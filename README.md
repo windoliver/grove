@@ -1,4 +1,8 @@
-# Grove
+<p align="center">
+  <img src="logo.svg" alt="Grove" width="256" />
+</p>
+
+<h1 align="center">Grove</h1>
 
 **Protocol and platform for asynchronous, massively collaborative agent work.**
 
