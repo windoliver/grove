@@ -216,9 +216,9 @@ This is enforced by the CID mechanism itself — no runtime check needed.
 
 ### Relation order is significant for CID computation
 
-Unlike tags (which are sorted alphabetically before hashing), relations
-are an **ordered array**. Two contributions with the same relations in
-different order produce **different CIDs**.
+Both tags and relations are **ordered arrays** — their order is
+significant for CID computation. Two contributions with the same
+relations in different order produce **different CIDs**.
 
 Agents SHOULD use a consistent ordering convention — for example,
 ordering by `relation_type` alphabetically, then by `target_cid`. This
@@ -262,9 +262,10 @@ source contribution's `created_at`.
 
 The `ContributionStore` interface defines `children(cid)` and
 `ancestors(cid)` as **single-hop** operations returning immediate
-neighbors only. Multi-hop traversal (e.g., "all transitive ancestors
-via `derives_from`") is the responsibility of the frontier calculator
-(issue #10) and higher-level query APIs.
+neighbors only. Both methods include `derives_from` and `adopts`
+relations (see `store.ts`). Multi-hop traversal (e.g., "all transitive
+ancestors via `derives_from` and `adopts`") is the responsibility of
+the frontier calculator (issue #10) and higher-level query APIs.
 
 Consumers SHOULD use depth-limited queries for multi-hop traversal to
-avoid unbounded graph walks on deep `derives_from` chains.
+avoid unbounded graph walks on deep relation chains.
