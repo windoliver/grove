@@ -176,3 +176,29 @@ describe("concurrent claim operations", () => {
     });
   });
 });
+
+describe("split-store close() safety", () => {
+  test("closing contribution store does not break claim store", async () => {
+    await withTwoStores(async ({ contrib1, claim1 }) => {
+      // close() on split stores is a no-op — it should not close the shared DB
+      contrib1.close();
+
+      // Claim store should still work after contribution store is "closed"
+      const claim = makeClaim({ claimId: "after-close", targetRef: "safe" });
+      const result = await claim1.createClaim(claim);
+      expect(result.claimId).toBe("after-close");
+    });
+  });
+
+  test("closing claim store does not break contribution store", async () => {
+    await withTwoStores(async ({ contrib1, claim1 }) => {
+      claim1.close();
+
+      // Contribution store should still work
+      const c = makeContribution({ summary: "after-claim-close" });
+      await contrib1.put(c);
+      const retrieved = await contrib1.get(c.cid);
+      expect(retrieved?.summary).toBe("after-claim-close");
+    });
+  });
+});

@@ -170,6 +170,25 @@ export function initSqliteDb(dbPath: string): Database {
       CURRENT_SCHEMA_VERSION,
       new Date().toISOString(),
     ]);
+
+    // Backfill junction tables for pre-existing contributions.
+    // INSERT OR IGNORE prevents duplicates when the tables already have rows.
+    db.run(`
+      INSERT OR IGNORE INTO contribution_tags (cid, tag)
+      SELECT c.cid, j.value
+      FROM contributions c, json_each(c.tags_json) j
+      WHERE NOT EXISTS (
+        SELECT 1 FROM contribution_tags ct WHERE ct.cid = c.cid
+      )
+    `);
+    db.run(`
+      INSERT OR IGNORE INTO artifacts (contribution_cid, name, content_hash)
+      SELECT c.cid, j.key, j.value
+      FROM contributions c, json_each(json_extract(c.manifest_json, '$.artifacts')) j
+      WHERE NOT EXISTS (
+        SELECT 1 FROM artifacts a WHERE a.contribution_cid = c.cid
+      )
+    `);
   });
   initSchema.immediate();
 
@@ -277,9 +296,9 @@ function buildFilteredQuery(opts: BuildFilteredQueryOptions): BuiltQuery {
 // Row helpers
 // ---------------------------------------------------------------------------
 
-/** Deserialize a manifest_json row into a Contribution. Skips CID verify (trusted store). */
+/** Deserialize a manifest_json row into a Contribution, verifying CID integrity. */
 function rowToContribution(row: { manifest_json: string }): Contribution {
-  return fromManifest(JSON.parse(row.manifest_json) as unknown, { verify: false });
+  return fromManifest(JSON.parse(row.manifest_json) as unknown);
 }
 
 interface ClaimRow {
@@ -473,8 +492,12 @@ export class SqliteContributionStore implements ContributionStore {
     return row?.cnt ?? 0;
   };
 
+  /**
+   * No-op when used via createSqliteStores() — the factory's close() owns the
+   * shared Database handle. Calling this will NOT close the underlying DB.
+   */
   close(): void {
-    this.db.close();
+    // Intentional no-op: DB lifecycle is managed by the factory or SqliteStore facade.
   }
 
   // ========================================================================
@@ -702,8 +725,12 @@ export class SqliteClaimStore implements ClaimStore {
     return rows.map((row) => rowToClaim(row));
   };
 
+  /**
+   * No-op when used via createSqliteStores() — the factory's close() owns the
+   * shared Database handle. Calling this will NOT close the underlying DB.
+   */
   close(): void {
-    this.db.close();
+    // Intentional no-op: DB lifecycle is managed by the factory or SqliteStore facade.
   }
 
   // ========================================================================
