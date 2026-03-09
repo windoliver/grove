@@ -133,11 +133,26 @@ const CidSchema = z
   .string()
   .regex(/^blake3:[0-9a-f]{64}$/, "CID must be in format blake3:<64-hex-chars>");
 
+/**
+ * Recursive schema for JSON-safe values only.
+ * Rejects Date, Map, Set, class instances, functions, etc.
+ */
+const JsonValueSchema: z.ZodTypeAny = z.lazy(() =>
+  z.union([
+    z.string(),
+    z.number().refine((n) => Number.isFinite(n), { message: "JSON numbers must be finite" }),
+    z.boolean(),
+    z.null(),
+    z.array(JsonValueSchema),
+    z.record(z.string(), JsonValueSchema),
+  ]),
+);
+
 const RelationSchema = z
   .object({
     targetCid: CidSchema,
     relationType: RelationTypeSchema,
-    metadata: z.record(z.string(), z.unknown()).optional(),
+    metadata: z.record(z.string(), JsonValueSchema).optional(),
   })
   .strict();
 
@@ -152,7 +167,7 @@ const ContributionInputSchema = z
     relations: z.array(RelationSchema),
     scores: z.record(z.string(), ScoreSchema).optional(),
     tags: z.array(z.string()),
-    context: z.record(z.string(), z.unknown()).optional(),
+    context: z.record(z.string(), JsonValueSchema).optional(),
     agent: AgentIdentitySchema,
     createdAt: z.string().datetime({ offset: true, message: "createdAt must be ISO 8601" }),
   })
@@ -170,7 +185,7 @@ const ContributionManifestSchema = z
     relations: z.array(RelationSchema),
     scores: z.record(z.string(), ScoreSchema).optional(),
     tags: z.array(z.string()),
-    context: z.record(z.string(), z.unknown()).optional(),
+    context: z.record(z.string(), JsonValueSchema).optional(),
     agent: AgentIdentitySchema,
     createdAt: z.string().datetime({ offset: true, message: "createdAt must be ISO 8601" }),
   })
@@ -292,8 +307,9 @@ export function computeCid(input: Contribution | ContributionInput): string {
 /**
  * Create a new Contribution with a computed CID.
  *
- * Returns a frozen (shallow) object. The CID is derived from the canonical
+ * Returns a deeply frozen object. The CID is derived from the canonical
  * manifest, so two calls with identical input always produce the same CID.
+ * All nested structures are deep-cloned to avoid freezing caller-owned objects.
  */
 export function createContribution(input: ContributionInput): Contribution {
   ContributionInputSchema.parse(input);
@@ -306,12 +322,20 @@ export function createContribution(input: ContributionInput): Contribution {
     summary: input.summary,
     description: input.description,
     artifacts: { ...input.artifacts },
-    relations: input.relations.map((r) => ({ ...r })),
+    relations: input.relations.map((r) => ({
+      targetCid: r.targetCid,
+      relationType: r.relationType,
+      ...(r.metadata !== undefined && {
+        metadata: JSON.parse(JSON.stringify(r.metadata)) as Record<string, unknown>,
+      }),
+    })),
     scores: input.scores
       ? Object.fromEntries(Object.entries(input.scores).map(([k, v]) => [k, v && { ...v }]))
       : undefined,
     tags: [...input.tags],
-    context: input.context ? { ...input.context } : undefined,
+    context: input.context
+      ? (JSON.parse(JSON.stringify(input.context)) as Record<string, unknown>)
+      : undefined,
     agent: { ...input.agent },
     createdAt: input.createdAt,
   };

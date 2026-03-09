@@ -854,6 +854,118 @@ describe("timezone offset support", () => {
 // Input validation in createContribution (Codex fix 3)
 // ---------------------------------------------------------------------------
 
+describe("createContribution does not freeze caller-owned objects", () => {
+  test("caller's nested context objects remain unfrozen", () => {
+    const inner = { nested: "value" };
+    const input = { ...MINIMAL_INPUT, context: { inner } };
+    createContribution(input);
+    expect(Object.isFrozen(inner)).toBe(false);
+    inner.nested = "modified";
+    expect(inner.nested).toBe("modified");
+  });
+
+  test("caller's relation metadata remains unfrozen", () => {
+    const metadata = { confidence: 0.9, details: { source: "manual" } };
+    const input = {
+      ...MINIMAL_INPUT,
+      relations: [
+        {
+          targetCid: "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          relationType: RelationType.DerivesFrom,
+          metadata,
+        },
+      ],
+    };
+    createContribution(input);
+    expect(Object.isFrozen(metadata)).toBe(false);
+    expect(Object.isFrozen(metadata.details)).toBe(false);
+    metadata.confidence = 0.5;
+    expect(metadata.confidence).toBe(0.5);
+  });
+
+  test("caller's tags array remains unfrozen", () => {
+    const tags = ["original"];
+    const input = { ...MINIMAL_INPUT, tags };
+    createContribution(input);
+    expect(Object.isFrozen(tags)).toBe(false);
+    tags.push("added");
+    expect(tags).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// JSON-safe context/metadata validation (Codex fix — non-JSON values)
+// ---------------------------------------------------------------------------
+
+describe("JSON-safe context and metadata validation", () => {
+  test("rejects Date in context", () => {
+    const input = {
+      ...MINIMAL_INPUT,
+      context: { when: new Date("2026-01-01") as unknown },
+    };
+    expect(() => createContribution(input)).toThrow();
+  });
+
+  test("rejects Map in context", () => {
+    const input = {
+      ...MINIMAL_INPUT,
+      context: { data: new Map() as unknown },
+    };
+    expect(() => createContribution(input)).toThrow();
+  });
+
+  test("rejects function in context", () => {
+    const input = {
+      ...MINIMAL_INPUT,
+      context: { fn: (() => 42) as unknown },
+    };
+    expect(() => createContribution(input)).toThrow();
+  });
+
+  test("rejects Date in relation metadata", () => {
+    const input = {
+      ...MINIMAL_INPUT,
+      relations: [
+        {
+          targetCid: "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          relationType: RelationType.DerivesFrom,
+          metadata: { when: new Date("2026-01-01") as unknown },
+        },
+      ],
+    };
+    expect(() => createContribution(input)).toThrow();
+  });
+
+  test("accepts nested plain JSON objects in context", () => {
+    const input = {
+      ...MINIMAL_INPUT,
+      context: { nested: { deep: { array: [1, "two", true, null] } } },
+    };
+    const contribution = createContribution(input);
+    expect(contribution.context).toEqual(input.context);
+  });
+
+  test("accepts nested plain JSON objects in relation metadata", () => {
+    const input = {
+      ...MINIMAL_INPUT,
+      relations: [
+        {
+          targetCid: "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          relationType: RelationType.DerivesFrom,
+          metadata: { nested: { scores: [1, 2, 3] } },
+        },
+      ],
+    };
+    const contribution = createContribution(input);
+    const firstRel = contribution.relations[0];
+    expect(firstRel?.metadata).toEqual({ nested: { scores: [1, 2, 3] } });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createContribution input validation (Codex fix 3)
+// ---------------------------------------------------------------------------
+
 describe("createContribution input validation", () => {
   test("rejects empty summary", () => {
     const input = { ...MINIMAL_INPUT, summary: "" };
