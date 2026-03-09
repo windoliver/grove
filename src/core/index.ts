@@ -9,6 +9,7 @@ export {
   type ContributionInput,
   ContributionKind,
   ContributionMode,
+  type JsonValue,
   type Relation,
   RelationType,
   type Score,

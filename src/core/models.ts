@@ -44,6 +44,20 @@ export const ClaimStatus = {
 } as const;
 export type ClaimStatus = (typeof ClaimStatus)[keyof typeof ClaimStatus];
 
+/**
+ * A JSON-safe value type. Only types that survive a JSON.stringify
+ * round-trip are permitted. This prevents non-JSON values (Map, Set,
+ * BigInt, functions, symbols) from entering context and metadata
+ * fields, where they would be silently lost or throw during CID hashing.
+ */
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
 /** Score direction — minimize or maximize. */
 export const ScoreDirection = {
   Minimize: "minimize",
@@ -74,7 +88,7 @@ export interface Score {
 export interface Relation {
   readonly targetCid: string;
   readonly relationType: RelationType;
-  readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+  readonly metadata?: Readonly<Record<string, JsonValue>> | undefined;
 }
 
 /** Content-addressed artifact metadata. */
@@ -101,7 +115,7 @@ export interface Contribution {
   readonly relations: readonly Relation[];
   readonly scores?: Readonly<Record<string, Score>> | undefined;
   readonly tags: readonly string[];
-  readonly context?: Readonly<Record<string, unknown>> | undefined;
+  readonly context?: Readonly<Record<string, JsonValue>> | undefined;
   readonly agent: AgentIdentity;
   readonly createdAt: string;
 }

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { computeCid, createContribution, toWireFormat, verifyCid } from "./cid.js";
-import type { ContributionInput } from "./models.js";
+import type { ContributionInput, JsonValue } from "./models.js";
 import { ContributionKind, ContributionMode, RelationType, ScoreDirection } from "./models.js";
 
 /** Minimal valid contribution input for testing. */
@@ -153,26 +153,24 @@ describe("computeCid", () => {
 
   test("undefined values in context do not affect CID", () => {
     const cid1 = computeCid(makeInput({ context: {} }));
+    // Cast through unknown — undefined is not a valid JsonValue, but we test
+    // defensive runtime behavior in case untyped JS callers pass it.
     const cid2 = computeCid(
-      makeInput({ context: { ignored: undefined } as Record<string, unknown> }),
+      makeInput({ context: { ignored: undefined } as unknown as Record<string, JsonValue> }),
     );
     expect(cid1).toBe(cid2);
   });
 
-  test("NaN in context produces different CID from null", () => {
-    // NaN → null in JSON, so they SHOULD produce the same CID
-    // (both serialize to {"val":null})
-    const cidNaN = computeCid(
-      makeInput({ context: { val: Number.NaN } as Record<string, unknown> }),
-    );
+  test("NaN in context produces same CID as null", () => {
+    // NaN is a valid JS number but not a valid JSON value.
+    // jsonNormalize() collapses NaN → null, so both produce the same CID.
+    const cidNaN = computeCid(makeInput({ context: { val: Number.NaN } }));
     const cidNull = computeCid(makeInput({ context: { val: null } }));
     expect(cidNaN).toBe(cidNull);
   });
 
   test("Infinity in context produces same CID as null", () => {
-    const cidInf = computeCid(
-      makeInput({ context: { val: Number.POSITIVE_INFINITY } as Record<string, unknown> }),
-    );
+    const cidInf = computeCid(makeInput({ context: { val: Number.POSITIVE_INFINITY } }));
     const cidNull = computeCid(makeInput({ context: { val: null } }));
     expect(cidInf).toBe(cidNull);
   });
@@ -185,7 +183,12 @@ describe("computeCid", () => {
     const cid1 = computeCid(makeInput({ relations: [{ ...baseRelation, metadata: {} }] }));
     const cid2 = computeCid(
       makeInput({
-        relations: [{ ...baseRelation, metadata: { gone: undefined } as Record<string, unknown> }],
+        relations: [
+          {
+            ...baseRelation,
+            metadata: { gone: undefined } as unknown as Record<string, JsonValue>,
+          },
+        ],
       }),
     );
     expect(cid1).toBe(cid2);
@@ -195,6 +198,27 @@ describe("computeCid", () => {
     const cid1 = computeCid(makeInput({ tags: ["optimizer", "benchmark"] }));
     const cid2 = computeCid(makeInput({ tags: ["benchmark", "optimizer"] }));
     expect(cid1).toBe(cid2);
+  });
+
+  test("Map in context is rejected at type level; at runtime hashes as empty object", () => {
+    // Map is not a JsonValue — this requires a cast to bypass TypeScript.
+    // At runtime, JSON.stringify(new Map([["k",1]])) === "{}" so it would
+    // silently lose data. The JsonValue type prevents this at compile time.
+    const cidMap = computeCid(
+      makeInput({ context: { val: new Map([["k", 1]]) } as unknown as Record<string, JsonValue> }),
+    );
+    const cidEmpty = computeCid(makeInput({ context: { val: {} } }));
+    expect(cidMap).toBe(cidEmpty);
+  });
+
+  test("BigInt in context throws at runtime (not JSON-serializable)", () => {
+    expect(() =>
+      computeCid(
+        makeInput({
+          context: { val: BigInt(42) } as unknown as Record<string, JsonValue>,
+        }),
+      ),
+    ).toThrow();
   });
 
   test("different agentId values produce different CIDs", () => {

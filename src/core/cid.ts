@@ -10,7 +10,14 @@
 
 import { hash } from "blake3";
 import { canonicalize } from "json-canonicalize";
-import type { AgentIdentity, Contribution, ContributionInput, Relation, Score } from "./models.js";
+import type {
+  AgentIdentity,
+  Contribution,
+  ContributionInput,
+  JsonValue,
+  Relation,
+  Score,
+} from "./models.js";
 
 /** CID prefix identifying the hash algorithm. */
 const CID_PREFIX = "blake3:";
@@ -27,20 +34,19 @@ function deepFreeze<T extends object>(obj: T): T {
 }
 
 /**
- * Normalize an arbitrary JS value to its JSON-safe equivalent.
+ * Normalize a JSON value to its canonical equivalent.
  *
  * Round-trips through JSON.parse(JSON.stringify(...)) to ensure the hash
  * input matches what JSON serialization would produce. This handles:
+ * - NaN → null, Infinity / -Infinity → null (valid numbers in JS, not in JSON)
  * - undefined keys are dropped
- * - NaN → null
- * - Infinity / -Infinity → null
- * - functions / symbols are dropped
  *
- * Without this, two observably different JS objects (e.g. { val: NaN }
- * vs { val: null }) could share the same CID.
+ * The JsonValue type prevents structurally non-JSON types (Map, Set,
+ * BigInt, functions, symbols) at compile time. This function handles
+ * the remaining numeric edge cases at runtime.
  */
-function jsonNormalize<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
+function jsonNormalize(value: Readonly<Record<string, JsonValue>>): Record<string, JsonValue> {
+  return JSON.parse(JSON.stringify(value)) as Record<string, JsonValue>;
 }
 
 /**
