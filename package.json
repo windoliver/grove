@@ -1,0 +1,48 @@
+{
+  "name": "grove",
+  "description": "Protocol and platform for asynchronous, massively collaborative agent work",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "bun@1.3.9",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js"
+    },
+    "./local": {
+      "types": "./dist/local/index.d.ts",
+      "import": "./dist/local/index.js"
+    }
+  },
+  "bin": {
+    "grove": "./dist/cli/main.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "test": "bun test",
+    "test:coverage": "bun test --coverage",
+    "check": "biome check .",
+    "postinstall": "lefthook install"
+  },
+  "dependencies": {
+    "blake3": "^1.0.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.14",
+    "@types/bun": "1.3.9",
+    "lefthook": "2.1.1",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3"
+  },
+  "trustedDependencies": [
+    "esbuild"
+  ]
+}

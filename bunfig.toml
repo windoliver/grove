@@ -1,0 +1,15 @@
+[install]
+linker = "isolated"
+exact = true
+saveTextLockfile = true
+
+[test]
+coverage = true
+coverageSkipTestFiles = true
+coverageReporter = ["text", "lcov"]
+coverageDir = "coverage"
+coverageThreshold = { lines = 0.8, functions = 0.8, statements = 0.8 }
+coveragePathIgnorePatterns = ["dist/**", "node_modules/**"]
+
+[run]
+shell = "bun"
