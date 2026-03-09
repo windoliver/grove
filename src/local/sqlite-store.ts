@@ -31,6 +31,15 @@ import type { ClaimStore, ContributionQuery, ContributionStore } from "../core/s
 const DEFAULT_LEASE_DURATION_MS = 60_000;
 const CURRENT_SCHEMA_VERSION = 1;
 
+/**
+ * Normalize an ISO 8601 timestamp to UTC Z-format.
+ * SQL text comparison of timestamps only works reliably when
+ * all values use the same format (no timezone offsets).
+ */
+function toUtcIso(iso: string): string {
+  return new Date(iso).toISOString();
+}
+
 // ---------------------------------------------------------------------------
 // Schema DDL
 // ---------------------------------------------------------------------------
@@ -150,28 +159,32 @@ export class SqliteStore implements ContributionStore, ClaimStore {
     this.dbPath = dbPath;
     this.db = new Database(dbPath);
 
-    // Configure pragmas — busy_timeout first to handle concurrent opens during WAL switch
+    // busy_timeout MUST be set before any potentially contentious operation.
+    // This ensures concurrent opens wait rather than fail immediately.
     this.db.run("PRAGMA busy_timeout = 5000");
-    this.db.run("PRAGMA journal_mode = WAL");
+
+    // Only switch to WAL if not already enabled — avoids contention when
+    // another process already set WAL mode on this database file.
+    const mode = (this.db.prepare("PRAGMA journal_mode").get() as { journal_mode: string })
+      .journal_mode;
+    if (mode !== "wal") {
+      this.db.run("PRAGMA journal_mode = WAL");
+    }
+
     this.db.run("PRAGMA synchronous = NORMAL");
     this.db.run("PRAGMA foreign_keys = ON");
 
-    // Initialize schema
-    this.db.run("BEGIN");
-    try {
+    // IMMEDIATE transaction for schema init — acquires write lock upfront
+    // so concurrent openers wait via busy_timeout instead of failing.
+    const initSchema = this.db.transaction(() => {
       this.db.exec(SCHEMA_DDL);
       this.db.exec(FTS_DDL);
-
-      // Record migration
       this.db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [
         CURRENT_SCHEMA_VERSION,
         new Date().toISOString(),
       ]);
-      this.db.run("COMMIT");
-    } catch (err) {
-      this.db.run("ROLLBACK");
-      throw err;
-    }
+    });
+    initSchema.immediate();
   }
 
   // ========================================================================
@@ -370,44 +383,52 @@ export class SqliteStore implements ContributionStore, ClaimStore {
   // ========================================================================
 
   createClaim = async (claim: Claim): Promise<Claim> => {
-    const existing = this.db
-      .prepare("SELECT claim_id FROM claims WHERE claim_id = ?")
-      .get(claim.claimId) as { claim_id: string } | null;
+    // Normalize timestamps to UTC for reliable SQL text comparison
+    const heartbeatUtc = toUtcIso(claim.heartbeatAt);
+    const leaseExpiresUtc = toUtcIso(claim.leaseExpiresAt);
 
-    if (existing !== null) {
-      throw new Error(`Claim with id '${claim.claimId}' already exists`);
-    }
+    // Atomic check-and-insert: IMMEDIATE transaction prevents TOCTOU races
+    const createTx = this.db.transaction(() => {
+      const existing = this.db
+        .prepare("SELECT claim_id FROM claims WHERE claim_id = ?")
+        .get(claim.claimId) as { claim_id: string } | null;
 
-    // Prevent duplicate active claims on the same target
-    const now = new Date().toISOString();
-    const activeOnTarget = this.db
-      .prepare(
-        "SELECT claim_id FROM claims WHERE target_ref = ? AND status = 'active' AND lease_expires_at >= ?",
-      )
-      .get(claim.targetRef, now) as { claim_id: string } | null;
+      if (existing !== null) {
+        throw new Error(`Claim with id '${claim.claimId}' already exists`);
+      }
 
-    if (activeOnTarget !== null) {
-      throw new Error(
-        `Target '${claim.targetRef}' already has an active claim '${activeOnTarget.claim_id}'`,
-      );
-    }
+      // Prevent duplicate active claims on the same target
+      const now = new Date().toISOString();
+      const activeOnTarget = this.db
+        .prepare(
+          "SELECT claim_id FROM claims WHERE target_ref = ? AND status = 'active' AND lease_expires_at >= ?",
+        )
+        .get(claim.targetRef, now) as { claim_id: string } | null;
 
-    this.db
-      .prepare(
-        `INSERT INTO claims (claim_id, target_ref, agent_id, status, heartbeat_at,
-         lease_expires_at, intent_summary, agent_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        claim.claimId,
-        claim.targetRef,
-        claim.agent.agentId,
-        claim.status,
-        claim.heartbeatAt,
-        claim.leaseExpiresAt,
-        claim.intentSummary,
-        JSON.stringify(claim.agent),
-      );
+      if (activeOnTarget !== null) {
+        throw new Error(
+          `Target '${claim.targetRef}' already has an active claim '${activeOnTarget.claim_id}'`,
+        );
+      }
+
+      this.db
+        .prepare(
+          `INSERT INTO claims (claim_id, target_ref, agent_id, status, heartbeat_at,
+           lease_expires_at, intent_summary, agent_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          claim.claimId,
+          claim.targetRef,
+          claim.agent.agentId,
+          claim.status,
+          heartbeatUtc,
+          leaseExpiresUtc,
+          claim.intentSummary,
+          JSON.stringify(claim.agent),
+        );
+    });
+    createTx.exclusive();
 
     const created = this.readClaim(claim.claimId);
     if (created === null) throw new Error(`Failed to read back claim '${claim.claimId}'`);

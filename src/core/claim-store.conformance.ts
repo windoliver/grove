@@ -91,6 +91,30 @@ export function runClaimStoreTests(factory: ClaimStoreFactory): void {
       expect(result.claimId).toBe("new-claim");
     });
 
+    test("createClaim handles offset timestamps correctly for target exclusivity", async () => {
+      // Create a claim with a timezone-offset lease that is 30 minutes in the future
+      const futureMs = Date.now() + 30 * 60_000;
+      const futureWithOffset = new Date(futureMs).toISOString().replace("Z", "+00:00");
+      const claim1 = makeClaim({
+        claimId: "offset-claim",
+        targetRef: "offset-target",
+        leaseExpiresAt: futureWithOffset,
+      });
+      await store.createClaim(claim1);
+
+      // Second claim on same target should be rejected despite offset format
+      const claim2 = makeClaim({
+        claimId: "offset-claim-2",
+        targetRef: "offset-target",
+      });
+      await expect(store.createClaim(claim2)).rejects.toThrow(/active claim/);
+
+      // The claim should appear in activeClaims
+      const actives = await store.activeClaims("offset-target");
+      expect(actives.length).toBe(1);
+      expect(actives[0]?.claimId).toBe("offset-claim");
+    });
+
     test("createClaim allows claiming target after previous claim lease expired", async () => {
       const expired = makeClaim({
         claimId: "expired-claim",
