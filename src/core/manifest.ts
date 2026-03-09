@@ -297,6 +297,11 @@ function toManifestDict(contribution: Contribution | ContributionInput): Record<
  * @returns The CID string in the format "blake3:<64-char-hex>".
  */
 export function computeCid(input: Contribution | ContributionInput): string {
+  if ("cid" in input) {
+    ContributionManifestSchema.parse(input);
+  } else {
+    ContributionInputSchema.parse(input);
+  }
   const dict = toManifestDict(input);
   const canonical = canonicalize(dict);
   const bytes = new TextEncoder().encode(canonical);

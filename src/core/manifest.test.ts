@@ -192,6 +192,35 @@ describe("computeCid", () => {
     });
   });
 
+  describe("input validation", () => {
+    test("rejects Date in context", () => {
+      const input = { ...MINIMAL_INPUT, context: { when: new Date("2026-01-01") as unknown } };
+      expect(() => computeCid(input)).toThrow();
+    });
+
+    test("rejects Date in relation metadata", () => {
+      const input = {
+        ...MINIMAL_INPUT,
+        relations: [
+          {
+            targetCid: "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            relationType: RelationType.DerivesFrom,
+            metadata: { when: new Date("2026-01-01") as unknown },
+          },
+        ],
+      };
+      expect(() => computeCid(input)).toThrow();
+    });
+
+    test("rejects non-JSON-safe values when called with a Contribution", () => {
+      const contribution: Contribution = {
+        ...createContribution(MINIMAL_INPUT),
+        context: { data: new Map() as unknown },
+      };
+      expect(() => computeCid(contribution)).toThrow();
+    });
+  });
+
   describe("CID format", () => {
     test("starts with blake3: prefix", () => {
       const cid = computeCid(MINIMAL_INPUT);
