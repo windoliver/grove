@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grove.dev/schemas/relation.json",
+  "title": "Grove Relation Edge",
+  "description": "A typed, directed edge between two contributions in the Grove contribution graph. This is the materialized edge form used in storage and API responses. In contribution manifests, relations are embedded without source_cid or created_at (which are derived from the containing contribution).",
+  "type": "object",
+  "required": ["source_cid", "target_cid", "relation_type", "created_at"],
+  "properties": {
+    "source_cid": {
+      "type": "string",
+      "description": "CID of the contribution that declares this relation (the source of the edge).",
+      "pattern": "^blake3:[a-f0-9]{64}$"
+    },
+    "target_cid": {
+      "type": "string",
+      "description": "CID of the contribution being referenced (the target of the edge).",
+      "pattern": "^blake3:[a-f0-9]{64}$"
+    },
+    "relation_type": {
+      "$ref": "#/$defs/relation_type"
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Optional metadata for this relation. Contents vary by relation type — see RELATIONS.md for recommended shapes.",
+      "additionalProperties": true,
+      "maxProperties": 100
+    },
+    "created_at": {
+      "type": "string",
+      "description": "Timestamp when this relation was created. Denormalized from the source contribution's created_at field.",
+      "format": "date-time"
+    }
+  },
+  "unevaluatedProperties": false,
+  "$defs": {
+    "relation_type": {
+      "type": "string",
+      "description": "The type of directed edge between contributions.",
+      "enum": ["derives_from", "responds_to", "reviews", "reproduces", "adopts"]
+    }
+  }
+}

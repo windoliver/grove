@@ -790,6 +790,87 @@ describe("verifyCid", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Relation-specific CID behavior
+// ---------------------------------------------------------------------------
+
+describe("relation-specific CID behavior", () => {
+  test("relation order affects CID (relations are an ordered array, not a set)", () => {
+    const relA = {
+      targetCid: "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      relationType: RelationType.DerivesFrom,
+    };
+    const relB = {
+      targetCid: "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      relationType: RelationType.Reviews,
+    };
+    const cid1 = computeCid({ ...MINIMAL_INPUT, relations: [relA, relB] });
+    const cid2 = computeCid({ ...MINIMAL_INPUT, relations: [relB, relA] });
+    expect(cid1).not.toBe(cid2);
+  });
+
+  test("relation metadata key order does NOT affect CID (canonical JSON sorts keys)", () => {
+    const rel1 = {
+      targetCid: "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      relationType: RelationType.Reviews,
+      metadata: { score: 0.9, verdict: "approved" },
+    };
+    const rel2 = {
+      targetCid: "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      relationType: RelationType.Reviews,
+      metadata: { verdict: "approved", score: 0.9 },
+    };
+    const cid1 = computeCid({ ...MINIMAL_INPUT, relations: [rel1] });
+    const cid2 = computeCid({ ...MINIMAL_INPUT, relations: [rel2] });
+    expect(cid1).toBe(cid2);
+  });
+
+  test("rejects invalid targetCid format — no prefix", () => {
+    expect(() =>
+      createContribution({
+        ...MINIMAL_INPUT,
+        relations: [{ targetCid: "not-a-valid-cid", relationType: RelationType.DerivesFrom }],
+      }),
+    ).toThrow();
+  });
+
+  test("rejects invalid targetCid format — wrong hash length", () => {
+    expect(() =>
+      createContribution({
+        ...MINIMAL_INPUT,
+        relations: [{ targetCid: "blake3:abc", relationType: RelationType.DerivesFrom }],
+      }),
+    ).toThrow();
+  });
+
+  test("rejects invalid targetCid format — uppercase hex", () => {
+    expect(() =>
+      createContribution({
+        ...MINIMAL_INPUT,
+        relations: [
+          {
+            targetCid: `blake3:${"A".repeat(64)}`,
+            relationType: RelationType.DerivesFrom,
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  test("accepts valid targetCid format", () => {
+    const contribution = createContribution({
+      ...MINIMAL_INPUT,
+      relations: [
+        {
+          targetCid: "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          relationType: RelationType.DerivesFrom,
+        },
+      ],
+    });
+    expect(contribution.relations).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // MANIFEST_VERSION
 // ---------------------------------------------------------------------------
 
