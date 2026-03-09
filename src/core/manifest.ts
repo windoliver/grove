@@ -331,7 +331,7 @@ export function createContribution(input: ContributionInput): Contribution {
       targetCid: r.targetCid,
       relationType: r.relationType,
       ...(r.metadata !== undefined && {
-        metadata: JSON.parse(JSON.stringify(r.metadata)) as Record<string, unknown>,
+        metadata: JSON.parse(JSON.stringify(r.metadata)) as Readonly<Record<string, JsonValue>>,
       }),
     })),
     scores: input.scores
@@ -339,7 +339,7 @@ export function createContribution(input: ContributionInput): Contribution {
       : undefined,
     tags: [...input.tags],
     context: input.context
-      ? (JSON.parse(JSON.stringify(input.context)) as Record<string, unknown>)
+      ? (JSON.parse(JSON.stringify(input.context)) as Readonly<Record<string, JsonValue>>)
       : undefined,
     agent: { ...input.agent },
     createdAt: input.createdAt,
