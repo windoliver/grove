@@ -12,7 +12,7 @@
 import type { SQLQueryBindings } from "bun:sqlite";
 import { Database } from "bun:sqlite";
 
-import { fromManifest, toManifest } from "../core/manifest.js";
+import { fromManifest, toManifest, verifyCid } from "../core/manifest.js";
 import type {
   AgentIdentity,
   Claim,
@@ -426,6 +426,13 @@ export class SqliteStore implements ContributionStore, ClaimStore {
     }
 
     const now = new Date();
+
+    // Reject heartbeat if lease has already expired
+    if (new Date(existing.leaseExpiresAt).getTime() < now.getTime()) {
+      throw new Error(
+        `Cannot heartbeat claim '${claimId}': lease expired at ${existing.leaseExpiresAt}`,
+      );
+    }
     const duration = leaseDurationMs ?? DEFAULT_LEASE_DURATION_MS;
     const newExpiry = new Date(now.getTime() + duration);
 
@@ -474,12 +481,13 @@ export class SqliteStore implements ContributionStore, ClaimStore {
   };
 
   activeClaims = async (targetRef?: string): Promise<readonly Claim[]> => {
+    const now = new Date().toISOString();
     let sql = `
       SELECT claim_id, target_ref, agent_id, status, heartbeat_at,
              lease_expires_at, intent_summary, agent_json
-      FROM claims WHERE status = 'active'
+      FROM claims WHERE status = 'active' AND lease_expires_at >= ?
     `;
-    const params: SQLQueryBindings[] = [];
+    const params: SQLQueryBindings[] = [now];
 
     if (targetRef !== undefined) {
       sql += " AND target_ref = ?";
@@ -511,6 +519,13 @@ export class SqliteStore implements ContributionStore, ClaimStore {
 
     if (existing !== null) {
       return;
+    }
+
+    // Verify CID integrity before persisting
+    if (!verifyCid(contribution)) {
+      throw new Error(
+        `CID integrity check failed for '${contribution.cid}': CID does not match manifest content`,
+      );
     }
 
     const manifestJson = JSON.stringify(toManifest(contribution));

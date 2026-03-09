@@ -185,6 +185,13 @@ export function runContentStoreTests(factory: ContentStoreFactory): void {
       expect(retrieved).toEqual(data);
     });
 
+    test("rejects malformed content hashes (path traversal)", async () => {
+      const malicious = "blake3:aa/../../../etc/passwd";
+      await expect(store.get(malicious)).rejects.toThrow();
+      await expect(store.exists(malicious)).rejects.toThrow();
+      await expect(store.delete(malicious)).rejects.toThrow();
+    });
+
     test("binary content round-trip (non-UTF8 bytes)", async () => {
       // Bytes that are invalid UTF-8 sequences
       const data = new Uint8Array([0xff, 0xfe, 0x00, 0x80, 0xc0, 0xc1, 0xf5, 0xf8]);

@@ -26,12 +26,22 @@ function computeHash(data: Uint8Array): string {
   return `${HASH_PREFIX}${digest}`;
 }
 
+/** Pattern for valid hex portion: exactly 64 lowercase hex characters. */
+const HEX_PATTERN = /^[0-9a-f]{64}$/;
+
 /**
- * Extract the hex portion from a content hash string.
- * Assumes the hash is in "blake3:<64-hex>" format.
+ * Extract and validate the hex portion from a content hash string.
+ * Throws if the hash is not in "blake3:<64-hex>" format.
  */
 function hexFromHash(contentHash: string): string {
-  return contentHash.slice(HASH_PREFIX.length);
+  if (!contentHash.startsWith(HASH_PREFIX)) {
+    throw new Error(`Invalid content hash prefix: expected '${HASH_PREFIX}', got '${contentHash}'`);
+  }
+  const hex = contentHash.slice(HASH_PREFIX.length);
+  if (!HEX_PATTERN.test(hex)) {
+    throw new Error(`Invalid content hash: hex portion must be 64 lowercase hex characters`);
+  }
+  return hex;
 }
 
 /**

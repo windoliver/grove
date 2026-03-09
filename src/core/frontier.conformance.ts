@@ -282,6 +282,41 @@ export function runFrontierCalculatorTests(
       expect(frontier.byReviewScore[0]?.value).toBe(7); // (8+6)/2
     });
 
+    test("respects minimize direction in review scores", async () => {
+      const target1 = makeContribution({
+        summary: "low-loss-target",
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      const target2 = makeContribution({
+        summary: "high-loss-target",
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+
+      // Reviews with minimize scores: lower is better
+      const review1 = makeContribution({
+        summary: "review-low",
+        kind: ContributionKind.Review,
+        scores: { loss: makeScore({ value: 0.1, direction: ScoreDirection.Minimize }) },
+        relations: [makeRelation({ targetCid: target1.cid, relationType: RelationType.Reviews })],
+        createdAt: "2026-01-03T00:00:00Z",
+      });
+      const review2 = makeContribution({
+        summary: "review-high",
+        kind: ContributionKind.Review,
+        scores: { loss: makeScore({ value: 0.9, direction: ScoreDirection.Minimize }) },
+        relations: [makeRelation({ targetCid: target2.cid, relationType: RelationType.Reviews })],
+        createdAt: "2026-01-04T00:00:00Z",
+      });
+
+      await store.putMany([target1, target2, review1, review2]);
+      const frontier = await calculator.compute();
+
+      expect(frontier.byReviewScore).toHaveLength(2);
+      // With minimize: lower value (0.1) should rank first
+      expect(frontier.byReviewScore[0]?.cid).toBe(target1.cid);
+      expect(frontier.byReviewScore[1]?.cid).toBe(target2.cid);
+    });
+
     test("returns empty when no reviews exist", async () => {
       const c = makeContribution({
         summary: "no-reviews",

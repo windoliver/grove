@@ -253,6 +253,32 @@ export function runClaimStoreTests(factory: ClaimStoreFactory): void {
       expect(actives[0]?.claimId).toBe("active-1");
     });
 
+    test("activeClaims excludes claims with expired leases", async () => {
+      const expired = makeClaim({
+        claimId: "expired-active",
+        leaseExpiresAt: new Date(Date.now() - 10_000).toISOString(),
+      });
+      const fresh = makeClaim({
+        claimId: "fresh-active",
+        leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+      await store.createClaim(expired);
+      await store.createClaim(fresh);
+
+      const actives = await store.activeClaims();
+      expect(actives.length).toBe(1);
+      expect(actives[0]?.claimId).toBe("fresh-active");
+    });
+
+    test("heartbeat throws for claim with expired lease", async () => {
+      const expired = makeClaim({
+        claimId: "expired-heartbeat",
+        leaseExpiresAt: new Date(Date.now() - 10_000).toISOString(),
+      });
+      await store.createClaim(expired);
+      await expect(store.heartbeat("expired-heartbeat")).rejects.toThrow();
+    });
+
     test("activeClaims filters by targetRef", async () => {
       const claim1 = makeClaim({
         claimId: "c1",

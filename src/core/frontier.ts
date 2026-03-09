@@ -201,6 +201,8 @@ export class DefaultFrontierCalculator implements FrontierCalculator {
     limit: number,
   ): Promise<readonly FrontierEntry[]> {
     const entries: FrontierEntry[] = [];
+    let minimizeCount = 0;
+    let maximizeCount = 0;
 
     for (const c of contributions) {
       // Find all contributions that review this one
@@ -215,6 +217,8 @@ export class DefaultFrontierCalculator implements FrontierCalculator {
           for (const score of Object.values(reviewer.scores)) {
             totalScore += score.value;
             scoreCount += 1;
+            if (score.direction === "minimize") minimizeCount++;
+            else maximizeCount++;
           }
         }
       }
@@ -224,7 +228,9 @@ export class DefaultFrontierCalculator implements FrontierCalculator {
       }
     }
 
-    entries.sort((a, b) => compareEntries(a, b, true));
+    // Respect score direction: if most review scores minimize, lower is better
+    const descending = maximizeCount >= minimizeCount;
+    entries.sort((a, b) => compareEntries(a, b, descending));
     return entries.slice(0, limit);
   }
 }
