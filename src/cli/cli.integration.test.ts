@@ -129,6 +129,21 @@ describe("grove CLI integration", () => {
     expect(releaseResult.exitCode).toBe(0);
   });
 
+  test("grove frontier --context accepts valid JSON and returns results", async () => {
+    const result = await runGrove(["frontier", "--context", '{"hardware":"H100"}', "--json"]);
+    expect(result.exitCode).toBe(0);
+    const data = JSON.parse(result.stdout);
+    // Empty grove, but the flag was accepted and parsed
+    expect(data.byRecency).toEqual([]);
+    expect(data.byMetric).toEqual({});
+  });
+
+  test("grove frontier --context rejects invalid JSON", async () => {
+    const result = await runGrove(["frontier", "--context", "not-json"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Invalid --context");
+  });
+
   test("grove unknown-command shows error", async () => {
     const { stderr, exitCode } = await runGrove(["nonexistent"]);
     expect(exitCode).toBe(1);
