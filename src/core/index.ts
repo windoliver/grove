@@ -8,6 +8,15 @@ export {
 export type { ContentStore, PutOptions } from "./cas.js";
 export { validateMediaType } from "./cas.js";
 export {
+  computeLeaseDuration,
+  DEFAULT_LEASE_DURATION_MS,
+  isClaimActiveAndValid,
+  resolveClaimOrRenew,
+  validateClaimContext,
+  validateHeartbeat,
+  validateTransition,
+} from "./claim-logic.js";
+export {
   DEFAULT_FAILURE_TIMEOUT_MS,
   DEFAULT_FRONTIER_CACHE_TTL_MS,
   DEFAULT_FRONTIER_DIGEST_LIMIT,
@@ -128,6 +137,7 @@ export type {
 } from "./store.js";
 export { ExpiryReason } from "./store.js";
 export { type SpawnOptions, type SpawnResult, spawnCommand, spawnOrThrow } from "./subprocess.js";
+export { toUtcIso } from "./time.js";
 export type {
   CheckoutOptions,
   StaleOptions,
