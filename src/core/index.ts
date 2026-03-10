@@ -121,6 +121,7 @@ export type {
   ExpireStaleOptions,
 } from "./store.js";
 export { ExpiryReason } from "./store.js";
+export { type SpawnOptions, type SpawnResult, spawnCommand, spawnOrThrow } from "./subprocess.js";
 export { toUtcIso } from "./time.js";
 export type {
   CheckoutOptions,

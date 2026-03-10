@@ -6,6 +6,7 @@
  */
 
 import type { ContentStore } from "../../core/cas.js";
+import { spawnOrThrow } from "../../core/subprocess.js";
 
 /**
  * Ingest a git diff as a single artifact into CAS.
@@ -31,21 +32,11 @@ export async function ingestGitDiff(
     throw new Error(`Invalid git ref: '${ref}' (must not start with '-')`);
   }
 
-  const proc = Bun.spawn(["git", "diff", ref, "--"], {
-    cwd: cwd ?? process.cwd(),
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
-
-  const exitCode = await proc.exited;
-  if (exitCode !== 0) {
-    throw new Error(`git diff failed (exit ${exitCode}): ${stderr.trim()}`);
-  }
+  const stdout = await spawnOrThrow(
+    ["git", "diff", ref, "--"],
+    { cwd: cwd ?? process.cwd() },
+    "git diff",
+  );
 
   if (stdout.length === 0) {
     return {};

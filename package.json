@@ -22,6 +22,10 @@
       "types": "./dist/server/index.d.ts",
       "import": "./dist/server/index.js"
     },
+    "./mcp": {
+      "types": "./dist/mcp/index.d.ts",
+      "import": "./dist/mcp/index.js"
+    },
     "./nexus": {
       "types": "./dist/nexus/index.d.ts",
       "import": "./dist/nexus/index.js"
@@ -29,7 +33,9 @@
   },
   "bin": {
     "grove": "./dist/cli/main.js",
-    "grove-server": "./dist/server/serve.js"
+    "grove-server": "./dist/server/serve.js",
+    "grove-mcp": "./dist/mcp/serve.js",
+    "grove-mcp-http": "./dist/mcp/serve-http.js"
   },
   "scripts": {
     "build": "tsup",
@@ -47,6 +53,7 @@
   },
   "dependencies": {
     "@hono/zod-validator": "0.7.6",
+    "@modelcontextprotocol/sdk": "^1.27.0",
     "blake3": "^1.0.2",
     "hono": "^4.12.6",
     "yaml": "^2.8.2",
