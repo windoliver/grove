@@ -8,6 +8,7 @@
 import { join } from "node:path";
 
 import type { ContentStore } from "../../core/cas.js";
+import { spawnOrThrow } from "../../core/subprocess.js";
 
 /**
  * Ingest the current git working tree into CAS.
@@ -27,21 +28,11 @@ export async function ingestGitTree(
 ): Promise<Record<string, string>> {
   const workDir = cwd ?? process.cwd();
 
-  const proc = Bun.spawn(["git", "ls-files", "--cached", "--others", "--exclude-standard"], {
-    cwd: workDir,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
-
-  const exitCode = await proc.exited;
-  if (exitCode !== 0) {
-    throw new Error(`git ls-files failed (exit ${exitCode}): ${stderr.trim()}`);
-  }
+  const stdout = await spawnOrThrow(
+    ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+    { cwd: workDir },
+    "git ls-files",
+  );
 
   const files = stdout
     .split("\n")

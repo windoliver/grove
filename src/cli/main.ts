@@ -111,6 +111,24 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       },
     },
     {
+      name: "export",
+      description: "Export contribution to GitHub",
+      needsStore: false,
+      handler: async (args) => {
+        const { handleExport } = await import("./commands/export.js");
+        await handleExport(args, groveOverride);
+      },
+    },
+    {
+      name: "import",
+      description: "Import from GitHub as contribution",
+      needsStore: false,
+      handler: async (args) => {
+        const { handleImport } = await import("./commands/import.js");
+        await handleImport(args, groveOverride);
+      },
+    },
+    {
       name: "claim",
       description: "Claim work to prevent duplication",
       needsStore: true,
@@ -261,6 +279,11 @@ Usage:
   grove search [--query <text>]     Search contributions
   grove log [-n <count>]            Recent contributions
   grove tree [--from <cid>]         DAG visualization
+
+  grove export --to-discussion <owner/repo> <cid>   Export to GitHub Discussion
+  grove export --to-pr <owner/repo> <cid>           Export to GitHub PR
+  grove import --from-pr <owner/repo#number>        Import GitHub PR
+  grove import --from-discussion <owner/repo#number> Import GitHub Discussion
 
 Global options:
   --grove <path>              Path to grove directory (or set GROVE_DIR)
