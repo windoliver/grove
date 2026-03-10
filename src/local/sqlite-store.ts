@@ -30,7 +30,7 @@ import type { ClaimStore, ContributionQuery, ContributionStore } from "../core/s
 // ---------------------------------------------------------------------------
 
 const DEFAULT_LEASE_DURATION_MS = 300_000;
-const CURRENT_SCHEMA_VERSION = 2;
+const CURRENT_SCHEMA_VERSION = 3;
 
 /**
  * Normalize an ISO 8601 timestamp to UTC Z-format.
@@ -122,6 +122,20 @@ const SCHEMA_DDL = `
 
   CREATE INDEX IF NOT EXISTS idx_claims_target ON claims(target_ref);
   CREATE INDEX IF NOT EXISTS idx_claims_status ON claims(status);
+
+  -- Workspaces table for agent session isolation
+  CREATE TABLE IF NOT EXISTS workspaces (
+    cid TEXT PRIMARY KEY,
+    workspace_path TEXT NOT NULL,
+    agent_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL,
+    last_activity_at TEXT NOT NULL,
+    context_json TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_workspaces_status ON workspaces(status);
+  CREATE INDEX IF NOT EXISTS idx_workspaces_activity ON workspaces(last_activity_at);
 `;
 
 const FTS_DDL = `
@@ -177,7 +191,7 @@ export function initSqliteDb(dbPath: string): Database {
     ).v;
 
     // Migration v1 → v2: add created_at and context_json to claims
-    if (currentVersion !== null && currentVersion < 2) {
+    if (currentVersion !== null && currentVersion < 2 && currentVersion >= 1) {
       // Check if columns already exist (idempotent migration)
       const columns = db.prepare("PRAGMA table_info(claims)").all() as readonly {
         name: string;
@@ -192,6 +206,13 @@ export function initSqliteDb(dbPath: string): Database {
       if (!columnNames.has("context_json")) {
         db.run("ALTER TABLE claims ADD COLUMN context_json TEXT");
       }
+    }
+
+    // Migration v2 → v3: add workspaces table
+    if (currentVersion !== null && currentVersion < 3 && currentVersion >= 2) {
+      // The workspaces table is in SCHEMA_DDL with CREATE TABLE IF NOT EXISTS,
+      // so it's automatically created for both fresh and migrated databases.
+      // No additional ALTER TABLE needed.
     }
 
     db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [

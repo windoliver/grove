@@ -32,7 +32,7 @@ describe("schema migration", () => {
       db.close();
 
       expect(row).toBeDefined();
-      expect(row?.version).toBe(2);
+      expect(row?.version).toBe(3);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -59,6 +59,7 @@ describe("schema migration", () => {
       expect(tableNames).toContain("claims");
       expect(tableNames).toContain("schema_migrations");
       expect(tableNames).toContain("contributions_fts");
+      expect(tableNames).toContain("workspaces");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -172,7 +173,7 @@ describe("schema migration", () => {
       db.close();
 
       expect(rows.length).toBe(1);
-      expect(rows[0]?.version).toBe(2);
+      expect(rows[0]?.version).toBe(3);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -190,7 +191,7 @@ describe("schema migration", () => {
         .get() as {
         version: number;
       } | null;
-      expect(row?.version).toBe(2);
+      expect(row?.version).toBe(3);
 
       db.close();
     } finally {

@@ -8,6 +8,16 @@ export type {
 } from "./frontier.js";
 export { DefaultFrontierCalculator, getScore } from "./frontier.js";
 export {
+  type HookEntry,
+  HookEntrySchema,
+  type HookResult,
+  type HookRunner,
+  type HooksConfig,
+  HooksConfigSchema,
+  hookCommand,
+  hookTimeout,
+} from "./hooks.js";
+export {
   CID_PATTERN,
   ContextSchema,
   computeCid,
@@ -35,4 +45,21 @@ export {
   type Score,
   ScoreDirection,
 } from "./models.js";
+export {
+  ArtifactNameError,
+  assertWithinBoundary,
+  containsTraversal,
+  PathContainmentError,
+  sanitizeCidForPath,
+  validateArtifactName,
+  validateWorkspaceKey,
+} from "./path-safety.js";
 export type { ClaimStore, ContributionQuery, ContributionStore } from "./store.js";
+export type {
+  CheckoutOptions,
+  StaleOptions,
+  WorkspaceInfo,
+  WorkspaceManager,
+  WorkspaceQuery,
+} from "./workspace.js";
+export { WorkspaceStatus } from "./workspace.js";
