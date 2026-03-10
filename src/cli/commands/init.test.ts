@@ -134,7 +134,7 @@ describe("executeInit", () => {
 
       // Check directory structure
       await access(join(dir, ".grove"));
-      await access(join(dir, ".grove", "store.sqlite"));
+      await access(join(dir, ".grove", "grove.db"));
       await access(join(dir, ".grove", "cas"));
       await access(join(dir, ".grove", "workspaces"));
       await access(join(dir, "GROVE.md"));

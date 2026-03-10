@@ -7,7 +7,13 @@
  */
 
 import type { Contribution, ContributionKind, Relation, RelationType } from "./models.js";
-import type { ContributionQuery, ContributionStore, ThreadNode } from "./store.js";
+import type {
+  ContributionQuery,
+  ContributionStore,
+  HotThreadsOptions,
+  ThreadNode,
+  ThreadSummary,
+} from "./store.js";
 
 /**
  * In-memory ContributionStore for testing.
@@ -242,6 +248,56 @@ export class InMemoryContributionStore implements ContributionStore {
     }
 
     return result;
+  };
+
+  hotThreads = async (opts?: HotThreadsOptions): Promise<readonly ThreadSummary[]> => {
+    // Build map: target CID → { count, lastReplyAt }
+    const threadInfo = new Map<string, { replyCount: number; lastReplyAt: string }>();
+    for (const c of this.contributions.values()) {
+      for (const rel of c.relations) {
+        if (rel.relationType === "responds_to") {
+          const existing = threadInfo.get(rel.targetCid);
+          if (existing === undefined) {
+            threadInfo.set(rel.targetCid, { replyCount: 1, lastReplyAt: c.createdAt });
+          } else {
+            existing.replyCount += 1;
+            // Compare by UTC epoch to handle timezone offsets correctly
+            if (new Date(c.createdAt).getTime() > new Date(existing.lastReplyAt).getTime()) {
+              existing.lastReplyAt = c.createdAt;
+            }
+          }
+        }
+      }
+    }
+
+    // Collect thread summaries
+    const summaries: ThreadSummary[] = [];
+    for (const [cid, info] of threadInfo) {
+      const contribution = this.contributions.get(cid);
+      if (contribution === undefined) continue;
+
+      // Tag filter — deduplicate tags to match SQLite behavior
+      if (opts?.tags !== undefined && opts.tags.length > 0) {
+        const uniqueTags = [...new Set(opts.tags)];
+        if (!uniqueTags.every((t) => contribution.tags.includes(t))) continue;
+      }
+
+      summaries.push({
+        contribution,
+        replyCount: info.replyCount,
+        lastReplyAt: info.lastReplyAt,
+      });
+    }
+
+    // Sort: reply count DESC, then last reply UTC epoch DESC
+    summaries.sort((a, b) => {
+      if (b.replyCount !== a.replyCount) return b.replyCount - a.replyCount;
+      return new Date(b.lastReplyAt).getTime() - new Date(a.lastReplyAt).getTime();
+    });
+
+    // Apply default limit of 20 to match SQLite backend
+    const limit = opts?.limit ?? 20;
+    return summaries.slice(0, limit);
   };
 
   close(): void {}

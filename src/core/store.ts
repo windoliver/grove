@@ -28,6 +28,22 @@ export interface ThreadNode {
   readonly depth: number;
 }
 
+/** A thread root with activity metadata, returned by hotThreads(). */
+export interface ThreadSummary {
+  readonly contribution: Contribution;
+  /** Number of direct responds_to replies. */
+  readonly replyCount: number;
+  /** ISO timestamp of the most recent reply. */
+  readonly lastReplyAt: string;
+}
+
+/** Options for hotThreads(). Default limit is 20 when omitted. */
+export interface HotThreadsOptions {
+  readonly tags?: readonly string[] | undefined;
+  /** Maximum number of threads to return. Defaults to 20 when omitted. */
+  readonly limit?: number | undefined;
+}
+
 /** Filters for querying contributions. */
 export interface ContributionQuery {
   readonly kind?: ContributionKind | undefined;
@@ -134,6 +150,17 @@ export interface ContributionStore {
    * have a count of 0. Non-existent CIDs also return 0 (not omitted).
    */
   replyCounts(cids: readonly string[]): Promise<ReadonlyMap<string, number>>;
+
+  /**
+   * List contributions that have discussion replies, ranked by activity.
+   *
+   * Returns contributions with at least one incoming `responds_to` relation,
+   * sorted by reply count DESC then most recent reply timestamp DESC.
+   * Any contribution kind can be a thread root (not just discussions).
+   *
+   * Optionally filtered by tags on the root contribution.
+   */
+  hotThreads(opts?: HotThreadsOptions): Promise<readonly ThreadSummary[]>;
 
   /** Release resources (e.g., close database connections). */
   close(): void;

@@ -19,7 +19,13 @@ import type {
   Relation,
   RelationType,
 } from "../core/models.js";
-import type { ContributionQuery, ContributionStore, ThreadNode } from "../core/store.js";
+import type {
+  ContributionQuery,
+  ContributionStore,
+  HotThreadsOptions,
+  ThreadNode,
+  ThreadSummary,
+} from "../core/store.js";
 import { toUtcIso } from "../core/time.js";
 import type { ListEntry, ListOptions, NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
@@ -413,6 +419,56 @@ export class NexusContributionStore implements ContributionStore {
     }
 
     return result;
+  }
+
+  async hotThreads(opts?: HotThreadsOptions): Promise<readonly ThreadSummary[]> {
+    const limit = opts?.limit ?? 20;
+    const uniqueTags =
+      opts?.tags !== undefined && opts.tags.length > 0 ? [...new Set(opts.tags)] : undefined;
+
+    // Scan all contributions to find roots with responds_to replies
+    const all = await this.list();
+    const threadInfo = new Map<
+      string,
+      { contribution: Contribution; replyCount: number; lastReplyAt: string }
+    >();
+
+    for (const c of all) {
+      for (const rel of c.relations) {
+        if (rel.relationType !== "responds_to") continue;
+        const existing = threadInfo.get(rel.targetCid);
+        if (existing) {
+          existing.replyCount++;
+          if (new Date(c.createdAt).getTime() > new Date(existing.lastReplyAt).getTime()) {
+            existing.lastReplyAt = c.createdAt;
+          }
+        } else {
+          const root = await this.get(rel.targetCid);
+          if (root !== undefined) {
+            threadInfo.set(rel.targetCid, {
+              contribution: root,
+              replyCount: 1,
+              lastReplyAt: c.createdAt,
+            });
+          }
+        }
+      }
+    }
+
+    let summaries = [...threadInfo.values()];
+
+    // Tag filter
+    if (uniqueTags !== undefined) {
+      summaries = summaries.filter((s) => uniqueTags.every((t) => s.contribution.tags.includes(t)));
+    }
+
+    // Sort: reply count DESC, then last reply UTC epoch DESC
+    summaries.sort((a, b) => {
+      if (b.replyCount !== a.replyCount) return b.replyCount - a.replyCount;
+      return new Date(b.lastReplyAt).getTime() - new Date(a.lastReplyAt).getTime();
+    });
+
+    return summaries.slice(0, limit);
   }
 
   close(): void {

@@ -15,6 +15,7 @@ import { frontier } from "./routes/frontier.js";
 import { gossip } from "./routes/gossip.js";
 import { grove } from "./routes/grove.js";
 import { search } from "./routes/search.js";
+import { threads } from "./routes/threads.js";
 
 /**
  * Create a Hono application with all grove-server routes.
@@ -36,6 +37,7 @@ export function createApp(deps: ServerDeps): Hono<ServerEnv> {
   app.route("/api/frontier", frontier);
   app.route("/api/search", search);
   app.route("/api/dag", dag);
+  app.route("/api/threads", threads);
   app.route("/api/claims", claims);
   app.route("/api/gossip", gossip);
   app.route("/api/grove", grove);

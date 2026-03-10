@@ -5,6 +5,7 @@
  * grove_search   — Search contributions by text and filters
  * grove_log      — Recent contributions
  * grove_tree     — View DAG structure (children/ancestors)
+ * grove_thread   — View a discussion thread
  *
  * All list operations return trimmed summaries to minimize token usage.
  */
@@ -144,6 +145,26 @@ const treeInputSchema = z.object({
     .describe(
       "Which direction to traverse: children (incoming edges), ancestors (outgoing), or both",
     ),
+});
+
+const threadInputSchema = z.object({
+  cid: z.string().describe("CID of the thread root contribution"),
+  maxDepth: z
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .optional()
+    .default(50)
+    .describe("Maximum depth to traverse (default: 50)"),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(200)
+    .optional()
+    .default(100)
+    .describe("Maximum number of nodes to return (default: 100)"),
 });
 
 // ---------------------------------------------------------------------------
@@ -320,6 +341,53 @@ export function registerQueryTools(server: McpServer, deps: McpDeps): void {
 
         return {
           content: [{ type: "text" as const, text: JSON.stringify(result) }],
+        };
+      } catch (error) {
+        return handleToolError(error);
+      }
+    },
+  );
+
+  // --- grove_thread -------------------------------------------------------
+  server.registerTool(
+    "grove_thread",
+    {
+      description:
+        "View a discussion thread rooted at a contribution. Returns thread nodes with depth, " +
+        "ordered so parents appear before children and siblings are chronological. " +
+        "Trimmed summaries to save tokens.",
+      inputSchema: threadInputSchema,
+    },
+    async (args) => {
+      try {
+        const { contributionStore } = deps;
+
+        const nodes = await contributionStore.thread(args.cid, {
+          maxDepth: args.maxDepth,
+          limit: args.limit,
+        });
+
+        if (nodes.length === 0) {
+          return notFoundError("Thread root", args.cid);
+        }
+
+        // Trimmed thread node summaries
+        const trimmed = nodes.map((n) => ({
+          cid: n.contribution.cid,
+          depth: n.depth,
+          summary: n.contribution.summary,
+          kind: n.contribution.kind,
+          agentId: n.contribution.agent.agentId,
+          createdAt: n.contribution.createdAt,
+        }));
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ nodes: trimmed, count: trimmed.length }),
+            },
+          ],
         };
       } catch (error) {
         return handleToolError(error);

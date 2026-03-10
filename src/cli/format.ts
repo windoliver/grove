@@ -6,6 +6,7 @@
 
 import type { FrontierEntry } from "../core/frontier.js";
 import type { Contribution, Score } from "../core/models.js";
+import type { ThreadNode, ThreadSummary } from "../core/store.js";
 
 /** Truncate a CID to a short display form: "blake3:abc123...". */
 export function truncateCid(cid: string, length = 12): string {
@@ -138,4 +139,59 @@ export function formatFrontierSection(heading: string, entries: readonly Frontie
   if (entries.length === 0) return "";
   const table = formatTable(FRONTIER_COLUMNS, entries.map(frontierEntryToRow));
   return `${heading}\n${table}`;
+}
+
+// ---------------------------------------------------------------------------
+// Thread formatters
+// ---------------------------------------------------------------------------
+
+/**
+ * Format a discussion thread with indentation showing reply depth.
+ *
+ * Output:
+ *   blake3:abc123..  "Topic question"  alice  2m ago
+ *     blake3:def456..  "Reply message"  bob  1m ago
+ *       blake3:ghi789..  "Nested reply"  carol  30s ago
+ */
+export function formatThread(nodes: readonly ThreadNode[]): string {
+  if (nodes.length === 0) return "(empty thread)";
+
+  const lines: string[] = [];
+  for (const node of nodes) {
+    const indent = "  ".repeat(node.depth);
+    const cid = truncateCid(node.contribution.cid);
+    const summary = node.contribution.summary;
+    const agent = node.contribution.agent.agentName ?? node.contribution.agent.agentId;
+    const time = formatTimestamp(node.contribution.createdAt);
+
+    // Truncate summary for readability
+    const maxSummary = 60 - node.depth * 2;
+    const trimmedSummary =
+      summary.length > maxSummary ? `${summary.slice(0, maxSummary - 2)}..` : summary;
+
+    lines.push(`${indent}${cid}  ${trimmedSummary}  [${agent}]  ${time}`);
+  }
+
+  return lines.join("\n");
+}
+
+/** Standard columns for hot threads display. */
+const HOT_THREADS_COLUMNS: readonly Column[] = [
+  { header: "CID", key: "cid", maxWidth: 22 },
+  { header: "REPLIES", key: "replies", align: "right", maxWidth: 8 },
+  { header: "SUMMARY", key: "summary", maxWidth: 40 },
+  { header: "LAST REPLY", key: "lastReply", maxWidth: 16 },
+  { header: "AGENT", key: "agent", maxWidth: 16 },
+];
+
+/** Format hot threads as a table. */
+export function formatHotThreads(summaries: readonly ThreadSummary[]): string {
+  const rows = summaries.map((s) => ({
+    cid: truncateCid(s.contribution.cid),
+    replies: String(s.replyCount),
+    summary: s.contribution.summary,
+    lastReply: formatTimestamp(s.lastReplyAt),
+    agent: s.contribution.agent.agentName ?? s.contribution.agent.agentId,
+  }));
+  return formatTable(HOT_THREADS_COLUMNS, rows);
 }

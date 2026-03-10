@@ -338,3 +338,76 @@ describe("grove_tree", () => {
     expect(result.text).toContain(McpErrorCode.NotFound);
   });
 });
+
+describe("grove_thread", () => {
+  let testDeps: TestMcpDeps;
+  let deps: McpDeps;
+  let server: McpServer;
+
+  beforeEach(async () => {
+    testDeps = await createTestMcpDeps();
+    deps = testDeps.deps;
+    server = new McpServer({ name: "test", version: "0.0.1" }, { capabilities: { tools: {} } });
+    registerQueryTools(server, deps);
+  });
+
+  afterEach(async () => {
+    await testDeps.cleanup();
+  });
+
+  test("returns thread nodes with depth", async () => {
+    const root = makeContribution({
+      kind: "discussion",
+      summary: "Root topic",
+    });
+    const reply = makeContribution({
+      kind: "discussion",
+      summary: "Reply message",
+      relations: [{ targetCid: root.cid, relationType: "responds_to" }],
+      createdAt: "2026-01-02T00:00:00Z",
+    });
+    await deps.contributionStore.put(root);
+    await deps.contributionStore.put(reply);
+
+    const result = await callTool(server, "grove_thread", { cid: root.cid });
+
+    expect(result.isError).toBeUndefined();
+    const data = JSON.parse(result.text);
+    expect(data.count).toBe(2);
+    expect(data.nodes[0].depth).toBe(0);
+    expect(data.nodes[0].summary).toBe("Root topic");
+    expect(data.nodes[1].depth).toBe(1);
+    expect(data.nodes[1].summary).toBe("Reply message");
+  });
+
+  test("returns trimmed node summaries", async () => {
+    const root = makeContribution({
+      kind: "discussion",
+      summary: "Topic",
+      description: "Should not appear",
+    });
+    await deps.contributionStore.put(root);
+
+    const result = await callTool(server, "grove_thread", { cid: root.cid });
+    const data = JSON.parse(result.text);
+    const node = data.nodes[0];
+    expect(node.cid).toBeDefined();
+    expect(node.summary).toBe("Topic");
+    expect(node.depth).toBe(0);
+    expect(node.kind).toBe("discussion");
+    expect(node.agentId).toBeDefined();
+    // Should NOT have full contribution fields
+    expect(node.description).toBeUndefined();
+    expect(node.artifacts).toBeUndefined();
+    expect(node.relations).toBeUndefined();
+  });
+
+  test("returns not-found for non-existent CID", async () => {
+    const result = await callTool(server, "grove_thread", {
+      cid: "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain(McpErrorCode.NotFound);
+  });
+});

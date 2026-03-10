@@ -208,6 +208,63 @@ describe("grove_review", () => {
   });
 });
 
+describe("grove_discuss", () => {
+  let testDeps: TestMcpDeps;
+  let deps: McpDeps;
+  let server: McpServer;
+
+  beforeEach(async () => {
+    testDeps = await createTestMcpDeps();
+    deps = testDeps.deps;
+    server = new McpServer({ name: "test", version: "0.0.1" }, { capabilities: { tools: {} } });
+    registerContributionTools(server, deps);
+  });
+
+  afterEach(async () => {
+    await testDeps.cleanup();
+  });
+
+  test("creates a root discussion (no targetCid)", async () => {
+    const result = await callTool(server, "grove_discuss", {
+      summary: "Should we use polling or push?",
+      tags: ["architecture"],
+    });
+
+    expect(result.isError).toBeUndefined();
+    const data = JSON.parse(result.text);
+    expect(data.kind).toBe("discussion");
+    expect(data.cid).toMatch(/^blake3:/);
+    expect(data.targetCid).toBeUndefined();
+  });
+
+  test("creates a reply discussion (with targetCid)", async () => {
+    const target = makeContribution({ summary: "Root topic" });
+    await deps.contributionStore.put(target);
+
+    const result = await callTool(server, "grove_discuss", {
+      targetCid: target.cid,
+      summary: "I think push is better",
+      tags: [],
+    });
+
+    expect(result.isError).toBeUndefined();
+    const data = JSON.parse(result.text);
+    expect(data.kind).toBe("discussion");
+    expect(data.targetCid).toBe(target.cid);
+  });
+
+  test("returns not-found for non-existent targetCid", async () => {
+    const result = await callTool(server, "grove_discuss", {
+      targetCid: "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+      summary: "Reply to nothing",
+      tags: [],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain(McpErrorCode.NotFound);
+  });
+});
+
 describe("grove_reproduce", () => {
   let testDeps: TestMcpDeps;
   let deps: McpDeps;

@@ -29,6 +29,8 @@ import { parseFrontierArgs, runFrontier } from "./commands/frontier.js";
 import { parseLogArgs, runLog } from "./commands/log.js";
 import { runRelease } from "./commands/release.js";
 import { parseSearchArgs, runSearch } from "./commands/search.js";
+import { parseThreadArgs, runThread } from "./commands/thread.js";
+import { parseThreadsArgs, runThreads } from "./commands/threads.js";
 import { parseTreeArgs, runTree } from "./commands/tree.js";
 import { initCliDeps } from "./context.js";
 import { resolveGroveDir } from "./utils/grove-dir.js";
@@ -118,6 +120,35 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       handler: async (args) => {
         const { handleContribute } = await import("./commands/contribute.js");
         await handleContribute(args);
+      },
+    },
+    {
+      name: "discuss",
+      description: "Post a discussion or reply",
+      needsStore: false,
+      handler: async (args) => {
+        const { handleDiscuss } = await import("./commands/discuss.js");
+        await handleDiscuss(args, groveOverride);
+      },
+    },
+    {
+      name: "thread",
+      description: "View a discussion thread",
+      needsStore: false,
+      handler: async (args) => {
+        await withCliDeps(async (a, deps) => {
+          await runThread(parseThreadArgs([...a]), deps);
+        }, args);
+      },
+    },
+    {
+      name: "threads",
+      description: "List active discussion threads",
+      needsStore: false,
+      handler: async (args) => {
+        await withCliDeps(async (a, deps) => {
+          await runThreads(parseThreadsArgs([...a]), deps);
+        }, args);
       },
     },
     {
@@ -289,6 +320,7 @@ function printUsage(): void {
 Usage:
   grove init [name]           Create a new grove
   grove contribute            Submit a contribution
+  grove discuss [cid] <msg>   Post a discussion or reply
   grove claim <target>        Claim work to prevent duplication
   grove release <claim-id>    Release a claim
   grove claims                List claims
@@ -299,6 +331,8 @@ Usage:
   grove search [--query <text>]     Search contributions
   grove log [-n <count>]            Recent contributions
   grove tree [--from <cid>]         DAG visualization
+  grove thread <cid>                View a discussion thread
+  grove threads [--tag <tag>]       List active discussion threads
 
   grove export --to-discussion <owner/repo> <cid>   Export to GitHub Discussion
   grove export --to-pr <owner/repo> <cid>           Export to GitHub PR

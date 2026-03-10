@@ -144,6 +144,61 @@ describe("grove CLI integration", () => {
     expect(result.stderr).toContain("Invalid --context");
   });
 
+  test("grove discuss + thread round-trip", async () => {
+    // This test needs a fully initialized grove. Use a separate temp dir
+    // and run without --grove so init creates .grove itself.
+    const discDir = await mkdtemp(join(tmpdir(), "grove-discuss-int-"));
+    try {
+      async function runDiscGrove(
+        args: string[],
+      ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+        const proc = Bun.spawn(["bun", join(import.meta.dir, "main.ts"), ...args], {
+          cwd: discDir,
+          stdout: "pipe",
+          stderr: "pipe",
+          env: { ...process.env, GROVE_AGENT_ID: "test-agent" },
+        });
+        const [stdout, stderr] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+        ]);
+        const exitCode = await proc.exited;
+        return { stdout, stderr, exitCode };
+      }
+
+      // Init the grove
+      const initResult = await runDiscGrove(["init", "test-grove"]);
+      expect(initResult.exitCode).toBe(0);
+
+      // Post a root discussion
+      const discussResult = await runDiscGrove(["discuss", "Should we refactor the parser?"]);
+      expect(discussResult.exitCode).toBe(0);
+      expect(discussResult.stdout).toContain("blake3:");
+
+      // Extract CID
+      const cidMatch = discussResult.stdout.match(/blake3:[a-f0-9]+/);
+      expect(cidMatch).not.toBeNull();
+      const rootCid = cidMatch![0];
+
+      // Reply to it
+      const replyResult = await runDiscGrove(["discuss", rootCid, "Yes, it is too complex"]);
+      expect(replyResult.exitCode).toBe(0);
+
+      // View thread
+      const threadResult = await runDiscGrove(["thread", rootCid]);
+      expect(threadResult.exitCode).toBe(0);
+      expect(threadResult.stdout).toContain("Should we refactor the parser?");
+      expect(threadResult.stdout).toContain("Yes, it is too complex");
+
+      // List threads
+      const threadsResult = await runDiscGrove(["threads"]);
+      expect(threadsResult.exitCode).toBe(0);
+      expect(threadsResult.stdout).toContain("Should we refactor the parser?");
+    } finally {
+      await rm(discDir, { recursive: true, force: true });
+    }
+  });
+
   test("grove unknown-command shows error", async () => {
     const { stderr, exitCode } = await runGrove(["nonexistent"]);
     expect(exitCode).toBe(1);
