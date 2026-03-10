@@ -305,5 +305,87 @@ export function runContentStoreTests(factory: ContentStoreFactory): void {
       expect(artifact).toBeDefined();
       expect(artifact?.mediaType).toBeUndefined();
     });
+
+    // ------------------------------------------------------------------
+    // hash determinism (#12A)
+    // ------------------------------------------------------------------
+
+    test("known BLAKE3 test vector for 'hello world'", async () => {
+      const data = new TextEncoder().encode("hello world");
+      const hash = await store.put(data);
+      expect(hash).toBe("blake3:d74981efa70a0c880b8d8c1985d075dbcbf679b99a5f9914e5aaf96b831a9e24");
+    });
+
+    test("different content produces different hashes", async () => {
+      const data1 = new TextEncoder().encode("content A");
+      const data2 = new TextEncoder().encode("content B");
+      const hash1 = await store.put(data1);
+      const hash2 = await store.put(data2);
+      expect(hash1).not.toBe(hash2);
+    });
+
+    test("putFile produces same hash as put for identical content", async () => {
+      const content = "cross-method hash check";
+      const data = new TextEncoder().encode(content);
+      const hashFromPut = await store.put(data);
+
+      const filePath = join(tempDir, "hash-check.txt");
+      await writeFile(filePath, content, "utf-8");
+      const hashFromFile = await store.putFile(filePath);
+
+      expect(hashFromFile).toBe(hashFromPut);
+    });
+
+    // ------------------------------------------------------------------
+    // re-storage after deletion (#11A)
+    // ------------------------------------------------------------------
+
+    test("put after delete re-stores content successfully", async () => {
+      const data = new TextEncoder().encode("re-storage test");
+      const hash = await store.put(data);
+
+      await store.delete(hash);
+      expect(await store.exists(hash)).toBe(false);
+      expect(await store.get(hash)).toBeUndefined();
+
+      // Re-store the same content
+      const rehash = await store.put(data);
+      expect(rehash).toBe(hash);
+      expect(await store.exists(hash)).toBe(true);
+      expect(await store.get(hash)).toEqual(data);
+    });
+
+    test("put with mediaType after delete of content with different mediaType", async () => {
+      const data = new TextEncoder().encode("media type lifecycle");
+      const hash = await store.put(data, { mediaType: "text/plain" });
+
+      await store.delete(hash);
+
+      // Re-store with a different mediaType
+      await store.put(data, { mediaType: "application/octet-stream" });
+      const artifact = await store.stat(hash);
+      expect(artifact).toBeDefined();
+      expect(artifact?.mediaType).toBe("application/octet-stream");
+    });
+
+    // ------------------------------------------------------------------
+    // error paths (#9A)
+    // ------------------------------------------------------------------
+
+    test("putFile rejects non-existent source file", async () => {
+      const missingFile = join(tempDir, "does-not-exist.txt");
+      await expect(store.putFile(missingFile)).rejects.toThrow();
+    });
+
+    test("putFile rejects directory path as source", async () => {
+      await expect(store.putFile(tempDir)).rejects.toThrow();
+    });
+
+    test("getToFile rejects when output parent directory does not exist", async () => {
+      const data = new TextEncoder().encode("output dir test");
+      const hash = await store.put(data);
+      const badPath = join(tempDir, "nonexistent", "subdir", "output.bin");
+      await expect(store.getToFile(hash, badPath)).rejects.toThrow();
+    });
   });
 }
