@@ -64,6 +64,11 @@
       "type": "integer",
       "description": "Number of retry attempts for this claim. 0 for the first attempt. Incremented by the orchestrator on each retry.",
       "minimum": 0
+    },
+    "revision": {
+      "type": "integer",
+      "description": "Optimistic concurrency revision number. Incremented by the store on every state transition (heartbeat, release, complete). Used by network-backed stores for compare-and-swap operations. May be absent for local stores.",
+      "minimum": 1
     }
   },
   "unevaluatedProperties": false,

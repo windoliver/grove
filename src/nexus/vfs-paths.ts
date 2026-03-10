@@ -95,3 +95,11 @@ export function activeClaimTargetDir(zoneId: string, targetRef: string): string 
 export function activeClaimsDir(zoneId: string): string {
   return `/zones/${zoneId}/indexes/claims/active`;
 }
+
+/**
+ * Path to a per-target lock file that enforces the one-active-claim-per-target invariant.
+ * Written with ifNoneMatch="*" for atomic exclusivity; content is the owning claimId.
+ */
+export function targetLockPath(zoneId: string, targetRef: string): string {
+  return `/zones/${zoneId}/indexes/claims/target-lock/${targetRef}`;
+}

@@ -27,10 +27,10 @@ import type {
 } from "../core/store.js";
 import { ExpiryReason } from "../core/store.js";
 import { toUtcIso } from "../core/time.js";
-import type { NexusClient } from "./client.js";
+import type { ListEntry, ListOptions, NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
-import { isRetryable, mapNexusError } from "./errors.js";
+import { isRetryable, mapNexusError, NexusConflictError } from "./errors.js";
 import { Semaphore } from "./semaphore.js";
 import {
   activeClaimIndexPath,
@@ -38,6 +38,7 @@ import {
   activeClaimTargetDir,
   claimPath,
   claimsDir,
+  targetLockPath,
 } from "./vfs-paths.js";
 
 const encoder = new TextEncoder();
@@ -72,21 +73,8 @@ export class NexusClaimStore implements ClaimStore {
   async createClaim(claim: Claim): Promise<Claim> {
     validateClaimContext(claim);
 
-    // Check for duplicate claimId
-    const existingById = await this.readClaim(claim.claimId);
-    if (existingById !== undefined) {
-      throw new Error(`Claim with id '${claim.claimId}' already exists`);
-    }
-
-    // Check for active claim on target
-    const now = new Date();
-    const activeOnTarget = await this.findActiveOnTarget(claim.targetRef, now);
-    if (activeOnTarget !== undefined) {
-      throw new Error(
-        `Target '${claim.targetRef}' already has an active claim '${activeOnTarget.claimId}'`,
-      );
-    }
-
+    // Check for duplicate claimId via conditional write (ifNoneMatch="*")
+    // This is race-safe: the write will fail if the file already exists.
     const createdClaim: Claim = {
       ...claim,
       createdAt: toUtcIso(claim.createdAt),
@@ -95,8 +83,34 @@ export class NexusClaimStore implements ClaimStore {
       revision: 1,
     };
 
-    await this.writeClaim(createdClaim);
-    await this.writeActiveIndex(createdClaim);
+    try {
+      await this.writeClaimConditional(createdClaim, { ifNoneMatch: "*" });
+    } catch (err) {
+      if (err instanceof NexusConflictError) {
+        throw new Error(`Claim with id '${claim.claimId}' already exists`);
+      }
+      throw err;
+    }
+
+    // Acquire target lock + write active index. The lock uses ifNoneMatch="*"
+    // to atomically enforce one-active-per-target. If it fails, roll back.
+    try {
+      await this.writeActiveIndexExclusive(createdClaim);
+    } catch (err) {
+      // Roll back the claim file — the lock is the gate.
+      await this.run(() => this.client.delete(claimPath(this.zoneId, claim.claimId))).catch(
+        () => {},
+      );
+      if (err instanceof NexusConflictError) {
+        // Another claim already active on this target — find it for error message
+        const now = new Date();
+        const activeOnTarget = await this.findActiveOnTarget(claim.targetRef, now);
+        const existingId = activeOnTarget?.claimId ?? "(unknown)";
+        throw new Error(`Target '${claim.targetRef}' already has an active claim '${existingId}'`);
+      }
+      throw err;
+    }
+
     return createdClaim;
   }
 
@@ -129,12 +143,7 @@ export class NexusClaimStore implements ClaimStore {
       return renewed;
     }
 
-    // Create new claim
-    const existingById = await this.readClaim(claim.claimId);
-    if (existingById !== undefined) {
-      throw new Error(`Claim with id '${claim.claimId}' already exists`);
-    }
-
+    // Create new claim — use conditional write for race safety
     const createdClaim: Claim = {
       ...claim,
       createdAt: toUtcIso(claim.createdAt),
@@ -142,8 +151,26 @@ export class NexusClaimStore implements ClaimStore {
       leaseExpiresAt: toUtcIso(claim.leaseExpiresAt),
       revision: 1,
     };
-    await this.writeClaim(createdClaim);
-    await this.writeActiveIndex(createdClaim);
+
+    try {
+      await this.writeClaimConditional(createdClaim, { ifNoneMatch: "*" });
+    } catch (err) {
+      if (err instanceof NexusConflictError) {
+        throw new Error(`Claim with id '${claim.claimId}' already exists`);
+      }
+      throw err;
+    }
+
+    // Write active index — roll back claim on failure
+    try {
+      await this.writeActiveIndexExclusive(createdClaim);
+    } catch (err) {
+      await this.run(() => this.client.delete(claimPath(this.zoneId, claim.claimId))).catch(
+        () => {},
+      );
+      throw err;
+    }
+
     return createdClaim;
   }
 
@@ -222,13 +249,10 @@ export class NexusClaimStore implements ClaimStore {
     }
 
     const dir = activeClaimsDir(this.zoneId);
-    const listing = await this.withRetry(
-      () => this.run(() => this.client.list(dir, { recursive: true })),
-      "activeClaims",
-    ).catch(() => ({ files: [], hasMore: false }));
+    const entries = await this.listAllPages(dir, { recursive: true });
 
     const claims: Claim[] = [];
-    for (const entry of listing.files) {
+    for (const entry of entries) {
       if (entry.isDirectory) continue;
       const claimId = entry.name;
       const claim = await this.readClaim(claimId);
@@ -337,14 +361,77 @@ export class NexusClaimStore implements ClaimStore {
     );
   }
 
-  private async writeActiveIndex(claim: Claim): Promise<void> {
-    const path = activeClaimIndexPath(this.zoneId, claim.targetRef, claim.claimId);
-    await this.run(() => this.client.write(path, new Uint8Array(0)));
+  /** Write claim file with conditional options (e.g. ifNoneMatch for create). */
+  private async writeClaimConditional(
+    claim: Claim,
+    opts: { ifNoneMatch?: string; ifMatch?: string },
+  ): Promise<void> {
+    const path = claimPath(this.zoneId, claim.claimId);
+    await this.withRetry(
+      () => this.run(() => this.client.write(path, encodeClaim(claim), opts)),
+      "writeClaimConditional",
+    );
+  }
+
+  /**
+   * Acquire the per-target lock + write active index marker.
+   * The lock file uses ifNoneMatch="*" to atomically enforce one-active-per-target.
+   * If the lock is held by a claim that is no longer active (expired/released/completed),
+   * the stale lock is cleaned up and the write is retried.
+   * Throws NexusConflictError if another claim genuinely owns the target.
+   */
+  private async writeActiveIndexExclusive(claim: Claim): Promise<void> {
+    const lockFile = targetLockPath(this.zoneId, claim.targetRef);
+
+    try {
+      // Atomic lock: fails with NexusConflictError if target already has an active claim
+      await this.run(() =>
+        this.client.write(lockFile, encoder.encode(claim.claimId), { ifNoneMatch: "*" }),
+      );
+    } catch (err) {
+      if (!(err instanceof NexusConflictError)) throw err;
+
+      // Lock conflict — check if the holder is still active
+      const existingLockData = await this.run(() => this.client.read(lockFile));
+      if (existingLockData !== undefined) {
+        const holderId = decoder.decode(existingLockData);
+        const holderClaim = await this.readClaim(holderId);
+
+        // If the holder is gone, expired, released, or completed, clean up and retry
+        if (
+          holderClaim === undefined ||
+          holderClaim.status !== "active" ||
+          new Date(holderClaim.leaseExpiresAt).getTime() < Date.now()
+        ) {
+          // Clean up stale lock and index
+          await this.run(() => this.client.delete(lockFile)).catch(() => {});
+          const staleIndexFile = activeClaimIndexPath(this.zoneId, claim.targetRef, holderId);
+          await this.run(() => this.client.delete(staleIndexFile)).catch(() => {});
+
+          // Retry the lock
+          await this.run(() =>
+            this.client.write(lockFile, encoder.encode(claim.claimId), { ifNoneMatch: "*" }),
+          );
+        } else {
+          // Genuine conflict — another active claim owns this target
+          throw err;
+        }
+      } else {
+        throw err;
+      }
+    }
+
+    // Also write the per-claim index marker (for listing)
+    const indexFile = activeClaimIndexPath(this.zoneId, claim.targetRef, claim.claimId);
+    await this.run(() => this.client.write(indexFile, new Uint8Array(0)));
   }
 
   private async deleteActiveIndex(claim: Claim): Promise<void> {
-    const path = activeClaimIndexPath(this.zoneId, claim.targetRef, claim.claimId);
-    await this.run(() => this.client.delete(path)).catch(() => {});
+    // Delete both the per-claim index and the target lock
+    const indexFile = activeClaimIndexPath(this.zoneId, claim.targetRef, claim.claimId);
+    const lockFile = targetLockPath(this.zoneId, claim.targetRef);
+    await this.run(() => this.client.delete(indexFile)).catch(() => {});
+    await this.run(() => this.client.delete(lockFile)).catch(() => {});
   }
 
   private async findActiveOnTarget(targetRef: string, now: Date): Promise<Claim | undefined> {
@@ -354,13 +441,10 @@ export class NexusClaimStore implements ClaimStore {
   }
 
   private async readActiveClaimsFromDir(dir: string, now: Date): Promise<Claim[]> {
-    const listing = await this.withRetry(
-      () => this.run(() => this.client.list(dir)),
-      "readActiveClaimsFromDir",
-    ).catch(() => ({ files: [], hasMore: false }));
+    const entries = await this.listAllPages(dir);
 
     const claims: Claim[] = [];
-    for (const entry of listing.files) {
+    for (const entry of entries) {
       if (entry.isDirectory) continue;
       const claimId = entry.name;
       const claim = await this.readClaim(claimId);
@@ -375,13 +459,10 @@ export class NexusClaimStore implements ClaimStore {
 
   private async listAllClaims(): Promise<Claim[]> {
     const dir = claimsDir(this.zoneId);
-    const listing = await this.withRetry(
-      () => this.run(() => this.client.list(dir)),
-      "listAllClaims",
-    ).catch(() => ({ files: [], hasMore: false }));
+    const entries = await this.listAllPages(dir);
 
     const claims: Claim[] = [];
-    for (const entry of listing.files) {
+    for (const entry of entries) {
       if (entry.isDirectory) continue;
       const data = await this.run(() => this.client.read(entry.path));
       if (data !== undefined) {
@@ -389,6 +470,33 @@ export class NexusClaimStore implements ClaimStore {
       }
     }
     return claims;
+  }
+
+  /** Paginate through all pages of a list() call, collecting all entries. */
+  private async listAllPages(
+    dir: string,
+    opts?: Omit<ListOptions, "cursor">,
+  ): Promise<readonly ListEntry[]> {
+    const entries: ListEntry[] = [];
+    let cursor: string | undefined;
+
+    do {
+      const listing = await this.withRetry(
+        () => this.run(() => this.client.list(dir, { ...opts, cursor })),
+        "listAllPages",
+      ).catch(() => ({
+        files: [] as ListEntry[],
+        hasMore: false as boolean,
+        nextCursor: undefined,
+      }));
+
+      for (const entry of listing.files) {
+        entries.push(entry);
+      }
+      cursor = listing.hasMore ? listing.nextCursor : undefined;
+    } while (cursor !== undefined);
+
+    return entries;
   }
 
   private async run<T>(fn: () => Promise<T>): Promise<T> {

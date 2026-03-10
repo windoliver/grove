@@ -21,7 +21,7 @@ import type {
 } from "../core/models.js";
 import type { ContributionQuery, ContributionStore, ThreadNode } from "../core/store.js";
 import { toUtcIso } from "../core/time.js";
-import type { NexusClient } from "./client.js";
+import type { ListEntry, ListOptions, NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
 import { isRetryable, mapNexusError } from "./errors.js";
@@ -77,15 +77,11 @@ export class NexusContributionStore implements ContributionStore {
     const manifestPath = contributionPath(this.zoneId, contribution.cid);
 
     await this.withRetry(async () => {
-      // Idempotent: skip if already stored
-      const exists = await this.run(() => this.client.exists(manifestPath));
-      if (exists) return;
-
-      // Store manifest
+      // Store manifest (idempotent — overwrites are safe since CID is content-addressed)
       const manifest = toManifest(contribution);
       await this.run(() => this.client.write(manifestPath, encode(manifest)));
 
-      // Write relation index entries
+      // Write relation index entries (idempotent writes)
       for (const rel of contribution.relations) {
         const relPath = relationIndexPath(this.zoneId, rel.targetCid, contribution.cid);
         const relData = encode({
@@ -95,13 +91,13 @@ export class NexusContributionStore implements ContributionStore {
         await this.run(() => this.client.write(relPath, relData));
       }
 
-      // Write tag index markers
+      // Write tag index markers (idempotent writes)
       for (const tag of contribution.tags) {
         const tp = tagIndexPath(this.zoneId, tag, contribution.cid);
         await this.run(() => this.client.write(tp, new Uint8Array(0)));
       }
 
-      // Write FTS index entry
+      // Write FTS index entry (idempotent write)
       const ftsPath = ftsIndexPath(this.zoneId, contribution.cid);
       await this.run(() =>
         this.client.write(
@@ -150,13 +146,10 @@ export class NexusContributionStore implements ContributionStore {
 
   async list(query?: ContributionQuery): Promise<readonly Contribution[]> {
     const ftsDir = ftsIndexDir(this.zoneId);
-    const listing = await this.withRetry(
-      () => this.run(() => this.client.list(ftsDir, { recursive: true })),
-      "list",
-    );
+    const entries = await this.listAllPages(ftsDir, { recursive: true });
 
     const contributions: Contribution[] = [];
-    for (const entry of listing.files) {
+    for (const entry of entries) {
       if (entry.isDirectory) continue;
       const ftsData = await this.run(() => this.client.read(entry.path));
       if (ftsData === undefined) continue;
@@ -183,14 +176,11 @@ export class NexusContributionStore implements ContributionStore {
 
   async children(cid: string): Promise<readonly Contribution[]> {
     const relDir = relationIndexDir(this.zoneId, cid);
-    const listing = await this.withRetry(
-      () => this.run(() => this.client.list(relDir)),
-      "children",
-    ).catch(() => ({ files: [], hasMore: false }));
+    const entries = await this.listAllPages(relDir).catch(() => []);
 
     const contributions: Contribution[] = [];
     const seen = new Set<string>();
-    for (const entry of listing.files) {
+    for (const entry of entries) {
       if (entry.isDirectory) continue;
       const sourceCid = entry.name.replace(/\.json$/, "");
       if (seen.has(sourceCid)) continue;
@@ -229,14 +219,11 @@ export class NexusContributionStore implements ContributionStore {
 
   async relatedTo(cid: string, relationType?: RelationType): Promise<readonly Contribution[]> {
     const relDir = relationIndexDir(this.zoneId, cid);
-    const listing = await this.withRetry(
-      () => this.run(() => this.client.list(relDir)),
-      "relatedTo",
-    ).catch(() => ({ files: [], hasMore: false }));
+    const entries = await this.listAllPages(relDir).catch(() => []);
 
     const contributions: Contribution[] = [];
     const seen = new Set<string>();
-    for (const entry of listing.files) {
+    for (const entry of entries) {
       if (entry.isDirectory) continue;
       const sourceCid = entry.name.replace(/\.json$/, "");
       if (seen.has(sourceCid)) continue;
@@ -285,14 +272,11 @@ export class NexusContributionStore implements ContributionStore {
     }
 
     // Fallback: list all FTS entries and filter by text
-    const listing = await this.withRetry(
-      () => this.run(() => this.client.list(ftsDir, { recursive: true })),
-      "search.fallback",
-    );
+    const allEntries = await this.listAllPages(ftsDir, { recursive: true });
 
     const lowerQuery = query.toLowerCase();
     const contributions: Contribution[] = [];
-    for (const entry of listing.files) {
+    for (const entry of allEntries) {
       if (entry.isDirectory) continue;
       const ftsData = await this.run(() => this.client.read(entry.path));
       if (ftsData === undefined) continue;
@@ -316,13 +300,10 @@ export class NexusContributionStore implements ContributionStore {
     relationType?: RelationType,
   ): Promise<readonly Contribution[]> {
     const relDir = relationIndexDir(this.zoneId, targetCid);
-    const listing = await this.withRetry(
-      () => this.run(() => this.client.list(relDir)),
-      "findExisting",
-    ).catch(() => ({ files: [], hasMore: false }));
+    const allEntries = await this.listAllPages(relDir).catch(() => []);
 
     const contributions: Contribution[] = [];
-    for (const entry of listing.files) {
+    for (const entry of allEntries) {
       if (entry.isDirectory) continue;
 
       // Filter by relationType if specified
@@ -346,7 +327,10 @@ export class NexusContributionStore implements ContributionStore {
   }
 
   async count(query?: ContributionQuery): Promise<number> {
-    const all = await this.list(query);
+    // Strip limit/offset so we count ALL matching contributions, not just a page.
+    const countQuery =
+      query !== undefined ? { ...query, limit: undefined, offset: undefined } : undefined;
+    const all = await this.list(countQuery);
     return all.length;
   }
 
@@ -368,12 +352,9 @@ export class NexusContributionStore implements ContributionStore {
 
       for (const parentCid of currentLevel) {
         const relDir = relationIndexDir(this.zoneId, parentCid);
-        const listing = await this.withRetry(
-          () => this.run(() => this.client.list(relDir)),
-          "thread.walk",
-        ).catch(() => ({ files: [], hasMore: false }));
+        const entries = await this.listAllPages(relDir).catch(() => []);
 
-        for (const entry of listing.files) {
+        for (const entry of entries) {
           if (entry.isDirectory) continue;
           // Read relation to check type
           const relData = await this.run(() => this.client.read(entry.path));
@@ -418,13 +399,10 @@ export class NexusContributionStore implements ContributionStore {
 
     for (const cid of cids) {
       const relDir = relationIndexDir(this.zoneId, cid);
-      const listing = await this.withRetry(
-        () => this.run(() => this.client.list(relDir)),
-        "replyCounts",
-      ).catch(() => ({ files: [], hasMore: false }));
+      const entries = await this.listAllPages(relDir).catch(() => []);
 
       let count = 0;
-      for (const entry of listing.files) {
+      for (const entry of entries) {
         if (entry.isDirectory) continue;
         const relData = await this.run(() => this.client.read(entry.path));
         if (relData === undefined) continue;
@@ -444,6 +422,33 @@ export class NexusContributionStore implements ContributionStore {
   // -----------------------------------------------------------------------
   // Private helpers
   // -----------------------------------------------------------------------
+
+  /** Paginate through all pages of a list() call, collecting all entries. */
+  private async listAllPages(
+    dir: string,
+    opts?: Omit<ListOptions, "cursor">,
+  ): Promise<readonly ListEntry[]> {
+    const entries: ListEntry[] = [];
+    let cursor: string | undefined;
+
+    do {
+      const listing = await this.withRetry(
+        () => this.run(() => this.client.list(dir, { ...opts, cursor })),
+        "listAllPages",
+      ).catch(() => ({
+        files: [] as ListEntry[],
+        hasMore: false as boolean,
+        nextCursor: undefined,
+      }));
+
+      for (const entry of listing.files) {
+        entries.push(entry);
+      }
+      cursor = listing.hasMore ? listing.nextCursor : undefined;
+    } while (cursor !== undefined);
+
+    return entries;
+  }
 
   private async run<T>(fn: () => Promise<T>): Promise<T> {
     return this.semaphore.run(fn);
