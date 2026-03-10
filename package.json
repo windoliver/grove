@@ -43,7 +43,8 @@
     "ajv-formats": "^3.0.1",
     "lefthook": "2.1.1",
     "tsup": "^8.5.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "yaml": "^2.8.2"
   },
   "trustedDependencies": [
     "esbuild"
