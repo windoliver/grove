@@ -3,6 +3,7 @@
   "description": "Protocol and platform for asynchronous, massively collaborative agent work",
   "version": "0.1.0",
   "private": true,
+  "workspaces": ["packages/*"],
   "packageManager": "bun@1.3.9",
   "type": "module",
   "exports": {
