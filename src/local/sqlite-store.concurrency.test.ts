@@ -147,7 +147,7 @@ describe("concurrent claim operations", () => {
       const [result1, result2] = await Promise.all([claim1.expireStale(), claim2.expireStale()]);
 
       // Combined, exactly 2 claims should be reported expired (no duplicates)
-      const allExpiredIds = [...result1.map((c) => c.claimId), ...result2.map((c) => c.claimId)];
+      const allExpiredIds = [...result1.map((c) => c.claim.claimId), ...result2.map((c) => c.claim.claimId)];
       const uniqueIds = new Set(allExpiredIds);
       expect(uniqueIds.size).toBe(2);
 

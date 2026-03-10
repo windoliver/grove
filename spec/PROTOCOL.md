@@ -489,6 +489,21 @@ Use cases include:
 - Parent workflow or orchestrator identifiers
 - Priority or urgency indicators
 
+### Claim-or-Renew (Idempotent Claiming)
+
+When the same agent (by `agent_id`) attempts to claim a target that
+it already holds an active claim on, implementations SHOULD update
+the existing claim rather than rejecting the request. This provides
+idempotent claiming semantics:
+
+- **Same agent, same target, active claim exists:** Renew the lease
+  and update `intent_summary`. Return the existing claim.
+- **Different agent, active claim exists:** Reject with an error.
+- **No active claim exists:** Create a new claim.
+
+This prevents duplicate work when an agent restarts or retries a
+claim operation, without violating the mutual exclusion guarantee.
+
 ### Separation from the Contribution Graph
 
 Claims are stored **separately** from the immutable contribution graph.
@@ -504,6 +519,91 @@ graph.
 
 The canonical wire format uses **snake_case** field names. See
 `schemas/claim.json` for the full JSON Schema (2020-12).
+
+---
+
+## Reconciliation
+
+Reconciliation is the process of cleaning up stale coordination state
+before computing frontiers or dispatching new work. This follows the
+**reconcile-before-dispatch** pattern from Kubernetes controllers and
+OpenAI Symphony.
+
+### Reconciliation Loop
+
+On every query cycle (before returning frontier/search results or
+dispatching new work), implementations SHOULD run:
+
+1. **Expire stale claims:**
+   - Transition all active claims where `lease_expires_at < now()`
+     to `expired` status.
+   - Optionally detect **stalled agents**: if `heartbeat_at` is older
+     than a configurable stall threshold (e.g., `2 × lease_duration`)
+     and the claim is still `active`, mark it as `expired`.
+   - Log expiration details (claim ID, reason, agent) for debugging.
+
+2. **Deduplicate active claims:**
+   - If multiple active claims exist for the same `(agent_id, target_ref)`
+     pair (possible under race conditions), keep the most recent
+     (by `created_at`) and release the rest.
+
+3. **Clean terminal claims:**
+   - Delete claims with status `completed`, `expired`, or `released`
+     that are older than a configurable retention period (default: 7 days).
+   - This prevents unbounded growth of the claims table.
+
+### Startup Reconciliation
+
+When the system starts or reinitializes:
+
+1. **Expire all stale claims:** Run lease-based expiry (without stall
+   detection — the system was down, so heartbeat gaps are expected).
+2. **Flag orphaned workspaces:** Workspaces with `active` status but
+   no corresponding active claim should be marked as `stale`.
+3. **Log summary:** Report the number of expired claims and stale
+   workspaces for operator visibility.
+
+Startup reconciliation does NOT attempt to resume in-flight agent work.
+The next poll cycle will re-dispatch eligible work naturally.
+
+### Frontier After Reconciliation
+
+Frontier computation MUST occur after reconciliation. This ensures:
+
+- Contributions with expired/stale claims are available for new claims.
+- The frontier does not show results that are "claimed but abandoned."
+- Agents see accurate availability when selecting their next task.
+
+The recommended pattern is:
+
+```
+reconciler.reconcile()        // clean up stale state
+frontier = calculator.compute(query)  // compute on clean state
+```
+
+### Idempotency Guarantees
+
+All core operations SHOULD be idempotent:
+
+| Operation | Idempotency Mechanism |
+|-----------|----------------------|
+| `contribute` (put) | CID-based `INSERT OR IGNORE` — same content produces same CID |
+| `claim` (claimOrRenew) | Same agent on same target → update existing claim |
+| `review` | CID dedup for identical reviews; `findExisting()` for semantic dedup |
+| `reconcile` | Level-triggered — running N times produces same state as once |
+| `expireStale` | Atomic `UPDATE...RETURNING` — safe under concurrent execution |
+
+### Stall Detection
+
+Stall detection is separate from lease expiry. A lease may be valid
+for hours, but if the agent hasn't sent a heartbeat in twice the
+expected interval, it is presumed dead.
+
+**Stall threshold:** Configurable per grove. Recommended default is
+`2 × default_lease_duration` (10 minutes with a 5-minute lease).
+
+Stall detection is optional and only runs during regular reconciliation,
+not during startup reconciliation (where heartbeat gaps are expected).
 
 ---
 

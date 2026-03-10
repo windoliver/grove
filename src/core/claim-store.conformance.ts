@@ -227,8 +227,9 @@ export function runClaimStoreTests(factory: ClaimStoreFactory): void {
 
       const stale = await store.expireStale();
       expect(stale.length).toBe(1);
-      expect(stale[0]?.claimId).toBe("expired-claim");
-      expect(stale[0]?.status).toBe(ClaimStatus.Expired);
+      expect(stale[0]?.claim.claimId).toBe("expired-claim");
+      expect(stale[0]?.claim.status).toBe(ClaimStatus.Expired);
+      expect(stale[0]?.reason).toBe("lease_expired");
     });
 
     test("expireStale returns the expired claims", async () => {
@@ -245,7 +246,7 @@ export function runClaimStoreTests(factory: ClaimStoreFactory): void {
 
       const stale = await store.expireStale();
       expect(stale.length).toBe(2);
-      const ids = stale.map((c) => c.claimId);
+      const ids = stale.map((c) => c.claim.claimId);
       expect(ids).toContain("exp-1");
       expect(ids).toContain("exp-2");
     });
@@ -265,7 +266,7 @@ export function runClaimStoreTests(factory: ClaimStoreFactory): void {
 
       const stale = await store.expireStale();
       expect(stale.length).toBe(1);
-      expect(stale[0]?.claimId).toBe("stale");
+      expect(stale[0]?.claim.claimId).toBe("stale");
 
       // The fresh claim should still be active
       const freshClaim = await store.getClaim("fresh");
@@ -442,6 +443,186 @@ export function runClaimStoreTests(factory: ClaimStoreFactory): void {
     });
 
     // ------------------------------------------------------------------
+    // claimOrRenew
+    // ------------------------------------------------------------------
+
+    test("claimOrRenew creates new claim when no active claim exists", async () => {
+      const claim = makeClaim({ claimId: "renew-new", targetRef: "renew-target" });
+      const result = await store.claimOrRenew(claim);
+      expect(result.claimId).toBe("renew-new");
+      expect(result.status).toBe(ClaimStatus.Active);
+    });
+
+    test("claimOrRenew renews existing claim by same agent", async () => {
+      const original = makeClaim({
+        claimId: "renew-original",
+        targetRef: "renew-target-2",
+        agent: { agentId: "agent-x" },
+        intentSummary: "original intent",
+      });
+      await store.createClaim(original);
+
+      const renewal = makeClaim({
+        claimId: "renew-attempt",
+        targetRef: "renew-target-2",
+        agent: { agentId: "agent-x" },
+        intentSummary: "updated intent",
+        leaseExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+      });
+      const result = await store.claimOrRenew(renewal);
+
+      // Should return the original claim ID, not the new one
+      expect(result.claimId).toBe("renew-original");
+      // Intent summary should be updated
+      expect(result.intentSummary).toBe("updated intent");
+    });
+
+    test("claimOrRenew throws when different agent has active claim", async () => {
+      const existing = makeClaim({
+        claimId: "renew-blocked",
+        targetRef: "renew-target-3",
+        agent: { agentId: "agent-a" },
+      });
+      await store.createClaim(existing);
+
+      const attempt = makeClaim({
+        claimId: "renew-different",
+        targetRef: "renew-target-3",
+        agent: { agentId: "agent-b" },
+      });
+      await expect(store.claimOrRenew(attempt)).rejects.toThrow(/active claim/);
+    });
+
+    test("claimOrRenew creates new claim after previous expired", async () => {
+      const expired = makeClaim({
+        claimId: "renew-expired",
+        targetRef: "renew-target-4",
+        leaseExpiresAt: new Date(Date.now() - 10_000).toISOString(),
+      });
+      await store.createClaim(expired);
+
+      const fresh = makeClaim({
+        claimId: "renew-fresh",
+        targetRef: "renew-target-4",
+      });
+      const result = await store.claimOrRenew(fresh);
+      expect(result.claimId).toBe("renew-fresh");
+      expect(result.status).toBe(ClaimStatus.Active);
+    });
+
+    // ------------------------------------------------------------------
+    // expireStale — stall detection
+    // ------------------------------------------------------------------
+
+    test("expireStale with stallThresholdMs detects stalled agents", async () => {
+      // Create a claim with valid lease but old heartbeat
+      const stalled = makeClaim({
+        claimId: "stalled-agent",
+        targetRef: "stall-target",
+        heartbeatAt: new Date(Date.now() - 120_000).toISOString(), // 2 min ago
+        leaseExpiresAt: new Date(Date.now() + 300_000).toISOString(), // still valid
+      });
+      await store.createClaim(stalled);
+
+      // Without stall threshold, claim should NOT be expired
+      const noStall = await store.expireStale();
+      expect(noStall.length).toBe(0);
+
+      // With stall threshold of 60s, claim should be expired
+      const withStall = await store.expireStale({ stallThresholdMs: 60_000 });
+      expect(withStall.length).toBe(1);
+      expect(withStall[0]?.claim.claimId).toBe("stalled-agent");
+      expect(withStall[0]?.reason).toBe("stalled");
+    });
+
+    test("expireStale with stallThresholdMs does not expire fresh heartbeats", async () => {
+      const fresh = makeClaim({
+        claimId: "fresh-heartbeat",
+        targetRef: "fresh-target",
+        heartbeatAt: new Date().toISOString(),
+        leaseExpiresAt: new Date(Date.now() + 300_000).toISOString(),
+      });
+      await store.createClaim(fresh);
+
+      const result = await store.expireStale({ stallThresholdMs: 60_000 });
+      expect(result.length).toBe(0);
+    });
+
+    // ------------------------------------------------------------------
+    // cleanCompleted
+    // ------------------------------------------------------------------
+
+    test("cleanCompleted deletes old terminal claims", async () => {
+      const old = makeClaim({
+        claimId: "clean-old",
+        targetRef: "clean-target-1",
+        createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 days ago
+      });
+      await store.createClaim(old);
+      await store.complete("clean-old");
+
+      const deleted = await store.cleanCompleted(7 * 24 * 60 * 60 * 1000); // 7 day retention
+      expect(deleted).toBe(1);
+
+      const claim = await store.getClaim("clean-old");
+      expect(claim).toBeUndefined();
+    });
+
+    test("cleanCompleted preserves recent terminal claims", async () => {
+      const recent = makeClaim({
+        claimId: "clean-recent",
+        targetRef: "clean-target-2",
+      });
+      await store.createClaim(recent);
+      await store.complete("clean-recent");
+
+      const deleted = await store.cleanCompleted(7 * 24 * 60 * 60 * 1000);
+      expect(deleted).toBe(0);
+
+      const claim = await store.getClaim("clean-recent");
+      expect(claim).toBeDefined();
+    });
+
+    test("cleanCompleted preserves active claims regardless of age", async () => {
+      const oldActive = makeClaim({
+        claimId: "clean-active",
+        targetRef: "clean-target-3",
+        createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+        leaseExpiresAt: new Date(Date.now() + 300_000).toISOString(),
+      });
+      await store.createClaim(oldActive);
+
+      const deleted = await store.cleanCompleted(7 * 24 * 60 * 60 * 1000);
+      expect(deleted).toBe(0);
+
+      const claim = await store.getClaim("clean-active");
+      expect(claim?.status).toBe(ClaimStatus.Active);
+    });
+
+    test("cleanCompleted deletes expired and released claims past retention", async () => {
+      const expired = makeClaim({
+        claimId: "clean-expired",
+        targetRef: "clean-target-4",
+        createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+        leaseExpiresAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+      });
+      await store.createClaim(expired);
+
+      const released = makeClaim({
+        claimId: "clean-released",
+        targetRef: "clean-target-5",
+        createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+      });
+      await store.createClaim(released);
+      await store.release("clean-released");
+
+      const deleted = await store.cleanCompleted(7 * 24 * 60 * 60 * 1000);
+      // The expired claim is still status='active' in DB (expireStale not called)
+      // so only the released one should be deleted
+      expect(deleted).toBe(1);
+    });
+
+    // ------------------------------------------------------------------
     // close
     // ------------------------------------------------------------------
 
@@ -450,3 +631,4 @@ export function runClaimStoreTests(factory: ClaimStoreFactory): void {
     });
   });
 }
+

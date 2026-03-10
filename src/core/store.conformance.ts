@@ -364,6 +364,101 @@ export function runContributionStoreTests(factory: ContributionStoreFactory): vo
     });
 
     // ------------------------------------------------------------------
+    // findExisting
+    // ------------------------------------------------------------------
+
+    test("findExisting finds review by same agent targeting same CID", async () => {
+      const target = makeContribution({ summary: "target for review" });
+      const review = makeContribution({
+        summary: "review of target",
+        kind: ContributionKind.Review,
+        agent: { agentId: "reviewer-1" },
+        relations: [{ targetCid: target.cid, relationType: RelationType.Reviews }],
+      });
+      await store.putMany([target, review]);
+
+      const existing = await store.findExisting("reviewer-1", target.cid, ContributionKind.Review);
+      expect(existing.length).toBe(1);
+      expect(existing[0]?.cid).toBe(review.cid);
+    });
+
+    test("findExisting returns empty for different agent", async () => {
+      const target = makeContribution({ summary: "target for agent check" });
+      const review = makeContribution({
+        summary: "review by agent-a",
+        kind: ContributionKind.Review,
+        agent: { agentId: "agent-a" },
+        relations: [{ targetCid: target.cid, relationType: RelationType.Reviews }],
+      });
+      await store.putMany([target, review]);
+
+      const existing = await store.findExisting("agent-b", target.cid, ContributionKind.Review);
+      expect(existing.length).toBe(0);
+    });
+
+    test("findExisting returns empty for different kind", async () => {
+      const target = makeContribution({ summary: "target for kind check" });
+      const work = makeContribution({
+        summary: "work deriving from target",
+        kind: ContributionKind.Work,
+        agent: { agentId: "worker-1" },
+        relations: [{ targetCid: target.cid, relationType: RelationType.DerivesFrom }],
+      });
+      await store.putMany([target, work]);
+
+      const existing = await store.findExisting("worker-1", target.cid, ContributionKind.Review);
+      expect(existing.length).toBe(0);
+    });
+
+    test("findExisting returns empty for different target", async () => {
+      const target1 = makeContribution({ summary: "target 1" });
+      const target2 = makeContribution({ summary: "target 2" });
+      const review = makeContribution({
+        summary: "review of target 1",
+        kind: ContributionKind.Review,
+        agent: { agentId: "reviewer-2" },
+        relations: [{ targetCid: target1.cid, relationType: RelationType.Reviews }],
+      });
+      await store.putMany([target1, target2, review]);
+
+      const existing = await store.findExisting(
+        "reviewer-2",
+        target2.cid,
+        ContributionKind.Review,
+      );
+      expect(existing.length).toBe(0);
+    });
+
+    test("findExisting returns most recent first", async () => {
+      const target = makeContribution({ summary: "target for ordering" });
+      const review1 = makeContribution({
+        summary: "first review",
+        kind: ContributionKind.Review,
+        agent: { agentId: "reviewer-3" },
+        relations: [{ targetCid: target.cid, relationType: RelationType.Reviews }],
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      const review2 = makeContribution({
+        summary: "second review",
+        kind: ContributionKind.Review,
+        agent: { agentId: "reviewer-3" },
+        relations: [{ targetCid: target.cid, relationType: RelationType.Reviews }],
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+      await store.putMany([target, review1, review2]);
+
+      const existing = await store.findExisting(
+        "reviewer-3",
+        target.cid,
+        ContributionKind.Review,
+      );
+      expect(existing.length).toBe(2);
+      // Most recent first
+      expect(existing[0]?.cid).toBe(review2.cid);
+      expect(existing[1]?.cid).toBe(review1.cid);
+    });
+
+    // ------------------------------------------------------------------
     // close
     // ------------------------------------------------------------------
 
@@ -372,3 +467,4 @@ export function runContributionStoreTests(factory: ContributionStoreFactory): vo
     });
   });
 }
+

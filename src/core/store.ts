@@ -7,6 +7,7 @@
 
 import type {
   Claim,
+  ClaimStatus,
   Contribution,
   ContributionKind,
   ContributionMode,
@@ -60,6 +61,23 @@ export interface ContributionStore {
    */
   search(query: string, filters?: ContributionQuery): Promise<readonly Contribution[]>;
 
+  /**
+   * Find existing contributions by agent, target, and kind.
+   *
+   * Used for semantic dedup: "has this agent already reviewed/adopted this target?"
+   * Returns contributions where:
+   * - agent.agentId matches the given agentId
+   * - kind matches the given kind
+   * - at least one relation targets the given targetCid
+   *
+   * Results are ordered by created_at descending (most recent first).
+   */
+  findExisting(
+    agentId: string,
+    targetCid: string,
+    kind: ContributionKind,
+  ): Promise<readonly Contribution[]>;
+
   /** Count contributions matching filters. */
   count(query?: ContributionQuery): Promise<number>;
 
@@ -67,10 +85,48 @@ export interface ContributionStore {
   close(): void;
 }
 
+/** Reason a claim was expired during reconciliation. */
+export const ExpiryReason = {
+  /** Lease expired: lease_expires_at < now. */
+  LeaseExpired: "lease_expired",
+  /** Agent stalled: heartbeat_at older than stall threshold. */
+  Stalled: "stalled",
+} as const;
+export type ExpiryReason = (typeof ExpiryReason)[keyof typeof ExpiryReason];
+
+/** A claim that was expired, with the reason for expiry. */
+export interface ExpiredClaim {
+  readonly claim: Claim;
+  readonly reason: ExpiryReason;
+}
+
+/** Options for expireStale(). */
+export interface ExpireStaleOptions {
+  /**
+   * Stall threshold in milliseconds. Claims whose heartbeat_at is older
+   * than `now - stallThresholdMs` are expired even if their lease hasn't
+   * technically ended. Detects dead agents that set long leases.
+   *
+   * If omitted, only lease-based expiry is performed (no stall detection).
+   */
+  readonly stallThresholdMs?: number | undefined;
+}
+
 /** Store for mutable claims (coordination objects). */
 export interface ClaimStore {
   /** Create a new claim. Throws if claimId already exists. */
   createClaim(claim: Claim): Promise<Claim>;
+
+  /**
+   * Create or renew a claim for the same agent on the same target.
+   *
+   * If the same agent (by agentId) already has an active claim on the
+   * target, updates the lease and intent summary. If a different agent
+   * has an active claim, throws. If no active claim exists, creates new.
+   *
+   * @returns The created or renewed claim snapshot.
+   */
+  claimOrRenew(claim: Claim): Promise<Claim>;
 
   /** Get a claim by ID. */
   getClaim(claimId: string): Promise<Claim | undefined>;
@@ -91,11 +147,29 @@ export interface ClaimStore {
   /** Mark a claim as completed. Returns the updated claim snapshot. */
   complete(claimId: string): Promise<Claim>;
 
-  /** Expire all claims past their lease. Returns the expired claims. */
-  expireStale(): Promise<readonly Claim[]>;
+  /**
+   * Expire stale claims. Returns expired claims with reasons.
+   *
+   * Expires claims where:
+   * 1. lease_expires_at < now (lease expired)
+   * 2. heartbeat_at < now - stallThresholdMs (agent stalled, if threshold provided)
+   *
+   * Both conditions are checked atomically.
+   */
+  expireStale(options?: ExpireStaleOptions): Promise<readonly ExpiredClaim[]>;
 
   /** List active claims, optionally filtered by target. */
   activeClaims(targetRef?: string): Promise<readonly Claim[]>;
+
+  /**
+   * Delete terminal claims older than the retention period.
+   *
+   * Removes claims with status in (completed, expired, released) where
+   * created_at < now - retentionMs.
+   *
+   * @returns Number of claims deleted.
+   */
+  cleanCompleted(retentionMs: number): Promise<number>;
 
   /** Release resources (e.g., close database connections). */
   close(): void;

@@ -5,7 +5,7 @@
 import { describe } from "bun:test";
 import { runFrontierCalculatorTests } from "./frontier.conformance.js";
 import { DefaultFrontierCalculator } from "./frontier.js";
-import type { Contribution, Relation, RelationType } from "./models.js";
+import type { Contribution, ContributionKind, Relation, RelationType } from "./models.js";
 import type { ContributionQuery, ContributionStore } from "./store.js";
 
 // ---------------------------------------------------------------------------
@@ -116,6 +116,19 @@ class InMemoryContributionStore implements ContributionStore {
   async count(query?: ContributionQuery): Promise<number> {
     const results = await this.list(query);
     return results.length;
+  }
+
+  async findExisting(
+    agentId: string,
+    targetCid: string,
+    kind: ContributionKind,
+  ): Promise<readonly Contribution[]> {
+    return [...this.contributions.values()].filter(
+      (c) =>
+        c.agent.agentId === agentId &&
+        c.kind === kind &&
+        c.relations.some((r) => r.targetCid === targetCid),
+    );
   }
 
   close(): void {
