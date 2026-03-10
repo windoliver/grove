@@ -101,6 +101,16 @@ export interface SearchResult {
 }
 
 // ---------------------------------------------------------------------------
+// Read result
+// ---------------------------------------------------------------------------
+
+/** Result of readWithMeta(): content + ETag from a single atomic read. */
+export interface ReadResult {
+  readonly content: Uint8Array;
+  readonly etag: string;
+}
+
+// ---------------------------------------------------------------------------
 // NexusClient interface
 // ---------------------------------------------------------------------------
 
@@ -115,6 +125,14 @@ export interface SearchResult {
 export interface NexusClient {
   /** Read a file. Returns undefined if the file does not exist. */
   read(path: string): Promise<Uint8Array | undefined>;
+
+  /**
+   * Read a file and return both its content and ETag atomically.
+   * Returns undefined if the file does not exist.
+   * Used for compare-and-swap patterns where the ETag must correspond
+   * to exactly the version whose content was read.
+   */
+  readWithMeta(path: string): Promise<ReadResult | undefined>;
 
   /** Write a file. Supports conditional writes via ETags. */
   write(path: string, content: Uint8Array, opts?: WriteOptions): Promise<WriteResult>;

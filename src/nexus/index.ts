@@ -5,6 +5,7 @@ export type {
   ListResult,
   MkdirOptions,
   NexusClient,
+  ReadResult,
   SearchOptions,
   SearchResult,
   WriteOptions,

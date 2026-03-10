@@ -365,14 +365,15 @@ export class NexusClaimStore implements ClaimStore {
     return result?.claim;
   }
 
-  /** Read a claim and its VFS ETag (needed for CAS writes via ifMatch). */
+  /** Read a claim and its VFS ETag atomically (needed for CAS writes via ifMatch). */
   private async readClaimWithEtag(claimId: string): Promise<ClaimWithEtag | undefined> {
     const p = claimPath(this.zoneId, claimId);
-    const data = await this.withRetry(() => this.run(() => this.client.read(p)), "readClaim");
-    if (data === undefined) return undefined;
-    const meta = await this.withRetry(() => this.run(() => this.client.stat(p)), "readClaim.stat");
-    if (meta === undefined) return undefined;
-    return { claim: decodeClaim(data), etag: meta.etag };
+    const result = await this.withRetry(
+      () => this.run(() => this.client.readWithMeta(p)),
+      "readClaim",
+    );
+    if (result === undefined) return undefined;
+    return { claim: decodeClaim(result.content), etag: result.etag };
   }
 
   /** Write claim with ifMatch for CAS safety on mutations. */

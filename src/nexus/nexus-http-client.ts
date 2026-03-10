@@ -13,6 +13,7 @@ import type {
   ListResult,
   MkdirOptions,
   NexusClient,
+  ReadResult,
   SearchOptions,
   SearchResult,
   WriteOptions,
@@ -134,6 +135,23 @@ export class NexusHttpClient implements NexusClient {
       }
       // Handle raw string content
       return new TextEncoder().encode(result.content);
+    } catch (err) {
+      if (err instanceof NexusNotFoundError) return undefined;
+      throw err;
+    }
+  }
+
+  async readWithMeta(path: string): Promise<ReadResult | undefined> {
+    try {
+      const result = await this.rpc<{ content: string; encoding: string; etag: string }>(
+        "sys_read",
+        { path, include_meta: true },
+      );
+      const content =
+        result.encoding === "base64"
+          ? fromBase64(result.content)
+          : new TextEncoder().encode(result.content);
+      return { content, etag: result.etag };
     } catch (err) {
       if (err instanceof NexusNotFoundError) return undefined;
       throw err;

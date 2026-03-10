@@ -12,6 +12,7 @@ import type {
   ListResult,
   MkdirOptions,
   NexusClient,
+  ReadResult,
   SearchOptions,
   SearchResult,
   WriteOptions,
@@ -133,6 +134,13 @@ export class MockNexusClient implements NexusClient {
     const file = this.files.get(path);
     if (file === undefined) return undefined;
     return new Uint8Array(file.content);
+  }
+
+  async readWithMeta(path: string): Promise<ReadResult | undefined> {
+    this.maybeThrow();
+    const file = this.files.get(path);
+    if (file === undefined) return undefined;
+    return { content: new Uint8Array(file.content), etag: file.etag };
   }
 
   async write(path: string, content: Uint8Array, opts?: WriteOptions): Promise<WriteResult> {
