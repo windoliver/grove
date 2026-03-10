@@ -5,41 +5,71 @@
  * These tests are SKIPPED unless NEXUS_URL is set in the environment.
  *
  * Usage:
- *   NEXUS_URL=http://localhost:8080 bun test tests/nexus/integration/
+ *   docker compose up nexus -d
+ *   NEXUS_URL=http://localhost:2026 bun test tests/nexus/integration/
  */
 
 import { describe, test } from "bun:test";
 
+import { runClaimStoreTests } from "../../../src/core/claim-store.conformance.js";
+import { runContributionStoreTests } from "../../../src/core/store.conformance.js";
+import { NexusClaimStore } from "../../../src/nexus/nexus-claim-store.js";
+import { NexusContributionStore } from "../../../src/nexus/nexus-contribution-store.js";
+import { NexusHttpClient } from "../../../src/nexus/nexus-http-client.js";
+
 const NEXUS_URL = process.env.NEXUS_URL;
+const NEXUS_API_KEY = process.env.NEXUS_API_KEY;
+
+function makeClient(): NexusHttpClient {
+  return new NexusHttpClient({
+    url: NEXUS_URL as string,
+    apiKey: NEXUS_API_KEY,
+    timeoutMs: 10_000,
+  });
+}
 
 describe.skipIf(!NEXUS_URL)("NexusContributionStore integration", () => {
-  // Implementation placeholder — uncomment when real NexusClient exists:
-  //
-  // runContributionStoreTests(async () => {
-  //   const client = new RealNexusClient({ url: NEXUS_URL! });
-  //   const zoneId = `integration-test-${Date.now()}`;
-  //   const store = new NexusContributionStore({ client, zoneId });
-  //   return {
-  //     store,
-  //     cleanup: async () => { await client.close(); },
-  //   };
-  // });
+  runContributionStoreTests(async () => {
+    const client = makeClient();
+    const zoneId = `integration-contrib-${Date.now()}`;
+    const store = new NexusContributionStore({
+      client,
+      zoneId,
+      retryMaxAttempts: 2,
+      retryBaseDelayMs: 100,
+    });
 
-  test("placeholder — real integration tests require NEXUS_URL and NexusClient SDK", () => {});
+    return {
+      store,
+      cleanup: async () => {
+        store.close();
+        await client.close();
+      },
+    };
+  });
+
+  test("placeholder — skipped when NEXUS_URL not set", () => {});
 });
 
 describe.skipIf(!NEXUS_URL)("NexusClaimStore integration", () => {
-  // Implementation placeholder — uncomment when real NexusClient exists:
-  //
-  // runClaimStoreTests(async () => {
-  //   const client = new RealNexusClient({ url: NEXUS_URL! });
-  //   const zoneId = `integration-test-${Date.now()}`;
-  //   const store = new NexusClaimStore({ client, zoneId });
-  //   return {
-  //     store,
-  //     cleanup: async () => { await client.close(); },
-  //   };
-  // });
+  runClaimStoreTests(async () => {
+    const client = makeClient();
+    const zoneId = `integration-claims-${Date.now()}`;
+    const store = new NexusClaimStore({
+      client,
+      zoneId,
+      retryMaxAttempts: 2,
+      retryBaseDelayMs: 100,
+    });
 
-  test("placeholder — real integration tests require NEXUS_URL and NexusClient SDK", () => {});
+    return {
+      store,
+      cleanup: async () => {
+        store.close();
+        await client.close();
+      },
+    };
+  });
+
+  test("placeholder — skipped when NEXUS_URL not set", () => {});
 });

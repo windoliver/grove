@@ -1,11 +1,30 @@
 /**
  * Nexus-specific error classes and error mapping.
  *
- * Maps Nexus/network errors into the Grove error hierarchy so callers
- * handle the same error types regardless of backend.
+ * Maps Nexus/network errors and JSON-RPC error codes into the Grove
+ * error hierarchy so callers handle the same error types regardless of backend.
  */
 
 import { GroveError } from "../core/errors.js";
+
+// ---------------------------------------------------------------------------
+// JSON-RPC error codes from nexi-lab/nexus
+// ---------------------------------------------------------------------------
+
+export const NEXUS_ERROR_CODES = {
+  FILE_NOT_FOUND: -32000,
+  FILE_EXISTS: -32001,
+  INVALID_PATH: -32002,
+  ACCESS_DENIED: -32003,
+  PERMISSION_ERROR: -32004,
+  VALIDATION_ERROR: -32005,
+  CONFLICT: -32006,
+  INTERNAL_ERROR: -32603,
+} as const;
+
+// ---------------------------------------------------------------------------
+// Error classes
+// ---------------------------------------------------------------------------
 
 /** Thrown when the Nexus backend is unreachable. */
 export class NexusConnectionError extends GroveError {
@@ -34,36 +53,56 @@ export class NexusAuthError extends GroveError {
   }
 }
 
-/** Thrown when a cache CAS operation fails due to revision mismatch. */
-export class NexusRevisionConflictError extends GroveError {
-  readonly expectedRevision: number;
-  readonly actualRevision?: number | undefined;
+/** Thrown when a file is not found. */
+export class NexusNotFoundError extends GroveError {
+  constructor(message: string, cause?: unknown) {
+    super(message);
+    this.name = "NexusNotFoundError";
+    if (cause !== undefined) this.cause = cause;
+  }
+}
+
+/** Thrown when a write conflicts (ETag mismatch or file-already-exists). */
+export class NexusConflictError extends GroveError {
+  readonly expectedEtag?: string | undefined;
+  readonly actualEtag?: string | undefined;
 
   constructor(opts: {
     message: string;
-    expectedRevision: number;
-    actualRevision?: number;
+    expectedEtag?: string;
+    actualEtag?: string;
     cause?: unknown;
   }) {
     super(opts.message);
-    this.name = "NexusRevisionConflictError";
-    this.expectedRevision = opts.expectedRevision;
-    this.actualRevision = opts.actualRevision;
+    this.name = "NexusConflictError";
+    this.expectedEtag = opts.expectedEtag;
+    this.actualEtag = opts.actualEtag;
     if (opts.cause !== undefined) this.cause = opts.cause;
   }
 }
 
 /**
+ * @deprecated Use NexusConflictError instead.
+ * Kept for backward compatibility — will be removed in next major version.
+ */
+export const NexusRevisionConflictError: typeof NexusConflictError = NexusConflictError;
+
+// ---------------------------------------------------------------------------
+// Error classification
+// ---------------------------------------------------------------------------
+
+/**
  * Classify whether an error is retryable (transient) or not.
  *
  * Retryable: connection errors, timeouts, server errors (5xx)
- * Non-retryable: auth errors, validation errors, not-found, conflicts
+ * Non-retryable: auth errors, not-found, conflicts, validation
  */
 export function isRetryable(error: unknown): boolean {
   if (error instanceof NexusConnectionError) return true;
   if (error instanceof NexusTimeoutError) return true;
   if (error instanceof NexusAuthError) return false;
-  if (error instanceof NexusRevisionConflictError) return false;
+  if (error instanceof NexusNotFoundError) return false;
+  if (error instanceof NexusConflictError) return false;
 
   // Generic Error — check message for known transient patterns
   if (error instanceof Error) {
@@ -74,6 +113,38 @@ export function isRetryable(error: unknown): boolean {
   }
 
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Error mapping
+// ---------------------------------------------------------------------------
+
+/** Parsed JSON-RPC error body. */
+export interface JsonRpcError {
+  readonly code: number;
+  readonly message: string;
+  readonly data?: unknown;
+}
+
+/**
+ * Map a JSON-RPC error code to the appropriate Nexus error type.
+ */
+export function mapJsonRpcError(rpcError: JsonRpcError): GroveError {
+  switch (rpcError.code) {
+    case NEXUS_ERROR_CODES.FILE_NOT_FOUND:
+      return new NexusNotFoundError(rpcError.message);
+    case NEXUS_ERROR_CODES.CONFLICT:
+    case NEXUS_ERROR_CODES.FILE_EXISTS:
+      return new NexusConflictError({ message: rpcError.message });
+    case NEXUS_ERROR_CODES.ACCESS_DENIED:
+    case NEXUS_ERROR_CODES.PERMISSION_ERROR:
+      return new NexusAuthError(rpcError.message);
+    case NEXUS_ERROR_CODES.VALIDATION_ERROR:
+    case NEXUS_ERROR_CODES.INVALID_PATH:
+      return new GroveError(rpcError.message);
+    default:
+      return new NexusConnectionError(`JSON-RPC error ${rpcError.code}: ${rpcError.message}`);
+  }
 }
 
 /**

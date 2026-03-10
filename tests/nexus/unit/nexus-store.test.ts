@@ -11,7 +11,8 @@ import { runClaimStoreTests } from "../../../src/core/claim-store.conformance.js
 import { runContributionStoreTests } from "../../../src/core/store.conformance.js";
 import { makeClaim, makeContribution } from "../../../src/core/test-helpers.js";
 import { MockNexusClient } from "../../../src/nexus/mock-client.js";
-import { NexusClaimStore, NexusContributionStore } from "../../../src/nexus/nexus-store.js";
+import { NexusClaimStore } from "../../../src/nexus/nexus-claim-store.js";
+import { NexusContributionStore } from "../../../src/nexus/nexus-contribution-store.js";
 
 // ---------------------------------------------------------------------------
 // ContributionStore conformance

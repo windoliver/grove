@@ -39,6 +39,9 @@
     "start:server": "bun run src/server/serve.ts",
     "test": "bun test",
     "test:coverage": "bun test --coverage",
+    "test:integration": "NEXUS_URL=http://localhost:2026 bun test tests/nexus/integration/",
+    "nexus:up": "docker compose up nexus -d",
+    "nexus:down": "docker compose down",
     "check": "biome check .",
     "postinstall": "lefthook install"
   },

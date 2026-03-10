@@ -11,7 +11,8 @@ import { ClaimStatus, RelationType } from "../../../src/core/models.js";
 import { makeClaim, makeContribution } from "../../../src/core/test-helpers.js";
 import { MockNexusClient } from "../../../src/nexus/mock-client.js";
 import { NexusCas } from "../../../src/nexus/nexus-cas.js";
-import { NexusClaimStore, NexusContributionStore } from "../../../src/nexus/nexus-store.js";
+import { NexusClaimStore } from "../../../src/nexus/nexus-claim-store.js";
+import { NexusContributionStore } from "../../../src/nexus/nexus-contribution-store.js";
 
 describe("Claim revision tracking", () => {
   test("revision increments on each state transition", async () => {

@@ -1,45 +1,46 @@
 /**
  * In-memory MockNexusClient for testing.
  *
- * Implements the full NexusClient interface using Maps and supports
- * failure injection for resilience testing.
+ * Implements the NexusClient VFS interface with an in-memory file tree.
+ * Supports ETag-based optimistic concurrency and failure injection.
  */
 
-import { writeFile } from "node:fs/promises";
-
-import type { JsonValue } from "../core/models.js";
 import type {
-  BlobStat,
-  CacheEntry,
-  CacheSetResult,
+  FileMeta,
+  ListEntry,
+  ListOptions,
+  ListResult,
+  MkdirOptions,
   NexusClient,
-  RecordQueryOpts,
+  SearchOptions,
+  SearchResult,
+  WriteOptions,
+  WriteResult,
 } from "./client.js";
-import { NexusConnectionError, NexusRevisionConflictError, NexusTimeoutError } from "./errors.js";
+import { NexusConflictError, NexusConnectionError, NexusTimeoutError } from "./errors.js";
 
 // ---------------------------------------------------------------------------
-// Failure injection
+// Failure injection types
 // ---------------------------------------------------------------------------
 
-/** Failure modes that can be injected into the mock. */
 export type FailureKind = "timeout" | "connection" | "auth";
 
-/** Configuration for failure injection. */
 export interface FailureMode {
-  /** Number of next calls that should fail. Decremented on each call. */
+  /** Number of next calls that will fail. */
   readonly failNext: number;
-  /** The kind of failure to simulate. */
+  /** Type of failure to simulate. */
   readonly failWith: FailureKind;
 }
 
 // ---------------------------------------------------------------------------
-// Internal cache entry with TTL + revision
+// Internal file representation
 // ---------------------------------------------------------------------------
 
-interface CacheRecord {
-  value: Uint8Array;
-  revision: number;
-  expiresAt: number; // epoch ms
+interface VfsFile {
+  content: Uint8Array;
+  etag: string;
+  createdAt: string;
+  modifiedAt: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -47,29 +48,16 @@ interface CacheRecord {
 // ---------------------------------------------------------------------------
 
 /**
- * In-memory implementation of NexusClient for testing.
+ * In-memory VFS implementation of NexusClient for testing.
  *
  * All data is stored in Maps. Supports failure injection via
  * `setFailureMode()` for resilience testing.
  */
 export class MockNexusClient implements NexusClient {
-  // Blob store
-  private readonly blobs = new Map<string, Uint8Array>();
-  private readonly blobMeta = new Map<string, BlobStat>();
-
-  // KV store
-  private readonly kv = new Map<string, Uint8Array>();
-
-  // Record store
-  private readonly records = new Map<string, Array<Record<string, JsonValue>>>();
-
-  // Cache store
-  private readonly cache = new Map<string, CacheRecord>();
-
-  // Failure injection
+  private readonly files = new Map<string, VfsFile>();
+  private readonly directories = new Set<string>(["/"]); // root always exists
+  private etagCounter = 0;
   private failureMode: { failNext: number; failWith: FailureKind } | undefined;
-
-  // Track whether close() has been called
   private closed = false;
 
   /**
@@ -112,313 +100,222 @@ export class MockNexusClient implements NexusClient {
   }
 
   // -----------------------------------------------------------------------
-  // Blob / CAS
+  // ETag generation
   // -----------------------------------------------------------------------
 
-  async putBlob(data: Uint8Array, hash: string, mediaType?: string): Promise<void> {
-    this.maybeThrow();
-    this.blobs.set(hash, new Uint8Array(data));
-    this.blobMeta.set(hash, {
-      sizeBytes: data.byteLength,
-      ...(mediaType !== undefined && { mediaType }),
-    });
-  }
-
-  async putBlobFromFile(path: string, hash: string, mediaType?: string): Promise<void> {
-    this.maybeThrow();
-    const file = Bun.file(path);
-    const data = new Uint8Array(await file.arrayBuffer());
-    this.blobs.set(hash, data);
-    this.blobMeta.set(hash, {
-      sizeBytes: data.byteLength,
-      ...(mediaType !== undefined && { mediaType }),
-    });
-  }
-
-  async getBlob(hash: string): Promise<Uint8Array | undefined> {
-    this.maybeThrow();
-    const data = this.blobs.get(hash);
-    return data !== undefined ? new Uint8Array(data) : undefined;
-  }
-
-  async getBlobToFile(hash: string, path: string): Promise<boolean> {
-    this.maybeThrow();
-    const data = this.blobs.get(hash);
-    if (data === undefined) return false;
-    await writeFile(path, data);
-    return true;
-  }
-
-  async blobExists(hash: string): Promise<boolean> {
-    this.maybeThrow();
-    return this.blobs.has(hash);
-  }
-
-  async deleteBlob(hash: string): Promise<boolean> {
-    this.maybeThrow();
-    const existed = this.blobs.delete(hash);
-    this.blobMeta.delete(hash);
-    return existed;
-  }
-
-  async statBlob(hash: string): Promise<BlobStat | undefined> {
-    this.maybeThrow();
-    return this.blobMeta.get(hash);
+  private nextEtag(): string {
+    return `etag-${++this.etagCounter}`;
   }
 
   // -----------------------------------------------------------------------
-  // KV / metastore
+  // Directory helpers
   // -----------------------------------------------------------------------
 
-  async kvPut(key: string, value: Uint8Array): Promise<void> {
-    this.maybeThrow();
-    this.kv.set(key, new Uint8Array(value));
-  }
-
-  async kvPutBatch(entries: ReadonlyArray<{ key: string; value: Uint8Array }>): Promise<void> {
-    this.maybeThrow();
-    for (const entry of entries) {
-      this.kv.set(entry.key, new Uint8Array(entry.value));
+  private ensureParentDirs(path: string): void {
+    const parts = path.split("/").filter(Boolean);
+    let current = "";
+    for (let i = 0; i < parts.length - 1; i++) {
+      current += `/${parts[i]}`;
+      this.directories.add(current);
     }
   }
 
-  async kvGet(key: string): Promise<Uint8Array | undefined> {
-    this.maybeThrow();
-    const data = this.kv.get(key);
-    return data !== undefined ? new Uint8Array(data) : undefined;
-  }
-
-  async kvList(
-    prefix: string,
-    opts?: { limit?: number; offset?: number },
-  ): Promise<ReadonlyArray<{ key: string; value: Uint8Array }>> {
-    this.maybeThrow();
-    const entries: Array<{ key: string; value: Uint8Array }> = [];
-    for (const [key, value] of this.kv) {
-      if (key.startsWith(prefix)) {
-        entries.push({ key, value: new Uint8Array(value) });
-      }
-    }
-    entries.sort((a, b) => a.key.localeCompare(b.key));
-    const offset = opts?.offset ?? 0;
-    const limit = opts?.limit ?? entries.length;
-    return entries.slice(offset, offset + limit);
-  }
-
-  async kvDelete(key: string): Promise<boolean> {
-    this.maybeThrow();
-    return this.kv.delete(key);
+  private normalizeDirPath(path: string): string {
+    return path.endsWith("/") ? path.slice(0, -1) : path;
   }
 
   // -----------------------------------------------------------------------
-  // Record store
+  // NexusClient implementation
   // -----------------------------------------------------------------------
 
-  private getTable(table: string): Array<Record<string, JsonValue>> {
-    let records = this.records.get(table);
-    if (records === undefined) {
-      records = [];
-      this.records.set(table, records);
-    }
-    return records;
+  async read(path: string): Promise<Uint8Array | undefined> {
+    this.maybeThrow();
+    const file = this.files.get(path);
+    if (file === undefined) return undefined;
+    return new Uint8Array(file.content);
   }
 
-  async recordPut(table: string, record: Record<string, JsonValue>): Promise<void> {
+  async write(path: string, content: Uint8Array, opts?: WriteOptions): Promise<WriteResult> {
     this.maybeThrow();
-    this.getTable(table).push({ ...record });
-  }
 
-  async recordPutBatch(
-    table: string,
-    records: ReadonlyArray<Record<string, JsonValue>>,
-  ): Promise<void> {
-    this.maybeThrow();
-    const t = this.getTable(table);
-    for (const record of records) {
-      t.push({ ...record });
-    }
-  }
+    const existing = this.files.get(path);
 
-  async recordQuery(
-    table: string,
-    filter: Record<string, JsonValue>,
-    opts?: RecordQueryOpts,
-  ): Promise<ReadonlyArray<Record<string, JsonValue>>> {
-    this.maybeThrow();
-    const t = this.getTable(table);
-    const results = t.filter((record) => matchesFilter(record, filter));
-
-    // Sort
-    if (opts?.orderBy) {
-      const dir = opts.orderDir === "asc" ? 1 : -1;
-      const key = opts.orderBy;
-      results.sort((a, b) => {
-        const va = String(a[key] ?? "");
-        const vb = String(b[key] ?? "");
-        return va.localeCompare(vb) * dir;
+    // Conditional write: ifNoneMatch="*" means file must not exist
+    if (opts?.ifNoneMatch === "*" && existing !== undefined) {
+      throw new NexusConflictError({
+        message: `File already exists: ${path}`,
+        expectedEtag: "*",
+        actualEtag: existing.etag,
       });
     }
 
-    // Pagination
-    const offset = opts?.offset ?? 0;
-    const limit = opts?.limit ?? results.length;
-    return results.slice(offset, offset + limit).map((r) => ({ ...r }));
-  }
-
-  async recordCount(table: string, filter: Record<string, JsonValue>): Promise<number> {
-    this.maybeThrow();
-    const t = this.getTable(table);
-    return t.filter((record) => matchesFilter(record, filter)).length;
-  }
-
-  async recordCountBatch(
-    table: string,
-    filters: ReadonlyArray<Record<string, JsonValue>>,
-  ): Promise<readonly number[]> {
-    this.maybeThrow();
-    const t = this.getTable(table);
-    return filters.map((filter) => t.filter((record) => matchesFilter(record, filter)).length);
-  }
-
-  async recordDelete(table: string, filter: Record<string, JsonValue>): Promise<number> {
-    this.maybeThrow();
-    const t = this.getTable(table);
-    const before = t.length;
-    const kept = t.filter((record) => !matchesFilter(record, filter));
-    this.records.set(table, kept);
-    return before - kept.length;
-  }
-
-  // -----------------------------------------------------------------------
-  // Full-text search
-  // -----------------------------------------------------------------------
-
-  async search(
-    table: string,
-    query: string,
-    filter?: Record<string, JsonValue>,
-  ): Promise<ReadonlyArray<Record<string, JsonValue>> | undefined> {
-    this.maybeThrow();
-    const t = this.getTable(table);
-    const lowerQuery = query.toLowerCase();
-    return t
-      .filter((record) => {
-        // Match against all string values in the record
-        const textMatch = Object.values(record).some(
-          (v) => typeof v === "string" && v.toLowerCase().includes(lowerQuery),
-        );
-        if (!textMatch) return false;
-        if (filter !== undefined) return matchesFilter(record, filter);
-        return true;
-      })
-      .map((r) => ({ ...r }));
-  }
-
-  // -----------------------------------------------------------------------
-  // Cache store
-  // -----------------------------------------------------------------------
-
-  async cacheSet(key: string, value: Uint8Array, ttlMs: number): Promise<CacheSetResult> {
-    this.maybeThrow();
-    const existing = this.cache.get(key);
-    const revision = (existing?.revision ?? 0) + 1;
-    this.cache.set(key, {
-      value: new Uint8Array(value),
-      revision,
-      expiresAt: Date.now() + ttlMs,
-    });
-    return { revision };
-  }
-
-  async cacheGet(key: string): Promise<CacheEntry | undefined> {
-    this.maybeThrow();
-    const entry = this.cache.get(key);
-    if (entry === undefined) return undefined;
-    if (entry.expiresAt < Date.now()) {
-      this.cache.delete(key);
-      return undefined;
-    }
-    return { value: new Uint8Array(entry.value), revision: entry.revision };
-  }
-
-  async cacheCAS(
-    key: string,
-    value: Uint8Array,
-    expectedRevision: number,
-    ttlMs: number,
-  ): Promise<CacheSetResult> {
-    this.maybeThrow();
-    const existing = this.cache.get(key);
-    const currentRevision = existing?.revision ?? 0;
-
-    if (currentRevision !== expectedRevision) {
-      throw new NexusRevisionConflictError({
-        message: `CAS conflict on key '${key}': expected revision ${expectedRevision}, got ${currentRevision}`,
-        expectedRevision,
-        actualRevision: currentRevision,
+    // Conditional write: ifMatch means ETags must match
+    if (opts?.ifMatch !== undefined && existing !== undefined && existing.etag !== opts.ifMatch) {
+      throw new NexusConflictError({
+        message: `ETag mismatch on ${path}: expected '${opts.ifMatch}', got '${existing.etag}'`,
+        expectedEtag: opts.ifMatch,
+        actualEtag: existing.etag,
       });
     }
 
-    const newRevision = currentRevision + 1;
-    this.cache.set(key, {
-      value: new Uint8Array(value),
-      revision: newRevision,
-      expiresAt: Date.now() + ttlMs,
+    // ifMatch on a non-existent file also conflicts
+    if (opts?.ifMatch !== undefined && existing === undefined) {
+      throw new NexusConflictError({
+        message: `File does not exist for conditional write: ${path}`,
+        expectedEtag: opts.ifMatch,
+      });
+    }
+
+    this.ensureParentDirs(path);
+    const now = new Date().toISOString();
+    const etag = this.nextEtag();
+
+    this.files.set(path, {
+      content: new Uint8Array(content),
+      etag,
+      createdAt: existing?.createdAt ?? now,
+      modifiedAt: now,
     });
-    return { revision: newRevision };
+
+    return { bytesWritten: content.byteLength, etag };
   }
 
-  async cacheDelete(key: string): Promise<boolean> {
+  async exists(path: string): Promise<boolean> {
     this.maybeThrow();
-    return this.cache.delete(key);
+    return this.files.has(path) || this.directories.has(this.normalizeDirPath(path));
   }
 
-  async cacheList(
-    prefix: string,
-    opts?: { limit?: number },
-  ): Promise<ReadonlyArray<{ key: string; value: Uint8Array; revision: number }>> {
+  async stat(path: string): Promise<FileMeta | undefined> {
     this.maybeThrow();
-    const now = Date.now();
-    const entries: Array<{ key: string; value: Uint8Array; revision: number }> = [];
-    for (const [key, entry] of this.cache) {
-      if (key.startsWith(prefix) && entry.expiresAt >= now) {
+    const file = this.files.get(path);
+    if (file === undefined) return undefined;
+    return {
+      size: file.content.byteLength,
+      etag: file.etag,
+      createdAt: file.createdAt,
+      modifiedAt: file.modifiedAt,
+    };
+  }
+
+  async delete(path: string): Promise<boolean> {
+    this.maybeThrow();
+    return this.files.delete(path);
+  }
+
+  async list(path: string, opts?: ListOptions): Promise<ListResult> {
+    this.maybeThrow();
+
+    const dirPath = this.normalizeDirPath(path);
+    const prefix = `${dirPath}/`;
+    const entries: ListEntry[] = [];
+    const seenDirs = new Set<string>();
+
+    // Collect all files under this path
+    const sortedPaths = [...this.files.keys()].filter((p) => p.startsWith(prefix)).sort();
+
+    for (const filePath of sortedPaths) {
+      const relativePath = filePath.slice(prefix.length);
+
+      if (opts?.recursive) {
+        const file = this.files.get(filePath);
         entries.push({
-          key,
-          value: new Uint8Array(entry.value),
-          revision: entry.revision,
+          name: relativePath.split("/").pop() ?? relativePath,
+          path: filePath,
+          ...(opts.details && file ? { size: file.content.byteLength, etag: file.etag } : {}),
+          isDirectory: false,
         });
+      } else {
+        // Non-recursive: only immediate children
+        const slashIndex = relativePath.indexOf("/");
+        if (slashIndex === -1) {
+          // Direct child file
+          const file = this.files.get(filePath);
+          entries.push({
+            name: relativePath,
+            path: filePath,
+            ...(opts?.details && file ? { size: file.content.byteLength, etag: file.etag } : {}),
+            isDirectory: false,
+          });
+        } else {
+          // Subdirectory — add as directory entry (deduplicate)
+          const dirName = relativePath.slice(0, slashIndex);
+          const fullDirPath = `${prefix}${dirName}`;
+          if (!seenDirs.has(fullDirPath)) {
+            seenDirs.add(fullDirPath);
+            entries.push({
+              name: dirName,
+              path: fullDirPath,
+              isDirectory: true,
+            });
+          }
+        }
       }
     }
-    entries.sort((a, b) => a.key.localeCompare(b.key));
-    if (opts?.limit !== undefined) {
-      return entries.slice(0, opts.limit);
+
+    // Handle cursor-based pagination
+    let startIndex = 0;
+    if (opts?.cursor !== undefined) {
+      const cursor = opts.cursor;
+      const cursorIndex = entries.findIndex((e) => e.path > cursor);
+      startIndex = cursorIndex >= 0 ? cursorIndex : entries.length;
     }
-    return entries;
+
+    const limit = opts?.limit ?? entries.length;
+    const page = entries.slice(startIndex, startIndex + limit);
+    const hasMore = startIndex + limit < entries.length;
+
+    return {
+      files: page,
+      hasMore,
+      nextCursor: hasMore ? page[page.length - 1]?.path : undefined,
+    };
   }
 
-  // -----------------------------------------------------------------------
-  // Lifecycle
-  // -----------------------------------------------------------------------
+  async mkdir(path: string, opts?: MkdirOptions): Promise<void> {
+    this.maybeThrow();
+    const dirPath = this.normalizeDirPath(path);
+    if (opts?.parents) {
+      this.ensureParentDirs(`${dirPath}/placeholder`);
+      this.directories.add(dirPath);
+    } else {
+      this.directories.add(dirPath);
+    }
+  }
+
+  async search(query: string, opts?: SearchOptions): Promise<readonly SearchResult[]> {
+    this.maybeThrow();
+
+    const lowerQuery = query.toLowerCase();
+    const results: SearchResult[] = [];
+    const decoder = new TextDecoder();
+    const pathPrefix = opts?.path ?? "";
+
+    for (const [filePath, file] of this.files) {
+      if (pathPrefix && !filePath.startsWith(pathPrefix)) continue;
+
+      try {
+        const text = decoder.decode(file.content);
+        const lowerText = text.toLowerCase();
+        const index = lowerText.indexOf(lowerQuery);
+        if (index >= 0) {
+          const snippetStart = Math.max(0, index - 40);
+          const snippetEnd = Math.min(text.length, index + query.length + 40);
+          results.push({
+            path: filePath,
+            snippet: text.slice(snippetStart, snippetEnd),
+          });
+        }
+      } catch {
+        // Not a text file — skip
+      }
+
+      if (opts?.limit !== undefined && results.length >= opts.limit) break;
+    }
+
+    return results;
+  }
 
   async close(): Promise<void> {
     this.closed = true;
   }
-}
-
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Check if a record matches a filter.
- * All filter keys must match the record's values.
- */
-function matchesFilter(
-  record: Record<string, JsonValue>,
-  filter: Record<string, JsonValue>,
-): boolean {
-  for (const [key, value] of Object.entries(filter)) {
-    if (record[key] !== value) return false;
-  }
-  return true;
 }

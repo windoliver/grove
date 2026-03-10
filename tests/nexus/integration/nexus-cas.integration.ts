@@ -6,34 +6,46 @@
  * a real Nexus backend to validate end-to-end behavior.
  *
  * Usage:
- *   NEXUS_URL=http://localhost:8080 bun test tests/nexus/integration/
+ *   docker compose up nexus -d
+ *   NEXUS_URL=http://localhost:2026 bun test tests/nexus/integration/
  */
 
 import { describe, test } from "bun:test";
 
+import { runContentStoreTests } from "../../../src/core/cas.conformance.js";
+import { NexusCas } from "../../../src/nexus/nexus-cas.js";
+import { NexusHttpClient } from "../../../src/nexus/nexus-http-client.js";
+
 const NEXUS_URL = process.env.NEXUS_URL;
+const NEXUS_API_KEY = process.env.NEXUS_API_KEY;
 
 describe.skipIf(!NEXUS_URL)("NexusCas integration", () => {
-  // When NEXUS_URL is available, create a real NexusClient
-  // pointing to the running Nexus instance and run conformance tests.
-  //
-  // Implementation placeholder — uncomment when real NexusClient exists:
-  //
-  // runContentStoreTests(async () => {
-  //   const client = new RealNexusClient({ url: NEXUS_URL! });
-  //   const zoneId = `integration-test-${Date.now()}`;
-  //   const store = new NexusCas({ client, zoneId });
-  //   return {
-  //     store,
-  //     cleanup: async () => {
-  //       // Clean up test zone data
-  //       await client.close();
-  //     },
-  //   };
-  // });
+  runContentStoreTests(async () => {
+    const client = new NexusHttpClient({
+      url: NEXUS_URL as string,
+      apiKey: NEXUS_API_KEY,
+      timeoutMs: 10_000,
+    });
 
-  test("placeholder — real integration tests require NEXUS_URL and NexusClient SDK", () => {
-    // This test exists to prevent the file from being empty.
-    // Replace with real tests when the Nexus SDK is available.
+    const zoneId = `integration-cas-${Date.now()}`;
+    const store = new NexusCas({
+      client,
+      zoneId,
+      retryMaxAttempts: 2,
+      retryBaseDelayMs: 100,
+    });
+
+    return {
+      store,
+      cleanup: async () => {
+        store.close();
+        await client.close();
+      },
+    };
+  });
+
+  test("placeholder — skipped when NEXUS_URL not set", () => {
+    // This test exists to prevent the describe block from being empty
+    // when conformance tests are wired up above.
   });
 });

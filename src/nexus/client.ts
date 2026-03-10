@@ -1,51 +1,103 @@
 /**
  * NexusClient port interface.
  *
- * Defines the abstract contract that a Nexus backend must satisfy.
- * The Nexus adapters (NexusCas, NexusContributionStore, NexusClaimStore)
- * depend on this port — not on any concrete transport (HTTP, gRPC, etc.).
+ * Defines the abstract contract that a Nexus VFS backend must satisfy.
+ * Models the real nexi-lab/nexus API: a POSIX-inspired virtual filesystem
+ * accessed via JSON-RPC (HTTP) or gRPC.
  *
- * For testing, use MockNexusClient (in-memory implementation).
- * For production, implement this against the real Nexus SDK.
+ * The Nexus adapters (NexusCas, NexusContributionStore, NexusClaimStore)
+ * depend on this port — not on any concrete transport.
+ *
+ * For testing, use MockNexusClient (in-memory VFS).
+ * For production, use NexusHttpClient (JSON-RPC over HTTP).
  */
 
-import type { JsonValue } from "../core/models.js";
-
 // ---------------------------------------------------------------------------
-// Blob / CAS operations
+// Write options and result
 // ---------------------------------------------------------------------------
 
-/** Metadata returned by blob stat operations. */
-export interface BlobStat {
-  readonly sizeBytes: number;
-  readonly mediaType?: string | undefined;
+/** Options for write operations. */
+export interface WriteOptions {
+  /** ETag for conditional write (optimistic concurrency). */
+  readonly ifMatch?: string | undefined;
+  /** Set to "*" to only write if the file does not exist. */
+  readonly ifNoneMatch?: string | undefined;
+  /** Force overwrite regardless of conditions. */
+  readonly force?: boolean | undefined;
+}
+
+/** Result of a successful write. */
+export interface WriteResult {
+  readonly bytesWritten: number;
+  readonly etag: string;
+  readonly version?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
-// Record store types
+// File metadata
 // ---------------------------------------------------------------------------
 
-/** Options for record queries. */
-export interface RecordQueryOpts {
+/** File metadata returned by stat(). */
+export interface FileMeta {
+  readonly size: number;
+  readonly etag: string;
+  readonly contentType?: string | undefined;
+  readonly createdAt?: string | undefined;
+  readonly modifiedAt?: string | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// List (directory listing)
+// ---------------------------------------------------------------------------
+
+/** Options for list(). */
+export interface ListOptions {
+  readonly recursive?: boolean | undefined;
+  readonly details?: boolean | undefined;
   readonly limit?: number | undefined;
-  readonly offset?: number | undefined;
-  readonly orderBy?: string | undefined;
-  readonly orderDir?: "asc" | "desc" | undefined;
+  readonly cursor?: string | undefined;
+}
+
+/** Result of a list() call. */
+export interface ListResult {
+  readonly files: readonly ListEntry[];
+  readonly hasMore: boolean;
+  readonly nextCursor?: string | undefined;
+}
+
+/** A single entry in a directory listing. */
+export interface ListEntry {
+  readonly name: string;
+  readonly path: string;
+  readonly size?: number | undefined;
+  readonly etag?: string | undefined;
+  readonly isDirectory?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
-// Cache store types
+// Mkdir
 // ---------------------------------------------------------------------------
 
-/** Value with revision tracking for optimistic concurrency. */
-export interface CacheEntry {
-  readonly value: Uint8Array;
-  readonly revision: number;
+/** Options for mkdir(). */
+export interface MkdirOptions {
+  readonly parents?: boolean | undefined;
 }
 
-/** Result of a cache set or CAS operation. */
-export interface CacheSetResult {
-  readonly revision: number;
+// ---------------------------------------------------------------------------
+// Search
+// ---------------------------------------------------------------------------
+
+/** Options for search(). */
+export interface SearchOptions {
+  readonly path?: string | undefined;
+  readonly limit?: number | undefined;
+}
+
+/** A single search result. */
+export interface SearchResult {
+  readonly path: string;
+  readonly snippet?: string | undefined;
+  readonly score?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -53,136 +105,38 @@ export interface CacheSetResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Abstract port for communicating with a Nexus backend.
+ * Abstract port for communicating with a Nexus VFS backend.
  *
- * Covers the four Nexus primitives:
- * - Blob store (CAS): content-addressed binary storage
- * - KV store (metastore): ordered key-value storage
- * - Record store: relational queries with indexed fields
- * - Cache store: TTL-based storage with optimistic concurrency
+ * Models the real nexi-lab/nexus syscall API:
+ * - sys_read / sys_write / exists / sys_stat / delete / list / mkdir / search
+ * - ETag-based optimistic concurrency on writes
+ * - Path-based addressing (not generic keys)
  */
 export interface NexusClient {
-  // -----------------------------------------------------------------------
-  // Blob / CAS
-  // -----------------------------------------------------------------------
+  /** Read a file. Returns undefined if the file does not exist. */
+  read(path: string): Promise<Uint8Array | undefined>;
 
-  /** Store a blob. No-op if hash already exists (CAS dedup). */
-  putBlob(data: Uint8Array, hash: string, mediaType?: string): Promise<void>;
+  /** Write a file. Supports conditional writes via ETags. */
+  write(path: string, content: Uint8Array, opts?: WriteOptions): Promise<WriteResult>;
 
-  /** Store a file as a blob. Implementations should stream for large files. */
-  putBlobFromFile(path: string, hash: string, mediaType?: string): Promise<void>;
+  /** Check if a file or directory exists. */
+  exists(path: string): Promise<boolean>;
 
-  /** Retrieve a blob by hash. Returns undefined if not found. */
-  getBlob(hash: string): Promise<Uint8Array | undefined>;
+  /** Get file metadata. Returns undefined if not found. */
+  stat(path: string): Promise<FileMeta | undefined>;
 
-  /** Retrieve a blob to a file. Returns true if found. */
-  getBlobToFile(hash: string, path: string): Promise<boolean>;
+  /** Delete a file. Returns true if deleted, false if not found. */
+  delete(path: string): Promise<boolean>;
 
-  /** Check if a blob exists. */
-  blobExists(hash: string): Promise<boolean>;
+  /** List files in a directory. */
+  list(path: string, opts?: ListOptions): Promise<ListResult>;
 
-  /** Delete a blob. Returns true if deleted. */
-  deleteBlob(hash: string): Promise<boolean>;
+  /** Create a directory. */
+  mkdir(path: string, opts?: MkdirOptions): Promise<void>;
 
-  /** Get blob metadata without downloading content. */
-  statBlob(hash: string): Promise<BlobStat | undefined>;
+  /** Full-text search across files. */
+  search(query: string, opts?: SearchOptions): Promise<readonly SearchResult[]>;
 
-  // -----------------------------------------------------------------------
-  // KV / metastore
-  // -----------------------------------------------------------------------
-
-  /** Store a single key-value pair. */
-  kvPut(key: string, value: Uint8Array): Promise<void>;
-
-  /** Store multiple key-value pairs in a batch. */
-  kvPutBatch(entries: ReadonlyArray<{ key: string; value: Uint8Array }>): Promise<void>;
-
-  /** Retrieve a value by key. Returns undefined if not found. */
-  kvGet(key: string): Promise<Uint8Array | undefined>;
-
-  /** List key-value pairs by prefix. */
-  kvList(
-    prefix: string,
-    opts?: { limit?: number; offset?: number },
-  ): Promise<ReadonlyArray<{ key: string; value: Uint8Array }>>;
-
-  /** Delete a key. Returns true if deleted. */
-  kvDelete(key: string): Promise<boolean>;
-
-  // -----------------------------------------------------------------------
-  // Record store
-  // -----------------------------------------------------------------------
-
-  /** Insert a record into a table. */
-  recordPut(table: string, record: Record<string, JsonValue>): Promise<void>;
-
-  /** Insert multiple records in a batch. */
-  recordPutBatch(table: string, records: ReadonlyArray<Record<string, JsonValue>>): Promise<void>;
-
-  /** Query records with filters. */
-  recordQuery(
-    table: string,
-    filter: Record<string, JsonValue>,
-    opts?: RecordQueryOpts,
-  ): Promise<ReadonlyArray<Record<string, JsonValue>>>;
-
-  /** Count records matching a filter. */
-  recordCount(table: string, filter: Record<string, JsonValue>): Promise<number>;
-
-  /** Count records for multiple filters in a batch. */
-  recordCountBatch(
-    table: string,
-    filters: ReadonlyArray<Record<string, JsonValue>>,
-  ): Promise<readonly number[]>;
-
-  /** Delete records matching a filter. Returns number of records deleted. */
-  recordDelete(table: string, filter: Record<string, JsonValue>): Promise<number>;
-
-  // -----------------------------------------------------------------------
-  // Full-text search (optional — implementations may not support this)
-  // -----------------------------------------------------------------------
-
-  /** Search records by text query. Returns undefined if not supported. */
-  search?(
-    table: string,
-    query: string,
-    filter?: Record<string, JsonValue>,
-  ): Promise<ReadonlyArray<Record<string, JsonValue>> | undefined>;
-
-  // -----------------------------------------------------------------------
-  // Cache store (TTL + optimistic concurrency)
-  // -----------------------------------------------------------------------
-
-  /** Set a cache entry with TTL. Returns the new revision. */
-  cacheSet(key: string, value: Uint8Array, ttlMs: number): Promise<CacheSetResult>;
-
-  /** Get a cache entry. Returns undefined if not found or expired. */
-  cacheGet(key: string): Promise<CacheEntry | undefined>;
-
-  /**
-   * Compare-and-swap: update only if current revision matches.
-   * Throws if revision does not match (stale update).
-   */
-  cacheCAS(
-    key: string,
-    value: Uint8Array,
-    expectedRevision: number,
-    ttlMs: number,
-  ): Promise<CacheSetResult>;
-
-  /** Delete a cache entry. Returns true if deleted. */
-  cacheDelete(key: string): Promise<boolean>;
-
-  /** List cache entries by prefix. */
-  cacheList(
-    prefix: string,
-    opts?: { limit?: number },
-  ): Promise<ReadonlyArray<{ key: string; value: Uint8Array; revision: number }>>;
-
-  // -----------------------------------------------------------------------
-  // Lifecycle
-  // -----------------------------------------------------------------------
-
-  /** Release resources (connections, handles, etc.). */
+  /** Release resources. */
   close(): Promise<void>;
 }

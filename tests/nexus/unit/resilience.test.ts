@@ -15,7 +15,7 @@ import {
 } from "../../../src/nexus/errors.js";
 import { MockNexusClient } from "../../../src/nexus/mock-client.js";
 import { NexusCas } from "../../../src/nexus/nexus-cas.js";
-import { NexusContributionStore } from "../../../src/nexus/nexus-store.js";
+import { NexusContributionStore } from "../../../src/nexus/nexus-contribution-store.js";
 
 describe("Retry behavior", () => {
   test("retries on transient connection error and succeeds", async () => {
