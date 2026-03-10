@@ -25,6 +25,7 @@ import {
 import type { Claim, Contribution, ContributionKind, Relation, RelationType } from "./models.js";
 import type {
   ActiveClaimFilter,
+  ClaimQuery,
   ClaimStore,
   ContributionQuery,
   ContributionStore,
@@ -451,6 +452,7 @@ export class EnforcingClaimStore implements ClaimStore {
     this.inner.expireStale(options);
   activeClaims = (targetRef?: string): Promise<readonly Claim[]> =>
     this.inner.activeClaims(targetRef);
+  listClaims = (query?: ClaimQuery): Promise<readonly Claim[]> => this.inner.listClaims(query);
   cleanCompleted = (retentionMs: number): Promise<number> => this.inner.cleanCompleted(retentionMs);
   countActiveClaims = (filter?: ActiveClaimFilter): Promise<number> =>
     this.inner.countActiveClaims(filter);

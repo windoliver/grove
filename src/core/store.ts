@@ -7,6 +7,7 @@
 
 import type {
   Claim,
+  ClaimStatus,
   Contribution,
   ContributionKind,
   ContributionMode,
@@ -165,6 +166,13 @@ export interface ExpireStaleOptions {
   readonly stallThresholdMs?: number | undefined;
 }
 
+/** Filters for querying claims. */
+export interface ClaimQuery {
+  readonly status?: ClaimStatus | readonly ClaimStatus[] | undefined;
+  readonly agentId?: string | undefined;
+  readonly targetRef?: string | undefined;
+}
+
 /** Store for mutable claims (coordination objects). */
 export interface ClaimStore {
   /** Optional persistent-state identity string. See ContributionStore.storeIdentity. */
@@ -216,6 +224,14 @@ export interface ClaimStore {
 
   /** List active claims, optionally filtered by target. */
   activeClaims(targetRef?: string): Promise<readonly Claim[]>;
+
+  /**
+   * List claims matching the given filters.
+   *
+   * Unlike activeClaims(), this can return claims in any status.
+   * If no query is provided, returns all claims ordered by created_at desc.
+   */
+  listClaims(query?: ClaimQuery): Promise<readonly Claim[]>;
 
   /**
    * Delete terminal claims older than the retention period.

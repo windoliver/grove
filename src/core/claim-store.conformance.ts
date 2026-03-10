@@ -773,6 +773,128 @@ export function runClaimStoreTests(factory: ClaimStoreFactory): void {
     });
 
     // ------------------------------------------------------------------
+    // listClaims
+    // ------------------------------------------------------------------
+
+    test("listClaims returns all claims when no query provided", async () => {
+      const c1 = makeClaim({ claimId: "list-1", targetRef: "lt-1" });
+      const c2 = makeClaim({ claimId: "list-2", targetRef: "lt-2" });
+      await store.createClaim(c1);
+      await store.createClaim(c2);
+      await store.release("list-2");
+
+      const all = await store.listClaims();
+      expect(all.length).toBe(2);
+    });
+
+    test("listClaims filters by single status", async () => {
+      const c1 = makeClaim({ claimId: "ls-1", targetRef: "lst-1" });
+      const c2 = makeClaim({ claimId: "ls-2", targetRef: "lst-2" });
+      await store.createClaim(c1);
+      await store.createClaim(c2);
+      await store.release("ls-2");
+
+      const active = await store.listClaims({ status: ClaimStatus.Active });
+      expect(active.length).toBe(1);
+      expect(active[0]?.claimId).toBe("ls-1");
+
+      const released = await store.listClaims({ status: ClaimStatus.Released });
+      expect(released.length).toBe(1);
+      expect(released[0]?.claimId).toBe("ls-2");
+    });
+
+    test("listClaims filters by multiple statuses", async () => {
+      const c1 = makeClaim({ claimId: "lm-1", targetRef: "lmt-1" });
+      const c2 = makeClaim({ claimId: "lm-2", targetRef: "lmt-2" });
+      const c3 = makeClaim({ claimId: "lm-3", targetRef: "lmt-3" });
+      await store.createClaim(c1);
+      await store.createClaim(c2);
+      await store.createClaim(c3);
+      await store.release("lm-2");
+      await store.complete("lm-3");
+
+      const terminal = await store.listClaims({
+        status: [ClaimStatus.Released, ClaimStatus.Completed],
+      });
+      expect(terminal.length).toBe(2);
+      const ids = terminal.map((c) => c.claimId);
+      expect(ids).toContain("lm-2");
+      expect(ids).toContain("lm-3");
+    });
+
+    test("listClaims filters by agentId", async () => {
+      const c1 = makeClaim({
+        claimId: "la-1",
+        targetRef: "lat-1",
+        agent: { agentId: "agent-x" },
+      });
+      const c2 = makeClaim({
+        claimId: "la-2",
+        targetRef: "lat-2",
+        agent: { agentId: "agent-y" },
+      });
+      await store.createClaim(c1);
+      await store.createClaim(c2);
+
+      const xClaims = await store.listClaims({ agentId: "agent-x" });
+      expect(xClaims.length).toBe(1);
+      expect(xClaims[0]?.agent.agentId).toBe("agent-x");
+    });
+
+    test("listClaims combines status and agentId filters", async () => {
+      const c1 = makeClaim({
+        claimId: "lc-1",
+        targetRef: "lct-1",
+        agent: { agentId: "agent-a" },
+      });
+      const c2 = makeClaim({
+        claimId: "lc-2",
+        targetRef: "lct-2",
+        agent: { agentId: "agent-a" },
+      });
+      const c3 = makeClaim({
+        claimId: "lc-3",
+        targetRef: "lct-3",
+        agent: { agentId: "agent-b" },
+      });
+      await store.createClaim(c1);
+      await store.createClaim(c2);
+      await store.createClaim(c3);
+      await store.release("lc-2");
+
+      const result = await store.listClaims({
+        status: ClaimStatus.Active,
+        agentId: "agent-a",
+      });
+      expect(result.length).toBe(1);
+      expect(result[0]?.claimId).toBe("lc-1");
+    });
+
+    test("listClaims returns empty array when no matches", async () => {
+      const result = await store.listClaims({ agentId: "nonexistent" });
+      expect(result.length).toBe(0);
+    });
+
+    test("listClaims orders by created_at descending", async () => {
+      const c1 = makeClaim({
+        claimId: "lo-1",
+        targetRef: "lot-1",
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      const c2 = makeClaim({
+        claimId: "lo-2",
+        targetRef: "lot-2",
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+      await store.createClaim(c1);
+      await store.createClaim(c2);
+
+      const result = await store.listClaims();
+      expect(result[0]?.claimId).toBe("lo-2");
+      expect(result[1]?.claimId).toBe("lo-1");
+    });
+
+    // ------------------------------------------------------------------
     // close
     // ------------------------------------------------------------------
 

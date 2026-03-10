@@ -26,6 +26,7 @@ import type {
 } from "../core/models.js";
 import type {
   ActiveClaimFilter,
+  ClaimQuery,
   ClaimStore,
   ContributionQuery,
   ContributionStore,
@@ -1033,6 +1034,30 @@ export class SqliteClaimStore implements ClaimStore {
     return rows.map((row) => rowToClaim(row));
   };
 
+  listClaims = async (query?: ClaimQuery): Promise<readonly Claim[]> => {
+    let sql = `SELECT ${CLAIM_SELECT_COLS} FROM claims WHERE 1=1`;
+    const params: SQLQueryBindings[] = [];
+
+    if (query?.status !== undefined) {
+      const statuses = Array.isArray(query.status) ? query.status : [query.status];
+      const placeholders = statuses.map(() => "?").join(", ");
+      sql += ` AND status IN (${placeholders})`;
+      params.push(...statuses);
+    }
+    if (query?.agentId !== undefined) {
+      sql += " AND agent_id = ?";
+      params.push(query.agentId);
+    }
+    if (query?.targetRef !== undefined) {
+      sql += " AND target_ref = ?";
+      params.push(query.targetRef);
+    }
+
+    sql += " ORDER BY created_at DESC";
+    const rows = this.db.prepare(sql).all(...params) as readonly ClaimRow[];
+    return rows.map((row) => rowToClaim(row));
+  };
+
   cleanCompleted = async (retentionMs: number): Promise<number> => {
     const cutoff = new Date(Date.now() - retentionMs).toISOString();
     // Use heartbeat_at (last activity) as the retention baseline, not created_at.
@@ -1232,6 +1257,7 @@ export class SqliteStore implements ContributionStore, ClaimStore {
     this.claims.expireStale(options);
   activeClaims = (targetRef?: string): Promise<readonly Claim[]> =>
     this.claims.activeClaims(targetRef);
+  listClaims = (query?: ClaimQuery): Promise<readonly Claim[]> => this.claims.listClaims(query);
   cleanCompleted = (retentionMs: number): Promise<number> =>
     this.claims.cleanCompleted(retentionMs);
   countActiveClaims = (filter?: ActiveClaimFilter): Promise<number> =>
