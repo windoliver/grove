@@ -888,9 +888,13 @@ export class SqliteClaimStore implements ClaimStore {
       if (activeOnTarget !== null) {
         // Same agent → renew the existing claim from current time
         if (activeOnTarget.agent_id === claim.agent.agentId) {
-          // Compute fresh lease from now, not from the (potentially stale) request payload.
-          // This ensures retries always extend the lease forward.
-          const freshExpiry = new Date(now.getTime() + DEFAULT_LEASE_DURATION_MS).toISOString();
+          // Use the requested lease duration (derived from the claim payload),
+          // but anchor it to now so retries always extend the lease forward.
+          const requestedDurationMs =
+            new Date(claim.leaseExpiresAt).getTime() - new Date(claim.createdAt).getTime();
+          const durationMs =
+            requestedDurationMs > 0 ? requestedDurationMs : DEFAULT_LEASE_DURATION_MS;
+          const freshExpiry = new Date(now.getTime() + durationMs).toISOString();
           this.db
             .prepare(
               `UPDATE claims SET heartbeat_at = ?, lease_expires_at = ?, intent_summary = ?

@@ -483,6 +483,32 @@ export function runClaimStoreTests(factory: ClaimStoreFactory): void {
       expect(new Date(result.leaseExpiresAt).getTime()).toBeGreaterThan(beforeRenew);
     });
 
+    test("claimOrRenew respects requested lease duration on renewal", async () => {
+      const original = makeClaim({
+        claimId: "renew-duration",
+        targetRef: "renew-target-dur",
+        agent: { agentId: "agent-d" },
+      });
+      await store.createClaim(original);
+
+      const beforeRenew = Date.now();
+      // Request a 1-hour lease via createdAt/leaseExpiresAt spread
+      const renewalCreatedAt = new Date(beforeRenew).toISOString();
+      const renewalLeaseExpires = new Date(beforeRenew + 3_600_000).toISOString();
+      const renewal = makeClaim({
+        claimId: "renew-duration-attempt",
+        targetRef: "renew-target-dur",
+        agent: { agentId: "agent-d" },
+        createdAt: renewalCreatedAt,
+        leaseExpiresAt: renewalLeaseExpires,
+      });
+      const result = await store.claimOrRenew(renewal);
+
+      // Lease should be approximately 1 hour from now (within 5s tolerance)
+      const expectedMinExpiry = beforeRenew + 3_600_000 - 5_000;
+      expect(new Date(result.leaseExpiresAt).getTime()).toBeGreaterThanOrEqual(expectedMinExpiry);
+    });
+
     test("claimOrRenew throws when different agent has active claim", async () => {
       const existing = makeClaim({
         claimId: "renew-blocked",
