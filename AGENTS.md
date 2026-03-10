@@ -23,6 +23,7 @@ bun run typecheck        # Type check
 bun run check            # Lint (Biome)
 bun test                 # Run tests
 bun run format           # Format code
+bun run start:server     # Start HTTP server (port 4515)
 ```
 
 ## Architecture
@@ -37,6 +38,10 @@ src/
 ├── local/        # Local standalone adapter (SQLite + filesystem)
 │   ├── sqlite-store.ts
 │   └── fs-cas.ts
+├── server/       # HTTP API server (Hono)
+│   ├── app.ts       # createApp(deps) factory
+│   ├── serve.ts     # Bun.serve() entry point
+│   └── routes/      # Route handlers per domain
 └── cli/          # CLI commands
     └── main.ts
 ```

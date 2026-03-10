@@ -14,6 +14,9 @@ export default defineConfig({
     "src/local/sqlite-store.ts",
     "src/local/fs-cas.ts",
     "src/cli/main.ts",
+    "src/server/index.ts",
+    "src/server/app.ts",
+    "src/server/serve.ts",
   ],
   format: ["esm"],
   dts: {
