@@ -1,0 +1,471 @@
+/**
+ * `grove contribute` command — submit a contribution to the grove.
+ *
+ * Supports multiple ingestion modes (files, git diff, git tree, report)
+ * and contribution kinds (work, review, discussion, adoption, reproduction).
+ */
+
+import { access, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { parseArgs } from "node:util";
+
+import type { AgentOverrides } from "../agent.js";
+import { resolveAgent } from "../agent.js";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/** Parsed and validated options for `grove contribute`. */
+export interface ContributeOptions {
+  readonly kind: "work" | "review" | "discussion" | "adoption" | "reproduction";
+  readonly mode: "evaluation" | "exploration" | undefined;
+  readonly summary: string;
+  readonly description?: string | undefined;
+
+  // Ingestion mode (mutually exclusive)
+  readonly artifacts: readonly string[];
+  readonly fromGitDiff?: string | undefined;
+  readonly fromGitTree: boolean;
+  readonly fromReport?: string | undefined;
+
+  // Relations
+  readonly parent?: string | undefined;
+  readonly reviews?: string | undefined;
+  readonly respondsTo?: string | undefined;
+  readonly adopts?: string | undefined;
+  readonly reproduces?: string | undefined;
+
+  // Metrics and scores
+  readonly metric: readonly string[];
+  readonly score: readonly string[];
+
+  // Metadata
+  readonly tags: readonly string[];
+
+  // Agent
+  readonly agentOverrides: AgentOverrides;
+
+  // Working directory
+  readonly cwd: string;
+}
+
+/** Validation result — either valid or a list of errors. */
+export type ValidationResult =
+  | { readonly valid: true }
+  | { readonly valid: false; readonly errors: readonly string[] };
+
+// ---------------------------------------------------------------------------
+// Argument parsing
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse `grove contribute` arguments.
+ */
+export function parseContributeArgs(args: readonly string[]): ContributeOptions {
+  const { values } = parseArgs({
+    args: args as string[],
+    options: {
+      kind: { type: "string", default: "work" },
+      mode: { type: "string" },
+      summary: { type: "string" },
+      description: { type: "string" },
+      artifacts: { type: "string", multiple: true, default: [] },
+      "from-git-diff": { type: "string" },
+      "from-git-tree": { type: "boolean", default: false },
+      "from-report": { type: "string" },
+      parent: { type: "string" },
+      reviews: { type: "string" },
+      "responds-to": { type: "string" },
+      adopts: { type: "string" },
+      reproduces: { type: "string" },
+      metric: { type: "string", multiple: true, default: [] },
+      score: { type: "string", multiple: true, default: [] },
+      tag: { type: "string", multiple: true, default: [] },
+      "agent-id": { type: "string" },
+      "agent-name": { type: "string" },
+      provider: { type: "string" },
+      model: { type: "string" },
+      platform: { type: "string" },
+    },
+    allowPositionals: false,
+    strict: true,
+  });
+
+  return {
+    kind: values.kind as ContributeOptions["kind"],
+    mode: (values.mode as ContributeOptions["mode"]) ?? undefined,
+    summary: values.summary as string,
+    description: values.description as string | undefined,
+    artifacts: values.artifacts as string[],
+    fromGitDiff: values["from-git-diff"] as string | undefined,
+    fromGitTree: values["from-git-tree"] as boolean,
+    fromReport: values["from-report"] as string | undefined,
+    parent: values.parent as string | undefined,
+    reviews: values.reviews as string | undefined,
+    respondsTo: values["responds-to"] as string | undefined,
+    adopts: values.adopts as string | undefined,
+    reproduces: values.reproduces as string | undefined,
+    metric: values.metric as string[],
+    score: values.score as string[],
+    tags: values.tag as string[],
+    agentOverrides: {
+      agentId: values["agent-id"] as string | undefined,
+      agentName: values["agent-name"] as string | undefined,
+      provider: values.provider as string | undefined,
+      model: values.model as string | undefined,
+      platform: values.platform as string | undefined,
+    },
+    cwd: process.cwd(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
+const VALID_KINDS = ["work", "review", "discussion", "adoption", "reproduction"] as const;
+const VALID_MODES = ["evaluation", "exploration"] as const;
+
+/**
+ * Validate contribute options. Checks:
+ * - Required fields (summary)
+ * - Valid kind and mode values
+ * - Mutual exclusion of ingestion modes
+ * - Kind/relation consistency
+ * - Metric format (name=value)
+ * - Score format (name=value)
+ */
+export function validateContributeOptions(options: ContributeOptions): ValidationResult {
+  const errors: string[] = [];
+
+  // Required fields
+  if (!options.summary || options.summary.trim().length === 0) {
+    errors.push("--summary is required and cannot be empty");
+  }
+
+  // Valid kind
+  if (!VALID_KINDS.includes(options.kind as (typeof VALID_KINDS)[number])) {
+    errors.push(`Invalid kind '${options.kind}'. Valid kinds: ${VALID_KINDS.join(", ")}`);
+  }
+
+  // Valid mode (undefined is allowed — resolved later from contract/default)
+  if (
+    options.mode !== undefined &&
+    !VALID_MODES.includes(options.mode as (typeof VALID_MODES)[number])
+  ) {
+    errors.push(`Invalid mode '${options.mode}'. Valid modes: ${VALID_MODES.join(", ")}`);
+  }
+
+  // Mutual exclusion of ingestion modes
+  const ingestionCount = [
+    options.artifacts.length > 0,
+    options.fromGitDiff !== undefined,
+    options.fromGitTree,
+    options.fromReport !== undefined,
+  ].filter(Boolean).length;
+
+  if (ingestionCount > 1) {
+    errors.push(
+      "Ingestion modes are mutually exclusive: use only one of --artifacts, --from-git-diff, --from-git-tree, --from-report",
+    );
+  }
+
+  // Kind/relation consistency
+  switch (options.kind) {
+    case "review":
+      if (!options.reviews) {
+        errors.push("--kind review requires --reviews <cid>");
+      }
+      break;
+    case "discussion":
+      if (!options.respondsTo) {
+        errors.push("--kind discussion requires --responds-to <cid>");
+      }
+      break;
+    case "adoption":
+      if (!options.adopts) {
+        errors.push("--kind adoption requires --adopts <cid>");
+      }
+      break;
+    case "reproduction":
+      if (!options.reproduces) {
+        errors.push("--kind reproduction requires --reproduces <cid>");
+      }
+      break;
+  }
+
+  // Metric format: name=value
+  for (const m of options.metric) {
+    const eqIdx = m.indexOf("=");
+    if (eqIdx <= 0) {
+      errors.push(`Invalid metric format '${m}'. Expected 'name=value' (e.g., 'tests_passing=47')`);
+      continue;
+    }
+    const value = m.slice(eqIdx + 1);
+    if (Number.isNaN(Number(value))) {
+      errors.push(`Invalid metric value in '${m}'. Value must be a number.`);
+    }
+  }
+
+  // Score format: name=value
+  for (const s of options.score) {
+    const eqIdx = s.indexOf("=");
+    if (eqIdx <= 0) {
+      errors.push(`Invalid score format '${s}'. Expected 'name=value' (e.g., 'quality=7')`);
+      continue;
+    }
+    const value = s.slice(eqIdx + 1);
+    if (Number.isNaN(Number(value))) {
+      errors.push(`Invalid score value in '${s}'. Value must be a number.`);
+    }
+  }
+
+  if (errors.length > 0) {
+    return { valid: false, errors };
+  }
+  return { valid: true };
+}
+
+// ---------------------------------------------------------------------------
+// Execution
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute `grove contribute`.
+ *
+ * 1. Validate options
+ * 2. Find and open .grove/
+ * 3. Validate parent CID exists (if specified)
+ * 4. Ingest artifacts
+ * 5. Build relations
+ * 6. Create contribution
+ * 7. Store contribution
+ */
+export async function executeContribute(options: ContributeOptions): Promise<{ cid: string }> {
+  // 1. Validate
+  const validation = validateContributeOptions(options);
+  if (!validation.valid) {
+    throw new Error(`Invalid contribute options:\n  ${validation.errors.join("\n  ")}`);
+  }
+
+  // 2. Find .grove/
+  const grovePath = join(options.cwd, ".grove");
+  try {
+    await access(grovePath);
+  } catch {
+    throw new Error("No grove found. Run 'grove init' first to create a grove in this directory.");
+  }
+
+  // Dynamic imports for lazy loading
+  const { createContribution } = await import("../../core/manifest.js");
+  const { SqliteContributionStore, initSqliteDb } = await import("../../local/sqlite-store.js");
+  const { FsCas } = await import("../../local/fs-cas.js");
+  const { parseGroveContract } = await import("../../core/contract.js");
+  const { EnforcingContributionStore } = await import("../../core/enforcing-store.js");
+
+  const dbPath = join(grovePath, "store.sqlite");
+  const casPath = join(grovePath, "cas");
+  const db = initSqliteDb(dbPath);
+  const rawStore = new SqliteContributionStore(db);
+  const cas = new FsCas(casPath);
+
+  // 3. Load GROVE.md contract for enforcement, default mode, and metric directions
+  const grovemdPath = join(options.cwd, "GROVE.md");
+  let contract: Awaited<ReturnType<typeof parseGroveContract>> | undefined;
+  let grovemdContent: string | undefined;
+  try {
+    grovemdContent = await readFile(grovemdPath, "utf-8");
+  } catch {
+    // GROVE.md does not exist — proceed without enforcement
+  }
+  if (grovemdContent !== undefined) {
+    // File exists — parse errors must propagate so malformed contracts
+    // are not silently ignored (which would bypass enforcement).
+    contract = parseGroveContract(grovemdContent);
+  }
+
+  // Wrap store with enforcement if contract is available
+  const store = contract ? new EnforcingContributionStore(rawStore, contract, { cas }) : rawStore;
+
+  // Resolve effective mode: CLI flag > grove default > "evaluation"
+  const effectiveMode = resolveMode(options.mode, contract?.mode);
+
+  try {
+    // 4. Validate parent CID exists
+    if (options.parent) {
+      const parent = await store.get(options.parent);
+      if (!parent) {
+        throw new Error(`Parent contribution not found: ${options.parent}`);
+      }
+    }
+
+    // Validate relation target CIDs exist
+    for (const cid of [options.reviews, options.respondsTo, options.adopts, options.reproduces]) {
+      if (cid) {
+        const target = await store.get(cid);
+        if (!target) {
+          throw new Error(`Relation target contribution not found: ${cid}`);
+        }
+      }
+    }
+
+    // 5. Validate artifact paths exist before ingesting
+    for (const artifactPath of options.artifacts) {
+      try {
+        await access(artifactPath);
+      } catch {
+        throw new Error(`Artifact path not found: ${artifactPath}`);
+      }
+    }
+
+    if (options.fromReport) {
+      try {
+        await access(options.fromReport);
+      } catch {
+        throw new Error(`Report file not found: ${options.fromReport}`);
+      }
+    }
+
+    // 6. Ingest artifacts
+    let artifacts: Record<string, string> = {};
+
+    if (options.artifacts.length > 0) {
+      const { ingestFiles } = await import("../../local/ingest/files.js");
+      artifacts = await ingestFiles(cas, options.artifacts);
+    } else if (options.fromGitDiff !== undefined) {
+      const { ingestGitDiff } = await import("../../local/ingest/git-diff.js");
+      artifacts = await ingestGitDiff(cas, options.fromGitDiff, options.cwd);
+    } else if (options.fromGitTree) {
+      const { ingestGitTree } = await import("../../local/ingest/git-tree.js");
+      artifacts = await ingestGitTree(cas, options.cwd);
+    } else if (options.fromReport !== undefined) {
+      const { ingestReport } = await import("../../local/ingest/report.js");
+      artifacts = await ingestReport(cas, options.fromReport);
+    }
+
+    // 7. Build relations
+    const { RelationType } = await import("../../core/models.js");
+    type RT = (typeof RelationType)[keyof typeof RelationType];
+    const relations: Array<{ targetCid: string; relationType: RT }> = [];
+
+    if (options.parent) {
+      relations.push({
+        targetCid: options.parent,
+        relationType: RelationType.DerivesFrom,
+      });
+    }
+    if (options.reviews) {
+      relations.push({
+        targetCid: options.reviews,
+        relationType: RelationType.Reviews,
+      });
+    }
+    if (options.respondsTo) {
+      relations.push({
+        targetCid: options.respondsTo,
+        relationType: RelationType.RespondsTo,
+      });
+    }
+    if (options.adopts) {
+      relations.push({
+        targetCid: options.adopts,
+        relationType: RelationType.Adopts,
+      });
+    }
+    if (options.reproduces) {
+      relations.push({
+        targetCid: options.reproduces,
+        relationType: RelationType.Reproduces,
+      });
+    }
+
+    // 8. Parse metrics into scores — use direction from GROVE.md contract when available
+    const { ScoreDirection } = await import("../../core/models.js");
+    type SD = (typeof ScoreDirection)[keyof typeof ScoreDirection];
+    const scores: Record<string, { value: number; direction: SD }> | undefined =
+      options.metric.length > 0 || options.score.length > 0 ? {} : undefined;
+
+    for (const m of options.metric) {
+      const eqIdx = m.indexOf("=");
+      const name = m.slice(0, eqIdx);
+      const value = Number(m.slice(eqIdx + 1));
+      // Look up direction from GROVE.md contract; fall back to maximize
+      const direction = contract?.metrics?.[name]?.direction ?? ScoreDirection.Maximize;
+      if (scores) {
+        scores[name] = { value, direction };
+      }
+    }
+
+    for (const s of options.score) {
+      const eqIdx = s.indexOf("=");
+      const name = s.slice(0, eqIdx);
+      const value = Number(s.slice(eqIdx + 1));
+      const direction = contract?.metrics?.[name]?.direction ?? ScoreDirection.Maximize;
+      if (scores) {
+        scores[name] = { value, direction };
+      }
+    }
+
+    // 9. Create and store contribution (goes through enforcing store if contract loaded)
+    const agent = resolveAgent(options.agentOverrides);
+
+    const contribution = createContribution({
+      kind: options.kind,
+      mode: effectiveMode,
+      summary: options.summary,
+      ...(options.description !== undefined && { description: options.description }),
+      artifacts,
+      relations,
+      ...(scores !== undefined && { scores }),
+      tags: [...options.tags],
+      agent,
+      createdAt: new Date().toISOString(),
+    });
+
+    await store.put(contribution);
+
+    console.log(`Contribution ${contribution.cid}`);
+    console.log(`  kind: ${contribution.kind}, mode: ${contribution.mode}`);
+    console.log(`  artifacts: ${Object.keys(artifacts).length}`);
+    if (relations.length > 0) {
+      console.log(`  relations: ${relations.length}`);
+    }
+
+    return { cid: contribution.cid };
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Resolve effective contribution mode.
+ *
+ * Priority: explicit CLI flag > grove contract default > "evaluation".
+ *
+ * When --mode is omitted, `cliMode` is `undefined` (no parseArgs default),
+ * so we can reliably distinguish "user omitted --mode" from
+ * "user explicitly passed --mode evaluation".
+ */
+function resolveMode(
+  cliMode: ContributeOptions["mode"],
+  groveDefault: string | undefined,
+): "evaluation" | "exploration" {
+  // If user explicitly set --mode, always honor it.
+  if (cliMode !== undefined) {
+    return cliMode;
+  }
+  // Otherwise, prefer the grove's configured default mode
+  if (groveDefault === "exploration" || groveDefault === "evaluation") {
+    return groveDefault;
+  }
+  return "evaluation";
+}
+
+/**
+ * Handle the `grove contribute` CLI command.
+ */
+export async function handleContribute(args: readonly string[]): Promise<void> {
+  const options = parseContributeArgs(args);
+  await executeContribute(options);
+}

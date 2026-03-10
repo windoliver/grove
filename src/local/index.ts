@@ -1,5 +1,9 @@
 export { FsCas } from "./fs-cas.js";
 export { LocalHookRunner, type LocalHookRunnerOptions } from "./hook-runner.js";
+export { ingestFiles } from "./ingest/files.js";
+export { ingestGitDiff } from "./ingest/git-diff.js";
+export { ingestGitTree } from "./ingest/git-tree.js";
+export { ingestReport } from "./ingest/report.js";
 export {
   createSqliteStores,
   initSqliteDb,
