@@ -11,6 +11,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createSqliteStores } from "../local/sqlite-store.js";
+import { MockNexusClient } from "../nexus/mock-client.js";
+import { NexusContributionStore } from "../nexus/nexus-contribution-store.js";
 import type { ContributionInput } from "./models.js";
 import { ContributionKind, RelationType } from "./models.js";
 import type { ContributionStore } from "./store.js";
@@ -352,4 +354,18 @@ describe("hotThreads() — InMemory", () => {
 
 describe("hotThreads() — SQLite", () => {
   hotThreadsTests(createSqliteBackend);
+});
+
+function createNexusBackend(): TestBackend {
+  const client = new MockNexusClient();
+  const store = new NexusContributionStore({
+    client,
+    zoneId: "test-zone",
+    retryMaxAttempts: 1,
+  });
+  return { store, cleanup: () => store.close() };
+}
+
+describe("hotThreads() — Nexus", () => {
+  hotThreadsTests(createNexusBackend);
 });
