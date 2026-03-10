@@ -460,14 +460,17 @@ export function runClaimStoreTests(factory: ClaimStoreFactory): void {
         agent: { agentId: "agent-x" },
         intentSummary: "original intent",
       });
-      await store.createClaim(original);
+      const created = await store.createClaim(original);
 
+      const beforeRenew = Date.now();
       const renewal = makeClaim({
         claimId: "renew-attempt",
         targetRef: "renew-target-2",
         agent: { agentId: "agent-x" },
         intentSummary: "updated intent",
-        leaseExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+        // Simulate a stale payload — old timestamps that should be ignored
+        heartbeatAt: new Date(Date.now() - 60_000).toISOString(),
+        leaseExpiresAt: new Date(Date.now() - 30_000).toISOString(),
       });
       const result = await store.claimOrRenew(renewal);
 
@@ -475,6 +478,9 @@ export function runClaimStoreTests(factory: ClaimStoreFactory): void {
       expect(result.claimId).toBe("renew-original");
       // Intent summary should be updated
       expect(result.intentSummary).toBe("updated intent");
+      // Lease should be extended from NOW, not from the stale payload
+      expect(new Date(result.heartbeatAt).getTime()).toBeGreaterThanOrEqual(beforeRenew);
+      expect(new Date(result.leaseExpiresAt).getTime()).toBeGreaterThan(beforeRenew);
     });
 
     test("claimOrRenew throws when different agent has active claim", async () => {
@@ -553,10 +559,12 @@ export function runClaimStoreTests(factory: ClaimStoreFactory): void {
     // ------------------------------------------------------------------
 
     test("cleanCompleted deletes old terminal claims", async () => {
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
       const old = makeClaim({
         claimId: "clean-old",
         targetRef: "clean-target-1",
-        createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 days ago
+        createdAt: thirtyDaysAgo,
+        heartbeatAt: thirtyDaysAgo, // old heartbeat → eligible for cleanup
       });
       await store.createClaim(old);
       await store.complete("clean-old");
@@ -584,10 +592,12 @@ export function runClaimStoreTests(factory: ClaimStoreFactory): void {
     });
 
     test("cleanCompleted preserves active claims regardless of age", async () => {
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
       const oldActive = makeClaim({
         claimId: "clean-active",
         targetRef: "clean-target-3",
-        createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+        createdAt: thirtyDaysAgo,
+        heartbeatAt: thirtyDaysAgo,
         leaseExpiresAt: new Date(Date.now() + 300_000).toISOString(),
       });
       await store.createClaim(oldActive);
@@ -599,19 +609,43 @@ export function runClaimStoreTests(factory: ClaimStoreFactory): void {
       expect(claim?.status).toBe(ClaimStatus.Active);
     });
 
+    test("cleanCompleted preserves long-running claims completed recently", async () => {
+      // Long-running claim (created 30 days ago) but completed moments ago
+      // should NOT be deleted — heartbeat_at is recent
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      const longRunning = makeClaim({
+        claimId: "clean-long-running",
+        targetRef: "clean-target-long",
+        createdAt: thirtyDaysAgo,
+        // heartbeatAt defaults to now (agent was alive until completion)
+      });
+      await store.createClaim(longRunning);
+      await store.complete("clean-long-running");
+
+      const deleted = await store.cleanCompleted(7 * 24 * 60 * 60 * 1000);
+      expect(deleted).toBe(0); // recent heartbeat → not deleted
+
+      const claim = await store.getClaim("clean-long-running");
+      expect(claim).toBeDefined();
+      expect(claim?.status).toBe(ClaimStatus.Completed);
+    });
+
     test("cleanCompleted deletes expired and released claims past retention", async () => {
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
       const expired = makeClaim({
         claimId: "clean-expired",
         targetRef: "clean-target-4",
-        createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
-        leaseExpiresAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+        createdAt: thirtyDaysAgo,
+        heartbeatAt: thirtyDaysAgo,
+        leaseExpiresAt: thirtyDaysAgo,
       });
       await store.createClaim(expired);
 
       const released = makeClaim({
         claimId: "clean-released",
         targetRef: "clean-target-5",
-        createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+        createdAt: thirtyDaysAgo,
+        heartbeatAt: thirtyDaysAgo,
       });
       await store.createClaim(released);
       await store.release("clean-released");

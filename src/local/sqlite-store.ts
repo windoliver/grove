@@ -755,23 +755,27 @@ export class SqliteClaimStore implements ClaimStore {
     let resultClaimId: string = claim.claimId;
 
     const tx = this.db.transaction(() => {
-      const now = new Date().toISOString();
+      const now = new Date();
+      const nowIso = now.toISOString();
       const activeOnTarget = this.db
         .prepare(
           `SELECT claim_id, agent_id FROM claims
            WHERE target_ref = ? AND status = 'active' AND lease_expires_at >= ?`,
         )
-        .get(claim.targetRef, now) as { claim_id: string; agent_id: string } | null;
+        .get(claim.targetRef, nowIso) as { claim_id: string; agent_id: string } | null;
 
       if (activeOnTarget !== null) {
-        // Same agent → renew the existing claim
+        // Same agent → renew the existing claim from current time
         if (activeOnTarget.agent_id === claim.agent.agentId) {
+          // Compute fresh lease from now, not from the (potentially stale) request payload.
+          // This ensures retries always extend the lease forward.
+          const freshExpiry = new Date(now.getTime() + DEFAULT_LEASE_DURATION_MS).toISOString();
           this.db
             .prepare(
               `UPDATE claims SET heartbeat_at = ?, lease_expires_at = ?, intent_summary = ?
                WHERE claim_id = ?`,
             )
-            .run(heartbeatUtc, leaseExpiresUtc, claim.intentSummary, activeOnTarget.claim_id);
+            .run(nowIso, freshExpiry, claim.intentSummary, activeOnTarget.claim_id);
           resultClaimId = activeOnTarget.claim_id;
           return;
         }
@@ -898,11 +902,15 @@ export class SqliteClaimStore implements ClaimStore {
 
   cleanCompleted = async (retentionMs: number): Promise<number> => {
     const cutoff = new Date(Date.now() - retentionMs).toISOString();
+    // Use heartbeat_at (last activity) as the retention baseline, not created_at.
+    // A long-running claim that completed moments ago has a recent heartbeat_at,
+    // so it won't be prematurely deleted. An old expired claim whose agent died
+    // long ago has a stale heartbeat_at, so it gets cleaned up correctly.
     const result = this.db
       .prepare(
         `DELETE FROM claims
          WHERE status IN ('completed', 'expired', 'released')
-         AND created_at < ?`,
+         AND heartbeat_at < ?`,
       )
       .run(cutoff);
     return result.changes;

@@ -165,7 +165,9 @@ export interface ClaimStore {
    * Delete terminal claims older than the retention period.
    *
    * Removes claims with status in (completed, expired, released) where
-   * created_at < now - retentionMs.
+   * heartbeat_at < now - retentionMs. Uses heartbeat_at (last activity)
+   * rather than created_at so that long-running claims that completed
+   * recently are not prematurely deleted.
    *
    * @returns Number of claims deleted.
    */

@@ -12,7 +12,8 @@
  */
 
 import type { ClaimStore, ExpiredClaim } from "./store.js";
-import type { WorkspaceManager, StaleOptions } from "./workspace.js";
+import type { WorkspaceInfo, WorkspaceManager } from "./workspace.js";
+import { WorkspaceStatus } from "./workspace.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -32,8 +33,8 @@ export interface ReconcileResult {
 export interface StartupReconcileResult {
   /** Claims expired during startup. */
   readonly expiredClaims: readonly ExpiredClaim[];
-  /** Workspaces flagged as stale (no active claim). */
-  readonly staleWorkspaceCount: number;
+  /** Active workspaces with no corresponding active claim (orphaned). */
+  readonly orphanedWorkspaces: readonly WorkspaceInfo[];
 }
 
 /** Configuration for reconciliation behavior. */
@@ -54,14 +55,6 @@ export interface ReconcilerConfig {
    * Default: 7 days (604_800_000 ms).
    */
   readonly retentionMs?: number | undefined;
-
-  /**
-   * Maximum idle time for workspaces before they are flagged as stale
-   * during startup reconciliation.
-   *
-   * Default: 1 hour (3_600_000 ms).
-   */
-  readonly workspaceMaxIdleMs?: number | undefined;
 }
 
 /** Protocol for reconciliation. */
@@ -93,9 +86,6 @@ export interface Reconciler {
 /** Default retention period: 7 days. */
 const DEFAULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** Default workspace idle threshold: 1 hour. */
-const DEFAULT_WORKSPACE_MAX_IDLE_MS = 60 * 60 * 1000;
-
 // ---------------------------------------------------------------------------
 // DefaultReconciler
 // ---------------------------------------------------------------------------
@@ -112,7 +102,6 @@ export class DefaultReconciler implements Reconciler {
   private readonly config: {
     readonly stallThresholdMs: number | undefined;
     readonly retentionMs: number;
-    readonly workspaceMaxIdleMs: number;
   };
 
   constructor(
@@ -125,7 +114,6 @@ export class DefaultReconciler implements Reconciler {
     this.config = {
       stallThresholdMs: config?.stallThresholdMs,
       retentionMs: config?.retentionMs ?? DEFAULT_RETENTION_MS,
-      workspaceMaxIdleMs: config?.workspaceMaxIdleMs ?? DEFAULT_WORKSPACE_MAX_IDLE_MS,
     };
   }
 
@@ -149,15 +137,13 @@ export class DefaultReconciler implements Reconciler {
     // we don't know how long the system was down, so only use hard lease expiry)
     const expiredClaims = await this.claimStore.expireStale();
 
-    // Step 2: Flag orphaned workspaces
-    let staleWorkspaceCount = 0;
-    if (this.workspaceManager !== undefined) {
-      const staleOptions: StaleOptions = { maxIdleMs: this.config.workspaceMaxIdleMs };
-      const staleWorkspaces = await this.workspaceManager.markStale(staleOptions);
-      staleWorkspaceCount = staleWorkspaces.length;
-    }
+    // Step 2: Detect orphaned workspaces — active workspaces with no active claim.
+    // This cross-references workspaces and claims rather than using idle-based
+    // detection, which would incorrectly flag healthy long-lived workspaces and
+    // miss recently-created orphans.
+    const orphanedWorkspaces = await this.detectOrphanedWorkspaces();
 
-    return { expiredClaims, staleWorkspaceCount };
+    return { expiredClaims, orphanedWorkspaces };
   }
 
   /**
@@ -203,5 +189,42 @@ export class DefaultReconciler implements Reconciler {
     }
 
     return deduplicatedIds;
+  }
+
+  /**
+   * Detect orphaned workspaces: active workspaces with no corresponding
+   * active claim by the same agent on the same target (CID).
+   *
+   * Unlike idle-based `markStale()`, this cross-references workspace state
+   * with claim state, so it correctly identifies:
+   * - Recent orphans (active workspace, no claim) → detected
+   * - Healthy long-lived workspaces (active workspace, active claim) → NOT flagged
+   */
+  private async detectOrphanedWorkspaces(): Promise<readonly WorkspaceInfo[]> {
+    if (this.workspaceManager === undefined) return [];
+
+    const activeWorkspaces = await this.workspaceManager.listWorkspaces({
+      status: WorkspaceStatus.Active,
+    });
+
+    if (activeWorkspaces.length === 0) return [];
+
+    // Build a set of active (targetRef, agentId) pairs from claims
+    const allActiveClaims = await this.claimStore.activeClaims();
+    const activeClaimKeys = new Set<string>();
+    for (const claim of allActiveClaims) {
+      activeClaimKeys.add(`${claim.targetRef}::${claim.agent.agentId}`);
+    }
+
+    // A workspace is orphaned if no active claim matches (cid, agentId)
+    const orphaned: WorkspaceInfo[] = [];
+    for (const ws of activeWorkspaces) {
+      const key = `${ws.cid}::${ws.agent.agentId}`;
+      if (!activeClaimKeys.has(key)) {
+        orphaned.push(ws);
+      }
+    }
+
+    return orphaned;
   }
 }

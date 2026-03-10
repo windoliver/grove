@@ -549,7 +549,10 @@ dispatching new work), implementations SHOULD run:
 
 3. **Clean terminal claims:**
    - Delete claims with status `completed`, `expired`, or `released`
-     that are older than a configurable retention period (default: 7 days).
+     whose `heartbeat_at` is older than a configurable retention period
+     (default: 7 days). Using `heartbeat_at` (last activity) rather
+     than `created_at` ensures that long-running claims completed
+     recently are not prematurely deleted.
    - This prevents unbounded growth of the claims table.
 
 ### Startup Reconciliation

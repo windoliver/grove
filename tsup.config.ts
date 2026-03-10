@@ -9,6 +9,7 @@ export default defineConfig({
     "src/core/cas.ts",
     "src/core/frontier.ts",
     "src/core/manifest.ts",
+    "src/core/reconciler.ts",
     "src/local/index.ts",
     "src/local/sqlite-store.ts",
     "src/local/fs-cas.ts",

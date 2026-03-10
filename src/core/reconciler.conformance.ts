@@ -138,11 +138,13 @@ export function runReconcilerTests(factory: ReconcilerFactory): void {
     // ------------------------------------------------------------------
 
     test("reconcile cleans terminal claims past retention", async () => {
-      // Create a completed claim with old createdAt
+      // Create a completed claim with old heartbeatAt (last activity 30 days ago)
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
       const old = makeClaim({
         claimId: "old-completed",
         targetRef: "target-old",
-        createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 days ago
+        createdAt: thirtyDaysAgo,
+        heartbeatAt: thirtyDaysAgo,
       });
       await claimStore.createClaim(old);
       await claimStore.complete("old-completed");
@@ -218,10 +220,10 @@ export function runReconcilerTests(factory: ReconcilerFactory): void {
       expect(result.expiredClaims[0]?.claim.claimId).toBe("startup-expired");
     });
 
-    test("startupReconcile on empty store returns zeros", async () => {
+    test("startupReconcile on empty store returns empty results", async () => {
       const result = await reconciler.startupReconcile();
       expect(result.expiredClaims.length).toBe(0);
-      expect(result.staleWorkspaceCount).toBe(0);
+      expect(result.orphanedWorkspaces.length).toBe(0);
     });
 
     test("startupReconcile preserves active claims with valid leases", async () => {
