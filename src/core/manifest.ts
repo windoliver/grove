@@ -155,8 +155,10 @@ const CidSchema = z
 /**
  * Recursive schema for JSON-safe values only.
  * Rejects Date, Map, Set, class instances, functions, etc.
+ *
+ * Exported for reuse in claim context validation.
  */
-const JsonValueSchema: z.ZodTypeAny = z.lazy(() =>
+export const JsonValueSchema: z.ZodTypeAny = z.lazy(() =>
   z.union([
     z.string(),
     z.number().refine((n) => Number.isFinite(n), { message: "JSON numbers must be finite" }),
@@ -166,6 +168,14 @@ const JsonValueSchema: z.ZodTypeAny = z.lazy(() =>
     z.record(z.string(), JsonValueSchema),
   ]),
 );
+
+/**
+ * Zod schema for optional context: Record<string, JsonValue>.
+ * Used by both contributions (in ContributionBaseSchema) and claims.
+ */
+export const ContextSchema: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodTypeAny>> = z
+  .record(z.string(), JsonValueSchema)
+  .optional();
 
 const RelationSchema = z
   .object({
@@ -186,7 +196,7 @@ const ContributionBaseSchema = z
     relations: z.array(RelationSchema),
     scores: z.record(z.string(), ScoreSchema).optional(),
     tags: z.array(z.string()),
-    context: z.record(z.string(), JsonValueSchema).optional(),
+    context: ContextSchema,
     agent: AgentIdentitySchema,
     createdAt: z.string().datetime({ offset: true, message: "createdAt must be ISO 8601" }),
   })

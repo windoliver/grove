@@ -13,7 +13,7 @@
 import type { SQLQueryBindings, Statement } from "bun:sqlite";
 import { Database } from "bun:sqlite";
 
-import { fromManifest, toManifest, verifyCid } from "../core/manifest.js";
+import { ContextSchema, fromManifest, toManifest, verifyCid } from "../core/manifest.js";
 import type {
   AgentIdentity,
   Claim,
@@ -636,6 +636,14 @@ export class SqliteClaimStore implements ClaimStore {
   }
 
   createClaim = async (claim: Claim): Promise<Claim> => {
+    // Validate context values are JSON-safe (reject Date, Map, Set, etc.)
+    if (claim.context !== undefined) {
+      const result = ContextSchema.safeParse(claim.context);
+      if (!result.success) {
+        throw new Error(`Invalid claim context: ${result.error.message}`);
+      }
+    }
+
     // Normalize timestamps to UTC for reliable SQL text comparison
     const createdAtUtc = toUtcIso(claim.createdAt);
     const heartbeatUtc = toUtcIso(claim.heartbeatAt);

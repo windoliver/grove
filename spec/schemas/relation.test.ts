@@ -268,7 +268,7 @@ describe("relation type enum sync", () => {
       },
       relations: [],
       tags: [],
-      agent: { agent_name: "test" },
+      agent: { agent_id: "test" },
       created_at: "2026-03-08T10:00:00Z",
     };
     expect(validate(manifest)).toBe(true);
@@ -286,7 +286,7 @@ describe("relation type enum sync", () => {
         artifacts: { [name]: validCid(1) },
         relations: [],
         tags: [],
-        agent: { agent_name: "test" },
+        agent: { agent_id: "test" },
         created_at: "2026-03-08T10:00:00Z",
       };
       expect(validate(manifest)).toBe(false);
@@ -303,7 +303,7 @@ describe("relation type enum sync", () => {
       artifacts: { "": validCid(1) },
       relations: [],
       tags: [],
-      agent: { agent_name: "test" },
+      agent: { agent_id: "test" },
       created_at: "2026-03-08T10:00:00Z",
     };
     expect(validate(manifest)).toBe(false);
@@ -321,7 +321,7 @@ describe("relation type enum sync", () => {
       artifacts: {},
       relations: [{ target_cid: validCid(1), relation_type: "derives_from" }],
       tags: [],
-      agent: { agent_name: "test" },
+      agent: { agent_id: "test" },
       created_at: "2026-03-08T10:00:00Z",
     };
     expect(validate(manifest)).toBe(true);
@@ -350,7 +350,7 @@ describe("cross-schema consistency", () => {
         },
       ],
       tags: [],
-      agent: { agent_name: "test-agent" },
+      agent: { agent_id: "test-agent" },
       created_at: "2026-03-08T10:00:00Z",
     };
     expect(validate(manifest)).toBe(true);
@@ -371,7 +371,7 @@ describe("cross-schema consistency", () => {
         },
       ],
       tags: [],
-      agent: { agent_name: "test-agent" },
+      agent: { agent_id: "test-agent" },
       created_at: "2026-03-08T10:00:00Z",
     };
     expect(validate(manifest)).toBe(false);
@@ -422,7 +422,7 @@ describe("cross-schema consistency", () => {
         artifacts: {},
         relations: [{ target_cid: validCid(1), relation_type: relationType }],
         tags: [],
-        agent: { agent_name: "test" },
+        agent: { agent_id: "test" },
         created_at: "2026-03-08T10:00:00Z",
       };
       expect(validate(manifest)).toBe(true);

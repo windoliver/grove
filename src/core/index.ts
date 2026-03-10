@@ -9,10 +9,12 @@ export type {
 export { DefaultFrontierCalculator, getScore } from "./frontier.js";
 export {
   CID_PATTERN,
+  ContextSchema,
   computeCid,
   createContribution,
   type FromManifestOptions,
   fromManifest,
+  JsonValueSchema,
   MANIFEST_VERSION,
   toManifest,
   verifyCid,

@@ -402,6 +402,15 @@ export function runClaimStoreTests(factory: ClaimStoreFactory): void {
       expect(retrieved?.context).toEqual(nestedContext);
     });
 
+    test("context rejects non-JSON-safe values (Date)", async () => {
+      const claim = makeClaim({
+        claimId: "ctx-invalid",
+        // Force a Date through the type system to simulate runtime misuse
+        context: { when: new Date() } as unknown as Record<string, never>,
+      });
+      await expect(store.createClaim(claim)).rejects.toThrow(/context/i);
+    });
+
     test("claim without context returns undefined for context", async () => {
       const claim = makeClaim({ claimId: "no-ctx" });
       await store.createClaim(claim);

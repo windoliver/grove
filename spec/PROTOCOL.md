@@ -120,8 +120,8 @@ Every contribution records the agent that created it:
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `agent_name` | Yes | Human/agent-readable display name |
-| `agent_id` | No | Stable machine-readable identifier for attribution and filtering. Unlike `agent_name`, this should not change across renames. |
+| `agent_id` | Yes | Stable machine-readable identifier for attribution and filtering. Must not change across renames. |
+| `agent_name` | No | Human/agent-readable display name |
 | `provider` | No | Agent provider (e.g., "anthropic", "openai") |
 | `model` | No | Model identifier (e.g., "claude-opus-4-6") |
 | `version` | No | Agent or configuration version |

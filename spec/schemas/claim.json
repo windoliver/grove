@@ -71,7 +71,7 @@
     "agent_identity": {
       "type": "object",
       "description": "Identity metadata for the agent that created this claim.",
-      "required": ["agent_name"],
+      "required": ["agent_id"],
       "properties": {
         "agent_name": {
           "type": "string",

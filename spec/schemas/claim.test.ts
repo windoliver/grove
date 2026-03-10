@@ -16,7 +16,7 @@ function validClaim(overrides?: Record<string, unknown>): Record<string, unknown
   return {
     claim_id: "claim-abc-123",
     target_ref: "optimize-attention-kernel",
-    agent: { agent_name: "research-agent" },
+    agent: { agent_id: "research-agent-001" },
     status: "active",
     intent_summary: "Exploring attention optimizations on H100",
     created_at: "2026-01-15T10:00:00Z",
@@ -33,8 +33,15 @@ function validClaim(overrides?: Record<string, unknown>): Record<string, unknown
 describe("claim schema — valid claims", () => {
   const validate = createValidator();
 
-  test("accepts minimal valid claim (no context)", () => {
+  test("accepts minimal valid claim (agent_id only, no context)", () => {
     expect(validate(validClaim())).toBe(true);
+  });
+
+  test("accepts claim with agent_id and agent_name", () => {
+    const claim = validClaim({
+      agent: { agent_id: "agent-001", agent_name: "Research Agent" },
+    });
+    expect(validate(claim)).toBe(true);
   });
 
   test("accepts claim with all fields", () => {
@@ -53,8 +60,8 @@ describe("claim schema — valid claims", () => {
   test("accepts claim with full agent identity", () => {
     const claim = validClaim({
       agent: {
-        agent_name: "Research Agent",
         agent_id: "agent-007",
+        agent_name: "Research Agent",
         provider: "anthropic",
         model: "claude-opus-4-6",
         version: "1.0.0",
@@ -192,17 +199,21 @@ describe("claim schema — invalid claims", () => {
     expect(validate(validClaim({ lease_expires_at: "yesterday" }))).toBe(false);
   });
 
-  // Agent validation
-  test("rejects agent without agent_name", () => {
+  // Agent validation — agent_id is required
+  test("rejects agent without agent_id", () => {
     expect(validate(validClaim({ agent: {} }))).toBe(false);
   });
 
-  test("rejects agent with empty agent_name", () => {
-    expect(validate(validClaim({ agent: { agent_name: "" } }))).toBe(false);
+  test("rejects agent with only agent_name (missing agent_id)", () => {
+    expect(validate(validClaim({ agent: { agent_name: "Research Agent" } }))).toBe(false);
+  });
+
+  test("rejects agent with empty agent_id", () => {
+    expect(validate(validClaim({ agent: { agent_id: "" } }))).toBe(false);
   });
 
   test("rejects agent with unknown properties", () => {
-    expect(validate(validClaim({ agent: { agent_name: "test", unknown: "value" } }))).toBe(false);
+    expect(validate(validClaim({ agent: { agent_id: "test", unknown: "value" } }))).toBe(false);
   });
 
   // Strict mode — no unknown properties
@@ -231,16 +242,28 @@ describe("claim schema — invalid claims", () => {
 // ---------------------------------------------------------------------------
 
 describe("cross-schema consistency", () => {
-  test("claim agent_identity matches contribution agent_identity", () => {
-    // Both schemas define agent_identity with the same structure.
-    // If either changes, this test catches the divergence.
+  test("claim agent_identity has same properties as contribution agent_identity", () => {
     const claimAgentProps = claimSchema.$defs.agent_identity.properties;
     const contributionAgentProps = (
       contributionSchema.$defs as { agent_identity: { properties: Record<string, unknown> } }
     ).agent_identity.properties;
 
-    // Same set of property names
     expect(Object.keys(claimAgentProps).sort()).toEqual(Object.keys(contributionAgentProps).sort());
+  });
+
+  test("claim agent_identity has same required fields as contribution agent_identity", () => {
+    const claimRequired = claimSchema.$defs.agent_identity.required;
+    const contributionRequired = (
+      contributionSchema.$defs as { agent_identity: { required: string[] } }
+    ).agent_identity.required;
+
+    expect(claimRequired).toEqual(contributionRequired);
+  });
+
+  test("both schemas require agent_id (not agent_name)", () => {
+    const claimRequired = claimSchema.$defs.agent_identity.required;
+    expect(claimRequired).toContain("agent_id");
+    expect(claimRequired).not.toContain("agent_name");
   });
 
   test("claim status enum matches expected lifecycle states", () => {
