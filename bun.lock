@@ -5,6 +5,7 @@
     "": {
       "name": "grove",
       "dependencies": {
+        "@grove/ask-user": "workspace:*",
         "@hono/zod-validator": "0.7.6",
         "@modelcontextprotocol/sdk": "^1.27.0",
         "blake3": "^1.0.2",

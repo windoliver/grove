@@ -13,6 +13,7 @@ export type {
   StrategyNameType,
 } from "./config.js";
 export { loadConfig, parseConfig } from "./config.js";
+export { registerAskUserTools } from "./register.js";
 export type { SpawnFn } from "./strategies/agent.js";
 export { createAgentStrategy } from "./strategies/agent.js";
 export type { ReadlineFn } from "./strategies/interactive.js";

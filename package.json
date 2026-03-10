@@ -37,8 +37,8 @@
     "grove-mcp-http": "./dist/mcp/serve-http.js"
   },
   "scripts": {
-    "build": "tsup && bun run --cwd packages/ask-user build",
-    "typecheck": "tsc --noEmit && bun run --cwd packages/ask-user typecheck",
+    "build": "bun run --cwd packages/ask-user build && tsup",
+    "typecheck": "bun run --cwd packages/ask-user typecheck && bun run --cwd packages/ask-user build && tsc --noEmit",
     "lint": "biome check .",
     "format": "biome format --write .",
     "start:server": "bun run src/server/serve.ts",
@@ -49,6 +49,7 @@
   },
   "dependencies": {
     "@hono/zod-validator": "0.7.6",
+    "@grove/ask-user": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.27.0",
     "blake3": "^1.0.2",
     "hono": "^4.12.6",

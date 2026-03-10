@@ -6,6 +6,7 @@
  * in-memory transports.
  */
 
+import { registerAskUserTools } from "@grove/ask-user";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { McpDeps } from "./deps.js";
@@ -20,7 +21,7 @@ import { registerWorkspaceTools } from "./tools/workspace.js";
  * @param deps - Injected dependencies (stores, CAS, frontier, workspace).
  * @returns Configured McpServer ready to connect to a transport.
  */
-export function createMcpServer(deps: McpDeps): McpServer {
+export async function createMcpServer(deps: McpDeps): Promise<McpServer> {
   const server = new McpServer(
     { name: "grove-mcp", version: "0.1.0" },
     { capabilities: { tools: {} } },
@@ -30,6 +31,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
   registerClaimTools(server, deps);
   registerQueryTools(server, deps);
   registerWorkspaceTools(server, deps);
+  await registerAskUserTools(server);
 
   return server;
 }
