@@ -1,0 +1,330 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grove.dev/schemas/grove-contract.json",
+  "title": "Grove Contract",
+  "description": "Schema for the structured YAML frontmatter of a GROVE.md workflow contract. GROVE.md is a repo-owned file that defines metrics, contribution gates, stop conditions, agent constraints, and claim policy for a grove. The YAML frontmatter is validated against this schema; the Markdown body is free-form prose for human/agent-readable context.",
+  "type": "object",
+  "required": ["contract_version", "name"],
+  "properties": {
+    "contract_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Contract schema version. Must be 1 for this version of the spec. Future versions will increment this value."
+    },
+    "name": {
+      "type": "string",
+      "description": "Human/agent-readable name for this grove.",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "description": {
+      "type": "string",
+      "description": "What this grove is about.",
+      "maxLength": 1024
+    },
+    "mode": {
+      "description": "Default contribution mode for this grove. Individual contributions may override.",
+      "$ref": "https://grove.dev/schemas/contribution.json#/$defs/contribution_mode"
+    },
+    "seed": {
+      "type": "string",
+      "description": "Reference to the seed contribution. May be a CID, a descriptive ref, or a URL.",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "metrics": {
+      "type": "object",
+      "description": "Named metric definitions. Keys are metric names (lowercase, underscores), values define direction and optional gate thresholds.",
+      "additionalProperties": {
+        "$ref": "#/$defs/metric_definition"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*$",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "maxProperties": 50
+    },
+    "gates": {
+      "type": "array",
+      "description": "Contribution gates — declarative rules that must pass before a contribution is accepted to the frontier. Non-gated contributions are still stored in the DAG but flagged.",
+      "items": {
+        "$ref": "#/$defs/gate"
+      },
+      "maxItems": 20
+    },
+    "stop_conditions": {
+      "$ref": "#/$defs/stop_conditions"
+    },
+    "agent_constraints": {
+      "$ref": "#/$defs/agent_constraints"
+    },
+    "claim_policy": {
+      "$ref": "#/$defs/claim_policy"
+    }
+  },
+  "unevaluatedProperties": false,
+  "$defs": {
+    "metric_definition": {
+      "type": "object",
+      "description": "Definition of a named metric with scoring direction and optional gate threshold.",
+      "required": ["direction"],
+      "properties": {
+        "direction": {
+          "description": "Whether lower or higher values are better for this metric.",
+          "$ref": "https://grove.dev/schemas/contribution.json#/$defs/score_direction"
+        },
+        "unit": {
+          "type": "string",
+          "description": "Human-readable unit label (e.g., 'bpb', 'seconds', 'accuracy').",
+          "maxLength": 64
+        },
+        "description": {
+          "type": "string",
+          "description": "What this metric measures.",
+          "maxLength": 256
+        },
+        "gate": {
+          "type": "number",
+          "description": "Threshold for frontier inclusion. For 'minimize' metrics, contributions must score at or below this value. For 'maximize' metrics, contributions must score at or above it."
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "gate": {
+      "type": "object",
+      "description": "A declarative contribution gate rule. The 'type' field determines which other fields are required.",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "The gate rule type.",
+          "enum": ["metric_improves", "has_artifact", "has_relation", "min_reviews", "min_score"]
+        },
+        "metric": {
+          "type": "string",
+          "description": "Metric name. Required for metric_improves and min_score gates. Must reference a metric defined in the metrics section.",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "maxLength": 64
+        },
+        "name": {
+          "type": "string",
+          "description": "Artifact name pattern. Required for has_artifact gates.",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "relation_type": {
+          "description": "Relation type. Required for has_relation gates.",
+          "$ref": "https://grove.dev/schemas/contribution.json#/$defs/relation_type"
+        },
+        "count": {
+          "type": "integer",
+          "description": "Minimum count. Required for min_reviews gates.",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "threshold": {
+          "type": "number",
+          "description": "Minimum score threshold. For min_reviews gates, this is a review score (0-1 by convention). For min_score gates, this is a raw metric value in the metric's native units."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "metric_improves" } }, "required": ["type"] },
+          "then": { "required": ["metric"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "has_artifact" } }, "required": ["type"] },
+          "then": { "required": ["name"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "has_relation" } }, "required": ["type"] },
+          "then": { "required": ["relation_type"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "min_reviews" } }, "required": ["type"] },
+          "then": { "required": ["count"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "min_score" } }, "required": ["type"] },
+          "then": { "required": ["metric", "threshold"] }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "stop_conditions": {
+      "type": "object",
+      "description": "Conditions under which the grove should stop accepting new contributions. Multiple conditions may be specified; the grove stops when ANY condition is met.",
+      "properties": {
+        "max_rounds_without_improvement": {
+          "type": "integer",
+          "description": "Auto-stop after N rounds with no frontier advance.",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "target_metric": {
+          "type": "object",
+          "description": "Stop when a metric reaches a target value. For 'minimize' metrics, stops when score is at or below the value. For 'maximize' metrics, stops when score is at or above.",
+          "required": ["metric", "value"],
+          "properties": {
+            "metric": {
+              "type": "string",
+              "description": "The metric name. Should reference a metric defined in the metrics section.",
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "maxLength": 64
+            },
+            "value": {
+              "type": "number",
+              "description": "The target value."
+            }
+          },
+          "unevaluatedProperties": false
+        },
+        "budget": {
+          "type": "object",
+          "description": "Maximum budget before stopping. Specify one or both sub-fields.",
+          "minProperties": 1,
+          "properties": {
+            "max_contributions": {
+              "type": "integer",
+              "description": "Maximum total contributions.",
+              "minimum": 1
+            },
+            "max_wall_clock_seconds": {
+              "type": "integer",
+              "description": "Maximum wall-clock time in seconds.",
+              "minimum": 1
+            }
+          },
+          "unevaluatedProperties": false
+        },
+        "quorum_review_score": {
+          "type": "object",
+          "description": "Stop when a contribution achieves review consensus.",
+          "required": ["min_reviews", "min_score"],
+          "properties": {
+            "min_reviews": {
+              "type": "integer",
+              "description": "Minimum number of reviews required.",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "min_score": {
+              "type": "number",
+              "description": "Minimum average review score (0-1).",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "unevaluatedProperties": false
+        },
+        "deliberation_limit": {
+          "type": "object",
+          "description": "Maximum discussion rounds or messages per topic.",
+          "minProperties": 1,
+          "properties": {
+            "max_rounds": {
+              "type": "integer",
+              "description": "Maximum rounds of review/discussion.",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "max_messages": {
+              "type": "integer",
+              "description": "Maximum discussion messages per topic.",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          },
+          "unevaluatedProperties": false
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "agent_constraints": {
+      "type": "object",
+      "description": "Rules constraining agent behavior within this grove.",
+      "properties": {
+        "allowed_kinds": {
+          "type": "array",
+          "description": "Contribution kinds agents are allowed to submit. If omitted, all kinds are allowed.",
+          "items": {
+            "$ref": "https://grove.dev/schemas/contribution.json#/$defs/contribution_kind"
+          },
+          "minItems": 1,
+          "maxItems": 5,
+          "uniqueItems": true
+        },
+        "required_artifacts": {
+          "type": "object",
+          "description": "Required artifact name patterns per contribution kind. Keys are contribution kinds, values are arrays of artifact name patterns that must be present.",
+          "properties": {
+            "work": { "$ref": "#/$defs/artifact_requirements" },
+            "review": { "$ref": "#/$defs/artifact_requirements" },
+            "discussion": { "$ref": "#/$defs/artifact_requirements" },
+            "adoption": { "$ref": "#/$defs/artifact_requirements" },
+            "reproduction": { "$ref": "#/$defs/artifact_requirements" }
+          },
+          "unevaluatedProperties": false
+        },
+        "required_relations": {
+          "type": "object",
+          "description": "Required relation types per contribution kind. Keys are contribution kinds, values are arrays of relation types that must be present.",
+          "properties": {
+            "work": { "$ref": "#/$defs/relation_requirements" },
+            "review": { "$ref": "#/$defs/relation_requirements" },
+            "discussion": { "$ref": "#/$defs/relation_requirements" },
+            "adoption": { "$ref": "#/$defs/relation_requirements" },
+            "reproduction": { "$ref": "#/$defs/relation_requirements" }
+          },
+          "unevaluatedProperties": false
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "artifact_requirements": {
+      "type": "array",
+      "description": "List of artifact name patterns that must be present in a contribution of this kind.",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "minItems": 1,
+      "maxItems": 20
+    },
+    "relation_requirements": {
+      "type": "array",
+      "description": "List of relation types that must be present in a contribution of this kind.",
+      "items": {
+        "$ref": "https://grove.dev/schemas/contribution.json#/$defs/relation_type"
+      },
+      "minItems": 1,
+      "maxItems": 5,
+      "uniqueItems": true
+    },
+    "claim_policy": {
+      "type": "object",
+      "description": "Policy for claim coordination in this grove.",
+      "properties": {
+        "default_lease_seconds": {
+          "type": "integer",
+          "description": "Default lease duration in seconds. Protocol default is 300 (5 minutes). Minimum 30 seconds, maximum 86400 (24 hours).",
+          "minimum": 30,
+          "maximum": 86400
+        },
+        "max_claims_per_agent": {
+          "type": "integer",
+          "description": "Maximum concurrent claims per agent. 0 means unlimited.",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "heartbeat_required": {
+          "type": "boolean",
+          "description": "Whether heartbeats are required to keep claims alive. Default: true."
+        }
+      },
+      "unevaluatedProperties": false
+    }
+  }
+}
