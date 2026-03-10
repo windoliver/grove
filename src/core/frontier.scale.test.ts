@@ -110,12 +110,10 @@ describe("frontier scale tests", () => {
       const calculator = new DefaultFrontierCalculator(proxy);
       await calculator.compute();
 
-      // relatedTo calls should be bounded. Currently the code calls relatedTo()
-      // once per contribution for review scores, which is O(N). This test
-      // documents the current behavior and will catch regressions above O(N).
+      // After refactoring to in-memory scan, relatedTo() should never be called.
+      // All edge counting is done via a single allContributions scan.
       const relatedToCalls = counts.relatedTo ?? 0;
-      // Must not exceed total contributions (targets + reviews = 40)
-      expect(relatedToCalls).toBeLessThanOrEqual(40);
+      expect(relatedToCalls).toBe(0);
 
       // list() should still be bounded
       expect(counts.list ?? 0).toBeLessThanOrEqual(3);

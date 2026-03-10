@@ -43,6 +43,7 @@ export function runFrontierCalculatorTests(
     expect(frontier.byAdoption).toHaveLength(0);
     expect(frontier.byRecency).toHaveLength(0);
     expect(frontier.byReviewScore).toHaveLength(0);
+    expect(frontier.byReproduction).toHaveLength(0);
   });
 
   // -----------------------------------------------------------------------
@@ -208,7 +209,7 @@ export function runFrontierCalculatorTests(
   // -----------------------------------------------------------------------
 
   describe("byAdoption", () => {
-    test("counts adoption relations", async () => {
+    test("counts adopts relations", async () => {
       const target = makeContribution({
         summary: "adopted-target",
         createdAt: "2026-01-01T00:00:00Z",
@@ -232,6 +233,83 @@ export function runFrontierCalculatorTests(
 
       expect(frontier.byAdoption).toHaveLength(1);
       expect(frontier.byAdoption[0]?.cid).toBe(target.cid);
+      expect(frontier.byAdoption[0]?.value).toBe(2);
+    });
+
+    test("counts derives_from relations toward adoption", async () => {
+      const target = makeContribution({
+        summary: "derived-target",
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+
+      const child = makeContribution({
+        summary: "child-work",
+        kind: ContributionKind.Work,
+        relations: [
+          makeRelation({ targetCid: target.cid, relationType: RelationType.DerivesFrom }),
+        ],
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+
+      await store.putMany([target, child]);
+      const frontier = await calculator.compute();
+
+      expect(frontier.byAdoption).toHaveLength(1);
+      expect(frontier.byAdoption[0]?.cid).toBe(target.cid);
+      expect(frontier.byAdoption[0]?.value).toBe(1);
+    });
+
+    test("sums derives_from and adopts from different contributors", async () => {
+      const target = makeContribution({
+        summary: "popular-target",
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+
+      const deriver = makeContribution({
+        summary: "deriver",
+        kind: ContributionKind.Work,
+        relations: [
+          makeRelation({ targetCid: target.cid, relationType: RelationType.DerivesFrom }),
+        ],
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+      const adopter = makeContribution({
+        summary: "adopter",
+        kind: ContributionKind.Adoption,
+        relations: [makeRelation({ targetCid: target.cid, relationType: RelationType.Adopts })],
+        createdAt: "2026-01-03T00:00:00Z",
+      });
+
+      await store.putMany([target, deriver, adopter]);
+      const frontier = await calculator.compute();
+
+      expect(frontier.byAdoption).toHaveLength(1);
+      expect(frontier.byAdoption[0]?.cid).toBe(target.cid);
+      expect(frontier.byAdoption[0]?.value).toBe(2);
+    });
+
+    test("single contributor with both derives_from and adopts counts as 2", async () => {
+      const target = makeContribution({
+        summary: "doubly-referenced",
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+
+      const contributor = makeContribution({
+        summary: "both-relations",
+        kind: ContributionKind.Work,
+        relations: [
+          makeRelation({ targetCid: target.cid, relationType: RelationType.DerivesFrom }),
+          makeRelation({ targetCid: target.cid, relationType: RelationType.Adopts }),
+        ],
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+
+      await store.putMany([target, contributor]);
+      const frontier = await calculator.compute();
+
+      expect(frontier.byAdoption).toHaveLength(1);
+      expect(frontier.byAdoption[0]?.cid).toBe(target.cid);
+      // Two relations from same contributor = 2 (counts relations, not contributors)
       expect(frontier.byAdoption[0]?.value).toBe(2);
     });
 
@@ -331,6 +409,119 @@ export function runFrontierCalculatorTests(
   });
 
   // -----------------------------------------------------------------------
+  // byReproduction
+  // -----------------------------------------------------------------------
+
+  describe("byReproduction", () => {
+    test("counts reproduces relations", async () => {
+      const target = makeContribution({
+        summary: "reproduced-target",
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+
+      const repro1 = makeContribution({
+        summary: "reproduction-1",
+        kind: ContributionKind.Reproduction,
+        relations: [makeRelation({ targetCid: target.cid, relationType: RelationType.Reproduces })],
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+      const repro2 = makeContribution({
+        summary: "reproduction-2",
+        kind: ContributionKind.Reproduction,
+        relations: [makeRelation({ targetCid: target.cid, relationType: RelationType.Reproduces })],
+        createdAt: "2026-01-03T00:00:00Z",
+      });
+
+      await store.putMany([target, repro1, repro2]);
+      const frontier = await calculator.compute();
+
+      expect(frontier.byReproduction).toHaveLength(1);
+      expect(frontier.byReproduction[0]?.cid).toBe(target.cid);
+      expect(frontier.byReproduction[0]?.value).toBe(2);
+    });
+
+    test("ranks by reproduction count descending", async () => {
+      const target1 = makeContribution({
+        summary: "often-reproduced",
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      const target2 = makeContribution({
+        summary: "rarely-reproduced",
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+
+      const repro1a = makeContribution({
+        summary: "repro-1a",
+        kind: ContributionKind.Reproduction,
+        relations: [
+          makeRelation({ targetCid: target1.cid, relationType: RelationType.Reproduces }),
+        ],
+        createdAt: "2026-01-03T00:00:00Z",
+      });
+      const repro1b = makeContribution({
+        summary: "repro-1b",
+        kind: ContributionKind.Reproduction,
+        relations: [
+          makeRelation({ targetCid: target1.cid, relationType: RelationType.Reproduces }),
+        ],
+        createdAt: "2026-01-04T00:00:00Z",
+      });
+      const repro2a = makeContribution({
+        summary: "repro-2a",
+        kind: ContributionKind.Reproduction,
+        relations: [
+          makeRelation({ targetCid: target2.cid, relationType: RelationType.Reproduces }),
+        ],
+        createdAt: "2026-01-05T00:00:00Z",
+      });
+
+      await store.putMany([target1, target2, repro1a, repro1b, repro2a]);
+      const frontier = await calculator.compute();
+
+      expect(frontier.byReproduction.length).toBeGreaterThanOrEqual(2);
+      expect(frontier.byReproduction[0]?.cid).toBe(target1.cid);
+      expect(frontier.byReproduction[0]?.value).toBe(2);
+      expect(frontier.byReproduction[1]?.cid).toBe(target2.cid);
+      expect(frontier.byReproduction[1]?.value).toBe(1);
+    });
+
+    test("respects limit", async () => {
+      const targets = Array.from({ length: 3 }, (_, i) =>
+        makeContribution({
+          summary: `target-${i}`,
+          createdAt: `2026-01-0${i + 1}T00:00:00Z`,
+        }),
+      );
+      await store.putMany(targets);
+
+      const repros = targets.map((t, i) =>
+        makeContribution({
+          summary: `repro-${i}`,
+          kind: ContributionKind.Reproduction,
+          relations: [makeRelation({ targetCid: t.cid, relationType: RelationType.Reproduces })],
+          createdAt: `2026-02-0${i + 1}T00:00:00Z`,
+        }),
+      );
+      await store.putMany(repros);
+
+      const frontier = await calculator.compute({ limit: 2 });
+      expect(frontier.byReproduction).toHaveLength(2);
+    });
+
+    test("returns empty when no reproductions exist", async () => {
+      const c = makeContribution({
+        summary: "no-reproductions",
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+
+      await store.put(c);
+      const frontier = await calculator.compute();
+
+      expect(frontier.byReproduction).toHaveLength(0);
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // Filtering
   // -----------------------------------------------------------------------
 
@@ -371,6 +562,206 @@ export function runFrontierCalculatorTests(
 
       expect(frontier.byRecency).toHaveLength(1);
       expect(frontier.byRecency[0]?.cid).toBe(linux.cid);
+    });
+
+    test("by kind", async () => {
+      const work = makeContribution({
+        summary: "work-item",
+        kind: ContributionKind.Work,
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      const review = makeContribution({
+        summary: "review-item",
+        kind: ContributionKind.Review,
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+
+      await store.putMany([work, review]);
+      const frontier = await calculator.compute({ kind: ContributionKind.Work });
+
+      expect(frontier.byRecency).toHaveLength(1);
+      expect(frontier.byRecency[0]?.cid).toBe(work.cid);
+    });
+
+    test("by mode", async () => {
+      const evaluation = makeContribution({
+        summary: "eval-item",
+        mode: ContributionMode.Evaluation,
+        scores: { acc: makeScore({ value: 0.9, direction: ScoreDirection.Maximize }) },
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      const exploration = makeContribution({
+        summary: "explore-item",
+        mode: ContributionMode.Exploration,
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+
+      await store.putMany([evaluation, exploration]);
+      const frontier = await calculator.compute({ mode: ContributionMode.Exploration });
+
+      expect(frontier.byRecency).toHaveLength(1);
+      expect(frontier.byRecency[0]?.cid).toBe(exploration.cid);
+    });
+
+    test("by agentId", async () => {
+      const agentA = makeContribution({
+        summary: "agent-a-work",
+        agent: { agentId: "agent-a" },
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      const agentB = makeContribution({
+        summary: "agent-b-work",
+        agent: { agentId: "agent-b" },
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+
+      await store.putMany([agentA, agentB]);
+      const frontier = await calculator.compute({ agentId: "agent-a" });
+
+      expect(frontier.byRecency).toHaveLength(1);
+      expect(frontier.byRecency[0]?.cid).toBe(agentA.cid);
+    });
+
+    test("by agentName", async () => {
+      const claude = makeContribution({
+        summary: "claude-work",
+        agent: { agentId: "a1", agentName: "claude" },
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      const codex = makeContribution({
+        summary: "codex-work",
+        agent: { agentId: "a2", agentName: "codex" },
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+
+      await store.putMany([claude, codex]);
+      const frontier = await calculator.compute({ agentName: "claude" });
+
+      expect(frontier.byRecency).toHaveLength(1);
+      expect(frontier.byRecency[0]?.cid).toBe(claude.cid);
+    });
+
+    test("combined filters use AND semantics", async () => {
+      const match = makeContribution({
+        summary: "match-all",
+        kind: ContributionKind.Work,
+        mode: ContributionMode.Evaluation,
+        tags: ["ml"],
+        agent: { agentId: "a1", platform: "linux" },
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      const wrongKind = makeContribution({
+        summary: "wrong-kind",
+        kind: ContributionKind.Review,
+        mode: ContributionMode.Evaluation,
+        tags: ["ml"],
+        agent: { agentId: "a1", platform: "linux" },
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+      const wrongTag = makeContribution({
+        summary: "wrong-tag",
+        kind: ContributionKind.Work,
+        mode: ContributionMode.Evaluation,
+        tags: ["audio"],
+        agent: { agentId: "a1", platform: "linux" },
+        createdAt: "2026-01-03T00:00:00Z",
+      });
+
+      await store.putMany([match, wrongKind, wrongTag]);
+      const frontier = await calculator.compute({
+        kind: ContributionKind.Work,
+        tags: ["ml"],
+        platform: "linux",
+      });
+
+      expect(frontier.byRecency).toHaveLength(1);
+      expect(frontier.byRecency[0]?.cid).toBe(match.cid);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Exploration mode inclusion
+  // -----------------------------------------------------------------------
+
+  describe("exploration mode inclusion", () => {
+    test("exploration contributions appear in byRecency", async () => {
+      const explore = makeContribution({
+        summary: "exploratory-work",
+        mode: ContributionMode.Exploration,
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+
+      await store.put(explore);
+      const frontier = await calculator.compute();
+
+      expect(frontier.byRecency).toHaveLength(1);
+      expect(frontier.byRecency[0]?.cid).toBe(explore.cid);
+    });
+
+    test("exploration contributions appear in byAdoption when adopted", async () => {
+      const explore = makeContribution({
+        summary: "adopted-exploration",
+        mode: ContributionMode.Exploration,
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+
+      const adopter = makeContribution({
+        summary: "adopter",
+        kind: ContributionKind.Adoption,
+        relations: [makeRelation({ targetCid: explore.cid, relationType: RelationType.Adopts })],
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+
+      await store.putMany([explore, adopter]);
+      const frontier = await calculator.compute();
+
+      expect(frontier.byAdoption).toHaveLength(1);
+      expect(frontier.byAdoption[0]?.cid).toBe(explore.cid);
+    });
+
+    test("exploration contributions appear in byReviewScore when reviewed", async () => {
+      const explore = makeContribution({
+        summary: "reviewed-exploration",
+        mode: ContributionMode.Exploration,
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+
+      const review = makeContribution({
+        summary: "review-of-exploration",
+        kind: ContributionKind.Review,
+        scores: { quality: makeScore({ value: 9, direction: ScoreDirection.Maximize }) },
+        relations: [makeRelation({ targetCid: explore.cid, relationType: RelationType.Reviews })],
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+
+      await store.putMany([explore, review]);
+      const frontier = await calculator.compute();
+
+      expect(frontier.byReviewScore).toHaveLength(1);
+      expect(frontier.byReviewScore[0]?.cid).toBe(explore.cid);
+    });
+
+    test("exploration contributions appear in byReproduction when reproduced", async () => {
+      const explore = makeContribution({
+        summary: "reproduced-exploration",
+        mode: ContributionMode.Exploration,
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+
+      const repro = makeContribution({
+        summary: "reproduction-of-exploration",
+        kind: ContributionKind.Reproduction,
+        relations: [
+          makeRelation({ targetCid: explore.cid, relationType: RelationType.Reproduces }),
+        ],
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+
+      await store.putMany([explore, repro]);
+      const frontier = await calculator.compute();
+
+      expect(frontier.byReproduction).toHaveLength(1);
+      expect(frontier.byReproduction[0]?.cid).toBe(explore.cid);
     });
   });
 
