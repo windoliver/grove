@@ -123,9 +123,7 @@ const discussInputSchema = z.object({
   targetCid: z
     .string()
     .optional()
-    .describe(
-      "CID of the contribution to reply to. Omit for root discussions (topic anchors).",
-    ),
+    .describe("CID of the contribution to reply to. Omit for root discussions (topic anchors)."),
   summary: z.string().describe("Discussion message"),
   description: z.string().optional().describe("Longer description"),
   tags: z.array(z.string()).optional().default([]).describe("Tags for channel semantics"),

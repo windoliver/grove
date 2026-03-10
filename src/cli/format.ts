@@ -161,16 +161,13 @@ export function formatThread(nodes: readonly ThreadNode[]): string {
     const indent = "  ".repeat(node.depth);
     const cid = truncateCid(node.contribution.cid);
     const summary = node.contribution.summary;
-    const agent =
-      node.contribution.agent.agentName ?? node.contribution.agent.agentId;
+    const agent = node.contribution.agent.agentName ?? node.contribution.agent.agentId;
     const time = formatTimestamp(node.contribution.createdAt);
 
     // Truncate summary for readability
     const maxSummary = 60 - node.depth * 2;
     const trimmedSummary =
-      summary.length > maxSummary
-        ? `${summary.slice(0, maxSummary - 2)}..`
-        : summary;
+      summary.length > maxSummary ? `${summary.slice(0, maxSummary - 2)}..` : summary;
 
     lines.push(`${indent}${cid}  ${trimmedSummary}  [${agent}]  ${time}`);
   }

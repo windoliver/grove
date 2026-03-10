@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initSqliteDb, SqliteContributionStore } from "../../local/sqlite-store.js";
 import { executeContribute } from "./contribute.js";
-import { parseDiscussArgs, executeDiscuss } from "./discuss.js";
+import { executeDiscuss, parseDiscussArgs } from "./discuss.js";
 import type { InitOptions } from "./init.js";
 import { executeInit } from "./init.js";
 

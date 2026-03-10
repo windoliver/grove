@@ -10,7 +10,7 @@
 
 import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { executeContribute, type ContributeOptions } from "./contribute.js";
+import { type ContributeOptions, executeContribute } from "./contribute.js";
 
 export interface DiscussOptions {
   readonly respondsTo?: string | undefined;

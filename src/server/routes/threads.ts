@@ -40,10 +40,7 @@ threads.get(
 
     const nodes = await contributionStore.thread(cid, { maxDepth, limit });
     if (nodes.length === 0) {
-      return c.json(
-        { error: { code: "NOT_FOUND", message: `Thread root ${cid} not found` } },
-        404,
-      );
+      return c.json({ error: { code: "NOT_FOUND", message: `Thread root ${cid} not found` } }, 404);
     }
 
     return c.json(
@@ -61,9 +58,7 @@ threads.get("/", zValidator("query", threadsQuerySchema), async (c) => {
   const { contributionStore } = c.get("deps");
   const raw = c.req.valid("query");
 
-  const tags = raw.tags
-    ? raw.tags.split(",").filter((t) => t.length > 0)
-    : undefined;
+  const tags = raw.tags ? raw.tags.split(",").filter((t) => t.length > 0) : undefined;
 
   const results = await contributionStore.hotThreads({
     tags,

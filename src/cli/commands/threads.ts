@@ -33,8 +33,7 @@ export function parseThreadsArgs(argv: string[]): ThreadsOptions {
     allowPositionals: false,
   });
 
-  const limit =
-    values.limit !== undefined ? Number.parseInt(values.limit, 10) : DEFAULT_LIMIT;
+  const limit = values.limit !== undefined ? Number.parseInt(values.limit, 10) : DEFAULT_LIMIT;
   if (Number.isNaN(limit) || limit <= 0) {
     throw new Error(`Invalid limit: '${values.limit}'. Must be a positive integer.`);
   }

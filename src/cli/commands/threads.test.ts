@@ -8,9 +8,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DefaultFrontierCalculator } from "../../core/frontier.js";
 import { ContributionKind, RelationType } from "../../core/models.js";
 import { makeContribution, makeRelation } from "../../core/test-helpers.js";
-import { DefaultFrontierCalculator } from "../../core/frontier.js";
 import { FsCas } from "../../local/fs-cas.js";
 import { initSqliteDb, SqliteContributionStore } from "../../local/sqlite-store.js";
 import type { CliDeps } from "../context.js";
@@ -106,7 +106,9 @@ describe("runThreads", () => {
         makeContribution({
           kind: ContributionKind.Discussion,
           summary: `Reply to A ${i}`,
-          relations: [makeRelation({ targetCid: rootA.cid, relationType: RelationType.RespondsTo })],
+          relations: [
+            makeRelation({ targetCid: rootA.cid, relationType: RelationType.RespondsTo }),
+          ],
           createdAt: `2026-01-0${2 + i}T00:00:00Z`,
         }),
       );

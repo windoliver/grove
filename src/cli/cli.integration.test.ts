@@ -152,15 +152,12 @@ describe("grove CLI integration", () => {
       async function runDiscGrove(
         args: string[],
       ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-        const proc = Bun.spawn(
-          ["bun", join(import.meta.dir, "main.ts"), ...args],
-          {
-            cwd: discDir,
-            stdout: "pipe",
-            stderr: "pipe",
-            env: { ...process.env, GROVE_AGENT_ID: "test-agent" },
-          },
-        );
+        const proc = Bun.spawn(["bun", join(import.meta.dir, "main.ts"), ...args], {
+          cwd: discDir,
+          stdout: "pipe",
+          stderr: "pipe",
+          env: { ...process.env, GROVE_AGENT_ID: "test-agent" },
+        });
         const [stdout, stderr] = await Promise.all([
           new Response(proc.stdout).text(),
           new Response(proc.stderr).text(),

@@ -40,8 +40,7 @@ export function parseThreadArgs(argv: string[]): ThreadOptions {
     throw new Error("Usage: grove thread <cid> [--depth N] [-n N] [--json]");
   }
 
-  const depth =
-    values.depth !== undefined ? Number.parseInt(values.depth, 10) : DEFAULT_DEPTH;
+  const depth = values.depth !== undefined ? Number.parseInt(values.depth, 10) : DEFAULT_DEPTH;
   if (Number.isNaN(depth) || depth <= 0) {
     throw new Error(`Invalid depth: '${values.depth}'. Must be a positive integer.`);
   }
