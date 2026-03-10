@@ -21,13 +21,6 @@ export type {
   FrontierQuery,
 } from "./frontier.js";
 export { DefaultFrontierCalculator, getScore } from "./frontier.js";
-export type { StopConditionResult, StopEvaluationResult } from "./lifecycle.js";
-export {
-  deriveLifecycleState,
-  deriveLifecycleStates,
-  evaluateStopConditions,
-  LifecycleState,
-} from "./lifecycle.js";
 export {
   type HookEntry,
   HookEntrySchema,
@@ -38,6 +31,13 @@ export {
   hookCommand,
   hookTimeout,
 } from "./hooks.js";
+export type { StopConditionResult, StopEvaluationResult } from "./lifecycle.js";
+export {
+  deriveLifecycleState,
+  deriveLifecycleStates,
+  evaluateStopConditions,
+  LifecycleState,
+} from "./lifecycle.js";
 export {
   CID_PATTERN,
   ContextSchema,
