@@ -38,7 +38,10 @@ frontier.get("/", zValidator("query", querySchema), async (c) => {
       return c.json({ error: "Invalid context parameter: must be valid JSON object" }, 400);
     }
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      return c.json({ error: "Invalid context parameter: must be a JSON object, not an array or primitive" }, 400);
+      return c.json(
+        { error: "Invalid context parameter: must be a JSON object, not an array or primitive" },
+        400,
+      );
     }
     contextFilter = parsed as Record<string, JsonValue>;
   }

@@ -172,7 +172,9 @@ export function registerQueryTools(server: McpServer, deps: McpDeps): void {
           mode: args.mode as ContributionMode | undefined,
           agentId: args.agentId,
           agentName: args.agentName,
-          context: args.context as Record<string, import("../../core/models.js").JsonValue> | undefined,
+          context: args.context as
+            | Record<string, import("../../core/models.js").JsonValue>
+            | undefined,
           limit: args.limit,
         });
 
