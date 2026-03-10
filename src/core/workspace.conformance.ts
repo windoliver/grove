@@ -370,4 +370,31 @@ export function runWorkspaceManagerTests(factory: WorkspaceManagerFactory): void
       ).rejects.toThrow("not found");
     });
   });
+
+  // =========================================================================
+  // Nested artifact paths (spec allows forward slashes)
+  // =========================================================================
+
+  describe("nested artifact paths", () => {
+    test("checkout materializes nested artifacts into subdirectories", async () => {
+      const contribution = await ctx.createContributionWithArtifacts({
+        "src/main.py": new TextEncoder().encode("print('hello')"),
+        "src/models/bert.py": new TextEncoder().encode("class Bert: pass"),
+        "README.md": new TextEncoder().encode("# My Project"),
+      });
+      const agent = makeAgent();
+
+      const info = await ctx.manager.checkout(contribution.cid, { agent });
+
+      // Verify all files materialized in correct subdirectories
+      const mainFile = Bun.file(`${info.workspacePath}/src/main.py`);
+      expect(await mainFile.text()).toBe("print('hello')");
+
+      const bertFile = Bun.file(`${info.workspacePath}/src/models/bert.py`);
+      expect(await bertFile.text()).toBe("class Bert: pass");
+
+      const readmeFile = Bun.file(`${info.workspacePath}/README.md`);
+      expect(await readmeFile.text()).toBe("# My Project");
+    });
+  });
 }

@@ -251,6 +251,55 @@ describe("LocalWorkspaceManager implementation", () => {
     }
   });
 
+  test("rejects malicious content hash with path traversal", async () => {
+    const dir = join(tmpdir(), `grove-workspace-hash-attack-${Date.now()}`);
+    await mkdir(dir, { recursive: true });
+
+    const dbPath = join(dir, "test.db");
+    const casRoot = join(dir, "cas");
+    const groveRoot = join(dir, "grove");
+
+    await mkdir(casRoot, { recursive: true });
+    await mkdir(groveRoot, { recursive: true });
+
+    const db = initSqliteDb(dbPath);
+    const contributionStore = new SqliteContributionStore(db);
+    const cas = new FsCas(casRoot);
+
+    const manager = new LocalWorkspaceManager({
+      groveRoot,
+      db,
+      contributionStore,
+      cas,
+    });
+
+    try {
+      // Directly insert a contribution with a malicious content hash
+      // that attempts path traversal via the CAS blob path
+      const maliciousHash = "blake3:aa/../../../etc/passwd";
+      const input: ContributionInput = {
+        kind: ContributionKind.Work,
+        mode: ContributionMode.Evaluation,
+        summary: "Malicious hash test",
+        artifacts: { "payload.txt": maliciousHash },
+        relations: [],
+        tags: [],
+        agent: makeAgent(),
+        createdAt: new Date().toISOString(),
+      };
+      const contribution = createContribution(input);
+      await contributionStore.put(contribution);
+
+      // Checkout should reject the malicious hash format
+      await expect(manager.checkout(contribution.cid, { agent: makeAgent() })).rejects.toThrow(
+        "Invalid content hash format",
+      );
+    } finally {
+      db.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("hooks integration — after_checkout runs", async () => {
     const dir = join(tmpdir(), `grove-workspace-hooks-${Date.now()}`);
     await mkdir(dir, { recursive: true });

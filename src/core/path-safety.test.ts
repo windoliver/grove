@@ -201,7 +201,7 @@ describe("assertWithinBoundary", () => {
 // ---------------------------------------------------------------------------
 
 describe("validateArtifactName", () => {
-  // Valid names
+  // Valid names (per spec: [a-zA-Z0-9][a-zA-Z0-9._/ -]*)
   test("accepts simple alphanumeric name", () => {
     expect(validateArtifactName("report.json")).toBe("report.json");
   });
@@ -214,13 +214,46 @@ describe("validateArtifactName", () => {
     expect(validateArtifactName("a")).toBe("a");
   });
 
-  // Vector 4: URL-encoded traversal
-  test("rejects URL-encoded ../ (%2e%2e%2f)", () => {
-    // The string "%2e%2e%2f" contains a / when decoded, but we check the raw string
-    expect(() => validateArtifactName("%2e%2e/foo")).toThrow(ArtifactNameError);
+  // Spec explicitly allows forward slashes for relative paths
+  test("accepts nested path with forward slashes (spec-valid)", () => {
+    expect(validateArtifactName("src/main.py")).toBe("src/main.py");
   });
 
-  // Vector 5: Null byte injection
+  test("accepts deeply nested path", () => {
+    expect(validateArtifactName("src/models/bert.py")).toBe("src/models/bert.py");
+  });
+
+  test("accepts name with spaces (spec-valid)", () => {
+    expect(validateArtifactName("my report v2.pdf")).toBe("my report v2.pdf");
+  });
+
+  // Traversal attacks
+  test("rejects .. path component in middle", () => {
+    expect(() => validateArtifactName("src/../secret.txt")).toThrow(ArtifactNameError);
+  });
+
+  test("rejects .. at end of path", () => {
+    expect(() => validateArtifactName("models/..")).toThrow(ArtifactNameError);
+  });
+
+  test("rejects deeply nested traversal", () => {
+    expect(() => validateArtifactName("a/../../etc/passwd")).toThrow(ArtifactNameError);
+  });
+
+  // Must start with alphanumeric
+  test("rejects name starting with dot", () => {
+    expect(() => validateArtifactName(".gitignore")).toThrow(ArtifactNameError);
+  });
+
+  test("rejects name starting with slash", () => {
+    expect(() => validateArtifactName("/etc/passwd")).toThrow(ArtifactNameError);
+  });
+
+  test("rejects name starting with space", () => {
+    expect(() => validateArtifactName(" file.txt")).toThrow(ArtifactNameError);
+  });
+
+  // Null byte injection
   test("rejects null byte in name", () => {
     expect(() => validateArtifactName("file\x00.txt")).toThrow(ArtifactNameError);
   });
@@ -229,22 +262,13 @@ describe("validateArtifactName", () => {
     expect(() => validateArtifactName("file.txt\x00")).toThrow(ArtifactNameError);
   });
 
-  // Vector 6: Windows-style separators
+  // Windows-style separators
   test("rejects backslash separator", () => {
     expect(() => validateArtifactName("dir\\file.txt")).toThrow(ArtifactNameError);
   });
 
-  // Vector 7: Unicode homoglyphs
-  test("rejects forward slash in name", () => {
-    expect(() => validateArtifactName("sub/dir")).toThrow(ArtifactNameError);
-  });
-
-  // Vector 8: Trailing dots/spaces
-  // (These are handled by the OS filesystem, but we validate at input)
-
-  // Vector 9: Special characters
+  // Reserved characters (not in spec allowed set)
   test("rejects colon in name", () => {
-    // Colons are problematic on Windows
     expect(() => validateArtifactName("file:name")).toThrow(ArtifactNameError);
   });
 
@@ -252,7 +276,7 @@ describe("validateArtifactName", () => {
     expect(() => validateArtifactName("file|name")).toThrow(ArtifactNameError);
   });
 
-  // Vector 10: Empty/whitespace
+  // Empty/whitespace
   test("rejects empty name", () => {
     expect(() => validateArtifactName("")).toThrow(ArtifactNameError);
   });
@@ -261,16 +285,15 @@ describe("validateArtifactName", () => {
     expect(() => validateArtifactName("   ")).toThrow(ArtifactNameError);
   });
 
-  test("rejects single dot", () => {
-    expect(() => validateArtifactName(".")).toThrow(ArtifactNameError);
+  // Trailing slash (directory, not file)
+  test("rejects trailing slash", () => {
+    expect(() => validateArtifactName("src/")).toThrow(ArtifactNameError);
   });
 
-  test("rejects double dot", () => {
-    expect(() => validateArtifactName("..")).toThrow(ArtifactNameError);
-  });
-
-  test("rejects path with forward slash", () => {
-    expect(() => validateArtifactName("../etc/passwd")).toThrow(ArtifactNameError);
+  // Length limit
+  test("rejects name exceeding 256 characters", () => {
+    const longName = "a".repeat(257);
+    expect(() => validateArtifactName(longName)).toThrow(ArtifactNameError);
   });
 });
 

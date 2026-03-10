@@ -11,7 +11,7 @@
  */
 
 import { realpath } from "node:fs/promises";
-import { isAbsolute, normalize, resolve } from "node:path";
+import { dirname, isAbsolute, normalize, resolve, sep } from "node:path";
 
 /** Characters allowed in sanitized artifact names: [A-Za-z0-9._-] */
 const SAFE_NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
@@ -48,10 +48,10 @@ async function safeRealpath(targetPath: string): Promise<string> {
  */
 async function resolveFromExistingAncestor(targetPath: string): Promise<string> {
   const normalized = normalize(targetPath);
-  const segments = normalized.split("/").filter(Boolean);
+  const segments = normalized.split(sep).filter(Boolean);
 
   // Walk from root, adding segments until we find the longest existing prefix
-  let existingPrefix = "/";
+  let existingPrefix = sep === "\\" ? normalized.slice(0, 3) : "/"; // Drive letter on Windows
   let remainingStart = 0;
 
   for (let i = 0; i < segments.length; i++) {
@@ -98,8 +98,11 @@ export async function assertWithinBoundary(
   const resolvedTarget = await safeRealpath(absoluteTarget);
 
   // Containment check: resolved path must start with boundary + separator
-  // (or equal the boundary exactly)
-  if (resolvedTarget !== resolvedBoundary && !resolvedTarget.startsWith(`${resolvedBoundary}/`)) {
+  // (or equal the boundary exactly). Uses path.sep for cross-platform safety.
+  if (
+    resolvedTarget !== resolvedBoundary &&
+    !resolvedTarget.startsWith(`${resolvedBoundary}${sep}`)
+  ) {
     throw new PathContainmentError(targetPath, resolvedBoundary, resolvedTarget);
   }
 
@@ -107,22 +110,26 @@ export async function assertWithinBoundary(
 }
 
 /**
- * Validate and sanitize an artifact name for use as a filename.
+ * Validate an artifact name/path for safe filesystem use.
  *
- * Rejects names that could cause path traversal or filesystem issues:
- * - Path separators (/ or \)
- * - Parent directory references (..)
- * - Absolute paths
- * - Null bytes
- * - Empty or whitespace-only names
- * - Names that are just "." or ".."
+ * Per the Grove spec (PROTOCOL.md §Artifact Name Constraints):
+ * - Keys must start with an alphanumeric character
+ * - Contain only `a-zA-Z0-9._/ -` (forward slashes allowed for relative paths)
+ * - Be 1-256 characters long
+ * - MUST NOT contain `..` path components
+ *
+ * Backslashes, colons, null bytes, and other reserved characters are rejected.
  *
  * @returns The validated name (unchanged — this is a gate, not a transform).
- * @throws Error if the name is invalid.
+ * @throws ArtifactNameError if the name is invalid.
  */
 export function validateArtifactName(name: string): string {
   if (name.length === 0) {
     throw new ArtifactNameError(name, "artifact name must not be empty");
+  }
+
+  if (name.length > 256) {
+    throw new ArtifactNameError(name, "artifact name must not exceed 256 characters");
   }
 
   if (name.trim().length === 0) {
@@ -134,27 +141,54 @@ export function validateArtifactName(name: string): string {
     throw new ArtifactNameError(name, "artifact name must not contain null bytes");
   }
 
-  // Reject characters that are problematic on various filesystems:
-  // / \ : * ? " < > | (Windows reserved + Unix path separators)
-  const UNSAFE_CHARS = /[/\\:*?"<>|]/;
-  if (UNSAFE_CHARS.test(name)) {
-    throw new ArtifactNameError(
-      name,
-      'artifact name must not contain path separators or reserved characters (/ \\ : * ? " < > |)',
-    );
+  // Must start with alphanumeric (per spec pattern)
+  if (!/^[a-zA-Z0-9]/.test(name)) {
+    throw new ArtifactNameError(name, "artifact name must start with an alphanumeric character");
   }
 
-  // Parent directory reference
-  if (name === ".." || name === ".") {
-    throw new ArtifactNameError(name, "artifact name must not be a relative directory reference");
+  // Only allow spec-permitted characters: a-zA-Z0-9._/ - (space)
+  // Reject backslashes, colons, and other reserved characters
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._/ -]*$/.test(name)) {
+    throw new ArtifactNameError(name, "artifact name may only contain a-zA-Z0-9._/ - (per spec)");
   }
 
-  // Absolute path injection (unlikely after separator check, but defense in depth)
+  // Reject `..` path components (path traversal)
+  if (TRAVERSAL_COMPONENT.test(name)) {
+    throw new ArtifactNameError(name, "artifact name must not contain '..' path components");
+  }
+
+  // Absolute path injection
   if (isAbsolute(name)) {
     throw new ArtifactNameError(name, "artifact name must not be an absolute path");
   }
 
+  // Reject trailing slash (indicates directory, not file)
+  if (name.endsWith("/")) {
+    throw new ArtifactNameError(name, "artifact name must not end with a slash");
+  }
+
   return name;
+}
+
+/**
+ * Ensure parent directories exist for a nested artifact path.
+ *
+ * For artifact names like `src/models/bert.py`, creates the `src/models/`
+ * directory under the workspace root.
+ *
+ * @param artifactName - Validated artifact name (may contain forward slashes).
+ * @param workspaceRoot - The workspace root directory.
+ */
+export async function ensureArtifactParentDir(
+  artifactName: string,
+  workspaceRoot: string,
+): Promise<void> {
+  const artifactPath = resolve(workspaceRoot, artifactName);
+  const parentDir = dirname(artifactPath);
+  if (parentDir !== workspaceRoot) {
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(parentDir, { recursive: true });
+  }
 }
 
 /**

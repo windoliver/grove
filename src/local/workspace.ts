@@ -22,6 +22,7 @@ import type { HookEntry, HookRunner, HooksConfig } from "../core/hooks.js";
 import type { AgentIdentity, JsonValue } from "../core/models.js";
 import {
   assertWithinBoundary,
+  ensureArtifactParentDir,
   sanitizeCidForPath,
   validateArtifactName,
 } from "../core/path-safety.js";
@@ -152,6 +153,9 @@ export class LocalWorkspaceManager implements WorkspaceManager {
         // Verify the destination stays within the temp directory
         await assertWithinBoundary(destPath, tmpDir);
 
+        // Create parent directories for nested artifact paths (e.g., src/main.py)
+        await ensureArtifactParentDir(name, tmpDir);
+
         // Copy from CAS using FICLONE (CoW when filesystem supports it)
         const found = await this.casGetToFile(contentHash, destPath);
         if (!found) {
@@ -269,6 +273,10 @@ export class LocalWorkspaceManager implements WorkspaceManager {
       );
     }
 
+    // Re-validate workspace path is under our workspace root before rm()
+    // to protect against corrupted/tampered SQLite rows pointing outside Grove
+    await assertWithinBoundary(workspace.workspacePath, this.workspacesRoot);
+
     // Remove the directory
     try {
       await rm(workspace.workspacePath, { recursive: true, force: true });
@@ -354,10 +362,18 @@ export class LocalWorkspaceManager implements WorkspaceManager {
   /**
    * Copy an artifact from CAS to a destination path using FICLONE
    * (copy-on-write when filesystem supports it).
+   *
+   * Validates the content hash format before constructing the CAS path
+   * to prevent path traversal via crafted hashes (e.g., "blake3:aa/../../../secret").
    */
   private async casGetToFile(contentHash: string, destPath: string): Promise<boolean> {
-    // Resolve the CAS blob path
-    const hex = contentHash.replace("blake3:", "");
+    // Validate content hash format to prevent path traversal
+    if (!/^blake3:[a-f0-9]{64}$/.test(contentHash)) {
+      throw new Error(`Invalid content hash format: '${contentHash}' — expected blake3:<64-hex>`);
+    }
+
+    // Safe: hex is guaranteed to be exactly 64 lowercase hex chars
+    const hex = contentHash.slice("blake3:".length);
     const blobPath = join(this.cas.rootPath, hex.slice(0, 2), hex.slice(2, 4), hex);
 
     try {

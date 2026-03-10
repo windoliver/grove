@@ -49,6 +49,7 @@ export {
   ArtifactNameError,
   assertWithinBoundary,
   containsTraversal,
+  ensureArtifactParentDir,
   PathContainmentError,
   sanitizeCidForPath,
   validateArtifactName,
