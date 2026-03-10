@@ -232,6 +232,18 @@ const RetrySchema = z
   })
   .strict();
 
+const GossipSchema = z
+  .object({
+    interval_seconds: z.number().int().min(5).max(3600).optional(),
+    fan_out: z.number().int().min(1).max(20).optional(),
+    partial_view_size: z.number().int().min(2).max(100).optional(),
+    shuffle_length: z.number().int().min(1).max(50).optional(),
+    suspicion_timeout_seconds: z.number().int().min(10).max(3600).optional(),
+    failure_timeout_seconds: z.number().int().min(30).max(7200).optional(),
+    digest_limit: z.number().int().min(1).max(50).optional(),
+  })
+  .strict();
+
 const GroveContractV2Schema = z
   .object({
     contract_version: z.literal(2),
@@ -247,6 +259,7 @@ const GroveContractV2Schema = z
     execution: ExecutionSchema.optional(),
     rate_limits: RateLimitsSchema.optional(),
     retry: RetrySchema.optional(),
+    gossip: GossipSchema.optional(),
   })
   .strict();
 
@@ -364,6 +377,17 @@ export interface RetryConfig {
   readonly maxAttempts?: number | undefined;
 }
 
+/** Gossip protocol configuration from GROVE.md contract. */
+export interface GossipContractConfig {
+  readonly intervalSeconds?: number | undefined;
+  readonly fanOut?: number | undefined;
+  readonly partialViewSize?: number | undefined;
+  readonly shuffleLength?: number | undefined;
+  readonly suspicionTimeoutSeconds?: number | undefined;
+  readonly failureTimeoutSeconds?: number | undefined;
+  readonly digestLimit?: number | undefined;
+}
+
 /** Parsed GROVE.md contract (always in V2 normalized form). */
 export interface GroveContract {
   readonly contractVersion: number;
@@ -381,6 +405,7 @@ export interface GroveContract {
   readonly execution?: ExecutionConfig | undefined;
   readonly rateLimits?: RateLimitsConfig | undefined;
   readonly retry?: RetryConfig | undefined;
+  readonly gossip?: GossipContractConfig | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -440,6 +465,9 @@ function wireV2ToContract(wire: z.infer<typeof GroveContractV2Schema>): GroveCon
     }),
     ...(wire.retry !== undefined && {
       retry: wireToRetry(wire.retry),
+    }),
+    ...(wire.gossip !== undefined && {
+      gossip: wireToGossip(wire.gossip),
     }),
   };
 }
@@ -611,6 +639,24 @@ function wireToRetry(
   };
 }
 
+function wireToGossip(
+  wire: NonNullable<z.infer<typeof GroveContractV2Schema>["gossip"]>,
+): GossipContractConfig {
+  return {
+    ...(wire.interval_seconds !== undefined && { intervalSeconds: wire.interval_seconds }),
+    ...(wire.fan_out !== undefined && { fanOut: wire.fan_out }),
+    ...(wire.partial_view_size !== undefined && { partialViewSize: wire.partial_view_size }),
+    ...(wire.shuffle_length !== undefined && { shuffleLength: wire.shuffle_length }),
+    ...(wire.suspicion_timeout_seconds !== undefined && {
+      suspicionTimeoutSeconds: wire.suspicion_timeout_seconds,
+    }),
+    ...(wire.failure_timeout_seconds !== undefined && {
+      failureTimeoutSeconds: wire.failure_timeout_seconds,
+    }),
+    ...(wire.digest_limit !== undefined && { digestLimit: wire.digest_limit }),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Cross-field validation
 // ---------------------------------------------------------------------------
@@ -703,6 +749,35 @@ function validateRateLimitConstraints(contract: GroveContract): void {
   }
 }
 
+/**
+ * Validate cross-field constraints within gossip config.
+ * E.g., suspicion_timeout < failure_timeout.
+ */
+function validateGossipConstraints(contract: GroveContract): void {
+  const g = contract.gossip;
+  if (g === undefined) return;
+
+  if (
+    g.suspicionTimeoutSeconds !== undefined &&
+    g.failureTimeoutSeconds !== undefined &&
+    g.suspicionTimeoutSeconds >= g.failureTimeoutSeconds
+  ) {
+    throw new Error(
+      `Invalid contract: gossip.suspicion_timeout_seconds (${g.suspicionTimeoutSeconds}) must be less than failure_timeout_seconds (${g.failureTimeoutSeconds})`,
+    );
+  }
+
+  if (
+    g.shuffleLength !== undefined &&
+    g.partialViewSize !== undefined &&
+    g.shuffleLength > g.partialViewSize
+  ) {
+    throw new Error(
+      `Invalid contract: gossip.shuffle_length (${g.shuffleLength}) exceeds partial_view_size (${g.partialViewSize})`,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Parser
 // ---------------------------------------------------------------------------
@@ -756,6 +831,7 @@ function parseRawObject(raw: unknown): GroveContract {
     validateMetricReferences(contract);
     validateExecutionConstraints(contract);
     validateRateLimitConstraints(contract);
+    validateGossipConstraints(contract);
     return contract;
   }
 

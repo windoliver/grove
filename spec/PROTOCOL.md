@@ -625,3 +625,118 @@ but v1 keeps the design simple.
 The CAS and artifact schema make no assumption that artifacts are
 source code. The same storage and addressing scheme handles code,
 data, logs, models, images, and any other binary content.
+
+---
+
+## Gossip Protocol (Server Federation)
+
+Grove servers federate via a gossip protocol that combines **CYCLON
+peer sampling** with **push-pull frontier exchange** and **liveness
+tracking**. This enables decentralized peer discovery and frontier
+propagation across multiple grove-server instances.
+
+### Design Goals
+
+- **Decentralized discovery**: No central registry — peers discover
+  each other via randomized shuffles.
+- **Frontier convergence**: All servers converge on the same frontier
+  view in O(log N) gossip rounds.
+- **Failure detection**: Unresponsive peers are detected and their
+  claims expired via the existing reconciler.
+- **Bounded overhead**: ~2-5 KB per gossip message (compact frontier
+  digests), not full contribution data.
+
+### CYCLON Peer Sampling
+
+Based on Voulgaris et al. (2005), simplified for HTTP transport:
+
+1. **Partial view**: Each server maintains a bounded set of known
+   peers (default 10), each with an age counter.
+2. **Shuffle round**: Each interval (default 30s ± 20% jitter):
+   - Age all entries
+   - Select the oldest peer as the shuffle target
+   - Send a subset of the view (including self with age 0)
+   - Receive the target's subset in return
+   - Merge received entries, replacing sent entries
+3. **Convergence**: The random overlay converges to a uniform random
+   graph in O(log N) rounds, ensuring even sampling.
+
+### Frontier Digest Exchange
+
+After each CYCLON shuffle, the server runs push-pull frontier exchange
+with a random subset of peers (fan-out, default 3):
+
+1. Compute a compact digest of the local frontier: top-K entries per
+   dimension (by-metric, by-adoption, by-recency, by-review-score,
+   by-reproduction).
+2. Send the digest to each fan-out peer.
+3. Receive the peer's digest and merge: keep the best value per
+   (metric, CID) pair.
+4. The merged remote frontier is available via `GET /api/gossip/frontier`.
+
+### Frontier Digest Format
+
+```json
+{
+  "peerId": "server-1",
+  "frontier": [
+    { "metric": "val_bpb", "value": 0.85, "cid": "blake3:abc..." },
+    { "metric": "_adoption", "value": 12, "cid": "blake3:def..." },
+    { "metric": "_recency", "value": 1710000000, "cid": "blake3:ghi..." }
+  ],
+  "load": { "queueDepth": 3 },
+  "capabilities": {},
+  "timestamp": "2025-03-10T00:00:00.000Z"
+}
+```
+
+Built-in dimensions use synthetic metric names prefixed with `_`:
+`_adoption`, `_recency`, `_review_score`, `_reproduction`.
+
+### Liveness Tracking
+
+Gossip rounds double as health checks:
+
+| State | Meaning | Transition |
+|-------|---------|------------|
+| `alive` | Peer responding normally | Initial state; restored on any successful exchange |
+| `suspected` | No response within suspicion timeout (default 90s) | `alive → suspected` after 3× gossip interval silence |
+| `failed` | No response within failure timeout (default 150s) | `suspected → failed` after prolonged silence |
+
+When a peer transitions to `failed`:
+- It is removed from the partial view
+- The reconciler expires any claims held by that peer
+- A `PeerFailed` event is emitted for listeners
+
+Recovery: if a failed peer later responds (e.g., after restart),
+it transitions back to `alive` and a `PeerRecovered` event is emitted.
+
+### Bootstrap
+
+Servers discover initial peers via seed configuration:
+
+```bash
+GOSSIP_SEEDS=peer1@http://host1:4515,peer2@http://host2:4515
+```
+
+Seeds are added to the initial partial view. After the first few
+shuffle rounds, the overlay self-organizes and seeds are no longer
+special.
+
+### HTTP Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/gossip/exchange` | Push-pull frontier exchange |
+| POST | `/api/gossip/shuffle` | CYCLON peer sampling shuffle |
+| GET | `/api/gossip/peers` | List known peers with age |
+| GET | `/api/gossip/frontier` | Merged frontier from all peers |
+
+All endpoints return 501 when gossip is not configured.
+
+### Security Considerations
+
+In v1, gossip endpoints are unauthenticated. Deployments SHOULD
+restrict access via network policies (VPN, firewall rules, or
+reverse proxy auth). Future versions may add mutual TLS or signed
+messages for peer authentication.

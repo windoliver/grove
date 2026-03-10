@@ -7,6 +7,17 @@ export {
 } from "./backoff.js";
 export type { ContentStore, PutOptions } from "./cas.js";
 export { validateMediaType } from "./cas.js";
+export {
+  DEFAULT_FAILURE_TIMEOUT_MS,
+  DEFAULT_FRONTIER_CACHE_TTL_MS,
+  DEFAULT_FRONTIER_DIGEST_LIMIT,
+  DEFAULT_GOSSIP_FAN_OUT,
+  DEFAULT_GOSSIP_INTERVAL_MS,
+  DEFAULT_GOSSIP_JITTER,
+  DEFAULT_PARTIAL_VIEW_SIZE,
+  DEFAULT_SHUFFLE_LENGTH,
+  DEFAULT_SUSPICION_TIMEOUT_MS,
+} from "./constants.js";
 export type {
   AgentConstraints,
   Budget,
@@ -16,6 +27,7 @@ export type {
   ExecutionConfig,
   Gate,
   GateType,
+  GossipContractConfig,
   GroveContract,
   MetricDefinition,
   QuorumReviewScore,

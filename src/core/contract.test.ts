@@ -556,3 +556,105 @@ describe("example GROVE.md files", () => {
     expect(contract.agentConstraints?.allowedKinds).toEqual(["work", "review", "reproduction"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Gossip contract config
+// ---------------------------------------------------------------------------
+
+describe("gossip contract config", () => {
+  test("parses V2 contract with gossip section", () => {
+    const contract = parseGroveContractObject({
+      contract_version: 2,
+      name: "gossip-grove",
+      gossip: {
+        interval_seconds: 60,
+        fan_out: 5,
+        partial_view_size: 20,
+        shuffle_length: 8,
+        suspicion_timeout_seconds: 120,
+        failure_timeout_seconds: 300,
+        digest_limit: 10,
+      },
+    });
+
+    expect(contract.gossip).toBeDefined();
+    expect(contract.gossip?.intervalSeconds).toBe(60);
+    expect(contract.gossip?.fanOut).toBe(5);
+    expect(contract.gossip?.partialViewSize).toBe(20);
+    expect(contract.gossip?.shuffleLength).toBe(8);
+    expect(contract.gossip?.suspicionTimeoutSeconds).toBe(120);
+    expect(contract.gossip?.failureTimeoutSeconds).toBe(300);
+    expect(contract.gossip?.digestLimit).toBe(10);
+  });
+
+  test("gossip section is optional", () => {
+    const contract = parseGroveContractObject({
+      contract_version: 2,
+      name: "no-gossip",
+    });
+
+    expect(contract.gossip).toBeUndefined();
+  });
+
+  test("rejects suspicion_timeout >= failure_timeout", () => {
+    expect(() =>
+      parseGroveContractObject({
+        contract_version: 2,
+        name: "bad-gossip",
+        gossip: {
+          suspicion_timeout_seconds: 200,
+          failure_timeout_seconds: 100,
+        },
+      }),
+    ).toThrow("suspicion_timeout_seconds");
+  });
+
+  test("rejects shuffle_length > partial_view_size", () => {
+    expect(() =>
+      parseGroveContractObject({
+        contract_version: 2,
+        name: "bad-gossip",
+        gossip: {
+          shuffle_length: 15,
+          partial_view_size: 10,
+        },
+      }),
+    ).toThrow("shuffle_length");
+  });
+
+  test("rejects unknown gossip fields", () => {
+    expect(() =>
+      parseGroveContractObject({
+        contract_version: 2,
+        name: "bad-gossip",
+        gossip: {
+          unknown_field: 42,
+        },
+      }),
+    ).toThrow();
+  });
+
+  test("gossip not available in V1 contracts", () => {
+    expect(() =>
+      parseGroveContractObject({
+        contract_version: 1,
+        name: "v1-gossip",
+        gossip: { interval_seconds: 30 },
+      }),
+    ).toThrow();
+  });
+
+  test("parses partial gossip config", () => {
+    const contract = parseGroveContractObject({
+      contract_version: 2,
+      name: "partial-gossip",
+      gossip: {
+        interval_seconds: 45,
+      },
+    });
+
+    expect(contract.gossip?.intervalSeconds).toBe(45);
+    expect(contract.gossip?.fanOut).toBeUndefined();
+    expect(contract.gossip?.partialViewSize).toBeUndefined();
+  });
+});

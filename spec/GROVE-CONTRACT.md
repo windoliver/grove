@@ -498,6 +498,49 @@ See `spec/examples/` for complete GROVE.md examples:
 
 ---
 
+## Gossip Settings (V2)
+
+The `gossip` section configures server-to-server gossip protocol
+parameters. These settings only apply when gossip is enabled on the
+grove-server (via `GOSSIP_SEEDS` environment variable).
+
+```yaml
+gossip:
+  interval_seconds: 30
+  fan_out: 3
+  partial_view_size: 10
+  shuffle_length: 5
+  suspicion_timeout_seconds: 90
+  failure_timeout_seconds: 150
+  digest_limit: 5
+```
+
+### Fields
+
+| Field | Range | Default | Description |
+|-------|-------|---------|-------------|
+| `interval_seconds` | 5-3600 | 30 | Base gossip round interval |
+| `fan_out` | 1-20 | 3 | Peers contacted per frontier exchange round |
+| `partial_view_size` | 2-100 | 10 | Maximum entries in CYCLON partial view |
+| `shuffle_length` | 1-50 | 5 | Entries exchanged per CYCLON shuffle |
+| `suspicion_timeout_seconds` | 10-3600 | 90 | Silence before suspecting a peer |
+| `failure_timeout_seconds` | 30-7200 | 150 | Silence before declaring a peer failed |
+| `digest_limit` | 1-50 | 5 | Top-K entries per frontier dimension in digest |
+
+### Cross-field Constraints
+
+- `suspicion_timeout_seconds` < `failure_timeout_seconds` (when both
+  specified)
+- `shuffle_length` ≤ `partial_view_size` (when both specified)
+
+### Interaction with Environment Variables
+
+`GOSSIP_SEEDS` (env var) provides the initial peer list. The gossip
+section in GROVE.md configures protocol parameters. If both are
+present, GROVE.md settings override the compiled defaults.
+
+---
+
 ## Wire Format
 
 The canonical wire format for the frontmatter uses **snake_case**

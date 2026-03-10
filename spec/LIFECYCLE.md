@@ -203,3 +203,52 @@ The `grove status` command (future CLI, issue #13) should display:
 
 This information is computed on-demand from the store and contract —
 no persistent status tracking is needed.
+
+---
+
+## Gossip-Based Failure Detection
+
+When gossip is enabled, grove-server uses gossip rounds as an
+additional failure detection signal beyond lease-based expiry.
+
+### Peer Liveness States
+
+| State | Meaning |
+|-------|---------|
+| `alive` | Peer responding to gossip exchanges |
+| `suspected` | No response within suspicion timeout (default 90s = 3× gossip interval) |
+| `failed` | No response within failure timeout (default 150s = 5× gossip interval) |
+
+### Integration with Reconciler
+
+When a peer transitions to `failed`:
+
+1. The peer is removed from the CYCLON partial view.
+2. The reconciler expires any active claims held by agents on
+   that server (if claim-to-server mapping is available).
+3. A `PeerFailed` event is emitted for listeners.
+
+This is complementary to lease-based expiry — gossip detects server
+failures faster than waiting for individual claim leases to expire,
+especially when agents hold long-duration leases.
+
+### Recovery
+
+If a previously failed peer responds (e.g., after restart or
+network partition heals):
+
+1. The peer transitions back to `alive`.
+2. A `PeerRecovered` event is emitted.
+3. The peer is re-added to the partial view via the next shuffle.
+
+Recovery is automatic — no manual intervention is required.
+
+### Event Types
+
+| Event | Trigger |
+|-------|---------|
+| `PeerJoined` | New peer discovered via shuffle response |
+| `PeerSuspected` | Peer unresponsive beyond suspicion timeout |
+| `PeerFailed` | Peer unresponsive beyond failure timeout |
+| `PeerRecovered` | Previously suspected/failed peer responds |
+| `FrontierUpdated` | Remote frontier entries merged |

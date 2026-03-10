@@ -34,7 +34,14 @@ src/
 │   ├── models.ts    # Contribution, Relation, Artifact, Claim
 │   ├── store.ts     # ContributionStore, ClaimStore protocols
 │   ├── cas.ts       # ContentStore protocol
-│   └── frontier.ts  # Frontier calculator
+│   ├── frontier.ts  # Frontier calculator
+│   ├── constants.ts # Shared defaults (lease, gossip)
+│   └── gossip/      # Gossip protocol types and errors
+├── gossip/       # Gossip implementation (CYCLON, transport, protocol)
+│   ├── cyclon.ts    # CYCLON peer sampling
+│   ├── protocol.ts  # DefaultGossipService orchestrator
+│   ├── http-transport.ts  # HTTP-based GossipTransport
+│   └── cached-frontier.ts # TTL-cached frontier calculator
 ├── local/        # Local standalone adapter (SQLite + filesystem)
 │   ├── sqlite-store.ts
 │   └── fs-cas.ts
@@ -63,3 +70,46 @@ src/
 - **Claim**: Mutable coordination object (lease-based)
 - **Frontier**: Multi-signal ranking (by metric, adoption, recency, review)
 - **Adopt ≠ Merge**: Adoption marks something as valuable without merging
+- **Gossip**: Server-to-server protocol for peer discovery and frontier propagation
+
+## Gossip Protocol (Server Federation)
+
+Grove servers can federate via a gossip protocol. This is a **server-side
+feature** — agents interact with their local grove-server as usual; gossip
+happens transparently between servers.
+
+### What gossip does
+
+- **Peer discovery**: CYCLON peer sampling maintains a partial view of the
+  network. Each round, the oldest peer is selected for a shuffle exchange.
+- **Frontier propagation**: Push-pull anti-entropy exchanges compact frontier
+  digests (~2-5 KB) so servers converge on a shared view of the best work.
+- **Failure detection**: Liveness tracking (Alive → Suspected → Failed) feeds
+  into the reconciler to expire claims held by failed peers.
+
+### Configuration
+
+Set `GOSSIP_SEEDS` env var on the server to enable federation:
+
+```bash
+GOSSIP_SEEDS=peer-id1@http://server1:4515,peer-id2@http://server2:4515
+```
+
+Gossip parameters can also be configured in GROVE.md (V2 contracts):
+
+```yaml
+gossip:
+  interval_seconds: 30
+  fan_out: 3
+  partial_view_size: 10
+  suspicion_timeout_seconds: 90
+  failure_timeout_seconds: 150
+```
+
+### API endpoints
+
+- `POST /api/gossip/exchange` — Push-pull frontier exchange
+- `POST /api/gossip/shuffle` — CYCLON peer sampling shuffle
+- `GET /api/gossip/peers` — List known peers
+- `GET /api/gossip/frontier` — Merged frontier from gossip
+- `GET /api/grove` — Includes gossip status in metadata

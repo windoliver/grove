@@ -12,7 +12,7 @@ const grove: HonoType<ServerEnv> = new Hono<ServerEnv>();
 
 /** GET /api/grove — Grove instance metadata. */
 grove.get("/", async (c) => {
-  const { contributionStore, claimStore } = c.get("deps");
+  const { contributionStore, claimStore, gossip: gossipService } = c.get("deps");
 
   const contributionCount = await contributionStore.count();
   const activeClaims = await claimStore.activeClaims();
@@ -26,6 +26,17 @@ grove.get("/", async (c) => {
       contributions: contributionCount,
       activeClaims: activeClaims.length,
     },
+    gossip: gossipService
+      ? {
+          enabled: true,
+          peers: gossipService.peers().length,
+          liveness: gossipService.liveness().map((l) => ({
+            peerId: l.peer.peerId,
+            status: l.status,
+            lastSeen: l.lastSeen,
+          })),
+        }
+      : { enabled: false },
   });
 });
 

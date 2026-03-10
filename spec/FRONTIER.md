@@ -53,3 +53,51 @@ Frontier queries support the following filters (AND semantics):
 
 When two entries have equal value in any dimension, they are ordered by
 CID lexicographically. This ensures deterministic, stable ordering.
+
+---
+
+## Frontier Digest and Gossip Propagation
+
+When gossip is enabled, servers exchange compact **frontier digests**
+to converge on a shared view of the best work across all federated
+instances.
+
+### Digest Format
+
+A frontier digest contains the top-K entries (default 5) from each
+dimension, encoded as `FrontierDigestEntry` objects:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `metric` | string | Metric name or synthetic dimension (`_adoption`, `_recency`, `_review_score`, `_reproduction`) |
+| `value` | number | The entry's value in this dimension |
+| `cid` | string | Content-derived identifier of the contribution |
+| `tags` | string[] | Optional tags from the contribution (by-metric only) |
+
+### Digest Size
+
+With 5 metrics and 4 built-in dimensions at K=5, a digest contains
+at most 45 entries (~2-5 KB JSON). This is small enough for frequent
+exchange without bandwidth concerns.
+
+### Merge Strategy
+
+When merging a remote digest into the local view:
+
+1. Index existing entries by `(metric, cid)` composite key.
+2. For each remote entry, keep the **higher value** per key.
+3. The merged result is the union of the best values seen across
+   all peers.
+
+This is commutative and idempotent — the same result is produced
+regardless of the order peers are contacted.
+
+### Cached Frontier Computation
+
+Computing a frontier digest is not free (requires scanning
+contributions). To avoid redundant computation during gossip rounds,
+the `CachedFrontierCalculator` decorator caches results with a
+configurable TTL (default 30s, matching the gossip interval).
+
+The cache is invalidated when new contributions are published locally,
+ensuring the digest reflects the latest local state.
