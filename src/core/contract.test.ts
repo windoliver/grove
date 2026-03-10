@@ -297,7 +297,7 @@ gates:
     expect(() => parseGroveContract(content)).toThrow("undefined metric 'typo_metric'");
   });
 
-  test("rejects max_rounds_without_improvement with no metrics defined", () => {
+  test("accepts max_rounds_without_improvement with no metrics (evaluates as not-met at runtime)", () => {
     const content = `---
 contract_version: 1
 name: test
@@ -305,7 +305,8 @@ stop_conditions:
   max_rounds_without_improvement: 5
 ---
 `;
-    expect(() => parseGroveContract(content)).toThrow("requires at least one metric");
+    const contract = parseGroveContract(content);
+    expect(contract.stopConditions?.maxRoundsWithoutImprovement).toBe(5);
   });
 });
 

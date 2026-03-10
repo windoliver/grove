@@ -427,13 +427,6 @@ function validateMetricReferences(contract: GroveContract): void {
     }
   }
 
-  if (
-    contract.stopConditions?.maxRoundsWithoutImprovement !== undefined &&
-    metricNames.size === 0
-  ) {
-    errors.push("stop_conditions.max_rounds_without_improvement requires at least one metric");
-  }
-
   if (errors.length > 0) {
     throw new Error(`Invalid contract: ${errors.join("; ")}`);
   }
