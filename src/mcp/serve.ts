@@ -18,11 +18,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { findGroveDir } from "../cli/context.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
 import { FsCas } from "../local/fs-cas.js";
-import {
-  SqliteClaimStore,
-  SqliteContributionStore,
-  initSqliteDb,
-} from "../local/sqlite-store.js";
+import { initSqliteDb, SqliteClaimStore, SqliteContributionStore } from "../local/sqlite-store.js";
 import { LocalWorkspaceManager } from "../local/workspace.js";
 import type { McpDeps } from "./deps.js";
 import { createMcpServer } from "./server.js";
@@ -38,9 +34,7 @@ let close: () => void;
 try {
   const groveDir = groveOverride ?? findGroveDir(cwd);
   if (groveDir === undefined) {
-    throw new Error(
-      "Not inside a grove. Run 'grove init' to create one, or set GROVE_DIR.",
-    );
+    throw new Error("Not inside a grove. Run 'grove init' to create one, or set GROVE_DIR.");
   }
 
   const dbPath = join(groveDir, "grove.db");

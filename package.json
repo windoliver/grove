@@ -30,7 +30,8 @@
   "bin": {
     "grove": "./dist/cli/main.js",
     "grove-server": "./dist/server/serve.js",
-    "grove-mcp": "./dist/mcp/serve.js"
+    "grove-mcp": "./dist/mcp/serve.js",
+    "grove-mcp-http": "./dist/mcp/serve-http.js"
   },
   "scripts": {
     "build": "tsup",

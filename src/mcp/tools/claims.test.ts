@@ -1,11 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { makeClaim } from "../../core/test-helpers.js";
 import type { McpDeps } from "../deps.js";
 import { McpErrorCode } from "../error-handler.js";
-import { createTestMcpDeps } from "../test-helpers.js";
 import type { TestMcpDeps } from "../test-helpers.js";
+import { createTestMcpDeps } from "../test-helpers.js";
 import { registerClaimTools } from "./claims.js";
 
 /** Helper to call a tool handler directly. */
@@ -14,10 +13,17 @@ async function callTool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<{ isError: boolean | undefined; text: string }> {
-  const registeredTools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<unknown> }> })._registeredTools;
+  const registeredTools = (
+    server as unknown as {
+      _registeredTools: Record<string, { handler: (args: unknown) => Promise<unknown> }>;
+    }
+  )._registeredTools;
   const tool = registeredTools[name];
   if (!tool) throw new Error(`Tool ${name} not registered`);
-  const result = await tool.handler(args) as { isError?: boolean; content: Array<{ type: string; text: string }> };
+  const result = (await tool.handler(args)) as {
+    isError?: boolean;
+    content: Array<{ type: string; text: string }>;
+  };
   return {
     isError: result.isError,
     text: result.content[0]?.text ?? "",

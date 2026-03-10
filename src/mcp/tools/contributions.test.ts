@@ -4,8 +4,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { makeContribution } from "../../core/test-helpers.js";
 import type { McpDeps } from "../deps.js";
 import { McpErrorCode } from "../error-handler.js";
-import { createTestMcpDeps, storeTestContent } from "../test-helpers.js";
 import type { TestMcpDeps } from "../test-helpers.js";
+import { createTestMcpDeps, storeTestContent } from "../test-helpers.js";
 import { registerContributionTools } from "./contributions.js";
 
 /** Helper to call a tool handler directly via a test McpServer. */
@@ -15,10 +15,17 @@ async function callTool(
   args: Record<string, unknown>,
 ): Promise<{ isError: boolean | undefined; text: string }> {
   // Access the registered tool's handler via the server's internal state
-  const registeredTools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown) => Promise<unknown> }> })._registeredTools;
+  const registeredTools = (
+    server as unknown as {
+      _registeredTools: Record<string, { handler: (args: unknown) => Promise<unknown> }>;
+    }
+  )._registeredTools;
   const tool = registeredTools[name];
   if (!tool) throw new Error(`Tool ${name} not registered`);
-  const result = await tool.handler(args) as { isError?: boolean; content: Array<{ type: string; text: string }> };
+  const result = (await tool.handler(args)) as {
+    isError?: boolean;
+    content: Array<{ type: string; text: string }>;
+  };
   return {
     isError: result.isError,
     text: result.content[0]?.text ?? "",
@@ -66,7 +73,9 @@ describe("grove_contribute", () => {
       summary: "Bad artifacts",
       tags: [],
       relations: [],
-      artifacts: { "file.txt": "blake3:0000000000000000000000000000000000000000000000000000000000000000" },
+      artifacts: {
+        "file.txt": "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+      },
       agent: { agentId: "agent-1" },
     });
 
@@ -99,7 +108,12 @@ describe("grove_contribute", () => {
       mode: "evaluation",
       summary: "Bad relation",
       tags: [],
-      relations: [{ targetCid: "blake3:0000000000000000000000000000000000000000000000000000000000000000", relationType: "derives_from" }],
+      relations: [
+        {
+          targetCid: "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+          relationType: "derives_from",
+        },
+      ],
       artifacts: {},
       agent: { agentId: "agent-1" },
     });

@@ -11,9 +11,8 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-
-import type { Contribution, ContributionKind, ContributionMode } from "../../core/models.js";
 import type { FrontierEntry } from "../../core/frontier.js";
+import type { Contribution, ContributionKind, ContributionMode } from "../../core/models.js";
 import type { McpDeps } from "../deps.js";
 import { handleToolError, notFoundError } from "../error-handler.js";
 
@@ -78,13 +77,17 @@ const frontierInputSchema = z.object({
     .enum(["work", "review", "discussion", "adoption", "reproduction"])
     .optional()
     .describe("Filter by contribution kind"),
-  mode: z
-    .enum(["evaluation", "exploration"])
-    .optional()
-    .describe("Filter by contribution mode"),
+  mode: z.enum(["evaluation", "exploration"]).optional().describe("Filter by contribution mode"),
   agentId: z.string().optional().describe("Filter by agent ID"),
   agentName: z.string().optional().describe("Filter by agent name"),
-  limit: z.number().int().min(1).max(50).optional().default(5).describe("Max results per signal (default: 5)"),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(50)
+    .optional()
+    .default(5)
+    .describe("Max results per signal (default: 5)"),
 });
 
 const searchInputSchema = z.object({
@@ -93,14 +96,18 @@ const searchInputSchema = z.object({
     .enum(["work", "review", "discussion", "adoption", "reproduction"])
     .optional()
     .describe("Filter by contribution kind"),
-  mode: z
-    .enum(["evaluation", "exploration"])
-    .optional()
-    .describe("Filter by contribution mode"),
+  mode: z.enum(["evaluation", "exploration"]).optional().describe("Filter by contribution mode"),
   tags: z.array(z.string()).optional().describe("Filter by tags"),
   agentId: z.string().optional().describe("Filter by agent ID"),
   agentName: z.string().optional().describe("Filter by agent name"),
-  limit: z.number().int().min(1).max(50).optional().default(10).describe("Max results (default: 10)"),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(50)
+    .optional()
+    .default(10)
+    .describe("Max results (default: 10)"),
   offset: z.number().int().min(0).optional().default(0).describe("Pagination offset"),
 });
 
@@ -109,13 +116,17 @@ const logInputSchema = z.object({
     .enum(["work", "review", "discussion", "adoption", "reproduction"])
     .optional()
     .describe("Filter by contribution kind"),
-  mode: z
-    .enum(["evaluation", "exploration"])
-    .optional()
-    .describe("Filter by contribution mode"),
+  mode: z.enum(["evaluation", "exploration"]).optional().describe("Filter by contribution mode"),
   tags: z.array(z.string()).optional().describe("Filter by tags"),
   agentId: z.string().optional().describe("Filter by agent ID"),
-  limit: z.number().int().min(1).max(50).optional().default(10).describe("Max results (default: 10)"),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(50)
+    .optional()
+    .default(10)
+    .describe("Max results (default: 10)"),
   offset: z.number().int().min(0).optional().default(0).describe("Pagination offset"),
 });
 
@@ -124,7 +135,9 @@ const treeInputSchema = z.object({
   direction: z
     .enum(["children", "ancestors", "both"])
     .default("both")
-    .describe("Which direction to traverse: children (incoming edges), ancestors (outgoing), or both"),
+    .describe(
+      "Which direction to traverse: children (incoming edges), ancestors (outgoing), or both",
+    ),
 });
 
 // ---------------------------------------------------------------------------
@@ -133,154 +146,174 @@ const treeInputSchema = z.object({
 
 export function registerQueryTools(server: McpServer, deps: McpDeps): void {
   // --- grove_frontier -----------------------------------------------------
-  server.registerTool("grove_frontier", {
-    description:
-      "Get the current frontier — the best contributions ranked by multiple signals: " +
-      "metric scores, adoption count, recency, review quality, and reproduction count. " +
-      "Use this to discover the most promising work to build on.",
-    inputSchema: frontierInputSchema,
-  }, async (args) => {
-    try {
-      const { frontier } = deps;
+  server.registerTool(
+    "grove_frontier",
+    {
+      description:
+        "Get the current frontier — the best contributions ranked by multiple signals: " +
+        "metric scores, adoption count, recency, review quality, and reproduction count. " +
+        "Use this to discover the most promising work to build on.",
+      inputSchema: frontierInputSchema,
+    },
+    async (args) => {
+      try {
+        const { frontier } = deps;
 
-      const result = await frontier.compute({
-        metric: args.metric,
-        tags: args.tags,
-        kind: args.kind as ContributionKind | undefined,
-        mode: args.mode as ContributionMode | undefined,
-        agentId: args.agentId,
-        agentName: args.agentName,
-        limit: args.limit,
-      });
+        const result = await frontier.compute({
+          metric: args.metric,
+          tags: args.tags,
+          kind: args.kind as ContributionKind | undefined,
+          mode: args.mode as ContributionMode | undefined,
+          agentId: args.agentId,
+          agentName: args.agentName,
+          limit: args.limit,
+        });
 
-      // Trim frontier entries for token efficiency
-      const trimmed = {
-        byMetric: Object.fromEntries(
-          Object.entries(result.byMetric).map(([k, v]) => [k, v.map(toFrontierSummary)]),
-        ),
-        byAdoption: result.byAdoption.map(toFrontierSummary),
-        byRecency: result.byRecency.map(toFrontierSummary),
-        byReviewScore: result.byReviewScore.map(toFrontierSummary),
-        byReproduction: result.byReproduction.map(toFrontierSummary),
-      };
+        // Trim frontier entries for token efficiency
+        const trimmed = {
+          byMetric: Object.fromEntries(
+            Object.entries(result.byMetric).map(([k, v]) => [k, v.map(toFrontierSummary)]),
+          ),
+          byAdoption: result.byAdoption.map(toFrontierSummary),
+          byRecency: result.byRecency.map(toFrontierSummary),
+          byReviewScore: result.byReviewScore.map(toFrontierSummary),
+          byReproduction: result.byReproduction.map(toFrontierSummary),
+        };
 
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(trimmed) }],
-      };
-    } catch (error) {
-      return handleToolError(error);
-    }
-  });
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(trimmed) }],
+        };
+      } catch (error) {
+        return handleToolError(error);
+      }
+    },
+  );
 
   // --- grove_search -------------------------------------------------------
-  server.registerTool("grove_search", {
-    description:
-      "Search contributions by full-text query with optional filters. " +
-      "Returns trimmed summaries to save tokens. Use grove_tree to explore relationships.",
-    inputSchema: searchInputSchema,
-  }, async (args) => {
-    try {
-      const { contributionStore } = deps;
+  server.registerTool(
+    "grove_search",
+    {
+      description:
+        "Search contributions by full-text query with optional filters. " +
+        "Returns trimmed summaries to save tokens. Use grove_tree to explore relationships.",
+      inputSchema: searchInputSchema,
+    },
+    async (args) => {
+      try {
+        const { contributionStore } = deps;
 
-      const results = await contributionStore.search(args.query, {
-        kind: args.kind as ContributionKind | undefined,
-        mode: args.mode as ContributionMode | undefined,
-        tags: args.tags,
-        agentId: args.agentId,
-        agentName: args.agentName,
-        limit: args.limit,
-        offset: args.offset,
-      });
+        const results = await contributionStore.search(args.query, {
+          kind: args.kind as ContributionKind | undefined,
+          mode: args.mode as ContributionMode | undefined,
+          tags: args.tags,
+          agentId: args.agentId,
+          agentName: args.agentName,
+          limit: args.limit,
+          offset: args.offset,
+        });
 
-      const summaries = results.map(toSummary);
+        const summaries = results.map(toSummary);
 
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({ results: summaries, count: summaries.length }),
-        }],
-      };
-    } catch (error) {
-      return handleToolError(error);
-    }
-  });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ results: summaries, count: summaries.length }),
+            },
+          ],
+        };
+      } catch (error) {
+        return handleToolError(error);
+      }
+    },
+  );
 
   // --- grove_log ----------------------------------------------------------
-  server.registerTool("grove_log", {
-    description:
-      "List recent contributions with optional filters. Returns trimmed summaries " +
-      "ordered by creation time (newest first).",
-    inputSchema: logInputSchema,
-  }, async (args) => {
-    try {
-      const { contributionStore } = deps;
+  server.registerTool(
+    "grove_log",
+    {
+      description:
+        "List recent contributions with optional filters. Returns trimmed summaries " +
+        "ordered by creation time (newest first).",
+      inputSchema: logInputSchema,
+    },
+    async (args) => {
+      try {
+        const { contributionStore } = deps;
 
-      const results = await contributionStore.list({
-        kind: args.kind as ContributionKind | undefined,
-        mode: args.mode as ContributionMode | undefined,
-        tags: args.tags,
-        agentId: args.agentId,
-        limit: args.limit,
-        offset: args.offset,
-      });
+        const results = await contributionStore.list({
+          kind: args.kind as ContributionKind | undefined,
+          mode: args.mode as ContributionMode | undefined,
+          tags: args.tags,
+          agentId: args.agentId,
+          limit: args.limit,
+          offset: args.offset,
+        });
 
-      const summaries = results.map(toSummary);
+        const summaries = results.map(toSummary);
 
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({ results: summaries, count: summaries.length }),
-        }],
-      };
-    } catch (error) {
-      return handleToolError(error);
-    }
-  });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ results: summaries, count: summaries.length }),
+            },
+          ],
+        };
+      } catch (error) {
+        return handleToolError(error);
+      }
+    },
+  );
 
   // --- grove_tree ---------------------------------------------------------
-  server.registerTool("grove_tree", {
-    description:
-      "View the DAG structure around a contribution. Shows children (contributions that " +
-      "reference this one) and/or ancestors (contributions this one references). " +
-      "Useful for understanding the lineage and impact of a contribution.",
-    inputSchema: treeInputSchema,
-  }, async (args) => {
-    try {
-      const { contributionStore } = deps;
+  server.registerTool(
+    "grove_tree",
+    {
+      description:
+        "View the DAG structure around a contribution. Shows children (contributions that " +
+        "reference this one) and/or ancestors (contributions this one references). " +
+        "Useful for understanding the lineage and impact of a contribution.",
+      inputSchema: treeInputSchema,
+    },
+    async (args) => {
+      try {
+        const { contributionStore } = deps;
 
-      // Verify CID exists
-      const contribution = await contributionStore.get(args.cid);
-      if (contribution === undefined) {
-        return notFoundError("Contribution", args.cid);
+        // Verify CID exists
+        const contribution = await contributionStore.get(args.cid);
+        if (contribution === undefined) {
+          return notFoundError("Contribution", args.cid);
+        }
+
+        const result: {
+          cid: string;
+          summary: string;
+          kind: string;
+          children?: ContributionSummary[];
+          ancestors?: ContributionSummary[];
+        } = {
+          cid: contribution.cid,
+          summary: contribution.summary,
+          kind: contribution.kind,
+        };
+
+        if (args.direction === "children" || args.direction === "both") {
+          const children = await contributionStore.children(args.cid);
+          result.children = children.map(toSummary);
+        }
+
+        if (args.direction === "ancestors" || args.direction === "both") {
+          const ancestors = await contributionStore.ancestors(args.cid);
+          result.ancestors = ancestors.map(toSummary);
+        }
+
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(result) }],
+        };
+      } catch (error) {
+        return handleToolError(error);
       }
-
-      const result: {
-        cid: string;
-        summary: string;
-        kind: string;
-        children?: ContributionSummary[];
-        ancestors?: ContributionSummary[];
-      } = {
-        cid: contribution.cid,
-        summary: contribution.summary,
-        kind: contribution.kind,
-      };
-
-      if (args.direction === "children" || args.direction === "both") {
-        const children = await contributionStore.children(args.cid);
-        result.children = children.map(toSummary);
-      }
-
-      if (args.direction === "ancestors" || args.direction === "both") {
-        const ancestors = await contributionStore.ancestors(args.cid);
-        result.ancestors = ancestors.map(toSummary);
-      }
-
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(result) }],
-      };
-    } catch (error) {
-      return handleToolError(error);
-    }
-  });
+    },
+  );
 }

@@ -8,16 +8,10 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-import { DefaultFrontierCalculator } from "../core/frontier.js";
 import type { ContentStore } from "../core/cas.js";
-import type { Artifact } from "../core/models.js";
+import { DefaultFrontierCalculator } from "../core/frontier.js";
 import { FsCas } from "../local/fs-cas.js";
-import {
-  SqliteClaimStore,
-  SqliteContributionStore,
-  initSqliteDb,
-} from "../local/sqlite-store.js";
+import { initSqliteDb, SqliteClaimStore, SqliteContributionStore } from "../local/sqlite-store.js";
 import { LocalWorkspaceManager } from "../local/workspace.js";
 import type { McpDeps } from "./deps.js";
 
@@ -73,9 +67,6 @@ export async function createTestMcpDeps(): Promise<TestMcpDeps> {
  * Store test content in CAS and return its hash.
  * Convenience for tests that need artifact content hashes.
  */
-export async function storeTestContent(
-  cas: ContentStore,
-  content: string,
-): Promise<string> {
+export async function storeTestContent(cas: ContentStore, content: string): Promise<string> {
   return cas.put(new TextEncoder().encode(content));
 }

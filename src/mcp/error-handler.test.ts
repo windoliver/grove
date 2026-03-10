@@ -8,7 +8,7 @@ import {
   RateLimitError,
   RetryExhaustedError,
 } from "../core/errors.js";
-import { McpErrorCode, handleToolError, notFoundError, validationError } from "./error-handler.js";
+import { handleToolError, McpErrorCode, notFoundError, validationError } from "./error-handler.js";
 
 describe("handleToolError", () => {
   test("maps ConcurrencyLimitError", () => {

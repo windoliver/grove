@@ -15,8 +15,14 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { makeContribution } from "../core/test-helpers.js";
 import type { McpDeps } from "./deps.js";
 import { createMcpServer } from "./server.js";
-import { createTestMcpDeps, storeTestContent } from "./test-helpers.js";
 import type { TestMcpDeps } from "./test-helpers.js";
+import { createTestMcpDeps } from "./test-helpers.js";
+
+/** Extract text from MCP tool result content array. */
+function getText(result: unknown): string {
+  const r = result as { content?: Array<{ type: string; text: string }> };
+  return r.content?.[0]?.text ?? "";
+}
 
 describe("MCP server integration", () => {
   let testDeps: TestMcpDeps;
@@ -79,8 +85,7 @@ describe("MCP server integration", () => {
     });
 
     expect(result.isError).toBeFalsy();
-    const content = result.content as Array<{ type: string; text: string }>;
-    const data = JSON.parse(content[0]!.text);
+    const data = JSON.parse(getText(result));
     expect(data.cid).toMatch(/^blake3:/);
     expect(data.kind).toBe("work");
   });
@@ -96,8 +101,7 @@ describe("MCP server integration", () => {
     });
 
     expect(result.isError).toBeFalsy();
-    const content = result.content as Array<{ type: string; text: string }>;
-    const data = JSON.parse(content[0]!.text);
+    const data = JSON.parse(getText(result));
     expect(data.results.length).toBe(1);
     expect(data.results[0].summary).toBe("Searchable via MCP");
   });
@@ -114,8 +118,7 @@ describe("MCP server integration", () => {
     });
 
     expect(claimResult.isError).toBeFalsy();
-    const claimContent = claimResult.content as Array<{ type: string; text: string }>;
-    const claimData = JSON.parse(claimContent[0]!.text);
+    const claimData = JSON.parse(getText(claimResult));
     expect(claimData.status).toBe("active");
 
     // Release
@@ -128,8 +131,7 @@ describe("MCP server integration", () => {
     });
 
     expect(releaseResult.isError).toBeFalsy();
-    const releaseContent = releaseResult.content as Array<{ type: string; text: string }>;
-    const releaseData = JSON.parse(releaseContent[0]!.text);
+    const releaseData = JSON.parse(getText(releaseResult));
     expect(releaseData.status).toBe("completed");
   });
 
@@ -148,8 +150,7 @@ describe("MCP server integration", () => {
     });
 
     expect(result.isError).toBeFalsy();
-    const content = result.content as Array<{ type: string; text: string }>;
-    const data = JSON.parse(content[0]!.text);
+    const data = JSON.parse(getText(result));
     expect(data.kind).toBe("review");
     expect(data.targetCid).toBe(target.cid);
   });
@@ -161,8 +162,7 @@ describe("MCP server integration", () => {
     });
 
     expect(result.isError).toBeFalsy();
-    const content = result.content as Array<{ type: string; text: string }>;
-    const data = JSON.parse(content[0]!.text);
+    const data = JSON.parse(getText(result));
     expect(data.byRecency).toEqual([]);
   });
 
@@ -176,8 +176,7 @@ describe("MCP server integration", () => {
     });
 
     expect(result.isError).toBeFalsy();
-    const content = result.content as Array<{ type: string; text: string }>;
-    const data = JSON.parse(content[0]!.text);
+    const data = JSON.parse(getText(result));
     expect(data.results.length).toBe(1);
   });
 
@@ -191,8 +190,7 @@ describe("MCP server integration", () => {
     });
 
     expect(result.isError).toBeFalsy();
-    const content = result.content as Array<{ type: string; text: string }>;
-    const data = JSON.parse(content[0]!.text);
+    const data = JSON.parse(getText(result));
     expect(data.cid).toBe(parent.cid);
   });
 
@@ -205,7 +203,6 @@ describe("MCP server integration", () => {
     });
 
     expect(result.isError).toBeTruthy();
-    const content = result.content as Array<{ type: string; text: string }>;
-    expect(content[0]!.text).toContain("NOT_FOUND");
+    expect(getText(result)).toContain("NOT_FOUND");
   });
 });
