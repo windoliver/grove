@@ -6,6 +6,7 @@
       "name": "grove",
       "dependencies": {
         "@hono/zod-validator": "0.7.6",
+        "@modelcontextprotocol/sdk": "^1.27.0",
         "blake3": "^1.0.2",
         "hono": "^4.12.6",
         "yaml": "^2.8.2",
