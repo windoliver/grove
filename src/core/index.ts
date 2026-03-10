@@ -1,4 +1,5 @@
 export type { ContentStore, PutOptions } from "./cas.js";
+export { validateMediaType } from "./cas.js";
 export type {
   Frontier,
   FrontierCalculator,

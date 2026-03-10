@@ -15,6 +15,7 @@ import { dirname, join } from "node:path";
 import { hash } from "blake3";
 
 import type { ContentStore, PutOptions } from "../core/cas.js";
+import { validateMediaType } from "../core/cas.js";
 import type { Artifact } from "../core/models.js";
 
 /** Prefix for BLAKE3 content hashes. */
@@ -78,6 +79,7 @@ export class FsCas implements ContentStore {
    */
   private async writeMeta(hex: string, options?: PutOptions): Promise<void> {
     if (!options?.mediaType) return;
+    validateMediaType(options.mediaType);
     const metaFile = this.metaPath(hex);
     await Bun.write(metaFile, JSON.stringify({ mediaType: options.mediaType }));
   }
@@ -164,6 +166,15 @@ export class FsCas implements ContentStore {
     }
 
     await unlink(blobFile);
+
+    // Clean up sidecar metadata file if it exists
+    const metaFile = this.metaPath(hex);
+    try {
+      await unlink(metaFile);
+    } catch {
+      // Sidecar may not exist — that's fine
+    }
+
     return true;
   };
 

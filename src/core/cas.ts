@@ -12,8 +12,30 @@ export interface PutOptions {
   /**
    * Advisory media type for the blob (e.g., "application/json").
    * Persisted alongside the content for retrieval via `stat()`.
+   * Must be a bare IANA media type without parameters (no "; charset=..." etc.).
    */
   readonly mediaType?: string | undefined;
+}
+
+/**
+ * Pattern for valid media types — matches artifact.json schema.
+ * Bare type/subtype only; parameters (e.g., "; charset=utf-8") are rejected.
+ */
+const MEDIA_TYPE_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9!#$&\-^_.+]*\/[a-zA-Z0-9][a-zA-Z0-9!#$&\-^_.+]*$/;
+
+/**
+ * Validate a media type string against the artifact schema pattern.
+ * Throws if the value is not a valid bare IANA media type.
+ */
+export function validateMediaType(mediaType: string): void {
+  if (mediaType.length > 256) {
+    throw new Error(`mediaType exceeds 256 characters: '${mediaType.slice(0, 40)}...'`);
+  }
+  if (!MEDIA_TYPE_PATTERN.test(mediaType)) {
+    throw new Error(
+      `Invalid mediaType '${mediaType}': must be a bare type/subtype without parameters`,
+    );
+  }
 }
 
 /**
