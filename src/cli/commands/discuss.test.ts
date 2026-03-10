@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initSqliteDb, SqliteContributionStore } from "../../local/sqlite-store.js";
 import { executeContribute } from "./contribute.js";
-import { executeDiscuss, parseDiscussArgs } from "./discuss.js";
+import { executeDiscuss, handleDiscuss, parseDiscussArgs } from "./discuss.js";
 import type { InitOptions } from "./init.js";
 import { executeInit } from "./init.js";
 
@@ -207,6 +207,36 @@ describe("executeDiscuss", () => {
       });
 
       expect(cid).toMatch(/^blake3:/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleDiscuss
+// ---------------------------------------------------------------------------
+
+describe("handleDiscuss", () => {
+  test("creates discussion via handleDiscuss with --grove override", async () => {
+    const dir = await createTempDir();
+    try {
+      await executeInit(makeInitOptions(dir));
+      const groveDir = join(dir, ".grove");
+
+      await handleDiscuss(["A topic via handleDiscuss"], groveDir);
+
+      // Verify it was stored
+      const dbPath = join(groveDir, "grove.db");
+      const db = initSqliteDb(dbPath);
+      const store = new SqliteContributionStore(db);
+      try {
+        const all = await store.list({ kind: "discussion" });
+        expect(all.length).toBeGreaterThanOrEqual(1);
+        expect(all.some((c) => c.summary === "A topic via handleDiscuss")).toBe(true);
+      } finally {
+        store.close();
+      }
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
