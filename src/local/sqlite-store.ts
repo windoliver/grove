@@ -40,17 +40,10 @@ import { ExpiryReason } from "../core/store.js";
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_LEASE_DURATION_MS = 300_000;
-const CURRENT_SCHEMA_VERSION = 5;
+import { DEFAULT_LEASE_DURATION_MS } from "../core/claim-logic.js";
+import { toUtcIso } from "../core/time.js";
 
-/**
- * Normalize an ISO 8601 timestamp to UTC Z-format.
- * SQL text comparison of timestamps only works reliably when
- * all values use the same format (no timezone offsets).
- */
-function toUtcIso(iso: string): string {
-  return new Date(iso).toISOString();
-}
+const CURRENT_SCHEMA_VERSION = 5;
 
 // ---------------------------------------------------------------------------
 // Schema DDL

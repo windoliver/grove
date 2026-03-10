@@ -1,0 +1,37 @@
+##
+# Local development services for Grove.
+#
+# Nexus (nexi-lab/nexus) provides the shared VFS backend
+# used by NexusHttpClient for integration tests.
+#
+# Usage:
+#   docker compose up nexus -d        # Start Nexus on port 2026
+#   docker compose down               # Stop all services
+#
+# Integration tests:
+#   NEXUS_URL=http://localhost:2026 bun test tests/nexus/integration/
+##
+
+services:
+  nexus:
+    build:
+      context: .
+      dockerfile: Dockerfile.nexus
+    ports:
+      - "2026:2026"
+    environment:
+      # Nexus only needs ANTHROPIC_API_KEY for agent features;
+      # the VFS layer works without it for integration tests.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-sk-test-placeholder}
+    volumes:
+      - nexus-data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:2026/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  nexus-data:

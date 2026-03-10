@@ -1,0 +1,13 @@
+FROM python:3.11-slim
+
+# Install nexus-ai-fs from PyPI
+RUN pip install --no-cache-dir nexus-ai-fs
+
+# Default working directory for Nexus data
+RUN mkdir -p /app/data
+WORKDIR /app
+
+EXPOSE 2026
+
+# Start the Nexus VFS server
+CMD ["nexus", "serve", "--host", "0.0.0.0", "--port", "2026"]

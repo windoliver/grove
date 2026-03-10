@@ -171,4 +171,12 @@ export interface Claim {
   readonly context?: Readonly<Record<string, JsonValue>> | undefined;
   /** Number of times this claim has been attempted (for retry/backoff). Defaults to 0. */
   readonly attemptCount?: number | undefined;
+  /**
+   * Optimistic concurrency revision number.
+   *
+   * Incremented by the store on every state transition (heartbeat, release,
+   * complete). Used by network-backed stores (e.g., Nexus) for compare-and-swap
+   * operations. Local stores may track it but are not required to.
+   */
+  readonly revision?: number | undefined;
 }

@@ -28,6 +28,10 @@
     "./mcp": {
       "types": "./dist/mcp/index.d.ts",
       "import": "./dist/mcp/index.js"
+    },
+    "./nexus": {
+      "types": "./dist/nexus/index.d.ts",
+      "import": "./dist/nexus/index.js"
     }
   },
   "bin": {
@@ -44,6 +48,9 @@
     "start:server": "bun run src/server/serve.ts",
     "test": "bun test && bun test --cwd packages/ask-user",
     "test:coverage": "bun test --coverage && bun test --cwd packages/ask-user --coverage",
+    "test:integration": "NEXUS_URL=http://localhost:2026 bun test tests/nexus/integration/",
+    "nexus:up": "docker compose up nexus -d",
+    "nexus:down": "docker compose down",
     "check": "biome check .",
     "postinstall": "lefthook install"
   },

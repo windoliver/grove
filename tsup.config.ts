@@ -17,6 +17,7 @@ export default defineConfig({
     "src/server/index.ts",
     "src/server/app.ts",
     "src/server/serve.ts",
+    "src/nexus/index.ts",
   ],
   format: ["esm"],
   dts: {
