@@ -98,4 +98,57 @@ describe("GET /api/frontier", () => {
     const data = await res.json();
     expect(data.byRecency).toHaveLength(1);
   });
+
+  test("filters by context field", async () => {
+    await ctx.app.request("/api/contributions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        validManifestBody({
+          summary: "H100 run",
+          context: { hardware: "H100" },
+        }),
+      ),
+    });
+    await ctx.app.request("/api/contributions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        validManifestBody({
+          summary: "A100 run",
+          context: { hardware: "A100" },
+          createdAt: new Date(Date.now() + 1).toISOString(),
+        }),
+      ),
+    });
+
+    const res = await ctx.app.request(
+      `/api/frontier?context=${encodeURIComponent('{"hardware":"H100"}')}`,
+    );
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.byRecency).toHaveLength(1);
+    expect(data.byRecency[0].summary).toBe("H100 run");
+  });
+
+  test("returns 400 for invalid context JSON", async () => {
+    const res = await ctx.app.request(`/api/frontier?context=${encodeURIComponent("not-json")}`);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain("Invalid context");
+  });
+
+  test("returns 400 for null context", async () => {
+    const res = await ctx.app.request(`/api/frontier?context=${encodeURIComponent("null")}`);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain("must be a JSON object");
+  });
+
+  test("returns 400 for array context", async () => {
+    const res = await ctx.app.request(`/api/frontier?context=${encodeURIComponent("[1,2]")}`);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain("must be a JSON object");
+  });
 });

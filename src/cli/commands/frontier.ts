@@ -11,7 +11,7 @@
 
 import { parseArgs } from "node:util";
 import type { FrontierEntry, FrontierQuery } from "../../core/frontier.js";
-import type { ContributionMode } from "../../core/models.js";
+import type { ContributionMode, JsonValue } from "../../core/models.js";
 import type { CliDeps, Writer } from "../context.js";
 import { formatFrontierSection } from "../format.js";
 
@@ -21,6 +21,7 @@ export interface FrontierOptions {
   readonly metric?: string | undefined;
   readonly tag?: string | undefined;
   readonly mode?: string | undefined;
+  readonly context?: Readonly<Record<string, JsonValue>> | undefined;
   readonly limit: number;
   readonly json: boolean;
 }
@@ -32,6 +33,7 @@ export function parseFrontierArgs(argv: string[]): FrontierOptions {
       metric: { type: "string" },
       tag: { type: "string" },
       mode: { type: "string" },
+      context: { type: "string" },
       n: { type: "string", short: "n" },
       json: { type: "boolean", default: false },
     },
@@ -44,10 +46,25 @@ export function parseFrontierArgs(argv: string[]): FrontierOptions {
     throw new Error(`Invalid limit: '${values.n}'. Must be a positive integer.`);
   }
 
+  let context: Record<string, JsonValue> | undefined;
+  if (values.context !== undefined) {
+    try {
+      context = JSON.parse(values.context) as Record<string, JsonValue>;
+    } catch {
+      throw new Error(
+        `Invalid --context: must be valid JSON object. Example: --context '{"hardware":"H100"}'`,
+      );
+    }
+    if (typeof context !== "object" || context === null || Array.isArray(context)) {
+      throw new Error(`Invalid --context: must be a JSON object, not an array or primitive.`);
+    }
+  }
+
   return {
     metric: values.metric,
     tag: values.tag,
     mode: values.mode,
+    context,
     limit,
     json: values.json ?? false,
   };
@@ -62,6 +79,7 @@ export async function runFrontier(
     metric: options.metric,
     tags: options.tag !== undefined ? [options.tag] : undefined,
     mode: options.mode as ContributionMode | undefined,
+    context: options.context,
     limit: options.limit,
   };
 

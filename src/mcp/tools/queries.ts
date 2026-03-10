@@ -80,6 +80,12 @@ const frontierInputSchema = z.object({
   mode: z.enum(["evaluation", "exploration"]).optional().describe("Filter by contribution mode"),
   agentId: z.string().optional().describe("Filter by agent ID"),
   agentName: z.string().optional().describe("Filter by agent name"),
+  context: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe(
+      "Filter by context fields (exact match). Example: { hardware: 'H100' } for best results on H100",
+    ),
   limit: z
     .number()
     .int()
@@ -166,6 +172,9 @@ export function registerQueryTools(server: McpServer, deps: McpDeps): void {
           mode: args.mode as ContributionMode | undefined,
           agentId: args.agentId,
           agentName: args.agentName,
+          context: args.context as
+            | Record<string, import("../../core/models.js").JsonValue>
+            | undefined,
           limit: args.limit,
         });
 

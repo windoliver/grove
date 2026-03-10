@@ -772,6 +772,156 @@ export function runFrontierCalculatorTests(
   });
 
   // -----------------------------------------------------------------------
+  // Context filtering
+  // -----------------------------------------------------------------------
+
+  describe("context filtering", () => {
+    test("filters by single context field", async () => {
+      const h100 = makeContribution({
+        summary: "h100-run",
+        context: { hardware: "H100" },
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      const a100 = makeContribution({
+        summary: "a100-run",
+        context: { hardware: "A100" },
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+
+      await store.putMany([h100, a100]);
+      const frontier = await calculator.compute({ context: { hardware: "H100" } });
+
+      expect(frontier.byRecency).toHaveLength(1);
+      expect(frontier.byRecency[0]?.cid).toBe(h100.cid);
+    });
+
+    test("filters by multiple context fields (AND semantics)", async () => {
+      const match = makeContribution({
+        summary: "h100-openwebtext",
+        context: { hardware: "H100", dataset: "openwebtext" },
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      const partialMatch = makeContribution({
+        summary: "h100-other",
+        context: { hardware: "H100", dataset: "c4" },
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+
+      await store.putMany([match, partialMatch]);
+      const frontier = await calculator.compute({
+        context: { hardware: "H100", dataset: "openwebtext" },
+      });
+
+      expect(frontier.byRecency).toHaveLength(1);
+      expect(frontier.byRecency[0]?.cid).toBe(match.cid);
+    });
+
+    test("excludes contributions without context field", async () => {
+      const withContext = makeContribution({
+        summary: "with-context",
+        context: { hardware: "H100" },
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      const noContext = makeContribution({
+        summary: "no-context",
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+
+      await store.putMany([withContext, noContext]);
+      const frontier = await calculator.compute({ context: { hardware: "H100" } });
+
+      expect(frontier.byRecency).toHaveLength(1);
+      expect(frontier.byRecency[0]?.cid).toBe(withContext.cid);
+    });
+
+    test("excludes contributions missing the specified context key", async () => {
+      const withKey = makeContribution({
+        summary: "has-hardware",
+        context: { hardware: "H100", region: "us-west" },
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      const missingKey = makeContribution({
+        summary: "no-hardware",
+        context: { region: "us-west" },
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+
+      await store.putMany([withKey, missingKey]);
+      const frontier = await calculator.compute({ context: { hardware: "H100" } });
+
+      expect(frontier.byRecency).toHaveLength(1);
+      expect(frontier.byRecency[0]?.cid).toBe(withKey.cid);
+    });
+
+    test("context filter combines with tag filter (AND semantics)", async () => {
+      const match = makeContribution({
+        summary: "h100-ml",
+        context: { hardware: "H100" },
+        tags: ["ml"],
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      const wrongTag = makeContribution({
+        summary: "h100-audio",
+        context: { hardware: "H100" },
+        tags: ["audio"],
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+      const wrongContext = makeContribution({
+        summary: "a100-ml",
+        context: { hardware: "A100" },
+        tags: ["ml"],
+        createdAt: "2026-01-03T00:00:00Z",
+      });
+
+      await store.putMany([match, wrongTag, wrongContext]);
+      const frontier = await calculator.compute({
+        tags: ["ml"],
+        context: { hardware: "H100" },
+      });
+
+      expect(frontier.byRecency).toHaveLength(1);
+      expect(frontier.byRecency[0]?.cid).toBe(match.cid);
+    });
+
+    test("matches nested objects regardless of key order", async () => {
+      const contrib = makeContribution({
+        summary: "nested-context",
+        context: { config: { a: 1, b: 2 } },
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+
+      await store.put(contrib);
+
+      // Query with keys in different order than stored
+      const frontier = await calculator.compute({
+        context: { config: { b: 2, a: 1 } },
+      });
+
+      expect(frontier.byRecency).toHaveLength(1);
+      expect(frontier.byRecency[0]?.cid).toBe(contrib.cid);
+    });
+
+    test("matches numeric context values exactly", async () => {
+      const gpuCount4 = makeContribution({
+        summary: "4-gpu",
+        context: { gpuCount: 4 },
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      const gpuCount8 = makeContribution({
+        summary: "8-gpu",
+        context: { gpuCount: 8 },
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+
+      await store.putMany([gpuCount4, gpuCount8]);
+      const frontier = await calculator.compute({ context: { gpuCount: 4 } });
+
+      expect(frontier.byRecency).toHaveLength(1);
+      expect(frontier.byRecency[0]?.cid).toBe(gpuCount4.cid);
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // Exploration mode inclusion
   // -----------------------------------------------------------------------
 

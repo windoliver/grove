@@ -85,6 +85,30 @@ describe("grove_frontier", () => {
     expect(data.byRecency.length).toBe(3);
   });
 
+  test("filters by context parameter", async () => {
+    const h100 = makeContribution({
+      summary: "H100 run",
+      context: { hardware: "H100" },
+      createdAt: "2026-01-01T00:00:00Z",
+    });
+    const a100 = makeContribution({
+      summary: "A100 run",
+      context: { hardware: "A100" },
+      createdAt: "2026-01-02T00:00:00Z",
+    });
+    await deps.contributionStore.put(h100);
+    await deps.contributionStore.put(a100);
+
+    const result = await callTool(server, "grove_frontier", {
+      context: { hardware: "H100" },
+    });
+
+    expect(result.isError).toBeUndefined();
+    const data = JSON.parse(result.text);
+    expect(data.byRecency).toHaveLength(1);
+    expect(data.byRecency[0].summary).toBe("H100 run");
+  });
+
   test("returns trimmed frontier entries", async () => {
     const c = makeContribution({
       summary: "Work",

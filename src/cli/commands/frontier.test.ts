@@ -75,6 +75,23 @@ describe("parseFrontierArgs", () => {
   test("rejects invalid limit", () => {
     expect(() => parseFrontierArgs(["-n", "abc"])).toThrow("Invalid limit");
   });
+
+  test("parses valid --context JSON", () => {
+    const opts = parseFrontierArgs(["--context", '{"hardware":"H100"}']);
+    expect(opts.context).toEqual({ hardware: "H100" });
+  });
+
+  test("rejects invalid --context JSON", () => {
+    expect(() => parseFrontierArgs(["--context", "not-json"])).toThrow("Invalid --context");
+  });
+
+  test("rejects --context with array", () => {
+    expect(() => parseFrontierArgs(["--context", "[1,2]"])).toThrow("must be a JSON object");
+  });
+
+  test("rejects --context with null", () => {
+    expect(() => parseFrontierArgs(["--context", "null"])).toThrow("must be a JSON object");
+  });
 });
 
 // ---------------------------------------------------------------------------
