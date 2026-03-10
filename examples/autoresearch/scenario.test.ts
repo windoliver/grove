@@ -14,11 +14,7 @@ import {
   LifecycleState,
 } from "../../src/core/lifecycle.js";
 import { verifyCid } from "../../src/core/manifest.js";
-import {
-  ClaimStatus,
-  ContributionKind,
-  RelationType,
-} from "../../src/core/models.js";
+import { ClaimStatus, ContributionKind, RelationType } from "../../src/core/models.js";
 import {
   agentA,
   agentA_initialWork,

@@ -19,13 +19,13 @@ import { DefaultFrontierCalculator } from "../../src/core/frontier.js";
 import { evaluateStopConditions } from "../../src/core/lifecycle.js";
 import { createContribution } from "../../src/core/manifest.js";
 import type { AgentIdentity, Contribution } from "../../src/core/models.js";
-import type { ClaimStore, ContributionStore } from "../../src/core/store.js";
 import {
   ContributionKind,
   ContributionMode,
   RelationType,
   ScoreDirection,
 } from "../../src/core/models.js";
+import type { ClaimStore, ContributionStore } from "../../src/core/store.js";
 import { createSqliteStores } from "../../src/local/sqlite-store.js";
 
 // ---------------------------------------------------------------------------
