@@ -251,6 +251,62 @@ stop_conditions:
 `;
     expect(() => parseGroveContract(content)).toThrow("Invalid GROVE.md contract");
   });
+
+  test("rejects duplicate relation types in required_relations", () => {
+    const content = `---
+contract_version: 1
+name: test
+agent_constraints:
+  required_relations:
+    review:
+      - reviews
+      - reviews
+---
+`;
+    expect(() => parseGroveContract(content)).toThrow("Invalid GROVE.md contract");
+  });
+
+  test("rejects target_metric referencing undefined metric", () => {
+    const content = `---
+contract_version: 1
+name: test
+metrics:
+  val_bpb:
+    direction: minimize
+stop_conditions:
+  target_metric:
+    metric: nonexistent
+    value: 0.85
+---
+`;
+    expect(() => parseGroveContract(content)).toThrow("undefined metric 'nonexistent'");
+  });
+
+  test("rejects gate referencing undefined metric", () => {
+    const content = `---
+contract_version: 1
+name: test
+metrics:
+  val_bpb:
+    direction: minimize
+gates:
+  - type: metric_improves
+    metric: typo_metric
+---
+`;
+    expect(() => parseGroveContract(content)).toThrow("undefined metric 'typo_metric'");
+  });
+
+  test("rejects max_rounds_without_improvement with no metrics defined", () => {
+    const content = `---
+contract_version: 1
+name: test
+stop_conditions:
+  max_rounds_without_improvement: 5
+---
+`;
+    expect(() => parseGroveContract(content)).toThrow("requires at least one metric");
+  });
 });
 
 // ---------------------------------------------------------------------------

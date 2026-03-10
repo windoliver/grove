@@ -313,38 +313,39 @@ async function evaluateMaxRoundsWithoutImprovement(
     const direction = metricDef.direction;
     const isMinimize = direction === "minimize";
 
-    // Find best score across all evaluation-mode contributions
+    // Find best score across all evaluation-mode contributions,
+    // tracking the index of the contribution that *first* set the best.
     let bestScore: number | undefined;
-    for (const c of sorted) {
-      if (c.mode === "exploration") continue;
+    let bestIndex = -1;
+    for (let i = 0; i < sorted.length; i++) {
+      const c = sorted[i];
+      if (c === undefined || c.mode === "exploration") continue;
       const score = c.scores?.[metricName];
       if (score === undefined) continue;
       if (bestScore === undefined) {
         bestScore = score.value;
+        bestIndex = i;
       } else if (isMinimize ? score.value < bestScore : score.value > bestScore) {
         bestScore = score.value;
+        bestIndex = i;
       }
     }
 
     if (bestScore === undefined) continue;
 
-    // Check if any of the last N contributions set the best score
-    const lastN = sorted.slice(-maxRounds);
-    for (const c of lastN) {
-      if (c.mode === "exploration") continue;
-      const score = c.scores?.[metricName];
-      if (score !== undefined && score.value === bestScore) {
-        // Found improvement in the last N rounds
-        return {
-          met: false,
-          reason: `Metric '${metricName}' improved within the last ${maxRounds} contributions`,
-          details: {
-            metric: metricName,
-            best_score: bestScore,
-            max_rounds: maxRounds,
-          },
-        };
-      }
+    // Check if the best was set within the last N contributions
+    const cutoff = sorted.length - maxRounds;
+    if (bestIndex >= cutoff) {
+      // The best score was set in the last N rounds — still improving
+      return {
+        met: false,
+        reason: `Metric '${metricName}' improved within the last ${maxRounds} contributions`,
+        details: {
+          metric: metricName,
+          best_score: bestScore,
+          max_rounds: maxRounds,
+        },
+      };
     }
   }
 

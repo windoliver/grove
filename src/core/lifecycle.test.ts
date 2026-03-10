@@ -433,6 +433,42 @@ describe("evaluateStopConditions", () => {
       expect(result.conditions.max_rounds_without_improvement?.met).toBe(true);
     });
 
+    test("met when last N tie the best but did not set a new best (tie case)", async () => {
+      const contract: GroveContract = {
+        contractVersion: 1,
+        name: "test",
+        metrics: { loss: { direction: "minimize" as const } },
+        stopConditions: { maxRoundsWithoutImprovement: 2 },
+      };
+      // scores: [10, 8, 8, 8] — best is 8, set at index 1, last 2 are ties not new bests
+      const contribs = [
+        makeUniqueContribution({
+          summary: "First",
+          createdAt: "2026-01-01T00:00:00Z",
+          scores: { loss: { value: 10, direction: ScoreDirection.Minimize } },
+        }),
+        makeUniqueContribution({
+          summary: "Best",
+          createdAt: "2026-01-01T00:01:00Z",
+          scores: { loss: { value: 8, direction: ScoreDirection.Minimize } },
+        }),
+        makeUniqueContribution({
+          summary: "Tie 1",
+          createdAt: "2026-01-01T00:02:00Z",
+          scores: { loss: { value: 8, direction: ScoreDirection.Minimize } },
+        }),
+        makeUniqueContribution({
+          summary: "Tie 2",
+          createdAt: "2026-01-01T00:03:00Z",
+          scores: { loss: { value: 8, direction: ScoreDirection.Minimize } },
+        }),
+      ];
+      const store = new InMemoryContributionStore(contribs);
+      const result = await evaluateStopConditions(contract, store);
+      // Best was set at index 1, which is outside the last 2 → met
+      expect(result.conditions.max_rounds_without_improvement?.met).toBe(true);
+    });
+
     test("not met when no metrics defined", async () => {
       const contract: GroveContract = {
         contractVersion: 1,

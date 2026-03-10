@@ -119,7 +119,10 @@ const ArtifactRequirementsSchema = z.array(z.string().min(1).max(256)).min(1).ma
 const RelationRequirementsSchema = z
   .array(z.enum(["derives_from", "responds_to", "reviews", "reproduces", "adopts"]))
   .min(1)
-  .max(5);
+  .max(5)
+  .refine((items) => new Set(items).size === items.length, {
+    message: "duplicate relation types",
+  });
 
 const ContributionKindEnum = z.enum(["work", "review", "discussion", "adoption", "reproduction"]);
 
@@ -396,6 +399,47 @@ function wireToClaimPolicy(
 // ---------------------------------------------------------------------------
 
 /**
+ * Validate metric cross-references in gates and stop conditions.
+ * Ensures that any metric referenced actually exists in the metrics map.
+ *
+ * @throws {Error} if a referenced metric is not defined.
+ */
+function validateMetricReferences(contract: GroveContract): void {
+  const metricNames = new Set(Object.keys(contract.metrics ?? {}));
+  const errors: string[] = [];
+
+  if (contract.gates !== undefined) {
+    for (const gate of contract.gates) {
+      if (
+        (gate.type === "metric_improves" || gate.type === "min_score") &&
+        gate.metric !== undefined &&
+        !metricNames.has(gate.metric)
+      ) {
+        errors.push(`gate references undefined metric '${gate.metric}'`);
+      }
+    }
+  }
+
+  if (contract.stopConditions?.targetMetric !== undefined) {
+    const { metric } = contract.stopConditions.targetMetric;
+    if (!metricNames.has(metric)) {
+      errors.push(`stop_conditions.target_metric references undefined metric '${metric}'`);
+    }
+  }
+
+  if (
+    contract.stopConditions?.maxRoundsWithoutImprovement !== undefined &&
+    metricNames.size === 0
+  ) {
+    errors.push("stop_conditions.max_rounds_without_improvement requires at least one metric");
+  }
+
+  if (errors.length > 0) {
+    throw new Error(`Invalid contract: ${errors.join("; ")}`);
+  }
+}
+
+/**
  * Extract YAML frontmatter from a GROVE.md file.
  * Returns the YAML string between the first pair of `---` delimiters,
  * or null if no frontmatter is found.
@@ -436,7 +480,9 @@ export function parseGroveContract(content: string): GroveContract {
     throw new Error(`Invalid GROVE.md contract: ${issues}`);
   }
 
-  return wireToContract(result.data);
+  const contract = wireToContract(result.data);
+  validateMetricReferences(contract);
+  return contract;
 }
 
 /**
@@ -452,5 +498,7 @@ export function parseGroveContractObject(obj: unknown): GroveContract {
     throw new Error(`Invalid grove contract: ${issues}`);
   }
 
-  return wireToContract(result.data);
+  const contract = wireToContract(result.data);
+  validateMetricReferences(contract);
+  return contract;
 }
