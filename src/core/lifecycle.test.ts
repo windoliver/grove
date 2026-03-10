@@ -6,7 +6,7 @@ import {
   evaluateStopConditions,
   LifecycleState,
 } from "./lifecycle.js";
-import type { Contribution, Relation } from "./models.js";
+import type { Contribution } from "./models.js";
 import {
   type ContributionInput,
   ContributionKind,
@@ -14,101 +14,8 @@ import {
   RelationType,
   ScoreDirection,
 } from "./models.js";
-import type { ContributionStore } from "./store.js";
 import { makeContribution } from "./test-helpers.js";
-
-// ---------------------------------------------------------------------------
-// In-memory ContributionStore for testing
-// ---------------------------------------------------------------------------
-
-class InMemoryContributionStore implements ContributionStore {
-  private readonly contributions = new Map<string, Contribution>();
-
-  constructor(contributions: readonly Contribution[] = []) {
-    for (const c of contributions) {
-      this.contributions.set(c.cid, c);
-    }
-  }
-
-  put = async (c: Contribution): Promise<void> => {
-    this.contributions.set(c.cid, c);
-  };
-  putMany = async (cs: readonly Contribution[]): Promise<void> => {
-    for (const c of cs) this.contributions.set(c.cid, c);
-  };
-  get = async (cid: string): Promise<Contribution | undefined> => this.contributions.get(cid);
-  list = async (): Promise<readonly Contribution[]> => [...this.contributions.values()];
-  count = async (): Promise<number> => this.contributions.size;
-
-  children = async (cid: string): Promise<readonly Contribution[]> => {
-    const result: Contribution[] = [];
-    for (const c of this.contributions.values()) {
-      for (const rel of c.relations) {
-        if (rel.targetCid === cid) {
-          result.push(c);
-          break;
-        }
-      }
-    }
-    return result;
-  };
-
-  ancestors = async (cid: string): Promise<readonly Contribution[]> => {
-    const c = this.contributions.get(cid);
-    if (c === undefined) return [];
-    const result: Contribution[] = [];
-    for (const rel of c.relations) {
-      const target = this.contributions.get(rel.targetCid);
-      if (target !== undefined) result.push(target);
-    }
-    return result;
-  };
-
-  relationsOf = async (cid: string, relationType?: string): Promise<readonly Relation[]> => {
-    const c = this.contributions.get(cid);
-    if (c === undefined) return [];
-    if (relationType === undefined) return c.relations;
-    return c.relations.filter((r) => r.relationType === relationType);
-  };
-
-  relatedTo = async (cid: string, relationType?: string): Promise<readonly Contribution[]> => {
-    const result: Contribution[] = [];
-    for (const c of this.contributions.values()) {
-      for (const rel of c.relations) {
-        if (
-          rel.targetCid === cid &&
-          (relationType === undefined || rel.relationType === relationType)
-        ) {
-          result.push(c);
-          break;
-        }
-      }
-    }
-    return result;
-  };
-
-  search = async (): Promise<readonly Contribution[]> => [];
-
-  findExisting = async (
-    agentId: string,
-    targetCid: string,
-    kind: ContributionKind,
-    relationType?: RelationType,
-  ): Promise<readonly Contribution[]> => {
-    return [...this.contributions.values()].filter(
-      (c) =>
-        c.agent.agentId === agentId &&
-        c.kind === kind &&
-        c.relations.some(
-          (r) =>
-            r.targetCid === targetCid &&
-            (relationType === undefined || r.relationType === relationType),
-        ),
-    );
-  };
-
-  close(): void {}
-}
+import { InMemoryContributionStore } from "./testing.js";
 
 // ---------------------------------------------------------------------------
 // Helper to create contributions with specific relations
@@ -902,6 +809,33 @@ describe("evaluateStopConditions", () => {
         stopConditions: { deliberationLimit: { maxMessages: 3 } },
       };
       const store = new InMemoryContributionStore([root, ...replies]);
+      const result = await evaluateStopConditions(contract, store);
+      expect(result.conditions.deliberation_limit?.met).toBe(true);
+    });
+
+    test("maxMessages on deep chain is not truncated by maxRounds", async () => {
+      // Regression: maxMessages must count the full thread, not just up
+      // to maxRounds depth. A 60-message chain with { maxMessages: 55 }
+      // must trigger even if maxRounds is unset (default depth was 50).
+      const root = makeUniqueContribution({ summary: "Deep root" });
+      const allContribs = [root];
+      let parentCid = root.cid;
+      for (let i = 0; i < 60; i++) {
+        const reply = makeUniqueContribution({
+          kind: ContributionKind.Discussion,
+          summary: `Deep reply ${i}`,
+          relations: [{ targetCid: parentCid, relationType: RelationType.RespondsTo }],
+        });
+        allContribs.push(reply);
+        parentCid = reply.cid;
+      }
+
+      const contract: GroveContract = {
+        contractVersion: 1,
+        name: "test",
+        stopConditions: { deliberationLimit: { maxMessages: 55 } },
+      };
+      const store = new InMemoryContributionStore(allContribs);
       const result = await evaluateStopConditions(contract, store);
       expect(result.conditions.deliberation_limit?.met).toBe(true);
     });

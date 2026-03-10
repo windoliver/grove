@@ -546,70 +546,28 @@ async function evaluateDeliberationLimit(
   limit: { readonly maxRounds?: number | undefined; readonly maxMessages?: number | undefined },
   store: ContributionStore,
 ): Promise<StopConditionResult> {
-  const allContributions = await store.list();
+  // Find topic roots: CIDs that are responds_to targets but don't
+  // themselves have outgoing responds_to relations.
+  const roots = await findTopicRoots(store);
 
-  // Build responds_to adjacency: child CID → parent CID
-  const respondsToParent = new Map<string, string>();
-  for (const c of allContributions) {
-    for (const rel of c.relations) {
-      if (rel.relationType === "responds_to") {
-        respondsToParent.set(c.cid, rel.targetCid);
-      }
-    }
-  }
-
-  // Find topic roots and compute depth + message count per topic
-  // A topic root is a CID that is a responds_to target but is not itself
-  // a responds_to source (or any CID in a chain that we can trace to a root)
-  const allCids = new Set(allContributions.map((c) => c.cid));
-
-  // Build children map: parent CID → child CIDs
-  const childrenOf = new Map<string, string[]>();
-  for (const [childCid, parentCid] of respondsToParent) {
-    let children = childrenOf.get(parentCid);
-    if (children === undefined) {
-      children = [];
-      childrenOf.set(parentCid, children);
-    }
-    children.push(childCid);
-  }
-
-  // Find roots: CIDs that are targets of responds_to but don't themselves respond_to anything
-  const roots = new Set<string>();
-  for (const parentCid of respondsToParent.values()) {
-    if (!respondsToParent.has(parentCid)) {
-      roots.add(parentCid);
-    }
-  }
-
-  // For each root, compute max depth and total message count via BFS
+  // For each root, use store.thread() to compute depth and message count
   const exceededTopics: DeliberationResult[] = [];
 
   for (const rootCid of roots) {
-    if (!allCids.has(rootCid)) continue;
+    // Traverse the full thread — don't truncate at maxRounds.
+    // maxRounds is the stop-condition threshold, not a traversal cap.
+    // maxMessages needs an accurate total descendant count, so we must
+    // walk the entire tree (capped at a high safety ceiling).
+    const nodes = await store.thread(rootCid, { maxDepth: 10_000 });
 
+    if (nodes.length === 0) continue;
+
+    // Max depth = highest depth in thread; message count = nodes minus root
     let maxDepth = 0;
-    let messageCount = 0;
-
-    // BFS: queue of [cid, depth]
-    const queue: [string, number][] = [[rootCid, 0]];
-    const visited = new Set<string>([rootCid]);
-
-    while (queue.length > 0) {
-      const entry = queue.shift();
-      if (entry === undefined) break;
-      const [currentCid, depth] = entry;
-      const children = childrenOf.get(currentCid) ?? [];
-
-      for (const childCid of children) {
-        if (visited.has(childCid)) continue;
-        visited.add(childCid);
-        const childDepth = depth + 1;
-        messageCount += 1;
-        if (childDepth > maxDepth) maxDepth = childDepth;
-        queue.push([childCid, childDepth]);
-      }
+    for (const node of nodes) {
+      if (node.depth > maxDepth) maxDepth = node.depth;
     }
+    const messageCount = nodes.length - 1; // Exclude root itself
 
     const maxRoundsExceeded = limit.maxRounds !== undefined && maxDepth >= limit.maxRounds;
     const maxMessagesExceeded =
@@ -657,9 +615,43 @@ async function evaluateDeliberationLimit(
     met: false,
     reason: "No topics exceed deliberation limits",
     details: {
-      topics_checked: roots.size,
+      topics_checked: roots.length,
       ...(limit.maxRounds !== undefined && { max_rounds: limit.maxRounds }),
       ...(limit.maxMessages !== undefined && { max_messages: limit.maxMessages }),
     },
   };
+}
+
+/**
+ * Find all topic roots in the store.
+ *
+ * A topic root is a CID that is a responds_to target but does not itself
+ * have any outgoing responds_to relation (i.e., it's the start of a thread).
+ */
+async function findTopicRoots(store: ContributionStore): Promise<readonly string[]> {
+  const allContributions = await store.list();
+
+  // Build responds_to adjacency: child CID → parent CID
+  const respondsToSources = new Set<string>();
+  const respondsToTargets = new Set<string>();
+
+  for (const c of allContributions) {
+    for (const rel of c.relations) {
+      if (rel.relationType === "responds_to") {
+        respondsToSources.add(c.cid);
+        respondsToTargets.add(rel.targetCid);
+      }
+    }
+  }
+
+  // Roots: targets that are not themselves sources
+  const roots: string[] = [];
+  const allCids = new Set(allContributions.map((c) => c.cid));
+  for (const targetCid of respondsToTargets) {
+    if (!respondsToSources.has(targetCid) && allCids.has(targetCid)) {
+      roots.push(targetCid);
+    }
+  }
+
+  return roots;
 }

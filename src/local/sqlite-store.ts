@@ -31,6 +31,7 @@ import type {
   ContributionStore,
   ExpiredClaim,
   ExpireStaleOptions,
+  ThreadNode,
 } from "../core/store.js";
 import { ExpiryReason } from "../core/store.js";
 
@@ -115,6 +116,7 @@ const SCHEMA_DDL = `
   CREATE INDEX IF NOT EXISTS idx_relations_source ON relations(source_cid);
   CREATE INDEX IF NOT EXISTS idx_relations_target ON relations(target_cid);
   CREATE INDEX IF NOT EXISTS idx_relations_type ON relations(relation_type);
+  CREATE INDEX IF NOT EXISTS idx_relations_target_type ON relations(target_cid, relation_type);
 
   -- Claims table
   CREATE TABLE IF NOT EXISTS claims (
@@ -633,6 +635,94 @@ export class SqliteContributionStore implements ContributionStore {
     return row?.cnt ?? 0;
   };
 
+  thread = async (
+    rootCid: string,
+    opts?: { readonly maxDepth?: number; readonly limit?: number },
+  ): Promise<readonly ThreadNode[]> => {
+    const maxDepth = opts?.maxDepth ?? 50;
+
+    // Check root exists
+    const rootRow = this.stmtGetByCid.get(rootCid) as { manifest_json: string } | null;
+    if (rootRow === null) return [];
+
+    // Deduplicate in the outer query: a contribution with multiple responds_to
+    // parents can appear at different depths in the CTE. GROUP BY cid + MIN(depth)
+    // keeps the shallowest occurrence, matching the InMemory BFS behavior.
+    const sql = `
+      WITH RECURSIVE thread_walk(cid, depth, created_at) AS (
+        SELECT ?, 0, c.created_at
+        FROM contributions c WHERE c.cid = ?
+        UNION ALL
+        SELECT r.source_cid, tw.depth + 1, child.created_at
+        FROM thread_walk tw
+        INNER JOIN relations r
+          ON r.target_cid = tw.cid AND r.relation_type = 'responds_to'
+        INNER JOIN contributions child ON child.cid = r.source_cid
+        WHERE tw.depth < ?
+      )
+      SELECT deduped.cid, deduped.depth, c.manifest_json
+      FROM (
+        SELECT cid, MIN(depth) AS depth, MIN(created_at) AS created_at
+        FROM thread_walk
+        GROUP BY cid
+      ) deduped
+      INNER JOIN contributions c ON c.cid = deduped.cid
+      ORDER BY deduped.depth ASC, deduped.created_at ASC
+      ${opts?.limit !== undefined ? "LIMIT ?" : ""}
+    `;
+
+    const params: SQLQueryBindings[] = [rootCid, rootCid, maxDepth];
+    if (opts?.limit !== undefined) {
+      params.push(opts.limit);
+    }
+
+    const rows = this.db.prepare(sql).all(...params) as readonly {
+      cid: string;
+      depth: number;
+      manifest_json: string;
+    }[];
+
+    return rows.map(
+      (row): ThreadNode => ({
+        contribution: rowToContribution(row),
+        depth: row.depth,
+      }),
+    );
+  };
+
+  replyCounts = async (cids: readonly string[]): Promise<ReadonlyMap<string, number>> => {
+    const result = new Map<string, number>();
+
+    // Initialize all requested CIDs to 0
+    for (const cid of cids) {
+      result.set(cid, 0);
+    }
+
+    if (cids.length === 0) return result;
+
+    // Chunk into groups of 500 to stay under SQLITE_MAX_VARIABLE_NUMBER (999)
+    const chunkSize = 500;
+    for (let i = 0; i < cids.length; i += chunkSize) {
+      const chunk = cids.slice(i, i + chunkSize);
+      const placeholders = chunk.map(() => "?").join(", ");
+      const sql = `
+        SELECT target_cid, COUNT(*) as cnt
+        FROM relations
+        WHERE target_cid IN (${placeholders}) AND relation_type = 'responds_to'
+        GROUP BY target_cid
+      `;
+      const rows = this.db.prepare(sql).all(...chunk) as readonly {
+        target_cid: string;
+        cnt: number;
+      }[];
+      for (const row of rows) {
+        result.set(row.target_cid, row.cnt);
+      }
+    }
+
+    return result;
+  };
+
   /**
    * No-op when used via createSqliteStores() — the factory's close() owns the
    * shared Database handle. Calling this will NOT close the underlying DB.
@@ -1123,6 +1213,12 @@ export class SqliteStore implements ContributionStore, ClaimStore {
   ): Promise<readonly Contribution[]> =>
     this.contributions.findExisting(agentId, targetCid, kind, relationType);
   count = (query?: ContributionQuery): Promise<number> => this.contributions.count(query);
+  thread = (
+    rootCid: string,
+    opts?: { readonly maxDepth?: number; readonly limit?: number },
+  ): Promise<readonly ThreadNode[]> => this.contributions.thread(rootCid, opts);
+  replyCounts = (cids: readonly string[]): Promise<ReadonlyMap<string, number>> =>
+    this.contributions.replyCounts(cids);
 
   // ClaimStore delegation
   createClaim = (claim: Claim): Promise<Claim> => this.claims.createClaim(claim);
