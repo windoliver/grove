@@ -66,7 +66,7 @@ try {
 
 // --- Server setup ---------------------------------------------------------
 
-const server = createMcpServer(deps);
+const server = await createMcpServer(deps);
 const transport = new StdioServerTransport();
 
 await server.connect(transport);

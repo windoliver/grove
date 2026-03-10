@@ -171,11 +171,13 @@ describe("thread traversal", () => {
     // responseB responds_to findingA → depth 1
     const responseBNode = thread.find((n) => n.contribution.cid === result.responseB.cid);
     expect(responseBNode).toBeDefined();
+    // biome-ignore lint/style/noNonNullAssertion: asserted defined above
     expect(responseBNode!.depth).toBe(1);
 
     // followUpA responds_to responseB → depth 2
     const followUpNode = thread.find((n) => n.contribution.cid === result.followUpA.cid);
     expect(followUpNode).toBeDefined();
+    // biome-ignore lint/style/noNonNullAssertion: asserted defined above
     expect(followUpNode!.depth).toBe(2);
   });
 
@@ -209,6 +211,7 @@ describe("reply counts", () => {
     const count = counts.get(result.findingA.cid);
     expect(count).toBeDefined();
     // responseB responds_to findingA → 1 reply
+    // biome-ignore lint/style/noNonNullAssertion: asserted defined above
     expect(count!).toBeGreaterThanOrEqual(1);
   });
 
@@ -216,6 +219,7 @@ describe("reply counts", () => {
     const counts = await ctx.contributionStore.replyCounts([result.responseB.cid]);
     const count = counts.get(result.responseB.cid);
     expect(count).toBeDefined();
+    // biome-ignore lint/style/noNonNullAssertion: asserted defined above
     expect(count!).toBe(1);
   });
 
