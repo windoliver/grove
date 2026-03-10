@@ -179,9 +179,8 @@ export function validateContributeOptions(options: ContributeOptions): Validatio
       }
       break;
     case "discussion":
-      if (!options.respondsTo) {
-        errors.push("--kind discussion requires --responds-to <cid>");
-      }
+      // Root discussions without --responds-to are valid (topic anchors).
+      // Replies use --responds-to to build threads.
       break;
     case "adoption":
       if (!options.adopts) {
@@ -264,7 +263,7 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
   const { parseGroveContract } = await import("../../core/contract.js");
   const { EnforcingContributionStore } = await import("../../core/enforcing-store.js");
 
-  const dbPath = join(grovePath, "store.sqlite");
+  const dbPath = join(grovePath, "grove.db");
   const casPath = join(grovePath, "cas");
   const db = initSqliteDb(dbPath);
   const rawStore = new SqliteContributionStore(db);

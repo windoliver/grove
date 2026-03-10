@@ -140,7 +140,7 @@ export async function executeInit(options: InitOptions): Promise<{ grovePath: st
   await mkdir(workspacesPath, { recursive: true });
 
   // 4. Initialize SQLite store
-  const dbPath = join(grovePath, "store.sqlite");
+  const dbPath = join(grovePath, "grove.db");
   const { initSqliteDb } = await import("../../local/sqlite-store.js");
   const db = initSqliteDb(dbPath);
 

@@ -217,6 +217,9 @@ export class EnforcingContributionStore implements ContributionStore {
   ): Promise<readonly ThreadNode[]> => this.inner.thread(rootCid, opts);
   replyCounts = (cids: readonly string[]): Promise<ReadonlyMap<string, number>> =>
     this.inner.replyCounts(cids);
+  hotThreads = (
+    opts?: import("./store.js").HotThreadsOptions,
+  ): Promise<readonly import("./store.js").ThreadSummary[]> => this.inner.hotThreads(opts);
   close = (): void => this.inner.close();
 
   // ========================================================================

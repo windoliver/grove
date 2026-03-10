@@ -248,12 +248,9 @@ describe("validateContributeOptions", () => {
     }
   });
 
-  test("rejects discussion without --responds-to", () => {
+  test("accepts discussion without --responds-to (root topic anchor)", () => {
     const result = validateContributeOptions(makeContributeOptions({ kind: "discussion" }));
-    expect(result.valid).toBe(false);
-    if (!result.valid) {
-      expect(result.errors[0]).toContain("--kind discussion requires --responds-to");
-    }
+    expect(result.valid).toBe(true);
   });
 
   test("rejects adoption without --adopts", () => {
@@ -799,7 +796,7 @@ describe("Codex review fixes", () => {
 
       // Read back from store to verify the mode was inherited
       const { SqliteContributionStore, initSqliteDb } = await import("../../local/sqlite-store.js");
-      const dbPath = join(dir, ".grove", "store.sqlite");
+      const dbPath = join(dir, ".grove", "grove.db");
       const db = initSqliteDb(dbPath);
       const store = new SqliteContributionStore(db);
       try {
@@ -835,7 +832,7 @@ describe("Codex review fixes", () => {
 
       // Read back from store to verify explicit flag wins
       const { SqliteContributionStore, initSqliteDb } = await import("../../local/sqlite-store.js");
-      const dbPath = join(dir, ".grove", "store.sqlite");
+      const dbPath = join(dir, ".grove", "grove.db");
       const db = initSqliteDb(dbPath);
       const store = new SqliteContributionStore(db);
       try {
@@ -893,7 +890,7 @@ describe("Codex review fixes", () => {
 
       // Read back from store to verify the score direction
       const { SqliteContributionStore, initSqliteDb } = await import("../../local/sqlite-store.js");
-      const dbPath = join(dir, ".grove", "store.sqlite");
+      const dbPath = join(dir, ".grove", "grove.db");
       const db = initSqliteDb(dbPath);
       const store = new SqliteContributionStore(db);
       try {

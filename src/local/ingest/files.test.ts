@@ -76,7 +76,7 @@ describe("ingestFiles", () => {
       await mkdir(join(srcDir, ".grove"), { recursive: true });
       await writeFile(join(srcDir, "main.ts"), "console.log('hi')");
       await writeFile(join(srcDir, ".git", "config"), "git config");
-      await writeFile(join(srcDir, ".grove", "store.sqlite"), "db");
+      await writeFile(join(srcDir, ".grove", "grove.db"), "db");
 
       const artifacts = await ingestFiles(cas, [srcDir]);
 

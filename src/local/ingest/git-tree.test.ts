@@ -99,7 +99,7 @@ describe("ingestGitTree", () => {
 
       await writeFile(join(repoDir, "src.ts"), "export {}");
       await mkdir(join(repoDir, ".grove"), { recursive: true });
-      await writeFile(join(repoDir, ".grove", "store.sqlite"), "db");
+      await writeFile(join(repoDir, ".grove", "grove.db"), "db");
 
       const run = async (cmd: string[]) => {
         const proc = Bun.spawn(cmd, { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
@@ -112,7 +112,7 @@ describe("ingestGitTree", () => {
 
       const names = Object.keys(artifacts);
       expect(names).toContain("src.ts");
-      expect(names).not.toContain(".grove/store.sqlite");
+      expect(names).not.toContain(".grove/grove.db");
     } finally {
       await rm(repoDir, { recursive: true, force: true });
     }

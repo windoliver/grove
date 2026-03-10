@@ -32,7 +32,9 @@ import type {
   ContributionStore,
   ExpiredClaim,
   ExpireStaleOptions,
+  HotThreadsOptions,
   ThreadNode,
+  ThreadSummary,
 } from "../core/store.js";
 import { ExpiryReason } from "../core/store.js";
 
@@ -717,6 +719,61 @@ export class SqliteContributionStore implements ContributionStore {
     return result;
   };
 
+  hotThreads = async (opts?: HotThreadsOptions): Promise<readonly ThreadSummary[]> => {
+    const limit = opts?.limit ?? 20;
+    const params: SQLQueryBindings[] = [];
+
+    let tagJoin = "";
+    let tagWhere = "";
+    if (opts?.tags !== undefined && opts.tags.length > 0) {
+      // Require all tags to match (intersection)
+      tagJoin = " INNER JOIN contribution_tags ct ON ct.cid = c.cid";
+      const placeholders = opts.tags.map(() => "?").join(", ");
+      tagWhere = ` AND ct.tag IN (${placeholders})`;
+      params.push(...opts.tags);
+      // GROUP BY with HAVING ensures all tags match
+    }
+
+    const havingCount =
+      opts?.tags !== undefined && opts.tags.length > 0
+        ? ` HAVING COUNT(DISTINCT r.source_cid) >= 1 AND COUNT(DISTINCT ct.tag) = ?`
+        : " HAVING COUNT(DISTINCT r.source_cid) >= 1";
+
+    const sql = `
+      SELECT c.manifest_json,
+             COUNT(DISTINCT r.source_cid) as reply_count,
+             MAX(reply_c.created_at) as last_reply_at
+      FROM contributions c
+      INNER JOIN relations r ON r.target_cid = c.cid AND r.relation_type = 'responds_to'
+      INNER JOIN contributions reply_c ON reply_c.cid = r.source_cid
+      ${tagJoin}
+      WHERE 1=1${tagWhere}
+      GROUP BY c.cid
+      ${havingCount}
+      ORDER BY reply_count DESC, last_reply_at DESC
+      LIMIT ?
+    `;
+
+    if (opts?.tags !== undefined && opts.tags.length > 0) {
+      params.push(opts.tags.length);
+    }
+    params.push(limit);
+
+    const rows = this.db.prepare(sql).all(...params) as readonly {
+      manifest_json: string;
+      reply_count: number;
+      last_reply_at: string;
+    }[];
+
+    return rows.map(
+      (row): ThreadSummary => ({
+        contribution: rowToContribution(row),
+        replyCount: row.reply_count,
+        lastReplyAt: row.last_reply_at,
+      }),
+    );
+  };
+
   /**
    * No-op when used via createSqliteStores() — the factory's close() owns the
    * shared Database handle. Calling this will NOT close the underlying DB.
@@ -1241,6 +1298,8 @@ export class SqliteStore implements ContributionStore, ClaimStore {
   ): Promise<readonly ThreadNode[]> => this.contributions.thread(rootCid, opts);
   replyCounts = (cids: readonly string[]): Promise<ReadonlyMap<string, number>> =>
     this.contributions.replyCounts(cids);
+  hotThreads = (opts?: HotThreadsOptions): Promise<readonly ThreadSummary[]> =>
+    this.contributions.hotThreads(opts);
 
   // ClaimStore delegation
   createClaim = (claim: Claim): Promise<Claim> => this.claims.createClaim(claim);
