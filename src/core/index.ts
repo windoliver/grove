@@ -1,6 +1,20 @@
 export type { ContentStore, PutOptions } from "./cas.js";
 export { validateMediaType } from "./cas.js";
 export type {
+  AgentConstraints,
+  Budget,
+  ClaimPolicy,
+  DeliberationLimit,
+  Gate,
+  GateType,
+  GroveContract,
+  MetricDefinition,
+  QuorumReviewScore,
+  StopConditions,
+  TargetMetric,
+} from "./contract.js";
+export { parseGroveContract, parseGroveContractObject } from "./contract.js";
+export type {
   Frontier,
   FrontierCalculator,
   FrontierEntry,
@@ -17,6 +31,13 @@ export {
   hookCommand,
   hookTimeout,
 } from "./hooks.js";
+export type { StopConditionResult, StopEvaluationResult } from "./lifecycle.js";
+export {
+  deriveLifecycleState,
+  deriveLifecycleStates,
+  evaluateStopConditions,
+  LifecycleState,
+} from "./lifecycle.js";
 export {
   CID_PATTERN,
   ContextSchema,

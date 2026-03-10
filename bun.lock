@@ -6,6 +6,7 @@
       "name": "grove",
       "dependencies": {
         "blake3": "^1.0.2",
+        "yaml": "^2.8.2",
         "zod": "4.3.6",
       },
       "devDependencies": {
@@ -16,7 +17,6 @@
         "lefthook": "2.1.1",
         "tsup": "^8.5.1",
         "typescript": "^5.9.3",
-        "yaml": "^2.8.2",
       },
     },
   },
