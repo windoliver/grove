@@ -508,6 +508,98 @@ export function runFrontierCalculatorTests(
       expect(frontier.byReproduction).toHaveLength(2);
     });
 
+    test("excludes challenged reproductions", async () => {
+      const target = makeContribution({
+        summary: "challenged-target",
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+
+      const confirmed = makeContribution({
+        summary: "confirmed-repro",
+        kind: ContributionKind.Reproduction,
+        relations: [
+          makeRelation({
+            targetCid: target.cid,
+            relationType: RelationType.Reproduces,
+            metadata: { result: "confirmed" },
+          }),
+        ],
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+      const challenged = makeContribution({
+        summary: "challenged-repro",
+        kind: ContributionKind.Reproduction,
+        relations: [
+          makeRelation({
+            targetCid: target.cid,
+            relationType: RelationType.Reproduces,
+            metadata: { result: "challenged" },
+          }),
+        ],
+        createdAt: "2026-01-03T00:00:00Z",
+      });
+
+      await store.putMany([target, confirmed, challenged]);
+      const frontier = await calculator.compute();
+
+      // Only the confirmed reproduction counts
+      expect(frontier.byReproduction).toHaveLength(1);
+      expect(frontier.byReproduction[0]?.cid).toBe(target.cid);
+      expect(frontier.byReproduction[0]?.value).toBe(1);
+    });
+
+    test("counts partial reproductions", async () => {
+      const target = makeContribution({
+        summary: "partial-target",
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+
+      const partial = makeContribution({
+        summary: "partial-repro",
+        kind: ContributionKind.Reproduction,
+        relations: [
+          makeRelation({
+            targetCid: target.cid,
+            relationType: RelationType.Reproduces,
+            metadata: { result: "partial" },
+          }),
+        ],
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+
+      await store.putMany([target, partial]);
+      const frontier = await calculator.compute();
+
+      expect(frontier.byReproduction).toHaveLength(1);
+      expect(frontier.byReproduction[0]?.value).toBe(1);
+    });
+
+    test("treats missing metadata as confirmed", async () => {
+      const target = makeContribution({
+        summary: "no-metadata-target",
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+
+      const noMeta = makeContribution({
+        summary: "no-metadata-repro",
+        kind: ContributionKind.Reproduction,
+        relations: [
+          makeRelation({
+            targetCid: target.cid,
+            relationType: RelationType.Reproduces,
+          }),
+        ],
+        createdAt: "2026-01-02T00:00:00Z",
+      });
+
+      await store.putMany([target, noMeta]);
+      const frontier = await calculator.compute();
+
+      // No metadata → treated as confirmed
+      expect(frontier.byReproduction).toHaveLength(1);
+      expect(frontier.byReproduction[0]?.value).toBe(1);
+    });
+
     test("returns empty when no reproductions exist", async () => {
       const c = makeContribution({
         summary: "no-reproductions",

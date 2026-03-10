@@ -123,9 +123,7 @@ export class DefaultFrontierCalculator implements FrontierCalculator {
     ]);
     const byRecency = this.computeByRecency(filtered, limit);
     const byReviewScore = this.computeByReviewScore(filtered, allContributions, limit);
-    const byReproduction = this.computeByRelationCount(filtered, allContributions, limit, [
-      RelationType.Reproduces,
-    ]);
+    const byReproduction = this.computeByReproduction(filtered, allContributions, limit);
 
     return { byMetric, byAdoption, byRecency, byReviewScore, byReproduction };
   }
@@ -195,6 +193,50 @@ export class DefaultFrontierCalculator implements FrontierCalculator {
     for (const c of allContributions) {
       for (const rel of c.relations) {
         if (relationTypes.includes(rel.relationType) && counts.has(rel.targetCid)) {
+          counts.set(rel.targetCid, (counts.get(rel.targetCid) ?? 0) + 1);
+        }
+      }
+    }
+
+    const entries: FrontierEntry[] = [];
+    for (const c of contributions) {
+      const count = counts.get(c.cid) ?? 0;
+      if (count > 0) {
+        entries.push(toEntry(c, count));
+      }
+    }
+
+    entries.sort((a, b) => compareEntries(a, b, true));
+    return entries.slice(0, limit);
+  }
+
+  /**
+   * Count confirmed reproductions for each filtered contribution.
+   *
+   * Per RELATIONS.md, reproduces metadata may include a `result` field
+   * with values "confirmed", "challenged", or "partial". Only "confirmed"
+   * and "partial" count toward the reproduction frontier. Reproductions
+   * without metadata are treated as confirmed (the default assumption).
+   * "challenged" reproductions are excluded — a repeatedly-challenged
+   * contribution should not rank alongside a repeatedly-confirmed one.
+   */
+  private computeByReproduction(
+    contributions: readonly Contribution[],
+    allContributions: readonly Contribution[],
+    limit: number,
+  ): readonly FrontierEntry[] {
+    const counts = new Map<string, number>();
+    for (const c of contributions) {
+      counts.set(c.cid, 0);
+    }
+
+    for (const c of allContributions) {
+      for (const rel of c.relations) {
+        if (rel.relationType === RelationType.Reproduces && counts.has(rel.targetCid)) {
+          // Exclude "challenged" reproductions from the count.
+          // Missing metadata or missing result field defaults to confirmed.
+          const result = rel.metadata?.result;
+          if (result === "challenged") continue;
           counts.set(rel.targetCid, (counts.get(rel.targetCid) ?? 0) + 1);
         }
       }

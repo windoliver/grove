@@ -9,13 +9,27 @@ queryable rankings along multiple dimensions:
 - **By adoption** — most-adopted contributions (counts `adopts` and `derives_from` relations)
 - **By recency** — most recent contributions
 - **By review score** — highest average review scores
-- **By reproduction** — most-reproduced contributions (counts `reproduces` relations)
+- **By reproduction** — most-confirmed reproductions (counts `reproduces` relations, excluding challenged)
 
 ## Adoption Counting
 
 Adoption count = number of `adopts` or `derives_from` relations pointing to a
 contribution. Both relation types are implicit quality signals: "I endorse
 this" (`adopts`) or "I built on this" (`derives_from`).
+
+## Reproduction Counting
+
+Reproduction count = number of `reproduces` relations pointing to a
+contribution, excluding those with `metadata.result === "challenged"`.
+
+Per RELATIONS.md, `reproduces` metadata may include a `result` field:
+- `"confirmed"` — counted (result confirmed)
+- `"partial"` — counted (partially confirmed)
+- `"challenged"` — excluded (result contradicted)
+- absent — counted (assumed confirmed when no metadata provided)
+
+This ensures a repeatedly-challenged contribution does not rank alongside
+a repeatedly-confirmed one.
 
 ## Exploration Mode
 
