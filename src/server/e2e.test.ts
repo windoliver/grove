@@ -7,7 +7,6 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import type { Server } from "bun";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
 import { InMemoryContributionStore } from "../core/testing.js";
 import { createApp } from "./app.js";
@@ -19,16 +18,16 @@ import {
   makeManifestBody,
 } from "./test-helpers.js";
 
-let server: Server;
+// biome-ignore lint/suspicious/noExplicitAny: test file — JSON responses are dynamically shaped
+type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+let server: ReturnType<typeof Bun.serve>;
 let baseUrl: string;
-let contributionStore: InMemoryContributionStore;
-let claimStore: InMemoryClaimStore;
-let cas: InMemoryContentStore;
 
 beforeAll(() => {
-  contributionStore = new InMemoryContributionStore();
-  claimStore = new InMemoryClaimStore();
-  cas = new InMemoryContentStore();
+  const contributionStore = new InMemoryContributionStore();
+  const claimStore = new InMemoryClaimStore();
+  const cas = new InMemoryContentStore();
   const frontier = new DefaultFrontierCalculator(contributionStore);
 
   const deps: ServerDeps = { contributionStore, claimStore, cas, frontier };
@@ -49,7 +48,7 @@ describe("E2E: grove metadata", () => {
   it("GET /api/grove returns metadata", async () => {
     const res = await fetch(`${baseUrl}/api/grove`);
     expect(res.status).toBe(200);
-    const data = await res.json();
+    const data = (await res.json()) as Json;
     expect(data.version).toBe("0.1.0");
     expect(data.protocol.manifestVersion).toBe(1);
     expect(typeof data.stats.contributions).toBe("number");
@@ -70,7 +69,7 @@ describe("E2E: contribution lifecycle", () => {
     });
 
     expect(res.status).toBe(201);
-    const data = await res.json();
+    const data = (await res.json()) as Json;
     expect(data.cid).toMatch(/^blake3:[0-9a-f]{64}$/);
     createdCid = data.cid;
   });
@@ -79,14 +78,14 @@ describe("E2E: contribution lifecycle", () => {
     const res = await fetch(`${baseUrl}/api/contributions`);
     expect(res.status).toBe(200);
     expect(res.headers.get("X-Total-Count")).toBeTruthy();
-    const data = await res.json();
+    const data = (await res.json()) as Json;
     expect(data.length).toBeGreaterThanOrEqual(1);
   });
 
   it("GET /api/contributions/:cid returns a single contribution", async () => {
     const res = await fetch(`${baseUrl}/api/contributions/${createdCid}`);
     expect(res.status).toBe(200);
-    const data = await res.json();
+    const data = (await res.json()) as Json;
     expect(data.cid).toBe(createdCid);
     expect(data.summary).toBe("E2E test contribution");
   });
@@ -116,7 +115,7 @@ describe("E2E: multipart upload and artifact download", () => {
     });
 
     expect(createRes.status).toBe(201);
-    const contribution = await createRes.json();
+    const contribution = (await createRes.json()) as Json;
     expect(contribution.artifacts["notes.txt"]).toMatch(/^blake3:/);
 
     // Download the artifact
@@ -141,7 +140,7 @@ describe("E2E: claim lifecycle", () => {
       body: JSON.stringify(body),
     });
     expect(createRes.status).toBe(201);
-    const claim = await createRes.json();
+    const claim = (await createRes.json()) as Json;
     expect(claim.status).toBe("active");
 
     // Heartbeat
@@ -159,14 +158,14 @@ describe("E2E: claim lifecycle", () => {
       body: JSON.stringify({ action: "complete" }),
     });
     expect(completeRes.status).toBe(200);
-    const completed = await completeRes.json();
+    const completed = (await completeRes.json()) as Json;
     expect(completed.status).toBe("completed");
   });
 
   it("GET /api/claims lists claims", async () => {
     const res = await fetch(`${baseUrl}/api/claims`);
     expect(res.status).toBe(200);
-    const data = await res.json();
+    const data = (await res.json()) as Json;
     expect(Array.isArray(data)).toBe(true);
   });
 });
@@ -175,7 +174,7 @@ describe("E2E: frontier", () => {
   it("GET /api/frontier returns frontier data", async () => {
     const res = await fetch(`${baseUrl}/api/frontier`);
     expect(res.status).toBe(200);
-    const data = await res.json();
+    const data = (await res.json()) as Json;
     expect(data).toHaveProperty("byMetric");
     expect(data).toHaveProperty("byAdoption");
     expect(data).toHaveProperty("byRecency");
@@ -186,7 +185,7 @@ describe("E2E: search", () => {
   it("GET /api/search?q=... returns search results", async () => {
     const res = await fetch(`${baseUrl}/api/search?q=E2E`);
     expect(res.status).toBe(200);
-    const data = await res.json();
+    const data = (await res.json()) as Json;
     expect(Array.isArray(data)).toBe(true);
   });
 
@@ -205,7 +204,7 @@ describe("E2E: DAG traversal", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(parentBody),
     });
-    const parent = await parentRes.json();
+    const parent = (await parentRes.json()) as Json;
 
     // Create child referencing parent
     const childBody = makeManifestBody({
@@ -217,19 +216,19 @@ describe("E2E: DAG traversal", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(childBody),
     });
-    const child = await childRes.json();
+    const child = (await childRes.json()) as Json;
 
     // Children of parent
     const childrenRes = await fetch(`${baseUrl}/api/dag/${parent.cid}/children`);
     expect(childrenRes.status).toBe(200);
-    const children = await childrenRes.json();
+    const children = (await childrenRes.json()) as Json;
     expect(children).toHaveLength(1);
     expect(children[0].cid).toBe(child.cid);
 
     // Ancestors of child
     const ancestorsRes = await fetch(`${baseUrl}/api/dag/${child.cid}/ancestors`);
     expect(ancestorsRes.status).toBe(200);
-    const ancestors = await ancestorsRes.json();
+    const ancestors = (await ancestorsRes.json()) as Json;
     expect(ancestors).toHaveLength(1);
     expect(ancestors[0].cid).toBe(parent.cid);
   });

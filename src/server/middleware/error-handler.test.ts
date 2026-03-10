@@ -10,6 +10,9 @@ import {
 } from "../../core/errors.js";
 import { handleError } from "./error-handler.js";
 
+// biome-ignore lint/suspicious/noExplicitAny: test file — JSON responses are dynamically shaped
+type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+
 /** Create a test app that throws the given error on GET /test. */
 function appThatThrows(error: Error): Hono {
   const app = new Hono();
@@ -35,7 +38,7 @@ describe("error handler", () => {
 
     const res = await app.request("/test");
     expect(res.status).toBe(400);
-    const data = await res.json();
+    const data = (await res.json()) as Json;
     expect(data.error.code).toBe("VALIDATION_ERROR");
   });
 
@@ -46,7 +49,7 @@ describe("error handler", () => {
 
     const res = await app.request("/test");
     expect(res.status).toBe(409);
-    const data = await res.json();
+    const data = (await res.json()) as Json;
     expect(data.error.code).toBe("CONCURRENCY_LIMIT");
   });
 
@@ -64,7 +67,7 @@ describe("error handler", () => {
     const res = await app.request("/test");
     expect(res.status).toBe(429);
     expect(res.headers.get("Retry-After")).toBe("30");
-    const data = await res.json();
+    const data = (await res.json()) as Json;
     expect(data.error.code).toBe("RATE_LIMIT");
   });
 
@@ -75,7 +78,7 @@ describe("error handler", () => {
 
     const res = await app.request("/test");
     expect(res.status).toBe(422);
-    const data = await res.json();
+    const data = (await res.json()) as Json;
     expect(data.error.code).toBe("LEASE_VIOLATION");
   });
 
@@ -86,7 +89,7 @@ describe("error handler", () => {
 
     const res = await app.request("/test");
     expect(res.status).toBe(422);
-    const data = await res.json();
+    const data = (await res.json()) as Json;
     expect(data.error.code).toBe("ARTIFACT_LIMIT");
   });
 
@@ -95,7 +98,7 @@ describe("error handler", () => {
 
     const res = await app.request("/test");
     expect(res.status).toBe(503);
-    const data = await res.json();
+    const data = (await res.json()) as Json;
     expect(data.error.code).toBe("RETRY_EXHAUSTED");
   });
 
@@ -106,7 +109,7 @@ describe("error handler", () => {
 
     const res = await app.request("/test");
     expect(res.status).toBe(500);
-    const data = await res.json();
+    const data = (await res.json()) as Json;
     expect(data.error.code).toBe("GROVE_ERROR");
   });
 
@@ -115,7 +118,7 @@ describe("error handler", () => {
 
     const res = await app.request("/test");
     expect(res.status).toBe(404);
-    const data = await res.json();
+    const data = (await res.json()) as Json;
     expect(data.error.code).toBe("NOT_FOUND");
   });
 
@@ -124,7 +127,7 @@ describe("error handler", () => {
 
     const res = await app.request("/test");
     expect(res.status).toBe(409);
-    const data = await res.json();
+    const data = (await res.json()) as Json;
     expect(data.error.code).toBe("CONFLICT");
   });
 
@@ -137,7 +140,7 @@ describe("error handler", () => {
 
       const res = await app.request("/test");
       expect(res.status).toBe(500);
-      const data = await res.json();
+      const data = (await res.json()) as Json;
       expect(data.error.code).toBe("INTERNAL_ERROR");
       expect(data.error.message).toBe("Internal server error");
       expect(data.error.message).not.toContain("secret");
