@@ -86,11 +86,10 @@ describe("gossip help", () => {
   });
 
   test("sets exit code for unknown subcommand", async () => {
-    const original = process.exitCode;
     const { writer } = createOutput();
     await handleGossip(["unknown"], undefined, undefined, writer);
     expect(process.exitCode).toBe(1);
-    process.exitCode = original;
+    process.exitCode = 0;
   });
 });
 
