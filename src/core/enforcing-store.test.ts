@@ -339,6 +339,25 @@ describe("EnforcingContributionStore", () => {
         await cleanup(dir, db);
       }
     });
+
+    test("allows historical contributions when no rate limits set", async () => {
+      const { dir, db, contributionStore } = await setupStores();
+      try {
+        const contract = makeContract(); // no rateLimits
+        const store = new EnforcingContributionStore(contributionStore, contract);
+
+        // A contribution with a very old timestamp should be accepted
+        // because clock skew enforcement is only active with rate limits
+        const historical = makeContribution({
+          summary: "historical",
+          createdAt: "2020-01-01T00:00:00Z",
+        });
+        await store.put(historical);
+        expect(await store.count()).toBe(1);
+      } finally {
+        await cleanup(dir, db);
+      }
+    });
   });
 
   describe("putMany enforcement", () => {
@@ -398,6 +417,23 @@ describe("EnforcingContributionStore", () => {
         await cleanup(dir, db);
       }
     });
+
+    test("putMany deduplicates same CID within the batch", async () => {
+      const { dir, db, contributionStore } = await setupStores();
+      try {
+        const contract = makeContract({
+          rateLimits: { maxContributionsPerAgentPerHour: 1 },
+        });
+        const store = new EnforcingContributionStore(contributionStore, contract);
+
+        const c = makeRecentContribution({ summary: "dup" });
+        // putMany([c, c]) should succeed — second is an intra-batch duplicate, not a rate limit hit
+        await store.putMany([c, c]);
+        expect(await store.count()).toBe(1);
+      } finally {
+        await cleanup(dir, db);
+      }
+    });
   });
 
   describe("idempotent put", () => {
@@ -448,6 +484,32 @@ describe("EnforcingContributionStore", () => {
       }
     });
 
+    test("rejects contribution with future-dated createdAt", async () => {
+      const { dir, db, contributionStore } = await setupStores();
+      try {
+        const contract = makeContract({
+          rateLimits: { maxContributionsPerAgentPerHour: 10 },
+        });
+        const store = new EnforcingContributionStore(contributionStore, contract);
+
+        // Future-date by 2 hours — well beyond the 5-minute tolerance
+        const futureDated = makeContribution({
+          summary: "future-dated",
+          createdAt: new Date(Date.now() + 2 * 3600 * 1000).toISOString(),
+        });
+
+        try {
+          await store.put(futureDated);
+          expect.unreachable("should have thrown");
+        } catch (e) {
+          expect(e).toBeInstanceOf(RateLimitError);
+          expect((e as RateLimitError).message).toContain("too far in the future");
+        }
+      } finally {
+        await cleanup(dir, db);
+      }
+    });
+
     test("allows contribution within clock skew tolerance", async () => {
       const { dir, db, contributionStore } = await setupStores();
       try {
@@ -471,6 +533,32 @@ describe("EnforcingContributionStore", () => {
   });
 
   describe("concurrent writes", () => {
+    test("shared mutex prevents cross-wrapper bypass", async () => {
+      const { dir, db, contributionStore } = await setupStores();
+      try {
+        const contract = makeContract({
+          rateLimits: { maxContributionsPerAgentPerHour: 1 },
+        });
+        // Two separate wrappers over the same inner store
+        const store1 = new EnforcingContributionStore(contributionStore, contract);
+        const store2 = new EnforcingContributionStore(contributionStore, contract);
+
+        await store1.put(makeRecentContribution({ summary: "from-wrapper-1" }));
+
+        // Second wrapper should see the contribution from wrapper 1 and reject
+        try {
+          await store2.put(makeRecentContribution({ summary: "from-wrapper-2" }));
+          expect.unreachable("should have thrown");
+        } catch (e) {
+          expect(e).toBeInstanceOf(RateLimitError);
+        }
+
+        expect(await contributionStore.count()).toBe(1);
+      } finally {
+        await cleanup(dir, db);
+      }
+    });
+
     test("mutex prevents concurrent puts from exceeding rate limit", async () => {
       const { dir, db, contributionStore } = await setupStores();
       try {
@@ -524,6 +612,35 @@ describe("EnforcingClaimStore", () => {
         }
 
         expect(await store.countActiveClaims()).toBe(3);
+      } finally {
+        await cleanup(dir, db);
+      }
+    });
+
+    test("shared mutex prevents cross-wrapper claim bypass", async () => {
+      const { dir, db, claimStore } = await setupStores();
+      try {
+        const contract = makeContract({
+          concurrency: { maxActiveClaims: 1 },
+        });
+        // Two separate wrappers over the same inner store
+        const store1 = new EnforcingClaimStore(claimStore, contract);
+        const store2 = new EnforcingClaimStore(claimStore, contract);
+
+        await store1.createClaim(
+          makeClaim({ claimId: "c1", targetRef: "t1", agent: { agentId: "a1" } }),
+        );
+
+        try {
+          await store2.createClaim(
+            makeClaim({ claimId: "c2", targetRef: "t2", agent: { agentId: "a2" } }),
+          );
+          expect.unreachable("should have thrown");
+        } catch (e) {
+          expect(e).toBeInstanceOf(ConcurrencyLimitError);
+        }
+
+        expect(await claimStore.countActiveClaims()).toBe(1);
       } finally {
         await cleanup(dir, db);
       }

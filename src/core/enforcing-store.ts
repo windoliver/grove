@@ -7,9 +7,11 @@
  * - Artifact limits (size, count)
  * - Lease duration limits (on create AND heartbeat)
  *
- * Write operations are serialized via an in-process mutex to prevent
- * TOCTOU races between check and write. The raw stores remain
- * contract-agnostic; all policy enforcement lives in these wrappers.
+ * Write operations are serialized via a shared in-process mutex keyed
+ * by inner store identity (WeakMap), so multiple wrappers over the same
+ * backing store share one mutex and cannot bypass limits via independent
+ * check-then-act sequences. The raw stores remain contract-agnostic;
+ * all policy enforcement lives in these wrappers.
  */
 
 import type { ContentStore } from "./cas.js";
@@ -71,6 +73,26 @@ class AsyncMutex {
   }
 }
 
+/**
+ * Shared mutex registries keyed by inner store identity.
+ *
+ * Multiple EnforcingStore wrappers over the same inner store MUST share
+ * a single mutex, otherwise concurrent callers using separate wrappers
+ * can bypass limits via independent check-then-act sequences. WeakMaps
+ * ensure the mutex is garbage-collected when the inner store is.
+ */
+const contributionStoreMutexes = new WeakMap<ContributionStore, AsyncMutex>();
+const claimStoreMutexes = new WeakMap<ClaimStore, AsyncMutex>();
+
+function getOrCreateMutex<T extends object>(registry: WeakMap<T, AsyncMutex>, key: T): AsyncMutex {
+  let mutex = registry.get(key);
+  if (mutex === undefined) {
+    mutex = new AsyncMutex();
+    registry.set(key, mutex);
+  }
+  return mutex;
+}
+
 // ---------------------------------------------------------------------------
 // EnforcingContributionStore
 // ---------------------------------------------------------------------------
@@ -87,7 +109,7 @@ export class EnforcingContributionStore implements ContributionStore {
   private readonly cas: ContentStore | undefined;
   private readonly contract: GroveContract;
   private readonly clock: () => Date;
-  private readonly writeMutex = new AsyncMutex();
+  private readonly writeMutex: AsyncMutex;
 
   constructor(
     inner: ContributionStore,
@@ -101,6 +123,7 @@ export class EnforcingContributionStore implements ContributionStore {
     this.contract = contract;
     this.cas = options?.cas;
     this.clock = options?.clock ?? (() => new Date());
+    this.writeMutex = getOrCreateMutex(contributionStoreMutexes, inner);
   }
 
   put = async (contribution: Contribution): Promise<void> => {
@@ -122,9 +145,14 @@ export class EnforcingContributionStore implements ContributionStore {
   putMany = async (contributions: readonly Contribution[]): Promise<void> => {
     await this.writeMutex.acquire();
     try {
-      // Filter out already-existing CIDs (idempotent puts should not be rate-limited)
+      // Filter out already-existing CIDs and intra-batch duplicates.
+      // Idempotent puts should not be rate-limited, and putMany([c, c])
+      // must behave the same as put(c); put(c) — the second is a no-op.
+      const seenCids = new Set<string>();
       const newContributions: Contribution[] = [];
       for (const c of contributions) {
+        if (seenCids.has(c.cid)) continue;
+        seenCids.add(c.cid);
         const existing = await this.inner.get(c.cid);
         if (existing === undefined) {
           newContributions.push(c);
@@ -178,8 +206,12 @@ export class EnforcingContributionStore implements ContributionStore {
   ): Promise<void> {
     const rl = this.contract.rateLimits;
 
-    // Reject backdated contributions to prevent rate-limit bypass
-    this.enforceClockSkew(contribution);
+    // Reject backdated / future-dated contributions to prevent rate-limit bypass.
+    // Only enforced when rate limits are configured — without rate limits there is
+    // no sliding window to game.
+    if (rl !== undefined) {
+      this.enforceClockSkew(contribution);
+    }
 
     // Check per-agent rate limit
     if (rl?.maxContributionsPerAgentPerHour !== undefined) {
@@ -228,13 +260,15 @@ export class EnforcingContributionStore implements ContributionStore {
 
   /**
    * Reject contributions whose createdAt is more than MAX_CLOCK_SKEW_MS
-   * in the past. This prevents callers from backdating timestamps to
-   * evade the sliding-window rate limit.
+   * away from "now" in either direction. Past-dated timestamps bypass the
+   * sliding-window rate limit; future-dated timestamps poison the window
+   * count for subsequent submissions.
    */
   private enforceClockSkew(contribution: Contribution): void {
     const now = this.clock();
     const createdAt = new Date(contribution.createdAt).getTime();
     const lowerBound = now.getTime() - MAX_CLOCK_SKEW_MS;
+    const upperBound = now.getTime() + MAX_CLOCK_SKEW_MS;
 
     if (createdAt < lowerBound) {
       throw new RateLimitError({
@@ -244,6 +278,17 @@ export class EnforcingContributionStore implements ContributionStore {
         windowSeconds: RATE_LIMIT_WINDOW_SECONDS,
         retryAfterMs: 0,
         message: `Contribution createdAt ${contribution.createdAt} is too far in the past (max skew: ${MAX_CLOCK_SKEW_MS}ms)`,
+      });
+    }
+
+    if (createdAt > upperBound) {
+      throw new RateLimitError({
+        limitType: "per_agent",
+        current: 0,
+        limit: 0,
+        windowSeconds: RATE_LIMIT_WINDOW_SECONDS,
+        retryAfterMs: 0,
+        message: `Contribution createdAt ${contribution.createdAt} is too far in the future (max skew: ${MAX_CLOCK_SKEW_MS}ms)`,
       });
     }
   }
@@ -332,11 +377,12 @@ export class EnforcingContributionStore implements ContributionStore {
 export class EnforcingClaimStore implements ClaimStore {
   private readonly inner: ClaimStore;
   private readonly contract: GroveContract;
-  private readonly writeMutex = new AsyncMutex();
+  private readonly writeMutex: AsyncMutex;
 
   constructor(inner: ClaimStore, contract: GroveContract) {
     this.inner = inner;
     this.contract = contract;
+    this.writeMutex = getOrCreateMutex(claimStoreMutexes, inner);
   }
 
   createClaim = async (claim: Claim): Promise<Claim> => {
