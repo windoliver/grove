@@ -20,6 +20,13 @@ export interface ActiveClaimFilter {
   readonly targetRef?: string | undefined;
 }
 
+/** A node in a discussion thread, with its position metadata. */
+export interface ThreadNode {
+  readonly contribution: Contribution;
+  /** Depth from the thread root (root = 0, direct replies = 1, etc.). */
+  readonly depth: number;
+}
+
 /** Filters for querying contributions. */
 export interface ContributionQuery {
   readonly kind?: ContributionKind | undefined;
@@ -100,6 +107,32 @@ export interface ContributionStore {
 
   /** Count contributions matching filters. */
   count(query?: ContributionQuery): Promise<number>;
+
+  /**
+   * Walk a discussion thread rooted at a contribution.
+   *
+   * Returns the root at depth 0 followed by all descendants reachable
+   * via `responds_to` relations, ordered chronologically within each depth.
+   * Parents always appear before their children.
+   *
+   * Returns an empty array if the root CID does not exist.
+   *
+   * @param rootCid - CID of the thread root contribution.
+   * @param opts.maxDepth - Maximum depth to traverse (default: 50).
+   * @param opts.limit - Maximum number of nodes to return.
+   */
+  thread(
+    rootCid: string,
+    opts?: { readonly maxDepth?: number; readonly limit?: number },
+  ): Promise<readonly ThreadNode[]>;
+
+  /**
+   * Count direct replies (incoming `responds_to` relations) for multiple CIDs.
+   *
+   * Returns a map from CID to direct reply count. CIDs with no replies
+   * have a count of 0. Non-existent CIDs also return 0 (not omitted).
+   */
+  replyCounts(cids: readonly string[]): Promise<ReadonlyMap<string, number>>;
 
   /** Release resources (e.g., close database connections). */
   close(): void;
