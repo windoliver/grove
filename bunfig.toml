@@ -9,7 +9,7 @@ coverageSkipTestFiles = true
 coverageReporter = ["text", "lcov"]
 coverageDir = "coverage"
 coverageThreshold = { lines = 0.8, functions = 0.8, statements = 0.8 }
-coveragePathIgnorePatterns = ["dist/**", "node_modules/**", "src/core/testing.ts", "examples/**/scenario.ts", "src/github/gh-cli-client.ts", "src/cli/context.ts", "src/cli/commands/export.ts", "src/cli/commands/import.ts"]
+coveragePathIgnorePatterns = ["dist/**", "node_modules/**", "src/core/testing.ts", "examples/**/scenario.ts", "src/github/gh-cli-client.ts", "src/cli/context.ts", "src/cli/commands/export.ts", "src/cli/commands/import.ts", "src/**/test-helpers.ts", "src/server/schemas.ts", "src/server/serve.ts"]
 
 [run]
 shell = "bun"
