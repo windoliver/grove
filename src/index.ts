@@ -73,3 +73,35 @@ export type {
   ExpireStaleOptions,
 } from "./core/store.js";
 export { ExpiryReason } from "./core/store.js";
+
+// GitHub adapter
+export {
+  createGitHubAdapter,
+  type ExportToDiscussionResult,
+  type ExportToPRResult,
+  type GitHubAdapterOptions,
+  type ImportResult,
+} from "./github/adapter.js";
+export {
+  type CreateDiscussionParams,
+  type CreatePRParams,
+  type GitHubClient,
+  type PushBranchParams,
+} from "./github/client.js";
+export { createGhCliClient } from "./github/gh-cli-client.js";
+export {
+  GhCliNotFoundError,
+  GitHubAdapterError,
+  GitHubAuthError,
+  GitHubNotFoundError,
+  GitHubRateLimitError,
+  GitHubValidationError,
+} from "./github/errors.js";
+export { parseDiscussionRef, parsePRRef, parseRepoRef } from "./github/refs.js";
+export type {
+  DiscussionRef,
+  GitHubDiscussion,
+  GitHubPR,
+  PRRef,
+  RepoRef,
+} from "./github/types.js";

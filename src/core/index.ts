@@ -120,3 +120,4 @@ export type {
   WorkspaceQuery,
 } from "./workspace.js";
 export { WorkspaceStatus } from "./workspace.js";
+export { spawnCommand, spawnOrThrow, type SpawnOptions, type SpawnResult } from "./subprocess.js";
