@@ -175,12 +175,12 @@ describe("EnforcingContributionStore", () => {
         });
 
         // Submit 2 contributions at T=0
-        await store.put(makeContribution({ summary: "t0-0" }));
-        await store.put(makeContribution({ summary: "t0-1" }));
+        await store.put(makeContribution({ summary: "t0-0", createdAt: mockNow.toISOString() }));
+        await store.put(makeContribution({ summary: "t0-1", createdAt: mockNow.toISOString() }));
 
         // Should be rate-limited
         try {
-          await store.put(makeContribution({ summary: "t0-2" }));
+          await store.put(makeContribution({ summary: "t0-2", createdAt: mockNow.toISOString() }));
           expect.unreachable("should have thrown");
         } catch (e) {
           expect(e).toBeInstanceOf(RateLimitError);
@@ -190,7 +190,7 @@ describe("EnforcingContributionStore", () => {
         mockNow = new Date("2026-01-01T01:00:01Z");
 
         // Should succeed — old contributions rolled out of window
-        await store.put(makeContribution({ summary: "t1-0" }));
+        await store.put(makeContribution({ summary: "t1-0", createdAt: mockNow.toISOString() }));
         expect(await store.count()).toBe(3);
       } finally {
         await cleanup(dir, db);
@@ -244,7 +244,7 @@ describe("EnforcingContributionStore", () => {
         });
         const store = new EnforcingContributionStore(contributionStore, contract);
 
-        const contribution = makeContribution({
+        const contribution = makeRecentContribution({
           summary: "too-many-artifacts",
           artifacts: {
             "file1.txt": "blake3:0000000000000000000000000000000000000000000000000000000000000001",
@@ -276,7 +276,7 @@ describe("EnforcingContributionStore", () => {
         });
         const store = new EnforcingContributionStore(contributionStore, contract);
 
-        const contribution = makeContribution({
+        const contribution = makeRecentContribution({
           summary: "ok-artifacts",
           artifacts: {
             "file1.txt": "blake3:0000000000000000000000000000000000000000000000000000000000000001",
@@ -303,7 +303,7 @@ describe("EnforcingContributionStore", () => {
         const largeData = new Uint8Array(200);
         const hash = await cas.put(largeData);
 
-        const contribution = makeContribution({
+        const contribution = makeRecentContribution({
           summary: "large-artifact",
           artifacts: { "big.bin": hash },
         });
@@ -332,7 +332,7 @@ describe("EnforcingContributionStore", () => {
         const store = new EnforcingContributionStore(contributionStore, contract);
 
         for (let i = 0; i < 10; i++) {
-          await store.put(makeContribution({ summary: `c-${i}` }));
+          await store.put(makeRecentContribution({ summary: `c-${i}` }));
         }
         expect(await store.count()).toBe(10);
       } finally {
@@ -366,6 +366,131 @@ describe("EnforcingContributionStore", () => {
         }
 
         // Only the first contribution should exist
+        expect(await store.count()).toBe(1);
+      } finally {
+        await cleanup(dir, db);
+      }
+    });
+
+    test("mixed-agent batch counts per-agent correctly", async () => {
+      const { dir, db, contributionStore } = await setupStores();
+      try {
+        const contract = makeContract({
+          rateLimits: { maxContributionsPerAgentPerHour: 1 },
+        });
+        const store = new EnforcingContributionStore(contributionStore, contract);
+
+        // [agent-a, agent-b] should both be accepted (1 each, limit is 1)
+        const batch = [
+          makeRecentContribution({
+            summary: "agent-a",
+            agent: { agentId: "agent-a" },
+          }),
+          makeRecentContribution({
+            summary: "agent-b",
+            agent: { agentId: "agent-b" },
+          }),
+        ];
+
+        await store.putMany(batch);
+        expect(await store.count()).toBe(2);
+      } finally {
+        await cleanup(dir, db);
+      }
+    });
+  });
+
+  describe("idempotent put", () => {
+    test("re-submitting same CID does not trigger rate limit", async () => {
+      const { dir, db, contributionStore } = await setupStores();
+      try {
+        const contract = makeContract({
+          rateLimits: { maxContributionsPerAgentPerHour: 1 },
+        });
+        const store = new EnforcingContributionStore(contributionStore, contract);
+
+        const c = makeRecentContribution({ summary: "idempotent" });
+        await store.put(c);
+
+        // Re-submitting the same CID should be a no-op, not a rate limit error
+        await store.put(c);
+        expect(await store.count()).toBe(1);
+      } finally {
+        await cleanup(dir, db);
+      }
+    });
+  });
+
+  describe("clock skew rejection", () => {
+    test("rejects contribution with backdated createdAt", async () => {
+      const { dir, db, contributionStore } = await setupStores();
+      try {
+        const contract = makeContract({
+          rateLimits: { maxContributionsPerAgentPerHour: 10 },
+        });
+        const store = new EnforcingContributionStore(contributionStore, contract);
+
+        // Backdate by 2 hours — well beyond the 5-minute tolerance
+        const backdated = makeContribution({
+          summary: "backdated",
+          createdAt: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
+        });
+
+        try {
+          await store.put(backdated);
+          expect.unreachable("should have thrown");
+        } catch (e) {
+          expect(e).toBeInstanceOf(RateLimitError);
+          expect((e as RateLimitError).message).toContain("too far in the past");
+        }
+      } finally {
+        await cleanup(dir, db);
+      }
+    });
+
+    test("allows contribution within clock skew tolerance", async () => {
+      const { dir, db, contributionStore } = await setupStores();
+      try {
+        const contract = makeContract({
+          rateLimits: { maxContributionsPerAgentPerHour: 10 },
+        });
+        const store = new EnforcingContributionStore(contributionStore, contract);
+
+        // 1 minute in the past — within the 5-minute tolerance
+        const slightlyOld = makeContribution({
+          summary: "slightly-old",
+          createdAt: new Date(Date.now() - 60 * 1000).toISOString(),
+        });
+
+        await store.put(slightlyOld);
+        expect(await store.count()).toBe(1);
+      } finally {
+        await cleanup(dir, db);
+      }
+    });
+  });
+
+  describe("concurrent writes", () => {
+    test("mutex prevents concurrent puts from exceeding rate limit", async () => {
+      const { dir, db, contributionStore } = await setupStores();
+      try {
+        const contract = makeContract({
+          rateLimits: { maxContributionsPerAgentPerHour: 1 },
+        });
+        const store = new EnforcingContributionStore(contributionStore, contract);
+
+        // Fire 3 concurrent puts — only 1 should succeed
+        const results = await Promise.allSettled([
+          store.put(makeRecentContribution({ summary: "concurrent-0" })),
+          store.put(makeRecentContribution({ summary: "concurrent-1" })),
+          store.put(makeRecentContribution({ summary: "concurrent-2" })),
+        ]);
+
+        const fulfilled = results.filter((r) => r.status === "fulfilled").length;
+        const rejected = results.filter((r) => r.status === "rejected").length;
+
+        expect(fulfilled).toBe(1);
+        expect(rejected).toBe(2);
         expect(await store.count()).toBe(1);
       } finally {
         await cleanup(dir, db);
@@ -460,6 +585,35 @@ describe("EnforcingClaimStore", () => {
         // Should now be able to create another
         await store.createClaim(makeClaim({ claimId: "c2", targetRef: "t2" }));
 
+        expect(await store.countActiveClaims()).toBe(1);
+      } finally {
+        await cleanup(dir, db);
+      }
+    });
+
+    test("mutex prevents concurrent creates from exceeding limit", async () => {
+      const { dir, db, claimStore } = await setupStores();
+      try {
+        const contract = makeContract({
+          concurrency: { maxActiveClaims: 1 },
+        });
+        const store = new EnforcingClaimStore(claimStore, contract);
+
+        // Fire 3 concurrent creates — only 1 should succeed
+        const results = await Promise.allSettled([
+          store.createClaim(
+            makeClaim({ claimId: "c1", targetRef: "t1", agent: { agentId: "a1" } }),
+          ),
+          store.createClaim(
+            makeClaim({ claimId: "c2", targetRef: "t2", agent: { agentId: "a2" } }),
+          ),
+          store.createClaim(
+            makeClaim({ claimId: "c3", targetRef: "t3", agent: { agentId: "a3" } }),
+          ),
+        ]);
+
+        const fulfilled = results.filter((r) => r.status === "fulfilled").length;
+        expect(fulfilled).toBe(1);
         expect(await store.countActiveClaims()).toBe(1);
       } finally {
         await cleanup(dir, db);
@@ -626,6 +780,97 @@ describe("EnforcingClaimStore", () => {
         );
 
         expect(await store.countActiveClaims()).toBe(1);
+      } finally {
+        await cleanup(dir, db);
+      }
+    });
+  });
+
+  describe("heartbeat lease enforcement", () => {
+    test("rejects heartbeat renewal exceeding max lease", async () => {
+      const { dir, db, claimStore } = await setupStores();
+      try {
+        const contract = makeContract({
+          execution: { maxLeaseSeconds: 60 },
+        });
+        const store = new EnforcingClaimStore(claimStore, contract);
+
+        const now = new Date();
+        await store.createClaim(
+          makeClaim({
+            claimId: "c1",
+            targetRef: "t1",
+            createdAt: now.toISOString(),
+            leaseExpiresAt: new Date(now.getTime() + 30_000).toISOString(),
+          }),
+        );
+
+        // Try to renew for 3600 seconds (exceeds 60s max)
+        try {
+          await store.heartbeat("c1", 3600_000);
+          expect.unreachable("should have thrown");
+        } catch (e) {
+          expect(e).toBeInstanceOf(LeaseViolationError);
+          const err = e as LeaseViolationError;
+          expect(err.requestedSeconds).toBe(3600);
+          expect(err.maxSeconds).toBe(60);
+        }
+      } finally {
+        await cleanup(dir, db);
+      }
+    });
+
+    test("heartbeat uses contract default lease when no duration specified", async () => {
+      const { dir, db, claimStore } = await setupStores();
+      try {
+        const contract = makeContract({
+          execution: { defaultLeaseSeconds: 120 },
+        });
+        const store = new EnforcingClaimStore(claimStore, contract);
+
+        const now = new Date();
+        await store.createClaim(
+          makeClaim({
+            claimId: "c1",
+            targetRef: "t1",
+            createdAt: now.toISOString(),
+            leaseExpiresAt: new Date(now.getTime() + 60_000).toISOString(),
+          }),
+        );
+
+        const updated = await store.heartbeat("c1");
+        // The lease should be extended by ~120 seconds from now
+        const leaseMs =
+          new Date(updated.leaseExpiresAt).getTime() - new Date(updated.heartbeatAt).getTime();
+        // Allow 5s tolerance for test execution time
+        expect(leaseMs).toBeGreaterThanOrEqual(115_000);
+        expect(leaseMs).toBeLessThanOrEqual(125_000);
+      } finally {
+        await cleanup(dir, db);
+      }
+    });
+
+    test("heartbeat allows renewal within max lease", async () => {
+      const { dir, db, claimStore } = await setupStores();
+      try {
+        const contract = makeContract({
+          execution: { maxLeaseSeconds: 3600 },
+        });
+        const store = new EnforcingClaimStore(claimStore, contract);
+
+        const now = new Date();
+        await store.createClaim(
+          makeClaim({
+            claimId: "c1",
+            targetRef: "t1",
+            createdAt: now.toISOString(),
+            leaseExpiresAt: new Date(now.getTime() + 300_000).toISOString(),
+          }),
+        );
+
+        // Renew for 600 seconds (within 3600s max)
+        const updated = await store.heartbeat("c1", 600_000);
+        expect(updated.claimId).toBe("c1");
       } finally {
         await cleanup(dir, db);
       }

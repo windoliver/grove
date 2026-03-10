@@ -5,10 +5,11 @@
  * - Concurrency limits (global, per-agent, per-target)
  * - Rate limits (per-agent, per-grove contributions per hour)
  * - Artifact limits (size, count)
- * - Lease duration limits
+ * - Lease duration limits (on create AND heartbeat)
  *
- * The raw stores remain contract-agnostic; all policy enforcement
- * lives in these wrappers.
+ * Write operations are serialized via an in-process mutex to prevent
+ * TOCTOU races between check and write. The raw stores remain
+ * contract-agnostic; all policy enforcement lives in these wrappers.
  */
 
 import type { ContentStore } from "./cas.js";
@@ -35,6 +36,41 @@ import type {
 
 const RATE_LIMIT_WINDOW_SECONDS = 3600; // 1 hour
 
+/**
+ * Maximum allowed clock skew for contribution timestamps (in ms).
+ * Contributions with `createdAt` more than this far in the past are
+ * rejected to prevent rate-limit bypass via backdating.
+ */
+const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000; // 5 minutes
+
+// ---------------------------------------------------------------------------
+// In-process mutex for serializing write operations
+// ---------------------------------------------------------------------------
+
+class AsyncMutex {
+  private queue: (() => void)[] = [];
+  private locked = false;
+
+  async acquire(): Promise<void> {
+    if (!this.locked) {
+      this.locked = true;
+      return;
+    }
+    return new Promise<void>((resolve) => {
+      this.queue.push(resolve);
+    });
+  }
+
+  release(): void {
+    const next = this.queue.shift();
+    if (next !== undefined) {
+      next();
+    } else {
+      this.locked = false;
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // EnforcingContributionStore
 // ---------------------------------------------------------------------------
@@ -44,12 +80,14 @@ const RATE_LIMIT_WINDOW_SECONDS = 3600; // 1 hour
  *
  * All read operations delegate directly to the inner store.
  * Write operations (`put`, `putMany`) check the contract before delegating.
+ * Writes are serialized via a mutex to prevent TOCTOU races.
  */
 export class EnforcingContributionStore implements ContributionStore {
   private readonly inner: ContributionStore;
   private readonly cas: ContentStore | undefined;
   private readonly contract: GroveContract;
   private readonly clock: () => Date;
+  private readonly writeMutex = new AsyncMutex();
 
   constructor(
     inner: ContributionStore,
@@ -66,18 +104,46 @@ export class EnforcingContributionStore implements ContributionStore {
   }
 
   put = async (contribution: Contribution): Promise<void> => {
-    await this.enforceContributionLimits(contribution);
-    return this.inner.put(contribution);
+    await this.writeMutex.acquire();
+    try {
+      // Idempotent: if CID already exists, skip enforcement and delegate (no-op)
+      const existing = await this.inner.get(contribution.cid);
+      if (existing !== undefined) {
+        return this.inner.put(contribution);
+      }
+
+      await this.enforceContributionLimits(contribution, 0, []);
+      return await this.inner.put(contribution);
+    } finally {
+      this.writeMutex.release();
+    }
   };
 
   putMany = async (contributions: readonly Contribution[]): Promise<void> => {
-    for (let i = 0; i < contributions.length; i++) {
-      const contribution = contributions[i];
-      if (contribution !== undefined) {
-        await this.enforceContributionLimits(contribution, i);
+    await this.writeMutex.acquire();
+    try {
+      // Filter out already-existing CIDs (idempotent puts should not be rate-limited)
+      const newContributions: Contribution[] = [];
+      for (const c of contributions) {
+        const existing = await this.inner.get(c.cid);
+        if (existing === undefined) {
+          newContributions.push(c);
+        }
       }
+
+      // Enforce limits for new contributions only, tracking per-agent pending counts
+      for (let i = 0; i < newContributions.length; i++) {
+        const contribution = newContributions[i];
+        if (contribution !== undefined) {
+          const preceding = newContributions.slice(0, i);
+          await this.enforceContributionLimits(contribution, i, preceding);
+        }
+      }
+
+      return await this.inner.putMany(contributions);
+    } finally {
+      this.writeMutex.release();
     }
-    return this.inner.putMany(contributions);
   };
 
   // Read operations — direct delegation
@@ -107,22 +173,29 @@ export class EnforcingContributionStore implements ContributionStore {
 
   private async enforceContributionLimits(
     contribution: Contribution,
-    pendingCount = 0,
+    _batchIndex: number,
+    precedingInBatch: readonly Contribution[],
   ): Promise<void> {
     const rl = this.contract.rateLimits;
 
+    // Reject backdated contributions to prevent rate-limit bypass
+    this.enforceClockSkew(contribution);
+
     // Check per-agent rate limit
     if (rl?.maxContributionsPerAgentPerHour !== undefined) {
+      const agentPendingCount = precedingInBatch.filter(
+        (c) => c.agent.agentId === contribution.agent.agentId,
+      ).length;
       await this.enforceAgentRateLimit(
         contribution.agent.agentId,
         rl.maxContributionsPerAgentPerHour,
-        pendingCount,
+        agentPendingCount,
       );
     }
 
     // Check per-grove rate limit
     if (rl?.maxContributionsPerGrovePerHour !== undefined) {
-      await this.enforceGroveRateLimit(rl.maxContributionsPerGrovePerHour, pendingCount);
+      await this.enforceGroveRateLimit(rl.maxContributionsPerGrovePerHour, precedingInBatch.length);
     }
 
     // Check artifact count
@@ -153,10 +226,32 @@ export class EnforcingContributionStore implements ContributionStore {
     }
   }
 
+  /**
+   * Reject contributions whose createdAt is more than MAX_CLOCK_SKEW_MS
+   * in the past. This prevents callers from backdating timestamps to
+   * evade the sliding-window rate limit.
+   */
+  private enforceClockSkew(contribution: Contribution): void {
+    const now = this.clock();
+    const createdAt = new Date(contribution.createdAt).getTime();
+    const lowerBound = now.getTime() - MAX_CLOCK_SKEW_MS;
+
+    if (createdAt < lowerBound) {
+      throw new RateLimitError({
+        limitType: "per_agent",
+        current: 0,
+        limit: 0,
+        windowSeconds: RATE_LIMIT_WINDOW_SECONDS,
+        retryAfterMs: 0,
+        message: `Contribution createdAt ${contribution.createdAt} is too far in the past (max skew: ${MAX_CLOCK_SKEW_MS}ms)`,
+      });
+    }
+  }
+
   private async enforceAgentRateLimit(
     agentId: string,
     limit: number,
-    pendingCount = 0,
+    pendingCount: number,
   ): Promise<void> {
     const now = this.clock();
     const windowStart = new Date(now.getTime() - RATE_LIMIT_WINDOW_SECONDS * 1000);
@@ -170,7 +265,7 @@ export class EnforcingContributionStore implements ContributionStore {
         .length + pendingCount;
 
     if (count >= limit) {
-      const retryAfterMs = this.computeRetryAfterMs(recentContributions, windowStart, limit);
+      const retryAfterMs = this.computeRetryAfterMs(recentContributions, windowStart);
       throw new RateLimitError({
         limitType: "per_agent",
         current: count,
@@ -181,7 +276,7 @@ export class EnforcingContributionStore implements ContributionStore {
     }
   }
 
-  private async enforceGroveRateLimit(limit: number, pendingCount = 0): Promise<void> {
+  private async enforceGroveRateLimit(limit: number, pendingCount: number): Promise<void> {
     const now = this.clock();
     const windowStart = new Date(now.getTime() - RATE_LIMIT_WINDOW_SECONDS * 1000);
 
@@ -192,7 +287,7 @@ export class EnforcingContributionStore implements ContributionStore {
         .length + pendingCount;
 
     if (count >= limit) {
-      const retryAfterMs = this.computeRetryAfterMs(allContributions, windowStart, limit);
+      const retryAfterMs = this.computeRetryAfterMs(allContributions, windowStart);
       throw new RateLimitError({
         limitType: "per_grove",
         current: count,
@@ -207,11 +302,7 @@ export class EnforcingContributionStore implements ContributionStore {
    * Compute how long until a slot opens in the rate limit window.
    * Finds the oldest in-window contribution and calculates when it rolls out.
    */
-  private computeRetryAfterMs(
-    contributions: readonly Contribution[],
-    windowStart: Date,
-    _limit: number,
-  ): number {
+  private computeRetryAfterMs(contributions: readonly Contribution[], windowStart: Date): number {
     const now = this.clock();
     const inWindow = contributions
       .filter((c) => new Date(c.createdAt).getTime() >= windowStart.getTime())
@@ -234,11 +325,14 @@ export class EnforcingContributionStore implements ContributionStore {
  * Wraps a ClaimStore with concurrency-limit and lease-limit enforcement.
  *
  * All read operations delegate directly to the inner store.
- * `createClaim` checks concurrency limits before delegating.
+ * `createClaim` checks concurrency and lease limits before delegating.
+ * `heartbeat` enforces maxLeaseSeconds and honors defaultLeaseSeconds.
+ * Write operations are serialized via a mutex to prevent TOCTOU races.
  */
 export class EnforcingClaimStore implements ClaimStore {
   private readonly inner: ClaimStore;
   private readonly contract: GroveContract;
+  private readonly writeMutex = new AsyncMutex();
 
   constructor(inner: ClaimStore, contract: GroveContract) {
     this.inner = inner;
@@ -246,16 +340,42 @@ export class EnforcingClaimStore implements ClaimStore {
   }
 
   createClaim = async (claim: Claim): Promise<Claim> => {
-    await this.enforceConcurrencyLimits(claim);
-    this.enforceLeaseLimit(claim);
-    return this.inner.createClaim(claim);
+    await this.writeMutex.acquire();
+    try {
+      await this.enforceConcurrencyLimits(claim);
+      this.enforceLeaseLimit(claim);
+      return await this.inner.createClaim(claim);
+    } finally {
+      this.writeMutex.release();
+    }
+  };
+
+  heartbeat = async (claimId: string, leaseDurationMs?: number): Promise<Claim> => {
+    // Determine effective lease duration: caller > contract default > store default
+    const contractDefaultMs =
+      this.contract.execution?.defaultLeaseSeconds !== undefined
+        ? this.contract.execution.defaultLeaseSeconds * 1000
+        : undefined;
+    const effectiveDurationMs = leaseDurationMs ?? contractDefaultMs;
+
+    // Enforce max lease if configured
+    const maxLeaseSeconds = this.contract.execution?.maxLeaseSeconds;
+    if (maxLeaseSeconds !== undefined && effectiveDurationMs !== undefined) {
+      const effectiveSeconds = effectiveDurationMs / 1000;
+      if (effectiveSeconds > maxLeaseSeconds) {
+        throw new LeaseViolationError({
+          requestedSeconds: Math.ceil(effectiveSeconds),
+          maxSeconds: maxLeaseSeconds,
+        });
+      }
+    }
+
+    return this.inner.heartbeat(claimId, effectiveDurationMs);
   };
 
   // Read/mutation operations — direct delegation
   claimOrRenew = (claim: Claim): Promise<Claim> => this.inner.claimOrRenew(claim);
   getClaim = (claimId: string): Promise<Claim | undefined> => this.inner.getClaim(claimId);
-  heartbeat = (claimId: string, leaseDurationMs?: number): Promise<Claim> =>
-    this.inner.heartbeat(claimId, leaseDurationMs);
   release = (claimId: string): Promise<Claim> => this.inner.release(claimId);
   complete = (claimId: string): Promise<Claim> => this.inner.complete(claimId);
   expireStale = (options?: ExpireStaleOptions): Promise<readonly ExpiredClaim[]> =>

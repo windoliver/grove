@@ -202,7 +202,7 @@ const ConcurrencySchema = z
   .object({
     max_active_claims: z.number().int().min(1).max(1000).optional(),
     max_claims_per_agent: z.number().int().min(0).max(100).optional(),
-    max_claims_per_target: z.number().int().min(1).max(100).optional(),
+    max_claims_per_target: z.literal(1).optional(),
   })
   .strict();
 
