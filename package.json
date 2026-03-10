@@ -3,6 +3,9 @@
   "description": "Protocol and platform for asynchronous, massively collaborative agent work",
   "version": "0.1.0",
   "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
   "packageManager": "bun@1.3.9",
   "type": "module",
   "exports": {
@@ -38,13 +41,13 @@
     "grove-mcp-http": "./dist/mcp/serve-http.js"
   },
   "scripts": {
-    "build": "tsup",
-    "typecheck": "tsc --noEmit",
+    "build": "bun run --cwd packages/ask-user build && tsup",
+    "typecheck": "bun run --cwd packages/ask-user typecheck && bun run --cwd packages/ask-user build && tsc --noEmit",
     "lint": "biome check .",
     "format": "biome format --write .",
     "start:server": "bun run src/server/serve.ts",
-    "test": "bun test",
-    "test:coverage": "bun test --coverage",
+    "test": "bun test && bun test --cwd packages/ask-user",
+    "test:coverage": "bun test --coverage && bun test --cwd packages/ask-user --coverage",
     "test:integration": "NEXUS_URL=http://localhost:2026 bun test tests/nexus/integration/",
     "nexus:up": "docker compose up nexus -d",
     "nexus:down": "docker compose down",
@@ -53,6 +56,7 @@
   },
   "dependencies": {
     "@hono/zod-validator": "0.7.6",
+    "@grove/ask-user": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.27.0",
     "blake3": "^1.0.2",
     "hono": "^4.12.6",

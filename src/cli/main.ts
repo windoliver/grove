@@ -102,6 +102,15 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       },
     },
     {
+      name: "ask",
+      description: "Ask a question (interactive or AI-answered)",
+      needsStore: false,
+      handler: async (args) => {
+        const { handleAsk } = await import("./commands/ask.js");
+        await handleAsk(args);
+      },
+    },
+    {
       name: "contribute",
       description: "Submit a contribution",
       needsStore: false,
@@ -273,6 +282,7 @@ Usage:
   grove claim <target>        Claim work to prevent duplication
   grove release <claim-id>    Release a claim
   grove claims                List claims
+  grove ask <question>        Ask a question (interactive or AI-answered)
 
   grove checkout <cid> --to <dir>   Materialize contribution artifacts
   grove frontier [--metric <name>]  Show current frontier

@@ -20,6 +20,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
 
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
@@ -75,10 +76,7 @@ try {
 // --- Session management -----------------------------------------------------
 
 /** Map of session ID → { server, transport } for active sessions. */
-const sessions = new Map<
-  string,
-  { server: ReturnType<typeof createMcpServer>; transport: StreamableHTTPServerTransport }
->();
+const sessions = new Map<string, { server: McpServer; transport: StreamableHTTPServerTransport }>();
 
 // --- HTTP server ------------------------------------------------------------
 
@@ -121,7 +119,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         sessions.set(id, { server, transport });
       },
     });
-    const server = createMcpServer(deps);
+    const server = await createMcpServer(deps);
 
     transport.onclose = () => {
       const sid = transport.sessionId;

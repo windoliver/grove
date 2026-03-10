@@ -34,7 +34,7 @@ describe("MCP server integration", () => {
     testDeps = await createTestMcpDeps();
     deps = testDeps.deps;
 
-    const server = createMcpServer(deps);
+    const server = await createMcpServer(deps);
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
     client = new Client({ name: "test-client", version: "0.0.1" });
@@ -53,10 +53,11 @@ describe("MCP server integration", () => {
     await testDeps.cleanup();
   });
 
-  test("lists all 10 tools", async () => {
+  test("lists all 11 tools", async () => {
     const tools = await client.listTools();
     const toolNames = tools.tools.map((t) => t.name).sort();
     expect(toolNames).toEqual([
+      "ask_user",
       "grove_checkout",
       "grove_claim",
       "grove_contribute",
