@@ -30,7 +30,7 @@ function defaultSpawn(
       return;
     }
     execFile(command, args, { timeout: opts.timeout }, (error, stdout) => {
-      if (error && error.killed) {
+      if (error?.killed) {
         reject(new Error(`Agent process timed out after ${opts.timeout}ms`));
         return;
       }
