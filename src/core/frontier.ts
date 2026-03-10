@@ -2,13 +2,14 @@
  * Multi-signal frontier calculator.
  *
  * Computes frontiers along multiple dimensions:
- * - By metric (when scores exist)
- * - By adoption count (most children in DAG)
+ * - By metric (when scores exist, evaluation mode only)
+ * - By adoption count (derives_from + adopts relations)
  * - By recency (most recent contributions)
  * - By review score (highest average review scores)
+ * - By reproduction (most-reproduced contributions)
  */
 
-import type { Contribution, Score } from "./models.js";
+import type { Contribution, ContributionKind, Score } from "./models.js";
 import { ContributionMode, RelationType } from "./models.js";
 import type { ContributionStore } from "./store.js";
 
@@ -26,6 +27,7 @@ export interface Frontier {
   readonly byAdoption: readonly FrontierEntry[];
   readonly byRecency: readonly FrontierEntry[];
   readonly byReviewScore: readonly FrontierEntry[];
+  readonly byReproduction: readonly FrontierEntry[];
 }
 
 /** Filters for frontier computation. */
@@ -33,6 +35,10 @@ export interface FrontierQuery {
   readonly metric?: string | undefined;
   readonly tags?: readonly string[] | undefined;
   readonly platform?: string | undefined;
+  readonly kind?: ContributionKind | undefined;
+  readonly mode?: ContributionMode | undefined;
+  readonly agentId?: string | undefined;
+  readonly agentName?: string | undefined;
   readonly limit?: number | undefined;
 }
 
@@ -64,7 +70,7 @@ function compareEntries(a: FrontierEntry, b: FrontierEntry, descending: boolean)
   return a.cid < b.cid ? -1 : a.cid > b.cid ? 1 : 0;
 }
 
-/** Filter contributions by query tags and platform. */
+/** Filter contributions by query tags, platform, kind, mode, and agent. */
 function matchesFilters(c: Contribution, query?: FrontierQuery): boolean {
   if (query?.tags && query.tags.length > 0) {
     for (const tag of query.tags) {
@@ -73,6 +79,18 @@ function matchesFilters(c: Contribution, query?: FrontierQuery): boolean {
   }
   if (query?.platform !== undefined) {
     if (c.agent.platform !== query.platform) return false;
+  }
+  if (query?.kind !== undefined) {
+    if (c.kind !== query.kind) return false;
+  }
+  if (query?.mode !== undefined) {
+    if (c.mode !== query.mode) return false;
+  }
+  if (query?.agentId !== undefined) {
+    if (c.agent.agentId !== query.agentId) return false;
+  }
+  if (query?.agentName !== undefined) {
+    if (c.agent.agentName !== query.agentName) return false;
   }
   return true;
 }
@@ -91,17 +109,23 @@ export class DefaultFrontierCalculator implements FrontierCalculator {
 
   async compute(query?: FrontierQuery): Promise<Frontier> {
     const limit = query?.limit ?? DEFAULT_LIMIT;
+    // TODO(perf): push filters to store.list() when scale demands.
+    // Currently loads all contributions for in-memory edge counting.
     const allContributions = await this.store.list();
     const filtered = allContributions.filter((c) => matchesFilters(c, query));
 
-    const [byMetric, byAdoption, byRecency, byReviewScore] = await Promise.all([
-      this.computeByMetric(filtered, limit, query?.metric),
-      this.computeByAdoption(filtered, allContributions, limit),
-      this.computeByRecency(filtered, limit),
-      this.computeByReviewScore(filtered, limit),
+    // All dimension computations are synchronous in-memory operations.
+    // The only async step is the store.list() call above.
+    const byMetric = this.computeByMetric(filtered, limit, query?.metric);
+    const byAdoption = this.computeByRelationCount(filtered, allContributions, limit, [
+      RelationType.Adopts,
+      RelationType.DerivesFrom,
     ]);
+    const byRecency = this.computeByRecency(filtered, limit);
+    const byReviewScore = this.computeByReviewScore(filtered, allContributions, limit);
+    const byReproduction = this.computeByReproduction(filtered, allContributions, limit);
 
-    return { byMetric, byAdoption, byRecency, byReviewScore };
+    return { byMetric, byAdoption, byRecency, byReviewScore, byReproduction };
   }
 
   private computeByMetric(
@@ -154,30 +178,73 @@ export class DefaultFrontierCalculator implements FrontierCalculator {
     return result;
   }
 
-  private computeByAdoption(
+  /** Count incoming relations of specified types for each filtered contribution. */
+  private computeByRelationCount(
     contributions: readonly Contribution[],
     allContributions: readonly Contribution[],
     limit: number,
+    relationTypes: readonly RelationType[],
   ): readonly FrontierEntry[] {
-    // For each contribution, count how many other contributions adopt it
-    const adoptionCounts = new Map<string, number>();
-
+    const counts = new Map<string, number>();
     for (const c of contributions) {
-      adoptionCounts.set(c.cid, 0);
+      counts.set(c.cid, 0);
     }
 
-    // Look through all contributions for "adopts" relations targeting our set
     for (const c of allContributions) {
       for (const rel of c.relations) {
-        if (rel.relationType === RelationType.Adopts && adoptionCounts.has(rel.targetCid)) {
-          adoptionCounts.set(rel.targetCid, (adoptionCounts.get(rel.targetCid) ?? 0) + 1);
+        if (relationTypes.includes(rel.relationType) && counts.has(rel.targetCid)) {
+          counts.set(rel.targetCid, (counts.get(rel.targetCid) ?? 0) + 1);
         }
       }
     }
 
     const entries: FrontierEntry[] = [];
     for (const c of contributions) {
-      const count = adoptionCounts.get(c.cid) ?? 0;
+      const count = counts.get(c.cid) ?? 0;
+      if (count > 0) {
+        entries.push(toEntry(c, count));
+      }
+    }
+
+    entries.sort((a, b) => compareEntries(a, b, true));
+    return entries.slice(0, limit);
+  }
+
+  /**
+   * Count confirmed reproductions for each filtered contribution.
+   *
+   * Per RELATIONS.md, reproduces metadata may include a `result` field
+   * with values "confirmed", "challenged", or "partial". Only "confirmed"
+   * and "partial" count toward the reproduction frontier. Reproductions
+   * without metadata are treated as confirmed (the default assumption).
+   * "challenged" reproductions are excluded — a repeatedly-challenged
+   * contribution should not rank alongside a repeatedly-confirmed one.
+   */
+  private computeByReproduction(
+    contributions: readonly Contribution[],
+    allContributions: readonly Contribution[],
+    limit: number,
+  ): readonly FrontierEntry[] {
+    const counts = new Map<string, number>();
+    for (const c of contributions) {
+      counts.set(c.cid, 0);
+    }
+
+    for (const c of allContributions) {
+      for (const rel of c.relations) {
+        if (rel.relationType === RelationType.Reproduces && counts.has(rel.targetCid)) {
+          // Exclude "challenged" reproductions from the count.
+          // Missing metadata or missing result field defaults to confirmed.
+          const result = rel.metadata?.result;
+          if (result === "challenged") continue;
+          counts.set(rel.targetCid, (counts.get(rel.targetCid) ?? 0) + 1);
+        }
+      }
+    }
+
+    const entries: FrontierEntry[] = [];
+    for (const c of contributions) {
+      const count = counts.get(c.cid) ?? 0;
       if (count > 0) {
         entries.push(toEntry(c, count));
       }
@@ -196,18 +263,36 @@ export class DefaultFrontierCalculator implements FrontierCalculator {
     return entries.slice(0, limit);
   }
 
-  private async computeByReviewScore(
+  private computeByReviewScore(
     contributions: readonly Contribution[],
+    allContributions: readonly Contribution[],
     limit: number,
-  ): Promise<readonly FrontierEntry[]> {
+  ): readonly FrontierEntry[] {
+    // Build a map of target CID → review contributions (in-memory scan).
+    // This avoids O(N) store.relatedTo() calls.
+    const filteredCids = new Set(contributions.map((c) => c.cid));
+    const reviewsByTarget = new Map<string, Contribution[]>();
+
+    for (const c of allContributions) {
+      for (const rel of c.relations) {
+        if (rel.relationType === RelationType.Reviews && filteredCids.has(rel.targetCid)) {
+          let reviews = reviewsByTarget.get(rel.targetCid);
+          if (reviews === undefined) {
+            reviews = [];
+            reviewsByTarget.set(rel.targetCid, reviews);
+          }
+          reviews.push(c);
+        }
+      }
+    }
+
     const entries: FrontierEntry[] = [];
     let minimizeCount = 0;
     let maximizeCount = 0;
 
     for (const c of contributions) {
-      // Find all contributions that review this one
-      const reviewers = await this.store.relatedTo(c.cid, RelationType.Reviews);
-      if (reviewers.length === 0) continue;
+      const reviewers = reviewsByTarget.get(c.cid);
+      if (reviewers === undefined || reviewers.length === 0) continue;
 
       // Average all score values from review contributions
       let totalScore = 0;
@@ -228,7 +313,10 @@ export class DefaultFrontierCalculator implements FrontierCalculator {
       }
     }
 
-    // Respect score direction: if most review scores minimize, lower is better
+    // Respect score direction: if most review scores minimize, lower is better.
+    // NOTE: mixed directions across reviewers (some minimize, some maximize)
+    // produce majority-vote ordering. This is a data quality issue, not a
+    // frontier bug — reviewers should use consistent metric semantics.
     const descending = maximizeCount >= minimizeCount;
     entries.sort((a, b) => compareEntries(a, b, descending));
     return entries.slice(0, limit);
