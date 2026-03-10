@@ -9,7 +9,6 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Server } from "bun";
 import { DefaultFrontierCalculator } from "../../core/frontier.js";
 import { ScoreDirection } from "../../core/models.js";
 import { makeContribution } from "../../core/test-helpers.js";
@@ -25,7 +24,7 @@ import { handleGossip } from "./gossip.js";
 
 let tmpDir: string;
 let deps: CliDeps;
-let mockServer: Server;
+let mockServer: ReturnType<typeof Bun.serve>;
 let serverUrl: string;
 
 function createOutput(): { lines: string[]; writer: (s: string) => void } {
