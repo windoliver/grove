@@ -48,7 +48,7 @@ const strategyNameSchema = z.enum(["llm", "rules", "agent", "interactive"]);
 const rulesConfigSchema = z.object({
   prefer: z.enum(["simpler", "existing", "first"]).default("simpler"),
   defaultResponse: z.string().default("Proceed with the simpler, more conventional approach."),
-});
+}).strict();
 
 const llmConfigSchema = z.object({
   model: z.string().default("claude-haiku-4-5-20251001"),
@@ -59,13 +59,13 @@ const llmConfigSchema = z.object({
     ),
   timeoutMs: z.number().int().positive().default(30_000),
   maxTokens: z.number().int().positive().default(256),
-});
+}).strict();
 
 const agentConfigSchema = z.object({
   command: z.string().default("acpx"),
   args: z.array(z.string()).default(["--approve-all", "claude"]),
   timeoutMs: z.number().int().positive().default(60_000),
-});
+}).strict();
 
 const configSchema = z.object({
   strategy: strategyNameSchema.default("llm"),
@@ -73,7 +73,7 @@ const configSchema = z.object({
   llm: llmConfigSchema.optional().default(() => llmConfigSchema.parse({})),
   rules: rulesConfigSchema.optional().default(() => rulesConfigSchema.parse({})),
   agent: agentConfigSchema.optional().default(() => agentConfigSchema.parse({})),
-});
+}).strict();
 
 const DEFAULT_CONFIG: AskUserConfig = configSchema.parse({}) as AskUserConfig;
 

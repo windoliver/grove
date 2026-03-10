@@ -52,6 +52,24 @@ describe("parseConfig", () => {
       expect(config.rules.prefer).toBe(p);
     }
   });
+
+  test("rejects unknown top-level keys (typo detection)", () => {
+    expect(() => parseConfig({ fallbak: "rules" })).toThrow();
+    expect(() => parseConfig({ strateggy: "llm" })).toThrow();
+  });
+
+  test("rejects unknown keys in llm config", () => {
+    expect(() => parseConfig({ llm: { maxTokenz: 1 } })).toThrow();
+    expect(() => parseConfig({ llm: { timeoutMS: 5000 } })).toThrow();
+  });
+
+  test("rejects unknown keys in rules config", () => {
+    expect(() => parseConfig({ rules: { perfer: "first" } })).toThrow();
+  });
+
+  test("rejects unknown keys in agent config", () => {
+    expect(() => parseConfig({ agent: { commnad: "acpx" } })).toThrow();
+  });
 });
 
 describe("loadConfig", () => {
