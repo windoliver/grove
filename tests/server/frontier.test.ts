@@ -85,4 +85,17 @@ describe("GET /api/frontier", () => {
       expect(entry.contribution.kind).toBe("work");
     }
   });
+
+  test("filters by tags", async () => {
+    await ctx.app.request("/api/contributions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(validManifestBody({ summary: "Tagged item", tags: ["perf"] })),
+    });
+
+    const res = await ctx.app.request("/api/frontier?tags=perf");
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.byRecency).toHaveLength(1);
+  });
 });

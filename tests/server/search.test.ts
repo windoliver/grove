@@ -68,4 +68,30 @@ describe("GET /api/search", () => {
     const data = await res.json();
     expect(data.length).toBeLessThanOrEqual(2);
   });
+
+  test("filters by tags", async () => {
+    await ctx.app.request("/api/contributions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        validManifestBody({ summary: "Parser with tag", tags: ["optimization"] }),
+      ),
+    });
+    await ctx.app.request("/api/contributions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        validManifestBody({
+          summary: "Parser no tag",
+          createdAt: new Date(Date.now() + 1).toISOString(),
+        }),
+      ),
+    });
+
+    const res = await ctx.app.request("/api/search?q=parser&tags=optimization");
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toHaveLength(1);
+    expect(data[0].summary).toBe("Parser with tag");
+  });
 });
