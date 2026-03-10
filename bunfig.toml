@@ -9,7 +9,7 @@ coverageSkipTestFiles = true
 coverageReporter = ["text", "lcov"]
 coverageDir = "coverage"
 coverageThreshold = { lines = 0.8, functions = 0.8, statements = 0.8 }
-coveragePathIgnorePatterns = ["dist/**", "node_modules/**", "src/core/testing.ts"]
+coveragePathIgnorePatterns = ["dist/**", "node_modules/**", "src/core/testing.ts", "examples/**/scenario.ts"]
 
 [run]
 shell = "bun"
