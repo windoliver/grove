@@ -45,3 +45,12 @@ export const DEFAULT_FAILURE_TIMEOUT_MS: number = 150_000;
 
 /** Default cached frontier TTL in milliseconds (30 seconds). */
 export const DEFAULT_FRONTIER_CACHE_TTL_MS: number = 30_000;
+
+/** Maximum frontier digest entries accepted per gossip message. */
+export const MAX_GOSSIP_FRONTIER_ENTRIES: number = 100;
+
+/** Maximum peers offered in a single CYCLON shuffle. */
+export const MAX_GOSSIP_OFFERED_PEERS: number = 50;
+
+/** Maximum entries retained in the merged (remote) frontier. */
+export const MAX_MERGED_FRONTIER_ENTRIES: number = 500;

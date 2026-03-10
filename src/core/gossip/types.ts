@@ -69,6 +69,8 @@ export interface PeerCapabilities {
 export interface GossipMessage {
   /** Unique identifier of the sending server. */
   readonly peerId: string;
+  /** Sender's HTTP base URL for gossip endpoints (enables peer discovery via exchange). */
+  readonly address?: string | undefined;
   /** Compact frontier digest (top-K entries per dimension). */
   readonly frontier: readonly FrontierDigestEntry[];
   /** Load information for work distribution. */

@@ -11,6 +11,7 @@ import { zValidator } from "@hono/zod-validator";
 import type { Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
+import { MAX_GOSSIP_FRONTIER_ENTRIES, MAX_GOSSIP_OFFERED_PEERS } from "../../core/constants.js";
 import type { ServerEnv } from "../deps.js";
 
 // ---------------------------------------------------------------------------
@@ -31,7 +32,8 @@ const capabilitiesSchema = z.record(
 
 const gossipMessageSchema = z.object({
   peerId: z.string().min(1),
-  frontier: z.array(frontierDigestEntrySchema),
+  address: z.string().optional(),
+  frontier: z.array(frontierDigestEntrySchema).max(MAX_GOSSIP_FRONTIER_ENTRIES),
   load: z.object({ queueDepth: z.number().int().min(0) }),
   capabilities: capabilitiesSchema,
   timestamp: z.string(),
@@ -46,7 +48,7 @@ const peerInfoSchema = z.object({
 
 const shuffleRequestSchema = z.object({
   sender: peerInfoSchema,
-  offered: z.array(peerInfoSchema),
+  offered: z.array(peerInfoSchema).max(MAX_GOSSIP_OFFERED_PEERS),
 });
 
 // ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ import {
   DEFAULT_PARTIAL_VIEW_SIZE,
   DEFAULT_SHUFFLE_LENGTH,
   DEFAULT_SUSPICION_TIMEOUT_MS,
+  MAX_MERGED_FRONTIER_ENTRIES,
 } from "../core/constants.js";
 import type { FrontierCalculator, FrontierEntry } from "../core/frontier.js";
 import {
@@ -82,6 +83,7 @@ export class DefaultGossipService implements GossipService {
   private readonly listeners: Set<GossipEventListener> = new Set();
   private readonly livenessMap = new Map<string, LivenessState>();
   private remoteFrontier: FrontierDigestEntry[] = [];
+  private localDigest: FrontierDigestEntry[] = [];
   private timer: ReturnType<typeof setTimeout> | undefined;
   private running = false;
   private readonly now: () => number;
@@ -93,6 +95,8 @@ export class DefaultGossipService implements GossipService {
     capabilities?: PeerCapabilities;
     getLoad?: () => PeerLoad;
     now?: () => number;
+    /** Pre-populate remote frontier (e.g., from persisted state). */
+    initialFrontier?: readonly FrontierDigestEntry[];
   }) {
     this.config = {
       peerId: opts.config.peerId,
@@ -135,6 +139,11 @@ export class DefaultGossipService implements GossipService {
         suspectedAt: undefined,
       });
     }
+
+    // Restore persisted frontier if provided
+    if (opts.initialFrontier && opts.initialFrontier.length > 0) {
+      this.remoteFrontier = [...opts.initialFrontier];
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -166,14 +175,16 @@ export class DefaultGossipService implements GossipService {
     // Merge remote frontier entries
     this.mergeRemoteFrontier(message.frontier);
 
-    // Ensure sender is in our view
-    const senderPeer: PeerInfo = {
-      peerId: message.peerId,
-      address: "", // Address not in GossipMessage; existing view entry has it
-      age: 0,
-      lastSeen: message.timestamp,
-    };
-    this.sampler.addPeer(senderPeer);
+    // Add sender to our view only if they provided a routable address
+    if (message.address) {
+      const senderPeer: PeerInfo = {
+        peerId: message.peerId,
+        address: message.address,
+        age: 0,
+        lastSeen: message.timestamp,
+      };
+      this.sampler.addPeer(senderPeer);
+    }
 
     // Return our current message
     return this.currentMessage();
@@ -210,6 +221,7 @@ export class DefaultGossipService implements GossipService {
     const digest = await this.computeDigest();
     return {
       peerId: this.config.peerId,
+      address: this.config.address,
       frontier: digest,
       load: this.getLoad(),
       capabilities: this.capabilities,
@@ -218,7 +230,22 @@ export class DefaultGossipService implements GossipService {
   }
 
   mergedFrontier(): readonly FrontierDigestEntry[] {
-    return this.remoteFrontier;
+    if (this.localDigest.length === 0) return this.remoteFrontier;
+    if (this.remoteFrontier.length === 0) return this.localDigest;
+
+    // Merge local + remote, keeping best value per (metric, cid)
+    const index = new Map<string, FrontierDigestEntry>();
+    for (const entry of this.localDigest) {
+      index.set(`${entry.metric}::${entry.cid}`, entry);
+    }
+    for (const entry of this.remoteFrontier) {
+      const key = `${entry.metric}::${entry.cid}`;
+      const existing = index.get(key);
+      if (!existing || entry.value > existing.value) {
+        index.set(key, entry);
+      }
+    }
+    return [...index.values()];
   }
 
   // -------------------------------------------------------------------------
@@ -355,6 +382,9 @@ export class DefaultGossipService implements GossipService {
     addDimension("review_score", frontier.byReviewScore);
     addDimension("reproduction", frontier.byReproduction);
 
+    // Cache for mergedFrontier()
+    this.localDigest = entries;
+
     return entries;
   }
 
@@ -374,7 +404,15 @@ export class DefaultGossipService implements GossipService {
       }
     }
 
-    this.remoteFrontier = [...index.values()];
+    let merged = [...index.values()];
+
+    // Evict when over limit — keep highest-value entries
+    if (merged.length > MAX_MERGED_FRONTIER_ENTRIES) {
+      merged.sort((a, b) => b.value - a.value);
+      merged = merged.slice(0, MAX_MERGED_FRONTIER_ENTRIES);
+    }
+
+    this.remoteFrontier = merged;
 
     this.emit({
       type: GossipEventType.FrontierUpdated,
@@ -440,22 +478,12 @@ export class DefaultGossipService implements GossipService {
     for (const [peerId, state] of this.livenessMap) {
       if (peerId === this.config.peerId) continue;
 
-      if (state.status === PeerStatus.Alive) {
-        // Check if peer should be suspected (no response in suspicionTimeout)
-        if (currentTime - state.lastSeen > this.config.suspicionTimeoutMs) {
-          this.livenessMap.set(peerId, {
-            ...state,
-            status: PeerStatus.Suspected,
-            suspectedAt: currentTime,
-          });
-          this.emit({
-            type: GossipEventType.PeerSuspected,
-            peerId,
-            timestamp: new Date(currentTime).toISOString(),
-          });
-        }
-      } else if (state.status === PeerStatus.Suspected) {
-        // Check if suspected peer should be declared failed
+      // Only transition suspected → failed here.
+      // The alive → suspected transition happens exclusively via
+      // markUnresponsive() when an actual communication attempt fails.
+      // This avoids falsely suspecting peers that simply weren't selected
+      // for gossip in recent rounds.
+      if (state.status === PeerStatus.Suspected) {
         const suspectedDuration = currentTime - (state.suspectedAt ?? currentTime);
         if (suspectedDuration > this.config.failureTimeoutMs - this.config.suspicionTimeoutMs) {
           this.livenessMap.set(peerId, {

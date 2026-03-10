@@ -288,15 +288,16 @@ async function handleShuffle(args: readonly string[], writer: Writer): Promise<v
   const transport = new HttpGossipTransport();
   const selfPeer: PeerInfo = {
     peerId,
-    address: `cli://${hostname()}`,
+    address: "", // CLI is ephemeral — not routable
     age: 0,
     lastSeen: new Date().toISOString(),
   };
 
   const target = urlToPeerInfo(peerUrl);
+  // Don't include self in offered — CLI can't receive incoming gossip
   const request: ShuffleRequest = {
     sender: { ...selfPeer, age: 0 },
-    offered: [{ ...selfPeer, age: 0 }],
+    offered: [],
   };
 
   writer(`Shuffling with ${peerUrl}...`);
@@ -339,7 +340,7 @@ async function handleSync(args: readonly string[], deps: CliDeps, writer: Writer
   const transport = new HttpGossipTransport();
   const selfPeer: PeerInfo = {
     peerId,
-    address: `cli://${hostname()}`,
+    address: "", // CLI is ephemeral — not routable
     age: 0,
     lastSeen: new Date().toISOString(),
   };
@@ -359,9 +360,10 @@ async function handleSync(args: readonly string[], deps: CliDeps, writer: Writer
   for (const seed of seeds) {
     try {
       writer(`  Shuffling with ${seed.peerId} (${seed.address})...`);
+      // Don't include self in offered — CLI can't receive incoming gossip
       const request: ShuffleRequest = {
         sender: { ...selfPeer, age: 0 },
-        offered: [{ ...selfPeer, age: 0 }],
+        offered: [],
       };
       const shuffleResp = await transport.shuffle(seed, request);
       sampler.processShuffleResponse(shuffleResp, request.offered);
@@ -473,6 +475,9 @@ async function handleDaemon(
     }
   }
 
+  // Load persisted frontier
+  const persistedFrontier = gossipStore.loadFrontier();
+
   // Create gossip service
   const cachedFrontier = new CachedFrontierCalculator(deps.frontier);
   const transport = new HttpGossipTransport();
@@ -485,6 +490,7 @@ async function handleDaemon(
     },
     transport,
     frontier: cachedFrontier,
+    initialFrontier: persistedFrontier,
   });
 
   // Register event listener for console output and state persistence
@@ -536,7 +542,9 @@ async function handleDaemon(
   writer(`  Port:      ${port}`);
   writer(`  Interval:  ${intervalSec}s`);
   writer(`  Seeds:     ${seeds.map((s) => s.peerId).join(", ")}`);
-  writer(`  Persisted: ${persistedPeers.length} peer(s)`);
+  writer(
+    `  Persisted: ${persistedPeers.length} peer(s), ${persistedFrontier.length} frontier entries`,
+  );
   writer(`\nListening for gossip on port ${port}. Press Ctrl+C to stop.\n`);
 
   // Start the gossip loop

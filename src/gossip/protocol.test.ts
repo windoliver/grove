@@ -41,6 +41,7 @@ class MockGossipTransport implements GossipTransport {
     // Default: echo back a response from the target peer
     return {
       peerId: peer.peerId,
+      address: peer.address,
       frontier: [],
       load: { queueDepth: 0 },
       capabilities: {},
@@ -87,6 +88,7 @@ function makePeer(id: string, address?: string): PeerInfo {
 function makeGossipMessage(peerId: string, frontier: FrontierDigestEntry[] = []): GossipMessage {
   return {
     peerId,
+    address: `http://peer-${peerId}:4515`,
     frontier,
     load: { queueDepth: 1 },
     capabilities: { platform: "test" },
@@ -142,10 +144,11 @@ describe("DefaultGossipService", () => {
   // -------------------------------------------------------------------------
 
   describe("currentMessage()", () => {
-    it("generates correct gossip message format with peerId, frontier, load, capabilities, timestamp", async () => {
+    it("generates correct gossip message format with peerId, address, frontier, load, capabilities, timestamp", async () => {
       const msg = await service.currentMessage();
 
       expect(msg.peerId).toBe(peerId);
+      expect(msg.address).toBe(address);
       expect(msg.load).toEqual({ queueDepth: 42 });
       expect(msg.capabilities).toEqual({ platform: "bun-test" });
       expect(msg.timestamp).toBe(new Date(currentTime).toISOString());
