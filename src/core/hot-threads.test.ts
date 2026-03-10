@@ -181,6 +181,48 @@ function hotThreadsTests(createBackend: () => TestBackend): void {
     }
   });
 
+  test("handles duplicate tags in filter", async () => {
+    const { store, cleanup } = createBackend();
+    try {
+      const tagged = makeTimedContribution({ summary: "Tagged", tags: ["architecture"] });
+      await store.put(tagged);
+      await store.put(
+        makeTimedContribution({
+          relations: [{ targetCid: tagged.cid, relationType: RelationType.RespondsTo }],
+        }),
+      );
+
+      // Duplicate tags should be deduplicated, not cause zero results
+      const results = await store.hotThreads({ tags: ["architecture", "architecture"] });
+      expect(results).toHaveLength(1);
+      expect(results[0]!.contribution.cid).toBe(tagged.cid);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("applies default limit of 20", async () => {
+    const { store, cleanup } = createBackend();
+    try {
+      // Create 25 threads
+      for (let i = 0; i < 25; i++) {
+        const root = makeTimedContribution({ summary: `Thread ${i}` });
+        await store.put(root);
+        await store.put(
+          makeTimedContribution({
+            relations: [{ targetCid: root.cid, relationType: RelationType.RespondsTo }],
+          }),
+        );
+      }
+
+      // No explicit limit — should default to 20
+      const results = await store.hotThreads();
+      expect(results).toHaveLength(20);
+    } finally {
+      cleanup();
+    }
+  });
+
   test("filters by tags", async () => {
     const { store, cleanup } = createBackend();
     try {

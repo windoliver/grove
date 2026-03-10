@@ -37,9 +37,10 @@ export interface ThreadSummary {
   readonly lastReplyAt: string;
 }
 
-/** Options for hotThreads(). */
+/** Options for hotThreads(). Default limit is 20 when omitted. */
 export interface HotThreadsOptions {
   readonly tags?: readonly string[] | undefined;
+  /** Maximum number of threads to return. Defaults to 20 when omitted. */
   readonly limit?: number | undefined;
 }
 

@@ -723,25 +723,29 @@ export class SqliteContributionStore implements ContributionStore {
     const limit = opts?.limit ?? 20;
     const params: SQLQueryBindings[] = [];
 
+    // Deduplicate tags to avoid COUNT(DISTINCT ct.tag) mismatch
+    const uniqueTags =
+      opts?.tags !== undefined && opts.tags.length > 0 ? [...new Set(opts.tags)] : undefined;
+
     let tagJoin = "";
     let tagWhere = "";
-    if (opts?.tags !== undefined && opts.tags.length > 0) {
+    if (uniqueTags !== undefined) {
       // Require all tags to match (intersection)
       tagJoin = " INNER JOIN contribution_tags ct ON ct.cid = c.cid";
-      const placeholders = opts.tags.map(() => "?").join(", ");
+      const placeholders = uniqueTags.map(() => "?").join(", ");
       tagWhere = ` AND ct.tag IN (${placeholders})`;
-      params.push(...opts.tags);
+      params.push(...uniqueTags);
       // GROUP BY with HAVING ensures all tags match
     }
 
     const havingCount =
-      opts?.tags !== undefined && opts.tags.length > 0
-        ? ` HAVING COUNT(DISTINCT r.source_cid) >= 1 AND COUNT(DISTINCT ct.tag) = ?`
-        : " HAVING COUNT(DISTINCT r.source_cid) >= 1";
+      uniqueTags !== undefined
+        ? ` HAVING COUNT(r.source_cid) >= 1 AND COUNT(DISTINCT ct.tag) = ?`
+        : " HAVING COUNT(r.source_cid) >= 1";
 
     const sql = `
       SELECT c.manifest_json,
-             COUNT(DISTINCT r.source_cid) as reply_count,
+             COUNT(r.source_cid) as reply_count,
              MAX(strftime('%Y-%m-%dT%H:%M:%SZ', reply_c.created_at)) as last_reply_at
       FROM contributions c
       INNER JOIN relations r ON r.target_cid = c.cid AND r.relation_type = 'responds_to'
@@ -754,8 +758,8 @@ export class SqliteContributionStore implements ContributionStore {
       LIMIT ?
     `;
 
-    if (opts?.tags !== undefined && opts.tags.length > 0) {
-      params.push(opts.tags.length);
+    if (uniqueTags !== undefined) {
+      params.push(uniqueTags.length);
     }
     params.push(limit);
 

@@ -276,9 +276,10 @@ export class InMemoryContributionStore implements ContributionStore {
       const contribution = this.contributions.get(cid);
       if (contribution === undefined) continue;
 
-      // Tag filter
+      // Tag filter — deduplicate tags to match SQLite behavior
       if (opts?.tags !== undefined && opts.tags.length > 0) {
-        if (!opts.tags.every((t) => contribution.tags.includes(t))) continue;
+        const uniqueTags = [...new Set(opts.tags)];
+        if (!uniqueTags.every((t) => contribution.tags.includes(t))) continue;
       }
 
       summaries.push({
@@ -294,10 +295,9 @@ export class InMemoryContributionStore implements ContributionStore {
       return new Date(b.lastReplyAt).getTime() - new Date(a.lastReplyAt).getTime();
     });
 
-    if (opts?.limit !== undefined) {
-      return summaries.slice(0, opts.limit);
-    }
-    return summaries;
+    // Apply default limit of 20 to match SQLite backend
+    const limit = opts?.limit ?? 20;
+    return summaries.slice(0, limit);
   };
 
   close(): void {}
