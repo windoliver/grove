@@ -96,7 +96,7 @@ export class DefaultFrontierCalculator implements FrontierCalculator {
 
     const [byMetric, byAdoption, byRecency, byReviewScore] = await Promise.all([
       this.computeByMetric(filtered, limit, query?.metric),
-      this.computeByAdoption(filtered, limit),
+      this.computeByAdoption(filtered, allContributions, limit),
       this.computeByRecency(filtered, limit),
       this.computeByReviewScore(filtered, limit),
     ]);
@@ -154,10 +154,11 @@ export class DefaultFrontierCalculator implements FrontierCalculator {
     return result;
   }
 
-  private async computeByAdoption(
+  private computeByAdoption(
     contributions: readonly Contribution[],
+    allContributions: readonly Contribution[],
     limit: number,
-  ): Promise<readonly FrontierEntry[]> {
+  ): readonly FrontierEntry[] {
     // For each contribution, count how many other contributions adopt it
     const adoptionCounts = new Map<string, number>();
 
@@ -166,7 +167,6 @@ export class DefaultFrontierCalculator implements FrontierCalculator {
     }
 
     // Look through all contributions for "adopts" relations targeting our set
-    const allContributions = await this.store.list();
     for (const c of allContributions) {
       for (const rel of c.relations) {
         if (rel.relationType === RelationType.Adopts && adoptionCounts.has(rel.targetCid)) {

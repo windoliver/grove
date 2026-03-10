@@ -1,2 +1,8 @@
 export { FsCas } from "./fs-cas.js";
-export { SqliteStore } from "./sqlite-store.js";
+export {
+  createSqliteStores,
+  initSqliteDb,
+  SqliteClaimStore,
+  SqliteContributionStore,
+  SqliteStore,
+} from "./sqlite-store.js";

@@ -175,8 +175,8 @@ const RelationSchema = z
   })
   .strict();
 
-/** Schema for ContributionInput — validates everything except cid and manifestVersion. */
-const ContributionInputSchema = z
+/** Shared fields for both ContributionInput and ContributionManifest schemas. */
+const ContributionBaseSchema = z
   .object({
     kind: ContributionKindSchema,
     mode: ContributionModeSchema,
@@ -192,23 +192,13 @@ const ContributionInputSchema = z
   })
   .strict();
 
-const ContributionManifestSchema = z
-  .object({
-    cid: CidSchema,
-    manifestVersion: z.number().int().positive(),
-    kind: ContributionKindSchema,
-    mode: ContributionModeSchema,
-    summary: z.string().min(1),
-    description: z.string().optional(),
-    artifacts: z.record(z.string(), z.string()),
-    relations: z.array(RelationSchema),
-    scores: z.record(z.string(), ScoreSchema).optional(),
-    tags: z.array(z.string()),
-    context: z.record(z.string(), JsonValueSchema).optional(),
-    agent: AgentIdentitySchema,
-    createdAt: z.string().datetime({ offset: true, message: "createdAt must be ISO 8601" }),
-  })
-  .strict();
+/** Schema for ContributionInput — validates everything except cid and manifestVersion. */
+const ContributionInputSchema = ContributionBaseSchema;
+
+const ContributionManifestSchema = ContributionBaseSchema.extend({
+  cid: CidSchema,
+  manifestVersion: z.number().int().positive(),
+});
 
 // ---------------------------------------------------------------------------
 // Deep freeze utility
