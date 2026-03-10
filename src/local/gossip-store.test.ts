@@ -150,9 +150,7 @@ describe("SqliteGossipStore", () => {
   });
 
   test("saveFrontier omits tags key when null", () => {
-    const entries: FrontierDigestEntry[] = [
-      { metric: "accuracy", cid: "cid-1", value: 0.95 },
-    ];
+    const entries: FrontierDigestEntry[] = [{ metric: "accuracy", cid: "cid-1", value: 0.95 }];
 
     store.saveFrontier(entries);
     const loaded = store.loadFrontier();
