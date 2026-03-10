@@ -30,6 +30,7 @@ import type {
   ContributionStore,
   ExpiredClaim,
   ExpireStaleOptions,
+  ThreadNode,
 } from "./store.js";
 
 // ---------------------------------------------------------------------------
@@ -209,6 +210,12 @@ export class EnforcingContributionStore implements ContributionStore {
   ): Promise<readonly Contribution[]> =>
     this.inner.findExisting(agentId, targetCid, kind, relationType);
   count = (query?: ContributionQuery): Promise<number> => this.inner.count(query);
+  thread = (
+    rootCid: string,
+    opts?: { readonly maxDepth?: number; readonly limit?: number },
+  ): Promise<readonly ThreadNode[]> => this.inner.thread(rootCid, opts);
+  replyCounts = (cids: readonly string[]): Promise<ReadonlyMap<string, number>> =>
+    this.inner.replyCounts(cids);
   close = (): void => this.inner.close();
 
   // ========================================================================
