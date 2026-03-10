@@ -9,12 +9,19 @@ import { createContribution } from "./manifest.js";
 import type {
   AgentIdentity,
   Artifact,
+  Claim,
   Contribution,
   ContributionInput,
   Relation,
   Score,
 } from "./models.js";
-import { ContributionKind, ContributionMode, RelationType, ScoreDirection } from "./models.js";
+import {
+  ClaimStatus,
+  ContributionKind,
+  ContributionMode,
+  RelationType,
+  ScoreDirection,
+} from "./models.js";
 
 /** Create an AgentIdentity with sensible defaults. */
 export function makeAgent(overrides?: Partial<AgentIdentity>): AgentIdentity {
@@ -47,6 +54,23 @@ export function makeArtifact(overrides?: Partial<Artifact>): Artifact {
   return {
     contentHash: "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     sizeBytes: 1024,
+    ...overrides,
+  };
+}
+
+/** Create a Claim with sensible defaults. */
+export function makeClaim(overrides?: Partial<Claim>): Claim {
+  const now = new Date().toISOString();
+  const leaseExpires = new Date(Date.now() + 300_000).toISOString();
+  return {
+    claimId: "claim-1",
+    targetRef: "target-1",
+    agent: makeAgent(),
+    status: ClaimStatus.Active,
+    intentSummary: "Test claim",
+    createdAt: now,
+    heartbeatAt: now,
+    leaseExpiresAt: leaseExpires,
     ...overrides,
   };
 }

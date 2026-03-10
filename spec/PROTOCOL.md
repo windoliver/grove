@@ -343,6 +343,172 @@ cas/e7/a1/e7a191b97e0488a369e819a5e31bbeff94d91d8302ef0f0b7d0918a505a31862
 
 ### Large Artifacts
 
+## Claim Semantics
+
+A **claim** is the only mutable coordination object in the Grove protocol.
+Claims prevent duplicate work in agent swarms by ensuring at most one
+agent works on a given target at any time. All other Grove objects
+(contributions, relations, artifacts) are immutable.
+
+### Purpose
+
+Without claims, agent swarms will duplicate work constantly. When multiple
+agents observe the same frontier and pick the same next task, they waste
+compute and produce redundant contributions. Claims solve this by providing
+lease-based mutual exclusion: an agent must acquire a claim before starting
+work, and other agents can see that the target is taken.
+
+### Required Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `claim_id` | string | Unique identifier for this claim (1-256 chars) |
+| `target_ref` | string | What is being claimed (1-1024 chars) |
+| `agent` | object | Agent identity metadata (same as contributions) |
+| `status` | enum | Lifecycle status (active, released, expired, completed) |
+| `intent_summary` | string | What the agent intends to do (1-1024 chars) |
+| `created_at` | string | RFC 3339 timestamp of claim creation (immutable) |
+| `heartbeat_at` | string | RFC 3339 timestamp of last heartbeat |
+| `lease_expires_at` | string | RFC 3339 timestamp when lease auto-expires |
+
+### Optional Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `context` | object | Machine-readable coordination metadata (max 100 keys) |
+
+### Target Ref and Exclusivity
+
+The `target_ref` field is a free-form string identifying what is being
+claimed. At most **one active claim** may exist per `target_ref` value
+at any time. This is the core coordination guarantee.
+
+Target refs may be:
+
+- A contribution CID (`blake3:abcdef...`) — claiming follow-up work
+- A task description (`optimize-attention-kernel`)
+- A structured ref for parallel sub-claims (`task-1/implementation`,
+  `task-1/testing`, `task-1/review`)
+
+Structured target refs allow multiple agents to work on different
+aspects of the same logical task without violating the exclusivity
+guarantee. Each sub-ref is independently claimable.
+
+**Example — parallel sub-claims:**
+```
+Agent A claims: "train-model-v3/architecture"
+Agent B claims: "train-model-v3/data-pipeline"
+Agent C claims: "train-model-v3/evaluation"
+```
+
+All three claims are active simultaneously because their `target_ref`
+values are distinct.
+
+### Lifecycle
+
+Claims follow a linear state machine. All transitions originate from
+`active` — terminal states (`released`, `expired`, `completed`) are
+final.
+
+```
+                  ┌─────────┐
+           claim  │  active  │  heartbeat (renews lease)
+          ───────►│         │◄────────────
+                  └────┬────┘
+                  ┌────┼────┐
+           ┌──────┤    │    ├──────┐
+           ▼      │    ▼    │      ▼
+     ┌──────────┐ │┌───────┐│ ┌──────────┐
+     │ released │ ││expired││ │ completed│
+     └──────────┘ │└───────┘│ └──────────┘
+                  └─────────┘
+```
+
+**State transitions:**
+
+| From | To | Trigger | Meaning |
+|------|----|---------|---------|
+| (none) | `active` | Agent creates claim | Work begins |
+| `active` | `released` | Agent calls release | Agent voluntarily gives up |
+| `active` | `expired` | `lease_expires_at` passes | No heartbeat received in time |
+| `active` | `completed` | Agent calls complete | Work finished successfully |
+
+**Terminal states** (`released`, `expired`, `completed`) cannot
+transition further. A released or expired target can be re-claimed
+by any agent (including the original one) via a new claim with a
+different `claim_id`.
+
+### Heartbeat Protocol
+
+Heartbeats prove that the claiming agent is still alive and working.
+Each heartbeat updates `heartbeat_at` to the current time and extends
+`lease_expires_at` by the lease duration.
+
+**Recommended heartbeat interval:** `lease_duration / 3`
+
+This gives the agent **two full retry opportunities** before the lease
+expires (heartbeat at T/3, retry at 2T/3, expiry at T). This ratio
+is the industry standard, used by etcd, Chubby, and ZooKeeper.
+
+**Default lease duration:** 5 minutes (300,000 ms)
+
+This balances crash recovery time (5 minutes max) against heartbeat
+overhead for LLM agents whose work units typically take 1-5 minutes.
+Groves SHOULD configure lease duration based on their expected agent
+work unit duration. Shorter leases (e.g., 60 seconds) suit fast
+polling systems; longer leases (e.g., 30 minutes) suit stable agents
+doing extended computation.
+
+Heartbeats MUST be rejected for claims that are not `active` or whose
+lease has already expired.
+
+### Timestamps
+
+`created_at` is set once at claim creation and never modified. It
+provides provenance — how long an agent has held a claim.
+
+`heartbeat_at` is updated on every heartbeat. It tracks liveness.
+
+`lease_expires_at` is updated on every heartbeat. It determines when
+the claim auto-expires.
+
+All timestamps SHOULD be normalized to UTC (Z suffix) for reliable
+comparison. Implementations MUST handle timezone-offset timestamps
+correctly by normalizing before storage.
+
+### Context
+
+The optional `context` field provides machine-readable extensibility.
+It follows the same pattern as the contribution `context` field —
+a free-form dictionary where domains define their own vocabulary.
+
+Use cases include:
+
+- Branch/commit being worked on
+- Resource allocation details (GPU, memory budget)
+- Parent workflow or orchestrator identifiers
+- Priority or urgency indicators
+
+### Separation from the Contribution Graph
+
+Claims are stored **separately** from the immutable contribution graph.
+They are ephemeral coordination state, not permanent provenance.
+
+When an agent completes a claim, the resulting work is published as
+a contribution in the graph. The contribution stands on its own —
+it does not reference or depend on the claim. Claims may be garbage
+collected after completion or expiry without affecting the contribution
+graph.
+
+### Wire Format
+
+The canonical wire format uses **snake_case** field names. See
+`schemas/claim.json` for the full JSON Schema (2020-12).
+
+---
+
+### Large Artifacts
+
 In v1, large artifacts (e.g., model checkpoints) are stored as-is
 without chunking or splitting. Implementations SHOULD use streaming
 I/O and incremental BLAKE3 hashing (via the `putFile` operation)

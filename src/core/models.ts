@@ -156,13 +156,16 @@ export type ContributionInput = Omit<Contribution, "cid" | "manifestVersion">;
  * mutating existing ones.
  *
  * They prevent duplicate work in agent swarms via lease-based coordination.
+ * At most one active claim may exist per target_ref at any time.
  */
 export interface Claim {
   readonly claimId: string;
   readonly targetRef: string;
   readonly agent: AgentIdentity;
   readonly status: ClaimStatus;
+  readonly intentSummary: string;
+  readonly createdAt: string;
   readonly heartbeatAt: string;
   readonly leaseExpiresAt: string;
-  readonly intentSummary: string;
+  readonly context?: Readonly<Record<string, JsonValue>> | undefined;
 }

@@ -20,21 +20,22 @@ import { initSqliteDb, SqliteStore } from "./sqlite-store.js";
 
 function makeClaim(overrides?: Partial<Claim>): Claim {
   const now = new Date().toISOString();
-  const leaseExpires = new Date(Date.now() + 60_000).toISOString();
+  const leaseExpires = new Date(Date.now() + 300_000).toISOString();
   return {
     claimId: "claim-1",
     targetRef: "target-1",
     agent: { agentId: "test-agent" },
     status: ClaimStatus.Active,
+    intentSummary: "Test claim",
+    createdAt: now,
     heartbeatAt: now,
     leaseExpiresAt: leaseExpires,
-    intentSummary: "Test claim",
     ...overrides,
   };
 }
 
 describe("schema migration", () => {
-  test("fresh DB creates schema_migrations with version 1", async () => {
+  test("fresh DB creates schema_migrations with current version", async () => {
     const dir = await mkdtemp(join(tmpdir(), "sqlite-migration-"));
     const dbPath = join(dir, "test.db");
     try {
@@ -49,7 +50,7 @@ describe("schema migration", () => {
       db.close();
 
       expect(row).toBeDefined();
-      expect(row?.version).toBe(1);
+      expect(row?.version).toBe(2);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -189,7 +190,7 @@ describe("schema migration", () => {
       db.close();
 
       expect(rows.length).toBe(1);
-      expect(rows[0]?.version).toBe(1);
+      expect(rows[0]?.version).toBe(2);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -202,10 +203,12 @@ describe("schema migration", () => {
       const db = initSqliteDb(dbPath);
 
       // Should be able to query schema
-      const row = db.prepare("SELECT version FROM schema_migrations LIMIT 1").get() as {
+      const row = db
+        .prepare("SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1")
+        .get() as {
         version: number;
       } | null;
-      expect(row?.version).toBe(1);
+      expect(row?.version).toBe(2);
 
       db.close();
     } finally {

@@ -21,15 +21,16 @@ export type ClaimStoreFactory = () => Promise<{
 /** Create a Claim object for testing. */
 function makeClaim(overrides?: Partial<Claim>): Claim {
   const now = new Date().toISOString();
-  const leaseExpires = new Date(Date.now() + 60_000).toISOString();
+  const leaseExpires = new Date(Date.now() + 300_000).toISOString();
   return {
     claimId: "claim-1",
     targetRef: "target-1",
     agent: { agentId: "test-agent" },
     status: ClaimStatus.Active,
+    intentSummary: "Test claim",
+    createdAt: now,
     heartbeatAt: now,
     leaseExpiresAt: leaseExpires,
-    intentSummary: "Test claim",
     ...overrides,
   };
 }
@@ -346,6 +347,106 @@ export function runClaimStoreTests(factory: ClaimStoreFactory): void {
       const results = await store.activeClaims("target-A");
       expect(results.length).toBe(1);
       expect(results[0]?.claimId).toBe("c1");
+    });
+
+    // ------------------------------------------------------------------
+    // created_at immutability
+    // ------------------------------------------------------------------
+
+    test("created_at is not modified by heartbeat", async () => {
+      const claim = makeClaim();
+      const created = await store.createClaim(claim);
+      const originalCreatedAt = created.createdAt;
+
+      const updated = await store.heartbeat(claim.claimId);
+      expect(updated.createdAt).toBe(originalCreatedAt);
+      // heartbeat_at should be updated, but created_at stays the same
+      expect(new Date(updated.heartbeatAt).getTime()).toBeGreaterThanOrEqual(
+        new Date(originalCreatedAt).getTime(),
+      );
+    });
+
+    test("created_at is not modified by release", async () => {
+      const claim = makeClaim();
+      const created = await store.createClaim(claim);
+      const originalCreatedAt = created.createdAt;
+
+      const released = await store.release(claim.claimId);
+      expect(released.createdAt).toBe(originalCreatedAt);
+    });
+
+    test("created_at is not modified by complete", async () => {
+      const claim = makeClaim();
+      const created = await store.createClaim(claim);
+      const originalCreatedAt = created.createdAt;
+
+      const completed = await store.complete(claim.claimId);
+      expect(completed.createdAt).toBe(originalCreatedAt);
+    });
+
+    // ------------------------------------------------------------------
+    // context round-trip
+    // ------------------------------------------------------------------
+
+    test("context is stored and retrieved correctly", async () => {
+      const claim = makeClaim({
+        claimId: "ctx-simple",
+        context: { branch: "feat/new-model", priority: 5 },
+      });
+      const created = await store.createClaim(claim);
+      expect(created.context).toEqual({ branch: "feat/new-model", priority: 5 });
+
+      const retrieved = await store.getClaim("ctx-simple");
+      expect(retrieved?.context).toEqual({ branch: "feat/new-model", priority: 5 });
+    });
+
+    test("context with nested values survives round-trip", async () => {
+      const nestedContext = {
+        workflow: "autoresearch",
+        config: { model: "claude-opus-4-6", budget: 100, tags: ["ml", "nlp"] },
+        scores: [0.95, 0.87, 0.92],
+        nullable: null,
+        flag: true,
+      };
+      const claim = makeClaim({
+        claimId: "ctx-nested",
+        context: nestedContext,
+      });
+      const created = await store.createClaim(claim);
+      expect(created.context).toEqual(nestedContext);
+
+      const retrieved = await store.getClaim("ctx-nested");
+      expect(retrieved?.context).toEqual(nestedContext);
+    });
+
+    test("claim without context returns undefined for context", async () => {
+      const claim = makeClaim({ claimId: "no-ctx" });
+      await store.createClaim(claim);
+
+      const retrieved = await store.getClaim("no-ctx");
+      expect(retrieved?.context).toBeUndefined();
+    });
+
+    // ------------------------------------------------------------------
+    // agent identity round-trip
+    // ------------------------------------------------------------------
+
+    test("full agent identity survives round-trip", async () => {
+      const fullAgent = {
+        agentId: "agent-007",
+        agentName: "Research Agent",
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        version: "1.0.0",
+        toolchain: "claude-code",
+        runtime: "bun-1.3.9",
+        platform: "H100",
+      };
+      const claim = makeClaim({ claimId: "full-agent", agent: fullAgent });
+      await store.createClaim(claim);
+
+      const retrieved = await store.getClaim("full-agent");
+      expect(retrieved?.agent).toEqual(fullAgent);
     });
 
     // ------------------------------------------------------------------

@@ -29,8 +29,8 @@ import type { ClaimStore, ContributionQuery, ContributionStore } from "../core/s
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_LEASE_DURATION_MS = 60_000;
-const CURRENT_SCHEMA_VERSION = 1;
+const DEFAULT_LEASE_DURATION_MS = 300_000;
+const CURRENT_SCHEMA_VERSION = 2;
 
 /**
  * Normalize an ISO 8601 timestamp to UTC Z-format.
@@ -112,9 +112,11 @@ const SCHEMA_DDL = `
     target_ref TEXT NOT NULL,
     agent_id TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
+    intent_summary TEXT NOT NULL,
+    created_at TEXT NOT NULL,
     heartbeat_at TEXT NOT NULL,
     lease_expires_at TEXT NOT NULL,
-    intent_summary TEXT NOT NULL,
+    context_json TEXT,
     agent_json TEXT NOT NULL
   );
 
@@ -166,6 +168,32 @@ export function initSqliteDb(dbPath: string): Database {
   const initSchema = db.transaction(() => {
     db.exec(SCHEMA_DDL);
     db.exec(FTS_DDL);
+
+    // Check current schema version for migrations
+    const currentVersion = (
+      db.prepare("SELECT MAX(version) as v FROM schema_migrations").get() as {
+        v: number | null;
+      }
+    ).v;
+
+    // Migration v1 → v2: add created_at and context_json to claims
+    if (currentVersion !== null && currentVersion < 2) {
+      // Check if columns already exist (idempotent migration)
+      const columns = db.prepare("PRAGMA table_info(claims)").all() as readonly {
+        name: string;
+      }[];
+      const columnNames = new Set(columns.map((c) => c.name));
+
+      if (!columnNames.has("created_at")) {
+        // Default created_at to heartbeat_at for existing claims
+        db.run("ALTER TABLE claims ADD COLUMN created_at TEXT NOT NULL DEFAULT ''");
+        db.run("UPDATE claims SET created_at = heartbeat_at WHERE created_at = ''");
+      }
+      if (!columnNames.has("context_json")) {
+        db.run("ALTER TABLE claims ADD COLUMN context_json TEXT");
+      }
+    }
+
     db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [
       CURRENT_SCHEMA_VERSION,
       new Date().toISOString(),
@@ -306,22 +334,32 @@ interface ClaimRow {
   readonly target_ref: string;
   readonly agent_id: string;
   readonly status: string;
+  readonly intent_summary: string;
+  readonly created_at: string;
   readonly heartbeat_at: string;
   readonly lease_expires_at: string;
-  readonly intent_summary: string;
+  readonly context_json: string | null;
   readonly agent_json: string;
 }
 
 function rowToClaim(row: ClaimRow, statusOverride?: ClaimStatus): Claim {
-  return {
+  const base: Claim = {
     claimId: row.claim_id,
     targetRef: row.target_ref,
     agent: JSON.parse(row.agent_json) as AgentIdentity,
     status: (statusOverride ?? row.status) as ClaimStatus,
+    intentSummary: row.intent_summary,
+    createdAt: row.created_at,
     heartbeatAt: row.heartbeat_at,
     leaseExpiresAt: row.lease_expires_at,
-    intentSummary: row.intent_summary,
   };
+  if (row.context_json !== null) {
+    return {
+      ...base,
+      context: JSON.parse(row.context_json) as Readonly<Record<string, JsonValue>>,
+    };
+  }
+  return base;
 }
 
 // ---------------------------------------------------------------------------
@@ -587,8 +625,8 @@ export class SqliteClaimStore implements ClaimStore {
     this.db = db;
 
     this.stmtGetClaim = db.query(
-      `SELECT claim_id, target_ref, agent_id, status, heartbeat_at,
-       lease_expires_at, intent_summary, agent_json
+      `SELECT claim_id, target_ref, agent_id, status, intent_summary,
+       created_at, heartbeat_at, lease_expires_at, context_json, agent_json
        FROM claims WHERE claim_id = ?`,
     );
     this.stmtUpdateHeartbeat = db.query(
@@ -599,6 +637,7 @@ export class SqliteClaimStore implements ClaimStore {
 
   createClaim = async (claim: Claim): Promise<Claim> => {
     // Normalize timestamps to UTC for reliable SQL text comparison
+    const createdAtUtc = toUtcIso(claim.createdAt);
     const heartbeatUtc = toUtcIso(claim.heartbeatAt);
     const leaseExpiresUtc = toUtcIso(claim.leaseExpiresAt);
 
@@ -628,18 +667,20 @@ export class SqliteClaimStore implements ClaimStore {
 
       this.db
         .prepare(
-          `INSERT INTO claims (claim_id, target_ref, agent_id, status, heartbeat_at,
-           lease_expires_at, intent_summary, agent_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO claims (claim_id, target_ref, agent_id, status, intent_summary,
+           created_at, heartbeat_at, lease_expires_at, context_json, agent_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           claim.claimId,
           claim.targetRef,
           claim.agent.agentId,
           claim.status,
+          claim.intentSummary,
+          createdAtUtc,
           heartbeatUtc,
           leaseExpiresUtc,
-          claim.intentSummary,
+          claim.context !== undefined ? JSON.stringify(claim.context) : null,
           JSON.stringify(claim.agent),
         );
     });
@@ -699,8 +740,8 @@ export class SqliteClaimStore implements ClaimStore {
       .prepare(
         `UPDATE claims SET status = 'expired'
          WHERE status = 'active' AND lease_expires_at < ?
-         RETURNING claim_id, target_ref, agent_id, status, heartbeat_at,
-                   lease_expires_at, intent_summary, agent_json`,
+         RETURNING claim_id, target_ref, agent_id, status, intent_summary,
+                   created_at, heartbeat_at, lease_expires_at, context_json, agent_json`,
       )
       .all(now) as readonly ClaimRow[];
 
@@ -710,8 +751,8 @@ export class SqliteClaimStore implements ClaimStore {
   activeClaims = async (targetRef?: string): Promise<readonly Claim[]> => {
     const now = new Date().toISOString();
     let sql = `
-      SELECT claim_id, target_ref, agent_id, status, heartbeat_at,
-             lease_expires_at, intent_summary, agent_json
+      SELECT claim_id, target_ref, agent_id, status, intent_summary,
+             created_at, heartbeat_at, lease_expires_at, context_json, agent_json
       FROM claims WHERE status = 'active' AND lease_expires_at >= ?
     `;
     const params: SQLQueryBindings[] = [now];

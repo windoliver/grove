@@ -44,15 +44,16 @@ async function withTwoStores<T>(
 
 function makeClaim(overrides?: Partial<Claim>): Claim {
   const now = new Date().toISOString();
-  const leaseExpires = new Date(Date.now() + 60_000).toISOString();
+  const leaseExpires = new Date(Date.now() + 300_000).toISOString();
   return {
     claimId: "claim-1",
     targetRef: "target-1",
     agent: { agentId: "test-agent" },
     status: ClaimStatus.Active,
+    intentSummary: "Test claim",
+    createdAt: now,
     heartbeatAt: now,
     leaseExpiresAt: leaseExpires,
-    intentSummary: "Test claim",
     ...overrides,
   };
 }
