@@ -14,6 +14,32 @@ can:
 
 This guide is organized by use case instead of internal modules.
 
+## Default Recommendation
+
+Treat Nexus as the primary Grove operating mode when you have a shared Nexus
+endpoint available.
+
+That means:
+
+- use Nexus for shared contributions, claims, outcomes, artifacts, and VFS
+- use the TUI as a shared operator view over that state
+- connect Claude Code, Codex, or other MCP hosts to the same grove
+
+Use local mode when:
+
+- you want a single-machine scratch grove
+- you are developing or debugging without shared infrastructure
+- you need the most complete spawned-session claim/workspace lifecycle today
+
+Important caveat:
+
+- `grove tui` still defaults to local mode unless you pass `--nexus` today
+- that default is an implementation detail, not the product story we should
+  optimize around
+- if Grove is going to present Nexus as the first-class path, the TUI should
+  eventually resolve Nexus by configuration and show its active provider mode
+  clearly on startup
+
 ## Choose Your Surface
 
 | If you want to... | Use | Entry point |
@@ -430,6 +456,13 @@ Current limitation:
   local-mode TUI still provides the most complete claim/workspace/session
   lifecycle for spawned agents
 
+Recommended stance:
+
+- treat Nexus as the default shared-state backend in docs and onboarding
+- treat local mode as the fallback and single-machine compatibility path
+- do not imply full local-mode session lifecycle parity in Nexus mode until the
+  missing claim/workspace/session plumbing is complete
+
 ## Use Case 9: Bridge Grove and GitHub
 
 Export a contribution:
@@ -516,6 +549,25 @@ shapes:
 
 The `examples/multi-agent/launch.sh` script is the closest current example of a
 real multi-agent workflow using MCP tools and a shared grove.
+
+## Testing and Current Gaps
+
+The detailed engineering matrix lives in
+[../testing/test-plan.md](../testing/test-plan.md), but users should know the
+high-level support picture:
+
+- strongest coverage today: `core`, `local`, `cli`, `server`, `github`, and
+  `gossip`
+- medium-confidence areas: MCP and Nexus adapter internals
+- weakest areas: TUI app/view behavior, remote/Nexus operator workflows, the
+  server diff route, and MCP outcome tools
+
+For TUI users, the practical takeaway is:
+
+- local mode is the most complete operator path today
+- remote mode is solid for observing a server-backed grove
+- Nexus mode is strong for shared state and VFS, but still needs lifecycle work
+  before it can honestly replace local mode for spawned-session management
 
 ## Where to Go Deeper
 
