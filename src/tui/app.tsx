@@ -9,13 +9,14 @@
 import { useKeyboard, useRenderer } from "@opentui/react";
 import type React from "react";
 import { useCallback, useState } from "react";
-import type { Contribution } from "../core/models.js";
+import type { Claim, Contribution } from "../core/models.js";
 import { CommandPalette } from "./components/command-palette.js";
 import { InputBar } from "./components/input-bar.js";
 import { StatusBar } from "./components/status-bar.js";
 import { PanelBar } from "./components/tab-bar.js";
 import { useNavigation } from "./hooks/use-navigation.js";
 import { InputMode, Panel, usePanelFocus } from "./hooks/use-panel-focus.js";
+import { usePolledData } from "./hooks/use-polled-data.js";
 import { PanelManager } from "./panels/panel-manager.js";
 import type { TuiDataProvider } from "./provider.js";
 
@@ -39,6 +40,14 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
   const [rowCount, setRowCount] = useState(0);
   // TODO: Wire up agent selection from AgentList panel to select a tmux session
   const [selectedSession, _setSelectedSession] = useState<string | undefined>();
+
+  // Poll active claims for topology-aware command palette
+  const claimsFetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
+  const { data: activeClaims } = usePolledData<readonly Claim[]>(
+    claimsFetcher,
+    intervalMs,
+    topology !== undefined,
+  );
 
   const handleContributionsLoaded = useCallback((contributions: readonly Contribution[]) => {
     setContributionList(contributions);
@@ -208,6 +217,8 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
         visible={panels.state.mode === InputMode.CommandPalette}
         tmux={tmux}
         onClose={handleCommandPaletteClose}
+        topology={topology}
+        activeClaims={activeClaims ?? undefined}
       />
       <InputBar
         visible={panels.state.mode === InputMode.TerminalInput}

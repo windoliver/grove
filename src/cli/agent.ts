@@ -8,6 +8,7 @@
 import { hostname } from "node:os";
 
 import type { AgentIdentity } from "../core/models.js";
+import type { AgentRole, AgentTopology } from "../core/topology.js";
 
 /** Environment variable names for agent identity fields. */
 const ENV_VARS = {
@@ -75,6 +76,26 @@ export function resolveAgent(overrides?: AgentOverrides): AgentIdentity {
   };
 
   return identity;
+}
+
+/**
+ * Resolve the AgentRole from a topology for a given agent identity.
+ *
+ * Returns undefined if topology is missing, agent has no role, or
+ * the role name doesn't match any role defined in the topology.
+ */
+export function resolveAgentRole(
+  topology: AgentTopology | undefined,
+  agentIdentity: AgentIdentity,
+): AgentRole | undefined {
+  if (topology === undefined) {
+    return undefined;
+  }
+  if (agentIdentity.role === undefined) {
+    return undefined;
+  }
+  const roleName = agentIdentity.role;
+  return topology.roles.find((r) => r.name === roleName);
 }
 
 function resolveField(

@@ -4,7 +4,9 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { resolveAgent } from "./agent.js";
+import type { AgentIdentity } from "../core/models.js";
+import type { AgentRole, AgentTopology } from "../core/topology.js";
+import { resolveAgent, resolveAgentRole } from "./agent.js";
 
 describe("resolveAgent", () => {
   const originalEnv = { ...process.env };
@@ -115,5 +117,38 @@ describe("resolveAgent", () => {
     process.env.GROVE_AGENT_ROLE = "env-role";
     const agent = resolveAgent({ role: "cli-role" });
     expect(agent.role).toBe("cli-role");
+  });
+});
+
+describe("resolveAgentRole", () => {
+  const coderRole: AgentRole = { name: "coder", maxInstances: 5 };
+  const reviewerRole: AgentRole = { name: "reviewer", maxInstances: 2 };
+  const topology: AgentTopology = {
+    structure: "graph",
+    roles: [coderRole, reviewerRole],
+  };
+
+  test("returns matching role when found", () => {
+    const agent: AgentIdentity = { agentId: "a1", role: "coder" };
+    const result = resolveAgentRole(topology, agent);
+    expect(result).toEqual(coderRole);
+  });
+
+  test("returns undefined when no topology", () => {
+    const agent: AgentIdentity = { agentId: "a1", role: "coder" };
+    const result = resolveAgentRole(undefined, agent);
+    expect(result).toBeUndefined();
+  });
+
+  test("returns undefined when agent has no role", () => {
+    const agent: AgentIdentity = { agentId: "a1" };
+    const result = resolveAgentRole(topology, agent);
+    expect(result).toBeUndefined();
+  });
+
+  test("returns undefined when role name doesn't match any topology role", () => {
+    const agent: AgentIdentity = { agentId: "a1", role: "nonexistent" };
+    const result = resolveAgentRole(topology, agent);
+    expect(result).toBeUndefined();
   });
 });

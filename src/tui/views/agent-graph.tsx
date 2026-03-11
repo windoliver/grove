@@ -11,6 +11,7 @@
 import React, { useCallback, useMemo } from "react";
 import type { Claim } from "../../core/models.js";
 import type { AgentTopology } from "../../core/topology.js";
+import { checkSpawn } from "../agents/spawn-validator.js";
 import type { TmuxManager } from "../agents/tmux-manager.js";
 import { agentIdFromSession } from "../agents/tmux-manager.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
@@ -99,6 +100,20 @@ export const AgentGraphView: React.NamedExoticComponent<AgentGraphProps> = React
       return renderGraph(layout);
     }, [topology, liveAgents]);
 
+    // Build capacity warnings for roles at or over max_instances
+    const capacityWarnings = useMemo(() => {
+      const warnings: string[] = [];
+      for (const role of topology.roles) {
+        const check = checkSpawn(topology, role.name, claims ?? []);
+        if (!check.allowed && check.warning && check.role !== undefined) {
+          warnings.push(
+            `${role.name} at capacity (${check.currentInstances}/${check.maxInstances})`,
+          );
+        }
+      }
+      return warnings;
+    }, [topology, claims]);
+
     if (rendered.lines.length === 0) {
       return (
         <box>
@@ -107,11 +122,14 @@ export const AgentGraphView: React.NamedExoticComponent<AgentGraphProps> = React
       );
     }
 
+    const headerSuffix =
+      capacityWarnings.length > 0 ? ` \u26A0 ${capacityWarnings.join(", ")}` : "";
+
     return (
       <box flexDirection="column">
         <box marginBottom={1}>
           <text color="#888888">
-            Topology: {topology.structure} ({topology.roles.length} roles)
+            Topology: {topology.structure} ({topology.roles.length} roles){headerSuffix}
           </text>
         </box>
         <box flexDirection="column">
