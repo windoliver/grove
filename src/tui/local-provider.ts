@@ -148,8 +148,19 @@ export class LocalDataProvider implements TuiDataProvider, TuiOutcomeProvider, T
     if (!this.workspace) {
       throw new Error("Workspace manager not available");
     }
-    const info = await this.workspace.checkout(targetRef, { agent });
-    return info.workspacePath;
+    try {
+      const info = await this.workspace.checkout(targetRef, { agent });
+      return info.workspacePath;
+    } catch {
+      // For TUI-spawned agents, targetRef is a spawnId (not a contribution CID).
+      // Fall back to a bare workspace directory so the agent gets an isolated
+      // working directory that the reconciler can still track.
+      if (this.workspace.createBareWorkspace) {
+        const info = await this.workspace.createBareWorkspace(targetRef, { agent });
+        return info.workspacePath;
+      }
+      throw new Error(`Cannot create workspace for '${targetRef}'`);
+    }
   }
 
   async releaseClaim(claimId: string): Promise<void> {

@@ -344,6 +344,46 @@ export class LocalWorkspaceManager implements WorkspaceManager {
     return updated;
   }
 
+  async createBareWorkspace(key: string, options: CheckoutOptions): Promise<WorkspaceInfo> {
+    const agentId = options.agent.agentId;
+    validateWorkspaceKey(agentId);
+
+    // Idempotent: return existing active workspace
+    const existing = await this.getWorkspace(key, agentId);
+    if (existing !== undefined && existing.status === WorkspaceStatus.Active) {
+      return existing;
+    }
+
+    // Create empty workspace directory
+    const keyHex = sanitizeCidForPath(key);
+    const workspacePath = join(this.workspacesRoot, `${keyHex}-${agentId}`);
+    await mkdir(this.workspacesRoot, { recursive: true });
+    await mkdir(workspacePath, { recursive: true });
+
+    // Record in SQLite
+    const now = new Date().toISOString();
+    this.upsertWorkspaceRow({
+      cid: key,
+      agentId,
+      workspacePath,
+      agent: options.agent,
+      status: WorkspaceStatus.Active,
+      createdAt: now,
+      lastActivityAt: now,
+      context: options.context,
+    });
+
+    return {
+      cid: key,
+      workspacePath,
+      agent: options.agent,
+      status: WorkspaceStatus.Active,
+      createdAt: now,
+      lastActivityAt: now,
+      ...(options.context !== undefined && { context: options.context }),
+    };
+  }
+
   async touchWorkspace(cid: string, agentId: string): Promise<WorkspaceInfo> {
     const now = new Date().toISOString();
 

@@ -16,7 +16,7 @@ import type { TmuxManager } from "../agents/tmux-manager.js";
 import { agentIdFromSession, tmuxSessionName } from "../agents/tmux-manager.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import { renderGraph } from "../layout/edge-render.js";
-import type { LiveAgentStatus } from "../layout/graph-layout.js";
+import type { LayoutEdge, LiveAgentStatus } from "../layout/graph-layout.js";
 import { layoutGraph } from "../layout/graph-layout.js";
 import type { TuiDataProvider } from "../provider.js";
 
@@ -29,6 +29,40 @@ export interface AgentGraphProps {
   readonly cursor: number;
   readonly topology: AgentTopology;
   readonly onSelectSession?: ((sessionName: string | undefined) => void) | undefined;
+}
+
+/**
+ * Build dynamic edges from claim lineage (parentAgentId in context).
+ *
+ * For each claim that records a parentAgentId, find the parent claim's role
+ * and create a runtime "spawns" edge from parent role → child role.
+ * Edges are deduplicated by (from, to) so the graph stays clean.
+ */
+function buildDynamicEdges(
+  claims: readonly Claim[],
+  staticEdgeKeys: ReadonlySet<string>,
+): readonly LayoutEdge[] {
+  const edges: LayoutEdge[] = [];
+  const seen = new Set<string>(staticEdgeKeys);
+
+  for (const claim of claims) {
+    const parentId = claim.context?.parentAgentId;
+    if (typeof parentId !== "string") continue;
+
+    const parentClaim = claims.find((c) => c.agent.agentId === parentId);
+    if (!parentClaim) continue;
+
+    const parentRole = parentClaim.agent.role ?? "unknown";
+    const childRole = claim.agent.role ?? "unknown";
+    const key = `${parentRole}::${childRole}`;
+
+    if (parentRole !== childRole && !seen.has(key)) {
+      edges.push({ from: parentRole, to: childRole, edgeType: "spawns" });
+      seen.add(key);
+    }
+  }
+
+  return edges;
 }
 
 /** Build live agent status map from claims and tmux sessions. */
@@ -138,8 +172,17 @@ export const AgentGraphView: React.NamedExoticComponent<AgentGraphProps> = React
 
     const rendered = useMemo(() => {
       const layout = layoutGraph(topology.roles, topology.structure, liveAgents);
-      return renderGraph(layout);
-    }, [topology, liveAgents]);
+
+      // Build dynamic edges from claim lineage (parentAgentId in context)
+      const staticEdgeKeys = new Set(layout.edges.map((e) => `${e.from}::${e.to}`));
+      const dynamicEdges = buildDynamicEdges(claims ?? [], staticEdgeKeys);
+
+      // Merge dynamic edges into layout for rendering
+      const mergedLayout =
+        dynamicEdges.length > 0 ? { ...layout, edges: [...layout.edges, ...dynamicEdges] } : layout;
+
+      return renderGraph(mergedLayout);
+    }, [topology, liveAgents, claims]);
 
     // Build capacity warnings for roles at or over max_instances
     const capacityWarnings = useMemo(() => {
