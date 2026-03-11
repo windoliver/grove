@@ -11,9 +11,11 @@ import { handleError } from "./middleware/error-handler.js";
 import { claims } from "./routes/claims.js";
 import { contributions } from "./routes/contributions.js";
 import { dag } from "./routes/dag.js";
+import { diff } from "./routes/diff.js";
 import { frontier } from "./routes/frontier.js";
 import { gossip } from "./routes/gossip.js";
 import { grove } from "./routes/grove.js";
+import { outcomes } from "./routes/outcomes.js";
 import { search } from "./routes/search.js";
 import { threads } from "./routes/threads.js";
 
@@ -37,10 +39,12 @@ export function createApp(deps: ServerDeps): Hono<ServerEnv> {
   app.route("/api/frontier", frontier);
   app.route("/api/search", search);
   app.route("/api/dag", dag);
+  app.route("/api/diff", diff);
   app.route("/api/threads", threads);
   app.route("/api/claims", claims);
   app.route("/api/gossip", gossip);
   app.route("/api/grove", grove);
+  app.route("/api/outcomes", outcomes);
 
   // Centralized error handling
   app.onError(handleError);

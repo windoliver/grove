@@ -13,6 +13,7 @@ describe("resolveAgentIdentity", () => {
     "GROVE_AGENT_VERSION",
     "GROVE_AGENT_TOOLCHAIN",
     "GROVE_AGENT_RUNTIME",
+    "GROVE_AGENT_ROLE",
   ];
 
   beforeEach(() => {
@@ -63,6 +64,7 @@ describe("resolveAgentIdentity", () => {
     process.env.GROVE_AGENT_VERSION = "1.0.0";
     process.env.GROVE_AGENT_TOOLCHAIN = "claude-code";
     process.env.GROVE_AGENT_RUNTIME = "bun";
+    process.env.GROVE_AGENT_ROLE = "reviewer";
 
     const identity = resolveAgentIdentity();
     expect(identity).toEqual({
@@ -74,6 +76,7 @@ describe("resolveAgentIdentity", () => {
       version: "1.0.0",
       toolchain: "claude-code",
       runtime: "bun",
+      role: "reviewer",
     });
   });
 

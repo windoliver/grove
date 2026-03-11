@@ -1,11 +1,7 @@
 /**
  * Activity stream view — live feed of contributions.
- *
- * Shows recent contributions in reverse chronological order,
- * filterable by kind, agent, and tag.
  */
 
-import { Box, Text } from "ink";
 import React, { useCallback, useEffect } from "react";
 import type { Contribution } from "../../core/models.js";
 import { formatTimestamp, truncateCid } from "../../shared/format.js";
@@ -21,7 +17,6 @@ export interface ActivityProps {
   readonly cursor: number;
   readonly pageOffset: number;
   readonly pageSize: number;
-  /** Called when contributions are loaded, for cursor-based drill-down. */
   readonly onContributionsLoaded?: (contributions: readonly Contribution[]) => void;
 }
 
@@ -45,14 +40,13 @@ export const ActivityView: React.NamedExoticComponent<ActivityProps> = React.mem
     pageOffset,
     pageSize,
     onContributionsLoaded,
-  }: ActivityProps): React.ReactElement {
+  }: ActivityProps): React.ReactNode {
     const fetcher = useCallback(
       () => provider.getActivity({ limit: pageSize, offset: pageOffset }),
       [provider, pageSize, pageOffset],
     );
     const { data, loading } = usePolledData<readonly Contribution[]>(fetcher, intervalMs, active);
 
-    // Report loaded contributions for cursor-based drill-down
     useEffect(() => {
       if (data && onContributionsLoaded) {
         onContributionsLoaded(data);
@@ -61,9 +55,9 @@ export const ActivityView: React.NamedExoticComponent<ActivityProps> = React.mem
 
     if (loading && !data) {
       return (
-        <Box>
-          <Text dimColor>Loading activity...</Text>
-        </Box>
+        <box>
+          <text opacity={0.5}>Loading activity...</text>
+        </box>
       );
     }
 
@@ -80,21 +74,19 @@ export const ActivityView: React.NamedExoticComponent<ActivityProps> = React.mem
     }));
 
     return (
-      <Box flexDirection="column">
-        <Box marginBottom={1}>
-          <Text bold underline>
-            Activity Stream
-          </Text>
+      <box flexDirection="column">
+        <box marginBottom={1}>
+          <text>Activity Stream</text>
           {contributions.length > 0 ? (
-            <Text dimColor>
+            <text opacity={0.5}>
               {"  "}showing {pageOffset + 1}-{pageOffset + contributions.length}
-            </Text>
+            </text>
           ) : pageOffset > 0 ? (
-            <Text dimColor>{"  "}(no more results — press p to go back)</Text>
+            <text opacity={0.5}>{"  "}(no more results — press p to go back)</text>
           ) : null}
-        </Box>
+        </box>
         <Table columns={[...COLUMNS]} rows={rows} cursor={cursor} />
-      </Box>
+      </box>
     );
   },
 );

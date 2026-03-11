@@ -1,11 +1,7 @@
 /**
  * Claims view — shows all active claims with lease countdown.
- *
- * Highlights expired/stale claims and detects duplicate claims
- * on the same target.
  */
 
-import { Box, Text } from "ink";
 import React, { useCallback, useEffect } from "react";
 import type { Claim } from "../../core/models.js";
 import { formatDuration } from "../../shared/duration.js";
@@ -20,7 +16,6 @@ export interface ClaimsProps {
   readonly intervalMs: number;
   readonly active: boolean;
   readonly cursor: number;
-  /** Called when claims are loaded, so App can track row count for j/k bounds. */
   readonly onRowCountChanged?: (count: number) => void;
 }
 
@@ -41,11 +36,10 @@ export const ClaimsView: React.NamedExoticComponent<ClaimsProps> = React.memo(fu
   active,
   cursor,
   onRowCountChanged,
-}: ClaimsProps): React.ReactElement {
+}: ClaimsProps): React.ReactNode {
   const fetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
   const { data, loading } = usePolledData<readonly Claim[]>(fetcher, intervalMs, active);
 
-  // Report row count for cursor bounds
   useEffect(() => {
     if (data && onRowCountChanged) {
       onRowCountChanged(data.length);
@@ -54,15 +48,14 @@ export const ClaimsView: React.NamedExoticComponent<ClaimsProps> = React.memo(fu
 
   if (loading && !data) {
     return (
-      <Box>
-        <Text dimColor>Loading claims...</Text>
-      </Box>
+      <box>
+        <text opacity={0.5}>Loading claims...</text>
+      </box>
     );
   }
 
   const claims = data ?? [];
 
-  // Detect duplicate targets
   const targetCounts = new Map<string, number>();
   for (const c of claims) {
     targetCounts.set(c.targetRef, (targetCounts.get(c.targetRef) ?? 0) + 1);
@@ -90,13 +83,11 @@ export const ClaimsView: React.NamedExoticComponent<ClaimsProps> = React.memo(fu
   });
 
   return (
-    <Box flexDirection="column">
-      <Box marginBottom={1}>
-        <Text bold underline>
-          Active Claims ({claims.length})
-        </Text>
-      </Box>
+    <box flexDirection="column">
+      <box marginBottom={1}>
+        <text>Active Claims ({claims.length})</text>
+      </box>
       <Table columns={[...COLUMNS]} rows={rows} cursor={cursor} />
-    </Box>
+    </box>
   );
 });

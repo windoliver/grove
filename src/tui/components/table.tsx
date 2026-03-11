@@ -1,11 +1,10 @@
 /**
  * Reusable TUI table component with cursor highlighting.
  *
- * Renders a simple text-based table inside an Ink Box.
+ * Renders a simple text-based table using OpenTUI intrinsics.
  * The selected row is highlighted with a ">" indicator.
  */
 
-import { Box, Text } from "ink";
 import React from "react";
 
 /** Column definition for the TUI table. */
@@ -32,56 +31,45 @@ export const Table: React.NamedExoticComponent<TableProps> = React.memo(function
   rows,
   cursor,
   maxRows,
-}: TableProps): React.ReactElement {
+}: TableProps): React.ReactNode {
   if (rows.length === 0) {
     return (
-      <Box>
-        <Text dimColor>(no data)</Text>
-      </Box>
+      <box>
+        <text opacity={0.5}>(no data)</text>
+      </box>
     );
   }
 
   const displayRows = maxRows !== undefined ? rows.slice(0, maxRows) : rows;
 
   return (
-    <Box flexDirection="column">
+    <box flexDirection="column">
       {/* Header */}
-      <Box>
-        <Text bold dimColor>
+      <box>
+        <text opacity={0.5}>
           {"  "}
           {columns
             .map((col) => padCell(col.header, col.width ?? col.header.length + 4, col.align))
             .join("  ")}
-        </Text>
-      </Box>
+        </text>
+      </box>
       {/* Rows */}
       {displayRows.map((row, i) => {
         const isSelected = cursor !== undefined && cursor === i;
         return (
-          <Box key={row.cid ?? row.id ?? String(i)}>
-            {isSelected ? (
-              <Text color="cyan" bold>
-                {">"}{" "}
-                {columns
-                  .map((col) =>
-                    padCell(row[col.key] ?? "", col.width ?? col.header.length + 4, col.align),
-                  )
-                  .join("  ")}
-              </Text>
-            ) : (
-              <Text>
-                {"  "}
-                {columns
-                  .map((col) =>
-                    padCell(row[col.key] ?? "", col.width ?? col.header.length + 4, col.align),
-                  )
-                  .join("  ")}
-              </Text>
-            )}
-          </Box>
+          <box key={row.cid ?? row.id ?? String(i)}>
+            <text color={isSelected ? "#00cccc" : undefined}>
+              {isSelected ? "> " : "  "}
+              {columns
+                .map((col) =>
+                  padCell(row[col.key] ?? "", col.width ?? col.header.length + 4, col.align),
+                )
+                .join("  ")}
+            </text>
+          </box>
         );
       })}
-    </Box>
+    </box>
   );
 });
 

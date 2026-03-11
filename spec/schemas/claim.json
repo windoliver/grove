@@ -124,6 +124,11 @@
           "type": "string",
           "description": "Hardware or execution platform (e.g., 'H100', 'macOS-arm64').",
           "maxLength": 128
+        },
+        "role": {
+          "type": "string",
+          "description": "Agent role in the topology (e.g., 'reviewer', 'contributor', 'orchestrator').",
+          "maxLength": 128
         }
       },
       "unevaluatedProperties": false

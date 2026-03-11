@@ -1,14 +1,9 @@
 /**
  * Dashboard view — the default TUI view.
  *
- * Shows:
- * - Grove metadata (name, mode, contribution count)
- * - Active claims with agent, target, lease remaining
- * - Recent contributions (reverse chronological)
- * - Frontier summary (top contributions per metric)
+ * Shows grove metadata, active claims, frontier summary, and recent contributions.
  */
 
-import { Box, Text } from "ink";
 import React, { useCallback, useEffect } from "react";
 import type { Contribution } from "../../core/models.js";
 import { formatDuration } from "../../shared/duration.js";
@@ -23,7 +18,6 @@ export interface DashboardProps {
   readonly intervalMs: number;
   readonly active: boolean;
   readonly cursor: number;
-  /** Called when contributions are loaded, for cursor-based drill-down. */
   readonly onContributionsLoaded?: (contributions: readonly Contribution[]) => void;
 }
 
@@ -50,11 +44,10 @@ export const DashboardView: React.NamedExoticComponent<DashboardProps> = React.m
     active,
     cursor,
     onContributionsLoaded,
-  }: DashboardProps): React.ReactElement {
+  }: DashboardProps): React.ReactNode {
     const fetcher = useCallback(() => provider.getDashboard(), [provider]);
     const { data, loading, error } = usePolledData<DashboardData>(fetcher, intervalMs, active);
 
-    // Report loaded contributions for cursor-based drill-down
     useEffect(() => {
       if (data && onContributionsLoaded) {
         onContributionsLoaded(data.recentContributions);
@@ -63,17 +56,17 @@ export const DashboardView: React.NamedExoticComponent<DashboardProps> = React.m
 
     if (loading && !data) {
       return (
-        <Box>
-          <Text dimColor>Loading dashboard...</Text>
-        </Box>
+        <box>
+          <text opacity={0.5}>Loading dashboard...</text>
+        </box>
       );
     }
 
     if (!data) {
       return (
-        <Box>
-          <Text color="red">Failed to load dashboard{error ? `: ${error.message}` : ""}</Text>
-        </Box>
+        <box>
+          <text color="#ff0000">Failed to load dashboard{error ? `: ${error.message}` : ""}</text>
+        </box>
       );
     }
 
@@ -98,59 +91,47 @@ export const DashboardView: React.NamedExoticComponent<DashboardProps> = React.m
     }));
 
     return (
-      <Box flexDirection="column">
-        {/* Metadata header */}
-        <Box marginBottom={1}>
-          <Text bold color="green">
-            {metadata.name}
-          </Text>
-          <Text dimColor>
+      <box flexDirection="column">
+        <box marginBottom={1}>
+          <text color="#00cc00">{metadata.name}</text>
+          <text opacity={0.5}>
             {"  "}mode:{metadata.mode} contributions:{metadata.contributionCount} claims:
             {metadata.activeClaimCount}
-          </Text>
-        </Box>
+          </text>
+        </box>
 
-        {/* Active claims */}
-        <Box flexDirection="column" marginBottom={1}>
-          <Text bold underline>
-            Active Claims ({activeClaims.length})
-          </Text>
+        <box flexDirection="column" marginBottom={1}>
+          <text>Active Claims ({activeClaims.length})</text>
           {activeClaims.length === 0 ? (
-            <Text dimColor>No active claims</Text>
+            <text opacity={0.5}>No active claims</text>
           ) : (
             <Table columns={[...CLAIM_COLUMNS]} rows={claimRows} />
           )}
-        </Box>
+        </box>
 
-        {/* Frontier summary */}
         {(frontierSummary.topByMetric.length > 0 || frontierSummary.topByAdoption.length > 0) && (
-          <Box flexDirection="column" marginBottom={1}>
-            <Text bold underline>
-              Frontier
-            </Text>
+          <box flexDirection="column" marginBottom={1}>
+            <text>Frontier</text>
             {frontierSummary.topByMetric.map((m) => (
-              <Text key={m.metric}>
-                <Text color="yellow">{m.metric}</Text>: {truncateCid(m.cid)} {m.summary} (
+              <text key={m.metric}>
+                <text color="#cccc00">{m.metric}</text>: {truncateCid(m.cid)} {m.summary} (
                 {m.value.toFixed(2)})
-              </Text>
+              </text>
             ))}
             {frontierSummary.topByAdoption.map((a) => (
-              <Text key={a.cid}>
-                <Text color="magenta">adoption</Text>: {truncateCid(a.cid)} {a.summary} ({a.count}{" "}
+              <text key={a.cid}>
+                <text color="#cc00cc">adoption</text>: {truncateCid(a.cid)} {a.summary} ({a.count}{" "}
                 refs)
-              </Text>
+              </text>
             ))}
-          </Box>
+          </box>
         )}
 
-        {/* Recent contributions */}
-        <Box flexDirection="column">
-          <Text bold underline>
-            Recent Contributions ({recentContributions.length})
-          </Text>
+        <box flexDirection="column">
+          <text>Recent Contributions ({recentContributions.length})</text>
           <Table columns={[...CONTRIBUTION_COLUMNS]} rows={contributionRows} cursor={cursor} />
-        </Box>
-      </Box>
+        </box>
+      </box>
     );
   },
 );

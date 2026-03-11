@@ -40,4 +40,13 @@ grove.get("/", async (c) => {
   });
 });
 
+/** GET /api/grove/topology — Agent topology configuration. */
+grove.get("/topology", (c) => {
+  const { topology } = c.get("deps");
+  if (!topology) {
+    return c.json({ error: { code: "NOT_FOUND", message: "Topology is not configured" } }, 404);
+  }
+  return c.json(topology);
+});
+
 export { grove };

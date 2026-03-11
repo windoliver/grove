@@ -2,14 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://grove.dev/schemas/grove-contract.json",
   "title": "Grove Contract",
-  "description": "Schema for the structured YAML frontmatter of a GROVE.md workflow contract. Supports contract_version 1 (legacy claim_policy) and contract_version 2 (concurrency, execution, rate_limits, retry). The YAML frontmatter is validated against this schema; the Markdown body is free-form prose for human/agent-readable context.",
+  "description": "Schema for the structured YAML frontmatter of a GROVE.md workflow contract. Supports contract_version 1 (legacy claim_policy), contract_version 2 (concurrency, execution, rate_limits, retry, topology, gossip, outcome_policy), and contract_version 3 (renames topology to agent_topology). The YAML frontmatter is validated against this schema; the Markdown body is free-form prose for human/agent-readable context.",
   "type": "object",
   "required": ["contract_version", "name"],
   "properties": {
     "contract_version": {
       "type": "integer",
-      "enum": [1, 2],
-      "description": "Contract schema version. Version 1 uses claim_policy; version 2 uses concurrency, execution, rate_limits, and retry sections."
+      "enum": [1, 2, 3],
+      "description": "Contract schema version. Version 1 uses claim_policy; version 2 uses concurrency, execution, rate_limits, retry, topology, gossip, and outcome_policy; version 3 renames topology to agent_topology."
     },
     "name": {
       "type": "string",
@@ -73,6 +73,18 @@
     },
     "retry": {
       "$ref": "#/$defs/retry"
+    },
+    "gossip": {
+      "$ref": "#/$defs/gossip"
+    },
+    "outcome_policy": {
+      "$ref": "#/$defs/outcome_policy"
+    },
+    "topology": {
+      "$ref": "#/$defs/agent_topology"
+    },
+    "agent_topology": {
+      "$ref": "#/$defs/agent_topology"
     }
   },
   "allOf": [
@@ -87,7 +99,11 @@
             { "required": ["concurrency"] },
             { "required": ["execution"] },
             { "required": ["rate_limits"] },
-            { "required": ["retry"] }
+            { "required": ["retry"] },
+            { "required": ["gossip"] },
+            { "required": ["outcome_policy"] },
+            { "required": ["topology"] },
+            { "required": ["agent_topology"] }
           ]
         }
       }
@@ -98,7 +114,20 @@
         "required": ["contract_version"]
       },
       "then": {
-        "not": { "required": ["claim_policy"] }
+        "not": {
+          "anyOf": [{ "required": ["claim_policy"] }, { "required": ["agent_topology"] }]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "contract_version": { "const": 3 } },
+        "required": ["contract_version"]
+      },
+      "then": {
+        "not": {
+          "anyOf": [{ "required": ["claim_policy"] }, { "required": ["topology"] }]
+        }
       }
     }
   ],
@@ -344,7 +373,7 @@
     },
     "claim_policy": {
       "type": "object",
-      "description": "Policy for claim coordination (v1 only). Use concurrency/execution/rate_limits/retry for v2.",
+      "description": "Policy for claim coordination (v1 only). Use concurrency/execution/rate_limits/retry for v2+.",
       "properties": {
         "default_lease_seconds": {
           "type": "integer",
@@ -367,7 +396,7 @@
     },
     "concurrency": {
       "type": "object",
-      "description": "Concurrency limits for claims (v2 only).",
+      "description": "Concurrency limits for claims (v2/v3).",
       "properties": {
         "max_active_claims": {
           "type": "integer",
@@ -391,7 +420,7 @@
     },
     "execution": {
       "type": "object",
-      "description": "Execution timeout and lease settings (v2 only).",
+      "description": "Execution timeout and lease settings (v2/v3).",
       "properties": {
         "default_lease_seconds": {
           "type": "integer",
@@ -422,7 +451,7 @@
     },
     "rate_limits": {
       "type": "object",
-      "description": "Rate limits on contributions (v2 only).",
+      "description": "Rate limits on contributions (v2/v3).",
       "properties": {
         "max_contributions_per_agent_per_hour": {
           "type": "integer",
@@ -452,7 +481,7 @@
     },
     "retry": {
       "type": "object",
-      "description": "Retry and backoff settings (v2 only).",
+      "description": "Retry and backoff settings (v2/v3).",
       "properties": {
         "base_delay_ms": {
           "type": "integer",
@@ -471,6 +500,214 @@
           "description": "Maximum retry attempts.",
           "minimum": 1,
           "maximum": 100
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "gossip": {
+      "type": "object",
+      "description": "Gossip protocol configuration (v2/v3). Controls peer-to-peer dissemination of contributions.",
+      "properties": {
+        "interval_seconds": {
+          "type": "integer",
+          "description": "Gossip round interval in seconds.",
+          "minimum": 5,
+          "maximum": 3600
+        },
+        "fan_out": {
+          "type": "integer",
+          "description": "Number of peers to gossip with per round.",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "partial_view_size": {
+          "type": "integer",
+          "description": "Maximum number of peers in the partial view.",
+          "minimum": 2,
+          "maximum": 100
+        },
+        "shuffle_length": {
+          "type": "integer",
+          "description": "Number of entries exchanged per shuffle round.",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "suspicion_timeout_seconds": {
+          "type": "integer",
+          "description": "Time before a non-responsive peer is suspected.",
+          "minimum": 10,
+          "maximum": 3600
+        },
+        "failure_timeout_seconds": {
+          "type": "integer",
+          "description": "Time before a suspected peer is declared failed.",
+          "minimum": 30,
+          "maximum": 7200
+        },
+        "digest_limit": {
+          "type": "integer",
+          "description": "Maximum number of digests per gossip message.",
+          "minimum": 1,
+          "maximum": 50
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "outcome_policy": {
+      "type": "object",
+      "description": "Outcome policy for automatic accept/reject of contributions (v2/v3).",
+      "properties": {
+        "auto_accept": {
+          "type": "object",
+          "description": "Conditions under which contributions are automatically accepted.",
+          "properties": {
+            "metric_improves": {
+              "type": "string",
+              "description": "Auto-accept when this metric improves over the frontier."
+            },
+            "all_gates_pass": {
+              "type": "boolean",
+              "description": "Auto-accept when all gates pass."
+            }
+          },
+          "unevaluatedProperties": false
+        },
+        "auto_reject": {
+          "type": "object",
+          "description": "Conditions under which contributions are automatically rejected.",
+          "properties": {
+            "metric_regresses": {
+              "type": "string",
+              "description": "Auto-reject when this metric regresses from the frontier."
+            },
+            "missing_required_artifacts": {
+              "type": "boolean",
+              "description": "Auto-reject when required artifacts are missing."
+            }
+          },
+          "unevaluatedProperties": false
+        },
+        "require_manual_review": {
+          "type": "boolean",
+          "description": "Whether contributions require manual review before acceptance."
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "agent_topology": {
+      "type": "object",
+      "description": "Agent topology defining structure, roles, edges, and spawning rules for multi-agent coordination. Used as 'topology' in v2 contracts and 'agent_topology' in v3 contracts.",
+      "required": ["structure", "roles"],
+      "properties": {
+        "structure": {
+          "type": "string",
+          "description": "Topology structure type. 'graph' allows arbitrary edges, 'tree' enforces single-parent hierarchy, 'flat' disallows edges.",
+          "enum": ["graph", "tree", "flat"]
+        },
+        "roles": {
+          "type": "array",
+          "description": "Agent roles within the topology. Each role defines a named participant type with optional edges to other roles.",
+          "items": {
+            "$ref": "#/$defs/topology_role"
+          },
+          "minItems": 1,
+          "maxItems": 50
+        },
+        "spawning": {
+          "$ref": "#/$defs/spawning_config"
+        },
+        "edge_types": {
+          "type": "array",
+          "description": "Custom edge type names allowed in this topology.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "maxItems": 20
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "topology_role": {
+      "type": "object",
+      "description": "An agent role within a topology, with optional description, instance limits, and edges to other roles.",
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Role name. Must be lowercase alphanumeric with hyphens/underscores.",
+          "pattern": "^[a-z][a-z0-9_-]*$",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of this role.",
+          "maxLength": 256
+        },
+        "max_instances": {
+          "type": "integer",
+          "description": "Maximum number of concurrent instances of this role.",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "edges": {
+          "type": "array",
+          "description": "Directed edges from this role to other roles.",
+          "items": {
+            "$ref": "#/$defs/role_edge"
+          },
+          "maxItems": 50
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "role_edge": {
+      "type": "object",
+      "description": "A directed edge from one role to another.",
+      "required": ["target", "edge_type"],
+      "properties": {
+        "target": {
+          "type": "string",
+          "description": "Target role name.",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "edge_type": {
+          "type": "string",
+          "description": "Type of relationship between the roles.",
+          "enum": ["delegates", "reports", "feeds", "requests", "feedback", "escalates"]
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "spawning_config": {
+      "type": "object",
+      "description": "Configuration for dynamic agent spawning within the topology.",
+      "required": ["dynamic"],
+      "properties": {
+        "dynamic": {
+          "type": "boolean",
+          "description": "Whether dynamic spawning of new agent instances is allowed."
+        },
+        "max_depth": {
+          "type": "integer",
+          "description": "Maximum nesting depth for spawned agents.",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "max_children_per_agent": {
+          "type": "integer",
+          "description": "Maximum number of child agents a single agent can spawn.",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "description": "Timeout in seconds for spawned agent sessions.",
+          "minimum": 10,
+          "maximum": 3600
         }
       },
       "unevaluatedProperties": false

@@ -10,9 +10,11 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { FrontierCalculator } from "../core/frontier.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
+import type { OutcomeStore } from "../core/outcome.js";
 import type { ContributionStore } from "../core/store.js";
 import type { WorkspaceManager } from "../core/workspace.js";
 import { FsCas } from "../local/fs-cas.js";
+import { SqliteOutcomeStore } from "../local/sqlite-outcome-store.js";
 import { initSqliteDb, SqliteContributionStore } from "../local/sqlite-store.js";
 import { LocalWorkspaceManager } from "../local/workspace.js";
 
@@ -27,6 +29,7 @@ export interface CliDeps {
   readonly workspace: WorkspaceManager;
   readonly cas: FsCas;
   readonly groveRoot: string;
+  readonly outcomeStore?: OutcomeStore | undefined;
   readonly close: () => void;
 }
 
@@ -80,6 +83,7 @@ export function initCliDeps(cwd: string, groveOverride?: string): CliDeps {
   const store = new SqliteContributionStore(db);
   const cas = new FsCas(casPath);
   const frontier = new DefaultFrontierCalculator(store);
+  const outcomeStore = new SqliteOutcomeStore(db);
   const workspace = new LocalWorkspaceManager({
     groveRoot: groveDir,
     db,
@@ -93,6 +97,7 @@ export function initCliDeps(cwd: string, groveOverride?: string): CliDeps {
     workspace,
     cas,
     groveRoot,
+    outcomeStore,
     close: () => {
       store.close();
       workspace.close();

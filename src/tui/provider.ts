@@ -1,13 +1,40 @@
 /**
- * TUI data provider interface.
+ * TUI data provider interfaces.
  *
  * View-oriented: one method per TUI view. Implementations handle
- * the details of fetching from local SQLite or remote HTTP.
+ * the details of fetching from local SQLite, remote HTTP, or Nexus.
+ *
+ * Provider capabilities are additive. TuiDataProvider is the base
+ * (unchanged from pre-#65). TuiOutcomeProvider, TuiArtifactProvider,
+ * and TuiVfsProvider are optional extensions with separate conformance
+ * suites. Panels check `provider.capabilities` at runtime.
  */
 
 import type { Frontier, FrontierQuery } from "../core/frontier.js";
-import type { Claim, Contribution, ContributionKind } from "../core/models.js";
+import type {
+  AgentIdentity,
+  Claim,
+  Contribution,
+  ContributionKind,
+  JsonValue,
+} from "../core/models.js";
+import type { OutcomeRecord, OutcomeStatus } from "../core/outcome.js";
 import type { ContributionQuery, ThreadNode, ThreadSummary } from "../core/store.js";
+
+// ---------------------------------------------------------------------------
+// Capabilities
+// ---------------------------------------------------------------------------
+
+/** Declares which optional provider interfaces are available. */
+export interface ProviderCapabilities {
+  readonly outcomes: boolean;
+  readonly artifacts: boolean;
+  readonly vfs: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Data types
+// ---------------------------------------------------------------------------
 
 /** Grove-level metadata shown in the dashboard header. */
 export interface GroveMetadata {
@@ -38,6 +65,15 @@ export interface FrontierSummary {
     readonly summary: string;
     readonly count: number;
   }[];
+}
+
+/** Input for creating a claim via the TUI provider. */
+export interface ClaimInput {
+  readonly targetRef: string;
+  readonly agent: AgentIdentity;
+  readonly intentSummary: string;
+  readonly leaseDurationMs: number;
+  readonly context?: Readonly<Record<string, JsonValue>> | undefined;
 }
 
 /** Options for paginated list queries. */
@@ -72,8 +108,50 @@ export interface DagData {
   readonly contributions: readonly Contribution[];
 }
 
+/** Operator-level aggregate stats (separate from Frontier). */
+export interface OperatorStats {
+  readonly totalContributions: number;
+  readonly outcomeBreakdown: {
+    readonly accepted: number;
+    readonly rejected: number;
+    readonly crashed: number;
+    readonly invalidated: number;
+  };
+  readonly acceptanceRate: number;
+  readonly byAgent: readonly AgentStats[];
+}
+
+/** Per-agent outcome statistics. */
+export interface AgentStats {
+  readonly agentId: string;
+  readonly total: number;
+  readonly accepted: number;
+  readonly rejected: number;
+  readonly acceptanceRate: number;
+}
+
+/** Artifact metadata returned by getArtifactMeta. */
+export interface ArtifactMeta {
+  readonly sizeBytes: number;
+  readonly mediaType?: string | undefined;
+}
+
+/** VFS directory entry for Nexus zone browsing. */
+export interface FsEntry {
+  readonly name: string;
+  readonly type: "file" | "directory";
+  readonly sizeBytes?: number | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Base provider (unchanged from pre-#65)
+// ---------------------------------------------------------------------------
+
 /** Abstract data provider for the TUI. */
 export interface TuiDataProvider {
+  /** Declares which optional interfaces this provider supports. */
+  readonly capabilities: ProviderCapabilities;
+
   /** Fetch aggregated dashboard data. */
   getDashboard(): Promise<DashboardData>;
 
@@ -98,6 +176,47 @@ export interface TuiDataProvider {
   /** Hot discussion threads. */
   getHotThreads(limit?: number): Promise<readonly ThreadSummary[]>;
 
+  /** Create a claim for an agent (optional — available in local/remote modes). */
+  createClaim?(input: ClaimInput): Promise<Claim>;
+
+  /** Check out a workspace for an agent (optional). Returns the workspace path. */
+  checkoutWorkspace?(targetRef: string, agent: AgentIdentity): Promise<string>;
+
+  /** Release a claim by transitioning it to "released" status (optional). */
+  releaseClaim?(claimId: string): Promise<void>;
+
+  /** Clean up a workspace directory by targetRef and agentId (optional). */
+  cleanWorkspace?(targetRef: string, agentId: string): Promise<void>;
+
   /** Release resources. */
   close(): void;
+}
+
+// ---------------------------------------------------------------------------
+// Optional provider extensions (additive, separate conformance suites)
+// ---------------------------------------------------------------------------
+
+/** Outcome queries — available when capabilities.outcomes is true. */
+export interface TuiOutcomeProvider {
+  getOutcome(cid: string): Promise<OutcomeRecord | undefined>;
+  getOutcomes(cids: readonly string[]): Promise<ReadonlyMap<string, OutcomeRecord>>;
+  getOutcomeStats(): Promise<OperatorStats>;
+  listOutcomes(query?: { status?: OutcomeStatus }): Promise<readonly OutcomeRecord[]>;
+}
+
+/** Artifact access — available when capabilities.artifacts is true. */
+export interface TuiArtifactProvider {
+  getArtifact(cid: string, name: string): Promise<Buffer>;
+  getArtifactMeta(cid: string, name: string): Promise<ArtifactMeta>;
+  diffArtifacts(
+    parentCid: string,
+    childCid: string,
+    name: string,
+  ): Promise<{ readonly parent: string; readonly child: string }>;
+  search(query: string): Promise<readonly Contribution[]>;
+}
+
+/** Nexus VFS browsing — available when capabilities.vfs is true. */
+export interface TuiVfsProvider {
+  listPath(path: string): Promise<readonly FsEntry[]>;
 }

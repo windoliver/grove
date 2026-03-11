@@ -702,8 +702,8 @@ describe("grove-contract schema — required fields and strict mode", () => {
     expect(validate({})).toBe(false);
   });
 
-  test("rejects unsupported contract_version (3)", () => {
-    expect(validate(validContract({ contract_version: 3 }))).toBe(false);
+  test("rejects unsupported contract_version (4)", () => {
+    expect(validate(validContract({ contract_version: 4 }))).toBe(false);
   });
 
   test("rejects contract_version as string", () => {
@@ -912,8 +912,8 @@ describe("grove-contract schema — cross-schema consistency", () => {
     ]);
   });
 
-  test("contract_version enum includes both versions", () => {
-    expect(groveContractSchema.properties.contract_version.enum).toEqual([1, 2]);
+  test("contract_version enum includes all versions", () => {
+    expect(groveContractSchema.properties.contract_version.enum).toEqual([1, 2, 3]);
   });
 });
 

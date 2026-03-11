@@ -11,6 +11,8 @@
 
 import { parseArgs } from "node:util";
 
+import type { OutcomeStatus } from "../../core/outcome.js";
+import { OUTCOME_STATUSES } from "../../core/outcome.js";
 import type { ContributionQuery } from "../../core/store.js";
 import type { CliDeps, Writer } from "../context.js";
 import { formatContributions } from "../format.js";
@@ -20,6 +22,7 @@ const DEFAULT_LIMIT = 20;
 export interface LogOptions {
   readonly kind?: string | undefined;
   readonly mode?: string | undefined;
+  readonly outcome?: string | undefined;
   readonly limit: number;
   readonly json: boolean;
 }
@@ -30,6 +33,7 @@ export function parseLogArgs(argv: string[]): LogOptions {
     options: {
       kind: { type: "string" },
       mode: { type: "string" },
+      outcome: { type: "string" },
       n: { type: "string", short: "n" },
       json: { type: "boolean", default: false },
     },
@@ -42,9 +46,16 @@ export function parseLogArgs(argv: string[]): LogOptions {
     throw new Error(`Invalid limit: '${values.n}'. Must be a positive integer.`);
   }
 
+  if (values.outcome !== undefined && !OUTCOME_STATUSES.has(values.outcome)) {
+    throw new Error(
+      `Invalid outcome: '${values.outcome}'. Must be one of: accepted, rejected, crashed, invalidated.`,
+    );
+  }
+
   return {
     kind: values.kind,
     mode: values.mode,
+    outcome: values.outcome,
     limit,
     json: values.json ?? false,
   };
@@ -61,7 +72,21 @@ export async function runLog(
     mode: options.mode as ContributionQuery["mode"],
   };
 
-  const contributions = await deps.store.list(query);
+  let contributions = await deps.store.list(query);
+
+  // Filter by outcome status if requested
+  if (options.outcome !== undefined) {
+    if (deps.outcomeStore === undefined) {
+      throw new Error("Outcome store is not available. Cannot filter by outcome.");
+    }
+    const cids = contributions.map((c) => c.cid);
+    const outcomes = await deps.outcomeStore.getBatch(cids);
+    const targetStatus = options.outcome as OutcomeStatus;
+    contributions = contributions.filter((c) => {
+      const record = outcomes.get(c.cid);
+      return record !== undefined && record.status === targetStatus;
+    });
+  }
 
   // Sort by createdAt descending (most recent first), then apply limit
   const sorted = [...contributions]

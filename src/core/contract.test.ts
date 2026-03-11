@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import type { AgentTopology } from "./contract.js";
 import { parseGroveContract, parseGroveContractObject } from "./contract.js";
 
 // ---------------------------------------------------------------------------
@@ -413,9 +414,9 @@ retry:
     expect(contract.retry).toBeUndefined();
   });
 
-  test("rejects unsupported contract_version", () => {
+  test("rejects unsupported contract_version with supported list", () => {
     expect(() => parseGroveContractObject({ contract_version: 99, name: "bad" })).toThrow(
-      "Unsupported contract_version",
+      "supported: 1, 2, 3",
     );
   });
 
@@ -656,5 +657,487 @@ describe("gossip contract config", () => {
     expect(contract.gossip?.intervalSeconds).toBe(45);
     expect(contract.gossip?.fanOut).toBeUndefined();
     expect(contract.gossip?.partialViewSize).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Outcome policy
+// ---------------------------------------------------------------------------
+
+describe("outcome_policy contract config", () => {
+  test("parses V2 contract with full outcome_policy", () => {
+    const contract = parseGroveContractObject({
+      contract_version: 2,
+      name: "outcome-grove",
+      outcome_policy: {
+        auto_accept: {
+          metric_improves: "val_bpb",
+          all_gates_pass: true,
+        },
+        auto_reject: {
+          metric_regresses: "val_bpb",
+          missing_required_artifacts: true,
+        },
+        require_manual_review: false,
+      },
+    });
+
+    expect(contract.outcomePolicy).toBeDefined();
+    expect(contract.outcomePolicy?.autoAccept?.metricImproves).toBe("val_bpb");
+    expect(contract.outcomePolicy?.autoAccept?.allGatesPass).toBe(true);
+    expect(contract.outcomePolicy?.autoReject?.metricRegresses).toBe("val_bpb");
+    expect(contract.outcomePolicy?.autoReject?.missingRequiredArtifacts).toBe(true);
+    expect(contract.outcomePolicy?.requireManualReview).toBe(false);
+  });
+
+  test("outcome_policy is optional", () => {
+    const contract = parseGroveContractObject({
+      contract_version: 2,
+      name: "no-outcome",
+    });
+
+    expect(contract.outcomePolicy).toBeUndefined();
+  });
+
+  test("parses partial outcome_policy with only auto_accept", () => {
+    const contract = parseGroveContractObject({
+      contract_version: 2,
+      name: "partial-outcome",
+      outcome_policy: {
+        auto_accept: {
+          all_gates_pass: true,
+        },
+      },
+    });
+
+    expect(contract.outcomePolicy?.autoAccept?.allGatesPass).toBe(true);
+    expect(contract.outcomePolicy?.autoAccept?.metricImproves).toBeUndefined();
+    expect(contract.outcomePolicy?.autoReject).toBeUndefined();
+    expect(contract.outcomePolicy?.requireManualReview).toBeUndefined();
+  });
+
+  test("parses outcome_policy with only require_manual_review", () => {
+    const contract = parseGroveContractObject({
+      contract_version: 2,
+      name: "manual-review",
+      outcome_policy: {
+        require_manual_review: true,
+      },
+    });
+
+    expect(contract.outcomePolicy?.requireManualReview).toBe(true);
+    expect(contract.outcomePolicy?.autoAccept).toBeUndefined();
+    expect(contract.outcomePolicy?.autoReject).toBeUndefined();
+  });
+
+  test("rejects unknown fields in outcome_policy", () => {
+    expect(() =>
+      parseGroveContractObject({
+        contract_version: 2,
+        name: "bad-outcome",
+        outcome_policy: {
+          unknown_field: true,
+        },
+      }),
+    ).toThrow();
+  });
+
+  test("rejects unknown fields in auto_accept", () => {
+    expect(() =>
+      parseGroveContractObject({
+        contract_version: 2,
+        name: "bad-outcome",
+        outcome_policy: {
+          auto_accept: {
+            bad_field: "oops",
+          },
+        },
+      }),
+    ).toThrow();
+  });
+
+  test("outcome_policy not available in V1 contracts", () => {
+    expect(() =>
+      parseGroveContractObject({
+        contract_version: 1,
+        name: "v1-outcome",
+        outcome_policy: {
+          require_manual_review: true,
+        },
+      }),
+    ).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Topology contract config
+// ---------------------------------------------------------------------------
+
+describe("topology contract config", () => {
+  test("parses V2 contract with full topology (graph structure, multiple roles with edges, spawning)", () => {
+    const content = `---
+contract_version: 2
+name: topology-grove
+topology:
+  structure: graph
+  roles:
+    - name: orchestrator
+      description: Coordinates worker agents
+      max_instances: 1
+      edges:
+        - target: worker
+          edge_type: delegates
+        - target: reviewer
+          edge_type: requests
+    - name: worker
+      description: Performs tasks
+      max_instances: 5
+      edges:
+        - target: orchestrator
+          edge_type: reports
+    - name: reviewer
+      description: Reviews work output
+      max_instances: 2
+      edges:
+        - target: orchestrator
+          edge_type: feedback
+  spawning:
+    dynamic: true
+    max_depth: 3
+    max_children_per_agent: 5
+    timeout_seconds: 300
+  edge_types:
+    - custom-notify
+    - custom-sync
+---
+`;
+    const contract = parseGroveContract(content);
+    expect(contract.contractVersion).toBe(2);
+
+    const topo = contract.topology as AgentTopology;
+    expect(topo).toBeDefined();
+    expect(topo.structure).toBe("graph");
+
+    // Roles
+    expect(topo.roles).toHaveLength(3);
+    expect(topo.roles[0]?.name).toBe("orchestrator");
+    expect(topo.roles[0]?.description).toBe("Coordinates worker agents");
+    expect(topo.roles[0]?.maxInstances).toBe(1);
+    expect(topo.roles[0]?.edges).toHaveLength(2);
+    expect(topo.roles[0]?.edges?.[0]?.target).toBe("worker");
+    expect(topo.roles[0]?.edges?.[0]?.edgeType).toBe("delegates");
+    expect(topo.roles[0]?.edges?.[1]?.target).toBe("reviewer");
+    expect(topo.roles[0]?.edges?.[1]?.edgeType).toBe("requests");
+
+    expect(topo.roles[1]?.name).toBe("worker");
+    expect(topo.roles[1]?.maxInstances).toBe(5);
+    expect(topo.roles[1]?.edges).toHaveLength(1);
+    expect(topo.roles[1]?.edges?.[0]?.target).toBe("orchestrator");
+    expect(topo.roles[1]?.edges?.[0]?.edgeType).toBe("reports");
+
+    expect(topo.roles[2]?.name).toBe("reviewer");
+    expect(topo.roles[2]?.edges?.[0]?.edgeType).toBe("feedback");
+
+    // Spawning
+    expect(topo.spawning).toBeDefined();
+    expect(topo.spawning?.dynamic).toBe(true);
+    expect(topo.spawning?.maxDepth).toBe(3);
+    expect(topo.spawning?.maxChildrenPerAgent).toBe(5);
+    expect(topo.spawning?.timeoutSeconds).toBe(300);
+
+    // Custom edge types
+    expect(topo.edgeTypes).toEqual(["custom-notify", "custom-sync"]);
+  });
+
+  test("parses minimal topology (flat, one role, no edges)", () => {
+    const content = `---
+contract_version: 2
+name: flat-grove
+topology:
+  structure: flat
+  roles:
+    - name: agent
+---
+`;
+    const contract = parseGroveContract(content);
+    const topo = contract.topology as AgentTopology;
+    expect(topo).toBeDefined();
+    expect(topo.structure).toBe("flat");
+    expect(topo.roles).toHaveLength(1);
+    expect(topo.roles[0]?.name).toBe("agent");
+    expect(topo.roles[0]?.edges).toBeUndefined();
+    expect(topo.spawning).toBeUndefined();
+    expect(topo.edgeTypes).toBeUndefined();
+  });
+
+  test("topology is optional — omitted topology parses fine", () => {
+    const contract = parseGroveContractObject({
+      contract_version: 2,
+      name: "no-topology",
+    });
+    expect(contract.topology).toBeUndefined();
+  });
+
+  test("rejects edge referencing undefined role name", () => {
+    expect(() =>
+      parseGroveContractObject({
+        contract_version: 2,
+        name: "bad-edge",
+        topology: {
+          structure: "graph",
+          roles: [
+            {
+              name: "orchestrator",
+              edges: [{ target: "nonexistent", edge_type: "delegates" }],
+            },
+          ],
+        },
+      }),
+    ).toThrow("not a defined role");
+  });
+
+  test("rejects self-edges (role name same as edge target)", () => {
+    expect(() =>
+      parseGroveContractObject({
+        contract_version: 2,
+        name: "self-edge",
+        topology: {
+          structure: "graph",
+          roles: [
+            {
+              name: "agent",
+              edges: [{ target: "agent", edge_type: "delegates" }],
+            },
+          ],
+        },
+      }),
+    ).toThrow("self-edge");
+  });
+
+  test("rejects flat topology with edges", () => {
+    expect(() =>
+      parseGroveContractObject({
+        contract_version: 2,
+        name: "flat-with-edges",
+        topology: {
+          structure: "flat",
+          roles: [
+            { name: "alpha" },
+            {
+              name: "beta",
+              edges: [{ target: "alpha", edge_type: "feeds" }],
+            },
+          ],
+        },
+      }),
+    ).toThrow("flat topology must not have edges");
+  });
+
+  test("rejects duplicate role names", () => {
+    expect(() =>
+      parseGroveContractObject({
+        contract_version: 2,
+        name: "dup-roles",
+        topology: {
+          structure: "graph",
+          roles: [{ name: "agent" }, { name: "agent" }],
+        },
+      }),
+    ).toThrow("duplicate role names");
+  });
+
+  test("rejects unknown fields in topology (strict mode)", () => {
+    expect(() =>
+      parseGroveContractObject({
+        contract_version: 2,
+        name: "strict-topo",
+        topology: {
+          structure: "graph",
+          roles: [{ name: "agent" }],
+          unknown_field: true,
+        },
+      }),
+    ).toThrow();
+  });
+
+  test("rejects topology in V1 contracts", () => {
+    expect(() =>
+      parseGroveContractObject({
+        contract_version: 1,
+        name: "v1-topology",
+        topology: {
+          structure: "flat",
+          roles: [{ name: "agent" }],
+        },
+      }),
+    ).toThrow();
+  });
+
+  test("parses tree topology with valid single-parent constraint", () => {
+    const content = `---
+contract_version: 2
+name: tree-grove
+topology:
+  structure: tree
+  roles:
+    - name: root
+      edges:
+        - target: child-a
+          edge_type: delegates
+        - target: child-b
+          edge_type: delegates
+    - name: child-a
+    - name: child-b
+---
+`;
+    const contract = parseGroveContract(content);
+    const topo = contract.topology as AgentTopology;
+    expect(topo).toBeDefined();
+    expect(topo.structure).toBe("tree");
+    expect(topo.roles).toHaveLength(3);
+    expect(topo.roles[0]?.name).toBe("root");
+    expect(topo.roles[0]?.edges).toHaveLength(2);
+  });
+
+  test("rejects tree topology where a role has multiple incoming edges", () => {
+    expect(() =>
+      parseGroveContractObject({
+        contract_version: 2,
+        name: "bad-tree",
+        topology: {
+          structure: "tree",
+          roles: [
+            {
+              name: "root",
+              edges: [{ target: "child", edge_type: "delegates" }],
+            },
+            {
+              name: "other-parent",
+              edges: [{ target: "child", edge_type: "delegates" }],
+            },
+            { name: "child" },
+          ],
+        },
+      }),
+    ).toThrow("single parent");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V3 contract parsing (agent_topology)
+// ---------------------------------------------------------------------------
+
+describe("V3 contracts", () => {
+  test("parses V3 contract with agent_topology", () => {
+    const content = `---
+contract_version: 3
+name: v3-grove
+agent_topology:
+  structure: graph
+  roles:
+    - name: orchestrator
+      max_instances: 1
+      edges:
+        - target: worker
+          edge_type: delegates
+    - name: worker
+      max_instances: 5
+  spawning:
+    dynamic: true
+    max_depth: 3
+---
+`;
+    const contract = parseGroveContract(content);
+    expect(contract.contractVersion).toBe(3);
+    expect(contract.name).toBe("v3-grove");
+
+    const topo = contract.topology as AgentTopology;
+    expect(topo).toBeDefined();
+    expect(topo.structure).toBe("graph");
+    expect(topo.roles).toHaveLength(2);
+    expect(topo.roles[0]?.name).toBe("orchestrator");
+    expect(topo.roles[1]?.name).toBe("worker");
+    expect(topo.spawning?.dynamic).toBe(true);
+    expect(topo.spawning?.maxDepth).toBe(3);
+  });
+
+  test("parses minimal V3 contract", () => {
+    const contract = parseGroveContractObject({
+      contract_version: 3,
+      name: "minimal-v3",
+    });
+    expect(contract.contractVersion).toBe(3);
+    expect(contract.topology).toBeUndefined();
+    expect(contract.concurrency).toBeUndefined();
+  });
+
+  test("V3 maps agent_topology to topology field in GroveContract", () => {
+    const contract = parseGroveContractObject({
+      contract_version: 3,
+      name: "v3-mapping",
+      agent_topology: {
+        structure: "flat",
+        roles: [{ name: "agent" }],
+      },
+    });
+    expect(contract.topology).toBeDefined();
+    expect(contract.topology?.structure).toBe("flat");
+    expect(contract.topology?.roles[0]?.name).toBe("agent");
+  });
+
+  test("V3 supports concurrency, execution, rate_limits, retry, gossip, outcome_policy", () => {
+    const contract = parseGroveContractObject({
+      contract_version: 3,
+      name: "v3-full",
+      concurrency: { max_active_claims: 10 },
+      execution: { default_lease_seconds: 300 },
+      rate_limits: { max_contributions_per_agent_per_hour: 50 },
+      retry: { max_attempts: 3 },
+      gossip: { interval_seconds: 30 },
+      outcome_policy: { require_manual_review: true },
+    });
+    expect(contract.concurrency?.maxActiveClaims).toBe(10);
+    expect(contract.execution?.defaultLeaseSeconds).toBe(300);
+    expect(contract.rateLimits?.maxContributionsPerAgentPerHour).toBe(50);
+    expect(contract.retry?.maxAttempts).toBe(3);
+    expect(contract.gossip?.intervalSeconds).toBe(30);
+    expect(contract.outcomePolicy?.requireManualReview).toBe(true);
+  });
+
+  test("V3 rejects old 'topology' field (strict mode)", () => {
+    expect(() =>
+      parseGroveContractObject({
+        contract_version: 3,
+        name: "v3-old-topology",
+        topology: {
+          structure: "flat",
+          roles: [{ name: "agent" }],
+        },
+      }),
+    ).toThrow("Invalid GROVE.md contract (v3)");
+  });
+
+  test("V3 validates metric cross-references", () => {
+    expect(() =>
+      parseGroveContractObject({
+        contract_version: 3,
+        name: "v3-bad-metric",
+        metrics: { accuracy: { direction: "maximize" } },
+        gates: [{ type: "metric_improves", metric: "nonexistent" }],
+      }),
+    ).toThrow("undefined metric 'nonexistent'");
+  });
+
+  test("V3 validates execution constraints", () => {
+    expect(() =>
+      parseGroveContractObject({
+        contract_version: 3,
+        name: "v3-bad-exec",
+        execution: {
+          default_lease_seconds: 7200,
+          max_lease_seconds: 3600,
+        },
+      }),
+    ).toThrow("default_lease_seconds");
   });
 });

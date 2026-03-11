@@ -1,14 +1,15 @@
 /**
  * Contribution detail view — full manifest, relations, artifacts, thread.
  *
- * Pushed onto the navigation stack when Enter is pressed on a contribution.
+ * Includes outcome annotation when available (Phase 5).
  */
 
-import { Box, Text } from "ink";
 import React, { useCallback } from "react";
+import type { OutcomeRecord } from "../../core/outcome.js";
 import { formatScore, formatTimestamp, truncateCid } from "../../shared/format.js";
+import { OutcomeBadge } from "../components/outcome-badge.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
-import type { ContributionDetail, TuiDataProvider } from "../provider.js";
+import type { ContributionDetail, TuiDataProvider, TuiOutcomeProvider } from "../provider.js";
 
 /** Props for the Detail view. */
 export interface DetailProps {
@@ -22,7 +23,7 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
   provider,
   cid,
   intervalMs,
-}: DetailProps): React.ReactElement {
+}: DetailProps): React.ReactNode {
   const fetcher = useCallback(() => provider.getContribution(cid), [provider, cid]);
   const { data, loading } = usePolledData<ContributionDetail | undefined>(
     fetcher,
@@ -30,162 +31,163 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
     true,
   );
 
+  // Fetch outcome for this CID if available
+  const outcomeProvider = provider.capabilities.outcomes
+    ? (provider as unknown as TuiOutcomeProvider)
+    : undefined;
+
+  const outcomeFetcher = useCallback(
+    () => outcomeProvider?.getOutcome(cid) ?? Promise.resolve(undefined),
+    [outcomeProvider, cid],
+  );
+  const { data: outcome } = usePolledData<OutcomeRecord | undefined>(
+    outcomeFetcher,
+    intervalMs,
+    true,
+  );
+
   if (loading && !data) {
     return (
-      <Box>
-        <Text dimColor>Loading {truncateCid(cid)}...</Text>
-      </Box>
+      <box>
+        <text opacity={0.5}>Loading {truncateCid(cid)}...</text>
+      </box>
     );
   }
 
   if (!data) {
     return (
-      <Box>
-        <Text color="red">Contribution not found: {cid}</Text>
-      </Box>
+      <box>
+        <text color="#ff0000">Contribution not found: {cid}</text>
+      </box>
     );
   }
 
   const { contribution: c, ancestors, children, thread } = data;
 
   return (
-    <Box flexDirection="column">
-      {/* Header */}
-      <Box marginBottom={1}>
-        <Text bold color="cyan">
-          {c.cid}
-        </Text>
-      </Box>
+    <box flexDirection="column">
+      <box marginBottom={1}>
+        <text color="#00cccc">{c.cid}</text>
+        {outcome && (
+          <>
+            <text> </text>
+            <OutcomeBadge status={outcome.status} />
+          </>
+        )}
+      </box>
 
-      {/* Metadata */}
-      <Box flexDirection="column" marginBottom={1}>
-        <Text>
-          <Text bold>Kind:</Text> {c.kind}
-          {"  "}
-          <Text bold>Mode:</Text> {c.mode}
-          {"  "}
-          <Text bold>Created:</Text> {formatTimestamp(c.createdAt)}
-        </Text>
-        <Text>
-          <Text bold>Agent:</Text> {c.agent.agentName ?? c.agent.agentId}
+      <box flexDirection="column" marginBottom={1}>
+        <text>
+          Kind: {c.kind} Mode: {c.mode} Created: {formatTimestamp(c.createdAt)}
+        </text>
+        <text>
+          Agent: {c.agent.agentName ?? c.agent.agentId}
           {c.agent.model ? ` (${c.agent.model})` : ""}
           {c.agent.platform ? ` on ${c.agent.platform}` : ""}
-        </Text>
-        {c.tags.length > 0 && (
-          <Text>
-            <Text bold>Tags:</Text> {c.tags.join(", ")}
-          </Text>
-        )}
-      </Box>
+        </text>
+        {c.tags.length > 0 && <text>Tags: {c.tags.join(", ")}</text>}
+      </box>
 
-      {/* Summary and description */}
-      <Box flexDirection="column" marginBottom={1}>
-        <Text bold underline>
-          Summary
-        </Text>
-        <Text>{c.summary}</Text>
+      {/* Outcome annotation */}
+      {outcome && (
+        <box flexDirection="column" marginBottom={1}>
+          <text>Outcome</text>
+          <text>
+            Status: {outcome.status} By: {outcome.evaluatedBy} At:{" "}
+            {formatTimestamp(outcome.evaluatedAt)}
+          </text>
+          {outcome.reason && <text opacity={0.5}>Reason: {outcome.reason}</text>}
+          {outcome.baselineCid && (
+            <text opacity={0.5}>Baseline: {truncateCid(outcome.baselineCid)}</text>
+          )}
+        </box>
+      )}
+
+      <box flexDirection="column" marginBottom={1}>
+        <text>Summary</text>
+        <text>{c.summary}</text>
         {c.description && (
-          <Box marginTop={1}>
-            <Text dimColor>{c.description.slice(0, 500)}</Text>
-          </Box>
+          <box marginTop={1}>
+            <text opacity={0.5}>{c.description.slice(0, 500)}</text>
+          </box>
         )}
-      </Box>
+      </box>
 
-      {/* Scores */}
       {c.scores && Object.keys(c.scores).length > 0 && (
-        <Box flexDirection="column" marginBottom={1}>
-          <Text bold underline>
-            Scores
-          </Text>
+        <box flexDirection="column" marginBottom={1}>
+          <text>Scores</text>
           {Object.entries(c.scores).map(([name, score]) => (
-            <Text key={name}>
+            <text key={name}>
               {name}: {formatScore(score)} ({score.direction})
-            </Text>
+            </text>
           ))}
-        </Box>
+        </box>
       )}
 
-      {/* Relations */}
       {c.relations.length > 0 && (
-        <Box flexDirection="column" marginBottom={1}>
-          <Text bold underline>
-            Relations ({c.relations.length})
-          </Text>
+        <box flexDirection="column" marginBottom={1}>
+          <text>Relations ({c.relations.length})</text>
           {c.relations.map((r, i) => (
-            <Text key={`rel-${String(i)}`}>
+            <text key={`rel-${String(i)}`}>
               {r.relationType} → {truncateCid(r.targetCid)}
-            </Text>
+            </text>
           ))}
-        </Box>
+        </box>
       )}
 
-      {/* Artifacts */}
       {Object.keys(c.artifacts).length > 0 && (
-        <Box flexDirection="column" marginBottom={1}>
-          <Text bold underline>
-            Artifacts ({Object.keys(c.artifacts).length})
-          </Text>
+        <box flexDirection="column" marginBottom={1}>
+          <text>Artifacts ({Object.keys(c.artifacts).length})</text>
           {Object.entries(c.artifacts).map(([name, hash]) => (
-            <Text key={name}>
+            <text key={name}>
               {name}: {truncateCid(hash)}
-            </Text>
+            </text>
           ))}
-        </Box>
+        </box>
       )}
 
-      {/* Ancestors and children */}
       {ancestors.length > 0 && (
-        <Box flexDirection="column" marginBottom={1}>
-          <Text bold underline>
-            Ancestors ({ancestors.length})
-          </Text>
+        <box flexDirection="column" marginBottom={1}>
+          <text>Ancestors ({ancestors.length})</text>
           {ancestors.map((a) => (
-            <Text key={a.cid}>
+            <text key={a.cid}>
               {truncateCid(a.cid)} [{a.kind}] {a.summary.slice(0, 50)}
-            </Text>
+            </text>
           ))}
-        </Box>
+        </box>
       )}
 
       {children.length > 0 && (
-        <Box flexDirection="column" marginBottom={1}>
-          <Text bold underline>
-            Children ({children.length})
-          </Text>
+        <box flexDirection="column" marginBottom={1}>
+          <text>Children ({children.length})</text>
           {children.map((ch) => (
-            <Text key={ch.cid}>
+            <text key={ch.cid}>
               {truncateCid(ch.cid)} [{ch.kind}] {ch.summary.slice(0, 50)}
-            </Text>
+            </text>
           ))}
-        </Box>
+        </box>
       )}
 
-      {/* Discussion thread */}
       {thread.length > 1 && (
-        <Box flexDirection="column">
-          <Text bold underline>
-            Discussion ({thread.length - 1} replies)
-          </Text>
+        <box flexDirection="column">
+          <text>Discussion ({thread.length - 1} replies)</text>
           {thread.slice(1).map((node) => (
-            <Text key={node.contribution.cid}>
+            <text key={node.contribution.cid}>
               {"  ".repeat(node.depth)}
               {truncateCid(node.contribution.cid)} {node.contribution.summary.slice(0, 40)} [
               {node.contribution.agent.agentName ?? node.contribution.agent.agentId}]{" "}
               {formatTimestamp(node.contribution.createdAt)}
-            </Text>
+            </text>
           ))}
-        </Box>
+        </box>
       )}
 
-      {/* Context */}
       {c.context && Object.keys(c.context).length > 0 && (
-        <Box flexDirection="column" marginTop={1}>
-          <Text bold underline>
-            Context
-          </Text>
-          <Text dimColor>{JSON.stringify(c.context, null, 2).slice(0, 300)}</Text>
-        </Box>
+        <box flexDirection="column" marginTop={1}>
+          <text>Context</text>
+          <text opacity={0.5}>{JSON.stringify(c.context, null, 2).slice(0, 300)}</text>
+        </box>
       )}
-    </Box>
+    </box>
   );
 });

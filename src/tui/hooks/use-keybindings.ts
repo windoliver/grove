@@ -1,11 +1,13 @@
 /**
  * Keyboard input routing for the TUI.
  *
- * Handles tab switching (1-4), vim navigation (j/k), drill-down (Enter/Esc),
- * pagination (n/p), refresh (r), filter (/), and quit (q).
+ * Handles tab switching (1-4), panel toggles (5-8), vim navigation (j/k),
+ * drill-down (Enter/Esc), pagination (n/p), refresh (r), and quit (q).
+ *
+ * Uses OpenTUI's useKeyboard hook.
  */
 
-import { useInput } from "ink";
+import { useKeyboard } from "@opentui/react";
 import type { NavigationActions } from "./use-navigation.js";
 import { Tab } from "./use-navigation.js";
 
@@ -41,7 +43,13 @@ export function useKeybindings(opts: KeybindingOptions): void {
     totalItems = 0,
   } = opts;
 
-  useInput((input, key) => {
+  useKeyboard((key) => {
+    const input = key.name;
+    const isReturn = input === "return";
+    const isEscape = input === "escape";
+    const isDown = input === "down";
+    const isUp = input === "up";
+
     // Tab switching: 1-4
     if (input === "1") {
       nav.switchTab(Tab.Dashboard);
@@ -61,21 +69,21 @@ export function useKeybindings(opts: KeybindingOptions): void {
     }
 
     // Vim navigation: j/k or arrow keys
-    if (input === "j" || key.downArrow) {
+    if (input === "j" || isDown) {
       nav.cursorDown(Math.max(0, listLength - 1));
       return;
     }
-    if (input === "k" || key.upArrow) {
+    if (input === "k" || isUp) {
       nav.cursorUp();
       return;
     }
 
     // Drill-down: Enter to select, Escape to go back
-    if (key.return && onSelect && listLength > 0) {
+    if (isReturn && onSelect && listLength > 0) {
       onSelect(nav.state.cursor);
       return;
     }
-    if (key.escape) {
+    if (isEscape) {
       if (nav.isDetailView) {
         nav.popDetail();
       }

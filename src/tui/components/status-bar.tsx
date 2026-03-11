@@ -1,56 +1,52 @@
 /**
  * Status bar component shown at the bottom of the TUI.
  *
- * Displays available keyboard shortcuts and current view context.
+ * Displays available keyboard shortcuts, current input mode, and errors.
  */
 
-import { Box, Text } from "ink";
 import React from "react";
+import type { InputMode } from "../hooks/use-panel-focus.js";
 
 /** Props for the StatusBar component. */
 export interface StatusBarProps {
-  /** Whether we're in a detail view. */
-  readonly isDetailView: boolean;
+  /** Current input mode. */
+  readonly mode: InputMode;
+  /** Whether we're in a detail view within a panel. */
+  readonly isDetailView?: boolean | undefined;
   /** Error message to display, if any. */
   readonly error?: string | undefined;
-  /** Last refresh timestamp. */
-  readonly lastRefresh?: string | undefined;
 }
+
+/** Mode labels for the status bar. */
+const MODE_LABELS: Record<InputMode, string> = {
+  normal: "NORMAL",
+  terminal_input: "TERMINAL",
+  command_palette: "CMD",
+};
 
 /** Bottom status bar with keybinding hints. */
 export const StatusBar: React.NamedExoticComponent<StatusBarProps> = React.memo(function StatusBar({
+  mode,
   isDetailView,
   error,
-  lastRefresh,
-}: StatusBarProps): React.ReactElement {
+}: StatusBarProps): React.ReactNode {
+  const modeLabel = MODE_LABELS[mode];
+
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="single"
-      borderTop
-      borderBottom={false}
-      borderLeft={false}
-      borderRight={false}
-    >
+    <box flexDirection="column">
       {error && (
-        <Box>
-          <Text color="red" bold>
-            Error: {error}
-          </Text>
-        </Box>
+        <box>
+          <text color="#ff0000">Error: {error}</text>
+        </box>
       )}
-      <Box>
-        <Text dimColor>
+      <box>
+        <text color="#00cccc">[{modeLabel}]</text>
+        <text opacity={0.5}>
           {isDetailView
             ? " Esc:back  j/k:scroll  r:refresh  q:quit"
-            : " 1-4:tab  j/k:nav  Enter:detail  n/p:page  r:refresh  q:quit"}
-        </Text>
-        {lastRefresh && (
-          <Text dimColor>
-            {"  "}| updated {lastRefresh}
-          </Text>
-        )}
-      </Box>
-    </Box>
+            : " 1-4:panel  5-8:toggle  Tab:cycle  j/k:nav  Enter:select  Ctrl+P:cmd  q:quit"}
+        </text>
+      </box>
+    </box>
   );
 });

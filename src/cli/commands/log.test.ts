@@ -7,14 +7,17 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DefaultFrontierCalculator } from "../../core/frontier.js";
+import type { OutcomeStore } from "../../core/outcome.js";
 import { makeContribution } from "../../core/test-helpers.js";
 import { FsCas } from "../../local/fs-cas.js";
+import { SqliteOutcomeStore } from "../../local/sqlite-outcome-store.js";
 import { initSqliteDb, SqliteContributionStore } from "../../local/sqlite-store.js";
 import type { CliDeps } from "../context.js";
 import { parseLogArgs, runLog } from "./log.js";
 
 let tmpDir: string;
 let deps: CliDeps;
+let outcomeStore: OutcomeStore;
 
 beforeEach(async () => {
   tmpDir = await mkdtemp(join(tmpdir(), "grove-log-test-"));
@@ -22,12 +25,14 @@ beforeEach(async () => {
   const store = new SqliteContributionStore(db);
   const cas = new FsCas(join(tmpDir, "cas"));
   const frontier = new DefaultFrontierCalculator(store);
+  outcomeStore = new SqliteOutcomeStore(db);
   deps = {
     store,
     frontier,
     workspace: undefined as never, // not used by log
     cas,
     groveRoot: tmpDir,
+    outcomeStore,
     close: () => {
       store.close();
     },
@@ -49,6 +54,7 @@ describe("parseLogArgs", () => {
     expect(opts.limit).toBe(20);
     expect(opts.kind).toBeUndefined();
     expect(opts.mode).toBeUndefined();
+    expect(opts.outcome).toBeUndefined();
     expect(opts.json).toBe(false);
   });
 
@@ -66,6 +72,15 @@ describe("parseLogArgs", () => {
   test("parses --json", () => {
     const opts = parseLogArgs(["--json"]);
     expect(opts.json).toBe(true);
+  });
+
+  test("parses --outcome flag", () => {
+    const opts = parseLogArgs(["--outcome", "accepted"]);
+    expect(opts.outcome).toBe("accepted");
+  });
+
+  test("rejects invalid outcome value", () => {
+    expect(() => parseLogArgs(["--outcome", "unknown"])).toThrow("Invalid outcome");
   });
 
   test("rejects invalid limit", () => {
@@ -155,5 +170,47 @@ describe("runLog", () => {
     const text = output.join("\n");
     expect(text).toContain("review item");
     expect(text).not.toContain("work item");
+  });
+
+  test("filters by outcome status", async () => {
+    const c1 = makeContribution({ summary: "accepted-item", createdAt: "2026-01-01T00:00:00Z" });
+    const c2 = makeContribution({ summary: "rejected-item", createdAt: "2026-01-02T00:00:00Z" });
+    const c3 = makeContribution({ summary: "no-outcome-item", createdAt: "2026-01-03T00:00:00Z" });
+
+    await deps.store.put(c1);
+    await deps.store.put(c2);
+    await deps.store.put(c3);
+
+    await outcomeStore.set(c1.cid, { status: "accepted", evaluatedBy: "test-agent" });
+    await outcomeStore.set(c2.cid, { status: "rejected", evaluatedBy: "test-agent" });
+
+    const output: string[] = [];
+    await runLog({ limit: 20, outcome: "accepted", json: false }, deps, (s) => output.push(s));
+
+    const text = output.join("\n");
+    expect(text).toContain("accepted-item");
+    expect(text).not.toContain("rejected-item");
+    expect(text).not.toContain("no-outcome-item");
+  });
+
+  test("outcome filter returns empty when no matches", async () => {
+    const c1 = makeContribution({ summary: "some-item" });
+    await deps.store.put(c1);
+
+    const output: string[] = [];
+    await runLog({ limit: 20, outcome: "crashed", json: false }, deps, (s) => output.push(s));
+
+    const text = output.join("\n");
+    expect(text).toContain("(no results)");
+  });
+
+  test("outcome filter throws when outcomeStore is unavailable", async () => {
+    const depsWithoutOutcome: CliDeps = { ...deps, outcomeStore: undefined };
+    const c1 = makeContribution({ summary: "test-item" });
+    await depsWithoutOutcome.store.put(c1);
+
+    await expect(
+      runLog({ limit: 20, outcome: "accepted", json: false }, depsWithoutOutcome),
+    ).rejects.toThrow("Outcome store is not available");
   });
 });

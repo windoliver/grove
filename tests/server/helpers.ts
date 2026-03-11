@@ -12,6 +12,7 @@ import type { Hono } from "hono";
 import type { ContentStore } from "../../src/core/cas.js";
 import type { FrontierCalculator } from "../../src/core/frontier.js";
 import { DefaultFrontierCalculator } from "../../src/core/frontier.js";
+import type { OutcomeStore } from "../../src/core/outcome.js";
 import type { ClaimStore, ContributionStore } from "../../src/core/store.js";
 import { FsCas } from "../../src/local/fs-cas.js";
 import { createSqliteStores } from "../../src/local/sqlite-store.js";
@@ -23,6 +24,7 @@ export interface TestContext {
   readonly deps: ServerDeps;
   readonly contributionStore: ContributionStore;
   readonly claimStore: ClaimStore;
+  readonly outcomeStore: OutcomeStore;
   readonly cas: ContentStore;
   readonly frontier: FrontierCalculator;
   readonly tempDir: string;
@@ -42,6 +44,7 @@ export async function createTestContext(): Promise<TestContext> {
   const deps: ServerDeps = {
     contributionStore: stores.contributionStore,
     claimStore: stores.claimStore,
+    outcomeStore: stores.outcomeStore,
     cas,
     frontier,
   };
@@ -53,6 +56,7 @@ export async function createTestContext(): Promise<TestContext> {
     deps,
     contributionStore: stores.contributionStore,
     claimStore: stores.claimStore,
+    outcomeStore: stores.outcomeStore,
     cas,
     frontier,
     tempDir,

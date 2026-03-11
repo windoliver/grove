@@ -37,6 +37,7 @@ import type {
 } from "../core/store.js";
 import { ExpiryReason } from "../core/store.js";
 import { BOUNTY_DDL, SqliteBountyStore } from "./sqlite-bounty-store.js";
+import { SqliteOutcomeStore } from "./sqlite-outcome-store.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -296,6 +297,7 @@ export function createSqliteStores(dbPath: string): {
   contributionStore: SqliteContributionStore;
   claimStore: SqliteClaimStore;
   bountyStore: SqliteBountyStore;
+  outcomeStore: SqliteOutcomeStore;
   close: () => void;
 } {
   const db = initSqliteDb(dbPath);
@@ -303,6 +305,7 @@ export function createSqliteStores(dbPath: string): {
     contributionStore: new SqliteContributionStore(db),
     claimStore: new SqliteClaimStore(db),
     bountyStore: new SqliteBountyStore(db),
+    outcomeStore: new SqliteOutcomeStore(db),
     close: () => db.close(),
   };
 }

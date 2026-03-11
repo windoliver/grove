@@ -1,16 +1,17 @@
 /**
- * DAG view — ASCII tree of the contribution graph.
+ * DAG view — ASCII tree of the contribution graph with outcome color-coding.
  *
- * Reuses the existing git-style DAG renderer from the CLI,
- * with color-coding by contribution kind and cursor navigation.
+ * Reuses the existing git-style DAG renderer from the CLI.
+ * Outcome badges are displayed alongside each node when available.
  */
 
-import { Box, Text } from "ink";
 import React, { useCallback, useEffect, useMemo } from "react";
 import { contributionsToDagNodes, renderDag } from "../../cli/format-dag.js";
 import type { Contribution } from "../../core/models.js";
+import type { OutcomeRecord } from "../../core/outcome.js";
+import { OutcomeBadge } from "../components/outcome-badge.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
-import type { DagData, TuiDataProvider } from "../provider.js";
+import type { DagData, TuiDataProvider, TuiOutcomeProvider } from "../provider.js";
 
 /** Props for the DAG view. */
 export interface DagProps {
@@ -18,17 +19,16 @@ export interface DagProps {
   readonly intervalMs: number;
   readonly active: boolean;
   readonly cursor: number;
-  /** Called when contributions are loaded, for cursor-based drill-down. */
   readonly onContributionsLoaded?: (contributions: readonly Contribution[]) => void;
 }
 
 /** Color map for contribution kinds. */
 const KIND_COLORS: Record<string, string> = {
-  work: "green",
-  review: "yellow",
-  discussion: "blue",
-  adoption: "magenta",
-  reproduction: "cyan",
+  work: "#00cc00",
+  review: "#cccc00",
+  discussion: "#0088cc",
+  adoption: "#cc00cc",
+  reproduction: "#00cccc",
 };
 
 /** DAG view component. */
@@ -38,11 +38,27 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
   active,
   cursor,
   onContributionsLoaded,
-}: DagProps): React.ReactElement {
+}: DagProps): React.ReactNode {
   const fetcher = useCallback(() => provider.getDag(), [provider]);
   const { data, loading } = usePolledData<DagData>(fetcher, intervalMs, active);
 
-  // Report loaded contributions for cursor-based drill-down
+  // Batch-fetch outcomes if provider supports it
+  const outcomeProvider = provider.capabilities.outcomes
+    ? (provider as unknown as TuiOutcomeProvider)
+    : undefined;
+
+  const cids = useMemo(() => data?.contributions.map((c) => c.cid) ?? [], [data]);
+
+  const outcomeFetcher = useCallback(
+    () => outcomeProvider?.getOutcomes(cids) ?? Promise.resolve(new Map()),
+    [outcomeProvider, cids],
+  );
+  const { data: outcomes } = usePolledData<ReadonlyMap<string, OutcomeRecord>>(
+    outcomeFetcher,
+    intervalMs,
+    active && cids.length > 0,
+  );
+
   useEffect(() => {
     if (data && onContributionsLoaded) {
       onContributionsLoaded(data.contributions);
@@ -51,7 +67,6 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
 
   const contributions = data?.contributions ?? [];
 
-  // Build a CID→kind lookup for coloring
   const kindMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const c of contributions) {
@@ -60,19 +75,16 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
     return map;
   }, [contributions]);
 
-  // Render DAG lines
   const dagLines = useMemo(() => {
     if (contributions.length === 0) return [];
     const nodes = contributionsToDagNodes(contributions);
     return renderDag(nodes);
   }, [contributions]);
 
-  // Build CID list for cursor mapping
   const cidList = useMemo(() => {
     return dagLines
       .filter((l) => l.label !== "")
       .map((l) => {
-        // Extract CID from label: "blake3:abc123.. [kind] summary"
         const match = /^(blake3:\S+)/.exec(l.label);
         return match?.[1] ?? "";
       });
@@ -80,70 +92,63 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
 
   if (loading && !data) {
     return (
-      <Box>
-        <Text dimColor>Loading DAG...</Text>
-      </Box>
+      <box>
+        <text opacity={0.5}>Loading DAG...</text>
+      </box>
     );
   }
 
   if (dagLines.length === 0) {
     return (
-      <Box>
-        <Text dimColor>(empty graph)</Text>
-      </Box>
+      <box>
+        <text opacity={0.5}>(empty graph)</text>
+      </box>
     );
   }
 
-  // Track which display line index (node lines only) we're at
   let nodeIndex = 0;
 
   return (
-    <Box flexDirection="column">
-      <Box marginBottom={1}>
-        <Text bold underline>
-          Contribution DAG ({contributions.length} nodes)
-        </Text>
-        <Text dimColor>
-          {"  "}
-          <Text color="green">work</Text> <Text color="yellow">review</Text>{" "}
-          <Text color="blue">discussion</Text> <Text color="magenta">adoption</Text>{" "}
-          <Text color="cyan">reproduction</Text>
-        </Text>
-      </Box>
+    <box flexDirection="column">
+      <box marginBottom={1}>
+        <text>Contribution DAG ({contributions.length} nodes) </text>
+        <text opacity={0.5}>
+          <text color="#00cc00">work</text> <text color="#cccc00">review</text>{" "}
+          <text color="#0088cc">discussion</text> <text color="#cc00cc">adoption</text>{" "}
+          <text color="#00cccc">reproduction</text>
+        </text>
+      </box>
       {dagLines.map((line, i) => {
         const isNodeLine = line.label !== "";
         const currentNodeIndex = isNodeLine ? nodeIndex++ : -1;
         const isSelected = isNodeLine && currentNodeIndex === cursor;
 
-        // Determine color from the CID in the label
         const cidInLabel = cidList[currentNodeIndex];
         const fullCid = contributions.find(
           (c) => cidInLabel && c.cid.includes(cidInLabel.replace("blake3:", "").replace("..", "")),
         )?.cid;
         const kind = fullCid ? kindMap.get(fullCid) : undefined;
         const color = kind ? KIND_COLORS[kind] : undefined;
+        const outcome = fullCid ? outcomes?.get(fullCid) : undefined;
 
         return (
-          <Box key={`dag-${String(i)}`}>
-            {isSelected ? (
-              <Text color="cyan" bold>
-                {">"}{" "}
-              </Text>
-            ) : (
-              <Text> </Text>
+          <box key={`dag-${String(i)}`}>
+            {isSelected ? <text color="#00cccc">{"> "}</text> : <text> </text>}
+            <text opacity={0.5}>{line.graphPrefix}</text>
+            {isNodeLine && (
+              <>
+                <text color={isSelected ? "#00cccc" : color}> {line.label}</text>
+                {outcome && (
+                  <>
+                    <text> </text>
+                    <OutcomeBadge status={outcome.status} />
+                  </>
+                )}
+              </>
             )}
-            <Text dimColor>{line.graphPrefix}</Text>
-            {isNodeLine &&
-              (isSelected ? (
-                <Text color="cyan"> {line.label}</Text>
-              ) : color ? (
-                <Text color={color}> {line.label}</Text>
-              ) : (
-                <Text> {line.label}</Text>
-              ))}
-          </Box>
+          </box>
         );
       })}
-    </Box>
+    </box>
   );
 });

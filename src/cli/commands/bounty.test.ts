@@ -257,7 +257,7 @@ describe("grove bounty", () => {
 
       // Get bounty ID from the store
       const bounties = await bountyStore.listBounties({ status: BountyStatus.Open });
-      const bountyId = bounties[0]!.bountyId;
+      const bountyId = bounties[0]?.bountyId as string;
       stdout = [];
 
       await runBounty(["claim", bountyId, "--agent-id", "claimer-agent"], deps);
@@ -302,7 +302,7 @@ describe("grove bounty", () => {
       );
 
       const bounties = await bountyStore.listBounties({ status: BountyStatus.Open });
-      const bountyId = bounties[0]!.bountyId;
+      const bountyId = bounties[0]?.bountyId as string;
 
       // First claim succeeds
       await runBounty(["claim", bountyId, "--agent-id", "claimer-1"], deps);

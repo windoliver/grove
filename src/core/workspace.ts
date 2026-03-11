@@ -143,6 +143,22 @@ export interface WorkspaceManager {
   markWorkspaceStale(cid: string, agentId: string): Promise<WorkspaceInfo>;
 
   /**
+   * Create a bare workspace directory without materializing artifacts.
+   *
+   * Used for TUI-spawned agent sessions that don't correspond to a
+   * contribution CID. Creates an empty directory, registers it in the
+   * workspace DB, and returns workspace info that the reconciler can track.
+   *
+   * Idempotent: if a workspace for this key + agent already exists and
+   * is active, returns the existing workspace info.
+   *
+   * @param key - Unique identifier for the workspace (e.g., spawnId)
+   * @param options - Agent identity and optional metadata
+   * @returns Information about the created workspace
+   */
+  createBareWorkspace?(key: string, options: CheckoutOptions): Promise<WorkspaceInfo>;
+
+  /**
    * Update the lastActivityAt timestamp for a workspace.
    * Used to keep a workspace from being marked stale.
    */

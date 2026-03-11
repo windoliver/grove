@@ -48,6 +48,7 @@ export function parseInitArgs(args: readonly string[]): InitOptions {
       provider: { type: "string" },
       model: { type: "string" },
       platform: { type: "string" },
+      role: { type: "string" },
     },
     allowPositionals: true,
     strict: true,
@@ -89,6 +90,7 @@ export function parseInitArgs(args: readonly string[]): InitOptions {
       provider: values.provider as string | undefined,
       model: values.model as string | undefined,
       platform: values.platform as string | undefined,
+      role: values.role as string | undefined,
     },
     cwd: process.cwd(),
   };

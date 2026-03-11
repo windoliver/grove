@@ -26,6 +26,7 @@ const createBodySchema = z.object({
     version: z.string().optional(),
     toolchain: z.string().optional(),
     runtime: z.string().optional(),
+    role: z.string().optional(),
   }),
   intentSummary: z.string().min(1),
   leaseDurationMs: z.number().int().positive().optional(),

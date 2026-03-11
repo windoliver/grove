@@ -8,6 +8,7 @@
 import { hostname } from "node:os";
 
 import type { AgentIdentity } from "../core/models.js";
+import type { AgentRole, AgentTopology } from "../core/topology.js";
 
 /** Environment variable names for agent identity fields. */
 const ENV_VARS = {
@@ -19,6 +20,7 @@ const ENV_VARS = {
   version: "GROVE_AGENT_VERSION",
   toolchain: "GROVE_AGENT_TOOLCHAIN",
   runtime: "GROVE_AGENT_RUNTIME",
+  role: "GROVE_AGENT_ROLE",
 } as const;
 
 /** CLI overrides for agent identity (all optional). */
@@ -31,6 +33,7 @@ export interface AgentOverrides {
   readonly version?: string | undefined;
   readonly toolchain?: string | undefined;
   readonly runtime?: string | undefined;
+  readonly role?: string | undefined;
 }
 
 /**
@@ -67,9 +70,58 @@ export function resolveAgent(overrides?: AgentOverrides): AgentIdentity {
     ...(resolveField(overrides?.runtime, env[ENV_VARS.runtime]) && {
       runtime: resolveField(overrides?.runtime, env[ENV_VARS.runtime]),
     }),
+    ...(resolveField(overrides?.role, env[ENV_VARS.role]) && {
+      role: resolveField(overrides?.role, env[ENV_VARS.role]),
+    }),
   };
 
   return identity;
+}
+
+/**
+ * Resolve the AgentRole from a topology for a given agent identity.
+ *
+ * Matching precedence:
+ * 1. Explicit role — agentIdentity.role matches a topology role name
+ * 2. Agent name fallback — agentIdentity.agentName matches a role name (case-insensitive)
+ * 3. Agent ID fallback — agentIdentity.agentId contains a role name (case-insensitive)
+ *
+ * Returns undefined if topology is missing or no match is found.
+ */
+export function resolveAgentRole(
+  topology: AgentTopology | undefined,
+  agentIdentity: AgentIdentity,
+): AgentRole | undefined {
+  if (topology === undefined) {
+    return undefined;
+  }
+
+  // 1. Explicit role match
+  if (agentIdentity.role !== undefined) {
+    const match = topology.roles.find((r) => r.name === agentIdentity.role);
+    if (match !== undefined) {
+      return match;
+    }
+  }
+
+  // 2. Agent name fallback (case-insensitive)
+  if (agentIdentity.agentName !== undefined) {
+    const nameLower = agentIdentity.agentName.toLowerCase();
+    const match = topology.roles.find((r) => r.name.toLowerCase() === nameLower);
+    if (match !== undefined) {
+      return match;
+    }
+  }
+
+  // 3. Agent ID fallback — check if agentId contains a role name (case-insensitive)
+  const idLower = agentIdentity.agentId.toLowerCase();
+  for (const role of topology.roles) {
+    if (idLower.includes(role.name.toLowerCase())) {
+      return role;
+    }
+  }
+
+  return undefined;
 }
 
 function resolveField(

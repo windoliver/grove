@@ -1,33 +1,37 @@
 /**
- * Tab bar component for switching between TUI views.
+ * Panel indicator bar for showing focused panel in multi-panel layout.
  */
 
-import { Box, Text } from "ink";
 import React from "react";
-import type { Tab } from "../hooks/use-navigation.js";
-import { TAB_LABELS } from "../hooks/use-navigation.js";
+import type { PanelFocusState } from "../hooks/use-panel-focus.js";
+import { getVisiblePanels, PANEL_LABELS } from "../hooks/use-panel-focus.js";
 
-/** Props for the TabBar component. */
-export interface TabBarProps {
-  readonly activeTab: Tab;
+/** Props for the PanelBar component. */
+export interface PanelBarProps {
+  readonly panelState: PanelFocusState;
 }
 
-/** Horizontal tab bar with numbered labels. */
-export const TabBar: React.NamedExoticComponent<TabBarProps> = React.memo(function TabBar({
-  activeTab,
-}: TabBarProps): React.ReactElement {
+/** Horizontal panel indicator bar with numbered labels. */
+export const PanelBar: React.NamedExoticComponent<PanelBarProps> = React.memo(function PanelBar({
+  panelState,
+}: PanelBarProps): React.ReactNode {
+  const visible = getVisiblePanels(panelState);
+
   return (
-    <Box>
-      {TAB_LABELS.map((label, i) => {
-        const isActive = i === activeTab;
+    <box>
+      {visible.map((panel) => {
+        const isActive = panel === panelState.focused;
         return (
-          <Box key={label} marginRight={2}>
-            <Text bold={isActive} color={isActive ? "cyan" : "gray"} underline={isActive}>
-              {i + 1}:{label}
-            </Text>
-          </Box>
+          <box key={panel} marginRight={2}>
+            <text color={isActive ? "#00cccc" : "#888888"}>
+              {isActive ? `[${panel}:${PANEL_LABELS[panel]}]` : ` ${panel}:${PANEL_LABELS[panel]} `}
+            </text>
+          </box>
         );
       })}
-    </Box>
+    </box>
   );
 });
+
+// Keep the old TabBar export for backwards compatibility during migration
+export { PanelBar as TabBar };

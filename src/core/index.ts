@@ -61,10 +61,13 @@ export {
 } from "./constants.js";
 export type {
   AgentConstraints,
+  AgentRole,
+  AgentTopology,
   Budget,
   ClaimPolicy,
   ConcurrencyConfig,
   DeliberationLimit,
+  EdgeType,
   ExecutionConfig,
   Gate,
   GateType,
@@ -74,6 +77,8 @@ export type {
   QuorumReviewScore,
   RateLimitsConfig,
   RetryConfig,
+  RoleEdge,
+  SpawningConfig,
   StopConditions,
   TargetMetric,
 } from "./contract.js";

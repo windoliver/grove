@@ -7,25 +7,39 @@
 
 import type { Frontier, FrontierQuery } from "../core/frontier.js";
 import type { Claim, Contribution } from "../core/models.js";
+import type { OutcomeRecord, OutcomeStatus } from "../core/outcome.js";
 import type { ContributionQuery, ThreadNode, ThreadSummary } from "../core/store.js";
 import type {
   ActivityQuery,
+  ArtifactMeta,
+  ClaimInput,
   ClaimsQuery,
   ContributionDetail,
   DagData,
   DashboardData,
-  FrontierSummary,
   GroveMetadata,
+  OperatorStats,
   PaginatedQuery,
+  ProviderCapabilities,
+  TuiArtifactProvider,
   TuiDataProvider,
+  TuiOutcomeProvider,
 } from "./provider.js";
+import { buildFrontierSummary } from "./provider-utils.js";
 
 /** TUI data provider backed by a remote grove-server HTTP API. */
-export class RemoteDataProvider implements TuiDataProvider {
+export class RemoteDataProvider
+  implements TuiDataProvider, TuiOutcomeProvider, TuiArtifactProvider
+{
+  readonly capabilities: ProviderCapabilities = {
+    outcomes: true,
+    artifacts: true,
+    vfs: false,
+  };
+
   private readonly baseUrl: string;
 
   constructor(baseUrl: string) {
-    // Normalize: remove trailing slash
     this.baseUrl = baseUrl.replace(/\/+$/, "");
   }
 
@@ -70,7 +84,6 @@ export class RemoteDataProvider implements TuiDataProvider {
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
     const contribution = (await resp.json()) as Contribution;
 
-    // Fetch ancestors, children, and thread in parallel
     const [ancestorsResp, childrenResp, threadResp] = await Promise.all([
       fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(cid)}/ancestors`),
       fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(cid)}/children`),
@@ -107,6 +120,25 @@ export class RemoteDataProvider implements TuiDataProvider {
     return (await resp.json()) as Claim[];
   }
 
+  async createClaim(input: ClaimInput): Promise<Claim> {
+    const resp = await fetch(`${this.baseUrl}/api/claims`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
+    return (await resp.json()) as Claim;
+  }
+
+  async releaseClaim(claimId: string): Promise<void> {
+    const resp = await fetch(`${this.baseUrl}/api/claims/${encodeURIComponent(claimId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "release" }),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
+  }
+
   async getFrontier(query?: FrontierQuery): Promise<Frontier> {
     const params = new URLSearchParams();
     if (query?.limit) params.set("limit", String(query.limit));
@@ -132,7 +164,6 @@ export class RemoteDataProvider implements TuiDataProvider {
 
   async getDag(rootCid?: string): Promise<DagData> {
     if (rootCid) {
-      // Fetch ancestors and children from the root
       const [ancestorsResp, childrenResp, rootResp] = await Promise.all([
         fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(rootCid)}/ancestors`),
         fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(rootCid)}/children`),
@@ -144,7 +175,6 @@ export class RemoteDataProvider implements TuiDataProvider {
       if (ancestorsResp.ok) contributions.push(...((await ancestorsResp.json()) as Contribution[]));
       if (childrenResp.ok) contributions.push(...((await childrenResp.json()) as Contribution[]));
 
-      // Deduplicate
       const seen = new Set<string>();
       const unique = contributions.filter((c) => {
         if (seen.has(c.cid)) return false;
@@ -155,7 +185,6 @@ export class RemoteDataProvider implements TuiDataProvider {
       return { contributions: unique };
     }
 
-    // No root — get recent contributions
     const contributions = await this.getContributions({ limit: 200 });
     return { contributions };
   }
@@ -176,6 +205,121 @@ export class RemoteDataProvider implements TuiDataProvider {
       lastReplyAt: t.lastReplyAt,
     }));
   }
+
+  // ---------------------------------------------------------------------------
+  // TuiOutcomeProvider
+  // ---------------------------------------------------------------------------
+
+  async getOutcome(cid: string): Promise<OutcomeRecord | undefined> {
+    const resp = await fetch(`${this.baseUrl}/api/outcomes/${encodeURIComponent(cid)}`);
+    if (resp.status === 404 || resp.status === 501) return undefined;
+    if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
+    return (await resp.json()) as OutcomeRecord;
+  }
+
+  async getOutcomes(cids: readonly string[]): Promise<ReadonlyMap<string, OutcomeRecord>> {
+    const map = new Map<string, OutcomeRecord>();
+    const results = await Promise.allSettled(cids.map((cid) => this.getOutcome(cid)));
+    for (let i = 0; i < cids.length; i++) {
+      const result = results[i];
+      if (result?.status === "fulfilled" && result.value) {
+        const cid = cids[i];
+        if (cid) map.set(cid, result.value);
+      }
+    }
+    return map;
+  }
+
+  async getOutcomeStats(): Promise<OperatorStats> {
+    try {
+      const resp = await fetch(`${this.baseUrl}/api/outcomes/stats`);
+      if (resp.ok) {
+        const stats = (await resp.json()) as {
+          total: number;
+          accepted: number;
+          rejected: number;
+          crashed: number;
+          invalidated: number;
+          acceptanceRate: number;
+        };
+        return {
+          totalContributions: stats.total,
+          outcomeBreakdown: {
+            accepted: stats.accepted,
+            rejected: stats.rejected,
+            crashed: stats.crashed,
+            invalidated: stats.invalidated,
+          },
+          acceptanceRate: stats.acceptanceRate,
+          byAgent: [],
+        };
+      }
+    } catch {
+      // Fallback
+    }
+    return {
+      totalContributions: 0,
+      outcomeBreakdown: { accepted: 0, rejected: 0, crashed: 0, invalidated: 0 },
+      acceptanceRate: 0,
+      byAgent: [],
+    };
+  }
+
+  async listOutcomes(query?: { status?: OutcomeStatus }): Promise<readonly OutcomeRecord[]> {
+    const params = new URLSearchParams();
+    if (query?.status) params.set("status", query.status);
+    const qs = params.toString();
+    try {
+      const resp = await fetch(`${this.baseUrl}/api/outcomes${qs ? `?${qs}` : ""}`);
+      if (resp.ok) return (await resp.json()) as OutcomeRecord[];
+    } catch {
+      // Fallback
+    }
+    return [];
+  }
+
+  // ---------------------------------------------------------------------------
+  // TuiArtifactProvider
+  // ---------------------------------------------------------------------------
+
+  async getArtifact(cid: string, name: string): Promise<Buffer> {
+    const resp = await fetch(
+      `${this.baseUrl}/api/contributions/${encodeURIComponent(cid)}/artifacts/${encodeURIComponent(name)}`,
+    );
+    if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
+    const arrayBuffer = await resp.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  }
+
+  async getArtifactMeta(cid: string, name: string): Promise<ArtifactMeta> {
+    const resp = await fetch(
+      `${this.baseUrl}/api/contributions/${encodeURIComponent(cid)}/artifacts/${encodeURIComponent(name)}/meta`,
+    );
+    if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
+    return (await resp.json()) as ArtifactMeta;
+  }
+
+  async diffArtifacts(
+    parentCid: string,
+    childCid: string,
+    name: string,
+  ): Promise<{ readonly parent: string; readonly child: string }> {
+    const [parentBuf, childBuf] = await Promise.all([
+      this.getArtifact(parentCid, name),
+      this.getArtifact(childCid, name),
+    ]);
+    return { parent: parentBuf.toString("utf-8"), child: childBuf.toString("utf-8") };
+  }
+
+  async search(query: string): Promise<readonly Contribution[]> {
+    const resp = await fetch(`${this.baseUrl}/api/search?query=${encodeURIComponent(query)}`);
+    if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
+    return (await resp.json()) as Contribution[];
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private helpers
+  // ---------------------------------------------------------------------------
 
   private async fetchGroveMetadata(): Promise<GroveMetadata> {
     try {
@@ -210,28 +354,4 @@ export class RemoteDataProvider implements TuiDataProvider {
   close(): void {
     // No resources to release for HTTP client
   }
-}
-
-/** Build a compact frontier summary from full frontier data. */
-function buildFrontierSummary(frontier: Frontier): FrontierSummary {
-  const topByMetric: FrontierSummary["topByMetric"][number][] = [];
-  for (const [metric, entries] of Object.entries(frontier.byMetric)) {
-    const top = entries[0];
-    if (top) {
-      topByMetric.push({
-        metric,
-        cid: top.cid,
-        summary: top.summary,
-        value: top.value,
-      });
-    }
-  }
-
-  const topByAdoption = frontier.byAdoption.slice(0, 3).map((e) => ({
-    cid: e.cid,
-    summary: e.summary,
-    count: e.value,
-  }));
-
-  return { topByMetric, topByAdoption };
 }

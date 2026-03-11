@@ -7,9 +7,12 @@
  * This is the only file excluded from test coverage — use createApp() for testing.
  */
 
+import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { parseGroveContract } from "../core/contract.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
 import type { GossipService } from "../core/gossip/types.js";
+import type { AgentTopology } from "../core/topology.js";
 import { CachedFrontierCalculator } from "../gossip/cached-frontier.js";
 import { HttpGossipTransport } from "../gossip/http-transport.js";
 import { DefaultGossipService } from "../gossip/protocol.js";
@@ -58,15 +61,33 @@ if (gossipSeeds) {
 }
 
 // ---------------------------------------------------------------------------
+// Optional agent topology from GROVE.md contract
+// ---------------------------------------------------------------------------
+
+let topology: AgentTopology | undefined;
+try {
+  const grovemdPath = join(GROVE_DIR, "..", "GROVE.md");
+  if (existsSync(grovemdPath)) {
+    const raw = await Bun.file(grovemdPath).text();
+    const contract = parseGroveContract(raw);
+    topology = contract.topology;
+  }
+} catch {
+  // Topology is optional
+}
+
+// ---------------------------------------------------------------------------
 // Start server
 // ---------------------------------------------------------------------------
 
 const deps: ServerDeps = {
   contributionStore: stores.contributionStore,
   claimStore: stores.claimStore,
+  outcomeStore: stores.outcomeStore,
   cas,
   frontier,
   gossip: gossipService,
+  topology,
 };
 
 const app = createApp(deps);

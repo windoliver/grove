@@ -19,6 +19,7 @@
  *   grove log           — Recent contributions
  *   grove tree          — DAG visualization
  *   grove gossip        — Gossip protocol commands
+ *   grove outcome       — Manage outcome annotations
  *   grove tui           — Operator TUI dashboard
  */
 
@@ -268,6 +269,29 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       },
     },
     {
+      name: "outcome",
+      description: "Manage outcome annotations",
+      needsStore: false,
+      handler: async (args) => {
+        const { parseOutcomeArgs, runOutcome } = await import("./commands/outcome.js");
+        const { SqliteOutcomeStore } = await import("../local/sqlite-outcome-store.js");
+        const { dbPath } = resolveGroveDir(groveOverride);
+        const { initSqliteDb } = await import("../local/sqlite-store.js");
+        const db = initSqliteDb(dbPath);
+        const outcomeStore = new SqliteOutcomeStore(db);
+        try {
+          const parsed = parseOutcomeArgs([...args]);
+          await runOutcome(parsed, {
+            outcomeStore,
+            stdout: console.log,
+            stderr: console.error,
+          });
+        } finally {
+          outcomeStore.close();
+        }
+      },
+    },
+    {
       name: "tui",
       description: "Operator TUI dashboard",
       needsStore: false,
@@ -373,7 +397,7 @@ Usage:
   grove import --from-pr <owner/repo#number>        Import GitHub PR
   grove import --from-discussion <owner/repo#number> Import GitHub Discussion
 
-  grove tui [--interval <s>] [--url <url>]  Operator TUI dashboard
+  grove tui [--interval <s>] [--url <url>] [--nexus <url>]  Operator TUI dashboard
 
   grove gossip peers    [--server <url>]      List known peers
   grove gossip status   [--server <url>]      Show gossip overview

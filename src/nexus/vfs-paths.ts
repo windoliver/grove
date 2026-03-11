@@ -116,3 +116,27 @@ export function activeClaimsDir(zoneId: string): string {
 export function targetLockPath(zoneId: string, targetRef: string): string {
   return `/zones/${zoneId}/indexes/claims/target-lock/${encodeSegment(targetRef)}`;
 }
+
+// ---------------------------------------------------------------------------
+// Outcome paths
+// ---------------------------------------------------------------------------
+
+/** Path to an outcome record JSON file. */
+export function outcomePath(zoneId: string, cid: string): string {
+  return `/zones/${zoneId}/outcomes/${encodeSegment(cid)}.json`;
+}
+
+/** Directory containing all outcome records. */
+export function outcomesDir(zoneId: string): string {
+  return `/zones/${zoneId}/outcomes`;
+}
+
+/** Path to an outcome status index marker. */
+export function outcomeStatusIndexPath(zoneId: string, status: string, cid: string): string {
+  return `/zones/${zoneId}/indexes/outcomes/status/${encodeSegment(status)}/${encodeSegment(cid)}`;
+}
+
+/** Directory for a specific outcome status index. */
+export function outcomeStatusIndexDir(zoneId: string, status: string): string {
+  return `/zones/${zoneId}/indexes/outcomes/status/${encodeSegment(status)}`;
+}
