@@ -186,7 +186,7 @@ describe("executeDiscuss", () => {
       try {
         const contribution = await store.get(cid);
         expect(contribution).toBeDefined();
-        expect(contribution!.mode).toBe("evaluation");
+        expect(contribution?.mode).toBe("evaluation");
       } finally {
         store.close();
       }

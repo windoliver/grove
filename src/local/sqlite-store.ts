@@ -883,8 +883,6 @@ export class SqliteClaimStore implements ClaimStore {
     const createdAtUtc = toUtcIso(claim.createdAt);
     const heartbeatUtc = toUtcIso(claim.heartbeatAt);
     const leaseExpiresUtc = toUtcIso(claim.leaseExpiresAt);
-    const attemptCount = claim.attemptCount ?? 0;
-
     // Atomic check-and-insert: EXCLUSIVE transaction prevents TOCTOU races
     const createTx = this.db.transaction(() => {
       const existing = this.db

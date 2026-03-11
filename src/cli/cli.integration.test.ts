@@ -178,7 +178,7 @@ describe("grove CLI integration", () => {
       // Extract CID
       const cidMatch = discussResult.stdout.match(/blake3:[a-f0-9]+/);
       expect(cidMatch).not.toBeNull();
-      const rootCid = cidMatch![0];
+      const rootCid = cidMatch?.[0];
 
       // Reply to it
       const replyResult = await runDiscGrove(["discuss", rootCid, "Yes, it is too complex"]);

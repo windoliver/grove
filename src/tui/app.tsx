@@ -48,13 +48,10 @@ export function App({ provider, intervalMs }: AppProps): React.ReactElement {
   // Claims tab has no contribution drill-down
   const isClaimsTab = nav.state.activeTab === Tab.Claims;
 
-  const handleContributionsLoaded = useCallback(
-    (contributions: readonly Contribution[]) => {
-      setContributionList(contributions);
-      setRowCount(contributions.length);
-    },
-    [],
-  );
+  const handleContributionsLoaded = useCallback((contributions: readonly Contribution[]) => {
+    setContributionList(contributions);
+    setRowCount(contributions.length);
+  }, []);
 
   const handleRowCountChanged = useCallback((count: number) => {
     setRowCount(count);

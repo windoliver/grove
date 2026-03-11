@@ -4,4 +4,4 @@
  * Re-exports from src/shared/duration.ts for backward compatibility.
  */
 
-export { parseDuration, formatDuration } from "../../shared/duration.js";
+export { formatDuration, parseDuration } from "../../shared/duration.js";

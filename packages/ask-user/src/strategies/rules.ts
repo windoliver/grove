@@ -71,7 +71,9 @@ function pickOption(options: readonly string[], prefer: "simpler" | "existing" |
   let bestScore = -1;
 
   for (let i = 0; i < options.length; i++) {
-    const score = scoreOption(options[i]!, keywords);
+    const opt = options[i];
+    if (!opt) continue;
+    const score = scoreOption(opt, keywords);
     if (score > bestScore) {
       bestScore = score;
       bestIdx = i;
@@ -83,10 +85,10 @@ function pickOption(options: readonly string[], prefer: "simpler" | "existing" |
     if (prefer === "simpler") {
       // Prefer the shorter option (simpler = less verbose)
       let shortestIdx = 0;
-      let shortestLen = options[0]!.length;
+      let shortestLen = options[0]?.length;
       for (let i = 1; i < options.length; i++) {
-        if (options[i]!.length < shortestLen) {
-          shortestLen = options[i]!.length;
+        if (options[i]?.length < shortestLen) {
+          shortestLen = options[i]?.length;
           shortestIdx = i;
         }
       }

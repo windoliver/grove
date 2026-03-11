@@ -13,7 +13,9 @@ export interface TabBarProps {
 }
 
 /** Horizontal tab bar with numbered labels. */
-export const TabBar: React.NamedExoticComponent<TabBarProps> = React.memo(function TabBar({ activeTab }: TabBarProps): React.ReactElement {
+export const TabBar: React.NamedExoticComponent<TabBarProps> = React.memo(function TabBar({
+  activeTab,
+}: TabBarProps): React.ReactElement {
   return (
     <Box>
       {TAB_LABELS.map((label, i) => {

@@ -7,8 +7,8 @@
 
 import { Box, Text } from "ink";
 import React, { useCallback, useEffect, useMemo } from "react";
-import type { Contribution } from "../../core/models.js";
 import { contributionsToDagNodes, renderDag } from "../../cli/format-dag.js";
+import type { Contribution } from "../../core/models.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { DagData, TuiDataProvider } from "../provider.js";
 

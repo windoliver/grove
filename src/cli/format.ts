@@ -12,13 +12,19 @@ import type { ThreadNode, ThreadSummary } from "../core/store.js";
 
 // Re-export shared pure formatters for backward compatibility
 export {
-  truncateCid,
-  formatTimestamp,
-  formatScore,
   contributionToRow,
+  formatScore,
+  formatTimestamp,
   frontierEntryToRow,
+  truncateCid,
 } from "../shared/format.js";
-import { truncateCid, formatTimestamp, frontierEntryToRow, contributionToRow } from "../shared/format.js";
+
+import {
+  contributionToRow,
+  formatTimestamp,
+  frontierEntryToRow,
+  truncateCid,
+} from "../shared/format.js";
 
 // ---------------------------------------------------------------------------
 // Table formatter

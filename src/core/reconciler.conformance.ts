@@ -164,7 +164,7 @@ export function runReconcilerTests(factory: ReconcilerFactory): void {
       await claimStore.createClaim(recent);
       await claimStore.complete("recent-completed");
 
-      const result = await reconciler.reconcile();
+      const _result = await reconciler.reconcile();
       // Recent claim should not be cleaned
       const claim = await claimStore.getClaim("recent-completed");
       expect(claim).toBeDefined();

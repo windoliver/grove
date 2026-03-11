@@ -43,8 +43,8 @@ describe("GET /api/threads/:cid", () => {
     expect(res.status).toBe(200);
     const data = (await res.json()) as Array<{ cid: string; depth: number }>;
     expect(data).toHaveLength(2);
-    expect(data[0]!.depth).toBe(0);
-    expect(data[1]!.depth).toBe(1);
+    expect(data[0]?.depth).toBe(0);
+    expect(data[1]?.depth).toBe(1);
   });
 
   test("returns 404 for non-existent CID", async () => {
@@ -138,8 +138,8 @@ describe("GET /api/threads", () => {
     const data = (await res.json()) as Array<{ cid: string; replyCount: number }>;
     expect(data).toHaveLength(2);
     // Thread A has more replies, should come first
-    expect(data[0]!.replyCount).toBe(2);
-    expect(data[1]!.replyCount).toBe(1);
+    expect(data[0]?.replyCount).toBe(2);
+    expect(data[1]?.replyCount).toBe(1);
   });
 
   test("respects limit query parameter", async () => {
