@@ -52,7 +52,7 @@
     "nexus:up": "docker compose up nexus -d",
     "nexus:down": "docker compose down",
     "check": "biome check .",
-    "postinstall": "lefthook install"
+    "postinstall": "bun ./scripts/install-hooks.mjs"
   },
   "dependencies": {
     "@hono/zod-validator": "0.7.6",
