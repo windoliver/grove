@@ -103,6 +103,50 @@ describe("grove_claim", () => {
     expect(result.isError).toBe(true);
   });
 
+  test("claim conflict error includes structured details", async () => {
+    // Agent 1 claims
+    await callTool(server, "grove_claim", {
+      targetRef: "task-1",
+      agent: { agentId: "agent-1" },
+      intentSummary: "Agent 1 is working",
+      leaseDurationMs: 300_000,
+    });
+
+    // Agent 2 tries same target — check error format
+    const result = await callTool(server, "grove_claim", {
+      targetRef: "task-1",
+      agent: { agentId: "agent-2" },
+      intentSummary: "Agent 2 wants to work",
+      leaseDurationMs: 300_000,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain(McpErrorCode.ClaimConflict);
+    expect(result.text).toContain("task-1");
+    expect(result.text).toContain("agent-1");
+    expect(result.text).toContain("Pick a different target");
+  });
+
+  test("claim conflict error includes holding agent's claim ID", async () => {
+    const createResult = await callTool(server, "grove_claim", {
+      targetRef: "task-1",
+      agent: { agentId: "agent-1" },
+      intentSummary: "Agent 1 is working",
+      leaseDurationMs: 300_000,
+    });
+    const holdingClaimId = JSON.parse(createResult.text).claimId;
+
+    const result = await callTool(server, "grove_claim", {
+      targetRef: "task-1",
+      agent: { agentId: "agent-2" },
+      intentSummary: "Agent 2 wants to work",
+      leaseDurationMs: 300_000,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain(holdingClaimId);
+  });
+
   test("creates claim with context metadata", async () => {
     const result = await callTool(server, "grove_claim", {
       targetRef: "task-2",

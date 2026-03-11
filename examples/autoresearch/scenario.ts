@@ -10,12 +10,7 @@
  * No GPU, no AI agents — pure protocol validation.
  */
 
-import { unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { GroveContract } from "../../src/core/contract.js";
-import { EnforcingClaimStore, EnforcingContributionStore } from "../../src/core/enforcing-store.js";
-import { DefaultFrontierCalculator } from "../../src/core/frontier.js";
 import { evaluateStopConditions } from "../../src/core/lifecycle.js";
 import { createContribution } from "../../src/core/manifest.js";
 import type { AgentIdentity, Contribution } from "../../src/core/models.js";
@@ -25,8 +20,13 @@ import {
   RelationType,
   ScoreDirection,
 } from "../../src/core/models.js";
-import type { ClaimStore, ContributionStore } from "../../src/core/store.js";
-import { createSqliteStores } from "../../src/local/sqlite-store.js";
+import {
+  cleanupGrove,
+  type GroveContext,
+  nextTimestamp,
+  resetTimestamps,
+  setupGrove as setupGroveBase,
+} from "../helpers.js";
 
 // ---------------------------------------------------------------------------
 // Agent identities
@@ -93,61 +93,12 @@ export const contract: GroveContract = {
   },
 };
 
-// ---------------------------------------------------------------------------
-// Grove setup
-// ---------------------------------------------------------------------------
+// Re-export helpers for test files that import from this module.
+export { cleanupGrove, type GroveContext, nextTimestamp, resetTimestamps } from "../helpers.js";
 
-export interface GroveContext {
-  readonly contributionStore: ContributionStore;
-  readonly claimStore: ClaimStore;
-  readonly frontier: DefaultFrontierCalculator;
-  readonly dbPath: string;
-  readonly close: () => void;
-}
-
-let dbCounter = 0;
-
+/** Create a grove context for the autoresearch scenario. */
 export function setupGrove(): GroveContext {
-  dbCounter += 1;
-  const dbPath = join(tmpdir(), `grove-e2e-autoresearch-${Date.now()}-${dbCounter}.db`);
-  const stores = createSqliteStores(dbPath);
-  // Provide a clock matching the scenario's deterministic timestamps (2026-03-10T10:…)
-  // so the enforcing wrapper's clock-skew check doesn't reject them.
-  const clock = () => new Date("2026-03-10T10:05:00Z");
-  const contributionStore = new EnforcingContributionStore(stores.contributionStore, contract, {
-    clock,
-  });
-  const claimStore = new EnforcingClaimStore(stores.claimStore, contract);
-  const frontier = new DefaultFrontierCalculator(contributionStore);
-  return { contributionStore, claimStore, frontier, dbPath, close: stores.close };
-}
-
-export function cleanupGrove(ctx: GroveContext): void {
-  ctx.close();
-  for (const suffix of ["", "-wal", "-shm"]) {
-    try {
-      unlinkSync(`${ctx.dbPath}${suffix}`);
-    } catch {
-      /* ignore */
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Timestamp helper — sequential ISO timestamps for deterministic ordering
-// ---------------------------------------------------------------------------
-
-let timestampCounter = 0;
-
-export function nextTimestamp(): string {
-  timestampCounter += 1;
-  const minutes = String(Math.floor(timestampCounter / 60)).padStart(2, "0");
-  const seconds = String(timestampCounter % 60).padStart(2, "0");
-  return `2026-03-10T10:${minutes}:${seconds}Z`;
-}
-
-export function resetTimestamps(): void {
-  timestampCounter = 0;
+  return setupGroveBase(contract, "autoresearch", "2026-03-10T10:05:00Z");
 }
 
 // ---------------------------------------------------------------------------

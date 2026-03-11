@@ -15,6 +15,7 @@ interface ErrorMapping {
 }
 
 const ERROR_MAP = new Map<string, ErrorMapping>([
+  ["ClaimConflictError", { status: 409, code: "CLAIM_CONFLICT" }],
   ["ConcurrencyLimitError", { status: 409, code: "CONCURRENCY_LIMIT" }],
   ["RateLimitError", { status: 429, code: "RATE_LIMIT" }],
   ["LeaseViolationError", { status: 422, code: "LEASE_VIOLATION" }],

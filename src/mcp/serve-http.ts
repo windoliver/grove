@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * Grove MCP server entry point — HTTP/SSE transport.
  *
@@ -17,6 +18,7 @@
  *   DELETE /mcp — Close a session
  */
 
+import { existsSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
 
@@ -25,7 +27,9 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 import { findGroveDir } from "../cli/context.js";
+import { parseGroveContract } from "../core/contract.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
+import { CachedFrontierCalculator } from "../gossip/cached-frontier.js";
 import { FsCas } from "../local/fs-cas.js";
 import { initSqliteDb, SqliteClaimStore, SqliteContributionStore } from "../local/sqlite-store.js";
 import { LocalWorkspaceManager } from "../local/workspace.js";
@@ -54,7 +58,8 @@ try {
   const contributionStore = new SqliteContributionStore(db);
   const claimStore = new SqliteClaimStore(db);
   const cas = new FsCas(casPath);
-  const frontier = new DefaultFrontierCalculator(contributionStore);
+  const baseFrontier = new DefaultFrontierCalculator(contributionStore);
+  const frontier = new CachedFrontierCalculator(baseFrontier, 5_000);
   const workspace = new LocalWorkspaceManager({
     groveRoot: groveDir,
     db,
@@ -62,7 +67,21 @@ try {
     cas,
   });
 
-  deps = { contributionStore, claimStore, cas, frontier, workspace };
+  // Parse GROVE.md contract if it exists — fail on malformed contracts
+  const groveContractPath = join(groveDir, "..", "GROVE.md");
+  const contract = existsSync(groveContractPath)
+    ? parseGroveContract(readFileSync(groveContractPath, "utf-8"))
+    : undefined;
+
+  deps = {
+    contributionStore,
+    claimStore,
+    cas,
+    frontier,
+    workspace,
+    contract,
+    onContributionWrite: () => frontier.invalidate(),
+  };
   closeStores = () => {
     workspace.close();
     db.close();

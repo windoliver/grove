@@ -6,6 +6,7 @@
  * consistent business rules without duplicating validation.
  */
 
+import { ClaimConflictError } from "./errors.js";
 import { ContextSchema } from "./manifest.js";
 import type { Claim, ClaimStatus } from "./models.js";
 
@@ -93,9 +94,11 @@ export function resolveClaimOrRenew(
     return { action: "renew", existingClaimId: existingClaim.claimId };
   }
 
-  throw new Error(
-    `Target '${targetRef}' already has an active claim '${existingClaim.claimId}' by agent '${existingClaim.agentId}'`,
-  );
+  throw new ClaimConflictError({
+    targetRef,
+    heldByAgentId: existingClaim.agentId,
+    heldByClaimId: existingClaim.claimId,
+  });
 }
 
 /**

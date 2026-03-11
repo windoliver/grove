@@ -43,6 +43,7 @@ import { ExpiryReason } from "../core/store.js";
 // ---------------------------------------------------------------------------
 
 import { DEFAULT_LEASE_DURATION_MS } from "../core/claim-logic.js";
+import { ClaimConflictError } from "../core/errors.js";
 import { toUtcIso } from "../core/time.js";
 
 const CURRENT_SCHEMA_VERSION = 5;
@@ -959,9 +960,11 @@ export class SqliteClaimStore implements ClaimStore {
           return;
         }
         // Different agent → reject
-        throw new Error(
-          `Target '${claim.targetRef}' already has an active claim '${activeOnTarget.claim_id}' by agent '${activeOnTarget.agent_id}'`,
-        );
+        throw new ClaimConflictError({
+          targetRef: claim.targetRef,
+          heldByAgentId: activeOnTarget.agent_id,
+          heldByClaimId: activeOnTarget.claim_id,
+        });
       }
 
       // No active claim → create new

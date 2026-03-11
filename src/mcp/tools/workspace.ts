@@ -12,29 +12,7 @@ import type { AgentInput } from "../agent-identity.js";
 import { resolveAgentIdentity } from "../agent-identity.js";
 import type { McpDeps } from "../deps.js";
 import { handleToolError, notFoundError } from "../error-handler.js";
-
-// ---------------------------------------------------------------------------
-// Schema
-// ---------------------------------------------------------------------------
-
-const agentSchema = z
-  .object({
-    agentId: z
-      .string()
-      .optional()
-      .describe("Unique agent identifier (default: GROVE_AGENT_ID env var or hostname-pid)"),
-    agentName: z.string().optional().describe("Human-readable agent name"),
-    provider: z.string().optional().describe("Agent provider"),
-    model: z.string().optional().describe("Model identifier"),
-    platform: z.string().optional().describe("Platform"),
-    version: z.string().optional().describe("Agent version"),
-    toolchain: z.string().optional().describe("Toolchain"),
-    runtime: z.string().optional().describe("Runtime environment"),
-  })
-  .optional()
-  .describe(
-    "Agent identity. Optional — if omitted, resolved from GROVE_AGENT_* env vars or defaults to hostname-pid.",
-  );
+import { agentSchema } from "../schemas.js";
 
 const checkoutInputSchema = z.object({
   cid: z.string().describe("CID of the contribution to check out"),

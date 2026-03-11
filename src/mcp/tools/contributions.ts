@@ -17,43 +17,7 @@ import type { AgentInput } from "../agent-identity.js";
 import { resolveAgentIdentity } from "../agent-identity.js";
 import type { McpDeps } from "../deps.js";
 import { handleToolError, notFoundError, validationError } from "../error-handler.js";
-
-// ---------------------------------------------------------------------------
-// Schemas
-// ---------------------------------------------------------------------------
-
-const agentSchema = z
-  .object({
-    agentId: z
-      .string()
-      .optional()
-      .describe("Unique agent identifier (default: GROVE_AGENT_ID env var or hostname-pid)"),
-    agentName: z.string().optional().describe("Human-readable agent name"),
-    provider: z.string().optional().describe("Agent provider (e.g., anthropic, openai)"),
-    model: z.string().optional().describe("Model identifier"),
-    platform: z.string().optional().describe("Platform (e.g., darwin, linux)"),
-    version: z.string().optional().describe("Agent version"),
-    toolchain: z.string().optional().describe("Toolchain (e.g., claude-code, codex)"),
-    runtime: z.string().optional().describe("Runtime environment"),
-  })
-  .optional()
-  .describe(
-    "Agent identity. Optional — if omitted, resolved from GROVE_AGENT_* env vars or defaults to hostname-pid.",
-  );
-
-const relationSchema = z.object({
-  targetCid: z.string().describe("CID of the target contribution"),
-  relationType: z
-    .enum(["derives_from", "responds_to", "reviews", "reproduces", "adopts"])
-    .describe("Type of relation"),
-  metadata: z.record(z.string(), z.unknown()).optional().describe("Optional relation metadata"),
-});
-
-const scoreSchema = z.object({
-  value: z.number().describe("Numeric score value"),
-  direction: z.enum(["minimize", "maximize"]).describe("Whether lower or higher is better"),
-  unit: z.string().optional().describe("Unit of measurement"),
-});
+import { agentSchema, relationSchema, scoreSchema } from "../schemas.js";
 
 const contributeInputSchema = z.object({
   kind: z
@@ -194,6 +158,7 @@ async function createSugarContribution(
 
   const contribution = createContribution(input);
   await contributionStore.put(contribution);
+  deps.onContributionWrite?.();
 
   return { cid: contribution.cid, contribution };
 }
@@ -246,7 +211,7 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
         }
 
         // Validate relation target CIDs exist
-        for (const rel of args.relations) {
+        for (const rel of args.relations as Array<{ targetCid: string }>) {
           const target = await contributionStore.get(rel.targetCid);
           if (target === undefined) {
             return validationError(`Relation target not found: ${rel.targetCid}`);
@@ -260,9 +225,9 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
           summary: args.summary,
           ...(args.description !== undefined ? { description: args.description } : {}),
           artifacts: args.artifacts,
-          relations: args.relations as readonly Relation[],
+          relations: args.relations as unknown as readonly Relation[],
           ...(args.scores !== undefined
-            ? { scores: args.scores as Readonly<Record<string, Score>> }
+            ? { scores: args.scores as unknown as Readonly<Record<string, Score>> }
             : {}),
           tags: args.tags,
           ...(args.context !== undefined
@@ -274,6 +239,7 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
 
         const contribution = createContribution(input);
         await contributionStore.put(contribution);
+        deps.onContributionWrite?.();
 
         return {
           content: [

@@ -9,12 +9,7 @@
  * In exploration mode, frontier is ranked by adoption + recency, not metrics.
  */
 
-import { unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { GroveContract } from "../../src/core/contract.js";
-import { EnforcingClaimStore, EnforcingContributionStore } from "../../src/core/enforcing-store.js";
-import { DefaultFrontierCalculator } from "../../src/core/frontier.js";
 import { createContribution } from "../../src/core/manifest.js";
 import type { AgentIdentity, Contribution } from "../../src/core/models.js";
 import {
@@ -23,8 +18,13 @@ import {
   RelationType,
   ScoreDirection,
 } from "../../src/core/models.js";
-import type { ClaimStore, ContributionStore } from "../../src/core/store.js";
-import { createSqliteStores } from "../../src/local/sqlite-store.js";
+import {
+  cleanupGrove,
+  type GroveContext,
+  nextTimestamp,
+  resetTimestamps as resetTimestampsBase,
+  setupGrove as setupGroveBase,
+} from "../helpers.js";
 
 // ---------------------------------------------------------------------------
 // Agent identities
@@ -72,61 +72,17 @@ export const contract: GroveContract = {
   },
 };
 
-// ---------------------------------------------------------------------------
-// Grove setup
-// ---------------------------------------------------------------------------
+// Re-export helpers for test files that import from this module.
+export { cleanupGrove, type GroveContext, nextTimestamp } from "../helpers.js";
 
-export interface GroveContext {
-  readonly contributionStore: ContributionStore;
-  readonly claimStore: ClaimStore;
-  readonly frontier: DefaultFrontierCalculator;
-  readonly dbPath: string;
-  readonly close: () => void;
-}
-
-let dbCounter = 0;
-
-export function setupGrove(): GroveContext {
-  dbCounter += 1;
-  const dbPath = join(tmpdir(), `grove-e2e-exploration-${Date.now()}-${dbCounter}.db`);
-  const stores = createSqliteStores(dbPath);
-  // Provide a clock matching the scenario's deterministic timestamps (2026-03-10T14:…)
-  // so the enforcing wrapper's clock-skew check doesn't reject them.
-  const clock = () => new Date("2026-03-10T14:05:00Z");
-  const contributionStore = new EnforcingContributionStore(stores.contributionStore, contract, {
-    clock,
-  });
-  const claimStore = new EnforcingClaimStore(stores.claimStore, contract);
-  const frontier = new DefaultFrontierCalculator(contributionStore);
-  return { contributionStore, claimStore, frontier, dbPath, close: stores.close };
-}
-
-export function cleanupGrove(ctx: GroveContext): void {
-  ctx.close();
-  for (const suffix of ["", "-wal", "-shm"]) {
-    try {
-      unlinkSync(`${ctx.dbPath}${suffix}`);
-    } catch {
-      /* ignore */
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Timestamp helper
-// ---------------------------------------------------------------------------
-
-let timestampCounter = 0;
-
-export function nextTimestamp(): string {
-  timestampCounter += 1;
-  const minutes = String(Math.floor(timestampCounter / 60)).padStart(2, "0");
-  const seconds = String(timestampCounter % 60).padStart(2, "0");
-  return `2026-03-10T14:${minutes}:${seconds}Z`;
-}
-
+/** Reset timestamps with hour prefix 14 (matching the exploration scenario clock). */
 export function resetTimestamps(): void {
-  timestampCounter = 0;
+  resetTimestampsBase("14");
+}
+
+/** Create a grove context for the code-exploration scenario. */
+export function setupGrove(): GroveContext {
+  return setupGroveBase(contract, "exploration", "2026-03-10T14:05:00Z");
 }
 
 // ---------------------------------------------------------------------------

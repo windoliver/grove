@@ -105,6 +105,29 @@ export class RetryExhaustedError extends GroveError {
   }
 }
 
+/** Thrown when a different agent already holds an active claim on the target. */
+export class ClaimConflictError extends GroveError {
+  readonly targetRef: string;
+  readonly heldByAgentId: string;
+  readonly heldByClaimId: string;
+
+  constructor(opts: {
+    targetRef: string;
+    heldByAgentId: string;
+    heldByClaimId: string;
+    message?: string;
+  }) {
+    const msg =
+      opts.message ??
+      `Target '${opts.targetRef}' already has an active claim '${opts.heldByClaimId}' by agent '${opts.heldByAgentId}'`;
+    super(msg);
+    this.name = "ClaimConflictError";
+    this.targetRef = opts.targetRef;
+    this.heldByAgentId = opts.heldByAgentId;
+    this.heldByClaimId = opts.heldByClaimId;
+  }
+}
+
 /** Thrown when a lease duration violates policy (exceeds max). */
 export class LeaseViolationError extends GroveError {
   readonly requestedSeconds: number;

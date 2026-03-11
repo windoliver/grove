@@ -8,6 +8,7 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   ArtifactLimitError,
+  ClaimConflictError,
   ConcurrencyLimitError,
   GroveError,
   LeaseViolationError,
@@ -17,6 +18,7 @@ import {
 
 /** Error codes returned to MCP clients for programmatic handling. */
 export const McpErrorCode = {
+  ClaimConflict: "CLAIM_CONFLICT",
   ConcurrencyLimit: "CONCURRENCY_LIMIT",
   RateLimit: "RATE_LIMIT",
   ArtifactLimit: "ARTIFACT_LIMIT",
@@ -34,6 +36,13 @@ export const McpErrorCode = {
  * containing a machine-parseable error code and human-readable message.
  */
 export function handleToolError(error: unknown): CallToolResult {
+  if (error instanceof ClaimConflictError) {
+    return toolError(
+      McpErrorCode.ClaimConflict,
+      `Target '${error.targetRef}' already claimed by agent '${error.heldByAgentId}' (claim '${error.heldByClaimId}'). Pick a different target.`,
+    );
+  }
+
   if (error instanceof ConcurrencyLimitError) {
     return toolError(
       McpErrorCode.ConcurrencyLimit,
