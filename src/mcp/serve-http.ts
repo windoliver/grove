@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * Grove MCP server entry point — HTTP/SSE transport.
  *
@@ -17,8 +18,8 @@
  *   DELETE /mcp — Close a session
  */
 
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
