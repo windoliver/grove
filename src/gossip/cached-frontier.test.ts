@@ -9,6 +9,23 @@ import { beforeEach, describe, expect, it } from "bun:test";
 import type { Frontier, FrontierCalculator, FrontierQuery } from "../core/frontier.js";
 import { CachedFrontierCalculator } from "./cached-frontier.js";
 
+/** Stable stringify matching the production cache key implementation. */
+function stableStringify(value: unknown): string {
+  if (value === null || value === undefined) return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const keys = Object.keys(obj).sort();
+    const pairs = keys
+      .filter((k) => obj[k] !== undefined)
+      .map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`);
+    return `{${pairs.join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -46,7 +63,7 @@ class MockFrontierCalculator implements FrontierCalculator {
 
   /** Register a result for a specific query. */
   setResultForQuery(query: FrontierQuery | undefined, result: Frontier): void {
-    const key = query ? JSON.stringify(query, Object.keys(query).sort()) : "{}";
+    const key = query ? stableStringify(query) : "{}";
     this.resultsByQuery.set(key, result);
   }
 
@@ -54,7 +71,7 @@ class MockFrontierCalculator implements FrontierCalculator {
     this.callCount++;
     this.lastQuery = query;
 
-    const key = query ? JSON.stringify(query, Object.keys(query).sort()) : "{}";
+    const key = query ? stableStringify(query) : "{}";
     const prev = this.callsByQuery.get(key) ?? 0;
     this.callsByQuery.set(key, prev + 1);
 
@@ -316,6 +333,30 @@ describe("CachedFrontierCalculator", () => {
       expect(inner.callCount).toBe(1);
     });
 
+    it("different nested context values get separate cache entries", async () => {
+      const queryH100: FrontierQuery = { context: { hardware: "H100" } };
+      const queryA100: FrontierQuery = { context: { hardware: "A100" } };
+
+      const frontierH100: Frontier = {
+        ...emptyFrontier(),
+        byRecency: [{ cid: "h", summary: "H100 result", value: 1, contribution: {} as never }],
+      };
+      const frontierA100: Frontier = {
+        ...emptyFrontier(),
+        byRecency: [{ cid: "a", summary: "A100 result", value: 2, contribution: {} as never }],
+      };
+
+      inner.setResultForQuery(queryH100, frontierH100);
+      inner.setResultForQuery(queryA100, frontierA100);
+
+      const resultH = await cached.compute(queryH100);
+      const resultA = await cached.compute(queryA100);
+
+      expect(inner.callCount).toBe(2);
+      expect(resultH).toBe(frontierH100);
+      expect(resultA).toBe(frontierA100);
+    });
+
     it("caching one query does not affect another", async () => {
       const queryA: FrontierQuery = { metric: "accuracy" };
       const queryB: FrontierQuery = { metric: "latency" };
@@ -324,8 +365,8 @@ describe("CachedFrontierCalculator", () => {
       clock.advance(TTL); // expire queryA
       await cached.compute(queryB); // first call for queryB
 
-      expect(inner.callsByQuery.get(JSON.stringify(queryA, Object.keys(queryA).sort()))).toBe(1);
-      expect(inner.callsByQuery.get(JSON.stringify(queryB, Object.keys(queryB).sort()))).toBe(1);
+      expect(inner.callsByQuery.get(stableStringify(queryA))).toBe(1);
+      expect(inner.callsByQuery.get(stableStringify(queryB))).toBe(1);
     });
 
     it("expiry is per-query, not global", async () => {
@@ -340,8 +381,8 @@ describe("CachedFrontierCalculator", () => {
       await cached.compute(queryA); // recompute
       await cached.compute(queryB); // cached
 
-      const keyA = JSON.stringify(queryA, Object.keys(queryA).sort());
-      const keyB = JSON.stringify(queryB, Object.keys(queryB).sort());
+      const keyA = stableStringify(queryA);
+      const keyB = stableStringify(queryB);
       expect(inner.callsByQuery.get(keyA)).toBe(2); // called twice
       expect(inner.callsByQuery.get(keyB)).toBe(1); // called once
     });

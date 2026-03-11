@@ -18,13 +18,13 @@
 #
 # Agents will run until stop conditions in GROVE.md are met.
 
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-# Add project binaries to PATH so grove / grove-mcp are discoverable
-export PATH="$PROJECT_ROOT/node_modules/.bin:$PATH"
+# Helper: run grove CLI via bun (binaries aren't globally linked after build)
+grove_cli() { bun run "$PROJECT_ROOT/dist/cli/main.js" "$@"; }
 
 # Verify prerequisites
 command -v acpx >/dev/null 2>&1 || {
@@ -32,10 +32,15 @@ command -v acpx >/dev/null 2>&1 || {
   exit 1
 }
 
+if [ ! -f "$PROJECT_ROOT/dist/cli/main.js" ]; then
+  echo "Error: dist/ not found. Run 'bun run build' first."
+  exit 1
+fi
+
 # Initialize grove if not already initialized
 if [ ! -d ".grove" ]; then
   echo "Initializing grove..."
-  grove init "Optimize code for throughput"
+  grove_cli init "Optimize code for throughput"
   cp "$SCRIPT_DIR/grove.md" ./GROVE.md
 fi
 
@@ -108,11 +113,12 @@ echo "Agent C (Reproducer):  PID $PID_C"
 echo ""
 echo "Waiting for all agents to complete..."
 
-# Wait for each agent and track exit codes
+# Wait for each agent and track exit codes.
+# Disable errexit so a non-zero wait doesn't abort the script.
 FAIL=0
-wait $PID_A 2>/dev/null; RC_A=$?
-wait $PID_B 2>/dev/null; RC_B=$?
-wait $PID_C 2>/dev/null; RC_C=$?
+wait $PID_A 2>/dev/null || true; RC_A=$?
+wait $PID_B 2>/dev/null || true; RC_B=$?
+wait $PID_C 2>/dev/null || true; RC_C=$?
 
 echo ""
 if [ $RC_A -ne 0 ]; then echo "Agent A (Implementer) FAILED (exit $RC_A)"; FAIL=1; fi
@@ -128,12 +134,12 @@ echo ""
 
 # Show results
 echo "--- Frontier (final results) ---"
-grove frontier 2>/dev/null || echo "(grove CLI not available — use: bun run examples/multi-agent/scenario.ts)"
+grove_cli frontier 2>/dev/null || echo "(grove CLI not available — use: bun run examples/multi-agent/scenario.ts)"
 
 echo ""
 echo "--- Collaboration DAG ---"
-grove tree 2>/dev/null || echo "(grove CLI not available)"
+grove_cli tree 2>/dev/null || echo "(grove CLI not available)"
 
 echo ""
 echo "--- Claims (should be completed/expired, none stuck) ---"
-grove claims 2>/dev/null || echo "(grove CLI not available)"
+grove_cli claims 2>/dev/null || echo "(grove CLI not available)"

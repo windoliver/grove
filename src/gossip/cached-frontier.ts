@@ -62,9 +62,25 @@ export class CachedFrontierCalculator implements FrontierCalculator {
   }
 }
 
-/** Derive a stable cache key from a FrontierQuery. */
+/** Derive a stable cache key from a FrontierQuery by deep-sorting all object keys. */
 function queryCacheKey(query?: FrontierQuery): string {
   if (!query) return "{}";
-  // Produce a stable key by sorting object keys
-  return JSON.stringify(query, Object.keys(query).sort());
+  return stableStringify(query);
+}
+
+/** Recursively serialize a value with sorted object keys for stable cache keys. */
+function stableStringify(value: unknown): string {
+  if (value === null || value === undefined) return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const keys = Object.keys(obj).sort();
+    const pairs = keys
+      .filter((k) => obj[k] !== undefined)
+      .map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`);
+    return `{${pairs.join(",")}}`;
+  }
+  return JSON.stringify(value);
 }

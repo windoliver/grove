@@ -72,7 +72,15 @@ try {
     ? parseGroveContract(readFileSync(groveContractPath, "utf-8"))
     : undefined;
 
-  deps = { contributionStore, claimStore, cas, frontier, workspace, contract };
+  deps = {
+    contributionStore,
+    claimStore,
+    cas,
+    frontier,
+    workspace,
+    contract,
+    onContributionWrite: () => frontier.invalidate(),
+  };
   closeStores = () => {
     workspace.close();
     db.close();

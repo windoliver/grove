@@ -158,6 +158,7 @@ async function createSugarContribution(
 
   const contribution = createContribution(input);
   await contributionStore.put(contribution);
+  deps.onContributionWrite?.();
 
   return { cid: contribution.cid, contribution };
 }
@@ -238,6 +239,7 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
 
         const contribution = createContribution(input);
         await contributionStore.put(contribution);
+        deps.onContributionWrite?.();
 
         return {
           content: [
