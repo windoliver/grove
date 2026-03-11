@@ -24,12 +24,13 @@ export interface AppProps {
   readonly provider: TuiDataProvider;
   readonly intervalMs: number;
   readonly tmux?: import("./agents/tmux-manager.js").TmuxManager | undefined;
+  readonly topology?: import("../core/topology.js").AgentTopology | undefined;
 }
 
 const PAGE_SIZE = 20;
 
 /** Root TUI application. */
-export function App({ provider, intervalMs, tmux }: AppProps): React.ReactNode {
+export function App({ provider, intervalMs, tmux, topology }: AppProps): React.ReactNode {
   const renderer = useRenderer();
   const nav = useNavigation();
   const panels = usePanelFocus();
@@ -222,6 +223,7 @@ export function App({ provider, intervalMs, tmux }: AppProps): React.ReactNode {
         pageSize={PAGE_SIZE}
         tmux={tmux}
         selectedSession={selectedSession}
+        topology={topology}
       />
       <StatusBar mode={panels.state.mode} isDetailView={nav.isDetailView} />
     </box>

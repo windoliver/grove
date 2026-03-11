@@ -58,6 +58,7 @@ describe("resolveAgent", () => {
     process.env.GROVE_AGENT_VERSION = "1.0";
     process.env.GROVE_AGENT_TOOLCHAIN = "bun";
     process.env.GROVE_AGENT_RUNTIME = "bun-1.3";
+    process.env.GROVE_AGENT_ROLE = "contributor";
 
     const agent = resolveAgent();
     expect(agent.agentId).toBe("agent-1");
@@ -68,6 +69,7 @@ describe("resolveAgent", () => {
     expect(agent.version).toBe("1.0");
     expect(agent.toolchain).toBe("bun");
     expect(agent.runtime).toBe("bun-1.3");
+    expect(agent.role).toBe("contributor");
   });
 
   test("CLI overrides take precedence over all env vars", () => {
@@ -89,5 +91,29 @@ describe("resolveAgent", () => {
     expect(agent.agentName).toBeUndefined();
     expect(agent.provider).toBeUndefined();
     expect(agent.model).toBeUndefined();
+    expect(agent.role).toBeUndefined();
+  });
+
+  test("role resolved from CLI override", () => {
+    const agent = resolveAgent({ agentId: "test", role: "reviewer" });
+    expect(agent.role).toBe("reviewer");
+  });
+
+  test("role resolved from GROVE_AGENT_ROLE env var", () => {
+    process.env.GROVE_AGENT_ROLE = "contributor";
+    const agent = resolveAgent();
+    expect(agent.role).toBe("contributor");
+  });
+
+  test("role omitted when not provided", () => {
+    const agent = resolveAgent({ agentId: "test" });
+    expect(agent.role).toBeUndefined();
+    expect(Object.keys(agent)).not.toContain("role");
+  });
+
+  test("CLI override takes precedence over env var for role", () => {
+    process.env.GROVE_AGENT_ROLE = "env-role";
+    const agent = resolveAgent({ role: "cli-role" });
+    expect(agent.role).toBe("cli-role");
   });
 });

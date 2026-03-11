@@ -87,6 +87,7 @@ export function parseContributeArgs(args: readonly string[]): ContributeOptions 
       provider: { type: "string" },
       model: { type: "string" },
       platform: { type: "string" },
+      role: { type: "string" },
     },
     allowPositionals: false,
     strict: true,
@@ -115,6 +116,7 @@ export function parseContributeArgs(args: readonly string[]): ContributeOptions 
       provider: values.provider as string | undefined,
       model: values.model as string | undefined,
       platform: values.platform as string | undefined,
+      role: values.role as string | undefined,
     },
     cwd: process.cwd(),
   };

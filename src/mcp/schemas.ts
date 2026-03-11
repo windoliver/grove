@@ -22,6 +22,7 @@ export const agentSchema: z.ZodTypeAny = z
     version: z.string().optional().describe("Agent version"),
     toolchain: z.string().optional().describe("Toolchain (e.g., claude-code, codex)"),
     runtime: z.string().optional().describe("Runtime environment"),
+    role: z.string().optional().describe("Agent role (e.g., reviewer, contributor, orchestrator)"),
   })
   .optional()
   .describe(

@@ -19,6 +19,7 @@ const ENV_VARS = {
   version: "GROVE_AGENT_VERSION",
   toolchain: "GROVE_AGENT_TOOLCHAIN",
   runtime: "GROVE_AGENT_RUNTIME",
+  role: "GROVE_AGENT_ROLE",
 } as const;
 
 /** CLI overrides for agent identity (all optional). */
@@ -31,6 +32,7 @@ export interface AgentOverrides {
   readonly version?: string | undefined;
   readonly toolchain?: string | undefined;
   readonly runtime?: string | undefined;
+  readonly role?: string | undefined;
 }
 
 /**
@@ -66,6 +68,9 @@ export function resolveAgent(overrides?: AgentOverrides): AgentIdentity {
     }),
     ...(resolveField(overrides?.runtime, env[ENV_VARS.runtime]) && {
       runtime: resolveField(overrides?.runtime, env[ENV_VARS.runtime]),
+    }),
+    ...(resolveField(overrides?.role, env[ENV_VARS.role]) && {
+      role: resolveField(overrides?.role, env[ENV_VARS.role]),
     }),
   };
 

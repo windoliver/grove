@@ -15,6 +15,9 @@ import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 
 import type { ContributionKind, ContributionMode, RelationType, ScoreDirection } from "./models.js";
+import { type AgentTopology, AgentTopologySchema, wireToTopology } from "./topology.js";
+
+export type { AgentRole, AgentTopology, EdgeType, RoleEdge, SpawningConfig } from "./topology.js";
 
 // ---------------------------------------------------------------------------
 // Shared Zod Schemas (snake_case — matches YAML frontmatter wire format)
@@ -281,6 +284,7 @@ const GroveContractV2Schema = z
     retry: RetrySchema.optional(),
     gossip: GossipSchema.optional(),
     outcome_policy: OutcomePolicySchema.optional(),
+    topology: AgentTopologySchema.optional(),
   })
   .strict();
 
@@ -447,6 +451,7 @@ export interface GroveContract {
   readonly retry?: RetryConfig | undefined;
   readonly gossip?: GossipContractConfig | undefined;
   readonly outcomePolicy?: OutcomePolicy | undefined;
+  readonly topology?: AgentTopology | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -512,6 +517,9 @@ function wireV2ToContract(wire: z.infer<typeof GroveContractV2Schema>): GroveCon
     }),
     ...(wire.outcome_policy !== undefined && {
       outcomePolicy: wireToOutcomePolicy(wire.outcome_policy),
+    }),
+    ...(wire.topology !== undefined && {
+      topology: wireToTopology(wire.topology),
     }),
   };
 }

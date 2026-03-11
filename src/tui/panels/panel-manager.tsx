@@ -19,6 +19,7 @@
 
 import React, { useCallback } from "react";
 import type { Contribution } from "../../core/models.js";
+import type { AgentTopology } from "../../core/topology.js";
 import type { TmuxManager } from "../agents/tmux-manager.js";
 import type { NavigationActions } from "../hooks/use-navigation.js";
 import type { PanelFocusState } from "../hooks/use-panel-focus.js";
@@ -26,6 +27,7 @@ import { isPanelVisible, PANEL_LABELS, Panel } from "../hooks/use-panel-focus.js
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { ContributionDetail, TuiDataProvider } from "../provider.js";
 import { ActivityView } from "../views/activity.js";
+import { AgentGraphView } from "../views/agent-graph.js";
 import { AgentListView } from "../views/agent-list.js";
 import { ArtifactPreviewView } from "../views/artifact-preview.js";
 import { ClaimsView } from "../views/claims.js";
@@ -46,6 +48,7 @@ export interface PanelManagerProps {
   readonly pageSize: number;
   readonly tmux?: TmuxManager | undefined;
   readonly selectedSession?: string | undefined;
+  readonly topology?: AgentTopology | undefined;
 }
 
 /** Wraps a panel view with a titled border. */
@@ -82,6 +85,7 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
     pageSize,
     tmux,
     selectedSession,
+    topology,
   }: PanelManagerProps): React.ReactNode {
     const isFocused = (p: Panel) => panelState.focused === p;
 
@@ -167,13 +171,24 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
           <box flexDirection="row" flexGrow={1}>
             {isPanelVisible(panelState, Panel.AgentList) && (
               <PanelChrome panel={Panel.AgentList} focused={isFocused(Panel.AgentList)}>
-                <AgentListView
-                  provider={provider}
-                  tmux={tmux}
-                  intervalMs={intervalMs}
-                  active
-                  cursor={isFocused(Panel.AgentList) ? nav.state.cursor : -1}
-                />
+                {topology ? (
+                  <AgentGraphView
+                    provider={provider}
+                    tmux={tmux}
+                    intervalMs={intervalMs}
+                    active
+                    cursor={isFocused(Panel.AgentList) ? nav.state.cursor : -1}
+                    topology={topology}
+                  />
+                ) : (
+                  <AgentListView
+                    provider={provider}
+                    tmux={tmux}
+                    intervalMs={intervalMs}
+                    active
+                    cursor={isFocused(Panel.AgentList) ? nav.state.cursor : -1}
+                  />
+                )}
               </PanelChrome>
             )}
             {isPanelVisible(panelState, Panel.Terminal) && (

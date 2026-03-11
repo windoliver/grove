@@ -142,6 +142,27 @@ export async function handleTui(args: readonly string[], groveOverride?: string)
     tmux = available ? mgr : undefined;
   }
 
+  // Read agent topology from GROVE.md contract (if available)
+  let topology: import("../core/topology.js").AgentTopology | undefined;
+  if (!opts.url && !opts.nexus) {
+    try {
+      const { existsSync: fsExists } = await import("node:fs");
+      const { join: pathJoin } = await import("node:path");
+      const { parseGroveContract } = await import("../core/contract.js");
+      const { resolveGroveDir } = await import("../cli/utils/grove-dir.js");
+      const { groveDir } = resolveGroveDir(effectiveGrove);
+      // GROVE.md lives in the parent of the .grove directory
+      const grovemdPath = pathJoin(groveDir, "..", "GROVE.md");
+      if (fsExists(grovemdPath)) {
+        const raw = await Bun.file(grovemdPath).text();
+        const contract = parseGroveContract(raw);
+        topology = contract.topology;
+      }
+    } catch {
+      // Ignore — topology is optional
+    }
+  }
+
   // Bun compatibility: ensure stdin is in raw mode for keyboard input
   process.stdin.resume();
 
@@ -163,6 +184,7 @@ export async function handleTui(args: readonly string[], groveOverride?: string)
       provider,
       intervalMs: opts.intervalMs,
       tmux,
+      topology,
     }),
   );
 

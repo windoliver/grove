@@ -75,6 +75,7 @@ export interface AgentIdentity {
   readonly version?: string | undefined;
   readonly toolchain?: string | undefined;
   readonly runtime?: string | undefined;
+  readonly role?: string | undefined;
 }
 
 /** A numeric score with direction and optional unit. */
