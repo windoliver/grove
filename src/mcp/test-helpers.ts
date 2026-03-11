@@ -10,7 +10,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ContentStore } from "../core/cas.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
+import { InMemoryCreditsService } from "../core/in-memory-credits.js";
 import { FsCas } from "../local/fs-cas.js";
+import { SqliteBountyStore } from "../local/sqlite-bounty-store.js";
 import { initSqliteDb, SqliteClaimStore, SqliteContributionStore } from "../local/sqlite-store.js";
 import { LocalWorkspaceManager } from "../local/workspace.js";
 import type { McpDeps } from "./deps.js";
@@ -35,6 +37,8 @@ export async function createTestMcpDeps(): Promise<TestMcpDeps> {
   const db = initSqliteDb(dbPath);
   const contributionStore = new SqliteContributionStore(db);
   const claimStore = new SqliteClaimStore(db);
+  const bountyStore = new SqliteBountyStore(db);
+  const creditsService = new InMemoryCreditsService();
   const cas = new FsCas(casPath);
   const frontier = new DefaultFrontierCalculator(contributionStore);
   const workspace = new LocalWorkspaceManager({
@@ -47,6 +51,8 @@ export async function createTestMcpDeps(): Promise<TestMcpDeps> {
   const deps: McpDeps = {
     contributionStore,
     claimStore,
+    bountyStore,
+    creditsService,
     cas,
     frontier,
     workspace,

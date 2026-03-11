@@ -5,6 +5,43 @@ export {
   DEFAULT_MAX_ATTEMPTS,
   DEFAULT_MAX_BACKOFF_MS,
 } from "./backoff.js";
+export type {
+  Bounty,
+  BountyCriteria,
+  BountyInput,
+  RewardRecord,
+} from "./bounty.js";
+export {
+  BountyStatus,
+  RewardType,
+  TERMINAL_BOUNTY_STATUSES,
+} from "./bounty.js";
+export {
+  BountyStateError,
+  InsufficientCreditsError,
+  PaymentError,
+} from "./bounty-errors.js";
+export {
+  computeRewardId,
+  evaluateBountyCriteria,
+  isBountyExpired,
+  isBountyTerminal,
+  validateBountyInput,
+  validateBountyTransition,
+} from "./bounty-logic.js";
+export type {
+  BountyQuery,
+  BountyStore,
+  RewardQuery,
+} from "./bounty-store.js";
+export type {
+  CreditBalance,
+  CreditsService,
+  Reservation,
+  TransferResult,
+} from "./credits.js";
+export { InMemoryCreditsService } from "./in-memory-credits.js";
+export type { FailureConfig } from "./in-memory-credits.js";
 export type { ContentStore, PutOptions } from "./cas.js";
 export { validateMediaType } from "./cas.js";
 export {

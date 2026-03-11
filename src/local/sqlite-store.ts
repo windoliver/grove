@@ -13,6 +13,7 @@
 import type { SQLQueryBindings, Statement } from "bun:sqlite";
 import { Database } from "bun:sqlite";
 
+import { BOUNTY_DDL, SqliteBountyStore } from "./sqlite-bounty-store.js";
 import { ContextSchema, fromManifest, toManifest, verifyCid } from "../core/manifest.js";
 import type {
   AgentIdentity,
@@ -43,7 +44,7 @@ import { ExpiryReason } from "../core/store.js";
 import { DEFAULT_LEASE_DURATION_MS } from "../core/claim-logic.js";
 import { toUtcIso } from "../core/time.js";
 
-const CURRENT_SCHEMA_VERSION = 5;
+const CURRENT_SCHEMA_VERSION = 6;
 
 // ---------------------------------------------------------------------------
 // Schema DDL
@@ -261,6 +262,11 @@ export function initSqliteDb(dbPath: string): Database {
       }
     }
 
+    // Migration → v6: add bounties and rewards tables
+    if (currentVersion === null || currentVersion < 6) {
+      db.exec(BOUNTY_DDL);
+    }
+
     db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [
       CURRENT_SCHEMA_VERSION,
       new Date().toISOString(),
@@ -297,12 +303,14 @@ export function initSqliteDb(dbPath: string): Database {
 export function createSqliteStores(dbPath: string): {
   contributionStore: SqliteContributionStore;
   claimStore: SqliteClaimStore;
+  bountyStore: SqliteBountyStore;
   close: () => void;
 } {
   const db = initSqliteDb(dbPath);
   return {
     contributionStore: new SqliteContributionStore(db),
     claimStore: new SqliteClaimStore(db),
+    bountyStore: new SqliteBountyStore(db),
     close: () => db.close(),
   };
 }

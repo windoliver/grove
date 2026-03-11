@@ -5,6 +5,8 @@
  * All contributions have valid computed CIDs.
  */
 
+import type { Bounty, RewardRecord } from "./bounty.js";
+import { BountyStatus, RewardType } from "./bounty.js";
 import { createContribution } from "./manifest.js";
 import type {
   AgentIdentity,
@@ -92,4 +94,39 @@ export function makeContribution(overrides?: Partial<ContributionInput>): Contri
     ...overrides,
   };
   return createContribution(input);
+}
+
+/** Create a Bounty with sensible defaults. */
+export function makeBounty(overrides?: Partial<Bounty>): Bounty {
+  const now = new Date().toISOString();
+  const deadline = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  return {
+    bountyId: "bounty-1",
+    title: "Improve val_bpb below 0.96",
+    description: "Test bounty description",
+    status: BountyStatus.Open,
+    creator: makeAgent({ agentId: "bounty-creator" }),
+    amount: 100,
+    criteria: {
+      description: "Improve val_bpb metric below 0.96 on H100",
+    },
+    deadline,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
+/** Create a RewardRecord with sensible defaults. */
+export function makeReward(overrides?: Partial<RewardRecord>): RewardRecord {
+  const now = new Date().toISOString();
+  return {
+    rewardId: "reward:frontier_advance:source-1:cid-1",
+    rewardType: RewardType.FrontierAdvance,
+    recipient: makeAgent({ agentId: "reward-recipient" }),
+    amount: 10,
+    contributionCid: "blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    createdAt: now,
+    ...overrides,
+  };
 }

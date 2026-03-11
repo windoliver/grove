@@ -20,7 +20,9 @@
  *   grove tree          — DAG visualization
  */
 
+import { InMemoryCreditsService } from "../core/in-memory-credits.js";
 import { createSqliteStores } from "../local/sqlite-store.js";
+import { runBounty } from "./commands/bounty.js";
 import { parseCheckoutArgs, runCheckout } from "./commands/checkout.js";
 import { runClaim } from "./commands/claim.js";
 import { runClaims } from "./commands/claims.js";
@@ -135,6 +137,26 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       handler: async (args) => {
         const { handleImport } = await import("./commands/import.js");
         await handleImport(args, groveOverride);
+      },
+    },
+    {
+      name: "bounty",
+      description: "Create, list, or claim bounties",
+      needsStore: false,
+      handler: async (args) => {
+        const { dbPath } = resolveGroveDir(groveOverride);
+        const stores = createSqliteStores(dbPath);
+        try {
+          await runBounty(args, {
+            bountyStore: stores.bountyStore,
+            creditsService: new InMemoryCreditsService(),
+            claimStore: stores.claimStore,
+            stdout: (msg) => console.log(msg),
+            stderr: (msg) => console.error(msg),
+          });
+        } finally {
+          stores.close();
+        }
       },
     },
     {
@@ -283,6 +305,10 @@ Usage:
   grove release <claim-id>    Release a claim
   grove claims                List claims
   grove ask <question>        Ask a question (interactive or AI-answered)
+
+  grove bounty create <title> --amount <credits> --deadline <duration>
+  grove bounty list [--status <status>] [--mine]
+  grove bounty claim <bounty-id>
 
   grove checkout <cid> --to <dir>   Materialize contribution artifacts
   grove frontier [--metric <name>]  Show current frontier
