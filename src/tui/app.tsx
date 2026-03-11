@@ -6,7 +6,7 @@
  */
 
 import { Box, useApp } from "ink";
-import React, { useCallback } from "react";
+import React, { useCallback, useEffect, useRef } from "react";
 import type { Contribution } from "../core/models.js";
 import { StatusBar } from "./components/status-bar.js";
 import { TabBar } from "./components/tab-bar.js";
@@ -38,6 +38,20 @@ export function App({ provider, intervalMs }: AppProps): React.ReactElement {
   // Track contributions for drill-down (resolve cursor → CID)
   const [contributionList, setContributionList] = React.useState<readonly Contribution[]>([]);
 
+  // Clear stale contribution list when switching to Claims (no drill-down there)
+  const prevTabRef = useRef(nav.state.activeTab);
+  useEffect(() => {
+    if (nav.state.activeTab !== prevTabRef.current) {
+      prevTabRef.current = nav.state.activeTab;
+      if (nav.state.activeTab === Tab.Claims) {
+        setContributionList([]);
+      }
+    }
+  }, [nav.state.activeTab]);
+
+  // Claims tab has no contribution drill-down
+  const isClaimsTab = nav.state.activeTab === Tab.Claims;
+
   const handleSelect = useCallback(
     (index: number) => {
       const contribution = contributionList[index];
@@ -56,13 +70,19 @@ export function App({ provider, intervalMs }: AppProps): React.ReactElement {
   // Estimate list length for keybinding bounds
   const listLength = contributionList.length;
 
+  // For pagination: if the current page is full, assume more items exist.
+  // This avoids needing a count() API — nextPage will simply fetch an empty page
+  // if there are no more results, which is a graceful no-op.
+  const hasFullPage = listLength >= PAGE_SIZE;
+  const totalItems = hasFullPage ? nav.state.pageOffset + listLength + 1 : nav.state.pageOffset + listLength;
+
   useKeybindings({
     nav,
     listLength,
-    onSelect: nav.isDetailView ? undefined : handleSelect,
+    onSelect: nav.isDetailView || isClaimsTab ? undefined : handleSelect,
     onQuit: handleQuit,
     pageSize: PAGE_SIZE,
-    totalItems: listLength,
+    totalItems,
   });
 
   // If we're in a detail view, show the detail

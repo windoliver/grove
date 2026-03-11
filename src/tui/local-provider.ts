@@ -94,7 +94,12 @@ export class LocalDataProvider implements TuiDataProvider {
 
   async getClaims(query?: ClaimsQuery): Promise<readonly import("../core/models.js").Claim[]> {
     if (!query || query.status === "active") {
-      return this.claims.activeClaims(query?.agentId);
+      // activeClaims() accepts targetRef, not agentId.
+      // If agentId filtering is requested, use listClaims() instead.
+      if (query?.agentId) {
+        return this.claims.listClaims({ status: "active", agentId: query.agentId });
+      }
+      return this.claims.activeClaims();
     }
     return this.claims.listClaims({
       agentId: query.agentId,
