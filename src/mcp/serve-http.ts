@@ -26,7 +26,6 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 import { findGroveDir } from "../cli/context.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
-import { InMemoryCreditsService } from "../core/in-memory-credits.js";
 import { FsCas } from "../local/fs-cas.js";
 import { SqliteBountyStore } from "../local/sqlite-bounty-store.js";
 import { initSqliteDb, SqliteClaimStore, SqliteContributionStore } from "../local/sqlite-store.js";
@@ -56,7 +55,6 @@ try {
   const contributionStore = new SqliteContributionStore(db);
   const claimStore = new SqliteClaimStore(db);
   const bountyStore = new SqliteBountyStore(db);
-  const creditsService = new InMemoryCreditsService();
   const cas = new FsCas(casPath);
   const frontier = new DefaultFrontierCalculator(contributionStore);
   const workspace = new LocalWorkspaceManager({
@@ -66,7 +64,8 @@ try {
     cas,
   });
 
-  deps = { contributionStore, claimStore, bountyStore, creditsService, cas, frontier, workspace };
+  // Note: creditsService is intentionally omitted — see serve.ts for rationale.
+  deps = { contributionStore, claimStore, bountyStore, cas, frontier, workspace };
   closeStores = () => {
     workspace.close();
     db.close();

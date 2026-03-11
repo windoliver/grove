@@ -100,24 +100,28 @@ export function registerBountyTools(server: McpServer, deps: McpDeps): void {
     async (args) => {
       try {
         const { bountyStore, creditsService } = deps;
-        if (!bountyStore || !creditsService) {
-          return errorResult("Bounty operations not available (missing bountyStore or creditsService)");
+        if (!bountyStore) {
+          return errorResult("Bounty operations not available (missing bountyStore)");
         }
 
         const agent = resolveAgentIdentity(args.agent as AgentInput);
         const now = new Date();
         const bountyId = crypto.randomUUID();
-        const reservationId = crypto.randomUUID();
         const deadlineMs = args.deadlineMs ?? 7 * 24 * 60 * 60 * 1000;
         const deadline = new Date(now.getTime() + deadlineMs).toISOString();
 
-        // Reserve credits
-        await creditsService.reserve({
-          reservationId,
-          agentId: agent.agentId,
-          amount: args.amount,
-          timeoutMs: deadlineMs + 24 * 60 * 60 * 1000, // deadline + 1 day
-        });
+        // Reserve credits when a CreditsService is available.
+        // Without one (local dev), bounties work but credit enforcement is skipped.
+        let reservationId: string | undefined;
+        if (creditsService) {
+          reservationId = crypto.randomUUID();
+          await creditsService.reserve({
+            reservationId,
+            agentId: agent.agentId,
+            amount: args.amount,
+            timeoutMs: deadlineMs + 24 * 60 * 60 * 1000, // deadline + 1 day
+          });
+        }
 
         const bounty: Bounty = {
           bountyId,
@@ -274,8 +278,8 @@ export function registerBountyTools(server: McpServer, deps: McpDeps): void {
     async (args) => {
       try {
         const { bountyStore, creditsService, contributionStore } = deps;
-        if (!bountyStore || !creditsService) {
-          return errorResult("Bounty operations not available");
+        if (!bountyStore) {
+          return errorResult("Bounty operations not available (missing bountyStore)");
         }
 
         const bounty = await bountyStore.getBounty(args.bountyId);
@@ -297,11 +301,12 @@ export function registerBountyTools(server: McpServer, deps: McpDeps): void {
         // Settle payment BEFORE state transition: capture the reservation
         // and atomically credit the fulfiller. If capture fails, the bounty
         // stays in its current state with the escrow intact.
-        if (bounty.reservationId && bounty.claimedBy) {
+        // When no creditsService is available, credit enforcement is skipped.
+        if (creditsService && bounty.reservationId && bounty.claimedBy) {
           await creditsService.capture(bounty.reservationId, {
             toAgentId: bounty.claimedBy.agentId,
           });
-        } else if (bounty.reservationId) {
+        } else if (creditsService && bounty.reservationId) {
           // No claimer — just capture (funds go to system/void)
           await creditsService.capture(bounty.reservationId);
         }

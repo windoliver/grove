@@ -71,9 +71,9 @@ describe("grove_bounty_create", () => {
   });
 
   test("returns error when bountyStore is missing", async () => {
-    const noBountyDeps = { ...deps, bountyStore: undefined };
+    const noBountyDeps = { ...deps, bountyStore: undefined } as unknown as McpDeps;
     const s = new McpServer({ name: "test", version: "0.0.1" }, { capabilities: { tools: {} } });
-    registerBountyTools(s, noBountyDeps as McpDeps);
+    registerBountyTools(s, noBountyDeps);
 
     const result = await callTool(s, "grove_bounty_create", {
       title: "Test",
@@ -83,6 +83,26 @@ describe("grove_bounty_create", () => {
 
     expect(result.isError).toBe(true);
     expect(result.text).toContain("not available");
+  });
+
+  test("creates bounty without creditsService (local dev mode)", async () => {
+    const noCreditsDeps = { ...deps, creditsService: undefined } as unknown as McpDeps;
+    const s = new McpServer({ name: "test", version: "0.0.1" }, { capabilities: { tools: {} } });
+    registerBountyTools(s, noCreditsDeps);
+
+    const result = await callTool(s, "grove_bounty_create", {
+      title: "No credits",
+      amount: 50,
+      criteria: { description: "test" },
+      agent: { agentId: "agent-1" },
+    });
+
+    expect(result.isError).toBeUndefined();
+    const data = JSON.parse(result.text);
+    expect(data.title).toBe("No credits");
+    expect(data.status).toBe("open");
+    // No reservation when creditsService is absent
+    expect(data.reservationId).toBeUndefined();
   });
 
   test("creates bounty with optional fields", async () => {
@@ -354,5 +374,39 @@ describe("grove_bounty_settle", () => {
 
     expect(result.isError).toBe(true);
     expect(result.text).toContain("not found");
+  });
+
+  test("settles without creditsService (local dev mode)", async () => {
+    const noCreditsDeps = { ...deps, creditsService: undefined } as unknown as McpDeps;
+    const s = new McpServer({ name: "test", version: "0.0.1" }, { capabilities: { tools: {} } });
+    registerBountyTools(s, noCreditsDeps);
+
+    const contribution = makeContribution({ summary: "Fulfills bounty" });
+    await deps.contributionStore.put(contribution);
+
+    // Create bounty without credits
+    const createResult = await callTool(s, "grove_bounty_create", {
+      title: "No credits settle",
+      amount: 100,
+      criteria: { description: "test" },
+      agent: { agentId: "creator" },
+    });
+    const bountyId = JSON.parse(createResult.text).bountyId;
+
+    // Claim
+    await callTool(s, "grove_bounty_claim", {
+      bountyId,
+      agent: { agentId: "worker" },
+    });
+
+    // Settle — should succeed without creditsService
+    const result = await callTool(s, "grove_bounty_settle", {
+      bountyId,
+      contributionCid: contribution.cid,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const data = JSON.parse(result.text);
+    expect(data.status).toBe("settled");
   });
 });

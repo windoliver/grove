@@ -135,8 +135,18 @@ export class InMemoryCreditsService implements CreditsService {
       throw new PaymentError({ operation: "capture", message: `Reservation '${reservationId}' not found` });
     }
 
-    // Idempotent: already captured
+    // Idempotent: already captured — verify toAgentId matches
     if (reservation.captured) {
+      const requestedTo = opts?.toAgentId;
+      const originalTo = reservation.capturedToAgentId;
+      if (requestedTo !== originalTo) {
+        throw new PaymentError({
+          operation: "capture",
+          message:
+            `Reservation '${reservationId}' already captured with different toAgentId` +
+            ` (original: ${originalTo ?? "none"}, requested: ${requestedTo ?? "none"})`,
+        });
+      }
       return;
     }
 
@@ -144,6 +154,14 @@ export class InMemoryCreditsService implements CreditsService {
       throw new PaymentError({
         operation: "capture",
         message: `Reservation '${reservationId}' already voided`,
+      });
+    }
+
+    // Reject expired reservations — the hold has already been released
+    if (new Date(reservation.expiresAt).getTime() <= Date.now()) {
+      throw new PaymentError({
+        operation: "capture",
+        message: `Reservation '${reservationId}' has expired`,
       });
     }
 

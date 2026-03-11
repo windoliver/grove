@@ -17,7 +17,6 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 
 import { findGroveDir } from "../cli/context.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
-import { InMemoryCreditsService } from "../core/in-memory-credits.js";
 import { FsCas } from "../local/fs-cas.js";
 import { SqliteBountyStore } from "../local/sqlite-bounty-store.js";
 import { initSqliteDb, SqliteClaimStore, SqliteContributionStore } from "../local/sqlite-store.js";
@@ -46,7 +45,6 @@ try {
   const contributionStore = new SqliteContributionStore(db);
   const claimStore = new SqliteClaimStore(db);
   const bountyStore = new SqliteBountyStore(db);
-  const creditsService = new InMemoryCreditsService();
   const cas = new FsCas(casPath);
   const frontier = new DefaultFrontierCalculator(contributionStore);
   const workspace = new LocalWorkspaceManager({
@@ -56,7 +54,11 @@ try {
     cas,
   });
 
-  deps = { contributionStore, claimStore, bountyStore, creditsService, cas, frontier, workspace };
+  // Note: creditsService is intentionally omitted. InMemoryCreditsService is
+  // not durable — balances and reservations are lost on restart. Bounties still
+  // work (persisted in SQLite) but credit enforcement is skipped until a
+  // persistent CreditsService (e.g., NexusPay) is configured.
+  deps = { contributionStore, claimStore, bountyStore, cas, frontier, workspace };
   close = () => {
     workspace.close();
     db.close();

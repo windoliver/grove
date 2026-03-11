@@ -393,4 +393,91 @@ describe("InMemoryCreditsService edge cases", () => {
     expect(workerBal.total).toBe(200);
     expect(workerBal.available).toBe(200);
   });
+
+  test("capture rejects expired reservation", async () => {
+    const service = new InMemoryCreditsService();
+    service.seed("agent-1", 500);
+
+    // Reserve with already-expired timeout
+    await service.reserve({
+      reservationId: "r-expired-cap",
+      agentId: "agent-1",
+      amount: 200,
+      timeoutMs: -1, // immediately expired
+    });
+
+    // Capture should reject — the reservation has expired
+    await expect(service.capture("r-expired-cap")).rejects.toThrow("expired");
+
+    // Balance should be unchanged (expired reservation doesn't hold funds)
+    const bal = await service.balance("agent-1");
+    expect(bal.available).toBe(500);
+    expect(bal.total).toBe(500);
+  });
+
+  test("idempotent capture rejects mismatched toAgentId", async () => {
+    const service = new InMemoryCreditsService();
+    service.seed("creator", 500);
+
+    await service.reserve({
+      reservationId: "r-idem-cap",
+      agentId: "creator",
+      amount: 200,
+      timeoutMs: 60_000,
+    });
+
+    // First capture to worker-a
+    await service.capture("r-idem-cap", { toAgentId: "worker-a" });
+
+    // Second capture with different toAgentId should fail
+    await expect(
+      service.capture("r-idem-cap", { toAgentId: "worker-b" }),
+    ).rejects.toThrow(PaymentError);
+
+    // Original capture should remain — worker-a gets the funds
+    const workerA = await service.balance("worker-a");
+    expect(workerA.total).toBe(200);
+    const workerB = await service.balance("worker-b");
+    expect(workerB.total).toBe(0);
+  });
+
+  test("idempotent capture succeeds when toAgentId matches", async () => {
+    const service = new InMemoryCreditsService();
+    service.seed("creator", 500);
+
+    await service.reserve({
+      reservationId: "r-idem-ok",
+      agentId: "creator",
+      amount: 100,
+      timeoutMs: 60_000,
+    });
+
+    await service.capture("r-idem-ok", { toAgentId: "worker" });
+    // Same toAgentId — should succeed (no-op)
+    await service.capture("r-idem-ok", { toAgentId: "worker" });
+
+    // Balance deducted only once
+    const bal = await service.balance("creator");
+    expect(bal.total).toBe(400);
+  });
+
+  test("idempotent capture rejects adding toAgentId to a no-destination capture", async () => {
+    const service = new InMemoryCreditsService();
+    service.seed("agent-1", 500);
+
+    await service.reserve({
+      reservationId: "r-no-dest",
+      agentId: "agent-1",
+      amount: 100,
+      timeoutMs: 60_000,
+    });
+
+    // First capture without toAgentId
+    await service.capture("r-no-dest");
+
+    // Retry with toAgentId — should fail
+    await expect(
+      service.capture("r-no-dest", { toAgentId: "worker" }),
+    ).rejects.toThrow(PaymentError);
+  });
 });

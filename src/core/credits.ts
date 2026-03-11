@@ -83,11 +83,14 @@ export interface CreditsService {
    * is atomically credited to that agent (matching TigerBeetle's
    * two-phase transfer semantics).
    *
-   * Idempotent: capturing an already-captured reservation is a no-op.
+   * Idempotent: capturing an already-captured reservation is a no-op,
+   * provided `toAgentId` matches the original capture. Mismatched
+   * `toAgentId` throws PaymentError to surface caller bugs.
    *
    * @param reservationId - The reservation to capture.
    * @param opts - Optional: destination agent for the captured funds.
-   * @throws PaymentError if reservation not found or already voided
+   * @throws PaymentError if reservation not found, already voided, expired,
+   *         or if idempotent retry has mismatched toAgentId
    */
   capture(reservationId: string, opts?: { toAgentId: string }): Promise<void>;
 
