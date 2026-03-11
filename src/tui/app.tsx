@@ -10,6 +10,7 @@ import { useKeyboard, useRenderer } from "@opentui/react";
 import type React from "react";
 import { useCallback, useState } from "react";
 import type { Claim, Contribution } from "../core/models.js";
+import type { SpawnOptions } from "./agents/tmux-manager.js";
 import { CommandPalette } from "./components/command-palette.js";
 import { InputBar } from "./components/input-bar.js";
 import { StatusBar } from "./components/status-bar.js";
@@ -241,6 +242,26 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
     panels.setMode(InputMode.Normal);
   }, [panels]);
 
+  const handleSpawn = useCallback(
+    (agentId: string, command: string, target: string) => {
+      const options: SpawnOptions = {
+        agentId,
+        command,
+        targetRef: target,
+        workspacePath: process.cwd(),
+      };
+      tmux?.spawn(options).catch(() => {});
+    },
+    [tmux],
+  );
+
+  const handleKill = useCallback(
+    (sessionName: string) => {
+      tmux?.kill(sessionName).catch(() => {});
+    },
+    [tmux],
+  );
+
   return (
     <box flexDirection="column" width="100%" height="100%">
       <PanelBar panelState={panels.state} />
@@ -248,6 +269,8 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
         visible={panels.state.mode === InputMode.CommandPalette}
         tmux={tmux}
         onClose={handleCommandPaletteClose}
+        onSpawn={handleSpawn}
+        onKill={handleKill}
         topology={topology}
         activeClaims={activeClaims ?? undefined}
       />

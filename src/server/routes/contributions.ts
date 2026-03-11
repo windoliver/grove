@@ -257,11 +257,10 @@ contributions.post("/", async (c) => {
 contributions.get("/", zValidator("query", listQuerySchema), async (c) => {
   const { contributionStore, outcomeStore } = c.get("deps");
   const raw = c.req.valid("query");
-  const query = toContributionQuery(raw);
 
-  let results = await contributionStore.list(query);
-
-  // Post-filter by outcome status if requested
+  // When outcome filter is specified, we must fetch ALL matching contributions
+  // (without limit/offset), filter by outcome status, then paginate manually.
+  // Otherwise the page may be underfilled and X-Total-Count would be wrong.
   if (raw.outcome !== undefined) {
     if (outcomeStore === undefined) {
       return c.json(
@@ -269,14 +268,28 @@ contributions.get("/", zValidator("query", listQuerySchema), async (c) => {
         501,
       );
     }
-    const cids = results.map((r) => r.cid);
+
+    const baseQuery = toContributionQuery({ ...raw, limit: undefined, offset: undefined });
+    const allResults = await contributionStore.list(baseQuery);
+
+    const cids = allResults.map((r) => r.cid);
     const outcomes = await outcomeStore.getBatch(cids);
     const targetStatus = raw.outcome as OutcomeStatus;
-    results = results.filter((r) => {
+    const filtered = allResults.filter((r) => {
       const record = outcomes.get(r.cid);
       return record !== undefined && record.status === targetStatus;
     });
+
+    const limit = raw.limit ?? 20;
+    const offset = raw.offset ?? 0;
+    const page = filtered.slice(offset, offset + limit);
+
+    c.header("X-Total-Count", String(filtered.length));
+    return c.json(page);
   }
+
+  const query = toContributionQuery(raw);
+  const results = await contributionStore.list(query);
 
   const total = await contributionStore.count({
     kind: query.kind,

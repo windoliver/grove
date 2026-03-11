@@ -3,7 +3,7 @@
  *
  * Wraps NexusContributionStore, NexusClaimStore, NexusOutcomeStore,
  * and NexusCas to implement TuiDataProvider + TuiOutcomeProvider +
- * TuiVfsProvider. Used when running `grove tui --nexus <url>`.
+ * TuiArtifactProvider + TuiVfsProvider. Used when running `grove tui --nexus <url>`.
  */
 
 import type { Frontier, FrontierQuery } from "../core/frontier.js";
@@ -17,8 +17,10 @@ import { resolveConfig } from "../nexus/config.js";
 import { NexusClaimStore } from "../nexus/nexus-claim-store.js";
 import { NexusContributionStore } from "../nexus/nexus-contribution-store.js";
 import { NexusOutcomeStore } from "../nexus/nexus-outcome-store.js";
+import { casMetaPath, casPath } from "../nexus/vfs-paths.js";
 import type {
   ActivityQuery,
+  ArtifactMeta,
   ClaimsQuery,
   ContributionDetail,
   DagData,
@@ -28,6 +30,7 @@ import type {
   OperatorStats,
   PaginatedQuery,
   ProviderCapabilities,
+  TuiArtifactProvider,
   TuiDataProvider,
   TuiOutcomeProvider,
   TuiVfsProvider,
@@ -41,7 +44,9 @@ export interface NexusProviderConfig {
 }
 
 /** TUI data provider backed by Nexus VFS. */
-export class NexusDataProvider implements TuiDataProvider, TuiOutcomeProvider, TuiVfsProvider {
+export class NexusDataProvider
+  implements TuiDataProvider, TuiOutcomeProvider, TuiArtifactProvider, TuiVfsProvider
+{
   readonly capabilities: ProviderCapabilities = {
     outcomes: true,
     artifacts: true,
@@ -202,6 +207,86 @@ export class NexusDataProvider implements TuiDataProvider, TuiOutcomeProvider, T
 
   async listOutcomes(query?: { status?: OutcomeStatus }): Promise<readonly OutcomeRecord[]> {
     return this.outcomes.list(query);
+  }
+
+  // ---------------------------------------------------------------------------
+  // TuiArtifactProvider
+  // ---------------------------------------------------------------------------
+
+  async getArtifact(cid: string, name: string): Promise<Buffer> {
+    const contribution = await this.store.get(cid);
+    if (!contribution) {
+      throw new Error(`Contribution not found: ${cid}`);
+    }
+
+    const contentHash = contribution.artifacts[name];
+    if (contentHash === undefined) {
+      throw new Error(`Artifact '${name}' not found on contribution ${cid}`);
+    }
+
+    const blobPath = casPath(this.zoneId, contentHash);
+    const data = await this.client.read(blobPath);
+    if (data === undefined) {
+      throw new Error(
+        `Artifact blob not found in Nexus CAS for contribution ${cid}, artifact '${name}' (hash: ${contentHash})`,
+      );
+    }
+
+    return Buffer.from(data);
+  }
+
+  async getArtifactMeta(cid: string, name: string): Promise<ArtifactMeta> {
+    const contribution = await this.store.get(cid);
+    if (!contribution) {
+      throw new Error(`Contribution not found: ${cid}`);
+    }
+
+    const contentHash = contribution.artifacts[name];
+    if (contentHash === undefined) {
+      throw new Error(`Artifact '${name}' not found on contribution ${cid}`);
+    }
+
+    const blobPath = casPath(this.zoneId, contentHash);
+    const meta = await this.client.stat(blobPath);
+    if (meta) {
+      // Try reading the sidecar .meta file for media type
+      const metaFilePath = casMetaPath(this.zoneId, contentHash);
+      const metaData = await this.client.read(metaFilePath).catch(() => undefined);
+      let mediaType: string | undefined;
+      if (metaData !== undefined) {
+        try {
+          const parsed = JSON.parse(new TextDecoder().decode(metaData)) as {
+            mediaType?: string;
+          };
+          mediaType = parsed.mediaType;
+        } catch {
+          // Ignore malformed sidecar
+        }
+      }
+
+      return {
+        sizeBytes: meta.size,
+        mediaType: mediaType ?? meta.contentType,
+      };
+    }
+
+    return { sizeBytes: 0 };
+  }
+
+  async diffArtifacts(
+    parentCid: string,
+    childCid: string,
+    name: string,
+  ): Promise<{ readonly parent: string; readonly child: string }> {
+    const [parentBuf, childBuf] = await Promise.all([
+      this.getArtifact(parentCid, name),
+      this.getArtifact(childCid, name),
+    ]);
+    return { parent: parentBuf.toString("utf-8"), child: childBuf.toString("utf-8") };
+  }
+
+  async search(query: string): Promise<readonly Contribution[]> {
+    return this.store.search(query);
   }
 
   // ---------------------------------------------------------------------------

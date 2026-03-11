@@ -2,7 +2,7 @@
  * Command palette overlay for the TUI.
  *
  * Activated via Ctrl+P, displays available commands.
- * Currently read-only; text-input filtering is planned for a follow-up.
+ * Displays available commands with role status information.
  */
 
 import React, { useMemo } from "react";
@@ -70,11 +70,16 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
   function CommandPalette({
     visible,
     tmux,
-    onClose: _onClose,
+    onClose,
+    onSpawn,
+    onKill,
     topology,
     activeClaims,
   }: CommandPaletteProps): React.ReactNode {
     const hasTmux = tmux !== undefined;
+
+    // onClose is provided for future interactive use; parent handles Esc via keyboard
+    void onClose;
 
     const roleLines = useMemo(() => {
       if (topology === undefined) return [];
@@ -94,6 +99,9 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
       return null;
     }
 
+    const canSpawn = hasTmux && onSpawn !== undefined;
+    const canKill = hasTmux && onKill !== undefined;
+
     return (
       <box flexDirection="column" paddingLeft={1} paddingRight={1}>
         <box>
@@ -110,6 +118,13 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
               </box>
             );
           })}
+        </box>
+        <box marginTop={1} paddingLeft={1}>
+          <text color="#888888">
+            {canSpawn ? "[s]pawn " : ""}
+            {canKill ? "[k]ill " : ""}
+            [Esc] close
+          </text>
         </box>
         {roleLines.length > 0 && (
           <box flexDirection="column" paddingLeft={1} marginTop={1}>
