@@ -43,10 +43,12 @@ function buildNetwork(
     // Deterministic but spread out: pick peers at evenly-spaced indices
     for (let s = 0; s < Math.min(seedCount, candidates.length); s++) {
       const idx = (i + 1 + s * Math.floor(n / seedCount)) % candidates.length;
-      seeds.push(candidates[idx]!);
+      const candidate = candidates[idx];
+      if (candidate) seeds.push(candidate);
     }
 
-    samplers.push(new CyclonPeerSampler(peers[i]!, { maxViewSize, shuffleLength }, seeds));
+    const peer = peers[i];
+    if (peer) samplers.push(new CyclonPeerSampler(peer, { maxViewSize, shuffleLength }, seeds));
   }
 
   return { peers, samplers };
@@ -61,7 +63,8 @@ function buildNetwork(
  */
 function runRound(samplers: CyclonPeerSampler[], peers: PeerInfo[], dropRate: number = 0): void {
   for (let i = 0; i < samplers.length; i++) {
-    const sampler = samplers[i]!;
+    const sampler = samplers[i];
+    if (!sampler) continue;
     const target = sampler.selectOldestPeer();
     if (!target) continue;
 
@@ -71,7 +74,8 @@ function runRound(samplers: CyclonPeerSampler[], peers: PeerInfo[], dropRate: nu
     // Find the target sampler
     const targetIdx = peers.findIndex((p) => p.peerId === target.peerId);
     if (targetIdx < 0) continue;
-    const targetSampler = samplers[targetIdx]!;
+    const targetSampler = samplers[targetIdx];
+    if (!targetSampler) continue;
 
     const request = sampler.createShuffleRequest(target);
     const response = targetSampler.handleShuffleRequest(request);
@@ -322,11 +326,11 @@ describe("Gossip convergence simulation", () => {
       // any single peer isn't "self" for the set -- all N peers should
       // appear as known by at least one other peer)
       for (let i = 1; i < discoveredPerRound.length; i++) {
-        expect(discoveredPerRound[i]!).toBeGreaterThanOrEqual(discoveredPerRound[i - 1]!);
+        expect(discoveredPerRound[i] ?? 0).toBeGreaterThanOrEqual(discoveredPerRound[i - 1] ?? 0);
       }
 
       // After all rounds, all peers should be discovered by someone
-      expect(discoveredPerRound[rounds - 1]!).toBeGreaterThanOrEqual(N - 1);
+      expect(discoveredPerRound[rounds - 1] ?? 0).toBeGreaterThanOrEqual(N - 1);
     });
   });
 
@@ -349,7 +353,7 @@ describe("Gossip convergence simulation", () => {
       // One round
       const targetA = samplerA.selectOldestPeer();
       expect(targetA).toBeDefined();
-      const request = samplerA.createShuffleRequest(targetA!);
+      const request = samplerA.createShuffleRequest(targetA ?? peerB);
       const response = samplerB.handleShuffleRequest(request);
       samplerA.processShuffleResponse(response, request.offered);
 

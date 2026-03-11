@@ -19,6 +19,7 @@
  *   grove log           — Recent contributions
  *   grove tree          — DAG visualization
  *   grove gossip        — Gossip protocol commands
+ *   grove tui           — Operator TUI dashboard
  */
 
 import { createSqliteStores } from "../local/sqlite-store.js";
@@ -266,6 +267,15 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
         await handleGossip(args, groveOverride, withCliDeps);
       },
     },
+    {
+      name: "tui",
+      description: "Operator TUI dashboard",
+      needsStore: false,
+      handler: async (args) => {
+        const { handleTui } = await import("../tui/main.js");
+        await handleTui(args, groveOverride);
+      },
+    },
   ];
 }
 
@@ -362,6 +372,8 @@ Usage:
   grove export --to-pr <owner/repo> <cid>           Export to GitHub PR
   grove import --from-pr <owner/repo#number>        Import GitHub PR
   grove import --from-discussion <owner/repo#number> Import GitHub Discussion
+
+  grove tui [--interval <s>] [--url <url>]  Operator TUI dashboard
 
   grove gossip peers    [--server <url>]      List known peers
   grove gossip status   [--server <url>]      Show gossip overview

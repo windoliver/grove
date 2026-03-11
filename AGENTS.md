@@ -49,6 +49,18 @@ src/
 │   ├── app.ts       # createApp(deps) factory
 │   ├── serve.ts     # Bun.serve() entry point
 │   └── routes/      # Route handlers per domain
+├── tui/          # Operator TUI dashboard (Ink/React)
+│   ├── app.tsx      # Root app with tab navigation
+│   ├── main.ts      # Entry point (grove tui)
+│   ├── provider.ts  # TuiDataProvider interface
+│   ├── local-provider.ts   # Local SQLite provider
+│   ├── remote-provider.ts  # HTTP client provider
+│   ├── hooks/       # React hooks (polling, navigation, keybindings)
+│   ├── views/       # Tab views (dashboard, dag, claims, activity, detail)
+│   └── components/  # Shared components (table, tab-bar, status-bar)
+├── shared/       # Pure utilities shared across CLI, TUI, server
+│   ├── format.ts    # CID truncation, timestamp, score formatting
+│   └── duration.ts  # Duration parsing and formatting
 └── cli/          # CLI commands
     └── main.ts
 ```

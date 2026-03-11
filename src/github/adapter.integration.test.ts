@@ -137,9 +137,11 @@ describe("integration: export to PR", () => {
     // Verify branch was pushed with the artifact
     const branches = client.getPushedBranches(repo);
     expect(branches.size).toBe(1);
-    const [, pushParams] = [...branches.entries()][0]!;
-    expect(pushParams.files.has("src/hello.ts")).toBe(true);
-    const pushedContent = new TextDecoder().decode(pushParams.files.get("src/hello.ts"));
+    const entry = [...branches.entries()][0];
+    expect(entry).toBeDefined();
+    const pushParams = entry?.[1];
+    expect(pushParams?.files.has("src/hello.ts")).toBe(true);
+    const pushedContent = new TextDecoder().decode(pushParams?.files.get("src/hello.ts"));
     expect(pushedContent).toBe("export const hello = 'world';");
   });
 });
@@ -199,9 +201,9 @@ describe("integration: import from PR", () => {
     // Verify diff artifact in CAS
     const diffHash = fetched?.artifacts.diff;
     expect(diffHash).toBeDefined();
-    const diffData = await cas.get(diffHash!);
+    const diffData = await cas.get(diffHash ?? "");
     expect(diffData).toBeDefined();
-    expect(new TextDecoder().decode(diffData!)).toContain("diff --git");
+    expect(new TextDecoder().decode(diffData ?? new Uint8Array())).toContain("diff --git");
 
     // Verify file patch artifact
     expect(fetched?.artifacts["patches/src/parser.ts"]).toBeDefined();

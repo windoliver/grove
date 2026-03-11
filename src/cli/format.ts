@@ -1,45 +1,30 @@
 /**
- * Shared CLI output formatting utilities.
+ * CLI output formatting utilities.
  *
- * Zero-dependency table formatter, CID truncation, and common display helpers.
+ * Zero-dependency table formatter and CLI-specific display helpers.
+ * Pure formatting utilities (truncateCid, formatTimestamp, formatScore)
+ * live in src/shared/format.ts and are re-exported here for convenience.
  */
 
 import type { FrontierEntry } from "../core/frontier.js";
-import type { Contribution, Score } from "../core/models.js";
+import type { Contribution } from "../core/models.js";
 import type { ThreadNode, ThreadSummary } from "../core/store.js";
 
-/** Truncate a CID to a short display form: "blake3:abc123...". */
-export function truncateCid(cid: string, length = 12): string {
-  const prefix = "blake3:";
-  if (!cid.startsWith(prefix)) return cid.slice(0, length);
-  return `${prefix}${cid.slice(prefix.length, prefix.length + length)}..`;
-}
+// Re-export shared pure formatters for backward compatibility
+export {
+  contributionToRow,
+  formatScore,
+  formatTimestamp,
+  frontierEntryToRow,
+  truncateCid,
+} from "../shared/format.js";
 
-/** Format an ISO timestamp as a short relative or absolute string. */
-export function formatTimestamp(iso: string): string {
-  const date = new Date(iso);
-  const now = Date.now();
-  const diffMs = now - date.getTime();
-
-  if (diffMs < 0) return date.toISOString().slice(0, 16).replace("T", " ");
-
-  const seconds = Math.floor(diffMs / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
-
-  return date.toISOString().slice(0, 10);
-}
-
-/** Format a score value with optional unit. */
-export function formatScore(score: Score): string {
-  const val = Number.isInteger(score.value) ? score.value.toString() : score.value.toFixed(4);
-  return score.unit ? `${val} ${score.unit}` : val;
-}
+import {
+  contributionToRow,
+  formatTimestamp,
+  frontierEntryToRow,
+  truncateCid,
+} from "../shared/format.js";
 
 // ---------------------------------------------------------------------------
 // Table formatter
@@ -94,17 +79,6 @@ const CONTRIBUTION_COLUMNS: readonly Column[] = [
   { header: "CREATED", key: "created", maxWidth: 16 },
 ];
 
-/** Convert a Contribution to a display row. */
-export function contributionToRow(c: Contribution): Record<string, string> {
-  return {
-    cid: truncateCid(c.cid),
-    kind: c.kind,
-    summary: c.summary,
-    agent: c.agent.agentName ?? c.agent.agentId,
-    created: formatTimestamp(c.createdAt),
-  };
-}
-
 /** Format a list of contributions as a table. */
 export function formatContributions(contributions: readonly Contribution[]): string {
   return formatTable(CONTRIBUTION_COLUMNS, contributions.map(contributionToRow));
@@ -122,17 +96,6 @@ const FRONTIER_COLUMNS: readonly Column[] = [
   { header: "AGENT", key: "agent", maxWidth: 16 },
   { header: "CREATED", key: "created", maxWidth: 16 },
 ];
-
-/** Convert a FrontierEntry to a display row. */
-export function frontierEntryToRow(entry: FrontierEntry): Record<string, string> {
-  return {
-    cid: truncateCid(entry.cid),
-    summary: entry.summary,
-    value: entry.value.toFixed(2),
-    agent: entry.contribution.agent.agentName ?? entry.contribution.agent.agentId,
-    created: formatTimestamp(entry.contribution.createdAt),
-  };
-}
 
 /** Format frontier entries as a table with a heading. */
 export function formatFrontierSection(heading: string, entries: readonly FrontierEntry[]): string {

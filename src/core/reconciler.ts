@@ -179,9 +179,11 @@ export class DefaultReconciler implements Reconciler {
       group.sort((a, b) => (a.createdAt > b.createdAt ? -1 : a.createdAt < b.createdAt ? 1 : 0));
 
       for (let i = 1; i < group.length; i++) {
+        const claim = group[i];
+        if (!claim) continue;
         try {
-          await this.claimStore.release(group[i]!.claimId);
-          deduplicatedIds.push(group[i]!.claimId);
+          await this.claimStore.release(claim.claimId);
+          deduplicatedIds.push(claim.claimId);
         } catch {
           // Claim may have been released/expired concurrently — safe to ignore
         }
@@ -222,7 +224,7 @@ export class DefaultReconciler implements Reconciler {
       const key = `${ws.cid}::${ws.agent.agentId}`;
       if (!activeClaimKeys.has(key)) {
         // Mark orphaned workspace as stale so it's flagged for cleanup
-        const staleWs = await this.workspaceManager!.markWorkspaceStale(ws.cid, ws.agent.agentId);
+        const staleWs = await this.workspaceManager?.markWorkspaceStale(ws.cid, ws.agent.agentId);
         orphaned.push(staleWs);
       }
     }

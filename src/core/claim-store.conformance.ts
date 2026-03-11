@@ -460,7 +460,7 @@ export function runClaimStoreTests(factory: ClaimStoreFactory): void {
         agent: { agentId: "agent-x" },
         intentSummary: "original intent",
       });
-      const created = await store.createClaim(original);
+      const _created = await store.createClaim(original);
 
       const beforeRenew = Date.now();
       const renewal = makeClaim({

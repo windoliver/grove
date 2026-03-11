@@ -613,14 +613,15 @@ describe("full shuffle round integration", () => {
           self,
           config,
           // Each node initially knows only its neighbor
-          [nodes[(nodes.indexOf(self) + 1) % nodes.length]!],
+          [nodes[(nodes.indexOf(self) + 1) % nodes.length] ?? self],
         ),
     );
 
     // Run several rounds of shuffles
     for (let round = 0; round < 10; round++) {
       for (let i = 0; i < samplers.length; i++) {
-        const sampler = samplers[i]!;
+        const sampler = samplers[i];
+        if (!sampler) continue;
         const oldest = sampler.selectOldestPeer();
         if (!oldest) continue;
 

@@ -119,9 +119,9 @@ function hotThreadsTests(createBackend: () => TestBackend): void {
 
       const results = await store.hotThreads();
       expect(results).toHaveLength(1);
-      expect(results[0]!.contribution.cid).toBe(root.cid);
-      expect(results[0]!.replyCount).toBe(2);
-      expect(results[0]!.lastReplyAt).toBe(reply2.createdAt);
+      expect(results[0]?.contribution.cid).toBe(root.cid);
+      expect(results[0]?.replyCount).toBe(2);
+      expect(results[0]?.lastReplyAt).toBe(reply2.createdAt);
     } finally {
       cleanup();
     }
@@ -153,10 +153,10 @@ function hotThreadsTests(createBackend: () => TestBackend): void {
       const results = await store.hotThreads();
       expect(results).toHaveLength(2);
       // A has more replies, so it comes first
-      expect(results[0]!.contribution.cid).toBe(rootA.cid);
-      expect(results[0]!.replyCount).toBe(3);
-      expect(results[1]!.contribution.cid).toBe(rootB.cid);
-      expect(results[1]!.replyCount).toBe(1);
+      expect(results[0]?.contribution.cid).toBe(rootA.cid);
+      expect(results[0]?.replyCount).toBe(3);
+      expect(results[1]?.contribution.cid).toBe(rootB.cid);
+      expect(results[1]?.replyCount).toBe(1);
     } finally {
       cleanup();
     }
@@ -197,7 +197,7 @@ function hotThreadsTests(createBackend: () => TestBackend): void {
       // Duplicate tags should be deduplicated, not cause zero results
       const results = await store.hotThreads({ tags: ["architecture", "architecture"] });
       expect(results).toHaveLength(1);
-      expect(results[0]!.contribution.cid).toBe(tagged.cid);
+      expect(results[0]?.contribution.cid).toBe(tagged.cid);
     } finally {
       cleanup();
     }
@@ -248,7 +248,7 @@ function hotThreadsTests(createBackend: () => TestBackend): void {
 
       const results = await store.hotThreads({ tags: ["architecture"] });
       expect(results).toHaveLength(1);
-      expect(results[0]!.contribution.cid).toBe(tagged.cid);
+      expect(results[0]?.contribution.cid).toBe(tagged.cid);
     } finally {
       cleanup();
     }
@@ -269,7 +269,7 @@ function hotThreadsTests(createBackend: () => TestBackend): void {
 
       const results = await store.hotThreads();
       expect(results).toHaveLength(1);
-      expect(results[0]!.contribution.kind).toBe("work");
+      expect(results[0]?.contribution.kind).toBe("work");
     } finally {
       cleanup();
     }
@@ -293,7 +293,7 @@ function hotThreadsTests(createBackend: () => TestBackend): void {
 
       const results = await store.hotThreads();
       expect(results).toHaveLength(1);
-      expect(results[0]!.contribution.cid).toBe(popular.cid);
+      expect(results[0]?.contribution.cid).toBe(popular.cid);
     } finally {
       cleanup();
     }
@@ -335,7 +335,7 @@ function hotThreadsTests(createBackend: () => TestBackend): void {
       expect(results).toHaveLength(1);
       // lastReplyAt should reflect the truly latest reply (Reply B at 06:00Z),
       // not Reply A which only looks later as a raw string (10:00:00+05:00)
-      const lastReplyUtc = new Date(results[0]!.lastReplyAt).getTime();
+      const lastReplyUtc = new Date(results[0]?.lastReplyAt ?? "").getTime();
       const replyBUtc = new Date("2026-01-01T06:00:00Z").getTime();
       expect(lastReplyUtc).toBe(replyBUtc);
     } finally {

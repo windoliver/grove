@@ -202,34 +202,40 @@ export function initSqliteDb(dbPath: string): Database {
       }
     ).v;
 
-    // Migration v1 → v2: add created_at and context_json to claims
-    if (currentVersion !== null && currentVersion < 2 && currentVersion >= 1) {
-      // Check if columns already exist (idempotent migration)
+    // Column-safe migrations: always run regardless of schema version.
+    // Each uses PRAGMA table_info to check before altering, making them
+    // idempotent on both fresh databases (columns exist from SCHEMA_DDL)
+    // and legacy databases that predate schema_migrations tracking
+    // (where currentVersion is null and version-gated migrations would
+    // be skipped, leaving the DB marked as current but missing columns).
+    {
       const columns = db.prepare("PRAGMA table_info(claims)").all() as readonly {
         name: string;
       }[];
       const columnNames = new Set(columns.map((c) => c.name));
 
+      // From v1→v2: add created_at and context_json to claims
       if (!columnNames.has("created_at")) {
-        // Default created_at to heartbeat_at for existing claims
         db.run("ALTER TABLE claims ADD COLUMN created_at TEXT NOT NULL DEFAULT ''");
         db.run("UPDATE claims SET created_at = heartbeat_at WHERE created_at = ''");
       }
       if (!columnNames.has("context_json")) {
         db.run("ALTER TABLE claims ADD COLUMN context_json TEXT");
       }
+
+      // From v4→v5: add attempt_count to claims
+      if (!columnNames.has("attempt_count")) {
+        db.run("ALTER TABLE claims ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0");
+      }
     }
 
-    // Migration v2 → v3: add workspaces table
-    if (currentVersion !== null && currentVersion < 3 && currentVersion >= 2) {
-      // The workspaces table is in SCHEMA_DDL with CREATE TABLE IF NOT EXISTS,
-      // so it's automatically created for both fresh and migrated databases.
-      // No additional ALTER TABLE needed.
-    }
+    // Composite index — idempotent via IF NOT EXISTS (from v4→v5)
+    db.run(
+      "CREATE INDEX IF NOT EXISTS idx_contributions_agent_created ON contributions(agent_id, created_at)",
+    );
 
-    // Migration v3 → v4: add agent_id to workspaces PK for per-agent isolation (kept for completeness)
+    // Version-gated destructive migration: recreate workspaces with per-agent PK
     if (currentVersion !== null && currentVersion < 4 && currentVersion >= 3) {
-      // Drop and recreate — workspaces are transient (can be re-checked out).
       db.run("DROP TABLE IF EXISTS workspaces");
       db.exec(`
         CREATE TABLE IF NOT EXISTS workspaces (
@@ -246,22 +252,6 @@ export function initSqliteDb(dbPath: string): Database {
         CREATE INDEX IF NOT EXISTS idx_workspaces_status ON workspaces(status);
         CREATE INDEX IF NOT EXISTS idx_workspaces_activity ON workspaces(last_activity_at);
       `);
-    }
-
-    // Migration → v5: add composite index + attempt_count column on claims
-    if (currentVersion !== null && currentVersion < 5) {
-      // Add composite index for rate-limit queries
-      db.run(
-        "CREATE INDEX IF NOT EXISTS idx_contributions_agent_created ON contributions(agent_id, created_at)",
-      );
-      // Add attempt_count column to claims
-      const claimCols = db.prepare("PRAGMA table_info(claims)").all() as readonly {
-        name: string;
-      }[];
-      const claimColNames = new Set(claimCols.map((c) => c.name));
-      if (!claimColNames.has("attempt_count")) {
-        db.run("ALTER TABLE claims ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0");
-      }
     }
 
     // Migration → v6: add bounties and rewards tables
@@ -893,8 +883,6 @@ export class SqliteClaimStore implements ClaimStore {
     const createdAtUtc = toUtcIso(claim.createdAt);
     const heartbeatUtc = toUtcIso(claim.heartbeatAt);
     const leaseExpiresUtc = toUtcIso(claim.leaseExpiresAt);
-    const attemptCount = claim.attemptCount ?? 0;
-
     // Atomic check-and-insert: EXCLUSIVE transaction prevents TOCTOU races
     const createTx = this.db.transaction(() => {
       const existing = this.db

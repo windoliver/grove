@@ -356,6 +356,95 @@ describe("schema migration", () => {
     }
   });
 
+  test("legacy DB with no schema_migrations rows gets claims columns added", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-migration-"));
+    const dbPath = join(dir, "test.db");
+    try {
+      // Simulate a pre-schema-tracking legacy DB: tables exist but
+      // schema_migrations has no rows (predates version tracking).
+      // SCHEMA_DDL's CREATE TABLE IF NOT EXISTS will be a no-op for
+      // the existing claims table, so column-adding migrations must
+      // still run even when currentVersion is null.
+      const db = new Database(dbPath);
+      db.run("PRAGMA journal_mode = WAL");
+      db.run("PRAGMA foreign_keys = ON");
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS contributions (
+          cid TEXT PRIMARY KEY, kind TEXT NOT NULL, mode TEXT NOT NULL,
+          summary TEXT NOT NULL, description TEXT, agent_id TEXT NOT NULL,
+          agent_name TEXT, created_at TEXT NOT NULL,
+          tags_json TEXT NOT NULL DEFAULT '[]', manifest_json TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS relations (
+          source_cid TEXT NOT NULL, target_cid TEXT NOT NULL,
+          relation_type TEXT NOT NULL, metadata_json TEXT,
+          FOREIGN KEY (source_cid) REFERENCES contributions(cid)
+        );
+        -- Old-style claims table: missing created_at, context_json, attempt_count
+        CREATE TABLE IF NOT EXISTS claims (
+          claim_id TEXT PRIMARY KEY, target_ref TEXT NOT NULL,
+          agent_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+          heartbeat_at TEXT NOT NULL, lease_expires_at TEXT NOT NULL,
+          intent_summary TEXT NOT NULL, agent_json TEXT NOT NULL
+        );
+        CREATE VIRTUAL TABLE IF NOT EXISTS contributions_fts USING fts5(cid, summary, description);
+        -- NOTE: no rows inserted into schema_migrations (simulates pre-tracking DB)
+      `);
+
+      // Insert a legacy claim
+      db.run(
+        `INSERT INTO claims (claim_id, target_ref, agent_id, status,
+         heartbeat_at, lease_expires_at, intent_summary, agent_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          "legacy-claim",
+          "some-target",
+          "agent-1",
+          "active",
+          new Date().toISOString(),
+          new Date(Date.now() + 60_000).toISOString(),
+          "legacy work",
+          JSON.stringify({ agentId: "agent-1" }),
+        ],
+      );
+      db.close();
+
+      // Open with initSqliteDb — should add missing columns
+      const db2 = initSqliteDb(dbPath);
+
+      // Verify the columns were added
+      const cols = db2.prepare("PRAGMA table_info(claims)").all() as readonly {
+        name: string;
+      }[];
+      const colNames = new Set(cols.map((c) => c.name));
+      expect(colNames.has("created_at")).toBe(true);
+      expect(colNames.has("context_json")).toBe(true);
+      expect(colNames.has("attempt_count")).toBe(true);
+
+      // Verify the legacy claim's created_at was backfilled from heartbeat_at
+      const claim = db2
+        .prepare("SELECT created_at, heartbeat_at FROM claims WHERE claim_id = ?")
+        .get("legacy-claim") as { created_at: string; heartbeat_at: string };
+      expect(claim.created_at).toBe(claim.heartbeat_at);
+
+      // Verify schema version was recorded
+      const version = (
+        db2.prepare("SELECT MAX(version) as v FROM schema_migrations").get() as {
+          v: number | null;
+        }
+      ).v;
+      expect(version).toBe(6);
+
+      db2.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("backfill does not duplicate tags on re-open", async () => {
     const dir = await mkdtemp(join(tmpdir(), "sqlite-migration-"));
     const dbPath = join(dir, "test.db");
