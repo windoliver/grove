@@ -89,7 +89,7 @@ describe("grove bounty", () => {
       expect(stdout[0]).toContain("open");
     });
 
-    test("reserves credits on creation", async () => {
+    test("reserves credits on creation when creditsService provided", async () => {
       await runBounty(
         ["create", "My bounty", "--amount", "500", "--deadline", "1d", "--agent-id", "test-agent"],
         deps,
@@ -98,6 +98,18 @@ describe("grove bounty", () => {
       // Balance should be reduced by the reserved amount
       const balance = await creditsService.balance("test-agent");
       expect(balance.available).toBe(9_500);
+    });
+
+    test("creates bounty without credits service (local dev mode)", async () => {
+      const noCreditsDeps = { ...deps, creditsService: undefined };
+      await runBounty(
+        ["create", "No credits", "--amount", "50", "--deadline", "1d", "--agent-id", "test-agent"],
+        noCreditsDeps,
+      );
+
+      expect(stdout.length).toBe(1);
+      expect(stdout[0]).toContain("Created bounty");
+      expect(stdout[0]).toContain("50 credits");
     });
 
     test("errors when title is missing", async () => {

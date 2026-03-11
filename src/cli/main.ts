@@ -20,7 +20,6 @@
  *   grove tree          — DAG visualization
  */
 
-import { InMemoryCreditsService } from "../core/in-memory-credits.js";
 import { createSqliteStores } from "../local/sqlite-store.js";
 import { runBounty } from "./commands/bounty.js";
 import { parseCheckoutArgs, runCheckout } from "./commands/checkout.js";
@@ -149,7 +148,6 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
         try {
           await runBounty(args, {
             bountyStore: stores.bountyStore,
-            creditsService: new InMemoryCreditsService(),
             claimStore: stores.claimStore,
             stdout: (msg) => console.log(msg),
             stderr: (msg) => console.error(msg),

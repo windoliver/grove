@@ -77,6 +77,8 @@ export class InMemoryCreditsService implements CreditsService {
       throw this.failureConfig.reserve;
     }
 
+    validatePositiveInteger(opts.amount, "reserve");
+
     // Idempotent: return existing reservation
     const existing = this.reservations.get(opts.reservationId);
     if (existing !== undefined) {
@@ -177,6 +179,8 @@ export class InMemoryCreditsService implements CreditsService {
       throw this.failureConfig.transfer;
     }
 
+    validatePositiveInteger(opts.amount, "transfer");
+
     // Idempotent: return existing transfer
     const existing = this.completedTransfers.get(opts.transferId);
     if (existing !== undefined) {
@@ -240,5 +244,19 @@ export class InMemoryCreditsService implements CreditsService {
       }
     }
     return reserved;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
+/** Ensure amount is a positive integer. */
+function validatePositiveInteger(amount: number, operation: string): void {
+  if (!Number.isInteger(amount) || amount <= 0) {
+    throw new PaymentError({
+      operation,
+      message: `Amount must be a positive integer, got ${amount}`,
+    });
   }
 }

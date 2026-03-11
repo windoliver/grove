@@ -218,4 +218,74 @@ describe("InMemoryCreditsService edge cases", () => {
     const bal = await service.balance("agent-1");
     expect(bal.available).toBe(500);
   });
+
+  test("reserve rejects negative amount", async () => {
+    const service = new InMemoryCreditsService();
+    service.seed("agent-1", 500);
+
+    await expect(
+      service.reserve({
+        reservationId: "r-neg",
+        agentId: "agent-1",
+        amount: -50,
+        timeoutMs: 60_000,
+      }),
+    ).rejects.toThrow(PaymentError);
+  });
+
+  test("reserve rejects zero amount", async () => {
+    const service = new InMemoryCreditsService();
+    service.seed("agent-1", 500);
+
+    await expect(
+      service.reserve({
+        reservationId: "r-zero",
+        agentId: "agent-1",
+        amount: 0,
+        timeoutMs: 60_000,
+      }),
+    ).rejects.toThrow(PaymentError);
+  });
+
+  test("reserve rejects non-integer amount", async () => {
+    const service = new InMemoryCreditsService();
+    service.seed("agent-1", 500);
+
+    await expect(
+      service.reserve({
+        reservationId: "r-float",
+        agentId: "agent-1",
+        amount: 1.5,
+        timeoutMs: 60_000,
+      }),
+    ).rejects.toThrow(PaymentError);
+  });
+
+  test("transfer rejects negative amount", async () => {
+    const service = new InMemoryCreditsService();
+    service.seed("agent-1", 500);
+
+    await expect(
+      service.transfer({
+        transferId: "xfer-neg",
+        fromAgentId: "agent-1",
+        toAgentId: "agent-2",
+        amount: -10,
+      }),
+    ).rejects.toThrow(PaymentError);
+  });
+
+  test("transfer rejects zero amount", async () => {
+    const service = new InMemoryCreditsService();
+    service.seed("agent-1", 500);
+
+    await expect(
+      service.transfer({
+        transferId: "xfer-zero",
+        fromAgentId: "agent-1",
+        toAgentId: "agent-2",
+        amount: 0,
+      }),
+    ).rejects.toThrow(PaymentError);
+  });
 });

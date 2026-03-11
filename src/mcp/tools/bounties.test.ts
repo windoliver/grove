@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { InMemoryCreditsService } from "../../core/in-memory-credits.js";
+import { makeContribution } from "../../core/test-helpers.js";
 import type { McpDeps } from "../deps.js";
 import type { TestMcpDeps } from "../test-helpers.js";
 import { createTestMcpDeps } from "../test-helpers.js";
@@ -253,7 +254,11 @@ describe("grove_bounty_settle", () => {
   });
 
   test("settles a claimed bounty end-to-end", async () => {
-    // Create
+    // Create a real contribution in the store
+    const contribution = makeContribution({ summary: "Fulfills the bounty" });
+    await deps.contributionStore.put(contribution);
+
+    // Create bounty
     const createResult = await callTool(server, "grove_bounty_create", {
       title: "Full lifecycle",
       amount: 500,
@@ -268,19 +273,70 @@ describe("grove_bounty_settle", () => {
       agent: { agentId: "worker" },
     });
 
-    // Settle
+    // Settle with real contribution CID
     const result = await callTool(server, "grove_bounty_settle", {
       bountyId,
-      contributionCid: "blake3:abc123",
+      contributionCid: contribution.cid,
     });
 
     expect(result.isError).toBeUndefined();
     const data = JSON.parse(result.text);
     expect(data.bountyId).toBe(bountyId);
     expect(data.status).toBe("settled");
-    expect(data.fulfilledByCid).toBe("blake3:abc123");
+    expect(data.fulfilledByCid).toBe(contribution.cid);
     expect(data.amount).toBe(500);
     expect(data.paidTo).toBe("worker");
+  });
+
+  test("rejects settlement with non-existent contribution", async () => {
+    const createResult = await callTool(server, "grove_bounty_create", {
+      title: "Test bounty",
+      amount: 100,
+      criteria: { description: "test" },
+      agent: { agentId: "creator" },
+    });
+    const bountyId = JSON.parse(createResult.text).bountyId;
+
+    await callTool(server, "grove_bounty_claim", {
+      bountyId,
+      agent: { agentId: "worker" },
+    });
+
+    const result = await callTool(server, "grove_bounty_settle", {
+      bountyId,
+      contributionCid: "blake3:doesnotexist",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("not found");
+  });
+
+  test("rejects settlement when criteria not met", async () => {
+    // Create contribution WITHOUT required tags
+    const contribution = makeContribution({ summary: "No tags" });
+    await deps.contributionStore.put(contribution);
+
+    // Create bounty requiring specific tags
+    const createResult = await callTool(server, "grove_bounty_create", {
+      title: "Needs tags",
+      amount: 100,
+      criteria: { description: "test", requiredTags: ["ml", "optimization"] },
+      agent: { agentId: "creator" },
+    });
+    const bountyId = JSON.parse(createResult.text).bountyId;
+
+    await callTool(server, "grove_bounty_claim", {
+      bountyId,
+      agent: { agentId: "worker" },
+    });
+
+    const result = await callTool(server, "grove_bounty_settle", {
+      bountyId,
+      contributionCid: contribution.cid,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("does not meet bounty criteria");
   });
 
   test("returns not-found for non-existent bounty", async () => {

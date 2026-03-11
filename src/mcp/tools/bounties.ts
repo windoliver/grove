@@ -12,6 +12,7 @@ import { z } from "zod";
 
 import type { Bounty, BountyCriteria } from "../../core/bounty.js";
 import { BountyStatus } from "../../core/bounty.js";
+import { evaluateBountyCriteria } from "../../core/bounty-logic.js";
 import type { JsonValue } from "../../core/models.js";
 import type { AgentInput } from "../agent-identity.js";
 import { resolveAgentIdentity } from "../agent-identity.js";
@@ -272,7 +273,7 @@ export function registerBountyTools(server: McpServer, deps: McpDeps): void {
     },
     async (args) => {
       try {
-        const { bountyStore, creditsService } = deps;
+        const { bountyStore, creditsService, contributionStore } = deps;
         if (!bountyStore || !creditsService) {
           return errorResult("Bounty operations not available");
         }
@@ -282,15 +283,28 @@ export function registerBountyTools(server: McpServer, deps: McpDeps): void {
           return notFoundError("Bounty", args.bountyId);
         }
 
+        // Validate the contribution exists and meets criteria
+        const contribution = await contributionStore.get(args.contributionCid);
+        if (!contribution) {
+          return errorResult(`Contribution '${args.contributionCid}' not found`);
+        }
+        if (!evaluateBountyCriteria(bounty.criteria, contribution)) {
+          return errorResult(
+            `Contribution '${args.contributionCid}' does not meet bounty criteria`,
+          );
+        }
+
         // Mark as completed
         const completed = await bountyStore.completeBounty(args.bountyId, args.contributionCid);
 
-        // Capture the reservation (finalize the debit from creator)
+        // Settlement: void the reservation to release the hold, then transfer
+        // credits from creator to fulfiller. void()+transfer() is the correct
+        // pattern — capture() would deduct from creator, making a subsequent
+        // transfer() double-charge.
         if (completed.reservationId) {
-          await creditsService.capture(completed.reservationId);
+          await creditsService.void(completed.reservationId);
         }
 
-        // Transfer credits to the fulfiller
         if (completed.claimedBy) {
           await creditsService.transfer({
             transferId: `bounty-payout:${args.bountyId}`,

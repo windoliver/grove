@@ -298,7 +298,7 @@ export class SqliteBountyStore implements BountyStore {
       .prepare(
         `SELECT * FROM bounties
          WHERE deadline < ?
-           AND status NOT IN ('settled', 'expired', 'cancelled')
+           AND status IN ('open', 'claimed')
          ORDER BY deadline ASC`,
       )
       .all(now) as BountyRow[];
@@ -401,7 +401,10 @@ export class SqliteBountyStore implements BountyStore {
     validateBountyTransition(bountyId, existing.status, targetStatus, action);
 
     const updated = transform(existing);
-    this.db.prepare(`
+
+    // CAS: include WHERE status = ? to prevent concurrent transitions.
+    // If another writer already changed the status, changes === 0.
+    const result = this.db.prepare(`
       UPDATE bounties SET
         status = ?,
         claimed_by_json = ?,
@@ -409,7 +412,7 @@ export class SqliteBountyStore implements BountyStore {
         fulfilled_by_cid = ?,
         reservation_id = ?,
         updated_at = ?
-      WHERE bounty_id = ?
+      WHERE bounty_id = ? AND status = ?
     `).run(
       updated.status,
       updated.claimedBy !== undefined ? JSON.stringify(updated.claimedBy) : null,
@@ -418,7 +421,17 @@ export class SqliteBountyStore implements BountyStore {
       updated.reservationId ?? null,
       updated.updatedAt,
       bountyId,
+      existing.status,
     );
+
+    if (result.changes === 0) {
+      throw new BountyStateError({
+        bountyId,
+        currentStatus: existing.status,
+        attemptedAction: action,
+        message: `Concurrent modification: bounty '${bountyId}' status changed since read`,
+      });
+    }
 
     return updated;
   }
@@ -465,6 +478,9 @@ export class SqliteBountyStore implements BountyStore {
     sql += " ORDER BY created_at DESC";
     if (query?.limit !== undefined) {
       sql += ` LIMIT ${query.limit}`;
+    } else if (query?.offset !== undefined) {
+      // SQLite requires LIMIT before OFFSET; use -1 for unlimited
+      sql += " LIMIT -1";
     }
     if (query?.offset !== undefined) {
       sql += ` OFFSET ${query.offset}`;

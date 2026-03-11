@@ -24,7 +24,8 @@ import { resolveAgentId } from "../utils/grove-dir.js";
 
 export interface BountyDeps {
   readonly bountyStore: BountyStore;
-  readonly creditsService: CreditsService;
+  /** Optional — when absent, bounties work without credit enforcement (local dev). */
+  readonly creditsService?: CreditsService | undefined;
   readonly claimStore: ClaimStore;
   readonly stdout: (msg: string) => void;
   readonly stderr: (msg: string) => void;
@@ -123,14 +124,17 @@ async function runBountyCreate(args: readonly string[], deps: BountyDeps): Promi
   const bountyId = randomUUID();
   const now = new Date().toISOString();
 
-  // Reserve credits
-  const reservationId = randomUUID();
-  await deps.creditsService.reserve({
-    reservationId,
-    agentId,
-    amount,
-    timeoutMs: deadlineMs + 24 * 60 * 60 * 1000, // deadline + 1 day safety margin
-  });
+  // Reserve credits (skip when no credits service — local dev mode)
+  let reservationId: string | undefined;
+  if (deps.creditsService) {
+    reservationId = randomUUID();
+    await deps.creditsService.reserve({
+      reservationId,
+      agentId,
+      amount,
+      timeoutMs: deadlineMs + 24 * 60 * 60 * 1000, // deadline + 1 day safety margin
+    });
+  }
 
   const bounty: Bounty = {
     bountyId,
