@@ -106,15 +106,24 @@ function readNexusUrlFromConfig(groveOverride?: string): string | undefined {
 const DEFAULT_HEALTH_TIMEOUT_MS = 3_000;
 
 /**
- * Lightweight health check: hits `GET /api/grove` on the Nexus server.
- * Returns true if 2xx, false otherwise (timeout, refused, 5xx, etc.).
+ * Lightweight health check against a Nexus server.
+ *
+ * Sends a minimal JSON-RPC `exists` call to `POST /api/nfs/exists`,
+ * which matches the Nexus wire protocol (all VFS ops go through
+ * `POST /api/nfs/{method}` as JSON-RPC). Any successful HTTP response
+ * (even a JSON-RPC error) means the server is reachable.
  */
 export async function checkNexusHealth(url: string, timeoutMs?: number): Promise<boolean> {
   try {
-    const resp = await fetch(`${url.replace(/\/+$/, "")}/api/grove`, {
+    const resp = await fetch(`${url.replace(/\/+$/, "")}/api/nfs/exists`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "exists", params: { path: "/" }, id: 1 }),
       signal: AbortSignal.timeout(timeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS),
     });
-    return resp.ok;
+    // Any HTTP-level response means the server is reachable.
+    // JSON-RPC errors (e.g. auth) still prove connectivity.
+    return resp.status < 500;
   } catch {
     return false;
   }
@@ -127,11 +136,12 @@ export async function checkNexusHealth(url: string, timeoutMs?: number): Promise
 /**
  * Load agent topology for the resolved backend.
  *
- * - remote/nexus: fetches from `${url}/api/grove/topology`
+ * - remote: fetches from `${url}/api/grove/topology`
+ * - nexus: tries remote endpoint first, falls back to local GROVE.md
  * - local: reads GROVE.md contract from the parent of .grove/
  */
 export async function loadTopology(backend: ResolvedBackend): Promise<AgentTopology | undefined> {
-  if (backend.mode === "remote" || backend.mode === "nexus") {
+  if (backend.mode === "remote") {
     try {
       const resp = await fetch(`${backend.url.replace(/\/+$/, "")}/api/grove/topology`);
       if (resp.ok) {
@@ -143,10 +153,13 @@ export async function loadTopology(backend: ResolvedBackend): Promise<AgentTopol
     return undefined;
   }
 
-  // Local mode
+  // Local + nexus: read from local GROVE.md contract.
+  // For nexus mode the grove.json is local, so GROVE.md should be adjacent.
   try {
     const { parseGroveContract } = await import("../core/contract.js");
-    const { groveDir } = resolveGroveDir(backend.groveOverride);
+    const { groveDir } = resolveGroveDir(
+      backend.mode === "local" ? backend.groveOverride : undefined,
+    );
     const grovemdPath = join(groveDir, "..", "GROVE.md");
     if (existsSync(grovemdPath)) {
       const raw = await Bun.file(grovemdPath).text();

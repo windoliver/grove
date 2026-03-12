@@ -82,7 +82,7 @@ export class RemoteDataProvider
 
   async getContribution(cid: string): Promise<ContributionDetail | undefined> {
     const resp = await fetch(`${this.baseUrl}/api/contributions/${encodeURIComponent(cid)}`);
-    if (resp.status === 404 || resp.status === 400) return undefined;
+    if (resp.status === 404) return undefined;
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
     const contribution = (await resp.json()) as Contribution;
 

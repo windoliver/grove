@@ -397,7 +397,7 @@ Usage:
   grove import --from-pr <owner/repo#number>        Import GitHub PR
   grove import --from-discussion <owner/repo#number> Import GitHub Discussion
 
-  grove tui [--interval <s>] [--url <url>] [--nexus <url>]  Operator TUI dashboard
+  grove tui [--interval <s>] [--url <url>] [--nexus <url>]  Operator TUI dashboard (auto-detects Nexus)
 
   grove gossip peers    [--server <url>]      List known peers
   grove gossip status   [--server <url>]      Show gossip overview

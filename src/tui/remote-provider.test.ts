@@ -120,7 +120,9 @@ describe("RemoteDataProvider specific", () => {
   });
 
   test("getContribution returns undefined for non-existent CID", async () => {
-    const detail = await provider.getContribution("blake3:nonexistent");
+    const detail = await provider.getContribution(
+      "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+    );
     expect(detail).toBeUndefined();
   });
 });

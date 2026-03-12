@@ -102,7 +102,7 @@ describe("resolveBackend", () => {
     expect(result.mode).toBe("local");
   });
 
-  test("grove.json with nexusUrl -> nexus mode", () => {
+  test("grove.json with nexusUrl -> nexus mode when --grove points at .grove dir", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "grove-resolve-test-"));
     const groveDir = join(tempDir, ".grove");
     mkdirSync(groveDir, { recursive: true });
@@ -112,12 +112,35 @@ describe("resolveBackend", () => {
     );
 
     try {
+      // --grove points at the .grove directory -> resolveGroveDir uses it directly
       const result = resolveBackend({ groveOverride: groveDir });
-      // groveOverride points to .grove dir, so resolveGroveDir will use it
-      // This may or may not find the file depending on resolveGroveDir behavior.
-      // The key thing we're testing is that --nexus/env take priority.
-      // grove.json reading depends on resolveGroveDir finding the directory.
-      expect(result.mode).toBeDefined();
+      expect(result.mode).toBe("nexus");
+      expect(result.source).toBe("grove.json");
+      if (result.mode === "nexus") {
+        expect(result.url).toBe("http://json-nexus:7070");
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("grove.json not found when --grove points at repo root (not .grove)", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "grove-resolve-test-"));
+    const groveDir = join(tempDir, ".grove");
+    mkdirSync(groveDir, { recursive: true });
+    writeFileSync(
+      join(groveDir, "grove.json"),
+      JSON.stringify({ nexusUrl: "http://json-nexus:7070" }),
+    );
+
+    try {
+      // --grove points at the repo root (parent of .grove) — config won't be found
+      // because resolveGroveDir treats the override as the final directory
+      const result = resolveBackend({ groveOverride: tempDir });
+      // Should fall through to local since grove.json is at tempDir/.grove/grove.json
+      // but resolveGroveDir(tempDir) returns groveDir=tempDir, so we look for
+      // tempDir/grove.json which doesn't exist
+      expect(result.mode).toBe("local");
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -181,11 +204,32 @@ describe("backendLabel", () => {
 // ---------------------------------------------------------------------------
 
 describe("checkNexusHealth", () => {
-  test("returns true on 200 OK", async () => {
+  test("returns true on 200 JSON-RPC response", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        // Verify it hits the correct Nexus JSON-RPC endpoint
+        const url = new URL(req.url);
+        expect(url.pathname).toBe("/api/nfs/exists");
+        expect(req.method).toBe("POST");
+        return new Response(JSON.stringify({ jsonrpc: "2.0", result: { exists: true }, id: 1 }), {
+          status: 200,
+        });
+      },
+    });
+    try {
+      const result = await checkNexusHealth(`http://localhost:${server.port}`);
+      expect(result).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("returns true on 401 (server reachable, just auth required)", async () => {
     const server = Bun.serve({
       port: 0,
       fetch() {
-        return new Response(JSON.stringify({ name: "test" }), { status: 200 });
+        return new Response("Unauthorized", { status: 401 });
       },
     });
     try {
