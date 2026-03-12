@@ -25,7 +25,8 @@ import type {
   TuiDataProvider,
   TuiOutcomeProvider,
 } from "./provider.js";
-import { buildFrontierSummary, diffArtifactBuffers } from "./provider-utils.js";
+import { diffArtifactsFromBuffers } from "./provider-shared.js";
+import { buildFrontierSummary } from "./provider-utils.js";
 
 /** TUI data provider backed by a remote grove-server HTTP API. */
 export class RemoteDataProvider
@@ -307,7 +308,11 @@ export class RemoteDataProvider
     childCid: string,
     name: string,
   ): Promise<{ readonly parent: string; readonly child: string }> {
-    return diffArtifactBuffers(this.getArtifact.bind(this), parentCid, childCid, name);
+    const [parentBuf, childBuf] = await Promise.all([
+      this.getArtifact(parentCid, name),
+      this.getArtifact(childCid, name),
+    ]);
+    return diffArtifactsFromBuffers(parentBuf, childBuf);
   }
 
   async search(query: string): Promise<readonly Contribution[]> {
