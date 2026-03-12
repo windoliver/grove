@@ -130,14 +130,15 @@ export async function nexusDown(projectRoot: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Read the Nexus server URL from `nexus.yaml` after `nexus up`.
+ * Read the Nexus HTTP server URL from `nexus.yaml` after `nexus up`.
  *
- * Parses the `port:` field from the YAML config (regex-based, no YAML
- * parser dependency). Falls back to DEFAULT_NEXUS_URL if the file is
- * missing or the port can't be determined.
+ * nexus#2918 materializes ports under `ports.http` / `ports.grpc` in
+ * nexus.yaml (see `init_cmd.py:_build_config`). The HTTP port is the
+ * one grove cares about for health checks and API calls.
  *
- * This handles the port-conflict resolution in nexus#2918 — if Nexus
- * resolves to a different port, the YAML is updated and we pick it up.
+ * Uses regex-based parsing (no YAML parser dependency). Falls back to
+ * DEFAULT_NEXUS_URL if the file is missing or the port can't be
+ * determined.
  */
 export function readNexusUrl(projectRoot: string): string {
   try {
@@ -145,12 +146,24 @@ export function readNexusUrl(projectRoot: string): string {
     if (!existsSync(yamlPath)) return DEFAULT_NEXUS_URL;
 
     const content = readFileSync(yamlPath, "utf-8");
-    // Match `port: <number>` — handles both top-level and nested YAML keys
-    const match = content.match(/port:\s*['"]?(\d+)/);
-    if (match?.[1]) {
-      const port = Number.parseInt(match[1], 10);
-      if (port > 0 && port <= 65535) {
-        return `http://localhost:${port}`;
+
+    // nexus.yaml shape (from nexus#2918 init_cmd.py):
+    //   ports:
+    //     http: 2026
+    //     grpc: 2028
+    //     postgres: 5432
+    //
+    // Match the `http:` key inside a `ports:` block.
+    // The regex finds `ports:` then scans for `http: <number>` on a
+    // subsequent indented line.
+    const portsBlock = content.match(/^ports:\s*\n((?:[ \t]+\S.*\n?)*)/m);
+    if (portsBlock?.[1]) {
+      const httpMatch = portsBlock[1].match(/http:\s*['"]?(\d+)/);
+      if (httpMatch?.[1]) {
+        const port = Number.parseInt(httpMatch[1], 10);
+        if (port > 0 && port <= 65535) {
+          return `http://localhost:${port}`;
+        }
       }
     }
   } catch {

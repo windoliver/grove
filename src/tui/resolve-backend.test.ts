@@ -160,7 +160,7 @@ describe("resolveBackend", () => {
     }
   });
 
-  test("grove.json with nexusManaged -> discovers nexus URL from nexus.yaml", () => {
+  test("grove.json with nexusManaged -> discovers nexus URL from nexus.yaml ports.http", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "grove-resolve-test-"));
     const groveDir = join(tempDir, ".grove");
     mkdirSync(groveDir, { recursive: true });
@@ -169,8 +169,11 @@ describe("resolveBackend", () => {
       join(groveDir, "grove.json"),
       JSON.stringify({ name: "test", mode: "nexus", nexusManaged: true }),
     );
-    // Write nexus.yaml with a non-default port
-    writeFileSync(join(tempDir, "nexus.yaml"), "server:\n  port: 3456\n");
+    // Write nexus.yaml with nexus#2918 ports shape
+    writeFileSync(
+      join(tempDir, "nexus.yaml"),
+      "preset: shared\nports:\n  http: 3456\n  grpc: 3458\n",
+    );
 
     try {
       const result = resolveBackend({ groveOverride: groveDir });
