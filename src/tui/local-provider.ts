@@ -129,6 +129,10 @@ export class LocalDataProvider implements TuiDataProvider, TuiOutcomeProvider, T
     }
   }
 
+  async heartbeatClaim(claimId: string, leaseDurationMs?: number): Promise<Claim> {
+    return this.claims.heartbeat(claimId, leaseDurationMs);
+  }
+
   async releaseClaim(claimId: string): Promise<void> {
     await this.claims.release(claimId);
   }

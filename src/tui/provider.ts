@@ -182,6 +182,9 @@ export interface TuiDataProvider {
   /** Check out a workspace for an agent (optional). Returns the workspace path. */
   checkoutWorkspace?(targetRef: string, agent: AgentIdentity): Promise<string>;
 
+  /** Renew a claim's lease by heartbeating (optional). */
+  heartbeatClaim?(claimId: string, leaseDurationMs?: number): Promise<Claim>;
+
   /** Release a claim by transitioning it to "released" status (optional). */
   releaseClaim?(claimId: string): Promise<void>;
 

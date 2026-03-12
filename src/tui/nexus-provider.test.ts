@@ -172,4 +172,121 @@ describe("NexusDataProvider lifecycle", () => {
     await provider.cleanWorkspace("spawn-life", "agent-life");
     expect(workspace?.cleanedWorkspaces.has("spawn-life:agent-life")).toBe(true);
   });
+
+  test("heartbeatClaim renews the lease", async () => {
+    const { provider } = createProvider();
+
+    // Create a claim
+    const claim = await provider.createClaim({
+      targetRef: "hb-target",
+      agent: { agentId: "hb-agent" },
+      intentSummary: "heartbeat test",
+      leaseDurationMs: 60_000,
+    });
+
+    const originalExpiry = new Date(claim.leaseExpiresAt).getTime();
+
+    // Heartbeat with a longer lease
+    const renewed = await provider.heartbeatClaim(claim.claimId, 300_000);
+
+    expect(renewed.claimId).toBe(claim.claimId);
+    expect(new Date(renewed.leaseExpiresAt).getTime()).toBeGreaterThan(originalExpiry);
+    expect(new Date(renewed.heartbeatAt).getTime()).toBeGreaterThanOrEqual(
+      new Date(claim.heartbeatAt).getTime(),
+    );
+
+    // Cleanup
+    await provider.releaseClaim(claim.claimId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Nexus-mode spawn path tests
+// ---------------------------------------------------------------------------
+
+describe("Nexus-mode spawn path", () => {
+  function createProvider() {
+    const client = new MockNexusClient();
+    const workspace = makeMockWorkspaceManager();
+    const provider = new NexusDataProvider({
+      nexusConfig: { client, zoneId: "test" },
+      workspaceManager: workspace,
+    });
+    return { provider, workspace };
+  }
+
+  test("spawn path: workspace → claim → heartbeat → kill → cleanup", async () => {
+    const { provider, workspace } = createProvider();
+    const spawnId = `claude-${Date.now().toString(36)}`;
+    const agent = { agentId: spawnId, role: "claude" };
+
+    // Step 1: Checkout workspace (simulates app.tsx doSpawn step 1)
+    const workspacePath = await provider.checkoutWorkspace(spawnId, agent);
+    expect(workspacePath).toContain(spawnId);
+    expect(workspace.createdWorkspaces.has(spawnId)).toBe(true);
+
+    // Step 2: Create claim (simulates app.tsx doSpawn step 2)
+    const claim = await provider.createClaim({
+      targetRef: spawnId,
+      agent,
+      intentSummary: "TUI-spawned: bash",
+      leaseDurationMs: 300_000,
+      context: { workspacePath },
+    });
+    expect(claim.status).toBe("active");
+
+    // Step 3: Heartbeat (simulates the heartbeat timer)
+    const heartbeated = await provider.heartbeatClaim(claim.claimId, 300_000);
+    // Heartbeat should renew: new expiry >= original (same ms is fine)
+    expect(new Date(heartbeated.leaseExpiresAt).getTime()).toBeGreaterThanOrEqual(
+      new Date(claim.leaseExpiresAt).getTime(),
+    );
+    // Heartbeat timestamp should be updated
+    expect(new Date(heartbeated.heartbeatAt).getTime()).toBeGreaterThanOrEqual(
+      new Date(claim.heartbeatAt).getTime(),
+    );
+
+    // Verify claim is still active
+    const activeClaims = await provider.getClaims({ status: "active" });
+    expect(activeClaims.find((c: Claim) => c.claimId === claim.claimId)).toBeDefined();
+
+    // Step 4: Kill (simulates handleKill)
+    await provider.releaseClaim(claim.claimId);
+    await provider.cleanWorkspace(spawnId, spawnId);
+
+    // Verify cleanup
+    const afterKill = await provider.getClaims({ status: "active" });
+    expect(afterKill.find((c: Claim) => c.claimId === claim.claimId)).toBeUndefined();
+    expect(workspace.cleanedWorkspaces.has(`${spawnId}:${spawnId}`)).toBe(true);
+  });
+
+  test("tmux failure rolls back claim and workspace", async () => {
+    const { provider, workspace } = createProvider();
+    const spawnId = `fail-${Date.now().toString(36)}`;
+    const agent = { agentId: spawnId };
+
+    // Step 1: Checkout workspace
+    const workspacePath = await provider.checkoutWorkspace(spawnId, agent);
+    expect(workspacePath).toContain(spawnId);
+
+    // Step 2: Create claim
+    const claim = await provider.createClaim({
+      targetRef: spawnId,
+      agent,
+      intentSummary: "will-fail",
+      leaseDurationMs: 300_000,
+      context: { workspacePath },
+    });
+    expect(claim.status).toBe("active");
+
+    // Step 3: Simulate tmux.spawn() failure — roll back
+    // (This is what app.tsx does in the catch block)
+    await provider.releaseClaim(claim.claimId);
+    await provider.cleanWorkspace(spawnId, spawnId);
+
+    // Verify: no active claims remain for this spawn
+    const afterRollback = await provider.getClaims({ status: "active" });
+    expect(afterRollback.find((c: Claim) => c.claimId === claim.claimId)).toBeUndefined();
+    expect(workspace.cleanedWorkspaces.has(`${spawnId}:${spawnId}`)).toBe(true);
+  });
 });
