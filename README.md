@@ -61,13 +61,13 @@ workspace `@grove/ask-user` package through its published export map.
 bun install
 bun run build
 export GROVE_AGENT_ID=codex-local
-export GROVE="bun run src/cli/main.ts"
+grove() { bun run src/cli/main.ts "$@"; }
 
-$GROVE init "Latency hunt" --metric latency_ms:minimize
-$GROVE contribute --summary "Baseline measurements" --artifacts README.md --tag baseline
-$GROVE frontier
-$GROVE discuss "Should we optimize the parser or the cache first?"
-$GROVE claims
+grove init "Latency hunt" --metric latency_ms:minimize
+grove contribute --summary "Baseline measurements" --artifacts README.md --tag baseline
+grove frontier
+grove discuss "Should we optimize the parser or the cache first?"
+grove claims
 
 # Optional runtime surfaces
 bun run src/server/serve.ts
