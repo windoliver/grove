@@ -66,7 +66,8 @@ export function createLlmStrategy(
         resolvedClient = sdk.messages;
       }
 
-      const response = await resolvedClient.create({
+      const activeClient = resolvedClient;
+      const response = await activeClient.create({
         model: config.model,
         max_tokens: config.maxTokens,
         system: config.systemPrompt,
