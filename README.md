@@ -61,13 +61,13 @@ workspace `@grove/ask-user` package through its published export map.
 bun install
 bun run build
 export GROVE_AGENT_ID=codex-local
-export GROVE="bun run src/cli/main.ts"
+grove() { bun run src/cli/main.ts "$@"; }
 
-$GROVE init "Latency hunt" --metric latency_ms:minimize
-$GROVE contribute --summary "Baseline measurements" --artifacts README.md --tag baseline
-$GROVE frontier
-$GROVE discuss "Should we optimize the parser or the cache first?"
-$GROVE claims
+grove init "Latency hunt" --metric latency_ms:minimize
+grove contribute --summary "Baseline measurements" --artifacts README.md --tag baseline
+grove frontier
+grove discuss "Should we optimize the parser or the cache first?"
+grove claims
 
 # Optional runtime surfaces
 bun run src/server/serve.ts
@@ -77,6 +77,10 @@ bun run src/mcp/serve.ts
 For a fuller end-to-end walkthrough, including claims, threads, checkout, HTTP
 server, MCP, and TUI usage, see [QUICKSTART.md](QUICKSTART.md).
 
+For a use-case-driven walkthrough that covers CLI, TUI, MCP, server, Nexus,
+GitHub, gossip, and ask-user workflows, see
+[docs/guides/user-guide.md](./docs/guides/user-guide.md).
+
 If you want generated `dist/` artifacts and bin entrypoints, run:
 
 ```bash
@@ -85,6 +89,9 @@ bun run build
 
 That emits the compiled entrypoints behind the package bins declared in
 `package.json`: `grove`, `grove-server`, `grove-mcp`, and `grove-mcp-http`.
+
+For a package-by-package coverage plan and release checklist, see
+[docs/testing/test-plan.md](./docs/testing/test-plan.md).
 
 ## Mental Model
 
