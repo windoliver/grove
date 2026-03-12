@@ -64,11 +64,23 @@ bun install
 bun run build
 ```
 
+If you are working from this source checkout, set a repo-local CLI helper first:
+
+```bash
+export GROVE="bun run src/cli/main.ts"
+```
+
+If you have installed the compiled bin onto your `PATH`, you can use `grove`
+directly instead.
+
 Initialize a grove in the current repo:
 
 ```bash
-grove init "Optimize code search"
+$GROVE init "Optimize code search"
 ```
+
+For readability, the rest of this guide uses `grove ...` in examples. In a
+source checkout, substitute `$GROVE ...`.
 
 Useful variants:
 
@@ -93,7 +105,7 @@ discussion, or investigation.
 Suppose you just ran:
 
 ```bash
-grove init "Optimize code search"
+$GROVE init "Optimize code search"
 ```
 
 Now you want one agent to improve the parser, another to review it, and a third
