@@ -180,19 +180,20 @@ export async function executeInit(options: InitOptions): Promise<{ grovePath: st
   // Resolve backend mode: if preset prefers nexus, use it.
   // - With explicit --nexus-url: external (unmanaged) Nexus
   // - Without --nexus-url: grove-managed Nexus (grove up handles lifecycle)
+  //   The actual Nexus URL is discovered at `grove up` time via nexus.yaml,
+  //   so we don't write nexusUrl here — this avoids stale port references
+  //   when Nexus resolves port conflicts (nexus#2918).
   const { writeGroveConfig } = await import("../../core/config.js");
-  const { DEFAULT_NEXUS_URL } = await import("../nexus-lifecycle.js");
   const groveJsonPath = join(grovePath, "grove.json");
   const preferredBackend = preset?.backend ?? "local";
   let resolvedMode: "local" | "nexus" = "local";
   let nexusManaged = false;
-  let nexusUrl = options.nexusUrl;
+  const nexusUrl = options.nexusUrl;
   if (preferredBackend === "nexus") {
     resolvedMode = "nexus";
     if (!nexusUrl) {
       // No explicit URL — grove will manage Nexus lifecycle
       nexusManaged = true;
-      nexusUrl = DEFAULT_NEXUS_URL;
     }
   }
   writeGroveConfig(
@@ -200,7 +201,7 @@ export async function executeInit(options: InitOptions): Promise<{ grovePath: st
       name: options.name,
       mode: resolvedMode,
       preset: options.preset,
-      ...(resolvedMode === "nexus" ? { nexusUrl } : {}),
+      ...(nexusUrl ? { nexusUrl } : {}),
       ...(nexusManaged ? { nexusManaged: true } : {}),
       services: preset?.services ?? { server: false, mcp: false },
     },

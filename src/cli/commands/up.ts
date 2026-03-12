@@ -155,51 +155,61 @@ export async function handleUp(args: readonly string[], groveOverride?: string):
     nexusManaged = true;
   }
 
-  // Spawn services in parallel
-  const spawnPromises: Promise<ChildProcess | null>[] = [];
+  // Everything after Nexus startup is wrapped in try/catch so we
+  // call shutdown() (including nexus down) if a later step throws.
+  try {
+    // Spawn services in parallel
+    const spawnPromises: Promise<ChildProcess | null>[] = [];
 
-  if (config.services?.server) {
-    spawnPromises.push(spawnService("server", "src/server/serve.ts", groveDir));
-  }
+    if (config.services?.server) {
+      spawnPromises.push(spawnService("server", "src/server/serve.ts", groveDir));
+    }
 
-  if (config.services?.mcp) {
-    spawnPromises.push(spawnService("mcp", "src/mcp/serve-http.ts", groveDir));
-  }
+    if (config.services?.mcp) {
+      spawnPromises.push(spawnService("mcp", "src/mcp/serve-http.ts", groveDir));
+    }
 
-  const results = await Promise.all(spawnPromises);
-  for (const result of results) {
-    if (result) children.push(result);
-  }
+    const results = await Promise.all(spawnPromises);
+    for (const result of results) {
+      if (result) children.push(result);
+    }
 
-  // Write PID file
-  const pidData = {
-    parentPid: process.pid,
-    children: children.map((c) => ({ name: c.name, pid: c.pid })),
-    startedAt: new Date().toISOString(),
-    nexusManaged,
-  };
-  writeFileSync(pidFilePath, `${JSON.stringify(pidData, null, 2)}\n`, "utf-8");
+    // Write PID file
+    const pidData = {
+      parentPid: process.pid,
+      children: children.map((c) => ({ name: c.name, pid: c.pid })),
+      startedAt: new Date().toISOString(),
+      nexusManaged,
+    };
+    writeFileSync(pidFilePath, `${JSON.stringify(pidData, null, 2)}\n`, "utf-8");
 
-  if (children.length > 0) {
-    console.log(`Started ${children.length} service(s): ${children.map((c) => c.name).join(", ")}`);
-  }
-
-  // Launch TUI or stay headless
-  if (opts.headless || opts.noTui) {
-    console.log("Running in headless mode. Use 'grove down' to stop.");
-    // In headless mode, wait for any child to exit, then shut down all remaining
     if (children.length > 0) {
-      await Promise.race(children.map((c) => c.proc.exited));
-      // One child exited — shut down all remaining services cleanly
+      console.log(
+        `Started ${children.length} service(s): ${children.map((c) => c.name).join(", ")}`,
+      );
+    }
+
+    // Launch TUI or stay headless
+    if (opts.headless || opts.noTui) {
+      console.log("Running in headless mode. Use 'grove down' to stop.");
+      // In headless mode, wait for any child to exit, then shut down all remaining
+      if (children.length > 0) {
+        await Promise.race(children.map((c) => c.proc.exited));
+        // One child exited — shut down all remaining services cleanly
+        await shutdown();
+      }
+    } else {
+      // Launch TUI as foreground
+      const { handleTui } = await import("../../tui/main.js");
+      await handleTui([], effectiveGrove);
+
+      // TUI exited — shut down services
       await shutdown();
     }
-  } else {
-    // Launch TUI as foreground
-    const { handleTui } = await import("../../tui/main.js");
-    await handleTui([], effectiveGrove);
-
-    // TUI exited — shut down services
+  } catch (err) {
+    // Ensure managed Nexus + child processes are cleaned up on failure
     await shutdown();
+    throw err;
   }
 }
 

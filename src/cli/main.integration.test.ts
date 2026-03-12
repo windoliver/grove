@@ -397,7 +397,8 @@ describe("grove init --preset", () => {
     expect(config.preset).toBe("review-loop");
     expect(config.mode).toBe("nexus");
     expect(config.nexusManaged).toBe(true);
-    expect(config.nexusUrl).toBe("http://localhost:2026");
+    // nexusUrl is NOT written for managed Nexus — discovered at `grove up` time
+    expect(config.nexusUrl).toBeUndefined();
     expect(config.services).toEqual({ server: true, mcp: false });
   });
 
@@ -426,7 +427,8 @@ describe("grove init --preset", () => {
     const config = JSON.parse(raw) as Record<string, unknown>;
     expect(config.mode).toBe("nexus");
     expect(config.nexusManaged).toBe(true);
-    expect(config.nexusUrl).toBe("http://localhost:2026");
+    // nexusUrl is NOT written for managed Nexus — discovered at `grove up` time
+    expect(config.nexusUrl).toBeUndefined();
   });
 
   test("nexus-preferring preset uses nexus with --nexus-url", async () => {

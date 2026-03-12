@@ -9,7 +9,7 @@
  * containers directly — Nexus owns its own lifecycle and dependency chain.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GroveConfig } from "../core/config.js";
 
@@ -126,6 +126,40 @@ export async function nexusDown(projectRoot: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Port discovery
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the Nexus server URL from `nexus.yaml` after `nexus up`.
+ *
+ * Parses the `port:` field from the YAML config (regex-based, no YAML
+ * parser dependency). Falls back to DEFAULT_NEXUS_URL if the file is
+ * missing or the port can't be determined.
+ *
+ * This handles the port-conflict resolution in nexus#2918 — if Nexus
+ * resolves to a different port, the YAML is updated and we pick it up.
+ */
+export function readNexusUrl(projectRoot: string): string {
+  try {
+    const yamlPath = join(projectRoot, "nexus.yaml");
+    if (!existsSync(yamlPath)) return DEFAULT_NEXUS_URL;
+
+    const content = readFileSync(yamlPath, "utf-8");
+    // Match `port: <number>` — handles both top-level and nested YAML keys
+    const match = content.match(/port:\s*['"]?(\d+)/);
+    if (match?.[1]) {
+      const port = Number.parseInt(match[1], 10);
+      if (port > 0 && port <= 65535) {
+        return `http://localhost:${port}`;
+      }
+    }
+  } catch {
+    // Fall through to default
+  }
+  return DEFAULT_NEXUS_URL;
+}
+
+// ---------------------------------------------------------------------------
 // Health check
 // ---------------------------------------------------------------------------
 
@@ -169,9 +203,16 @@ export async function waitForNexusHealth(
  * 1. Check nexus CLI availability
  * 2. Auto-init nexus.yaml if missing
  * 3. Run `nexus up`
- * 4. Wait for health check
+ * 4. Discover actual URL from nexus.yaml (handles port-conflict resolution)
+ * 5. Wait for health check
+ *
+ * Returns the resolved Nexus URL (may differ from config.nexusUrl if
+ * Nexus resolved a port conflict during startup).
  */
-export async function ensureNexusRunning(projectRoot: string, config: GroveConfig): Promise<void> {
+export async function ensureNexusRunning(
+  projectRoot: string,
+  config: GroveConfig,
+): Promise<string> {
   const hasNexus = await checkNexusCli();
   if (!hasNexus) {
     throw new Error(
@@ -192,9 +233,12 @@ export async function ensureNexusRunning(projectRoot: string, config: GroveConfi
   process.stderr.write("Starting Nexus...\n");
   await nexusUp(projectRoot);
 
-  // Health check
-  const nexusUrl = config.nexusUrl ?? DEFAULT_NEXUS_URL;
+  // Discover actual URL — nexus.yaml may have been updated with a
+  // different port if the default was already in use (nexus#2918).
+  const nexusUrl = config.nexusUrl ?? readNexusUrl(projectRoot);
   process.stderr.write(`Waiting for Nexus at ${nexusUrl}...\n`);
   await waitForNexusHealth(nexusUrl);
   process.stderr.write("Nexus is ready.\n");
+
+  return nexusUrl;
 }
