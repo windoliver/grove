@@ -119,6 +119,17 @@ export async function handleUp(args: readonly string[], groveOverride?: string):
       }
     }
 
+    // Stop managed Nexus
+    if (nexusManaged) {
+      try {
+        const { nexusDown } = await import("../nexus-lifecycle.js");
+        process.stderr.write("Stopping Nexus...\n");
+        await nexusDown(projectRoot);
+      } catch {
+        /* ignore — nexus down is best-effort */
+      }
+    }
+
     // Clean up PID file
     try {
       const { unlinkSync } = require("node:fs") as typeof import("node:fs");
@@ -134,6 +145,15 @@ export async function handleUp(args: readonly string[], groveOverride?: string):
   process.on("SIGTERM", () => {
     shutdown().then(() => process.exit(0));
   });
+
+  // Start managed Nexus if configured
+  const projectRoot = join(groveDir, "..");
+  let nexusManaged = false;
+  if (config.nexusManaged || (config.mode === "nexus" && !config.nexusUrl)) {
+    const { ensureNexusRunning } = await import("../nexus-lifecycle.js");
+    await ensureNexusRunning(projectRoot, config);
+    nexusManaged = true;
+  }
 
   // Spawn services in parallel
   const spawnPromises: Promise<ChildProcess | null>[] = [];
@@ -156,6 +176,7 @@ export async function handleUp(args: readonly string[], groveOverride?: string):
     parentPid: process.pid,
     children: children.map((c) => ({ name: c.name, pid: c.pid })),
     startedAt: new Date().toISOString(),
+    nexusManaged,
   };
   writeFileSync(pidFilePath, `${JSON.stringify(pidData, null, 2)}\n`, "utf-8");
 

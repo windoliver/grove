@@ -34,6 +34,12 @@ export interface GroveConfig {
   readonly remoteUrl?: string | undefined;
   readonly services?: GroveServices | undefined;
   readonly backend?: string | undefined;
+  /**
+   * When true, `grove up` manages the Nexus lifecycle (init/up/down).
+   * When false or absent with mode "nexus", Nexus is externally managed
+   * and nexusUrl must point to a running instance.
+   */
+  readonly nexusManaged?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -62,13 +68,18 @@ export const GroveConfigSchema: z.ZodType<GroveConfig> = z
     remoteUrl: z.string().url().optional(),
     services: ServicesSchema,
     backend: z.string().min(1).max(64).optional(),
+    nexusManaged: z.boolean().optional(),
   })
   .strict()
   .superRefine((config, ctx) => {
-    if (config.mode === "nexus" && !config.nexusUrl) {
+    // nexusUrl is required when mode is "nexus" UNLESS grove manages the
+    // Nexus lifecycle (nexusManaged: true), in which case it defaults to
+    // http://localhost:2026 at runtime.
+    if (config.mode === "nexus" && !config.nexusUrl && !config.nexusManaged) {
       ctx.addIssue({
         code: "custom",
-        message: "nexusUrl is required when mode is 'nexus'",
+        message:
+          "nexusUrl is required when mode is 'nexus' (or set nexusManaged: true for grove-managed Nexus)",
       });
     }
     if (config.mode === "remote" && !config.remoteUrl) {
@@ -120,6 +131,7 @@ export function writeGroveConfig(config: GroveConfig, path: string): void {
   if (config.remoteUrl !== undefined) obj.remoteUrl = config.remoteUrl;
   if (config.services !== undefined) obj.services = config.services;
   if (config.backend !== undefined) obj.backend = config.backend;
+  if (config.nexusManaged !== undefined) obj.nexusManaged = config.nexusManaged;
 
   writeFileSync(path, `${JSON.stringify(obj, null, 2)}\n`, "utf-8");
 }

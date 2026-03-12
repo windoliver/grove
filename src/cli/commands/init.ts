@@ -177,29 +177,61 @@ export async function executeInit(options: InitOptions): Promise<{ grovePath: st
   await writeFile(grovemdPath, grovemdContent, "utf-8");
 
   // 6. Write grove.json
-  // Resolve backend mode: if preset prefers nexus, use it only when a nexusUrl
-  // is available (via --nexus-url or GROVE_NEXUS_URL); otherwise fall back to local.
+  // Resolve backend mode: if preset prefers nexus, use it.
+  // - With explicit --nexus-url: external (unmanaged) Nexus
+  // - Without --nexus-url: grove-managed Nexus (grove up handles lifecycle)
   const { writeGroveConfig } = await import("../../core/config.js");
+  const { DEFAULT_NEXUS_URL } = await import("../nexus-lifecycle.js");
   const groveJsonPath = join(grovePath, "grove.json");
   const preferredBackend = preset?.backend ?? "local";
   let resolvedMode: "local" | "nexus" = "local";
-  if (preferredBackend === "nexus" && options.nexusUrl) {
+  let nexusManaged = false;
+  let nexusUrl = options.nexusUrl;
+  if (preferredBackend === "nexus") {
     resolvedMode = "nexus";
-  } else if (preferredBackend === "nexus") {
-    console.log(
-      `Note: preset '${options.preset}' prefers Nexus backend, but no --nexus-url or GROVE_NEXUS_URL provided. Using local mode.`,
-    );
+    if (!nexusUrl) {
+      // No explicit URL — grove will manage Nexus lifecycle
+      nexusManaged = true;
+      nexusUrl = DEFAULT_NEXUS_URL;
+    }
   }
   writeGroveConfig(
     {
       name: options.name,
       mode: resolvedMode,
       preset: options.preset,
-      ...(resolvedMode === "nexus" && options.nexusUrl ? { nexusUrl: options.nexusUrl } : {}),
+      ...(resolvedMode === "nexus" ? { nexusUrl } : {}),
+      ...(nexusManaged ? { nexusManaged: true } : {}),
       services: preset?.services ?? { server: false, mcp: false },
     },
     groveJsonPath,
   );
+
+  // 6b. Initialize Nexus if grove-managed
+  if (nexusManaged) {
+    try {
+      const {
+        checkNexusCli,
+        nexusInit: runNexusInit,
+        inferNexusPreset,
+      } = await import("../nexus-lifecycle.js");
+      const hasNexus = await checkNexusCli();
+      if (hasNexus) {
+        const nexusPreset = inferNexusPreset({
+          name: options.name,
+          mode: resolvedMode,
+          preset: options.preset,
+        });
+        await runNexusInit(options.cwd, nexusPreset);
+        console.log(`Initialized Nexus (preset: ${nexusPreset})`);
+      } else {
+        console.log("Note: nexus CLI not installed. 'grove up' will auto-initialize Nexus.");
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(`Warning: Nexus init failed (${msg}). 'grove up' will retry.`);
+    }
+  }
 
   // 7. Seed demo contributions if preset defines them
   if (preset?.seedContributions && preset.seedContributions.length > 0) {

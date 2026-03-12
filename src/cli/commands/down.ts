@@ -19,6 +19,7 @@ interface PidFileData {
   readonly parentPid: number;
   readonly children: readonly { name: string; pid: number }[];
   readonly startedAt: string;
+  readonly nexusManaged?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +95,19 @@ Options:
       pidData.children.map((c) => c.pid),
       5_000,
     );
+  }
+
+  // Stop managed Nexus if applicable
+  if (pidData.nexusManaged) {
+    try {
+      const { nexusDown } = await import("../nexus-lifecycle.js");
+      const projectRoot = join(groveDir, "..");
+      console.log("Stopping Nexus...");
+      await nexusDown(projectRoot);
+      console.log("Nexus stopped.");
+    } catch {
+      /* nexus down is best-effort */
+    }
   }
 
   // Clean up PID file

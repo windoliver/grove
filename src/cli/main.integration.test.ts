@@ -395,7 +395,9 @@ describe("grove init --preset", () => {
     const config = JSON.parse(raw) as Record<string, unknown>;
     expect(config.name).toBe("test-grove");
     expect(config.preset).toBe("review-loop");
-    expect(config.mode).toBe("local");
+    expect(config.mode).toBe("nexus");
+    expect(config.nexusManaged).toBe(true);
+    expect(config.nexusUrl).toBe("http://localhost:2026");
     expect(config.services).toEqual({ server: true, mcp: false });
   });
 
@@ -412,19 +414,19 @@ describe("grove init --preset", () => {
     expect(content).toContain("reviewer");
   });
 
-  test("nexus-preferring preset falls back to local without --nexus-url", async () => {
+  test("nexus-preferring preset uses managed Nexus without --nexus-url", async () => {
     const { stdout, exitCode } = await runCli(
       ["init", "test-grove", "--preset", "swarm-ops"],
       tmpDir,
     );
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("prefers Nexus backend");
-    expect(stdout).toContain("Using local mode");
+    expect(stdout).toContain("Initialized grove");
 
     const raw = await readFile(join(tmpDir, ".grove", "grove.json"), "utf-8");
     const config = JSON.parse(raw) as Record<string, unknown>;
-    expect(config.mode).toBe("local");
-    expect(config.nexusUrl).toBeUndefined();
+    expect(config.mode).toBe("nexus");
+    expect(config.nexusManaged).toBe(true);
+    expect(config.nexusUrl).toBe("http://localhost:2026");
   });
 
   test("nexus-preferring preset uses nexus with --nexus-url", async () => {
