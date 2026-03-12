@@ -137,7 +137,9 @@ describe("CLI commands (with grove)", () => {
     const { stdout, exitCode } = await runCli(["log", "--json"], tmpDir);
     expect(exitCode).toBe(0);
     const parsed = JSON.parse(stdout);
-    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toHaveProperty("results");
+    expect(parsed).toHaveProperty("count");
+    expect(Array.isArray(parsed.results)).toBe(true);
   });
 
   test("grove log -n 1 returns newest only", async () => {
@@ -180,8 +182,10 @@ describe("CLI commands (with grove)", () => {
     const { stdout, exitCode } = await runCli(["search", "--json"], tmpDir);
     expect(exitCode).toBe(0);
     const parsed = JSON.parse(stdout);
-    expect(Array.isArray(parsed)).toBe(true);
-    expect(parsed.length).toBe(2);
+    expect(parsed).toHaveProperty("results");
+    expect(parsed).toHaveProperty("count");
+    expect(Array.isArray(parsed.results)).toBe(true);
+    expect(parsed.results.length).toBe(2);
   });
 
   test("grove search -n 1 --sort recency returns newest only", async () => {
