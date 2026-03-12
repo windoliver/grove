@@ -5,8 +5,8 @@ to do two things:
 
 1. preserve confidence in the protocol, storage, and agent-facing surfaces that
    already have good coverage
-2. close the biggest remaining gaps, especially around the TUI and Nexus-backed
-   operator workflows
+2. close the biggest remaining gaps, especially around end-user TUI behavior
+   and cross-surface operator workflows
 
 The plan is grouped by package/module and by test layer.
 
@@ -34,30 +34,32 @@ Automated test files currently present:
 | `src/local` | 16 |
 | `src/cli` | 26 |
 | `src/server` | 2 |
-| `tests/server` | 11 |
+| `tests/server` | 10 |
 | `src/mcp` | 9 |
 | `src/github` | 6 |
 | `src/gossip` | 4 |
 | `tests/gossip` | 3 |
-| `src/tui` | 7 |
-| `tests/nexus` | 6 |
+| `src/tui` | 14 |
+| `tests/nexus` | 5 |
 | `examples` | 3 |
 
 Interpretation:
 
 - strongest areas: protocol/core logic, local storage/workspaces, CLI, server,
   GitHub bridge, and gossip
-- medium-confidence areas: MCP and Nexus adapter internals
-- weakest areas: TUI app/view behavior, remote/Nexus operator workflows, and a
-  few user-facing edges such as the server diff route and MCP outcomes tools
+- medium-confidence areas: TUI backend resolution and provider lifecycle, MCP,
+  and Nexus adapter internals
+- weakest areas: TUI app/view behavior, full cross-surface operator scenarios,
+  and a few user-facing edges such as the server diff route and MCP outcomes
+  tools
 
 ## Priority Order
 
 ### P0: highest-value gaps
 
 - add direct tests for TUI app/view behavior
-- add remote-provider and nexus-provider tests
-- add Nexus-backed operator workflow tests
+- add higher-level `src/tui/main.ts` startup and provider-wiring tests
+- add Nexus-first cross-surface operator scenario tests
 - add MCP outcome tool tests
 - add server diff route tests
 
@@ -290,23 +292,24 @@ Keep:
 Add:
 
 - end-to-end user workflows using Nexus-backed claims, contributions, outcomes,
-  and TUI browsing
+  TUI browsing, and backend auto-detection
 - concurrency/conflict tests across multiple logical agents
 - VFS browsing tests tied to real TUI provider expectations
 - explicit tests for zone scoping, revision conflict recovery, and retry
   backoff behavior under mixed read/write workloads
 
-Critical gap:
+Remaining gap:
 
-- no full operator workflow currently ties Nexus to the TUI, MCP, and
-  claim/workspace/session lifecycle together
+- no repeatable end-to-end scenario currently ties Nexus auto-detection, TUI
+  shared-state usage, MCP clients, and example workflows together
 
 Manual:
 
+- run `GROVE_NEXUS_URL=http://... grove tui`
 - run `grove tui --nexus ...`
 - browse VFS
 - inspect contributions, claims, frontier, and outcomes
-- once Nexus execution lifecycle is complete, validate spawn/kill and cleanup
+- verify local fallback behavior when auto-detected Nexus is unhealthy
 
 ### `src/github`
 
@@ -372,16 +375,19 @@ Current automated coverage:
 - graph layout and edge rendering
 - tmux manager
 - spawn validator
+- spawn manager and spawn lifecycle
 - local provider
+- remote provider
+- Nexus provider
+- backend resolution
+- provider-shared and provider-utils helpers
 
 Largest gaps:
 
 - `src/tui/app.tsx` root behavior
-- `src/tui/main.ts` provider-mode wiring
+- `src/tui/main.ts` full startup wiring
 - all major views and most shared components
-- `remote-provider.ts`
-- `nexus-provider.ts`
-- end-user spawn/kill/operator loops
+- end-user operator loops across backend modes
 
 Add next:
 
@@ -389,7 +395,6 @@ Add next:
   terminal, agent list/graph, and VFS browser
 - component tests for table, status bar, panel bar, command palette, and input
   handling
-- provider tests for remote and Nexus providers
 - app-level tests for:
   - panel toggling and focus
   - detail drill-in and back navigation
@@ -397,12 +402,17 @@ Add next:
   - command palette spawn/kill flow
   - topology-aware graph mode
   - artifact diff toggle
+- startup integration tests for:
+  - Nexus auto-detection from `GROVE_NEXUS_URL`
+  - Nexus auto-detection from `.grove/grove.json`
+  - fallback to local on unhealthy or auth-protected Nexus
+  - explicit `--url` and `--nexus` precedence
 - Ghostty fallback tests for terminal rendering
 
 Manual TUI checklist:
 
 1. Local mode
-   - launch `grove tui`
+   - launch `grove tui` with no Nexus configuration
    - confirm DAG, Detail, Frontier, and Claims render with seed data
    - open Agent and Terminal panels with tmux available
    - spawn a session from the command palette
@@ -413,10 +423,12 @@ Manual TUI checklist:
    - connect with `grove tui --url http://localhost:4515`
    - confirm dashboard, detail, frontier, claims, artifacts, and outcomes work
 3. Nexus mode
-   - launch `grove tui --nexus <url>`
+   - launch `GROVE_NEXUS_URL=http://... grove tui`
+   - verify the dashboard shows a Nexus backend label
    - confirm VFS browsing works
    - confirm contribution/detail/frontier/outcome views use Nexus-backed data
-   - document current spawn limitations until the Nexus lifecycle is complete
+   - verify local fallback behavior for unhealthy or auth-protected Nexus
+   - verify explicit `--nexus <url>` override still works
 4. Topology mode
    - add topology to `GROVE.md`
    - confirm Agent panel renders graph view and command palette respects role
@@ -474,6 +486,7 @@ people actually use Grove:
    - claims, contributions, artifacts, outcomes stay consistent
 4. Nexus-backed collaboration loop
    - Nexus-backed contribution + claim + outcome flow
+   - `grove tui` resolves Nexus from config or env
    - TUI reads the same shared state
    - manual or automated operator verification
 5. GitHub bridge loop

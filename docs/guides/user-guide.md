@@ -29,16 +29,17 @@ Use local mode when:
 
 - you want a single-machine scratch grove
 - you are developing or debugging without shared infrastructure
-- you need the most complete spawned-session claim/workspace lifecycle today
+- you need tmux-backed session spawn, kill, and live terminal management today
 
 Important caveat:
 
-- `grove tui` still defaults to local mode unless you pass `--nexus` today
-- that default is an implementation detail, not the product story we should
-  optimize around
-- if Grove is going to present Nexus as the first-class path, the TUI should
-  eventually resolve Nexus by configuration and show its active provider mode
-  clearly on startup
+- `grove tui` now auto-selects Nexus when it is configured through
+  `GROVE_NEXUS_URL` or `.grove/grove.json`
+- `--url` still means a remote `grove-server`
+- `--nexus` remains as an explicit Nexus override when you want to bypass
+  auto-detection
+- if an auto-detected Nexus endpoint is unavailable, not really Nexus, or
+  requires auth, the TUI falls back to local mode and prints a warning
 
 ## Choose Your Surface
 
@@ -248,6 +249,7 @@ Use bounties when you want an explicit task market instead of ad hoc claims.
 Launch the TUI:
 
 ```bash
+export GROVE_NEXUS_URL=http://localhost:2026
 grove tui
 grove tui --url http://localhost:4515
 grove tui --nexus http://localhost:2026
@@ -255,9 +257,11 @@ grove tui --nexus http://localhost:2026
 
 Provider modes:
 
-- local: reads directly from local SQLite/CAS/workspace managers
+- Nexus: auto-selected from `GROVE_NEXUS_URL` or `.grove/grove.json` and
+  provides shared contributions, claims, outcomes, artifacts, and VFS
 - remote: reads from `grove-server`
-- Nexus: reads from Nexus-backed stores and enables VFS browsing
+- local: fallback mode that reads directly from local SQLite/CAS/workspace
+  managers
 
 ### Core panels
 
@@ -300,7 +304,7 @@ Keybindings:
 - Terminal: watch captured output from the selected tmux session and type into
   it
 - Artifact: preview text/binary artifacts and diff parent vs child content
-- VFS: browse Nexus VFS directories when running with `--nexus`
+- VFS: browse Nexus VFS directories when the active backend is Nexus
 
 ### TUI operator workflow
 
@@ -316,13 +320,14 @@ Recommended flow:
 
 ### TUI caveats
 
-- tmux is required for agent session management and terminal capture
-- VFS only appears when the provider supports it, which is the Nexus-backed TUI
+- active backend selection is shown in the dashboard header
+- VFS only appears when the active provider is Nexus
+- tmux-backed session management and live terminal capture are still local-mode
+  features today
 - current spawn behavior is shell-first: the command palette starts `$SHELL`
   rather than a prewired `claude` or `codex` command
-- local mode currently has the most complete claim/workspace/session lifecycle
-- Nexus mode is strong for shared state and VFS, but its spawned-session
-  lifecycle is not yet as complete as local mode
+- `--url` is for a remote `grove-server`; `--nexus` is an explicit Nexus
+  override, not the normal way to opt into Nexus-first usage
 
 ## Use Case 6: Connect Agents Through MCP
 
@@ -441,7 +446,10 @@ What Nexus-backed mode provides:
 Where you use it today:
 
 - programmatically through `src/nexus/*`
-- from the TUI with `grove tui --nexus <url>`
+- from the TUI via `grove tui` when Nexus is configured through
+  `GROVE_NEXUS_URL` or `.grove/grove.json`
+- from the TUI with `grove tui --nexus <url>` when you want an explicit
+  override
 - in integration tests under `tests/nexus`
 
 What Nexus mode is best for:
@@ -452,16 +460,17 @@ What Nexus mode is best for:
 
 Current limitation:
 
-- there is no dedicated Nexus execution control plane in this repo slice, so
-  local-mode TUI still provides the most complete claim/workspace/session
-  lifecycle for spawned agents
+- Nexus now covers shared-state reads, claims, outcomes, artifacts, VFS, and
+  workspace bookkeeping, but tmux-backed session spawn and terminal management
+  are still attached to local mode
 
 Recommended stance:
 
 - treat Nexus as the default shared-state backend in docs and onboarding
-- treat local mode as the fallback and single-machine compatibility path
-- do not imply full local-mode session lifecycle parity in Nexus mode until the
-  missing claim/workspace/session plumbing is complete
+- treat local mode as the fallback and single-machine session-manager path
+- do not imply that `--url` and Nexus are interchangeable: `--url` is
+  `grove-server`, Nexus is auto-detected or explicitly overridden with
+  `--nexus`
 
 ## Use Case 9: Bridge Grove and GitHub
 
@@ -558,16 +567,17 @@ high-level support picture:
 
 - strongest coverage today: `core`, `local`, `cli`, `server`, `github`, and
   `gossip`
-- medium-confidence areas: MCP and Nexus adapter internals
-- weakest areas: TUI app/view behavior, remote/Nexus operator workflows, the
-  server diff route, and MCP outcome tools
+- medium-confidence areas: TUI backend resolution and provider lifecycle, MCP,
+  and Nexus adapter internals
+- weakest areas: TUI app/view behavior, full cross-surface operator scenarios,
+  the server diff route, and MCP outcome tools
 
 For TUI users, the practical takeaway is:
 
-- local mode is the most complete operator path today
+- `grove tui` is now Nexus-first when Nexus is configured
 - remote mode is solid for observing a server-backed grove
-- Nexus mode is strong for shared state and VFS, but still needs lifecycle work
-  before it can honestly replace local mode for spawned-session management
+- local mode is still the path for tmux-backed session spawn and terminal
+  capture
 
 ## Where to Go Deeper
 
