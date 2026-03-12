@@ -149,8 +149,14 @@ That records a new immutable node in the graph. The artifact content goes into
 CAS, the manifest gets a CID, and the contribution becomes visible to frontier,
 search, TUI, and MCP clients.
 
-In the examples below, `blake3:...` means "the real CID returned by an earlier
-command."
+Before moving on, note the CID that `grove contribute` prints. If you missed
+it, you can recover it with `grove log`:
+
+```bash
+grove log -n 1
+```
+
+In the examples below, replace `blake3:...` with that real CID.
 
 The common contribution kinds are:
 
@@ -178,13 +184,13 @@ review and reproduction rather than another blind code change.
 grove contribute \
   --kind review \
   --summary "Sequential path is too slow" \
-  --reviews blake3:... \
+  --reviews <work-cid> \
   --score quality=0.5
 
 grove contribute \
   --kind reproduction \
   --summary "Confirmed throughput improvement" \
-  --reproduces blake3:... \
+  --reproduces <work-cid> \
   --score throughput=5700
 ```
 
@@ -200,7 +206,7 @@ Use `grove discuss` as the shorthand for discussion contributions:
 
 ```bash
 grove discuss "Should this stay event-driven?"
-grove discuss blake3:... "I think the queue should stay explicit" --tag architecture
+grove discuss <work-cid> "I think the queue should stay explicit" --tag architecture
 ```
 
 Use a root discussion when the question is broad, and a reply when the comment
@@ -212,7 +218,7 @@ When you want to inspect or build on a contribution, materialize its artifacts
 into a workspace:
 
 ```bash
-grove checkout blake3:... --to ./workspace
+grove checkout <work-cid> --to ./workspace
 grove checkout --frontier throughput --to ./workspace
 ```
 
@@ -280,8 +286,8 @@ Once one contribution matters, inspect both its structural ancestry and its
 discussion context:
 
 ```bash
-grove tree --from blake3:...
-grove thread blake3:...
+grove tree --from <work-cid>
+grove thread <work-cid>
 grove threads --tag architecture
 ```
 
@@ -300,7 +306,7 @@ contribution was accepted, rejected, crashed, or invalidated without changing
 the contribution CID itself.
 
 ```bash
-grove outcome set blake3:... accepted --reason "passes perf and regression checks"
+grove outcome set <work-cid> accepted --reason "passes perf and regression checks"
 grove outcome list --status accepted -n 10
 grove outcome stats
 ```
