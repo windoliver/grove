@@ -11,7 +11,6 @@ import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Claim, Contribution } from "../core/models.js";
 import { checkSpawn, checkSpawnDepth } from "./agents/spawn-validator.js";
-import type { SpawnOptions } from "./agents/tmux-manager.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
 import { buildPaletteItems, CommandPalette } from "./components/command-palette.js";
 import { InputBar } from "./components/input-bar.js";
@@ -22,6 +21,7 @@ import { InputMode, Panel, usePanelFocus } from "./hooks/use-panel-focus.js";
 import { usePolledData } from "./hooks/use-polled-data.js";
 import { PanelManager } from "./panels/panel-manager.js";
 import type { TuiDataProvider } from "./provider.js";
+import { SpawnManager } from "./spawn-manager.js";
 
 /** Props for the root App component. */
 export interface AppProps {
@@ -59,23 +59,23 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
   const [lastError, setLastError] = useState<string | undefined>();
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  // Track heartbeat timers for spawned agents (keyed by claimId)
-  const heartbeatTimersRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
-
   const showError = useCallback((message: string) => {
     if (errorTimerRef.current !== undefined) clearTimeout(errorTimerRef.current);
     setLastError(message);
     errorTimerRef.current = setTimeout(() => setLastError(undefined), 5_000);
   }, []);
 
-  // Cleanup all timers on unmount
+  // SpawnManager handles workspace/claim/heartbeat lifecycle
+  const spawnManagerRef = useRef<SpawnManager | undefined>(undefined);
+  if (spawnManagerRef.current === undefined) {
+    spawnManagerRef.current = new SpawnManager(provider, tmux, showError);
+  }
+
+  // Cleanup timers on unmount
   useEffect(() => {
     return () => {
       if (errorTimerRef.current !== undefined) clearTimeout(errorTimerRef.current);
-      for (const timer of heartbeatTimersRef.current.values()) {
-        clearInterval(timer);
-      }
-      heartbeatTimersRef.current.clear();
+      spawnManagerRef.current?.destroy();
     };
   }, []);
 
@@ -329,64 +329,15 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
     panels.setMode(InputMode.Normal);
   }, [panels]);
 
-  /** Lease duration for TUI-spawned agent claims. */
-  const LEASE_DURATION_MS = 300_000; // 5 minutes
-
-  /** Heartbeat interval: renew lease at ~40% of the lease duration. */
-  const HEARTBEAT_INTERVAL_MS = 120_000; // 2 minutes
-
   /**
-   * Start a periodic heartbeat for a claim. Returns a cleanup function.
-   * Heartbeat failures are non-fatal (logged to status bar) — the agent
-   * continues running and the next heartbeat will retry.
-   */
-  const startHeartbeat = useCallback(
-    (claimId: string) => {
-      if (!provider.heartbeatClaim) return;
-      const heartbeatFn = provider.heartbeatClaim.bind(provider);
-      const timer = setInterval(() => {
-        heartbeatFn(claimId, LEASE_DURATION_MS).catch((err) => {
-          const msg = err instanceof Error ? err.message : "Heartbeat failed";
-          showError(`Heartbeat for ${claimId.slice(0, 8)}: ${msg}`);
-        });
-      }, HEARTBEAT_INTERVAL_MS);
-      heartbeatTimersRef.current.set(claimId, timer);
-    },
-    [provider, showError],
-  );
-
-  /** Stop heartbeat for a claim. */
-  const stopHeartbeat = useCallback((claimId: string) => {
-    const timer = heartbeatTimersRef.current.get(claimId);
-    if (timer !== undefined) {
-      clearInterval(timer);
-      heartbeatTimersRef.current.delete(claimId);
-    }
-  }, []);
-
-  /**
-   * Spawn a new agent session, creating a claim to bind it to the
-   * Grove coordination model.
-   *
-   * Lifecycle: workspace checkout → claim → tmux session → heartbeat loop.
-   * On failure at any step, all previously-created state is rolled back.
-   *
-   * Each spawn uses a unique spawnId as both tmux session suffix and claim
-   * targetRef, avoiding claimOrRenew collisions under the protocol invariant
-   * of one active claim per targetRef.
+   * Spawn a new agent session via SpawnManager.
+   * Validates topology constraints, then delegates lifecycle to SpawnManager.
    */
   const handleSpawn = useCallback(
     (agentId: string, command: string, _target: string, parentAgentId?: string) => {
-      // Enforce topology spawn constraints using the role name (agentId).
-      // Pass parentAgentId so max_children_per_agent is checked when known.
       const spawnCheck = checkSpawn(topology, agentId, activeClaims ?? [], parentAgentId);
-      if (!spawnCheck.allowed) {
-        return;
-      }
+      if (!spawnCheck.allowed) return;
 
-      // Compute depth from the parent's claim context.
-      // Operator-initiated spawns (no parent) are depth 0.
-      // Child spawns inherit parent depth + 1.
       let depth = 0;
       if (parentAgentId !== undefined) {
         const parentClaim = (activeClaims ?? []).find((c) => c.agent.agentId === parentAgentId);
@@ -396,113 +347,25 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
       }
 
       const depthCheck = checkSpawnDepth(topology, depth);
-      if (!depthCheck.allowed) {
-        return;
-      }
+      if (!depthCheck.allowed) return;
 
-      // Generate a unique spawn ID — used as tmux session suffix, claim
-      // targetRef, and workspace CID so all three are correlated.
-      const spawnId = `${agentId}-${Date.now().toString(36)}`;
-
-      const doSpawn = async (): Promise<void> => {
-        // Derive the role from topology if available
-        const role = topology?.roles.find((r) => r.name === agentId)?.name;
-        const agent = { agentId: spawnId, ...(role !== undefined ? { role } : {}) };
-
-        // Step 1: Check out an isolated workspace.
-        // Fails the entire spawn if workspace creation fails — never fall
-        // through to cwd, which would violate workspace isolation.
-        let workspacePath: string;
-        if (provider.checkoutWorkspace) {
-          workspacePath = await provider.checkoutWorkspace(spawnId, agent);
-        } else {
-          throw new Error("Provider does not support workspace checkout");
-        }
-
-        // Step 2: Create a claim using spawnId as targetRef.
-        let claim: import("../core/models.js").Claim | undefined;
-        if (provider.createClaim) {
-          claim = await provider.createClaim({
-            targetRef: spawnId,
-            agent,
-            intentSummary: `TUI-spawned: ${command}`,
-            leaseDurationMs: LEASE_DURATION_MS,
-            context: {
-              workspacePath,
-              ...(parentAgentId !== undefined ? { parentAgentId, depth } : {}),
-            },
-          });
-        }
-
-        // Step 3: Start the tmux session.
-        // If this fails, roll back claim + workspace.
-        try {
-          const options: SpawnOptions = {
-            agentId: spawnId,
-            command,
-            targetRef: spawnId,
-            workspacePath,
-          };
-          await tmux?.spawn(options);
-        } catch (spawnErr) {
-          // Roll back: release claim, clean workspace
-          if (claim && provider.releaseClaim) {
-            await provider.releaseClaim(claim.claimId).catch(() => {});
-          }
-          if (provider.cleanWorkspace) {
-            await provider.cleanWorkspace(spawnId, spawnId).catch(() => {});
-          }
-          throw spawnErr;
-        }
-
-        // Step 4: Start periodic heartbeat to keep the lease alive.
-        if (claim) {
-          startHeartbeat(claim.claimId);
-        }
-      };
-
-      doSpawn().catch((err) => {
+      spawnManagerRef.current?.spawn(agentId, command, parentAgentId, depth).catch((err) => {
         const msg = err instanceof Error ? err.message : "Spawn failed";
         showError(msg);
       });
     },
-    [tmux, provider, topology, activeClaims, showError, startHeartbeat],
+    [topology, activeClaims, showError],
   );
 
   /** Kill tmux session → stop heartbeat → release claim → clean workspace. */
   const handleKill = useCallback(
     (sessionName: string) => {
-      const cleanup = async (): Promise<void> => {
-        // Step 1: Kill the tmux session
-        await tmux?.kill(sessionName);
-
-        // Step 2: Release associated claim and clean workspace
-        const killedAgentId = agentIdFromSession(sessionName);
-        if (!killedAgentId) return;
-
-        const claims = await provider.getClaims({ agentId: killedAgentId, status: "active" });
-        for (const claim of claims) {
-          if (claim.agent.agentId === killedAgentId) {
-            // Stop heartbeat timer for this claim
-            stopHeartbeat(claim.claimId);
-
-            // Release claim first (required before workspace cleanup)
-            if (provider.releaseClaim) {
-              await provider.releaseClaim(claim.claimId);
-            }
-            // Clean workspace (uses claim.targetRef which matches workspace CID)
-            if (provider.cleanWorkspace) {
-              await provider.cleanWorkspace(claim.targetRef, killedAgentId);
-            }
-          }
-        }
-      };
-      cleanup().catch((err) => {
+      spawnManagerRef.current?.kill(sessionName).catch((err) => {
         const msg = err instanceof Error ? err.message : "Kill failed";
         showError(msg);
       });
     },
-    [tmux, provider, showError, stopHeartbeat],
+    [showError],
   );
 
   return (
