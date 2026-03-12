@@ -95,7 +95,8 @@ export const DashboardView: React.NamedExoticComponent<DashboardProps> = React.m
         <box marginBottom={1}>
           <text color="#00cc00">{metadata.name}</text>
           <text opacity={0.5}>
-            {"  "}mode:{metadata.mode} contributions:{metadata.contributionCount} claims:
+            {"  "}
+            {metadata.backendLabel} contributions:{metadata.contributionCount} claims:
             {metadata.activeClaimCount}
           </text>
         </box>

@@ -42,6 +42,7 @@ export interface GroveMetadata {
   readonly contributionCount: number;
   readonly activeClaimCount: number;
   readonly mode: string;
+  readonly backendLabel: string;
 }
 
 /** Aggregated dashboard data fetched in a single call. */

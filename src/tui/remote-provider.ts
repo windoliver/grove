@@ -25,7 +25,7 @@ import type {
   TuiDataProvider,
   TuiOutcomeProvider,
 } from "./provider.js";
-import { buildFrontierSummary } from "./provider-utils.js";
+import { buildFrontierSummary, diffArtifactBuffers } from "./provider-utils.js";
 
 /** TUI data provider backed by a remote grove-server HTTP API. */
 export class RemoteDataProvider
@@ -38,9 +38,11 @@ export class RemoteDataProvider
   };
 
   private readonly baseUrl: string;
+  private readonly label: string;
 
-  constructor(baseUrl: string) {
+  constructor(baseUrl: string, backendLabel?: string) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
+    this.label = backendLabel ?? `remote (${this.baseUrl})`;
   }
 
   async getDashboard(): Promise<DashboardData> {
@@ -80,7 +82,7 @@ export class RemoteDataProvider
 
   async getContribution(cid: string): Promise<ContributionDetail | undefined> {
     const resp = await fetch(`${this.baseUrl}/api/contributions/${encodeURIComponent(cid)}`);
-    if (resp.status === 404) return undefined;
+    if (resp.status === 404 || resp.status === 400) return undefined;
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
     const contribution = (await resp.json()) as Contribution;
 
@@ -185,7 +187,8 @@ export class RemoteDataProvider
       return { contributions: unique };
     }
 
-    const contributions = await this.getContributions({ limit: 200 });
+    // Server caps at 100 per request
+    const contributions = await this.getContributions({ limit: 100 });
     return { contributions };
   }
 
@@ -304,11 +307,7 @@ export class RemoteDataProvider
     childCid: string,
     name: string,
   ): Promise<{ readonly parent: string; readonly child: string }> {
-    const [parentBuf, childBuf] = await Promise.all([
-      this.getArtifact(parentCid, name),
-      this.getArtifact(childCid, name),
-    ]);
-    return { parent: parentBuf.toString("utf-8"), child: childBuf.toString("utf-8") };
+    return diffArtifactBuffers(this.getArtifact.bind(this), parentCid, childCid, name);
   }
 
   async search(query: string): Promise<readonly Contribution[]> {
@@ -337,6 +336,7 @@ export class RemoteDataProvider
           contributionCount: data.stats?.contributions ?? 0,
           activeClaimCount: data.stats?.activeClaims ?? 0,
           mode: "remote",
+          backendLabel: this.label,
         };
       }
     } catch {
@@ -348,6 +348,7 @@ export class RemoteDataProvider
       contributionCount: 0,
       activeClaimCount: 0,
       mode: "remote",
+      backendLabel: this.label,
     };
   }
 
