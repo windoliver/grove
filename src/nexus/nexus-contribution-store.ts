@@ -136,6 +136,19 @@ export class NexusContributionStore implements ContributionStore {
     }
   }
 
+  async getMany(cids: readonly string[]): Promise<ReadonlyMap<string, Contribution>> {
+    const result = new Map<string, Contribution>();
+    if (cids.length === 0) return result;
+
+    for (const cid of cids) {
+      const contribution = await this.get(cid);
+      if (contribution !== undefined) {
+        result.set(cid, contribution);
+      }
+    }
+    return result;
+  }
+
   async get(cid: string): Promise<Contribution | undefined> {
     const cached = this.cache.get(cid);
     if (cached !== undefined) return cached;

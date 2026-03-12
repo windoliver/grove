@@ -7,65 +7,23 @@
  * grove_tree     — View DAG structure (children/ancestors)
  * grove_thread   — View a discussion thread
  *
- * All list operations return trimmed summaries to minimize token usage.
+ * All business logic is delegated to the shared operations layer.
+ * List operations return trimmed summaries to minimize token usage.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type { FrontierEntry } from "../../core/frontier.js";
-import type { Contribution, ContributionKind, ContributionMode } from "../../core/models.js";
+
+import type { ContributionKind, ContributionMode, JsonValue } from "../../core/models.js";
+import {
+  frontierOperation,
+  logOperation,
+  searchOperation,
+  threadOperation,
+  treeOperation,
+} from "../../core/operations/index.js";
 import type { McpDeps } from "../deps.js";
-import { handleToolError, notFoundError } from "../error-handler.js";
-
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
-
-/** Trimmed contribution summary for list responses — saves agent tokens. */
-interface ContributionSummary {
-  readonly cid: string;
-  readonly summary: string;
-  readonly kind: string;
-  readonly mode: string;
-  readonly tags: readonly string[];
-  readonly scores?: Readonly<Record<string, { value: number; direction: string }>> | undefined;
-  readonly agentId: string;
-  readonly createdAt: string;
-}
-
-function toSummary(c: Contribution): ContributionSummary {
-  return {
-    cid: c.cid,
-    summary: c.summary,
-    kind: c.kind,
-    mode: c.mode,
-    tags: c.tags,
-    ...(c.scores !== undefined ? { scores: c.scores } : {}),
-    agentId: c.agent.agentId,
-    createdAt: c.createdAt,
-  };
-}
-
-/** Trimmed frontier entry — includes ranking value. */
-interface FrontierEntrySummary {
-  readonly cid: string;
-  readonly summary: string;
-  readonly value: number;
-  readonly kind: string;
-  readonly mode: string;
-  readonly agentId: string;
-}
-
-function toFrontierSummary(e: FrontierEntry): FrontierEntrySummary {
-  return {
-    cid: e.cid,
-    summary: e.summary,
-    value: e.value,
-    kind: e.contribution.kind,
-    mode: e.contribution.mode,
-    agentId: e.contribution.agent.agentId,
-  };
-}
+import { toMcpResult, toOperationDeps } from "../operation-adapter.js";
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -172,6 +130,8 @@ const threadInputSchema = z.object({
 // ---------------------------------------------------------------------------
 
 export function registerQueryTools(server: McpServer, deps: McpDeps): void {
+  const opDeps = toOperationDeps(deps);
+
   // --- grove_frontier -----------------------------------------------------
   server.registerTool(
     "grove_frontier",
@@ -183,39 +143,22 @@ export function registerQueryTools(server: McpServer, deps: McpDeps): void {
       inputSchema: frontierInputSchema,
     },
     async (args) => {
-      try {
-        const { frontier } = deps;
-
-        const result = await frontier.compute({
-          metric: args.metric,
-          tags: args.tags,
-          kind: args.kind as ContributionKind | undefined,
-          mode: args.mode as ContributionMode | undefined,
-          agentId: args.agentId,
-          agentName: args.agentName,
-          context: args.context as
-            | Record<string, import("../../core/models.js").JsonValue>
-            | undefined,
-          limit: args.limit,
-        });
-
-        // Trim frontier entries for token efficiency
-        const trimmed = {
-          byMetric: Object.fromEntries(
-            Object.entries(result.byMetric).map(([k, v]) => [k, v.map(toFrontierSummary)]),
-          ),
-          byAdoption: result.byAdoption.map(toFrontierSummary),
-          byRecency: result.byRecency.map(toFrontierSummary),
-          byReviewScore: result.byReviewScore.map(toFrontierSummary),
-          byReproduction: result.byReproduction.map(toFrontierSummary),
-        };
-
-        return {
-          content: [{ type: "text" as const, text: JSON.stringify(trimmed) }],
-        };
-      } catch (error) {
-        return handleToolError(error);
-      }
+      const result = await frontierOperation(
+        {
+          ...(args.metric !== undefined ? { metric: args.metric } : {}),
+          ...(args.tags !== undefined ? { tags: args.tags } : {}),
+          ...(args.kind !== undefined ? { kind: args.kind as ContributionKind } : {}),
+          ...(args.mode !== undefined ? { mode: args.mode as ContributionMode } : {}),
+          ...(args.agentId !== undefined ? { agentId: args.agentId } : {}),
+          ...(args.agentName !== undefined ? { agentName: args.agentName } : {}),
+          ...(args.context !== undefined
+            ? { context: args.context as Readonly<Record<string, JsonValue>> }
+            : {}),
+          ...(args.limit !== undefined ? { limit: args.limit } : {}),
+        },
+        opDeps,
+      );
+      return toMcpResult(result);
     },
   );
 
@@ -229,32 +172,20 @@ export function registerQueryTools(server: McpServer, deps: McpDeps): void {
       inputSchema: searchInputSchema,
     },
     async (args) => {
-      try {
-        const { contributionStore } = deps;
-
-        const results = await contributionStore.search(args.query, {
-          kind: args.kind as ContributionKind | undefined,
-          mode: args.mode as ContributionMode | undefined,
-          tags: args.tags,
-          agentId: args.agentId,
-          agentName: args.agentName,
-          limit: args.limit,
-          offset: args.offset,
-        });
-
-        const summaries = results.map(toSummary);
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({ results: summaries, count: summaries.length }),
-            },
-          ],
-        };
-      } catch (error) {
-        return handleToolError(error);
-      }
+      const result = await searchOperation(
+        {
+          query: args.query,
+          ...(args.kind !== undefined ? { kind: args.kind as ContributionKind } : {}),
+          ...(args.mode !== undefined ? { mode: args.mode as ContributionMode } : {}),
+          ...(args.tags !== undefined ? { tags: args.tags } : {}),
+          ...(args.agentId !== undefined ? { agentId: args.agentId } : {}),
+          ...(args.agentName !== undefined ? { agentName: args.agentName } : {}),
+          ...(args.limit !== undefined ? { limit: args.limit } : {}),
+          ...(args.offset !== undefined ? { offset: args.offset } : {}),
+        },
+        opDeps,
+      );
+      return toMcpResult(result);
     },
   );
 
@@ -268,32 +199,18 @@ export function registerQueryTools(server: McpServer, deps: McpDeps): void {
       inputSchema: logInputSchema,
     },
     async (args) => {
-      try {
-        const { contributionStore } = deps;
-
-        const results = await contributionStore.list({
-          kind: args.kind as ContributionKind | undefined,
-          mode: args.mode as ContributionMode | undefined,
-          tags: args.tags,
-          agentId: args.agentId,
-          limit: args.limit,
-          offset: args.offset,
-        });
-
-        // Store returns oldest-first; reverse for newest-first as promised by the tool contract
-        const summaries = results.map(toSummary).reverse();
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({ results: summaries, count: summaries.length }),
-            },
-          ],
-        };
-      } catch (error) {
-        return handleToolError(error);
-      }
+      const result = await logOperation(
+        {
+          ...(args.kind !== undefined ? { kind: args.kind as ContributionKind } : {}),
+          ...(args.mode !== undefined ? { mode: args.mode as ContributionMode } : {}),
+          ...(args.tags !== undefined ? { tags: args.tags } : {}),
+          ...(args.agentId !== undefined ? { agentId: args.agentId } : {}),
+          ...(args.limit !== undefined ? { limit: args.limit } : {}),
+          ...(args.offset !== undefined ? { offset: args.offset } : {}),
+        },
+        opDeps,
+      );
+      return toMcpResult(result);
     },
   );
 
@@ -308,43 +225,14 @@ export function registerQueryTools(server: McpServer, deps: McpDeps): void {
       inputSchema: treeInputSchema,
     },
     async (args) => {
-      try {
-        const { contributionStore } = deps;
-
-        // Verify CID exists
-        const contribution = await contributionStore.get(args.cid);
-        if (contribution === undefined) {
-          return notFoundError("Contribution", args.cid);
-        }
-
-        const result: {
-          cid: string;
-          summary: string;
-          kind: string;
-          children?: ContributionSummary[];
-          ancestors?: ContributionSummary[];
-        } = {
-          cid: contribution.cid,
-          summary: contribution.summary,
-          kind: contribution.kind,
-        };
-
-        if (args.direction === "children" || args.direction === "both") {
-          const children = await contributionStore.children(args.cid);
-          result.children = children.map(toSummary);
-        }
-
-        if (args.direction === "ancestors" || args.direction === "both") {
-          const ancestors = await contributionStore.ancestors(args.cid);
-          result.ancestors = ancestors.map(toSummary);
-        }
-
-        return {
-          content: [{ type: "text" as const, text: JSON.stringify(result) }],
-        };
-      } catch (error) {
-        return handleToolError(error);
-      }
+      const result = await treeOperation(
+        {
+          cid: args.cid,
+          ...(args.direction !== undefined ? { direction: args.direction } : {}),
+        },
+        opDeps,
+      );
+      return toMcpResult(result);
     },
   );
 
@@ -359,39 +247,15 @@ export function registerQueryTools(server: McpServer, deps: McpDeps): void {
       inputSchema: threadInputSchema,
     },
     async (args) => {
-      try {
-        const { contributionStore } = deps;
-
-        const nodes = await contributionStore.thread(args.cid, {
-          maxDepth: args.maxDepth,
-          limit: args.limit,
-        });
-
-        if (nodes.length === 0) {
-          return notFoundError("Thread root", args.cid);
-        }
-
-        // Trimmed thread node summaries
-        const trimmed = nodes.map((n) => ({
-          cid: n.contribution.cid,
-          depth: n.depth,
-          summary: n.contribution.summary,
-          kind: n.contribution.kind,
-          agentId: n.contribution.agent.agentId,
-          createdAt: n.contribution.createdAt,
-        }));
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({ nodes: trimmed, count: trimmed.length }),
-            },
-          ],
-        };
-      } catch (error) {
-        return handleToolError(error);
-      }
+      const result = await threadOperation(
+        {
+          cid: args.cid,
+          ...(args.maxDepth !== undefined ? { maxDepth: args.maxDepth } : {}),
+          ...(args.limit !== undefined ? { limit: args.limit } : {}),
+        },
+        opDeps,
+      );
+      return toMcpResult(result);
     },
   );
 }

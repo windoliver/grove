@@ -98,12 +98,10 @@ export class RemoteDataProvider
 
     let thread: ThreadNode[] = [];
     if (threadResp.ok) {
-      const raw = (await threadResp.json()) as {
-        cid: string;
-        depth: number;
-        contribution: Contribution;
-      }[];
-      thread = raw.map((n) => ({
+      const body = (await threadResp.json()) as {
+        nodes: readonly { cid: string; depth: number; contribution: Contribution }[];
+      };
+      thread = body.nodes.map((n) => ({
         contribution: n.contribution,
         depth: n.depth,
       }));
@@ -120,7 +118,8 @@ export class RemoteDataProvider
     const qs = params.toString();
     const resp = await fetch(`${this.baseUrl}/api/claims${qs ? `?${qs}` : ""}`);
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
-    return (await resp.json()) as Claim[];
+    const body = (await resp.json()) as { claims: readonly Claim[] };
+    return body.claims;
   }
 
   async createClaim(input: ClaimInput): Promise<Claim> {
@@ -197,13 +196,15 @@ export class RemoteDataProvider
     const params = new URLSearchParams({ limit: String(limit) });
     const resp = await fetch(`${this.baseUrl}/api/threads?${params.toString()}`);
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
-    const raw = (await resp.json()) as {
-      cid: string;
-      replyCount: number;
-      lastReplyAt: string;
-      contribution: Contribution;
-    }[];
-    return raw.map((t) => ({
+    const body = (await resp.json()) as {
+      threads: readonly {
+        cid: string;
+        replyCount: number;
+        lastReplyAt: string;
+        contribution: Contribution;
+      }[];
+    };
+    return body.threads.map((t) => ({
       contribution: t.contribution,
       replyCount: t.replyCount,
       lastReplyAt: t.lastReplyAt,
@@ -316,9 +317,10 @@ export class RemoteDataProvider
   }
 
   async search(query: string): Promise<readonly Contribution[]> {
-    const resp = await fetch(`${this.baseUrl}/api/search?query=${encodeURIComponent(query)}`);
+    const resp = await fetch(`${this.baseUrl}/api/search?q=${encodeURIComponent(query)}`);
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
-    return (await resp.json()) as Contribution[];
+    const body = (await resp.json()) as { results: readonly Contribution[] };
+    return body.results;
   }
 
   // ---------------------------------------------------------------------------

@@ -12,8 +12,10 @@ import { parseArgs } from "node:util";
 
 import type { Contribution } from "../../core/models.js";
 import { RelationType } from "../../core/models.js";
+import { treeOperation } from "../../core/operations/index.js";
 import type { CliDeps, Writer } from "../context.js";
 import { contributionsToDagNodes, formatDag, renderDag } from "../format-dag.js";
+import { toOperationDeps } from "../operation-adapter.js";
 
 const DEFAULT_DEPTH = 10;
 
@@ -100,11 +102,18 @@ export async function runTree(
   let contributions: readonly Contribution[];
 
   if (options.from !== undefined) {
-    // Subtree from a specific contribution
-    const root = await deps.store.get(options.from);
-    if (root === undefined) {
+    // Use the treeOperation to validate the CID exists, then collect full subgraph
+    // for DAG rendering (the operation only returns summaries, but we need full
+    // Contribution objects for the DAG renderer).
+    const result = await treeOperation(
+      { cid: options.from, direction: "both" },
+      toOperationDeps(deps),
+    );
+
+    if (!result.ok) {
       throw new Error(`Contribution '${options.from}' not found.`);
     }
+
     contributions = await collectSubgraph(deps, options.from, options.depth);
   } else {
     // Full graph

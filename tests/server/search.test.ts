@@ -17,7 +17,7 @@ describe("GET /api/search", () => {
 
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data).toEqual([]);
+    expect(data).toEqual({ results: [], count: 0 });
   });
 
   test("finds contributions by summary text", async () => {
@@ -40,8 +40,8 @@ describe("GET /api/search", () => {
     const res = await ctx.app.request("/api/search?q=parser");
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data).toHaveLength(1);
-    expect(data[0].summary).toBe("Optimize the parser");
+    expect(data.results).toHaveLength(1);
+    expect(data.results[0].summary).toBe("Optimize the parser");
   });
 
   test("requires search query parameter", async () => {
@@ -66,7 +66,7 @@ describe("GET /api/search", () => {
     const res = await ctx.app.request("/api/search?q=parser&limit=2");
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data.length).toBeLessThanOrEqual(2);
+    expect(data.results.length).toBeLessThanOrEqual(2);
   });
 
   test("filters by tags", async () => {
@@ -91,7 +91,7 @@ describe("GET /api/search", () => {
     const res = await ctx.app.request("/api/search?q=parser&tags=optimization");
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data).toHaveLength(1);
-    expect(data[0].summary).toBe("Parser with tag");
+    expect(data.results).toHaveLength(1);
+    expect(data.results[0].summary).toBe("Parser with tag");
   });
 });

@@ -3,14 +3,22 @@
  *
  * Supports multiple ingestion modes (files, git diff, git tree, report)
  * and contribution kinds (work, review, discussion, adoption, reproduction).
+ *
+ * Delegates contribution creation to the shared operations layer
+ * (contributeOperation) while handling CLI-specific concerns:
+ * argument parsing, validation, store initialization, artifact ingestion,
+ * contract loading, and output formatting.
  */
 
 import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
+import type { ContributionMode } from "../../core/models.js";
+import type { ContributeInput, OperationDeps } from "../../core/operations/index.js";
+import { contributeOperation } from "../../core/operations/index.js";
 import type { AgentOverrides } from "../agent.js";
-import { resolveAgent } from "../agent.js";
+import { outputJson, outputJsonError } from "../format.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -45,6 +53,9 @@ export interface ContributeOptions {
 
   // Agent
   readonly agentOverrides: AgentOverrides;
+
+  // Output
+  readonly json?: boolean | undefined;
 
   // Working directory
   readonly cwd: string;
@@ -88,6 +99,7 @@ export function parseContributeArgs(args: readonly string[]): ContributeOptions 
       model: { type: "string" },
       platform: { type: "string" },
       role: { type: "string" },
+      json: { type: "boolean", default: false },
     },
     allowPositionals: false,
     strict: true,
@@ -118,6 +130,7 @@ export function parseContributeArgs(args: readonly string[]): ContributeOptions 
       platform: values.platform as string | undefined,
       role: values.role as string | undefined,
     },
+    json: values.json ?? false,
     cwd: process.cwd(),
   };
 }
@@ -237,11 +250,10 @@ export function validateContributeOptions(options: ContributeOptions): Validatio
  *
  * 1. Validate options
  * 2. Find and open .grove/
- * 3. Validate parent CID exists (if specified)
- * 4. Ingest artifacts
- * 5. Build relations
- * 6. Create contribution
- * 7. Store contribution
+ * 3. Load GROVE.md contract
+ * 4. Validate artifact paths & ingest
+ * 5. Build relations and scores
+ * 6. Delegate to contributeOperation
  */
 export async function executeContribute(options: ContributeOptions): Promise<{ cid: string }> {
   // 1. Validate
@@ -259,9 +271,11 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
   }
 
   // Dynamic imports for lazy loading
-  const { createContribution } = await import("../../core/manifest.js");
-  const { SqliteContributionStore, initSqliteDb } = await import("../../local/sqlite-store.js");
+  const { SqliteContributionStore, SqliteClaimStore, initSqliteDb } = await import(
+    "../../local/sqlite-store.js"
+  );
   const { FsCas } = await import("../../local/fs-cas.js");
+  const { DefaultFrontierCalculator } = await import("../../core/frontier.js");
   const { parseGroveContract } = await import("../../core/contract.js");
   const { EnforcingContributionStore } = await import("../../core/enforcing-store.js");
 
@@ -269,7 +283,9 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
   const casPath = join(grovePath, "cas");
   const db = initSqliteDb(dbPath);
   const rawStore = new SqliteContributionStore(db);
+  const claimStore = new SqliteClaimStore(db);
   const cas = new FsCas(casPath);
+  const frontier = new DefaultFrontierCalculator(rawStore);
 
   // 3. Load GROVE.md contract for enforcement, default mode, and metric directions
   const grovemdPath = join(options.cwd, "GROVE.md");
@@ -289,11 +305,8 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
   // Wrap store with enforcement if contract is available
   const store = contract ? new EnforcingContributionStore(rawStore, contract, { cas }) : rawStore;
 
-  // Resolve effective mode: CLI flag > grove default > "evaluation"
-  const effectiveMode = resolveMode(options.mode, contract?.mode);
-
   try {
-    // 4. Validate parent CID exists
+    // 4. Validate parent CID exists (CLI-specific: early user-friendly error)
     if (options.parent) {
       const parent = await store.get(options.parent);
       if (!parent) {
@@ -301,7 +314,7 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
       }
     }
 
-    // Validate relation target CIDs exist
+    // Validate relation target CIDs exist (CLI-specific: early user-friendly error)
     for (const cid of [options.reviews, options.respondsTo, options.adopts, options.reproduces]) {
       if (cid) {
         const target = await store.get(cid);
@@ -311,7 +324,7 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
       }
     }
 
-    // 5. Validate artifact paths exist before ingesting
+    // 5. Validate artifact paths exist before ingesting (CLI-specific)
     for (const artifactPath of options.artifacts) {
       try {
         await access(artifactPath);
@@ -328,7 +341,7 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
       }
     }
 
-    // 6. Ingest artifacts
+    // 6. Ingest artifacts (CLI-specific: file/git/report ingestion)
     let artifacts: Record<string, string> = {};
 
     if (options.artifacts.length > 0) {
@@ -408,59 +421,53 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
       }
     }
 
-    // 9. Create and store contribution (goes through enforcing store if contract loaded)
-    const agent = resolveAgent(options.agentOverrides);
+    // 9. Delegate to contributeOperation
+    const opDeps: OperationDeps = {
+      contributionStore: store,
+      claimStore,
+      cas,
+      frontier,
+      ...(contract !== undefined ? { contract } : {}),
+    };
 
-    const contribution = createContribution({
+    const input: ContributeInput = {
       kind: options.kind,
-      mode: effectiveMode,
+      mode: options.mode as ContributionMode | undefined,
       summary: options.summary,
-      ...(options.description !== undefined && { description: options.description }),
+      ...(options.description !== undefined ? { description: options.description } : {}),
       artifacts,
       relations,
-      ...(scores !== undefined && { scores }),
+      ...(scores !== undefined ? { scores } : {}),
       tags: [...options.tags],
-      agent,
-      createdAt: new Date().toISOString(),
-    });
+      agent: options.agentOverrides,
+    };
 
-    await store.put(contribution);
+    const result = await contributeOperation(input, opDeps);
 
-    console.log(`Contribution ${contribution.cid}`);
-    console.log(`  kind: ${contribution.kind}, mode: ${contribution.mode}`);
-    console.log(`  artifacts: ${Object.keys(artifacts).length}`);
-    if (relations.length > 0) {
-      console.log(`  relations: ${relations.length}`);
+    if (!result.ok) {
+      if (options.json) {
+        outputJsonError(result.error);
+      }
+      throw new Error(result.error.message);
     }
 
-    return { cid: contribution.cid };
+    const value = result.value;
+
+    if (options.json) {
+      outputJson(value);
+    } else {
+      console.log(`Contribution ${value.cid}`);
+      console.log(`  kind: ${value.kind}, mode: ${value.mode}`);
+      console.log(`  artifacts: ${value.artifactCount}`);
+      if (value.relationCount > 0) {
+        console.log(`  relations: ${value.relationCount}`);
+      }
+    }
+
+    return { cid: value.cid };
   } finally {
     db.close();
   }
-}
-
-/**
- * Resolve effective contribution mode.
- *
- * Priority: explicit CLI flag > grove contract default > "evaluation".
- *
- * When --mode is omitted, `cliMode` is `undefined` (no parseArgs default),
- * so we can reliably distinguish "user omitted --mode" from
- * "user explicitly passed --mode evaluation".
- */
-function resolveMode(
-  cliMode: ContributeOptions["mode"],
-  groveDefault: string | undefined,
-): "evaluation" | "exploration" {
-  // If user explicitly set --mode, always honor it.
-  if (cliMode !== undefined) {
-    return cliMode;
-  }
-  // Otherwise, prefer the grove's configured default mode
-  if (groveDefault === "exploration" || groveDefault === "evaluation") {
-    return groveDefault;
-  }
-  return "evaluation";
 }
 
 /**

@@ -9,7 +9,9 @@ import type { Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { ContributionKind, ContributionMode } from "../../core/models.js";
+import { searchOperation } from "../../core/operations/index.js";
 import type { ServerEnv } from "../deps.js";
+import { toHttpResult, toOperationDeps } from "../operation-adapter.js";
 
 const querySchema = z.object({
   q: z.string().min(1, "Search query is required"),
@@ -26,20 +28,25 @@ const search: HonoType<ServerEnv> = new Hono<ServerEnv>();
 
 /** GET /api/search — Search contributions by text query with filters. */
 search.get("/", zValidator("query", querySchema), async (c) => {
-  const { contributionStore } = c.get("deps");
   const raw = c.req.valid("query");
 
-  const results = await contributionStore.search(raw.q, {
-    kind: raw.kind as ContributionKind | undefined,
-    mode: raw.mode as ContributionMode | undefined,
-    tags: raw.tags ? raw.tags.split(",").filter((t) => t.length > 0) : undefined,
-    agentId: raw.agentId,
-    agentName: raw.agentName,
-    limit: raw.limit,
-    offset: raw.offset,
-  });
+  const deps = toOperationDeps(c.get("deps"));
+  const result = await searchOperation(
+    {
+      query: raw.q,
+      kind: raw.kind as ContributionKind | undefined,
+      mode: raw.mode as ContributionMode | undefined,
+      tags: raw.tags ? raw.tags.split(",").filter((t) => t.length > 0) : undefined,
+      agentId: raw.agentId,
+      agentName: raw.agentName,
+      limit: raw.limit,
+      offset: raw.offset,
+    },
+    deps,
+  );
 
-  return c.json(results);
+  const { data, status } = toHttpResult(result);
+  return c.json(data, status);
 });
 
 export { search };

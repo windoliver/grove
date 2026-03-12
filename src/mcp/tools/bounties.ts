@@ -5,19 +5,23 @@
  * grove_bounty_list    — List bounties with filters
  * grove_bounty_claim   — Claim an open bounty
  * grove_bounty_settle  — Settle a completed bounty (distribute credits)
+ *
+ * All business logic is delegated to the shared operations layer.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-
-import type { Bounty, BountyCriteria } from "../../core/bounty.js";
-import { BountyStatus } from "../../core/bounty.js";
-import { evaluateBountyCriteria } from "../../core/bounty-logic.js";
+import type { BountyCriteria, BountyStatus } from "../../core/bounty.js";
 import type { JsonValue } from "../../core/models.js";
-import type { AgentInput } from "../agent-identity.js";
-import { resolveAgentIdentity } from "../agent-identity.js";
+import type { AgentOverrides } from "../../core/operations/agent.js";
+import {
+  claimBountyOperation,
+  createBountyOperation,
+  listBountiesOperation,
+  settleBountyOperation,
+} from "../../core/operations/index.js";
 import type { McpDeps } from "../deps.js";
-import { handleToolError, notFoundError } from "../error-handler.js";
+import { toMcpResult, toOperationDeps } from "../operation-adapter.js";
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -91,6 +95,8 @@ const settleBountySchema = z.object({
 // ---------------------------------------------------------------------------
 
 export function registerBountyTools(server: McpServer, deps: McpDeps): void {
+  const opDeps = toOperationDeps(deps);
+
   // --- grove_bounty_create -------------------------------------------------
   server.registerTool(
     "grove_bounty_create",
@@ -101,69 +107,22 @@ export function registerBountyTools(server: McpServer, deps: McpDeps): void {
       inputSchema: createBountySchema,
     },
     async (args) => {
-      try {
-        const { bountyStore, creditsService } = deps;
-        if (!bountyStore) {
-          return errorResult("Bounty operations not available (missing bountyStore)");
-        }
-
-        const agent = resolveAgentIdentity(args.agent as AgentInput);
-        const now = new Date();
-        const bountyId = crypto.randomUUID();
-        const deadlineMs = args.deadlineMs ?? 7 * 24 * 60 * 60 * 1000;
-        const deadline = new Date(now.getTime() + deadlineMs).toISOString();
-
-        // Reserve credits when a CreditsService is available.
-        // Without one (local dev), bounties work but credit enforcement is skipped.
-        let reservationId: string | undefined;
-        if (creditsService) {
-          reservationId = crypto.randomUUID();
-          await creditsService.reserve({
-            reservationId,
-            agentId: agent.agentId,
-            amount: args.amount,
-            timeoutMs: deadlineMs + 24 * 60 * 60 * 1000, // deadline + 1 day
-          });
-        }
-
-        const bounty: Bounty = {
-          bountyId,
+      const result = await createBountyOperation(
+        {
           title: args.title,
-          description: args.description ?? args.title,
-          status: BountyStatus.Open,
-          creator: agent,
+          ...(args.description !== undefined ? { description: args.description } : {}),
           amount: args.amount,
           criteria: args.criteria as BountyCriteria,
-          zoneId: args.zoneId,
-          deadline,
-          reservationId,
-          createdAt: now.toISOString(),
-          updatedAt: now.toISOString(),
+          ...(args.deadlineMs !== undefined ? { deadlineMs: args.deadlineMs } : {}),
+          agent: args.agent as AgentOverrides,
+          ...(args.zoneId !== undefined ? { zoneId: args.zoneId } : {}),
           ...(args.context !== undefined
             ? { context: args.context as Readonly<Record<string, JsonValue>> }
             : {}),
-        };
-
-        const result = await bountyStore.createBounty(bounty);
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({
-                bountyId: result.bountyId,
-                title: result.title,
-                amount: result.amount,
-                status: result.status,
-                deadline: result.deadline,
-                reservationId: result.reservationId,
-              }),
-            },
-          ],
-        };
-      } catch (error) {
-        return handleToolError(error);
-      }
+        },
+        opDeps,
+      );
+      return toMcpResult(result);
     },
   );
 
@@ -175,38 +134,15 @@ export function registerBountyTools(server: McpServer, deps: McpDeps): void {
       inputSchema: listBountiesSchema,
     },
     async (args) => {
-      try {
-        const { bountyStore } = deps;
-        if (!bountyStore) {
-          return errorResult("Bounty operations not available");
-        }
-
-        const bounties = await bountyStore.listBounties({
-          status: args.status as BountyStatus | undefined,
-          creatorAgentId: args.creatorAgentId,
-          limit: args.limit,
-        });
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                bounties.map((b) => ({
-                  bountyId: b.bountyId,
-                  title: b.title,
-                  amount: b.amount,
-                  status: b.status,
-                  deadline: b.deadline,
-                  claimedBy: b.claimedBy?.agentId,
-                })),
-              ),
-            },
-          ],
-        };
-      } catch (error) {
-        return handleToolError(error);
-      }
+      const result = await listBountiesOperation(
+        {
+          ...(args.status !== undefined ? { status: args.status as BountyStatus } : {}),
+          ...(args.creatorAgentId !== undefined ? { creatorAgentId: args.creatorAgentId } : {}),
+          ...(args.limit !== undefined ? { limit: args.limit } : {}),
+        },
+        opDeps,
+      );
+      return toMcpResult(result);
     },
   );
 
@@ -220,54 +156,15 @@ export function registerBountyTools(server: McpServer, deps: McpDeps): void {
       inputSchema: claimBountySchema,
     },
     async (args) => {
-      try {
-        const { bountyStore, claimStore } = deps;
-        if (!bountyStore) {
-          return errorResult("Bounty operations not available");
-        }
-
-        const bounty = await bountyStore.getBounty(args.bountyId);
-        if (!bounty) {
-          return notFoundError("Bounty", args.bountyId);
-        }
-
-        const agent = resolveAgentIdentity(args.agent as AgentInput);
-        const now = new Date();
-        const claimId = crypto.randomUUID();
-
-        // Create claim via existing system
-        const claim = await claimStore.claimOrRenew({
-          claimId,
-          targetRef: `bounty:${args.bountyId}`,
-          agent,
-          status: "active",
-          intentSummary: `Claiming bounty: ${bounty.title}`,
-          createdAt: now.toISOString(),
-          heartbeatAt: now.toISOString(),
-          leaseExpiresAt: new Date(
-            now.getTime() + (args.leaseDurationMs ?? 1_800_000),
-          ).toISOString(),
-        });
-
-        const claimed = await bountyStore.claimBounty(args.bountyId, agent, claim.claimId);
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({
-                bountyId: claimed.bountyId,
-                title: claimed.title,
-                status: claimed.status,
-                claimId: claim.claimId,
-                claimedBy: claimed.claimedBy?.agentId,
-              }),
-            },
-          ],
-        };
-      } catch (error) {
-        return handleToolError(error);
-      }
+      const result = await claimBountyOperation(
+        {
+          bountyId: args.bountyId,
+          agent: args.agent as AgentOverrides,
+          ...(args.leaseDurationMs !== undefined ? { leaseDurationMs: args.leaseDurationMs } : {}),
+        },
+        opDeps,
+      );
+      return toMcpResult(result);
     },
   );
 
@@ -281,83 +178,14 @@ export function registerBountyTools(server: McpServer, deps: McpDeps): void {
       inputSchema: settleBountySchema,
     },
     async (args) => {
-      try {
-        const { bountyStore, creditsService, contributionStore } = deps;
-        if (!bountyStore) {
-          return errorResult("Bounty operations not available (missing bountyStore)");
-        }
-
-        const bounty = await bountyStore.getBounty(args.bountyId);
-        if (!bounty) {
-          return notFoundError("Bounty", args.bountyId);
-        }
-
-        // Validate the contribution exists and meets criteria
-        const contribution = await contributionStore.get(args.contributionCid);
-        if (!contribution) {
-          return errorResult(`Contribution '${args.contributionCid}' not found`);
-        }
-        if (!evaluateBountyCriteria(bounty.criteria, contribution)) {
-          return errorResult(
-            `Contribution '${args.contributionCid}' does not meet bounty criteria`,
-          );
-        }
-
-        // If the bounty has a reservationId, credits MUST be captured before
-        // settling. Refusing to settle without creditsService prevents the
-        // state claiming "settled / paidTo: worker" when no debit or payout
-        // actually occurred.
-        if (bounty.reservationId && !creditsService) {
-          return errorResult(
-            "Cannot settle bounty with escrowed credits: creditsService is not available. " +
-              "Configure a persistent CreditsService to capture the reservation.",
-          );
-        }
-
-        // Settle payment BEFORE state transition: capture the reservation
-        // and atomically credit the fulfiller. If capture fails, the bounty
-        // stays in its current state with the escrow intact.
-        if (creditsService && bounty.reservationId && bounty.claimedBy) {
-          await creditsService.capture(bounty.reservationId, {
-            toAgentId: bounty.claimedBy.agentId,
-          });
-        } else if (creditsService && bounty.reservationId) {
-          // No claimer — just capture (funds go to system/void)
-          await creditsService.capture(bounty.reservationId);
-        }
-
-        // Payment succeeded — now persist state transitions
-        const completed = await bountyStore.completeBounty(args.bountyId, args.contributionCid);
-        const settled = await bountyStore.settleBounty(completed.bountyId);
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({
-                bountyId: settled.bountyId,
-                status: settled.status,
-                fulfilledByCid: settled.fulfilledByCid,
-                amount: settled.amount,
-                paidTo: settled.claimedBy?.agentId,
-              }),
-            },
-          ],
-        };
-      } catch (error) {
-        return handleToolError(error);
-      }
+      const result = await settleBountyOperation(
+        {
+          bountyId: args.bountyId,
+          contributionCid: args.contributionCid,
+        },
+        opDeps,
+      );
+      return toMcpResult(result);
     },
   );
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function errorResult(message: string) {
-  return {
-    content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }],
-    isError: true,
-  };
 }

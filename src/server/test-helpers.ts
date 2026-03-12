@@ -48,6 +48,14 @@ export class InMemoryContentStore implements ContentStore {
     return this.blobs.has(contentHash);
   }
 
+  async existsMany(contentHashes: readonly string[]): Promise<ReadonlyMap<string, boolean>> {
+    const result = new Map<string, boolean>();
+    for (const hash of contentHashes) {
+      result.set(hash, this.blobs.has(hash));
+    }
+    return result;
+  }
+
   async delete(contentHash: string): Promise<boolean> {
     const had = this.blobs.has(contentHash);
     this.blobs.delete(contentHash);

@@ -1,29 +1,35 @@
 /**
  * grove checkout — materialize a contribution's artifacts into a directory.
  *
+ * Uses the shared operations layer for frontier resolution and contribution
+ * lookup, while keeping CLI-specific artifact staging (atomic rename to --to).
+ *
  * Usage:
  *   grove checkout blake3:abc123 --to ./workspace/
  *   grove checkout --frontier throughput --to ./workspace/
+ *   grove checkout blake3:abc123 --to ./workspace/ --json
  */
 
 import { mkdir, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-
+import { frontierOperation } from "../../core/operations/index.js";
 import {
   assertWithinBoundary,
   ensureArtifactParentDir,
   validateArtifactName,
 } from "../../core/path-safety.js";
 import type { CliDeps, Writer } from "../context.js";
-import { truncateCid } from "../format.js";
+import { outputJson, outputJsonError, truncateCid } from "../format.js";
+import { toOperationDeps } from "../operation-adapter.js";
 
 export interface CheckoutOptions {
   readonly cid?: string | undefined;
   readonly frontierMetric?: string | undefined;
   readonly to: string;
   readonly agent: string;
+  readonly json?: boolean | undefined;
 }
 
 export function parseCheckoutArgs(argv: string[]): CheckoutOptions {
@@ -33,6 +39,7 @@ export function parseCheckoutArgs(argv: string[]): CheckoutOptions {
       to: { type: "string" },
       frontier: { type: "string" },
       agent: { type: "string", default: "cli-user" },
+      json: { type: "boolean", default: false },
     },
     strict: true,
     allowPositionals: true,
@@ -58,6 +65,7 @@ export function parseCheckoutArgs(argv: string[]): CheckoutOptions {
     frontierMetric,
     to: values.to,
     agent: values.agent ?? "cli-user",
+    json: values.json ?? false,
   };
 }
 
@@ -66,33 +74,56 @@ export async function runCheckout(
   deps: CliDeps,
   writer: Writer = console.log,
 ): Promise<void> {
+  const opDeps = toOperationDeps(deps);
   let targetCid: string;
 
   if (options.cid !== undefined) {
     targetCid = options.cid;
   } else {
-    // Resolve CID from frontier metric
-    const frontier = await deps.frontier.compute({ metric: options.frontierMetric, limit: 1 });
+    // Resolve CID from frontier metric using the operations layer
+    const result = await frontierOperation({ metric: options.frontierMetric, limit: 1 }, opDeps);
+
+    if (!result.ok) {
+      if (options.json) {
+        outputJsonError(result.error);
+      }
+      throw new Error(result.error.message);
+    }
+
     const metricEntries = options.frontierMetric
-      ? frontier.byMetric[options.frontierMetric]
+      ? result.value.byMetric[options.frontierMetric]
       : undefined;
 
     if (metricEntries === undefined || metricEntries.length === 0) {
-      throw new Error(`No frontier entries found for metric '${options.frontierMetric}'.`);
+      const errMsg = `No frontier entries found for metric '${options.frontierMetric}'.`;
+      if (options.json) {
+        outputJsonError({ code: "NOT_FOUND", message: errMsg });
+      }
+      throw new Error(errMsg);
     }
 
     const best = metricEntries[0];
     if (best === undefined) {
-      throw new Error(`No frontier entries found for metric '${options.frontierMetric}'.`);
+      const errMsg = `No frontier entries found for metric '${options.frontierMetric}'.`;
+      if (options.json) {
+        outputJsonError({ code: "NOT_FOUND", message: errMsg });
+      }
+      throw new Error(errMsg);
     }
     targetCid = best.cid;
-    writer(`Resolved frontier best for '${options.frontierMetric}': ${truncateCid(targetCid)}`);
+    if (!options.json) {
+      writer(`Resolved frontier best for '${options.frontierMetric}': ${truncateCid(targetCid)}`);
+    }
   }
 
   // Verify contribution exists
   const contribution = await deps.store.get(targetCid);
   if (contribution === undefined) {
-    throw new Error(`Contribution '${targetCid}' not found.`);
+    const errMsg = `Contribution '${targetCid}' not found.`;
+    if (options.json) {
+      outputJsonError({ code: "NOT_FOUND", message: errMsg });
+    }
+    throw new Error(errMsg);
   }
 
   // Stage artifacts into a temp directory, then atomically swap into --to.
@@ -131,6 +162,18 @@ export async function runCheckout(
   }
 
   const artifactCount = Object.keys(contribution.artifacts).length;
+
+  if (options.json) {
+    outputJson({
+      cid: targetCid,
+      destination: destDir,
+      kind: contribution.kind,
+      summary: contribution.summary,
+      artifactCount,
+    });
+    return;
+  }
+
   writer(`Checked out ${truncateCid(targetCid)} to ${destDir}`);
   writer(`  Kind: ${contribution.kind}`);
   writer(`  Summary: ${contribution.summary}`);

@@ -10,7 +10,11 @@ import { DefaultFrontierCalculator } from "../../core/frontier.js";
 import { RelationType } from "../../core/models.js";
 import { makeContribution, makeRelation } from "../../core/test-helpers.js";
 import { FsCas } from "../../local/fs-cas.js";
-import { initSqliteDb, SqliteContributionStore } from "../../local/sqlite-store.js";
+import {
+  initSqliteDb,
+  SqliteClaimStore,
+  SqliteContributionStore,
+} from "../../local/sqlite-store.js";
 import type { CliDeps } from "../context.js";
 import { parseTreeArgs, runTree } from "./tree.js";
 
@@ -21,10 +25,12 @@ beforeEach(async () => {
   tmpDir = await mkdtemp(join(tmpdir(), "grove-tree-test-"));
   const db = initSqliteDb(join(tmpDir, "grove.db"));
   const store = new SqliteContributionStore(db);
+  const claimStore = new SqliteClaimStore(db);
   const cas = new FsCas(join(tmpDir, "cas"));
   const frontier = new DefaultFrontierCalculator(store);
   deps = {
     store,
+    claimStore,
     frontier,
     workspace: undefined as never,
     cas,

@@ -159,6 +159,17 @@ export class NexusCas implements ContentStore {
     return fileExists;
   }
 
+  async existsMany(contentHashes: readonly string[]): Promise<ReadonlyMap<string, boolean>> {
+    const result = new Map<string, boolean>();
+    if (contentHashes.length === 0) return result;
+
+    for (const hash of contentHashes) {
+      const exists = await this.exists(hash);
+      result.set(hash, exists);
+    }
+    return result;
+  }
+
   async delete(contentHash: string): Promise<boolean> {
     validateHash(contentHash);
     const blobPath = casPath(this.zoneId, contentHash);

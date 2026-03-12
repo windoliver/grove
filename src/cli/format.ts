@@ -10,6 +10,30 @@ import type { FrontierEntry } from "../core/frontier.js";
 import type { Contribution } from "../core/models.js";
 import type { ThreadNode, ThreadSummary } from "../core/store.js";
 
+// ---------------------------------------------------------------------------
+// JSON output
+// ---------------------------------------------------------------------------
+
+/**
+ * Output data as JSON, with pretty-printing when stdout is a TTY.
+ *
+ * If `process.stdout.isTTY` is true: pretty-print with 2-space indent.
+ * If piped or redirected: compact single-line JSON.
+ */
+export function outputJson(data: unknown): void {
+  const json = process.stdout.isTTY ? JSON.stringify(data, null, 2) : JSON.stringify(data);
+  console.log(json);
+}
+
+/**
+ * Output a structured error in JSON format and exit with code 1.
+ * Used by `--json` commands when an operation fails.
+ */
+export function outputJsonError(error: { code: string; message: string }): never {
+  outputJson({ error: { code: error.code, message: error.message } });
+  process.exit(1);
+}
+
 // Re-export shared pure formatters for backward compatibility
 export {
   contributionToRow,

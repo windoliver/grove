@@ -194,6 +194,8 @@ export class EnforcingContributionStore implements ContributionStore {
 
   // Read operations — direct delegation
   get = (cid: string): Promise<Contribution | undefined> => this.inner.get(cid);
+  getMany = (cids: readonly string[]): Promise<ReadonlyMap<string, Contribution>> =>
+    this.inner.getMany(cids);
   list = (query?: ContributionQuery): Promise<readonly Contribution[]> => this.inner.list(query);
   children = (cid: string): Promise<readonly Contribution[]> => this.inner.children(cid);
   ancestors = (cid: string): Promise<readonly Contribution[]> => this.inner.ancestors(cid);

@@ -14,7 +14,11 @@ import { ScoreDirection } from "../../core/models.js";
 import { makeContribution } from "../../core/test-helpers.js";
 import { FsCas } from "../../local/fs-cas.js";
 import { SqliteGossipStore } from "../../local/gossip-store.js";
-import { initSqliteDb, SqliteContributionStore } from "../../local/sqlite-store.js";
+import {
+  initSqliteDb,
+  SqliteClaimStore,
+  SqliteContributionStore,
+} from "../../local/sqlite-store.js";
 import type { CliDeps } from "../context.js";
 import { handleGossip } from "./gossip.js";
 
@@ -46,10 +50,12 @@ beforeEach(async () => {
   await mkdir(groveDir, { recursive: true });
   const db = initSqliteDb(join(groveDir, "grove.db"));
   const store = new SqliteContributionStore(db);
+  const claimStore = new SqliteClaimStore(db);
   const cas = new FsCas(join(groveDir, "cas"));
   const frontier = new DefaultFrontierCalculator(store);
   deps = {
     store,
+    claimStore,
     frontier,
     workspace: undefined as never,
     cas,

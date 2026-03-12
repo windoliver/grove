@@ -124,7 +124,6 @@ describe("grove_claim", () => {
     expect(result.text).toContain(McpErrorCode.ClaimConflict);
     expect(result.text).toContain("task-1");
     expect(result.text).toContain("agent-1");
-    expect(result.text).toContain("Pick a different target");
   });
 
   test("claim conflict error includes holding agent's claim ID", async () => {

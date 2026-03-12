@@ -7,13 +7,18 @@
  *   grove bounty claim <bounty-id>
  */
 
-import { randomUUID } from "node:crypto";
 import { parseArgs } from "node:util";
-import type { Bounty } from "../../core/bounty.js";
-import { BountyStatus } from "../../core/bounty.js";
+import type { BountyStatus } from "../../core/bounty.js";
 import type { BountyStore } from "../../core/bounty-store.js";
 import type { CreditsService } from "../../core/credits.js";
+import type { OperationDeps } from "../../core/operations/index.js";
+import {
+  claimBountyOperation,
+  createBountyOperation,
+  listBountiesOperation,
+} from "../../core/operations/index.js";
 import type { ClaimStore } from "../../core/store.js";
+import { outputJson, outputJsonError } from "../format.js";
 import { parseDuration } from "../utils/duration.js";
 import { resolveAgentId } from "../utils/grove-dir.js";
 
@@ -28,6 +33,18 @@ export interface BountyDeps {
   readonly claimStore: ClaimStore;
   readonly stdout: (msg: string) => void;
   readonly stderr: (msg: string) => void;
+}
+
+/** Build OperationDeps from BountyDeps (only bounty-relevant fields). */
+function toOpDeps(deps: BountyDeps): OperationDeps {
+  return {
+    claimStore: deps.claimStore,
+    contributionStore: undefined as never,
+    cas: undefined as never,
+    frontier: undefined as never,
+    bountyStore: deps.bountyStore,
+    ...(deps.creditsService !== undefined ? { creditsService: deps.creditsService } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -75,6 +92,7 @@ async function runBountyCreate(args: readonly string[], deps: BountyDeps): Promi
       tags: { type: "string" },
       "agent-id": { type: "string" },
       "zone-id": { type: "string" },
+      json: { type: "boolean", default: false },
     },
     allowPositionals: true,
     strict: true,
@@ -109,7 +127,6 @@ async function runBountyCreate(args: readonly string[], deps: BountyDeps): Promi
   }
 
   const deadlineMs = parseDuration(values.deadline);
-  const deadline = new Date(Date.now() + deadlineMs).toISOString();
   const agentId = resolveAgentId(values["agent-id"]);
 
   const criteria = {
@@ -121,38 +138,34 @@ async function runBountyCreate(args: readonly string[], deps: BountyDeps): Promi
     requiredTags: values.tags?.split(",").map((t) => t.trim()),
   };
 
-  const bountyId = randomUUID();
-  const now = new Date().toISOString();
-
-  // Reserve credits (skip when no credits service — local dev mode)
-  let reservationId: string | undefined;
-  if (deps.creditsService) {
-    reservationId = randomUUID();
-    await deps.creditsService.reserve({
-      reservationId,
-      agentId,
+  const result = await createBountyOperation(
+    {
+      title,
+      ...(values.description !== undefined ? { description: values.description } : {}),
       amount,
-      timeoutMs: deadlineMs + 24 * 60 * 60 * 1000, // deadline + 1 day safety margin
-    });
+      criteria,
+      deadlineMs,
+      agent: { agentId },
+      ...(values["zone-id"] !== undefined ? { zoneId: values["zone-id"] } : {}),
+    },
+    toOpDeps(deps),
+  );
+
+  if (!result.ok) {
+    if (values.json) {
+      outputJsonError(result.error);
+    }
+    deps.stderr(`Error: ${result.error.message}`);
+    process.exitCode = 1;
+    return;
   }
 
-  const bounty: Bounty = {
-    bountyId,
-    title,
-    description: values.description ?? title,
-    status: BountyStatus.Open,
-    creator: { agentId },
-    amount,
-    criteria,
-    zoneId: values["zone-id"],
-    deadline,
-    reservationId,
-    createdAt: now,
-    updatedAt: now,
-  };
+  if (values.json) {
+    outputJson(result.value);
+    return;
+  }
 
-  await deps.bountyStore.createBounty(bounty);
-  deps.stdout(formatBountySummary(bounty, "Created"));
+  deps.stdout(formatBountySummaryFromResult(result.value, title, "Created"));
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +180,7 @@ async function runBountyList(args: readonly string[], deps: BountyDeps): Promise
       mine: { type: "boolean" },
       "agent-id": { type: "string" },
       limit: { type: "string", short: "n", default: "20" },
+      json: { type: "boolean", default: false },
     },
     strict: true,
   });
@@ -174,11 +188,30 @@ async function runBountyList(args: readonly string[], deps: BountyDeps): Promise
   const agentId = values.mine ? resolveAgentId(values["agent-id"]) : undefined;
   const statusFilter = values.status as BountyStatus | undefined;
 
-  const bounties = await deps.bountyStore.listBounties({
-    status: statusFilter,
-    creatorAgentId: agentId,
-    limit: parseInt(values.limit ?? "20", 10),
-  });
+  const result = await listBountiesOperation(
+    {
+      ...(statusFilter !== undefined ? { status: statusFilter } : {}),
+      ...(agentId !== undefined ? { creatorAgentId: agentId } : {}),
+      limit: parseInt(values.limit ?? "20", 10),
+    },
+    toOpDeps(deps),
+  );
+
+  if (!result.ok) {
+    if (values.json) {
+      outputJsonError(result.error);
+    }
+    deps.stderr(`Error: ${result.error.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  if (values.json) {
+    outputJson(result.value);
+    return;
+  }
+
+  const bounties = result.value.bounties;
 
   if (bounties.length === 0) {
     deps.stdout("No bounties found.");
@@ -200,6 +233,7 @@ async function runBountyClaim(args: readonly string[], deps: BountyDeps): Promis
     options: {
       "agent-id": { type: "string" },
       lease: { type: "string", short: "l", default: "30m" },
+      json: { type: "boolean", default: false },
     },
     allowPositionals: true,
     strict: true,
@@ -212,14 +246,14 @@ async function runBountyClaim(args: readonly string[], deps: BountyDeps): Promis
     return;
   }
 
+  // Pre-check: verify bounty exists and is open (the operation doesn't validate status)
   const bounty = await deps.bountyStore.getBounty(bountyId);
   if (!bounty) {
     deps.stderr(`Error: bounty '${bountyId}' not found.`);
     process.exitCode = 1;
     return;
   }
-
-  if (bounty.status !== BountyStatus.Open) {
+  if (bounty.status !== "open") {
     deps.stderr(`Error: bounty '${bountyId}' is not open (status: ${bounty.status}).`);
     process.exitCode = 1;
     return;
@@ -228,44 +262,68 @@ async function runBountyClaim(args: readonly string[], deps: BountyDeps): Promis
   const agentId = resolveAgentId(values["agent-id"]);
   const leaseMs = parseDuration(values.lease ?? "30m");
 
-  // Create a claim via the existing claim system
-  const now = new Date();
-  const claimId = randomUUID();
-  const claim = await deps.claimStore.claimOrRenew({
-    claimId,
-    targetRef: `bounty:${bountyId}`,
-    agent: { agentId },
-    status: "active" as const,
-    intentSummary: `Claiming bounty: ${bounty.title}`,
-    createdAt: now.toISOString(),
-    heartbeatAt: now.toISOString(),
-    leaseExpiresAt: new Date(now.getTime() + leaseMs).toISOString(),
-  });
+  const result = await claimBountyOperation(
+    {
+      bountyId,
+      agent: { agentId },
+      leaseDurationMs: leaseMs,
+    },
+    toOpDeps(deps),
+  );
 
-  // Update bounty status
-  const claimed = await deps.bountyStore.claimBounty(bountyId, { agentId }, claim.claimId);
-  deps.stdout(formatBountySummary(claimed, "Claimed"));
+  if (!result.ok) {
+    if (values.json) {
+      outputJsonError(result.error);
+    }
+    deps.stderr(`Error: ${result.error.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  if (values.json) {
+    outputJson(result.value);
+    return;
+  }
+
+  const v = result.value;
+  const lines = [
+    `Claimed bounty ${v.bountyId}`,
+    `  Title:    ${v.title}`,
+    `  Status:   ${v.status}`,
+    `  Claim ID: ${v.claimId}`,
+  ];
+  if (v.claimedBy !== undefined) {
+    lines.push(`  Claimed by: ${v.claimedBy}`);
+  }
+  deps.stdout(lines.join("\n"));
 }
 
 // ---------------------------------------------------------------------------
 // Formatting
 // ---------------------------------------------------------------------------
 
-function formatBountySummary(bounty: Bounty, action: string): string {
+function formatBountySummaryFromResult(
+  result: { bountyId: string; title: string; amount: number; status: string; deadline: string },
+  title: string,
+  action: string,
+): string {
   const lines = [
-    `${action} bounty ${bounty.bountyId}`,
-    `  Title:    ${bounty.title}`,
-    `  Amount:   ${bounty.amount} credits`,
-    `  Status:   ${bounty.status}`,
-    `  Deadline: ${bounty.deadline}`,
+    `${action} bounty ${result.bountyId}`,
+    `  Title:    ${title}`,
+    `  Amount:   ${result.amount} credits`,
+    `  Status:   ${result.status}`,
+    `  Deadline: ${result.deadline}`,
   ];
-  if (bounty.claimedBy) {
-    lines.push(`  Claimed by: ${bounty.claimedBy.agentId}`);
-  }
   return lines.join("\n");
 }
 
-function formatBountyLine(bounty: Bounty): string {
+function formatBountyLine(bounty: {
+  bountyId: string;
+  title: string;
+  amount: number;
+  status: string;
+  deadline: string;
+}): string {
   const deadline = new Date(bounty.deadline);
   const remaining = deadline.getTime() - Date.now();
   const remainingStr =

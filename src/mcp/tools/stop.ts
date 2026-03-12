@@ -2,19 +2,23 @@
  * MCP tool for stop condition evaluation.
  *
  * grove_check_stop — Check if grove stop conditions are met
+ *
+ * All business logic is delegated to the shared operations layer.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-import type { JsonValue } from "../../core/models.js";
+import { checkStopOperation } from "../../core/operations/index.js";
 import type { McpDeps } from "../deps.js";
-import { handleToolError } from "../error-handler.js";
+import { toMcpResult, toOperationDeps } from "../operation-adapter.js";
 
 // ---------------------------------------------------------------------------
 // Tool registration
 // ---------------------------------------------------------------------------
 
 export function registerStopTools(server: McpServer, deps: McpDeps): void {
+  const opDeps = toOperationDeps(deps);
+
   server.registerTool(
     "grove_check_stop",
     {
@@ -26,50 +30,8 @@ export function registerStopTools(server: McpServer, deps: McpDeps): void {
       inputSchema: {},
     },
     async () => {
-      try {
-        const { contract, contributionStore } = deps;
-
-        if (contract === undefined) {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  stopped: false,
-                  reason: "No GROVE.md contract defined — stop conditions not configured",
-                  conditions: {},
-                  evaluatedAt: new Date().toISOString(),
-                }),
-              },
-            ],
-          };
-        }
-
-        // Lazy import to avoid circular dependency at module load time.
-        const { evaluateStopConditions } = await import("../../core/lifecycle.js");
-        const result = await evaluateStopConditions(contract, contributionStore);
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({
-                stopped: result.stopped,
-                reason: result.stopped
-                  ? Object.entries(result.conditions)
-                      .filter(([, c]) => c.met)
-                      .map(([name, c]) => `${name}: ${c.reason}`)
-                      .join("; ")
-                  : "No stop conditions met",
-                conditions: result.conditions as unknown as Readonly<Record<string, JsonValue>>,
-                evaluatedAt: result.evaluatedAt,
-              }),
-            },
-          ],
-        };
-      } catch (error) {
-        return handleToolError(error);
-      }
+      const result = await checkStopOperation(opDeps);
+      return toMcpResult(result);
     },
   );
 }

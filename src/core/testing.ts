@@ -41,6 +41,17 @@ export class InMemoryContributionStore implements ContributionStore {
 
   get = async (cid: string): Promise<Contribution | undefined> => this.contributions.get(cid);
 
+  getMany = async (cids: readonly string[]): Promise<ReadonlyMap<string, Contribution>> => {
+    const result = new Map<string, Contribution>();
+    for (const cid of cids) {
+      const c = this.contributions.get(cid);
+      if (c !== undefined) {
+        result.set(cid, c);
+      }
+    }
+    return result;
+  };
+
   list = async (query?: ContributionQuery): Promise<readonly Contribution[]> => {
     let results = [...this.contributions.values()];
 

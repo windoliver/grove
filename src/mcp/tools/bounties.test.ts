@@ -152,7 +152,8 @@ describe("grove_bounty_list", () => {
 
     expect(result.isError).toBeUndefined();
     const data = JSON.parse(result.text);
-    expect(data).toEqual([]);
+    expect(data.bounties).toEqual([]);
+    expect(data.count).toBe(0);
   });
 
   test("lists created bounties", async () => {
@@ -171,7 +172,8 @@ describe("grove_bounty_list", () => {
 
     const result = await callTool(server, "grove_bounty_list", {});
     const data = JSON.parse(result.text);
-    expect(data.length).toBe(2);
+    expect(data.bounties.length).toBe(2);
+    expect(data.count).toBe(2);
   });
 
   test("filters by status", async () => {
@@ -184,11 +186,11 @@ describe("grove_bounty_list", () => {
 
     const result = await callTool(server, "grove_bounty_list", { status: "open" });
     const data = JSON.parse(result.text);
-    expect(data.length).toBe(1);
-    expect(data[0].status).toBe("open");
+    expect(data.bounties.length).toBe(1);
+    expect(data.bounties[0].status).toBe("open");
 
     const settled = await callTool(server, "grove_bounty_list", { status: "settled" });
-    expect(JSON.parse(settled.text).length).toBe(0);
+    expect(JSON.parse(settled.text).bounties.length).toBe(0);
   });
 
   test("filters by creator", async () => {
@@ -200,10 +202,10 @@ describe("grove_bounty_list", () => {
     });
 
     const result = await callTool(server, "grove_bounty_list", { creatorAgentId: "agent-1" });
-    expect(JSON.parse(result.text).length).toBe(1);
+    expect(JSON.parse(result.text).bounties.length).toBe(1);
 
     const noMatch = await callTool(server, "grove_bounty_list", { creatorAgentId: "other" });
-    expect(JSON.parse(noMatch.text).length).toBe(0);
+    expect(JSON.parse(noMatch.text).bounties.length).toBe(0);
   });
 });
 

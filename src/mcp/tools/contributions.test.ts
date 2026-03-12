@@ -119,8 +119,8 @@ describe("grove_contribute", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.text).toContain(McpErrorCode.ValidationError);
-    expect(result.text).toContain("Relation target not found");
+    expect(result.text).toContain(McpErrorCode.NotFound);
+    expect(result.text).toContain("Contribution not found");
   });
 
   test("creates contribution with valid relation", async () => {

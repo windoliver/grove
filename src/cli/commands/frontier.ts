@@ -10,10 +10,12 @@
  */
 
 import { parseArgs } from "node:util";
-import type { FrontierEntry, FrontierQuery } from "../../core/frontier.js";
 import type { ContributionMode, JsonValue } from "../../core/models.js";
+import type { FrontierEntrySummary, FrontierInput } from "../../core/operations/index.js";
+import { frontierOperation } from "../../core/operations/index.js";
 import type { CliDeps, Writer } from "../context.js";
-import { formatFrontierSection } from "../format.js";
+import { formatTable } from "../format.js";
+import { toOperationDeps } from "../operation-adapter.js";
 
 const DEFAULT_LIMIT = 10;
 
@@ -75,15 +77,21 @@ export async function runFrontier(
   deps: CliDeps,
   writer: Writer = console.log,
 ): Promise<void> {
-  const query: FrontierQuery = {
-    metric: options.metric,
-    tags: options.tag !== undefined ? [options.tag] : undefined,
-    mode: options.mode as ContributionMode | undefined,
-    context: options.context,
+  const input: FrontierInput = {
+    ...(options.metric !== undefined ? { metric: options.metric } : {}),
+    ...(options.tag !== undefined ? { tags: [options.tag] } : {}),
+    ...(options.mode !== undefined ? { mode: options.mode as ContributionMode } : {}),
+    ...(options.context !== undefined ? { context: options.context } : {}),
     limit: options.limit,
   };
 
-  const frontier = await deps.frontier.compute(query);
+  const result = await frontierOperation(input, toOperationDeps(deps));
+
+  if (!result.ok) {
+    throw new Error(result.error.message);
+  }
+
+  const frontier = result.value;
 
   if (options.json) {
     writer(JSON.stringify(frontier, null, 2));
@@ -94,12 +102,12 @@ export async function runFrontier(
 
   // Metric sections
   for (const [metricName, entries] of Object.entries(frontier.byMetric)) {
-    const section = formatFrontierSection(`By metric: ${metricName}`, entries);
+    const section = formatFrontierSummarySection(`By metric: ${metricName}`, entries);
     if (section) sections.push(section);
   }
 
   // Other dimensions
-  const otherSections: readonly [string, readonly FrontierEntry[]][] = [
+  const otherSections: readonly [string, readonly FrontierEntrySummary[]][] = [
     ["By adoption count", frontier.byAdoption],
     ["By recency", frontier.byRecency],
     ["By review score", frontier.byReviewScore],
@@ -107,7 +115,7 @@ export async function runFrontier(
   ];
 
   for (const [heading, entries] of otherSections) {
-    const section = formatFrontierSection(heading, entries);
+    const section = formatFrontierSummarySection(heading, entries);
     if (section) sections.push(section);
   }
 
@@ -117,4 +125,37 @@ export async function runFrontier(
   }
 
   writer(sections.join("\n\n"));
+}
+
+// ---------------------------------------------------------------------------
+// Formatting helpers
+// ---------------------------------------------------------------------------
+
+/** Standard columns for frontier display from operation summaries. */
+const FRONTIER_COLUMNS = [
+  { header: "CID", key: "cid", maxWidth: 22 },
+  { header: "SUMMARY", key: "summary", maxWidth: 40 },
+  { header: "VALUE", key: "value", align: "right" as const, maxWidth: 14 },
+  { header: "AGENT", key: "agent", maxWidth: 16 },
+] as const;
+
+function summaryToRow(entry: FrontierEntrySummary): Record<string, string> {
+  const cid = entry.cid;
+  const short = cid.length > 20 ? `${cid.slice(0, 18)}..` : cid;
+  return {
+    cid: short,
+    summary: entry.summary,
+    value: entry.value.toFixed(2),
+    agent: entry.agentId,
+  };
+}
+
+/** Format frontier entry summaries as a table with a heading. */
+function formatFrontierSummarySection(
+  heading: string,
+  entries: readonly FrontierEntrySummary[],
+): string {
+  if (entries.length === 0) return "";
+  const table = formatTable(FRONTIER_COLUMNS, entries.map(summaryToRow));
+  return `${heading}\n${table}`;
 }

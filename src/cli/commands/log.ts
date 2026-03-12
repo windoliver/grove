@@ -11,11 +11,13 @@
 
 import { parseArgs } from "node:util";
 
+import type { ContributionKind, ContributionMode } from "../../core/models.js";
+import { logOperation } from "../../core/operations/index.js";
 import type { OutcomeStatus } from "../../core/outcome.js";
 import { OUTCOME_STATUSES } from "../../core/outcome.js";
-import type { ContributionQuery } from "../../core/store.js";
 import type { CliDeps, Writer } from "../context.js";
 import { formatContributions } from "../format.js";
+import { toOperationDeps } from "../operation-adapter.js";
 
 const DEFAULT_LIMIT = 20;
 
@@ -66,37 +68,68 @@ export async function runLog(
   deps: CliDeps,
   writer: Writer = console.log,
 ): Promise<void> {
-  // Fetch all matching contributions (no limit yet — we must sort first)
-  const query: ContributionQuery = {
-    kind: options.kind as ContributionQuery["kind"],
-    mode: options.mode as ContributionQuery["mode"],
-  };
-
-  let contributions = await deps.store.list(query);
-
-  // Filter by outcome status if requested
+  // Outcome filtering requires direct store access (getBatch is not in the operation)
   if (options.outcome !== undefined) {
     if (deps.outcomeStore === undefined) {
       throw new Error("Outcome store is not available. Cannot filter by outcome.");
     }
+
+    // Fetch all matching contributions, filter by outcome, then sort and slice
+    const contributions = await deps.store.list({
+      kind: options.kind as ContributionKind | undefined,
+      mode: options.mode as ContributionMode | undefined,
+    });
+
     const cids = contributions.map((c) => c.cid);
     const outcomes = await deps.outcomeStore.getBatch(cids);
     const targetStatus = options.outcome as OutcomeStatus;
-    contributions = contributions.filter((c) => {
+    const filtered = contributions.filter((c) => {
       const record = outcomes.get(c.cid);
       return record !== undefined && record.status === targetStatus;
     });
-  }
 
-  // Sort by createdAt descending (most recent first), then apply limit
-  const sorted = [...contributions]
-    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-    .slice(0, options.limit);
+    const sorted = [...filtered]
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+      .slice(0, options.limit);
 
-  if (options.json) {
-    writer(JSON.stringify(sorted, null, 2));
+    if (options.json) {
+      writer(JSON.stringify(sorted, null, 2));
+      return;
+    }
+    writer(formatContributions(sorted));
     return;
   }
 
-  writer(formatContributions(sorted));
+  // Use the operation layer to fetch contributions (without limit — the operation's
+  // store-level limit returns oldest-first which would cut off newest entries).
+  // Apply limit after the operation reverses to newest-first order.
+  const result = await logOperation(
+    {
+      ...(options.kind !== undefined ? { kind: options.kind as ContributionKind } : {}),
+      ...(options.mode !== undefined ? { mode: options.mode as ContributionMode } : {}),
+    },
+    toOperationDeps(deps),
+  );
+
+  if (!result.ok) {
+    throw new Error(result.error.message);
+  }
+
+  // The operation returns newest-first; apply CLI limit
+  const sliced = result.value.results.slice(0, options.limit);
+
+  // Fetch full Contribution objects for display
+  const cids = sliced.map((r) => r.cid);
+  const fullMap = await deps.store.getMany(cids);
+  // Preserve the operation's order (newest first)
+  const full = cids
+    .map((cid) => fullMap.get(cid))
+    .filter((c): c is import("../../core/models.js").Contribution => c !== undefined);
+
+  if (options.json) {
+    writer(JSON.stringify(full, null, 2));
+    return;
+  }
+
+  writer(formatContributions(full));
 }

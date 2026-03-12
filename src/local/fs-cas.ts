@@ -196,6 +196,23 @@ export class FsCas implements ContentStore {
   }
 
   /**
+   * Check existence of multiple content hashes in parallel.
+   * Returns a map of hash → boolean.
+   */
+  async existsMany(contentHashes: readonly string[]): Promise<ReadonlyMap<string, boolean>> {
+    const result = new Map<string, boolean>();
+    if (contentHashes.length === 0) return result;
+
+    const entries = await Promise.all(
+      contentHashes.map(async (hash) => [hash, await this.exists(hash)] as const),
+    );
+    for (const [hash, exists] of entries) {
+      result.set(hash, exists);
+    }
+    return result;
+  }
+
+  /**
    * Delete content by hash.
    * Returns true if the content was deleted, false if it did not exist.
    */

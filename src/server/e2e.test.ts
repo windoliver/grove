@@ -166,7 +166,8 @@ describe("E2E: claim lifecycle", () => {
     const res = await fetch(`${baseUrl}/api/claims`);
     expect(res.status).toBe(200);
     const data = (await res.json()) as Json;
-    expect(Array.isArray(data)).toBe(true);
+    expect(Array.isArray(data.claims)).toBe(true);
+    expect(typeof data.count).toBe("number");
   });
 });
 
@@ -186,7 +187,8 @@ describe("E2E: search", () => {
     const res = await fetch(`${baseUrl}/api/search?q=E2E`);
     expect(res.status).toBe(200);
     const data = (await res.json()) as Json;
-    expect(Array.isArray(data)).toBe(true);
+    expect(Array.isArray(data.results)).toBe(true);
+    expect(typeof data.count).toBe("number");
   });
 
   it("GET /api/search without q returns 400", async () => {

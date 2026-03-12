@@ -12,18 +12,19 @@ import { zValidator } from "@hono/zod-validator";
 import type { Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
-import { createContribution } from "../../core/manifest.js";
 import type {
-  ContributionInput,
   ContributionKind,
   ContributionMode,
   JsonValue,
   Relation,
   Score,
 } from "../../core/models.js";
+import type { ContributeInput } from "../../core/operations/index.js";
+import { contributeOperation } from "../../core/operations/index.js";
 import type { OutcomeStatus } from "../../core/outcome.js";
 import type { ContributionQuery } from "../../core/store.js";
 import type { ServerEnv } from "../deps.js";
+import { toHttpResult, toOperationDeps } from "../operation-adapter.js";
 import { CID_REGEX, MAX_REQUEST_SIZE } from "../schemas.js";
 
 // ---------------------------------------------------------------------------
@@ -144,7 +145,8 @@ contributions.post("/", async (c) => {
     );
   }
 
-  const { contributionStore, cas } = c.get("deps");
+  const serverDeps = c.get("deps");
+  const { cas } = serverDeps;
   const contentType = c.req.header("content-type") ?? "";
 
   let manifestData: unknown;
@@ -196,30 +198,15 @@ contributions.post("/", async (c) => {
   // Validate manifest
   const parsed = manifestSchema.parse(manifestData);
 
-  // Build artifacts map: start with pre-computed hashes, overlay multipart files
+  // Ingest multipart artifact files into CAS (HTTP-specific concern)
   const artifacts: Record<string, string> = {};
   if (parsed.artifacts) {
     for (const [name, hash] of Object.entries(parsed.artifacts)) {
       if (typeof hash === "string") {
-        // Verify pre-computed hash exists in CAS
-        const exists = await cas.exists(hash);
-        if (!exists) {
-          return c.json(
-            {
-              error: {
-                code: "VALIDATION_ERROR",
-                message: `Artifact '${name}' references non-existent hash ${hash}`,
-              },
-            },
-            400,
-          );
-        }
         artifacts[name] = hash;
       }
     }
   }
-
-  // Process multipart artifact files
   for (const [name, file] of artifactParts) {
     const bytes = new Uint8Array(await file.arrayBuffer());
     const mediaType = file.type || undefined;
@@ -227,9 +214,8 @@ contributions.post("/", async (c) => {
     artifacts[name] = contentHash;
   }
 
-  // Build contribution input
-  const now = new Date().toISOString();
-  const input: ContributionInput = {
+  // Build operation input and delegate to shared operations layer
+  const input: ContributeInput = {
     kind: parsed.kind,
     mode: parsed.mode,
     summary: parsed.summary,
@@ -244,12 +230,18 @@ contributions.post("/", async (c) => {
       ? { context: parsed.context as Readonly<Record<string, JsonValue>> }
       : {}),
     agent: parsed.agent,
-    createdAt: parsed.createdAt ?? now,
   };
 
-  const contribution = createContribution(input);
-  await contributionStore.put(contribution);
+  const opDeps = toOperationDeps(serverDeps);
+  const result = await contributeOperation(input, opDeps);
 
+  if (!result.ok) {
+    const { data, status } = toHttpResult(result);
+    return c.json(data, status);
+  }
+
+  // Fetch the full contribution to preserve the existing response shape
+  const contribution = await serverDeps.contributionStore.get(result.value.cid);
   return c.json(contribution, 201);
 });
 

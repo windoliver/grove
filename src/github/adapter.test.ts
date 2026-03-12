@@ -44,6 +44,14 @@ class InMemoryCas {
     return this.blobs.has(hash);
   };
 
+  existsMany = async (hashes: readonly string[]): Promise<ReadonlyMap<string, boolean>> => {
+    const result = new Map<string, boolean>();
+    for (const hash of hashes) {
+      result.set(hash, this.blobs.has(hash));
+    }
+    return result;
+  };
+
   delete = async (hash: string): Promise<boolean> => {
     return this.blobs.delete(hash);
   };

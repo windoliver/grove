@@ -11,11 +11,11 @@ import { dirname, join, resolve } from "node:path";
 import type { FrontierCalculator } from "../core/frontier.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
 import type { OutcomeStore } from "../core/outcome.js";
-import type { ContributionStore } from "../core/store.js";
+import type { ClaimStore, ContributionStore } from "../core/store.js";
 import type { WorkspaceManager } from "../core/workspace.js";
 import { FsCas } from "../local/fs-cas.js";
 import { SqliteOutcomeStore } from "../local/sqlite-outcome-store.js";
-import { initSqliteDb, SqliteContributionStore } from "../local/sqlite-store.js";
+import { initSqliteDb, SqliteClaimStore, SqliteContributionStore } from "../local/sqlite-store.js";
 import { LocalWorkspaceManager } from "../local/workspace.js";
 
 const GROVE_DIR = ".grove";
@@ -25,6 +25,7 @@ const CAS_DIR = "cas";
 /** All dependencies a CLI command needs. */
 export interface CliDeps {
   readonly store: ContributionStore;
+  readonly claimStore: ClaimStore;
   readonly frontier: FrontierCalculator;
   readonly workspace: WorkspaceManager;
   readonly cas: FsCas;
@@ -81,6 +82,7 @@ export function initCliDeps(cwd: string, groveOverride?: string): CliDeps {
 
   const db = initSqliteDb(dbPath);
   const store = new SqliteContributionStore(db);
+  const claimStore = new SqliteClaimStore(db);
   const cas = new FsCas(casPath);
   const frontier = new DefaultFrontierCalculator(store);
   const outcomeStore = new SqliteOutcomeStore(db);
@@ -93,6 +95,7 @@ export function initCliDeps(cwd: string, groveOverride?: string): CliDeps {
 
   return {
     store,
+    claimStore,
     frontier,
     workspace,
     cas,

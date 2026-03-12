@@ -82,7 +82,7 @@ describe("GET /api/frontier", () => {
     const data = await res.json();
     // Only work contributions in recency
     for (const entry of data.byRecency) {
-      expect(entry.contribution.kind).toBe("work");
+      expect(entry.kind).toBe("work");
     }
   });
 

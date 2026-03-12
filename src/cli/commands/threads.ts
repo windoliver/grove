@@ -10,8 +10,10 @@
 
 import { parseArgs } from "node:util";
 
+import { threadsOperation } from "../../core/operations/index.js";
 import type { CliDeps, Writer } from "../context.js";
 import { formatHotThreads } from "../format.js";
+import { toOperationDeps } from "../operation-adapter.js";
 
 const DEFAULT_LIMIT = 10;
 
@@ -50,10 +52,19 @@ export async function runThreads(
   deps: CliDeps,
   writer: Writer = console.log,
 ): Promise<void> {
-  const summaries = await deps.store.hotThreads({
-    tags: options.tags.length > 0 ? options.tags : undefined,
-    limit: options.limit,
-  });
+  const result = await threadsOperation(
+    {
+      ...(options.tags.length > 0 ? { tags: options.tags } : {}),
+      limit: options.limit,
+    },
+    toOperationDeps(deps),
+  );
+
+  if (!result.ok) {
+    throw new Error(result.error.message);
+  }
+
+  const summaries = result.value.threads;
 
   if (summaries.length === 0) {
     if (options.json) {
@@ -68,14 +79,12 @@ export async function runThreads(
     writer(
       JSON.stringify(
         summaries.map((s) => ({
-          cid: s.contribution.cid,
-          summary: s.contribution.summary,
-          kind: s.contribution.kind,
+          cid: s.cid,
+          summary: s.summary,
+          kind: s.kind,
           replyCount: s.replyCount,
           lastReplyAt: s.lastReplyAt,
-          tags: s.contribution.tags,
-          agent: s.contribution.agent.agentName ?? s.contribution.agent.agentId,
-          createdAt: s.contribution.createdAt,
+          agent: s.agentId,
         })),
         null,
         2,
@@ -84,5 +93,21 @@ export async function runThreads(
     return;
   }
 
-  writer(formatHotThreads(summaries));
+  // Fetch full contributions for the formatHotThreads function
+  const cids = summaries.map((s) => s.cid);
+  const fullMap = await deps.store.getMany(cids);
+
+  const threadSummaries = summaries
+    .map((s) => {
+      const contribution = fullMap.get(s.cid);
+      if (contribution === undefined) return undefined;
+      return {
+        contribution,
+        replyCount: s.replyCount,
+        lastReplyAt: s.lastReplyAt,
+      };
+    })
+    .filter((t): t is import("../../core/store.js").ThreadSummary => t !== undefined);
+
+  writer(formatHotThreads(threadSummaries));
 }

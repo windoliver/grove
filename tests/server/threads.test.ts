@@ -41,10 +41,13 @@ describe("GET /api/threads/:cid", () => {
 
     const res = await ctx.app.request(`/api/threads/${root.cid}`);
     expect(res.status).toBe(200);
-    const data = (await res.json()) as Array<{ cid: string; depth: number }>;
-    expect(data).toHaveLength(2);
-    expect(data[0]?.depth).toBe(0);
-    expect(data[1]?.depth).toBe(1);
+    const data = (await res.json()) as {
+      nodes: Array<{ cid: string; depth: number }>;
+      count: number;
+    };
+    expect(data.nodes).toHaveLength(2);
+    expect(data.nodes[0]?.depth).toBe(0);
+    expect(data.nodes[1]?.depth).toBe(1);
   });
 
   test("returns 404 for non-existent CID", async () => {
@@ -78,8 +81,8 @@ describe("GET /api/threads", () => {
   test("returns empty array when no threads", async () => {
     const res = await ctx.app.request("/api/threads");
     expect(res.status).toBe(200);
-    const data = (await res.json()) as unknown[];
-    expect(data).toEqual([]);
+    const data = (await res.json()) as { threads: unknown[]; count: number };
+    expect(data).toEqual({ threads: [], count: 0 });
   });
 
   test("returns threads sorted by reply count", async () => {
@@ -135,11 +138,14 @@ describe("GET /api/threads", () => {
 
     const res = await ctx.app.request("/api/threads");
     expect(res.status).toBe(200);
-    const data = (await res.json()) as Array<{ cid: string; replyCount: number }>;
-    expect(data).toHaveLength(2);
+    const data = (await res.json()) as {
+      threads: Array<{ cid: string; replyCount: number }>;
+      count: number;
+    };
+    expect(data.threads).toHaveLength(2);
     // Thread A has more replies, should come first
-    expect(data[0]?.replyCount).toBe(2);
-    expect(data[1]?.replyCount).toBe(1);
+    expect(data.threads[0]?.replyCount).toBe(2);
+    expect(data.threads[1]?.replyCount).toBe(1);
   });
 
   test("respects limit query parameter", async () => {
@@ -174,7 +180,7 @@ describe("GET /api/threads", () => {
 
     const res = await ctx.app.request("/api/threads?limit=2");
     expect(res.status).toBe(200);
-    const data = (await res.json()) as unknown[];
-    expect(data).toHaveLength(2);
+    const data = (await res.json()) as { threads: unknown[]; count: number };
+    expect(data.threads).toHaveLength(2);
   });
 });

@@ -15,13 +15,13 @@
  */
 
 import { parseArgs } from "node:util";
-
-import type {
-  OutcomeQuery,
-  OutcomeRecord,
-  OutcomeStats,
-  OutcomeStore,
-} from "../../core/outcome.js";
+import type { OperationDeps } from "../../core/operations/index.js";
+import {
+  listOutcomesOperation,
+  outcomeStatsOperation,
+  setOutcomeOperation,
+} from "../../core/operations/index.js";
+import type { OutcomeRecord, OutcomeStats, OutcomeStore } from "../../core/outcome.js";
 import { OUTCOME_STATUSES } from "../../core/outcome.js";
 import type { Writer } from "../context.js";
 import { formatTable, truncateCid } from "../format.js";
@@ -35,6 +35,17 @@ export interface OutcomeDeps {
   readonly outcomeStore: OutcomeStore;
   readonly stdout: Writer;
   readonly stderr: Writer;
+}
+
+/** Build OperationDeps from OutcomeDeps (only outcome-relevant fields). */
+function toOpDeps(deps: OutcomeDeps): OperationDeps {
+  return {
+    outcomeStore: deps.outcomeStore,
+    contributionStore: undefined as never,
+    claimStore: undefined as never,
+    cas: undefined as never,
+    frontier: undefined as never,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -208,25 +219,45 @@ async function runSet(args: OutcomeSetArgs, deps: OutcomeDeps): Promise<void> {
     return;
   }
 
-  const record = await deps.outcomeStore.set(args.cid, {
-    status: args.status as OutcomeRecord["status"],
-    reason: args.reason,
-    baselineCid: args.baseline,
-    evaluatedBy: args.evaluator,
-  });
+  const result = await setOutcomeOperation(
+    {
+      cid: args.cid,
+      status: args.status as OutcomeRecord["status"],
+      ...(args.reason !== undefined ? { reason: args.reason } : {}),
+      ...(args.baseline !== undefined ? { baselineCid: args.baseline } : {}),
+      agent: { agentId: args.evaluator },
+    },
+    toOpDeps(deps),
+  );
 
+  if (!result.ok) {
+    deps.stderr(`Error: ${result.error.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const record = result.value;
   deps.stdout(
     `Outcome set: ${truncateCid(record.cid)} → ${record.status} (by ${record.evaluatedBy})`,
   );
 }
 
 async function runList(args: OutcomeListArgs, deps: OutcomeDeps): Promise<void> {
-  const query: OutcomeQuery = {
-    status: args.status as OutcomeQuery["status"],
-    limit: args.limit,
-  };
+  const result = await listOutcomesOperation(
+    {
+      ...(args.status !== undefined ? { status: args.status as OutcomeRecord["status"] } : {}),
+      limit: args.limit,
+    },
+    toOpDeps(deps),
+  );
 
-  const outcomes = await deps.outcomeStore.list(query);
+  if (!result.ok) {
+    deps.stderr(`Error: ${result.error.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const outcomes = result.value;
 
   if (args.json) {
     deps.stdout(JSON.stringify(outcomes, null, 2));
@@ -237,6 +268,13 @@ async function runList(args: OutcomeListArgs, deps: OutcomeDeps): Promise<void> 
 }
 
 async function runStats(deps: OutcomeDeps): Promise<void> {
-  const stats = await deps.outcomeStore.getStats();
-  deps.stdout(formatStats(stats));
+  const result = await outcomeStatsOperation(toOpDeps(deps));
+
+  if (!result.ok) {
+    deps.stderr(`Error: ${result.error.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  deps.stdout(formatStats(result.value));
 }

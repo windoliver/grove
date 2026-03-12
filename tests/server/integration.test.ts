@@ -60,7 +60,7 @@ describe("multi-endpoint integration", () => {
     // 6. Searchable
     const searchRes = await ctx.app.request("/api/search?q=ML+model");
     const searchResults = await searchRes.json();
-    expect(searchResults).toHaveLength(1);
+    expect(searchResults.results).toHaveLength(1);
   });
 
   test("contribution DAG traversal: parent → child → grandchild", async () => {

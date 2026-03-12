@@ -62,6 +62,9 @@ export interface ContentStore {
   /** Check if content exists. */
   exists(contentHash: string): Promise<boolean>;
 
+  /** Check existence of multiple content hashes. Returns a map of hash → boolean. */
+  existsMany(contentHashes: readonly string[]): Promise<ReadonlyMap<string, boolean>>;
+
   /** Delete content by hash. Returns true if deleted. */
   delete(contentHash: string): Promise<boolean>;
 

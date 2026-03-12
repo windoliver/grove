@@ -79,6 +79,9 @@ export interface ContributionStore {
   /** Retrieve a contribution by CID. */
   get(cid: string): Promise<Contribution | undefined>;
 
+  /** Retrieve multiple contributions by CID. Returns a map of CID → Contribution for found CIDs. */
+  getMany(cids: readonly string[]): Promise<ReadonlyMap<string, Contribution>>;
+
   /** List contributions matching filters. */
   list(query?: ContributionQuery): Promise<readonly Contribution[]>;
 

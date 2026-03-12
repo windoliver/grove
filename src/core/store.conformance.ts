@@ -98,6 +98,35 @@ export function runContributionStoreTests(factory: ContributionStoreFactory): vo
     });
 
     // ------------------------------------------------------------------
+    // getMany
+    // ------------------------------------------------------------------
+
+    test("getMany returns found CIDs", async () => {
+      const c1 = makeContribution({ summary: "getMany-a" });
+      const c2 = makeContribution({ summary: "getMany-b" });
+      await store.putMany([c1, c2]);
+      const result = await store.getMany([c1.cid, c2.cid]);
+      expect(result.size).toBe(2);
+      expect(result.get(c1.cid)?.summary).toBe("getMany-a");
+      expect(result.get(c2.cid)?.summary).toBe("getMany-b");
+    });
+
+    test("getMany omits missing CIDs", async () => {
+      const c = makeContribution({ summary: "getMany-exists" });
+      await store.put(c);
+      const missing = "blake3:0000000000000000000000000000000000000000000000000000000000000000";
+      const result = await store.getMany([c.cid, missing]);
+      expect(result.size).toBe(1);
+      expect(result.has(c.cid)).toBe(true);
+      expect(result.has(missing)).toBe(false);
+    });
+
+    test("getMany returns empty map for empty input", async () => {
+      const result = await store.getMany([]);
+      expect(result.size).toBe(0);
+    });
+
+    // ------------------------------------------------------------------
     // list
     // ------------------------------------------------------------------
 

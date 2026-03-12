@@ -11,10 +11,11 @@
  *   grove claim <target> --agent-id my-agent --lease 15m
  */
 
-import { randomUUID } from "node:crypto";
 import { parseArgs } from "node:util";
-
+import type { OperationDeps } from "../../core/operations/index.js";
+import { claimOperation, ErrorCode } from "../../core/operations/index.js";
 import type { ClaimStore } from "../../core/store.js";
+import { outputJson, outputJsonError } from "../format.js";
 import { parseDuration } from "../utils/duration.js";
 import { resolveAgentId } from "../utils/grove-dir.js";
 import { formatClaimSummary } from "../utils/output.js";
@@ -34,6 +35,7 @@ export async function runClaim(args: readonly string[], deps: ClaimDeps): Promis
       lease: { type: "string", short: "l", default: DEFAULT_LEASE },
       intent: { type: "string", short: "i" },
       "agent-id": { type: "string" },
+      json: { type: "boolean", default: false },
     },
     allowPositionals: true,
     strict: true,
@@ -62,19 +64,61 @@ export async function runClaim(args: readonly string[], deps: ClaimDeps): Promis
     }
   }
 
-  const now = new Date();
-  const claim = await deps.claimStore.claimOrRenew({
-    claimId: randomUUID(),
-    targetRef: target,
-    agent: { agentId },
-    status: "active" as const,
-    intentSummary: intent,
-    createdAt: now.toISOString(),
-    heartbeatAt: now.toISOString(),
-    leaseExpiresAt: new Date(now.getTime() + leaseMs).toISOString(),
-  });
+  // Build minimal OperationDeps with only what claimOperation needs
+  const opDeps: OperationDeps = {
+    claimStore: deps.claimStore,
+    // These are required by the interface but not used by claimOperation
+    contributionStore: undefined as never,
+    cas: undefined as never,
+    frontier: undefined as never,
+  };
 
-  // Distinguish new claim from renewal
-  const isRenewal = existing.some((c) => c.agent.agentId === agentId);
-  deps.stdout(formatClaimSummary(claim, isRenewal ? "Renewed" : "Claimed"));
+  const result = await claimOperation(
+    {
+      targetRef: target,
+      intentSummary: intent,
+      leaseDurationMs: leaseMs,
+      agent: { agentId },
+    },
+    opDeps,
+  );
+
+  if (!result.ok) {
+    if (values.json) {
+      outputJsonError(result.error);
+    }
+    // For claim conflicts, produce an error message compatible with the original
+    // ClaimConflictError format that includes "active claim".
+    if (result.error.code === ErrorCode.ClaimConflict) {
+      const details = result.error.details as
+        | { targetRef?: string; heldByAgentId?: string; heldByClaimId?: string }
+        | undefined;
+      const heldBy = details?.heldByAgentId ?? "unknown";
+      const claimId = details?.heldByClaimId ?? "unknown";
+      throw new Error(
+        `Target '${target}' already has an active claim '${claimId}' by agent '${heldBy}'`,
+      );
+    }
+    throw new Error(result.error.message);
+  }
+
+  if (values.json) {
+    outputJson(result.value);
+    return;
+  }
+
+  // Fetch the claim object for formatting (formatClaimSummary expects a Claim)
+  const claim = await deps.claimStore.getClaim(result.value.claimId);
+  if (claim === undefined) {
+    // Should not happen after a successful operation
+    deps.stdout(
+      `${result.value.renewed ? "Renewed" : "Claimed"}: ${result.value.claimId}\n` +
+        `  target:  ${result.value.targetRef}\n` +
+        `  agent:   ${result.value.agentId}\n` +
+        `  status:  ${result.value.status}`,
+    );
+    return;
+  }
+
+  deps.stdout(formatClaimSummary(claim, result.value.renewed ? "Renewed" : "Claimed"));
 }

@@ -510,6 +510,20 @@ export class SqliteContributionStore implements ContributionStore {
     return rowToContribution(row);
   };
 
+  getMany = async (cids: readonly string[]): Promise<ReadonlyMap<string, Contribution>> => {
+    const result = new Map<string, Contribution>();
+    if (cids.length === 0) return result;
+
+    const placeholders = cids.map(() => "?").join(", ");
+    const sql = `SELECT manifest_json FROM contributions WHERE cid IN (${placeholders})`;
+    const rows = this.db.prepare(sql).all(...cids) as readonly { manifest_json: string }[];
+    for (const row of rows) {
+      const contribution = rowToContribution(row);
+      result.set(contribution.cid, contribution);
+    }
+    return result;
+  };
+
   list = async (query?: ContributionQuery): Promise<readonly Contribution[]> => {
     const { sql, params } = buildFilteredQuery({
       baseSelect: "SELECT c.manifest_json FROM contributions c",
@@ -1279,6 +1293,8 @@ export class SqliteStore implements ContributionStore, ClaimStore {
   putMany = (contributions: readonly Contribution[]): Promise<void> =>
     this.contributions.putMany(contributions);
   get = (cid: string): Promise<Contribution | undefined> => this.contributions.get(cid);
+  getMany = (cids: readonly string[]): Promise<ReadonlyMap<string, Contribution>> =>
+    this.contributions.getMany(cids);
   list = (query?: ContributionQuery): Promise<readonly Contribution[]> =>
     this.contributions.list(query);
   children = (cid: string): Promise<readonly Contribution[]> => this.contributions.children(cid);

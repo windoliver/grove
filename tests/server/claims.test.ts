@@ -230,7 +230,7 @@ describe("GET /api/claims", () => {
 
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data).toEqual([]);
+    expect(data).toEqual({ claims: [], count: 0 });
   });
 
   test("lists active claims", async () => {
@@ -243,8 +243,8 @@ describe("GET /api/claims", () => {
     const res = await ctx.app.request("/api/claims?status=active");
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data).toHaveLength(1);
-    expect(data[0].status).toBe("active");
+    expect(data.claims).toHaveLength(1);
+    expect(data.claims[0].status).toBe("active");
   });
 
   test("filters by agentId", async () => {
@@ -262,7 +262,7 @@ describe("GET /api/claims", () => {
     const res = await ctx.app.request("/api/claims?agentId=agent-1");
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data).toHaveLength(1);
-    expect(data[0].agent.agentId).toBe("agent-1");
+    expect(data.claims).toHaveLength(1);
+    expect(data.claims[0].agentId).toBe("agent-1");
   });
 });

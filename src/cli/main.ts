@@ -135,6 +135,24 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       },
     },
     {
+      name: "review",
+      description: "Submit a review of a contribution",
+      needsStore: false,
+      handler: async (args) => {
+        const { handleReview } = await import("./commands/review.js");
+        await handleReview(args, groveOverride);
+      },
+    },
+    {
+      name: "reproduce",
+      description: "Submit a reproduction attempt",
+      needsStore: false,
+      handler: async (args) => {
+        const { handleReproduce } = await import("./commands/reproduce.js");
+        await handleReproduce(args, groveOverride);
+      },
+    },
+    {
       name: "thread",
       description: "View a discussion thread",
       needsStore: false,
@@ -375,6 +393,8 @@ Usage:
   grove init [name]           Create a new grove
   grove contribute            Submit a contribution
   grove discuss [cid] <msg>   Post a discussion or reply
+  grove review <cid>          Submit a review of a contribution
+  grove reproduce <cid>       Submit a reproduction attempt
   grove claim <target>        Claim work to prevent duplication
   grove release <claim-id>    Release a claim
   grove claims                List claims

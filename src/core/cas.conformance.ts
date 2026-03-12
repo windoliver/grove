@@ -94,6 +94,36 @@ export function runContentStoreTests(factory: ContentStoreFactory): void {
     });
 
     // ------------------------------------------------------------------
+    // existsMany
+    // ------------------------------------------------------------------
+
+    test("existsMany returns true for existing hashes", async () => {
+      const data1 = new TextEncoder().encode("existsMany-a");
+      const data2 = new TextEncoder().encode("existsMany-b");
+      const hash1 = await store.put(data1);
+      const hash2 = await store.put(data2);
+      const result = await store.existsMany([hash1, hash2]);
+      expect(result.size).toBe(2);
+      expect(result.get(hash1)).toBe(true);
+      expect(result.get(hash2)).toBe(true);
+    });
+
+    test("existsMany returns false for missing hashes", async () => {
+      const fakeHash = "blake3:0000000000000000000000000000000000000000000000000000000000000000";
+      const data = new TextEncoder().encode("existsMany-exists");
+      const realHash = await store.put(data);
+      const result = await store.existsMany([realHash, fakeHash]);
+      expect(result.size).toBe(2);
+      expect(result.get(realHash)).toBe(true);
+      expect(result.get(fakeHash)).toBe(false);
+    });
+
+    test("existsMany returns empty map for empty input", async () => {
+      const result = await store.existsMany([]);
+      expect(result.size).toBe(0);
+    });
+
+    // ------------------------------------------------------------------
     // delete
     // ------------------------------------------------------------------
 

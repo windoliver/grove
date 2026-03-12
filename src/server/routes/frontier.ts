@@ -9,7 +9,9 @@ import type { Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { ContributionKind, ContributionMode, JsonValue } from "../../core/models.js";
+import { frontierOperation } from "../../core/operations/index.js";
 import type { ServerEnv } from "../deps.js";
+import { toHttpResult, toOperationDeps } from "../operation-adapter.js";
 
 const querySchema = z.object({
   kind: z.string().optional(),
@@ -26,7 +28,6 @@ const frontier: HonoType<ServerEnv> = new Hono<ServerEnv>();
 
 /** GET /api/frontier — Compute multi-signal frontier. */
 frontier.get("/", zValidator("query", querySchema), async (c) => {
-  const { frontier: calculator } = c.get("deps");
   const query = c.req.valid("query");
 
   let contextFilter: Record<string, JsonValue> | undefined;
@@ -46,18 +47,23 @@ frontier.get("/", zValidator("query", querySchema), async (c) => {
     contextFilter = parsed as Record<string, JsonValue>;
   }
 
-  const result = await calculator.compute({
-    metric: query.metric,
-    tags: query.tags ? query.tags.split(",").filter((t) => t.length > 0) : undefined,
-    kind: query.kind as ContributionKind | undefined,
-    mode: query.mode as ContributionMode | undefined,
-    agentId: query.agentId,
-    agentName: query.agentName,
-    context: contextFilter,
-    limit: query.limit,
-  });
+  const deps = toOperationDeps(c.get("deps"));
+  const result = await frontierOperation(
+    {
+      metric: query.metric,
+      tags: query.tags ? query.tags.split(",").filter((t) => t.length > 0) : undefined,
+      kind: query.kind as ContributionKind | undefined,
+      mode: query.mode as ContributionMode | undefined,
+      agentId: query.agentId,
+      agentName: query.agentName,
+      context: contextFilter,
+      limit: query.limit,
+    },
+    deps,
+  );
 
-  return c.json(result);
+  const { data, status } = toHttpResult(result);
+  return c.json(data, status);
 });
 
 export { frontier };

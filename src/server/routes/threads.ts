@@ -9,7 +9,9 @@ import { zValidator } from "@hono/zod-validator";
 import type { Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
+import { threadOperation, threadsOperation } from "../../core/operations/index.js";
 import type { ServerEnv } from "../deps.js";
+import { toHttpResult, toOperationDeps } from "../operation-adapter.js";
 import { CID_REGEX } from "../schemas.js";
 
 const cidParamSchema = z.object({
@@ -34,45 +36,28 @@ threads.get(
   zValidator("param", cidParamSchema),
   zValidator("query", threadQuerySchema),
   async (c) => {
-    const { contributionStore } = c.get("deps");
     const { cid } = c.req.valid("param");
     const { maxDepth, limit } = c.req.valid("query");
 
-    const nodes = await contributionStore.thread(cid, { maxDepth, limit });
-    if (nodes.length === 0) {
-      return c.json({ error: { code: "NOT_FOUND", message: `Thread root ${cid} not found` } }, 404);
-    }
+    const deps = toOperationDeps(c.get("deps"));
+    const result = await threadOperation({ cid, maxDepth, limit }, deps);
 
-    return c.json(
-      nodes.map((n) => ({
-        cid: n.contribution.cid,
-        depth: n.depth,
-        contribution: n.contribution,
-      })),
-    );
+    const { data, status } = toHttpResult(result);
+    return c.json(data, status);
   },
 );
 
 /** GET /api/threads — List active threads sorted by reply count. */
 threads.get("/", zValidator("query", threadsQuerySchema), async (c) => {
-  const { contributionStore } = c.get("deps");
   const raw = c.req.valid("query");
 
   const tags = raw.tags ? raw.tags.split(",").filter((t) => t.length > 0) : undefined;
 
-  const results = await contributionStore.hotThreads({
-    tags,
-    limit: raw.limit,
-  });
+  const deps = toOperationDeps(c.get("deps"));
+  const result = await threadsOperation({ tags, limit: raw.limit }, deps);
 
-  return c.json(
-    results.map((s) => ({
-      cid: s.contribution.cid,
-      replyCount: s.replyCount,
-      lastReplyAt: s.lastReplyAt,
-      contribution: s.contribution,
-    })),
-  );
+  const { data, status } = toHttpResult(result);
+  return c.json(data, status);
 });
 
 export { threads };

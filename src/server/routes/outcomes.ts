@@ -10,8 +10,15 @@
 import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { z } from "zod";
-import type { OutcomeInput, OutcomeStatus } from "../../core/outcome.js";
+import {
+  getOutcomeOperation,
+  listOutcomesOperation,
+  outcomeStatsOperation,
+  setOutcomeOperation,
+} from "../../core/operations/index.js";
+import type { OutcomeStatus } from "../../core/outcome.js";
 import type { ServerEnv } from "../deps.js";
+import { toHttpResult, toOperationDeps } from "../operation-adapter.js";
 import { CID_REGEX } from "../schemas.js";
 
 const cidParamSchema = z.object({
@@ -34,40 +41,28 @@ const listQuerySchema = z.object({
 
 export const outcomes: Hono<ServerEnv> = new Hono<ServerEnv>();
 
-/** Helper to get the outcome store or return 501. */
-function getOutcomeStore(c: { get: (key: "deps") => { outcomeStore?: unknown } }) {
-  const deps = c.get("deps");
-  if (!deps.outcomeStore) {
-    return null;
-  }
-  return deps.outcomeStore as import("../../core/outcome.js").OutcomeStore;
-}
-
 // GET /api/outcomes/stats — must be before /:cid to avoid route conflict
 outcomes.get("/stats", async (c) => {
-  const store = getOutcomeStore(c);
-  if (!store) return c.json({ error: "Outcome store not configured" }, 501);
+  const deps = toOperationDeps(c.get("deps"));
+  const result = await outcomeStatsOperation(deps);
 
-  const stats = await store.getStats();
-  return c.json(stats);
+  const { data, status } = toHttpResult(result);
+  return c.json(data, status);
 });
 
 // GET /api/outcomes/:cid
 outcomes.get("/:cid", zValidator("param", cidParamSchema), async (c) => {
-  const store = getOutcomeStore(c);
-  if (!store) return c.json({ error: "Outcome store not configured" }, 501);
-
   const { cid } = c.req.valid("param");
-  const record = await store.get(cid);
-  if (!record) return c.json({ error: "No outcome for this CID" }, 404);
-  return c.json(record);
+
+  const deps = toOperationDeps(c.get("deps"));
+  const result = await getOutcomeOperation({ cid }, deps);
+
+  const { data, status } = toHttpResult(result);
+  return c.json(data, status);
 });
 
 // POST /api/outcomes/:cid
 outcomes.post("/:cid", zValidator("param", cidParamSchema), async (c) => {
-  const store = getOutcomeStore(c);
-  if (!store) return c.json({ error: "Outcome store not configured" }, 501);
-
   const { cid } = c.req.valid("param");
   const body = await c.req.json();
   const parsed = setOutcomeSchema.safeParse(body);
@@ -75,28 +70,36 @@ outcomes.post("/:cid", zValidator("param", cidParamSchema), async (c) => {
     return c.json({ error: "Invalid input", details: parsed.error.issues }, 400);
   }
 
-  const input: OutcomeInput = {
-    status: parsed.data.status as OutcomeStatus,
-    reason: parsed.data.reason,
-    baselineCid: parsed.data.baselineCid,
-    evaluatedBy: parsed.data.evaluatedBy,
-  };
+  const deps = toOperationDeps(c.get("deps"));
+  const result = await setOutcomeOperation(
+    {
+      cid,
+      status: parsed.data.status as OutcomeStatus,
+      ...(parsed.data.reason !== undefined ? { reason: parsed.data.reason } : {}),
+      ...(parsed.data.baselineCid !== undefined ? { baselineCid: parsed.data.baselineCid } : {}),
+      agent: { agentId: parsed.data.evaluatedBy },
+    },
+    deps,
+  );
 
-  const record = await store.set(cid, input);
-  return c.json(record, 201);
+  const { data, status } = toHttpResult(result, 201);
+  return c.json(data, status);
 });
 
 // GET /api/outcomes
 outcomes.get("/", zValidator("query", listQuerySchema), async (c) => {
-  const store = getOutcomeStore(c);
-  if (!store) return c.json({ error: "Outcome store not configured" }, 501);
-
   const query = c.req.valid("query");
-  const records = await store.list({
-    status: query.status as OutcomeStatus | undefined,
-    evaluatedBy: query.evaluatedBy,
-    limit: query.limit,
-    offset: query.offset,
-  });
-  return c.json(records);
+
+  const deps = toOperationDeps(c.get("deps"));
+  const result = await listOutcomesOperation(
+    {
+      status: query.status as OutcomeStatus | undefined,
+      limit: query.limit,
+      offset: query.offset,
+    },
+    deps,
+  );
+
+  const { data, status } = toHttpResult(result);
+  return c.json(data, status);
 });

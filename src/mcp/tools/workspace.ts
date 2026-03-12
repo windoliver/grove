@@ -2,16 +2,18 @@
  * MCP tool for workspace operations.
  *
  * grove_checkout — Materialize a contribution's artifacts to a local workspace
+ *
+ * All business logic is delegated to the shared operations layer.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import type { JsonValue } from "../../core/models.js";
-import type { AgentInput } from "../agent-identity.js";
-import { resolveAgentIdentity } from "../agent-identity.js";
+import type { AgentOverrides } from "../../core/operations/agent.js";
+import { checkoutOperation } from "../../core/operations/index.js";
 import type { McpDeps } from "../deps.js";
-import { handleToolError, notFoundError } from "../error-handler.js";
+import { toMcpResult, toOperationDeps } from "../operation-adapter.js";
 import { agentSchema } from "../schemas.js";
 
 const checkoutInputSchema = z.object({
@@ -25,6 +27,8 @@ const checkoutInputSchema = z.object({
 // ---------------------------------------------------------------------------
 
 export function registerWorkspaceTools(server: McpServer, deps: McpDeps): void {
+  const opDeps = toOperationDeps(deps);
+
   server.registerTool(
     "grove_checkout",
     {
@@ -36,42 +40,17 @@ export function registerWorkspaceTools(server: McpServer, deps: McpDeps): void {
       inputSchema: checkoutInputSchema,
     },
     async (args) => {
-      try {
-        const { contributionStore, workspace } = deps;
-
-        // Verify contribution exists
-        const contribution = await contributionStore.get(args.cid);
-        if (contribution === undefined) {
-          return notFoundError("Contribution", args.cid);
-        }
-
-        const agent = resolveAgentIdentity(args.agent as AgentInput);
-
-        const wsInfo = await workspace.checkout(args.cid, {
-          agent,
+      const result = await checkoutOperation(
+        {
+          cid: args.cid,
+          agent: args.agent as AgentOverrides,
           ...(args.context !== undefined
             ? { context: args.context as Readonly<Record<string, JsonValue>> }
             : {}),
-        });
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({
-                cid: wsInfo.cid,
-                workspacePath: wsInfo.workspacePath,
-                status: wsInfo.status,
-                agentId: wsInfo.agent.agentId,
-                artifactCount: Object.keys(contribution.artifacts).length,
-                createdAt: wsInfo.createdAt,
-              }),
-            },
-          ],
-        };
-      } catch (error) {
-        return handleToolError(error);
-      }
+        },
+        opDeps,
+      );
+      return toMcpResult(result);
     },
   );
 }
