@@ -151,8 +151,12 @@ export async function handleUp(args: readonly string[], groveOverride?: string):
   let nexusManaged = false;
   if (config.nexusManaged || (config.mode === "nexus" && !config.nexusUrl)) {
     const { ensureNexusRunning } = await import("../nexus-lifecycle.js");
-    await ensureNexusRunning(projectRoot, config);
+    const nexusUrl = await ensureNexusRunning(projectRoot, config);
     nexusManaged = true;
+    // Expose the discovered URL so resolveBackend (env step) picks it up
+    // when launching the TUI. This is the bridge between the managed-Nexus
+    // lifecycle and the TUI's backend resolution chain.
+    process.env.GROVE_NEXUS_URL = nexusUrl;
   }
 
   // Everything after Nexus startup is wrapped in try/catch so we

@@ -160,6 +160,51 @@ describe("resolveBackend", () => {
     }
   });
 
+  test("grove.json with nexusManaged -> discovers nexus URL from nexus.yaml", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "grove-resolve-test-"));
+    const groveDir = join(tempDir, ".grove");
+    mkdirSync(groveDir, { recursive: true });
+    // Write managed-Nexus grove.json (no nexusUrl)
+    writeFileSync(
+      join(groveDir, "grove.json"),
+      JSON.stringify({ name: "test", mode: "nexus", nexusManaged: true }),
+    );
+    // Write nexus.yaml with a non-default port
+    writeFileSync(join(tempDir, "nexus.yaml"), "server:\n  port: 3456\n");
+
+    try {
+      const result = resolveBackend({ groveOverride: groveDir });
+      expect(result.mode).toBe("nexus");
+      expect(result.source).toBe("grove.json");
+      if (result.mode === "nexus") {
+        expect(result.url).toBe("http://localhost:3456");
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("grove.json with nexusManaged but no nexus.yaml -> falls back to default URL", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "grove-resolve-test-"));
+    const groveDir = join(tempDir, ".grove");
+    mkdirSync(groveDir, { recursive: true });
+    writeFileSync(
+      join(groveDir, "grove.json"),
+      JSON.stringify({ name: "test", mode: "nexus", nexusManaged: true }),
+    );
+
+    try {
+      const result = resolveBackend({ groveOverride: groveDir });
+      expect(result.mode).toBe("nexus");
+      expect(result.source).toBe("grove.json");
+      if (result.mode === "nexus") {
+        expect(result.url).toBe("http://localhost:2026");
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test("invalid grove.json -> falls through to local", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "grove-resolve-test-"));
     const groveDir = join(tempDir, ".grove");

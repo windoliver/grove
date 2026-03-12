@@ -107,7 +107,18 @@ function readNexusUrlFromConfig(groveOverride?: string): string | undefined {
       const { parseGroveConfig } =
         require("../core/config.js") as typeof import("../core/config.js");
       const config = parseGroveConfig(raw);
-      return config.nexusUrl || undefined;
+      if (config.nexusUrl) return config.nexusUrl;
+
+      // Managed Nexus: no nexusUrl in grove.json — discover from nexus.yaml.
+      // This handles standalone `grove tui` on a managed-Nexus grove where
+      // `grove up` already started Nexus but didn't set GROVE_NEXUS_URL.
+      if (config.nexusManaged && config.mode === "nexus") {
+        const { readNexusUrl } =
+          require("../cli/nexus-lifecycle.js") as typeof import("../cli/nexus-lifecycle.js");
+        return readNexusUrl(join(groveDir, ".."));
+      }
+
+      return undefined;
     } catch {
       // Fall back to untyped parse for legacy grove.json files
       const parsed = JSON.parse(raw) as { nexusUrl?: string };
