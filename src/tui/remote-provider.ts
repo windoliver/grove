@@ -5,7 +5,10 @@
  * `grove tui --url http://server:4515`.
  */
 
+import type { Bounty } from "../core/bounty.js";
+import type { BountyQuery } from "../core/bounty-store.js";
 import type { Frontier, FrontierQuery } from "../core/frontier.js";
+import type { PeerInfo } from "../core/gossip/types.js";
 import type { Claim, Contribution } from "../core/models.js";
 import type { OutcomeRecord, OutcomeStatus } from "../core/outcome.js";
 import type { ContributionQuery, ThreadNode, ThreadSummary } from "../core/store.js";
@@ -321,6 +324,49 @@ export class RemoteDataProvider
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
     const body = (await resp.json()) as { results: readonly Contribution[] };
     return body.results;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Bounties (duck-typed — detected by bounties-panel.tsx at runtime)
+  // ---------------------------------------------------------------------------
+
+  async listBounties(query?: BountyQuery): Promise<readonly Bounty[]> {
+    const params = new URLSearchParams();
+    if (query?.status) {
+      const s = query.status;
+      params.set("status", typeof s === "string" ? s : [...s].join(","));
+    }
+    if (query?.creatorAgentId) params.set("creatorAgentId", query.creatorAgentId);
+    if (query?.limit) params.set("limit", String(query.limit));
+
+    const qs = params.toString();
+    try {
+      const resp = await fetch(`${this.baseUrl}/api/bounties${qs ? `?${qs}` : ""}`);
+      if (resp.ok) {
+        const body = (await resp.json()) as { bounties: readonly Bounty[] };
+        return body.bounties;
+      }
+    } catch {
+      // Fallback — server may not have bounty routes
+    }
+    return [];
+  }
+
+  // ---------------------------------------------------------------------------
+  // Gossip (duck-typed — detected by gossip-panel.tsx at runtime)
+  // ---------------------------------------------------------------------------
+
+  async getGossipPeers(): Promise<readonly PeerInfo[]> {
+    try {
+      const resp = await fetch(`${this.baseUrl}/api/gossip/peers`);
+      if (resp.ok) {
+        const body = (await resp.json()) as { peers: readonly PeerInfo[] };
+        return body.peers;
+      }
+    } catch {
+      // Fallback — gossip may not be enabled
+    }
+    return [];
   }
 
   // ---------------------------------------------------------------------------

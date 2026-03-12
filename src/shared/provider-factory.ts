@@ -121,6 +121,7 @@ async function createLocalProvider(
     frontier: deps.frontier,
     groveName,
     outcomeStore: stores.outcomeStore,
+    bountyStore: stores.bountyStore,
     cas: deps.cas,
     workspace: deps.workspace,
     backendLabel: label,

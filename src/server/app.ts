@@ -8,6 +8,7 @@
 import { Hono } from "hono";
 import type { ServerDeps, ServerEnv } from "./deps.js";
 import { handleError } from "./middleware/error-handler.js";
+import { bounties } from "./routes/bounties.js";
 import { claims } from "./routes/claims.js";
 import { contributions } from "./routes/contributions.js";
 import { dag } from "./routes/dag.js";
@@ -42,6 +43,7 @@ export function createApp(deps: ServerDeps): Hono<ServerEnv> {
   app.route("/api/diff", diff);
   app.route("/api/threads", threads);
   app.route("/api/claims", claims);
+  app.route("/api/bounties", bounties);
   app.route("/api/gossip", gossip);
   app.route("/api/grove", grove);
   app.route("/api/outcomes", outcomes);

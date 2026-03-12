@@ -34,7 +34,7 @@ and their classification. All `shared` capabilities use the operations layer in
 | threads | Y | Y | Y | Y | shared |
 | check stop | - | Y | - | - | transport-only |
 | bounty create | Y | Y | - | - | shared |
-| bounty list | Y | Y | - | - | shared |
+| bounty list | Y | Y | Y | Y | shared |
 | bounty claim | Y | Y | - | - | shared |
 | bounty settle | - | Y | - | - | transport-only |
 | outcome set | Y | Y | Y | Y | shared |
@@ -42,10 +42,12 @@ and their classification. All `shared` capabilities use the operations layer in
 | outcome list | Y | Y | Y | Y | shared |
 | outcome stats | Y | Y | Y | Y | shared |
 | init | Y | - | - | - | operator-only |
+| up | Y | - | - | - | operator-only |
+| down | Y | - | - | - | operator-only |
 | ask (CLI) / ask_user (MCP) | Y | Y | - | - | transport-only |
 | tui | Y | - | - | - | operator-only |
 | import/export | Y | - | - | - | deferred |
-| gossip | Y | - | Y | - | infra-only |
+| gossip peers | Y | - | Y | Y | infra-only |
 | cas put | - | Y | Y | - | transport-only |
 | ingest git diff | - | Y | - | - | transport-only |
 | ingest git tree | - | Y | - | - | transport-only |

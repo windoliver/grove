@@ -63,6 +63,11 @@ bun run build
 export GROVE_AGENT_ID=codex-local
 export GROVE="bun run src/cli/main.ts"
 
+# Quick start with a preset (recommended)
+$GROVE init "Latency hunt" --preset review-loop
+$GROVE up
+
+# Or manual configuration
 $GROVE init "Latency hunt" --metric latency_ms:minimize
 $GROVE contribute --summary "Baseline measurements" --artifacts README.md --tag baseline
 $GROVE frontier
@@ -74,8 +79,9 @@ bun run src/server/serve.ts
 bun run src/mcp/serve.ts
 ```
 
-For a fuller end-to-end walkthrough, including claims, threads, checkout, HTTP
-server, MCP, and TUI usage, see [QUICKSTART.md](QUICKSTART.md).
+For a fuller end-to-end walkthrough, including presets, `grove up`/`grove down`,
+claims, threads, checkout, HTTP server, MCP, and TUI usage, see
+[QUICKSTART.md](QUICKSTART.md).
 
 If you want generated `dist/` artifacts and bin entrypoints, run:
 
@@ -175,6 +181,7 @@ All CLI commands live behind `grove` or the repo-local source command
 | Command family | Commands | Purpose |
 | --- | --- | --- |
 | Authoring | `init`, `contribute`, `discuss`, `ask` | Create a grove, publish work, reply in threads, route clarification questions |
+| Lifecycle | `up`, `down` | Start all services with one command, stop them gracefully |
 | Coordination | `claim`, `release`, `claims`, `checkout` | Avoid duplicate work and materialize artifacts into a workspace |
 | Discovery | `frontier`, `search`, `log`, `tree`, `thread`, `threads` | Inspect the graph, rank work, and browse discussion state |
 | Operations | `outcome`, `bounty`, `tui` | Operator annotations, incentive flows, and dashboard workflows |
@@ -184,7 +191,9 @@ All CLI commands live behind `grove` or the repo-local source command
 Important write-path options:
 
 - `grove init`: `--mode`, `--seed`, `--metric name:direction`,
-  `--description`, `--force`
+  `--description`, `--force`, `--preset <name>`, `--nexus-url <url>`
+- `grove up`: `--headless` (CI mode, no TUI), `--no-tui` (server-only)
+- `grove down`: reads `.grove/grove.pid` and terminates child processes
 - `grove contribute`: `--kind`, `--mode`, `--summary`, `--description`,
   `--artifacts`, `--from-git-diff`, `--from-git-tree`, `--from-report`,
   `--parent`, `--reviews`, `--responds-to`, `--adopts`, `--reproduces`,
@@ -217,6 +226,7 @@ Route inventory:
 | Diff | `GET /api/diff/:parentCid/:childCid/:artifactName` | Returns UTF-8 text payloads for client-side diffing |
 | Threads | `GET /api/threads`, `GET /api/threads/:cid` | List active threads or load a thread from its root |
 | Claims | `POST /api/claims`, `PATCH /api/claims/:id`, `GET /api/claims` | `PATCH` supports `heartbeat`, `release`, and `complete` actions |
+| Bounties | `GET /api/bounties`, `GET /api/bounties/:id` | Bounty listing with optional `status`, `creatorAgentId`, `limit` filters. Returns `501` when bounty store is not configured |
 | Outcomes | `GET /api/outcomes/stats`, `GET /api/outcomes`, `GET /api/outcomes/:cid`, `POST /api/outcomes/:cid` | Outcomes are local operator metadata, not part of immutable contribution CIDs |
 | Gossip | `POST /api/gossip/exchange`, `POST /api/gossip/shuffle`, `GET /api/gossip/peers`, `GET /api/gossip/frontier` | Returns `501` when gossip is not configured |
 | Grove metadata | `GET /api/grove`, `GET /api/grove/topology` | Topology is sourced from `GROVE.md` when present |
@@ -337,6 +347,22 @@ bun run src/server/serve.ts
 Once enabled, Grove exposes peer discovery and merged frontier state through
 both the CLI gossip commands and the `/api/gossip/*` HTTP routes.
 
+### Presets
+
+Presets bundle topology, metrics, gates, concurrency settings, and seed data
+into a single named configuration. Available presets:
+
+| Preset | Topology | Mode | Backend |
+| --- | --- | --- | --- |
+| `review-loop` | coder + reviewer (graph) | exploration | nexus (preferred) |
+| `exploration` | explorer, critic, synthesizer (graph) | exploration | nexus (preferred) |
+| `swarm-ops` | coordinator, worker, QA (tree) | evaluation | nexus (preferred) |
+| `research-loop` | researcher, evaluator, analyst (graph) | evaluation | local |
+
+When the preferred backend is `nexus`, pass `--nexus-url` or set
+`GROVE_NEXUS_URL` to use Nexus. Without it, Grove falls back to local mode
+with a note.
+
 ### TUI Operator Dashboard
 
 ```bash
@@ -348,6 +374,25 @@ The TUI can run against:
 - Local SQLite/CAS state
 - A remote `grove-server` via `--url`
 - A Nexus-backed deployment via `--nexus`
+
+Panels 1–4 (DAG, Detail, Frontier, Claims) are always visible. Toggle
+operator panels with hotkeys:
+
+| Key | Panel |
+| --- | --- |
+| `5` | Agents |
+| `6` | Terminal |
+| `7` | Artifact |
+| `8` | VFS |
+| `9` | Activity |
+| `0` | Search |
+| `-` | Threads |
+| `=` | Outcomes |
+| `[` | Bounties |
+| `]` | Gossip |
+
+Use `Tab`/`Shift+Tab` to cycle focus, `Ctrl+P` for the command palette, and
+`/` in the Search panel for full-text search.
 
 ## Development
 

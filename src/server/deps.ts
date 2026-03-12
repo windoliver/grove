@@ -5,6 +5,7 @@
  * injected by createApp(). This enables testing with real or mock stores.
  */
 
+import type { BountyStore } from "../core/bounty-store.js";
 import type { ContentStore } from "../core/cas.js";
 import type { FrontierCalculator } from "../core/frontier.js";
 import type { GossipService } from "../core/gossip/types.js";
@@ -22,6 +23,8 @@ export interface ServerDeps {
   readonly gossip?: GossipService | undefined;
   /** Optional outcome store. Routes return 501 when not configured. */
   readonly outcomeStore?: OutcomeStore | undefined;
+  /** Optional bounty store. Routes return 501 when not configured. */
+  readonly bountyStore?: BountyStore | undefined;
   /** Optional agent topology. Routes return 404 when not configured. */
   readonly topology?: AgentTopology | undefined;
 }

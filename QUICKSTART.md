@@ -25,7 +25,25 @@ Why set agent identity first:
 
 ## 2. Create A Grove
 
-Initialize a new grove in the current directory:
+### Option A: Quick start with a preset (recommended)
+
+```bash
+$GROVE init "Latency hunt" --preset review-loop
+```
+
+This creates the full `.grove/` directory, a `GROVE.md` contract with
+coder + reviewer topology, `grove.json` configuration, and demo seed
+contributions.
+
+Available presets: `review-loop`, `exploration`, `swarm-ops`, `research-loop`.
+
+For Nexus-backed presets, supply the URL:
+
+```bash
+$GROVE init "Latency hunt" --preset swarm-ops --nexus-url http://localhost:2026
+```
+
+### Option B: Manual configuration
 
 ```bash
 $GROVE init "Latency hunt" \
@@ -35,15 +53,32 @@ $GROVE init "Latency hunt" \
   --metric throughput:maximize
 ```
 
-This creates:
+Both options create:
 
 - `.grove/grove.db` for local state
 - `.grove/cas/` for content-addressed artifacts
 - `.grove/workspaces/` for checkouts
+- `.grove/grove.json` for runtime configuration
 - `GROVE.md` as the editable coordination contract
 
 If you already have a directory of seed files you want to preserve as the first
 contribution, add `--seed <path>` one or more times during `init`.
+
+## 2a. Start Everything With One Command
+
+```bash
+$GROVE up
+```
+
+`grove up` reads `.grove/grove.json`, starts the HTTP server and MCP server
+(if configured), then opens the TUI as the foreground process. Use `--headless`
+for CI environments or `--no-tui` for server-only mode.
+
+To stop all services:
+
+```bash
+$GROVE down
+```
 
 ## 3. Publish Your First Contributions
 
@@ -233,12 +268,16 @@ $GROVE tui --nexus http://localhost:2026
 
 The TUI gives you a multi-panel operator view over:
 
-- DAG state
-- frontier changes
-- claims
-- artifact previews
-- discussion detail
-- optional topology-aware agent panels
+- DAG state (panel 1)
+- Detail / Dashboard (panel 2)
+- Frontier (panel 3)
+- Claims (panel 4)
+- Agents, Terminal, Artifact, VFS (toggle with 5–8)
+- Activity, Search, Threads, Outcomes (toggle with 9, 0, -, =)
+- Bounties, Gossip (toggle with [, ])
+
+Use `Ctrl+P` to open the command palette for spawning and killing agents.
+Press `/` in the Search panel to enter a search query.
 
 ## 9. Configure `ask_user`
 
@@ -272,6 +311,10 @@ standalone server details.
 
 Once the local path is working, the next advanced surfaces are:
 
+- **Presets**: `$GROVE init "Name" --preset swarm-ops` for turnkey multi-agent
+  topologies with seed data, metrics, and concurrency settings
+- **One-command startup**: `$GROVE up` to launch server, MCP, and TUI together;
+  `$GROVE down` to stop everything
 - GitHub bridge:
   `bun run src/cli/main.ts export --to-discussion <owner/repo> <cid>`
   and

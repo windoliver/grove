@@ -6,6 +6,8 @@
  * running `grove tui` against a local .grove directory.
  */
 
+import type { Bounty } from "../core/bounty.js";
+import type { BountyQuery, BountyStore } from "../core/bounty-store.js";
 import type { ContentStore } from "../core/cas.js";
 import type { Frontier, FrontierCalculator, FrontierQuery } from "../core/frontier.js";
 import type { AgentIdentity, Claim, Contribution } from "../core/models.js";
@@ -50,6 +52,7 @@ export interface LocalProviderDeps {
   readonly frontier: FrontierCalculator;
   readonly groveName: string;
   readonly outcomeStore?: OutcomeStore | undefined;
+  readonly bountyStore?: BountyStore | undefined;
   readonly cas?: ContentStore | undefined;
   readonly workspace?: WorkspaceManager | undefined;
   readonly backendLabel?: string | undefined;
@@ -63,6 +66,7 @@ export class LocalDataProvider implements TuiDataProvider, TuiOutcomeProvider, T
   private readonly calc: FrontierCalculator;
   private readonly name: string;
   private readonly outcomes: OutcomeStore | undefined;
+  private readonly bounties: BountyStore | undefined;
   private readonly cas: ContentStore | undefined;
   private readonly workspace: WorkspaceManager | undefined;
   private readonly label: string;
@@ -73,6 +77,7 @@ export class LocalDataProvider implements TuiDataProvider, TuiOutcomeProvider, T
     this.calc = deps.frontier;
     this.name = deps.groveName;
     this.outcomes = deps.outcomeStore;
+    this.bounties = deps.bountyStore;
     this.cas = deps.cas;
     this.workspace = deps.workspace;
     this.label = deps.backendLabel ?? "local (.grove/)";
@@ -266,6 +271,15 @@ export class LocalDataProvider implements TuiDataProvider, TuiOutcomeProvider, T
   }
 
   // ---------------------------------------------------------------------------
+  // Bounties (duck-typed — detected by bounties-panel.tsx at runtime)
+  // ---------------------------------------------------------------------------
+
+  async listBounties(query?: BountyQuery): Promise<readonly Bounty[]> {
+    if (!this.bounties) return [];
+    return this.bounties.listBounties(query);
+  }
+
+  // ---------------------------------------------------------------------------
   // Lifecycle
   // ---------------------------------------------------------------------------
 
@@ -273,6 +287,7 @@ export class LocalDataProvider implements TuiDataProvider, TuiOutcomeProvider, T
     this.store.close();
     this.claims.close();
     this.outcomes?.close();
+    this.bounties?.close();
     this.cas?.close();
     this.workspace?.close();
   }
