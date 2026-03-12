@@ -28,6 +28,7 @@ import type {
   DagData,
   DashboardData,
   FsEntry,
+  GroveMetadata,
   OperatorStats,
   PaginatedQuery,
   ProviderCapabilities,
@@ -41,10 +42,10 @@ import {
   claimsFromStore,
   contributionDetailFromStore,
   dagFromStore,
-  dashboardFromStores,
   diffArtifactsFromBuffers,
   outcomeStatsFromStore,
 } from "./provider-shared.js";
+import { buildFrontierSummary } from "./provider-utils.js";
 
 /** Configuration for the Nexus provider. */
 export interface NexusProviderConfig {
@@ -52,6 +53,7 @@ export interface NexusProviderConfig {
   readonly groveName?: string | undefined;
   /** Optional workspace manager for local workspace lifecycle (hybrid mode). */
   readonly workspaceManager?: WorkspaceManager | undefined;
+  readonly backendLabel?: string | undefined;
 }
 
 /** TUI data provider backed by Nexus VFS. */
@@ -72,6 +74,7 @@ export class NexusDataProvider
   private readonly zoneId: string;
   private readonly name: string;
   private readonly workspace: WorkspaceManager | undefined;
+  private readonly label: string;
 
   constructor(config: NexusProviderConfig) {
     this.store = new NexusContributionStore(config.nexusConfig);
@@ -80,6 +83,7 @@ export class NexusDataProvider
     this.frontier = new DefaultFrontierCalculator(this.store);
     this.name = config.groveName ?? "nexus";
     this.workspace = config.workspaceManager;
+    this.label = config.backendLabel ?? "nexus";
 
     const resolved = resolveConfig(config.nexusConfig);
     this.client = resolved.client;
@@ -91,7 +95,27 @@ export class NexusDataProvider
   // ---------------------------------------------------------------------------
 
   async getDashboard(): Promise<DashboardData> {
-    return dashboardFromStores(this.store, this.claims, this.frontier, this.name, "nexus");
+    const [contributionCount, activeClaims, recentContributions, frontier] = await Promise.all([
+      this.store.count(),
+      this.claims.activeClaims(),
+      this.store.list({ limit: 10 }),
+      this.frontier.compute({ limit: 3 }),
+    ]);
+
+    const metadata: GroveMetadata = {
+      name: this.name,
+      contributionCount,
+      activeClaimCount: activeClaims.length,
+      mode: "nexus",
+      backendLabel: this.label,
+    };
+
+    return {
+      metadata,
+      activeClaims,
+      recentContributions,
+      frontierSummary: buildFrontierSummary(frontier),
+    };
   }
 
   async getContributions(

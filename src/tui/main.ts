@@ -5,14 +5,23 @@
  * and renders the root App component.
  */
 
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { TuiDataProvider } from "./provider.js";
+import {
+  backendLabel,
+  checkNexusHealth,
+  loadTopology,
+  type ResolvedBackend,
+  resolveBackend,
+} from "./resolve-backend.js";
 
 /** Default polling interval: 5 seconds. */
 const DEFAULT_INTERVAL_MS = 5_000;
 
 /** Parse TUI command-line arguments. */
-function parseTuiArgs(args: readonly string[]): {
+export function parseTuiArgs(args: readonly string[]): {
   readonly intervalMs: number;
   readonly url: string | undefined;
   readonly nexus: string | undefined;
@@ -40,9 +49,16 @@ Usage:
 Options:
   -i, --interval <seconds>  Polling interval (default: 5)
   -u, --url <url>           Remote grove-server URL
-  -n, --nexus <url>         Nexus zone URL (enables VFS browsing)
-  -g, --grove <path>        Path to grove directory
+  -n, --nexus <url>         Override Nexus URL (bypasses auto-detection)
+  -g, --grove <path>        Path to .grove directory (not the repo root)
   -h, --help                Show this help message
+
+Backend auto-detection:
+  Nexus is auto-selected when configured via GROVE_NEXUS_URL env var
+  or nexusUrl in .grove/grove.json. Use --nexus to override explicitly.
+
+Environment:
+  GROVE_NEXUS_URL            Nexus zone URL (auto-detected as backend)
 
 Keybindings:
   1-4       Focus protocol core panel (DAG, Detail, Frontier, Claims)
@@ -71,27 +87,22 @@ Keybindings:
   };
 }
 
-/** Create a data provider based on CLI arguments. */
-async function createProvider(
-  url: string | undefined,
-  nexus: string | undefined,
-  groveOverride: string | undefined,
-): Promise<TuiDataProvider> {
-  if (url) {
+/** Create a data provider from a resolved backend. */
+async function createProvider(backend: ResolvedBackend, label: string): Promise<TuiDataProvider> {
+  if (backend.mode === "remote") {
     const { RemoteDataProvider } = await import("./remote-provider.js");
-    return new RemoteDataProvider(url);
+    return new RemoteDataProvider(backend.url, label);
   }
 
-  if (nexus) {
+  if (backend.mode === "nexus") {
     const { NexusHttpClient } = await import("../nexus/nexus-http-client.js");
     const { NexusDataProvider } = await import("./nexus-provider.js");
     const { LocalWorkspaceManager } = await import("../local/workspace.js");
-    const { join } = await import("node:path");
     const { mkdirSync } = await import("node:fs");
     const { initSqliteDb } = await import("../local/sqlite-store.js");
     const { FsCas } = await import("../local/fs-cas.js");
 
-    const client = new NexusHttpClient({ url: nexus });
+    const client = new NexusHttpClient({ url: backend.url });
 
     // Create workspace root for Nexus-spawned agents.
     // groveRoot is the parent — LocalWorkspaceManager appends "workspaces".
@@ -138,6 +149,7 @@ async function createProvider(
     return new NexusDataProvider({
       nexusConfig: { client, zoneId: "default" },
       workspaceManager,
+      backendLabel: label,
     });
   }
 
@@ -146,13 +158,10 @@ async function createProvider(
   const { createSqliteStores } = await import("../local/sqlite-store.js");
   const { LocalDataProvider } = await import("./local-provider.js");
 
-  const deps = initCliDeps(process.cwd(), groveOverride);
-
-  const { existsSync } = await import("node:fs");
-  const { join } = await import("node:path");
+  const deps = initCliDeps(process.cwd(), backend.groveOverride);
   const dbPath = join(deps.groveRoot, ".grove", "grove.db");
 
-  // Read grove name from the .grove directory
+  // Read grove name from .grove/grove.json
   let groveName = "grove";
   try {
     const metaPath = join(deps.groveRoot, ".grove", "grove.json");
@@ -175,6 +184,7 @@ async function createProvider(
     outcomeStore: stores.outcomeStore,
     cas: deps.cas,
     workspace: deps.workspace,
+    backendLabel: label,
   });
 }
 
@@ -183,76 +193,56 @@ export async function handleTui(args: readonly string[], groveOverride?: string)
   const opts = parseTuiArgs(args);
   const effectiveGrove = opts.groveOverride ?? groveOverride;
 
-  const provider = await createProvider(opts.url, opts.nexus, effectiveGrove);
+  let backend = resolveBackend({
+    url: opts.url,
+    nexus: opts.nexus,
+    groveOverride: effectiveGrove,
+  });
+
+  // Health check for nexus backends
+  if (backend.mode === "nexus") {
+    const health = await checkNexusHealth(backend.url);
+    if (health !== "ok") {
+      if (backend.source === "flag") {
+        // Explicit --nexus: give a specific error
+        if (health === "auth_required") {
+          throw new Error(
+            `Nexus at ${backend.url} requires authentication (HTTP 401/403). No credential path is configured.`,
+          );
+        }
+        throw new Error(`Nexus at ${backend.url} is unreachable (${health})`);
+      }
+      // Auto-detected nexus not usable — fallback to local
+      const reason =
+        health === "auth_required"
+          ? "requires authentication"
+          : health === "not_nexus"
+            ? "endpoint not found (not a Nexus server?)"
+            : health === "server_error"
+              ? "server error"
+              : "unreachable";
+      process.stderr.write(
+        `Warning: Nexus at ${backend.url} ${reason}, falling back to local mode\n`,
+      );
+      backend = { mode: "local", groveOverride: effectiveGrove, source: "default" };
+    }
+  }
+
+  const label = backendLabel(backend);
+
+  // Load provider and topology in parallel (except when nexus fallback just happened)
+  const [provider, topology] = await Promise.all([
+    createProvider(backend, label),
+    loadTopology(backend),
+  ]);
 
   // Create TmuxManager for local agent management (only in local mode)
   let tmux: import("./agents/tmux-manager.js").TmuxManager | undefined;
-  if (!opts.url) {
+  if (backend.mode === "local") {
     const { ShellTmuxManager } = await import("./agents/tmux-manager.js");
     const mgr = new ShellTmuxManager();
     const available = await mgr.isAvailable();
     tmux = available ? mgr : undefined;
-  }
-
-  // Read agent topology
-  let topology: import("../core/topology.js").AgentTopology | undefined;
-  if (opts.url) {
-    // Remote mode: fetch topology from the grove-server API
-    try {
-      const resp = await fetch(`${opts.url}/api/grove/topology`);
-      if (resp.ok) {
-        topology = (await resp.json()) as import("../core/topology.js").AgentTopology;
-      }
-    } catch {
-      // Topology not available on remote
-    }
-  } else if (opts.nexus) {
-    // Nexus mode: read topology from Nexus VFS stored file
-    try {
-      const { NexusHttpClient } = await import("../nexus/nexus-http-client.js");
-      const client = new NexusHttpClient({ url: opts.nexus });
-      const zoneId = "default";
-      const data = await client.read(`/zones/${zoneId}/grove/topology.json`);
-      if (data !== undefined) {
-        topology = JSON.parse(
-          new TextDecoder().decode(data),
-        ) as import("../core/topology.js").AgentTopology;
-      }
-    } catch {
-      // Topology not available in Nexus VFS — try GROVE.md fallback
-      try {
-        const { NexusHttpClient } = await import("../nexus/nexus-http-client.js");
-        const client = new NexusHttpClient({ url: opts.nexus });
-        const zoneId = "default";
-        const data = await client.read(`/zones/${zoneId}/GROVE.md`);
-        if (data !== undefined) {
-          const { parseGroveContract } = await import("../core/contract.js");
-          const raw = new TextDecoder().decode(data);
-          const contract = parseGroveContract(raw);
-          topology = contract.topology;
-        }
-      } catch {
-        // Topology not available on Nexus
-      }
-    }
-  } else {
-    // Local mode: read from GROVE.md contract
-    try {
-      const { existsSync: fsExists } = await import("node:fs");
-      const { join: pathJoin } = await import("node:path");
-      const { parseGroveContract } = await import("../core/contract.js");
-      const { resolveGroveDir } = await import("../cli/utils/grove-dir.js");
-      const { groveDir } = resolveGroveDir(effectiveGrove);
-      // GROVE.md lives in the parent of the .grove directory
-      const grovemdPath = pathJoin(groveDir, "..", "GROVE.md");
-      if (fsExists(grovemdPath)) {
-        const raw = await Bun.file(grovemdPath).text();
-        const contract = parseGroveContract(raw);
-        topology = contract.topology;
-      }
-    } catch {
-      // Ignore — topology is optional
-    }
   }
 
   // Bun compatibility: ensure stdin is in raw mode for keyboard input

@@ -38,7 +38,13 @@ function makeMockProvider(): TuiDataProvider & {
 
     async getDashboard() {
       return {
-        metadata: { name: "test", contributionCount: 0, activeClaimCount: 0, mode: "test" },
+        metadata: {
+          name: "test",
+          contributionCount: 0,
+          activeClaimCount: 0,
+          mode: "test",
+          backendLabel: "test",
+        },
         activeClaims: [],
         recentContributions: [],
         frontierSummary: { topByMetric: [], topByAdoption: [] },

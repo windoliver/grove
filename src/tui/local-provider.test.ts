@@ -130,6 +130,7 @@ describe("LocalDataProvider specific", () => {
     const dashboard = await provider.getDashboard();
     expect(dashboard.metadata.name).toBe("test-grove");
     expect(dashboard.metadata.mode).toBe("local");
+    expect(dashboard.metadata.backendLabel).toBe("local (.grove/)");
     expect(dashboard.metadata.contributionCount).toBe(3);
     expect(dashboard.metadata.activeClaimCount).toBe(1);
   });

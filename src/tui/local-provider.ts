@@ -25,6 +25,7 @@ import type {
   ContributionDetail,
   DagData,
   DashboardData,
+  GroveMetadata,
   OperatorStats,
   PaginatedQuery,
   ProviderCapabilities,
@@ -37,10 +38,10 @@ import {
   claimsFromStore,
   contributionDetailFromStore,
   dagFromStore,
-  dashboardFromStores,
   diffArtifactsFromBuffers,
   outcomeStatsFromStore,
 } from "./provider-shared.js";
+import { buildFrontierSummary } from "./provider-utils.js";
 
 /** Configuration for the local provider. */
 export interface LocalProviderDeps {
@@ -51,6 +52,7 @@ export interface LocalProviderDeps {
   readonly outcomeStore?: OutcomeStore | undefined;
   readonly cas?: ContentStore | undefined;
   readonly workspace?: WorkspaceManager | undefined;
+  readonly backendLabel?: string | undefined;
 }
 
 /** TUI data provider backed by local SQLite stores. */
@@ -63,6 +65,7 @@ export class LocalDataProvider implements TuiDataProvider, TuiOutcomeProvider, T
   private readonly outcomes: OutcomeStore | undefined;
   private readonly cas: ContentStore | undefined;
   private readonly workspace: WorkspaceManager | undefined;
+  private readonly label: string;
 
   constructor(deps: LocalProviderDeps) {
     this.store = deps.contributionStore;
@@ -72,6 +75,7 @@ export class LocalDataProvider implements TuiDataProvider, TuiOutcomeProvider, T
     this.outcomes = deps.outcomeStore;
     this.cas = deps.cas;
     this.workspace = deps.workspace;
+    this.label = deps.backendLabel ?? "local (.grove/)";
     this.capabilities = {
       outcomes: deps.outcomeStore !== undefined,
       artifacts: deps.cas !== undefined,
@@ -80,7 +84,27 @@ export class LocalDataProvider implements TuiDataProvider, TuiOutcomeProvider, T
   }
 
   async getDashboard(): Promise<DashboardData> {
-    return dashboardFromStores(this.store, this.claims, this.calc, this.name, "local");
+    const [contributionCount, activeClaims, recentContributions, frontier] = await Promise.all([
+      this.store.count(),
+      this.claims.activeClaims(),
+      this.store.list({ limit: 10 }),
+      this.calc.compute({ limit: 3 }),
+    ]);
+
+    const metadata: GroveMetadata = {
+      name: this.name,
+      contributionCount,
+      activeClaimCount: activeClaims.length,
+      mode: "local",
+      backendLabel: this.label,
+    };
+
+    return {
+      metadata,
+      activeClaims,
+      recentContributions,
+      frontierSummary: buildFrontierSummary(frontier),
+    };
   }
 
   async getContributions(

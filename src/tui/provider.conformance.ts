@@ -75,7 +75,9 @@ export function runProviderConformanceTests(suiteName: string, factory: Provider
     test("getContribution returns undefined for non-existent CID", async () => {
       const { provider, cleanup } = await factory();
       try {
-        const detail = await provider.getContribution("blake3:nonexistent");
+        const detail = await provider.getContribution(
+          "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+        );
         expect(detail).toBeUndefined();
       } finally {
         cleanup();

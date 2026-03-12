@@ -90,7 +90,9 @@ export const VfsBrowserView: React.NamedExoticComponent<VfsBrowserProps> = React
     if (!isVfsProvider(provider)) {
       return (
         <box>
-          <text opacity={0.5}>VFS requires Nexus provider (--nexus)</text>
+          <text opacity={0.5}>
+            VFS requires Nexus backend (configure via GROVE_NEXUS_URL, grove.json, or --nexus)
+          </text>
         </box>
       );
     }

@@ -25,6 +25,7 @@ import type {
   TuiDataProvider,
   TuiOutcomeProvider,
 } from "./provider.js";
+import { diffArtifactsFromBuffers } from "./provider-shared.js";
 import { buildFrontierSummary } from "./provider-utils.js";
 
 /** TUI data provider backed by a remote grove-server HTTP API. */
@@ -38,9 +39,11 @@ export class RemoteDataProvider
   };
 
   private readonly baseUrl: string;
+  private readonly label: string;
 
-  constructor(baseUrl: string) {
+  constructor(baseUrl: string, backendLabel?: string) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
+    this.label = backendLabel ?? `remote (${this.baseUrl})`;
   }
 
   async getDashboard(): Promise<DashboardData> {
@@ -185,7 +188,8 @@ export class RemoteDataProvider
       return { contributions: unique };
     }
 
-    const contributions = await this.getContributions({ limit: 200 });
+    // Server caps at 100 per request
+    const contributions = await this.getContributions({ limit: 100 });
     return { contributions };
   }
 
@@ -308,7 +312,7 @@ export class RemoteDataProvider
       this.getArtifact(parentCid, name),
       this.getArtifact(childCid, name),
     ]);
-    return { parent: parentBuf.toString("utf-8"), child: childBuf.toString("utf-8") };
+    return diffArtifactsFromBuffers(parentBuf, childBuf);
   }
 
   async search(query: string): Promise<readonly Contribution[]> {
@@ -337,6 +341,7 @@ export class RemoteDataProvider
           contributionCount: data.stats?.contributions ?? 0,
           activeClaimCount: data.stats?.activeClaims ?? 0,
           mode: "remote",
+          backendLabel: this.label,
         };
       }
     } catch {
@@ -348,6 +353,7 @@ export class RemoteDataProvider
       contributionCount: 0,
       activeClaimCount: 0,
       mode: "remote",
+      backendLabel: this.label,
     };
   }
 

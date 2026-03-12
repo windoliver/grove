@@ -44,6 +44,7 @@ export async function dashboardFromStores(
     contributionCount,
     activeClaimCount: activeClaims.length,
     mode,
+    backendLabel: mode,
   };
 
   return {
