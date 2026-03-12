@@ -55,6 +55,10 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
   // Command palette selection cursor
   const [paletteIndex, setPaletteIndex] = useState(0);
 
+  // Search query state (driven from search input mode)
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchBuffer, setSearchBuffer] = useState("");
+
   // Last error for status bar display (auto-clears after 5s)
   const [lastError, setLastError] = useState<string | undefined>();
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -104,7 +108,9 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
   // Derive parentAgentId from the selected session for lineage-aware palette display
   const paletteParentId = selectedSession ? agentIdFromSession(selectedSession) : undefined;
 
-  // Derive the palette items so the keyboard handler can look up the selected action
+  // Derive the palette items so the keyboard handler can look up the selected action.
+  // Only advertise spawn if the provider supports workspace checkout (remote does not).
+  const canSpawn = provider.checkoutWorkspace !== undefined;
   const paletteItems = useMemo(
     () =>
       buildPaletteItems(
@@ -112,11 +118,11 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
         activeClaims ?? [],
         paletteSessions ?? [],
         tmux !== undefined,
-        true,
+        canSpawn,
         true,
         paletteParentId,
       ),
-    [topology, activeClaims, paletteSessions, tmux, paletteParentId],
+    [topology, activeClaims, paletteSessions, tmux, canSpawn, paletteParentId],
   );
 
   const handleContributionsLoaded = useCallback((contributions: readonly Contribution[]) => {
@@ -210,6 +216,25 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
       return;
     }
 
+    // In search input mode, build query string character by character
+    if (panels.state.mode === InputMode.SearchInput) {
+      if (input === "return") {
+        setSearchQuery(searchBuffer);
+        panels.setMode(InputMode.Normal);
+        return;
+      }
+      if (input === "backspace") {
+        setSearchBuffer((b) => b.slice(0, -1));
+        return;
+      }
+      // Append printable characters
+      if (input && input.length === 1 && !isCtrl) {
+        setSearchBuffer((b) => b + input);
+        return;
+      }
+      return;
+    }
+
     // Normal mode keybindings
     if (input === "q") {
       handleQuit();
@@ -281,6 +306,13 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
     // Terminal input mode entry
     if (input === "i" && panels.state.focused === Panel.Terminal) {
       panels.setMode(InputMode.TerminalInput);
+      return;
+    }
+
+    // Search input mode entry
+    if (input === "/" && panels.state.focused === Panel.Search) {
+      setSearchBuffer(searchQuery);
+      panels.setMode(InputMode.SearchInput);
       return;
     }
 
@@ -419,6 +451,8 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
         artifactIndex={artifactIndex}
         showArtifactDiff={showArtifactDiff}
         activeClaims={activeClaims ?? undefined}
+        searchQuery={searchQuery}
+        isSearchInputMode={panels.state.mode === InputMode.SearchInput}
       />
       <StatusBar mode={panels.state.mode} isDetailView={nav.isDetailView} error={lastError} />
     </box>

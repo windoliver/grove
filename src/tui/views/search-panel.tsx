@@ -2,10 +2,11 @@
  * Search panel — full-text search of contributions.
  *
  * Operator panel (toggled via key 0) with an integrated search
- * input bar and results table.
+ * input bar and results table. Press "/" when focused to enter
+ * search input mode; type query and press Enter to search.
  */
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect } from "react";
 import type { Contribution } from "../../core/models.js";
 import { formatTimestamp, truncateCid } from "../../shared/format.js";
 import { Table } from "../components/table.js";
@@ -18,7 +19,8 @@ export interface SearchPanelProps {
   readonly intervalMs: number;
   readonly active: boolean;
   readonly cursor: number;
-  readonly searchQuery?: string | undefined;
+  readonly searchQuery: string;
+  readonly isInputMode: boolean;
   readonly onRowCountChanged?: ((count: number) => void) | undefined;
 }
 
@@ -38,29 +40,22 @@ export const SearchPanelView: React.NamedExoticComponent<SearchPanelProps> = Rea
     active,
     cursor,
     searchQuery,
+    isInputMode,
     onRowCountChanged,
   }: SearchPanelProps): React.ReactNode {
-    const [query, setQuery] = useState(searchQuery ?? "");
-
-    useEffect(() => {
-      if (searchQuery !== undefined) {
-        setQuery(searchQuery);
-      }
-    }, [searchQuery]);
-
     // Use search if available on the provider, fall back to getContributions
     const fetcher = useCallback(async (): Promise<readonly Contribution[]> => {
-      if (!query) return provider.getContributions({ limit: 20 });
+      if (!searchQuery) return provider.getContributions({ limit: 20 });
 
       // Check if provider has search capability (TuiArtifactProvider)
       const searchable = provider as { search?: (q: string) => Promise<readonly Contribution[]> };
       if (searchable.search) {
-        return searchable.search(query);
+        return searchable.search(searchQuery);
       }
 
       // Fallback: use getContributions (no server-side search)
       return provider.getContributions({ limit: 20 });
-    }, [provider, query]);
+    }, [provider, searchQuery]);
 
     const { data, loading } = usePolledData<readonly Contribution[]>(fetcher, intervalMs, active);
 
@@ -92,14 +87,20 @@ export const SearchPanelView: React.NamedExoticComponent<SearchPanelProps> = Rea
       <box flexDirection="column">
         <box marginBottom={1}>
           <text>Search</text>
-          {query ? (
+          {isInputMode ? (
+            <text color="#00cccc">
+              {"  /"}
+              {searchQuery}
+              {"_"}
+            </text>
+          ) : searchQuery ? (
             <text opacity={0.5}>
-              {"  "}query: "{query}" ({contributions.length} results)
+              {"  "}query: &quot;{searchQuery}&quot; ({contributions.length} results) [/ to search]
             </text>
           ) : (
             <text opacity={0.5}>
               {"  "}
-              {contributions.length} contributions
+              {contributions.length} contributions [/ to search]
             </text>
           )}
         </box>

@@ -166,9 +166,11 @@ export async function handleUp(args: readonly string[], groveOverride?: string):
   // Launch TUI or stay headless
   if (opts.headless || opts.noTui) {
     console.log("Running in headless mode. Use 'grove down' to stop.");
-    // In headless mode, just wait for children to exit
+    // In headless mode, wait for any child to exit, then shut down all remaining
     if (children.length > 0) {
       await Promise.race(children.map((c) => c.proc.exited));
+      // One child exited — shut down all remaining services cleanly
+      await shutdown();
     }
   } else {
     // Launch TUI as foreground

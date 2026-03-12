@@ -22,6 +22,7 @@ const MODE_LABELS: Record<InputMode, string> = {
   normal: "NORMAL",
   terminal_input: "TERMINAL",
   command_palette: "CMD",
+  search_input: "SEARCH",
 };
 
 /** Bottom status bar with keybinding hints. */

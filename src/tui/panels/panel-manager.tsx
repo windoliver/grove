@@ -62,6 +62,10 @@ export interface PanelManagerProps {
   readonly showArtifactDiff?: boolean | undefined;
   /** Pre-fetched active claims from the parent poller (avoids double polling). */
   readonly activeClaims?: readonly import("../../core/models.js").Claim[] | undefined;
+  /** Current search query for the Search panel. */
+  readonly searchQuery?: string | undefined;
+  /** Whether the Search panel is in input mode. */
+  readonly isSearchInputMode?: boolean | undefined;
 }
 
 /** Wraps a panel view with a titled border. */
@@ -104,6 +108,8 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
     artifactIndex,
     showArtifactDiff,
     activeClaims,
+    searchQuery,
+    isSearchInputMode,
   }: PanelManagerProps): React.ReactNode {
     const isFocused = (p: Panel) => panelState.focused === p;
 
@@ -293,6 +299,8 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
                   intervalMs={intervalMs}
                   active={isPanelVisible(panelState, Panel.Search)}
                   cursor={isFocused(Panel.Search) ? nav.state.cursor : -1}
+                  searchQuery={searchQuery ?? ""}
+                  isInputMode={isSearchInputMode ?? false}
                   onRowCountChanged={onRowCountChanged}
                 />
               </PanelChrome>
