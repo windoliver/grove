@@ -64,5 +64,5 @@ export const explorationPreset: PresetConfig = {
     },
   ],
   services: { server: true, mcp: false },
-  backend: "local",
+  backend: "nexus",
 };

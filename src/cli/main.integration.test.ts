@@ -412,6 +412,35 @@ describe("grove init --preset", () => {
     expect(content).toContain("reviewer");
   });
 
+  test("nexus-preferring preset falls back to local without --nexus-url", async () => {
+    const { stdout, exitCode } = await runCli(
+      ["init", "test-grove", "--preset", "swarm-ops"],
+      tmpDir,
+    );
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("prefers Nexus backend");
+    expect(stdout).toContain("Using local mode");
+
+    const raw = await readFile(join(tmpDir, ".grove", "grove.json"), "utf-8");
+    const config = JSON.parse(raw) as Record<string, unknown>;
+    expect(config.mode).toBe("local");
+    expect(config.nexusUrl).toBeUndefined();
+  });
+
+  test("nexus-preferring preset uses nexus with --nexus-url", async () => {
+    const { stdout, exitCode } = await runCli(
+      ["init", "test-grove", "--preset", "swarm-ops", "--nexus-url", "http://localhost:4000"],
+      tmpDir,
+    );
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Initialized grove");
+
+    const raw = await readFile(join(tmpDir, ".grove", "grove.json"), "utf-8");
+    const config = JSON.parse(raw) as Record<string, unknown>;
+    expect(config.mode).toBe("nexus");
+    expect(config.nexusUrl).toBe("http://localhost:4000");
+  });
+
   test("grove init --preset unknown fails with error", async () => {
     const { stderr, exitCode } = await runCli(
       ["init", "test-grove", "--preset", "nonexistent"],

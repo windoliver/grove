@@ -410,6 +410,7 @@ function printUsage(): void {
 Usage:
   grove init [name]                    Create a new grove
   grove init --preset <name> [name]    Create from preset (review-loop, exploration, swarm-ops, research-loop)
+    --nexus-url <url>                  Use Nexus backend (or set GROVE_NEXUS_URL)
   grove up [--headless] [--no-tui]     Start all services and TUI
   grove down                           Stop all services
 

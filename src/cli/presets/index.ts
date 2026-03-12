@@ -41,6 +41,12 @@ export interface PresetConfig {
   readonly execution?: ExecutionConfig | undefined;
   readonly seedContributions?: readonly SeedContribution[] | undefined;
   readonly services: { readonly server: boolean; readonly mcp: boolean };
+  /**
+   * Preferred backend for this preset.
+   * - "local": always uses local SQLite (zero-dependency fallback).
+   * - "nexus": prefers Nexus as the shared backend; falls back to local
+   *   if no nexusUrl is provided at init time.
+   */
   readonly backend: "local" | "nexus";
 }
 

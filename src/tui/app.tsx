@@ -451,7 +451,7 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
         artifactIndex={artifactIndex}
         showArtifactDiff={showArtifactDiff}
         activeClaims={activeClaims ?? undefined}
-        searchQuery={searchQuery}
+        searchQuery={panels.state.mode === InputMode.SearchInput ? searchBuffer : searchQuery}
         isSearchInputMode={panels.state.mode === InputMode.SearchInput}
       />
       <StatusBar mode={panels.state.mode} isDetailView={nav.isDetailView} error={lastError} />

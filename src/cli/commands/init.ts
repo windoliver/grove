@@ -30,6 +30,7 @@ export interface InitOptions {
   readonly agentOverrides: AgentOverrides;
   readonly cwd: string;
   readonly preset?: string | undefined;
+  readonly nexusUrl?: string | undefined;
 }
 
 /**
@@ -48,6 +49,7 @@ export function parseInitArgs(args: readonly string[]): InitOptions {
       description: { type: "string" },
       force: { type: "boolean", default: false },
       preset: { type: "string" },
+      "nexus-url": { type: "string" },
       "agent-id": { type: "string" },
       "agent-name": { type: "string" },
       provider: { type: "string" },
@@ -100,6 +102,7 @@ export function parseInitArgs(args: readonly string[]): InitOptions {
     description: values.description as string | undefined,
     force: values.force as boolean,
     preset,
+    nexusUrl: (values["nexus-url"] as string | undefined) ?? process.env.GROVE_NEXUS_URL,
     agentOverrides: {
       agentId: values["agent-id"] as string | undefined,
       agentName: values["agent-name"] as string | undefined,
@@ -174,13 +177,25 @@ export async function executeInit(options: InitOptions): Promise<{ grovePath: st
   await writeFile(grovemdPath, grovemdContent, "utf-8");
 
   // 6. Write grove.json
+  // Resolve backend mode: if preset prefers nexus, use it only when a nexusUrl
+  // is available (via --nexus-url or GROVE_NEXUS_URL); otherwise fall back to local.
   const { writeGroveConfig } = await import("../../core/config.js");
   const groveJsonPath = join(grovePath, "grove.json");
+  const preferredBackend = preset?.backend ?? "local";
+  let resolvedMode: "local" | "nexus" = "local";
+  if (preferredBackend === "nexus" && options.nexusUrl) {
+    resolvedMode = "nexus";
+  } else if (preferredBackend === "nexus") {
+    console.log(
+      `Note: preset '${options.preset}' prefers Nexus backend, but no --nexus-url or GROVE_NEXUS_URL provided. Using local mode.`,
+    );
+  }
   writeGroveConfig(
     {
       name: options.name,
-      mode: preset?.backend ?? "local",
+      mode: resolvedMode,
       preset: options.preset,
+      ...(resolvedMode === "nexus" && options.nexusUrl ? { nexusUrl: options.nexusUrl } : {}),
       services: preset?.services ?? { server: false, mcp: false },
     },
     groveJsonPath,
