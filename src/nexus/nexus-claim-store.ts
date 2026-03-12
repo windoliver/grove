@@ -226,6 +226,8 @@ export class NexusClaimStore implements ClaimStore {
     };
 
     await this.writeClaimCas(updated, etag);
+    this.claimCache.set(updated.claimId, updated);
+    this.invalidateActiveClaimsCache();
     return updated;
   }
 
@@ -470,11 +472,14 @@ export class NexusClaimStore implements ClaimStore {
     } catch (err) {
       if (!(err instanceof NexusConflictError)) throw err;
 
-      // Lock conflict — check if the holder is still active
+      // Lock conflict — check if the holder is still active.
+      // IMPORTANT: bypass cache to get fresh state (the holder may have
+      // heartbeated recently, and stale cache would cause false expiry).
       const existingLockData = await this.run(() => this.client.read(lockFile));
       if (existingLockData !== undefined) {
         const holderId = decoder.decode(existingLockData);
-        const holderClaim = await this.readClaim(holderId);
+        const holderResult = await this.readClaimWithEtag(holderId);
+        const holderClaim = holderResult?.claim;
 
         // If the holder is gone, expired, released, or completed, clean up and retry
         if (

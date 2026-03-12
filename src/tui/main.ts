@@ -271,6 +271,13 @@ export async function handleTui(args: readonly string[], groveOverride?: string)
 
   const root = createRoot(renderer);
 
+  // Start workspace GC for modes that have lifecycle support
+  let stopGc: (() => void) | undefined;
+  if (provider.cleanWorkspace) {
+    const { startWorkspaceGc } = await import("./workspace-gc.js");
+    stopGc = startWorkspaceGc(provider);
+  }
+
   root.render(
     React.createElement(App, {
       provider,
@@ -284,5 +291,6 @@ export async function handleTui(args: readonly string[], groveOverride?: string)
 
   // Wait for renderer to be stopped (e.g., by quit action)
   await renderer.idle();
+  stopGc?.();
   provider.close();
 }
