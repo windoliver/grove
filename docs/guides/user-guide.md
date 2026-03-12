@@ -138,8 +138,8 @@ The main write command is `grove contribute`. A typical first contribution is a
 ```bash
 grove contribute \
   --kind work \
-  --summary "Replace sequential parser with worker pool" \
-  --artifacts src/parser.ts \
+  --summary "Tighten CLI entrypoint behavior" \
+  --artifacts src/cli/main.ts \
   --score throughput=5800 \
   --score latency_p99=32 \
   --tag optimization
@@ -148,6 +148,9 @@ grove contribute \
 That records a new immutable node in the graph. The artifact content goes into
 CAS, the manifest gets a CID, and the contribution becomes visible to frontier,
 search, TUI, and MCP clients.
+
+In the examples below, `blake3:...` means "the real CID returned by an earlier
+command."
 
 The common contribution kinds are:
 
