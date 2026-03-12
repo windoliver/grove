@@ -102,6 +102,18 @@ describe("resolveBackend", () => {
     expect(result.mode).toBe("local");
   });
 
+  test("--nexus flag preserves groveOverride for topology loading", () => {
+    const result = resolveBackend({
+      nexus: "http://nexus:8080",
+      groveOverride: "/my/project/.grove",
+    });
+    expect(result.mode).toBe("nexus");
+    expect(result.source).toBe("flag");
+    if (result.mode === "nexus") {
+      expect(result.groveOverride).toBe("/my/project/.grove");
+    }
+  });
+
   test("grove.json with nexusUrl -> nexus mode when --grove points at .grove dir", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "grove-resolve-test-"));
     const groveDir = join(tempDir, ".grove");
@@ -118,6 +130,8 @@ describe("resolveBackend", () => {
       expect(result.source).toBe("grove.json");
       if (result.mode === "nexus") {
         expect(result.url).toBe("http://json-nexus:7070");
+        // groveOverride must survive so loadTopology can find GROVE.md
+        expect(result.groveOverride).toBe(groveDir);
       }
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
@@ -235,6 +249,36 @@ describe("checkNexusHealth", () => {
     try {
       const result = await checkNexusHealth(`http://localhost:${server.port}`);
       expect(result).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("returns false on 404 (not a Nexus server)", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response("Not Found", { status: 404 });
+      },
+    });
+    try {
+      const result = await checkNexusHealth(`http://localhost:${server.port}`);
+      expect(result).toBe(false);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("returns false on 405 (method not allowed — wrong server)", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response("Method Not Allowed", { status: 405 });
+      },
+    });
+    try {
+      const result = await checkNexusHealth(`http://localhost:${server.port}`);
+      expect(result).toBe(false);
     } finally {
       server.stop(true);
     }

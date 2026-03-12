@@ -18,7 +18,12 @@ import type { AgentTopology } from "../core/topology.js";
 /** Discriminated union describing the resolved backend. */
 export type ResolvedBackend =
   | { readonly mode: "remote"; readonly url: string; readonly source: "flag" }
-  | { readonly mode: "nexus"; readonly url: string; readonly source: "flag" | "env" | "grove.json" }
+  | {
+      readonly mode: "nexus";
+      readonly url: string;
+      readonly source: "flag" | "env" | "grove.json";
+      readonly groveOverride?: string | undefined;
+    }
   | {
       readonly mode: "local";
       readonly groveOverride?: string | undefined;
@@ -56,19 +61,24 @@ export function resolveBackend(flags: ResolveBackendFlags): ResolvedBackend {
 
   // 2. Explicit --nexus flag -> nexus
   if (flags.nexus) {
-    return { mode: "nexus", url: flags.nexus, source: "flag" };
+    return { mode: "nexus", url: flags.nexus, source: "flag", groveOverride: flags.groveOverride };
   }
 
   // 3. GROVE_NEXUS_URL env
   const envUrl = process.env.GROVE_NEXUS_URL;
   if (envUrl) {
-    return { mode: "nexus", url: envUrl, source: "env" };
+    return { mode: "nexus", url: envUrl, source: "env", groveOverride: flags.groveOverride };
   }
 
   // 4. grove.json nexusUrl
   const nexusFromConfig = readNexusUrlFromConfig(flags.groveOverride);
   if (nexusFromConfig) {
-    return { mode: "nexus", url: nexusFromConfig, source: "grove.json" };
+    return {
+      mode: "nexus",
+      url: nexusFromConfig,
+      source: "grove.json",
+      groveOverride: flags.groveOverride,
+    };
   }
 
   // 5. Local fallback
@@ -110,8 +120,11 @@ const DEFAULT_HEALTH_TIMEOUT_MS = 3_000;
  *
  * Sends a minimal JSON-RPC `exists` call to `POST /api/nfs/exists`,
  * which matches the Nexus wire protocol (all VFS ops go through
- * `POST /api/nfs/{method}` as JSON-RPC). Any successful HTTP response
- * (even a JSON-RPC error) means the server is reachable.
+ * `POST /api/nfs/{method}` as JSON-RPC).
+ *
+ * Healthy: 2xx (working) or 401/403 (auth required but server is Nexus).
+ * Unhealthy: 404/405 (not a Nexus endpoint — mistyped URL or wrong server),
+ * 5xx (server error), or network failure.
  */
 export async function checkNexusHealth(url: string, timeoutMs?: number): Promise<boolean> {
   try {
@@ -121,9 +134,10 @@ export async function checkNexusHealth(url: string, timeoutMs?: number): Promise
       body: JSON.stringify({ jsonrpc: "2.0", method: "exists", params: { path: "/" }, id: 1 }),
       signal: AbortSignal.timeout(timeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS),
     });
-    // Any HTTP-level response means the server is reachable.
-    // JSON-RPC errors (e.g. auth) still prove connectivity.
-    return resp.status < 500;
+    // 2xx: working Nexus. 401/403: reachable, auth required.
+    // 404/405: endpoint doesn't exist — not a Nexus server.
+    // 5xx: server error.
+    return resp.ok || resp.status === 401 || resp.status === 403;
   } catch {
     return false;
   }
@@ -157,9 +171,7 @@ export async function loadTopology(backend: ResolvedBackend): Promise<AgentTopol
   // For nexus mode the grove.json is local, so GROVE.md should be adjacent.
   try {
     const { parseGroveContract } = await import("../core/contract.js");
-    const { groveDir } = resolveGroveDir(
-      backend.mode === "local" ? backend.groveOverride : undefined,
-    );
+    const { groveDir } = resolveGroveDir(backend.groveOverride);
     const grovemdPath = join(groveDir, "..", "GROVE.md");
     if (existsSync(grovemdPath)) {
       const raw = await Bun.file(grovemdPath).text();
