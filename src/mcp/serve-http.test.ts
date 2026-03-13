@@ -42,18 +42,18 @@ interface TestServerContext {
 function buildTestServer(deps: McpDeps, sessionTtlMs: number): TestServerContext {
   const sessions = new Map<string, ManagedSession>();
 
-  const reapTimer = setInterval(
-    () => {
-      const now = Date.now();
-      for (const [id, session] of sessions) {
-        if (now - session.lastActivity > sessionTtlMs) {
-          session.server.close().catch(() => {});
-          sessions.delete(id);
-        }
+  // Mirror production: reap interval adapts to TTL, floor at 50ms for tests.
+  const reapIntervalMs = Math.min(60_000, Math.max(50, Math.floor(sessionTtlMs / 2)));
+
+  const reapTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [id, session] of sessions) {
+      if (now - session.lastActivity > sessionTtlMs) {
+        session.server.close().catch(() => {});
+        sessions.delete(id);
       }
-    },
-    Math.max(50, Math.floor(sessionTtlMs / 2)),
-  );
+    }
+  }, reapIntervalMs);
 
   function readBody(req: IncomingMessage): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -118,6 +118,11 @@ function buildTestServer(deps: McpDeps, sessionTtlMs: number): TestServerContext
         return;
       }
       getSession.lastActivity = Date.now();
+      // Mirror production: keep SSE sessions alive while stream is open.
+      const keepAlive = setInterval(() => {
+        getSession.lastActivity = Date.now();
+      }, reapIntervalMs / 2);
+      res.on("close", () => clearInterval(keepAlive));
       await getSession.transport.handleRequest(req, res);
     } else if (req.method === "DELETE") {
       const delSession = sessionId ? sessions.get(sessionId) : undefined;

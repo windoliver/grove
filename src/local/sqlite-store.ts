@@ -271,13 +271,14 @@ export function initSqliteDb(dbPath: string): Database {
       db.exec(BOUNTY_DDL);
     }
 
-    // Migration → v7: normalize created_at to UTC Z-format for reliable ORDER BY.
-    // Runs for both legacy databases (currentVersion === null, never tracked schema)
-    // and tracked databases below v7, so no contribution rows are left unnormalized.
+    // Migration → v7: normalize ALL created_at values to UTC with milliseconds
+    // for reliable lexicographic ORDER BY. This covers:
+    //  - Non-Z offsets like +05:30 (strftime normalizes to UTC)
+    //  - Z-without-milliseconds like T08:00:00Z (strftime adds .000)
+    // Without milliseconds, "T08:00:00Z" sorts BEFORE "T08:00:00.100Z"
+    // because '.' (0x2E) < 'Z' (0x5A), giving wrong chronological order.
     if (currentVersion === null || currentVersion < 7) {
-      db.run(
-        "UPDATE contributions SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', created_at) WHERE created_at NOT LIKE '%Z'",
-      );
+      db.run("UPDATE contributions SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', created_at)");
     }
 
     db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [
