@@ -398,8 +398,8 @@ describe("putMany with rich contributions", () => {
     const mlExperiment = await store.list({ tags: ["ml", "experiment"] });
     expect(mlExperiment.length).toBe(2);
     const mlExpCids = mlExperiment.map((c) => c.cid);
-    expect(mlExpCids).toContain(contributions[1]?.cid);
-    expect(mlExpCids).toContain(contributions[9]?.cid);
+    expect(mlExpCids).toContain(contributions[1]?.cid as string);
+    expect(mlExpCids).toContain(contributions[9]?.cid as string);
 
     // Relations: children of root1
     const root1Children = await store.children(root1.cid);
@@ -412,7 +412,7 @@ describe("putMany with rich contributions", () => {
     // FTS search
     const transformerSearch = await store.search("transformer");
     expect(transformerSearch.length).toBeGreaterThanOrEqual(1);
-    expect(transformerSearch.map((c) => c.cid)).toContain(contributions[0]?.cid);
+    expect(transformerSearch.map((c) => c.cid)).toContain(contributions[0]?.cid as string);
 
     // FTS with filter
     const reviewSearch = await store.search("benchmark", { kind: ContributionKind.Review });
