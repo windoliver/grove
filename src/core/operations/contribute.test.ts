@@ -158,6 +158,71 @@ describe("contributeOperation", () => {
     expect(stored).toBeDefined();
     expect(stored?.summary).toBe("retrievable");
   });
+
+  // -----------------------------------------------------------------------
+  // Timezone normalization (toUtcIso in contributeOperation)
+  // -----------------------------------------------------------------------
+
+  test("createdAt with positive offset is stored as UTC Z-format", async () => {
+    const result = await contributeOperation(
+      {
+        kind: "work",
+        summary: "IST contribution",
+        createdAt: "2026-01-02T00:00:00+05:30",
+        agent: { agentId: "tz-agent" },
+      },
+      deps,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.createdAt).toBe("2026-01-01T18:30:00.000Z");
+
+    const stored = await deps.contributionStore.get(result.value.cid);
+    expect(stored).toBeDefined();
+    expect(stored?.createdAt).toEndWith("Z");
+    expect(stored?.createdAt).toBe("2026-01-01T18:30:00.000Z");
+  });
+
+  test("createdAt with negative offset is stored as UTC Z-format", async () => {
+    const result = await contributeOperation(
+      {
+        kind: "work",
+        summary: "PST contribution",
+        createdAt: "2026-03-15T08:00:00-08:00",
+        agent: { agentId: "tz-agent" },
+      },
+      deps,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.createdAt).toBe("2026-03-15T16:00:00.000Z");
+
+    const stored = await deps.contributionStore.get(result.value.cid);
+    expect(stored).toBeDefined();
+    expect(stored?.createdAt).toBe("2026-03-15T16:00:00.000Z");
+  });
+
+  test("createdAt already in UTC Z-format is idempotent", async () => {
+    const result = await contributeOperation(
+      {
+        kind: "work",
+        summary: "UTC contribution",
+        createdAt: "2026-06-01T12:00:00.000Z",
+        agent: { agentId: "tz-agent" },
+      },
+      deps,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.createdAt).toBe("2026-06-01T12:00:00.000Z");
+
+    const stored = await deps.contributionStore.get(result.value.cid);
+    expect(stored).toBeDefined();
+    expect(stored?.createdAt).toBe("2026-06-01T12:00:00.000Z");
+  });
 });
 
 describe("reviewOperation", () => {

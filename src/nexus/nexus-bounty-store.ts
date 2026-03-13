@@ -15,7 +15,7 @@ import type { AgentIdentity } from "../core/models.js";
 import type { ListEntry, ListOptions, NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
-import { isRetryable, mapNexusError } from "./errors.js";
+import { withRetry, withSemaphore } from "./retry.js";
 import { Semaphore } from "./semaphore.js";
 import {
   bountiesDir,
@@ -66,12 +66,13 @@ export class NexusBountyStore implements BountyStore {
       updatedAt: now,
     };
 
-    await this.withRetry(
+    await withRetry(
       () =>
-        this.run(() =>
+        withSemaphore(this.semaphore, () =>
           this.client.write(bountyPath(this.zoneId, bounty.bountyId), encodeBounty(created)),
         ),
       "createBounty",
+      this.config,
     );
 
     await this.writeStatusIndex(created);
@@ -79,9 +80,11 @@ export class NexusBountyStore implements BountyStore {
   }
 
   async getBounty(bountyId: string): Promise<Bounty | undefined> {
-    const data = await this.withRetry(
-      () => this.run(() => this.client.read(bountyPath(this.zoneId, bountyId))),
+    const data = await withRetry(
+      () =>
+        withSemaphore(this.semaphore, () => this.client.read(bountyPath(this.zoneId, bountyId))),
       "getBounty",
+      this.config,
     );
     if (data === undefined) return undefined;
     return decodeBounty(data);
@@ -221,15 +224,18 @@ export class NexusBountyStore implements BountyStore {
     };
     if (transform) updated = transform(updated);
 
-    await this.withRetry(
+    await withRetry(
       () =>
-        this.run(() => this.client.write(bountyPath(this.zoneId, bountyId), encodeBounty(updated))),
+        withSemaphore(this.semaphore, () =>
+          this.client.write(bountyPath(this.zoneId, bountyId), encodeBounty(updated)),
+        ),
       `transitionBounty:${newStatus}`,
+      this.config,
     );
 
     // Clean up old status index
     if (oldStatus !== newStatus) {
-      await this.run(() =>
+      await withSemaphore(this.semaphore, () =>
         this.client.delete(bountyStatusIndexPath(this.zoneId, oldStatus, bountyId)),
       ).catch(() => {});
     }
@@ -239,15 +245,16 @@ export class NexusBountyStore implements BountyStore {
   }
 
   private async writeStatusIndex(bounty: Bounty): Promise<void> {
-    await this.withRetry(
+    await withRetry(
       () =>
-        this.run(() =>
+        withSemaphore(this.semaphore, () =>
           this.client.write(
             bountyStatusIndexPath(this.zoneId, bounty.status, bounty.bountyId),
             new Uint8Array(0),
           ),
         ),
       "writeStatusIndex",
+      this.config,
     );
   }
 
@@ -259,9 +266,10 @@ export class NexusBountyStore implements BountyStore {
     let cursor: string | undefined;
 
     do {
-      const listing = await this.withRetry(
-        () => this.run(() => this.client.list(dir, { ...opts, cursor })),
+      const listing = await withRetry(
+        () => withSemaphore(this.semaphore, () => this.client.list(dir, { ...opts, cursor })),
         "listAllPages",
+        this.config,
       ).catch(() => ({
         files: [] as ListEntry[],
         hasMore: false as boolean,
@@ -275,29 +283,5 @@ export class NexusBountyStore implements BountyStore {
     } while (cursor !== undefined);
 
     return entries;
-  }
-
-  private async run<T>(fn: () => Promise<T>): Promise<T> {
-    return this.semaphore.run(fn);
-  }
-
-  private async withRetry<T>(fn: () => Promise<T>, context: string): Promise<T> {
-    let lastError: unknown;
-    for (let attempt = 0; attempt < this.config.retryMaxAttempts; attempt++) {
-      try {
-        return await fn();
-      } catch (error) {
-        lastError = error;
-        if (!isRetryable(error) || attempt === this.config.retryMaxAttempts - 1) {
-          throw mapNexusError(error, context);
-        }
-        const delay = Math.min(
-          this.config.retryBaseDelayMs * 2 ** attempt,
-          this.config.retryMaxDelayMs,
-        );
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      }
-    }
-    throw mapNexusError(lastError, context);
   }
 }

@@ -122,6 +122,50 @@ describe("NexusContributionStore adapter-specific", () => {
     expect(await store.get(c3.cid)).toBeDefined();
   });
 
+  describe("getMany", () => {
+    test("empty input returns empty map", async () => {
+      const result = await store.getMany([]);
+      expect(result.size).toBe(0);
+    });
+
+    test("single existing CID", async () => {
+      const c = makeContribution({ summary: "getMany single" });
+      await store.put(c);
+
+      const result = await store.getMany([c.cid]);
+      expect(result.size).toBe(1);
+      expect(result.get(c.cid)?.summary).toBe("getMany single");
+    });
+
+    test("single missing CID returns empty map", async () => {
+      const result = await store.getMany(["nonexistent"]);
+      expect(result.size).toBe(0);
+    });
+
+    test("mixed existing and missing", async () => {
+      const c1 = makeContribution({ summary: "getMany mix-a" });
+      const c2 = makeContribution({ summary: "getMany mix-b" });
+      const c3 = makeContribution({ summary: "getMany mix-c" });
+      await store.putMany([c1, c2, c3]);
+
+      const result = await store.getMany([c1.cid, c2.cid, c3.cid, "nonexistent"]);
+      expect(result.size).toBe(3);
+      expect(result.get(c1.cid)?.summary).toBe("getMany mix-a");
+      expect(result.get(c2.cid)?.summary).toBe("getMany mix-b");
+      expect(result.get(c3.cid)?.summary).toBe("getMany mix-c");
+      expect(result.has("nonexistent")).toBe(false);
+    });
+
+    test("duplicate CIDs in input returns single map entry", async () => {
+      const c = makeContribution({ summary: "getMany dup" });
+      await store.put(c);
+
+      const result = await store.getMany([c.cid, c.cid]);
+      expect(result.size).toBe(1);
+      expect(result.get(c.cid)?.summary).toBe("getMany dup");
+    });
+  });
+
   test("storeIdentity includes zone", () => {
     expect(store.storeIdentity).toBe("nexus:test-zone:contributions");
   });

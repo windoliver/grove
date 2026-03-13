@@ -121,7 +121,10 @@ function hotThreadsTests(createBackend: () => TestBackend): void {
       expect(results).toHaveLength(1);
       expect(results[0]?.contribution.cid).toBe(root.cid);
       expect(results[0]?.replyCount).toBe(2);
-      expect(results[0]?.lastReplyAt).toBe(reply2.createdAt);
+      // The stored created_at is normalized to UTC Z-format with milliseconds.
+      expect(new Date(results[0]?.lastReplyAt ?? "").getTime()).toBe(
+        new Date(reply2.createdAt).getTime(),
+      );
     } finally {
       cleanup();
     }

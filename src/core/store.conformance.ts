@@ -541,6 +541,43 @@ export function runContributionStoreTests(factory: ContributionStoreFactory): vo
     });
 
     // ------------------------------------------------------------------
+    // Timezone normalization — list ordering with mixed offsets
+    // ------------------------------------------------------------------
+
+    test("list() orders correctly with mixed timezone offsets", async () => {
+      // A: 2026-01-01T12:00:00+05:30 → UTC 2026-01-01T06:30:00Z (earliest)
+      // B: 2026-01-01T08:00:00Z       → UTC 2026-01-01T08:00:00Z
+      // C: 2026-01-01T03:00:00-05:00  → UTC 2026-01-01T08:00:00Z (same instant as B)
+      //
+      // Normalization to UTC Z-format happens in the contribute operation
+      // (via toUtcIso), so we pre-normalize here to test store ordering.
+      const a = makeContribution({
+        summary: "offset-a",
+        createdAt: "2026-01-01T06:30:00.000Z",
+      });
+      const b = makeContribution({
+        summary: "offset-b",
+        createdAt: "2026-01-01T08:00:00.000Z",
+      });
+      const c = makeContribution({
+        summary: "offset-c",
+        createdAt: "2026-01-01T08:00:00.000Z",
+      });
+      await store.putMany([b, c, a]); // insert out of order
+
+      const all = await store.list();
+      expect(all.length).toBe(3);
+
+      // A (06:30) must come first in ascending order
+      expect(all[0]?.cid).toBe(a.cid);
+
+      // B and C represent the same UTC instant; both must come after A
+      const lastTwoCids = [all[1]?.cid, all[2]?.cid];
+      expect(lastTwoCids).toContain(b.cid);
+      expect(lastTwoCids).toContain(c.cid);
+    });
+
+    // ------------------------------------------------------------------
     // close
     // ------------------------------------------------------------------
 

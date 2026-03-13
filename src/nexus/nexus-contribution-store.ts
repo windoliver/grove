@@ -30,8 +30,8 @@ import { toUtcIso } from "../core/time.js";
 import type { ListEntry, ListOptions, NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
-import { isRetryable, mapNexusError } from "./errors.js";
 import { LruCache } from "./lru-cache.js";
+import { withRetry, withSemaphore } from "./retry.js";
 import { Semaphore } from "./semaphore.js";
 import {
   contributionPath,
@@ -82,46 +82,52 @@ export class NexusContributionStore implements ContributionStore {
 
     const manifestPath = contributionPath(this.zoneId, contribution.cid);
 
-    await this.withRetry(async () => {
-      // Store manifest (idempotent — overwrites are safe since CID is content-addressed)
-      const manifest = toManifest(contribution);
-      await this.run(() => this.client.write(manifestPath, encode(manifest)));
+    await withRetry(
+      async () => {
+        // Store manifest (idempotent — overwrites are safe since CID is content-addressed)
+        const manifest = toManifest(contribution);
+        await withSemaphore(this.semaphore, () =>
+          this.client.write(manifestPath, encode(manifest)),
+        );
 
-      // Write relation index entries (idempotent writes)
-      for (const rel of contribution.relations) {
-        const relPath = relationIndexPath(this.zoneId, rel.targetCid, contribution.cid);
-        const relData = encode({
-          relationType: rel.relationType,
-          ...(rel.metadata !== undefined ? { metadata: rel.metadata } : {}),
-        });
-        await this.run(() => this.client.write(relPath, relData));
-      }
+        // Write relation index entries (idempotent writes)
+        for (const rel of contribution.relations) {
+          const relPath = relationIndexPath(this.zoneId, rel.targetCid, contribution.cid);
+          const relData = encode({
+            relationType: rel.relationType,
+            ...(rel.metadata !== undefined ? { metadata: rel.metadata } : {}),
+          });
+          await withSemaphore(this.semaphore, () => this.client.write(relPath, relData));
+        }
 
-      // Write tag index markers (idempotent writes)
-      for (const tag of contribution.tags) {
-        const tp = tagIndexPath(this.zoneId, tag, contribution.cid);
-        await this.run(() => this.client.write(tp, new Uint8Array(0)));
-      }
+        // Write tag index markers (idempotent writes)
+        for (const tag of contribution.tags) {
+          const tp = tagIndexPath(this.zoneId, tag, contribution.cid);
+          await withSemaphore(this.semaphore, () => this.client.write(tp, new Uint8Array(0)));
+        }
 
-      // Write FTS index entry (idempotent write)
-      const ftsPath = ftsIndexPath(this.zoneId, contribution.cid);
-      await this.run(() =>
-        this.client.write(
-          ftsPath,
-          encode({
-            cid: contribution.cid,
-            summary: contribution.summary,
-            description: contribution.description ?? "",
-            kind: contribution.kind,
-            mode: contribution.mode,
-            agentId: contribution.agent.agentId,
-            agentName: contribution.agent.agentName ?? null,
-            createdAt: toUtcIso(contribution.createdAt),
-            tags: contribution.tags,
-          }),
-        ),
-      );
-    }, "put");
+        // Write FTS index entry (idempotent write)
+        const ftsPath = ftsIndexPath(this.zoneId, contribution.cid);
+        await withSemaphore(this.semaphore, () =>
+          this.client.write(
+            ftsPath,
+            encode({
+              cid: contribution.cid,
+              summary: contribution.summary,
+              description: contribution.description ?? "",
+              kind: contribution.kind,
+              mode: contribution.mode,
+              agentId: contribution.agent.agentId,
+              agentName: contribution.agent.agentName ?? null,
+              createdAt: toUtcIso(contribution.createdAt),
+              tags: contribution.tags,
+            }),
+          ),
+        );
+      },
+      "put",
+      this.config,
+    );
 
     this.cache.set(contribution.cid, contribution);
   }
@@ -139,9 +145,8 @@ export class NexusContributionStore implements ContributionStore {
   async getMany(cids: readonly string[]): Promise<ReadonlyMap<string, Contribution>> {
     const result = new Map<string, Contribution>();
     if (cids.length === 0) return result;
-
-    for (const cid of cids) {
-      const contribution = await this.get(cid);
+    const entries = await Promise.all(cids.map(async (cid) => [cid, await this.get(cid)] as const));
+    for (const [cid, contribution] of entries) {
       if (contribution !== undefined) {
         result.set(cid, contribution);
       }
@@ -154,7 +159,11 @@ export class NexusContributionStore implements ContributionStore {
     if (cached !== undefined) return cached;
 
     const path = contributionPath(this.zoneId, cid);
-    const data = await this.withRetry(() => this.run(() => this.client.read(path)), "get");
+    const data = await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.read(path)),
+      "get",
+      this.config,
+    );
     if (data === undefined) return undefined;
 
     const manifest = decode<Record<string, unknown>>(data);
@@ -170,7 +179,7 @@ export class NexusContributionStore implements ContributionStore {
     const contributions: Contribution[] = [];
     for (const entry of entries) {
       if (entry.isDirectory) continue;
-      const ftsData = await this.run(() => this.client.read(entry.path));
+      const ftsData = await withSemaphore(this.semaphore, () => this.client.read(entry.path));
       if (ftsData === undefined) continue;
 
       const fts = decode<Record<string, JsonValue>>(ftsData);
@@ -180,8 +189,8 @@ export class NexusContributionStore implements ContributionStore {
       if (c !== undefined) contributions.push(c);
     }
 
-    // Sort by createdAt descending
-    contributions.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    // Sort by createdAt ascending (matches SQLite store behavior)
+    contributions.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
     // Apply limit/offset
     const offset = query?.offset ?? 0;
@@ -249,7 +258,7 @@ export class NexusContributionStore implements ContributionStore {
 
       // Filter by relationType if specified
       if (relationType !== undefined) {
-        const relData = await this.run(() => this.client.read(entry.path));
+        const relData = await withSemaphore(this.semaphore, () => this.client.read(entry.path));
         if (relData !== undefined) {
           const rel = decode<{ relationType: string }>(relData);
           if (rel.relationType !== relationType) continue;
@@ -266,9 +275,10 @@ export class NexusContributionStore implements ContributionStore {
   async search(query: string, filters?: ContributionQuery): Promise<readonly Contribution[]> {
     // Try Nexus native search first
     const ftsDir = ftsIndexDir(this.zoneId);
-    const results = await this.withRetry(
-      () => this.run(() => this.client.search(query, { path: ftsDir })),
+    const results = await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.search(query, { path: ftsDir })),
       "search",
+      this.config,
     );
 
     if (results.length > 0) {
@@ -279,7 +289,7 @@ export class NexusContributionStore implements ContributionStore {
         const cid = filename.replace(/\.json$/, "");
         if (!cid) continue;
 
-        const ftsData = await this.run(() => this.client.read(r.path));
+        const ftsData = await withSemaphore(this.semaphore, () => this.client.read(r.path));
         if (ftsData === undefined) continue;
         const fts = decode<Record<string, JsonValue>>(ftsData);
         if (!matchesFtsQuery(fts, filters)) continue;
@@ -297,7 +307,7 @@ export class NexusContributionStore implements ContributionStore {
     const contributions: Contribution[] = [];
     for (const entry of allEntries) {
       if (entry.isDirectory) continue;
-      const ftsData = await this.run(() => this.client.read(entry.path));
+      const ftsData = await withSemaphore(this.semaphore, () => this.client.read(entry.path));
       if (ftsData === undefined) continue;
 
       const fts = decode<Record<string, JsonValue>>(ftsData);
@@ -327,7 +337,7 @@ export class NexusContributionStore implements ContributionStore {
 
       // Filter by relationType if specified
       if (relationType !== undefined) {
-        const relData = await this.run(() => this.client.read(entry.path));
+        const relData = await withSemaphore(this.semaphore, () => this.client.read(entry.path));
         if (relData !== undefined) {
           const rel = decode<{ relationType: string }>(relData);
           if (rel.relationType !== relationType) continue;
@@ -376,7 +386,7 @@ export class NexusContributionStore implements ContributionStore {
         for (const entry of entries) {
           if (entry.isDirectory) continue;
           // Read relation to check type
-          const relData = await this.run(() => this.client.read(entry.path));
+          const relData = await withSemaphore(this.semaphore, () => this.client.read(entry.path));
           if (relData === undefined) continue;
           const rel = decode<{ relationType: string }>(relData);
           if (rel.relationType !== "responds_to") continue;
@@ -423,7 +433,7 @@ export class NexusContributionStore implements ContributionStore {
       let count = 0;
       for (const entry of entries) {
         if (entry.isDirectory) continue;
-        const relData = await this.run(() => this.client.read(entry.path));
+        const relData = await withSemaphore(this.semaphore, () => this.client.read(entry.path));
         if (relData === undefined) continue;
         const rel = decode<{ relationType: string }>(relData);
         if (rel.relationType === "responds_to") count++;
@@ -501,9 +511,10 @@ export class NexusContributionStore implements ContributionStore {
     let cursor: string | undefined;
 
     do {
-      const listing = await this.withRetry(
-        () => this.run(() => this.client.list(dir, { ...opts, cursor })),
+      const listing = await withRetry(
+        () => withSemaphore(this.semaphore, () => this.client.list(dir, { ...opts, cursor })),
         "listAllPages",
+        this.config,
       ).catch(() => ({
         files: [] as ListEntry[],
         hasMore: false as boolean,
@@ -517,30 +528,6 @@ export class NexusContributionStore implements ContributionStore {
     } while (cursor !== undefined);
 
     return entries;
-  }
-
-  private async run<T>(fn: () => Promise<T>): Promise<T> {
-    return this.semaphore.run(fn);
-  }
-
-  private async withRetry<T>(fn: () => Promise<T>, context: string): Promise<T> {
-    let lastError: unknown;
-    for (let attempt = 0; attempt < this.config.retryMaxAttempts; attempt++) {
-      try {
-        return await fn();
-      } catch (error) {
-        lastError = error;
-        if (!isRetryable(error) || attempt === this.config.retryMaxAttempts - 1) {
-          throw mapNexusError(error, context);
-        }
-        const delay = Math.min(
-          this.config.retryBaseDelayMs * 2 ** attempt,
-          this.config.retryMaxDelayMs,
-        );
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      }
-    }
-    throw mapNexusError(lastError, context);
   }
 }
 

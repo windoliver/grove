@@ -27,8 +27,8 @@ import type { Artifact } from "../core/models.js";
 import type { NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
-import { isRetryable, mapNexusError } from "./errors.js";
 import { LruCache } from "./lru-cache.js";
+import { withRetry, withSemaphore } from "./retry.js";
 import { Semaphore } from "./semaphore.js";
 import { casMetaPath, casPath } from "./vfs-paths.js";
 
@@ -100,17 +100,21 @@ export class NexusCas implements ContentStore {
 
     // Exists-before-put optimization for large blobs
     if (data.byteLength > this.config.existsThresholdBytes) {
-      const fileExists = await this.withRetry(
-        () => this.runWithSemaphore(() => this.client.exists(blobPath)),
+      const fileExists = await withRetry(
+        () => withSemaphore(this.semaphore, () => this.client.exists(blobPath)),
         "put.exists",
+        this.config,
       );
       if (fileExists) {
         if (mediaType) {
           const metaPath = casMetaPath(this.zoneId, contentHash);
-          await this.withRetry(
+          await withRetry(
             () =>
-              this.runWithSemaphore(() => this.client.write(metaPath, encodeMetadata(mediaType))),
+              withSemaphore(this.semaphore, () =>
+                this.client.write(metaPath, encodeMetadata(mediaType)),
+              ),
             "put.meta",
+            this.config,
           );
         }
         this.existsCache.set(contentHash, true);
@@ -120,16 +124,21 @@ export class NexusCas implements ContentStore {
       }
     }
 
-    await this.withRetry(
-      () => this.runWithSemaphore(() => this.client.write(blobPath, data)),
+    await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.write(blobPath, data)),
       "put",
+      this.config,
     );
 
     if (mediaType) {
       const metaPath = casMetaPath(this.zoneId, contentHash);
-      await this.withRetry(
-        () => this.runWithSemaphore(() => this.client.write(metaPath, encodeMetadata(mediaType))),
+      await withRetry(
+        () =>
+          withSemaphore(this.semaphore, () =>
+            this.client.write(metaPath, encodeMetadata(mediaType)),
+          ),
         "put.meta",
+        this.config,
       );
     }
 
@@ -141,7 +150,11 @@ export class NexusCas implements ContentStore {
   async get(contentHash: string): Promise<Uint8Array | undefined> {
     validateHash(contentHash);
     const blobPath = casPath(this.zoneId, contentHash);
-    return this.withRetry(() => this.runWithSemaphore(() => this.client.read(blobPath)), "get");
+    return withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.read(blobPath)),
+      "get",
+      this.config,
+    );
   }
 
   async exists(contentHash: string): Promise<boolean> {
@@ -151,9 +164,10 @@ export class NexusCas implements ContentStore {
     if (cached !== undefined) return cached;
 
     const blobPath = casPath(this.zoneId, contentHash);
-    const fileExists = await this.withRetry(
-      () => this.runWithSemaphore(() => this.client.exists(blobPath)),
+    const fileExists = await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.exists(blobPath)),
       "exists",
+      this.config,
     );
     if (fileExists) this.existsCache.set(contentHash, true);
     return fileExists;
@@ -162,9 +176,10 @@ export class NexusCas implements ContentStore {
   async existsMany(contentHashes: readonly string[]): Promise<ReadonlyMap<string, boolean>> {
     const result = new Map<string, boolean>();
     if (contentHashes.length === 0) return result;
-
-    for (const hash of contentHashes) {
-      const exists = await this.exists(hash);
+    const entries = await Promise.all(
+      contentHashes.map(async (hash) => [hash, await this.exists(hash)] as const),
+    );
+    for (const [hash, exists] of entries) {
       result.set(hash, exists);
     }
     return result;
@@ -173,15 +188,17 @@ export class NexusCas implements ContentStore {
   async delete(contentHash: string): Promise<boolean> {
     validateHash(contentHash);
     const blobPath = casPath(this.zoneId, contentHash);
-    const deleted = await this.withRetry(
-      () => this.runWithSemaphore(() => this.client.delete(blobPath)),
+    const deleted = await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.delete(blobPath)),
       "delete",
+      this.config,
     );
     // Also delete metadata sidecar
     const metaPath = casMetaPath(this.zoneId, contentHash);
-    await this.withRetry(
-      () => this.runWithSemaphore(() => this.client.delete(metaPath)),
+    await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.delete(metaPath)),
       "delete.meta",
+      this.config,
     ).catch(() => {});
     this.existsCache.delete(contentHash);
     this.statCache.delete(contentHash);
@@ -198,16 +215,21 @@ export class NexusCas implements ContentStore {
     const blobPath = casPath(this.zoneId, contentHash);
 
     // Exists-before-put — file-based puts are always "large"
-    const fileExists = await this.withRetry(
-      () => this.runWithSemaphore(() => this.client.exists(blobPath)),
+    const fileExists = await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.exists(blobPath)),
       "putFile.exists",
+      this.config,
     );
     if (fileExists) {
       if (mediaType) {
         const metaP = casMetaPath(this.zoneId, contentHash);
-        await this.withRetry(
-          () => this.runWithSemaphore(() => this.client.write(metaP, encodeMetadata(mediaType))),
+        await withRetry(
+          () =>
+            withSemaphore(this.semaphore, () =>
+              this.client.write(metaP, encodeMetadata(mediaType)),
+            ),
           "putFile.meta",
+          this.config,
         );
       }
       this.existsCache.set(contentHash, true);
@@ -216,16 +238,19 @@ export class NexusCas implements ContentStore {
       return contentHash;
     }
 
-    await this.withRetry(
-      () => this.runWithSemaphore(() => this.client.write(blobPath, fileData)),
+    await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.write(blobPath, fileData)),
       "putFile",
+      this.config,
     );
 
     if (mediaType) {
       const metaP = casMetaPath(this.zoneId, contentHash);
-      await this.withRetry(
-        () => this.runWithSemaphore(() => this.client.write(metaP, encodeMetadata(mediaType))),
+      await withRetry(
+        () =>
+          withSemaphore(this.semaphore, () => this.client.write(metaP, encodeMetadata(mediaType))),
         "putFile.meta",
+        this.config,
       );
     }
 
@@ -237,9 +262,10 @@ export class NexusCas implements ContentStore {
   async getToFile(contentHash: string, destPath: string): Promise<boolean> {
     validateHash(contentHash);
     const blobPath = casPath(this.zoneId, contentHash);
-    const data = await this.withRetry(
-      () => this.runWithSemaphore(() => this.client.read(blobPath)),
+    const data = await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.read(blobPath)),
       "getToFile",
+      this.config,
     );
     if (data === undefined) return false;
     await writeFile(destPath, data);
@@ -253,18 +279,20 @@ export class NexusCas implements ContentStore {
     if (cached !== undefined) return cached;
 
     const blobPath = casPath(this.zoneId, contentHash);
-    const fileMeta = await this.withRetry(
-      () => this.runWithSemaphore(() => this.client.stat(blobPath)),
+    const fileMeta = await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.stat(blobPath)),
       "stat",
+      this.config,
     );
     if (fileMeta === undefined) return undefined;
 
     // Read metadata sidecar for mediaType
     let mediaType: string | undefined;
     const metaPath = casMetaPath(this.zoneId, contentHash);
-    const metaData = await this.withRetry(
-      () => this.runWithSemaphore(() => this.client.read(metaPath)),
+    const metaData = await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.read(metaPath)),
       "stat.meta",
+      this.config,
     ).catch(() => undefined);
     if (metaData !== undefined) {
       const meta = decodeMetadata(metaData);
@@ -283,33 +311,5 @@ export class NexusCas implements ContentStore {
 
   close(): void {
     // No-op — lifecycle managed by client
-  }
-
-  // -----------------------------------------------------------------------
-  // Private helpers
-  // -----------------------------------------------------------------------
-
-  private async runWithSemaphore<T>(fn: () => Promise<T>): Promise<T> {
-    return this.semaphore.run(fn);
-  }
-
-  private async withRetry<T>(fn: () => Promise<T>, context: string): Promise<T> {
-    let lastError: unknown;
-    for (let attempt = 0; attempt < this.config.retryMaxAttempts; attempt++) {
-      try {
-        return await fn();
-      } catch (error) {
-        lastError = error;
-        if (!isRetryable(error) || attempt === this.config.retryMaxAttempts - 1) {
-          throw mapNexusError(error, context);
-        }
-        const delay = Math.min(
-          this.config.retryBaseDelayMs * 2 ** attempt,
-          this.config.retryMaxDelayMs,
-        );
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      }
-    }
-    throw mapNexusError(lastError, context);
   }
 }
