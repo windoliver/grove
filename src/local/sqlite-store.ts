@@ -271,8 +271,10 @@ export function initSqliteDb(dbPath: string): Database {
       db.exec(BOUNTY_DDL);
     }
 
-    // Migration → v7: normalize created_at to UTC Z-format for reliable ORDER BY
-    if (currentVersion !== null && currentVersion < 7) {
+    // Migration → v7: normalize created_at to UTC Z-format for reliable ORDER BY.
+    // Runs for both legacy databases (currentVersion === null, never tracked schema)
+    // and tracked databases below v7, so no contribution rows are left unnormalized.
+    if (currentVersion === null || currentVersion < 7) {
       db.run(
         "UPDATE contributions SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', created_at) WHERE created_at NOT LIKE '%Z'",
       );

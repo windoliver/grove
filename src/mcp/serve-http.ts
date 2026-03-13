@@ -99,7 +99,16 @@ try {
 // --- Session management -----------------------------------------------------
 
 /** Idle timeout before a session is reaped (default 30 min). */
-const SESSION_TTL_MS = Number.parseInt(process.env.MCP_SESSION_TTL_MS ?? "1800000", 10);
+const SESSION_TTL_MS = (() => {
+  const raw = Number.parseInt(process.env.MCP_SESSION_TTL_MS ?? "1800000", 10);
+  if (Number.isNaN(raw) || raw <= 0) {
+    process.stderr.write(
+      `grove-mcp-http: invalid MCP_SESSION_TTL_MS '${process.env.MCP_SESSION_TTL_MS}', using default 1800000\n`,
+    );
+    return 1_800_000;
+  }
+  return raw;
+})();
 
 /** How often the reaper sweeps for stale sessions (60 s). */
 const REAP_INTERVAL_MS = 60_000;
@@ -186,6 +195,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       return;
     }
     getSession.lastActivity = Date.now();
+    // Keep the session alive while the SSE stream is open. Without this,
+    // long-lived GET streams would be reaped as "idle" even though the
+    // client is actively waiting for server-initiated messages.
+    const keepAlive = setInterval(() => {
+      getSession.lastActivity = Date.now();
+    }, REAP_INTERVAL_MS / 2);
+    res.on("close", () => clearInterval(keepAlive));
     await getSession.transport.handleRequest(req, res);
   } else if (req.method === "DELETE") {
     // Close session

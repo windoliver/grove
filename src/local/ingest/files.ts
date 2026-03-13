@@ -38,9 +38,11 @@ export async function ingestFiles(
 ): Promise<Record<string, string>> {
   const artifacts: Record<string, string> = {};
 
-  // Collect file paths for parallel puts; directories are walked sequentially
+  // Collect file paths for parallel puts; directories are walked sequentially.
+  // We pass `artifacts` to walkDirectory so directory names are registered
+  // *before* we check top-level files — and we also pre-register top-level
+  // names into `artifacts` so walkDirectory can detect collisions in reverse.
   const filePuts: Array<{ path: string; name: string }> = [];
-  const seenNames = new Set<string>();
 
   for (const p of paths) {
     const info = await stat(p);
@@ -48,12 +50,13 @@ export async function ingestFiles(
       await walkDirectory(cas, p, p, artifacts);
     } else if (info.isFile()) {
       const name = basename(p);
-      if (name in artifacts || seenNames.has(name)) {
+      if (name in artifacts) {
         throw new Error(
           `Artifact name collision: '${name}' already exists. Use directories to avoid name conflicts.`,
         );
       }
-      seenNames.add(name);
+      // Reserve the name so subsequent walkDirectory calls detect collisions.
+      artifacts[name] = "";
       filePuts.push({ path: p, name });
     }
   }
