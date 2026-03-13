@@ -20,7 +20,7 @@
     "lint": "biome check ."
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.53.0",
+    "@anthropic-ai/sdk": "0.78.0",
     "@modelcontextprotocol/sdk": "^1.27.0",
     "zod": "4.3.6"
   },
