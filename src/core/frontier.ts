@@ -11,7 +11,7 @@
 
 import type { Contribution, ContributionKind, JsonValue, Score } from "./models.js";
 import { ContributionMode, RelationType } from "./models.js";
-import type { ContributionStore } from "./store.js";
+import type { ContributionQuery, ContributionStore } from "./store.js";
 
 /** A single entry in a frontier ranking. */
 export interface FrontierEntry {
@@ -137,10 +137,26 @@ export class DefaultFrontierCalculator implements FrontierCalculator {
 
   async compute(query?: FrontierQuery): Promise<Frontier> {
     const limit = query?.limit ?? DEFAULT_LIMIT;
-    // TODO(perf): push filters to store.list() when scale demands.
-    // Currently loads all contributions for in-memory edge counting.
-    const allContributions = await this.store.list();
-    const filtered = allContributions.filter((c) => matchesFilters(c, query));
+
+    // Push supported filters to the store for indexed queries.
+    // (Partially addresses the TODO(perf) — platform and context filters
+    // are not supported by ContributionQuery so they remain in-memory.)
+    const storeQuery: ContributionQuery = {
+      ...(query?.kind !== undefined ? { kind: query.kind } : {}),
+      ...(query?.mode !== undefined ? { mode: query.mode } : {}),
+      ...(query?.agentId !== undefined ? { agentId: query.agentId } : {}),
+      ...(query?.agentName !== undefined ? { agentName: query.agentName } : {}),
+      ...(query?.tags !== undefined && query.tags.length > 0 ? { tags: [...query.tags] } : {}),
+    };
+
+    // Fetch store-filtered contributions. Platform and context filters
+    // are not supported by ContributionQuery so they remain in-memory.
+    const storeContributions = await this.store.list(storeQuery);
+    const filtered = storeContributions.filter((c) => matchesFilters(c, query));
+
+    // Relation counting still needs all contributions for incoming-edge scans.
+    const allContributions =
+      Object.keys(storeQuery).length > 0 ? await this.store.list() : storeContributions;
 
     // All dimension computations are synchronous in-memory operations.
     // The only async step is the store.list() call above.

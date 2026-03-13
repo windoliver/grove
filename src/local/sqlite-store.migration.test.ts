@@ -32,7 +32,7 @@ describe("schema migration", () => {
       db.close();
 
       expect(row).toBeDefined();
-      expect(row?.version).toBe(6);
+      expect(row?.version).toBe(7);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -173,7 +173,7 @@ describe("schema migration", () => {
       db.close();
 
       expect(rows.length).toBe(1);
-      expect(rows[0]?.version).toBe(6);
+      expect(rows[0]?.version).toBe(7);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -191,7 +191,7 @@ describe("schema migration", () => {
         .get() as {
         version: number;
       } | null;
-      expect(row?.version).toBe(6);
+      expect(row?.version).toBe(7);
 
       db.close();
     } finally {
@@ -437,7 +437,7 @@ describe("schema migration", () => {
           v: number | null;
         }
       ).v;
-      expect(version).toBe(6);
+      expect(version).toBe(7);
 
       db2.close();
     } finally {

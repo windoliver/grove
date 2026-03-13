@@ -17,6 +17,7 @@ import type {
   Score,
 } from "../models.js";
 import { ContributionKind as CK, ContributionMode as CM, RelationType } from "../models.js";
+import { toUtcIso } from "../time.js";
 import type { AgentOverrides } from "./agent.js";
 import { resolveAgent } from "./agent.js";
 import type { OperationDeps } from "./deps.js";
@@ -200,7 +201,8 @@ export async function contributeOperation(
 
     const agent = resolveAgent(input.agent);
     const mode = resolveMode(input.mode, deps);
-    const createdAt = input.createdAt ?? new Date().toISOString();
+    // Normalize to UTC Z-format so lexicographic ORDER BY works without datetime().
+    const createdAt = toUtcIso(input.createdAt ?? new Date().toISOString());
 
     const contributionInput: ContributionInput = {
       kind: input.kind,

@@ -20,7 +20,7 @@ import { OutcomeStatus } from "../core/outcome.js";
 import type { ListEntry, ListOptions, NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
-import { isRetryable, mapNexusError } from "./errors.js";
+import { withRetry, withSemaphore } from "./retry.js";
 import { Semaphore } from "./semaphore.js";
 import {
   decodeSegment,
@@ -75,37 +75,43 @@ export class NexusOutcomeStore implements OutcomeStore {
     };
 
     // Write the outcome JSON
-    await this.withRetry(
-      () => this.run(() => this.client.write(outcomePath(this.zoneId, cid), encodeOutcome(record))),
+    await withRetry(
+      () =>
+        withSemaphore(this.semaphore, () =>
+          this.client.write(outcomePath(this.zoneId, cid), encodeOutcome(record)),
+        ),
       "set",
+      this.config,
     );
 
     // Delete old status index marker if the status changed
     if (existing !== undefined && existing.status !== record.status) {
-      await this.run(() =>
+      await withSemaphore(this.semaphore, () =>
         this.client.delete(outcomeStatusIndexPath(this.zoneId, existing.status, cid)),
       ).catch(() => {});
     }
 
     // Write new status index marker
-    await this.withRetry(
+    await withRetry(
       () =>
-        this.run(() =>
+        withSemaphore(this.semaphore, () =>
           this.client.write(
             outcomeStatusIndexPath(this.zoneId, record.status, cid),
             new Uint8Array(0),
           ),
         ),
       "set:index",
+      this.config,
     );
 
     return record;
   }
 
   async get(cid: string): Promise<OutcomeRecord | undefined> {
-    const data = await this.withRetry(
-      () => this.run(() => this.client.read(outcomePath(this.zoneId, cid))),
+    const data = await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.read(outcomePath(this.zoneId, cid))),
       "get",
+      this.config,
     );
     if (data === undefined) return undefined;
     return decodeOutcome(data);
@@ -213,9 +219,10 @@ export class NexusOutcomeStore implements OutcomeStore {
     let cursor: string | undefined;
 
     do {
-      const listing = await this.withRetry(
-        () => this.run(() => this.client.list(dir, { ...opts, cursor })),
+      const listing = await withRetry(
+        () => withSemaphore(this.semaphore, () => this.client.list(dir, { ...opts, cursor })),
         "listAllPages",
+        this.config,
       ).catch(() => ({
         files: [] as ListEntry[],
         hasMore: false as boolean,
@@ -229,29 +236,5 @@ export class NexusOutcomeStore implements OutcomeStore {
     } while (cursor !== undefined);
 
     return entries;
-  }
-
-  private async run<T>(fn: () => Promise<T>): Promise<T> {
-    return this.semaphore.run(fn);
-  }
-
-  private async withRetry<T>(fn: () => Promise<T>, context: string): Promise<T> {
-    let lastError: unknown;
-    for (let attempt = 0; attempt < this.config.retryMaxAttempts; attempt++) {
-      try {
-        return await fn();
-      } catch (error) {
-        lastError = error;
-        if (!isRetryable(error) || attempt === this.config.retryMaxAttempts - 1) {
-          throw mapNexusError(error, context);
-        }
-        const delay = Math.min(
-          this.config.retryBaseDelayMs * 2 ** attempt,
-          this.config.retryMaxDelayMs,
-        );
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      }
-    }
-    throw mapNexusError(lastError, context);
   }
 }

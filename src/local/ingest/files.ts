@@ -38,6 +38,12 @@ export async function ingestFiles(
 ): Promise<Record<string, string>> {
   const artifacts: Record<string, string> = {};
 
+  // Collect file paths for parallel puts; directories are walked sequentially.
+  // We pass `artifacts` to walkDirectory so directory names are registered
+  // *before* we check top-level files — and we also pre-register top-level
+  // names into `artifacts` so walkDirectory can detect collisions in reverse.
+  const filePuts: Array<{ path: string; name: string }> = [];
+
   for (const p of paths) {
     const info = await stat(p);
     if (info.isDirectory()) {
@@ -49,9 +55,21 @@ export async function ingestFiles(
           `Artifact name collision: '${name}' already exists. Use directories to avoid name conflicts.`,
         );
       }
-      const hash = await cas.putFile(p);
-      artifacts[name] = hash;
+      // Reserve the name so subsequent walkDirectory calls detect collisions.
+      artifacts[name] = "";
+      filePuts.push({ path: p, name });
     }
+  }
+
+  // Put all top-level files concurrently
+  const results = await Promise.all(
+    filePuts.map(async ({ path: filePath, name }) => {
+      const hash = await cas.putFile(filePath);
+      return { name, hash };
+    }),
+  );
+  for (const { name, hash } of results) {
+    artifacts[name] = hash;
   }
 
   return artifacts;
@@ -64,6 +82,9 @@ async function walkDirectory(
   artifacts: Record<string, string>,
 ): Promise<void> {
   const entries = await readdir(currentDir, { withFileTypes: true });
+
+  // Collect file entries for parallel puts
+  const fileEntries: Array<{ fullPath: string; name: string }> = [];
 
   for (const entry of entries) {
     const fullPath = join(currentDir, entry.name);
@@ -81,8 +102,18 @@ async function walkDirectory(
           `Artifact name collision: '${name}' already exists. Use distinct directory structures to avoid name conflicts.`,
         );
       }
-      const hash = await cas.putFile(fullPath);
-      artifacts[name] = hash;
+      fileEntries.push({ fullPath, name });
     }
+  }
+
+  // Put all files in CAS concurrently
+  const results = await Promise.all(
+    fileEntries.map(async ({ fullPath, name }) => {
+      const hash = await cas.putFile(fullPath);
+      return { name, hash };
+    }),
+  );
+  for (const { name, hash } of results) {
+    artifacts[name] = hash;
   }
 }

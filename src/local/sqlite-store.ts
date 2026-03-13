@@ -47,7 +47,7 @@ import { DEFAULT_LEASE_DURATION_MS } from "../core/claim-logic.js";
 import { ClaimConflictError } from "../core/errors.js";
 import { toUtcIso } from "../core/time.js";
 
-const CURRENT_SCHEMA_VERSION = 6;
+const CURRENT_SCHEMA_VERSION = 7;
 
 // ---------------------------------------------------------------------------
 // Schema DDL
@@ -133,6 +133,8 @@ const SCHEMA_DDL = `
 
   CREATE INDEX IF NOT EXISTS idx_claims_target ON claims(target_ref);
   CREATE INDEX IF NOT EXISTS idx_claims_status ON claims(status);
+  -- Composite index for active-claim queries: WHERE status = 'active' AND lease_expires_at >= ?
+  CREATE INDEX IF NOT EXISTS idx_claims_status_lease ON claims(status, lease_expires_at);
 
   -- Workspaces table for agent session isolation (per-agent isolation)
   CREATE TABLE IF NOT EXISTS workspaces (
@@ -189,6 +191,15 @@ export function initSqliteDb(dbPath: string): Database {
 
   db.run("PRAGMA synchronous = NORMAL");
   db.run("PRAGMA foreign_keys = ON");
+
+  // Performance PRAGMAs — safe defaults for local CLI/server workloads.
+  db.run("PRAGMA temp_store = MEMORY");
+  db.run("PRAGMA mmap_size = 268435456"); // 256 MB memory-mapped I/O
+  db.run("PRAGMA cache_size = -16000"); // 16 MB page cache (8× default)
+  db.run("PRAGMA journal_size_limit = 27103364"); // ~26 MB WAL cap
+
+  // Refresh query planner statistics from previous sessions.
+  db.run("PRAGMA optimize = 0x10002");
 
   // IMMEDIATE transaction for schema init — acquires write lock upfront
   // so concurrent openers wait via busy_timeout instead of failing.
@@ -260,6 +271,16 @@ export function initSqliteDb(dbPath: string): Database {
       db.exec(BOUNTY_DDL);
     }
 
+    // Migration → v7: normalize ALL created_at values to UTC with milliseconds
+    // for reliable lexicographic ORDER BY. This covers:
+    //  - Non-Z offsets like +05:30 (strftime normalizes to UTC)
+    //  - Z-without-milliseconds like T08:00:00Z (strftime adds .000)
+    // Without milliseconds, "T08:00:00Z" sorts BEFORE "T08:00:00.100Z"
+    // because '.' (0x2E) < 'Z' (0x5A), giving wrong chronological order.
+    if (currentVersion === null || currentVersion < 7) {
+      db.run("UPDATE contributions SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', created_at)");
+    }
+
     db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [
       CURRENT_SCHEMA_VERSION,
       new Date().toISOString(),
@@ -306,7 +327,10 @@ export function createSqliteStores(dbPath: string): {
     claimStore: new SqliteClaimStore(db),
     bountyStore: new SqliteBountyStore(db),
     outcomeStore: new SqliteOutcomeStore(db),
-    close: () => db.close(),
+    close: () => {
+      db.run("PRAGMA optimize");
+      db.close();
+    },
   };
 }
 
@@ -355,14 +379,15 @@ function buildFilteredQuery(opts: BuildFilteredQueryOptions): BuiltQuery {
     params.push(query.agentName);
   }
 
-  // Tag filtering via junction table — contribution must have ALL queried tags
+  // Tag filtering via junction table — contribution must have ALL queried tags.
+  // Uses a single GROUP BY / HAVING subquery instead of N correlated EXISTS.
   if (query?.tags !== undefined && query.tags.length > 0) {
-    for (const tag of query.tags) {
-      conditions.push(
-        "EXISTS (SELECT 1 FROM contribution_tags ct WHERE ct.cid = c.cid AND ct.tag = ?)",
-      );
-      params.push(tag);
-    }
+    const uniqueTags = [...new Set(query.tags)];
+    const placeholders = uniqueTags.map(() => "?").join(", ");
+    conditions.push(
+      `c.cid IN (SELECT ct.cid FROM contribution_tags ct WHERE ct.tag IN (${placeholders}) GROUP BY ct.cid HAVING COUNT(DISTINCT ct.tag) = ?)`,
+    );
+    params.push(...uniqueTags, uniqueTags.length);
   }
 
   let sql = baseSelect;
@@ -496,10 +521,84 @@ export class SqliteContributionStore implements ContributionStore {
   };
 
   putMany = async (contributions: readonly Contribution[]): Promise<void> => {
+    if (contributions.length === 0) return;
+    // Small batches use the single-put path (cached statements are optimal).
+    if (contributions.length <= 3) {
+      const tx = this.db.transaction(() => {
+        for (const c of contributions) {
+          this.putSync(c);
+        }
+      });
+      tx();
+      return;
+    }
+
+    // Larger batches: insert contributions individually (need per-row duplicate
+    // detection), then batch junction-table rows with multi-row INSERTs.
     const tx = this.db.transaction(() => {
+      const pendingRelations: SQLQueryBindings[][] = [];
+      const pendingTags: SQLQueryBindings[][] = [];
+      const pendingArtifacts: SQLQueryBindings[][] = [];
+      const pendingFts: SQLQueryBindings[][] = [];
+
       for (const c of contributions) {
-        this.putSync(c);
+        if (!verifyCid(c)) {
+          throw new Error(
+            `CID integrity check failed for '${c.cid}': CID does not match manifest content`,
+          );
+        }
+        const manifestJson = JSON.stringify(toManifest(c));
+        const tagsJson = JSON.stringify(c.tags);
+        const createdAtUtc = toUtcIso(c.createdAt);
+
+        const result = this.stmtInsertContribution.run(
+          c.cid,
+          c.kind,
+          c.mode,
+          c.summary,
+          c.description ?? null,
+          c.agent.agentId,
+          c.agent.agentName ?? null,
+          createdAtUtc,
+          tagsJson,
+          manifestJson,
+        );
+        if (result.changes === 0) continue;
+
+        for (const rel of c.relations) {
+          pendingRelations.push([
+            c.cid,
+            rel.targetCid,
+            rel.relationType,
+            rel.metadata !== undefined ? JSON.stringify(rel.metadata) : null,
+          ]);
+        }
+        pendingFts.push([c.cid, c.summary, c.description ?? ""]);
+        for (const tag of c.tags) {
+          pendingTags.push([c.cid, tag]);
+        }
+        for (const [name, contentHash] of Object.entries(c.artifacts)) {
+          pendingArtifacts.push([c.cid, name, contentHash]);
+        }
       }
+
+      // Batch junction-table inserts (chunk to stay under SQLITE_MAX_VARIABLE_NUMBER=999)
+      this.batchInsert(
+        "INSERT INTO relations (source_cid, target_cid, relation_type, metadata_json) VALUES",
+        4,
+        pendingRelations,
+      );
+      this.batchInsert(
+        "INSERT INTO contributions_fts (cid, summary, description) VALUES",
+        3,
+        pendingFts,
+      );
+      this.batchInsert("INSERT INTO contribution_tags (cid, tag) VALUES", 2, pendingTags);
+      this.batchInsert(
+        "INSERT INTO artifacts (contribution_cid, name, content_hash) VALUES",
+        3,
+        pendingArtifacts,
+      );
     });
     tx();
   };
@@ -627,9 +726,7 @@ export class SqliteContributionStore implements ContributionStore {
       params.push(relationType);
     }
 
-    // Use datetime() to normalize timestamps for reliable ordering
-    // across different timezone representations (e.g., Z vs +05:00)
-    sql += " ORDER BY datetime(c.created_at) DESC";
+    sql += " ORDER BY c.created_at DESC";
 
     const rows = this.db.prepare(sql).all(...params) as readonly {
       manifest_json: string;
@@ -761,7 +858,7 @@ export class SqliteContributionStore implements ContributionStore {
     const sql = `
       SELECT c.manifest_json,
              COUNT(r.source_cid) as reply_count,
-             MAX(strftime('%Y-%m-%dT%H:%M:%SZ', reply_c.created_at)) as last_reply_at
+             MAX(reply_c.created_at) as last_reply_at
       FROM contributions c
       INNER JOIN relations r ON r.target_cid = c.cid AND r.relation_type = 'responds_to'
       INNER JOIN contributions reply_c ON reply_c.cid = r.source_cid
@@ -816,6 +913,9 @@ export class SqliteContributionStore implements ContributionStore {
 
     const manifestJson = JSON.stringify(toManifest(contribution));
     const tagsJson = JSON.stringify(contribution.tags);
+    // Normalize to UTC for reliable lexicographic ORDER BY on the indexed column.
+    // The manifest_json keeps the original value for CID integrity.
+    const createdAtUtc = toUtcIso(contribution.createdAt);
 
     const tx = this.db.transaction(() => {
       // INSERT OR IGNORE: if CID already exists, this is a no-op
@@ -827,7 +927,7 @@ export class SqliteContributionStore implements ContributionStore {
         contribution.description ?? null,
         contribution.agent.agentId,
         contribution.agent.agentName ?? null,
-        contribution.createdAt,
+        createdAtUtc,
         tagsJson,
         manifestJson,
       );
@@ -863,6 +963,19 @@ export class SqliteContributionStore implements ContributionStore {
       }
     });
     tx();
+  }
+
+  /** Multi-row INSERT helper. Chunks rows to stay under SQLITE_MAX_VARIABLE_NUMBER (999). */
+  private batchInsert(prefix: string, cols: number, rows: SQLQueryBindings[][]): void {
+    if (rows.length === 0) return;
+    const chunkSize = Math.floor(999 / cols);
+    for (let i = 0; i < rows.length; i += chunkSize) {
+      const chunk = rows.slice(i, i + chunkSize);
+      const placeholderRow = `(${Array(cols).fill("?").join(", ")})`;
+      const sql = `${prefix} ${chunk.map(() => placeholderRow).join(", ")}`;
+      const params = chunk.flat();
+      this.db.prepare(sql).run(...params);
+    }
   }
 }
 

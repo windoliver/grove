@@ -101,6 +101,72 @@ describe("NexusCas adapter-specific", () => {
     store.close();
   });
 
+  describe("existsMany", () => {
+    test("empty input returns empty map", async () => {
+      const store = new NexusCas({ client, zoneId: "test", retryMaxAttempts: 1 });
+
+      const result = await store.existsMany([]);
+      expect(result.size).toBe(0);
+
+      store.close();
+    });
+
+    test("single existing hash", async () => {
+      const store = new NexusCas({ client, zoneId: "test", retryMaxAttempts: 1 });
+
+      const data = new TextEncoder().encode("existsMany single");
+      const hash = await store.put(data);
+
+      const result = await store.existsMany([hash]);
+      expect(result.size).toBe(1);
+      expect(result.get(hash)).toBe(true);
+
+      store.close();
+    });
+
+    test("single missing hash", async () => {
+      const store = new NexusCas({ client, zoneId: "test", retryMaxAttempts: 1 });
+
+      const fakeHash = "blake3:0000000000000000000000000000000000000000000000000000000000000000";
+      const result = await store.existsMany([fakeHash]);
+      expect(result.size).toBe(1);
+      expect(result.get(fakeHash)).toBe(false);
+
+      store.close();
+    });
+
+    test("mixed existing and missing", async () => {
+      const store = new NexusCas({ client, zoneId: "test", retryMaxAttempts: 1 });
+
+      const data1 = new TextEncoder().encode("existsMany mix-a");
+      const data2 = new TextEncoder().encode("existsMany mix-b");
+      const hash1 = await store.put(data1);
+      const hash2 = await store.put(data2);
+      const fakeHash = "blake3:0000000000000000000000000000000000000000000000000000000000000000";
+
+      const result = await store.existsMany([hash1, hash2, fakeHash]);
+      expect(result.size).toBe(3);
+      expect(result.get(hash1)).toBe(true);
+      expect(result.get(hash2)).toBe(true);
+      expect(result.get(fakeHash)).toBe(false);
+
+      store.close();
+    });
+
+    test("duplicate hashes in input returns single map entry", async () => {
+      const store = new NexusCas({ client, zoneId: "test", retryMaxAttempts: 1 });
+
+      const data = new TextEncoder().encode("existsMany dup");
+      const hash = await store.put(data);
+
+      const result = await store.existsMany([hash, hash]);
+      expect(result.size).toBe(1);
+      expect(result.get(hash)).toBe(true);
+
+      store.close();
+    });
+  });
+
   test("stat caches results for subsequent calls", async () => {
     const store = new NexusCas({ client, zoneId: "test", retryMaxAttempts: 1 });
 

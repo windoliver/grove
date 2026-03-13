@@ -30,8 +30,9 @@ import { toUtcIso } from "../core/time.js";
 import type { ListEntry, ListOptions, NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
-import { isRetryable, mapNexusError, NexusConflictError } from "./errors.js";
+import { NexusConflictError } from "./errors.js";
 import { LruCache } from "./lru-cache.js";
+import { withRetry, withSemaphore } from "./retry.js";
 import { Semaphore } from "./semaphore.js";
 import {
   activeClaimIndexPath,
@@ -118,9 +119,9 @@ export class NexusClaimStore implements ClaimStore {
       await this.writeActiveIndexExclusive(createdClaim);
     } catch (err) {
       // Roll back the claim file — the lock is the gate.
-      await this.run(() => this.client.delete(claimPath(this.zoneId, claim.claimId))).catch(
-        () => {},
-      );
+      await withSemaphore(this.semaphore, () =>
+        this.client.delete(claimPath(this.zoneId, claim.claimId)),
+      ).catch(() => {});
       if (err instanceof NexusConflictError) {
         // Another claim already active on this target — find it for error message
         const now = new Date();
@@ -196,9 +197,9 @@ export class NexusClaimStore implements ClaimStore {
     try {
       await this.writeActiveIndexExclusive(createdClaim);
     } catch (err) {
-      await this.run(() => this.client.delete(claimPath(this.zoneId, claim.claimId))).catch(
-        () => {},
-      );
+      await withSemaphore(this.semaphore, () =>
+        this.client.delete(claimPath(this.zoneId, claim.claimId)),
+      ).catch(() => {});
       throw err;
     }
 
@@ -347,7 +348,11 @@ export class NexusClaimStore implements ClaimStore {
       if (["completed", "expired", "released"].includes(claim.status)) {
         if (new Date(claim.heartbeatAt).getTime() < cutoff.getTime()) {
           const path = claimPath(this.zoneId, claim.claimId);
-          await this.withRetry(() => this.run(() => this.client.delete(path)), "cleanCompleted");
+          await withRetry(
+            () => withSemaphore(this.semaphore, () => this.client.delete(path)),
+            "cleanCompleted",
+            this.config,
+          );
           this.claimCache.delete(claim.claimId);
           deleted++;
         }
@@ -417,9 +422,10 @@ export class NexusClaimStore implements ClaimStore {
   /** Read a claim and its VFS ETag atomically (needed for CAS writes via ifMatch). */
   private async readClaimWithEtag(claimId: string): Promise<ClaimWithEtag | undefined> {
     const p = claimPath(this.zoneId, claimId);
-    const result = await this.withRetry(
-      () => this.run(() => this.client.readWithMeta(p)),
+    const result = await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.readWithMeta(p)),
       "readClaim",
+      this.config,
     );
     if (result === undefined) return undefined;
     return { claim: decodeClaim(result.content), etag: result.etag };
@@ -428,17 +434,22 @@ export class NexusClaimStore implements ClaimStore {
   /** Write claim with ifMatch for CAS safety on mutations. */
   private async writeClaimCas(claim: Claim, expectedEtag: string): Promise<void> {
     const p = claimPath(this.zoneId, claim.claimId);
-    await this.withRetry(
-      () => this.run(() => this.client.write(p, encodeClaim(claim), { ifMatch: expectedEtag })),
+    await withRetry(
+      () =>
+        withSemaphore(this.semaphore, () =>
+          this.client.write(p, encodeClaim(claim), { ifMatch: expectedEtag }),
+        ),
       "writeClaimCas",
+      this.config,
     );
   }
 
   private async writeClaim(claim: Claim): Promise<void> {
     const p = claimPath(this.zoneId, claim.claimId);
-    await this.withRetry(
-      () => this.run(() => this.client.write(p, encodeClaim(claim))),
+    await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.write(p, encodeClaim(claim))),
       "writeClaim",
+      this.config,
     );
   }
 
@@ -448,9 +459,10 @@ export class NexusClaimStore implements ClaimStore {
     opts: { ifNoneMatch?: string; ifMatch?: string },
   ): Promise<void> {
     const path = claimPath(this.zoneId, claim.claimId);
-    await this.withRetry(
-      () => this.run(() => this.client.write(path, encodeClaim(claim), opts)),
+    await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.write(path, encodeClaim(claim), opts)),
       "writeClaimConditional",
+      this.config,
     );
   }
 
@@ -466,7 +478,7 @@ export class NexusClaimStore implements ClaimStore {
 
     try {
       // Atomic lock: fails with NexusConflictError if target already has an active claim
-      await this.run(() =>
+      await withSemaphore(this.semaphore, () =>
         this.client.write(lockFile, encoder.encode(claim.claimId), { ifNoneMatch: "*" }),
       );
     } catch (err) {
@@ -475,7 +487,9 @@ export class NexusClaimStore implements ClaimStore {
       // Lock conflict — check if the holder is still active.
       // IMPORTANT: bypass cache to get fresh state (the holder may have
       // heartbeated recently, and stale cache would cause false expiry).
-      const existingLockData = await this.run(() => this.client.read(lockFile));
+      const existingLockData = await withSemaphore(this.semaphore, () =>
+        this.client.read(lockFile),
+      );
       if (existingLockData !== undefined) {
         const holderId = decoder.decode(existingLockData);
         const holderResult = await this.readClaimWithEtag(holderId);
@@ -488,12 +502,14 @@ export class NexusClaimStore implements ClaimStore {
           new Date(holderClaim.leaseExpiresAt).getTime() < Date.now()
         ) {
           // Clean up stale lock and index
-          await this.run(() => this.client.delete(lockFile)).catch(() => {});
+          await withSemaphore(this.semaphore, () => this.client.delete(lockFile)).catch(() => {});
           const staleIndexFile = activeClaimIndexPath(this.zoneId, claim.targetRef, holderId);
-          await this.run(() => this.client.delete(staleIndexFile)).catch(() => {});
+          await withSemaphore(this.semaphore, () => this.client.delete(staleIndexFile)).catch(
+            () => {},
+          );
 
           // Retry the lock
-          await this.run(() =>
+          await withSemaphore(this.semaphore, () =>
             this.client.write(lockFile, encoder.encode(claim.claimId), { ifNoneMatch: "*" }),
           );
         } else {
@@ -507,15 +523,15 @@ export class NexusClaimStore implements ClaimStore {
 
     // Also write the per-claim index marker (for listing)
     const indexFile = activeClaimIndexPath(this.zoneId, claim.targetRef, claim.claimId);
-    await this.run(() => this.client.write(indexFile, new Uint8Array(0)));
+    await withSemaphore(this.semaphore, () => this.client.write(indexFile, new Uint8Array(0)));
   }
 
   private async deleteActiveIndex(claim: Claim): Promise<void> {
     // Delete both the per-claim index and the target lock
     const indexFile = activeClaimIndexPath(this.zoneId, claim.targetRef, claim.claimId);
     const lockFile = targetLockPath(this.zoneId, claim.targetRef);
-    await this.run(() => this.client.delete(indexFile)).catch(() => {});
-    await this.run(() => this.client.delete(lockFile)).catch(() => {});
+    await withSemaphore(this.semaphore, () => this.client.delete(indexFile)).catch(() => {});
+    await withSemaphore(this.semaphore, () => this.client.delete(lockFile)).catch(() => {});
   }
 
   private async findActiveOnTarget(targetRef: string, now: Date): Promise<Claim | undefined> {
@@ -571,9 +587,10 @@ export class NexusClaimStore implements ClaimStore {
     let cursor: string | undefined;
 
     do {
-      const listing = await this.withRetry(
-        () => this.run(() => this.client.list(dir, { ...opts, cursor })),
+      const listing = await withRetry(
+        () => withSemaphore(this.semaphore, () => this.client.list(dir, { ...opts, cursor })),
         "listAllPages",
+        this.config,
       ).catch(() => ({
         files: [] as ListEntry[],
         hasMore: false as boolean,
@@ -587,29 +604,5 @@ export class NexusClaimStore implements ClaimStore {
     } while (cursor !== undefined);
 
     return entries;
-  }
-
-  private async run<T>(fn: () => Promise<T>): Promise<T> {
-    return this.semaphore.run(fn);
-  }
-
-  private async withRetry<T>(fn: () => Promise<T>, context: string): Promise<T> {
-    let lastError: unknown;
-    for (let attempt = 0; attempt < this.config.retryMaxAttempts; attempt++) {
-      try {
-        return await fn();
-      } catch (error) {
-        lastError = error;
-        if (!isRetryable(error) || attempt === this.config.retryMaxAttempts - 1) {
-          throw mapNexusError(error, context);
-        }
-        const delay = Math.min(
-          this.config.retryBaseDelayMs * 2 ** attempt,
-          this.config.retryMaxDelayMs,
-        );
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      }
-    }
-    throw mapNexusError(lastError, context);
   }
 }
