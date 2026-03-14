@@ -58,6 +58,17 @@ describe("generateCompletions", () => {
     expect(script).not.toContain("case $words[1]");
   });
 
+  test("zsh: subcommand flags use nested helper functions", () => {
+    const script = generateCompletions("zsh");
+    // bounty has subcommands, so it should delegate to _grove_bounty
+    expect(script).toContain("_grove_bounty()");
+    expect(script).toContain("bounty) _grove_bounty ;;");
+    // The helper should list subcommands and dispatch their flags
+    expect(script).toContain("'create:Create a new bounty'");
+    expect(script).toContain("create) _arguments");
+    expect(script).toContain("'--amount[amount]'");
+  });
+
   test("zsh: contains all command names with descriptions", () => {
     const script = generateCompletions("zsh");
     for (const cmd of COMMANDS) {
