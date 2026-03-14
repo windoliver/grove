@@ -26,7 +26,7 @@ const ERROR_MAP = new Map<string, ErrorMapping>([
   ["PeerUnreachableError", { status: 502, code: "PEER_UNREACHABLE" }],
   ["GossipTimeoutError", { status: 504, code: "GOSSIP_TIMEOUT" }],
   ["NotFoundError", { status: 404, code: "NOT_FOUND" }],
-  ["StateConflictError", { status: 409, code: "CONFLICT" }],
+  ["StateConflictError", { status: 409, code: "STATE_CONFLICT" }],
 ]);
 
 /** Format error response body. */

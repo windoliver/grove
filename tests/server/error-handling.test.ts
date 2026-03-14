@@ -68,7 +68,7 @@ describe("error handler middleware", () => {
     const res = await app.request("/test");
     expect(res.status).toBe(409);
     const data = await res.json();
-    expect(data.error.code).toBe("CONFLICT");
+    expect(data.error.code).toBe("STATE_CONFLICT");
   });
 
   test("maps unknown errors to 500 without leaking details", async () => {

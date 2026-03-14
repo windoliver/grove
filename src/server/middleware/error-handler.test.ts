@@ -142,7 +142,7 @@ describe("error handler", () => {
     const res = await app.request("/test");
     expect(res.status).toBe(409);
     const data = (await res.json()) as Json;
-    expect(data.error.code).toBe("CONFLICT");
+    expect(data.error.code).toBe("STATE_CONFLICT");
   });
 
   it("maps unknown errors to 500 without leaking details", async () => {
