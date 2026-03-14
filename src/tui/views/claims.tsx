@@ -6,6 +6,7 @@ import React, { useCallback, useEffect } from "react";
 import type { Claim } from "../../core/models.js";
 import { formatDuration } from "../../shared/duration.js";
 import { formatTimestamp } from "../../shared/format.js";
+import { DataStatus } from "../components/data-status.js";
 import { Table } from "../components/table.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
@@ -42,11 +43,12 @@ export const ClaimsView: React.NamedExoticComponent<ClaimsProps> = React.memo(fu
 }: ClaimsProps): React.ReactNode {
   // Use parent-provided claims if available, otherwise poll independently
   const fetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
-  const { data: polledData, loading } = usePolledData<readonly Claim[]>(
-    fetcher,
-    intervalMs,
-    active && propClaims === undefined,
-  );
+  const {
+    data: polledData,
+    loading,
+    isStale,
+    error,
+  } = usePolledData<readonly Claim[]>(fetcher, intervalMs, active && propClaims === undefined);
   const data = propClaims ?? polledData;
 
   useEffect(() => {
@@ -95,6 +97,7 @@ export const ClaimsView: React.NamedExoticComponent<ClaimsProps> = React.memo(fu
     <box flexDirection="column">
       <box marginBottom={1}>
         <text>Active Claims ({claims.length})</text>
+        <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
       </box>
       <Table columns={[...COLUMNS]} rows={rows} cursor={cursor} />
     </box>

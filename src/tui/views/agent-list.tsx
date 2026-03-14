@@ -10,6 +10,7 @@ import type { Claim } from "../../core/models.js";
 import { formatDuration } from "../../shared/duration.js";
 import type { TmuxManager } from "../agents/tmux-manager.js";
 import { agentIdFromSession } from "../agents/tmux-manager.js";
+import { DataStatus } from "../components/data-status.js";
 import { Table } from "../components/table.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
@@ -79,11 +80,12 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
       return tmux.listSessions();
     }, [tmux]);
 
-    const { data: claims, loading: claimsLoading } = usePolledData<readonly Claim[]>(
-      claimFetcher,
-      intervalMs,
-      active,
-    );
+    const {
+      data: claims,
+      loading: claimsLoading,
+      isStale,
+      error,
+    } = usePolledData<readonly Claim[]>(claimFetcher, intervalMs, active);
     const { data: sessions } = usePolledData<readonly string[]>(
       tmuxFetcher,
       intervalMs * 2, // Poll tmux less frequently
@@ -126,6 +128,7 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
           <text>
             Agents ({agentRows.length}){!tmux && <text opacity={0.5}> [no tmux]</text>}
           </text>
+          <DataStatus loading={claimsLoading && !claims} isStale={isStale} error={error?.message} />
         </box>
         <Table columns={[...COLUMNS]} rows={agentRows} cursor={cursor} />
       </box>

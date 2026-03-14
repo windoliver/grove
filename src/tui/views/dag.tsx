@@ -9,6 +9,7 @@ import React, { useCallback, useEffect, useMemo } from "react";
 import { contributionsToDagNodes, renderDag } from "../../cli/format-dag.js";
 import type { Contribution } from "../../core/models.js";
 import type { OutcomeRecord } from "../../core/outcome.js";
+import { DataStatus } from "../components/data-status.js";
 import { OutcomeBadge } from "../components/outcome-badge.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { DagData, TuiDataProvider, TuiOutcomeProvider } from "../provider.js";
@@ -40,7 +41,7 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
   onContributionsLoaded,
 }: DagProps): React.ReactNode {
   const fetcher = useCallback(() => provider.getDag(), [provider]);
-  const { data, loading } = usePolledData<DagData>(fetcher, intervalMs, active);
+  const { data, loading, isStale, error } = usePolledData<DagData>(fetcher, intervalMs, active);
 
   // Batch-fetch outcomes if provider supports it
   const outcomeProvider = provider.capabilities.outcomes
@@ -112,6 +113,7 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
     <box flexDirection="column">
       <box marginBottom={1}>
         <text>Contribution DAG ({contributions.length} nodes) </text>
+        <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
         <text opacity={0.5}>
           <text color="#00cc00">work</text> <text color="#cccc00">review</text>{" "}
           <text color="#0088cc">discussion</text> <text color="#cc00cc">adoption</text>{" "}

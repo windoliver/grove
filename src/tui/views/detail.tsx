@@ -7,6 +7,7 @@
 import React, { useCallback } from "react";
 import type { OutcomeRecord } from "../../core/outcome.js";
 import { formatScore, formatTimestamp, truncateCid } from "../../shared/format.js";
+import { DataStatus } from "../components/data-status.js";
 import { OutcomeBadge } from "../components/outcome-badge.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { ContributionDetail, TuiDataProvider, TuiOutcomeProvider } from "../provider.js";
@@ -25,7 +26,7 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
   intervalMs,
 }: DetailProps): React.ReactNode {
   const fetcher = useCallback(() => provider.getContribution(cid), [provider, cid]);
-  const { data, loading } = usePolledData<ContributionDetail | undefined>(
+  const { data, loading, isStale, error } = usePolledData<ContributionDetail | undefined>(
     fetcher,
     intervalMs,
     true,
@@ -68,6 +69,7 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
     <box flexDirection="column">
       <box marginBottom={1}>
         <text color="#00cccc">{c.cid}</text>
+        <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
         {outcome && (
           <>
             <text> </text>

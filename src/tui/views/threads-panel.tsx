@@ -8,6 +8,7 @@
 import React, { useCallback, useEffect } from "react";
 import type { ThreadSummary } from "../../core/store.js";
 import { formatTimestamp, truncateCid } from "../../shared/format.js";
+import { DataStatus } from "../components/data-status.js";
 import { Table } from "../components/table.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
@@ -39,7 +40,11 @@ export const ThreadsPanelView: React.NamedExoticComponent<ThreadsPanelProps> = R
     onRowCountChanged,
   }: ThreadsPanelProps): React.ReactNode {
     const fetcher = useCallback(() => provider.getHotThreads(20), [provider]);
-    const { data, loading } = usePolledData<readonly ThreadSummary[]>(fetcher, intervalMs, active);
+    const { data, loading, isStale, error } = usePolledData<readonly ThreadSummary[]>(
+      fetcher,
+      intervalMs,
+      active,
+    );
 
     useEffect(() => {
       if (data && onRowCountChanged) {
@@ -73,6 +78,7 @@ export const ThreadsPanelView: React.NamedExoticComponent<ThreadsPanelProps> = R
       <box flexDirection="column">
         <box marginBottom={1}>
           <text>Threads</text>
+          <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
           <text opacity={0.5}>
             {"  "}
             {threads.length} active
