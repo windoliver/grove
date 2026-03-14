@@ -5,8 +5,10 @@ import {
   ConcurrencyLimitError,
   GroveError,
   LeaseViolationError,
+  NotFoundError,
   RateLimitError,
   RetryExhaustedError,
+  StateConflictError,
 } from "../../core/errors.js";
 import { handleError } from "./error-handler.js";
 
@@ -113,8 +115,14 @@ describe("error handler", () => {
     expect(data.error.code).toBe("GROVE_ERROR");
   });
 
-  it("maps 'not found' errors to 404", async () => {
-    const app = appThatThrows(new Error("Claim xyz does not exist"));
+  it("maps NotFoundError to 404", async () => {
+    const app = appThatThrows(
+      new NotFoundError({
+        resource: "Claim",
+        identifier: "xyz",
+        message: "Claim xyz does not exist",
+      }),
+    );
 
     const res = await app.request("/test");
     expect(res.status).toBe(404);
@@ -122,8 +130,14 @@ describe("error handler", () => {
     expect(data.error.code).toBe("NOT_FOUND");
   });
 
-  it("maps 'not active' errors to 409", async () => {
-    const app = appThatThrows(new Error("Claim is not active"));
+  it("maps StateConflictError to 409", async () => {
+    const app = appThatThrows(
+      new StateConflictError({
+        resource: "Claim",
+        reason: "not active",
+        message: "Claim is not active",
+      }),
+    );
 
     const res = await app.request("/test");
     expect(res.status).toBe(409);

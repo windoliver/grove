@@ -6,12 +6,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { checkoutOperation } from "./checkout.js";
 import { contributeOperation } from "./contribute.js";
 import type { OperationDeps } from "./deps.js";
-import type { TestOperationDeps } from "./test-helpers.js";
+import type { FullOperationDeps, TestOperationDeps } from "./test-helpers.js";
 import { createTestOperationDeps, storeTestContent } from "./test-helpers.js";
 
 describe("checkoutOperation", () => {
   let testDeps: TestOperationDeps;
-  let deps: OperationDeps;
+  let deps: FullOperationDeps;
 
   beforeEach(async () => {
     testDeps = await createTestOperationDeps();

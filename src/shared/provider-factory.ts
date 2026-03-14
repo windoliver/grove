@@ -7,8 +7,39 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import type { ContributionStore } from "../core/store.js";
 import type { TuiDataProvider } from "../tui/provider.js";
 import type { ResolvedBackend } from "../tui/resolve-backend.js";
+
+/**
+ * Create a type-safe stub ContributionStore.
+ *
+ * Every required method returns a sensible default (empty arrays, undefined,
+ * 0, empty maps). Because the return type is `ContributionStore` (not
+ * `unknown`), the compiler will catch any interface drift.
+ */
+export function createStubContributionStore(identity?: string): ContributionStore {
+  return {
+    storeIdentity: identity,
+    get: async () => undefined,
+    getMany: async () => new Map(),
+    put: async () => {},
+    putMany: async () => {},
+    list: async () => [],
+    ancestors: async () => [],
+    children: async () => [],
+    count: async () => 0,
+    countSince: async () => 0,
+    thread: async () => [],
+    hotThreads: async () => [],
+    search: async () => [],
+    relationsOf: async () => [],
+    relatedTo: async () => [],
+    findExisting: async () => [],
+    replyCounts: async () => new Map(),
+    close: () => {},
+  };
+}
 
 /**
  * Create a TuiDataProvider from a resolved backend.
@@ -52,24 +83,7 @@ async function createNexusProvider(
   const db = initSqliteDb(dbPath);
 
   // Stub contribution store — bare workspace creation doesn't fetch artifacts
-  const stubContributionStore = {
-    get: async () => undefined,
-    put: async () => {},
-    putMany: async () => {},
-    list: async () => [],
-    ancestors: async () => [],
-    children: async () => [],
-    count: async () => 0,
-    thread: async () => [],
-    hotThreads: async () => [],
-    search: async () => [],
-    relationsOf: async () => [],
-    relatedTo: async () => [],
-    findExisting: async () => undefined,
-    replyCounts: async () => new Map(),
-    close: () => {},
-    storeIdentity: "nexus-workspace-stub",
-  } as unknown as import("../core/store.js").ContributionStore;
+  const stubContributionStore = createStubContributionStore("nexus-workspace-stub");
 
   const casRoot = join(groveRoot, "cas");
   mkdirSync(casRoot, { recursive: true });

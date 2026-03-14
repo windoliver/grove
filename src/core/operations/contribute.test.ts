@@ -10,13 +10,12 @@ import {
   reproduceOperation,
   reviewOperation,
 } from "./contribute.js";
-import type { OperationDeps } from "./deps.js";
-import type { TestOperationDeps } from "./test-helpers.js";
+import type { FullOperationDeps, TestOperationDeps } from "./test-helpers.js";
 import { createTestOperationDeps, storeTestContent } from "./test-helpers.js";
 
 describe("contributeOperation", () => {
   let testDeps: TestOperationDeps;
-  let deps: OperationDeps;
+  let deps: FullOperationDeps;
 
   beforeEach(async () => {
     testDeps = await createTestOperationDeps();
@@ -227,7 +226,7 @@ describe("contributeOperation", () => {
 
 describe("reviewOperation", () => {
   let testDeps: TestOperationDeps;
-  let deps: OperationDeps;
+  let deps: FullOperationDeps;
 
   beforeEach(async () => {
     testDeps = await createTestOperationDeps();
@@ -281,7 +280,7 @@ describe("reviewOperation", () => {
 
 describe("reproduceOperation", () => {
   let testDeps: TestOperationDeps;
-  let deps: OperationDeps;
+  let deps: FullOperationDeps;
 
   beforeEach(async () => {
     testDeps = await createTestOperationDeps();
@@ -378,7 +377,7 @@ describe("reproduceOperation", () => {
 
 describe("discussOperation", () => {
   let testDeps: TestOperationDeps;
-  let deps: OperationDeps;
+  let deps: FullOperationDeps;
 
   beforeEach(async () => {
     testDeps = await createTestOperationDeps();

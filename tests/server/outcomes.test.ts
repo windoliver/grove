@@ -1,19 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { createTestContext } from "./helpers.js";
+import { createTestContext, outcomeBody } from "./helpers.js";
 
 const VALID_CID = `blake3:${"a".repeat(64)}`;
 const VALID_CID_2 = `blake3:${"b".repeat(64)}`;
 const VALID_CID_3 = `blake3:${"c".repeat(64)}`;
-
-function outcomeBody(overrides?: Record<string, unknown>): Record<string, unknown> {
-  return {
-    status: "accepted",
-    reason: "Looks good",
-    evaluatedBy: "reviewer-1",
-    ...overrides,
-  };
-}
 
 describe("GET /api/outcomes/stats", () => {
   let ctx: TestContext;

@@ -40,9 +40,6 @@ export interface BountyDeps {
 function toOpDeps(deps: BountyDeps): OperationDeps {
   return {
     claimStore: deps.claimStore,
-    contributionStore: undefined as never,
-    cas: undefined as never,
-    frontier: undefined as never,
     bountyStore: deps.bountyStore,
     ...(deps.creditsService !== undefined ? { creditsService: deps.creditsService } : {}),
   };

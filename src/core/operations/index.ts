@@ -63,11 +63,13 @@ export type { CheckStopResult, StopConditionStatus } from "./lifecycle.js";
 export { checkStopOperation } from "./lifecycle.js";
 // Outcome operations
 export type {
+  GetBatchOutcomesInput,
   GetOutcomeInput,
   ListOutcomesInput,
   SetOutcomeInput,
 } from "./outcome.js";
 export {
+  getBatchOutcomesOperation,
   getOutcomeOperation,
   listOutcomesOperation,
   outcomeStatsOperation,

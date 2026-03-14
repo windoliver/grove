@@ -4,11 +4,30 @@
  * Validates that CYCLON peer sampling achieves O(log N) convergence:
  * starting from sparse seed connectivity, every peer discovers the
  * majority of the network within a logarithmic number of rounds.
+ *
+ * Uses a seeded PRNG so results are fully reproducible. Override the
+ * seed via the GOSSIP_TEST_SEED env var to replay a specific run.
  */
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { PeerInfo } from "../../src/core/gossip/types.js";
 import { CyclonPeerSampler } from "../../src/gossip/cyclon.js";
+
+// ---------------------------------------------------------------------------
+// Seeded PRNG (LCG)
+// ---------------------------------------------------------------------------
+
+const GOSSIP_TEST_SEED = Number(process.env.GOSSIP_TEST_SEED) || 42;
+console.log(`[gossip convergence] using seed: ${GOSSIP_TEST_SEED}`);
+
+/** Create a seeded PRNG using a linear congruential generator. */
+function seededRandom(seed: number): () => number {
+  let state = seed;
+  return () => {
+    state = (state * 1664525 + 1013904223) & 0xffffffff;
+    return (state >>> 0) / 0xffffffff;
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -60,16 +79,22 @@ function buildNetwork(
  * initiator processes the response.
  *
  * @param dropRate - fraction of shuffles to drop (simulating message loss)
+ * @param rng - seeded PRNG for deterministic message-loss simulation
  */
-function runRound(samplers: CyclonPeerSampler[], peers: PeerInfo[], dropRate: number = 0): void {
+function runRound(
+  samplers: CyclonPeerSampler[],
+  peers: PeerInfo[],
+  dropRate: number = 0,
+  rng: () => number = Math.random,
+): void {
   for (let i = 0; i < samplers.length; i++) {
     const sampler = samplers[i];
     if (!sampler) continue;
     const target = sampler.selectOldestPeer();
     if (!target) continue;
 
-    // Simulate message loss
-    if (dropRate > 0 && Math.random() < dropRate) continue;
+    // Simulate message loss (deterministic via seeded rng)
+    if (dropRate > 0 && rng() < dropRate) continue;
 
     // Find the target sampler
     const targetIdx = peers.findIndex((p) => p.peerId === target.peerId);
@@ -125,6 +150,20 @@ function countTotalLinks(samplers: CyclonPeerSampler[]): number {
 // ---------------------------------------------------------------------------
 
 describe("Gossip convergence simulation", () => {
+  // Replace Math.random with the seeded PRNG so that the production
+  // shuffleArray (which calls Math.random directly) is deterministic.
+  const originalRandom = Math.random;
+  let rng: () => number;
+
+  beforeEach(() => {
+    rng = seededRandom(GOSSIP_TEST_SEED);
+    Math.random = rng;
+  });
+
+  afterEach(() => {
+    Math.random = originalRandom;
+  });
+
   describe("small network (N=10)", () => {
     const N = 10;
     const maxViewSize = Math.ceil(Math.log2(N)) + 2; // 6
@@ -259,7 +298,7 @@ describe("Gossip convergence simulation", () => {
       const dropRate = 0.2;
 
       for (let round = 0; round < maxRounds; round++) {
-        runRound(samplers, peers, dropRate);
+        runRound(samplers, peers, dropRate, rng);
       }
 
       // With 20% loss, convergence is slower but should still achieve
@@ -276,7 +315,7 @@ describe("Gossip convergence simulation", () => {
       const dropRate = 0.2;
 
       for (let round = 0; round < maxRounds; round++) {
-        runRound(samplers, peers, dropRate);
+        runRound(samplers, peers, dropRate, rng);
       }
 
       const avg = measureAvgKnown(samplers);
@@ -289,7 +328,7 @@ describe("Gossip convergence simulation", () => {
       const dropRate = 0.5;
 
       for (let round = 0; round < maxRounds; round++) {
-        runRound(samplers, peers, dropRate);
+        runRound(samplers, peers, dropRate, rng);
       }
 
       // Even with extreme loss, given enough rounds, peers connect

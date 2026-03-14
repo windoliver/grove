@@ -6,7 +6,7 @@
  * consistent business rules without duplicating validation.
  */
 
-import { ClaimConflictError } from "./errors.js";
+import { ClaimConflictError, NotFoundError, StateConflictError } from "./errors.js";
 import { ContextSchema } from "./manifest.js";
 import type { Claim, ClaimStatus } from "./models.js";
 
@@ -39,17 +39,25 @@ export function isClaimActiveAndValid(claim: Claim, now: Date = new Date()): boo
  */
 export function validateHeartbeat(claim: Claim | undefined, claimId: string): void {
   if (claim === undefined) {
-    throw new Error(`Claim '${claimId}' not found`);
+    throw new NotFoundError({
+      resource: "Claim",
+      identifier: claimId,
+      message: `Claim '${claimId}' not found`,
+    });
   }
   if (claim.status !== "active") {
-    throw new Error(
-      `Cannot heartbeat claim '${claimId}' with status '${claim.status}' (must be active)`,
-    );
+    throw new StateConflictError({
+      resource: "Claim",
+      reason: `status is '${claim.status}'`,
+      message: `Cannot heartbeat claim '${claimId}' with status '${claim.status}' (must be active)`,
+    });
   }
   if (new Date(claim.leaseExpiresAt).getTime() < Date.now()) {
-    throw new Error(
-      `Cannot heartbeat claim '${claimId}': lease expired at ${claim.leaseExpiresAt}`,
-    );
+    throw new StateConflictError({
+      resource: "Claim",
+      reason: "lease expired",
+      message: `Cannot heartbeat claim '${claimId}': lease expired at ${claim.leaseExpiresAt}`,
+    });
   }
 }
 
@@ -63,12 +71,18 @@ export function validateTransition(
   newStatus: ClaimStatus,
 ): void {
   if (claim === undefined) {
-    throw new Error(`Claim '${claimId}' not found`);
+    throw new NotFoundError({
+      resource: "Claim",
+      identifier: claimId,
+      message: `Claim '${claimId}' not found`,
+    });
   }
   if (claim.status !== "active") {
-    throw new Error(
-      `Cannot transition claim '${claimId}' from '${claim.status}' to '${newStatus}' (must be active)`,
-    );
+    throw new StateConflictError({
+      resource: "Claim",
+      reason: `status is '${claim.status}'`,
+      message: `Cannot transition claim '${claimId}' from '${claim.status}' to '${newStatus}' (must be active)`,
+    });
   }
 }
 

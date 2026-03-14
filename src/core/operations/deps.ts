@@ -18,14 +18,15 @@ import type { WorkspaceManager } from "../workspace.js";
  * Dependencies required by operations.
  *
  * All operations receive a subset of these via the OperationDeps interface.
- * Required deps (contributionStore, claimStore, cas, frontier) are always
- * available. Optional deps are only present when the feature is configured.
+ * Every field is optional so that callers only supply what the target
+ * operation actually needs. Operations that require a particular dep
+ * check for its presence and return a validation error when it is missing.
  */
 export interface OperationDeps {
-  readonly contributionStore: ContributionStore;
-  readonly claimStore: ClaimStore;
-  readonly cas: ContentStore;
-  readonly frontier: FrontierCalculator;
+  readonly contributionStore?: ContributionStore | undefined;
+  readonly claimStore?: ClaimStore | undefined;
+  readonly cas?: ContentStore | undefined;
+  readonly frontier?: FrontierCalculator | undefined;
   readonly contract?: GroveContract | undefined;
   readonly workspace?: WorkspaceManager | undefined;
   readonly outcomeStore?: OutcomeStore | undefined;

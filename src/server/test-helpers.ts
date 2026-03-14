@@ -7,6 +7,7 @@
 
 import type { Hono } from "hono";
 import type { ContentStore, PutOptions } from "../core/cas.js";
+import { NotFoundError, StateConflictError } from "../core/errors.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
 import type { AgentIdentity, Artifact, Claim, ContributionInput } from "../core/models.js";
 import type {
@@ -94,7 +95,11 @@ export class InMemoryClaimStore implements ClaimStore {
 
   async createClaim(claim: Claim): Promise<Claim> {
     if (this.claims.has(claim.claimId)) {
-      throw new Error(`Claim ${claim.claimId} already exists`);
+      throw new StateConflictError({
+        resource: "Claim",
+        reason: "already exists",
+        message: `Claim ${claim.claimId} already exists`,
+      });
     }
     this.claims.set(claim.claimId, claim);
     return claim;
@@ -115,7 +120,11 @@ export class InMemoryClaimStore implements ClaimStore {
           this.claims.set(existing.claimId, renewed);
           return renewed;
         }
-        throw new Error(`Target ${claim.targetRef} already has an active claim by another agent`);
+        throw new StateConflictError({
+          resource: "Claim",
+          reason: "target already has an active claim",
+          message: `Target ${claim.targetRef} already has an active claim by another agent`,
+        });
       }
     }
     this.claims.set(claim.claimId, claim);
@@ -128,8 +137,20 @@ export class InMemoryClaimStore implements ClaimStore {
 
   async heartbeat(claimId: string, leaseDurationMs?: number): Promise<Claim> {
     const claim = this.claims.get(claimId);
-    if (!claim) throw new Error(`Claim ${claimId} does not exist`);
-    if (claim.status !== "active") throw new Error(`Claim ${claimId} is not active`);
+    if (!claim) {
+      throw new NotFoundError({
+        resource: "Claim",
+        identifier: claimId,
+        message: `Claim ${claimId} does not exist`,
+      });
+    }
+    if (claim.status !== "active") {
+      throw new StateConflictError({
+        resource: "Claim",
+        reason: "not active",
+        message: `Claim ${claimId} is not active`,
+      });
+    }
     const now = new Date();
     const updated: Claim = {
       ...claim,
@@ -142,8 +163,20 @@ export class InMemoryClaimStore implements ClaimStore {
 
   async release(claimId: string): Promise<Claim> {
     const claim = this.claims.get(claimId);
-    if (!claim) throw new Error(`Claim ${claimId} does not exist`);
-    if (claim.status !== "active") throw new Error(`Claim ${claimId} is not active`);
+    if (!claim) {
+      throw new NotFoundError({
+        resource: "Claim",
+        identifier: claimId,
+        message: `Claim ${claimId} does not exist`,
+      });
+    }
+    if (claim.status !== "active") {
+      throw new StateConflictError({
+        resource: "Claim",
+        reason: "not active",
+        message: `Claim ${claimId} is not active`,
+      });
+    }
     const updated: Claim = { ...claim, status: "released" };
     this.claims.set(claimId, updated);
     return updated;
@@ -151,8 +184,20 @@ export class InMemoryClaimStore implements ClaimStore {
 
   async complete(claimId: string): Promise<Claim> {
     const claim = this.claims.get(claimId);
-    if (!claim) throw new Error(`Claim ${claimId} does not exist`);
-    if (claim.status !== "active") throw new Error(`Claim ${claimId} is not active`);
+    if (!claim) {
+      throw new NotFoundError({
+        resource: "Claim",
+        identifier: claimId,
+        message: `Claim ${claimId} does not exist`,
+      });
+    }
+    if (claim.status !== "active") {
+      throw new StateConflictError({
+        resource: "Claim",
+        reason: "not active",
+        message: `Claim ${claimId} is not active`,
+      });
+    }
     const updated: Claim = { ...claim, status: "completed" };
     this.claims.set(claimId, updated);
     return updated;

@@ -393,6 +393,69 @@ export function runContributionStoreTests(factory: ContributionStoreFactory): vo
     });
 
     // ------------------------------------------------------------------
+    // countSince
+    // ------------------------------------------------------------------
+
+    test("countSince counts contributions at or after timestamp", async () => {
+      const old = makeContribution({
+        summary: "old contribution",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      const recent = makeContribution({
+        summary: "recent contribution",
+        createdAt: "2026-01-02T00:00:00.000Z",
+      });
+      await store.putMany([old, recent]);
+      const count = await store.countSince({ since: "2026-01-01T12:00:00.000Z" });
+      expect(count).toBe(1);
+    });
+
+    test("countSince filters by agentId", async () => {
+      const a1 = makeContribution({
+        summary: "agent-1 recent",
+        agent: { agentId: "agent-1" },
+        createdAt: "2026-01-02T00:00:00.000Z",
+      });
+      const a2 = makeContribution({
+        summary: "agent-2 recent",
+        agent: { agentId: "agent-2" },
+        createdAt: "2026-01-02T00:00:00.000Z",
+      });
+      await store.putMany([a1, a2]);
+      const count = await store.countSince({
+        agentId: "agent-1",
+        since: "2026-01-01T00:00:00.000Z",
+      });
+      expect(count).toBe(1);
+    });
+
+    test("countSince without agentId counts all agents", async () => {
+      const a1 = makeContribution({
+        summary: "agent-1",
+        agent: { agentId: "agent-1" },
+        createdAt: "2026-01-02T00:00:00.000Z",
+      });
+      const a2 = makeContribution({
+        summary: "agent-2",
+        agent: { agentId: "agent-2" },
+        createdAt: "2026-01-02T00:00:00.000Z",
+      });
+      await store.putMany([a1, a2]);
+      const count = await store.countSince({ since: "2026-01-01T00:00:00.000Z" });
+      expect(count).toBe(2);
+    });
+
+    test("countSince returns 0 when no contributions match", async () => {
+      const old = makeContribution({
+        summary: "old",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      await store.put(old);
+      const count = await store.countSince({ since: "2026-02-01T00:00:00.000Z" });
+      expect(count).toBe(0);
+    });
+
+    // ------------------------------------------------------------------
     // findExisting
     // ------------------------------------------------------------------
 

@@ -17,6 +17,7 @@ import type {
   Score,
 } from "../models.js";
 import { ContributionKind as CK, ContributionMode as CM, RelationType } from "../models.js";
+import type { ContributionStore } from "../store.js";
 import { toUtcIso } from "../time.js";
 import type { AgentOverrides } from "./agent.js";
 import { resolveAgent } from "./agent.js";
@@ -131,11 +132,11 @@ export interface DiscussInput {
  * Returns a validation error if any target is missing, or undefined if all valid.
  */
 async function validateRelations(
-  deps: OperationDeps,
+  store: ContributionStore,
   relations: readonly Relation[],
 ): Promise<OperationResult<void> | undefined> {
   for (const rel of relations) {
-    const target = await deps.contributionStore.get(rel.targetCid);
+    const target = await store.get(rel.targetCid);
     if (target === undefined) {
       return notFound("Contribution", rel.targetCid);
     }
@@ -151,6 +152,9 @@ async function validateArtifacts(
   deps: OperationDeps,
   artifacts: Readonly<Record<string, string>>,
 ): Promise<OperationResult<void> | undefined> {
+  if (deps.cas === undefined) {
+    return validationErr("Artifact validation not available (missing cas)");
+  }
   for (const [name, hash] of Object.entries(artifacts)) {
     const exists = await deps.cas.exists(hash);
     if (!exists) {
@@ -183,13 +187,17 @@ export async function contributeOperation(
   deps: OperationDeps,
 ): Promise<OperationResult<ContributeResult>> {
   try {
+    if (deps.contributionStore === undefined) {
+      return validationErr("Contribution operations not available (missing contributionStore)");
+    }
+
     const artifacts = input.artifacts ?? {};
     const relations = input.relations ?? [];
     const tags = input.tags ?? [];
 
     // Validate relations
     if (relations.length > 0) {
-      const relErr = await validateRelations(deps, relations);
+      const relErr = await validateRelations(deps.contributionStore, relations);
       if (relErr !== undefined) return relErr as OperationResult<ContributeResult>;
     }
 
@@ -242,6 +250,10 @@ export async function reviewOperation(
   deps: OperationDeps,
 ): Promise<OperationResult<ReviewResult>> {
   try {
+    if (deps.contributionStore === undefined) {
+      return validationErr("Contribution operations not available (missing contributionStore)");
+    }
+
     const relations: Relation[] = [
       {
         targetCid: input.targetCid,
@@ -251,7 +263,7 @@ export async function reviewOperation(
     ];
 
     // Validate target exists
-    const relErr = await validateRelations(deps, relations);
+    const relErr = await validateRelations(deps.contributionStore, relations);
     if (relErr !== undefined) return relErr as OperationResult<ReviewResult>;
 
     const agent = resolveAgent(input.agent);
@@ -293,7 +305,15 @@ export async function reproduceOperation(
   deps: OperationDeps,
 ): Promise<OperationResult<ReproduceResult>> {
   try {
+    if (deps.contributionStore === undefined) {
+      return validationErr("Contribution operations not available (missing contributionStore)");
+    }
+
     const result = input.result ?? "confirmed";
+    if (deps.contributionStore === undefined) {
+      return validationErr("Contribution operations not available (missing contributionStore)");
+    }
+
     const artifacts = input.artifacts ?? {};
 
     const relations: Relation[] = [
@@ -305,7 +325,7 @@ export async function reproduceOperation(
     ];
 
     // Validate target exists
-    const relErr = await validateRelations(deps, relations);
+    const relErr = await validateRelations(deps.contributionStore, relations);
     if (relErr !== undefined) return relErr as OperationResult<ReproduceResult>;
 
     // Validate artifacts
@@ -354,6 +374,10 @@ export async function discussOperation(
   deps: OperationDeps,
 ): Promise<OperationResult<DiscussResult>> {
   try {
+    if (deps.contributionStore === undefined) {
+      return validationErr("Contribution operations not available (missing contributionStore)");
+    }
+
     const relations: Relation[] = [];
     if (input.targetCid !== undefined) {
       relations.push({
@@ -364,7 +388,7 @@ export async function discussOperation(
 
     // Validate target exists (if replying)
     if (relations.length > 0) {
-      const relErr = await validateRelations(deps, relations);
+      const relErr = await validateRelations(deps.contributionStore, relations);
       if (relErr !== undefined) return relErr as OperationResult<DiscussResult>;
     }
 

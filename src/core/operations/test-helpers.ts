@@ -16,13 +16,20 @@ import {
 } from "../../local/sqlite-store.js";
 import { LocalWorkspaceManager } from "../../local/workspace.js";
 import type { ContentStore } from "../cas.js";
+import type { GroveContract } from "../contract.js";
 import { DefaultFrontierCalculator } from "../frontier.js";
 import { InMemoryCreditsService } from "../in-memory-credits.js";
+import type { OutcomeStore } from "../outcome.js";
 import type { OperationDeps } from "./deps.js";
+
+/** OperationDeps with all fields guaranteed present (for tests). */
+export type FullOperationDeps = {
+  readonly [K in keyof Required<OperationDeps>]: NonNullable<OperationDeps[K]>;
+};
 
 /** A test OperationDeps instance with cleanup function. */
 export interface TestOperationDeps {
-  readonly deps: OperationDeps;
+  readonly deps: FullOperationDeps;
   readonly tempDir: string;
   readonly cleanup: () => Promise<void>;
 }
@@ -51,7 +58,7 @@ export async function createTestOperationDeps(): Promise<TestOperationDeps> {
     cas,
   });
 
-  const deps: OperationDeps = {
+  const deps: FullOperationDeps = {
     contributionStore,
     claimStore,
     bountyStore,
@@ -59,6 +66,11 @@ export async function createTestOperationDeps(): Promise<TestOperationDeps> {
     cas,
     frontier,
     workspace,
+    contract: undefined as unknown as GroveContract,
+    outcomeStore: undefined as unknown as OutcomeStore,
+    onContributionWrite: () => {
+      /* no-op for tests */
+    },
   };
 
   return {

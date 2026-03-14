@@ -3,6 +3,17 @@
  *
  * createApp(deps) returns a Hono application with all routes mounted.
  * Dependencies are injected via context variables, enabling easy testing.
+ *
+ * ## Security / Auth Model
+ *
+ * The HTTP server is designed for **local and trusted-network use only**.
+ *
+ * - No authentication or authorization middleware is enforced.
+ * - Agent IDs are self-reported by callers and are **not verified** by the
+ *   server — any client can claim any agent identity.
+ * - For internet-facing or production deployments, place the server behind a
+ *   reverse proxy (e.g. nginx, Caddy, or a cloud load-balancer) that provides
+ *   TLS termination and authentication.
  */
 
 import { Hono } from "hono";

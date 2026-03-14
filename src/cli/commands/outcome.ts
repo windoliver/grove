@@ -45,10 +45,6 @@ export interface OutcomeDeps {
 function toOpDeps(deps: OutcomeDeps): OperationDeps {
   return {
     outcomeStore: deps.outcomeStore,
-    contributionStore: undefined as never,
-    claimStore: undefined as never,
-    cas: undefined as never,
-    frontier: undefined as never,
   };
 }
 

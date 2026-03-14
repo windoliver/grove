@@ -27,6 +27,7 @@ import type {
   ThreadSummary,
 } from "../core/store.js";
 import { toUtcIso } from "../core/time.js";
+import { batchParallel } from "./batch.js";
 import type { ListEntry, ListOptions, NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
@@ -176,18 +177,22 @@ export class NexusContributionStore implements ContributionStore {
     const ftsDir = ftsIndexDir(this.zoneId);
     const entries = await this.listAllPages(ftsDir, { recursive: true });
 
-    const contributions: Contribution[] = [];
-    for (const entry of entries) {
-      if (entry.isDirectory) continue;
+    const nonDirEntries = entries.filter((e) => !e.isDirectory);
+
+    // Read FTS entries in parallel and filter by query
+    const ftsResults = await batchParallel(nonDirEntries, async (entry) => {
       const ftsData = await withSemaphore(this.semaphore, () => this.client.read(entry.path));
-      if (ftsData === undefined) continue;
-
+      if (ftsData === undefined) return undefined;
       const fts = decode<Record<string, JsonValue>>(ftsData);
-      if (!matchesFtsQuery(fts, query)) continue;
+      if (!matchesFtsQuery(fts, query)) return undefined;
+      return fts.cid as string;
+    });
 
-      const c = await this.get(fts.cid as string);
-      if (c !== undefined) contributions.push(c);
-    }
+    const matchingCids = ftsResults.filter((cid): cid is string => cid !== undefined);
+
+    // Fetch matching contributions in parallel
+    const fetched = await batchParallel(matchingCids, (cid) => this.get(cid));
+    const contributions = fetched.filter((c): c is Contribution => c !== undefined);
 
     // Sort by createdAt ascending (matches SQLite store behavior)
     contributions.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
@@ -366,6 +371,14 @@ export class NexusContributionStore implements ContributionStore {
       query !== undefined ? { ...query, limit: undefined, offset: undefined } : undefined;
     const all = await this.list(countQuery);
     return all.length;
+  }
+
+  async countSince(query: { agentId?: string; since: string }): Promise<number> {
+    const all = await this.list(
+      query.agentId !== undefined ? { agentId: query.agentId } : undefined,
+    );
+    const sinceTime = new Date(query.since).getTime();
+    return all.filter((c) => new Date(c.createdAt).getTime() >= sinceTime).length;
   }
 
   async thread(

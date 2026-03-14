@@ -42,9 +42,6 @@ export async function runRelease(args: readonly string[], deps: ReleaseDeps): Pr
   // Build minimal OperationDeps with only what releaseOperation needs
   const opDeps: OperationDeps = {
     claimStore: deps.claimStore,
-    contributionStore: undefined as never,
-    cas: undefined as never,
-    frontier: undefined as never,
   };
 
   const result = await releaseOperation({ claimId, action }, opDeps);

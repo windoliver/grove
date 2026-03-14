@@ -85,6 +85,17 @@ export class InMemoryContributionStore implements ContributionStore {
     return results.length;
   };
 
+  countSince = async (query: { agentId?: string; since: string }): Promise<number> => {
+    const sinceTime = new Date(query.since).getTime();
+    let results = [...this.contributions.values()].filter(
+      (c) => new Date(c.createdAt).getTime() >= sinceTime,
+    );
+    if (query.agentId !== undefined) {
+      results = results.filter((c) => c.agent.agentId === query.agentId);
+    }
+    return results.length;
+  };
+
   children = async (cid: string): Promise<readonly Contribution[]> => {
     const result: Contribution[] = [];
     for (const c of this.contributions.values()) {

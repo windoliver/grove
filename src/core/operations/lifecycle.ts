@@ -6,7 +6,7 @@
 
 import type { OperationDeps } from "./deps.js";
 import type { OperationResult } from "./result.js";
-import { fromGroveError, ok } from "./result.js";
+import { fromGroveError, ok, validationErr } from "./result.js";
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -43,6 +43,10 @@ export async function checkStopOperation(
         conditions: {},
         evaluatedAt: new Date().toISOString(),
       });
+    }
+
+    if (deps.contributionStore === undefined) {
+      return validationErr("Stop condition evaluation not available (missing contributionStore)");
     }
 
     // Lazy import to avoid circular dependency at module load time.

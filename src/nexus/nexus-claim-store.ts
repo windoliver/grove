@@ -17,6 +17,7 @@ import {
   validateHeartbeat,
   validateTransition,
 } from "../core/claim-logic.js";
+import { StateConflictError } from "../core/errors.js";
 import type { Claim, ClaimStatus } from "../core/models.js";
 import type {
   ActiveClaimFilter,
@@ -28,6 +29,7 @@ import type {
 import { ExpiryReason } from "../core/store.js";
 import { toUtcIso } from "../core/time.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
+import { batchParallel } from "./batch.js";
 import type { ListEntry, ListOptions, NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
@@ -109,7 +111,11 @@ export class NexusClaimStore implements ClaimStore {
       await this.writeClaimConditional(createdClaim, { ifNoneMatch: "*" });
     } catch (err) {
       if (err instanceof NexusConflictError) {
-        throw new Error(`Claim with id '${claim.claimId}' already exists`);
+        throw new StateConflictError({
+          resource: "Claim",
+          reason: "already exists",
+          message: `Claim with id '${claim.claimId}' already exists`,
+        });
       }
       throw err;
     }
@@ -132,7 +138,11 @@ export class NexusClaimStore implements ClaimStore {
         const now = new Date();
         const activeOnTarget = await this.findActiveOnTarget(claim.targetRef, now);
         const existingId = activeOnTarget?.claimId ?? "(unknown)";
-        throw new Error(`Target '${claim.targetRef}' already has an active claim '${existingId}'`);
+        throw new StateConflictError({
+          resource: "Claim",
+          reason: "target already has an active claim",
+          message: `Target '${claim.targetRef}' already has an active claim '${existingId}'`,
+        });
       }
       throw err;
     }
@@ -193,7 +203,11 @@ export class NexusClaimStore implements ClaimStore {
       await this.writeClaimConditional(createdClaim, { ifNoneMatch: "*" });
     } catch (err) {
       if (err instanceof NexusConflictError) {
-        throw new Error(`Claim with id '${claim.claimId}' already exists`);
+        throw new StateConflictError({
+          resource: "Claim",
+          reason: "already exists",
+          message: `Claim with id '${claim.claimId}' already exists`,
+        });
       }
       throw err;
     }
@@ -562,11 +576,12 @@ export class NexusClaimStore implements ClaimStore {
   private async readActiveClaimsFromDir(dir: string, now: Date): Promise<Claim[]> {
     const entries = await this.listAllPages(dir);
 
+    const nonDirEntries = entries.filter((e) => !e.isDirectory);
+    const claimIds = nonDirEntries.map((entry) => decodeSegment(entry.name));
+    const fetched = await batchParallel(claimIds, (claimId) => this.readClaim(claimId));
+
     const claims: Claim[] = [];
-    for (const entry of entries) {
-      if (entry.isDirectory) continue;
-      const claimId = decodeSegment(entry.name);
-      const claim = await this.readClaim(claimId);
+    for (const claim of fetched) {
       if (claim !== undefined && claim.status === "active") {
         if (new Date(claim.leaseExpiresAt).getTime() >= now.getTime()) {
           claims.push(claim);
@@ -585,16 +600,11 @@ export class NexusClaimStore implements ClaimStore {
     const dir = claimsDir(this.zoneId);
     const entries = await this.listAllPages(dir);
 
-    const claims: ClaimWithEtag[] = [];
-    for (const entry of entries) {
-      if (entry.isDirectory) continue;
-      const claimId = decodeSegment(entry.name.replace(/\.json$/, ""));
-      const result = await this.readClaimWithEtag(claimId);
-      if (result !== undefined) {
-        claims.push(result);
-      }
-    }
-    return claims;
+    const nonDirEntries = entries.filter((e) => !e.isDirectory);
+    const claimIds = nonDirEntries.map((entry) => decodeSegment(entry.name.replace(/\.json$/, "")));
+    const fetched = await batchParallel(claimIds, (claimId) => this.readClaimWithEtag(claimId));
+
+    return fetched.filter((result): result is ClaimWithEtag => result !== undefined);
   }
 
   /** Paginate through all pages of a list() call, collecting all entries. */
