@@ -28,6 +28,7 @@ export interface LogOptions {
   readonly outcome?: string | undefined;
   readonly limit: number;
   readonly json: boolean;
+  readonly wide: boolean;
 }
 
 export function parseLogArgs(argv: string[]): LogOptions {
@@ -39,6 +40,7 @@ export function parseLogArgs(argv: string[]): LogOptions {
       outcome: { type: "string" },
       n: { type: "string", short: "n" },
       json: { type: "boolean", default: false },
+      wide: { type: "boolean", default: false },
     },
     strict: true,
     allowPositionals: false,
@@ -61,6 +63,7 @@ export function parseLogArgs(argv: string[]): LogOptions {
     outcome: values.outcome,
     limit,
     json: values.json ?? false,
+    wide: values.wide ?? false,
   };
 }
 
@@ -107,7 +110,7 @@ export async function runLog(
       outputJson({ results: summaries, count: summaries.length });
       return;
     }
-    writer(formatContributions(sorted));
+    writer(formatContributions(sorted, { wide: options.wide }));
     return;
   }
 
@@ -142,5 +145,5 @@ export async function runLog(
     .map((cid) => fullMap.get(cid))
     .filter((c): c is import("../../core/models.js").Contribution => c !== undefined);
 
-  writer(formatContributions(full));
+  writer(formatContributions(full, { wide: options.wide }));
 }

@@ -104,9 +104,9 @@ describe("CLI dispatch", () => {
     expect(stdout).toContain("grove");
   });
 
-  test("unknown command exits 1", async () => {
+  test("unknown command exits 2 (usage error)", async () => {
     const { stderr, exitCode } = await runCli(["bogus"], tmpDir);
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(2);
     expect(stderr).toContain("unknown command");
   });
 

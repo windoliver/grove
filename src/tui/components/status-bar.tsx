@@ -23,6 +23,7 @@ const MODE_LABELS: Record<InputMode, string> = {
   terminal_input: "TERMINAL",
   command_palette: "CMD",
   search_input: "SEARCH",
+  help: "HELP",
 };
 
 /** Bottom status bar with keybinding hints. */
@@ -44,8 +45,8 @@ export const StatusBar: React.NamedExoticComponent<StatusBarProps> = React.memo(
         <text color="#00cccc">[{modeLabel}]</text>
         <text opacity={0.5}>
           {isDetailView
-            ? " Esc:back  j/k:scroll  r:refresh  q:quit"
-            : " 1-4:panel  5-8:toggle  Tab:cycle  j/k:nav  Enter:select  Ctrl+P:cmd  q:quit"}
+            ? " Esc:back  j/k:scroll  r:refresh  ?:help  q:quit"
+            : " 1-4:panel  5-]:toggle  Tab:cycle  j/k:nav  Enter:select  Ctrl+P:cmd  ?:help  q:quit"}
         </text>
       </box>
     </box>

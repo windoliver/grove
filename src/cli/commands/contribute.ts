@@ -447,6 +447,7 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
     if (!result.ok) {
       if (options.json) {
         outputJsonError(result.error);
+        return { cid: "" };
       }
       throw new Error(result.error.message);
     }

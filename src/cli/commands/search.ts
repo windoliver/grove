@@ -32,6 +32,7 @@ export interface SearchOptions {
   readonly sort: SortField;
   readonly limit: number;
   readonly json: boolean;
+  readonly wide: boolean;
 }
 
 export function parseSearchArgs(argv: string[]): SearchOptions {
@@ -46,6 +47,7 @@ export function parseSearchArgs(argv: string[]): SearchOptions {
       sort: { type: "string", default: "recency" },
       n: { type: "string", short: "n" },
       json: { type: "boolean", default: false },
+      wide: { type: "boolean", default: false },
     },
     strict: true,
     allowPositionals: true,
@@ -70,6 +72,7 @@ export function parseSearchArgs(argv: string[]): SearchOptions {
     sort,
     limit,
     json: values.json ?? false,
+    wide: values.wide ?? false,
   };
 }
 
@@ -120,7 +123,7 @@ export async function runSearch(
       .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
       .slice(0, options.limit);
 
-    writer(formatContributions(sorted));
+    writer(formatContributions(sorted, { wide: options.wide }));
     return;
   }
 
@@ -171,5 +174,5 @@ export async function runSearch(
     return;
   }
 
-  writer(formatContributions(results));
+  writer(formatContributions(results, { wide: options.wide }));
 }

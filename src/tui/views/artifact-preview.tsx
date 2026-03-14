@@ -7,6 +7,7 @@
  */
 
 import React, { useCallback, useMemo } from "react";
+import { DataStatus } from "../components/data-status.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { ArtifactMeta, TuiArtifactProvider, TuiDataProvider } from "../provider.js";
 
@@ -232,7 +233,7 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
       return { meta, content };
     }, [artifactProvider, cid, artifactName]);
 
-    const { data, loading, error } = usePolledData<ArtifactData | undefined>(
+    const { data, loading, error, isStale } = usePolledData<ArtifactData | undefined>(
       fetcher,
       intervalMs,
       active,
@@ -360,6 +361,7 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
         )}
         <box marginBottom={1}>
           <text color="#00cccc">{preview.header}</text>
+          <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
           {hasDiffSupport && (
             <text color={showDiff ? "#ffcc00" : "#666666"}>
               {showDiff ? "  [DIFF ON]" : "  [d]iff"}

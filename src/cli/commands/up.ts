@@ -188,9 +188,14 @@ export async function handleUp(args: readonly string[], groveOverride?: string):
     writeFileSync(pidFilePath, `${JSON.stringify(pidData, null, 2)}\n`, "utf-8");
 
     if (children.length > 0) {
-      console.log(
-        `Started ${children.length} service(s): ${children.map((c) => c.name).join(", ")}`,
-      );
+      const serverPort = Number(process.env.PORT ?? 4515);
+      const mcpPort = Number(process.env.MCP_PORT ?? 4015);
+      const serviceLines = children.map((c) => {
+        if (c.name === "server") return `  HTTP server  \u2192 http://localhost:${serverPort}`;
+        if (c.name === "mcp") return `  MCP server   \u2192 http://localhost:${mcpPort}`;
+        return `  ${c.name}`;
+      });
+      console.log(`Started ${children.length} service(s):\n${serviceLines.join("\n")}`);
     }
 
     // Launch TUI or stay headless

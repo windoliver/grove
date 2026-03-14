@@ -130,6 +130,7 @@ export async function runReproduce(
     if (!result.ok) {
       if (options.json) {
         outputJsonError(result.error);
+        return;
       }
       console.error(`grove reproduce: ${result.error.message}`);
       process.exitCode = 1;

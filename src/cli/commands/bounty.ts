@@ -21,6 +21,7 @@ import type { ClaimStore } from "../../core/store.js";
 import { outputJson, outputJsonError } from "../format.js";
 import { parseDuration } from "../utils/duration.js";
 import { resolveAgentId } from "../utils/grove-dir.js";
+import { collectErrors, formatValidationErrors } from "../utils/validate.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -99,34 +100,31 @@ async function runBountyCreate(args: readonly string[], deps: BountyDeps): Promi
   });
 
   const title = positionals.join(" ");
-  if (!title) {
-    deps.stderr(
-      "Error: title is required.\n\nUsage: grove bounty create <title> --amount <credits> --deadline <duration>",
-    );
+
+  const amountRaw = values.amount ? parseInt(values.amount, 10) : NaN;
+  const errors = collectErrors([
+    [!title, { field: "title", message: "title is required" }],
+    [!values.amount, { field: "--amount", message: "--amount is required" }],
+    [!values.deadline, { field: "--deadline", message: "--deadline is required" }],
+    [
+      !!values.amount && (Number.isNaN(amountRaw) || amountRaw <= 0),
+      { field: "--amount", message: `--amount must be a positive integer, got '${values.amount}'` },
+    ],
+  ]);
+
+  const errMsg = formatValidationErrors(
+    errors,
+    "Usage: grove bounty create <title> --amount <credits> --deadline <duration>",
+  );
+  if (errMsg) {
+    deps.stderr(errMsg);
     process.exitCode = 2;
     return;
   }
 
-  if (!values.amount) {
-    deps.stderr("Error: --amount is required.");
-    process.exitCode = 2;
-    return;
-  }
+  const amount = amountRaw;
 
-  if (!values.deadline) {
-    deps.stderr("Error: --deadline is required.");
-    process.exitCode = 2;
-    return;
-  }
-
-  const amount = parseInt(values.amount, 10);
-  if (Number.isNaN(amount) || amount <= 0) {
-    deps.stderr(`Error: --amount must be a positive integer, got '${values.amount}'`);
-    process.exitCode = 2;
-    return;
-  }
-
-  const deadlineMs = parseDuration(values.deadline);
+  const deadlineMs = parseDuration(values.deadline as string);
   const agentId = resolveAgentId(values["agent-id"]);
 
   const criteria = {
@@ -154,6 +152,7 @@ async function runBountyCreate(args: readonly string[], deps: BountyDeps): Promi
   if (!result.ok) {
     if (values.json) {
       outputJsonError(result.error);
+      return;
     }
     deps.stderr(`Error: ${result.error.message}`);
     process.exitCode = 1;
@@ -200,6 +199,7 @@ async function runBountyList(args: readonly string[], deps: BountyDeps): Promise
   if (!result.ok) {
     if (values.json) {
       outputJsonError(result.error);
+      return;
     }
     deps.stderr(`Error: ${result.error.message}`);
     process.exitCode = 1;
@@ -274,6 +274,7 @@ async function runBountyClaim(args: readonly string[], deps: BountyDeps): Promis
   if (!result.ok) {
     if (values.json) {
       outputJsonError(result.error);
+      return;
     }
     deps.stderr(`Error: ${result.error.message}`);
     process.exitCode = 1;

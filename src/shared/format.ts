@@ -41,10 +41,16 @@ export function formatScore(score: Score): string {
   return score.unit ? `${val} ${score.unit}` : val;
 }
 
+/** Options for row conversion. */
+export interface RowOptions {
+  /** When true, show full CIDs without truncation. */
+  readonly wide?: boolean | undefined;
+}
+
 /** Convert a Contribution to a display row record. */
-export function contributionToRow(c: Contribution): Record<string, string> {
+export function contributionToRow(c: Contribution, options?: RowOptions): Record<string, string> {
   return {
-    cid: truncateCid(c.cid),
+    cid: options?.wide ? c.cid : truncateCid(c.cid),
     kind: c.kind,
     summary: c.summary,
     agent: c.agent.agentName ?? c.agent.agentId,
@@ -53,9 +59,12 @@ export function contributionToRow(c: Contribution): Record<string, string> {
 }
 
 /** Convert a FrontierEntry to a display row record. */
-export function frontierEntryToRow(entry: FrontierEntry): Record<string, string> {
+export function frontierEntryToRow(
+  entry: FrontierEntry,
+  options?: RowOptions,
+): Record<string, string> {
   return {
-    cid: truncateCid(entry.cid),
+    cid: options?.wide ? entry.cid : truncateCid(entry.cid),
     summary: entry.summary,
     value: entry.value.toFixed(2),
     agent: entry.contribution.agent.agentName ?? entry.contribution.agent.agentId,

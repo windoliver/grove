@@ -4,7 +4,13 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Score } from "../core/models.js";
-import { contributionToRow, formatScore, formatTimestamp, truncateCid } from "./format.js";
+import {
+  contributionToRow,
+  formatScore,
+  formatTimestamp,
+  frontierEntryToRow,
+  truncateCid,
+} from "./format.js";
 
 describe("truncateCid", () => {
   test("truncates blake3 CID", () => {
@@ -105,5 +111,70 @@ describe("contributionToRow", () => {
 
     const row = contributionToRow(contribution);
     expect(row.agent).toBe("agent-2");
+  });
+
+  test("wide mode shows full CID", () => {
+    const fullCid = "blake3:abcdef123456789012345678";
+    const contribution = {
+      cid: fullCid,
+      manifestVersion: 1,
+      kind: "work" as const,
+      mode: "evaluation" as const,
+      summary: "Test",
+      artifacts: {},
+      relations: [],
+      tags: [],
+      agent: { agentId: "a" },
+      createdAt: new Date().toISOString(),
+    };
+
+    const row = contributionToRow(contribution, { wide: true });
+    expect(row.cid).toBe(fullCid);
+  });
+});
+
+describe("frontierEntryToRow", () => {
+  const makeEntry = () => ({
+    cid: "blake3:abcdef123456789012345678",
+    summary: "Best result",
+    value: 0.95,
+    contribution: {
+      cid: "blake3:abcdef123456789012345678",
+      manifestVersion: 1,
+      kind: "work" as const,
+      mode: "evaluation" as const,
+      summary: "Best result",
+      artifacts: {},
+      relations: [],
+      tags: [],
+      agent: { agentId: "agent-1", agentName: "Alice" },
+      createdAt: new Date(Date.now() - 120_000).toISOString(),
+    },
+  });
+
+  test("truncates CID by default", () => {
+    const row = frontierEntryToRow(makeEntry());
+    expect(row.cid).toBe("blake3:abcdef123456..");
+    expect(row.summary).toBe("Best result");
+    expect(row.value).toBe("0.95");
+    expect(row.agent).toBe("Alice");
+  });
+
+  test("wide mode shows full CID", () => {
+    const entry = makeEntry();
+    const row = frontierEntryToRow(entry, { wide: true });
+    expect(row.cid).toBe(entry.cid);
+  });
+
+  test("uses agentId when agentName is absent", () => {
+    const entry = {
+      ...makeEntry(),
+      contribution: {
+        ...makeEntry().contribution,
+        agent: { agentId: "bot-1" } as { agentId: string; agentName?: string },
+      },
+    };
+    const row = frontierEntryToRow(entry);
+    expect(row.agent).toBe("bot-1");
   });
 });

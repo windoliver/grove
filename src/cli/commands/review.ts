@@ -116,6 +116,7 @@ export async function runReview(options: ReviewOptions, groveOverride?: string):
     if (!result.ok) {
       if (options.json) {
         outputJsonError(result.error);
+        return;
       }
       console.error(`grove review: ${result.error.message}`);
       process.exitCode = 1;

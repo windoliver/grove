@@ -21,6 +21,7 @@ export interface ThreadsOptions {
   readonly tags: readonly string[];
   readonly limit: number;
   readonly json: boolean;
+  readonly wide: boolean;
 }
 
 export function parseThreadsArgs(argv: string[]): ThreadsOptions {
@@ -30,6 +31,7 @@ export function parseThreadsArgs(argv: string[]): ThreadsOptions {
       tag: { type: "string", multiple: true, default: [] },
       limit: { type: "string" },
       json: { type: "boolean", default: false },
+      wide: { type: "boolean", default: false },
     },
     strict: true,
     allowPositionals: false,
@@ -44,6 +46,7 @@ export function parseThreadsArgs(argv: string[]): ThreadsOptions {
     tags: values.tag as string[],
     limit,
     json: values.json ?? false,
+    wide: values.wide ?? false,
   };
 }
 
@@ -92,5 +95,5 @@ export async function runThreads(
     })
     .filter((t): t is import("../../core/store.js").ThreadSummary => t !== undefined);
 
-  writer(formatHotThreads(threadSummaries));
+  writer(formatHotThreads(threadSummaries, { wide: options.wide }));
 }

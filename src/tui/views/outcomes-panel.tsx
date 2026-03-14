@@ -8,6 +8,7 @@
 import React, { useCallback, useEffect } from "react";
 import type { OutcomeRecord } from "../../core/outcome.js";
 import { formatTimestamp, truncateCid } from "../../shared/format.js";
+import { DataStatus } from "../components/data-status.js";
 import { Table } from "../components/table.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider, TuiOutcomeProvider } from "../provider.js";
@@ -73,7 +74,11 @@ export const OutcomesPanelView: React.NamedExoticComponent<OutcomesPanelProps> =
       }));
     }, [provider, supportsOutcomes]);
 
-    const { data, loading } = usePolledData<readonly OutcomeRow[]>(fetcher, intervalMs, active);
+    const { data, loading, isStale, error } = usePolledData<readonly OutcomeRow[]>(
+      fetcher,
+      intervalMs,
+      active,
+    );
 
     useEffect(() => {
       if (data && onRowCountChanged) {
@@ -103,6 +108,7 @@ export const OutcomesPanelView: React.NamedExoticComponent<OutcomesPanelProps> =
       <box flexDirection="column">
         <box marginBottom={1}>
           <text>Outcomes</text>
+          <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
           <text opacity={0.5}>
             {"  "}
             {outcomes.length} annotations

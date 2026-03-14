@@ -8,6 +8,7 @@
 import React, { useCallback, useEffect, useMemo } from "react";
 import type { Frontier, FrontierEntry } from "../../core/frontier.js";
 import { truncateCid } from "../../shared/format.js";
+import { DataStatus } from "../components/data-status.js";
 import { Table } from "../components/table.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
@@ -135,7 +136,7 @@ export const FrontierView: React.NamedExoticComponent<FrontierViewProps> = React
     onRowCountChanged,
   }: FrontierViewProps): React.ReactNode {
     const fetcher = useCallback(() => provider.getFrontier(), [provider]);
-    const { data, loading } = usePolledData<Frontier>(fetcher, intervalMs, active);
+    const { data, loading, isStale, error } = usePolledData<Frontier>(fetcher, intervalMs, active);
 
     const flatRows = useMemo(() => (data ? flattenFrontier(data) : []), [data]);
 
@@ -165,6 +166,7 @@ export const FrontierView: React.NamedExoticComponent<FrontierViewProps> = React
       <box flexDirection="column">
         <box marginBottom={1}>
           <text>Frontier Rankings</text>
+          <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
           {flatRows.length > 0 ? (
             <text opacity={0.5}>
               {"  "}

@@ -119,6 +119,17 @@ describe("panelSetMode", () => {
     const s2 = panelSetMode(s, InputMode.Normal);
     expect(s2).toBe(s);
   });
+
+  test("enters Help mode", () => {
+    const s = panelSetMode(initialPanelState(), InputMode.Help);
+    expect(s.mode).toBe(InputMode.Help);
+  });
+
+  test("exits Help mode back to Normal", () => {
+    let s = panelSetMode(initialPanelState(), InputMode.Help);
+    s = panelSetMode(s, InputMode.Normal);
+    expect(s.mode).toBe(InputMode.Normal);
+  });
 });
 
 describe("isPanelVisible", () => {

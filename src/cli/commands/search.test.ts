@@ -98,7 +98,9 @@ describe("parseSearchArgs", () => {
 describe("runSearch", () => {
   test("returns no results for empty store", async () => {
     const output: string[] = [];
-    await runSearch({ sort: "recency", limit: 20, json: false }, deps, (s) => output.push(s));
+    await runSearch({ sort: "recency", limit: 20, json: false, wide: false }, deps, (s) =>
+      output.push(s),
+    );
     expect(output.join("\n")).toContain("(no results)");
   });
 
@@ -114,7 +116,7 @@ describe("runSearch", () => {
 
     const output: string[] = [];
     await runSearch(
-      { query: "connection pool", sort: "recency", limit: 20, json: false },
+      { query: "connection pool", sort: "recency", limit: 20, json: false, wide: false },
       deps,
       (s) => output.push(s),
     );
@@ -136,8 +138,10 @@ describe("runSearch", () => {
     await deps.store.put(untagged);
 
     const output: string[] = [];
-    await runSearch({ tag: "gpu", sort: "recency", limit: 20, json: false }, deps, (s) =>
-      output.push(s),
+    await runSearch(
+      { tag: "gpu", sort: "recency", limit: 20, json: false, wide: false },
+      deps,
+      (s) => output.push(s),
     );
 
     const text = output.join("\n");
@@ -165,8 +169,10 @@ describe("runSearch", () => {
     await deps.store.put(adopter);
 
     const output: string[] = [];
-    await runSearch({ kind: "work", sort: "adoption", limit: 20, json: false }, deps, (s) =>
-      output.push(s),
+    await runSearch(
+      { kind: "work", sort: "adoption", limit: 20, json: false, wide: false },
+      deps,
+      (s) => output.push(s),
     );
 
     const text = output.join("\n");
@@ -204,8 +210,10 @@ describe("runSearch", () => {
 
     const output: string[] = [];
     // -n 1 with adoption sort must return the most-adopted item, not an arbitrary one
-    await runSearch({ kind: "work", sort: "adoption", limit: 1, json: false }, deps, (s) =>
-      output.push(s),
+    await runSearch(
+      { kind: "work", sort: "adoption", limit: 1, json: false, wide: false },
+      deps,
+      (s) => output.push(s),
     );
 
     const text = output.join("\n");
@@ -222,7 +230,7 @@ describe("runSearch", () => {
     const origLog = console.log;
     console.log = (msg: string) => logged.push(msg);
     try {
-      await runSearch({ sort: "recency", limit: 20, json: true }, deps);
+      await runSearch({ sort: "recency", limit: 20, json: true, wide: false }, deps);
     } finally {
       console.log = origLog;
     }

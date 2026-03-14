@@ -10,6 +10,7 @@ import React, { useCallback, useEffect } from "react";
 import type { Bounty } from "../../core/bounty.js";
 import type { BountyQuery, BountyStore } from "../../core/bounty-store.js";
 import { formatTimestamp, truncateCid } from "../../shared/format.js";
+import { DataStatus } from "../components/data-status.js";
 import { Table } from "../components/table.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
@@ -79,7 +80,11 @@ export const BountiesPanelView: React.NamedExoticComponent<BountiesPanelProps> =
       }));
     }, [provider, supportsBounties]);
 
-    const { data, loading } = usePolledData<readonly BountyRow[]>(fetcher, intervalMs, active);
+    const { data, loading, isStale, error } = usePolledData<readonly BountyRow[]>(
+      fetcher,
+      intervalMs,
+      active,
+    );
 
     useEffect(() => {
       if (data && onRowCountChanged) {
@@ -109,6 +114,7 @@ export const BountiesPanelView: React.NamedExoticComponent<BountiesPanelProps> =
       <box flexDirection="column">
         <box marginBottom={1}>
           <text>Bounties</text>
+          <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
           <text opacity={0.5}>
             {"  "}
             {bounties.length} records

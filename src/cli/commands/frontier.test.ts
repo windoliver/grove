@@ -107,7 +107,7 @@ describe("parseFrontierArgs", () => {
 describe("runFrontier", () => {
   test("outputs no data message for empty store", async () => {
     const output: string[] = [];
-    await runFrontier({ limit: 10, json: false }, deps, (s) => output.push(s));
+    await runFrontier({ limit: 10, json: false, wide: false }, deps, (s) => output.push(s));
     expect(output.join("\n")).toContain("(no frontier data)");
   });
 
@@ -119,7 +119,7 @@ describe("runFrontier", () => {
     await deps.store.put(c);
 
     const output: string[] = [];
-    await runFrontier({ metric: "throughput", limit: 10, json: false }, deps, (s) =>
+    await runFrontier({ metric: "throughput", limit: 10, json: false, wide: false }, deps, (s) =>
       output.push(s),
     );
 
@@ -141,7 +141,7 @@ describe("runFrontier", () => {
     await deps.store.put(c2);
 
     const output: string[] = [];
-    await runFrontier({ limit: 10, json: false }, deps, (s) => output.push(s));
+    await runFrontier({ limit: 10, json: false, wide: false }, deps, (s) => output.push(s));
 
     const text = output.join("\n");
     // Should have recency and adoption sections
@@ -157,7 +157,7 @@ describe("runFrontier", () => {
     await deps.store.put(c);
 
     const output: string[] = [];
-    await runFrontier({ limit: 10, json: true }, deps, (s) => output.push(s));
+    await runFrontier({ limit: 10, json: true, wide: false }, deps, (s) => output.push(s));
 
     const parsed = JSON.parse(output.join(""));
     expect(parsed.byMetric).toBeDefined();

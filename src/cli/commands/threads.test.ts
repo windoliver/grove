@@ -87,7 +87,9 @@ describe("parseThreadsArgs", () => {
 describe("runThreads", () => {
   test("displays no active threads message when empty", async () => {
     const lines: string[] = [];
-    await runThreads({ tags: [], limit: 10, json: false }, deps, (msg) => lines.push(msg));
+    await runThreads({ tags: [], limit: 10, json: false, wide: false }, deps, (msg) =>
+      lines.push(msg),
+    );
     expect(lines.join("")).toContain("no active threads");
   });
 
@@ -97,7 +99,7 @@ describe("runThreads", () => {
     const origLog = console.log;
     console.log = (msg: string) => logged.push(msg);
     try {
-      await runThreads({ tags: [], limit: 10, json: true }, deps);
+      await runThreads({ tags: [], limit: 10, json: true, wide: false }, deps);
     } finally {
       console.log = origLog;
     }
@@ -147,7 +149,9 @@ describe("runThreads", () => {
     );
 
     const lines: string[] = [];
-    await runThreads({ tags: [], limit: 10, json: false }, deps, (msg) => lines.push(msg));
+    await runThreads({ tags: [], limit: 10, json: false, wide: false }, deps, (msg) =>
+      lines.push(msg),
+    );
     const output = lines.join("\n");
     // Thread A should appear first (more replies)
     const indexA = output.indexOf("Thread A");
@@ -178,7 +182,7 @@ describe("runThreads", () => {
     const origLog = console.log;
     console.log = (msg: string) => logged.push(msg);
     try {
-      await runThreads({ tags: [], limit: 10, json: true }, deps);
+      await runThreads({ tags: [], limit: 10, json: true, wide: false }, deps);
     } finally {
       console.log = origLog;
     }

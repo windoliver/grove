@@ -58,6 +58,7 @@ export async function runClaims(args: readonly string[], deps: ClaimsDeps): Prom
     if (!result.ok) {
       if (json) {
         outputJsonError(result.error);
+        return;
       }
       throw new Error(result.error.message);
     }

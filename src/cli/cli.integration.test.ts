@@ -201,7 +201,7 @@ describe("grove CLI integration", () => {
 
   test("grove unknown-command shows error", async () => {
     const { stderr, exitCode } = await runGrove(["nonexistent"]);
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(2); // usage error
     expect(stderr).toContain("unknown command");
   });
 

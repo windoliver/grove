@@ -23,7 +23,7 @@ export const PanelBar: React.NamedExoticComponent<PanelBarProps> = React.memo(fu
         const isActive = panel === panelState.focused;
         return (
           <box key={panel} marginRight={2}>
-            <text color={isActive ? "#00cccc" : "#888888"}>
+            <text bold={isActive} color={isActive ? "#00cccc" : "#888888"}>
               {isActive ? `[${panel}:${PANEL_LABELS[panel]}]` : ` ${panel}:${PANEL_LABELS[panel]} `}
             </text>
           </box>

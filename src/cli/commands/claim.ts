@@ -86,6 +86,7 @@ export async function runClaim(args: readonly string[], deps: ClaimDeps): Promis
   if (!result.ok) {
     if (values.json) {
       outputJsonError(result.error);
+      return;
     }
     // For claim conflicts, produce an error message compatible with the original
     // ClaimConflictError format that includes "active claim".

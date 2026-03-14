@@ -9,6 +9,7 @@
 import React, { useCallback, useEffect } from "react";
 import type { PeerInfo } from "../../core/gossip/types.js";
 import { formatTimestamp } from "../../shared/format.js";
+import { DataStatus } from "../components/data-status.js";
 import { Table } from "../components/table.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
@@ -74,7 +75,11 @@ export const GossipPanelView: React.NamedExoticComponent<GossipPanelProps> = Rea
       }));
     }, [provider, supportsGossip]);
 
-    const { data, loading } = usePolledData<readonly PeerRow[]>(fetcher, intervalMs, active);
+    const { data, loading, isStale, error } = usePolledData<readonly PeerRow[]>(
+      fetcher,
+      intervalMs,
+      active,
+    );
 
     useEffect(() => {
       if (data && onRowCountChanged) {
@@ -104,6 +109,7 @@ export const GossipPanelView: React.NamedExoticComponent<GossipPanelProps> = Rea
       <box flexDirection="column">
         <box marginBottom={1}>
           <text>Gossip</text>
+          <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
           <text opacity={0.5}>
             {"  "}
             {peers.length} peers

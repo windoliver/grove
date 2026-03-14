@@ -36,6 +36,7 @@ import { parseThreadArgs, runThread } from "./commands/thread.js";
 import { parseThreadsArgs, runThreads } from "./commands/threads.js";
 import { parseTreeArgs, runTree } from "./commands/tree.js";
 import { initCliDeps } from "./context.js";
+import { UsageError } from "./errors.js";
 import { resolveGroveDir } from "./utils/grove-dir.js";
 
 // ---------------------------------------------------------------------------
@@ -336,6 +337,15 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
         await handleDown(args, groveOverride);
       },
     },
+    {
+      name: "completions",
+      description: "Generate shell completion scripts",
+      needsStore: false,
+      handler: async (args) => {
+        const { handleCompletions } = await import("./commands/completions.js");
+        await handleCompletions(args);
+      },
+    },
   ];
 }
 
@@ -375,9 +385,7 @@ async function main(): Promise<void> {
   const commands = buildCommands(groveOverride);
   const command = commands.find((c) => c.name === first);
   if (!command) {
-    console.error(`grove: unknown command '${first}'. Run 'grove --help' for usage.`);
-    process.exitCode = 1;
-    return;
+    throw new UsageError(`unknown command '${first}'. Run 'grove --help' for usage.`);
   }
 
   // Dispatch
@@ -458,11 +466,18 @@ Usage:
   grove gossip add-peer <id@address>          Add peer to local store
   grove gossip remove-peer <id>               Remove peer from local store
 
+  grove completions bash|zsh|fish          Generate shell completion scripts
+
 Global options:
   --grove <path>              Path to grove directory (or set GROVE_DIR)
   --help, -h                  Show this help message
   --version, -v               Show version
-  --verbose                   Show stack traces on error`);
+  --verbose                   Show stack traces on error
+
+Per-command options:
+  --wide                      Show full values in table output (no truncation)
+                              Supported by: frontier, log, search, threads
+  --json                      Machine-readable JSON output`);
 }
 
 // ---------------------------------------------------------------------------
@@ -482,5 +497,6 @@ main().catch((err: unknown) => {
     console.error(`grove: unexpected error: ${String(err)}`);
   }
 
-  process.exitCode = 1;
+  // UsageError → exit 2, everything else → exit 1
+  process.exitCode = err instanceof UsageError ? err.exitCode : 1;
 });

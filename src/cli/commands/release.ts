@@ -52,6 +52,7 @@ export async function runRelease(args: readonly string[], deps: ReleaseDeps): Pr
   if (!result.ok) {
     if (values.json) {
       outputJsonError(result.error);
+      return;
     }
     throw new Error(result.error.message);
   }

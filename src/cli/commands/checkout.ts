@@ -86,6 +86,7 @@ export async function runCheckout(
     if (!result.ok) {
       if (options.json) {
         outputJsonError(result.error);
+        return;
       }
       throw new Error(result.error.message);
     }
@@ -98,6 +99,7 @@ export async function runCheckout(
       const errMsg = `No frontier entries found for metric '${options.frontierMetric}'.`;
       if (options.json) {
         outputJsonError({ code: "NOT_FOUND", message: errMsg });
+        return;
       }
       throw new Error(errMsg);
     }
@@ -107,6 +109,7 @@ export async function runCheckout(
       const errMsg = `No frontier entries found for metric '${options.frontierMetric}'.`;
       if (options.json) {
         outputJsonError({ code: "NOT_FOUND", message: errMsg });
+        return;
       }
       throw new Error(errMsg);
     }
@@ -122,6 +125,7 @@ export async function runCheckout(
     const errMsg = `Contribution '${targetCid}' not found.`;
     if (options.json) {
       outputJsonError({ code: "NOT_FOUND", message: errMsg });
+      return;
     }
     throw new Error(errMsg);
   }

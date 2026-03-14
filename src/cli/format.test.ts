@@ -136,6 +136,32 @@ describe("formatTable", () => {
     // Right-aligned: value should be at the end
     expect(dataLine?.trimEnd()).toMatch(/42$/);
   });
+
+  test("wide mode: ignores maxWidth, shows full values", () => {
+    const cols = [{ header: "X", key: "x", maxWidth: 8 }];
+    const longStr = "a very long string that should NOT be truncated";
+    const rows = [{ x: longStr }];
+
+    const output = formatTable(cols, rows, { wide: true });
+    expect(output).toContain(longStr);
+    expect(output).not.toContain("..");
+  });
+
+  test("wide mode: preserves alignment", () => {
+    const cols = [
+      { header: "NAME", key: "name", maxWidth: 5 },
+      { header: "VALUE", key: "value", maxWidth: 5 },
+    ];
+    const rows = [
+      { name: "alpha-long-name", value: "12345" },
+      { name: "beta", value: "67890" },
+    ];
+
+    const output = formatTable(cols, rows, { wide: true });
+    // In wide mode, full names should be visible
+    expect(output).toContain("alpha-long-name");
+    expect(output).toContain("beta");
+  });
 });
 
 // ---------------------------------------------------------------------------

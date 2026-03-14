@@ -26,6 +26,7 @@ export interface FrontierOptions {
   readonly context?: Readonly<Record<string, JsonValue>> | undefined;
   readonly limit: number;
   readonly json: boolean;
+  readonly wide: boolean;
 }
 
 export function parseFrontierArgs(argv: string[]): FrontierOptions {
@@ -38,6 +39,7 @@ export function parseFrontierArgs(argv: string[]): FrontierOptions {
       context: { type: "string" },
       n: { type: "string", short: "n" },
       json: { type: "boolean", default: false },
+      wide: { type: "boolean", default: false },
     },
     strict: true,
     allowPositionals: false,
@@ -69,6 +71,7 @@ export function parseFrontierArgs(argv: string[]): FrontierOptions {
     context,
     limit,
     json: values.json ?? false,
+    wide: values.wide ?? false,
   };
 }
 
@@ -102,7 +105,7 @@ export async function runFrontier(
 
   // Metric sections
   for (const [metricName, entries] of Object.entries(frontier.byMetric)) {
-    const section = formatFrontierSummarySection(`By metric: ${metricName}`, entries);
+    const section = formatFrontierSummarySection(`By metric: ${metricName}`, entries, options.wide);
     if (section) sections.push(section);
   }
 
@@ -115,7 +118,7 @@ export async function runFrontier(
   ];
 
   for (const [heading, entries] of otherSections) {
-    const section = formatFrontierSummarySection(heading, entries);
+    const section = formatFrontierSummarySection(heading, entries, options.wide);
     if (section) sections.push(section);
   }
 
@@ -139,9 +142,9 @@ const FRONTIER_COLUMNS = [
   { header: "AGENT", key: "agent", maxWidth: 16 },
 ] as const;
 
-function summaryToRow(entry: FrontierEntrySummary): Record<string, string> {
+function summaryToRow(entry: FrontierEntrySummary, wide = false): Record<string, string> {
   const cid = entry.cid;
-  const short = cid.length > 20 ? `${cid.slice(0, 18)}..` : cid;
+  const short = wide ? cid : cid.length > 20 ? `${cid.slice(0, 18)}..` : cid;
   return {
     cid: short,
     summary: entry.summary,
@@ -154,8 +157,10 @@ function summaryToRow(entry: FrontierEntrySummary): Record<string, string> {
 function formatFrontierSummarySection(
   heading: string,
   entries: readonly FrontierEntrySummary[],
+  wide = false,
 ): string {
   if (entries.length === 0) return "";
-  const table = formatTable(FRONTIER_COLUMNS, entries.map(summaryToRow));
+  const rows = entries.map((e) => summaryToRow(e, wide));
+  const table = formatTable(FRONTIER_COLUMNS, rows, { wide });
   return `${heading}\n${table}`;
 }

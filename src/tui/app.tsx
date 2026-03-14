@@ -13,6 +13,7 @@ import type { Claim, Contribution } from "../core/models.js";
 import { checkSpawn, checkSpawnDepth } from "./agents/spawn-validator.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
 import { buildPaletteItems, CommandPalette } from "./components/command-palette.js";
+import { HelpOverlay } from "./components/help-overlay.js";
 import { InputBar } from "./components/input-bar.js";
 import { StatusBar } from "./components/status-bar.js";
 import { PanelBar } from "./components/tab-bar.js";
@@ -154,7 +155,7 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
     const input = key.name;
     const isCtrl = key.ctrl;
 
-    // Command palette toggle (works in all modes)
+    // Command palette toggle (works in all modes except help)
     if (isCtrl && input === "p") {
       if (panels.state.mode === InputMode.CommandPalette) {
         panels.setMode(InputMode.Normal);
@@ -178,7 +179,16 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
       return;
     }
 
+    // In help mode, ? toggles off (in addition to Esc above)
+    if (panels.state.mode === InputMode.Help) {
+      if (input === "?" || (key.shift && input === "/")) {
+        panels.setMode(InputMode.Normal);
+      }
+      return;
+    }
+
     // In terminal input mode, forward keystrokes to the selected tmux session
+    // (must come BEFORE the ? handler so ? can be typed in terminal)
     if (panels.state.mode === InputMode.TerminalInput) {
       if (tmux && selectedSession && input) {
         tmux.sendKeys(selectedSession, input).catch(() => {});
@@ -232,6 +242,12 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
         setSearchBuffer((b) => b + input);
         return;
       }
+      return;
+    }
+
+    // Help overlay toggle — only in normal mode (after all mode-specific handlers)
+    if (input === "?" || (key.shift && input === "/")) {
+      panels.setMode(InputMode.Help);
       return;
     }
 
@@ -427,6 +443,11 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
   return (
     <box flexDirection="column" width="100%" height="100%">
       <PanelBar panelState={panels.state} />
+      <HelpOverlay
+        visible={panels.state.mode === InputMode.Help}
+        isDetailView={nav.isDetailView}
+        focusedPanel={panels.state.focused}
+      />
       <CommandPalette
         visible={paletteVisible}
         tmux={tmux}

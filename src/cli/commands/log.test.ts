@@ -105,7 +105,7 @@ describe("parseLogArgs", () => {
 describe("runLog", () => {
   test("outputs empty table when no contributions", async () => {
     const output: string[] = [];
-    await runLog({ limit: 20, json: false }, deps, (s) => output.push(s));
+    await runLog({ limit: 20, json: false, wide: false }, deps, (s) => output.push(s));
     expect(output.join("\n")).toContain("(no results)");
   });
 
@@ -119,7 +119,7 @@ describe("runLog", () => {
     await deps.store.put(c3);
 
     const output: string[] = [];
-    await runLog({ limit: 20, json: false }, deps, (s) => output.push(s));
+    await runLog({ limit: 20, json: false, wide: false }, deps, (s) => output.push(s));
 
     const text = output.join("\n");
     const thirdIdx = text.indexOf("Third");
@@ -139,7 +139,7 @@ describe("runLog", () => {
     await deps.store.put(newest);
 
     const output: string[] = [];
-    await runLog({ limit: 1, json: false }, deps, (s) => output.push(s));
+    await runLog({ limit: 1, json: false, wide: false }, deps, (s) => output.push(s));
 
     const text = output.join("\n");
     // -n 1 must return the newest contribution, not the oldest
@@ -156,7 +156,7 @@ describe("runLog", () => {
     const origLog = console.log;
     console.log = (msg: string) => logged.push(msg);
     try {
-      await runLog({ limit: 20, json: true }, deps);
+      await runLog({ limit: 20, json: true, wide: false }, deps);
     } finally {
       console.log = origLog;
     }
@@ -180,7 +180,9 @@ describe("runLog", () => {
     await deps.store.put(review);
 
     const output: string[] = [];
-    await runLog({ limit: 20, kind: "review", json: false }, deps, (s) => output.push(s));
+    await runLog({ limit: 20, kind: "review", json: false, wide: false }, deps, (s) =>
+      output.push(s),
+    );
 
     const text = output.join("\n");
     expect(text).toContain("review item");
@@ -200,7 +202,9 @@ describe("runLog", () => {
     await outcomeStore.set(c2.cid, { status: "rejected", evaluatedBy: "test-agent" });
 
     const output: string[] = [];
-    await runLog({ limit: 20, outcome: "accepted", json: false }, deps, (s) => output.push(s));
+    await runLog({ limit: 20, outcome: "accepted", json: false, wide: false }, deps, (s) =>
+      output.push(s),
+    );
 
     const text = output.join("\n");
     expect(text).toContain("accepted-item");
@@ -213,7 +217,9 @@ describe("runLog", () => {
     await deps.store.put(c1);
 
     const output: string[] = [];
-    await runLog({ limit: 20, outcome: "crashed", json: false }, deps, (s) => output.push(s));
+    await runLog({ limit: 20, outcome: "crashed", json: false, wide: false }, deps, (s) =>
+      output.push(s),
+    );
 
     const text = output.join("\n");
     expect(text).toContain("(no results)");
@@ -225,7 +231,7 @@ describe("runLog", () => {
     await depsWithoutOutcome.store.put(c1);
 
     await expect(
-      runLog({ limit: 20, outcome: "accepted", json: false }, depsWithoutOutcome),
+      runLog({ limit: 20, outcome: "accepted", json: false, wide: false }, depsWithoutOutcome),
     ).rejects.toThrow("Outcome store is not available");
   });
 });

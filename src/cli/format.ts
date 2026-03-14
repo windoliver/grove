@@ -26,12 +26,15 @@ export function outputJson(data: unknown): void {
 }
 
 /**
- * Output a structured error in JSON format and exit with code 1.
+ * Output a structured error in JSON format and set exit code 1.
  * Used by `--json` commands when an operation fails.
+ *
+ * Note: this sets process.exitCode instead of calling process.exit()
+ * so callers' finally blocks (e.g. store cleanup) still execute.
  */
-export function outputJsonError(error: { code: string; message: string }): never {
+export function outputJsonError(error: { code: string; message: string }): void {
   outputJson({ error: { code: error.code, message: error.message } });
-  process.exit(1);
+  process.exitCode = 1;
 }
 
 // Re-export shared pure formatters for backward compatibility
@@ -40,6 +43,7 @@ export {
   formatScore,
   formatTimestamp,
   frontierEntryToRow,
+  type RowOptions,
   truncateCid,
 } from "../shared/format.js";
 
@@ -62,17 +66,27 @@ export interface Column {
   readonly maxWidth?: number;
 }
 
+/** Options for table formatting. */
+export interface FormatTableOptions {
+  /** When true, ignore maxWidth and show full values. */
+  readonly wide?: boolean;
+}
+
 /** Format rows as an aligned text table. */
 export function formatTable(
   columns: readonly Column[],
   rows: readonly Record<string, string>[],
+  options?: FormatTableOptions,
 ): string {
   if (rows.length === 0) return "(no results)";
+
+  const wide = options?.wide ?? false;
 
   // Compute widths
   const widths: number[] = columns.map((col) => {
     const dataMax = rows.reduce((max, row) => Math.max(max, (row[col.key] ?? "").length), 0);
     const natural = Math.max(col.header.length, dataMax);
+    if (wide) return natural;
     return col.maxWidth !== undefined ? Math.min(natural, col.maxWidth) : natural;
   });
 
@@ -104,8 +118,13 @@ const CONTRIBUTION_COLUMNS: readonly Column[] = [
 ];
 
 /** Format a list of contributions as a table. */
-export function formatContributions(contributions: readonly Contribution[]): string {
-  return formatTable(CONTRIBUTION_COLUMNS, contributions.map(contributionToRow));
+export function formatContributions(
+  contributions: readonly Contribution[],
+  options?: FormatTableOptions,
+): string {
+  const wide = options?.wide;
+  const rows = contributions.map((c) => contributionToRow(c, { wide }));
+  return formatTable(CONTRIBUTION_COLUMNS, rows, options);
 }
 
 // ---------------------------------------------------------------------------
@@ -122,9 +141,15 @@ const FRONTIER_COLUMNS: readonly Column[] = [
 ];
 
 /** Format frontier entries as a table with a heading. */
-export function formatFrontierSection(heading: string, entries: readonly FrontierEntry[]): string {
+export function formatFrontierSection(
+  heading: string,
+  entries: readonly FrontierEntry[],
+  options?: FormatTableOptions,
+): string {
   if (entries.length === 0) return "";
-  const table = formatTable(FRONTIER_COLUMNS, entries.map(frontierEntryToRow));
+  const wide = options?.wide;
+  const rows = entries.map((e) => frontierEntryToRow(e, { wide }));
+  const table = formatTable(FRONTIER_COLUMNS, rows, options);
   return `${heading}\n${table}`;
 }
 
@@ -172,13 +197,17 @@ const HOT_THREADS_COLUMNS: readonly Column[] = [
 ];
 
 /** Format hot threads as a table. */
-export function formatHotThreads(summaries: readonly ThreadSummary[]): string {
+export function formatHotThreads(
+  summaries: readonly ThreadSummary[],
+  options?: FormatTableOptions,
+): string {
+  const wide = options?.wide;
   const rows = summaries.map((s) => ({
-    cid: truncateCid(s.contribution.cid),
+    cid: wide ? s.contribution.cid : truncateCid(s.contribution.cid),
     replies: String(s.replyCount),
     summary: s.contribution.summary,
     lastReply: formatTimestamp(s.lastReplyAt),
     agent: s.contribution.agent.agentName ?? s.contribution.agent.agentId,
   }));
-  return formatTable(HOT_THREADS_COLUMNS, rows);
+  return formatTable(HOT_THREADS_COLUMNS, rows, options);
 }

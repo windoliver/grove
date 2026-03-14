@@ -156,6 +156,19 @@ describe("grove bounty", () => {
       process.exitCode = 0;
     });
 
+    test("shows all errors at once when multiple fields are missing", async () => {
+      await runBounty(["create", "--agent-id", "test-agent"], deps);
+
+      expect(stderr.length).toBe(1);
+      const msg = stderr[0] ?? "";
+      expect(msg).toContain("3 validation errors:");
+      expect(msg).toContain("title is required");
+      expect(msg).toContain("--amount is required");
+      expect(msg).toContain("--deadline is required");
+      expect(process.exitCode).toBe(2);
+      process.exitCode = 0;
+    });
+
     test("creates bounty with criteria options", async () => {
       await runBounty(
         [

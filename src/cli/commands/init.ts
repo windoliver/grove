@@ -224,9 +224,11 @@ export async function executeInit(options: InitOptions): Promise<{ grovePath: st
           preset: options.preset,
         });
         await runNexusInit(options.cwd, nexusPreset);
-        console.log(`Initialized Nexus (preset: ${nexusPreset})`);
+        console.log(`Initialized Nexus backend (preset: ${nexusPreset}).`);
       } else {
-        console.log("Note: nexus CLI not installed. 'grove up' will auto-initialize Nexus.");
+        console.log(
+          "Nexus CLI not found. 'grove up' will install and initialize it automatically.",
+        );
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -298,7 +300,13 @@ export async function executeInit(options: InitOptions): Promise<{ grovePath: st
 
   console.log(`Initialized grove '${options.name}' at ${grovePath}`);
   if (preset) {
-    console.log(`\nRun 'grove up' to start.`);
+    const services: string[] = [];
+    if (preset.services?.server) services.push("HTTP server");
+    if (preset.services?.mcp) services.push("MCP server");
+    const serviceList = services.length > 0 ? ` (${services.join(", ")})` : "";
+    console.log(`\nNext: run 'grove up' to start all services${serviceList}.`);
+  } else {
+    console.log("\nNext: run 'grove up' to start, or 'grove contribute' to publish work.");
   }
   return { grovePath };
 }

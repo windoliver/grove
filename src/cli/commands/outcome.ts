@@ -292,6 +292,7 @@ async function runSet(args: OutcomeSetArgs, deps: OutcomeDeps): Promise<void> {
   if (!result.ok) {
     if (args.json) {
       outputJsonError(result.error);
+      return;
     }
     deps.stderr(`Error: ${result.error.message}`);
     process.exitCode = 1;
@@ -315,6 +316,7 @@ async function runGet(args: OutcomeGetArgs, deps: OutcomeDeps): Promise<void> {
   if (!result.ok) {
     if (args.json) {
       outputJsonError(result.error);
+      return;
     }
     deps.stderr(`Error: ${result.error.message}`);
     process.exitCode = 1;

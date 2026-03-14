@@ -8,6 +8,7 @@
 import React, { useCallback, useEffect } from "react";
 import type { Contribution } from "../../core/models.js";
 import { formatTimestamp, truncateCid } from "../../shared/format.js";
+import { DataStatus } from "../components/data-status.js";
 import { Table } from "../components/table.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
@@ -40,7 +41,11 @@ export const ActivityPanelView: React.NamedExoticComponent<ActivityPanelProps> =
     onRowCountChanged,
   }: ActivityPanelProps): React.ReactNode {
     const fetcher = useCallback(() => provider.getActivity({ limit: 30 }), [provider]);
-    const { data, loading } = usePolledData<readonly Contribution[]>(fetcher, intervalMs, active);
+    const { data, loading, isStale, error } = usePolledData<readonly Contribution[]>(
+      fetcher,
+      intervalMs,
+      active,
+    );
 
     useEffect(() => {
       if (data && onRowCountChanged) {
@@ -71,6 +76,7 @@ export const ActivityPanelView: React.NamedExoticComponent<ActivityPanelProps> =
       <box flexDirection="column">
         <box marginBottom={1}>
           <text>Activity</text>
+          <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
           <text opacity={0.5}>
             {"  "}
             {contributions.length} recent
