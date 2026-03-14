@@ -5,6 +5,7 @@
  * whose claims are no longer active in the provider.
  */
 
+import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { TuiDataProvider } from "./provider.js";
 
 /** Default GC interval: 5 minutes. */
@@ -25,9 +26,7 @@ export function startWorkspaceGc(
   intervalMs: number = GC_INTERVAL_MS,
 ): () => void {
   const timer = setInterval(() => {
-    runGc(provider).catch(() => {
-      // GC errors are non-fatal — will retry next tick
-    });
+    void safeCleanup(runGc(provider), "workspace GC tick", { silent: true });
   }, intervalMs);
 
   return () => clearInterval(timer);

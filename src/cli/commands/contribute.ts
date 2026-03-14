@@ -143,6 +143,31 @@ const VALID_KINDS = ["work", "review", "discussion", "adoption", "reproduction"]
 const VALID_MODES = ["evaluation", "exploration"] as const;
 
 /**
+ * Parse a metric/score string in "name=value" format.
+ *
+ * Used by both validation and execution to avoid duplicated parsing logic.
+ *
+ * @returns Parsed result or an error message string.
+ */
+export function parseMetricString(
+  raw: string,
+  label: string,
+): { readonly name: string; readonly value: number } | { readonly error: string } {
+  const eqIdx = raw.indexOf("=");
+  if (eqIdx <= 0) {
+    return {
+      error: `Invalid ${label} format '${raw}'. Expected 'name=value' (e.g., 'tests_passing=47')`,
+    };
+  }
+  const name = raw.slice(0, eqIdx);
+  const value = Number(raw.slice(eqIdx + 1));
+  if (Number.isNaN(value) || !Number.isFinite(value)) {
+    return { error: `Invalid ${label} value in '${raw}'. Value must be a finite number.` };
+  }
+  return { name, value };
+}
+
+/**
  * Validate contribute options. Checks:
  * - Required fields (summary)
  * - Valid kind and mode values
@@ -211,27 +236,17 @@ export function validateContributeOptions(options: ContributeOptions): Validatio
 
   // Metric format: name=value
   for (const m of options.metric) {
-    const eqIdx = m.indexOf("=");
-    if (eqIdx <= 0) {
-      errors.push(`Invalid metric format '${m}'. Expected 'name=value' (e.g., 'tests_passing=47')`);
-      continue;
-    }
-    const value = m.slice(eqIdx + 1);
-    if (Number.isNaN(Number(value))) {
-      errors.push(`Invalid metric value in '${m}'. Value must be a number.`);
+    const result = parseMetricString(m, "metric");
+    if ("error" in result) {
+      errors.push(result.error);
     }
   }
 
   // Score format: name=value
   for (const s of options.score) {
-    const eqIdx = s.indexOf("=");
-    if (eqIdx <= 0) {
-      errors.push(`Invalid score format '${s}'. Expected 'name=value' (e.g., 'quality=7')`);
-      continue;
-    }
-    const value = s.slice(eqIdx + 1);
-    if (Number.isNaN(Number(value))) {
-      errors.push(`Invalid score value in '${s}'. Value must be a number.`);
+    const result = parseMetricString(s, "score");
+    if ("error" in result) {
+      errors.push(result.error);
     }
   }
 
@@ -401,23 +416,20 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
       options.metric.length > 0 || options.score.length > 0 ? {} : undefined;
 
     for (const m of options.metric) {
-      const eqIdx = m.indexOf("=");
-      const name = m.slice(0, eqIdx);
-      const value = Number(m.slice(eqIdx + 1));
-      // Look up direction from GROVE.md contract; fall back to maximize
-      const direction = contract?.metrics?.[name]?.direction ?? ScoreDirection.Maximize;
+      const parsed = parseMetricString(m, "metric");
+      if ("error" in parsed) continue; // Already validated above
+      const direction = contract?.metrics?.[parsed.name]?.direction ?? ScoreDirection.Maximize;
       if (scores) {
-        scores[name] = { value, direction };
+        scores[parsed.name] = { value: parsed.value, direction };
       }
     }
 
     for (const s of options.score) {
-      const eqIdx = s.indexOf("=");
-      const name = s.slice(0, eqIdx);
-      const value = Number(s.slice(eqIdx + 1));
-      const direction = contract?.metrics?.[name]?.direction ?? ScoreDirection.Maximize;
+      const parsed = parseMetricString(s, "score");
+      if ("error" in parsed) continue; // Already validated above
+      const direction = contract?.metrics?.[parsed.name]?.direction ?? ScoreDirection.Maximize;
       if (scores) {
-        scores[name] = { value, direction };
+        scores[parsed.name] = { value: parsed.value, direction };
       }
     }
 

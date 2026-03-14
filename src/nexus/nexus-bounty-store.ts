@@ -12,6 +12,7 @@
 import type { Bounty, BountyStatus, RewardRecord } from "../core/bounty.js";
 import type { BountyQuery, BountyStore, RewardQuery } from "../core/bounty-store.js";
 import type { AgentIdentity } from "../core/models.js";
+import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { ListEntry, ListOptions, NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
@@ -235,9 +236,13 @@ export class NexusBountyStore implements BountyStore {
 
     // Clean up old status index
     if (oldStatus !== newStatus) {
-      await withSemaphore(this.semaphore, () =>
-        this.client.delete(bountyStatusIndexPath(this.zoneId, oldStatus, bountyId)),
-      ).catch(() => {});
+      await safeCleanup(
+        withSemaphore(this.semaphore, () =>
+          this.client.delete(bountyStatusIndexPath(this.zoneId, oldStatus, bountyId)),
+        ),
+        "delete old bounty status index",
+        { silent: true },
+      );
     }
     await this.writeStatusIndex(updated);
 

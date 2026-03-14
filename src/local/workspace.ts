@@ -36,6 +36,7 @@ import type {
   WorkspaceQuery,
 } from "../core/workspace.js";
 import { WorkspaceStatus } from "../core/workspace.js";
+import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { FsCas } from "./fs-cas.js";
 
 // ---------------------------------------------------------------------------
@@ -190,7 +191,9 @@ export class LocalWorkspaceManager implements WorkspaceManager {
       await rename(tmpDir, workspacePath);
     } catch (err) {
       // Clean up temp directory on failure
-      await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      await safeCleanup(rm(tmpDir, { recursive: true, force: true }), "remove temp workspace dir", {
+        silent: true,
+      });
       throw err;
     }
 

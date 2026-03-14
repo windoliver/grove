@@ -19,6 +19,9 @@
       "correctness": {
         "noUnusedImports": "error"
       },
+      "suspicious": {
+        "noEmptyBlockStatements": "warn"
+      },
       "style": {
         "useImportType": "error",
         "useNodejsImportProtocol": "error",

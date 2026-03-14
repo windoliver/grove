@@ -10,6 +10,7 @@ import { useKeyboard, useRenderer } from "@opentui/react";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Claim, Contribution } from "../core/models.js";
+import { safeCleanup } from "../shared/safe-cleanup.js";
 import { checkSpawn, checkSpawnDepth } from "./agents/spawn-validator.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
 import { buildPaletteItems, CommandPalette } from "./components/command-palette.js";
@@ -191,7 +192,7 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
     // (must come BEFORE the ? handler so ? can be typed in terminal)
     if (panels.state.mode === InputMode.TerminalInput) {
       if (tmux && selectedSession && input) {
-        tmux.sendKeys(selectedSession, input).catch(() => {});
+        void safeCleanup(tmux.sendKeys(selectedSession, input), "sendKeys to tmux session");
       }
       return;
     }

@@ -6,6 +6,8 @@
  * Binary content is base64-encoded for JSON transport.
  */
 
+import { z } from "zod";
+
 import type {
   FileMeta,
   ListEntry,
@@ -56,6 +58,56 @@ function fromBase64(b64: string): Uint8Array {
 }
 
 // ---------------------------------------------------------------------------
+// RPC response schemas — validate Nexus JSON-RPC responses at runtime
+// ---------------------------------------------------------------------------
+
+const ReadResultSchema = z.object({ content: z.string(), encoding: z.string() });
+const ReadWithMetaResultSchema = z.object({
+  content: z.string(),
+  encoding: z.string(),
+  etag: z.string(),
+});
+const WriteResultSchema = z.object({
+  bytes_written: z.number(),
+  etag: z.string(),
+  version: z.number().optional(),
+});
+const ExistsResultSchema = z.object({ exists: z.boolean() });
+const StatResultSchema = z.object({
+  metadata: z.object({
+    size: z.number().optional(),
+    etag: z.string().optional(),
+    content_type: z.string().optional(),
+    created_at: z.string().optional(),
+    modified_at: z.string().optional(),
+  }),
+});
+const DeleteResultSchema = z.object({ deleted: z.boolean() });
+const ListResultSchema = z.object({
+  files: z.array(
+    z.object({
+      name: z.string(),
+      path: z.string(),
+      size: z.number().optional(),
+      etag: z.string().optional(),
+      is_directory: z.boolean().optional(),
+    }),
+  ),
+  has_more: z.boolean(),
+  next_cursor: z.string().optional(),
+});
+const MkdirResultSchema = z.object({ created: z.boolean() });
+const SearchResultSchema = z.object({
+  results: z.array(
+    z.object({
+      path: z.string(),
+      snippet: z.string().optional(),
+      score: z.number().optional(),
+    }),
+  ),
+});
+
+// ---------------------------------------------------------------------------
 // NexusHttpClient
 // ---------------------------------------------------------------------------
 
@@ -79,7 +131,11 @@ export class NexusHttpClient implements NexusClient {
   // JSON-RPC transport
   // -----------------------------------------------------------------------
 
-  private async rpc<T>(method: string, params: Record<string, unknown>): Promise<T> {
+  private async rpc<T>(
+    method: string,
+    params: Record<string, unknown>,
+    schema: z.ZodType<T>,
+  ): Promise<T> {
     if (this.closed) throw new NexusConnectionError("Client is closed");
 
     const id = ++this.requestId;
@@ -113,14 +169,14 @@ export class NexusHttpClient implements NexusClient {
       throw new NexusConnectionError(`Nexus server error: HTTP ${response.status}`);
     }
 
-    const result = (await response.json()) as {
-      result?: T;
+    const envelope = (await response.json()) as {
+      result?: unknown;
       error?: JsonRpcError;
     };
-    if (result.error) {
-      throw mapJsonRpcError(result.error);
+    if (envelope.error) {
+      throw mapJsonRpcError(envelope.error);
     }
-    return result.result as T;
+    return schema.parse(envelope.result);
   }
 
   // -----------------------------------------------------------------------
@@ -129,7 +185,7 @@ export class NexusHttpClient implements NexusClient {
 
   async read(path: string): Promise<Uint8Array | undefined> {
     try {
-      const result = await this.rpc<{ content: string; encoding: string }>("sys_read", { path });
+      const result = await this.rpc("sys_read", { path }, ReadResultSchema);
       if (result.encoding === "base64") {
         return fromBase64(result.content);
       }
@@ -143,9 +199,10 @@ export class NexusHttpClient implements NexusClient {
 
   async readWithMeta(path: string): Promise<ReadResult | undefined> {
     try {
-      const result = await this.rpc<{ content: string; encoding: string; etag: string }>(
+      const result = await this.rpc(
         "sys_read",
         { path, include_meta: true },
+        ReadWithMetaResultSchema,
       );
       const content =
         result.encoding === "base64"
@@ -167,10 +224,7 @@ export class NexusHttpClient implements NexusClient {
     if (opts?.ifNoneMatch !== undefined) params.if_none_match = opts.ifNoneMatch;
     if (opts?.force !== undefined) params.force = opts.force;
 
-    const result = await this.rpc<{ bytes_written: number; etag: string; version?: number }>(
-      "sys_write",
-      params,
-    );
+    const result = await this.rpc("sys_write", params, WriteResultSchema);
     return {
       bytesWritten: result.bytes_written,
       etag: result.etag,
@@ -179,21 +233,13 @@ export class NexusHttpClient implements NexusClient {
   }
 
   async exists(path: string): Promise<boolean> {
-    const result = await this.rpc<{ exists: boolean }>("exists", { path });
+    const result = await this.rpc("exists", { path }, ExistsResultSchema);
     return result.exists;
   }
 
   async stat(path: string): Promise<FileMeta | undefined> {
     try {
-      const result = await this.rpc<{
-        metadata: {
-          size?: number;
-          etag?: string;
-          content_type?: string;
-          created_at?: string;
-          modified_at?: string;
-        };
-      }>("sys_stat", { path });
+      const result = await this.rpc("sys_stat", { path }, StatResultSchema);
       const m = result.metadata;
       return {
         size: m.size ?? 0,
@@ -210,7 +256,7 @@ export class NexusHttpClient implements NexusClient {
 
   async delete(path: string): Promise<boolean> {
     try {
-      await this.rpc<{ deleted: boolean }>("delete", { path });
+      await this.rpc("delete", { path }, DeleteResultSchema);
       return true;
     } catch (err) {
       if (err instanceof NexusNotFoundError) return false;
@@ -225,17 +271,7 @@ export class NexusHttpClient implements NexusClient {
     if (opts?.limit !== undefined) params.limit = opts.limit;
     if (opts?.cursor !== undefined) params.cursor = opts.cursor;
 
-    const result = await this.rpc<{
-      files: Array<{
-        name: string;
-        path: string;
-        size?: number;
-        etag?: string;
-        is_directory?: boolean;
-      }>;
-      has_more: boolean;
-      next_cursor?: string;
-    }>("list", params);
+    const result = await this.rpc("list", params, ListResultSchema);
 
     return {
       files: result.files.map(
@@ -255,7 +291,7 @@ export class NexusHttpClient implements NexusClient {
   async mkdir(path: string, opts?: MkdirOptions): Promise<void> {
     const params: Record<string, unknown> = { path };
     if (opts?.parents !== undefined) params.parents = opts.parents;
-    await this.rpc<{ created: boolean }>("mkdir", params);
+    await this.rpc("mkdir", params, MkdirResultSchema);
   }
 
   async search(query: string, opts?: SearchOptions): Promise<readonly SearchResult[]> {
@@ -263,9 +299,7 @@ export class NexusHttpClient implements NexusClient {
     if (opts?.path !== undefined) params.path = opts.path;
     if (opts?.limit !== undefined) params.limit = opts.limit;
 
-    const result = await this.rpc<{
-      results: Array<{ path: string; snippet?: string; score?: number }>;
-    }>("search", params);
+    const result = await this.rpc("search", params, SearchResultSchema);
 
     return result.results.map(
       (r): SearchResult => ({

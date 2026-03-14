@@ -17,6 +17,7 @@ import type {
   OutcomeStore,
 } from "../core/outcome.js";
 import { OutcomeStatus } from "../core/outcome.js";
+import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { ListEntry, ListOptions, NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
@@ -86,9 +87,13 @@ export class NexusOutcomeStore implements OutcomeStore {
 
     // Delete old status index marker if the status changed
     if (existing !== undefined && existing.status !== record.status) {
-      await withSemaphore(this.semaphore, () =>
-        this.client.delete(outcomeStatusIndexPath(this.zoneId, existing.status, cid)),
-      ).catch(() => {});
+      await safeCleanup(
+        withSemaphore(this.semaphore, () =>
+          this.client.delete(outcomeStatusIndexPath(this.zoneId, existing.status, cid)),
+        ),
+        "delete old outcome status index",
+        { silent: true },
+      );
     }
 
     // Write new status index marker

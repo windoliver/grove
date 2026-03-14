@@ -34,6 +34,7 @@ import { FsCas } from "../local/fs-cas.js";
 import { SqliteBountyStore } from "../local/sqlite-bounty-store.js";
 import { initSqliteDb, SqliteClaimStore, SqliteContributionStore } from "../local/sqlite-store.js";
 import { LocalWorkspaceManager } from "../local/workspace.js";
+import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { McpDeps } from "./deps.js";
 import { createMcpServer } from "./server.js";
 
@@ -127,7 +128,7 @@ const reapTimer = setInterval(() => {
   const now = Date.now();
   for (const [id, session] of sessions) {
     if (now - session.lastActivity > SESSION_TTL_MS) {
-      session.server.close().catch(() => {});
+      void safeCleanup(session.server.close(), "reap idle MCP session", { silent: true });
       sessions.delete(id);
     }
   }

@@ -9,7 +9,12 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ContributeOptions } from "./contribute.js";
-import { executeContribute, parseContributeArgs, validateContributeOptions } from "./contribute.js";
+import {
+  executeContribute,
+  parseContributeArgs,
+  parseMetricString,
+  validateContributeOptions,
+} from "./contribute.js";
 import type { InitOptions } from "./init.js";
 import { executeInit } from "./init.js";
 
@@ -53,6 +58,97 @@ function makeContributeOptions(overrides?: Partial<ContributeOptions>): Contribu
     ...overrides,
   };
 }
+
+// ---------------------------------------------------------------------------
+// parseMetricString
+// ---------------------------------------------------------------------------
+
+describe("parseMetricString", () => {
+  test("parses valid metric string", () => {
+    const result = parseMetricString("tests_passing=47", "metric");
+    expect("error" in result).toBe(false);
+    if (!("error" in result)) {
+      expect(result.name).toBe("tests_passing");
+      expect(result.value).toBe(47);
+    }
+  });
+
+  test("parses decimal values", () => {
+    const result = parseMetricString("val_bpb=0.9701", "metric");
+    expect("error" in result).toBe(false);
+    if (!("error" in result)) {
+      expect(result.name).toBe("val_bpb");
+      expect(result.value).toBeCloseTo(0.9701);
+    }
+  });
+
+  test("parses negative values", () => {
+    const result = parseMetricString("loss=-0.5", "metric");
+    expect("error" in result).toBe(false);
+    if (!("error" in result)) {
+      expect(result.value).toBe(-0.5);
+    }
+  });
+
+  test("parses zero", () => {
+    const result = parseMetricString("errors=0", "metric");
+    expect("error" in result).toBe(false);
+    if (!("error" in result)) {
+      expect(result.value).toBe(0);
+    }
+  });
+
+  test("rejects missing = separator", () => {
+    const result = parseMetricString("no_equals", "metric");
+    expect("error" in result).toBe(true);
+    if ("error" in result) {
+      expect(result.error).toContain("Invalid metric format");
+    }
+  });
+
+  test("rejects = at start (empty name)", () => {
+    const result = parseMetricString("=42", "metric");
+    expect("error" in result).toBe(true);
+  });
+
+  test("rejects non-numeric value", () => {
+    const result = parseMetricString("foo=bar", "metric");
+    expect("error" in result).toBe(true);
+    if ("error" in result) {
+      expect(result.error).toContain("finite number");
+    }
+  });
+
+  test("rejects Infinity", () => {
+    const result = parseMetricString("foo=Infinity", "metric");
+    expect("error" in result).toBe(true);
+    if ("error" in result) {
+      expect(result.error).toContain("finite number");
+    }
+  });
+
+  test("rejects NaN", () => {
+    const result = parseMetricString("foo=NaN", "score");
+    expect("error" in result).toBe(true);
+    if ("error" in result) {
+      expect(result.error).toContain("finite number");
+    }
+  });
+
+  test("uses label in error messages", () => {
+    const result = parseMetricString("bad", "score");
+    expect("error" in result).toBe(true);
+    if ("error" in result) {
+      expect(result.error).toContain("score");
+    }
+  });
+
+  test("handles value with = in it (e.g., base64)", () => {
+    // name=abc=def should parse name="name", value=NaN (not a number)
+    const result = parseMetricString("name=abc=def", "metric");
+    expect("error" in result).toBe(true);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // parseContributeArgs
@@ -289,7 +385,7 @@ describe("validateContributeOptions", () => {
     const result = validateContributeOptions(makeContributeOptions({ metric: ["foo=bar"] }));
     expect(result.valid).toBe(false);
     if (!result.valid) {
-      expect(result.errors[0]).toContain("Value must be a number");
+      expect(result.errors[0]).toContain("finite number");
     }
   });
 

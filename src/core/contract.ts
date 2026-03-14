@@ -662,7 +662,7 @@ function wireToAgentConstraints(
 ): AgentConstraints {
   return {
     ...(wire.allowed_kinds !== undefined && {
-      allowedKinds: wire.allowed_kinds as unknown as ContributionKind[],
+      allowedKinds: wire.allowed_kinds as ContributionKind[],
     }),
     ...(wire.required_artifacts !== undefined && {
       requiredArtifacts: wire.required_artifacts as Partial<Record<ContributionKind, string[]>>,

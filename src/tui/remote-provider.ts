@@ -11,6 +11,19 @@ import type { Frontier, FrontierQuery } from "../core/frontier.js";
 import type { PeerInfo } from "../core/gossip/types.js";
 import type { Claim, Contribution } from "../core/models.js";
 import type { OutcomeRecord, OutcomeStatus } from "../core/outcome.js";
+import {
+  parseBounties,
+  parseClaim,
+  parseClaims,
+  parseContribution,
+  parseContributions,
+  parseFrontier,
+  parseOutcomeRecord,
+  parseOutcomeRecords,
+  parseOutcomeStats,
+  parsePeerInfos,
+  parseThreadSummaries,
+} from "../core/schemas.js";
 import type { ContributionQuery, ThreadNode, ThreadSummary } from "../core/store.js";
 import type {
   ActivityQuery,
@@ -81,14 +94,14 @@ export class RemoteDataProvider
     const qs = params.toString();
     const resp = await fetch(`${this.baseUrl}/api/contributions${qs ? `?${qs}` : ""}`);
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
-    return (await resp.json()) as Contribution[];
+    return parseContributions(await resp.json());
   }
 
   async getContribution(cid: string): Promise<ContributionDetail | undefined> {
     const resp = await fetch(`${this.baseUrl}/api/contributions/${encodeURIComponent(cid)}`);
     if (resp.status === 404) return undefined;
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
-    const contribution = (await resp.json()) as Contribution;
+    const contribution = parseContribution(await resp.json());
 
     const [ancestorsResp, childrenResp, threadResp] = await Promise.all([
       fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(cid)}/ancestors`),
@@ -96,16 +109,16 @@ export class RemoteDataProvider
       fetch(`${this.baseUrl}/api/threads/${encodeURIComponent(cid)}`),
     ]);
 
-    const ancestors = ancestorsResp.ok ? ((await ancestorsResp.json()) as Contribution[]) : [];
-    const children = childrenResp.ok ? ((await childrenResp.json()) as Contribution[]) : [];
+    const ancestors = ancestorsResp.ok ? parseContributions(await ancestorsResp.json()) : [];
+    const children = childrenResp.ok ? parseContributions(await childrenResp.json()) : [];
 
     let thread: ThreadNode[] = [];
     if (threadResp.ok) {
       const body = (await threadResp.json()) as {
-        nodes: readonly { cid: string; depth: number; contribution: Contribution }[];
+        nodes: readonly { cid: string; depth: number; contribution: unknown }[];
       };
       thread = body.nodes.map((n) => ({
-        contribution: n.contribution,
+        contribution: parseContribution(n.contribution),
         depth: n.depth,
       }));
     }
@@ -121,8 +134,8 @@ export class RemoteDataProvider
     const qs = params.toString();
     const resp = await fetch(`${this.baseUrl}/api/claims${qs ? `?${qs}` : ""}`);
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
-    const body = (await resp.json()) as { claims: readonly Claim[] };
-    return body.claims;
+    const body = (await resp.json()) as { claims: unknown };
+    return parseClaims(body.claims);
   }
 
   async createClaim(input: ClaimInput): Promise<Claim> {
@@ -132,7 +145,7 @@ export class RemoteDataProvider
       body: JSON.stringify(input),
     });
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
-    return (await resp.json()) as Claim;
+    return parseClaim(await resp.json());
   }
 
   async releaseClaim(claimId: string): Promise<void> {
@@ -154,7 +167,7 @@ export class RemoteDataProvider
     const qs = params.toString();
     const resp = await fetch(`${this.baseUrl}/api/frontier${qs ? `?${qs}` : ""}`);
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
-    return (await resp.json()) as Frontier;
+    return parseFrontier(await resp.json());
   }
 
   async getActivity(query?: ActivityQuery): Promise<readonly Contribution[]> {
@@ -176,9 +189,9 @@ export class RemoteDataProvider
       ]);
 
       const contributions: Contribution[] = [];
-      if (rootResp.ok) contributions.push((await rootResp.json()) as Contribution);
-      if (ancestorsResp.ok) contributions.push(...((await ancestorsResp.json()) as Contribution[]));
-      if (childrenResp.ok) contributions.push(...((await childrenResp.json()) as Contribution[]));
+      if (rootResp.ok) contributions.push(parseContribution(await rootResp.json()));
+      if (ancestorsResp.ok) contributions.push(...parseContributions(await ancestorsResp.json()));
+      if (childrenResp.ok) contributions.push(...parseContributions(await childrenResp.json()));
 
       const seen = new Set<string>();
       const unique = contributions.filter((c) => {
@@ -199,19 +212,8 @@ export class RemoteDataProvider
     const params = new URLSearchParams({ limit: String(limit) });
     const resp = await fetch(`${this.baseUrl}/api/threads?${params.toString()}`);
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
-    const body = (await resp.json()) as {
-      threads: readonly {
-        cid: string;
-        replyCount: number;
-        lastReplyAt: string;
-        contribution: Contribution;
-      }[];
-    };
-    return body.threads.map((t) => ({
-      contribution: t.contribution,
-      replyCount: t.replyCount,
-      lastReplyAt: t.lastReplyAt,
-    }));
+    const body = (await resp.json()) as { threads: unknown };
+    return parseThreadSummaries(body.threads);
   }
 
   // ---------------------------------------------------------------------------
@@ -222,7 +224,7 @@ export class RemoteDataProvider
     const resp = await fetch(`${this.baseUrl}/api/outcomes/${encodeURIComponent(cid)}`);
     if (resp.status === 404 || resp.status === 501) return undefined;
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
-    return (await resp.json()) as OutcomeRecord;
+    return parseOutcomeRecord(await resp.json());
   }
 
   async getOutcomes(cids: readonly string[]): Promise<ReadonlyMap<string, OutcomeRecord>> {
@@ -242,14 +244,7 @@ export class RemoteDataProvider
     try {
       const resp = await fetch(`${this.baseUrl}/api/outcomes/stats`);
       if (resp.ok) {
-        const stats = (await resp.json()) as {
-          total: number;
-          accepted: number;
-          rejected: number;
-          crashed: number;
-          invalidated: number;
-          acceptanceRate: number;
-        };
+        const stats = parseOutcomeStats(await resp.json());
         return {
           totalContributions: stats.total,
           outcomeBreakdown: {
@@ -279,7 +274,7 @@ export class RemoteDataProvider
     const qs = params.toString();
     try {
       const resp = await fetch(`${this.baseUrl}/api/outcomes${qs ? `?${qs}` : ""}`);
-      if (resp.ok) return (await resp.json()) as OutcomeRecord[];
+      if (resp.ok) return parseOutcomeRecords(await resp.json());
     } catch {
       // Fallback
     }
@@ -304,6 +299,7 @@ export class RemoteDataProvider
       `${this.baseUrl}/api/contributions/${encodeURIComponent(cid)}/artifacts/${encodeURIComponent(name)}/meta`,
     );
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
+    // ArtifactMeta is a simple local type — lightweight validation sufficient
     return (await resp.json()) as ArtifactMeta;
   }
 
@@ -322,8 +318,8 @@ export class RemoteDataProvider
   async search(query: string): Promise<readonly Contribution[]> {
     const resp = await fetch(`${this.baseUrl}/api/search?q=${encodeURIComponent(query)}`);
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
-    const body = (await resp.json()) as { results: readonly Contribution[] };
-    return body.results;
+    const body = (await resp.json()) as { results: unknown };
+    return parseContributions(body.results);
   }
 
   // ---------------------------------------------------------------------------
@@ -343,8 +339,8 @@ export class RemoteDataProvider
     try {
       const resp = await fetch(`${this.baseUrl}/api/bounties${qs ? `?${qs}` : ""}`);
       if (resp.ok) {
-        const body = (await resp.json()) as { bounties: readonly Bounty[] };
-        return body.bounties;
+        const body = (await resp.json()) as { bounties: unknown };
+        return parseBounties(body.bounties);
       }
     } catch {
       // Fallback — server may not have bounty routes
@@ -360,8 +356,8 @@ export class RemoteDataProvider
     try {
       const resp = await fetch(`${this.baseUrl}/api/gossip/peers`);
       if (resp.ok) {
-        const body = (await resp.json()) as { peers: readonly PeerInfo[] };
-        return body.peers;
+        const body = (await resp.json()) as { peers: unknown };
+        return parsePeerInfos(body.peers);
       }
     } catch {
       // Fallback — gossip may not be enabled

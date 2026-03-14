@@ -24,6 +24,7 @@ import { hash } from "blake3";
 import type { ContentStore, PutOptions } from "../core/cas.js";
 import { validateMediaType } from "../core/cas.js";
 import type { Artifact } from "../core/models.js";
+import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
@@ -195,11 +196,15 @@ export class NexusCas implements ContentStore {
     );
     // Also delete metadata sidecar
     const metaPath = casMetaPath(this.zoneId, contentHash);
-    await withRetry(
-      () => withSemaphore(this.semaphore, () => this.client.delete(metaPath)),
-      "delete.meta",
-      this.config,
-    ).catch(() => {});
+    await safeCleanup(
+      withRetry(
+        () => withSemaphore(this.semaphore, () => this.client.delete(metaPath)),
+        "delete.meta",
+        this.config,
+      ),
+      "delete CAS metadata sidecar",
+      { silent: true },
+    );
     this.existsCache.delete(contentHash);
     this.statCache.delete(contentHash);
     return deleted;
@@ -289,11 +294,17 @@ export class NexusCas implements ContentStore {
     // Read metadata sidecar for mediaType
     let mediaType: string | undefined;
     const metaPath = casMetaPath(this.zoneId, contentHash);
-    const metaData = await withRetry(
-      () => withSemaphore(this.semaphore, () => this.client.read(metaPath)),
-      "stat.meta",
-      this.config,
-    ).catch(() => undefined);
+    let metaData: Uint8Array | undefined;
+    try {
+      metaData = await withRetry(
+        () => withSemaphore(this.semaphore, () => this.client.read(metaPath)),
+        "stat.meta",
+        this.config,
+      );
+    } catch {
+      // Expected: metadata sidecar may not exist
+      metaData = undefined;
+    }
     if (metaData !== undefined) {
       const meta = decodeMetadata(metaData);
       mediaType = meta.mediaType || undefined;

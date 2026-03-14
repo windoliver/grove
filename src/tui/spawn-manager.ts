@@ -8,6 +8,7 @@
  */
 
 import type { AgentIdentity, Claim } from "../core/models.js";
+import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
 import type { TuiDataProvider } from "./provider.js";
@@ -113,10 +114,18 @@ export class SpawnManager {
     } catch (spawnErr) {
       // Roll back claim + workspace
       if (claim && this.provider.releaseClaim) {
-        await this.provider.releaseClaim(claim.claimId).catch(() => {});
+        await safeCleanup(
+          this.provider.releaseClaim(claim.claimId),
+          "rollback claim after spawn failure",
+          { silent: true },
+        );
       }
       if (this.provider.cleanWorkspace) {
-        await this.provider.cleanWorkspace(spawnId, spawnId).catch(() => {});
+        await safeCleanup(
+          this.provider.cleanWorkspace(spawnId, spawnId),
+          "rollback workspace after spawn failure",
+          { silent: true },
+        );
       }
       throw spawnErr;
     }
@@ -158,10 +167,13 @@ export class SpawnManager {
       this.spawnRecords.delete(killedAgentId);
 
       if (this.provider.releaseClaim) {
-        await this.provider.releaseClaim(tracked.claimId).catch(() => {});
+        await safeCleanup(this.provider.releaseClaim(tracked.claimId), "release claim during kill");
       }
       if (this.provider.cleanWorkspace) {
-        await this.provider.cleanWorkspace(tracked.targetRef, killedAgentId).catch(() => {});
+        await safeCleanup(
+          this.provider.cleanWorkspace(tracked.targetRef, killedAgentId),
+          "clean workspace during kill",
+        );
       }
       return;
     }

@@ -22,6 +22,7 @@ import { createHash as createBlake3, hash } from "blake3";
 import type { ContentStore, PutOptions } from "../core/cas.js";
 import { validateMediaType } from "../core/cas.js";
 import type { Artifact } from "../core/models.js";
+import { safeCleanup } from "../shared/safe-cleanup.js";
 
 /** Prefix for BLAKE3 content hashes. */
 const HASH_PREFIX = "blake3:";
@@ -276,7 +277,9 @@ export class FsCas implements ContentStore {
       }
     } catch (err) {
       hasher.dispose();
-      await unlink(stagingFile).catch(() => {});
+      await safeCleanup(unlink(stagingFile), "remove staging file after hash failure", {
+        silent: true,
+      });
       throw err;
     }
     // Note: digest() internally frees the native WASM handle.
@@ -287,12 +290,14 @@ export class FsCas implements ContentStore {
     // Skip rename if content already exists
     try {
       await fsStat(blobPath);
-      await unlink(stagingFile).catch(() => {});
+      await safeCleanup(unlink(stagingFile), "remove staging file after dedup", { silent: true });
       await this.writeMeta(metaPath, options);
       return contentHash;
     } catch (err) {
       if (!isNotFound(err)) {
-        await unlink(stagingFile).catch(() => {});
+        await safeCleanup(unlink(stagingFile), "remove staging file after stat error", {
+          silent: true,
+        });
         throw err;
       }
     }

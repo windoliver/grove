@@ -27,6 +27,7 @@ import type {
 } from "../core/store.js";
 import { ExpiryReason } from "../core/store.js";
 import { toUtcIso } from "../core/time.js";
+import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { ListEntry, ListOptions, NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
@@ -119,9 +120,13 @@ export class NexusClaimStore implements ClaimStore {
       await this.writeActiveIndexExclusive(createdClaim);
     } catch (err) {
       // Roll back the claim file — the lock is the gate.
-      await withSemaphore(this.semaphore, () =>
-        this.client.delete(claimPath(this.zoneId, claim.claimId)),
-      ).catch(() => {});
+      await safeCleanup(
+        withSemaphore(this.semaphore, () =>
+          this.client.delete(claimPath(this.zoneId, claim.claimId)),
+        ),
+        "rollback claim file after index failure",
+        { silent: true },
+      );
       if (err instanceof NexusConflictError) {
         // Another claim already active on this target — find it for error message
         const now = new Date();
@@ -197,9 +202,13 @@ export class NexusClaimStore implements ClaimStore {
     try {
       await this.writeActiveIndexExclusive(createdClaim);
     } catch (err) {
-      await withSemaphore(this.semaphore, () =>
-        this.client.delete(claimPath(this.zoneId, claim.claimId)),
-      ).catch(() => {});
+      await safeCleanup(
+        withSemaphore(this.semaphore, () =>
+          this.client.delete(claimPath(this.zoneId, claim.claimId)),
+        ),
+        "rollback claim file after claimOrRenew index failure",
+        { silent: true },
+      );
       throw err;
     }
 
@@ -502,10 +511,14 @@ export class NexusClaimStore implements ClaimStore {
           new Date(holderClaim.leaseExpiresAt).getTime() < Date.now()
         ) {
           // Clean up stale lock and index
-          await withSemaphore(this.semaphore, () => this.client.delete(lockFile)).catch(() => {});
+          await safeCleanup(
+            withSemaphore(this.semaphore, () => this.client.delete(lockFile)),
+            "delete stale target lock",
+          );
           const staleIndexFile = activeClaimIndexPath(this.zoneId, claim.targetRef, holderId);
-          await withSemaphore(this.semaphore, () => this.client.delete(staleIndexFile)).catch(
-            () => {},
+          await safeCleanup(
+            withSemaphore(this.semaphore, () => this.client.delete(staleIndexFile)),
+            "delete stale claim index",
           );
 
           // Retry the lock
@@ -530,8 +543,14 @@ export class NexusClaimStore implements ClaimStore {
     // Delete both the per-claim index and the target lock
     const indexFile = activeClaimIndexPath(this.zoneId, claim.targetRef, claim.claimId);
     const lockFile = targetLockPath(this.zoneId, claim.targetRef);
-    await withSemaphore(this.semaphore, () => this.client.delete(indexFile)).catch(() => {});
-    await withSemaphore(this.semaphore, () => this.client.delete(lockFile)).catch(() => {});
+    await safeCleanup(
+      withSemaphore(this.semaphore, () => this.client.delete(indexFile)),
+      "delete active claim index",
+    );
+    await safeCleanup(
+      withSemaphore(this.semaphore, () => this.client.delete(lockFile)),
+      "delete target lock",
+    );
   }
 
   private async findActiveOnTarget(targetRef: string, now: Date): Promise<Claim | undefined> {
