@@ -125,31 +125,27 @@ export class SpawnManager {
     }
 
     // Step 3: Start tmux session. Roll back on failure.
+    // If PR context is available, wrap the command with env var exports
+    // so the agent process sees GROVE_PR_* from the start.
     try {
+      let finalCommand = command;
+      if (this.prContext) {
+        const esc = (s: string) => s.replace(/'/g, "'\\''");
+        const exports = [
+          `export GROVE_PR_NUMBER='${esc(String(this.prContext.number))}'`,
+          `export GROVE_PR_TITLE='${esc(this.prContext.title)}'`,
+          `export GROVE_PR_FILES='${esc(String(this.prContext.filesChanged))}'`,
+        ].join(" && ");
+        finalCommand = `${exports} && ${command}`;
+      }
+
       const options: SpawnOptions = {
         agentId: spawnId,
-        command,
+        command: finalCommand,
         targetRef: spawnId,
         workspacePath,
       };
       await this.tmux?.spawn(options);
-
-      // Inject PR context as env vars if available.
-      // The agent can read GROVE_PR_NUMBER, GROVE_PR_TITLE, GROVE_PR_FILES.
-      if (this.prContext && this.tmux) {
-        const sessionName = `grove-${spawnId}`;
-        const envVars: Record<string, string> = {
-          GROVE_PR_NUMBER: String(this.prContext.number),
-          GROVE_PR_TITLE: this.prContext.title,
-          GROVE_PR_FILES: String(this.prContext.filesChanged),
-        };
-        for (const [key, value] of Object.entries(envVars)) {
-          // Use send-keys to export env vars in the tmux session shell.
-          // Escaping: wrap value in single quotes with inner single-quote escaping.
-          const escaped = value.replace(/'/g, "'\\''");
-          await this.tmux.sendKeys(sessionName, `export ${key}='${escaped}' Enter`);
-        }
-      }
     } catch (spawnErr) {
       // Roll back claim + workspace
       if (claim && this.provider.releaseClaim) {

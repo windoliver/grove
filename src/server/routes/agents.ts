@@ -20,8 +20,9 @@ export const agents: Hono<ServerEnv> = new Hono<ServerEnv>();
  * Remote agent spawn request from a gossip peer.
  * Body: { role: string, command?: string, targetRef?: string, context?: Record<string, unknown> }
  *
- * The receiving server creates a claim and starts an agent session
- * for the requested role. Returns the claim ID and agent ID.
+ * Creates a claim for the delegated work. The peer's local TUI or
+ * reconciler is responsible for picking up the claim and starting
+ * an actual agent process (this endpoint only reserves the slot).
  */
 agents.post("/spawn", async (c) => {
   const deps = c.get("deps");

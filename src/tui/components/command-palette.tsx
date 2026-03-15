@@ -38,7 +38,9 @@ export interface CommandPaletteProps {
   /** Parent agent ID for lineage-aware capacity display. */
   readonly parentAgentId?: string | undefined;
   /** Gossip peers with free agent capacity for delegation. */
-  readonly gossipPeers?: readonly { peerId: string; freeSlots: number }[] | undefined;
+  readonly gossipPeers?:
+    | readonly { peerId: string; address: string; freeSlots: number }[]
+    | undefined;
 }
 
 /** Build the unified list of palette items from topology roles and tmux sessions. */
@@ -50,7 +52,7 @@ export function buildPaletteItems(
   hasSpawn: boolean,
   hasKill: boolean,
   parentAgentId?: string | undefined,
-  gossipPeers?: readonly { peerId: string; freeSlots: number }[] | undefined,
+  gossipPeers?: readonly { peerId: string; address: string; freeSlots: number }[] | undefined,
 ): readonly PaletteItem[] {
   const items: PaletteItem[] = [];
 
@@ -98,7 +100,7 @@ export function buildPaletteItems(
       if (peer.freeSlots > 0) {
         items.push({
           kind: "delegate" as const,
-          id: peer.peerId,
+          id: peer.address,
           label: `[d] Delegate to ${peer.peerId} (${peer.freeSlots} free)`,
           enabled: true,
           detail: `${peer.freeSlots} slots`,

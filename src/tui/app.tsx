@@ -241,6 +241,69 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
     }
   }, [provider, nav.state.cursor, showError]);
 
+  /** Send a message via the boardroom API or local provider. */
+  const sendTuiMessage = useCallback(
+    async (recipients: string, body: string) => {
+      try {
+        // Try local provider first (has direct store access)
+        const mp = provider as unknown as {
+          sendMessage?: (body: string, recipients: string[]) => Promise<void>;
+        };
+        if (mp.sendMessage) {
+          await mp.sendMessage(
+            body,
+            recipients.split(",").map((r) => r.trim()),
+          );
+          showError(`Sent to ${recipients}`);
+          return;
+        }
+        // Fallback: POST to boardroom endpoint (works for remote providers)
+        // Detect base URL from provider label or default
+        const rp = provider as unknown as { baseUrl?: string };
+        const baseUrl = rp.baseUrl ?? "http://localhost:4515";
+        const resp = await fetch(`${baseUrl}/api/boardroom/message`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            body,
+            recipients: recipients.split(",").map((r) => r.trim()),
+          }),
+        });
+        if (resp.ok) {
+          showError(`Sent to ${recipients}`);
+        } else {
+          showError(`Send failed: HTTP ${String(resp.status)}`);
+        }
+      } catch (err) {
+        showError(err instanceof Error ? err.message : "Send failed");
+      }
+    },
+    [provider, showError],
+  );
+
+  /** Delegate work to a gossip peer by calling its /api/agents/spawn endpoint. */
+  const handleDelegate = useCallback(
+    async (peerAddress: string) => {
+      try {
+        const resp = await fetch(`${peerAddress.replace(/\/+$/, "")}/api/agents/spawn`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role: "worker" }),
+        });
+        if (!resp.ok) {
+          const body = (await resp.json()) as { error?: string };
+          showError(`Delegation failed: ${body.error ?? `HTTP ${String(resp.status)}`}`);
+          return;
+        }
+        const body = (await resp.json()) as { agentId: string; role: string };
+        showError(`Delegated to peer: ${body.agentId} (${body.role})`);
+      } catch (err) {
+        showError(err instanceof Error ? err.message : "Delegation failed");
+      }
+    },
+    [showError],
+  );
+
   const handleDenyQuestion = useCallback(async () => {
     const askProvider = provider as unknown as {
       answerQuestion?: (cid: string, answer: string) => Promise<void>;
@@ -340,7 +403,7 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
               "Register agents via: grove agent register --name @name --role role --platform platform",
             );
           } else if (item.kind === "delegate") {
-            showError(`Delegation to ${item.id} — coming soon (requires gossip transport)`);
+            void handleDelegate(item.id);
           }
           panels.setMode(InputMode.Normal);
           setPaletteIndex(0);
@@ -373,13 +436,7 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
     if (panels.state.mode === InputMode.MessageInput) {
       if (input === "return") {
         if (messageBuffer.trim() && messageRecipients) {
-          // Send via provider if it supports messaging
-          const mp = provider as unknown as { getInboxMessages?: unknown };
-          if ("getInboxMessages" in mp) {
-            // We can't send from TUI directly via provider (it's read-only)
-            // Show confirmation instead
-            showError(`Message to ${messageRecipients}: ${messageBuffer.slice(0, 40)}...`);
-          }
+          void sendTuiMessage(messageRecipients, messageBuffer);
         }
         panels.setMode(InputMode.Normal);
         return;

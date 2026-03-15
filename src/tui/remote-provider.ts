@@ -477,8 +477,15 @@ export class RemoteDataProvider
     }
   }
 
-  async answerQuestion(_questionCid: string, _answer: string): Promise<void> {
-    // Remote answer submission not yet implemented — requires new server endpoint
+  async answerQuestion(questionCid: string, answer: string): Promise<void> {
+    const resp = await fetch(`${this.baseUrl}/api/boardroom/answer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ questionCid, answer }),
+    });
+    if (!resp.ok) {
+      throw new Error(`Failed to answer question: HTTP ${String(resp.status)}`);
+    }
   }
 
   // ---------------------------------------------------------------------------

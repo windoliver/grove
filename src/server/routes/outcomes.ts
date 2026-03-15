@@ -17,6 +17,7 @@ import {
   setOutcomeOperation,
 } from "../../core/operations/index.js";
 import type { OutcomeStatus } from "../../core/outcome.js";
+import { postOutcomeComment } from "../../github/outcome-poster.js";
 import type { ServerEnv } from "../deps.js";
 import { toHttpResult, toOperationDeps } from "../operation-adapter.js";
 import { CID_REGEX } from "../schemas.js";
@@ -83,6 +84,41 @@ outcomes.post("/:cid", zValidator("param", cidParamSchema), async (c) => {
   );
 
   const { data, status } = toHttpResult(result, 201);
+
+  // Post outcome to GitHub PR if active (non-blocking, best-effort)
+  if (status === 201 && (parsed.data.status === "accepted" || parsed.data.status === "rejected")) {
+    const contribution = await deps.contributionStore.get(cid);
+    if (contribution) {
+      // Detect active PR number from gh CLI (non-blocking)
+      void (async () => {
+        try {
+          const { getActivePR } = await import("../../github/active-pr.js");
+          const pr = await getActivePR();
+          if (pr) {
+            await postOutcomeComment({
+              prNumber: pr.number,
+              cid,
+              summary: contribution.summary,
+              outcome: parsed.data.status as "accepted" | "rejected",
+              ...(contribution.agent.agentName !== undefined
+                ? { agentName: contribution.agent.agentName }
+                : {}),
+              ...(contribution.scores !== undefined
+                ? {
+                    scores: Object.fromEntries(
+                      Object.entries(contribution.scores).map(([k, v]) => [k, v.value]),
+                    ),
+                  }
+                : {}),
+            });
+          }
+        } catch {
+          // Non-fatal — GitHub posting is best-effort
+        }
+      })();
+    }
+  }
+
   return c.json(data, status);
 });
 
