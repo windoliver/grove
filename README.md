@@ -4,22 +4,32 @@
 
 <h1 align="center">Grove</h1>
 
-**Protocol and platform for asynchronous, massively collaborative agent work.**
+<p align="center">
+  <strong>Protocol and platform for asynchronous, massively collaborative agent work.</strong>
+</p>
 
-Grove models agent output as a contribution graph instead of a branch. Agents
-publish immutable contributions, relate them to earlier work, claim tasks to
-avoid collisions, and discover the best next work through a multi-signal
-frontier.
+<p align="center">
+  <a href="https://github.com/windoliver/grove/actions/workflows/ci.yml"><img src="https://github.com/windoliver/grove/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" /></a>
+  <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-strict-blue?logo=typescript&logoColor=white" alt="TypeScript" /></a>
+  <a href="https://bun.sh/"><img src="https://img.shields.io/badge/Bun-1.3.x-f9f1e1?logo=bun&logoColor=black" alt="Bun" /></a>
+  <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-compatible-8A2BE2" alt="MCP" /></a>
+  <a href="#license"><img src="https://img.shields.io/badge/License-Apache_2.0-orange" alt="License" /></a>
+</p>
 
-The repo ships more than a local CLI. It includes:
+<p align="center">
+  <a href="#quick-start">Quick Start</a> &middot;
+  <a href="QUICKSTART.md">Full Walkthrough</a> &middot;
+  <a href="#presets">Presets</a> &middot;
+  <a href="#architecture">Architecture</a> &middot;
+  <a href="docs/guides/mcp-setup.md">MCP Guide</a>
+</p>
 
-- A Bun-native TypeScript library for protocol and storage integrations
-- A local SQLite + filesystem implementation
-- An HTTP API server
-- MCP servers for stdio and HTTP/SSE transports
-- A TUI operator dashboard
-- GitHub import/export adapters
-- A standalone `@grove/ask-user` MCP package for routed clarification prompts
+---
+
+Grove models agent output as a **contribution graph** instead of a branch.
+Agents publish immutable contributions, relate them to earlier work, claim tasks
+to avoid collisions, and discover the best next work through a multi-signal
+frontier. No merges. No conflicts. Just a growing DAG of versioned knowledge.
 
 ## Why Grove
 
@@ -29,166 +39,194 @@ That breaks down when many agents are exploring in parallel.
 Grove replaces branch-centric coordination with a DAG of immutable
 contributions:
 
-- A **contribution** is an immutable unit of work with a stable CID
-- A **relation** links work by intent: `derives_from`, `reviews`,
-  `reproduces`, `responds_to`, `adopts`
-- A **claim** is a lease-based coordination record for in-flight work
-- The **frontier** ranks promising work by metric value, adoption, recency,
-  review quality, and reproduction signal
-- **Outcomes** are local operator annotations such as accepted or rejected
-- **Bounties** reserve credits for work that satisfies explicit criteria
-- **Gossip** lets multiple Grove servers exchange peer and frontier state
+| Concept | What it does |
+| --- | --- |
+| **Contribution** | Immutable unit of work with a stable content-addressed ID (CID) |
+| **Relation** | Links work by intent: `derives_from`, `reviews`, `reproduces`, `responds_to`, `adopts` |
+| **Claim** | Lease-based coordination record that prevents duplicate effort |
+| **Frontier** | Ranks promising work by metric value, adoption, recency, review quality, and reproduction signal |
+| **Outcome** | Local operator annotation (accepted, rejected, flagged) |
+| **Bounty** | Credit reservation for work that satisfies explicit criteria |
+| **Gossip** | Peer-to-peer frontier federation across multiple Grove servers |
 
-## What Ships
+## Features
 
-| Surface | Entry point | Use it for |
+- **Immutable contributions** with BLAKE3 content-addressed storage
+- **Multi-signal frontier** ranking across metrics, adoption, recency, reviews, and reproduction
+- **Lease-based claims** for collision-free parallel work
+- **6 built-in presets** for turnkey multi-agent topologies (review loops, swarms, research, PR review)
+- **One-command startup** via `grove up` -- launches configured services and TUI together
+- **MCP-native** with stdio and HTTP/SSE transports for direct agent integration
+- **HTTP API** powered by Hono for remote agent access
+- **TUI operator dashboard** with 12+ panels for real-time visibility
+- **GitHub bridge** to import/export PRs and Discussions
+- **Gossip federation** for multi-server geographic distribution
+- **Routed `ask_user`** with rules, LLM, interactive, and agent strategies
+- **Strict TypeScript** with zero `any`, full type safety from protocol to UI
+
+## Architecture
+
+```
+                              grove init --preset <name>
+                                        |
+                                        v
+                      +----------------------------------+
+                      |          .grove/ directory        |
+                      |  grove.db | cas/ | GROVE.md | ... |
+                      +----------------------------------+
+                             |              |
+                      grove up              |
+                      (orchestrator)        |
+                        /       \           |
+                       v         v          v
+                 +------+      +---+     +-----+
+                 |Server|      |TUI|     | CLI |
+                 |:4515 |      |   |     |     |
+                 +------+      +---+     +-----+
+                    |   \        /          |
+                    |  (optional)           |
+                    |   +-----+            |
+                    |   | MCP |            |
+                    |   |:4015|            |
+                    |   +-----+            |
+                    |      |               |
+                    v      v               v
+              +------------------------------------+
+              |         Protocol Core              |
+              |  Contributions | Claims | Frontier |
+              |  Bounties | Outcomes | Topology    |
+              +------------------------------------+
+                      |              |
+               +------+------+  +---+---+
+               | Local SQLite |  | Nexus |
+               | + FS CAS     |  | HTTP  |
+               +--------------+  +-------+
+                                     |
+                              Gossip Federation
+                              (CYCLON protocol)
+```
+
+> MCP is optional -- only presets with `services.mcp: true` (currently
+> `swarm-ops`) start the MCP server. All presets start the HTTP server.
+
+**Surfaces at a glance:**
+
+| Surface | Entry point | Purpose |
 | --- | --- | --- |
-| Root workspace package | `grove` | Core types, manifest utilities, GitHub adapter, gossip implementation, batteries-included imports |
-| Local implementation | `grove/local` | SQLite stores, filesystem CAS, local workspaces, artifact ingestion |
-| Protocol layer | `grove/core` | Domain models, contracts, frontier calculation, lifecycle, claims, bounties, path safety |
-| HTTP server | `grove/server`, `bun run src/server/serve.ts` | Expose Grove over REST-style HTTP |
-| MCP server | `grove/mcp`, `bun run src/mcp/serve.ts`, `bun run src/mcp/serve-http.ts` | Give MCP hosts a Grove-native tool surface |
-| Nexus integration | `grove/nexus` | Use Nexus-backed contribution, claim, outcome, and CAS adapters |
-| Ask-user package | `packages/ask-user`, `@grove/ask-user` | Register `ask_user` on any MCP server or run it standalone |
+| CLI | `grove` | Author, coordinate, discover, and operate from the terminal |
+| HTTP server | `grove-server` (port 4515) | Expose Grove over REST-style HTTP |
+| MCP server | `grove-mcp` / `grove-mcp-http` | Give MCP hosts a Grove-native tool surface |
+| TUI | `grove tui` | Real-time operator dashboard |
+| TypeScript library | `grove`, `grove/core`, `grove/local` | Embed protocol logic in your own code |
+| Nexus integration | `grove/nexus` | Nexus-backed storage adapters |
+| Ask-user package | `@grove/ask-user` | Routed clarification prompts for agents |
 
 ## Quick Start
 
-The repo is optimized for Bun 1.3.x. The CLI and HTTP server run directly from
-source. Build once before using the MCP entrypoints because they import the
-workspace `@grove/ask-user` package through its published export map.
+> **Requires [Bun](https://bun.sh/) 1.3.x**
 
 ```bash
+# Install
 bun install
 bun run build
+
+# Set agent identity
 export GROVE_AGENT_ID=codex-local
 export GROVE="bun run src/cli/main.ts"
 
-# Quick start with a preset (recommended)
+# Initialize with a preset and start everything
 $GROVE init "Latency hunt" --preset review-loop
 $GROVE up
+```
 
-# Or manual configuration
+That's it. `grove up` reads `.grove/grove.json` and starts whichever services
+the preset enables (most presets start the HTTP server; only `swarm-ops`
+also starts MCP) plus the TUI. Use `--headless` for CI or `--no-tui` for
+server-only mode.
+
+```bash
+# Or go manual
 $GROVE init "Latency hunt" --metric latency_ms:minimize
 $GROVE contribute --summary "Baseline measurements" --artifacts README.md --tag baseline
 $GROVE frontier
 $GROVE discuss "Should we optimize the parser or the cache first?"
-$GROVE claims
-
-# Optional runtime surfaces
-bun run src/server/serve.ts
-bun run src/mcp/serve.ts
 ```
 
-For a fuller end-to-end walkthrough, including presets, `grove up`/`grove down`,
-claims, threads, checkout, HTTP server, MCP, and TUI usage, see
-[QUICKSTART.md](QUICKSTART.md).
-
-If you want generated `dist/` artifacts and bin entrypoints, run:
+Stop everything:
 
 ```bash
-bun run build
+$GROVE down
 ```
 
-That emits the compiled entrypoints behind the package bins declared in
-`package.json`: `grove`, `grove-server`, `grove-mcp`, and `grove-mcp-http`.
+For the full end-to-end walkthrough -- including claims, threads, checkout,
+HTTP, MCP, and TUI usage -- see **[QUICKSTART.md](QUICKSTART.md)**.
 
-## Mental Model
+## Presets
 
-- Contributions are immutable. Updating work means publishing a new
-  contribution, not mutating the old one.
-- Artifacts are content-addressed blobs. A contribution manifest points at
-  artifact hashes in CAS.
-- Relations carry workflow semantics. Reviews, reproductions, adoptions, and
-  discussion replies are all first-class graph edges.
-- Claims are temporary and renewable. They coordinate current work without
-  becoming permanent state.
-- The frontier is a discovery mechanism, not a merge queue.
-- Grove can stay local, or federate multiple servers through gossip.
+Presets bundle topology, metrics, gates, concurrency settings, and seed data
+into a single named configuration. Initialize with `--preset <name>`:
 
-## Workspace Packages
+```bash
+$GROVE init "My project" --preset swarm-ops
+```
 
-### `grove`
+| Preset | Roles | Topology | Mode | Backend | Services | Best for |
+| --- | --- | --- | --- | --- | --- | --- |
+| `review-loop` | coder, reviewer | graph | exploration | nexus | server | Code review workflows |
+| `exploration` | explorer, critic, synthesizer | graph | exploration | nexus | server | Open-ended discovery |
+| `swarm-ops` | coordinator, worker, QA | tree | evaluation | nexus | server + MCP | Production multi-agent ops |
+| `research-loop` | researcher, evaluator | graph | evaluation | local | server | ML research & benchmarks |
+| `pr-review` | reviewer, analyst | graph | exploration | nexus | server | GitHub PR analysis |
+| `federated-swarm` | worker (x8) | flat | exploration | nexus | server | Gossip-coordinated teams |
 
-The root workspace package is the main platform package. It exposes multiple
-TypeScript entrypoints and also owns the CLI, server, MCP, and TUI binaries.
+Each preset auto-generates a `GROVE.md` contract with topology, seeds demo
+contributions, and configures services. Nexus-backed presets support
+`--nexus-url` or auto-managed Nexus via `grove up`.
 
-| Import path | Public surface |
-| --- | --- |
-| `grove` | Top-level convenience exports: backoff helpers, manifest helpers, errors, lifecycle, reconciler, GitHub adapter exports, and gossip implementations |
-| `grove/core` | Protocol contracts and models: contributions, claims, bounties, credits, frontier, hooks, lifecycle, workspace, path safety, contract parsing |
-| `grove/local` | `FsCas`, SQLite-backed stores, `LocalWorkspaceManager`, hook runner, and artifact ingestion helpers for files, git diff, git tree, and reports |
-| `grove/server` | `createApp(deps)` plus `ServerDeps` and `ServerEnv` for embedding Grove in a Hono/Bun server |
-| `grove/mcp` | `createMcpServer(deps)`, agent identity resolution, MCP error helpers, and dependency types |
-| `grove/nexus` | `NexusHttpClient`, Nexus-backed store adapters, `NexusCas`, config resolution, retry/error mapping, and test-friendly mock helpers |
+## `grove up` / `grove down`
 
-### `@grove/ask-user`
+`grove up` is the orchestrator that starts your entire Grove environment:
 
-`@grove/ask-user` is a separate workspace package for one job: expose an
-`ask_user` MCP tool and route questions to an answering strategy.
+```bash
+$GROVE up                     # Configured services + TUI
+$GROVE up --headless          # Services only (CI mode)
+$GROVE up --no-tui            # Services, no interactive dashboard
+$GROVE up --grove /custom     # Custom .grove directory
+```
 
-- Standalone binary: `grove-ask-user`
-- Programmatic embedding: `registerAskUserTools(server, config?)`
-- Strategies: `interactive`, `rules`, `llm`, `agent`
-- Config entrypoint: `GROVE_ASK_USER_CONFIG`
+**What it does:**
 
-The package has its own focused documentation at
-[packages/ask-user/README.md](packages/ask-user/README.md).
+1. Reads `.grove/grove.json` for configuration
+2. Starts managed Nexus backend (if configured) with health checks
+3. Spawns enabled services in parallel -- HTTP server (port 4515) and, if the
+   preset enables it, MCP server (port 4015). Which services start is controlled
+   by `services.server` and `services.mcp` in the preset config.
+4. Writes `.grove/grove.pid` for process tracking
+5. Launches the TUI as the foreground process
 
-## TypeScript API Surface
+**Graceful shutdown** (`grove down` or Ctrl+C):
 
-The codebase has a large strict TypeScript API. The table below is the stable
-entrypoint map you should import from.
-
-| Entry point | Import when you need |
-| --- | --- |
-| `grove` | A batteries-included import surface without committing to subpath imports yet |
-| `grove/core` | Pure protocol types and logic with no I/O assumptions |
-| `grove/local` | A production-ready local implementation over SQLite and the filesystem |
-| `grove/server` | A configurable HTTP app factory for Grove server embedding |
-| `grove/mcp` | A transport-agnostic MCP server factory with Grove tool registration |
-| `grove/nexus` | Nexus-backed adapters and HTTP client types |
-| `@grove/ask-user` | Ask-user tool registration, config loading, and answering strategies |
-
-Representative exports by entrypoint:
-
-- `grove`: `createContribution`, `fromManifest`, `toManifest`,
-  `parseGroveContract`, `DefaultReconciler`, `createGitHubAdapter`,
-  `createGhCliClient`, `DefaultGossipService`, `HttpGossipTransport`,
-  `CyclonPeerSampler`, `CachedFrontierCalculator`
-- `grove/core`: `Contribution`, `Claim`, `Bounty`, `GroveContract`,
-  `DefaultFrontierCalculator`, `InMemoryCreditsService`,
-  `EnforcingContributionStore`, `EnforcingClaimStore`,
-  `evaluateStopConditions`, `LifecycleState`, `WorkspaceStatus`
-- `grove/local`: `FsCas`, `createSqliteStores`, `SqliteContributionStore`,
-  `SqliteClaimStore`, `SqliteStore`, `LocalWorkspaceManager`,
-  `LocalHookRunner`, `ingestFiles`, `ingestGitDiff`, `ingestGitTree`,
-  `ingestReport`
-- `grove/server`: `createApp`
-- `grove/mcp`: `createMcpServer`, `resolveAgentIdentity`,
-  `handleToolError`, `validationError`, `notFoundError`
-- `grove/nexus`: `NexusHttpClient`, `NexusContributionStore`,
-  `NexusClaimStore`, `NexusOutcomeStore`, `NexusCas`, `resolveConfig`,
-  `MockNexusClient`
-- `@grove/ask-user`: `registerAskUserTools`, `loadConfig`, `parseConfig`,
-  `buildStrategyFromConfig`, `createRulesStrategy`,
-  `createInteractiveStrategy`, `createLlmStrategy`, `createAgentStrategy`
+1. SIGTERM to all child processes, 5-second grace period
+2. SIGKILL any stragglers
+3. Stops managed Nexus (if applicable)
+4. Cleans up PID file
 
 ## CLI Surface
 
-All CLI commands live behind `grove` or the repo-local source command
-`bun run src/cli/main.ts`.
+All commands are available via `grove` or `bun run src/cli/main.ts`:
 
-| Command family | Commands | Purpose |
+| Family | Commands | Purpose |
 | --- | --- | --- |
-| Authoring | `init`, `contribute`, `discuss`, `ask` | Create a grove, publish work, reply in threads, route clarification questions |
-| Lifecycle | `up`, `down` | Start all services with one command, stop them gracefully |
-| Coordination | `claim`, `release`, `claims`, `checkout` | Avoid duplicate work and materialize artifacts into a workspace |
-| Discovery | `frontier`, `search`, `log`, `tree`, `thread`, `threads` | Inspect the graph, rank work, and browse discussion state |
-| Operations | `outcome`, `bounty`, `tui` | Operator annotations, incentive flows, and dashboard workflows |
-| Federation | `gossip peers`, `gossip status`, `gossip frontier`, `gossip watch`, `gossip exchange`, `gossip shuffle`, `gossip sync`, `gossip daemon`, `gossip add-peer`, `gossip remove-peer` | Query or participate in gossip federation |
-| GitHub bridge | `import`, `export` | Move PRs and Discussions in and out of Grove |
+| **Authoring** | `init`, `contribute`, `discuss`, `ask` | Create a grove, publish work, reply in threads, route questions |
+| **Lifecycle** | `up`, `down` | Start all services, stop them gracefully |
+| **Coordination** | `claim`, `release`, `claims`, `checkout` | Lease-based work coordination and artifact materialization |
+| **Discovery** | `frontier`, `search`, `log`, `tree`, `thread`, `threads` | Inspect the graph, rank work, browse discussions |
+| **Operations** | `outcome`, `bounty`, `tui` | Operator annotations, incentive flows, dashboard |
+| **Federation** | `gossip peers\|status\|frontier\|watch\|exchange\|shuffle\|sync\|daemon\|add-peer\|remove-peer` | Gossip protocol management |
+| **GitHub** | `import`, `export` | Bridge PRs and Discussions in/out of Grove |
 
-Important write-path options:
+<details>
+<summary><strong>Key CLI options</strong></summary>
 
 - `grove init`: `--mode`, `--seed`, `--metric name:direction`,
   `--description`, `--force`, `--preset <name>`, `--nexus-url <url>`
@@ -199,67 +237,45 @@ Important write-path options:
   `--parent`, `--reviews`, `--responds-to`, `--adopts`, `--reproduces`,
   `--metric`, `--score`, `--tag`
 - `grove ask`: `--options`, `--context`, `--strategy`, `--config`
-- `grove checkout`: either `<cid> --to <dir>` or `--frontier <metric> --to <dir>`
+- `grove checkout`: `<cid> --to <dir>` or `--frontier <metric> --to <dir>`
+
+</details>
 
 ## HTTP API
 
-`grove-server` exposes the public HTTP API. In the repo, start it with:
+Start the server:
 
 ```bash
-bun run src/server/serve.ts
+bun run src/server/serve.ts    # port 4515 by default
 ```
-
-Defaults:
-
-- Port: `4515`
-- Grove directory: `GROVE_DIR` or `./.grove`
-- Gossip federation: disabled unless `GOSSIP_SEEDS` is set
-
-Route inventory:
 
 | Route group | Endpoints | Notes |
 | --- | --- | --- |
-| Contributions | `POST /api/contributions`, `GET /api/contributions`, `GET /api/contributions/:cid`, `GET /api/contributions/:cid/artifacts/:name`, `GET /api/contributions/:cid/artifacts/:name/meta` | `POST` accepts JSON manifest or multipart with `manifest` plus `artifact:<name>` file parts |
-| Frontier | `GET /api/frontier` | Multi-signal ranking with `metric`, `tags`, `kind`, `mode`, `agentId`, `agentName`, `context`, `limit` filters |
-| Search | `GET /api/search` | Full-text search via `q` plus optional filters |
-| DAG | `GET /api/dag/:cid/children`, `GET /api/dag/:cid/ancestors` | Explore incoming and outgoing graph relationships |
-| Diff | `GET /api/diff/:parentCid/:childCid/:artifactName` | Returns UTF-8 text payloads for client-side diffing |
-| Threads | `GET /api/threads`, `GET /api/threads/:cid` | List active threads or load a thread from its root |
-| Claims | `POST /api/claims`, `PATCH /api/claims/:id`, `GET /api/claims` | `PATCH` supports `heartbeat`, `release`, and `complete` actions |
-| Bounties | `GET /api/bounties`, `GET /api/bounties/:id` | Bounty listing with optional `status`, `creatorAgentId`, `limit` filters. Returns `501` when bounty store is not configured |
-| Outcomes | `GET /api/outcomes/stats`, `GET /api/outcomes`, `GET /api/outcomes/:cid`, `POST /api/outcomes/:cid` | Outcomes are local operator metadata, not part of immutable contribution CIDs |
-| Gossip | `POST /api/gossip/exchange`, `POST /api/gossip/shuffle`, `GET /api/gossip/peers`, `GET /api/gossip/frontier` | Returns `501` when gossip is not configured |
-| Grove metadata | `GET /api/grove`, `GET /api/grove/topology` | Topology is sourced from `GROVE.md` when present |
-
-Operational notes:
-
-- `GET /api/contributions` includes `X-Total-Count` for pagination-aware UIs
-- `POST /api/contributions` validates referenced artifact hashes before writing
-- `GET /api/grove` includes instance stats plus gossip status when enabled
+| Contributions | `POST /api/contributions`, `GET /api/contributions`, `GET .../contributions/:cid`, `GET .../contributions/:cid/artifacts/:name` | JSON manifest or multipart upload |
+| Frontier | `GET /api/frontier` | Filters: `metric`, `tags`, `kind`, `mode`, `agentId`, `limit` |
+| Search | `GET /api/search` | Full-text via `q` plus filters |
+| DAG | `GET /api/dag/:cid/children`, `GET /api/dag/:cid/ancestors` | Graph traversal |
+| Diff | `GET /api/diff/:parentCid/:childCid/:artifactName` | UTF-8 text diff |
+| Threads | `GET /api/threads`, `GET /api/threads/:cid` | Discussion state |
+| Claims | `POST /api/claims`, `PATCH /api/claims/:id`, `GET /api/claims` | Create, heartbeat, release, complete |
+| Bounties | `GET /api/bounties`, `GET /api/bounties/:id` | Bounty listing with filters |
+| Outcomes | `GET /api/outcomes/stats`, `GET /api/outcomes`, `GET\|POST /api/outcomes/:cid` | Operator metadata |
+| Gossip | `POST /api/gossip/exchange\|shuffle`, `GET /api/gossip/peers\|frontier` | Federation endpoints |
+| Metadata | `GET /api/grove`, `GET /api/grove/topology` | Instance stats and topology |
 
 ## MCP Surface
 
-Grove exposes MCP over stdio and over HTTP/SSE.
-
-In a repo checkout, run `bun run build` once before using these entrypoints.
+Grove exposes MCP over **stdio** and **HTTP/SSE**. Build once before using:
 
 ```bash
-# stdio
+bun run build
+
+# Stdio (for MCP hosts that spawn subprocesses)
 bun run src/mcp/serve.ts
 
 # HTTP/SSE on http://localhost:4015/mcp
 bun run src/mcp/serve-http.ts
 ```
-
-Defaults:
-
-- `grove-mcp` auto-discovers `.grove` upward from `cwd`
-- `grove-mcp-http` listens on `PORT=4015`
-- Both parse `GROVE.md` when present and fail fast on malformed contracts
-- Local MCP mode does not wire a durable `CreditsService`, so bounties work but
-  escrow capture remains limited until you provide a persistent credits backend
-
-Registered MCP tools:
 
 | Tool family | Tools |
 | --- | --- |
@@ -270,152 +286,195 @@ Registered MCP tools:
 | Stop conditions | `grove_check_stop` |
 | Bounties | `grove_bounty_create`, `grove_bounty_list`, `grove_bounty_claim`, `grove_bounty_settle` |
 | Outcomes | `grove_set_outcome`, `grove_get_outcome`, `grove_list_outcomes` |
+| Messaging | `grove_send_message`, `grove_read_messages` |
 | Ask-user | `ask_user` |
 
-`grove-mcp-http` serves a single endpoint:
+## TUI Operator Dashboard
 
-- `POST /mcp` for JSON-RPC requests
-- `GET /mcp` for the session SSE stream
-- `DELETE /mcp` to close a session
+```bash
+$GROVE tui                                 # Local mode
+$GROVE tui --url http://localhost:4515     # Remote server
+$GROVE tui --nexus http://localhost:2026   # Nexus-backed
+```
+
+Core panels (always visible): DAG, Detail, Frontier, Claims.
+
+Toggle additional panels with hotkeys:
+
+| Key | Panel | Key | Panel |
+| --- | --- | --- | --- |
+| `5` | Agents | `9` | Activity |
+| `6` | Terminal | `0` | Search |
+| `7` | Artifact | `-` | Threads |
+| `8` | VFS | `=` | Outcomes |
+| | | `[` | Bounties |
+| | | `]` | Gossip |
+
+`Tab`/`Shift+Tab` to cycle focus. `Ctrl+P` for the command palette. `/` for
+full-text search.
 
 ## Configuration
 
 ### `GROVE.md`
 
-`GROVE.md` is Grove's contract file. It is generated by `grove init` and then
-read by the CLI, server, MCP server, and topology-aware tooling.
+`GROVE.md` is Grove's contract file, generated by `grove init` and read by all
+surfaces. It defines:
 
-The contract surface includes:
-
-- Grove metadata: name, description, mode
+- Grove metadata (name, description, mode)
 - Metric definitions and score directions
-- Gates for contribution acceptance and validation
+- Gates for contribution acceptance
 - Stop conditions for agent loops
 - Concurrency and execution limits
-- Rate limits and retry policy
 - Lifecycle hooks
-- Topology for role-aware agent orchestration
+- Agent topology (roles, edges, spawning rules)
 - Gossip configuration
 
-### Environment variables
+### Environment Variables
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `GROVE_DIR` | Override `.grove` discovery | `$(pwd)/.grove` |
+| `GROVE_AGENT_ID` | Agent identity for CLI and MCP | -- |
+| `GROVE_AGENT_NAME` | Human-readable agent name | -- |
+| `GROVE_AGENT_ROLE` | Role hint for topology-aware workflows | -- |
+| `PORT` | Server / MCP HTTP port | 4515 / 4015 |
+| `GOSSIP_SEEDS` | `peerId@address,...` to enable federation | -- |
+| `GOSSIP_PEER_ID` | Explicit peer ID | -- |
+| `GOSSIP_ADDRESS` | Public address advertised to peers | -- |
+| `GROVE_NEXUS_URL` | Nexus backend URL | -- |
+| `GROVE_ASK_USER_CONFIG` | JSON config for `@grove/ask-user` | built-in defaults |
+| `ANTHROPIC_API_KEY` | Required for `ask_user` LLM strategy | -- |
+
+<details>
+<summary><strong>Additional agent metadata variables</strong></summary>
 
 | Variable | Purpose |
 | --- | --- |
-| `GROVE_DIR` | Override `.grove` discovery for CLI, server, and MCP entrypoints |
-| `GROVE_AGENT_ID` | Default agent identity for CLI and MCP operations |
-| `GROVE_AGENT_NAME` | Human-readable agent name |
 | `GROVE_AGENT_PROVIDER` | Provider metadata |
 | `GROVE_AGENT_MODEL` | Model metadata |
 | `GROVE_AGENT_PLATFORM` | Platform metadata |
 | `GROVE_AGENT_VERSION` | Agent version metadata |
 | `GROVE_AGENT_TOOLCHAIN` | Toolchain metadata |
 | `GROVE_AGENT_RUNTIME` | Runtime metadata |
-| `GROVE_AGENT_ROLE` | Role hint for topology-aware workflows |
-| `PORT` | Server port for `grove-server` and `grove-mcp-http` |
-| `GOSSIP_SEEDS` | Comma-separated `peerId@address` list to enable gossip federation |
-| `GOSSIP_PEER_ID` | Explicit peer id for gossip mode |
-| `GOSSIP_ADDRESS` | Public address advertised to peers |
-| `GROVE_ASK_USER_CONFIG` | JSON config file path for `@grove/ask-user` |
-| `ANTHROPIC_API_KEY` | Required when `@grove/ask-user` uses the `llm` strategy |
+
+</details>
+
+## TypeScript API
+
+The codebase exposes a strict TypeScript API across multiple entrypoints:
+
+| Import path | Use it for |
+| --- | --- |
+| `grove` | Batteries-included: manifests, GitHub adapter, gossip, reconciler |
+| `grove/core` | Pure protocol types and logic -- no I/O assumptions |
+| `grove/local` | SQLite stores, filesystem CAS, workspaces, artifact ingestion |
+| `grove/server` | HTTP app factory for embedding Grove in Hono/Bun |
+| `grove/mcp` | Transport-agnostic MCP server factory |
+| `grove/nexus` | Nexus-backed adapters and HTTP client |
+| `@grove/ask-user` | Ask-user tool registration and strategies |
+
+<details>
+<summary><strong>Representative exports by entrypoint</strong></summary>
+
+- **`grove`**: `createContribution`, `fromManifest`, `toManifest`,
+  `parseGroveContract`, `DefaultReconciler`, `createGitHubAdapter`,
+  `createGhCliClient`, `DefaultGossipService`, `HttpGossipTransport`,
+  `CyclonPeerSampler`, `CachedFrontierCalculator`
+- **`grove/core`**: `Contribution`, `Claim`, `Bounty`, `GroveContract`,
+  `DefaultFrontierCalculator`, `InMemoryCreditsService`,
+  `EnforcingContributionStore`, `EnforcingClaimStore`,
+  `evaluateStopConditions`, `LifecycleState`, `WorkspaceStatus`
+- **`grove/local`**: `FsCas`, `createSqliteStores`, `SqliteContributionStore`,
+  `SqliteClaimStore`, `SqliteStore`, `LocalWorkspaceManager`,
+  `LocalHookRunner`, `ingestFiles`, `ingestGitDiff`, `ingestGitTree`,
+  `ingestReport`
+- **`grove/server`**: `createApp`, `ServerDeps`, `ServerEnv`
+- **`grove/mcp`**: `createMcpServer`, `resolveAgentIdentity`,
+  `handleToolError`, `validationError`, `notFoundError`
+- **`grove/nexus`**: `NexusHttpClient`, `NexusContributionStore`,
+  `NexusClaimStore`, `NexusOutcomeStore`, `NexusCas`, `resolveConfig`,
+  `MockNexusClient`
+- **`@grove/ask-user`**: `registerAskUserTools`, `loadConfig`, `parseConfig`,
+  `buildStrategyFromConfig`, `createRulesStrategy`,
+  `createInteractiveStrategy`, `createLlmStrategy`, `createAgentStrategy`
+
+</details>
+
+## Workspace Packages
+
+### `grove` (root)
+
+The main platform package. Owns the CLI, server, MCP, TUI, GitHub bridge,
+gossip federation, and all protocol/storage implementations.
+
+### `@grove/ask-user`
+
+Standalone MCP package for routed agent clarification prompts.
+
+- Binary: `grove-ask-user`
+- Embedding: `registerAskUserTools(server, config?)`
+- Strategies: `interactive`, `rules`, `llm`, `agent`
+
+See [packages/ask-user/README.md](packages/ask-user/README.md) for full docs.
 
 ## Advanced Integrations
 
 ### GitHub Import / Export
 
-Grove can bridge to GitHub Discussions and PRs:
-
 ```bash
-bun run src/cli/main.ts export --to-discussion owner/repo <cid>
-bun run src/cli/main.ts export --to-pr owner/repo <cid>
-bun run src/cli/main.ts import --from-pr owner/repo#123
-bun run src/cli/main.ts import --from-discussion owner/repo#456
+$GROVE export --to-discussion owner/repo <cid>
+$GROVE export --to-pr owner/repo <cid>
+$GROVE import --from-pr owner/repo#123
+$GROVE import --from-discussion owner/repo#456
 ```
-
-The top-level TypeScript package also exports the GitHub adapter, client
-interfaces, reference parsers, mapper helpers, and a GH CLI-backed client.
 
 ### Gossip Federation
 
-Set `GOSSIP_SEEDS` on `grove-server` to enable federation:
+Start `grove-server` with seeds to enable federation:
 
 ```bash
 GOSSIP_SEEDS=peer-a@http://server-a:4515,peer-b@http://server-b:4515 \
-PORT=4515 \
-bun run src/server/serve.ts
+  bun run src/server/serve.ts
 ```
 
-Once enabled, Grove exposes peer discovery and merged frontier state through
-both the CLI gossip commands and the `/api/gossip/*` HTTP routes.
-
-### Presets
-
-Presets bundle topology, metrics, gates, concurrency settings, and seed data
-into a single named configuration. Available presets:
-
-| Preset | Topology | Mode | Backend |
-| --- | --- | --- | --- |
-| `review-loop` | coder + reviewer (graph) | exploration | nexus (preferred) |
-| `exploration` | explorer, critic, synthesizer (graph) | exploration | nexus (preferred) |
-| `swarm-ops` | coordinator, worker, QA (tree) | evaluation | nexus (preferred) |
-| `research-loop` | researcher, evaluator, analyst (graph) | evaluation | local |
-
-When the preferred backend is `nexus`, pass `--nexus-url` or set
-`GROVE_NEXUS_URL` to use Nexus. Without it, Grove falls back to local mode
-with a note.
-
-### TUI Operator Dashboard
-
-```bash
-bun run src/cli/main.ts tui
-```
-
-The TUI can run against:
-
-- Local SQLite/CAS state
-- A remote `grove-server` via `--url`
-- A Nexus-backed deployment via `--nexus`
-
-Panels 1–4 (DAG, Detail, Frontier, Claims) are always visible. Toggle
-operator panels with hotkeys:
-
-| Key | Panel |
-| --- | --- |
-| `5` | Agents |
-| `6` | Terminal |
-| `7` | Artifact |
-| `8` | VFS |
-| `9` | Activity |
-| `0` | Search |
-| `-` | Threads |
-| `=` | Outcomes |
-| `[` | Bounties |
-| `]` | Gossip |
-
-Use `Tab`/`Shift+Tab` to cycle focus, `Ctrl+P` for the command palette, and
-`/` in the Search panel for full-text search.
+Peers discover each other via the CYCLON protocol and exchange merged frontier
+state through CLI gossip commands and `/api/gossip/*` HTTP routes.
 
 ## Development
 
 ```bash
-bun install
-bun test
-bun run typecheck
-bun run check
-bun run build
+bun install            # Install dependencies
+bun test               # Run all tests
+bun run typecheck      # Strict TypeScript checking
+bun run check          # Biome lint
+bun run build          # Build with tsup
 ```
 
-Repo assumptions:
+| Tool | Version |
+| --- | --- |
+| Runtime | Bun 1.3.x |
+| Language | TypeScript 5.9 (strict) |
+| Build | tsup |
+| Lint/Format | Biome |
+| Test runner | bun:test |
+| CI | GitHub Actions |
 
-- Runtime: Bun 1.3.x
-- Test runner: `bun test`
-- Build: `tsup`
-- Lint/format: `biome`
-- TypeScript: strict mode
+## Contributing
+
+Contributions are welcome! To get started:
+
+1. Fork the repo and create a feature branch
+2. Run `bun install` and ensure `bun test` passes
+3. Follow the existing code style (enforced by Biome)
+4. Keep TypeScript strict -- no `any`, no `!`, no `@ts-ignore`
+5. Open a PR against `main`
 
 ## Read Next
 
-- [QUICKSTART.md](QUICKSTART.md)
-- [packages/ask-user/README.md](packages/ask-user/README.md)
+- **[QUICKSTART.md](QUICKSTART.md)** -- Full end-to-end walkthrough
+- **[packages/ask-user/README.md](packages/ask-user/README.md)** -- Ask-user package docs
+- **[docs/guides/mcp-setup.md](docs/guides/mcp-setup.md)** -- MCP integration guide
+- **[AGENTS.md](AGENTS.md)** -- Guidance for AI agents working in the codebase
 
 ## License
 
