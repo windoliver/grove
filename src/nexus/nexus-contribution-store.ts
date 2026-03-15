@@ -282,31 +282,34 @@ export class NexusContributionStore implements ContributionStore {
   }
 
   async search(query: string, filters?: ContributionQuery): Promise<readonly Contribution[]> {
-    // Try Nexus native search first
+    // Try Nexus native search first (not all Nexus versions support it)
     const ftsDir = ftsIndexDir(this.zoneId);
-    const results = await withRetry(
-      () => withSemaphore(this.semaphore, () => this.client.search(query, { path: ftsDir })),
-      "search",
-      this.config,
-    );
+    try {
+      const results = await withRetry(
+        () => withSemaphore(this.semaphore, () => this.client.search(query, { path: ftsDir })),
+        "search",
+        this.config,
+      );
 
-    if (results.length > 0) {
-      const contributions: Contribution[] = [];
-      for (const r of results) {
-        // Extract CID from path: .../fts/{cid}.json
-        const filename = r.path.split("/").pop() ?? "";
-        const cid = filename.replace(/\.json$/, "");
-        if (!cid) continue;
+      if (results.length > 0) {
+        const contributions: Contribution[] = [];
+        for (const r of results) {
+          const filename = r.path.split("/").pop() ?? "";
+          const cid = filename.replace(/\.json$/, "");
+          if (!cid) continue;
 
-        const ftsData = await withSemaphore(this.semaphore, () => this.client.read(r.path));
-        if (ftsData === undefined) continue;
-        const fts = decode<Record<string, JsonValue>>(ftsData);
-        if (!matchesFtsQuery(fts, filters)) continue;
+          const ftsData = await withSemaphore(this.semaphore, () => this.client.read(r.path));
+          if (ftsData === undefined) continue;
+          const fts = decode<Record<string, JsonValue>>(ftsData);
+          if (!matchesFtsQuery(fts, filters)) continue;
 
-        const c = await this.get(cid);
-        if (c !== undefined) contributions.push(c);
+          const c = await this.get(cid);
+          if (c !== undefined) contributions.push(c);
+        }
+        return contributions;
       }
-      return contributions;
+    } catch {
+      // Nexus search not supported — fall through to manual scan
     }
 
     // Fallback: list all FTS entries and filter by text

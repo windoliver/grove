@@ -35,8 +35,8 @@ describe.skipIf(!NEXUS_URL)("NexusContributionStore integration", () => {
     const store = new NexusContributionStore({
       client,
       zoneId,
-      retryMaxAttempts: 2,
-      retryBaseDelayMs: 100,
+      retryMaxAttempts: 4,
+      retryBaseDelayMs: 500,
     });
 
     return {
@@ -58,8 +58,8 @@ describe.skipIf(!NEXUS_URL)("NexusClaimStore integration", () => {
     const store = new NexusClaimStore({
       client,
       zoneId,
-      retryMaxAttempts: 2,
-      retryBaseDelayMs: 100,
+      retryMaxAttempts: 4,
+      retryBaseDelayMs: 500,
     });
 
     return {

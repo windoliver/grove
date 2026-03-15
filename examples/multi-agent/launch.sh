@@ -21,21 +21,15 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PROJECT_ROOT
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-# Helper: run grove CLI via bun (binaries aren't globally linked after build)
-grove_cli() { bun run "$PROJECT_ROOT/dist/cli/main.js" "$@"; }
+# Source shared functions
+# shellcheck source=../lib.sh
+source "$SCRIPT_DIR/../lib.sh"
 
 # Verify prerequisites
-command -v acpx >/dev/null 2>&1 || {
-  echo "Error: acpx not found. Install with: npm install -g acpx@latest"
-  exit 1
-}
-
-if [ ! -f "$PROJECT_ROOT/dist/cli/main.js" ]; then
-  echo "Error: dist/ not found. Run 'bun run build' first."
-  exit 1
-fi
+check_prereqs acpx bun
 
 # Initialize grove if not already initialized
 if [ ! -d ".grove" ]; then
@@ -130,16 +124,5 @@ if [ $FAIL -ne 0 ]; then
 else
   echo "=== All agents completed successfully ==="
 fi
-echo ""
 
-# Show results
-echo "--- Frontier (final results) ---"
-grove_cli frontier 2>/dev/null || echo "(grove CLI not available — use: bun run examples/multi-agent/scenario.ts)"
-
-echo ""
-echo "--- Collaboration DAG ---"
-grove_cli tree 2>/dev/null || echo "(grove CLI not available)"
-
-echo ""
-echo "--- Claims (should be completed/expired, none stuck) ---"
-grove_cli claims 2>/dev/null || echo "(grove CLI not available)"
+show_results
