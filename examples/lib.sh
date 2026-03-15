@@ -85,14 +85,20 @@ _run_with_timeout() {
     return $?
   fi
 
-  # Portable fallback: run in background, kill after deadline
+  # Portable fallback: run in a new process group, kill the whole group
+  # after the deadline. This ensures child processes (e.g., agent CLIs
+  # that spawn subprocesses) are also terminated, preventing duplicate
+  # agents after a Ralph loop restart.
+  set -m  # enable job control so "$@" runs in its own process group
   "$@" &
   local pid=$!
   (
     sleep "$secs"
-    kill "$pid" 2>/dev/null
+    # Kill the entire process group (negative PID), not just the leader
+    kill -- -"$pid" 2>/dev/null
   ) &
   local watchdog=$!
+  set +m  # restore
   wait "$pid" 2>/dev/null
   local rc=$?
   kill "$watchdog" 2>/dev/null

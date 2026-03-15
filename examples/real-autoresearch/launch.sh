@@ -69,8 +69,19 @@ echo "Timeout:    ${AGENT_TIMEOUT}s per session"
 echo "Max restarts: ${MAX_RESTARTS:-unlimited}"
 echo ""
 
-# Check basic prerequisites
-check_prereqs acpx bun
+# Derive required binaries from configured agent commands.
+# Each *_CMD may be multi-word (e.g., "acpx --approve-all claude");
+# we only need the first word (the binary name).
+REQUIRED_BINS="bun"
+for cmd_var in "$RESEARCHER_CMD" "$REVIEWER_CMD" "$REPRODUCER_CMD"; do
+  # shellcheck disable=SC2086 # intentional word splitting to get first word
+  set -- $cmd_var
+  REQUIRED_BINS="$REQUIRED_BINS $1"
+done
+# Deduplicate
+REQUIRED_BINS="$(echo "$REQUIRED_BINS" | tr ' ' '\n' | sort -u | tr '\n' ' ')"
+# shellcheck disable=SC2086 # intentional word splitting for check_prereqs args
+check_prereqs $REQUIRED_BINS
 
 # Verify Nexus is reachable
 echo "Checking Nexus at $NEXUS_URL..."
