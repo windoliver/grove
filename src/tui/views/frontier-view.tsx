@@ -20,6 +20,14 @@ export interface FrontierViewProps {
   readonly active: boolean;
   readonly cursor: number;
   readonly onRowCountChanged?: (count: number) => void;
+  /** When true, the view is in compare mode and allows multi-select. */
+  readonly compareMode?: boolean | undefined;
+  /** Callback when a CID is selected/deselected in compare mode. */
+  readonly onCompareSelect?: ((cid: string) => void) | undefined;
+  /** Currently selected CIDs for comparison (controlled from parent). */
+  readonly compareCids?: readonly string[] | undefined;
+  /** Reports the ordered CID list so the parent can resolve cursor to CID. */
+  readonly onFrontierCidsChanged?: ((cids: readonly string[]) => void) | undefined;
 }
 
 /** A flattened frontier row combining entry data with its ranking dimension. */
@@ -134,17 +142,36 @@ export const FrontierView: React.NamedExoticComponent<FrontierViewProps> = React
     active,
     cursor,
     onRowCountChanged,
+    compareMode,
+    onCompareSelect,
+    compareCids,
+    onFrontierCidsChanged,
   }: FrontierViewProps): React.ReactNode {
+    // onCompareSelect is part of the interface for parent coordination;
+    // Enter-key handling that calls it lives in app.tsx.
+    void onCompareSelect;
+
     const fetcher = useCallback(() => provider.getFrontier(), [provider]);
     const { data, loading, isStale, error } = usePolledData<Frontier>(fetcher, intervalMs, active);
 
     const flatRows = useMemo(() => (data ? flattenFrontier(data) : []), [data]);
+
+    // Track selected CIDs set for efficient lookup
+    const selectedSet = useMemo(() => new Set(compareCids ?? []), [compareCids]);
 
     useEffect(() => {
       if (onRowCountChanged) {
         onRowCountChanged(flatRows.length);
       }
     }, [flatRows.length, onRowCountChanged]);
+
+    // Report frontier CIDs to parent for cursor-to-CID resolution
+    const frontierCids = useMemo(() => flatRows.map((r) => r.cid), [flatRows]);
+    useEffect(() => {
+      if (onFrontierCidsChanged) {
+        onFrontierCidsChanged(frontierCids);
+      }
+    }, [frontierCids, onFrontierCidsChanged]);
 
     if (loading && !data) {
       return (
@@ -154,18 +181,23 @@ export const FrontierView: React.NamedExoticComponent<FrontierViewProps> = React
       );
     }
 
-    const tableRows = flatRows.map((r) => ({
-      rank: String(r.rank),
-      cid: truncateCid(r.cid),
-      metric: r.metric,
-      value: formatValue(r.value),
-      summary: r.summary.length > 36 ? `${r.summary.slice(0, 34)}..` : r.summary,
-    }));
+    const tableRows = flatRows.map((r) => {
+      const isSelected = compareMode && selectedSet.has(r.cid);
+      const prefix = compareMode ? (isSelected ? "[*] " : "[ ] ") : "";
+      return {
+        rank: String(r.rank),
+        cid: `${prefix}${truncateCid(r.cid)}`,
+        metric: r.metric,
+        value: formatValue(r.value),
+        summary: r.summary.length > 36 ? `${r.summary.slice(0, 34)}..` : r.summary,
+      };
+    });
 
     return (
       <box flexDirection="column">
         <box marginBottom={1}>
           <text>Frontier Rankings</text>
+          {compareMode && <text color="#ff6600"> [COMPARE]</text>}
           <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
           {flatRows.length > 0 ? (
             <text opacity={0.5}>

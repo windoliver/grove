@@ -19,6 +19,13 @@ const LEASE_DURATION_MS = 300_000; // 5 minutes
 /** Heartbeat interval: renew at ~40% of lease duration. */
 const HEARTBEAT_INTERVAL_MS = 120_000; // 2 minutes
 
+/** PR context injected as env vars when spawning agents. */
+export interface PrContext {
+  readonly number: number;
+  readonly title: string;
+  readonly filesChanged: number;
+}
+
 /** Tracked state for a spawned agent. */
 interface SpawnRecord {
   readonly claimId: string;
@@ -45,6 +52,7 @@ export class SpawnManager {
   private readonly heartbeatTimers = new Map<string, ReturnType<typeof setInterval>>();
   private readonly spawnRecords = new Map<string, SpawnRecord>();
   private readonly onError: (message: string) => void;
+  private prContext: PrContext | undefined;
 
   /** Overridable heartbeat interval for testing. */
   heartbeatIntervalMs: number = HEARTBEAT_INTERVAL_MS;
@@ -57,6 +65,20 @@ export class SpawnManager {
     this.provider = provider;
     this.tmux = tmux;
     this.onError = onError;
+  }
+
+  /**
+   * Set PR context to inject into spawned agent environments.
+   * When set, GROVE_PR_NUMBER, GROVE_PR_TITLE, and GROVE_PR_FILES
+   * are exported in the tmux session before the agent command runs.
+   */
+  setPrContext(ctx: PrContext | undefined): void {
+    this.prContext = ctx;
+  }
+
+  /** Get the current PR context (for testing). */
+  getPrContext(): PrContext | undefined {
+    return this.prContext;
   }
 
   /**
@@ -103,10 +125,23 @@ export class SpawnManager {
     }
 
     // Step 3: Start tmux session. Roll back on failure.
+    // If PR context is available, wrap the command with env var exports
+    // so the agent process sees GROVE_PR_* from the start.
     try {
+      let finalCommand = command;
+      if (this.prContext) {
+        const esc = (s: string) => s.replace(/'/g, "'\\''");
+        const exports = [
+          `export GROVE_PR_NUMBER='${esc(String(this.prContext.number))}'`,
+          `export GROVE_PR_TITLE='${esc(this.prContext.title)}'`,
+          `export GROVE_PR_FILES='${esc(String(this.prContext.filesChanged))}'`,
+        ].join(" && ");
+        finalCommand = `${exports} && ${command}`;
+      }
+
       const options: SpawnOptions = {
         agentId: spawnId,
-        command,
+        command: finalCommand,
         targetRef: spawnId,
         workspacePath,
       };

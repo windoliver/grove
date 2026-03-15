@@ -75,4 +75,7 @@ export const swarmOpsPreset: PresetConfig = {
   ],
   services: { server: true, mcp: true },
   backend: "nexus",
+  features: {
+    costTracking: true,
+  },
 };

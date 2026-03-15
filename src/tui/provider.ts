@@ -30,6 +30,10 @@ export interface ProviderCapabilities {
   readonly outcomes: boolean;
   readonly artifacts: boolean;
   readonly vfs: boolean;
+  readonly messaging: boolean;
+  readonly costTracking: boolean;
+  readonly askUser: boolean;
+  readonly github: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +148,49 @@ export interface FsEntry {
   readonly sizeBytes?: number | undefined;
 }
 
+/** Message from inbox. */
+export interface InboxMessage {
+  readonly cid: string;
+  readonly from: { readonly agentId: string; readonly agentName?: string };
+  readonly body: string;
+  readonly recipients: readonly string[];
+  readonly createdAt: string;
+}
+
+/** Session cost summary. */
+export interface SessionCostSummary {
+  readonly totalCostUsd: number;
+  readonly totalTokens: number;
+  readonly byAgent: readonly {
+    readonly agentId: string;
+    readonly agentName?: string;
+    readonly costUsd: number;
+    readonly tokens: number;
+    readonly contextPercent?: number;
+  }[];
+}
+
+/** Pending ask-user question. */
+export interface PendingQuestion {
+  readonly cid: string;
+  readonly agentName?: string;
+  readonly question: string;
+  readonly options?: readonly string[];
+  readonly createdAt: string;
+}
+
+/** GitHub PR summary. */
+export interface GitHubPRSummary {
+  readonly number: number;
+  readonly title: string;
+  readonly state: string;
+  readonly checksStatus: string;
+  readonly reviewStatus: string;
+  readonly filesChanged: number;
+  readonly additions: number;
+  readonly deletions: number;
+}
+
 // ---------------------------------------------------------------------------
 // Base provider (unchanged from pre-#65)
 // ---------------------------------------------------------------------------
@@ -223,4 +270,28 @@ export interface TuiArtifactProvider {
 /** Nexus VFS browsing — available when capabilities.vfs is true. */
 export interface TuiVfsProvider {
   listPath(path: string): Promise<readonly FsEntry[]>;
+}
+
+/** Messaging queries — available when capabilities.messaging is true. */
+export interface TuiMessagingProvider {
+  getInboxMessages(query?: {
+    recipient?: string;
+    limit?: number;
+  }): Promise<readonly InboxMessage[]>;
+}
+
+/** Cost tracking — available when capabilities.costTracking is true. */
+export interface TuiCostProvider {
+  getSessionCosts(): Promise<SessionCostSummary>;
+}
+
+/** Ask-user event bus — available when capabilities.askUser is true. */
+export interface TuiAskUserProvider {
+  getPendingQuestions(): Promise<readonly PendingQuestion[]>;
+  answerQuestion(questionCid: string, answer: string): Promise<void>;
+}
+
+/** GitHub context — available when capabilities.github is true. */
+export interface TuiGitHubProvider {
+  getActivePR(): Promise<GitHubPRSummary | undefined>;
 }

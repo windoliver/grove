@@ -59,6 +59,21 @@ export interface PeerLoad {
   readonly queueDepth: number;
 }
 
+/**
+ * Agent capacity information for a peer server (boardroom).
+ *
+ * Included in gossip messages so that peers can delegate work
+ * to nodes with available agent slots.
+ */
+export interface AgentCapacity {
+  /** Total agent slots available on this peer. */
+  readonly totalSlots: number;
+  /** Currently occupied agent slots. */
+  readonly usedSlots: number;
+  /** Number of free slots (totalSlots - usedSlots). */
+  readonly freeSlots: number;
+}
+
 /** Capabilities of a peer server. */
 export interface PeerCapabilities {
   readonly platform?: string | undefined;
@@ -79,6 +94,8 @@ export interface GossipMessage {
   readonly capabilities: PeerCapabilities;
   /** Timestamp of this message. */
   readonly timestamp: string;
+  /** Agent capacity for gossip-aware spawning (boardroom). */
+  readonly agentCapacity?: AgentCapacity | undefined;
 }
 
 // ---------------------------------------------------------------------------

@@ -68,4 +68,7 @@ export const explorationPreset: PresetConfig = {
   ],
   services: { server: true, mcp: false },
   backend: "nexus",
+  features: {
+    askUser: { strategy: "interactive", perAgent: true },
+  },
 };

@@ -34,7 +34,15 @@ function makeMockProvider(): TuiDataProvider & {
     cleanedWorkspaces,
     heartbeatCount,
 
-    capabilities: { outcomes: false, artifacts: false, vfs: false },
+    capabilities: {
+      outcomes: false,
+      artifacts: false,
+      vfs: false,
+      messaging: false,
+      costTracking: false,
+      askUser: false,
+      github: false,
+    },
 
     async getDashboard() {
       return {

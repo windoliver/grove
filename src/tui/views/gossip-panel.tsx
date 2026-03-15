@@ -31,13 +31,15 @@ interface GossipPeerProvider {
 interface PeerRow {
   readonly peerId: string;
   readonly address: string;
+  readonly capacity: string;
   readonly age: string;
   readonly lastSeen: string;
 }
 
 const COLUMNS = [
-  { header: "PEER", key: "peerId", width: 20 },
-  { header: "ADDRESS", key: "address", width: 28 },
+  { header: "PEER", key: "peerId", width: 18 },
+  { header: "ADDRESS", key: "address", width: 24 },
+  { header: "CAPACITY", key: "capacity", width: 10 },
   { header: "AGE", key: "age", width: 6 },
   { header: "LAST SEEN", key: "lastSeen", width: 12 },
 ] as const;
@@ -68,8 +70,12 @@ export const GossipPanelView: React.NamedExoticComponent<GossipPanelProps> = Rea
         provider as unknown as GossipPeerProvider
       ).getGossipPeers();
       return peers.map((p) => ({
-        peerId: p.peerId.length > 20 ? `${p.peerId.slice(0, 18)}..` : p.peerId,
-        address: p.address.length > 28 ? `${p.address.slice(0, 26)}..` : p.address,
+        peerId: p.peerId.length > 18 ? `${p.peerId.slice(0, 16)}..` : p.peerId,
+        address: p.address.length > 24 ? `${p.address.slice(0, 22)}..` : p.address,
+        capacity:
+          (p as unknown as { freeSlots?: number; totalSlots?: number }).totalSlots !== undefined
+            ? `${String((p as unknown as { freeSlots: number }).freeSlots)}/${String((p as unknown as { totalSlots: number }).totalSlots)}`
+            : "-",
         age: String(p.age),
         lastSeen: formatTimestamp(p.lastSeen),
       }));

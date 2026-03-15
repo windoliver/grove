@@ -7,7 +7,6 @@
 
 import React, { useCallback, useEffect, useRef } from "react";
 import type { Claim } from "../../core/models.js";
-import { formatDuration } from "../../shared/duration.js";
 import type { TmuxManager } from "../agents/tmux-manager.js";
 import { agentIdFromSession } from "../agents/tmux-manager.js";
 import { DataStatus } from "../components/data-status.js";
@@ -26,17 +25,44 @@ export interface AgentListProps {
 }
 
 const COLUMNS = [
-  { header: "AGENT", key: "agentId", width: 18 },
-  { header: "TARGET", key: "target", width: 24 },
-  { header: "STATUS", key: "status", width: 10 },
-  { header: "LEASE", key: "lease", width: 12 },
-  { header: "SESSION", key: "session", width: 20 },
+  { header: "AGENT", key: "agentId", width: 16 },
+  { header: "PLATFORM", key: "platform", width: 12 },
+  { header: "STATUS", key: "status", width: 8 },
+  { header: "COST", key: "cost", width: 10 },
+  { header: "TARGET", key: "target", width: 18 },
+  { header: "SESSION", key: "session", width: 16 },
 ] as const;
+
+/** Derive detailed agent status from claim, session, and tmux state. */
+function deriveAgentStatus(
+  claim: Claim,
+  session: string | undefined,
+  tmuxSessions: readonly string[],
+): string {
+  const remaining = new Date(claim.leaseExpiresAt).getTime() - Date.now();
+
+  if (remaining <= 0) return "expired";
+  if (!session) return "claimed";
+
+  // Check if session is still alive in tmux
+  const sessionAlive = tmuxSessions.includes(session);
+  if (!sessionAlive) return "error";
+
+  // Check for stalled agents (heartbeat older than 60s)
+  const heartbeatAge = Date.now() - new Date(claim.heartbeatAt).getTime();
+  if (heartbeatAge > 60_000) {
+    return "stalled";
+  }
+
+  // Active session exists
+  return "running";
+}
 
 /** Build agent rows by correlating claims with tmux sessions. */
 function buildAgentRows(
   claims: readonly Claim[],
   tmuxSessions: readonly string[],
+  costs?: ReadonlyMap<string, { costUsd: number; tokens: number; contextPercent?: number }>,
 ): readonly Record<string, string>[] {
   const agentSessions = new Map<string, string>();
 
@@ -50,13 +76,15 @@ function buildAgentRows(
   return claims.map((claim) => {
     const agentId = claim.agent.agentName ?? claim.agent.agentId;
     const session = agentSessions.get(claim.agent.agentId);
-    const remaining = new Date(claim.leaseExpiresAt).getTime() - Date.now();
+    const status = deriveAgentStatus(claim, session, tmuxSessions);
+    const agentCost = costs?.get(claim.agent.agentId);
 
     return {
       agentId,
-      target: claim.targetRef.length > 24 ? `${claim.targetRef.slice(0, 22)}..` : claim.targetRef,
-      status: session ? "running" : remaining > 0 ? "claimed" : "expired",
-      lease: remaining > 0 ? formatDuration(remaining) : "expired",
+      platform: claim.agent.platform ?? "-",
+      target: claim.targetRef.length > 18 ? `${claim.targetRef.slice(0, 16)}..` : claim.targetRef,
+      status,
+      cost: agentCost ? `$${agentCost.costUsd.toFixed(2)}` : "-",
       session: session ?? "-",
     };
   });
@@ -92,11 +120,38 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
       error: tmuxError,
     } = usePolledData<readonly string[]>(tmuxFetcher, intervalMs * 2, active && !!tmux);
 
+    const costFetcher = useCallback(async () => {
+      const cp = provider as unknown as {
+        getSessionCosts?: () => Promise<{
+          byAgent: readonly {
+            agentId: string;
+            costUsd: number;
+            tokens: number;
+            contextPercent?: number;
+          }[];
+        }>;
+      };
+      if (!cp.getSessionCosts)
+        return new Map<string, { costUsd: number; tokens: number; contextPercent?: number }>();
+      const costs = await cp.getSessionCosts();
+      const map = new Map<string, { costUsd: number; tokens: number; contextPercent?: number }>();
+      for (const a of costs.byAgent) {
+        const entry: { costUsd: number; tokens: number; contextPercent?: number } = {
+          costUsd: a.costUsd,
+          tokens: a.tokens,
+        };
+        if (a.contextPercent !== undefined) entry.contextPercent = a.contextPercent;
+        map.set(a.agentId, entry);
+      }
+      return map;
+    }, [provider]);
+    const { data: agentCosts } = usePolledData(costFetcher, intervalMs * 2, active);
+
     // Combine staleness from both data sources
     const combinedStale = isStale || tmuxStale;
     const combinedError = error ?? tmuxError;
 
-    const agentRows = buildAgentRows(claims ?? [], sessions ?? []);
+    const agentRows = buildAgentRows(claims ?? [], sessions ?? [], agentCosts ?? undefined);
 
     // Track rows for session selection and notify parent when cursor moves
     const rowsRef = useRef(agentRows);

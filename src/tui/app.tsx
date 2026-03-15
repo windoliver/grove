@@ -22,7 +22,7 @@ import { useNavigation } from "./hooks/use-navigation.js";
 import { InputMode, Panel, usePanelFocus } from "./hooks/use-panel-focus.js";
 import { usePolledData } from "./hooks/use-polled-data.js";
 import { PanelManager } from "./panels/panel-manager.js";
-import type { TuiDataProvider } from "./provider.js";
+import type { GitHubPRSummary, TuiDataProvider, TuiGitHubProvider } from "./provider.js";
 import { SpawnManager } from "./spawn-manager.js";
 
 /** Props for the root App component. */
@@ -34,6 +34,12 @@ export interface AppProps {
 }
 
 const PAGE_SIZE = 20;
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M tok`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K tok`;
+  return `${n} tok`;
+}
 
 /** Root TUI application. */
 export function App({ provider, intervalMs, tmux, topology }: AppProps): React.ReactNode {
@@ -60,6 +66,15 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
   // Search query state (driven from search input mode)
   const [searchQuery, setSearchQuery] = useState("");
   const [searchBuffer, setSearchBuffer] = useState("");
+
+  // Message input state
+  const [messageBuffer, setMessageBuffer] = useState("");
+  const [messageRecipients, setMessageRecipients] = useState("");
+
+  // Frontier compare mode
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareCids, setCompareCids] = useState<readonly string[]>([]);
+  const [frontierCids, setFrontierCids] = useState<readonly string[]>([]);
 
   // Last error for status bar display (auto-clears after 5s)
   const [lastError, setLastError] = useState<string | undefined>();
@@ -107,12 +122,95 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
     paletteVisible && tmux !== undefined,
   );
 
+  // Poll session costs for status bar display
+  const costFetcher = useCallback(async () => {
+    const cp = provider as unknown as {
+      getSessionCosts?: () => Promise<{ totalCostUsd: number; totalTokens: number }>;
+    };
+    if (!cp.getSessionCosts) return undefined;
+    return cp.getSessionCosts();
+  }, [provider]);
+  const { data: sessionCosts } = usePolledData<
+    { totalCostUsd: number; totalTokens: number } | undefined
+  >(
+    costFetcher,
+    intervalMs * 3, // Cold tier — poll every 3x base interval
+    true,
+  );
+
+  // Poll active PR and set context on SpawnManager so agents get env vars
+  const hasGitHub =
+    "getActivePR" in provider &&
+    typeof (provider as unknown as TuiGitHubProvider).getActivePR === "function";
+  const prFetcher = useCallback(async (): Promise<GitHubPRSummary | undefined> => {
+    if (!hasGitHub) return undefined;
+    return (provider as unknown as TuiGitHubProvider).getActivePR();
+  }, [provider, hasGitHub]);
+  const { data: activePR } = usePolledData<GitHubPRSummary | undefined>(
+    prFetcher,
+    intervalMs * 4, // Cold tier — PR context changes infrequently
+    hasGitHub,
+  );
+
+  // Sync PR context to SpawnManager whenever it changes
+  useEffect(() => {
+    if (!spawnManagerRef.current) return;
+    if (activePR) {
+      spawnManagerRef.current.setPrContext({
+        number: activePR.number,
+        title: activePR.title,
+        filesChanged: activePR.filesChanged,
+      });
+    } else {
+      spawnManagerRef.current.setPrContext(undefined);
+    }
+  }, [activePR]);
+
+  // Poll gossip peers for delegate items in command palette
+  const gossipFetcher = useCallback(async () => {
+    const gp = provider as unknown as {
+      getGossipPeers?: () => Promise<
+        readonly { peerId: string; address: string; freeSlots?: number; totalSlots?: number }[]
+      >;
+    };
+    if (!gp.getGossipPeers) return undefined;
+    const peers = await gp.getGossipPeers();
+    return peers
+      .filter(
+        (p): p is typeof p & { freeSlots: number; totalSlots: number } =>
+          p.freeSlots !== undefined && p.freeSlots > 0,
+      )
+      .map((p) => ({ peerId: p.peerId, address: p.address, freeSlots: p.freeSlots }));
+  }, [provider]);
+  const { data: gossipPeers } = usePolledData(gossipFetcher, intervalMs * 4, paletteVisible);
+
   // Derive parentAgentId from the selected session for lineage-aware palette display
   const paletteParentId = selectedSession ? agentIdFromSession(selectedSession) : undefined;
 
   // Derive the palette items so the keyboard handler can look up the selected action.
   // Only advertise spawn if the provider supports workspace checkout (remote does not).
   const canSpawn = provider.checkoutWorkspace !== undefined;
+
+  // Load agent profiles from .grove/agents.json
+  const profilesFetcher = useCallback(async () => {
+    try {
+      const { readFileSync } = await import("node:fs");
+      const { resolve } = await import("node:path");
+      const path = resolve(process.cwd(), ".grove", "agents.json");
+      const json = readFileSync(path, "utf-8");
+      const { parseAgentProfiles } = await import("../core/agent-profile.js");
+      return parseAgentProfiles(json).profiles.map((p) => ({
+        name: p.name,
+        role: p.role,
+        platform: p.platform,
+        command: p.command,
+      }));
+    } catch {
+      return undefined;
+    }
+  }, []);
+  const { data: agentProfiles } = usePolledData(profilesFetcher, intervalMs * 10, true);
+
   const paletteItems = useMemo(
     () =>
       buildPaletteItems(
@@ -123,8 +221,19 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
         canSpawn,
         true,
         paletteParentId,
+        gossipPeers ?? undefined,
+        agentProfiles ?? undefined,
       ),
-    [topology, activeClaims, paletteSessions, tmux, canSpawn, paletteParentId],
+    [
+      topology,
+      activeClaims,
+      paletteSessions,
+      tmux,
+      canSpawn,
+      paletteParentId,
+      gossipPeers,
+      agentProfiles,
+    ],
   );
 
   const handleContributionsLoaded = useCallback((contributions: readonly Contribution[]) => {
@@ -136,6 +245,21 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
     setRowCount(count);
   }, []);
 
+  const handleCompareSelect = useCallback((cid: string) => {
+    setCompareCids((prev) => {
+      if (prev.includes(cid)) return prev.filter((c) => c !== cid);
+      if (prev.length >= 2) {
+        const second = prev[1] ?? prev[0] ?? cid;
+        return [second, cid]; // Replace oldest
+      }
+      return [...prev, cid];
+    });
+  }, []);
+
+  const handleFrontierCidsChanged = useCallback((cids: readonly string[]) => {
+    setFrontierCids(cids);
+  }, []);
+
   const handleSelect = useCallback(
     (index: number) => {
       const contribution = contributionList[index];
@@ -145,6 +269,109 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
     },
     [contributionList, nav],
   );
+
+  const handleApproveQuestion = useCallback(async () => {
+    const askProvider = provider as unknown as {
+      answerQuestion?: (cid: string, answer: string) => Promise<void>;
+      getPendingQuestions?: () => Promise<readonly { cid: string; options?: readonly string[] }[]>;
+    };
+    if (!askProvider.answerQuestion || !askProvider.getPendingQuestions) return;
+
+    try {
+      const questions = await askProvider.getPendingQuestions();
+      const selected = questions[nav.state.cursor];
+      if (!selected) return;
+
+      const answer = selected.options?.[0] ?? "Approved";
+      await askProvider.answerQuestion(selected.cid, answer);
+      showError(`Answered: ${answer}`);
+    } catch (err) {
+      showError(err instanceof Error ? err.message : "Failed to answer");
+    }
+  }, [provider, nav.state.cursor, showError]);
+
+  /** Send a message via the boardroom API or local provider. */
+  const sendTuiMessage = useCallback(
+    async (recipients: string, body: string) => {
+      try {
+        // Try local provider first (has direct store access)
+        const mp = provider as unknown as {
+          sendMessage?: (body: string, recipients: string[]) => Promise<void>;
+        };
+        if (mp.sendMessage) {
+          await mp.sendMessage(
+            body,
+            recipients.split(",").map((r) => r.trim()),
+          );
+          showError(`Sent to ${recipients}`);
+          return;
+        }
+        // Fallback: POST to boardroom endpoint (works for remote providers)
+        // Detect base URL from provider label or default
+        const rp = provider as unknown as { baseUrl?: string };
+        const baseUrl = rp.baseUrl ?? "http://localhost:4515";
+        const resp = await fetch(`${baseUrl}/api/boardroom/message`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            body,
+            recipients: recipients.split(",").map((r) => r.trim()),
+          }),
+        });
+        if (resp.ok) {
+          showError(`Sent to ${recipients}`);
+        } else {
+          showError(`Send failed: HTTP ${String(resp.status)}`);
+        }
+      } catch (err) {
+        showError(err instanceof Error ? err.message : "Send failed");
+      }
+    },
+    [provider, showError],
+  );
+
+  /** Delegate work to a gossip peer by calling its /api/agents/spawn endpoint. */
+  const handleDelegate = useCallback(
+    async (peerAddress: string) => {
+      // Use first topology role, or fallback to "worker"
+      const role = topology?.roles[0]?.name ?? "worker";
+      try {
+        const resp = await fetch(`${peerAddress.replace(/\/+$/, "")}/api/agents/spawn`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role }),
+        });
+        if (!resp.ok) {
+          const body = (await resp.json()) as { error?: string };
+          showError(`Delegation failed: ${body.error ?? `HTTP ${String(resp.status)}`}`);
+          return;
+        }
+        const body = (await resp.json()) as { agentId: string; role: string };
+        showError(`Delegated to peer: ${body.agentId} (${body.role})`);
+      } catch (err) {
+        showError(err instanceof Error ? err.message : "Delegation failed");
+      }
+    },
+    [showError, topology],
+  );
+
+  const handleDenyQuestion = useCallback(async () => {
+    const askProvider = provider as unknown as {
+      answerQuestion?: (cid: string, answer: string) => Promise<void>;
+      getPendingQuestions?: () => Promise<readonly { cid: string }[]>;
+    };
+    if (!askProvider.answerQuestion || !askProvider.getPendingQuestions) return;
+
+    try {
+      const questions = await askProvider.getPendingQuestions();
+      const selected = questions[nav.state.cursor];
+      if (!selected) return;
+      await askProvider.answerQuestion(selected.cid, "Denied");
+      showError("Answered: Denied");
+    } catch (err) {
+      showError(err instanceof Error ? err.message : "Failed to answer");
+    }
+  }, [provider, nav.state.cursor, showError]);
 
   const handleQuit = useCallback(() => {
     provider.close();
@@ -214,12 +441,50 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
         const item = paletteItems[paletteIndex];
         if (item?.enabled) {
           if (item.kind === "spawn") {
-            // Use role's command if defined, else $SHELL (or fallback to bash).
+            // Use profile command > role command > $SHELL > bash
+            const profileCommand = agentProfiles?.find((p) => p.role === item.id)?.command;
             const roleCommand = topology?.roles.find((r) => r.name === item.id)?.command;
-            const shell = roleCommand ?? process.env.SHELL ?? "bash";
+            const shell = profileCommand ?? roleCommand ?? process.env.SHELL ?? "bash";
             handleSpawn(item.id, shell, "HEAD", paletteParentId);
           } else if (item.kind === "kill") {
             handleKill(item.id);
+          } else if (item.kind === "register") {
+            // Create .grove/agents.json template if it doesn't exist
+            void (async () => {
+              try {
+                const { existsSync, writeFileSync, mkdirSync } = await import("node:fs");
+                const { resolve } = await import("node:path");
+                const dir = resolve(process.cwd(), ".grove");
+                const path = resolve(dir, "agents.json");
+                if (!existsSync(path)) {
+                  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+                  const template = JSON.stringify(
+                    {
+                      profiles: [
+                        {
+                          name: "@agent-1",
+                          role: topology?.roles[0]?.name ?? "worker",
+                          platform: "claude-code",
+                          command: "claude --dangerously-skip-permissions",
+                        },
+                      ],
+                    },
+                    null,
+                    2,
+                  );
+                  writeFileSync(path, template);
+                  showError(`Created ${path} — edit to add agent profiles`);
+                } else {
+                  showError(
+                    `Profiles loaded from ${path} (${String(agentProfiles?.length ?? 0)} profiles)`,
+                  );
+                }
+              } catch (err) {
+                showError(err instanceof Error ? err.message : "Registration failed");
+              }
+            })();
+          } else if (item.kind === "delegate") {
+            void handleDelegate(item.id);
           }
           panels.setMode(InputMode.Normal);
           setPaletteIndex(0);
@@ -243,6 +508,38 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
       // Append printable characters
       if (input && input.length === 1 && !isCtrl) {
         setSearchBuffer((b) => b + input);
+        return;
+      }
+      return;
+    }
+
+    // In message input mode, build message character by character
+    if (panels.state.mode === InputMode.MessageInput) {
+      if (input === "return") {
+        const buf = messageBuffer.trim();
+        if (buf) {
+          if (messageRecipients === "@direct") {
+            // Parse "@recipient rest of message" from buffer
+            const match = buf.match(/^(@\S+)\s+(.+)/s);
+            if (match) {
+              void sendTuiMessage(match[1]!, match[2]!);
+            } else {
+              showError("Usage: @recipient message");
+            }
+          } else if (messageRecipients) {
+            void sendTuiMessage(messageRecipients, buf);
+          }
+        }
+        panels.setMode(InputMode.Normal);
+        return;
+      }
+      if (input === "backspace") {
+        setMessageBuffer((b) => b.slice(0, -1));
+        return;
+      }
+      // Append printable characters
+      if (input && input.length === 1 && !isCtrl) {
+        setMessageBuffer((b) => b + input);
         return;
       }
       return;
@@ -319,6 +616,18 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
       panels.toggle(Panel.Gossip);
       return;
     }
+    if (input === "\\") {
+      panels.toggle(Panel.Inbox);
+      return;
+    }
+    if (input === ";") {
+      panels.toggle(Panel.Decisions);
+      return;
+    }
+    if (input === "'") {
+      panels.toggle(Panel.GitHub);
+      return;
+    }
 
     // Tab/Shift+Tab: cycle focus
     if (input === "tab") {
@@ -343,6 +652,50 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
       return;
     }
 
+    // Broadcast message (enters message input mode)
+    if (input === "b") {
+      setMessageBuffer("");
+      setMessageRecipients("@all");
+      panels.setMode(InputMode.MessageInput);
+      return;
+    }
+
+    // Direct message (enters message input mode, user types @recipient message)
+    if (input === "@") {
+      setMessageBuffer("@");
+      setMessageRecipients("@direct"); // Sentinel — parsed from buffer on Enter
+      panels.setMode(InputMode.MessageInput);
+      return;
+    }
+
+    // Approve pending question (Decisions panel)
+    if (input === "a" && panels.state.focused === Panel.Decisions) {
+      void handleApproveQuestion();
+      return;
+    }
+
+    // Deny pending question (Decisions panel)
+    if (input === "d" && panels.state.focused === Panel.Decisions) {
+      void handleDenyQuestion();
+      return;
+    }
+
+    // MCP/ask-user manager (opens command palette for per-agent MCP config)
+    if (input === "m") {
+      setPaletteIndex(0);
+      panels.setMode(InputMode.CommandPalette);
+      return;
+    }
+
+    // Compare artifacts (Frontier panel)
+    if (input === "C" && panels.state.focused === Panel.Frontier) {
+      setCompareMode((v) => {
+        if (!v) setCompareCids([]); // Clear selections when entering compare mode
+        return !v;
+      });
+      return;
+    }
+
     // Within-panel navigation
     if (input === "j" || input === "down") {
       nav.cursorDown(Math.max(0, rowCount - 1));
@@ -356,6 +709,14 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
     if (input === "return") {
       if (panels.state.focused === Panel.Vfs) {
         setVfsNavigateTrigger((n) => n + 1);
+        return;
+      }
+      // In compare mode, Enter selects/deselects frontier entries
+      if (compareMode && panels.state.focused === Panel.Frontier && frontierCids.length > 0) {
+        const cid = frontierCids[nav.state.cursor];
+        if (cid) {
+          handleCompareSelect(cid);
+        }
         return;
       }
       const isClaimsPanel = panels.state.focused === Panel.Claims;
@@ -376,6 +737,22 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
     if (input === "p") {
       nav.prevPage(PAGE_SIZE);
       return;
+    }
+
+    // Artifact panel: adopt actions in compare mode
+    if (panels.state.focused === Panel.Artifact && compareMode && compareCids.length === 2) {
+      if (input === "a") {
+        showError(`Adopted: ${(compareCids[0] ?? "").slice(0, 16)}...`);
+        setCompareMode(false);
+        setCompareCids([]);
+        return;
+      }
+      if (input === "b") {
+        showError(`Adopted: ${(compareCids[1] ?? "").slice(0, 16)}...`);
+        setCompareMode(false);
+        setCompareCids([]);
+        return;
+      }
     }
 
     // Artifact panel: cycling (h/l, left/right) and diff toggle (d)
@@ -462,10 +839,19 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
         selectedIndex={paletteIndex}
         sessions={paletteSessions ?? undefined}
         parentAgentId={paletteParentId}
+        items={paletteItems}
       />
       <InputBar
-        visible={panels.state.mode === InputMode.TerminalInput}
+        visible={
+          panels.state.mode === InputMode.TerminalInput ||
+          panels.state.mode === InputMode.MessageInput
+        }
         sessionName={selectedSession}
+        messageLabel={
+          panels.state.mode === InputMode.MessageInput
+            ? `Message ${messageRecipients}: ${messageBuffer}`
+            : undefined
+        }
       />
       <PanelManager
         provider={provider}
@@ -485,8 +871,21 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
         activeClaims={activeClaims ?? undefined}
         searchQuery={panels.state.mode === InputMode.SearchInput ? searchBuffer : searchQuery}
         isSearchInputMode={panels.state.mode === InputMode.SearchInput}
+        compareMode={compareMode}
+        compareCids={compareCids}
+        onCompareSelect={handleCompareSelect}
+        onFrontierCidsChanged={handleFrontierCidsChanged}
       />
-      <StatusBar mode={panels.state.mode} isDetailView={nav.isDetailView} error={lastError} />
+      <StatusBar
+        mode={panels.state.mode}
+        isDetailView={nav.isDetailView}
+        error={lastError}
+        costLabel={
+          sessionCosts
+            ? `$${sessionCosts.totalCostUsd.toFixed(2)} | ${formatTokens(sessionCosts.totalTokens)}`
+            : undefined
+        }
+      />
     </box>
   );
 }

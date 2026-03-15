@@ -11,10 +11,18 @@ import type { BountyQuery } from "../core/bounty-store.js";
 import type { Frontier, FrontierQuery } from "../core/frontier.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
 import type { PeerInfo } from "../core/gossip/types.js";
+import { computeCid } from "../core/manifest.js";
 import type { AgentIdentity, Claim, Contribution } from "../core/models.js";
+import {
+  answerQuestion as answerQuestionOp,
+  listPendingQuestions,
+} from "../core/operations/ask-user-bus.js";
+import { getSessionCosts as getSessionCostsOp } from "../core/operations/cost-tracking.js";
+import { readInbox } from "../core/operations/messaging.js";
 import type { OutcomeRecord, OutcomeStatus } from "../core/outcome.js";
 import type { ContributionQuery, ThreadSummary } from "../core/store.js";
 import type { WorkspaceManager } from "../core/workspace.js";
+import { getActivePR } from "../github/active-pr.js";
 import type { NexusClient } from "../nexus/client.js";
 import type { NexusConfig } from "../nexus/config.js";
 import { resolveConfig } from "../nexus/config.js";
@@ -32,12 +40,20 @@ import type {
   DagData,
   DashboardData,
   FsEntry,
+  GitHubPRSummary,
   GroveMetadata,
+  InboxMessage,
   OperatorStats,
   PaginatedQuery,
+  PendingQuestion,
   ProviderCapabilities,
+  SessionCostSummary,
   TuiArtifactProvider,
+  TuiAskUserProvider,
+  TuiCostProvider,
   TuiDataProvider,
+  TuiGitHubProvider,
+  TuiMessagingProvider,
   TuiOutcomeProvider,
   TuiVfsProvider,
 } from "./provider.js";
@@ -69,12 +85,24 @@ export interface NexusProviderConfig {
 
 /** TUI data provider backed by Nexus VFS. */
 export class NexusDataProvider
-  implements TuiDataProvider, TuiOutcomeProvider, TuiArtifactProvider, TuiVfsProvider
+  implements
+    TuiDataProvider,
+    TuiOutcomeProvider,
+    TuiArtifactProvider,
+    TuiVfsProvider,
+    TuiMessagingProvider,
+    TuiCostProvider,
+    TuiAskUserProvider,
+    TuiGitHubProvider
 {
   readonly capabilities: ProviderCapabilities = {
     outcomes: true,
     artifacts: true,
     vfs: true,
+    messaging: true,
+    costTracking: true,
+    askUser: true,
+    github: true,
   };
 
   private readonly store: NexusContributionStore;
@@ -313,6 +341,77 @@ export class NexusDataProvider
 
   async search(query: string): Promise<readonly Contribution[]> {
     return this.store.search(query);
+  }
+
+  // ---------------------------------------------------------------------------
+  // TuiMessagingProvider
+  // ---------------------------------------------------------------------------
+
+  async getInboxMessages(query?: {
+    recipient?: string;
+    limit?: number;
+  }): Promise<readonly InboxMessage[]> {
+    const messages = await readInbox(this.store, {
+      recipient: query?.recipient,
+      limit: query?.limit,
+    });
+    return messages.map((m) => ({
+      cid: m.cid,
+      from: {
+        agentId: m.from.agentId,
+        ...(m.from.agentName !== undefined ? { agentName: m.from.agentName } : {}),
+      },
+      body: m.body,
+      recipients: m.recipients,
+      createdAt: m.createdAt,
+    }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // TuiCostProvider
+  // ---------------------------------------------------------------------------
+
+  async getSessionCosts(): Promise<SessionCostSummary> {
+    const costs = await getSessionCostsOp(this.store);
+    return {
+      totalCostUsd: costs.totalCostUsd,
+      totalTokens: costs.totalInputTokens + costs.totalOutputTokens,
+      byAgent: costs.byAgent.map((a) => ({
+        agentId: a.agentId,
+        ...(a.agentName !== undefined ? { agentName: a.agentName } : {}),
+        costUsd: a.totalCostUsd,
+        tokens: a.totalInputTokens + a.totalOutputTokens,
+        ...(a.latestContextPercent !== undefined ? { contextPercent: a.latestContextPercent } : {}),
+      })),
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // TuiAskUserProvider
+  // ---------------------------------------------------------------------------
+
+  async getPendingQuestions(): Promise<readonly PendingQuestion[]> {
+    const questions = await listPendingQuestions(this.store);
+    return questions.map((q) => ({
+      cid: q.cid,
+      ...(q.agent.agentName !== undefined ? { agentName: q.agent.agentName } : {}),
+      question: q.question,
+      ...(q.options !== undefined ? { options: q.options } : {}),
+      createdAt: q.createdAt,
+    }));
+  }
+
+  async answerQuestion(questionCid: string, answer: string): Promise<void> {
+    const operator = { agentId: "tui-operator", agentName: "operator" };
+    await answerQuestionOp(this.store, { questionCid, answer, operator }, computeCid);
+  }
+
+  // ---------------------------------------------------------------------------
+  // TuiGitHubProvider
+  // ---------------------------------------------------------------------------
+
+  async getActivePR(): Promise<GitHubPRSummary | undefined> {
+    return getActivePR();
   }
 
   // ---------------------------------------------------------------------------

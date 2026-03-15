@@ -65,4 +65,9 @@ export const researchLoopPreset: PresetConfig = {
   ],
   services: { server: true, mcp: false },
   backend: "local",
+  features: {
+    askUser: { strategy: "interactive", perAgent: true },
+    costTracking: true,
+    messaging: true,
+  },
 };

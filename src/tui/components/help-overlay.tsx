@@ -46,6 +46,9 @@ const PANEL_BINDINGS: readonly KeyBinding[] = [
   { key: "=", description: "Toggle Outcomes panel" },
   { key: "[", description: "Toggle Bounties panel" },
   { key: "]", description: "Toggle Gossip panel" },
+  { key: "\\", description: "Toggle Inbox panel" },
+  { key: ";", description: "Toggle Decisions panel" },
+  { key: "'", description: "Toggle GitHub panel" },
 ];
 
 const NAVIGATION_BINDINGS: readonly KeyBinding[] = [
@@ -79,10 +82,25 @@ const SEARCH_BINDINGS: readonly KeyBinding[] = [
   { key: "Esc", description: "Cancel search input" },
 ];
 
+const MESSAGING_BINDINGS: readonly KeyBinding[] = [
+  { key: "b", description: "Broadcast message to all agents" },
+  { key: "@", description: "Direct message to agent" },
+  { key: "m", description: "MCP/ask-user manager" },
+];
+
+const DECISIONS_BINDINGS: readonly KeyBinding[] = [
+  { key: "a", description: "Approve pending question" },
+  { key: "d", description: "Deny pending question" },
+];
+
+const FRONTIER_BINDINGS: readonly KeyBinding[] = [{ key: "C", description: "Compare artifacts" }];
+
 // Panel IDs matching use-panel-focus.ts
 const PANEL_ARTIFACT = 7;
 const PANEL_TERMINAL = 6;
 const PANEL_SEARCH = 10;
+const PANEL_DECISIONS = 16;
+const PANEL_FRONTIER = 3;
 
 function renderSection(title: string, bindings: readonly KeyBinding[]): React.ReactNode {
   return (
@@ -130,6 +148,15 @@ export const HelpOverlay: React.NamedExoticComponent<HelpOverlayProps> = React.m
     if (focusedPanel === PANEL_SEARCH) {
       sections.push(renderSection("Search Panel", SEARCH_BINDINGS));
     }
+    if (focusedPanel === PANEL_DECISIONS) {
+      sections.push(renderSection("Decisions Panel", DECISIONS_BINDINGS));
+    }
+    if (focusedPanel === PANEL_FRONTIER) {
+      sections.push(renderSection("Frontier Panel", FRONTIER_BINDINGS));
+    }
+
+    // Messaging is always available in normal mode
+    sections.push(renderSection("Messaging", MESSAGING_BINDINGS));
 
     return (
       <box flexDirection="column" paddingLeft={1} paddingRight={1}>

@@ -12,15 +12,28 @@ import React from "react";
 export interface InputBarProps {
   readonly visible: boolean;
   readonly sessionName?: string | undefined;
+  readonly messageLabel?: string | undefined;
 }
 
 /** Terminal input mode status bar. */
 export const InputBar: React.NamedExoticComponent<InputBarProps> = React.memo(function InputBar({
   visible,
   sessionName,
+  messageLabel,
 }: InputBarProps): React.ReactNode {
   if (!visible) {
     return null;
+  }
+
+  if (messageLabel) {
+    return (
+      <box paddingLeft={1} paddingRight={1}>
+        <text color="#ffcc00">[MESSAGE]</text>
+        <text color="#888888"> </text>
+        <text color="#ffffff">{messageLabel}</text>
+        <text color="#888888"> — Enter to send, Esc to cancel</text>
+      </box>
+    );
   }
 
   const target = sessionName ?? "(none)";

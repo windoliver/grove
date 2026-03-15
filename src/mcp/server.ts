@@ -14,6 +14,7 @@ import { registerBountyTools } from "./tools/bounties.js";
 import { registerClaimTools } from "./tools/claims.js";
 import { registerContributionTools } from "./tools/contributions.js";
 import { registerIngestTools } from "./tools/ingest.js";
+import { registerMessagingTools } from "./tools/messaging.js";
 import { registerOutcomeTools } from "./tools/outcomes.js";
 import { registerQueryTools } from "./tools/queries.js";
 import { registerStopTools } from "./tools/stop.js";
@@ -39,6 +40,7 @@ export async function createMcpServer(deps: McpDeps): Promise<McpServer> {
   registerBountyTools(server, deps);
   registerOutcomeTools(server, deps);
   registerIngestTools(server, deps);
+  registerMessagingTools(server, deps);
   await registerAskUserTools(server);
 
   return server;

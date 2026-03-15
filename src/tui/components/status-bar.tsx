@@ -15,6 +15,8 @@ export interface StatusBarProps {
   readonly isDetailView?: boolean | undefined;
   /** Error message to display, if any. */
   readonly error?: string | undefined;
+  /** Session cost label (e.g. "$1.23 / 45k tokens"), shown on the right when available. */
+  readonly costLabel?: string | undefined;
 }
 
 /** Mode labels for the status bar. */
@@ -23,6 +25,7 @@ const MODE_LABELS: Record<InputMode, string> = {
   terminal_input: "TERMINAL",
   command_palette: "CMD",
   search_input: "SEARCH",
+  message_input: "MESSAGE",
   help: "HELP",
 };
 
@@ -31,6 +34,7 @@ export const StatusBar: React.NamedExoticComponent<StatusBarProps> = React.memo(
   mode,
   isDetailView,
   error,
+  costLabel,
 }: StatusBarProps): React.ReactNode {
   const modeLabel = MODE_LABELS[mode];
 
@@ -48,6 +52,12 @@ export const StatusBar: React.NamedExoticComponent<StatusBarProps> = React.memo(
             ? " Esc:back  j/k:scroll  r:refresh  ?:help  q:quit"
             : " 1-4:panel  5-]:toggle  Tab:cycle  j/k:nav  Enter:select  Ctrl+P:cmd  ?:help  q:quit"}
         </text>
+        {costLabel && (
+          <text color="#888888">
+            {"  "}
+            {costLabel}
+          </text>
+        )}
       </box>
     </box>
   );

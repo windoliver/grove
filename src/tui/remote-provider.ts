@@ -33,12 +33,20 @@ import type {
   ContributionDetail,
   DagData,
   DashboardData,
+  GitHubPRSummary,
   GroveMetadata,
+  InboxMessage,
   OperatorStats,
   PaginatedQuery,
+  PendingQuestion,
   ProviderCapabilities,
+  SessionCostSummary,
   TuiArtifactProvider,
+  TuiAskUserProvider,
+  TuiCostProvider,
   TuiDataProvider,
+  TuiGitHubProvider,
+  TuiMessagingProvider,
   TuiOutcomeProvider,
 } from "./provider.js";
 import { diffArtifactsFromBuffers } from "./provider-shared.js";
@@ -46,12 +54,23 @@ import { buildFrontierSummary } from "./provider-utils.js";
 
 /** TUI data provider backed by a remote grove-server HTTP API. */
 export class RemoteDataProvider
-  implements TuiDataProvider, TuiOutcomeProvider, TuiArtifactProvider
+  implements
+    TuiDataProvider,
+    TuiOutcomeProvider,
+    TuiArtifactProvider,
+    TuiMessagingProvider,
+    TuiCostProvider,
+    TuiAskUserProvider,
+    TuiGitHubProvider
 {
   readonly capabilities: ProviderCapabilities = {
     outcomes: true,
     artifacts: true,
     vfs: false,
+    messaging: true,
+    costTracking: true,
+    askUser: true,
+    github: true,
   };
 
   private readonly baseUrl: string;
@@ -392,6 +411,120 @@ export class RemoteDataProvider
       // Fallback — gossip may not be enabled
     }
     return [];
+  }
+
+  // ---------------------------------------------------------------------------
+  // TuiMessagingProvider
+  // ---------------------------------------------------------------------------
+
+  async getInboxMessages(query?: {
+    recipient?: string;
+    limit?: number;
+  }): Promise<readonly InboxMessage[]> {
+    try {
+      const resp = await fetch(`${this.baseUrl}/api/boardroom/summary`);
+      if (!resp.ok) return [];
+      const body = (await resp.json()) as {
+        recentMessages: readonly {
+          fromAgentId: string;
+          fromAgentName?: string;
+          body: string;
+          recipients: readonly string[];
+          createdAt: string;
+          cid: string;
+        }[];
+      };
+      let messages = body.recentMessages.map((m) => ({
+        cid: m.cid,
+        from: {
+          agentId: m.fromAgentId,
+          ...(m.fromAgentName !== undefined ? { agentName: m.fromAgentName } : {}),
+        },
+        body: m.body,
+        recipients: [...m.recipients],
+        createdAt: m.createdAt,
+      }));
+      if (query?.recipient) {
+        const target = query.recipient;
+        messages = messages.filter(
+          (m) => m.recipients.includes(target) || m.recipients.includes("@all"),
+        );
+      }
+      if (query?.limit) messages = messages.slice(0, query.limit);
+      return messages;
+    } catch {
+      return [];
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // TuiCostProvider
+  // ---------------------------------------------------------------------------
+
+  async getSessionCosts(): Promise<SessionCostSummary> {
+    try {
+      const resp = await fetch(`${this.baseUrl}/api/boardroom/summary`);
+      if (!resp.ok) return { totalCostUsd: 0, totalTokens: 0, byAgent: [] };
+      const body = (await resp.json()) as {
+        costSummary: {
+          totalCostUsd: number;
+          totalTokens: number;
+          byAgent: readonly {
+            agentId: string;
+            agentName?: string;
+            costUsd: number;
+            tokens: number;
+          }[];
+        };
+      };
+      return body.costSummary;
+    } catch {
+      return { totalCostUsd: 0, totalTokens: 0, byAgent: [] };
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // TuiAskUserProvider
+  // ---------------------------------------------------------------------------
+
+  async getPendingQuestions(): Promise<readonly PendingQuestion[]> {
+    try {
+      const resp = await fetch(`${this.baseUrl}/api/boardroom/summary`);
+      if (!resp.ok) return [];
+      const body = (await resp.json()) as {
+        pendingQuestions: readonly {
+          cid: string;
+          agentName?: string;
+          question: string;
+          options?: readonly string[];
+          createdAt: string;
+        }[];
+      };
+      return body.pendingQuestions;
+    } catch {
+      return [];
+    }
+  }
+
+  async answerQuestion(questionCid: string, answer: string): Promise<void> {
+    const resp = await fetch(`${this.baseUrl}/api/boardroom/answer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ questionCid, answer }),
+    });
+    if (!resp.ok) {
+      throw new Error(`Failed to answer question: HTTP ${String(resp.status)}`);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // TuiGitHubProvider
+  // ---------------------------------------------------------------------------
+
+  async getActivePR(): Promise<GitHubPRSummary | undefined> {
+    // gh CLI runs locally even for remote providers
+    const { getActivePR: getActivePRFn } = await import("../github/active-pr.js");
+    return getActivePRFn();
   }
 
   // ---------------------------------------------------------------------------

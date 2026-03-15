@@ -42,6 +42,13 @@ const TopologyRoleWithEdgesSchema = z
     max_instances: z.number().int().min(1).max(100).optional(),
     edges: z.array(RoleEdgeSchema).max(50).optional(),
     command: z.string().max(512).optional(),
+    // Profile fields — runtime agent configuration (boardroom)
+    platform: z.enum(["claude-code", "codex", "gemini", "custom"]).optional(),
+    model: z.string().max(128).optional(),
+    color: z
+      .string()
+      .regex(/^#[0-9a-fA-F]{6}$/)
+      .optional(),
   })
   .strict();
 
@@ -65,6 +72,9 @@ interface WireAgentTopology {
         }[]
       | undefined;
     readonly command?: string | undefined;
+    readonly platform?: "claude-code" | "codex" | "gemini" | "custom" | undefined;
+    readonly model?: string | undefined;
+    readonly color?: string | undefined;
   }[];
   readonly spawning?:
     | {
@@ -175,6 +185,9 @@ export interface RoleEdge {
   readonly edgeType: EdgeType;
 }
 
+/** Supported agent platform identifiers (boardroom). */
+export type AgentPlatformType = "claude-code" | "codex" | "gemini" | "custom";
+
 /** An agent role within a topology. */
 export interface AgentRole {
   readonly name: string;
@@ -183,6 +196,12 @@ export interface AgentRole {
   readonly edges?: readonly RoleEdge[] | undefined;
   /** Shell command to run when spawning this role (defaults to $SHELL). */
   readonly command?: string | undefined;
+  /** Agent platform identifier (boardroom). */
+  readonly platform?: AgentPlatformType | undefined;
+  /** Model identifier, e.g. "claude-opus-4-6" (boardroom). */
+  readonly model?: string | undefined;
+  /** TUI handle color as hex, e.g. "#00cccc" (boardroom). */
+  readonly color?: string | undefined;
 }
 
 /** Spawning configuration for dynamic agent creation. */
@@ -223,6 +242,9 @@ export function wireToTopology(wire: z.infer<typeof AgentTopologySchema>): Agent
           ),
         }),
         ...(role.command !== undefined && { command: role.command }),
+        ...(role.platform !== undefined && { platform: role.platform as AgentPlatformType }),
+        ...(role.model !== undefined && { model: role.model }),
+        ...(role.color !== undefined && { color: role.color }),
       }),
     ),
     ...(wire.spawning !== undefined && {

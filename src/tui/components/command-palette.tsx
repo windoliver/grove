@@ -14,8 +14,8 @@ import type { TmuxManager } from "../agents/tmux-manager.js";
 
 /** A single actionable entry in the palette. */
 export interface PaletteItem {
-  readonly kind: "spawn" | "kill";
-  /** For spawn: role name. For kill: session name. */
+  readonly kind: "spawn" | "kill" | "register" | "delegate";
+  /** For spawn: role name. For kill: session name. For delegate: peerId. */
   readonly id: string;
   readonly label: string;
   readonly enabled: boolean;
@@ -37,6 +37,20 @@ export interface CommandPaletteProps {
   readonly sessions?: readonly string[] | undefined;
   /** Parent agent ID for lineage-aware capacity display. */
   readonly parentAgentId?: string | undefined;
+  /** Gossip peers with free agent capacity for delegation. */
+  readonly gossipPeers?:
+    | readonly { peerId: string; address: string; freeSlots: number }[]
+    | undefined;
+  /** Pre-built palette items from parent (single source of truth). */
+  readonly items?: readonly PaletteItem[] | undefined;
+}
+
+/** An agent profile loaded from .grove/agents.json. */
+export interface LoadedProfile {
+  readonly name: string;
+  readonly role: string;
+  readonly platform: string;
+  readonly command?: string | undefined;
 }
 
 /** Build the unified list of palette items from topology roles and tmux sessions. */
@@ -48,12 +62,47 @@ export function buildPaletteItems(
   hasSpawn: boolean,
   hasKill: boolean,
   parentAgentId?: string | undefined,
+  gossipPeers?: readonly { peerId: string; address: string; freeSlots: number }[] | undefined,
+  agentProfiles?: readonly LoadedProfile[] | undefined,
 ): readonly PaletteItem[] {
   const items: PaletteItem[] = [];
 
-  // Spawn items from topology roles
+  // Register item — always available at the top
+  items.push({
+    kind: "register" as const,
+    id: "register-agent",
+    label: "[r] Register new agent profile",
+    enabled: true,
+    detail: "agents.json",
+  });
+
+  // Spawn items from registered profiles (take precedence over raw topology roles)
+  const profileRoles = new Set<string>();
+  if (agentProfiles && agentProfiles.length > 0 && hasTmux && hasSpawn) {
+    for (const profile of agentProfiles) {
+      profileRoles.add(profile.role);
+      const check = topology
+        ? checkSpawn(topology, profile.role, activeClaims, parentAgentId)
+        : { allowed: true, currentInstances: 0 };
+      const max =
+        "maxInstances" in check && check.maxInstances !== undefined
+          ? String(check.maxInstances)
+          : "\u221E";
+      const suffix = !check.allowed ? " (at capacity)" : "";
+      items.push({
+        kind: "spawn",
+        id: profile.role,
+        label: `spawn: ${profile.name} [${profile.platform}]`,
+        enabled: check.allowed,
+        detail: `${check.currentInstances}/${max}${suffix}`,
+      });
+    }
+  }
+
+  // Spawn items from topology roles (only those not already covered by profiles)
   if (topology && hasTmux && hasSpawn) {
     for (const role of topology.roles) {
+      if (profileRoles.has(role.name)) continue;
       const check = checkSpawn(topology, role.name, activeClaims, parentAgentId);
       const max = check.maxInstances !== undefined ? String(check.maxInstances) : "\u221E";
       const suffix = !check.allowed ? " (at capacity)" : "";
@@ -80,6 +129,21 @@ export function buildPaletteItems(
     }
   }
 
+  // Delegate items from gossip peers with free capacity
+  if (gossipPeers) {
+    for (const peer of gossipPeers) {
+      if (peer.freeSlots > 0) {
+        items.push({
+          kind: "delegate" as const,
+          id: peer.address,
+          label: `[d] Delegate to ${peer.peerId} (${peer.freeSlots} free)`,
+          enabled: true,
+          detail: `${peer.freeSlots} slots`,
+        });
+      }
+    }
+  }
+
   return items;
 }
 
@@ -96,6 +160,8 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
     selectedIndex,
     sessions,
     parentAgentId,
+    gossipPeers,
+    items: externalItems,
   }: CommandPaletteProps): React.ReactNode {
     const hasTmux = tmux !== undefined;
 
@@ -105,7 +171,8 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
     void onSpawn;
     void onKill;
 
-    const items = useMemo(
+    // Use parent-provided items (single source of truth) or build internally as fallback
+    const internalItems = useMemo(
       () =>
         buildPaletteItems(
           topology,
@@ -115,9 +182,11 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
           onSpawn !== undefined,
           onKill !== undefined,
           parentAgentId,
+          gossipPeers,
         ),
-      [topology, activeClaims, sessions, hasTmux, onSpawn, onKill, parentAgentId],
+      [topology, activeClaims, sessions, hasTmux, onSpawn, onKill, parentAgentId, gossipPeers],
     );
+    const items = externalItems ?? internalItems;
 
     if (!visible) {
       return null;

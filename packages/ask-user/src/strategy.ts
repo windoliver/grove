@@ -98,6 +98,10 @@ export async function resolveStrategy(
       const { createInteractiveStrategy } = await import("./strategies/interactive.js");
       return createInteractiveStrategy();
     }
+    case "tui": {
+      const { createTuiStrategy } = await import("./strategies/tui.js");
+      return createTuiStrategy();
+    }
   }
 }
 

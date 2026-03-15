@@ -81,6 +81,8 @@ export class DefaultGossipService implements GossipService {
   private readonly frontier: FrontierCalculator;
   private readonly capabilities: PeerCapabilities;
   private readonly getLoad: () => PeerLoad;
+  private readonly getActiveClaimCount: (() => Promise<number>) | undefined;
+  private readonly maxAgentSlots: number;
   private readonly listeners: Set<GossipEventListener> = new Set();
   private readonly livenessMap = new Map<string, LivenessState>();
   private remoteFrontier: FrontierDigestEntry[] = [];
@@ -98,6 +100,10 @@ export class DefaultGossipService implements GossipService {
     now?: () => number;
     /** Pre-populate remote frontier (e.g., from persisted state). */
     initialFrontier?: readonly FrontierDigestEntry[];
+    /** Callback to get the current number of active claims (for agent capacity). */
+    getActiveClaimCount?: () => Promise<number>;
+    /** Maximum agent slots available on this peer (default: 8). */
+    maxAgentSlots?: number;
   }) {
     this.config = {
       peerId: opts.config.peerId,
@@ -130,6 +136,8 @@ export class DefaultGossipService implements GossipService {
     this.frontier = opts.frontier;
     this.capabilities = opts.capabilities ?? {};
     this.getLoad = opts.getLoad ?? (() => ({ queueDepth: 0 }));
+    this.getActiveClaimCount = opts.getActiveClaimCount;
+    this.maxAgentSlots = opts.maxAgentSlots ?? 8;
     this.now = opts.now ?? Date.now;
 
     // Initialize liveness for seed peers
@@ -220,6 +228,18 @@ export class DefaultGossipService implements GossipService {
 
   async currentMessage(): Promise<GossipMessage> {
     const digest = await this.computeDigest();
+
+    // Compute agent capacity if claim count callback is available
+    let agentCapacity: GossipMessage["agentCapacity"];
+    if (this.getActiveClaimCount) {
+      const usedSlots = await this.getActiveClaimCount();
+      agentCapacity = {
+        totalSlots: this.maxAgentSlots,
+        usedSlots,
+        freeSlots: Math.max(0, this.maxAgentSlots - usedSlots),
+      };
+    }
+
     return {
       peerId: this.config.peerId,
       address: this.config.address,
@@ -227,6 +247,7 @@ export class DefaultGossipService implements GossipService {
       load: this.getLoad(),
       capabilities: this.capabilities,
       timestamp: new Date(this.now()).toISOString(),
+      agentCapacity,
     };
   }
 

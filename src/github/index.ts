@@ -44,6 +44,9 @@ export {
   prToContributionInput,
 } from "./mapper.js";
 
+// Outcome poster (Feature 4: Outcome -> GitHub)
+export { postCheckRun, postOutcomeComment } from "./outcome-poster.js";
+
 // Ref parsers
 export { parseDiscussionRef, parsePRRef, parseRepoRef } from "./refs.js";
 // Testing utilities

@@ -32,11 +32,15 @@ import { AgentListView } from "../views/agent-list.js";
 import { ArtifactPreviewView } from "../views/artifact-preview.js";
 import { BountiesPanelView } from "../views/bounties-panel.js";
 import { ClaimsView } from "../views/claims.js";
+import { CompareView } from "../views/compare-view.js";
 import { DagView } from "../views/dag.js";
 import { DashboardView } from "../views/dashboard.js";
+import { DecisionsPanelView } from "../views/decisions-panel.js";
 import { DetailView } from "../views/detail.js";
 import { FrontierView } from "../views/frontier-view.js";
+import { GitHubPanelView } from "../views/github-panel.js";
 import { GossipPanelView } from "../views/gossip-panel.js";
+import { InboxPanelView } from "../views/inbox-panel.js";
 import { OutcomesPanelView } from "../views/outcomes-panel.js";
 import { SearchPanelView } from "../views/search-panel.js";
 import { TerminalView } from "../views/terminal.js";
@@ -68,6 +72,14 @@ export interface PanelManagerProps {
   readonly searchQuery?: string | undefined;
   /** Whether the Search panel is in input mode. */
   readonly isSearchInputMode?: boolean | undefined;
+  /** Whether compare mode is active in the Frontier panel. */
+  readonly compareMode?: boolean | undefined;
+  /** CIDs selected for comparison. */
+  readonly compareCids?: readonly string[] | undefined;
+  /** Callback when a CID is selected/deselected in compare mode. */
+  readonly onCompareSelect?: ((cid: string) => void) | undefined;
+  /** Reports the ordered CID list from the frontier view. */
+  readonly onFrontierCidsChanged?: ((cids: readonly string[]) => void) | undefined;
 }
 
 /** Wraps a panel view with a titled border. */
@@ -112,6 +124,10 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
     activeClaims,
     searchQuery,
     isSearchInputMode,
+    compareMode,
+    compareCids,
+    onCompareSelect,
+    onFrontierCidsChanged,
   }: PanelManagerProps): React.ReactNode {
     const isFocused = (p: Panel) => panelState.focused === p;
 
@@ -185,6 +201,10 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
               active
               cursor={isFocused(Panel.Frontier) ? nav.state.cursor : -1}
               onRowCountChanged={onRowCountChanged}
+              compareMode={compareMode}
+              onCompareSelect={onCompareSelect}
+              compareCids={compareCids}
+              onFrontierCidsChanged={onFrontierCidsChanged}
             />
           </PanelChrome>
         </box>
@@ -248,23 +268,33 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
         {/* Artifact / VFS panels */}
         {(isPanelVisible(panelState, Panel.Artifact) || isPanelVisible(panelState, Panel.Vfs)) && (
           <box flexDirection="row" flexGrow={1}>
-            {isPanelVisible(panelState, Panel.Artifact) && (
-              <PanelChrome panel={Panel.Artifact} focused={isFocused(Panel.Artifact)}>
-                <ArtifactPreviewView
-                  provider={provider}
-                  cid={detailCid}
-                  artifactName={selectedArtifactName}
-                  allArtifactNames={artifactNames}
-                  artifactIndex={
-                    artifactNames.length > 0 ? (artifactIndex ?? 0) % artifactNames.length : 0
-                  }
-                  parentCid={parentCid}
-                  showDiff={showArtifactDiff}
-                  intervalMs={intervalMs}
-                  active={isPanelVisible(panelState, Panel.Artifact)}
-                />
-              </PanelChrome>
-            )}
+            {isPanelVisible(panelState, Panel.Artifact) &&
+              (compareMode && compareCids && compareCids.length === 2 ? (
+                <PanelChrome panel={Panel.Artifact} focused={isFocused(Panel.Artifact)}>
+                  <CompareView
+                    provider={provider}
+                    leftCid={compareCids[0] ?? ""}
+                    rightCid={compareCids[1] ?? ""}
+                    intervalMs={intervalMs}
+                  />
+                </PanelChrome>
+              ) : (
+                <PanelChrome panel={Panel.Artifact} focused={isFocused(Panel.Artifact)}>
+                  <ArtifactPreviewView
+                    provider={provider}
+                    cid={detailCid}
+                    artifactName={selectedArtifactName}
+                    allArtifactNames={artifactNames}
+                    artifactIndex={
+                      artifactNames.length > 0 ? (artifactIndex ?? 0) % artifactNames.length : 0
+                    }
+                    parentCid={parentCid}
+                    showDiff={showArtifactDiff}
+                    intervalMs={intervalMs}
+                    active={isPanelVisible(panelState, Panel.Artifact)}
+                  />
+                </PanelChrome>
+              ))}
             {isPanelVisible(panelState, Panel.Vfs) && (
               <PanelChrome panel={Panel.Vfs} focused={isFocused(Panel.Vfs)}>
                 <VfsBrowserView
@@ -361,6 +391,47 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
                   intervalMs={intervalMs}
                   active={isPanelVisible(panelState, Panel.Gossip)}
                   cursor={isFocused(Panel.Gossip) ? nav.state.cursor : -1}
+                  onRowCountChanged={onRowCountChanged}
+                />
+              </PanelChrome>
+            )}
+          </box>
+        )}
+
+        {/* Inbox / Decisions / GitHub panels */}
+        {(isPanelVisible(panelState, Panel.Inbox) ||
+          isPanelVisible(panelState, Panel.Decisions) ||
+          isPanelVisible(panelState, Panel.GitHub)) && (
+          <box flexDirection="row" flexGrow={1}>
+            {isPanelVisible(panelState, Panel.Inbox) && (
+              <PanelChrome panel={Panel.Inbox} focused={isFocused(Panel.Inbox)}>
+                <InboxPanelView
+                  provider={provider}
+                  intervalMs={intervalMs}
+                  active={isPanelVisible(panelState, Panel.Inbox)}
+                  cursor={isFocused(Panel.Inbox) ? nav.state.cursor : -1}
+                  onRowCountChanged={onRowCountChanged}
+                />
+              </PanelChrome>
+            )}
+            {isPanelVisible(panelState, Panel.Decisions) && (
+              <PanelChrome panel={Panel.Decisions} focused={isFocused(Panel.Decisions)}>
+                <DecisionsPanelView
+                  provider={provider}
+                  intervalMs={intervalMs}
+                  active={isPanelVisible(panelState, Panel.Decisions)}
+                  cursor={isFocused(Panel.Decisions) ? nav.state.cursor : -1}
+                  onRowCountChanged={onRowCountChanged}
+                />
+              </PanelChrome>
+            )}
+            {isPanelVisible(panelState, Panel.GitHub) && (
+              <PanelChrome panel={Panel.GitHub} focused={isFocused(Panel.GitHub)}>
+                <GitHubPanelView
+                  provider={provider}
+                  intervalMs={intervalMs}
+                  active={isPanelVisible(panelState, Panel.GitHub)}
+                  cursor={isFocused(Panel.GitHub) ? nav.state.cursor : -1}
                   onRowCountChanged={onRowCountChanged}
                 />
               </PanelChrome>

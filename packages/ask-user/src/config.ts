@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { z } from "zod/v4";
 
 /** Valid strategy names. */
-export type StrategyNameType = "llm" | "rules" | "agent" | "interactive";
+export type StrategyNameType = "llm" | "rules" | "agent" | "interactive" | "tui";
 
 /** Rules strategy configuration. */
 export interface RulesConfigType {
@@ -43,7 +43,7 @@ export interface AskUserConfig {
 
 // --- Internal Zod schemas (not exported, avoids isolatedDeclarations issues) ---
 
-const strategyNameSchema = z.enum(["llm", "rules", "agent", "interactive"]);
+const strategyNameSchema = z.enum(["llm", "rules", "agent", "interactive", "tui"]);
 
 const rulesConfigSchema = z
   .object({

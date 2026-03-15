@@ -97,6 +97,11 @@ function jsonDeepEqual(a: unknown, b: unknown): boolean {
   return false;
 }
 
+/** Check if a contribution is ephemeral (messages, transient data). */
+function isEphemeral(c: Contribution): boolean {
+  return c.context?.ephemeral === true;
+}
+
 /** Filter contributions by query tags, platform, kind, mode, and agent. */
 function matchesFilters(c: Contribution, query?: FrontierQuery): boolean {
   if (query?.tags && query.tags.length > 0) {
@@ -157,8 +162,10 @@ export class DefaultFrontierCalculator implements FrontierCalculator {
 
     // Fetch store-filtered contributions. Platform and context filters
     // are not supported by ContributionQuery so they remain in-memory.
+    // Ephemeral contributions (messages, transient data) are excluded
+    // from frontier ranking by default to prevent inbox flooding.
     const storeContributions = await this.store.list(storeQuery);
-    const filtered = storeContributions.filter((c) => matchesFilters(c, query));
+    const filtered = storeContributions.filter((c) => !isEphemeral(c) && matchesFilters(c, query));
 
     // Relation counting still needs all contributions for incoming-edge scans.
     const allContributions =

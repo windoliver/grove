@@ -19,6 +19,8 @@
 import { Hono } from "hono";
 import type { ServerDeps, ServerEnv } from "./deps.js";
 import { handleError } from "./middleware/error-handler.js";
+import { agents } from "./routes/agents.js";
+import { boardroom } from "./routes/boardroom.js";
 import { bounties } from "./routes/bounties.js";
 import { claims } from "./routes/claims.js";
 import { contributions } from "./routes/contributions.js";
@@ -47,6 +49,8 @@ export function createApp(deps: ServerDeps): Hono<ServerEnv> {
   });
 
   // Mount route groups
+  app.route("/api/agents", agents);
+  app.route("/api/boardroom", boardroom);
   app.route("/api/contributions", contributions);
   app.route("/api/frontier", frontier);
   app.route("/api/search", search);

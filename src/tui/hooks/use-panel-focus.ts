@@ -27,6 +27,9 @@ export const Panel = {
   Outcomes: 12,
   Bounties: 13,
   Gossip: 14,
+  Inbox: 15,
+  Decisions: 16,
+  GitHub: 17,
 } as const;
 export type Panel = (typeof Panel)[keyof typeof Panel];
 
@@ -46,6 +49,9 @@ export const PANEL_LABELS: Readonly<Record<Panel, string>> = {
   [Panel.Outcomes]: "Outcomes",
   [Panel.Bounties]: "Bounties",
   [Panel.Gossip]: "Gossip",
+  [Panel.Inbox]: "Inbox",
+  [Panel.Decisions]: "Decisions",
+  [Panel.GitHub]: "GitHub",
 };
 
 /** Protocol core panels — always visible. */
@@ -68,18 +74,22 @@ export const OPERATOR_PANELS: readonly Panel[] = [
   Panel.Outcomes,
   Panel.Bounties,
   Panel.Gossip,
+  Panel.Inbox,
+  Panel.Decisions,
+  Panel.GitHub,
 ];
 
 // ---------------------------------------------------------------------------
 // Input mode
 // ---------------------------------------------------------------------------
 
-/** Input mode hierarchy: command palette > help > search input > terminal input > normal. */
+/** Input mode hierarchy: command palette > help > search input > message input > terminal input > normal. */
 export const InputMode = {
   Normal: "normal",
   TerminalInput: "terminal_input",
   CommandPalette: "command_palette",
   SearchInput: "search_input",
+  MessageInput: "message_input",
   Help: "help",
 } as const;
 export type InputMode = (typeof InputMode)[keyof typeof InputMode];

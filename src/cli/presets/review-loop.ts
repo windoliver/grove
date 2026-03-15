@@ -59,4 +59,8 @@ export const reviewLoopPreset: PresetConfig = {
   ],
   services: { server: true, mcp: false },
   backend: "nexus",
+  features: {
+    askUser: { strategy: "interactive", perAgent: false },
+    messaging: true,
+  },
 };
