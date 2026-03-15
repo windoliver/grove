@@ -87,7 +87,8 @@ outcomes.post("/:cid", zValidator("param", cidParamSchema), async (c) => {
 
   // Post outcome to GitHub PR if active (non-blocking, best-effort)
   if (status === 201 && (parsed.data.status === "accepted" || parsed.data.status === "rejected")) {
-    const contribution = await deps.contributionStore.get(cid);
+    const serverDeps = c.get("deps");
+    const contribution = await serverDeps.contributionStore.get(cid);
     if (contribution) {
       // Detect active PR number from gh CLI (non-blocking)
       void (async () => {
