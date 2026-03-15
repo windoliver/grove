@@ -40,6 +40,11 @@ export interface GroveConfig {
    * and nexusUrl must point to a running instance.
    */
   readonly nexusManaged?: boolean | undefined;
+  /**
+   * Nexus image channel: "edge" (latest develop), "stable", or a specific
+   * tag. Defaults to "edge". Only used when nexusManaged is true.
+   */
+  readonly nexusChannel?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -69,6 +74,7 @@ export const GroveConfigSchema: z.ZodType<GroveConfig> = z
     services: ServicesSchema,
     backend: z.string().min(1).max(64).optional(),
     nexusManaged: z.boolean().optional(),
+    nexusChannel: z.string().min(1).max(64).optional(),
   })
   .strict()
   .superRefine((config, ctx) => {
@@ -132,6 +138,7 @@ export function writeGroveConfig(config: GroveConfig, path: string): void {
   if (config.services !== undefined) obj.services = config.services;
   if (config.backend !== undefined) obj.backend = config.backend;
   if (config.nexusManaged !== undefined) obj.nexusManaged = config.nexusManaged;
+  if (config.nexusChannel !== undefined) obj.nexusChannel = config.nexusChannel;
 
   writeFileSync(path, `${JSON.stringify(obj, null, 2)}\n`, "utf-8");
 }

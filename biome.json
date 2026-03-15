@@ -37,5 +37,23 @@
   },
   "files": {
     "includes": ["**/*.ts", "**/*.tsx", "**/*.json"]
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["**/*.test.ts", "**/*.test.tsx"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noNonNullAssertion": "off"
+          },
+          "suspicious": {
+            "noNonNullAssertedOptionalChain": "off"
+          },
+          "correctness": {
+            "noUnsafeOptionalChaining": "off"
+          }
+        }
+      }
+    }
+  ]
 }

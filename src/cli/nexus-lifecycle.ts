@@ -20,11 +20,17 @@ import type { GroveConfig } from "../core/config.js";
 /** Default Nexus server URL when managed by Grove. */
 export const DEFAULT_NEXUS_URL = "http://localhost:2026";
 
+/** Default Nexus image channel. Edge tracks latest develop builds. */
+export const DEFAULT_NEXUS_CHANNEL = "edge";
+
 /** Default health-check timeout (ms). */
 const HEALTH_TIMEOUT_MS = 30_000;
 
 /** Health-check poll interval (ms). */
 const HEALTH_POLL_MS = 1_000;
+
+/** Default `nexus up` timeout (seconds). */
+const NEXUS_UP_TIMEOUT_S = 180;
 
 // ---------------------------------------------------------------------------
 // Preset inference
@@ -62,20 +68,31 @@ export async function checkNexusCli(): Promise<boolean> {
 // Lifecycle commands
 // ---------------------------------------------------------------------------
 
+/** Options for `nexusInit`. */
+export interface NexusInitOptions {
+  readonly preset: "local" | "shared" | "demo";
+  readonly channel?: string | undefined;
+}
+
 /**
- * Run `nexus init --preset <preset>` in the project root.
+ * Run `nexus init --preset <preset> --channel <channel>` in the project root.
  *
  * Generates `nexus.yaml` alongside `GROVE.md` and `.grove/`.
  * No-ops if `nexus.yaml` already exists.
  */
 export async function nexusInit(
   projectRoot: string,
-  preset: "local" | "shared" | "demo",
+  presetOrOptions: "local" | "shared" | "demo" | NexusInitOptions,
 ): Promise<void> {
   const nexusYaml = join(projectRoot, "nexus.yaml");
   if (existsSync(nexusYaml)) return;
 
-  const proc = Bun.spawn(["nexus", "init", "--preset", preset], {
+  const opts: NexusInitOptions =
+    typeof presetOrOptions === "string" ? { preset: presetOrOptions } : presetOrOptions;
+
+  const channel = opts.channel ?? DEFAULT_NEXUS_CHANNEL;
+
+  const proc = Bun.spawn(["nexus", "init", "--preset", opts.preset, "--channel", channel], {
     cwd: projectRoot,
     stdout: "pipe",
     stderr: "pipe",
@@ -91,9 +108,16 @@ export async function nexusInit(
  * Run `nexus up` in the project root.
  *
  * Starts Nexus via Docker Compose. Expects `nexus.yaml` to exist.
+ * Passes `--timeout` so `nexus up` waits for health checks.
+ *
+ * Falls back to `nexus up` without `--timeout` if the installed
+ * CLI doesn't support the flag (nexus-ai-fs < 0.9.0).
  */
-export async function nexusUp(projectRoot: string): Promise<void> {
-  const proc = Bun.spawn(["nexus", "up"], {
+export async function nexusUp(
+  projectRoot: string,
+  timeoutSeconds: number = NEXUS_UP_TIMEOUT_S,
+): Promise<void> {
+  const proc = Bun.spawn(["nexus", "up", "--timeout", String(timeoutSeconds)], {
     cwd: projectRoot,
     stdout: "pipe",
     stderr: "pipe",
@@ -101,6 +125,20 @@ export async function nexusUp(projectRoot: string): Promise<void> {
   const code = await proc.exited;
   if (code !== 0) {
     const stderr = await new Response(proc.stderr).text();
+    // Retry without --timeout if the flag is unsupported
+    if (stderr.includes("no such option") || stderr.includes("unrecognized arguments")) {
+      const fallback = Bun.spawn(["nexus", "up"], {
+        cwd: projectRoot,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const fallbackCode = await fallback.exited;
+      if (fallbackCode !== 0) {
+        const fallbackStderr = await new Response(fallback.stderr).text();
+        throw new Error(`nexus up failed (exit ${fallbackCode}): ${fallbackStderr.trim()}`);
+      }
+      return;
+    }
     throw new Error(`nexus up failed (exit ${code}): ${stderr.trim()}`);
   }
 }
@@ -238,8 +276,9 @@ export async function ensureNexusRunning(
   const nexusYaml = join(projectRoot, "nexus.yaml");
   if (!existsSync(nexusYaml)) {
     const preset = inferNexusPreset(config);
-    process.stderr.write(`Initializing Nexus (preset: ${preset})...\n`);
-    await nexusInit(projectRoot, preset);
+    const channel = config.nexusChannel ?? DEFAULT_NEXUS_CHANNEL;
+    process.stderr.write(`Initializing Nexus (preset: ${preset}, channel: ${channel})...\n`);
+    await nexusInit(projectRoot, { preset, channel });
   }
 
   // Start Nexus

@@ -31,6 +31,7 @@ export interface InitOptions {
   readonly cwd: string;
   readonly preset?: string | undefined;
   readonly nexusUrl?: string | undefined;
+  readonly nexusChannel?: string | undefined;
 }
 
 /**
@@ -50,6 +51,7 @@ export function parseInitArgs(args: readonly string[]): InitOptions {
       force: { type: "boolean", default: false },
       preset: { type: "string" },
       "nexus-url": { type: "string" },
+      "nexus-channel": { type: "string" },
       "agent-id": { type: "string" },
       "agent-name": { type: "string" },
       provider: { type: "string" },
@@ -103,6 +105,8 @@ export function parseInitArgs(args: readonly string[]): InitOptions {
     force: values.force as boolean,
     preset,
     nexusUrl: (values["nexus-url"] as string | undefined) ?? process.env.GROVE_NEXUS_URL,
+    nexusChannel:
+      (values["nexus-channel"] as string | undefined) ?? process.env.GROVE_NEXUS_CHANNEL,
     agentOverrides: {
       agentId: values["agent-id"] as string | undefined,
       agentName: values["agent-name"] as string | undefined,
@@ -203,6 +207,7 @@ export async function executeInit(options: InitOptions): Promise<{ grovePath: st
       preset: options.preset,
       ...(nexusUrl ? { nexusUrl } : {}),
       ...(nexusManaged ? { nexusManaged: true } : {}),
+      ...(nexusManaged && options.nexusChannel ? { nexusChannel: options.nexusChannel } : {}),
       services: preset?.services ?? { server: false, mcp: false },
     },
     groveJsonPath,
@@ -223,8 +228,12 @@ export async function executeInit(options: InitOptions): Promise<{ grovePath: st
           mode: resolvedMode,
           preset: options.preset,
         });
-        await runNexusInit(options.cwd, nexusPreset);
-        console.log(`Initialized Nexus backend (preset: ${nexusPreset}).`);
+        await runNexusInit(options.cwd, {
+          preset: nexusPreset,
+          channel: options.nexusChannel,
+        });
+        const channel = options.nexusChannel ?? "edge";
+        console.log(`Initialized Nexus backend (preset: ${nexusPreset}, channel: ${channel}).`);
       } else {
         console.log(
           "Nexus CLI not found. 'grove up' will install and initialize it automatically.",
