@@ -12,8 +12,10 @@ import {
   ConcurrencyLimitError,
   GroveError,
   LeaseViolationError,
+  NotFoundError,
   RateLimitError,
   RetryExhaustedError,
+  StateConflictError,
 } from "../core/errors.js";
 
 /** Error codes returned to MCP clients for programmatic handling. */
@@ -25,6 +27,7 @@ export const McpErrorCode = {
   RetryExhausted: "RETRY_EXHAUSTED",
   LeaseViolation: "LEASE_VIOLATION",
   NotFound: "NOT_FOUND",
+  StateConflict: "STATE_CONFLICT",
   ValidationError: "VALIDATION_ERROR",
   InternalError: "INTERNAL_ERROR",
 } as const;
@@ -77,6 +80,14 @@ export function handleToolError(error: unknown): CallToolResult {
       McpErrorCode.LeaseViolation,
       `Lease violation: requested ${error.requestedSeconds}s exceeds max ${error.maxSeconds}s`,
     );
+  }
+
+  if (error instanceof NotFoundError) {
+    return toolError(McpErrorCode.NotFound, error.message);
+  }
+
+  if (error instanceof StateConflictError) {
+    return toolError(McpErrorCode.StateConflict, error.message);
   }
 
   if (error instanceof GroveError) {

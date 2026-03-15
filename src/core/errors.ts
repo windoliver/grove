@@ -128,6 +128,34 @@ export class ClaimConflictError extends GroveError {
   }
 }
 
+/** Thrown when a requested resource cannot be found. */
+export class NotFoundError extends GroveError {
+  readonly resource: string;
+  readonly identifier: string;
+
+  constructor(opts: { resource: string; identifier: string; message?: string }) {
+    const msg = opts.message ?? `${opts.resource} '${opts.identifier}' not found`;
+    super(msg);
+    this.name = "NotFoundError";
+    this.resource = opts.resource;
+    this.identifier = opts.identifier;
+  }
+}
+
+/** Thrown when an operation conflicts with the current resource state. */
+export class StateConflictError extends GroveError {
+  readonly resource: string;
+  readonly reason: string;
+
+  constructor(opts: { resource: string; reason: string; message?: string }) {
+    const msg = opts.message ?? `${opts.resource} conflict: ${opts.reason}`;
+    super(msg);
+    this.name = "StateConflictError";
+    this.resource = opts.resource;
+    this.reason = opts.reason;
+  }
+}
+
 /** Thrown when a lease duration violates policy (exceeds max). */
 export class LeaseViolationError extends GroveError {
   readonly requestedSeconds: number;

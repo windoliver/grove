@@ -42,9 +42,6 @@ export async function runClaims(args: readonly string[], deps: ClaimsDeps): Prom
     // Terminal claims: use listClaimsOperation with status filter
     const opDeps: OperationDeps = {
       claimStore: deps.claimStore,
-      contributionStore: undefined as never,
-      cas: undefined as never,
-      frontier: undefined as never,
     };
 
     const result = await listClaimsOperation(

@@ -67,10 +67,6 @@ export async function runClaim(args: readonly string[], deps: ClaimDeps): Promis
   // Build minimal OperationDeps with only what claimOperation needs
   const opDeps: OperationDeps = {
     claimStore: deps.claimStore,
-    // These are required by the interface but not used by claimOperation
-    contributionStore: undefined as never,
-    cas: undefined as never,
-    frontier: undefined as never,
   };
 
   const result = await claimOperation(

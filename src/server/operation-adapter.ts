@@ -36,6 +36,7 @@ export function toHttpStatus(code: OperationErrorCode): ContentfulStatusCode {
     case "VALIDATION_ERROR":
       return 400;
     case "CLAIM_CONFLICT":
+    case "STATE_CONFLICT":
       return 409;
     case "CONCURRENCY_LIMIT":
       return 429;

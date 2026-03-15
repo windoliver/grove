@@ -142,9 +142,10 @@ describe("error codes are exhaustive", () => {
     expect(codes).toContain("RETRY_EXHAUSTED");
     expect(codes).toContain("LEASE_VIOLATION");
     expect(codes).toContain("NOT_FOUND");
+    expect(codes).toContain("STATE_CONFLICT");
     expect(codes).toContain("VALIDATION_ERROR");
     expect(codes).toContain("INTERNAL_ERROR");
-    expect(codes.length).toBe(9);
+    expect(codes.length).toBe(10);
   });
 
   test("OperationErrorCode matches MCP McpErrorCode", async () => {

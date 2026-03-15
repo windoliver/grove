@@ -129,6 +129,18 @@ export interface ContributionStore {
   count(query?: ContributionQuery): Promise<number>;
 
   /**
+   * Count contributions created at or after the given timestamp.
+   *
+   * Optionally scoped to a single agent. Uses indexed queries where
+   * available (e.g., the `(agent_id, created_at)` composite index in
+   * SQLite) instead of materializing full contribution objects.
+   *
+   * @param query.agentId - If provided, only count contributions by this agent.
+   * @param query.since - ISO 8601 timestamp; counts contributions with `created_at >= since`.
+   */
+  countSince(query: { agentId?: string; since: string }): Promise<number>;
+
+  /**
    * Walk a discussion thread rooted at a contribution.
    *
    * Returns the root at depth 0 followed by all descendants reachable

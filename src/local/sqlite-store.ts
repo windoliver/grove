@@ -44,7 +44,7 @@ import { SqliteOutcomeStore } from "./sqlite-outcome-store.js";
 // ---------------------------------------------------------------------------
 
 import { DEFAULT_LEASE_DURATION_MS } from "../core/claim-logic.js";
-import { ClaimConflictError } from "../core/errors.js";
+import { ClaimConflictError, NotFoundError, StateConflictError } from "../core/errors.js";
 import { toUtcIso } from "../core/time.js";
 
 const CURRENT_SCHEMA_VERSION = 7;
@@ -743,6 +743,14 @@ export class SqliteContributionStore implements ContributionStore {
     return row?.cnt ?? 0;
   };
 
+  countSince = async (query: { agentId?: string; since: string }): Promise<number> => {
+    const sql =
+      "SELECT COUNT(*) as cnt FROM contributions WHERE created_at >= ? AND (agent_id = ? OR ? IS NULL)";
+    const agentId = query.agentId ?? null;
+    const row = this.db.prepare(sql).get(query.since, agentId, agentId) as { cnt: number } | null;
+    return row?.cnt ?? 0;
+  };
+
   thread = async (
     rootCid: string,
     opts?: { readonly maxDepth?: number; readonly limit?: number },
@@ -1020,7 +1028,11 @@ export class SqliteClaimStore implements ClaimStore {
         .get(claim.claimId) as { claim_id: string } | null;
 
       if (existing !== null) {
-        throw new Error(`Claim with id '${claim.claimId}' already exists`);
+        throw new StateConflictError({
+          resource: "Claim",
+          reason: "already exists",
+          message: `Claim with id '${claim.claimId}' already exists`,
+        });
       }
 
       // Prevent duplicate active claims on the same target
@@ -1032,9 +1044,11 @@ export class SqliteClaimStore implements ClaimStore {
         .get(claim.targetRef, now) as { claim_id: string } | null;
 
       if (activeOnTarget !== null) {
-        throw new Error(
-          `Target '${claim.targetRef}' already has an active claim '${activeOnTarget.claim_id}'`,
-        );
+        throw new StateConflictError({
+          resource: "Claim",
+          reason: "target already has an active claim",
+          message: `Target '${claim.targetRef}' already has an active claim '${activeOnTarget.claim_id}'`,
+        });
       }
 
       this.insertClaimRow(claim, createdAtUtc, heartbeatUtc, leaseExpiresUtc);
@@ -1097,7 +1111,11 @@ export class SqliteClaimStore implements ClaimStore {
         .prepare("SELECT claim_id FROM claims WHERE claim_id = ?")
         .get(claim.claimId) as { claim_id: string } | null;
       if (existingId !== null) {
-        throw new Error(`Claim with id '${claim.claimId}' already exists`);
+        throw new StateConflictError({
+          resource: "Claim",
+          reason: "already exists",
+          message: `Claim with id '${claim.claimId}' already exists`,
+        });
       }
 
       this.insertClaimRow(claim, createdAtUtc, heartbeatUtc, leaseExpiresUtc);
@@ -1140,16 +1158,24 @@ export class SqliteClaimStore implements ClaimStore {
     // UPDATE matched nothing — determine why for a specific error message
     const existing = this.readClaim(claimId);
     if (existing === null) {
-      throw new Error(`Claim '${claimId}' not found`);
+      throw new NotFoundError({
+        resource: "Claim",
+        identifier: claimId,
+        message: `Claim '${claimId}' not found`,
+      });
     }
     if (existing.status !== "active") {
-      throw new Error(
-        `Cannot heartbeat claim '${claimId}' with status '${existing.status}' (must be active)`,
-      );
+      throw new StateConflictError({
+        resource: "Claim",
+        reason: `status is '${existing.status}'`,
+        message: `Cannot heartbeat claim '${claimId}' with status '${existing.status}' (must be active)`,
+      });
     }
-    throw new Error(
-      `Cannot heartbeat claim '${claimId}': lease expired at ${existing.leaseExpiresAt}`,
-    );
+    throw new StateConflictError({
+      resource: "Claim",
+      reason: "lease expired",
+      message: `Cannot heartbeat claim '${claimId}': lease expired at ${existing.leaseExpiresAt}`,
+    });
   };
 
   release = async (claimId: string): Promise<Claim> => {
@@ -1367,11 +1393,17 @@ export class SqliteClaimStore implements ClaimStore {
     // UPDATE matched nothing — determine why
     const existing = this.readClaim(claimId);
     if (existing === null) {
-      throw new Error(`Claim '${claimId}' not found`);
+      throw new NotFoundError({
+        resource: "Claim",
+        identifier: claimId,
+        message: `Claim '${claimId}' not found`,
+      });
     }
-    throw new Error(
-      `Cannot transition claim '${claimId}' from '${existing.status}' to '${newStatus}' (must be active)`,
-    );
+    throw new StateConflictError({
+      resource: "Claim",
+      reason: `status is '${existing.status}'`,
+      message: `Cannot transition claim '${claimId}' from '${existing.status}' to '${newStatus}' (must be active)`,
+    });
   }
 }
 
@@ -1426,6 +1458,8 @@ export class SqliteStore implements ContributionStore, ClaimStore {
   ): Promise<readonly Contribution[]> =>
     this.contributions.findExisting(agentId, targetCid, kind, relationType);
   count = (query?: ContributionQuery): Promise<number> => this.contributions.count(query);
+  countSince = (query: { agentId?: string; since: string }): Promise<number> =>
+    this.contributions.countSince(query);
   thread = (
     rootCid: string,
     opts?: { readonly maxDepth?: number; readonly limit?: number },

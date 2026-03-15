@@ -18,6 +18,7 @@ import type {
 } from "../core/outcome.js";
 import { OutcomeStatus } from "../core/outcome.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
+import { batchParallel } from "./batch.js";
 import type { ListEntry, ListOptions, NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
@@ -148,20 +149,17 @@ export class NexusOutcomeStore implements OutcomeStore {
     }
 
     // Read records from entries
+    const nonDirEntries = entries.filter((e) => !e.isDirectory);
+    const cids = nonDirEntries.map((entry) =>
+      query?.status !== undefined
+        ? decodeSegment(entry.name)
+        : decodeSegment(entry.name.replace(/\.json$/, "")),
+    );
+
+    const fetched = await batchParallel(cids, (cid) => this.get(cid));
+
     const records: OutcomeRecord[] = [];
-    for (const entry of entries) {
-      if (entry.isDirectory) continue;
-
-      let cid: string;
-      if (query?.status !== undefined) {
-        // Status index entries: name is the CID (encoded)
-        cid = decodeSegment(entry.name);
-      } else {
-        // Outcome dir entries: name is {cid}.json
-        cid = decodeSegment(entry.name.replace(/\.json$/, ""));
-      }
-
-      const record = await this.get(cid);
+    for (const record of fetched) {
       if (record === undefined) continue;
 
       // Apply evaluatedBy filter if specified

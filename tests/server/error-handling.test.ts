@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { Hono } from "hono";
-import { ConcurrencyLimitError, RateLimitError } from "../../src/core/errors.js";
+import {
+  ConcurrencyLimitError,
+  NotFoundError,
+  RateLimitError,
+  StateConflictError,
+} from "../../src/core/errors.js";
 import { handleError } from "../../src/server/middleware/error-handler.js";
 
 describe("error handler middleware", () => {
@@ -44,9 +49,9 @@ describe("error handler middleware", () => {
     expect(data.error.code).toBe("RATE_LIMIT");
   });
 
-  test("maps 'not found' errors to 404", async () => {
+  test("maps NotFoundError to 404", async () => {
     app.get("/test", () => {
-      throw new Error("Claim xyz not found");
+      throw new NotFoundError({ resource: "Claim", identifier: "xyz" });
     });
 
     const res = await app.request("/test");
@@ -55,15 +60,15 @@ describe("error handler middleware", () => {
     expect(data.error.code).toBe("NOT_FOUND");
   });
 
-  test("maps 'not active' errors to 409", async () => {
+  test("maps StateConflictError to 409", async () => {
     app.get("/test", () => {
-      throw new Error("Claim is not active");
+      throw new StateConflictError({ resource: "Claim", reason: "not active" });
     });
 
     const res = await app.request("/test");
     expect(res.status).toBe(409);
     const data = await res.json();
-    expect(data.error.code).toBe("CONFLICT");
+    expect(data.error.code).toBe("STATE_CONFLICT");
   });
 
   test("maps unknown errors to 500 without leaking details", async () => {

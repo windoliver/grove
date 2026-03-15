@@ -1,120 +1,33 @@
 /**
- * Route-level integration tests for the remaining grove HTTP server routes.
+ * Route-level integration tests for routes without dedicated per-domain files.
  *
- * Covers: DAG, Diff, Gossip, Grove, Outcomes, Threads, Bounties.
- * Each test exercises real stores wired through createApp() — no mocks,
- * no running server.
+ * Per-domain coverage lives in dedicated test files:
+ *   - claims.test.ts        — POST/PATCH/GET /api/claims
+ *   - contributions.test.ts — POST/GET /api/contributions, artifact downloads
+ *   - frontier.test.ts      — GET /api/frontier (filters, pagination)
+ *   - search.test.ts        — GET /api/search
+ *   - outcomes.test.ts      — POST/GET /api/outcomes, stats
+ *   - threads.test.ts       — GET /api/threads
+ *   - dag.test.ts           — GET /api/dag children/ancestors
+ *   - grove.test.ts         — GET /api/grove metadata, gossip status, stats
+ *   - integration.test.ts   — multi-endpoint workflow tests
+ *   - error-handling.test.ts — error-handler middleware unit tests
+ *
+ * This file covers routes that do NOT yet have their own per-domain file:
+ *   - Diff   (/api/diff)
+ *   - Gossip (/api/gossip) — not-configured 501 responses
+ *   - Grove  (/api/grove/topology) — topology endpoint only
+ *   - Bounties (/api/bounties) — not-configured 501 responses
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { createTestContext, validManifestBody } from "./helpers.js";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** POST a JSON contribution and return the parsed response body. */
-async function postContribution(
-  ctx: TestContext,
-  overrides?: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
-  const res = await ctx.app.request("/api/contributions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(validManifestBody(overrides)),
-  });
-  return (await res.json()) as Record<string, unknown>;
-}
+import { createTestContext, postContribution } from "./helpers.js";
 
 const FAKE_CID = `blake3:${"0".repeat(64)}`;
 
 // ===================================================================
-// 1. DAG route (/api/dag)
-// ===================================================================
-
-describe("routes — /api/dag", () => {
-  let ctx: TestContext;
-
-  beforeEach(async () => {
-    ctx = await createTestContext();
-  });
-  afterEach(async () => {
-    await ctx.cleanup();
-  });
-
-  // --- GET /:cid/children ---
-
-  test("GET /:cid/children returns empty array for CID with no children", async () => {
-    const parent = await postContribution(ctx, { summary: "Parent node" });
-
-    const res = await ctx.app.request(`/api/dag/${parent.cid}/children`);
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data).toEqual([]);
-  });
-
-  test("GET /:cid/children returns children that reference the CID", async () => {
-    const parent = await postContribution(ctx, { summary: "Parent" });
-    await postContribution(ctx, {
-      summary: "Child",
-      relations: [{ targetCid: parent.cid, relationType: "derives_from" }],
-      createdAt: new Date(Date.now() + 1).toISOString(),
-    });
-
-    const res = await ctx.app.request(`/api/dag/${parent.cid}/children`);
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as Array<{ summary: string }>;
-    expect(data).toHaveLength(1);
-    expect(data[0].summary).toBe("Child");
-  });
-
-  test("GET /:cid/children returns empty array for non-existent CID", async () => {
-    const res = await ctx.app.request(`/api/dag/${FAKE_CID}/children`);
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data).toEqual([]);
-  });
-
-  test("GET /:cid/children returns 400 for invalid CID format", async () => {
-    const res = await ctx.app.request("/api/dag/invalid-cid/children");
-    expect(res.status).toBe(400);
-  });
-
-  // --- GET /:cid/ancestors ---
-
-  test("GET /:cid/ancestors returns ancestors that the CID references", async () => {
-    const ancestor = await postContribution(ctx, { summary: "Ancestor" });
-    const descendant = await postContribution(ctx, {
-      summary: "Descendant",
-      relations: [{ targetCid: ancestor.cid, relationType: "derives_from" }],
-      createdAt: new Date(Date.now() + 1).toISOString(),
-    });
-
-    const res = await ctx.app.request(`/api/dag/${descendant.cid}/ancestors`);
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as Array<{ summary: string }>;
-    expect(data).toHaveLength(1);
-    expect(data[0].summary).toBe("Ancestor");
-  });
-
-  test("GET /:cid/ancestors returns empty array for CID with no relations", async () => {
-    const contribution = await postContribution(ctx);
-
-    const res = await ctx.app.request(`/api/dag/${contribution.cid}/ancestors`);
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data).toEqual([]);
-  });
-
-  test("GET /:cid/ancestors returns 400 for invalid CID format", async () => {
-    const res = await ctx.app.request("/api/dag/not-valid/ancestors");
-    expect(res.status).toBe(400);
-  });
-});
-
-// ===================================================================
-// 2. Diff route (/api/diff)
+// 1. Diff route (/api/diff)
 // ===================================================================
 
 describe("routes — /api/diff", () => {
@@ -209,7 +122,7 @@ describe("routes — /api/diff", () => {
 });
 
 // ===================================================================
-// 3. Gossip route (/api/gossip)
+// 2. Gossip route (/api/gossip)
 // ===================================================================
 
 describe("routes — /api/gossip", () => {
@@ -275,10 +188,10 @@ describe("routes — /api/gossip", () => {
 });
 
 // ===================================================================
-// 4. Grove route (/api/grove)
+// 3. Grove topology (/api/grove/topology)
 // ===================================================================
 
-describe("routes — /api/grove", () => {
+describe("routes — /api/grove/topology", () => {
   let ctx: TestContext;
 
   beforeEach(async () => {
@@ -286,35 +199,6 @@ describe("routes — /api/grove", () => {
   });
   afterEach(async () => {
     await ctx.cleanup();
-  });
-
-  test("GET / returns grove metadata with version and stats", async () => {
-    const res = await ctx.app.request("/api/grove");
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as {
-      version: string;
-      protocol: { manifestVersion: number };
-      stats: { contributions: number; activeClaims: number };
-      gossip: { enabled: boolean };
-    };
-    expect(data.version).toBe("0.1.0");
-    expect(data.protocol.manifestVersion).toBe(1);
-    expect(data.stats.contributions).toBe(0);
-    expect(data.stats.activeClaims).toBe(0);
-    expect(data.gossip.enabled).toBe(false);
-  });
-
-  test("GET / reflects contribution count after adding contributions", async () => {
-    await postContribution(ctx, { summary: "First" });
-    await postContribution(ctx, {
-      summary: "Second",
-      createdAt: new Date(Date.now() + 1).toISOString(),
-    });
-
-    const res = await ctx.app.request("/api/grove");
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as { stats: { contributions: number } };
-    expect(data.stats.contributions).toBe(2);
   });
 
   test("GET /topology returns 404 when topology is not configured", async () => {
@@ -327,301 +211,7 @@ describe("routes — /api/grove", () => {
 });
 
 // ===================================================================
-// 5. Outcomes route (/api/outcomes)
-// ===================================================================
-
-describe("routes — /api/outcomes", () => {
-  let ctx: TestContext;
-
-  const VALID_CID = `blake3:${"a".repeat(64)}`;
-  const VALID_CID_2 = `blake3:${"b".repeat(64)}`;
-
-  function outcomeBody(overrides?: Record<string, unknown>): Record<string, unknown> {
-    return {
-      status: "accepted",
-      reason: "Meets all criteria",
-      evaluatedBy: "reviewer-1",
-      ...overrides,
-    };
-  }
-
-  beforeEach(async () => {
-    ctx = await createTestContext();
-  });
-  afterEach(async () => {
-    await ctx.cleanup();
-  });
-
-  // --- POST /:cid ---
-
-  test("POST /:cid sets outcome and returns 201", async () => {
-    const res = await ctx.app.request(`/api/outcomes/${VALID_CID}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(outcomeBody()),
-    });
-
-    expect(res.status).toBe(201);
-    const data = (await res.json()) as {
-      cid: string;
-      status: string;
-      reason: string;
-      evaluatedBy: string;
-      evaluatedAt: string;
-    };
-    expect(data.cid).toBe(VALID_CID);
-    expect(data.status).toBe("accepted");
-    expect(data.reason).toBe("Meets all criteria");
-    expect(data.evaluatedBy).toBe("reviewer-1");
-    expect(data.evaluatedAt).toBeTruthy();
-  });
-
-  test("POST /:cid returns 400 for invalid status value", async () => {
-    const res = await ctx.app.request(`/api/outcomes/${VALID_CID}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: "bogus", evaluatedBy: "agent-1" }),
-    });
-
-    expect(res.status).toBe(400);
-  });
-
-  test("POST /:cid returns 400 for invalid CID format", async () => {
-    const res = await ctx.app.request("/api/outcomes/not-a-cid", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(outcomeBody()),
-    });
-
-    expect(res.status).toBe(400);
-  });
-
-  // --- GET /:cid ---
-
-  test("GET /:cid returns the outcome after it is set", async () => {
-    await ctx.app.request(`/api/outcomes/${VALID_CID}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(outcomeBody()),
-    });
-
-    const res = await ctx.app.request(`/api/outcomes/${VALID_CID}`);
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as { cid: string; status: string };
-    expect(data.cid).toBe(VALID_CID);
-    expect(data.status).toBe("accepted");
-  });
-
-  test("GET /:cid returns 404 for CID with no outcome", async () => {
-    const res = await ctx.app.request(`/api/outcomes/${VALID_CID}`);
-    expect(res.status).toBe(404);
-    const data = (await res.json()) as { error: { code: string } };
-    expect(data.error).toBeTruthy();
-  });
-
-  // --- GET / ---
-
-  test("GET / lists all outcomes", async () => {
-    await ctx.app.request(`/api/outcomes/${VALID_CID}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(outcomeBody({ status: "accepted" })),
-    });
-    await ctx.app.request(`/api/outcomes/${VALID_CID_2}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(outcomeBody({ status: "rejected" })),
-    });
-
-    const res = await ctx.app.request("/api/outcomes");
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as Array<{ cid: string }>;
-    expect(data).toHaveLength(2);
-  });
-
-  test("GET / filters outcomes by status", async () => {
-    await ctx.app.request(`/api/outcomes/${VALID_CID}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(outcomeBody({ status: "accepted" })),
-    });
-    await ctx.app.request(`/api/outcomes/${VALID_CID_2}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(outcomeBody({ status: "rejected" })),
-    });
-
-    const res = await ctx.app.request("/api/outcomes?status=rejected");
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as Array<{ cid: string; status: string }>;
-    expect(data).toHaveLength(1);
-    expect(data[0].status).toBe("rejected");
-    expect(data[0].cid).toBe(VALID_CID_2);
-  });
-
-  // --- GET /stats ---
-
-  test("GET /stats returns zero stats when no outcomes exist", async () => {
-    const res = await ctx.app.request("/api/outcomes/stats");
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as {
-      total: number;
-      accepted: number;
-      rejected: number;
-      crashed: number;
-      invalidated: number;
-      acceptanceRate: number;
-    };
-    expect(data.total).toBe(0);
-    expect(data.accepted).toBe(0);
-    expect(data.rejected).toBe(0);
-    expect(data.crashed).toBe(0);
-    expect(data.invalidated).toBe(0);
-    expect(data.acceptanceRate).toBe(0);
-  });
-
-  test("GET /stats returns correct counts after setting outcomes", async () => {
-    await ctx.app.request(`/api/outcomes/${VALID_CID}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(outcomeBody({ status: "accepted" })),
-    });
-    await ctx.app.request(`/api/outcomes/${VALID_CID_2}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(outcomeBody({ status: "rejected" })),
-    });
-
-    const res = await ctx.app.request("/api/outcomes/stats");
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as { total: number; accepted: number; rejected: number };
-    expect(data.total).toBe(2);
-    expect(data.accepted).toBe(1);
-    expect(data.rejected).toBe(1);
-  });
-});
-
-// ===================================================================
-// 6. Threads route (/api/threads)
-// ===================================================================
-
-describe("routes — /api/threads", () => {
-  let ctx: TestContext;
-
-  beforeEach(async () => {
-    ctx = await createTestContext();
-  });
-  afterEach(async () => {
-    await ctx.cleanup();
-  });
-
-  // --- GET /:cid ---
-
-  test("GET /:cid returns thread with root and replies", async () => {
-    const root = await postContribution(ctx, { kind: "discussion", summary: "Root topic" });
-    await postContribution(ctx, {
-      kind: "discussion",
-      summary: "Reply message",
-      relations: [{ targetCid: root.cid, relationType: "responds_to" }],
-      createdAt: new Date(Date.now() + 1000).toISOString(),
-    });
-
-    const res = await ctx.app.request(`/api/threads/${root.cid}`);
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as {
-      nodes: Array<{ cid: string; depth: number }>;
-      count: number;
-    };
-    expect(data.nodes).toHaveLength(2);
-    expect(data.nodes[0].depth).toBe(0);
-    expect(data.nodes[1].depth).toBe(1);
-    expect(data.count).toBe(2);
-  });
-
-  test("GET /:cid returns 404 for non-existent CID", async () => {
-    const res = await ctx.app.request(`/api/threads/${FAKE_CID}`);
-    expect(res.status).toBe(404);
-    const data = (await res.json()) as { error: { code: string } };
-    expect(data.error.code).toBe("NOT_FOUND");
-  });
-
-  test("GET /:cid returns 400 for invalid CID format", async () => {
-    const res = await ctx.app.request("/api/threads/not-a-valid-cid");
-    expect(res.status).toBe(400);
-  });
-
-  // --- GET / ---
-
-  test("GET / returns empty threads list when no contributions exist", async () => {
-    const res = await ctx.app.request("/api/threads");
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as { threads: unknown[]; count: number };
-    expect(data.threads).toEqual([]);
-    expect(data.count).toBe(0);
-  });
-
-  test("GET / returns threads sorted by reply count", async () => {
-    // Thread A: root + 2 replies
-    const rootA = await postContribution(ctx, { kind: "discussion", summary: "Thread A" });
-    for (let i = 0; i < 2; i++) {
-      await postContribution(ctx, {
-        kind: "discussion",
-        summary: `Reply A-${i}`,
-        relations: [{ targetCid: rootA.cid, relationType: "responds_to" }],
-        createdAt: new Date(Date.now() + 1000 * (i + 1)).toISOString(),
-      });
-    }
-
-    // Thread B: root + 1 reply
-    const rootB = await postContribution(ctx, {
-      kind: "discussion",
-      summary: "Thread B",
-      createdAt: new Date(Date.now() + 5000).toISOString(),
-    });
-    await postContribution(ctx, {
-      kind: "discussion",
-      summary: "Reply B-0",
-      relations: [{ targetCid: rootB.cid, relationType: "responds_to" }],
-      createdAt: new Date(Date.now() + 6000).toISOString(),
-    });
-
-    const res = await ctx.app.request("/api/threads");
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as {
-      threads: Array<{ cid: string; replyCount: number }>;
-      count: number;
-    };
-    expect(data.threads).toHaveLength(2);
-    // Thread A has more replies, should come first
-    expect(data.threads[0].replyCount).toBe(2);
-    expect(data.threads[1].replyCount).toBe(1);
-  });
-
-  test("GET / respects limit query parameter", async () => {
-    // Create 3 threads with replies
-    for (let i = 0; i < 3; i++) {
-      const root = await postContribution(ctx, {
-        kind: "discussion",
-        summary: `Thread ${i}`,
-        createdAt: new Date(Date.now() + i * 2000).toISOString(),
-      });
-      await postContribution(ctx, {
-        kind: "discussion",
-        summary: `Reply ${i}`,
-        relations: [{ targetCid: root.cid, relationType: "responds_to" }],
-        createdAt: new Date(Date.now() + i * 2000 + 1000).toISOString(),
-      });
-    }
-
-    const res = await ctx.app.request("/api/threads?limit=2");
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as { threads: unknown[]; count: number };
-    expect(data.threads).toHaveLength(2);
-  });
-});
-
-// ===================================================================
-// 7. Bounties route (/api/bounties)
+// 4. Bounties route (/api/bounties)
 // ===================================================================
 
 describe("routes — /api/bounties", () => {

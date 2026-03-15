@@ -1,19 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { createTestContext } from "./helpers.js";
+import { createTestContext, outcomeBody } from "./helpers.js";
 
 const VALID_CID = `blake3:${"a".repeat(64)}`;
 const VALID_CID_2 = `blake3:${"b".repeat(64)}`;
 const VALID_CID_3 = `blake3:${"c".repeat(64)}`;
-
-function outcomeBody(overrides?: Record<string, unknown>): Record<string, unknown> {
-  return {
-    status: "accepted",
-    reason: "Looks good",
-    evaluatedBy: "reviewer-1",
-    ...overrides,
-  };
-}
 
 describe("GET /api/outcomes/stats", () => {
   let ctx: TestContext;
@@ -234,5 +225,81 @@ describe("GET /api/outcomes", () => {
     expect(data).toHaveLength(1);
     expect(data[0].status).toBe("accepted");
     expect(data[0].cid).toBe(VALID_CID);
+  });
+
+  test("GET /api/outcomes?cids=cid1,cid2 returns matching outcomes", async () => {
+    // Create two outcomes
+    await ctx.app.request(`/api/outcomes/${VALID_CID}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(outcomeBody({ status: "accepted" })),
+    });
+    await ctx.app.request(`/api/outcomes/${VALID_CID_2}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(outcomeBody({ status: "rejected" })),
+    });
+
+    const res = await ctx.app.request(
+      `/api/outcomes?cids=${encodeURIComponent(`${VALID_CID},${VALID_CID_2}`)}`,
+    );
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toHaveLength(2);
+    const cids = data.map((d: { cid: string }) => d.cid).sort();
+    expect(cids).toEqual([VALID_CID, VALID_CID_2].sort());
+  });
+
+  test("GET /api/outcomes?cids= (empty) returns empty array", async () => {
+    const res = await ctx.app.request("/api/outcomes?cids=");
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toEqual([]);
+  });
+
+  test("GET /api/outcomes?cids=nonexistent returns empty for unknown CIDs", async () => {
+    const res = await ctx.app.request(`/api/outcomes?cids=${VALID_CID_3}`);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toHaveLength(0);
+  });
+
+  test("GET /api/outcomes?cids=a,b&status=accepted returns 400", async () => {
+    const res = await ctx.app.request(
+      `/api/outcomes?cids=${VALID_CID},${VALID_CID_2}&status=accepted`,
+    );
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error.code).toBe("VALIDATION_ERROR");
+  });
+
+  test("GET /api/outcomes?cids=a,b&evaluatedBy=x returns 400", async () => {
+    const res = await ctx.app.request(
+      `/api/outcomes?cids=${VALID_CID},${VALID_CID_2}&evaluatedBy=reviewer-1`,
+    );
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error.code).toBe("VALIDATION_ERROR");
+  });
+
+  test("GET /api/outcomes?cids=a,b&limit=5 returns 400", async () => {
+    const res = await ctx.app.request(`/api/outcomes?cids=${VALID_CID},${VALID_CID_2}&limit=5`);
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error.code).toBe("VALIDATION_ERROR");
+  });
+
+  test("GET /api/outcomes?cids=a,b&offset=1 returns 400", async () => {
+    const res = await ctx.app.request(`/api/outcomes?cids=${VALID_CID},${VALID_CID_2}&offset=1`);
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error.code).toBe("VALIDATION_ERROR");
   });
 });

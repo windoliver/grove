@@ -11,6 +11,7 @@ import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { z } from "zod";
 import {
+  getBatchOutcomesOperation,
   getOutcomeOperation,
   listOutcomesOperation,
   outcomeStatsOperation,
@@ -38,6 +39,7 @@ const listQuerySchema = z.object({
   evaluatedBy: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(20),
   offset: z.coerce.number().int().min(0).default(0),
+  cids: z.string().optional(),
 });
 
 export const outcomes: Hono<ServerEnv> = new Hono<ServerEnv>();
@@ -155,8 +157,47 @@ outcomes.post("/:cid", zValidator("param", cidParamSchema), async (c) => {
 // GET /api/outcomes
 outcomes.get("/", zValidator("query", listQuerySchema), async (c) => {
   const query = c.req.valid("query");
-
   const deps = toOperationDeps(c.get("deps"));
+
+  // When cids is provided, use batch lookup instead of list
+  if (query.cids !== undefined) {
+    // Reject mixed query modes — cids is a distinct lookup path
+    const hasListFilters =
+      query.status !== undefined ||
+      query.evaluatedBy !== undefined ||
+      query.limit !== 20 ||
+      query.offset !== 0;
+    if (hasListFilters) {
+      return c.json(
+        {
+          error: {
+            code: "VALIDATION_ERROR",
+            message:
+              "Cannot combine 'cids' with 'status', 'evaluatedBy', 'limit', or 'offset' filters",
+          },
+        },
+        400,
+      );
+    }
+
+    const cidList = query.cids
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+
+    if (cidList.length === 0) {
+      return c.json([], 200);
+    }
+
+    const result = await getBatchOutcomesOperation({ cids: cidList }, deps);
+    if (!result.ok) {
+      const { data, status } = toHttpResult(result);
+      return c.json(data, status);
+    }
+    // Return as an array to match the existing list response format
+    return c.json([...result.value.values()], 200);
+  }
+
   const result = await listOutcomesOperation(
     {
       status: query.status as OutcomeStatus | undefined,

@@ -12,6 +12,7 @@ import { BountyStatus } from "../core/bounty.js";
 import { BountyStateError } from "../core/bounty-errors.js";
 import { validateBountyTransition } from "../core/bounty-logic.js";
 import type { BountyQuery, BountyStore, RewardQuery } from "../core/bounty-store.js";
+import { StateConflictError } from "../core/errors.js";
 import type { AgentIdentity, JsonValue } from "../core/models.js";
 
 /** UTC ISO 8601 timestamp for "now". */
@@ -205,7 +206,11 @@ export class SqliteBountyStore implements BountyStore {
       );
     } catch (err) {
       if (err instanceof Error && err.message.includes("UNIQUE constraint")) {
-        throw new Error(`Bounty '${bounty.bountyId}' already exists`);
+        throw new StateConflictError({
+          resource: "Bounty",
+          reason: "already exists",
+          message: `Bounty '${bounty.bountyId}' already exists`,
+        });
       }
       throw err;
     }

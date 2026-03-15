@@ -81,3 +81,49 @@ export function validManifestBody(overrides?: Record<string, unknown>): Record<s
     ...overrides,
   };
 }
+
+/** Create a minimal valid claim body (JSON). */
+export function claimBody(overrides?: Record<string, unknown>): Record<string, unknown> {
+  return {
+    targetRef: "optimize-parser",
+    agent: { agentId: "agent-1" },
+    intentSummary: "Working on parser optimization",
+    ...overrides,
+  };
+}
+
+/** Create a minimal valid outcome body (JSON). */
+export function outcomeBody(overrides?: Record<string, unknown>): Record<string, unknown> {
+  return {
+    status: "accepted",
+    reason: "Looks good",
+    evaluatedBy: "reviewer-1",
+    ...overrides,
+  };
+}
+
+/** POST a JSON contribution and return the parsed response body. */
+export async function postContribution(
+  ctx: TestContext,
+  overrides?: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const res = await ctx.app.request("/api/contributions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(validManifestBody(overrides)),
+  });
+  return (await res.json()) as Record<string, unknown>;
+}
+
+/** POST a claim and return the parsed response body. */
+export async function postClaim(
+  ctx: TestContext,
+  overrides?: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const res = await ctx.app.request("/api/claims", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(claimBody(overrides)),
+  });
+  return (await res.json()) as Record<string, unknown>;
+}

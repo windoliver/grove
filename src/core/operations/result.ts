@@ -12,8 +12,10 @@ import {
   ConcurrencyLimitError,
   GroveError,
   LeaseViolationError,
+  NotFoundError,
   RateLimitError,
   RetryExhaustedError,
+  StateConflictError,
 } from "../errors.js";
 
 // ---------------------------------------------------------------------------
@@ -29,6 +31,7 @@ export const OperationErrorCode = {
   RetryExhausted: "RETRY_EXHAUSTED",
   LeaseViolation: "LEASE_VIOLATION",
   NotFound: "NOT_FOUND",
+  StateConflict: "STATE_CONFLICT",
   ValidationError: "VALIDATION_ERROR",
   InternalError: "INTERNAL_ERROR",
 } as const;
@@ -167,6 +170,22 @@ export function fromGroveError(error: unknown): OperationErr {
         requestedSeconds: error.requestedSeconds,
         maxSeconds: error.maxSeconds,
       },
+    });
+  }
+
+  if (error instanceof NotFoundError) {
+    return err({
+      code: OperationErrorCode.NotFound,
+      message: error.message,
+      details: { resource: error.resource, identifier: error.identifier },
+    });
+  }
+
+  if (error instanceof StateConflictError) {
+    return err({
+      code: OperationErrorCode.StateConflict,
+      message: error.message,
+      details: { resource: error.resource, reason: error.reason },
     });
   }
 

@@ -213,6 +213,8 @@ export class EnforcingContributionStore implements ContributionStore {
   ): Promise<readonly Contribution[]> =>
     this.inner.findExisting(agentId, targetCid, kind, relationType);
   count = (query?: ContributionQuery): Promise<number> => this.inner.count(query);
+  countSince = (query: { agentId?: string; since: string }): Promise<number> =>
+    this.inner.countSince(query);
   thread = (
     rootCid: string,
     opts?: { readonly maxDepth?: number; readonly limit?: number },
@@ -330,15 +332,16 @@ export class EnforcingContributionStore implements ContributionStore {
     const now = this.clock();
     const windowStart = new Date(now.getTime() - RATE_LIMIT_WINDOW_SECONDS * 1000);
 
-    // Count contributions by this agent in the last hour
-    const recentContributions = await this.inner.list({
+    // Count contributions by this agent in the last hour using indexed query
+    const storedCount = await this.inner.countSince({
       agentId,
+      since: windowStart.toISOString(),
     });
-    const count =
-      recentContributions.filter((c) => new Date(c.createdAt).getTime() >= windowStart.getTime())
-        .length + pendingCount;
+    const count = storedCount + pendingCount;
 
     if (count >= limit) {
+      // Fetch full list only when we need to compute retryAfterMs
+      const recentContributions = await this.inner.list({ agentId });
       const retryAfterMs = this.computeRetryAfterMs(recentContributions, windowStart);
       throw new RateLimitError({
         limitType: "per_agent",
@@ -354,13 +357,15 @@ export class EnforcingContributionStore implements ContributionStore {
     const now = this.clock();
     const windowStart = new Date(now.getTime() - RATE_LIMIT_WINDOW_SECONDS * 1000);
 
-    // Count all contributions in the last hour
-    const allContributions = await this.inner.list();
-    const count =
-      allContributions.filter((c) => new Date(c.createdAt).getTime() >= windowStart.getTime())
-        .length + pendingCount;
+    // Count all contributions in the last hour using indexed query
+    const storedCount = await this.inner.countSince({
+      since: windowStart.toISOString(),
+    });
+    const count = storedCount + pendingCount;
 
     if (count >= limit) {
+      // Fetch full list only when we need to compute retryAfterMs
+      const allContributions = await this.inner.list();
       const retryAfterMs = this.computeRetryAfterMs(allContributions, windowStart);
       throw new RateLimitError({
         limitType: "per_grove",

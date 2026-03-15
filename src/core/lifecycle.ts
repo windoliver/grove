@@ -221,6 +221,9 @@ export interface DeliberationResult {
  *
  * Returns a structured result indicating which conditions are met.
  * The grove is considered stopped if ANY condition is met.
+ *
+ * Loads contributions once and passes them to each evaluator to avoid
+ * redundant store.list() calls.
  */
 export async function evaluateStopConditions(
   contract: GroveContract,
@@ -233,38 +236,42 @@ export async function evaluateStopConditions(
     return { stopped: false, conditions: {}, evaluatedAt: new Date().toISOString() };
   }
 
+  // Load all contributions once for all evaluators that need them
+  const allContributions = await store.list();
+
   if (stopConditions.maxRoundsWithoutImprovement !== undefined) {
-    conditions.max_rounds_without_improvement = await evaluateMaxRoundsWithoutImprovement(
+    conditions.max_rounds_without_improvement = evaluateMaxRoundsWithoutImprovement(
       stopConditions.maxRoundsWithoutImprovement,
       contract.metrics ?? {},
-      store,
+      allContributions,
     );
   }
 
   if (stopConditions.targetMetric !== undefined) {
-    conditions.target_metric = await evaluateTargetMetric(
+    conditions.target_metric = evaluateTargetMetric(
       stopConditions.targetMetric.metric,
       stopConditions.targetMetric.value,
       contract.metrics ?? {},
-      store,
+      allContributions,
     );
   }
 
   if (stopConditions.budget !== undefined) {
-    conditions.budget = await evaluateBudget(stopConditions.budget, store);
+    conditions.budget = evaluateBudget(stopConditions.budget, allContributions);
   }
 
   if (stopConditions.quorumReviewScore !== undefined) {
-    conditions.quorum_review_score = await evaluateQuorumReviewScore(
+    conditions.quorum_review_score = evaluateQuorumReviewScore(
       stopConditions.quorumReviewScore.minReviews,
       stopConditions.quorumReviewScore.minScore,
-      store,
+      allContributions,
     );
   }
 
   if (stopConditions.deliberationLimit !== undefined) {
     conditions.deliberation_limit = await evaluateDeliberationLimit(
       stopConditions.deliberationLimit,
+      allContributions,
       store,
     );
   }
@@ -277,11 +284,11 @@ export async function evaluateStopConditions(
 // Individual stop condition evaluators
 // ---------------------------------------------------------------------------
 
-async function evaluateMaxRoundsWithoutImprovement(
+function evaluateMaxRoundsWithoutImprovement(
   maxRounds: number,
   metrics: Readonly<Record<string, MetricDefinition>>,
-  store: ContributionStore,
-): Promise<StopConditionResult> {
+  allContributions: readonly Contribution[],
+): StopConditionResult {
   const metricNames = Object.keys(metrics);
   if (metricNames.length === 0) {
     return {
@@ -291,7 +298,6 @@ async function evaluateMaxRoundsWithoutImprovement(
     };
   }
 
-  const allContributions = await store.list();
   if (allContributions.length < maxRounds) {
     return {
       met: false,
@@ -356,12 +362,12 @@ async function evaluateMaxRoundsWithoutImprovement(
   };
 }
 
-async function evaluateTargetMetric(
+function evaluateTargetMetric(
   metricName: string,
   targetValue: number,
   metrics: Readonly<Record<string, MetricDefinition>>,
-  store: ContributionStore,
-): Promise<StopConditionResult> {
+  allContributions: readonly Contribution[],
+): StopConditionResult {
   const metricDef = metrics[metricName];
   if (metricDef === undefined) {
     return {
@@ -371,7 +377,6 @@ async function evaluateTargetMetric(
     };
   }
 
-  const allContributions = await store.list();
   const isMinimize = metricDef.direction === "minimize";
 
   let bestScore: number | undefined;
@@ -409,14 +414,14 @@ async function evaluateTargetMetric(
   };
 }
 
-async function evaluateBudget(
+function evaluateBudget(
   budget: {
     readonly maxContributions?: number | undefined;
     readonly maxWallClockSeconds?: number | undefined;
   },
-  store: ContributionStore,
-): Promise<StopConditionResult> {
-  const totalContributions = await store.count();
+  allContributions: readonly Contribution[],
+): StopConditionResult {
+  const totalContributions = allContributions.length;
 
   if (totalContributions === 0) {
     return {
@@ -445,8 +450,6 @@ async function evaluateBudget(
   let wallClockBudgetMet = false;
   let secondsElapsed = 0;
   if (budget.maxWallClockSeconds !== undefined) {
-    // Get the earliest contribution's createdAt
-    const allContributions = await store.list();
     if (allContributions.length > 0) {
       const sorted = [...allContributions].sort(
         (a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt),
@@ -485,13 +488,11 @@ async function evaluateBudget(
   };
 }
 
-async function evaluateQuorumReviewScore(
+function evaluateQuorumReviewScore(
   minReviews: number,
   minScore: number,
-  store: ContributionStore,
-): Promise<StopConditionResult> {
-  const allContributions = await store.list();
-
+  allContributions: readonly Contribution[],
+): StopConditionResult {
   // Build map of target CID → { totalReviews, scores[] }
   // Per spec: reviews without metadata.score count toward min_reviews
   // but do not contribute to the average score calculation.
@@ -544,11 +545,12 @@ async function evaluateQuorumReviewScore(
 
 async function evaluateDeliberationLimit(
   limit: { readonly maxRounds?: number | undefined; readonly maxMessages?: number | undefined },
+  allContributions: readonly Contribution[],
   store: ContributionStore,
 ): Promise<StopConditionResult> {
   // Find topic roots: CIDs that are responds_to targets but don't
   // themselves have outgoing responds_to relations.
-  const roots = await findTopicRoots(store);
+  const roots = findTopicRoots(allContributions);
 
   // For each root, use store.thread() to compute depth and message count
   const exceededTopics: DeliberationResult[] = [];
@@ -623,14 +625,12 @@ async function evaluateDeliberationLimit(
 }
 
 /**
- * Find all topic roots in the store.
+ * Find all topic roots from a pre-loaded list of contributions.
  *
  * A topic root is a CID that is a responds_to target but does not itself
  * have any outgoing responds_to relation (i.e., it's the start of a thread).
  */
-async function findTopicRoots(store: ContributionStore): Promise<readonly string[]> {
-  const allContributions = await store.list();
-
+function findTopicRoots(allContributions: readonly Contribution[]): readonly string[] {
   // Build responds_to adjacency: child CID → parent CID
   const respondsToSources = new Set<string>();
   const respondsToTargets = new Set<string>();

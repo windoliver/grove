@@ -11,8 +11,10 @@
 
 import type { Bounty, BountyStatus, RewardRecord } from "../core/bounty.js";
 import type { BountyQuery, BountyStore, RewardQuery } from "../core/bounty-store.js";
+import { NotFoundError } from "../core/errors.js";
 import type { AgentIdentity } from "../core/models.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
+import { batchParallel } from "./batch.js";
 import type { ListEntry, ListOptions, NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
@@ -102,18 +104,17 @@ export class NexusBountyStore implements BountyStore {
       entries = await this.listAllPages(dir);
     }
 
+    const nonDirEntries = entries.filter((e) => !e.isDirectory);
+    const bountyIds = nonDirEntries.map((entry) =>
+      query?.status !== undefined && typeof query.status === "string"
+        ? decodeSegment(entry.name)
+        : decodeSegment(entry.name.replace(/\.json$/, "")),
+    );
+
+    const fetched = await batchParallel(bountyIds, (id) => this.getBounty(id));
+
     const bounties: Bounty[] = [];
-    for (const entry of entries) {
-      if (entry.isDirectory) continue;
-
-      let bountyId: string;
-      if (query?.status !== undefined && typeof query.status === "string") {
-        bountyId = decodeSegment(entry.name);
-      } else {
-        bountyId = decodeSegment(entry.name.replace(/\.json$/, ""));
-      }
-
-      const bounty = await this.getBounty(bountyId);
+    for (const bounty of fetched) {
       if (bounty === undefined) continue;
 
       // Apply status filter for array queries
@@ -215,7 +216,12 @@ export class NexusBountyStore implements BountyStore {
     transform?: (b: Bounty) => Bounty,
   ): Promise<Bounty> {
     const existing = await this.getBounty(bountyId);
-    if (!existing) throw new Error(`Bounty not found: ${bountyId}`);
+    if (!existing)
+      throw new NotFoundError({
+        resource: "Bounty",
+        identifier: bountyId,
+        message: `Bounty not found: ${bountyId}`,
+      });
 
     const oldStatus = existing.status;
     let updated: Bounty = {

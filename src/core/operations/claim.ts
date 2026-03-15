@@ -11,7 +11,7 @@ import type { AgentOverrides } from "./agent.js";
 import { resolveAgent } from "./agent.js";
 import type { OperationDeps } from "./deps.js";
 import type { OperationResult } from "./result.js";
-import { fromGroveError, notFound, ok } from "./result.js";
+import { fromGroveError, notFound, ok, validationErr } from "./result.js";
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -91,6 +91,10 @@ export async function claimOperation(
   deps: OperationDeps,
 ): Promise<OperationResult<ClaimResult>> {
   try {
+    if (deps.claimStore === undefined) {
+      return validationErr("Claim operations not available (missing claimStore)");
+    }
+
     const agent = resolveAgent(input.agent);
     const now = new Date();
     const leaseDurationMs = input.leaseDurationMs ?? DEFAULT_LEASE_MS;
@@ -134,6 +138,10 @@ export async function releaseOperation(
   deps: OperationDeps,
 ): Promise<OperationResult<ReleaseResult>> {
   try {
+    if (deps.claimStore === undefined) {
+      return validationErr("Claim operations not available (missing claimStore)");
+    }
+
     // Verify claim exists
     const existing = await deps.claimStore.getClaim(input.claimId);
     if (existing === undefined) {
@@ -164,6 +172,10 @@ export async function listClaimsOperation(
   deps: OperationDeps,
 ): Promise<OperationResult<ListClaimsResult>> {
   try {
+    if (deps.claimStore === undefined) {
+      return validationErr("Claim operations not available (missing claimStore)");
+    }
+
     const claims = await deps.claimStore.listClaims({
       status: input.status,
       agentId: input.agentId,

@@ -14,7 +14,7 @@ import type { Contribution, ContributionKind, ContributionMode, JsonValue } from
 import type { ThreadNode, ThreadSummary } from "../store.js";
 import type { OperationDeps } from "./deps.js";
 import type { OperationResult } from "./result.js";
-import { fromGroveError, notFound, ok } from "./result.js";
+import { fromGroveError, notFound, ok, validationErr } from "./result.js";
 
 // ---------------------------------------------------------------------------
 // Shared summary types
@@ -228,6 +228,10 @@ export async function frontierOperation(
   deps: OperationDeps,
 ): Promise<OperationResult<FrontierResult>> {
   try {
+    if (deps.frontier === undefined) {
+      return validationErr("Frontier operations not available (missing frontier)");
+    }
+
     const result = await deps.frontier.compute({
       metric: input.metric,
       tags: input.tags,
@@ -259,6 +263,10 @@ export async function searchOperation(
   deps: OperationDeps,
 ): Promise<OperationResult<SearchResult>> {
   try {
+    if (deps.contributionStore === undefined) {
+      return validationErr("Query operations not available (missing contributionStore)");
+    }
+
     const results = await deps.contributionStore.search(input.query, {
       kind: input.kind,
       mode: input.mode,
@@ -282,6 +290,10 @@ export async function logOperation(
   deps: OperationDeps,
 ): Promise<OperationResult<LogResult>> {
   try {
+    if (deps.contributionStore === undefined) {
+      return validationErr("Query operations not available (missing contributionStore)");
+    }
+
     const results = await deps.contributionStore.list({
       kind: input.kind,
       mode: input.mode,
@@ -305,6 +317,10 @@ export async function treeOperation(
   deps: OperationDeps,
 ): Promise<OperationResult<TreeResult>> {
   try {
+    if (deps.contributionStore === undefined) {
+      return validationErr("Query operations not available (missing contributionStore)");
+    }
+
     const contribution = await deps.contributionStore.get(input.cid);
     if (contribution === undefined) {
       return notFound("Contribution", input.cid);
@@ -341,6 +357,10 @@ export async function threadOperation(
   deps: OperationDeps,
 ): Promise<OperationResult<ThreadResult>> {
   try {
+    if (deps.contributionStore === undefined) {
+      return validationErr("Query operations not available (missing contributionStore)");
+    }
+
     const nodes = await deps.contributionStore.thread(input.cid, {
       ...(input.maxDepth !== undefined ? { maxDepth: input.maxDepth } : {}),
       ...(input.limit !== undefined ? { limit: input.limit } : {}),
@@ -363,6 +383,10 @@ export async function threadsOperation(
   deps: OperationDeps,
 ): Promise<OperationResult<ThreadsResult>> {
   try {
+    if (deps.contributionStore === undefined) {
+      return validationErr("Query operations not available (missing contributionStore)");
+    }
+
     const threads = await deps.contributionStore.hotThreads({
       tags: input.tags,
       limit: input.limit,

@@ -1,15 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { createTestContext } from "./helpers.js";
-
-function claimBody(overrides?: Record<string, unknown>): Record<string, unknown> {
-  return {
-    targetRef: "optimize-parser",
-    agent: { agentId: "agent-1" },
-    intentSummary: "Working on parser optimization",
-    ...overrides,
-  };
-}
+import { claimBody, createTestContext } from "./helpers.js";
 
 describe("POST /api/claims", () => {
   let ctx: TestContext;

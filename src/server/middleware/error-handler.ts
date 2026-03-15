@@ -9,6 +9,8 @@ import type { Context } from "hono";
 import { ZodError } from "zod";
 import { GroveError, RateLimitError } from "../../core/errors.js";
 
+// NotFoundError and StateConflictError are resolved via ERROR_MAP by name.
+
 interface ErrorMapping {
   readonly status: number;
   readonly code: string;
@@ -23,6 +25,8 @@ const ERROR_MAP = new Map<string, ErrorMapping>([
   ["RetryExhaustedError", { status: 503, code: "RETRY_EXHAUSTED" }],
   ["PeerUnreachableError", { status: 502, code: "PEER_UNREACHABLE" }],
   ["GossipTimeoutError", { status: 504, code: "GOSSIP_TIMEOUT" }],
+  ["NotFoundError", { status: 404, code: "NOT_FOUND" }],
+  ["StateConflictError", { status: 409, code: "STATE_CONFLICT" }],
 ]);
 
 /** Format error response body. */
@@ -58,22 +62,6 @@ export function handleError(err: Error, c: Context): Response {
 
     // Unknown GroveError subclass → 500
     return c.json(errorBody("GROVE_ERROR", err.message), 500);
-  }
-
-  // Claim not found or invalid state transitions throw plain Errors
-  // from the store layer. Check for common patterns.
-  if (err instanceof Error) {
-    const msg = err.message.toLowerCase();
-    if (msg.includes("not found") || msg.includes("does not exist")) {
-      return c.json(errorBody("NOT_FOUND", err.message), 404);
-    }
-    if (
-      msg.includes("not active") ||
-      msg.includes("already exists") ||
-      msg.includes("already has")
-    ) {
-      return c.json(errorBody("CONFLICT", err.message), 409);
-    }
   }
 
   // Fallback: 500 Internal Server Error (no stack trace in response)

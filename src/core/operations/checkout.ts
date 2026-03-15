@@ -50,6 +50,10 @@ export async function checkoutOperation(
       return validationErr("Workspace manager not configured");
     }
 
+    if (deps.contributionStore === undefined) {
+      return validationErr("Checkout not available (missing contributionStore)");
+    }
+
     // Verify contribution exists
     const contribution = await deps.contributionStore.get(input.cid);
     if (contribution === undefined) {

@@ -207,6 +207,10 @@ export async function claimBountyOperation(
       return validationErr("Bounty operations not available");
     }
 
+    if (deps.claimStore === undefined) {
+      return validationErr("Claim operations not available (missing claimStore)");
+    }
+
     const bounty = await deps.bountyStore.getBounty(input.bountyId);
     if (!bounty) {
       return notFound("Bounty", input.bountyId);
@@ -251,6 +255,10 @@ export async function settleBountyOperation(
   try {
     if (deps.bountyStore === undefined) {
       return validationErr("Bounty operations not available (missing bountyStore)");
+    }
+
+    if (deps.contributionStore === undefined) {
+      return validationErr("Settle bounty not available (missing contributionStore)");
     }
 
     const bounty = await deps.bountyStore.getBounty(input.bountyId);

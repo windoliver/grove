@@ -247,15 +247,44 @@ export class RemoteDataProvider
   }
 
   async getOutcomes(cids: readonly string[]): Promise<ReadonlyMap<string, OutcomeRecord>> {
+    if (cids.length === 0) return new Map();
+
     const map = new Map<string, OutcomeRecord>();
-    const results = await Promise.allSettled(cids.map((cid) => this.getOutcome(cid)));
-    for (let i = 0; i < cids.length; i++) {
-      const result = results[i];
-      if (result?.status === "fulfilled" && result.value) {
-        const cid = cids[i];
-        if (cid) map.set(cid, result.value);
+    const CHUNK_SIZE = 50;
+
+    // Chunk CIDs to avoid overly long URLs
+    const chunks: string[][] = [];
+    for (let i = 0; i < cids.length; i += CHUNK_SIZE) {
+      chunks.push(cids.slice(i, i + CHUNK_SIZE) as string[]);
+    }
+
+    const chunkResults = await Promise.allSettled(
+      chunks.map(async (chunk) => {
+        const params = new URLSearchParams({ cids: chunk.join(",") });
+        const resp = await fetch(`${this.baseUrl}/api/outcomes?${params.toString()}`);
+        if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
+        return parseOutcomeRecords(await resp.json());
+      }),
+    );
+
+    for (let i = 0; i < chunkResults.length; i++) {
+      const result = chunkResults[i] as PromiseSettledResult<readonly OutcomeRecord[]>;
+      const chunk = chunks[i] as string[];
+      if (result.status === "fulfilled") {
+        for (const record of result.value) {
+          map.set(record.cid, record);
+        }
+      } else {
+        // Fall back to individual fetches so one bad chunk doesn't hide valid outcomes
+        const fallbackResults = await Promise.allSettled(chunk.map((cid) => this.getOutcome(cid)));
+        for (const fb of fallbackResults) {
+          if (fb.status === "fulfilled" && fb.value !== undefined) {
+            map.set(fb.value.cid, fb.value);
+          }
+        }
       }
     }
+
     return map;
   }
 

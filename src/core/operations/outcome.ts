@@ -40,6 +40,11 @@ export interface ListOutcomesInput {
   readonly offset?: number | undefined;
 }
 
+/** Input for batch get outcomes by CIDs. */
+export interface GetBatchOutcomesInput {
+  readonly cids: readonly string[];
+}
+
 // ---------------------------------------------------------------------------
 // Operations
 // ---------------------------------------------------------------------------
@@ -107,6 +112,27 @@ export async function listOutcomesOperation(
       offset: input.offset,
     });
 
+    return ok(records);
+  } catch (error) {
+    return fromGroveError(error);
+  }
+}
+
+/** Get outcomes for multiple CIDs in a single batch query. */
+export async function getBatchOutcomesOperation(
+  input: GetBatchOutcomesInput,
+  deps: OperationDeps,
+): Promise<OperationResult<ReadonlyMap<string, OutcomeRecord>>> {
+  try {
+    if (deps.outcomeStore === undefined) {
+      return validationErr("Outcome store not configured");
+    }
+
+    if (input.cids.length === 0) {
+      return ok(new Map());
+    }
+
+    const records = await deps.outcomeStore.getBatch(input.cids);
     return ok(records);
   } catch (error) {
     return fromGroveError(error);
