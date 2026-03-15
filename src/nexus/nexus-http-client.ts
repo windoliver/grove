@@ -48,6 +48,10 @@ export interface NexusHttpConfig {
 // Helpers
 // ---------------------------------------------------------------------------
 
+function toBase64(data: Uint8Array): string {
+  return Buffer.from(data).toString("base64");
+}
+
 function fromBase64(b64: string): Uint8Array {
   return new Uint8Array(Buffer.from(b64, "base64"));
 }
@@ -210,15 +214,11 @@ export class NexusHttpClient implements NexusClient {
   async read(path: string): Promise<Uint8Array | undefined> {
     try {
       const result = await this.rpc("sys_read", { path }, ReadResultSchema);
-      // Nexus returns { __type__: "bytes", data: "base64..." }
-      if ("__type__" in result && result.__type__ === "bytes") {
-        return fromBase64(result.data);
-      }
-      // Legacy format: { content, encoding }
-      if ("encoding" in result && result.encoding === "base64") {
-        return fromBase64(result.content);
-      }
-      return new TextEncoder().encode("content" in result ? result.content : "");
+      // Nexus returns stored bytes base64-encoded for JSON transport.
+      // We also base64-encode on write (for binary safety), so we need
+      // to decode twice: once for transport, once for our storage encoding.
+      const transportDecoded = this.decodeReadResult(result);
+      return fromBase64(new TextDecoder().decode(transportDecoded));
     } catch (err) {
       if (err instanceof NexusNotFoundError) return undefined;
       throw err;
@@ -227,20 +227,20 @@ export class NexusHttpClient implements NexusClient {
 
   async readWithMeta(path: string): Promise<ReadResult | undefined> {
     try {
-      // Nexus sys_read doesn't return etag inline — read content then stat for etag
-      const result = await this.rpc("sys_read", { path }, ReadResultSchema);
-      let content: Uint8Array;
-      if ("__type__" in result && result.__type__ === "bytes") {
-        content = fromBase64(result.data);
-      } else if ("encoding" in result && result.encoding === "base64") {
-        content = fromBase64(result.content);
-      } else {
-        content = new TextEncoder().encode("content" in result ? result.content : "");
-      }
-
-      // Get etag from stat
+      // Nexus sys_read doesn't return etag inline. We stat FIRST to get
+      // the etag, then read. This ordering is safe for CAS: if a concurrent
+      // writer updates between stat and read, we get a stale etag with newer
+      // content. A subsequent ifMatch write will fail (etag mismatch),
+      // forcing a correct retry. The unsafe direction (read-then-stat) could
+      // pair old content with a new etag, allowing a write to succeed when
+      // it shouldn't.
       const meta = await this.stat(path);
-      return { content, etag: meta?.etag ?? "" };
+      if (meta === undefined) return undefined;
+
+      const result = await this.rpc("sys_read", { path }, ReadResultSchema);
+      const transportDecoded = this.decodeReadResult(result);
+      const content = fromBase64(new TextDecoder().decode(transportDecoded));
+      return { content, etag: meta.etag };
     } catch (err) {
       if (err instanceof NexusNotFoundError) return undefined;
       throw err;
@@ -248,12 +248,13 @@ export class NexusHttpClient implements NexusClient {
   }
 
   async write(path: string, content: Uint8Array, opts?: WriteOptions): Promise<WriteResult> {
-    // Nexus sys_write accepts `content` as a raw UTF-8 string — it handles
-    // storage encoding internally. Do NOT base64-encode here; Nexus would
-    // store the base64 string literally, causing double-encoding on read.
+    // Nexus sys_write treats `content` as a raw string stored verbatim.
+    // We base64-encode content so arbitrary binary (including non-UTF-8
+    // bytes like 0xFF) survives the JSON transport and storage round-trip.
+    // The corresponding read() double-decodes (transport base64 → our base64).
     const params: Record<string, unknown> = {
       path,
-      content: new TextDecoder().decode(content),
+      content: toBase64(content),
     };
     if (opts?.ifMatch !== undefined) params.if_match = opts.ifMatch;
     if (opts?.ifNoneMatch !== undefined) params.if_none_match = opts.ifNoneMatch;
@@ -265,6 +266,19 @@ export class NexusHttpClient implements NexusClient {
       etag: result.etag,
       version: result.version,
     };
+  }
+
+  /** Decode a sys_read response into raw stored bytes (before our base64 layer). */
+  private decodeReadResult(
+    result: { __type__: "bytes"; data: string } | { content: string; encoding: string },
+  ): Uint8Array {
+    if ("__type__" in result && result.__type__ === "bytes") {
+      return fromBase64(result.data);
+    }
+    if ("encoding" in result && result.encoding === "base64") {
+      return fromBase64(result.content);
+    }
+    return new TextEncoder().encode("content" in result ? result.content : "");
   }
 
   async exists(path: string): Promise<boolean> {
