@@ -198,6 +198,7 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
   const [ks, dispatch] = useReducer(tuiReducer, INITIAL_KEYBOARD_STATE);
 
   // Restore persisted state on first load (item 13)
+  // restoredRef gates both restore AND save — save must not run before restore.
   const restoredRef = useRef(false);
   useEffect(() => {
     if (restoredRef.current || !persistedState) return;
@@ -212,27 +213,27 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
     }
     // Restore search query
     if (persistedState.searchQuery) {
-      dispatch({ type: "SEARCH_CHAR", char: "" }); // no-op but triggers state
-      // Set buffer then submit to populate searchQuery
       for (const ch of persistedState.searchQuery) {
         dispatch({ type: "SEARCH_CHAR", char: ch });
       }
       dispatch({ type: "SEARCH_SUBMIT" });
     }
-    // Restore focused panel
-    if (persistedState.focusedPanel !== undefined) {
-      panels.focus(persistedState.focusedPanel as import("./hooks/use-panel-focus.js").Panel);
-    }
-    // Restore visible operator panels
+    // Restore visible operator panels FIRST (so focus can land on them)
     if (persistedState.visibleOperatorPanels) {
       for (const p of persistedState.visibleOperatorPanels) {
         panels.toggle(p as import("./hooks/use-panel-focus.js").Panel);
       }
     }
+    // Restore focused panel AFTER panels are visible
+    if (persistedState.focusedPanel !== undefined) {
+      panels.focus(persistedState.focusedPanel as import("./hooks/use-panel-focus.js").Panel);
+    }
   }, [persistedState, panels]);
 
   // Persist state on changes (item 13)
+  // Gated by restoredRef to prevent saving default state before async restore completes.
   useEffect(() => {
+    if (!restoredRef.current) return;
     const visibleOps = [...panels.state.visibleOperator];
     saveState({
       zoomLevel: ks.zoomLevel,
@@ -279,7 +280,8 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
     topology !== undefined,
   );
 
-  // Poll tmux sessions for the command palette kill list
+  // Poll tmux sessions — used by command palette, agent count, split pane,
+  // and transcript search. Always active when tmux is available (fix #3).
   const paletteVisible = panels.state.mode === InputMode.CommandPalette;
   const sessionsFetcher = useCallback(async () => {
     if (!tmux) return [] as readonly string[];
@@ -289,8 +291,8 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
   }, [tmux]);
   const { data: paletteSessions } = usePolledData<readonly string[]>(
     sessionsFetcher,
-    intervalMs * 2,
-    paletteVisible && tmux !== undefined,
+    paletteVisible ? intervalMs * 2 : intervalMs * 4,
+    tmux !== undefined,
   );
 
   // Poll session costs — skip if provider doesn't support it (15B)
