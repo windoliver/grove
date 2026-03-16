@@ -180,12 +180,17 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
     [onConnect],
   );
 
-  // Keyboard handler for error states (q to quit)
+  // Keyboard handler for error states (q to quit, Esc to go back to setup)
   useKeyboard(
     useCallback(
       (key) => {
-        if ((mode === "initializing" || mode === "starting") && initError && key.name === "q") {
-          handleQuit();
+        if ((mode === "initializing" || mode === "starting") && initError) {
+          if (key.name === "q") {
+            handleQuit();
+          } else if (key.name === "escape") {
+            setMode("setup");
+            setInitError(undefined);
+          }
         }
       },
       [mode, initError, handleQuit],

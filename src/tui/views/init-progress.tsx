@@ -63,7 +63,7 @@ export const InitProgressView: React.NamedExoticComponent<InitProgressProps> = R
             <text color={theme.error} bold>
               Error: {error}
             </text>
-            <text color={theme.muted}>Press q to quit, or fix the issue and retry.</text>
+            <text color={theme.muted}>Esc:back to setup q:quit</text>
           </box>
         ) : null}
       </box>

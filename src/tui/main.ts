@@ -350,6 +350,31 @@ export async function handleTui(
   process.on("SIGTERM", onSignal);
 
   try {
+    // Direct connection mode: --url or --nexus flags bypass the setup screen
+    // and go straight to the boardroom (preserves existing CLI contract)
+    if (opts.url || opts.nexus) {
+      // Start services if grove exists (same as Resume, but automatic)
+      if (groveDir) {
+        const { startServices } = await import("../shared/service-lifecycle.js");
+        runningServices = await startServices({
+          groveDir,
+          build: serviceOpts?.build,
+          nexusSource: serviceOpts?.nexusSource,
+        });
+      }
+
+      const result = await buildAppProps(effectiveGrove, opts);
+      activeProvider = result.provider;
+      activeStopGc = result.stopGc;
+
+      const { App } = await import("./app.js");
+      root.render(React.createElement(App, result.appProps));
+
+      renderer.start();
+      await renderer.idle();
+      return;
+    }
+
     const presets = await loadPresetList();
 
     // onInit: handles "New grove" path — run init then start services
