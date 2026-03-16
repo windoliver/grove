@@ -148,38 +148,38 @@ function findGroveDir(groveOverride?: string): string | undefined {
 function buildPresetDetails(preset: {
   readonly mode: string;
   readonly backend: string;
-  readonly topology?:
-    | {
-        readonly structure: string;
-        readonly roles: readonly { readonly name: string }[];
-      }
-    | undefined;
-  readonly concurrency?:
-    | {
-        readonly maxActiveClaims?: number | undefined;
-        readonly maxClaimsPerAgent?: number | undefined;
-      }
-    | undefined;
+  readonly topology?: { readonly roles: readonly { readonly name: string }[] } | undefined;
+  readonly metrics?: readonly { readonly name: string; readonly direction: string }[] | undefined;
+  readonly gates?: readonly { readonly type: string }[] | undefined;
+  readonly stopConditions?: object | undefined;
+  readonly services: { readonly server: boolean; readonly mcp: boolean };
 }): string {
   const lines: string[] = [];
   lines.push(`Mode: ${preset.mode}`);
   lines.push(`Backend: ${preset.backend}`);
   if (preset.topology) {
     const roleNames = preset.topology.roles.map((r) => r.name).join(", ");
-    lines.push(`Topology: ${preset.topology.structure} — ${roleNames}`);
+    lines.push(`Roles: ${roleNames}`);
   }
-  if (preset.concurrency) {
-    const parts: string[] = [];
-    if (preset.concurrency.maxActiveClaims !== undefined) {
-      parts.push(`maxActiveClaims=${preset.concurrency.maxActiveClaims}`);
-    }
-    if (preset.concurrency.maxClaimsPerAgent !== undefined) {
-      parts.push(`maxClaimsPerAgent=${preset.concurrency.maxClaimsPerAgent}`);
-    }
-    if (parts.length > 0) {
-      lines.push(`Concurrency: ${parts.join(", ")}`);
-    }
+  if (preset.metrics && preset.metrics.length > 0) {
+    const metricStrs = preset.metrics.map((m) => `${m.name} (${m.direction})`);
+    lines.push(`Metrics: ${metricStrs.join(", ")}`);
+  } else {
+    lines.push("Metrics: none (exploration mode)");
   }
+  if (preset.gates && preset.gates.length > 0) {
+    lines.push(`Gates: ${preset.gates.map((g) => g.type).join(", ")}`);
+  }
+  if (preset.stopConditions) {
+    const stops = Object.entries(preset.stopConditions as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .map(([k, v]) => `${k}=${String(v)}`);
+    if (stops.length > 0) lines.push(`Stop: ${stops.join(", ")}`);
+  }
+  const services: string[] = [];
+  if (preset.services.server) services.push("HTTP server");
+  if (preset.services.mcp) services.push("MCP server");
+  if (services.length > 0) lines.push(`Services: ${services.join(", ")}`);
   return lines.join("\n");
 }
 
@@ -320,10 +320,12 @@ export async function handleTui(args: readonly string[], groveOverride?: string)
     let activeProvider: TuiDataProvider | undefined;
     let activeStopGc: (() => void) | undefined;
 
-    const onInit = async (presetName: string): Promise<import("./app.js").AppProps> => {
-      // Run grove init with the selected preset
+    const onInit = async (
+      presetName: string,
+      groveName: string,
+    ): Promise<import("./app.js").AppProps> => {
+      // Run grove init with the selected preset and user-provided name
       const { executeInit } = await import("../cli/commands/init.js");
-      const groveName = basename(process.cwd());
 
       await executeInit({
         name: groveName,

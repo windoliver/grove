@@ -895,6 +895,7 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
         onCompareSelect={handleCompareSelect}
         onFrontierCidsChanged={handleFrontierCidsChanged}
         zoomLevel={zoomLevel}
+        activeSessions={paletteSessions?.filter((s) => s.startsWith("grove-"))}
       />
       <StatusBar
         mode={panels.state.mode}

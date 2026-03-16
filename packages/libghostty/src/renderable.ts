@@ -12,9 +12,13 @@
  * extend({ "ghostty-terminal": GhosttyRenderable });
  * ```
  *
- * Usage (unchanged from ghostty-opentui):
+ * Usage:
  * ```tsx
+ * // Stateless mode (full re-parse each render):
  * <ghostty-terminal ansi={rawOutput} cols={120} rows={30} />
+ *
+ * // Persistent mode (delta-only feeding, no reset):
+ * <ghostty-terminal delta={newBytes} cols={120} rows={30} />
  * ```
  */
 
@@ -23,16 +27,21 @@ import { GhosttyTerminal } from "./terminal.js";
 /**
  * OpenTUI renderable class for terminal output.
  *
- * This is a TextBufferRenderable-compatible class that OpenTUI's
- * extend() function registers as a custom intrinsic element.
+ * Two rendering modes:
  *
- * When `ansi` prop changes, it feeds the *entire* content to a fresh
- * terminal instance (stateless mode). For persistent mode, use
- * GhosttyTerminal directly and call .write() with deltas.
+ * **Stateless** (via `ansi` prop): Resets the terminal and feeds the
+ * entire ANSI blob on every getText() call. Simple but re-parses everything.
+ *
+ * **Persistent** (via `delta` prop): Only feeds the new bytes since the
+ * last render. Terminal state (cursor, colors, scrollback) is maintained
+ * across calls. This is the mode used for per-agent persistent terminals.
+ *
+ * The prop is named `delta` (not `feed`) to avoid collision with the
+ * `appendData()` imperative method.
  */
 export class GhosttyRenderable {
   private _ansi: string | Buffer | Uint8Array = "";
-  private _feed: string | Buffer | Uint8Array | undefined;
+  private _delta: string | Buffer | Uint8Array | undefined;
   private _cols = 120;
   private _rows = 30;
   private _trimEnd = false;
@@ -43,25 +52,32 @@ export class GhosttyRenderable {
     // OpenTUI passes renderer context and options to constructors
   }
 
+  // -- Props set by OpenTUI reconciler via property assignment --
+
   get ansi(): string | Buffer | Uint8Array {
     return this._ansi;
   }
 
   set ansi(value: string | Buffer | Uint8Array) {
     this._ansi = value;
-    // When ansi is set, use stateless mode (full re-parse)
+    // ansi prop = stateless mode (full re-parse)
     this._persistentMode = false;
-    this.invalidate();
   }
 
   /**
-   * Feed delta bytes for persistent mode.
-   * When set, the terminal is NOT reset — new bytes are appended
-   * to the existing state, avoiding full re-parse.
+   * Delta bytes for persistent mode.
+   * When set, getText() does NOT reset the terminal — it only feeds
+   * the delta, preserving cursor/color/scrollback state.
    */
-  set feed(value: string | Buffer | Uint8Array) {
-    this._feed = value;
-    this._persistentMode = true;
+  get delta(): string | Buffer | Uint8Array | undefined {
+    return this._delta;
+  }
+
+  set delta(value: string | Buffer | Uint8Array | undefined) {
+    this._delta = value;
+    if (value !== undefined) {
+      this._persistentMode = true;
+    }
   }
 
   get cols(): number {
@@ -71,7 +87,9 @@ export class GhosttyRenderable {
   set cols(value: number) {
     if (this._cols !== value) {
       this._cols = value;
-      this.invalidate();
+      if (this._terminal) {
+        this._terminal.resize(this._cols, this._rows);
+      }
     }
   }
 
@@ -82,7 +100,9 @@ export class GhosttyRenderable {
   set rows(value: number) {
     if (this._rows !== value) {
       this._rows = value;
-      this.invalidate();
+      if (this._terminal) {
+        this._terminal.resize(this._cols, this._rows);
+      }
     }
   }
 
@@ -94,25 +114,27 @@ export class GhosttyRenderable {
     this._trimEnd = value;
   }
 
+  // -- Rendering --
+
   /**
    * Get the rendered text content for OpenTUI's text buffer.
-   *
-   * This is called by OpenTUI's reconciler to get the content to display.
+   * Called by OpenTUI's reconciler on each render frame.
    */
   getText(): string {
     if (!this._terminal) {
       this._terminal = new GhosttyTerminal(this._cols, this._rows, 0);
     }
 
-    if (this._persistentMode && this._feed !== undefined) {
-      // Persistent mode: feed only the delta bytes, no reset
-      this.writeInput(this._feed);
-      this._feed = undefined;
-    } else {
+    if (this._persistentMode && this._delta !== undefined) {
+      // Persistent mode: feed only the delta, no reset
+      this.writeToTerminal(this._delta);
+      this._delta = undefined;
+    } else if (!this._persistentMode) {
       // Stateless mode: reset and feed the full content
       this._terminal.reset();
-      this.writeInput(this._ansi);
+      this.writeToTerminal(this._ansi);
     }
+    // If persistent mode but no delta, just return current state (no-op)
 
     let text = this._terminal.getText();
     if (this._trimEnd) {
@@ -121,39 +143,25 @@ export class GhosttyRenderable {
     return text;
   }
 
-  /** Write input data to the terminal, handling type conversion. */
-  private writeInput(input: string | Buffer | Uint8Array): void {
-    if (!this._terminal) return;
-    if (typeof input === "string") {
-      this._terminal.write(input);
-    } else if (input instanceof Uint8Array) {
-      this._terminal.write(input);
-    } else if (Buffer.isBuffer(input)) {
-      this._terminal.write(new Uint8Array(input));
-    }
-  }
+  // -- Imperative API (for direct usage outside OpenTUI props) --
 
   /**
-   * Feed additional data to a persistent terminal.
-   *
+   * Append data to the persistent terminal.
    * For streaming mode — avoids re-parsing the entire history.
    */
-  feed(data: string | Buffer | Uint8Array): void {
+  appendData(data: string | Buffer | Uint8Array): void {
     if (!this._terminal) {
       this._terminal = new GhosttyTerminal(this._cols, this._rows, 0);
     }
-    if (typeof data === "string") {
-      this._terminal.write(data);
-    } else if (data instanceof Uint8Array) {
-      this._terminal.write(data);
-    } else if (Buffer.isBuffer(data)) {
-      this._terminal.write(new Uint8Array(data));
-    }
+    this._persistentMode = true;
+    this.writeToTerminal(data);
   }
 
   /** Reset the terminal state. */
   reset(): void {
     this._terminal?.reset();
+    this._persistentMode = false;
+    this._delta = undefined;
   }
 
   /** Release native resources. */
@@ -162,12 +170,16 @@ export class GhosttyRenderable {
     this._terminal = null;
   }
 
-  private invalidate(): void {
-    // Resize the terminal if dimensions changed
-    if (this._terminal) {
-      if (this._terminal.cols !== this._cols || this._terminal.rows !== this._rows) {
-        this._terminal.resize(this._cols, this._rows);
-      }
+  // -- Internal --
+
+  private writeToTerminal(input: string | Buffer | Uint8Array): void {
+    if (!this._terminal) return;
+    if (typeof input === "string") {
+      this._terminal.write(input);
+    } else if (input instanceof Uint8Array) {
+      this._terminal.write(input);
+    } else if (Buffer.isBuffer(input)) {
+      this._terminal.write(new Uint8Array(input));
     }
   }
 }

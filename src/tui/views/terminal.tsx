@@ -209,10 +209,9 @@ export const TerminalView: React.NamedExoticComponent<TerminalProps> = React.mem
         <box flexDirection="column">
           {header}
           {createElement("ghostty-terminal" as string, {
-            // When libghostty is active, pass delta via feed prop;
-            // otherwise pass full ansi for stateless rendering
-            ansi: libghosttyAvailable ? undefined : rawOutput,
-            ...(libghosttyAvailable ? { feed: ansiProp } : {}),
+            // When libghostty is active, pass delta via `delta` prop
+            // for persistent mode; otherwise pass full `ansi` for stateless
+            ...(libghosttyAvailable ? { delta: ansiProp } : { ansi: rawOutput }),
             cols: 120,
             rows: 30,
             trimEnd: true,

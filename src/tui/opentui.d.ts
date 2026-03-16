@@ -129,11 +129,13 @@ declare module "@grove/libghostty/renderable" {
     constructor(ctx: unknown, options: Record<string, unknown>);
     get ansi(): string | Buffer | Uint8Array;
     set ansi(value: string | Buffer | Uint8Array);
+    get delta(): string | Buffer | Uint8Array | undefined;
+    set delta(value: string | Buffer | Uint8Array | undefined);
     get cols(): number;
     set cols(value: number);
     get rows(): number;
     set rows(value: number);
-    feed(data: string | Buffer | Uint8Array): void;
+    appendData(data: string | Buffer | Uint8Array): void;
     reset(): void;
     getText(): string;
     destroy(): void;

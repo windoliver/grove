@@ -27,6 +27,7 @@ import { isPanelVisible, PANEL_LABELS, Panel } from "../hooks/use-panel-focus.js
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { ContributionDetail, TuiDataProvider } from "../provider.js";
 import { theme } from "../theme.js";
+import { AgentSplitPane } from "../components/agent-split-pane.js";
 import { ActivityPanelView } from "../views/activity-panel.js";
 import { AgentGraphView } from "../views/agent-graph.js";
 import { AgentListView } from "../views/agent-list.js";
@@ -83,6 +84,8 @@ export interface PanelManagerProps {
   readonly onFrontierCidsChanged?: ((cids: readonly string[]) => void) | undefined;
   /** Current zoom level. */
   readonly zoomLevel?: ZoomLevel | undefined;
+  /** Active tmux sessions for split pane view. */
+  readonly activeSessions?: readonly string[] | undefined;
 }
 
 /** Zoom level for panel layout. */
@@ -182,6 +185,7 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
     onCompareSelect,
     onFrontierCidsChanged,
     zoomLevel,
+    activeSessions,
   }: PanelManagerProps): React.ReactNode {
     const isFocused = (p: Panel) => panelState.focused === p;
     const zoom = zoomLevel ?? "normal";
@@ -332,13 +336,23 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
               )}
               {isPanelVisible(panelState, Panel.Terminal) && (
                 <PanelChrome panel={Panel.Terminal} focused={isFocused(Panel.Terminal)}>
-                  <TerminalView
-                    sessionName={selectedSession}
-                    tmux={tmux}
-                    intervalMs={intervalMs}
-                    active
-                    mode={panelState.mode}
-                  />
+                  {/* Show split panes when multiple agents are active */}
+                  {tmux && activeSessions && activeSessions.length > 1 ? (
+                    <AgentSplitPane
+                      sessions={activeSessions}
+                      tmux={tmux}
+                      intervalMs={intervalMs}
+                      active
+                    />
+                  ) : (
+                    <TerminalView
+                      sessionName={selectedSession}
+                      tmux={tmux}
+                      intervalMs={intervalMs}
+                      active
+                      mode={panelState.mode}
+                    />
+                  )}
                 </PanelChrome>
               )}
             </box>

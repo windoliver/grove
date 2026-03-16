@@ -36,8 +36,8 @@ export interface TuiAppProps {
   readonly appProps?: AppProps | undefined;
   /** Presets for the welcome screen. */
   readonly presets?: readonly TuiPresetEntry[] | undefined;
-  /** Callback to run init for a selected preset. Returns AppProps on success. */
-  readonly onInit?: ((presetName: string) => Promise<AppProps>) | undefined;
+  /** Callback to run init for a selected preset + grove name. Returns AppProps on success. */
+  readonly onInit?: ((presetName: string, groveName: string) => Promise<AppProps>) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -77,9 +77,9 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
     renderer.destroy();
   }, [renderer]);
 
-  /** Handle preset selection — kicks off initialization. */
+  /** Handle preset + name selection — kicks off initialization. */
   const handleSelect = useCallback(
-    (presetName: string) => {
+    (presetName: string, groveName: string) => {
       if (!onInit) return;
 
       setMode("initializing");
@@ -90,8 +90,6 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
       // Run init asynchronously with progressive step updates
       void (async () => {
         try {
-          // Simulate progressive step completion during init
-          // Mark steps done progressively as the init runs
           const markStep = (index: number) => {
             setInitSteps((prev) => prev.map((s, i) => (i <= index ? { ...s, done: true } : s)));
           };
@@ -99,7 +97,7 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
           // Mark first step immediately
           markStep(0);
 
-          const result = await onInit(presetName);
+          const result = await onInit(presetName, groveName);
 
           // Mark all steps done on success
           setInitSteps((prev) => prev.map((s) => ({ ...s, done: true })));
