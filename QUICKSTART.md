@@ -12,7 +12,9 @@ without installing global binaries.
 ```bash
 bun install
 bun run build
-bun link          # puts "grove" on your PATH
+
+# Link the CLI so "grove" is on your PATH
+bun link
 ```
 
 Optionally set agent identity (used when contributing/claiming, not required for init):
