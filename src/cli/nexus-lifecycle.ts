@@ -10,7 +10,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { GroveConfig } from "../core/config.js";
 
 // ---------------------------------------------------------------------------
@@ -104,20 +104,94 @@ export async function nexusInit(
   }
 }
 
+/** Options for `nexusUp`. */
+export interface NexusUpOptions {
+  /** Timeout in seconds for health checks (default: 180). */
+  readonly timeoutSeconds?: number | undefined;
+  /**
+   * Build Nexus from source instead of pulling a pre-built image.
+   *
+   * Requires a nexus source checkout — resolved via:
+   * 1. `nexusSource` option (explicit path)
+   * 2. `NEXUS_SOURCE` environment variable
+   *
+   * The repo-checkout `nexus-stack.yml` has a `build:` directive
+   * that points at the local Dockerfile. The pip-installed bundled
+   * compose file does NOT — so `--build` without a source path
+   * will be silently ignored by `nexus up`.
+   */
+  readonly build?: boolean | undefined;
+  /**
+   * Path to a local nexus source checkout (e.g., `~/nexus`).
+   * When set, `nexus up --build` runs with `--compose-file` pointing
+   * at the repo's `nexus-stack.yml` so Docker Compose uses the local
+   * build context (Dockerfile + maturin Rust extensions). Implies `--build`.
+   */
+  readonly nexusSource?: string | undefined;
+}
+
+/**
+ * Resolve the nexus source directory for `--build`.
+ *
+ * Priority:
+ * 1. Explicit `nexusSource` option
+ * 2. `NEXUS_SOURCE` environment variable
+ * 3. `undefined` (no source — `--build` will be rejected)
+ */
+function resolveNexusSource(explicit?: string): string | undefined {
+  if (explicit) return resolve(explicit);
+  const envSource = process.env.NEXUS_SOURCE;
+  if (envSource) return resolve(envSource);
+  return undefined;
+}
+
 /**
  * Run `nexus up` in the project root.
  *
  * Starts Nexus via Docker Compose. Expects `nexus.yaml` to exist.
  * Passes `--timeout` so `nexus up` waits for health checks.
  *
+ * When `build` is true (or `nexusSource` is set), passes `--build`
+ * and `--compose-file` pointing at the source repo's `nexus-stack.yml`
+ * so Docker Compose uses the local build context instead of pulling
+ * from GHCR.
+ *
  * Falls back to `nexus up` without `--timeout` if the installed
  * CLI doesn't support the flag (nexus-ai-fs < 0.9.0).
  */
-export async function nexusUp(
-  projectRoot: string,
-  timeoutSeconds: number = NEXUS_UP_TIMEOUT_S,
-): Promise<void> {
-  const proc = Bun.spawn(["nexus", "up", "--timeout", String(timeoutSeconds)], {
+export async function nexusUp(projectRoot: string, opts: NexusUpOptions = {}): Promise<void> {
+  const timeout = opts.timeoutSeconds ?? NEXUS_UP_TIMEOUT_S;
+  const wantsBuild = opts.build || !!opts.nexusSource;
+
+  // Resolve source directory for --build
+  let sourceDir: string | undefined;
+  if (wantsBuild) {
+    sourceDir = resolveNexusSource(opts.nexusSource);
+    if (!sourceDir) {
+      throw new Error(
+        "--build requires a nexus source checkout.\n" +
+          "Provide one with: grove up --nexus-source ~/nexus\n" +
+          "Or set: export NEXUS_SOURCE=~/nexus",
+      );
+    }
+    if (!existsSync(sourceDir)) {
+      throw new Error(`Nexus source directory not found: ${sourceDir}`);
+    }
+    const composeFile = join(sourceDir, "nexus-stack.yml");
+    if (!existsSync(composeFile)) {
+      throw new Error(
+        `nexus-stack.yml not found in ${sourceDir}. ` + "Is this a nexus source checkout?",
+      );
+    }
+  }
+
+  const args = ["nexus", "up", "--timeout", String(timeout)];
+  if (wantsBuild && sourceDir) {
+    args.push("--build");
+    args.push("--compose-file", join(sourceDir, "nexus-stack.yml"));
+  }
+
+  const proc = Bun.spawn(args, {
     cwd: projectRoot,
     stdout: "pipe",
     stderr: "pipe",
@@ -127,7 +201,12 @@ export async function nexusUp(
     const stderr = await new Response(proc.stderr).text();
     // Retry without --timeout if the flag is unsupported
     if (stderr.includes("no such option") || stderr.includes("unrecognized arguments")) {
-      const fallback = Bun.spawn(["nexus", "up"], {
+      const fallbackArgs = ["nexus", "up"];
+      if (wantsBuild && sourceDir) {
+        fallbackArgs.push("--build");
+        fallbackArgs.push("--compose-file", join(sourceDir, "nexus-stack.yml"));
+      }
+      const fallback = Bun.spawn(fallbackArgs, {
         cwd: projectRoot,
         stdout: "pipe",
         stderr: "pipe",
@@ -211,6 +290,43 @@ export function readNexusUrl(projectRoot: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// API key discovery
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the Nexus API key from `nexus.yaml`.
+ *
+ * `nexus init --preset shared|demo` generates an `api_key: sk-<token>`
+ * field in `nexus.yaml`. The `local` preset sets `auth: none` and
+ * omits the key.
+ *
+ * Priority:
+ * 1. `NEXUS_API_KEY` environment variable (explicit override)
+ * 2. `api_key` field in `nexus.yaml`
+ * 3. `undefined` (no auth — local preset or unauthenticated server)
+ */
+export function readNexusApiKey(projectRoot: string): string | undefined {
+  // 1. Env var override
+  const envKey = process.env.NEXUS_API_KEY;
+  if (envKey) return envKey;
+
+  // 2. Read from nexus.yaml
+  try {
+    const yamlPath = join(projectRoot, "nexus.yaml");
+    if (!existsSync(yamlPath)) return undefined;
+
+    const content = readFileSync(yamlPath, "utf-8");
+
+    // Match top-level `api_key: <value>` (not inside a nested block).
+    // Nexus init_cmd.py writes: api_key: sk-<32-char-hex>
+    const match = content.match(/^api_key:\s*['"]?(\S+?)['"]?\s*$/m);
+    return match?.[1] ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Health check
 // ---------------------------------------------------------------------------
 
@@ -247,23 +363,33 @@ export async function waitForNexusHealth(
 // Composite helpers
 // ---------------------------------------------------------------------------
 
+/** Result from `ensureNexusRunning`. */
+export interface NexusRunningInfo {
+  /** Resolved Nexus HTTP URL (may differ from config if port conflict resolved). */
+  readonly url: string;
+  /** API key from nexus.yaml or NEXUS_API_KEY env var (undefined for auth: none). */
+  readonly apiKey: string | undefined;
+}
+
 /**
  * Ensure Nexus is running for a managed-nexus grove.
  *
  * Called by `grove up` before spawning grove services:
  * 1. Check nexus CLI availability
  * 2. Auto-init nexus.yaml if missing
- * 3. Run `nexus up`
+ * 3. Run `nexus up` (with optional `--build` / source path)
  * 4. Discover actual URL from nexus.yaml (handles port-conflict resolution)
- * 5. Wait for health check
+ * 5. Read API key from nexus.yaml (auto-provisioned by `nexus init`)
+ * 6. Wait for health check
  *
- * Returns the resolved Nexus URL (may differ from config.nexusUrl if
- * Nexus resolved a port conflict during startup).
+ * Returns the resolved Nexus URL and API key. The URL may differ from
+ * config.nexusUrl if Nexus resolved a port conflict during startup.
  */
 export async function ensureNexusRunning(
   projectRoot: string,
   config: GroveConfig,
-): Promise<string> {
+  upOpts?: NexusUpOptions,
+): Promise<NexusRunningInfo> {
   const hasNexus = await checkNexusCli();
   if (!hasNexus) {
     throw new Error(
@@ -282,15 +408,27 @@ export async function ensureNexusRunning(
   }
 
   // Start Nexus
-  process.stderr.write("Starting Nexus...\n");
-  await nexusUp(projectRoot);
+  const buildLabel = upOpts?.nexusSource
+    ? ` (source build from ${upOpts.nexusSource})`
+    : upOpts?.build
+      ? " (--build)"
+      : "";
+  process.stderr.write(`Starting Nexus${buildLabel}...\n`);
+  await nexusUp(projectRoot, upOpts);
 
   // Discover actual URL — nexus.yaml may have been updated with a
   // different port if the default was already in use (nexus#2918).
   const nexusUrl = config.nexusUrl ?? readNexusUrl(projectRoot);
   process.stderr.write(`Waiting for Nexus at ${nexusUrl}...\n`);
   await waitForNexusHealth(nexusUrl);
-  process.stderr.write("Nexus is ready.\n");
 
-  return nexusUrl;
+  // Read API key (auto-provisioned by nexus init for shared/demo presets)
+  const apiKey = readNexusApiKey(projectRoot);
+  if (apiKey) {
+    process.stderr.write(`Nexus is ready. API key: ${apiKey}\n`);
+  } else {
+    process.stderr.write("Nexus is ready (auth: none).\n");
+  }
+
+  return { url: nexusUrl, apiKey };
 }
