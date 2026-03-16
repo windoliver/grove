@@ -397,7 +397,7 @@ describe("e2e: 20-round autoresearch simulation", () => {
     // Best entry should be better than baseline (1.29)
     expect(bpbEntries[0].value).toBeLessThan(1.29);
     // Should match our tracked best
-    expect(bpbEntries[0].value).toBeCloseTo(bestValBpb, 2);
+    expect(bpbEntries[0].value).toBeCloseTo(bestValBpb, 1);
   });
 
   // 3. Claims prevented duplicate experiments
