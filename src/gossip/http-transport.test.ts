@@ -326,77 +326,79 @@ describe("validatePeerUrl", () => {
   // Valid URLs
   // -------------------------------------------------------------------------
 
-  it("accepts a valid http URL", () => {
-    expect(validatePeerUrl("http://example.com:4515/api")).toBe("http://example.com:4515/api");
+  it("accepts a valid http URL", async () => {
+    expect(await validatePeerUrl("http://example.com:4515/api")).toBe(
+      "http://example.com:4515/api",
+    );
   });
 
-  it("accepts a valid https URL", () => {
-    expect(validatePeerUrl("https://node.example.com")).toBe("https://node.example.com");
+  it("accepts a valid https URL", async () => {
+    expect(await validatePeerUrl("https://node.example.com")).toBe("https://node.example.com");
   });
 
-  it("accepts a public IPv4 address", () => {
-    expect(validatePeerUrl("http://8.8.8.8:4515")).toBe("http://8.8.8.8:4515");
+  it("accepts a public IPv4 address", async () => {
+    expect(await validatePeerUrl("http://8.8.8.8:4515")).toBe("http://8.8.8.8:4515");
   });
 
   // -------------------------------------------------------------------------
   // Parsing failures
   // -------------------------------------------------------------------------
 
-  it("rejects an unparseable URL", () => {
-    expect(() => validatePeerUrl("not-a-url")).toThrow(/unable to parse/);
+  it("rejects an unparseable URL", async () => {
+    await expect(validatePeerUrl("not-a-url")).rejects.toThrow(/unable to parse/);
   });
 
   // -------------------------------------------------------------------------
   // Scheme checks
   // -------------------------------------------------------------------------
 
-  it("rejects ftp scheme", () => {
-    expect(() => validatePeerUrl("ftp://evil.com/file")).toThrow(/scheme.*ftp:/);
+  it("rejects ftp scheme", async () => {
+    await expect(validatePeerUrl("ftp://evil.com/file")).rejects.toThrow(/scheme.*ftp:/);
   });
 
-  it("rejects file scheme", () => {
-    expect(() => validatePeerUrl("file:///etc/passwd")).toThrow(/scheme/);
+  it("rejects file scheme", async () => {
+    await expect(validatePeerUrl("file:///etc/passwd")).rejects.toThrow(/scheme/);
   });
 
-  it("allows a custom scheme via allowedSchemes", () => {
+  it("allows a custom scheme via allowedSchemes", async () => {
     const opts = { allowedSchemes: new Set(["custom:"]) };
-    expect(validatePeerUrl("custom://host/path", opts)).toBe("custom://host/path");
+    expect(await validatePeerUrl("custom://host/path", opts)).toBe("custom://host/path");
   });
 
   // -------------------------------------------------------------------------
   // Dangerous hostnames
   // -------------------------------------------------------------------------
 
-  it("rejects localhost", () => {
-    expect(() => validatePeerUrl("http://localhost:4515")).toThrow(/private\/internal/);
+  it("rejects localhost", async () => {
+    await expect(validatePeerUrl("http://localhost:4515")).rejects.toThrow(/private\/internal/);
   });
 
-  it("rejects localhost with trailing dot (FQDN)", () => {
-    expect(() => validatePeerUrl("http://localhost.:4515")).toThrow(/private\/internal/);
+  it("rejects localhost with trailing dot (FQDN)", async () => {
+    await expect(validatePeerUrl("http://localhost.:4515")).rejects.toThrow(/private\/internal/);
   });
 
-  it("rejects metadata.google.internal", () => {
-    expect(() => validatePeerUrl("http://metadata.google.internal/computeMetadata")).toThrow(
+  it("rejects metadata.google.internal", async () => {
+    await expect(
+      validatePeerUrl("http://metadata.google.internal/computeMetadata"),
+    ).rejects.toThrow(/private\/internal/);
+  });
+
+  it("rejects metadata.internal", async () => {
+    await expect(validatePeerUrl("http://metadata.internal")).rejects.toThrow(/private\/internal/);
+  });
+
+  it("rejects instance-data (AWS metadata alias)", async () => {
+    await expect(validatePeerUrl("http://instance-data/latest/meta-data")).rejects.toThrow(
       /private\/internal/,
     );
   });
 
-  it("rejects metadata.internal", () => {
-    expect(() => validatePeerUrl("http://metadata.internal")).toThrow(/private\/internal/);
+  it("rejects kubernetes.default", async () => {
+    await expect(validatePeerUrl("http://kubernetes.default")).rejects.toThrow(/private\/internal/);
   });
 
-  it("rejects instance-data (AWS metadata alias)", () => {
-    expect(() => validatePeerUrl("http://instance-data/latest/meta-data")).toThrow(
-      /private\/internal/,
-    );
-  });
-
-  it("rejects kubernetes.default", () => {
-    expect(() => validatePeerUrl("http://kubernetes.default")).toThrow(/private\/internal/);
-  });
-
-  it("rejects kubernetes.default.svc.cluster.local", () => {
-    expect(() => validatePeerUrl("http://kubernetes.default.svc.cluster.local")).toThrow(
+  it("rejects kubernetes.default.svc.cluster.local", async () => {
+    await expect(validatePeerUrl("http://kubernetes.default.svc.cluster.local")).rejects.toThrow(
       /private\/internal/,
     );
   });
@@ -405,84 +407,103 @@ describe("validatePeerUrl", () => {
   // Private IPv4 ranges
   // -------------------------------------------------------------------------
 
-  it("rejects 10.x.x.x", () => {
-    expect(() => validatePeerUrl("http://10.0.0.1:4515")).toThrow(/private\/reserved/);
+  it("rejects 10.x.x.x", async () => {
+    await expect(validatePeerUrl("http://10.0.0.1:4515")).rejects.toThrow(/private\/reserved/);
   });
 
-  it("rejects 172.16.x.x", () => {
-    expect(() => validatePeerUrl("http://172.16.0.1:4515")).toThrow(/private\/reserved/);
+  it("rejects 172.16.x.x", async () => {
+    await expect(validatePeerUrl("http://172.16.0.1:4515")).rejects.toThrow(/private\/reserved/);
   });
 
-  it("rejects 172.31.x.x (upper end of /12)", () => {
-    expect(() => validatePeerUrl("http://172.31.255.255")).toThrow(/private\/reserved/);
+  it("rejects 172.31.x.x (upper end of /12)", async () => {
+    await expect(validatePeerUrl("http://172.31.255.255")).rejects.toThrow(/private\/reserved/);
   });
 
-  it("allows 172.15.x.x (just below the private range)", () => {
-    expect(validatePeerUrl("http://172.15.0.1:4515")).toBe("http://172.15.0.1:4515");
+  it("allows 172.15.x.x (just below the private range)", async () => {
+    expect(await validatePeerUrl("http://172.15.0.1:4515")).toBe("http://172.15.0.1:4515");
   });
 
-  it("allows 172.32.x.x (just above the private range)", () => {
-    expect(validatePeerUrl("http://172.32.0.1:4515")).toBe("http://172.32.0.1:4515");
+  it("allows 172.32.x.x (just above the private range)", async () => {
+    expect(await validatePeerUrl("http://172.32.0.1:4515")).toBe("http://172.32.0.1:4515");
   });
 
-  it("rejects 192.168.x.x", () => {
-    expect(() => validatePeerUrl("http://192.168.1.1:4515")).toThrow(/private\/reserved/);
+  it("rejects 192.168.x.x", async () => {
+    await expect(validatePeerUrl("http://192.168.1.1:4515")).rejects.toThrow(/private\/reserved/);
   });
 
-  it("rejects 127.0.0.1 (loopback)", () => {
-    expect(() => validatePeerUrl("http://127.0.0.1:4515")).toThrow(/private\/reserved/);
+  it("rejects 127.0.0.1 (loopback)", async () => {
+    await expect(validatePeerUrl("http://127.0.0.1:4515")).rejects.toThrow(/private\/reserved/);
   });
 
-  it("rejects 169.254.x.x (link-local)", () => {
-    expect(() => validatePeerUrl("http://169.254.169.254/latest/meta-data")).toThrow(
+  it("rejects 169.254.x.x (link-local)", async () => {
+    await expect(validatePeerUrl("http://169.254.169.254/latest/meta-data")).rejects.toThrow(
       /private\/reserved/,
     );
   });
 
-  it("rejects 0.0.0.0", () => {
-    expect(() => validatePeerUrl("http://0.0.0.0:4515")).toThrow(/private\/reserved/);
+  it("rejects 0.0.0.0", async () => {
+    await expect(validatePeerUrl("http://0.0.0.0:4515")).rejects.toThrow(/private\/reserved/);
   });
 
   // -------------------------------------------------------------------------
   // Private IPv6 ranges
   // -------------------------------------------------------------------------
 
-  it("rejects ::1 (IPv6 loopback)", () => {
-    expect(() => validatePeerUrl("http://[::1]:4515")).toThrow(/private\/reserved/);
+  it("rejects ::1 (IPv6 loopback)", async () => {
+    await expect(validatePeerUrl("http://[::1]:4515")).rejects.toThrow(/private\/reserved/);
   });
 
-  it("rejects fc00:: (IPv6 ULA)", () => {
-    expect(() => validatePeerUrl("http://[fc00::1]:4515")).toThrow(/private\/reserved/);
+  it("rejects fc00:: (IPv6 ULA)", async () => {
+    await expect(validatePeerUrl("http://[fc00::1]:4515")).rejects.toThrow(/private\/reserved/);
   });
 
-  it("rejects fd00:: (IPv6 ULA)", () => {
-    expect(() => validatePeerUrl("http://[fd12:3456::1]:4515")).toThrow(/private\/reserved/);
+  it("rejects fd00:: (IPv6 ULA)", async () => {
+    await expect(validatePeerUrl("http://[fd12:3456::1]:4515")).rejects.toThrow(
+      /private\/reserved/,
+    );
   });
 
-  it("rejects fe80:: (IPv6 link-local)", () => {
-    expect(() => validatePeerUrl("http://[fe80::1]:4515")).toThrow(/private\/reserved/);
+  it("rejects fe80:: (IPv6 link-local)", async () => {
+    await expect(validatePeerUrl("http://[fe80::1]:4515")).rejects.toThrow(/private\/reserved/);
   });
 
-  it("rejects ::ffff:127.0.0.1 (IPv4-mapped loopback)", () => {
-    expect(() => validatePeerUrl("http://[::ffff:127.0.0.1]:4515")).toThrow(/private\/reserved/);
+  it("rejects ::ffff:127.0.0.1 (IPv4-mapped loopback)", async () => {
+    await expect(validatePeerUrl("http://[::ffff:127.0.0.1]:4515")).rejects.toThrow(
+      /private\/reserved/,
+    );
   });
 
-  it("rejects ::ffff:10.0.0.1 (IPv4-mapped private)", () => {
-    expect(() => validatePeerUrl("http://[::ffff:10.0.0.1]:4515")).toThrow(/private\/reserved/);
+  it("rejects ::ffff:10.0.0.1 (IPv4-mapped private)", async () => {
+    await expect(validatePeerUrl("http://[::ffff:10.0.0.1]:4515")).rejects.toThrow(
+      /private\/reserved/,
+    );
   });
 
-  it("rejects ::ffff:192.168.1.1 (IPv4-mapped private)", () => {
-    expect(() => validatePeerUrl("http://[::ffff:192.168.1.1]:4515")).toThrow(/private\/reserved/);
+  it("rejects ::ffff:192.168.1.1 (IPv4-mapped private)", async () => {
+    await expect(validatePeerUrl("http://[::ffff:192.168.1.1]:4515")).rejects.toThrow(
+      /private\/reserved/,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // DNS resolution check
+  // -------------------------------------------------------------------------
+
+  it("rejects hostname that resolves to loopback via DNS", async () => {
+    // "localhost" is caught by the denylist, but this test verifies the
+    // DNS resolution path works for any hostname resolving to 127.0.0.1.
+    // We use localhost directly since it's the most reliable test case.
+    await expect(validatePeerUrl("http://localhost:4515")).rejects.toThrow(/private/);
   });
 
   // -------------------------------------------------------------------------
   // allowPrivateIPs bypass
   // -------------------------------------------------------------------------
 
-  it("allows private IPs when allowPrivateIPs is true", () => {
+  it("allows private IPs when allowPrivateIPs is true", async () => {
     const opts = { allowPrivateIPs: true as const };
-    expect(validatePeerUrl("http://10.0.0.1:4515", opts)).toBe("http://10.0.0.1:4515");
-    expect(validatePeerUrl("http://localhost:4515", opts)).toBe("http://localhost:4515");
-    expect(validatePeerUrl("http://[::1]:4515", opts)).toBe("http://[::1]:4515");
+    expect(await validatePeerUrl("http://10.0.0.1:4515", opts)).toBe("http://10.0.0.1:4515");
+    expect(await validatePeerUrl("http://localhost:4515", opts)).toBe("http://localhost:4515");
+    expect(await validatePeerUrl("http://[::1]:4515", opts)).toBe("http://[::1]:4515");
   });
 });

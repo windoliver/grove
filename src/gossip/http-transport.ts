@@ -6,6 +6,8 @@
  * connection reuse.
  */
 
+import { resolve4, resolve6 } from "node:dns/promises";
+
 import { GossipTimeoutError, PeerUnreachableError } from "../core/gossip/errors.js";
 import type {
   GossipMessage,
@@ -117,21 +119,35 @@ function isPrivateIPv6(raw: string): boolean {
   return false;
 }
 
+/** Check whether a single resolved IP address is private/reserved. */
+function isPrivateIP(ip: string): boolean {
+  if (ip.includes(":")) return isPrivateIPv6(ip);
+  return isPrivateIPv4(ip);
+}
+
 /**
  * Validate a peer URL to prevent Server-Side Request Forgery (SSRF).
  *
- * Checks:
+ * Checks (synchronous):
  *  1. The URL is syntactically valid.
  *  2. The scheme is http or https (configurable).
  *  3. The hostname is not a known-dangerous name (e.g. "localhost").
  *  4. If the hostname is an IP literal, it must not be in a private/reserved range.
  *
+ * Then (async):
+ *  5. Resolves the hostname via DNS and rejects if ANY resolved address
+ *     falls in a private/reserved range. This closes the main SSRF vector
+ *     where an attacker-controlled domain resolves to an internal IP.
+ *
  * @param url       - The raw URL string to validate.
  * @param options   - Optional overrides.
- * @returns The validated URL string (with trailing-slash normalisation left to the caller).
+ * @returns The validated URL string.
  * @throws {Error}  A descriptive message when validation fails.
  */
-export function validatePeerUrl(url: string, options?: ValidatePeerUrlOptions): string {
+export async function validatePeerUrl(
+  url: string,
+  options?: ValidatePeerUrlOptions,
+): Promise<string> {
   const allowedSchemes = options?.allowedSchemes ?? DEFAULT_ALLOWED_SCHEMES;
   const allowPrivate = options?.allowPrivateIPs === true;
 
@@ -176,15 +192,43 @@ export function validatePeerUrl(url: string, options?: ValidatePeerUrlOptions): 
   // on the runtime. Strip them before checking.
   const bare =
     hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
-  const isIPv4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(bare);
-  const isIPv6 = bare.includes(":");
+  const looksLikeIPv4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(bare);
+  const looksLikeIPv6 = bare.includes(":");
 
-  if (isIPv4 && isPrivateIPv4(bare)) {
+  if (looksLikeIPv4 && isPrivateIPv4(bare)) {
     throw new Error(`Peer URL rejected: IPv4 address "${bare}" is in a private/reserved range`);
   }
 
-  if (isIPv6 && isPrivateIPv6(bare)) {
+  if (looksLikeIPv6 && isPrivateIPv6(bare)) {
     throw new Error(`Peer URL rejected: IPv6 address "${bare}" is in a private/reserved range`);
+  }
+
+  // 6. DNS resolution check -------------------------------------------------
+  // If the hostname is not an IP literal, resolve it and verify that NONE
+  // of the resolved addresses fall in a private/reserved range. This catches
+  // attacker-controlled domains that point to internal IPs.
+  if (!looksLikeIPv4 && !looksLikeIPv6) {
+    const resolved: string[] = [];
+    try {
+      const addrs = await resolve4(hostname);
+      for (const addr of addrs) resolved.push(addr);
+    } catch {
+      // A lookup failed — may be IPv6-only, continue
+    }
+    try {
+      const addrs = await resolve6(hostname);
+      for (const addr of addrs) resolved.push(addr);
+    } catch {
+      // AAAA lookup failed — may be IPv4-only, continue
+    }
+
+    for (const addr of resolved) {
+      if (isPrivateIP(addr)) {
+        throw new Error(
+          `Peer URL rejected: hostname "${hostname}" resolves to private/reserved address ${addr}`,
+        );
+      }
+    }
   }
 
   return url;
@@ -225,14 +269,14 @@ export class HttpGossipTransport implements GossipTransport {
 
   async exchange(peer: PeerInfo, message: GossipMessage): Promise<GossipMessage> {
     const url = `${peer.address}/api/gossip/exchange`;
-    validatePeerUrl(url, { allowPrivateIPs: this.allowPrivateIPs });
+    await validatePeerUrl(url, { allowPrivateIPs: this.allowPrivateIPs });
     const response = await this.post<GossipMessage>(url, message, peer.peerId);
     return response;
   }
 
   async shuffle(peer: PeerInfo, request: ShuffleRequest): Promise<ShuffleResponse> {
     const url = `${peer.address}/api/gossip/shuffle`;
-    validatePeerUrl(url, { allowPrivateIPs: this.allowPrivateIPs });
+    await validatePeerUrl(url, { allowPrivateIPs: this.allowPrivateIPs });
     const response = await this.post<ShuffleResponse>(url, request, peer.peerId);
     return response;
   }
