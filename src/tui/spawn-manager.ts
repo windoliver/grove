@@ -70,7 +70,7 @@ export class SpawnManager {
   /**
    * Set PR context to inject into spawned agent environments.
    * When set, GROVE_PR_NUMBER, GROVE_PR_TITLE, and GROVE_PR_FILES
-   * are exported in the tmux session before the agent command runs.
+   * are passed as environment variables via the spawn options.
    */
   setPrContext(ctx: PrContext | undefined): void {
     this.prContext = ctx;
@@ -125,25 +125,23 @@ export class SpawnManager {
     }
 
     // Step 3: Start tmux session. Roll back on failure.
-    // If PR context is available, wrap the command with env var exports
-    // so the agent process sees GROVE_PR_* from the start.
+    // If PR context is available, pass GROVE_PR_* as env vars
+    // so the agent process sees them from the start.
     try {
-      let finalCommand = command;
-      if (this.prContext) {
-        const esc = (s: string) => s.replace(/'/g, "'\\''");
-        const exports = [
-          `export GROVE_PR_NUMBER='${esc(String(this.prContext.number))}'`,
-          `export GROVE_PR_TITLE='${esc(this.prContext.title)}'`,
-          `export GROVE_PR_FILES='${esc(String(this.prContext.filesChanged))}'`,
-        ].join(" && ");
-        finalCommand = `${exports} && ${command}`;
-      }
+      const prEnv: Record<string, string> | undefined = this.prContext
+        ? {
+            GROVE_PR_NUMBER: String(this.prContext.number),
+            GROVE_PR_TITLE: this.prContext.title,
+            GROVE_PR_FILES: String(this.prContext.filesChanged),
+          }
+        : undefined;
 
       const options: SpawnOptions = {
         agentId: spawnId,
-        command: finalCommand,
+        command,
         targetRef: spawnId,
         workspacePath,
+        ...(prEnv ? { env: prEnv } : {}),
       };
       await this.tmux?.spawn(options);
     } catch (spawnErr) {

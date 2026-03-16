@@ -167,9 +167,14 @@ export class DefaultFrontierCalculator implements FrontierCalculator {
     const storeContributions = await this.store.list(storeQuery);
     const filtered = storeContributions.filter((c) => !isEphemeral(c) && matchesFilters(c, query));
 
-    // Relation counting still needs all contributions for incoming-edge scans.
+    // Fetch only contributions with relations targeting the filtered set,
+    // rather than scanning the entire store. When no filters are applied,
+    // storeContributions already contains everything — no second query needed.
+    const filteredCids = filtered.map((c) => c.cid);
     const allContributions =
-      Object.keys(storeQuery).length > 0 ? await this.store.list() : storeContributions;
+      Object.keys(storeQuery).length > 0
+        ? await this.store.incomingSources(filteredCids)
+        : storeContributions;
 
     // All dimension computations are synchronous in-memory operations.
     // The only async step is the store.list() call above.

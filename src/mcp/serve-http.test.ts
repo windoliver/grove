@@ -3,7 +3,8 @@
  *
  * Spins up a real HTTP server using the same session management logic as
  * serve-http.ts, backed by test deps. Exercises HTTP routing, session
- * creation/reuse/deletion, TTL-based reaping, and error responses.
+ * creation/reuse/deletion, TTL-based reaping, auth, body-size limits,
+ * and error responses.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -21,6 +22,16 @@ import { createTestMcpDeps } from "./test-helpers.js";
 // Session management (mirrors serve-http.ts logic)
 // ---------------------------------------------------------------------------
 
+/** Maximum allowed body size for incoming requests (10 MB). */
+const MAX_MCP_BODY_SIZE = 10 * 1024 * 1024;
+
+class BodyTooLargeError extends Error {
+  constructor(maxBytes: number) {
+    super(`Request body exceeds ${maxBytes} bytes`);
+    this.name = "BodyTooLargeError";
+  }
+}
+
 interface ManagedSession {
   server: McpServer;
   transport: StreamableHTTPServerTransport;
@@ -35,11 +46,18 @@ interface TestServerContext {
   deps: McpDeps;
 }
 
+interface BuildTestServerOptions {
+  sessionTtlMs: number;
+  authToken?: string;
+  maxBodySize?: number;
+}
+
 /**
  * Build a minimal HTTP server that reproduces the session management logic
  * from serve-http.ts so we can test it in isolation.
  */
-function buildTestServer(deps: McpDeps, sessionTtlMs: number): TestServerContext {
+function buildTestServer(deps: McpDeps, opts: BuildTestServerOptions): TestServerContext {
+  const { sessionTtlMs, authToken, maxBodySize = MAX_MCP_BODY_SIZE } = opts;
   const sessions = new Map<string, ManagedSession>();
 
   // Mirror production: reap interval = min(60s, TTL/3).
@@ -49,18 +67,36 @@ function buildTestServer(deps: McpDeps, sessionTtlMs: number): TestServerContext
     const now = Date.now();
     for (const [id, session] of sessions) {
       if (now - session.lastActivity > sessionTtlMs) {
-        session.server.close().catch(() => {});
+        session.server.close().catch(() => undefined);
         sessions.delete(id);
       }
     }
   }, reapIntervalMs);
 
-  function readBody(req: IncomingMessage): Promise<string> {
+  function readBody(req: IncomingMessage, maxBytes: number = maxBodySize): Promise<string> {
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
-      req.on("data", (chunk: Buffer) => chunks.push(chunk));
-      req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
-      req.on("error", reject);
+      let totalBytes = 0;
+      let rejected = false;
+      req.on("data", (chunk: Buffer) => {
+        if (rejected) return;
+        totalBytes += chunk.length;
+        if (totalBytes > maxBytes) {
+          rejected = true;
+          // Drain remaining data without accumulating it, so the
+          // socket stays open long enough for us to send a 413 response.
+          req.resume();
+          reject(new BodyTooLargeError(maxBytes));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      req.on("end", () => {
+        if (!rejected) resolve(Buffer.concat(chunks).toString("utf-8"));
+      });
+      req.on("error", (err) => {
+        if (!rejected) reject(err);
+      });
     });
   }
 
@@ -73,10 +109,30 @@ function buildTestServer(deps: McpDeps, sessionTtlMs: number): TestServerContext
       return;
     }
 
+    // Shared-secret authentication (when configured)
+    if (authToken !== undefined) {
+      const authHeader = req.headers.authorization ?? "";
+      if (authHeader !== `Bearer ${authToken}`) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Unauthorized" }));
+        return;
+      }
+    }
+
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
     if (req.method === "POST") {
-      const body = await readBody(req);
+      let body: string;
+      try {
+        body = await readBody(req);
+      } catch (err) {
+        if (err instanceof BodyTooLargeError) {
+          res.writeHead(413, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Request body too large" }));
+          return;
+        }
+        throw err;
+      }
       let parsed: unknown;
       try {
         parsed = JSON.parse(body);
@@ -169,7 +225,7 @@ function startServer(ctx: TestServerContext): Promise<string> {
 async function stopServer(ctx: TestServerContext): Promise<void> {
   if (ctx.reapTimer) clearInterval(ctx.reapTimer);
   for (const [, session] of ctx.sessions) {
-    await session.server.close().catch(() => {});
+    await session.server.close().catch(() => undefined);
   }
   ctx.sessions.clear();
   await new Promise<void>((resolve) => ctx.httpServer.close(() => resolve()));
@@ -200,7 +256,7 @@ describe("MCP HTTP session management", () => {
 
   beforeAll(async () => {
     testDeps = await createTestMcpDeps();
-    ctx = buildTestServer(testDeps.deps, 30 * 60 * 1000); // 30 min TTL (won't fire during tests)
+    ctx = buildTestServer(testDeps.deps, { sessionTtlMs: 30 * 60 * 1000 }); // 30 min TTL (won't fire during tests)
     await startServer(ctx);
   });
 
@@ -438,7 +494,7 @@ describe("MCP HTTP session TTL reaping", () => {
   beforeAll(async () => {
     testDeps = await createTestMcpDeps();
     // Use a very short TTL (100ms) so sessions expire quickly
-    ctx = buildTestServer(testDeps.deps, 100);
+    ctx = buildTestServer(testDeps.deps, { sessionTtlMs: 100 });
     await startServer(ctx);
   });
 
@@ -509,5 +565,142 @@ describe("MCP HTTP session TTL reaping", () => {
 
     // Now it should be reaped
     expect(ctx.sessions.has(sessionId as string)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shared-secret authentication tests
+// ---------------------------------------------------------------------------
+
+describe("MCP HTTP shared-secret authentication", () => {
+  const TEST_TOKEN = "test-secret-token-42";
+  let testDeps: TestMcpDeps;
+  let ctx: TestServerContext;
+
+  beforeAll(async () => {
+    testDeps = await createTestMcpDeps();
+    ctx = buildTestServer(testDeps.deps, { sessionTtlMs: 30 * 60 * 1000, authToken: TEST_TOKEN });
+    await startServer(ctx);
+  });
+
+  afterAll(async () => {
+    await stopServer(ctx);
+    await testDeps.cleanup();
+  });
+
+  test("POST /mcp without Authorization header returns 401", async () => {
+    const res = await fetch(`${ctx.baseUrl}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(INIT_REQUEST),
+    });
+    expect(res.status).toBe(401);
+
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toContain("Unauthorized");
+  });
+
+  test("POST /mcp with wrong token returns 401", async () => {
+    const res = await fetch(`${ctx.baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer wrong-token",
+      },
+      body: JSON.stringify(INIT_REQUEST),
+    });
+    expect(res.status).toBe(401);
+
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toContain("Unauthorized");
+  });
+
+  test("GET /mcp without Authorization header returns 401", async () => {
+    const res = await fetch(`${ctx.baseUrl}/mcp`, { method: "GET" });
+    expect(res.status).toBe(401);
+
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toContain("Unauthorized");
+  });
+
+  test("DELETE /mcp without Authorization header returns 401", async () => {
+    const res = await fetch(`${ctx.baseUrl}/mcp`, { method: "DELETE" });
+    expect(res.status).toBe(401);
+
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toContain("Unauthorized");
+  });
+
+  test("POST /mcp with correct Bearer token succeeds", async () => {
+    const res = await fetch(`${ctx.baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${TEST_TOKEN}`,
+      },
+      body: JSON.stringify(INIT_REQUEST),
+    });
+    expect(res.status).toBe(200);
+
+    const sessionId = res.headers.get("mcp-session-id");
+    expect(sessionId).toBeTruthy();
+  });
+
+  test("non-/mcp endpoints skip auth check (return 404 without 401)", async () => {
+    const res = await fetch(`${ctx.baseUrl}/other`, { method: "GET" });
+    expect(res.status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Body-size limit tests
+// ---------------------------------------------------------------------------
+
+describe("MCP HTTP body-size limit", () => {
+  let testDeps: TestMcpDeps;
+  let ctx: TestServerContext;
+
+  // Use a small limit (256 bytes) so tests are fast and don't allocate huge buffers.
+  const SMALL_LIMIT = 256;
+
+  beforeAll(async () => {
+    testDeps = await createTestMcpDeps();
+    ctx = buildTestServer(testDeps.deps, {
+      sessionTtlMs: 30 * 60 * 1000,
+      maxBodySize: SMALL_LIMIT,
+    });
+    await startServer(ctx);
+  });
+
+  afterAll(async () => {
+    await stopServer(ctx);
+    await testDeps.cleanup();
+  });
+
+  test("POST /mcp with body exceeding limit returns 413", async () => {
+    const oversizedBody = "x".repeat(SMALL_LIMIT + 1);
+    const res = await fetch(`${ctx.baseUrl}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: oversizedBody,
+    });
+    expect(res.status).toBe(413);
+
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toContain("Request body too large");
+  });
+
+  test("POST /mcp with body within limit succeeds normally", async () => {
+    // The INIT_REQUEST JSON is well under 256 bytes
+    const res = await fetch(`${ctx.baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify(INIT_REQUEST),
+    });
+    expect(res.status).toBe(200);
   });
 });

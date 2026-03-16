@@ -52,7 +52,8 @@ if (gossipSeeds) {
     return { peerId: id, address, age: 0, lastSeen: new Date().toISOString() };
   });
 
-  const transport = new HttpGossipTransport();
+  const allowPrivateIPs = process.env.GROVE_GOSSIP_ALLOW_PRIVATE_IPS === "true";
+  const transport = new HttpGossipTransport({ allowPrivateIPs });
   gossipService = new DefaultGossipService({
     config: { peerId, address: peerAddress, seedPeers },
     transport,

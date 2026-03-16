@@ -109,6 +109,23 @@ export class InMemoryContributionStore implements ContributionStore {
     return result;
   };
 
+  incomingSources = async (targetCids: readonly string[]): Promise<readonly Contribution[]> => {
+    const cidSet = new Set(targetCids);
+    const seen = new Set<string>();
+    const result: Contribution[] = [];
+    for (const c of this.contributions.values()) {
+      if (seen.has(c.cid)) continue;
+      for (const rel of c.relations) {
+        if (cidSet.has(rel.targetCid)) {
+          seen.add(c.cid);
+          result.push(c);
+          break;
+        }
+      }
+    }
+    return result;
+  };
+
   ancestors = async (cid: string): Promise<readonly Contribution[]> => {
     const c = this.contributions.get(cid);
     if (c === undefined) return [];
@@ -322,5 +339,7 @@ export class InMemoryContributionStore implements ContributionStore {
     return summaries.slice(0, limit);
   };
 
-  close(): void {}
+  close(): void {
+    // No resources to release in the in-memory store.
+  }
 }

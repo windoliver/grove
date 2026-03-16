@@ -139,9 +139,7 @@ export class NexusContributionStore implements ContributionStore {
     for (const c of contributions) {
       unique.set(c.cid, c);
     }
-    for (const c of unique.values()) {
-      await this.put(c);
-    }
+    await batchParallel([...unique.values()], (c) => this.put(c));
   }
 
   async getMany(cids: readonly string[]): Promise<ReadonlyMap<string, Contribution>> {
@@ -227,6 +225,23 @@ export class NexusContributionStore implements ContributionStore {
     // Fetch in parallel — semaphore in get() limits actual concurrency
     const results = await Promise.all(cids.map((c) => this.get(c)));
     return results.filter((c): c is Contribution => c !== undefined);
+  }
+
+  async incomingSources(targetCids: readonly string[]): Promise<readonly Contribution[]> {
+    if (targetCids.length === 0) return [];
+    // Batch children() calls and deduplicate results
+    const childSets = await batchParallel(targetCids, (cid) => this.children(cid));
+    const seen = new Set<string>();
+    const results: Contribution[] = [];
+    for (const children of childSets) {
+      for (const c of children) {
+        if (!seen.has(c.cid)) {
+          seen.add(c.cid);
+          results.push(c);
+        }
+      }
+    }
+    return results;
   }
 
   async ancestors(cid: string): Promise<readonly Contribution[]> {

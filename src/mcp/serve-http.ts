@@ -38,6 +38,18 @@ import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { McpDeps } from "./deps.js";
 import { createMcpServer } from "./server.js";
 
+// --- Security constants -----------------------------------------------------
+
+/** Maximum allowed body size for incoming requests (10 MB). */
+const MAX_MCP_BODY_SIZE = 10 * 1024 * 1024;
+
+/**
+ * Optional shared-secret for authenticating requests.
+ * When set, every request must include `Authorization: Bearer <token>`.
+ * When unset, auth is skipped (backward compatible for local-only use).
+ */
+const AUTH_TOKEN = process.env.GROVE_MCP_AUTH_TOKEN ?? undefined;
+
 // --- Initialization ---------------------------------------------------------
 
 const groveOverride = process.env.GROVE_DIR ?? undefined;
@@ -150,12 +162,32 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
+  // Shared-secret authentication (when configured)
+  if (AUTH_TOKEN !== undefined) {
+    const authHeader = req.headers.authorization ?? "";
+    if (authHeader !== `Bearer ${AUTH_TOKEN}`) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Unauthorized" }));
+      return;
+    }
+  }
+
   // Parse session ID from header
   const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
   if (req.method === "POST") {
-    // Read body
-    const body = await readBody(req);
+    // Read body (with size limit to prevent DoS)
+    let body: string;
+    try {
+      body = await readBody(req, MAX_MCP_BODY_SIZE);
+    } catch (err) {
+      if (err instanceof BodyTooLargeError) {
+        res.writeHead(413, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Request body too large" }));
+        return;
+      }
+      throw err;
+    }
     let parsed: unknown;
     try {
       parsed = JSON.parse(body);
@@ -225,12 +257,37 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   }
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
+class BodyTooLargeError extends Error {
+  constructor(maxBytes: number) {
+    super(`Request body exceeds ${maxBytes} bytes`);
+    this.name = "BodyTooLargeError";
+  }
+}
+
+function readBody(req: IncomingMessage, maxBytes: number = MAX_MCP_BODY_SIZE): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
-    req.on("error", reject);
+    let totalBytes = 0;
+    let rejected = false;
+    req.on("data", (chunk: Buffer) => {
+      if (rejected) return;
+      totalBytes += chunk.length;
+      if (totalBytes > maxBytes) {
+        rejected = true;
+        // Drain remaining data without accumulating it, so the
+        // socket stays open long enough for us to send a 413 response.
+        req.resume();
+        reject(new BodyTooLargeError(maxBytes));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (!rejected) resolve(Buffer.concat(chunks).toString("utf-8"));
+    });
+    req.on("error", (err) => {
+      if (!rejected) reject(err);
+    });
   });
 }
 

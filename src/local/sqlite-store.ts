@@ -419,9 +419,9 @@ function buildFilteredQuery(opts: BuildFilteredQueryOptions): BuiltQuery {
 // Row helpers
 // ---------------------------------------------------------------------------
 
-/** Deserialize a manifest_json row into a Contribution, verifying CID integrity. */
+/** Deserialize a manifest_json row into a Contribution (CID already verified at write time). */
 function rowToContribution(row: { manifest_json: string }): Contribution {
-  return fromManifest(JSON.parse(row.manifest_json) as unknown);
+  return fromManifest(JSON.parse(row.manifest_json) as unknown, { verify: false });
 }
 
 interface ClaimRow {
@@ -636,6 +636,36 @@ export class SqliteContributionStore implements ContributionStore {
   children = async (cid: string): Promise<readonly Contribution[]> => {
     const rows = this.stmtChildren.all(cid) as readonly { manifest_json: string }[];
     return rows.map(rowToContribution);
+  };
+
+  incomingSources = async (targetCids: readonly string[]): Promise<readonly Contribution[]> => {
+    if (targetCids.length === 0) return [];
+
+    const seen = new Set<string>();
+    const results: Contribution[] = [];
+
+    // Chunk to stay under SQLITE_MAX_VARIABLE_NUMBER (999)
+    const chunkSize = 500;
+    for (let i = 0; i < targetCids.length; i += chunkSize) {
+      const chunk = targetCids.slice(i, i + chunkSize);
+      const placeholders = chunk.map(() => "?").join(", ");
+      const sql = `
+        SELECT DISTINCT c.manifest_json
+        FROM contributions c
+        JOIN relations r ON r.source_cid = c.cid
+        WHERE r.target_cid IN (${placeholders})
+      `;
+      const rows = this.db.prepare(sql).all(...chunk) as readonly { manifest_json: string }[];
+      for (const row of rows) {
+        const contribution = rowToContribution(row);
+        if (!seen.has(contribution.cid)) {
+          seen.add(contribution.cid);
+          results.push(contribution);
+        }
+      }
+    }
+
+    return results;
   };
 
   ancestors = async (cid: string): Promise<readonly Contribution[]> => {
@@ -1201,7 +1231,7 @@ export class SqliteClaimStore implements ClaimStore {
           `UPDATE claims SET status = 'expired'
            WHERE status = 'active' AND lease_expires_at < ?
            RETURNING claim_id, target_ref, agent_id, status, intent_summary,
-                     created_at, heartbeat_at, lease_expires_at, context_json, agent_json`,
+                     created_at, heartbeat_at, lease_expires_at, context_json, agent_json, attempt_count`,
         )
         .all(nowIso) as readonly ClaimRow[];
 
@@ -1217,7 +1247,7 @@ export class SqliteClaimStore implements ClaimStore {
             `UPDATE claims SET status = 'expired'
              WHERE status = 'active' AND heartbeat_at < ?
              RETURNING claim_id, target_ref, agent_id, status, intent_summary,
-                       created_at, heartbeat_at, lease_expires_at, context_json, agent_json`,
+                       created_at, heartbeat_at, lease_expires_at, context_json, agent_json, attempt_count`,
           )
           .all(stallCutoff) as readonly ClaimRow[];
 
@@ -1443,6 +1473,8 @@ export class SqliteStore implements ContributionStore, ClaimStore {
   list = (query?: ContributionQuery): Promise<readonly Contribution[]> =>
     this.contributions.list(query);
   children = (cid: string): Promise<readonly Contribution[]> => this.contributions.children(cid);
+  incomingSources = (targetCids: readonly string[]): Promise<readonly Contribution[]> =>
+    this.contributions.incomingSources(targetCids);
   ancestors = (cid: string): Promise<readonly Contribution[]> => this.contributions.ancestors(cid);
   relationsOf = (cid: string, relationType?: RelationType): Promise<readonly Relation[]> =>
     this.contributions.relationsOf(cid, relationType);

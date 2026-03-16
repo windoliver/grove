@@ -6,6 +6,11 @@
 
 export { CachedFrontierCalculator } from "./cached-frontier.js";
 export { type CyclonConfig, CyclonPeerSampler } from "./cyclon.js";
-export { HttpGossipTransport, type HttpTransportConfig } from "./http-transport.js";
+export {
+  HttpGossipTransport,
+  type HttpTransportConfig,
+  type ValidatePeerUrlOptions,
+  validatePeerUrl,
+} from "./http-transport.js";
 export { DefaultGossipService } from "./protocol.js";
 export type { BackgroundWorker } from "./worker.js";

@@ -28,6 +28,7 @@ export function createStubContributionStore(identity?: string): ContributionStor
     list: async () => [],
     ancestors: async () => [],
     children: async () => [],
+    incomingSources: async () => [],
     count: async () => 0,
     countSince: async () => 0,
     thread: async () => [],

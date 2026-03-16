@@ -15,7 +15,7 @@ grove.get("/", async (c) => {
   const { contributionStore, claimStore, gossip: gossipService } = c.get("deps");
 
   const contributionCount = await contributionStore.count();
-  const activeClaims = await claimStore.activeClaims();
+  const activeClaimCount = await claimStore.countActiveClaims();
 
   return c.json({
     version: "0.1.0",
@@ -24,7 +24,7 @@ grove.get("/", async (c) => {
     },
     stats: {
       contributions: contributionCount,
-      activeClaims: activeClaims.length,
+      activeClaims: activeClaimCount,
     },
     gossip: gossipService
       ? {

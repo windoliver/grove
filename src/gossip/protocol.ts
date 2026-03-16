@@ -382,8 +382,14 @@ export class DefaultGossipService implements GossipService {
     const view = this.sampler.getView();
     if (view.length === 0) return;
 
-    // Select fan-out peers (random subset of view)
-    const shuffled = [...view].sort(() => Math.random() - 0.5);
+    // Select fan-out peers (random subset of view) via Fisher-Yates shuffle
+    const shuffled = [...view];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = shuffled[i];
+      shuffled[i] = shuffled[j] as (typeof shuffled)[number];
+      shuffled[j] = tmp as (typeof shuffled)[number];
+    }
     const targets = shuffled.slice(0, Math.min(this.config.fanOut, shuffled.length));
 
     const message = await this.currentMessage();

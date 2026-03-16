@@ -8,9 +8,22 @@
  * (Issue #90, Feature 6: Gossip-aware agent spawning)
  */
 
+import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
+import { z } from "zod";
 
 import type { ServerEnv } from "../deps.js";
+
+// ---------------------------------------------------------------------------
+// File-local schemas (not exported — avoids isolatedDeclarations issues)
+// ---------------------------------------------------------------------------
+
+const spawnBodySchema = z.object({
+  role: z.string().min(1),
+  command: z.string().optional(),
+  targetRef: z.string().optional(),
+  context: z.record(z.string(), z.unknown()).optional(),
+});
 
 export const agents: Hono<ServerEnv> = new Hono<ServerEnv>();
 
@@ -24,21 +37,12 @@ export const agents: Hono<ServerEnv> = new Hono<ServerEnv>();
  * reconciler is responsible for picking up the claim and starting
  * an actual agent process (this endpoint only reserves the slot).
  */
-agents.post("/spawn", async (c) => {
+agents.post("/spawn", zValidator("json", spawnBodySchema), async (c) => {
   const deps = c.get("deps");
   const claimStore = deps.claimStore;
   const topology = deps.topology;
 
-  const body = (await c.req.json()) as {
-    role?: string;
-    command?: string;
-    targetRef?: string;
-    context?: Record<string, unknown>;
-  };
-
-  if (!body.role) {
-    return c.json({ error: "role is required" }, 400);
-  }
+  const body = c.req.valid("json");
 
   // Validate role against topology
   if (topology) {
@@ -48,11 +52,11 @@ agents.post("/spawn", async (c) => {
     }
   }
 
-  // Check capacity
-  const activeClaims = await claimStore.activeClaims();
+  // Check capacity (use countActiveClaims to avoid materializing all claim objects)
+  const activeCount = await claimStore.countActiveClaims();
   const maxSlots = 8; // Default; could be configurable
-  if (activeClaims.length >= maxSlots) {
-    return c.json({ error: "at capacity", activeAgents: activeClaims.length, maxSlots }, 503);
+  if (activeCount >= maxSlots) {
+    return c.json({ error: "at capacity", activeAgents: activeCount, maxSlots }, 503);
   }
 
   // Create a claim for the remote spawn
@@ -96,12 +100,12 @@ agents.get("/capacity", async (c) => {
   const deps = c.get("deps");
   const claimStore = deps.claimStore;
 
-  const activeClaims = await claimStore.activeClaims();
+  const activeCount = await claimStore.countActiveClaims();
   const maxSlots = 8;
 
   return c.json({
     totalSlots: maxSlots,
-    usedSlots: activeClaims.length,
-    freeSlots: Math.max(0, maxSlots - activeClaims.length),
+    usedSlots: activeCount,
+    freeSlots: Math.max(0, maxSlots - activeCount),
   });
 });

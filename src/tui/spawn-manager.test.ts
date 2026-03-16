@@ -9,6 +9,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { Claim } from "../core/models.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
+import { MockTmuxManager } from "./agents/tmux-manager.js";
 import type { ClaimInput, ClaimsQuery, TuiDataProvider } from "./provider.js";
 import { SpawnManager } from "./spawn-manager.js";
 
@@ -128,7 +129,9 @@ function makeMockProvider(): TuiDataProvider & {
       cleanedWorkspaces.add(`${targetRef}:${agentId}`);
     },
 
-    close() {},
+    close() {
+      // No-op for test mock.
+    },
   };
 }
 
@@ -165,7 +168,9 @@ function makeMockTmux(shouldFail = false): TmuxManager & {
       if (idx !== -1) spawnedSessions.splice(idx, 1);
     },
 
-    async sendKeys() {},
+    async sendKeys() {
+      // No-op for test mock.
+    },
     async capturePanes() {
       return "";
     },
@@ -348,10 +353,106 @@ describe("SpawnManager", () => {
     (provider as unknown as Record<string, unknown>).checkoutWorkspace = undefined;
 
     const tmux = makeMockTmux();
-    manager = new SpawnManager(provider, tmux, () => {});
+    manager = new SpawnManager(provider, tmux, () => {
+      // No-op error callback for test.
+    });
 
     await expect(manager.spawn("claude", "bash")).rejects.toThrow(
       "Provider does not support workspace checkout",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shell injection regression tests
+// ---------------------------------------------------------------------------
+
+describe("SpawnManager — shell injection safety", () => {
+  /** Helper: spawn with a given PR title and return the MockTmuxManager session entry. */
+  async function spawnWithTitle(title: string) {
+    const provider = makeMockProvider();
+    const tmux = new MockTmuxManager();
+    const errors: string[] = [];
+    const mgr = new SpawnManager(provider, tmux, (msg) => errors.push(msg));
+
+    // Assign to module-level `manager` so afterEach can call destroy().
+    manager = mgr;
+
+    mgr.setPrContext({ number: 42, title, filesChanged: 5 });
+
+    const result = await mgr.spawn("claude", "bash");
+    const sessionName = `grove-${result.spawnId}`;
+    const session = tmux.sessions.get(sessionName);
+    expect(session).toBeDefined();
+    return { session: session!, sessionName, tmux, errors };
+  }
+
+  test("PR title with backticks is safely passed as env var", async () => {
+    const title = "`whoami`";
+    const { session } = await spawnWithTitle(title);
+
+    // The command must NOT contain the malicious payload.
+    expect(session.command).not.toContain(title);
+
+    // The env var must carry the raw string, not an executed result.
+    expect(session.env).toBeDefined();
+    expect(session.env!.GROVE_PR_TITLE).toBe(title);
+  });
+
+  test("PR title with $() is safely passed as env var", async () => {
+    const title = "$(rm -rf /)";
+    const { session } = await spawnWithTitle(title);
+
+    expect(session.command).not.toContain(title);
+
+    expect(session.env).toBeDefined();
+    expect(session.env!.GROVE_PR_TITLE).toBe(title);
+  });
+
+  test("PR title with semicolons is safely passed as env var", async () => {
+    const title = "; malicious-command";
+    const { session } = await spawnWithTitle(title);
+
+    expect(session.command).not.toContain(title);
+
+    expect(session.env).toBeDefined();
+    expect(session.env!.GROVE_PR_TITLE).toBe(title);
+  });
+
+  test("PR title with $VARIABLE is safely passed as env var", async () => {
+    const title = "$HOME and $PATH";
+    const { session } = await spawnWithTitle(title);
+
+    expect(session.command).not.toContain(title);
+
+    expect(session.env).toBeDefined();
+    expect(session.env!.GROVE_PR_TITLE).toBe(title);
+  });
+
+  test("PR context is NOT embedded in the command string", async () => {
+    const title = "innocuous title";
+    const provider = makeMockProvider();
+    const tmux = new MockTmuxManager();
+    const errors: string[] = [];
+    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg));
+    manager.setPrContext({ number: 99, title, filesChanged: 10 });
+
+    const result = await manager.spawn("claude", "bash");
+    const sessionName = `grove-${result.spawnId}`;
+    const session = tmux.sessions.get(sessionName);
+    expect(session).toBeDefined();
+
+    // The command must not contain any GROVE_PR_ references —
+    // those belong exclusively in the env object.
+    expect(session!.command).not.toContain("GROVE_PR_");
+    expect(session!.command).not.toContain("GROVE_PR_NUMBER");
+    expect(session!.command).not.toContain("GROVE_PR_TITLE");
+    expect(session!.command).not.toContain("GROVE_PR_FILES");
+
+    // Env must contain all three PR context vars.
+    expect(session!.env).toBeDefined();
+    expect(session!.env!.GROVE_PR_NUMBER).toBe("99");
+    expect(session!.env!.GROVE_PR_TITLE).toBe(title);
+    expect(session!.env!.GROVE_PR_FILES).toBe("10");
   });
 });

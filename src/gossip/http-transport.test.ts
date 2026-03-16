@@ -13,7 +13,7 @@ import type {
   ShuffleRequest,
   ShuffleResponse,
 } from "../core/gossip/types.js";
-import { HttpGossipTransport } from "./http-transport.js";
+import { HttpGossipTransport, validatePeerUrl } from "./http-transport.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -95,7 +95,7 @@ describe("HttpGossipTransport", () => {
 
   describe("exchange()", () => {
     it("sends POST to correct URL with correct body", async () => {
-      const transport = new HttpGossipTransport();
+      const transport = new HttpGossipTransport({ allowPrivateIPs: true });
       const peer = makePeer("peer-1", baseUrl);
       const message = makeGossipMessage("self");
 
@@ -113,7 +113,7 @@ describe("HttpGossipTransport", () => {
     });
 
     it("returns parsed GossipMessage from response", async () => {
-      const transport = new HttpGossipTransport();
+      const transport = new HttpGossipTransport({ allowPrivateIPs: true });
       const peer = makePeer("peer-2", baseUrl);
 
       const responseMsg: GossipMessage = {
@@ -141,7 +141,7 @@ describe("HttpGossipTransport", () => {
 
   describe("shuffle()", () => {
     it("sends POST to correct URL with correct body", async () => {
-      const transport = new HttpGossipTransport();
+      const transport = new HttpGossipTransport({ allowPrivateIPs: true });
       const peer = makePeer("peer-3", baseUrl);
 
       const request: ShuffleRequest = {
@@ -171,7 +171,7 @@ describe("HttpGossipTransport", () => {
 
   describe("PeerUnreachableError on network failure", () => {
     it("throws PeerUnreachableError when peer is unreachable (bad port)", async () => {
-      const transport = new HttpGossipTransport({ timeoutMs: 2000 });
+      const transport = new HttpGossipTransport({ timeoutMs: 2000, allowPrivateIPs: true });
       // Use a port that is almost certainly not listening
       const peer = makePeer("dead-peer", "http://127.0.0.1:1");
 
@@ -181,7 +181,7 @@ describe("HttpGossipTransport", () => {
     });
 
     it("throws PeerUnreachableError on HTTP error status", async () => {
-      const transport = new HttpGossipTransport();
+      const transport = new HttpGossipTransport({ allowPrivateIPs: true });
       const peer = makePeer("error-peer", baseUrl);
 
       serverResponseCode = 500;
@@ -193,7 +193,7 @@ describe("HttpGossipTransport", () => {
     });
 
     it("PeerUnreachableError carries peerId and address", async () => {
-      const transport = new HttpGossipTransport();
+      const transport = new HttpGossipTransport({ allowPrivateIPs: true });
       const peer = makePeer("err-peer", baseUrl);
 
       serverResponseCode = 503;
@@ -210,7 +210,7 @@ describe("HttpGossipTransport", () => {
     });
 
     it("throws PeerUnreachableError for shuffle on HTTP error", async () => {
-      const transport = new HttpGossipTransport();
+      const transport = new HttpGossipTransport({ allowPrivateIPs: true });
       const peer = makePeer("bad-shuffle-peer", baseUrl);
 
       serverResponseCode = 502;
@@ -230,7 +230,7 @@ describe("HttpGossipTransport", () => {
 
   describe("GossipTimeoutError on timeout", () => {
     it("throws GossipTimeoutError when request exceeds timeout", async () => {
-      const transport = new HttpGossipTransport({ timeoutMs: 100 });
+      const transport = new HttpGossipTransport({ timeoutMs: 100, allowPrivateIPs: true });
       const peer = makePeer("slow-peer", baseUrl);
 
       serverDelayMs = 500;
@@ -241,7 +241,7 @@ describe("HttpGossipTransport", () => {
     });
 
     it("GossipTimeoutError carries peerId and timeoutMs", async () => {
-      const transport = new HttpGossipTransport({ timeoutMs: 50 });
+      const transport = new HttpGossipTransport({ timeoutMs: 50, allowPrivateIPs: true });
       const peer = makePeer("timeout-peer", baseUrl);
 
       serverDelayMs = 300;
@@ -258,7 +258,7 @@ describe("HttpGossipTransport", () => {
     });
 
     it("throws GossipTimeoutError for shuffle on timeout", async () => {
-      const transport = new HttpGossipTransport({ timeoutMs: 50 });
+      const transport = new HttpGossipTransport({ timeoutMs: 50, allowPrivateIPs: true });
       const peer = makePeer("slow-shuffle", baseUrl);
 
       serverDelayMs = 300;
@@ -278,7 +278,7 @@ describe("HttpGossipTransport", () => {
 
   describe("default config", () => {
     it("uses default timeout when no config provided", async () => {
-      const transport = new HttpGossipTransport();
+      const transport = new HttpGossipTransport({ allowPrivateIPs: true });
       const peer = makePeer("default-peer", baseUrl);
 
       serverResponseBody = makeGossipMessage("default-peer");
@@ -287,5 +287,186 @@ describe("HttpGossipTransport", () => {
       const result = await transport.exchange(peer, makeGossipMessage("self"));
       expect(result.peerId).toBe("default-peer");
     });
+  });
+
+  // -----------------------------------------------------------------------
+  // SSRF validation — transport-level
+  // -----------------------------------------------------------------------
+
+  describe("SSRF validation in transport", () => {
+    it("exchange() rejects localhost peer by default", async () => {
+      const transport = new HttpGossipTransport(); // allowPrivateIPs defaults to false
+      const peer = makePeer("bad", "http://localhost:9999");
+
+      await expect(transport.exchange(peer, makeGossipMessage("self"))).rejects.toThrow(
+        /private\/internal/,
+      );
+    });
+
+    it("shuffle() rejects private IP peer by default", async () => {
+      const transport = new HttpGossipTransport();
+      const peer = makePeer("bad", "http://10.0.0.1:9999");
+
+      const request: ShuffleRequest = {
+        sender: makePeer("self", "http://self:4515"),
+        offered: [],
+      };
+
+      await expect(transport.shuffle(peer, request)).rejects.toThrow(/private\/reserved/);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validatePeerUrl — unit tests
+// ---------------------------------------------------------------------------
+
+describe("validatePeerUrl", () => {
+  // -------------------------------------------------------------------------
+  // Valid URLs
+  // -------------------------------------------------------------------------
+
+  it("accepts a valid http URL", () => {
+    expect(validatePeerUrl("http://example.com:4515/api")).toBe("http://example.com:4515/api");
+  });
+
+  it("accepts a valid https URL", () => {
+    expect(validatePeerUrl("https://node.example.com")).toBe("https://node.example.com");
+  });
+
+  it("accepts a public IPv4 address", () => {
+    expect(validatePeerUrl("http://8.8.8.8:4515")).toBe("http://8.8.8.8:4515");
+  });
+
+  // -------------------------------------------------------------------------
+  // Parsing failures
+  // -------------------------------------------------------------------------
+
+  it("rejects an unparseable URL", () => {
+    expect(() => validatePeerUrl("not-a-url")).toThrow(/unable to parse/);
+  });
+
+  // -------------------------------------------------------------------------
+  // Scheme checks
+  // -------------------------------------------------------------------------
+
+  it("rejects ftp scheme", () => {
+    expect(() => validatePeerUrl("ftp://evil.com/file")).toThrow(/scheme.*ftp:/);
+  });
+
+  it("rejects file scheme", () => {
+    expect(() => validatePeerUrl("file:///etc/passwd")).toThrow(/scheme/);
+  });
+
+  it("allows a custom scheme via allowedSchemes", () => {
+    const opts = { allowedSchemes: new Set(["custom:"]) };
+    expect(validatePeerUrl("custom://host/path", opts)).toBe("custom://host/path");
+  });
+
+  // -------------------------------------------------------------------------
+  // Dangerous hostnames
+  // -------------------------------------------------------------------------
+
+  it("rejects localhost", () => {
+    expect(() => validatePeerUrl("http://localhost:4515")).toThrow(/private\/internal/);
+  });
+
+  it("rejects metadata.google.internal", () => {
+    expect(() => validatePeerUrl("http://metadata.google.internal/computeMetadata")).toThrow(
+      /private\/internal/,
+    );
+  });
+
+  it("rejects metadata.internal", () => {
+    expect(() => validatePeerUrl("http://metadata.internal")).toThrow(/private\/internal/);
+  });
+
+  it("rejects instance-data (AWS metadata alias)", () => {
+    expect(() => validatePeerUrl("http://instance-data/latest/meta-data")).toThrow(
+      /private\/internal/,
+    );
+  });
+
+  it("rejects kubernetes.default", () => {
+    expect(() => validatePeerUrl("http://kubernetes.default")).toThrow(/private\/internal/);
+  });
+
+  it("rejects kubernetes.default.svc.cluster.local", () => {
+    expect(() => validatePeerUrl("http://kubernetes.default.svc.cluster.local")).toThrow(
+      /private\/internal/,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Private IPv4 ranges
+  // -------------------------------------------------------------------------
+
+  it("rejects 10.x.x.x", () => {
+    expect(() => validatePeerUrl("http://10.0.0.1:4515")).toThrow(/private\/reserved/);
+  });
+
+  it("rejects 172.16.x.x", () => {
+    expect(() => validatePeerUrl("http://172.16.0.1:4515")).toThrow(/private\/reserved/);
+  });
+
+  it("rejects 172.31.x.x (upper end of /12)", () => {
+    expect(() => validatePeerUrl("http://172.31.255.255")).toThrow(/private\/reserved/);
+  });
+
+  it("allows 172.15.x.x (just below the private range)", () => {
+    expect(validatePeerUrl("http://172.15.0.1:4515")).toBe("http://172.15.0.1:4515");
+  });
+
+  it("allows 172.32.x.x (just above the private range)", () => {
+    expect(validatePeerUrl("http://172.32.0.1:4515")).toBe("http://172.32.0.1:4515");
+  });
+
+  it("rejects 192.168.x.x", () => {
+    expect(() => validatePeerUrl("http://192.168.1.1:4515")).toThrow(/private\/reserved/);
+  });
+
+  it("rejects 127.0.0.1 (loopback)", () => {
+    expect(() => validatePeerUrl("http://127.0.0.1:4515")).toThrow(/private\/reserved/);
+  });
+
+  it("rejects 169.254.x.x (link-local)", () => {
+    expect(() => validatePeerUrl("http://169.254.169.254/latest/meta-data")).toThrow(
+      /private\/reserved/,
+    );
+  });
+
+  it("rejects 0.0.0.0", () => {
+    expect(() => validatePeerUrl("http://0.0.0.0:4515")).toThrow(/private\/reserved/);
+  });
+
+  // -------------------------------------------------------------------------
+  // Private IPv6 ranges
+  // -------------------------------------------------------------------------
+
+  it("rejects ::1 (IPv6 loopback)", () => {
+    expect(() => validatePeerUrl("http://[::1]:4515")).toThrow(/private\/reserved/);
+  });
+
+  it("rejects fc00:: (IPv6 ULA)", () => {
+    expect(() => validatePeerUrl("http://[fc00::1]:4515")).toThrow(/private\/reserved/);
+  });
+
+  it("rejects fd00:: (IPv6 ULA)", () => {
+    expect(() => validatePeerUrl("http://[fd12:3456::1]:4515")).toThrow(/private\/reserved/);
+  });
+
+  it("rejects fe80:: (IPv6 link-local)", () => {
+    expect(() => validatePeerUrl("http://[fe80::1]:4515")).toThrow(/private\/reserved/);
+  });
+
+  // -------------------------------------------------------------------------
+  // allowPrivateIPs bypass
+  // -------------------------------------------------------------------------
+
+  it("allows private IPs when allowPrivateIPs is true", () => {
+    const opts = { allowPrivateIPs: true as const };
+    expect(validatePeerUrl("http://10.0.0.1:4515", opts)).toBe("http://10.0.0.1:4515");
+    expect(validatePeerUrl("http://localhost:4515", opts)).toBe("http://localhost:4515");
+    expect(validatePeerUrl("http://[::1]:4515", opts)).toBe("http://[::1]:4515");
   });
 });

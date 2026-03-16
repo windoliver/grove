@@ -17,6 +17,7 @@
  */
 
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import type { ServerDeps, ServerEnv } from "./deps.js";
 import { handleError } from "./middleware/error-handler.js";
 import { agents } from "./routes/agents.js";
@@ -41,6 +42,9 @@ import { threads } from "./routes/threads.js";
  */
 export function createApp(deps: ServerDeps): Hono<ServerEnv> {
   const app = new Hono<ServerEnv>();
+
+  // Global body-size limit (10 MB)
+  app.use("*", bodyLimit({ maxSize: 10 * 1024 * 1024 }));
 
   // Inject dependencies into every request's context
   app.use("*", async (c, next) => {

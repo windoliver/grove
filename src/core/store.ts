@@ -159,6 +159,15 @@ export interface ContributionStore {
   ): Promise<readonly ThreadNode[]>;
 
   /**
+   * Get contributions that have relations targeting any of the given CIDs.
+   *
+   * Batch version of children(). Returns a flat array of unique source
+   * contributions (deduplicated by CID). Used by frontier calculation to
+   * avoid a full store.list() when only incoming-edge data is needed.
+   */
+  incomingSources(targetCids: readonly string[]): Promise<readonly Contribution[]>;
+
+  /**
    * Count direct replies (incoming `responds_to` relations) for multiple CIDs.
    *
    * Returns a map from CID to direct reply count. CIDs with no replies

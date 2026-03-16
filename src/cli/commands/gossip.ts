@@ -245,7 +245,7 @@ async function handleExchange(
 ): Promise<void> {
   const { peerUrl, peerId, json } = parseDirectArgs([...args]);
 
-  const transport = new HttpGossipTransport();
+  const transport = new HttpGossipTransport({ allowPrivateIPs: true });
   const message = await buildGossipMessage(peerId, deps);
   const target = urlToPeerInfo(peerUrl);
 
@@ -285,7 +285,7 @@ async function handleExchange(
 async function handleShuffle(args: readonly string[], writer: Writer): Promise<void> {
   const { peerUrl, peerId, json } = parseDirectArgs([...args]);
 
-  const transport = new HttpGossipTransport();
+  const transport = new HttpGossipTransport({ allowPrivateIPs: true });
   // Use the target URL as our address — not routable for incoming gossip,
   // but satisfies the sender schema and identifies the request origin.
   const selfPeer: PeerInfo = {
@@ -339,7 +339,7 @@ async function handleSync(args: readonly string[], deps: CliDeps, writer: Writer
 
   const peerId = values["peer-id"] ?? `cli-${hostname()}-${process.pid}`;
   const json = values.json ?? false;
-  const transport = new HttpGossipTransport();
+  const transport = new HttpGossipTransport({ allowPrivateIPs: true });
 
   // Parse seeds: either "peerId@url" or just "url"
   const seeds = parseSeedList(seedsArg);
@@ -485,7 +485,7 @@ async function handleDaemon(
 
   // Create gossip service
   const cachedFrontier = new CachedFrontierCalculator(deps.frontier);
-  const transport = new HttpGossipTransport();
+  const transport = new HttpGossipTransport({ allowPrivateIPs: true });
   const gossipService = new DefaultGossipService({
     config: {
       peerId,

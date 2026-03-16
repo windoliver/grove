@@ -96,7 +96,7 @@ function createLocalRuntime(groveDir: string | undefined): GroveRuntime {
   const cas = new FsCas(casPath);
   const frontier = new DefaultFrontierCalculator(contributionStore);
   const workspace = new LocalWorkspaceManager({
-    groveRoot: groveDir,
+    groveRoot,
     db,
     contributionStore,
     cas,

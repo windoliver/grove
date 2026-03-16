@@ -10,13 +10,30 @@
  * Reduces N separate polling requests to 1 (Issue #90, Decision 13A).
  */
 
+import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
+import { z } from "zod";
 
 import { computeCid } from "../../core/manifest.js";
 import { ContributionKind, RelationType } from "../../core/models.js";
 import { answerQuestion } from "../../core/operations/ask-user-bus.js";
 import { sendMessage } from "../../core/operations/messaging.js";
 import type { ServerEnv } from "../deps.js";
+
+// ---------------------------------------------------------------------------
+// File-local schemas (not exported — avoids isolatedDeclarations issues)
+// ---------------------------------------------------------------------------
+
+const answerBodySchema = z.object({
+  questionCid: z.string().min(1),
+  answer: z.string().min(1),
+});
+
+const messageBodySchema = z.object({
+  body: z.string().min(1),
+  recipients: z.array(z.string().min(1)).min(1),
+  inReplyTo: z.string().optional(),
+});
 
 // ---------------------------------------------------------------------------
 // Types
@@ -157,9 +174,8 @@ boardroom.get("/summary", async (c) => {
 
   const byAgent = [...agentCosts.values()];
 
-  // Active claim count
-  const activeClaims = await claimStore.activeClaims();
-  const activeClaimCount = activeClaims.length;
+  // Active claim count (use countActiveClaims to avoid materializing all claim objects)
+  const activeClaimCount = await claimStore.countActiveClaims();
 
   const summary: BoardroomSummary = {
     pendingQuestions,
@@ -181,14 +197,11 @@ boardroom.get("/summary", async (c) => {
  * Answer a pending ask-user question from the TUI.
  * Body: { questionCid: string, answer: string }
  */
-boardroom.post("/answer", async (c) => {
+boardroom.post("/answer", zValidator("json", answerBodySchema), async (c) => {
   const deps = c.get("deps");
   const store = deps.contributionStore;
 
-  const body = (await c.req.json()) as { questionCid?: string; answer?: string };
-  if (!body.questionCid || !body.answer) {
-    return c.json({ error: "questionCid and answer are required" }, 400);
-  }
+  const body = c.req.valid("json");
 
   const operator = { agentId: "tui-operator", agentName: "operator" };
   const contribution = await answerQuestion(
@@ -206,18 +219,11 @@ boardroom.post("/answer", async (c) => {
  * Send a message from the TUI operator.
  * Body: { body: string, recipients: string[], inReplyTo?: string }
  */
-boardroom.post("/message", async (c) => {
+boardroom.post("/message", zValidator("json", messageBodySchema), async (c) => {
   const deps = c.get("deps");
   const store = deps.contributionStore;
 
-  const body = (await c.req.json()) as {
-    body?: string;
-    recipients?: string[];
-    inReplyTo?: string;
-  };
-  if (!body.body || !body.recipients?.length) {
-    return c.json({ error: "body and recipients are required" }, 400);
-  }
+  const body = c.req.valid("json");
 
   const operator = { agentId: "tui-operator", agentName: "operator" };
   const contribution = await sendMessage(

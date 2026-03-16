@@ -171,14 +171,18 @@ export class EnforcingContributionStore implements ContributionStore {
       // Filter out already-existing CIDs and intra-batch duplicates.
       // Idempotent puts should not be rate-limited, and putMany([c, c])
       // must behave the same as put(c); put(c) — the second is a no-op.
-      const seenCids = new Set<string>();
-      const newContributions: Contribution[] = [];
+      const uniqueByBatch = new Map<string, Contribution>();
       for (const c of contributions) {
-        if (seenCids.has(c.cid)) continue;
-        seenCids.add(c.cid);
-        const existing = await this.inner.get(c.cid);
-        if (existing === undefined) {
-          newContributions.push(c);
+        if (!uniqueByBatch.has(c.cid)) uniqueByBatch.set(c.cid, c);
+      }
+
+      // Batch existence check instead of per-item get()
+      const uniqueCids = [...uniqueByBatch.keys()];
+      const existingMap = await this.inner.getMany(uniqueCids);
+      const newContributions: Contribution[] = [];
+      for (const [cid, contribution] of uniqueByBatch) {
+        if (!existingMap.has(cid)) {
+          newContributions.push(contribution);
         }
       }
 
@@ -201,6 +205,8 @@ export class EnforcingContributionStore implements ContributionStore {
     this.inner.getMany(cids);
   list = (query?: ContributionQuery): Promise<readonly Contribution[]> => this.inner.list(query);
   children = (cid: string): Promise<readonly Contribution[]> => this.inner.children(cid);
+  incomingSources = (targetCids: readonly string[]): Promise<readonly Contribution[]> =>
+    this.inner.incomingSources(targetCids);
   ancestors = (cid: string): Promise<readonly Contribution[]> => this.inner.ancestors(cid);
   relationsOf = (cid: string, relationType?: RelationType): Promise<readonly Relation[]> =>
     this.inner.relationsOf(cid, relationType);

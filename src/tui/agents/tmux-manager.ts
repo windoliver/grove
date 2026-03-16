@@ -26,6 +26,8 @@ export interface SpawnOptions {
   readonly command: string;
   readonly targetRef: string;
   readonly workspacePath: string;
+  /** Extra environment variables to inject into the spawned process. */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 /** Interface for tmux operations — mockable for testing. */
@@ -106,7 +108,11 @@ export class ShellTmuxManager implements TmuxManager {
         options.workspacePath,
         options.command,
       ],
-      { stdout: "pipe", stderr: "pipe" },
+      {
+        stdout: "pipe",
+        stderr: "pipe",
+        ...(options.env ? { env: { ...process.env, ...options.env } } : {}),
+      },
     );
     await proc.exited;
     if (proc.exitCode !== 0) {
@@ -145,7 +151,10 @@ export class ShellTmuxManager implements TmuxManager {
 
 /** Mock TmuxManager for testing. */
 export class MockTmuxManager implements TmuxManager {
-  readonly sessions: Map<string, { command: string; output: string }> = new Map();
+  readonly sessions: Map<
+    string,
+    { command: string; output: string; env?: Readonly<Record<string, string>> }
+  > = new Map();
   private available = true;
 
   setAvailable(value: boolean): void {
@@ -162,7 +171,11 @@ export class MockTmuxManager implements TmuxManager {
 
   async spawn(options: SpawnOptions): Promise<string> {
     const name = tmuxSessionName(options.agentId);
-    this.sessions.set(name, { command: options.command, output: "" });
+    this.sessions.set(name, {
+      command: options.command,
+      output: "",
+      ...(options.env ? { env: options.env } : {}),
+    });
     return name;
   }
 
