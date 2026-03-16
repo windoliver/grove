@@ -326,18 +326,25 @@ describe("validatePeerUrl", () => {
   // Valid URLs
   // -------------------------------------------------------------------------
 
-  it("accepts a valid http URL", async () => {
-    expect(await validatePeerUrl("http://example.com:4515/api")).toBe(
-      "http://example.com:4515/api",
-    );
+  it("accepts a valid http URL and pins to resolved IP", async () => {
+    const result = await validatePeerUrl("http://example.com:4515/api");
+    // pinnedUrl should have the hostname replaced with a resolved IP
+    expect(result.pinnedUrl).toMatch(/^http:\/\/\d+\.\d+\.\d+\.\d+:4515\/api/);
+    expect(result.hostHeader).toBe("example.com:4515");
   });
 
-  it("accepts a valid https URL", async () => {
-    expect(await validatePeerUrl("https://node.example.com")).toBe("https://node.example.com");
+  it("accepts a valid https URL and pins to resolved IP", async () => {
+    const result = await validatePeerUrl("https://example.com");
+    expect(result.hostHeader).toBe("example.com");
+    // pinnedUrl hostname is a resolved IP, not the original domain
+    const pinned = new URL(result.pinnedUrl);
+    expect(pinned.hostname).not.toBe("example.com");
   });
 
-  it("accepts a public IPv4 address", async () => {
-    expect(await validatePeerUrl("http://8.8.8.8:4515")).toBe("http://8.8.8.8:4515");
+  it("accepts a public IPv4 address (no DNS needed)", async () => {
+    const result = await validatePeerUrl("http://8.8.8.8:4515");
+    expect(result.pinnedUrl).toContain("8.8.8.8:4515");
+    expect(result.hostHeader).toBe("8.8.8.8:4515");
   });
 
   // -------------------------------------------------------------------------
@@ -361,8 +368,9 @@ describe("validatePeerUrl", () => {
   });
 
   it("allows a custom scheme via allowedSchemes", async () => {
-    const opts = { allowedSchemes: new Set(["custom:"]) };
-    expect(await validatePeerUrl("custom://host/path", opts)).toBe("custom://host/path");
+    const opts = { allowedSchemes: new Set(["custom:"]), allowPrivateIPs: true };
+    const result = await validatePeerUrl("custom://host/path", opts);
+    expect(result.pinnedUrl).toBe("custom://host/path");
   });
 
   // -------------------------------------------------------------------------
@@ -420,11 +428,13 @@ describe("validatePeerUrl", () => {
   });
 
   it("allows 172.15.x.x (just below the private range)", async () => {
-    expect(await validatePeerUrl("http://172.15.0.1:4515")).toBe("http://172.15.0.1:4515");
+    const result = await validatePeerUrl("http://172.15.0.1:4515");
+    expect(result.pinnedUrl).toContain("172.15.0.1");
   });
 
   it("allows 172.32.x.x (just above the private range)", async () => {
-    expect(await validatePeerUrl("http://172.32.0.1:4515")).toBe("http://172.32.0.1:4515");
+    const result = await validatePeerUrl("http://172.32.0.1:4515");
+    expect(result.pinnedUrl).toContain("172.32.0.1");
   });
 
   it("rejects 192.168.x.x", async () => {
@@ -502,8 +512,24 @@ describe("validatePeerUrl", () => {
 
   it("allows private IPs when allowPrivateIPs is true", async () => {
     const opts = { allowPrivateIPs: true as const };
-    expect(await validatePeerUrl("http://10.0.0.1:4515", opts)).toBe("http://10.0.0.1:4515");
-    expect(await validatePeerUrl("http://localhost:4515", opts)).toBe("http://localhost:4515");
-    expect(await validatePeerUrl("http://[::1]:4515", opts)).toBe("http://[::1]:4515");
+    const r1 = await validatePeerUrl("http://10.0.0.1:4515", opts);
+    expect(r1.pinnedUrl).toBe("http://10.0.0.1:4515");
+    const r2 = await validatePeerUrl("http://localhost:4515", opts);
+    expect(r2.pinnedUrl).toBe("http://localhost:4515");
+    const r3 = await validatePeerUrl("http://[::1]:4515", opts);
+    expect(r3.pinnedUrl).toBe("http://[::1]:4515");
+  });
+
+  it("pins URL to resolved IP to prevent DNS rebinding", async () => {
+    // example.com resolves to a public IP — the pinnedUrl must use that IP,
+    // not the original hostname, so fetch() never does a second DNS lookup.
+    const result = await validatePeerUrl("http://example.com:4515/test");
+    const pinned = new URL(result.pinnedUrl);
+    // Hostname in pinnedUrl must be an IP, not the original domain
+    expect(pinned.hostname).not.toBe("example.com");
+    expect(pinned.pathname).toBe("/test");
+    expect(pinned.port).toBe("4515");
+    // Host header preserves the original hostname for virtual-host routing
+    expect(result.hostHeader).toBe("example.com:4515");
   });
 });

@@ -9,6 +9,7 @@ export { type CyclonConfig, CyclonPeerSampler } from "./cyclon.js";
 export {
   HttpGossipTransport,
   type HttpTransportConfig,
+  type ValidatedUrl,
   type ValidatePeerUrlOptions,
   validatePeerUrl,
 } from "./http-transport.js";

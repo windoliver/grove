@@ -125,29 +125,38 @@ function isPrivateIP(ip: string): boolean {
   return isPrivateIPv4(ip);
 }
 
+/** Result of SSRF validation: a fetch-ready URL pinned to a resolved IP. */
+export interface ValidatedUrl {
+  /** URL with hostname replaced by the validated IP (use this for fetch). */
+  readonly pinnedUrl: string;
+  /** Original hostname to send in the Host header for virtual-host routing. */
+  readonly hostHeader: string;
+}
+
 /**
  * Validate a peer URL to prevent Server-Side Request Forgery (SSRF).
  *
- * Checks (synchronous):
- *  1. The URL is syntactically valid.
- *  2. The scheme is http or https (configurable).
- *  3. The hostname is not a known-dangerous name (e.g. "localhost").
- *  4. If the hostname is an IP literal, it must not be in a private/reserved range.
+ * Returns a {@link ValidatedUrl} with the hostname replaced by the resolved
+ * IP address. Callers MUST use `pinnedUrl` for the actual fetch and set the
+ * `Host` header to `hostHeader`. This eliminates the DNS-rebinding TOCTOU
+ * window: the resolved IP is validated and then used directly — fetch never
+ * performs a second DNS lookup.
  *
- * Then (async):
- *  5. Resolves the hostname via DNS and rejects if ANY resolved address
- *     falls in a private/reserved range. This closes the main SSRF vector
- *     where an attacker-controlled domain resolves to an internal IP.
+ * Checks:
+ *  1. URL is syntactically valid, scheme is http/https.
+ *  2. Hostname is not in the dangerous-name denylist.
+ *  3. IP literals are not in private/reserved ranges.
+ *  4. DNS-resolved addresses are not in private/reserved ranges.
  *
  * @param url       - The raw URL string to validate.
  * @param options   - Optional overrides.
- * @returns The validated URL string.
+ * @returns A {@link ValidatedUrl} pinned to the validated IP.
  * @throws {Error}  A descriptive message when validation fails.
  */
 export async function validatePeerUrl(
   url: string,
   options?: ValidatePeerUrlOptions,
-): Promise<string> {
+): Promise<ValidatedUrl> {
   const allowedSchemes = options?.allowedSchemes ?? DEFAULT_ALLOWED_SCHEMES;
   const allowPrivate = options?.allowPrivateIPs === true;
 
@@ -172,9 +181,13 @@ export async function validatePeerUrl(
     throw new Error(`Invalid peer URL: missing hostname in "${url}"`);
   }
 
+  // Build the Host header value (hostname + non-default port).
+  const portSuffix = parsed.port ? `:${parsed.port}` : "";
+  const hostHeader = `${rawHostname}${portSuffix}`;
+
   // Short-circuit remaining checks when private IPs are explicitly allowed.
   if (allowPrivate) {
-    return url;
+    return { pinnedUrl: url, hostHeader };
   }
 
   // Canonicalize: strip trailing dot (FQDN notation) so "localhost." matches "localhost".
@@ -188,8 +201,6 @@ export async function validatePeerUrl(
   }
 
   // 5. IP-literal checks ----------------------------------------------------
-  // IPv6 literals may appear with brackets in hostname (e.g. "[::1]") depending
-  // on the runtime. Strip them before checking.
   const bare =
     hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
   const looksLikeIPv4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(bare);
@@ -203,35 +214,47 @@ export async function validatePeerUrl(
     throw new Error(`Peer URL rejected: IPv6 address "${bare}" is in a private/reserved range`);
   }
 
-  // 6. DNS resolution check -------------------------------------------------
-  // If the hostname is not an IP literal, resolve it and verify that NONE
-  // of the resolved addresses fall in a private/reserved range. This catches
-  // attacker-controlled domains that point to internal IPs.
-  if (!looksLikeIPv4 && !looksLikeIPv6) {
-    const resolved: string[] = [];
-    try {
-      const addrs = await resolve4(hostname);
-      for (const addr of addrs) resolved.push(addr);
-    } catch {
-      // A lookup failed — may be IPv6-only, continue
-    }
-    try {
-      const addrs = await resolve6(hostname);
-      for (const addr of addrs) resolved.push(addr);
-    } catch {
-      // AAAA lookup failed — may be IPv4-only, continue
-    }
+  // If already an IP literal, no DNS rebinding risk — pin directly.
+  if (looksLikeIPv4 || looksLikeIPv6) {
+    return { pinnedUrl: url, hostHeader };
+  }
 
-    for (const addr of resolved) {
-      if (isPrivateIP(addr)) {
-        throw new Error(
-          `Peer URL rejected: hostname "${hostname}" resolves to private/reserved address ${addr}`,
-        );
-      }
+  // 6. DNS resolution + pinning ---------------------------------------------
+  // Resolve the hostname, validate all addresses, then rewrite the URL to
+  // use the first safe IP. This makes fetch() connect to the validated IP
+  // directly, eliminating the DNS-rebinding TOCTOU window.
+  const resolved: string[] = [];
+  try {
+    const addrs = await resolve4(hostname);
+    for (const addr of addrs) resolved.push(addr);
+  } catch {
+    // A lookup failed — may be IPv6-only, continue
+  }
+  try {
+    const addrs = await resolve6(hostname);
+    for (const addr of addrs) resolved.push(addr);
+  } catch {
+    // AAAA lookup failed — may be IPv4-only, continue
+  }
+
+  if (resolved.length === 0) {
+    throw new Error(`Peer URL rejected: hostname "${hostname}" could not be resolved`);
+  }
+
+  for (const addr of resolved) {
+    if (isPrivateIP(addr)) {
+      throw new Error(
+        `Peer URL rejected: hostname "${hostname}" resolves to private/reserved address ${addr}`,
+      );
     }
   }
 
-  return url;
+  // Pin the URL to the first resolved IP.
+  const pinnedIp = resolved[0] as string;
+  const pinnedHost = pinnedIp.includes(":") ? `[${pinnedIp}]` : pinnedIp;
+  const pinned = new URL(url);
+  pinned.hostname = pinnedHost;
+  return { pinnedUrl: pinned.toString(), hostHeader };
 }
 
 // ---------------------------------------------------------------------------
@@ -269,27 +292,28 @@ export class HttpGossipTransport implements GossipTransport {
 
   async exchange(peer: PeerInfo, message: GossipMessage): Promise<GossipMessage> {
     const url = `${peer.address}/api/gossip/exchange`;
-    await validatePeerUrl(url, { allowPrivateIPs: this.allowPrivateIPs });
-    const response = await this.post<GossipMessage>(url, message, peer.peerId);
+    const validated = await validatePeerUrl(url, { allowPrivateIPs: this.allowPrivateIPs });
+    const response = await this.post<GossipMessage>(validated, message, peer.peerId);
     return response;
   }
 
   async shuffle(peer: PeerInfo, request: ShuffleRequest): Promise<ShuffleResponse> {
     const url = `${peer.address}/api/gossip/shuffle`;
-    await validatePeerUrl(url, { allowPrivateIPs: this.allowPrivateIPs });
-    const response = await this.post<ShuffleResponse>(url, request, peer.peerId);
+    const validated = await validatePeerUrl(url, { allowPrivateIPs: this.allowPrivateIPs });
+    const response = await this.post<ShuffleResponse>(validated, request, peer.peerId);
     return response;
   }
 
-  private async post<T>(url: string, body: unknown, peerId: string): Promise<T> {
+  private async post<T>(validated: ValidatedUrl, body: unknown, peerId: string): Promise<T> {
+    const { pinnedUrl, hostHeader } = validated;
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
       try {
-        const response = await fetch(url, {
+        const response = await fetch(pinnedUrl, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", Host: hostHeader },
           body: JSON.stringify(body),
           signal: controller.signal,
         });
@@ -297,7 +321,7 @@ export class HttpGossipTransport implements GossipTransport {
         if (!response.ok) {
           throw new PeerUnreachableError({
             peerId,
-            address: url,
+            address: pinnedUrl,
             cause: new Error(`HTTP ${response.status}: ${response.statusText}`),
           });
         }
@@ -319,7 +343,7 @@ export class HttpGossipTransport implements GossipTransport {
       // Network errors (connection refused, DNS failure, etc.)
       throw new PeerUnreachableError({
         peerId,
-        address: url,
+        address: pinnedUrl,
         cause: err instanceof Error ? err : new Error(String(err)),
       });
     }
