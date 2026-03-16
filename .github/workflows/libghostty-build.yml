@@ -1,0 +1,80 @@
+name: Build libghostty-vt binaries
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "packages/libghostty/build.zig"
+      - "packages/libghostty/build.zig.zon"
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-macos
+            platform_dir: darwin-arm64
+            lib_ext: dylib
+          - os: macos-13
+            target: x86_64-macos
+            platform_dir: darwin-x64
+            lib_ext: dylib
+          - os: ubuntu-latest
+            target: x86_64-linux
+            platform_dir: linux-x64
+            lib_ext: so
+          - os: ubuntu-latest
+            target: aarch64-linux
+            platform_dir: linux-arm64
+            lib_ext: so
+
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: packages/libghostty
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.14.0
+
+      - name: Build libghostty-vt
+        run: zig build lib-vt -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast
+
+      - name: Copy binary to platforms/
+        run: |
+          mkdir -p platforms/${{ matrix.platform_dir }}
+          cp zig-out/lib/libghostty-vt.${{ matrix.lib_ext }} \
+             platforms/${{ matrix.platform_dir }}/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libghostty-vt-${{ matrix.platform_dir }}
+          path: packages/libghostty/platforms/${{ matrix.platform_dir }}/libghostty-vt.${{ matrix.lib_ext }}
+
+  # After all platform builds, create a combined artifact
+  package:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: packages/libghostty/platforms/
+          merge-multiple: true
+
+      - name: List built binaries
+        run: find packages/libghostty/platforms/ -type f -name "libghostty-vt.*"
+
+      - name: Upload combined package
+        uses: actions/upload-artifact@v4
+        with:
+          name: libghostty-all-platforms
+          path: packages/libghostty/platforms/

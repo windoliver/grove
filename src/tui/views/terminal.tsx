@@ -98,6 +98,8 @@ function useGhosttyAvailable(): boolean {
 interface AgentTerminalState {
   /** Number of bytes previously fed to the terminal. */
   prevLength: number;
+  /** Full previous capture content for prefix comparison. */
+  prevContent: string;
 }
 
 /** Global map of agent session → terminal state. */
@@ -192,26 +194,35 @@ export const TerminalView: React.NamedExoticComponent<TerminalProps> = React.mem
       </box>
     );
 
-    // --- Ghostty path: persistent ANSI/VT rendering ---
+    // --- Ghostty path: ANSI/VT rendering ---
     if (ghosttyAvailable && rawOutput.length > 0) {
-      // Compute delta for persistent feeding when libghostty is available
-      let ansiProp = rawOutput;
+      // Determine rendering mode when @grove/libghostty is available
+      let useDelta = false;
+      let deltaContent = rawOutput;
+
       if (libghosttyAvailable && sessionName) {
         const state = agentStates.get(sessionName);
-        if (state && rawOutput.length > state.prevLength) {
-          // Only feed the new bytes — the terminal maintains state
-          ansiProp = rawOutput.slice(state.prevLength);
+        if (state) {
+          if (rawOutput.length > state.prevLength && rawOutput.startsWith(state.prevContent)) {
+            // Output grew and prefix matches — safe to feed only delta
+            useDelta = true;
+            deltaContent = rawOutput.slice(state.prevLength);
+          }
+          // Otherwise output shrank, changed, or screen cleared —
+          // fall back to full re-parse (ansi prop, not delta)
         }
-        agentStates.set(sessionName, { prevLength: rawOutput.length });
+        agentStates.set(sessionName, {
+          prevLength: rawOutput.length,
+          prevContent: rawOutput,
+        });
       }
 
       return (
         <box flexDirection="column">
           {header}
           {createElement("ghostty-terminal" as string, {
-            // When libghostty is active, pass delta via `delta` prop
-            // for persistent mode; otherwise pass full `ansi` for stateless
-            ...(libghosttyAvailable ? { delta: ansiProp } : { ansi: rawOutput }),
+            // delta = persistent (append only), ansi = stateless (full re-parse)
+            ...(libghosttyAvailable && useDelta ? { delta: deltaContent } : { ansi: rawOutput }),
             cols: 120,
             rows: 30,
             trimEnd: true,

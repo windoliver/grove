@@ -2,20 +2,28 @@
     .name = "grove-libghostty",
     .version = "0.1.0",
     .dependencies = .{
-        // Pinned to a specific Ghostty commit for reproducible builds.
+        // Pinned to Ghostty commit 600f59ae for reproducible builds.
         // The libghostty-vt C API is unstable — update deliberately.
         //
         // To update:
-        //   1. Pick a ghostty commit from https://github.com/ghostty-org/ghostty
-        //   2. Update the commit hash in the url below
-        //   3. Run: zig fetch --save <new-url> to update the hash
-        //   4. Run: zig build lib-vt -Dtarget=aarch64-macos
-        //   5. Run tests: bun test
-        //   6. Fix any FFI signature changes in src/ffi.ts
+        //   1. Pick a commit from https://github.com/ghostty-org/ghostty
+        //   2. Update the commit hash in the URL below
+        //   3. Run: zig fetch --save=ghostty <new-url>
+        //      (this populates the .hash field automatically)
+        //   4. Run: zig build lib-vt  (verify build succeeds)
+        //   5. Run: bun test  (verify FFI signatures still match)
+        //   6. Fix any signature changes in src/ffi.ts
+        //
+        // Prebuilt binaries are produced by the CI workflow
+        // (.github/workflows/libghostty-build.yml) and can be triggered
+        // manually via workflow_dispatch or on push to build.zig*.
+        //
+        // On fresh checkout without binaries, @grove/libghostty gracefully
+        // returns isAvailable()=false and the TUI falls back to plain text.
         .ghostty = .{
             .url = "https://github.com/ghostty-org/ghostty/archive/600f59ae313adf377c0bf0d754fa258257f5f65f.tar.gz",
-            // After first build, run `zig fetch --save <url>` to populate this hash.
-            // Until then, Zig will verify the download on first fetch.
+            // Hash is populated by `zig fetch --save=ghostty <url>`.
+            // Until first build, Zig verifies integrity on download.
         },
     },
     .paths = .{
