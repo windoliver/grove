@@ -74,14 +74,34 @@ function isPrivateIPv4(ip: string): boolean {
  * Return true if `ip` is a private or reserved IPv6 address.
  *
  * Covers:
- *  - ::1          (loopback)
- *  - fc00::/7     (unique local addresses, i.e. fc00:: – fdff::)
- *  - fe80::/10    (link-local)
+ *  - ::1              (loopback)
+ *  - fc00::/7         (unique local addresses, i.e. fc00:: – fdff::)
+ *  - fe80::/10        (link-local)
+ *  - ::ffff:x.x.x.x  (IPv4-mapped IPv6 — delegates to isPrivateIPv4)
  */
 function isPrivateIPv6(raw: string): boolean {
   // Normalise: strip optional zone id (e.g. %eth0), lowercase
   const ip = raw.replace(/%.*$/, "").toLowerCase();
   if (ip === "::1") return true;
+
+  // IPv4-mapped IPv6 addresses: ::ffff:a.b.c.d or ::ffff:HHHH:HHHH (hex form).
+  // Runtimes may normalise the dotted-decimal form into two hex groups
+  // (e.g. Bun turns ::ffff:127.0.0.1 into ::ffff:7f00:1). Both must be
+  // checked against IPv4 private ranges to prevent SSRF bypass.
+  const v4MappedDotted = ip.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (v4MappedDotted) {
+    return isPrivateIPv4(v4MappedDotted[1] as string);
+  }
+  const v4MappedHex = ip.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (v4MappedHex) {
+    const hi = parseInt(v4MappedHex[1] as string, 16);
+    const lo = parseInt(v4MappedHex[2] as string, 16);
+    const a = (hi >> 8) & 0xff;
+    const b = hi & 0xff;
+    const c = (lo >> 8) & 0xff;
+    const d = lo & 0xff;
+    return isPrivateIPv4(`${a}.${b}.${c}.${d}`);
+  }
 
   // Expand the first group to check prefix bits.
   const firstGroup = ip.split(":")[0] ?? "";
@@ -131,8 +151,8 @@ export function validatePeerUrl(url: string, options?: ValidatePeerUrlOptions): 
   }
 
   // 3. Hostname must be present ---------------------------------------------
-  const hostname = parsed.hostname; // already lowercased by URL constructor
-  if (!hostname) {
+  const rawHostname = parsed.hostname; // already lowercased by URL constructor
+  if (!rawHostname) {
     throw new Error(`Invalid peer URL: missing hostname in "${url}"`);
   }
 
@@ -140,6 +160,9 @@ export function validatePeerUrl(url: string, options?: ValidatePeerUrlOptions): 
   if (allowPrivate) {
     return url;
   }
+
+  // Canonicalize: strip trailing dot (FQDN notation) so "localhost." matches "localhost".
+  const hostname = rawHostname.endsWith(".") ? rawHostname.slice(0, -1) : rawHostname;
 
   // 4. Dangerous well-known hostnames ---------------------------------------
   if (DANGEROUS_HOSTNAMES.has(hostname)) {

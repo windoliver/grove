@@ -371,6 +371,10 @@ describe("validatePeerUrl", () => {
     expect(() => validatePeerUrl("http://localhost:4515")).toThrow(/private\/internal/);
   });
 
+  it("rejects localhost with trailing dot (FQDN)", () => {
+    expect(() => validatePeerUrl("http://localhost.:4515")).toThrow(/private\/internal/);
+  });
+
   it("rejects metadata.google.internal", () => {
     expect(() => validatePeerUrl("http://metadata.google.internal/computeMetadata")).toThrow(
       /private\/internal/,
@@ -457,6 +461,18 @@ describe("validatePeerUrl", () => {
 
   it("rejects fe80:: (IPv6 link-local)", () => {
     expect(() => validatePeerUrl("http://[fe80::1]:4515")).toThrow(/private\/reserved/);
+  });
+
+  it("rejects ::ffff:127.0.0.1 (IPv4-mapped loopback)", () => {
+    expect(() => validatePeerUrl("http://[::ffff:127.0.0.1]:4515")).toThrow(/private\/reserved/);
+  });
+
+  it("rejects ::ffff:10.0.0.1 (IPv4-mapped private)", () => {
+    expect(() => validatePeerUrl("http://[::ffff:10.0.0.1]:4515")).toThrow(/private\/reserved/);
+  });
+
+  it("rejects ::ffff:192.168.1.1 (IPv4-mapped private)", () => {
+    expect(() => validatePeerUrl("http://[::ffff:192.168.1.1]:4515")).toThrow(/private\/reserved/);
   });
 
   // -------------------------------------------------------------------------
