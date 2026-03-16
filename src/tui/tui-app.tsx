@@ -1,11 +1,13 @@
 /**
- * TUI application wrapper — handles the welcome -> init -> boardroom transition.
+ * TUI application wrapper — handles the setup -> starting -> boardroom lifecycle.
  *
- * When launched without an existing .grove/ directory, shows the welcome
- * screen for preset selection, runs initialization with progress feedback,
- * and then transitions to the full boardroom App.
+ * Always shows the setup screen first so the user can choose what to do:
+ * - Resume an existing grove (if .grove/ exists)
+ * - Create a new grove (select preset)
+ * - Connect to a remote Nexus
  *
- * When .grove/ already exists, renders the boardroom App directly.
+ * After the user picks an action, services start inside the TUI with
+ * progress feedback, then transitions to the full boardroom App.
  */
 
 import { useKeyboard, useRenderer } from "@opentui/react";
@@ -17,8 +19,8 @@ import { theme } from "./theme.js";
 // Types
 // ---------------------------------------------------------------------------
 
-/** The TUI mode state machine: welcome -> initializing -> boardroom. */
-type TuiMode = "welcome" | "initializing" | "boardroom";
+/** The TUI mode state machine: setup -> initializing/starting -> boardroom. */
+type TuiMode = "setup" | "initializing" | "starting" | "boardroom";
 
 /** A preset entry for the welcome screen. */
 export interface TuiPresetEntry {
@@ -30,14 +32,18 @@ export interface TuiPresetEntry {
 
 /** Props for the TuiApp wrapper component. */
 export interface TuiAppProps {
-  /** If true, start in welcome mode (no .grove/ found). */
-  readonly welcomeMode: boolean;
-  /** Props for the boardroom App (undefined in welcome mode until init completes). */
-  readonly appProps?: AppProps | undefined;
+  /** Whether a .grove/ directory exists. */
+  readonly groveExists: boolean;
+  /** Info about the existing grove (name + preset), if .grove/ exists. */
+  readonly groveInfo?: { name: string; preset: string } | undefined;
   /** Presets for the welcome screen. */
   readonly presets?: readonly TuiPresetEntry[] | undefined;
   /** Callback to run init for a selected preset + grove name. Returns AppProps on success. */
   readonly onInit?: ((presetName: string, groveName: string) => Promise<AppProps>) | undefined;
+  /** Callback to start services for an existing grove. Accepts a progress reporter. */
+  readonly onStart?: ((onProgress?: (step: string) => void) => Promise<AppProps>) | undefined;
+  /** Callback to connect to a remote Nexus URL. Returns AppProps on success. */
+  readonly onConnect?: ((nexusUrl: string) => Promise<AppProps>) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -57,27 +63,29 @@ const INIT_STEPS = [
 // Component
 // ---------------------------------------------------------------------------
 
-/** TUI application root that manages the welcome -> boardroom lifecycle. */
+/** TUI application root that manages the setup -> boardroom lifecycle. */
 export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(function TuiApp(
   props: TuiAppProps,
 ): React.ReactNode {
-  const { welcomeMode, appProps: initialAppProps, presets, onInit } = props;
+  const { groveExists, groveInfo, presets, onInit, onStart, onConnect } = props;
   const renderer = useRenderer();
 
-  const [mode, setMode] = useState<TuiMode>(welcomeMode ? "welcome" : "boardroom");
-  const [appProps, setAppProps] = useState<AppProps | undefined>(initialAppProps);
+  const [mode, setMode] = useState<TuiMode>("setup");
+  const [appProps, setAppProps] = useState<AppProps | undefined>();
   const [initPreset, setInitPreset] = useState<string>("");
   const [initSteps, setInitSteps] = useState<readonly { label: string; done: boolean }[]>(
     INIT_STEPS.map((label) => ({ label, done: false })),
   );
   const [initError, setInitError] = useState<string | undefined>();
+  const [startingSteps, setStartingSteps] = useState<string[]>([]);
+  const [startingDone, setStartingDone] = useState(false);
 
-  /** Handle quit from the welcome screen. */
+  /** Handle quit from the setup screen. */
   const handleQuit = useCallback(() => {
     renderer.destroy();
   }, [renderer]);
 
-  /** Handle preset + name selection — kicks off initialization. */
+  /** Handle "New grove" — preset + name selected, kicks off initialization. */
   const handleSelect = useCallback(
     (presetName: string, groveName: string) => {
       if (!onInit) return;
@@ -116,11 +124,67 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
     [onInit],
   );
 
-  // Keyboard handler for init error state (q to quit)
+  /** Handle "Resume" — start services for existing grove. */
+  const handleResume = useCallback(() => {
+    if (!onStart) return;
+
+    setMode("starting");
+    setInitError(undefined);
+    setStartingDone(false);
+    setStartingSteps(["Starting services..."]);
+
+    void (async () => {
+      try {
+        const result = await onStart((step) => {
+          setStartingSteps((prev) => [...prev, step]);
+        });
+
+        // Mark all steps complete, brief pause to show completion
+        setStartingDone(true);
+        await new Promise<void>((resolve) => setTimeout(resolve, 300));
+
+        setAppProps(result);
+        setMode("boardroom");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setInitError(message);
+      }
+    })();
+  }, [onStart]);
+
+  /** Handle "Connect to remote Nexus" — connect without starting local services. */
+  const handleConnect = useCallback(
+    (nexusUrl: string) => {
+      if (!onConnect) return;
+
+      setMode("starting");
+      setInitError(undefined);
+      setStartingDone(false);
+      setStartingSteps([`Connecting to ${nexusUrl}...`]);
+
+      void (async () => {
+        try {
+          const result = await onConnect(nexusUrl);
+
+          setStartingDone(true);
+          await new Promise<void>((resolve) => setTimeout(resolve, 300));
+
+          setAppProps(result);
+          setMode("boardroom");
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          setInitError(message);
+        }
+      })();
+    },
+    [onConnect],
+  );
+
+  // Keyboard handler for error states (q to quit)
   useKeyboard(
     useCallback(
       (key) => {
-        if (mode === "initializing" && initError && key.name === "q") {
+        if ((mode === "initializing" || mode === "starting") && initError && key.name === "q") {
           handleQuit();
         }
       },
@@ -134,7 +198,6 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
 
   if (mode === "boardroom" && appProps) {
     // Lazy import App to avoid circular deps — rendered via React.createElement
-    // The App component is loaded by the caller and passed via appProps
     const { App } = require("./app.js") as typeof import("./app.js");
     return React.createElement(App, appProps);
   }
@@ -149,12 +212,35 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
     });
   }
 
-  // Welcome mode
+  if (mode === "starting") {
+    const { InitProgressView } =
+      require("./views/init-progress.js") as typeof import("./views/init-progress.js");
+    const steps = startingSteps.map((label, i) => ({
+      label,
+      done: startingDone || i < startingSteps.length - 1,
+    }));
+    // If there's an error, mark the last step as not done for visual distinction
+    if (initError && steps.length > 0) {
+      const last = steps[steps.length - 1];
+      if (last) steps[steps.length - 1] = { ...last, done: false };
+    }
+    return React.createElement(InitProgressView, {
+      presetName: groveInfo?.name ?? "services",
+      steps,
+      error: initError,
+    });
+  }
+
+  // Setup mode — always shown first
   if (presets && presets.length > 0) {
     const { WelcomeScreen } = require("./views/welcome.js") as typeof import("./views/welcome.js");
     return React.createElement(WelcomeScreen, {
       presets,
+      groveExists,
+      groveInfo,
       onSelect: handleSelect,
+      onResume: handleResume,
+      onConnect: handleConnect,
       onQuit: handleQuit,
     });
   }

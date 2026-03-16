@@ -31,19 +31,29 @@ Why set agent identity:
 - TUI, frontier output, and thread views become much easier to read
 - **Not needed for `grove init`** — only matters at `contribute`/`claim` time
 
-## 2. Create A Grove
+## 2. Start Grove
 
-### Option A: Quick start with a preset (recommended)
+```bash
+grove up
+```
+
+If no `.grove/` directory exists, the TUI opens a **welcome screen** where you
+pick a preset, name your grove, and start — no separate `grove init` step
+needed. If already initialized, `grove up` starts services and the TUI directly.
+
+Use `--headless` for CI environments or `--no-tui` for server-only mode.
+
+### Alternative: initialize from the CLI
+
+If you prefer initializing from the command line:
 
 ```bash
 grove init "Latency hunt" --preset review-loop
+grove up
 ```
 
-This creates the full `.grove/` directory, a `GROVE.md` contract with
-coder + reviewer topology, `grove.json` configuration, and demo seed
-contributions.
-
-Available presets: `review-loop`, `exploration`, `swarm-ops`, `research-loop`.
+Available presets: `review-loop`, `exploration`, `swarm-ops`, `research-loop`,
+`pr-review`, `federated-swarm`.
 
 For Nexus-backed presets, supply the URL:
 
@@ -51,7 +61,7 @@ For Nexus-backed presets, supply the URL:
 grove init "Latency hunt" --preset swarm-ops --nexus-url http://localhost:2026
 ```
 
-### Option B: Manual configuration
+For fully manual configuration:
 
 ```bash
 grove init "Latency hunt" \
@@ -61,7 +71,7 @@ grove init "Latency hunt" \
   --metric throughput:maximize
 ```
 
-Both options create:
+All init paths create:
 
 - `.grove/grove.db` for local state
 - `.grove/cas/` for content-addressed artifacts
@@ -72,21 +82,7 @@ Both options create:
 If you already have a directory of seed files you want to preserve as the first
 contribution, add `--seed <path>` one or more times during `init`.
 
-## 2a. Start Everything With One Command
-
-```bash
-grove up
-```
-
-`grove up` reads `.grove/grove.json`, starts the HTTP server and MCP server
-(if configured), then opens the TUI as the foreground process. Use `--headless`
-for CI environments or `--no-tui` for server-only mode.
-
-To stop all services:
-
-```bash
-grove down
-```
+Stop everything with `grove down` or `Ctrl+C` in the TUI.
 
 ## 3. Publish Your First Contributions
 

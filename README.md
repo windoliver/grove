@@ -133,22 +133,20 @@ bun run build
 # Link the CLI so "grove" is on your PATH
 bun link
 
-# Initialize with a preset and start everything
-grove init "Latency hunt" --preset review-loop
+# Launch Grove
 grove up
 ```
 
-That's it. `grove up` reads `.grove/grove.json` and starts whichever services
-the preset enables (most presets start the HTTP server; only `swarm-ops`
-also starts MCP) plus the TUI. Use `--headless` for CI or `--no-tui` for
-server-only mode.
+That's it. If no `.grove/` directory exists, the TUI opens a welcome screen
+where you pick a preset, name your grove, and start -- no separate `grove init`
+needed. If already initialized, `grove up` starts services and the TUI directly.
+
+Use `--headless` for CI or `--no-tui` for server-only mode.
 
 ```bash
-# Or go manual
-grove init "Latency hunt" --metric latency_ms:minimize
-grove contribute --summary "Baseline measurements" --artifacts README.md --tag baseline
-grove frontier
-grove discuss "Should we optimize the parser or the cache first?"
+# Or initialize from the CLI if you prefer
+grove init "Latency hunt" --preset review-loop
+grove up
 ```
 
 Stop everything:
@@ -370,6 +368,8 @@ bun run src/mcp/serve-http.ts
 | Ask-user | `ask_user` |
 
 ## TUI Operator Dashboard
+
+`grove up` launches the TUI automatically. For standalone TUI use:
 
 ```bash
 grove tui                                 # Local mode

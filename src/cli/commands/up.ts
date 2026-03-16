@@ -1,11 +1,10 @@
 /**
  * `grove up` command — start all grove services and TUI.
  *
- * Reads .grove/grove.json, starts services via the shared service lifecycle,
- * then launches the TUI as the foreground process.
+ * Non-headless: always delegates to the TUI, which shows the setup screen
+ * first and handles service startup internally with progress feedback.
  *
- * When no .grove/ exists, falls through to the TUI welcome flow which
- * handles init + service startup internally.
+ * Headless: starts services directly with stderr output (for CI/scripting).
  */
 
 import { existsSync } from "node:fs";
@@ -79,7 +78,15 @@ export async function handleUp(args: readonly string[], groveOverride?: string):
   const opts = parseUpArgs(args);
   const effectiveGrove = opts.groveOverride ?? groveOverride;
 
-  // Resolve grove directory — may throw if .grove/ doesn't exist
+  // Non-headless: always delegate to TUI — it shows the setup screen first,
+  // then handles service startup internally with progress feedback.
+  if (!opts.headless && !opts.noTui) {
+    const { handleTui } = await import("../../tui/main.js");
+    await handleTui([], effectiveGrove, { build: opts.build, nexusSource: opts.nexusSource });
+    return;
+  }
+
+  // Headless mode: resolve grove directory, start services, wait
   let groveDir: string;
   try {
     const resolved = resolveGroveDir(effectiveGrove);
@@ -87,18 +94,11 @@ export async function handleUp(args: readonly string[], groveOverride?: string):
     const configPath = join(groveDir, "grove.json");
     if (!existsSync(configPath)) throw new Error("No grove.json");
   } catch {
-    // No .grove/ or no grove.json — launch TUI (handles init internally)
-    if (!opts.headless && !opts.noTui) {
-      const { handleTui } = await import("../../tui/main.js");
-      await handleTui([], effectiveGrove);
-      return;
-    }
     throw new Error(
       "No grove.json found. Run 'grove init' first, or 'grove init --preset <name>' for a quick start.",
     );
   }
 
-  // Start services via shared lifecycle
   const { startServices, stopServices } = await import("../../shared/service-lifecycle.js");
   const services = await startServices({
     groveDir,
@@ -106,7 +106,6 @@ export async function handleUp(args: readonly string[], groveOverride?: string):
     nexusSource: opts.nexusSource,
   });
 
-  // Register signal handlers
   const shutdown = async () => {
     process.stderr.write("\nShutting down...\n");
     await stopServices(services);
@@ -130,16 +129,9 @@ export async function handleUp(args: readonly string[], groveOverride?: string):
       console.log(`Started ${services.children.length} service(s):\n${serviceLines.join("\n")}`);
     }
 
-    if (opts.headless || opts.noTui) {
-      console.log("Running in headless mode. Use 'grove down' to stop.");
-      if (services.children.length > 0) {
-        await Promise.race(services.children.map((c) => c.proc.exited));
-        await shutdown();
-      }
-    } else {
-      // Launch TUI as foreground — services already running, skip double-start
-      const { handleTui } = await import("../../tui/main.js");
-      await handleTui([], effectiveGrove, true);
+    console.log("Running in headless mode. Use 'grove down' to stop.");
+    if (services.children.length > 0) {
+      await Promise.race(services.children.map((c) => c.proc.exited));
       await shutdown();
     }
   } catch (err) {
