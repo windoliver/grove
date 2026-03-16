@@ -26,6 +26,8 @@ export interface ServiceStartOptions {
   readonly build?: boolean | undefined;
   /** Path to local nexus source checkout. */
   readonly nexusSource?: string | undefined;
+  /** Optional progress callback — captures status messages for TUI display instead of stderr. */
+  readonly onProgress?: ((step: string) => void) | undefined;
 }
 
 /** Running service state — returned by startServices, passed to stopServices. */
@@ -72,6 +74,7 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
       const nexusInfo = await ensureNexusRunning(projectRoot, config, {
         build: options.build ?? false,
         nexusSource: options.nexusSource,
+        onProgress: options.onProgress,
       });
       nexusManaged = true;
       process.env.GROVE_NEXUS_URL = nexusInfo.url;
@@ -87,10 +90,12 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
   const spawnPromises: Promise<ChildProcess | null>[] = [];
 
   if (config.services?.server) {
+    options.onProgress?.("Starting HTTP server...");
     spawnPromises.push(spawnService("server", "src/server/serve.ts", groveDir));
   }
 
   if (config.services?.mcp) {
+    options.onProgress?.("Starting MCP server...");
     spawnPromises.push(spawnService("mcp", "src/mcp/serve-http.ts", groveDir));
   }
 

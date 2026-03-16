@@ -128,6 +128,8 @@ export interface NexusUpOptions {
    * build context (Dockerfile + maturin Rust extensions). Implies `--build`.
    */
   readonly nexusSource?: string | undefined;
+  /** Optional progress callback — replaces stderr writes when provided (e.g. TUI context). */
+  readonly onProgress?: ((step: string) => void) | undefined;
 }
 
 /**
@@ -180,7 +182,7 @@ export async function nexusUp(projectRoot: string, opts: NexusUpOptions = {}): P
     const composeFile = join(sourceDir, "nexus-stack.yml");
     if (!existsSync(composeFile)) {
       throw new Error(
-        `nexus-stack.yml not found in ${sourceDir}. ` + "Is this a nexus source checkout?",
+        `nexus-stack.yml not found in ${sourceDir}. Is this a nexus source checkout?`,
       );
     }
   }
@@ -390,6 +392,8 @@ export async function ensureNexusRunning(
   config: GroveConfig,
   upOpts?: NexusUpOptions,
 ): Promise<NexusRunningInfo> {
+  const report = upOpts?.onProgress ?? ((msg: string) => process.stderr.write(`${msg}\n`));
+
   const hasNexus = await checkNexusCli();
   if (!hasNexus) {
     throw new Error(
@@ -403,7 +407,7 @@ export async function ensureNexusRunning(
   if (!existsSync(nexusYaml)) {
     const preset = inferNexusPreset(config);
     const channel = config.nexusChannel ?? DEFAULT_NEXUS_CHANNEL;
-    process.stderr.write(`Initializing Nexus (preset: ${preset}, channel: ${channel})...\n`);
+    report(`Initializing Nexus (preset: ${preset}, channel: ${channel})...`);
     await nexusInit(projectRoot, { preset, channel });
   }
 
@@ -413,22 +417,18 @@ export async function ensureNexusRunning(
     : upOpts?.build
       ? " (--build)"
       : "";
-  process.stderr.write(`Starting Nexus${buildLabel}...\n`);
+  report(`Starting Nexus${buildLabel}...`);
   await nexusUp(projectRoot, upOpts);
 
   // Discover actual URL — nexus.yaml may have been updated with a
   // different port if the default was already in use (nexus#2918).
   const nexusUrl = config.nexusUrl ?? readNexusUrl(projectRoot);
-  process.stderr.write(`Waiting for Nexus at ${nexusUrl}...\n`);
+  report(`Waiting for Nexus at ${nexusUrl}...`);
   await waitForNexusHealth(nexusUrl);
 
   // Read API key (auto-provisioned by nexus init for shared/demo presets)
   const apiKey = readNexusApiKey(projectRoot);
-  if (apiKey) {
-    process.stderr.write(`Nexus is ready. API key: ${apiKey}\n`);
-  } else {
-    process.stderr.write("Nexus is ready (auth: none).\n");
-  }
+  report(apiKey ? "Nexus is ready" : "Nexus is ready (auth: none)");
 
   return { url: nexusUrl, apiKey };
 }

@@ -1,15 +1,20 @@
 /**
- * Welcome screen view — shown when grove is launched without initialization.
+ * Welcome / setup screen view — always shown when the TUI starts.
  *
- * Two-step flow:
- *  1. Preset selection with j/k navigation, ? for detail overlay
- *  2. Name input (character-by-character) then Enter to confirm
+ * Three-step flow:
+ *  1. Action selection: Resume (if .grove/ exists), New grove, Connect to remote Nexus
+ *  2a. If "New grove": Preset selection with j/k navigation, ? for detail overlay
+ *  2b. If "Connect": URL input
+ *  3. If "New grove": Name input (character-by-character) then Enter to confirm
  *
- * After name input, onSelect is called with (presetName, groveName).
+ * After completion, the appropriate callback is invoked:
+ * - onResume() for resuming an existing grove
+ * - onSelect(presetName, groveName) for creating a new grove
+ * - onConnect(nexusUrl) for connecting to a remote Nexus
  */
 
 import { useKeyboard, useRenderer } from "@opentui/react";
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import { theme } from "../theme.js";
 
 /** A preset entry for the welcome screen. */
@@ -23,8 +28,16 @@ export interface PresetEntry {
 /** Props for the WelcomeScreen component. */
 export interface WelcomeProps {
   readonly presets: readonly PresetEntry[];
-  /** Called with (presetName, groveName) after user completes both steps. */
+  /** Whether a .grove/ directory exists. */
+  readonly groveExists: boolean;
+  /** Info about the existing grove (name + preset). */
+  readonly groveInfo?: { name: string; preset: string } | undefined;
+  /** Called with (presetName, groveName) after user completes the "New grove" flow. */
   readonly onSelect: (presetName: string, groveName: string) => void;
+  /** Called when user picks "Resume" to start the existing grove. */
+  readonly onResume: () => void;
+  /** Called with a Nexus URL when user completes the "Connect" flow. */
+  readonly onConnect: (nexusUrl: string) => void;
   readonly onQuit: () => void;
 }
 
@@ -38,17 +51,46 @@ const GLOSSARY: readonly { term: string; definition: string }[] = [
   { term: "Nexus", definition: "Shared backend for multi-agent coordination" },
 ];
 
-type WelcomeStep = "preset" | "name";
+/** Action item for the setup menu. */
+interface ActionItem {
+  readonly id: "resume" | "new" | "connect";
+  readonly label: string;
+}
 
-/** Welcome screen shown when no .grove/ directory exists. */
+type WelcomeStep = "action" | "preset" | "name" | "connect";
+
+/** Welcome screen shown as the first thing the user sees. */
 export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.memo(
-  function WelcomeScreen({ presets, onSelect, onQuit }: WelcomeProps): React.ReactNode {
+  function WelcomeScreen({
+    presets,
+    groveExists,
+    groveInfo,
+    onSelect,
+    onResume,
+    onConnect,
+    onQuit,
+  }: WelcomeProps): React.ReactNode {
     const [cursor, setCursor] = useState(0);
     const [showDetail, setShowDetail] = useState(false);
-    const [step, setStep] = useState<WelcomeStep>("preset");
+    const [step, setStep] = useState<WelcomeStep>("action");
     const [selectedPreset, setSelectedPreset] = useState("");
     const [nameBuffer, setNameBuffer] = useState("");
+    const [urlBuffer, setUrlBuffer] = useState("http://localhost:2026");
     void useRenderer();
+
+    // Build action items based on whether .grove/ exists
+    const actions = useMemo<readonly ActionItem[]>(() => {
+      const items: ActionItem[] = [];
+      if (groveExists && groveInfo) {
+        items.push({
+          id: "resume",
+          label: `Resume "${groveInfo.name}" (${groveInfo.preset})`,
+        });
+      }
+      items.push({ id: "new", label: "New grove (select preset)" });
+      items.push({ id: "connect", label: "Connect to remote Nexus" });
+      return items;
+    }, [groveExists, groveInfo]);
 
     useKeyboard(
       useCallback(
@@ -56,8 +98,33 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
           const input = key.name;
           const isCtrl = key.ctrl;
 
-          if (input === "q" && step === "preset" && !showDetail) {
+          if (input === "q" && step === "action" && !showDetail) {
             onQuit();
+            return;
+          }
+
+          // -- URL input step (Connect to remote Nexus) --
+          if (step === "connect") {
+            if (input === "escape") {
+              setStep("action");
+              setCursor(actions.findIndex((a) => a.id === "connect"));
+              return;
+            }
+            if (input === "return") {
+              const url = urlBuffer.trim();
+              if (url.length > 0) {
+                onConnect(url);
+              }
+              return;
+            }
+            if (input === "backspace") {
+              setUrlBuffer((b) => b.slice(0, -1));
+              return;
+            }
+            if (input && input.length === 1 && !isCtrl) {
+              setUrlBuffer((b) => b + input);
+              return;
+            }
             return;
           }
 
@@ -86,37 +153,117 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
           }
 
           // -- Preset selection step --
-          if (input === "j" || input === "down") {
-            setCursor((c) => Math.min(c + 1, presets.length - 1));
-            return;
-          }
-          if (input === "k" || input === "up") {
-            setCursor((c) => Math.max(c - 1, 0));
-            return;
-          }
-          if (input === "return") {
-            const selected = presets[cursor];
-            if (selected) {
-              setSelectedPreset(selected.name);
-              // Default name from current directory
-              const defaultName = process.cwd().split("/").pop() ?? "my-grove";
-              setNameBuffer(defaultName);
-              setStep("name");
+          if (step === "preset") {
+            if (input === "escape") {
+              setStep("action");
+              setCursor(actions.findIndex((a) => a.id === "new"));
+              return;
+            }
+            if (input === "j" || input === "down") {
+              setCursor((c) => Math.min(c + 1, presets.length - 1));
+              return;
+            }
+            if (input === "k" || input === "up") {
+              setCursor((c) => Math.max(c - 1, 0));
+              return;
+            }
+            if (input === "return") {
+              const selected = presets[cursor];
+              if (selected) {
+                setSelectedPreset(selected.name);
+                const defaultName = process.cwd().split("/").pop() ?? "my-grove";
+                setNameBuffer(defaultName);
+                setStep("name");
+              }
+              return;
+            }
+            if (input === "?" || (key.shift && input === "/")) {
+              setShowDetail((v) => !v);
+              return;
+            }
+            if (input === "escape" && showDetail) {
+              setShowDetail(false);
+              return;
             }
             return;
           }
-          if (input === "?" || (key.shift && input === "/")) {
-            setShowDetail((v) => !v);
-            return;
-          }
-          if (input === "escape" && showDetail) {
-            setShowDetail(false);
-            return;
+
+          // -- Action selection step --
+          if (step === "action") {
+            if (input === "j" || input === "down") {
+              setCursor((c) => Math.min(c + 1, actions.length - 1));
+              return;
+            }
+            if (input === "k" || input === "up") {
+              setCursor((c) => Math.max(c - 1, 0));
+              return;
+            }
+            if (input === "return") {
+              const action = actions[cursor];
+              if (!action) return;
+
+              if (action.id === "resume") {
+                onResume();
+                return;
+              }
+              if (action.id === "new") {
+                setCursor(0);
+                setStep("preset");
+                return;
+              }
+              if (action.id === "connect") {
+                setUrlBuffer("http://localhost:2026");
+                setStep("connect");
+                return;
+              }
+            }
           }
         },
-        [presets, cursor, onSelect, onQuit, step, selectedPreset, nameBuffer, showDetail],
+        [
+          presets,
+          actions,
+          cursor,
+          onSelect,
+          onResume,
+          onConnect,
+          onQuit,
+          step,
+          selectedPreset,
+          nameBuffer,
+          urlBuffer,
+          showDetail,
+        ],
       ),
     );
+
+    // -- Connect URL input view --
+    if (step === "connect") {
+      return (
+        <box
+          flexDirection="column"
+          width="100%"
+          height="100%"
+          borderStyle="round"
+          borderColor={theme.focus}
+        >
+          <box flexDirection="column" paddingX={2} paddingTop={1}>
+            <text color={theme.focus} bold>
+              Connect to remote Nexus
+            </text>
+            <text color={theme.muted}>{""}</text>
+            <box>
+              <text color={theme.text}>Nexus URL: </text>
+              <text color={theme.focus} bold>
+                {urlBuffer}
+              </text>
+              <text color={theme.focus}>_</text>
+            </box>
+            <text color={theme.muted}>{""}</text>
+            <text color={theme.dimmed}>Enter:connect Esc:back Backspace:delete</text>
+          </box>
+        </box>
+      );
+    }
 
     // -- Name input view --
     if (step === "name") {
@@ -149,6 +296,89 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
     }
 
     // -- Preset selection view --
+    if (step === "preset") {
+      return (
+        <box
+          flexDirection="column"
+          width="100%"
+          height="100%"
+          borderStyle="round"
+          borderColor={theme.focus}
+        >
+          {/* Banner */}
+          <box flexDirection="column" paddingX={2} paddingTop={1}>
+            <text color={theme.focus} bold>
+              Select a preset
+            </text>
+            <text color={theme.muted}>{""}</text>
+          </box>
+
+          {/* Preset list */}
+          <box
+            flexDirection="column"
+            marginX={2}
+            borderStyle="single"
+            borderColor={theme.border}
+            paddingX={1}
+          >
+            {presets.map((preset, i) => {
+              const selected = i === cursor;
+              const prefix = selected ? "> " : "  ";
+              return (
+                <text
+                  key={preset.name}
+                  color={selected ? theme.focus : theme.text}
+                  backgroundColor={selected ? theme.selectedBg : undefined}
+                  bold={selected}
+                >
+                  {prefix}
+                  {preset.name.padEnd(20)}
+                  <text color={theme.muted}>{preset.description}</text>
+                </text>
+              );
+            })}
+          </box>
+
+          {/* Detail overlay for selected preset */}
+          {showDetail && presets[cursor] ? (
+            <box
+              flexDirection="column"
+              marginX={2}
+              marginTop={1}
+              borderStyle="single"
+              borderColor={theme.info}
+              paddingX={1}
+            >
+              <text color={theme.info} bold>
+                Preset: {presets[cursor]?.name ?? ""}
+              </text>
+              <text color={theme.text}>{presets[cursor]?.description ?? ""}</text>
+              {presets[cursor]?.details ? (
+                <box flexDirection="column" marginTop={1}>
+                  {presets[cursor]?.details?.split("\n").map((line, i) => (
+                    <text
+                      // biome-ignore lint/suspicious/noArrayIndexKey: detail lines have no stable identity
+                      key={i}
+                      color={theme.muted}
+                    >
+                      {line}
+                    </text>
+                  ))}
+                </box>
+              ) : null}
+              <text color={theme.dimmed}>Press ? to close details</text>
+            </box>
+          ) : null}
+
+          {/* Keyboard hints */}
+          <box paddingX={2} marginTop={1}>
+            <text color={theme.dimmed}>j/k:navigate Enter:select ?:details Esc:back</text>
+          </box>
+        </box>
+      );
+    }
+
+    // -- Action selection view (setup screen) --
     return (
       <box
         flexDirection="column"
@@ -160,74 +390,35 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
         {/* Banner */}
         <box flexDirection="column" paddingX={2} paddingTop={1}>
           <text color={theme.focus} bold>
-            Welcome to Grove
+            Grove
           </text>
           <text color={theme.muted}>{""}</text>
-          <text color={theme.text}>Grove is a multi-agent collaboration workspace.</text>
-          <text color={theme.text}>Agents work together on a shared contribution graph</text>
-          <text color={theme.text}>with human oversight.</text>
         </box>
 
-        {/* Quick Start — Preset list */}
+        {/* Action menu */}
         <box
           flexDirection="column"
           marginX={2}
-          marginTop={1}
           borderStyle="single"
           borderColor={theme.border}
           paddingX={1}
         >
-          <text color={theme.focus} bold>
-            Quick Start
-          </text>
-          {presets.map((preset, i) => {
+          {actions.map((action, i) => {
             const selected = i === cursor;
             const prefix = selected ? "> " : "  ";
             return (
               <text
-                key={preset.name}
+                key={action.id}
                 color={selected ? theme.focus : theme.text}
                 backgroundColor={selected ? theme.selectedBg : undefined}
                 bold={selected}
               >
                 {prefix}
-                {preset.name.padEnd(20)}
-                <text color={theme.muted}>{preset.description}</text>
+                {action.label}
               </text>
             );
           })}
         </box>
-
-        {/* Detail overlay for selected preset */}
-        {showDetail && presets[cursor] ? (
-          <box
-            flexDirection="column"
-            marginX={2}
-            marginTop={1}
-            borderStyle="single"
-            borderColor={theme.info}
-            paddingX={1}
-          >
-            <text color={theme.info} bold>
-              Preset: {presets[cursor]?.name ?? ""}
-            </text>
-            <text color={theme.text}>{presets[cursor]?.description ?? ""}</text>
-            {presets[cursor]?.details ? (
-              <box flexDirection="column" marginTop={1}>
-                {presets[cursor]?.details?.split("\n").map((line, i) => (
-                  <text
-                    // biome-ignore lint/suspicious/noArrayIndexKey: detail lines have no stable identity
-                    key={i}
-                    color={theme.muted}
-                  >
-                    {line}
-                  </text>
-                ))}
-              </box>
-            ) : null}
-            <text color={theme.dimmed}>Press ? to close details</text>
-          </box>
-        ) : null}
 
         {/* Concept glossary */}
         <box
@@ -239,8 +430,12 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
           paddingX={1}
         >
           <text color={theme.focus} bold>
-            What is this?
+            What is Grove?
           </text>
+          <text color={theme.text}>A multi-agent collaboration workspace.</text>
+          <text color={theme.text}>Agents work together on a shared contribution graph</text>
+          <text color={theme.text}>with human oversight.</text>
+          <text color={theme.muted}>{""}</text>
           {GLOSSARY.map((entry) => (
             <text key={entry.term} color={theme.text}>
               {"  "}
@@ -252,7 +447,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
 
         {/* Keyboard hints */}
         <box paddingX={2} marginTop={1}>
-          <text color={theme.dimmed}>j/k:navigate Enter:select ?:details q:quit</text>
+          <text color={theme.dimmed}>[Enter] select [j/k] navigate [q] quit</text>
         </box>
       </box>
     );
