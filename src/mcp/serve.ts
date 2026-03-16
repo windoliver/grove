@@ -12,7 +12,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
@@ -71,6 +71,9 @@ try {
   // not durable — balances and reservations are lost on restart. Bounties still
   // work (persisted in SQLite) but credit enforcement is skipped until a
   // persistent CreditsService (e.g., NexusPay) is configured.
+  // Workspace boundary: the project root containing .grove/
+  const workspaceBoundary = resolve(groveDir, "..");
+
   deps = {
     contributionStore,
     claimStore,
@@ -80,6 +83,7 @@ try {
     workspace,
     contract,
     onContributionWrite: () => frontier.invalidate(),
+    workspaceBoundary,
   };
   close = () => {
     workspace.close();

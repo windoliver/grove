@@ -143,9 +143,9 @@ describe("grove_cas_put", () => {
     expect(result.text).toContain("VALIDATION_ERROR");
   });
 
-  test("returns error for non-existent file path", async () => {
+  test("returns error for non-existent file path within boundary", async () => {
     const result = await callTool(server, "grove_cas_put", {
-      filePath: "/tmp/nonexistent-file-12345.txt",
+      filePath: join(testDeps.tempDir, "nonexistent-file-12345.txt"),
     });
 
     expect(result.isError).toBe(true);
@@ -299,5 +299,104 @@ describe("grove_ingest_git_tree", () => {
     });
 
     expect(result.isError).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Path boundary validation (CRIT-1)
+// ---------------------------------------------------------------------------
+
+describe("grove_cas_put path boundary validation", () => {
+  let testDeps: TestMcpDeps;
+  let server: McpServer;
+
+  beforeEach(async () => {
+    testDeps = await createTestMcpDeps();
+    server = new McpServer({ name: "test", version: "0.0.1" }, { capabilities: { tools: {} } });
+    registerIngestTools(server, testDeps.deps);
+  });
+
+  afterEach(async () => {
+    await testDeps.cleanup();
+  });
+
+  test("rejects filePath outside workspace boundary", async () => {
+    const result = await callTool(server, "grove_cas_put", {
+      filePath: "/etc/passwd",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("Path containment violation");
+  });
+
+  test("accepts filePath within workspace boundary", async () => {
+    const filePath = join(testDeps.tempDir, "safe-file.txt");
+    await writeFile(filePath, "safe content");
+
+    const result = await callTool(server, "grove_cas_put", {
+      filePath,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const data = JSON.parse(result.text);
+    expect(data.hash).toMatch(/^blake3:[a-f0-9]{64}$/);
+  });
+
+  test("rejects path traversal via ../", async () => {
+    const result = await callTool(server, "grove_cas_put", {
+      filePath: `${testDeps.tempDir}/../../../etc/passwd`,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("Path containment violation");
+  });
+});
+
+describe("grove_ingest_git_diff cwd boundary validation", () => {
+  let testDeps: TestMcpDeps;
+  let server: McpServer;
+
+  beforeEach(async () => {
+    testDeps = await createTestMcpDeps();
+    server = new McpServer({ name: "test", version: "0.0.1" }, { capabilities: { tools: {} } });
+    registerIngestTools(server, testDeps.deps);
+  });
+
+  afterEach(async () => {
+    await testDeps.cleanup();
+  });
+
+  test("rejects cwd outside workspace boundary", async () => {
+    const result = await callTool(server, "grove_ingest_git_diff", {
+      cwd: "/tmp/evil",
+      ref: "HEAD",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("Path containment violation");
+  });
+});
+
+describe("grove_ingest_git_tree cwd boundary validation", () => {
+  let testDeps: TestMcpDeps;
+  let server: McpServer;
+
+  beforeEach(async () => {
+    testDeps = await createTestMcpDeps();
+    server = new McpServer({ name: "test", version: "0.0.1" }, { capabilities: { tools: {} } });
+    registerIngestTools(server, testDeps.deps);
+  });
+
+  afterEach(async () => {
+    await testDeps.cleanup();
+  });
+
+  test("rejects cwd outside workspace boundary", async () => {
+    const result = await callTool(server, "grove_ingest_git_tree", {
+      cwd: "/tmp/evil",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("Path containment violation");
   });
 });

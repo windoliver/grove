@@ -6,6 +6,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { MAX_MERGED_FRONTIER_ENTRIES } from "../core/constants.js";
 import type { Frontier, FrontierCalculator, FrontierQuery } from "../core/frontier.js";
 import {
   type FrontierDigestEntry,
@@ -551,6 +552,294 @@ describe("DefaultGossipService", () => {
       const entry = merged.find((e) => e.cid === "blake3:c1");
       expect(entry).toBeDefined();
       expect(entry?.value).toBe(0.95);
+    });
+
+    it("prefers lower value for minimize metrics", async () => {
+      const frontier1: FrontierDigestEntry[] = [
+        { metric: "loss", value: 0.05, cid: "blake3:loss1", direction: "minimize" },
+      ];
+      const frontier2: FrontierDigestEntry[] = [
+        { metric: "loss", value: 0.03, cid: "blake3:loss1", direction: "minimize" },
+      ];
+
+      await service.handleExchange({ ...makeGossipMessage("peer-1"), frontier: frontier1 });
+      await service.handleExchange({ ...makeGossipMessage("peer-2"), frontier: frontier2 });
+
+      const merged = service.mergedFrontier();
+      const entry = merged.find((e) => e.cid === "blake3:loss1");
+      expect(entry).toBeDefined();
+      expect(entry?.value).toBe(0.03);
+    });
+
+    it("prefers higher value for maximize metrics (default behavior)", async () => {
+      const frontier1: FrontierDigestEntry[] = [
+        { metric: "accuracy", value: 0.9, cid: "blake3:acc1", direction: "maximize" },
+      ];
+      const frontier2: FrontierDigestEntry[] = [
+        { metric: "accuracy", value: 0.95, cid: "blake3:acc1", direction: "maximize" },
+      ];
+
+      await service.handleExchange({ ...makeGossipMessage("peer-1"), frontier: frontier1 });
+      await service.handleExchange({ ...makeGossipMessage("peer-2"), frontier: frontier2 });
+
+      const merged = service.mergedFrontier();
+      const entry = merged.find((e) => e.cid === "blake3:acc1");
+      expect(entry).toBeDefined();
+      expect(entry?.value).toBe(0.95);
+    });
+
+    it("backward compatibility: entries without direction default to maximize", async () => {
+      // Entries without direction field should behave like maximize (higher wins)
+      const frontier1: FrontierDigestEntry[] = [{ metric: "score", value: 10, cid: "blake3:s1" }];
+      const frontier2: FrontierDigestEntry[] = [{ metric: "score", value: 20, cid: "blake3:s1" }];
+
+      await service.handleExchange({ ...makeGossipMessage("peer-1"), frontier: frontier1 });
+      await service.handleExchange({ ...makeGossipMessage("peer-2"), frontier: frontier2 });
+
+      const merged = service.mergedFrontier();
+      const entry = merged.find((e) => e.cid === "blake3:s1");
+      expect(entry).toBeDefined();
+      expect(entry?.value).toBe(20);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Direction-aware mergeRemoteFrontier and eviction
+  // -------------------------------------------------------------------------
+
+  describe("direction-aware mergeRemoteFrontier", () => {
+    it("prefers lower value for minimize metrics via handleExchange", async () => {
+      // First exchange sets initial remote frontier
+      const frontier1: FrontierDigestEntry[] = [
+        { metric: "loss", value: 0.05, cid: "blake3:r1", direction: "minimize" },
+      ];
+      await service.handleExchange({ ...makeGossipMessage("peer-1"), frontier: frontier1 });
+
+      // Second exchange with a better (lower) value for the same entry
+      const frontier2: FrontierDigestEntry[] = [
+        { metric: "loss", value: 0.02, cid: "blake3:r1", direction: "minimize" },
+      ];
+      await service.handleExchange({ ...makeGossipMessage("peer-2"), frontier: frontier2 });
+
+      const merged = service.mergedFrontier();
+      const entry = merged.find((e) => e.cid === "blake3:r1" && e.metric === "loss");
+      expect(entry).toBeDefined();
+      expect(entry?.value).toBe(0.02);
+    });
+
+    it("does not replace minimize entry with worse (higher) value", async () => {
+      const frontier1: FrontierDigestEntry[] = [
+        { metric: "loss", value: 0.02, cid: "blake3:r2", direction: "minimize" },
+      ];
+      await service.handleExchange({ ...makeGossipMessage("peer-1"), frontier: frontier1 });
+
+      // Worse (higher) value for minimize metric
+      const frontier2: FrontierDigestEntry[] = [
+        { metric: "loss", value: 0.1, cid: "blake3:r2", direction: "minimize" },
+      ];
+      await service.handleExchange({ ...makeGossipMessage("peer-2"), frontier: frontier2 });
+
+      const merged = service.mergedFrontier();
+      const entry = merged.find((e) => e.cid === "blake3:r2" && e.metric === "loss");
+      expect(entry).toBeDefined();
+      expect(entry?.value).toBe(0.02);
+    });
+
+    it("eviction keeps best minimize entries (lowest values survive)", async () => {
+      // Create more entries than MAX_MERGED_FRONTIER_ENTRIES so eviction triggers
+      const entries: FrontierDigestEntry[] = [];
+      for (let i = 0; i < MAX_MERGED_FRONTIER_ENTRIES + 50; i++) {
+        entries.push({
+          metric: "loss",
+          // Lower values are better for minimize; use i as value so 0 is best
+          value: i * 0.01,
+          cid: `blake3:evict-${i}`,
+          direction: "minimize",
+        });
+      }
+
+      await service.handleExchange({ ...makeGossipMessage("peer-evict"), frontier: entries });
+
+      const merged = service.mergedFrontier();
+      // Should have been capped to MAX_MERGED_FRONTIER_ENTRIES
+      expect(merged.length).toBeLessThanOrEqual(MAX_MERGED_FRONTIER_ENTRIES);
+
+      // The best (lowest) minimize entries should survive eviction.
+      // Entry with value 0 (i=0) should be present.
+      const bestEntry = merged.find((e) => e.cid === "blake3:evict-0");
+      expect(bestEntry).toBeDefined();
+      expect(bestEntry?.value).toBe(0);
+
+      // The worst (highest value) entries should be evicted.
+      // The last entry should NOT be present.
+      const worstEntry = merged.find(
+        (e) => e.cid === `blake3:evict-${MAX_MERGED_FRONTIER_ENTRIES + 49}`,
+      );
+      expect(worstEntry).toBeUndefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // computeDigest direction propagation
+  // -------------------------------------------------------------------------
+
+  describe("computeDigest direction propagation", () => {
+    it("includes direction from frontier contribution scores", async () => {
+      frontierCalc.frontier = {
+        byMetric: {
+          loss: [
+            {
+              cid: "blake3:dir1",
+              summary: "low loss",
+              value: 0.03,
+              contribution: {
+                cid: "blake3:dir1",
+                manifestVersion: 1,
+                summary: "low loss",
+                kind: "work",
+                mode: "evaluation",
+                artifacts: {},
+                tags: [],
+                agent: { agentId: "a1" },
+                relations: [],
+                createdAt: new Date().toISOString(),
+                scores: {
+                  loss: { value: 0.03, direction: "minimize" },
+                },
+              },
+            },
+          ],
+          accuracy: [
+            {
+              cid: "blake3:dir2",
+              summary: "high acc",
+              value: 0.99,
+              contribution: {
+                cid: "blake3:dir2",
+                manifestVersion: 1,
+                summary: "high acc",
+                kind: "work",
+                mode: "evaluation",
+                artifacts: {},
+                tags: [],
+                agent: { agentId: "a1" },
+                relations: [],
+                createdAt: new Date().toISOString(),
+                scores: {
+                  accuracy: { value: 0.99, direction: "maximize" },
+                },
+              },
+            },
+          ],
+        },
+        byAdoption: [],
+        byRecency: [],
+        byReviewScore: [],
+        byReproduction: [],
+      };
+
+      const msg = await service.currentMessage();
+
+      const lossEntry = msg.frontier.find((e) => e.metric === "loss");
+      expect(lossEntry).toBeDefined();
+      expect(lossEntry?.direction).toBe("minimize");
+
+      const accEntry = msg.frontier.find((e) => e.metric === "accuracy");
+      expect(accEntry).toBeDefined();
+      expect(accEntry?.direction).toBe("maximize");
+    });
+
+    it("defaults direction to maximize when contribution has no scores", async () => {
+      frontierCalc.frontier = {
+        byMetric: {
+          quality: [
+            {
+              cid: "blake3:nodir",
+              summary: "no direction",
+              value: 0.8,
+              // contribution without scores — direction should default to maximize
+              contribution: {
+                cid: "blake3:nodir",
+                manifestVersion: 1,
+                summary: "no direction",
+                kind: "work",
+                mode: "evaluation",
+                artifacts: {},
+                tags: [],
+                agent: { agentId: "a1" },
+                relations: [],
+                createdAt: new Date().toISOString(),
+              },
+            },
+          ],
+        },
+        byAdoption: [],
+        byRecency: [],
+        byReviewScore: [],
+        byReproduction: [],
+      };
+
+      const msg = await service.currentMessage();
+
+      const entry = msg.frontier.find((e) => e.metric === "quality");
+      expect(entry).toBeDefined();
+      expect(entry?.direction).toBe("maximize");
+    });
+
+    it("synthetic dimensions always have direction maximize", async () => {
+      frontierCalc.frontier = {
+        byMetric: {},
+        byAdoption: [
+          {
+            cid: "blake3:adopt1",
+            summary: "adopted",
+            value: 5,
+            contribution: {
+              cid: "blake3:adopt1",
+              manifestVersion: 1,
+              summary: "adopted",
+              kind: "work",
+              mode: "evaluation",
+              artifacts: {},
+              tags: [],
+              agent: { agentId: "a1" },
+              relations: [],
+              createdAt: new Date().toISOString(),
+            },
+          },
+        ],
+        byRecency: [
+          {
+            cid: "blake3:recent1",
+            summary: "recent",
+            value: Date.now(),
+            contribution: {
+              cid: "blake3:recent1",
+              manifestVersion: 1,
+              summary: "recent",
+              kind: "work",
+              mode: "evaluation",
+              artifacts: {},
+              tags: [],
+              agent: { agentId: "a1" },
+              relations: [],
+              createdAt: new Date().toISOString(),
+            },
+          },
+        ],
+        byReviewScore: [],
+        byReproduction: [],
+      };
+
+      const msg = await service.currentMessage();
+
+      const adoptionEntry = msg.frontier.find((e) => e.metric === "_adoption");
+      expect(adoptionEntry).toBeDefined();
+      expect(adoptionEntry?.direction).toBe("maximize");
+
+      const recencyEntry = msg.frontier.find((e) => e.metric === "_recency");
+      expect(recencyEntry).toBeDefined();
+      expect(recencyEntry?.direction).toBe("maximize");
     });
   });
 

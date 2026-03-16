@@ -23,4 +23,10 @@ export interface McpDeps extends ServerDeps {
   readonly onContributionWrite?: (() => void) | undefined;
   readonly bountyStore?: BountyStore;
   readonly creditsService?: CreditsService;
+  /**
+   * Workspace boundary root directory. All file-system access from MCP tools
+   * (filePath args, git cwd, etc.) must resolve within this directory.
+   * Typically the project root containing the .grove/ directory.
+   */
+  readonly workspaceBoundary: string;
 }

@@ -1208,6 +1208,129 @@ describe("EnforcingClaimStore", () => {
       }
     });
   });
+
+  describe("claimOrRenew enforcement", () => {
+    test("claimOrRenew enforces concurrency limits for new claims", async () => {
+      const { dir, db, claimStore } = await setupStores();
+      try {
+        const contract = makeContract({
+          concurrency: { maxActiveClaims: 1 },
+        });
+        const store = new EnforcingClaimStore(claimStore, contract);
+
+        // Create one claim via createClaim to fill the concurrency slot
+        await store.createClaim(
+          makeClaim({ claimId: "c1", targetRef: "t-1", agent: { agentId: "agent-a" } }),
+        );
+
+        // claimOrRenew for a different target by a different agent should fail
+        try {
+          await store.claimOrRenew(
+            makeClaim({ claimId: "c2", targetRef: "t-2", agent: { agentId: "agent-b" } }),
+          );
+          expect.unreachable("should have thrown");
+        } catch (e) {
+          expect(e).toBeInstanceOf(ConcurrencyLimitError);
+          const err = e as ConcurrencyLimitError;
+          expect(err.limitType).toBe("global");
+          expect(err.current).toBe(1);
+          expect(err.limit).toBe(1);
+        }
+      } finally {
+        await cleanup(dir, db);
+      }
+    });
+
+    test("claimOrRenew allows renewal when concurrency limit is reached", async () => {
+      const { dir, db, claimStore } = await setupStores();
+      try {
+        const contract = makeContract({
+          concurrency: { maxActiveClaims: 1 },
+        });
+        const store = new EnforcingClaimStore(claimStore, contract);
+
+        // Create one claim to fill the concurrency slot
+        await store.createClaim(
+          makeClaim({ claimId: "c1", targetRef: "t-1", agent: { agentId: "test-agent" } }),
+        );
+
+        // claimOrRenew for the SAME target by the SAME agent should succeed (renewal)
+        const renewed = await store.claimOrRenew(
+          makeClaim({ claimId: "c2", targetRef: "t-1", agent: { agentId: "test-agent" } }),
+        );
+        expect(renewed.claimId).toBe("c1"); // Should renew existing claim
+
+        // Verify we still have exactly 1 active claim
+        expect(await store.countActiveClaims()).toBe(1);
+      } finally {
+        await cleanup(dir, db);
+      }
+    });
+
+    test("claimOrRenew enforces lease limits", async () => {
+      const { dir, db, claimStore } = await setupStores();
+      try {
+        const contract = makeContract({
+          execution: { maxLeaseSeconds: 60 },
+        });
+        const store = new EnforcingClaimStore(claimStore, contract);
+
+        const now = new Date();
+        const twoHoursLater = new Date(now.getTime() + 2 * 3600 * 1000);
+
+        try {
+          await store.claimOrRenew(
+            makeClaim({
+              claimId: "c1",
+              targetRef: "t-1",
+              createdAt: now.toISOString(),
+              leaseExpiresAt: twoHoursLater.toISOString(),
+            }),
+          );
+          expect.unreachable("should have thrown");
+        } catch (e) {
+          expect(e).toBeInstanceOf(LeaseViolationError);
+          const err = e as LeaseViolationError;
+          expect(err.requestedSeconds).toBeGreaterThan(60);
+          expect(err.maxSeconds).toBe(60);
+        }
+      } finally {
+        await cleanup(dir, db);
+      }
+    });
+
+    test("concurrent claimOrRenew calls are serialized by mutex", async () => {
+      const { dir, db, claimStore } = await setupStores();
+      try {
+        const contract = makeContract({
+          concurrency: { maxActiveClaims: 1 },
+        });
+        const store = new EnforcingClaimStore(claimStore, contract);
+
+        // Fire 3 concurrent claimOrRenew calls for different targets — only 1 should succeed
+        const results = await Promise.allSettled([
+          store.claimOrRenew(
+            makeClaim({ claimId: "c1", targetRef: "t-1", agent: { agentId: "a1" } }),
+          ),
+          store.claimOrRenew(
+            makeClaim({ claimId: "c2", targetRef: "t-2", agent: { agentId: "a2" } }),
+          ),
+          store.claimOrRenew(
+            makeClaim({ claimId: "c3", targetRef: "t-3", agent: { agentId: "a3" } }),
+          ),
+        ]);
+
+        const fulfilled = results.filter((r) => r.status === "fulfilled").length;
+        const rejected = results.filter((r) => r.status === "rejected").length;
+
+        expect(fulfilled).toBe(1);
+        expect(rejected).toBe(2);
+        expect(await store.countActiveClaims()).toBe(1);
+      } finally {
+        await cleanup(dir, db);
+      }
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

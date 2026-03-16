@@ -56,6 +56,7 @@ export async function createTestMcpDeps(): Promise<TestMcpDeps> {
     cas,
     frontier,
     workspace,
+    workspaceBoundary: tempDir,
   };
 
   return {

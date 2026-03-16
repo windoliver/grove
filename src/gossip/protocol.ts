@@ -45,6 +45,29 @@ import {
 import { CyclonPeerSampler } from "./cyclon.js";
 
 // ---------------------------------------------------------------------------
+// Direction-aware helpers
+// ---------------------------------------------------------------------------
+
+/** Compare two values, respecting the metric direction. Default: maximize. */
+function isBetterValue(
+  candidate: number,
+  existing: number,
+  direction: "minimize" | "maximize" | undefined,
+): boolean {
+  return direction === "minimize" ? candidate < existing : candidate > existing;
+}
+
+/**
+ * Returns a normalized "goodness" value for eviction sorting.
+ * Higher return value = "better" entry regardless of direction.
+ * For maximize: higher value is better → return as-is.
+ * For minimize: lower value is better → negate so lower values become higher.
+ */
+function sortValueForEviction(entry: FrontierDigestEntry): number {
+  return entry.direction === "minimize" ? -entry.value : entry.value;
+}
+
+// ---------------------------------------------------------------------------
 // Liveness state
 // ---------------------------------------------------------------------------
 
@@ -263,7 +286,7 @@ export class DefaultGossipService implements GossipService {
     for (const entry of this.remoteFrontier) {
       const key = `${entry.metric}::${entry.cid}`;
       const existing = index.get(key);
-      if (!existing || entry.value > existing.value) {
+      if (!existing || isBetterValue(entry.value, existing.value, entry.direction)) {
         index.set(key, entry);
       }
     }
@@ -379,6 +402,7 @@ export class DefaultGossipService implements GossipService {
     // Collect top entries from each metric dimension
     for (const [metric, metricEntries] of Object.entries(frontier.byMetric)) {
       for (const entry of metricEntries) {
+        const direction = entry.contribution?.scores?.[metric]?.direction;
         entries.push({
           metric,
           value: entry.value,
@@ -387,17 +411,21 @@ export class DefaultGossipService implements GossipService {
             entry.contribution && entry.contribution.tags.length > 0
               ? entry.contribution.tags
               : undefined,
+          direction: direction ?? "maximize",
         });
       }
     }
 
-    // Add top entries from other dimensions with synthetic metric names
+    // Add top entries from other dimensions with synthetic metric names.
+    // Synthetic dimensions are always "maximize" (higher = more adoptions,
+    // more recent, higher review score, more reproductions).
     const addDimension = (dimension: string, items: readonly FrontierEntry[]): void => {
       for (const entry of items.slice(0, this.config.digestLimit)) {
         entries.push({
           metric: `_${dimension}`,
           value: entry.value,
           cid: entry.cid,
+          direction: "maximize",
         });
       }
     };
@@ -426,20 +454,20 @@ export class DefaultGossipService implements GossipService {
       index.set(`${entry.metric}::${entry.cid}`, entry);
     }
 
-    // Merge: keep the best value per (metric, cid)
+    // Merge: keep the best value per (metric, cid), respecting direction
     for (const entry of remote) {
       const key = `${entry.metric}::${entry.cid}`;
       const existing = index.get(key);
-      if (!existing || entry.value > existing.value) {
+      if (!existing || isBetterValue(entry.value, existing.value, entry.direction)) {
         index.set(key, entry);
       }
     }
 
     let merged = [...index.values()];
 
-    // Evict when over limit — keep highest-value entries
+    // Evict when over limit — keep "best" entries (direction-aware)
     if (merged.length > MAX_MERGED_FRONTIER_ENTRIES) {
-      merged.sort((a, b) => b.value - a.value);
+      merged.sort((a, b) => sortValueForEviction(b) - sortValueForEviction(a));
       merged = merged.slice(0, MAX_MERGED_FRONTIER_ENTRIES);
     }
 

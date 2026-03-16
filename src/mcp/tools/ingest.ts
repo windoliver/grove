@@ -13,6 +13,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
+import { assertWithinBoundary } from "../../core/path-safety.js";
 import { ingestGitDiff } from "../../local/ingest/git-diff.js";
 import { ingestGitTree } from "../../local/ingest/git-tree.js";
 import type { McpDeps } from "../deps.js";
@@ -122,6 +123,7 @@ export function registerIngestTools(server: McpServer, deps: McpDeps): void {
         const putOptions = mediaType !== undefined ? { mediaType } : undefined;
 
         if (filePath !== undefined) {
+          await assertWithinBoundary(filePath, deps.workspaceBoundary);
           const hash = await deps.cas.putFile(filePath, putOptions);
           return successResult({ hash });
         }
@@ -152,8 +154,10 @@ export function registerIngestTools(server: McpServer, deps: McpDeps): void {
     },
     async (args) => {
       try {
+        const effectiveCwd = args.cwd ?? deps.workspaceBoundary;
+        await assertWithinBoundary(effectiveCwd, deps.workspaceBoundary);
         const ref = args.ref ?? "HEAD";
-        const artifacts = await ingestGitDiff(deps.cas, ref, args.cwd);
+        const artifacts = await ingestGitDiff(deps.cas, ref, effectiveCwd);
         return successResult({ artifacts });
       } catch (error: unknown) {
         return handleToolError(error);
@@ -173,7 +177,9 @@ export function registerIngestTools(server: McpServer, deps: McpDeps): void {
     },
     async (args) => {
       try {
-        const artifacts = await ingestGitTree(deps.cas, args.cwd);
+        const effectiveCwd = args.cwd ?? deps.workspaceBoundary;
+        await assertWithinBoundary(effectiveCwd, deps.workspaceBoundary);
+        const artifacts = await ingestGitTree(deps.cas, effectiveCwd);
         return successResult({ artifacts });
       } catch (error: unknown) {
         return handleToolError(error);

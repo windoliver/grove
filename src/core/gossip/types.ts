@@ -52,6 +52,8 @@ export interface FrontierDigestEntry {
   readonly value: number;
   readonly cid: string;
   readonly tags?: readonly string[] | undefined;
+  /** Score direction for this metric. When absent, "maximize" is assumed for backward compatibility. */
+  readonly direction?: "minimize" | "maximize" | undefined;
 }
 
 /** Load information for a peer server. */

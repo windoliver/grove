@@ -128,8 +128,13 @@ describe("scenario 2: claim deduplication", () => {
   });
 
   test("Agent C gets conflict error when claiming same target", () => {
-    expect(s2.agentCConflictError).toContain("optimize-parser");
-    expect(s2.agentCConflictError).toContain("agent-implementer");
+    // The enforcing wrapper rejects with a concurrency limit error (per_target: 1)
+    // before the inner store even sees the claim.
+    expect(s2.agentCConflictError).toBeTruthy();
+    expect(
+      s2.agentCConflictError.includes("optimize-parser") ||
+        s2.agentCConflictError.includes("Concurrency limit exceeded"),
+    ).toBe(true);
   });
 
   test("Agent C picks alternative work successfully", () => {

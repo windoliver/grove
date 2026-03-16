@@ -30,10 +30,11 @@ import { ExpiryReason } from "../core/store.js";
 import { toUtcIso } from "../core/time.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import { batchParallel } from "./batch.js";
-import type { ListEntry, ListOptions, NexusClient } from "./client.js";
+import type { NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
 import { NexusConflictError } from "./errors.js";
+import { listAllPages } from "./list-pages.js";
 import { LruCache } from "./lru-cache.js";
 import { withRetry, withSemaphore } from "./retry.js";
 import { Semaphore } from "./semaphore.js";
@@ -318,7 +319,9 @@ export class NexusClaimStore implements ClaimStore {
     }
 
     const dir = activeClaimsDir(this.zoneId);
-    const entries = await this.listAllPages(dir, { recursive: true });
+    const entries = await listAllPages(this.client, this.semaphore, this.config, dir, {
+      recursive: true,
+    });
 
     // Parallel reads for all non-directory entries
     const claimIds = entries
@@ -574,7 +577,7 @@ export class NexusClaimStore implements ClaimStore {
   }
 
   private async readActiveClaimsFromDir(dir: string, now: Date): Promise<Claim[]> {
-    const entries = await this.listAllPages(dir);
+    const entries = await listAllPages(this.client, this.semaphore, this.config, dir);
 
     const nonDirEntries = entries.filter((e) => !e.isDirectory);
     const claimIds = nonDirEntries.map((entry) => decodeSegment(entry.name));
@@ -598,40 +601,12 @@ export class NexusClaimStore implements ClaimStore {
 
   private async listAllClaimsWithEtags(): Promise<ClaimWithEtag[]> {
     const dir = claimsDir(this.zoneId);
-    const entries = await this.listAllPages(dir);
+    const entries = await listAllPages(this.client, this.semaphore, this.config, dir);
 
     const nonDirEntries = entries.filter((e) => !e.isDirectory);
     const claimIds = nonDirEntries.map((entry) => decodeSegment(entry.name.replace(/\.json$/, "")));
     const fetched = await batchParallel(claimIds, (claimId) => this.readClaimWithEtag(claimId));
 
     return fetched.filter((result): result is ClaimWithEtag => result !== undefined);
-  }
-
-  /** Paginate through all pages of a list() call, collecting all entries. */
-  private async listAllPages(
-    dir: string,
-    opts?: Omit<ListOptions, "cursor">,
-  ): Promise<readonly ListEntry[]> {
-    const entries: ListEntry[] = [];
-    let cursor: string | undefined;
-
-    do {
-      const listing = await withRetry(
-        () => withSemaphore(this.semaphore, () => this.client.list(dir, { ...opts, cursor })),
-        "listAllPages",
-        this.config,
-      ).catch(() => ({
-        files: [] as ListEntry[],
-        hasMore: false as boolean,
-        nextCursor: undefined,
-      }));
-
-      for (const entry of listing.files) {
-        entries.push(entry);
-      }
-      cursor = listing.hasMore ? listing.nextCursor : undefined;
-    } while (cursor !== undefined);
-
-    return entries;
   }
 }

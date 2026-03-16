@@ -19,9 +19,10 @@ import type {
 import { OutcomeStatus } from "../core/outcome.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import { batchParallel } from "./batch.js";
-import type { ListEntry, ListOptions, NexusClient } from "./client.js";
+import type { ListEntry, NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
+import { listAllPages } from "./list-pages.js";
 import { withRetry, withSemaphore } from "./retry.js";
 import { Semaphore } from "./semaphore.js";
 import {
@@ -141,11 +142,11 @@ export class NexusOutcomeStore implements OutcomeStore {
     if (query?.status !== undefined) {
       // Use the status index for efficient filtering
       const dir = outcomeStatusIndexDir(this.zoneId, query.status);
-      entries = await this.listAllPages(dir);
+      entries = await listAllPages(this.client, this.semaphore, this.config, dir);
     } else {
       // List all outcomes
       const dir = outcomesDir(this.zoneId);
-      entries = await this.listAllPages(dir);
+      entries = await listAllPages(this.client, this.semaphore, this.config, dir);
     }
 
     // Read records from entries
@@ -183,7 +184,7 @@ export class NexusOutcomeStore implements OutcomeStore {
     // Count entries in each status index dir in parallel
     const promises: Array<Promise<void>> = statuses.map(async (status) => {
       const dir = outcomeStatusIndexDir(this.zoneId, status);
-      const entries = await this.listAllPages(dir);
+      const entries = await listAllPages(this.client, this.semaphore, this.config, dir);
       counts[status] = entries.filter((e) => !e.isDirectory).length;
     });
     await Promise.all(promises);
@@ -207,37 +208,5 @@ export class NexusOutcomeStore implements OutcomeStore {
 
   close(): void {
     // No-op — no local state to release
-  }
-
-  // -----------------------------------------------------------------------
-  // Private helpers
-  // -----------------------------------------------------------------------
-
-  /** Paginate through all pages of a list() call, collecting all entries. */
-  private async listAllPages(
-    dir: string,
-    opts?: Omit<ListOptions, "cursor">,
-  ): Promise<readonly ListEntry[]> {
-    const entries: ListEntry[] = [];
-    let cursor: string | undefined;
-
-    do {
-      const listing = await withRetry(
-        () => withSemaphore(this.semaphore, () => this.client.list(dir, { ...opts, cursor })),
-        "listAllPages",
-        this.config,
-      ).catch(() => ({
-        files: [] as ListEntry[],
-        hasMore: false as boolean,
-        nextCursor: undefined,
-      }));
-
-      for (const entry of listing.files) {
-        entries.push(entry);
-      }
-      cursor = listing.hasMore ? listing.nextCursor : undefined;
-    } while (cursor !== undefined);
-
-    return entries;
   }
 }

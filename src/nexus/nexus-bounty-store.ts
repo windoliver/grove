@@ -11,13 +11,15 @@
 
 import type { Bounty, BountyStatus, RewardRecord } from "../core/bounty.js";
 import type { BountyQuery, BountyStore, RewardQuery } from "../core/bounty-store.js";
-import { NotFoundError } from "../core/errors.js";
+import { NotFoundError, StateConflictError } from "../core/errors.js";
 import type { AgentIdentity } from "../core/models.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import { batchParallel } from "./batch.js";
-import type { ListEntry, ListOptions, NexusClient } from "./client.js";
+import type { ListEntry, NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
+import { NexusConflictError } from "./errors.js";
+import { listAllPages } from "./list-pages.js";
 import { withRetry, withSemaphore } from "./retry.js";
 import { Semaphore } from "./semaphore.js";
 import {
@@ -37,6 +39,12 @@ function encodeBounty(bounty: Bounty): Uint8Array {
 
 function decodeBounty(data: Uint8Array): Bounty {
   return JSON.parse(decoder.decode(data)) as Bounty;
+}
+
+/** A bounty bundled with its VFS ETag for CAS writes. */
+interface BountyWithEtag {
+  readonly bounty: Bounty;
+  readonly etag: string;
 }
 
 /**
@@ -69,14 +77,27 @@ export class NexusBountyStore implements BountyStore {
       updatedAt: now,
     };
 
-    await withRetry(
-      () =>
-        withSemaphore(this.semaphore, () =>
-          this.client.write(bountyPath(this.zoneId, bounty.bountyId), encodeBounty(created)),
-        ),
-      "createBounty",
-      this.config,
-    );
+    try {
+      await withRetry(
+        () =>
+          withSemaphore(this.semaphore, () =>
+            this.client.write(bountyPath(this.zoneId, bounty.bountyId), encodeBounty(created), {
+              ifNoneMatch: "*",
+            }),
+          ),
+        "createBounty",
+        this.config,
+      );
+    } catch (err) {
+      if (err instanceof NexusConflictError) {
+        throw new StateConflictError({
+          resource: "Bounty",
+          reason: "already exists",
+          message: `Bounty with id '${bounty.bountyId}' already exists`,
+        });
+      }
+      throw err;
+    }
 
     await this.writeStatusIndex(created);
     return created;
@@ -98,10 +119,10 @@ export class NexusBountyStore implements BountyStore {
 
     if (query?.status !== undefined && typeof query.status === "string") {
       const dir = bountyStatusIndexDir(this.zoneId, query.status);
-      entries = await this.listAllPages(dir);
+      entries = await listAllPages(this.client, this.semaphore, this.config, dir);
     } else {
       const dir = bountiesDir(this.zoneId);
-      entries = await this.listAllPages(dir);
+      entries = await listAllPages(this.client, this.semaphore, this.config, dir);
     }
 
     const nonDirEntries = entries.filter((e) => !e.isDirectory);
@@ -215,14 +236,15 @@ export class NexusBountyStore implements BountyStore {
     newStatus: BountyStatus,
     transform?: (b: Bounty) => Bounty,
   ): Promise<Bounty> {
-    const existing = await this.getBounty(bountyId);
-    if (!existing)
+    const result = await this.readBountyWithEtag(bountyId);
+    if (!result)
       throw new NotFoundError({
         resource: "Bounty",
         identifier: bountyId,
         message: `Bounty not found: ${bountyId}`,
       });
 
+    const { bounty: existing, etag } = result;
     const oldStatus = existing.status;
     let updated: Bounty = {
       ...existing,
@@ -231,14 +253,7 @@ export class NexusBountyStore implements BountyStore {
     };
     if (transform) updated = transform(updated);
 
-    await withRetry(
-      () =>
-        withSemaphore(this.semaphore, () =>
-          this.client.write(bountyPath(this.zoneId, bountyId), encodeBounty(updated)),
-        ),
-      `transitionBounty:${newStatus}`,
-      this.config,
-    );
+    await this.writeBountyCas(updated, etag);
 
     // Clean up old status index
     if (oldStatus !== newStatus) {
@@ -255,6 +270,34 @@ export class NexusBountyStore implements BountyStore {
     return updated;
   }
 
+  /** Read a bounty and its VFS ETag atomically (needed for CAS writes via ifMatch). */
+  private async readBountyWithEtag(bountyId: string): Promise<BountyWithEtag | undefined> {
+    const result = await withRetry(
+      () =>
+        withSemaphore(this.semaphore, () =>
+          this.client.readWithMeta(bountyPath(this.zoneId, bountyId)),
+        ),
+      "readBountyWithEtag",
+      this.config,
+    );
+    if (result === undefined) return undefined;
+    return { bounty: decodeBounty(result.content), etag: result.etag };
+  }
+
+  /** Write bounty with ifMatch for CAS safety on mutations. */
+  private async writeBountyCas(bounty: Bounty, expectedEtag: string): Promise<void> {
+    await withRetry(
+      () =>
+        withSemaphore(this.semaphore, () =>
+          this.client.write(bountyPath(this.zoneId, bounty.bountyId), encodeBounty(bounty), {
+            ifMatch: expectedEtag,
+          }),
+        ),
+      "writeBountyCas",
+      this.config,
+    );
+  }
+
   private async writeStatusIndex(bounty: Bounty): Promise<void> {
     await withRetry(
       () =>
@@ -267,32 +310,5 @@ export class NexusBountyStore implements BountyStore {
       "writeStatusIndex",
       this.config,
     );
-  }
-
-  private async listAllPages(
-    dir: string,
-    opts?: Omit<ListOptions, "cursor">,
-  ): Promise<readonly ListEntry[]> {
-    const entries: ListEntry[] = [];
-    let cursor: string | undefined;
-
-    do {
-      const listing = await withRetry(
-        () => withSemaphore(this.semaphore, () => this.client.list(dir, { ...opts, cursor })),
-        "listAllPages",
-        this.config,
-      ).catch(() => ({
-        files: [] as ListEntry[],
-        hasMore: false as boolean,
-        nextCursor: undefined,
-      }));
-
-      for (const entry of listing.files) {
-        entries.push(entry);
-      }
-      cursor = listing.hasMore ? listing.nextCursor : undefined;
-    } while (cursor !== undefined);
-
-    return entries;
   }
 }

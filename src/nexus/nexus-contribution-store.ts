@@ -28,9 +28,10 @@ import type {
 } from "../core/store.js";
 import { toUtcIso } from "../core/time.js";
 import { batchParallel } from "./batch.js";
-import type { ListEntry, ListOptions, NexusClient } from "./client.js";
+import type { NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
+import { listAllPages } from "./list-pages.js";
 import { LruCache } from "./lru-cache.js";
 import { withRetry, withSemaphore } from "./retry.js";
 import { Semaphore } from "./semaphore.js";
@@ -175,7 +176,9 @@ export class NexusContributionStore implements ContributionStore {
 
   async list(query?: ContributionQuery): Promise<readonly Contribution[]> {
     const ftsDir = ftsIndexDir(this.zoneId);
-    const entries = await this.listAllPages(ftsDir, { recursive: true });
+    const entries = await listAllPages(this.client, this.semaphore, this.config, ftsDir, {
+      recursive: true,
+    });
 
     const nonDirEntries = entries.filter((e) => !e.isDirectory);
 
@@ -210,7 +213,7 @@ export class NexusContributionStore implements ContributionStore {
   async children(cid: string): Promise<readonly Contribution[]> {
     const relDir = relationIndexDir(this.zoneId, cid);
     // Expected: directory may not exist yet
-    const entries = await this.listAllPages(relDir).catch(() => []);
+    const entries = await listAllPages(this.client, this.semaphore, this.config, relDir);
 
     const seen = new Set<string>();
     const cids: string[] = [];
@@ -256,7 +259,7 @@ export class NexusContributionStore implements ContributionStore {
   async relatedTo(cid: string, relationType?: RelationType): Promise<readonly Contribution[]> {
     const relDir = relationIndexDir(this.zoneId, cid);
     // Expected: directory may not exist yet
-    const entries = await this.listAllPages(relDir).catch(() => []);
+    const entries = await listAllPages(this.client, this.semaphore, this.config, relDir);
 
     const contributions: Contribution[] = [];
     const seen = new Set<string>();
@@ -313,7 +316,9 @@ export class NexusContributionStore implements ContributionStore {
     }
 
     // Fallback: list all FTS entries and filter by text
-    const allEntries = await this.listAllPages(ftsDir, { recursive: true });
+    const allEntries = await listAllPages(this.client, this.semaphore, this.config, ftsDir, {
+      recursive: true,
+    });
 
     const lowerQuery = query.toLowerCase();
     const contributions: Contribution[] = [];
@@ -342,7 +347,7 @@ export class NexusContributionStore implements ContributionStore {
   ): Promise<readonly Contribution[]> {
     const relDir = relationIndexDir(this.zoneId, targetCid);
     // Expected: directory may not exist yet
-    const allEntries = await this.listAllPages(relDir).catch(() => []);
+    const allEntries = await listAllPages(this.client, this.semaphore, this.config, relDir);
 
     const contributions: Contribution[] = [];
     for (const entry of allEntries) {
@@ -403,7 +408,7 @@ export class NexusContributionStore implements ContributionStore {
       for (const parentCid of currentLevel) {
         const relDir = relationIndexDir(this.zoneId, parentCid);
         // Expected: directory may not exist yet
-        const entries = await this.listAllPages(relDir).catch(() => []);
+        const entries = await listAllPages(this.client, this.semaphore, this.config, relDir);
 
         for (const entry of entries) {
           if (entry.isDirectory) continue;
@@ -451,7 +456,7 @@ export class NexusContributionStore implements ContributionStore {
     for (const cid of cids) {
       const relDir = relationIndexDir(this.zoneId, cid);
       // Expected: directory may not exist yet
-      const entries = await this.listAllPages(relDir).catch(() => []);
+      const entries = await listAllPages(this.client, this.semaphore, this.config, relDir);
 
       let count = 0;
       for (const entry of entries) {
@@ -519,38 +524,6 @@ export class NexusContributionStore implements ContributionStore {
 
   close(): void {
     // No-op — lifecycle managed by client
-  }
-
-  // -----------------------------------------------------------------------
-  // Private helpers
-  // -----------------------------------------------------------------------
-
-  /** Paginate through all pages of a list() call, collecting all entries. */
-  private async listAllPages(
-    dir: string,
-    opts?: Omit<ListOptions, "cursor">,
-  ): Promise<readonly ListEntry[]> {
-    const entries: ListEntry[] = [];
-    let cursor: string | undefined;
-
-    do {
-      const listing = await withRetry(
-        () => withSemaphore(this.semaphore, () => this.client.list(dir, { ...opts, cursor })),
-        "listAllPages",
-        this.config,
-      ).catch(() => ({
-        files: [] as ListEntry[],
-        hasMore: false as boolean,
-        nextCursor: undefined,
-      }));
-
-      for (const entry of listing.files) {
-        entries.push(entry);
-      }
-      cursor = listing.hasMore ? listing.nextCursor : undefined;
-    } while (cursor !== undefined);
-
-    return entries;
   }
 }
 

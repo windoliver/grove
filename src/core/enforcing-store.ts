@@ -73,6 +73,15 @@ class AsyncMutex {
       this.locked = false;
     }
   }
+
+  async runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    await this.acquire();
+    try {
+      return await fn();
+    } finally {
+      this.release();
+    }
+  }
 }
 
 /**
@@ -145,8 +154,7 @@ export class EnforcingContributionStore implements ContributionStore {
   }
 
   put = async (contribution: Contribution): Promise<void> => {
-    await this.writeMutex.acquire();
-    try {
+    return this.writeMutex.runExclusive(async () => {
       // Idempotent: if CID already exists, skip enforcement and delegate (no-op)
       const existing = await this.inner.get(contribution.cid);
       if (existing !== undefined) {
@@ -155,14 +163,11 @@ export class EnforcingContributionStore implements ContributionStore {
 
       await this.enforceContributionLimits(contribution, 0, []);
       return await this.inner.put(contribution);
-    } finally {
-      this.writeMutex.release();
-    }
+    });
   };
 
   putMany = async (contributions: readonly Contribution[]): Promise<void> => {
-    await this.writeMutex.acquire();
-    try {
+    return this.writeMutex.runExclusive(async () => {
       // Filter out already-existing CIDs and intra-batch duplicates.
       // Idempotent puts should not be rate-limited, and putMany([c, c])
       // must behave the same as put(c); put(c) — the second is a no-op.
@@ -187,9 +192,7 @@ export class EnforcingContributionStore implements ContributionStore {
       }
 
       return await this.inner.putMany(contributions);
-    } finally {
-      this.writeMutex.release();
-    }
+    });
   };
 
   // Read operations — direct delegation
@@ -420,14 +423,11 @@ export class EnforcingClaimStore implements ClaimStore {
   }
 
   createClaim = async (claim: Claim): Promise<Claim> => {
-    await this.writeMutex.acquire();
-    try {
+    return this.writeMutex.runExclusive(async () => {
       await this.enforceConcurrencyLimits(claim);
       this.enforceLeaseLimit(claim);
       return await this.inner.createClaim(claim);
-    } finally {
-      this.writeMutex.release();
-    }
+    });
   };
 
   heartbeat = async (claimId: string, leaseDurationMs?: number): Promise<Claim> => {
@@ -453,8 +453,28 @@ export class EnforcingClaimStore implements ClaimStore {
     return this.inner.heartbeat(claimId, effectiveDurationMs);
   };
 
+  // claimOrRenew — enforced via mutex with concurrency + lease checks
+  claimOrRenew = async (claim: Claim): Promise<Claim> => {
+    return this.writeMutex.runExclusive(async () => {
+      // Determine if this is a renewal (agent already has an active claim on the target)
+      // or a new claim (no existing active claim by this agent on this target).
+      const existingCount = await this.inner.countActiveClaims({
+        targetRef: claim.targetRef,
+        agentId: claim.agent.agentId,
+      });
+
+      if (existingCount === 0) {
+        // New claim path: enforce concurrency limits (adding a new active claim)
+        await this.enforceConcurrencyLimits(claim);
+      }
+      // Both paths: enforce lease limits
+      this.enforceLeaseLimit(claim);
+
+      return await this.inner.claimOrRenew(claim);
+    });
+  };
+
   // Read/mutation operations — direct delegation
-  claimOrRenew = (claim: Claim): Promise<Claim> => this.inner.claimOrRenew(claim);
   getClaim = (claimId: string): Promise<Claim | undefined> => this.inner.getClaim(claimId);
   release = (claimId: string): Promise<Claim> => this.inner.release(claimId);
   complete = (claimId: string): Promise<Claim> => this.inner.complete(claimId);

@@ -20,7 +20,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -76,6 +76,9 @@ try {
     ? parseGroveContract(readFileSync(groveContractPath, "utf-8"))
     : undefined;
 
+  // Workspace boundary: the project root containing .grove/
+  const workspaceBoundary = resolve(groveDir, "..");
+
   // Note: creditsService is intentionally omitted — see serve.ts for rationale.
   deps = {
     contributionStore,
@@ -86,6 +89,7 @@ try {
     workspace,
     contract,
     onContributionWrite: () => frontier.invalidate(),
+    workspaceBoundary,
   };
   closeStores = () => {
     workspace.close();
