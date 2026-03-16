@@ -333,12 +333,12 @@ describe("validatePeerUrl", () => {
     expect(result.hostHeader).toBe("example.com:4515");
   });
 
-  it("accepts a valid https URL and pins to resolved IP", async () => {
+  it("accepts a valid https URL and preserves hostname for TLS", async () => {
     const result = await validatePeerUrl("https://example.com");
     expect(result.hostHeader).toBe("example.com");
-    // pinnedUrl hostname is a resolved IP, not the original domain
+    // HTTPS keeps the original hostname for TLS SNI/cert validation
     const pinned = new URL(result.pinnedUrl);
-    expect(pinned.hostname).not.toBe("example.com");
+    expect(pinned.hostname).toBe("example.com");
   });
 
   it("accepts a public IPv4 address (no DNS needed)", async () => {
@@ -520,7 +520,7 @@ describe("validatePeerUrl", () => {
     expect(r3.pinnedUrl).toBe("http://[::1]:4515");
   });
 
-  it("pins URL to resolved IP to prevent DNS rebinding", async () => {
+  it("pins HTTP URL to resolved IP to prevent DNS rebinding", async () => {
     // example.com resolves to a public IP — the pinnedUrl must use that IP,
     // not the original hostname, so fetch() never does a second DNS lookup.
     const result = await validatePeerUrl("http://example.com:4515/test");
@@ -530,6 +530,18 @@ describe("validatePeerUrl", () => {
     expect(pinned.pathname).toBe("/test");
     expect(pinned.port).toBe("4515");
     // Host header preserves the original hostname for virtual-host routing
+    expect(result.hostHeader).toBe("example.com:4515");
+  });
+
+  it("preserves original hostname for HTTPS (TLS SNI compatibility)", async () => {
+    // HTTPS URLs must keep the original hostname so TLS SNI and certificate
+    // validation work correctly. Pinning to an IP would break TLS for any
+    // peer with a hostname-based certificate.
+    const result = await validatePeerUrl("https://example.com:4515/test");
+    const pinned = new URL(result.pinnedUrl);
+    expect(pinned.hostname).toBe("example.com");
+    expect(pinned.pathname).toBe("/test");
+    expect(pinned.port).toBe("4515");
     expect(result.hostHeader).toBe("example.com:4515");
   });
 });

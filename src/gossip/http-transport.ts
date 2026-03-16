@@ -249,7 +249,20 @@ export async function validatePeerUrl(
     }
   }
 
-  // Pin the URL to the first resolved IP.
+  // Pin the URL to the first resolved IP — but only for HTTP.
+  // For HTTPS, TLS SNI and certificate validation require the original
+  // hostname in the URL (fetch() uses the URL hostname for SNI, and the
+  // server's certificate is checked against it). Rewriting to an IP would
+  // break TLS for any peer with a hostname-based certificate.
+  //
+  // The DNS pre-flight check above still catches static rebinding (attacker
+  // domain → private IP). For HTTPS, the remaining TOCTOU window is
+  // mitigated by TLS certificate validation — an attacker who rebinds to
+  // a private IP also needs a valid certificate for the original hostname.
+  if (parsed.protocol === "https:") {
+    return { pinnedUrl: url, hostHeader };
+  }
+
   const pinnedIp = resolved[0] as string;
   const pinnedHost = pinnedIp.includes(":") ? `[${pinnedIp}]` : pinnedIp;
   const pinned = new URL(url);
