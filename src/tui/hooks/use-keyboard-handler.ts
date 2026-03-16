@@ -26,12 +26,16 @@ export interface KeyboardActions {
   readonly onArtifactDiffToggle: () => void;
   readonly onCompareToggle: () => void;
   readonly onCompareSelect: (cid: string) => void;
-  readonly onSearchSubmit: (query: string) => void;
+  readonly onCompareAdopt: (side: "a" | "b") => void;
+  readonly onSearchStart: () => void;
+  readonly onSearchSubmit: () => void;
   readonly onSearchChar: (char: string) => void;
   readonly onSearchBackspace: () => void;
   readonly onMessageSubmit: () => void;
   readonly onMessageChar: (char: string) => void;
   readonly onMessageBackspace: () => void;
+  readonly onBroadcastMode: () => void;
+  readonly onDirectMessageMode: () => void;
   readonly onApproveQuestion: () => void;
   readonly onDenyQuestion: () => void;
   readonly onSendKeys: (key: string) => void;
@@ -39,9 +43,11 @@ export interface KeyboardActions {
   readonly onPaletteDown: (maxIndex: number) => void;
   readonly onPaletteSelect: () => void;
   readonly onZoomCycle: () => void;
+  readonly onZoomReset: () => void;
   readonly onSelect: (index: number) => void;
   readonly rowCount: number;
   readonly pageSize: number;
+  readonly paletteItemCount: number;
   readonly compareMode: boolean;
   readonly frontierCids: readonly string[];
   readonly selectedSession: string | undefined;
@@ -87,7 +93,8 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     return true;
   }
 
-  // Escape always exits current mode, or pops detail, or reduces zoom
+  // Escape: one effect per keypress, highest-priority first.
+  // Priority: (1) exit mode → (2) pop detail → (3) reset zoom
   if (input === "escape") {
     if (mode !== InputMode.Normal) {
       actions.panels.setMode(InputMode.Normal);
@@ -97,8 +104,8 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
       actions.nav.popDetail();
       return true;
     }
-    // Escape in normal mode with no detail view → cycle zoom back
-    actions.onZoomCycle();
+    // Reset zoom to normal (not cycle — Escape is "go back", not "go forward")
+    actions.onZoomReset();
     return true;
   }
 
@@ -121,7 +128,7 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
   // Command palette navigation
   if (mode === InputMode.CommandPalette) {
     if (input === "j" || input === "down") {
-      actions.onPaletteDown(0); // maxIndex handled by caller
+      actions.onPaletteDown(Math.max(0, actions.paletteItemCount - 1));
       return true;
     }
     if (input === "k" || input === "up") {
@@ -138,7 +145,7 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
   // Search input mode
   if (mode === InputMode.SearchInput) {
     if (input === "return") {
-      actions.onSearchSubmit("");
+      actions.onSearchSubmit();
       return true;
     }
     if (input === "backspace") {
@@ -277,22 +284,37 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
 
   // Search input mode entry
   if (input === "/" && focused === Panel.Search) {
-    actions.panels.setMode(InputMode.SearchInput);
+    actions.onSearchStart();
     return true;
   }
 
-  // Broadcast message
-  if (input === "b") {
-    actions.onMessageChar(""); // triggers broadcast mode
-    actions.panels.setMode(InputMode.MessageInput);
-    return true;
-  }
+  // Panel-specific keys — must be checked BEFORE global keys like "b"/"d"
+  // because they are more specific (panel + mode gated).
 
-  // Direct message
-  if (input === "@") {
-    actions.onMessageChar("@");
-    actions.panels.setMode(InputMode.MessageInput);
-    return true;
+  // Artifact panel: adopt compared contribution (a/b)
+  if (focused === Panel.Artifact && actions.compareMode) {
+    if (input === "a") {
+      actions.onCompareAdopt("a");
+      return true;
+    }
+    if (input === "b") {
+      actions.onCompareAdopt("b");
+      return true;
+    }
+  }
+  if (focused === Panel.Artifact) {
+    if (input === "h" || input === "left") {
+      actions.onArtifactPrev();
+      return true;
+    }
+    if (input === "l" || input === "right") {
+      actions.onArtifactNext();
+      return true;
+    }
+    if (input === "d") {
+      actions.onArtifactDiffToggle();
+      return true;
+    }
   }
 
   // Approve/Deny pending question (Decisions panel)
@@ -305,16 +327,30 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     return true;
   }
 
+  // Compare artifacts (Frontier panel)
+  if (input === "C" && focused === Panel.Frontier) {
+    actions.onCompareToggle();
+    return true;
+  }
+
+  // Global keys — only reached if no panel-specific handler matched
+
+  // Broadcast message
+  if (input === "b") {
+    actions.onBroadcastMode();
+    return true;
+  }
+
+  // Direct message
+  if (input === "@") {
+    actions.onDirectMessageMode();
+    return true;
+  }
+
   // MCP/ask-user manager
   if (input === "m") {
     actions.onSpawnPalette();
     actions.panels.setMode(InputMode.CommandPalette);
-    return true;
-  }
-
-  // Compare artifacts (Frontier panel)
-  if (input === "C" && focused === Panel.Frontier) {
-    actions.onCompareToggle();
     return true;
   }
 
@@ -356,32 +392,6 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
   if (input === "p") {
     actions.nav.prevPage(actions.pageSize);
     return true;
-  }
-
-  // Artifact panel actions
-  if (focused === Panel.Artifact && actions.compareMode) {
-    if (input === "a") {
-      actions.onCompareSelect("a");
-      return true;
-    }
-    if (input === "b") {
-      actions.onCompareSelect("b");
-      return true;
-    }
-  }
-  if (focused === Panel.Artifact) {
-    if (input === "h" || input === "left") {
-      actions.onArtifactPrev();
-      return true;
-    }
-    if (input === "l" || input === "right") {
-      actions.onArtifactNext();
-      return true;
-    }
-    if (input === "d") {
-      actions.onArtifactDiffToggle();
-      return true;
-    }
   }
 
   if (input === "r") return true; // refresh — handled by polling

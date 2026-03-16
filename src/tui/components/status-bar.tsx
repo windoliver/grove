@@ -6,7 +6,7 @@
  */
 
 import React from "react";
-import type { InputMode, Panel } from "../hooks/use-panel-focus.js";
+import { type InputMode, Panel } from "../hooks/use-panel-focus.js";
 import { theme } from "../theme.js";
 
 /** Props for the StatusBar component. */
@@ -39,21 +39,21 @@ const MODE_LABELS: Record<InputMode, string> = {
 function panelHints(panel: Panel | undefined, isDetailView: boolean | undefined): string {
   if (isDetailView) return " Esc:back  j/k:scroll  r:refresh  ?:help  q:quit";
 
-  // Panel-specific hints (panel numbers match Panel constants)
+  // Panel-specific hints — use Panel enum constants (never magic numbers)
   switch (panel) {
-    case 6: // Terminal
+    case Panel.Terminal:
       return " i:input  Esc:exit  j/k:scroll  Tab:cycle  ?:help  q:quit";
-    case 3: // Frontier
+    case Panel.Frontier:
       return " C:compare  j/k:nav  Enter:detail  +/Esc:zoom  ?:help  q:quit";
-    case 7: // Artifact
+    case Panel.Artifact:
       return " h/l:cycle  d:diff  j/k:scroll  +/Esc:zoom  ?:help  q:quit";
-    case 10: // Search
+    case Panel.Search:
       return " /:search  j/k:nav  Enter:detail  ?:help  q:quit";
-    case 8: // VFS
+    case Panel.Vfs:
       return " j/k:nav  Enter:browse  Esc:back  ?:help  q:quit";
-    case 16: // Decisions
+    case Panel.Decisions:
       return " a:approve  d:deny  j/k:nav  ?:help  q:quit";
-    case 15: // Inbox
+    case Panel.Inbox:
       return " b:broadcast  @:direct  j/k:nav  ?:help  q:quit";
     default:
       return " 1-4:panel  5-]:toggle  Tab:cycle  j/k:nav  Enter:select  Ctrl+P:spawn  +/Esc:zoom  ?:help  q:quit";

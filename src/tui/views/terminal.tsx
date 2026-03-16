@@ -9,6 +9,9 @@
  * The rendered output preserves ANSI colors: each cell's foreground color is
  * read from the xterm buffer and applied via OpenTUI's <text color> prop.
  *
+ * Diff-aware coloring: lines matching unified diff patterns (@@, +, -)
+ * get tinted backgrounds for instant scannability.
+ *
  * Falls back to plain text when xterm headless is not available.
  */
 
@@ -19,16 +22,44 @@ import { usePolledData } from "../hooks/use-polled-data.js";
 import { theme } from "../theme.js";
 
 // ---------------------------------------------------------------------------
-// Persistent terminal state per agent via @xterm/headless
+// Persistent terminal cache with lifecycle management (3A)
 // ---------------------------------------------------------------------------
 
 interface PersistentTerminal {
   terminal: import("@xterm/headless").Terminal;
   prevLength: number;
   prevContent: string;
+  lastAccessed: number;
 }
 
+/** Maximum number of cached terminals before eviction. */
+const MAX_CACHED_TERMINALS = 50;
+
 const agentTerminals = new Map<string, PersistentTerminal>();
+
+/** Evict least-recently-used terminals when cache exceeds limit. */
+function evictStaleTerminals(): void {
+  if (agentTerminals.size <= MAX_CACHED_TERMINALS) return;
+
+  const entries = [...agentTerminals.entries()].sort(
+    (a, b) => a[1].lastAccessed - b[1].lastAccessed,
+  );
+  const toEvict = entries.slice(0, agentTerminals.size - MAX_CACHED_TERMINALS);
+  for (const [key, pt] of toEvict) {
+    pt.terminal.dispose();
+    agentTerminals.delete(key);
+  }
+}
+
+/** Dispose terminals for sessions that are no longer active. */
+export function disposeInactiveTerminals(activeSessions: ReadonlySet<string>): void {
+  for (const [key, pt] of agentTerminals) {
+    if (!activeSessions.has(key)) {
+      pt.terminal.dispose();
+      agentTerminals.delete(key);
+    }
+  }
+}
 
 let xtermModule: typeof import("@xterm/headless") | null = null;
 let xtermLoadFailed = false;
@@ -55,8 +86,12 @@ function getAgentTerminal(
       terminal: new xterm.Terminal({ cols: 120, rows: 30, scrollback: 1000 }),
       prevLength: 0,
       prevContent: "",
+      lastAccessed: Date.now(),
     };
     agentTerminals.set(sessionName, pt);
+    evictStaleTerminals();
+  } else {
+    pt.lastAccessed = Date.now();
   }
   return pt;
 }
@@ -74,14 +109,15 @@ function feedTerminal(pt: PersistentTerminal, rawOutput: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Styled line extraction from xterm buffer
+// Pre-computed ANSI color palette (13C)
 // ---------------------------------------------------------------------------
 
 /** A run of characters sharing the same foreground color. */
 interface StyledSpan {
   text: string;
-  color: string | undefined; // hex color or undefined for default
+  color: string | undefined;
   bold: boolean;
+  bgColor?: string | undefined;
 }
 
 /** A line of styled spans extracted from the xterm buffer. */
@@ -90,7 +126,7 @@ interface StyledLine {
 }
 
 /** ANSI 16-color palette mapped to hex. */
-const ANSI_COLORS: readonly string[] = [
+const ANSI_16: readonly string[] = [
   "#000000",
   "#cc0000",
   "#00cc00",
@@ -109,7 +145,42 @@ const ANSI_COLORS: readonly string[] = [
   "#ffffff",
 ];
 
-/** Convert an xterm color number to a hex string. */
+/**
+ * Pre-computed lookup table for all 256 ANSI indexed colors → hex.
+ * Built once at module load time to avoid per-cell recomputation.
+ */
+const ANSI_256_PALETTE: readonly (string | undefined)[] = (() => {
+  const palette: (string | undefined)[] = new Array(256);
+
+  // 0-15: standard ANSI colors
+  for (let i = 0; i < 16; i++) {
+    palette[i] = ANSI_16[i];
+  }
+
+  // 16-231: 6x6x6 color cube
+  for (let i = 16; i < 232; i++) {
+    const idx = i - 16;
+    const r = Math.floor(idx / 36) * 51;
+    const g = Math.floor((idx % 36) / 6) * 51;
+    const b = (idx % 6) * 51;
+    palette[i] =
+      `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+  }
+
+  // 232-255: grayscale ramp
+  for (let i = 232; i < 256; i++) {
+    const v = (i - 232) * 10 + 8;
+    palette[i] =
+      `#${v.toString(16).padStart(2, "0")}${v.toString(16).padStart(2, "0")}${v.toString(16).padStart(2, "0")}`;
+  }
+
+  return palette;
+})();
+
+/** RGB hex cache for true-color values. */
+const rgbHexCache = new Map<number, string>();
+
+/** Convert an xterm color to hex using pre-computed palette. */
 function cellColorToHex(
   color: number,
   isRgb: boolean,
@@ -118,27 +189,43 @@ function cellColorToHex(
   b: number,
 ): string | undefined {
   if (isRgb) {
-    return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+    const key = (r << 16) | (g << 8) | b;
+    let hex = rgbHexCache.get(key);
+    if (hex === undefined) {
+      hex = `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+      rgbHexCache.set(key, hex);
+    }
+    return hex;
   }
-  // Indexed color (0-255)
-  if (color >= 0 && color < 16) {
-    return ANSI_COLORS[color];
+  // Indexed color: O(1) lookup in pre-computed palette
+  if (color >= 0 && color < 256) {
+    return ANSI_256_PALETTE[color];
   }
-  if (color >= 16 && color < 232) {
-    // 216-color cube
-    const idx = color - 16;
-    const cr = Math.floor(idx / 36) * 51;
-    const cg = Math.floor((idx % 36) / 6) * 51;
-    const cb = (idx % 6) * 51;
-    return `#${cr.toString(16).padStart(2, "0")}${cg.toString(16).padStart(2, "0")}${cb.toString(16).padStart(2, "0")}`;
-  }
-  if (color >= 232 && color < 256) {
-    // Grayscale ramp
-    const v = (color - 232) * 10 + 8;
-    return `#${v.toString(16).padStart(2, "0")}${v.toString(16).padStart(2, "0")}${v.toString(16).padStart(2, "0")}`;
-  }
-  return undefined; // default terminal color
+  return undefined;
 }
+
+// ---------------------------------------------------------------------------
+// Diff-aware terminal coloring (16A)
+// ---------------------------------------------------------------------------
+
+/** Background tint colors for unified diff lines. */
+const DIFF_BG = {
+  hunk: "#1a1a3a", // blue tint for @@ hunk headers
+  add: "#1a2a1a", // green tint for + lines
+  remove: "#2a1a1a", // red tint for - lines
+} as const;
+
+/** Detect unified diff pattern and return appropriate background color. */
+function diffLineBgColor(lineText: string): string | undefined {
+  if (lineText.startsWith("@@")) return DIFF_BG.hunk;
+  if (lineText.startsWith("+")) return DIFF_BG.add;
+  if (lineText.startsWith("-")) return DIFF_BG.remove;
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Styled line extraction with diff detection
+// ---------------------------------------------------------------------------
 
 /** Extract styled lines from an xterm terminal buffer. */
 function extractStyledLines(terminal: import("@xterm/headless").Terminal): StyledLine[] {
@@ -182,6 +269,15 @@ function extractStyledLines(terminal: import("@xterm/headless").Terminal): Style
 
     if (currentText) {
       spans.push({ text: currentText, color: currentColor, bold: currentBold });
+    }
+
+    // Detect diff lines and apply background tint
+    const plainText = spans.map((s) => s.text).join("");
+    const bg = diffLineBgColor(plainText);
+    if (bg) {
+      for (const span of spans) {
+        span.bgColor = bg;
+      }
     }
 
     lines.push({ spans });
@@ -259,7 +355,7 @@ export const TerminalView: React.NamedExoticComponent<TerminalProps> = React.mem
       active && !!sessionName && !!tmux,
     );
 
-    // Feed output and extract styled lines
+    // Feed output and extract styled lines (memoized — only recomputes when output changes)
     const styledLines = useMemo((): StyledLine[] | null => {
       const rawOutput = output ?? "";
       if (!rawOutput || !xtermReady || !xtermModule || !sessionName) return null;
@@ -313,7 +409,7 @@ export const TerminalView: React.NamedExoticComponent<TerminalProps> = React.mem
               <box key={y}>
                 {line.spans.map((span, x) => (
                   // biome-ignore lint/suspicious/noArrayIndexKey: spans have no stable identity
-                  <text key={x} color={span.color} bold={span.bold}>
+                  <text key={x} color={span.color} bold={span.bold} backgroundColor={span.bgColor}>
                     {span.text}
                   </text>
                 ))}

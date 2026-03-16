@@ -109,22 +109,29 @@ export function useFirstLaunchTooltips(): {
   dismissAll: () => void;
 } {
   const [show, setShow] = useState(false);
-  const [checked, setChecked] = useState(false);
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    if (checked) return;
+    if (loaded) return;
+    let cancelled = false;
     readTooltipState().then((dismissed) => {
+      if (cancelled) return;
       setShow(!dismissed);
-      setChecked(true);
+      setLoaded(true);
     });
-  }, [checked]);
+    return () => {
+      cancelled = true;
+    };
+  }, [loaded]);
 
   const dismissAll = useCallback(() => {
     setShow(false);
     void writeTooltipState();
   }, []);
 
-  return { showTooltips: show, dismissAll };
+  // Don't show tooltips until we've read the persisted state — prevents
+  // the race where tooltips flash in after an async read completes.
+  return { showTooltips: loaded && show, dismissAll };
 }
 
 /** Overlay showing first-launch tooltips. */

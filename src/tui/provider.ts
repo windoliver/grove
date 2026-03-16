@@ -295,3 +295,56 @@ export interface TuiAskUserProvider {
 export interface TuiGitHubProvider {
   getActivePR(): Promise<GitHubPRSummary | undefined>;
 }
+
+// ---------------------------------------------------------------------------
+// Type guards — use these instead of `as unknown as { method? }` casts
+// ---------------------------------------------------------------------------
+
+/** Check if provider supports outcome queries. */
+export function isOutcomeProvider(
+  provider: TuiDataProvider,
+): provider is TuiDataProvider & TuiOutcomeProvider {
+  return provider.capabilities.outcomes;
+}
+
+/** Check if provider supports artifact access. */
+export function isArtifactProvider(
+  provider: TuiDataProvider,
+): provider is TuiDataProvider & TuiArtifactProvider {
+  return provider.capabilities.artifacts;
+}
+
+/** Check if provider supports Nexus VFS browsing. */
+export function isVfsProvider(
+  provider: TuiDataProvider,
+): provider is TuiDataProvider & TuiVfsProvider {
+  return provider.capabilities.vfs;
+}
+
+/** Check if provider supports messaging. */
+export function isMessagingProvider(
+  provider: TuiDataProvider,
+): provider is TuiDataProvider & TuiMessagingProvider {
+  return provider.capabilities.messaging;
+}
+
+/** Check if provider supports cost tracking. */
+export function isCostProvider(
+  provider: TuiDataProvider,
+): provider is TuiDataProvider & TuiCostProvider {
+  return provider.capabilities.costTracking;
+}
+
+/** Check if provider supports ask-user events. */
+export function isAskUserProvider(
+  provider: TuiDataProvider,
+): provider is TuiDataProvider & TuiAskUserProvider {
+  return provider.capabilities.askUser;
+}
+
+/** Check if provider supports GitHub context. */
+export function isGitHubProvider(
+  provider: TuiDataProvider,
+): provider is TuiDataProvider & TuiGitHubProvider {
+  return provider.capabilities.github;
+}
