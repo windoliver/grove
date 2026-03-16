@@ -73,7 +73,11 @@ async function createNexusProvider(
   const { initSqliteDb } = await import("../local/sqlite-store.js");
   const { FsCas } = await import("../local/fs-cas.js");
 
-  const client = new NexusHttpClient({ url: backend.url });
+  // Resolve API key: NEXUS_API_KEY env var (set by grove up from nexus.yaml,
+  // or overridden explicitly by the user) → undefined (auth: none).
+  const apiKey = process.env.NEXUS_API_KEY || undefined;
+
+  const client = new NexusHttpClient({ url: backend.url, apiKey });
 
   const homeDir = process.env.HOME ?? "/tmp";
   const groveRoot = join(homeDir, ".grove", "nexus-workspaces");

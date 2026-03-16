@@ -20,6 +20,14 @@ interface UpOptions {
   readonly headless: boolean;
   readonly noTui: boolean;
   readonly groveOverride?: string | undefined;
+  /** Pass `--build` to `nexus up` to rebuild Docker images locally. */
+  readonly build: boolean;
+  /**
+   * Path to local nexus source checkout (e.g., `~/nexus`).
+   * Runs `nexus up --build` from this directory so Docker Compose
+   * uses the local source build context.
+   */
+  readonly nexusSource?: string | undefined;
 }
 
 interface ChildProcess {
@@ -39,6 +47,8 @@ function parseUpArgs(args: readonly string[]): UpOptions {
       headless: { type: "boolean", default: false },
       "no-tui": { type: "boolean", default: false },
       grove: { type: "string" },
+      build: { type: "boolean", default: false },
+      "nexus-source": { type: "string" },
       help: { type: "boolean", short: "h" },
     },
     allowPositionals: false,
@@ -52,10 +62,12 @@ Usage:
   grove up [options]
 
 Options:
-  --headless     Start services without TUI (for CI/scripting)
-  --no-tui       Start services only, no TUI
-  --grove <path> Path to .grove directory
-  -h, --help     Show this help message`);
+  --headless            Start services without TUI (for CI/scripting)
+  --no-tui              Start services only, no TUI
+  --grove <path>        Path to .grove directory
+  --nexus-source <path> Build Nexus from local source (e.g., ~/nexus)
+  --build               Same as --nexus-source, using NEXUS_SOURCE env var
+  -h, --help            Show this help message`);
     process.exit(0);
   }
 
@@ -63,6 +75,8 @@ Options:
     headless: values.headless as boolean,
     noTui: values["no-tui"] as boolean,
     groveOverride: values.grove as string | undefined,
+    build: values.build as boolean,
+    nexusSource: values["nexus-source"] as string | undefined,
   };
 }
 
@@ -151,12 +165,18 @@ export async function handleUp(args: readonly string[], groveOverride?: string):
   let nexusManaged = false;
   if (config.nexusManaged || (config.mode === "nexus" && !config.nexusUrl)) {
     const { ensureNexusRunning } = await import("../nexus-lifecycle.js");
-    const nexusUrl = await ensureNexusRunning(projectRoot, config);
+    const nexusInfo = await ensureNexusRunning(projectRoot, config, {
+      build: opts.build,
+      nexusSource: opts.nexusSource,
+    });
     nexusManaged = true;
-    // Expose the discovered URL so resolveBackend (env step) picks it up
-    // when launching the TUI. This is the bridge between the managed-Nexus
-    // lifecycle and the TUI's backend resolution chain.
-    process.env.GROVE_NEXUS_URL = nexusUrl;
+    // Expose the discovered URL and API key so resolveBackend (env step)
+    // picks them up when launching the TUI. This is the bridge between
+    // the managed-Nexus lifecycle and the TUI's backend resolution chain.
+    process.env.GROVE_NEXUS_URL = nexusInfo.url;
+    if (nexusInfo.apiKey) {
+      process.env.NEXUS_API_KEY = nexusInfo.apiKey;
+    }
   }
 
   // Everything after Nexus startup is wrapped in try/catch so we
