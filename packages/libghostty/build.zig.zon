@@ -2,19 +2,20 @@
     .name = "grove-libghostty",
     .version = "0.1.0",
     .dependencies = .{
-        // Pin to a specific Ghostty commit for reproducible builds.
-        // Update this hash deliberately when upgrading libghostty-vt.
+        // Pinned to a specific Ghostty commit for reproducible builds.
+        // The libghostty-vt C API is unstable — update deliberately.
         //
         // To update:
         //   1. Pick a ghostty commit from https://github.com/ghostty-org/ghostty
-        //   2. Update the url and hash below
-        //   3. Run: zig build lib-vt -Dtarget=aarch64-macos
-        //   4. Run tests: bun test
-        //   5. Fix any FFI signature changes in src/ffi.ts
+        //   2. Update the commit hash in the url below
+        //   3. Run: zig fetch --save <new-url> to update the hash
+        //   4. Run: zig build lib-vt -Dtarget=aarch64-macos
+        //   5. Run tests: bun test
+        //   6. Fix any FFI signature changes in src/ffi.ts
         .ghostty = .{
-            .url = "https://github.com/ghostty-org/ghostty/archive/main.tar.gz",
-            // TODO: Pin to specific commit hash once libghostty-vt has a tagged release.
-            // .hash = "...",
+            .url = "https://github.com/ghostty-org/ghostty/archive/600f59ae313adf377c0bf0d754fa258257f5f65f.tar.gz",
+            // After first build, run `zig fetch --save <url>` to populate this hash.
+            // Until then, Zig will verify the download on first fetch.
         },
     },
     .paths = .{

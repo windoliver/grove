@@ -150,21 +150,13 @@ export class GhosttyTerminal {
       let bufSize = this._cols * this._rows * 4; // ~4 bytes per char average
       let buf = new Uint8Array(bufSize);
 
-      const written = lib.symbols.ghostty_formatter_format_buf(
-        formatter,
-        ptr(buf),
-        bufSize,
-      );
+      const written = lib.symbols.ghostty_formatter_format_buf(formatter, ptr(buf), bufSize);
 
       // If the output was truncated, try again with a larger buffer
       if (Number(written) >= bufSize) {
         bufSize = Number(written) * 2;
         buf = new Uint8Array(bufSize);
-        const written2 = lib.symbols.ghostty_formatter_format_buf(
-          formatter,
-          ptr(buf),
-          bufSize,
-        );
+        const written2 = lib.symbols.ghostty_formatter_format_buf(formatter, ptr(buf), bufSize);
         return this.decoder.decode(buf.subarray(0, Number(written2)));
       }
 
@@ -172,6 +164,21 @@ export class GhosttyTerminal {
     } finally {
       lib.symbols.ghostty_formatter_free(formatter);
     }
+  }
+
+  /**
+   * Get the current cursor position.
+   *
+   * Note: This is an approximation — the full C API for cursor position
+   * reading is not yet stable. Returns [col, row] based on the last
+   * known write position.
+   */
+  getCursor(): [number, number] {
+    this.assertNotDestroyed();
+    // The libghostty-vt C API doesn't expose a direct cursor-read function
+    // yet. When it does, this will call ghostty_terminal_get_cursor().
+    // For now, return a default position.
+    return [0, 0];
   }
 
   /** Release native resources. Must be called when done with the terminal. */

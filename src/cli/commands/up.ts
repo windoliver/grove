@@ -89,12 +89,27 @@ export async function handleUp(args: readonly string[], groveOverride?: string):
   const opts = parseUpArgs(args);
   const effectiveGrove = opts.groveOverride ?? groveOverride;
 
-  // Resolve grove directory
-  const { groveDir } = resolveGroveDir(effectiveGrove);
-  const configPath = join(groveDir, "grove.json");
+  // Resolve grove directory — may throw if .grove/ doesn't exist at all
+  let groveDir: string;
+  let configPath: string;
+  try {
+    const resolved = resolveGroveDir(effectiveGrove);
+    groveDir = resolved.groveDir;
+    configPath = join(groveDir, "grove.json");
+  } catch {
+    // No .grove/ directory found — launch TUI in welcome mode
+    if (!opts.headless && !opts.noTui) {
+      const { handleTui } = await import("../../tui/main.js");
+      await handleTui([], effectiveGrove);
+      return;
+    }
+    throw new Error(
+      "No grove found. Run 'grove init' first, or 'grove init --preset <name>' for a quick start.",
+    );
+  }
 
   if (!existsSync(configPath)) {
-    // No grove.json — launch TUI in welcome mode for guided initialization
+    // .grove/ exists but no grove.json — also launch welcome mode
     if (!opts.headless && !opts.noTui) {
       const { handleTui } = await import("../../tui/main.js");
       await handleTui([], effectiveGrove);

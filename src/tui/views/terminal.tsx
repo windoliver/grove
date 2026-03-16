@@ -1,19 +1,19 @@
 /**
  * Terminal view — shows captured output from the selected agent's tmux session.
  *
- * Uses @grove/libghostty for full ANSI/VT rendering when available. Falls
- * back to ghostty-opentui, then to plain text if neither native library
- * is loadable.
+ * Uses @grove/libghostty for full ANSI/VT rendering when available, with
+ * persistent terminal state per agent. Falls back to ghostty-opentui, then
+ * to plain text if neither native library is loadable.
  *
- * The dynamic import is wrapped in a module-level promise so that:
- *  1. We only attempt the import once (not on every render).
- *  2. The fallback path has zero overhead — no per-frame try/catch.
+ * Persistent mode: Each agent gets a GhosttyTerminal that maintains state
+ * across .write() calls. On each poll, only the *new* bytes from tmux are
+ * fed, avoiding re-parsing the entire ANSI blob every cycle.
  *
  * In terminal input mode (press 'i' when Terminal panel focused),
  * keystrokes are forwarded to the tmux session via sendKeys.
  */
 
-import React, { createElement, useCallback, useEffect, useState } from "react";
+import React, { createElement, useCallback, useEffect, useRef, useState } from "react";
 import type { TmuxManager } from "../agents/tmux-manager.js";
 import type { InputMode } from "../hooks/use-panel-focus.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
@@ -24,6 +24,8 @@ import { theme } from "../theme.js";
 // ---------------------------------------------------------------------------
 
 let ghosttyRegistered = false;
+/** True when @grove/libghostty is available (persistent terminal support). */
+let libghosttyAvailable = false;
 
 /**
  * Try to load and register the terminal renderable.
@@ -40,6 +42,7 @@ const ghosttyPromise: Promise<boolean> = (async () => {
     const { GhosttyRenderable } = await import("@grove/libghostty/renderable");
     opentui.extend({ "ghostty-terminal": GhosttyRenderable as unknown });
     ghosttyRegistered = true;
+    libghosttyAvailable = true;
     return true;
   } catch {
     // @grove/libghostty not available — try ghostty-opentui fallback
@@ -84,6 +87,23 @@ function useGhosttyAvailable(): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Persistent terminal state per agent
+// ---------------------------------------------------------------------------
+
+/**
+ * Tracks per-agent terminal state for delta-based feeding.
+ * When @grove/libghostty is available, we track how many bytes we've
+ * already fed and only send the new portion on each poll.
+ */
+interface AgentTerminalState {
+  /** Number of bytes previously fed to the terminal. */
+  prevLength: number;
+}
+
+/** Global map of agent session → terminal state. */
+const agentStates = new Map<string, AgentTerminalState>();
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -113,6 +133,12 @@ export const TerminalView: React.NamedExoticComponent<TerminalProps> = React.mem
     const captureMs = Math.max(intervalMs, 200); // minimum 200ms for terminal
     const ghosttyAvailable = useGhosttyAvailable();
 
+    // Track the renderable ref for persistent feeding
+    const renderableRef = useRef<{
+      feed?: (data: string | Uint8Array) => void;
+      reset?: () => void;
+    } | null>(null);
+
     const fetcher = useCallback(async () => {
       if (!tmux || !sessionName) return "";
       return tmux.capturePanes(sessionName);
@@ -123,6 +149,14 @@ export const TerminalView: React.NamedExoticComponent<TerminalProps> = React.mem
       captureMs,
       active && !!sessionName && !!tmux,
     );
+
+    // When session changes, reset persistent state
+    useEffect(() => {
+      if (sessionName) {
+        agentStates.delete(sessionName);
+        renderableRef.current?.reset?.();
+      }
+    }, [sessionName]);
 
     if (!tmux) {
       return (
@@ -144,7 +178,7 @@ export const TerminalView: React.NamedExoticComponent<TerminalProps> = React.mem
     const isInputMode = mode === "terminal_input";
     const rawOutput = output ?? "";
 
-    // Status header — shared by both rendering paths
+    // Status header — shared by all rendering paths
     const header = (
       <box>
         <text color={theme.muted}>
@@ -158,15 +192,27 @@ export const TerminalView: React.NamedExoticComponent<TerminalProps> = React.mem
       </box>
     );
 
-    // --- Ghostty path: full ANSI/VT rendering ---
+    // --- Ghostty path: persistent ANSI/VT rendering ---
     if (ghosttyAvailable && rawOutput.length > 0) {
+      // Compute delta for persistent feeding when libghostty is available
+      let ansiProp = rawOutput;
+      if (libghosttyAvailable && sessionName) {
+        const state = agentStates.get(sessionName);
+        if (state && rawOutput.length > state.prevLength) {
+          // Only feed the new bytes — the terminal maintains state
+          ansiProp = rawOutput.slice(state.prevLength);
+        }
+        agentStates.set(sessionName, { prevLength: rawOutput.length });
+      }
+
       return (
         <box flexDirection="column">
           {header}
-          {/* createElement used because "ghostty-terminal" is a dynamically
-              registered intrinsic element without static JSX type definitions. */}
           {createElement("ghostty-terminal" as string, {
-            ansi: rawOutput,
+            // When libghostty is active, pass delta via feed prop;
+            // otherwise pass full ansi for stateless rendering
+            ansi: libghosttyAvailable ? undefined : rawOutput,
+            ...(libghosttyAvailable ? { feed: ansiProp } : {}),
             cols: 120,
             rows: 30,
             trimEnd: true,

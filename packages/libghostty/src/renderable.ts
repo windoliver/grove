@@ -32,10 +32,12 @@ import { GhosttyTerminal } from "./terminal.js";
  */
 export class GhosttyRenderable {
   private _ansi: string | Buffer | Uint8Array = "";
+  private _feed: string | Buffer | Uint8Array | undefined;
   private _cols = 120;
   private _rows = 30;
   private _trimEnd = false;
   private _terminal: GhosttyTerminal | null = null;
+  private _persistentMode = false;
 
   constructor(_ctx: unknown, _options: Record<string, unknown>) {
     // OpenTUI passes renderer context and options to constructors
@@ -47,7 +49,19 @@ export class GhosttyRenderable {
 
   set ansi(value: string | Buffer | Uint8Array) {
     this._ansi = value;
+    // When ansi is set, use stateless mode (full re-parse)
+    this._persistentMode = false;
     this.invalidate();
+  }
+
+  /**
+   * Feed delta bytes for persistent mode.
+   * When set, the terminal is NOT reset — new bytes are appended
+   * to the existing state, avoiding full re-parse.
+   */
+  set feed(value: string | Buffer | Uint8Array) {
+    this._feed = value;
+    this._persistentMode = true;
   }
 
   get cols(): number {
@@ -90,15 +104,14 @@ export class GhosttyRenderable {
       this._terminal = new GhosttyTerminal(this._cols, this._rows, 0);
     }
 
-    // Reset and feed the full content (stateless mode)
-    this._terminal.reset();
-    const input = this._ansi;
-    if (typeof input === "string") {
-      this._terminal.write(input);
-    } else if (input instanceof Uint8Array) {
-      this._terminal.write(input);
-    } else if (Buffer.isBuffer(input)) {
-      this._terminal.write(new Uint8Array(input));
+    if (this._persistentMode && this._feed !== undefined) {
+      // Persistent mode: feed only the delta bytes, no reset
+      this.writeInput(this._feed);
+      this._feed = undefined;
+    } else {
+      // Stateless mode: reset and feed the full content
+      this._terminal.reset();
+      this.writeInput(this._ansi);
     }
 
     let text = this._terminal.getText();
@@ -106,6 +119,18 @@ export class GhosttyRenderable {
       text = text.trimEnd();
     }
     return text;
+  }
+
+  /** Write input data to the terminal, handling type conversion. */
+  private writeInput(input: string | Buffer | Uint8Array): void {
+    if (!this._terminal) return;
+    if (typeof input === "string") {
+      this._terminal.write(input);
+    } else if (input instanceof Uint8Array) {
+      this._terminal.write(input);
+    } else if (Buffer.isBuffer(input)) {
+      this._terminal.write(new Uint8Array(input));
+    }
   }
 
   /**

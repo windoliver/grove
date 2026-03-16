@@ -18,6 +18,7 @@ import { HelpOverlay } from "./components/help-overlay.js";
 import { InputBar } from "./components/input-bar.js";
 import { StatusBar } from "./components/status-bar.js";
 import { PanelBar } from "./components/tab-bar.js";
+import { TooltipOverlay, useFirstLaunchTooltips } from "./components/tooltip-overlay.js";
 import { nextZoom } from "./hooks/use-keyboard-handler.js";
 import { useNavigation } from "./hooks/use-navigation.js";
 import { InputMode, Panel, usePanelFocus } from "./hooks/use-panel-focus.js";
@@ -48,6 +49,7 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
   const renderer = useRenderer();
   const nav = useNavigation();
   const panels = usePanelFocus();
+  const { showTooltips, dismissAll: dismissTooltips } = useFirstLaunchTooltips();
 
   const [contributionList, setContributionList] = useState<readonly Contribution[]>([]);
   const [rowCount, setRowCount] = useState(0);
@@ -390,6 +392,12 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
     const input = key.name;
     const isCtrl = key.ctrl;
 
+    // Dismiss first-launch tooltips on any key press
+    if (showTooltips) {
+      dismissTooltips();
+      return;
+    }
+
     // Command palette toggle (works in all modes except help)
     if (isCtrl && input === "p") {
       if (panels.state.mode === InputMode.CommandPalette) {
@@ -426,12 +434,24 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
       return;
     }
 
-    // Terminal input: forward to tmux
+    // Terminal input: forward to tmux with paste safety validation
     if (panels.state.mode === InputMode.TerminalInput) {
       if (tmux && selectedSession && input) {
-        void safeCleanup(tmux.sendKeys(selectedSession, input), "sendKeys to tmux session", {
-          silent: true,
-        });
+        // Validate paste safety when @grove/libghostty is available
+        void (async () => {
+          try {
+            const { isPasteSafe } = await import("@grove/libghostty");
+            if (!isPasteSafe(input)) {
+              showError("Blocked: input contains potentially dangerous escape sequences");
+              return;
+            }
+          } catch {
+            // @grove/libghostty not available — skip paste check
+          }
+          void safeCleanup(tmux.sendKeys(selectedSession, input), "sendKeys to tmux session", {
+            silent: true,
+          });
+        })();
       }
       return;
     }
@@ -820,6 +840,7 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
 
   return (
     <box flexDirection="column" width="100%" height="100%">
+      <TooltipOverlay visible={showTooltips} onDismissAll={dismissTooltips} />
       <PanelBar panelState={panels.state} />
       <HelpOverlay
         visible={panels.state.mode === InputMode.Help}

@@ -110,6 +110,7 @@ declare module "@grove/libghostty" {
     scrollViewport(delta: number): void;
     getText(): string;
     getHtml(): string;
+    getCursor(): [number, number];
     destroy(): void;
   }
   export function ptyToText(
