@@ -277,8 +277,18 @@ async function buildAppProps(
 // Main entry points
 // ---------------------------------------------------------------------------
 
-/** Main TUI entry point. */
-export async function handleTui(args: readonly string[], groveOverride?: string): Promise<void> {
+/**
+ * Main TUI entry point.
+ *
+ * @param args - CLI arguments for the TUI
+ * @param groveOverride - Explicit .grove path override
+ * @param skipServices - If true, skip service startup (caller already started them, e.g. grove up)
+ */
+export async function handleTui(
+  args: readonly string[],
+  groveOverride?: string,
+  skipServices?: boolean,
+): Promise<void> {
   const opts = parseTuiArgs(args);
   const effectiveGrove = opts.groveOverride ?? groveOverride;
 
@@ -325,10 +335,12 @@ export async function handleTui(args: readonly string[], groveOverride?: string)
 
   try {
     if (isInitialized) {
-      // Start services (HTTP, MCP, managed Nexus) before launching boardroom
-      const resolvedGrove = groveDir ?? join(process.cwd(), ".grove");
-      const { startServices } = await import("../shared/service-lifecycle.js");
-      runningServices = await startServices({ groveDir: resolvedGrove });
+      // Start services unless caller already did (e.g. grove up)
+      if (!skipServices) {
+        const resolvedGrove = groveDir ?? join(process.cwd(), ".grove");
+        const { startServices } = await import("../shared/service-lifecycle.js");
+        runningServices = await startServices({ groveDir: resolvedGrove });
+      }
 
       // Build boardroom props (provider, topology, tmux)
       const result = await buildAppProps(effectiveGrove, opts);

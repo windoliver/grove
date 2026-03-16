@@ -137,9 +137,9 @@ export async function handleUp(args: readonly string[], groveOverride?: string):
         await shutdown();
       }
     } else {
-      // Launch TUI as foreground — services already running
+      // Launch TUI as foreground — services already running, skip double-start
       const { handleTui } = await import("../../tui/main.js");
-      await handleTui([], effectiveGrove);
+      await handleTui([], effectiveGrove, true);
       await shutdown();
     }
   } catch (err) {
