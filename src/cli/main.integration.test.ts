@@ -99,12 +99,7 @@ describe("CLI dispatch", () => {
   });
 
   // bare `grove` now launches the TUI (issue #113) instead of printing usage.
-  // This requires a TTY and OpenTUI renderer, so it can't run in CI.
-  // The behavior is verified by the TUI-specific tests and manual testing.
-  test.skip("no args launches TUI (not usage)", async () => {
-    const { exitCode } = await runCli([], tmpDir);
-    expect(exitCode).not.toBe(2);
-  });
+  // Not testable in CI (requires TTY for OpenTUI renderer).
 
   test("unknown command exits 2 (usage error)", async () => {
     const { stderr, exitCode } = await runCli(["bogus"], tmpDir);
