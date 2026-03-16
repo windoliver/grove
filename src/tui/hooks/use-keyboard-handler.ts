@@ -7,6 +7,7 @@
 
 import type { KeyEvent } from "@opentui/core";
 import type { ZoomLevel } from "../panels/panel-manager.js";
+import type { KeybindingOverrides } from "./use-keybinding-overrides.js";
 import type { NavigationActions } from "./use-navigation.js";
 import { InputMode, Panel, type PanelFocusActions } from "./use-panel-focus.js";
 
@@ -26,12 +27,16 @@ export interface KeyboardActions {
   readonly onArtifactDiffToggle: () => void;
   readonly onCompareToggle: () => void;
   readonly onCompareSelect: (cid: string) => void;
-  readonly onSearchSubmit: (query: string) => void;
+  readonly onCompareAdopt: (side: "a" | "b") => void;
+  readonly onSearchStart: () => void;
+  readonly onSearchSubmit: () => void;
   readonly onSearchChar: (char: string) => void;
   readonly onSearchBackspace: () => void;
   readonly onMessageSubmit: () => void;
   readonly onMessageChar: (char: string) => void;
   readonly onMessageBackspace: () => void;
+  readonly onBroadcastMode: () => void;
+  readonly onDirectMessageMode: () => void;
   readonly onApproveQuestion: () => void;
   readonly onDenyQuestion: () => void;
   readonly onSendKeys: (key: string) => void;
@@ -39,13 +44,20 @@ export interface KeyboardActions {
   readonly onPaletteDown: (maxIndex: number) => void;
   readonly onPaletteSelect: () => void;
   readonly onZoomCycle: () => void;
+  readonly onZoomReset: () => void;
+  readonly onTerminalScrollUp: () => void;
+  readonly onTerminalScrollDown: () => void;
+  readonly onTerminalScrollBottom: () => void;
   readonly onSelect: (index: number) => void;
   readonly rowCount: number;
   readonly pageSize: number;
+  readonly paletteItemCount: number;
   readonly compareMode: boolean;
   readonly frontierCids: readonly string[];
   readonly selectedSession: string | undefined;
   readonly hasTmux: boolean;
+  /** Keybinding overrides from .grove/keybindings.json (item 19). */
+  readonly keybindingOverrides?: KeybindingOverrides | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +88,67 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
   const mode = actions.panels.state.mode;
   const focused = actions.panels.state.focused;
 
+  // Keybinding overrides (item 19): check if this key maps to a remapped action.
+  // Override lookup only applies in normal mode to avoid breaking modal input.
+  const overrides = actions.keybindingOverrides;
+  if (mode === InputMode.Normal && overrides && input && !isCtrl) {
+    // Reverse lookup: find which action this key is mapped to
+    for (const [action, boundKey] of Object.entries(overrides)) {
+      if (boundKey === input) {
+        switch (action) {
+          case "quit":
+            actions.onQuit();
+            return true;
+          case "help":
+            actions.panels.setMode(InputMode.Help);
+            return true;
+          case "zoom_cycle":
+            actions.onZoomCycle();
+            return true;
+          case "zoom_reset":
+            actions.onZoomReset();
+            return true;
+          case "broadcast":
+            actions.onBroadcastMode();
+            return true;
+          case "direct_message":
+            actions.onDirectMessageMode();
+            return true;
+          case "search_start":
+            if (focused === Panel.Search) actions.onSearchStart();
+            return true;
+          case "terminal_input":
+            if (focused === Panel.Terminal) actions.panels.setMode(InputMode.TerminalInput);
+            return true;
+          case "compare_toggle":
+            if (focused === Panel.Frontier) actions.onCompareToggle();
+            return true;
+          case "artifact_prev":
+            if (focused === Panel.Artifact) actions.onArtifactPrev();
+            return true;
+          case "artifact_next":
+            if (focused === Panel.Artifact) actions.onArtifactNext();
+            return true;
+          case "artifact_diff":
+            if (focused === Panel.Artifact) actions.onArtifactDiffToggle();
+            return true;
+          case "approve":
+            if (focused === Panel.Decisions) actions.onApproveQuestion();
+            return true;
+          case "deny":
+            if (focused === Panel.Decisions) actions.onDenyQuestion();
+            return true;
+          case "refresh":
+            return true;
+          case "palette":
+            actions.onSpawnPalette();
+            actions.panels.setMode(InputMode.CommandPalette);
+            return true;
+        }
+      }
+    }
+  }
+
   // Command palette toggle (works in all modes except help)
   if (isCtrl && input === "p") {
     if (mode === InputMode.CommandPalette) {
@@ -87,7 +160,8 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     return true;
   }
 
-  // Escape always exits current mode, or pops detail, or reduces zoom
+  // Escape: one effect per keypress, highest-priority first.
+  // Priority: (1) exit mode → (2) pop detail → (3) reset zoom
   if (input === "escape") {
     if (mode !== InputMode.Normal) {
       actions.panels.setMode(InputMode.Normal);
@@ -97,8 +171,8 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
       actions.nav.popDetail();
       return true;
     }
-    // Escape in normal mode with no detail view → cycle zoom back
-    actions.onZoomCycle();
+    // Reset zoom to normal (not cycle — Escape is "go back", not "go forward")
+    actions.onZoomReset();
     return true;
   }
 
@@ -121,7 +195,7 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
   // Command palette navigation
   if (mode === InputMode.CommandPalette) {
     if (input === "j" || input === "down") {
-      actions.onPaletteDown(0); // maxIndex handled by caller
+      actions.onPaletteDown(Math.max(0, actions.paletteItemCount - 1));
       return true;
     }
     if (input === "k" || input === "up") {
@@ -138,7 +212,7 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
   // Search input mode
   if (mode === InputMode.SearchInput) {
     if (input === "return") {
-      actions.onSearchSubmit("");
+      actions.onSearchSubmit();
       return true;
     }
     if (input === "backspace") {
@@ -269,6 +343,12 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     return true;
   }
 
+  // View mode cycle: V key (item 11 — grid ↔ pipeline)
+  if (input === "V" || (key.shift && input === "v")) {
+    actions.panels.cycleViewMode();
+    return true;
+  }
+
   // Terminal input mode entry
   if (input === "i" && focused === Panel.Terminal) {
     actions.panels.setMode(InputMode.TerminalInput);
@@ -277,22 +357,53 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
 
   // Search input mode entry
   if (input === "/" && focused === Panel.Search) {
-    actions.panels.setMode(InputMode.SearchInput);
+    actions.onSearchStart();
     return true;
   }
 
-  // Broadcast message
-  if (input === "b") {
-    actions.onMessageChar(""); // triggers broadcast mode
-    actions.panels.setMode(InputMode.MessageInput);
-    return true;
+  // Panel-specific keys — must be checked BEFORE global keys like "b"/"d"
+  // because they are more specific (panel + mode gated).
+
+  // Terminal panel: j/k scroll output, G un-pins (item 9)
+  if (focused === Panel.Terminal) {
+    if (input === "j" || input === "down") {
+      actions.onTerminalScrollDown();
+      return true;
+    }
+    if (input === "k" || input === "up") {
+      actions.onTerminalScrollUp();
+      return true;
+    }
+    if (input === "G" || (key.shift && input === "g")) {
+      actions.onTerminalScrollBottom();
+      return true;
+    }
   }
 
-  // Direct message
-  if (input === "@") {
-    actions.onMessageChar("@");
-    actions.panels.setMode(InputMode.MessageInput);
-    return true;
+  // Artifact panel: adopt compared contribution (a/b)
+  if (focused === Panel.Artifact && actions.compareMode) {
+    if (input === "a") {
+      actions.onCompareAdopt("a");
+      return true;
+    }
+    if (input === "b") {
+      actions.onCompareAdopt("b");
+      return true;
+    }
+  }
+  if (focused === Panel.Artifact) {
+    if (input === "h" || input === "left") {
+      actions.onArtifactPrev();
+      return true;
+    }
+    if (input === "l" || input === "right") {
+      actions.onArtifactNext();
+      return true;
+    }
+    if (input === "d") {
+      actions.onArtifactDiffToggle();
+      return true;
+    }
   }
 
   // Approve/Deny pending question (Decisions panel)
@@ -305,16 +416,30 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     return true;
   }
 
+  // Compare artifacts (Frontier panel)
+  if (input === "C" && focused === Panel.Frontier) {
+    actions.onCompareToggle();
+    return true;
+  }
+
+  // Global keys — only reached if no panel-specific handler matched
+
+  // Broadcast message
+  if (input === "b") {
+    actions.onBroadcastMode();
+    return true;
+  }
+
+  // Direct message
+  if (input === "@") {
+    actions.onDirectMessageMode();
+    return true;
+  }
+
   // MCP/ask-user manager
   if (input === "m") {
     actions.onSpawnPalette();
     actions.panels.setMode(InputMode.CommandPalette);
-    return true;
-  }
-
-  // Compare artifacts (Frontier panel)
-  if (input === "C" && focused === Panel.Frontier) {
-    actions.onCompareToggle();
     return true;
   }
 
@@ -356,32 +481,6 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
   if (input === "p") {
     actions.nav.prevPage(actions.pageSize);
     return true;
-  }
-
-  // Artifact panel actions
-  if (focused === Panel.Artifact && actions.compareMode) {
-    if (input === "a") {
-      actions.onCompareSelect("a");
-      return true;
-    }
-    if (input === "b") {
-      actions.onCompareSelect("b");
-      return true;
-    }
-  }
-  if (focused === Panel.Artifact) {
-    if (input === "h" || input === "left") {
-      actions.onArtifactPrev();
-      return true;
-    }
-    if (input === "l" || input === "right") {
-      actions.onArtifactNext();
-      return true;
-    }
-    if (input === "d") {
-      actions.onArtifactDiffToggle();
-      return true;
-    }
   }
 
   if (input === "r") return true; // refresh — handled by polling

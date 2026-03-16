@@ -123,6 +123,9 @@ export function parseInitArgs(args: readonly string[]): InitOptions {
 // Execution
 // ---------------------------------------------------------------------------
 
+/** Callback fired as each init step completes, for progress UI. */
+export type InitProgressCallback = (step: number, label: string) => void;
+
 /** Dependencies for executeInit (injectable for testing). */
 export interface InitDeps {
   readonly cwd: string;
@@ -140,8 +143,13 @@ export interface InitDeps {
  * 7. Seed demo contributions if preset defines them
  * 8. Optionally ingest seed artifacts
  */
-export async function executeInit(options: InitOptions): Promise<{ grovePath: string }> {
+export async function executeInit(
+  options: InitOptions,
+  onProgress?: InitProgressCallback,
+): Promise<{ grovePath: string }> {
   const grovePath = join(options.cwd, ".grove");
+  // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op fallback
+  const progress = onProgress ?? (() => {});
 
   // 1. Check for existing grove
   if (!options.force) {
@@ -150,6 +158,7 @@ export async function executeInit(options: InitOptions): Promise<{ grovePath: st
       throw new Error(`Grove already initialized at ${grovePath}. Use --force to reinitialize.`);
     }
   }
+  progress(0, "Validating configuration");
 
   // 2. Validate seed paths before creating any state
   for (const seedPath of options.seed) {
@@ -164,23 +173,27 @@ export async function executeInit(options: InitOptions): Promise<{ grovePath: st
   const preset = options.preset ? getPreset(options.preset) : undefined;
 
   // 3. Create directory structure
+  progress(1, "Creating directory structure");
   const casPath = join(grovePath, "cas");
   const workspacesPath = join(grovePath, "workspaces");
   await mkdir(casPath, { recursive: true });
   await mkdir(workspacesPath, { recursive: true });
 
   // 4. Initialize SQLite store
+  progress(2, "Initializing database");
   const dbPath = join(grovePath, "grove.db");
   const { initSqliteDb } = await import("../../local/sqlite-store.js");
   const db = initSqliteDb(dbPath);
 
   // 5. Generate GROVE.md
+  progress(3, "Generating GROVE.md contract");
   const grovemdPath = join(options.cwd, "GROVE.md");
   const mdConfig = preset ? presetToGroveMdConfig(preset, options) : defaultGroveMdConfig(options);
   const grovemdContent = buildGroveMd(mdConfig);
   await writeFile(grovemdPath, grovemdContent, "utf-8");
 
   // 6. Write grove.json
+  progress(4, "Writing configuration");
   // Resolve backend mode: if preset prefers nexus, use it.
   // - With explicit --nexus-url: external (unmanaged) Nexus
   // - Without --nexus-url: grove-managed Nexus (grove up handles lifecycle)
@@ -246,6 +259,7 @@ export async function executeInit(options: InitOptions): Promise<{ grovePath: st
   }
 
   // 7. Seed demo contributions if preset defines them
+  progress(5, "Seeding data");
   if (preset?.seedContributions && preset.seedContributions.length > 0) {
     const { createContribution } = await import("../../core/manifest.js");
     const { SqliteContributionStore } = await import("../../local/sqlite-store.js");

@@ -5,7 +5,7 @@
  * In local mode, shows session status and allows spawn/kill via command palette.
  */
 
-import React, { useCallback, useEffect, useRef } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { Claim } from "../../core/models.js";
 import type { TmuxManager } from "../agents/tmux-manager.js";
 import { agentIdFromSession } from "../agents/tmux-manager.js";
@@ -14,7 +14,7 @@ import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
-import { theme } from "../theme.js";
+import { BRAILLE_SPINNER, theme } from "../theme.js";
 
 /** Props for the AgentList view. */
 export interface AgentListProps {
@@ -28,9 +28,10 @@ export interface AgentListProps {
 
 const COLUMNS = [
   { header: "AGENT", key: "agentId", width: 16 },
+  { header: "ROLE", key: "role", width: 12 },
   { header: "PLATFORM", key: "platform", width: 12 },
   { header: "STATUS", key: "status", width: 12 },
-  { header: "COST", key: "cost", width: 10 },
+  { header: "COST", key: "cost", width: 14 },
   { header: "TARGET", key: "target", width: 18 },
   { header: "SESSION", key: "session", width: 16 },
 ] as const;
@@ -60,11 +61,13 @@ function deriveAgentStatus(
   return "running";
 }
 
-/** Map a status string to its theme symbol. */
-function statusSymbol(status: string): string {
+/** Map a status string to its theme symbol (with animated spinner for running). */
+function statusSymbol(status: string, spinnerFrame?: number): string {
   switch (status) {
     case "running":
-      return theme.agentRunning;
+      return spinnerFrame !== undefined
+        ? (BRAILLE_SPINNER[spinnerFrame % BRAILLE_SPINNER.length] ?? theme.agentRunning)
+        : theme.agentRunning;
     case "claimed":
     case "stalled":
       return theme.agentWaiting;
@@ -77,11 +80,19 @@ function statusSymbol(status: string): string {
   }
 }
 
-/** Build agent rows by correlating claims with tmux sessions. */
+/** Format token count to compact string (e.g. "12K", "1.2M"). */
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K`;
+  return String(n);
+}
+
+/** Build agent rows by correlating claims with tmux sessions, grouped by role. */
 function buildAgentRows(
   claims: readonly Claim[],
   tmuxSessions: readonly string[],
   costs?: ReadonlyMap<string, { costUsd: number; tokens: number; contextPercent?: number }>,
+  spinnerFrame?: number,
 ): readonly Record<string, string>[] {
   const agentSessions = new Map<string, string>();
 
@@ -92,21 +103,38 @@ function buildAgentRows(
     }
   }
 
-  return claims.map((claim) => {
+  const rows = claims.map((claim) => {
     const agentId = claim.agent.agentName ?? claim.agent.agentId;
     const session = agentSessions.get(claim.agent.agentId);
     const status = deriveAgentStatus(claim, session, tmuxSessions);
     const agentCost = costs?.get(claim.agent.agentId);
+    const role = claim.agent.role ?? "worker";
 
     return {
       agentId,
+      role,
       platform: claim.agent.platform ?? "-",
       target: claim.targetRef.length > 18 ? `${claim.targetRef.slice(0, 16)}..` : claim.targetRef,
-      status: `${statusSymbol(status)} ${status}`,
-      cost: agentCost ? `$${agentCost.costUsd.toFixed(2)}` : "-",
+      status: `${statusSymbol(status, spinnerFrame)} ${status}`,
+      cost: agentCost
+        ? `$${agentCost.costUsd.toFixed(2)} | ${formatTokens(agentCost.tokens)}`
+        : "-",
       session: session ?? "-",
+      _role: role, // for sorting
     };
   });
+
+  // Group by role: coordinators first, then alphabetical
+  rows.sort((a, b) => {
+    if (a._role !== b._role) {
+      if (a._role === "coordinator") return -1;
+      if (b._role === "coordinator") return 1;
+      return a._role.localeCompare(b._role);
+    }
+    return a.agentId.localeCompare(b.agentId);
+  });
+
+  return rows;
 }
 
 /** Agent list view component. */
@@ -119,6 +147,16 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
     cursor,
     onSelectSession,
   }: AgentListProps): React.ReactNode {
+    // Animated spinner for running agents (item 8)
+    const [spinnerFrame, setSpinnerFrame] = useState(0);
+    useEffect(() => {
+      if (!active) return;
+      const timer = setInterval(() => {
+        setSpinnerFrame((f) => (f + 1) % BRAILLE_SPINNER.length);
+      }, 100);
+      return () => clearInterval(timer);
+    }, [active]);
+
     const claimFetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
     const tmuxFetcher = useCallback(async () => {
       if (!tmux) return [] as readonly string[];
@@ -170,7 +208,12 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
     const combinedStale = isStale || tmuxStale;
     const combinedError = error ?? tmuxError;
 
-    const agentRows = buildAgentRows(claims ?? [], sessions ?? [], agentCosts ?? undefined);
+    const agentRows = buildAgentRows(
+      claims ?? [],
+      sessions ?? [],
+      agentCosts ?? undefined,
+      spinnerFrame,
+    );
 
     // Track rows for session selection and notify parent when cursor moves
     const rowsRef = useRef(agentRows);

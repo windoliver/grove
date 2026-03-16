@@ -5,7 +5,7 @@
  * The selected row is highlighted with a ">" indicator.
  */
 
-import React, { createElement } from "react";
+import React, { createElement, useMemo } from "react";
 import { theme } from "../theme.js";
 
 /** Column definition for the TUI table. */
@@ -36,6 +36,34 @@ export const Table: React.NamedExoticComponent<TableProps> = React.memo(function
   cursor,
   maxRows,
 }: TableProps): React.ReactNode {
+  // Virtual scrolling: cursor-centered windowing (item 18)
+  // useMemo MUST be called before any early return (Rules of Hooks).
+  const maxItems = maxRows ?? MAX_RENDER_ITEMS;
+  const { displayRows, startIndex, truncated } = useMemo(() => {
+    if (rows.length === 0)
+      return { displayRows: [] as Record<string, string>[], startIndex: 0, truncated: false };
+
+    const total = rows.length;
+    const windowSize = Math.min(maxItems, total);
+    const isTruncated = total > windowSize;
+
+    if (cursor === undefined || cursor < 0 || !isTruncated) {
+      return { displayRows: rows.slice(0, windowSize), startIndex: 0, truncated: isTruncated };
+    }
+
+    // Center cursor in the window
+    const half = Math.floor(windowSize / 2);
+    let start = Math.max(0, cursor - half);
+    if (start + windowSize > total) {
+      start = Math.max(0, total - windowSize);
+    }
+    return {
+      displayRows: rows.slice(start, start + windowSize),
+      startIndex: start,
+      truncated: isTruncated,
+    };
+  }, [rows, cursor, maxItems]);
+
   if (rows.length === 0) {
     return (
       <box>
@@ -43,11 +71,6 @@ export const Table: React.NamedExoticComponent<TableProps> = React.memo(function
       </box>
     );
   }
-
-  // Apply max-items guard to prevent rendering thousands of items
-  const maxItems = maxRows ?? MAX_RENDER_ITEMS;
-  const displayRows = rows.slice(0, maxItems);
-  const truncated = rows.length > maxItems;
 
   return (
     <box flexDirection="column">
@@ -65,7 +88,7 @@ export const Table: React.NamedExoticComponent<TableProps> = React.memo(function
         "scroll-box" as string,
         { flexGrow: 1 },
         ...displayRows.map((row, i) => {
-          const isSelected = cursor !== undefined && cursor === i;
+          const isSelected = cursor !== undefined && cursor === startIndex + i;
           return (
             <box key={row.cid ?? row.id ?? String(i)}>
               <text color={isSelected ? theme.focus : undefined}>

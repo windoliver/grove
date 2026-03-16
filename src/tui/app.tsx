@@ -3,12 +3,13 @@
  *
  * Multi-panel agent command center with graph-first layout.
  * Uses OpenTUI for rendering, usePanelFocus for panel state,
- * and useNavigation for within-panel navigation.
+ * useNavigation for within-panel navigation, and routeKey as
+ * the single source of truth for keyboard handling.
  */
 
 import { useKeyboard, useRenderer } from "@opentui/react";
 import type React from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { Claim, Contribution } from "../core/models.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import { checkSpawn, checkSpawnDepth } from "./agents/spawn-validator.js";
@@ -19,13 +20,21 @@ import { InputBar } from "./components/input-bar.js";
 import { StatusBar } from "./components/status-bar.js";
 import { PanelBar } from "./components/tab-bar.js";
 import { TooltipOverlay, useFirstLaunchTooltips } from "./components/tooltip-overlay.js";
-import { nextZoom } from "./hooks/use-keyboard-handler.js";
+import { useKeybindingOverrides } from "./hooks/use-keybinding-overrides.js";
+import type { KeyboardActions } from "./hooks/use-keyboard-handler.js";
+import { nextZoom, routeKey } from "./hooks/use-keyboard-handler.js";
 import { useNavigation } from "./hooks/use-navigation.js";
-import { InputMode, Panel, usePanelFocus } from "./hooks/use-panel-focus.js";
+import { InputMode, usePanelFocus } from "./hooks/use-panel-focus.js";
 import { usePolledData } from "./hooks/use-polled-data.js";
+import { useSessionPersistence } from "./hooks/use-session-persistence.js";
 import type { ZoomLevel } from "./panels/panel-manager.js";
 import { PanelManager } from "./panels/panel-manager.js";
-import type { GitHubPRSummary, TuiDataProvider, TuiGitHubProvider } from "./provider.js";
+import {
+  type GitHubPRSummary,
+  isCostProvider,
+  isGitHubProvider,
+  type TuiDataProvider,
+} from "./provider.js";
 import { SpawnManager } from "./spawn-manager.js";
 
 /** Props for the root App component. */
@@ -44,44 +53,200 @@ function formatTokens(n: number): string {
   return `${n} tok`;
 }
 
+// ---------------------------------------------------------------------------
+// TUI keyboard state — consolidated into a reducer for testability
+// and future session persistence support.
+// ---------------------------------------------------------------------------
+
+/** State managed by the keyboard-driven reducer. */
+export interface TuiKeyboardState {
+  readonly vfsNavigateTrigger: number;
+  readonly artifactIndex: number;
+  readonly showArtifactDiff: boolean;
+  readonly paletteIndex: number;
+  readonly searchQuery: string;
+  readonly searchBuffer: string;
+  readonly messageBuffer: string;
+  readonly messageRecipients: string;
+  readonly compareMode: boolean;
+  readonly compareCids: readonly string[];
+  readonly zoomLevel: ZoomLevel;
+  readonly terminalScrollOffset: number;
+}
+
+/** Actions for the TUI keyboard state reducer. */
+export type TuiAction =
+  | { readonly type: "VFS_NAVIGATE" }
+  | { readonly type: "ARTIFACT_PREV" }
+  | { readonly type: "ARTIFACT_NEXT" }
+  | { readonly type: "ARTIFACT_DIFF_TOGGLE" }
+  | { readonly type: "PALETTE_UP" }
+  | { readonly type: "PALETTE_DOWN"; readonly maxIndex: number }
+  | { readonly type: "PALETTE_RESET" }
+  | { readonly type: "SEARCH_START"; readonly currentQuery: string }
+  | { readonly type: "SEARCH_CHAR"; readonly char: string }
+  | { readonly type: "SEARCH_BACKSPACE" }
+  | { readonly type: "SEARCH_SUBMIT" }
+  | { readonly type: "MESSAGE_CHAR"; readonly char: string }
+  | { readonly type: "MESSAGE_BACKSPACE" }
+  | { readonly type: "MESSAGE_CLEAR" }
+  | { readonly type: "BROADCAST_MODE" }
+  | { readonly type: "DIRECT_MESSAGE_MODE" }
+  | { readonly type: "COMPARE_TOGGLE" }
+  | { readonly type: "COMPARE_SELECT"; readonly cid: string }
+  | { readonly type: "COMPARE_ADOPT" }
+  | { readonly type: "ZOOM_CYCLE" }
+  | { readonly type: "ZOOM_RESET" }
+  | { readonly type: "TERMINAL_SCROLL_UP" }
+  | { readonly type: "TERMINAL_SCROLL_DOWN" }
+  | { readonly type: "TERMINAL_SCROLL_BOTTOM" };
+
+const INITIAL_KEYBOARD_STATE: TuiKeyboardState = {
+  vfsNavigateTrigger: 0,
+  artifactIndex: 0,
+  showArtifactDiff: false,
+  paletteIndex: 0,
+  searchQuery: "",
+  searchBuffer: "",
+  messageBuffer: "",
+  messageRecipients: "",
+  compareMode: false,
+  compareCids: [],
+  zoomLevel: "normal",
+  terminalScrollOffset: 0,
+};
+
+/** Pure reducer for TUI keyboard state — testable and serializable. */
+export function tuiReducer(state: TuiKeyboardState, action: TuiAction): TuiKeyboardState {
+  switch (action.type) {
+    case "VFS_NAVIGATE":
+      return { ...state, vfsNavigateTrigger: state.vfsNavigateTrigger + 1 };
+    case "ARTIFACT_PREV":
+      return { ...state, artifactIndex: Math.max(0, state.artifactIndex - 1) };
+    case "ARTIFACT_NEXT":
+      return { ...state, artifactIndex: state.artifactIndex + 1 };
+    case "ARTIFACT_DIFF_TOGGLE":
+      return { ...state, showArtifactDiff: !state.showArtifactDiff };
+    case "PALETTE_UP":
+      return { ...state, paletteIndex: Math.max(0, state.paletteIndex - 1) };
+    case "PALETTE_DOWN":
+      return { ...state, paletteIndex: Math.min(state.paletteIndex + 1, action.maxIndex) };
+    case "PALETTE_RESET":
+      return { ...state, paletteIndex: 0 };
+    case "SEARCH_START":
+      return { ...state, searchBuffer: action.currentQuery };
+    case "SEARCH_CHAR":
+      return { ...state, searchBuffer: state.searchBuffer + action.char };
+    case "SEARCH_BACKSPACE":
+      return { ...state, searchBuffer: state.searchBuffer.slice(0, -1) };
+    case "SEARCH_SUBMIT":
+      return { ...state, searchQuery: state.searchBuffer };
+    case "MESSAGE_CHAR":
+      return { ...state, messageBuffer: state.messageBuffer + action.char };
+    case "MESSAGE_BACKSPACE":
+      return { ...state, messageBuffer: state.messageBuffer.slice(0, -1) };
+    case "MESSAGE_CLEAR":
+      return { ...state, messageBuffer: "", messageRecipients: "" };
+    case "BROADCAST_MODE":
+      return { ...state, messageBuffer: "", messageRecipients: "@all" };
+    case "DIRECT_MESSAGE_MODE":
+      return { ...state, messageBuffer: "@", messageRecipients: "@direct" };
+    case "COMPARE_TOGGLE":
+      return {
+        ...state,
+        compareMode: !state.compareMode,
+        compareCids: state.compareMode ? state.compareCids : [],
+      };
+    case "COMPARE_SELECT": {
+      const prev = state.compareCids;
+      if (prev.includes(action.cid)) {
+        return { ...state, compareCids: prev.filter((c) => c !== action.cid) };
+      }
+      if (prev.length >= 2) {
+        const second = prev[1] ?? prev[0] ?? action.cid;
+        return { ...state, compareCids: [second, action.cid] };
+      }
+      return { ...state, compareCids: [...prev, action.cid] };
+    }
+    case "COMPARE_ADOPT":
+      return { ...state, compareMode: false, compareCids: [] };
+    case "ZOOM_CYCLE":
+      return { ...state, zoomLevel: nextZoom(state.zoomLevel) };
+    case "ZOOM_RESET":
+      return state.zoomLevel === "normal" ? state : { ...state, zoomLevel: "normal" };
+    case "TERMINAL_SCROLL_UP":
+      return { ...state, terminalScrollOffset: state.terminalScrollOffset + 5 };
+    case "TERMINAL_SCROLL_DOWN":
+      return { ...state, terminalScrollOffset: Math.max(0, state.terminalScrollOffset - 5) };
+    case "TERMINAL_SCROLL_BOTTOM":
+      return state.terminalScrollOffset === 0 ? state : { ...state, terminalScrollOffset: 0 };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Root component
+// ---------------------------------------------------------------------------
+
 /** Root TUI application. */
 export function App({ provider, intervalMs, tmux, topology }: AppProps): React.ReactNode {
   const renderer = useRenderer();
   const nav = useNavigation();
   const panels = usePanelFocus();
   const { showTooltips, dismissAll: dismissTooltips } = useFirstLaunchTooltips();
+  const { persistedState, saveState } = useSessionPersistence();
+  const keybindingOverrides = useKeybindingOverrides();
+  const [ks, dispatch] = useReducer(tuiReducer, INITIAL_KEYBOARD_STATE);
+
+  // Restore persisted state on first load (item 13)
+  // restoredRef gates both restore AND save — save must not run before restore.
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current || !persistedState) return;
+    restoredRef.current = true;
+    // Restore zoom level
+    if (persistedState.zoomLevel && persistedState.zoomLevel !== "normal") {
+      let current: ZoomLevel = "normal";
+      while (current !== persistedState.zoomLevel) {
+        dispatch({ type: "ZOOM_CYCLE" });
+        current = nextZoom(current);
+      }
+    }
+    // Restore search query
+    if (persistedState.searchQuery) {
+      for (const ch of persistedState.searchQuery) {
+        dispatch({ type: "SEARCH_CHAR", char: ch });
+      }
+      dispatch({ type: "SEARCH_SUBMIT" });
+    }
+    // Restore visible operator panels FIRST (so focus can land on them)
+    if (persistedState.visibleOperatorPanels) {
+      for (const p of persistedState.visibleOperatorPanels) {
+        panels.toggle(p as import("./hooks/use-panel-focus.js").Panel);
+      }
+    }
+    // Restore focused panel AFTER panels are visible
+    if (persistedState.focusedPanel !== undefined) {
+      panels.focus(persistedState.focusedPanel as import("./hooks/use-panel-focus.js").Panel);
+    }
+  }, [persistedState, panels]);
+
+  // Persist state on changes (item 13)
+  // Gated by restoredRef to prevent saving default state before async restore completes.
+  useEffect(() => {
+    if (!restoredRef.current) return;
+    const visibleOps = [...panels.state.visibleOperator];
+    saveState({
+      zoomLevel: ks.zoomLevel,
+      searchQuery: ks.searchQuery || undefined,
+      focusedPanel: panels.state.focused,
+      visibleOperatorPanels: visibleOps.length > 0 ? visibleOps : undefined,
+    });
+  }, [ks.zoomLevel, ks.searchQuery, panels.state.focused, panels.state.visibleOperator, saveState]);
 
   const [contributionList, setContributionList] = useState<readonly Contribution[]>([]);
   const [rowCount, setRowCount] = useState(0);
   const [selectedSession, setSelectedSession] = useState<string | undefined>();
-
-  // VFS navigation trigger — incremented when Enter pressed in VFS panel
-  const [vfsNavigateTrigger, setVfsNavigateTrigger] = useState(0);
-
-  // Artifact cycling state
-  const [artifactIndex, setArtifactIndex] = useState(0);
-
-  // Artifact diff toggle
-  const [showArtifactDiff, setShowArtifactDiff] = useState(false);
-
-  // Command palette selection cursor
-  const [paletteIndex, setPaletteIndex] = useState(0);
-
-  // Search query state (driven from search input mode)
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchBuffer, setSearchBuffer] = useState("");
-
-  // Message input state
-  const [messageBuffer, setMessageBuffer] = useState("");
-  const [messageRecipients, setMessageRecipients] = useState("");
-
-  // Frontier compare mode
-  const [compareMode, setCompareMode] = useState(false);
-  const [compareCids, setCompareCids] = useState<readonly string[]>([]);
   const [frontierCids, setFrontierCids] = useState<readonly string[]>([]);
-
-  // Zoom level (Normal → Half → Full cycle)
-  const [zoomLevel, setZoomLevel] = useState<ZoomLevel>("normal");
 
   // Last error for status bar display (auto-clears after 5s)
   const [lastError, setLastError] = useState<string | undefined>();
@@ -115,7 +280,8 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
     topology !== undefined,
   );
 
-  // Poll tmux sessions for the command palette kill list
+  // Poll tmux sessions — used by command palette, agent count, split pane,
+  // and transcript search. Always active when tmux is available (fix #3).
   const paletteVisible = panels.state.mode === InputMode.CommandPalette;
   const sessionsFetcher = useCallback(async () => {
     if (!tmux) return [] as readonly string[];
@@ -125,37 +291,39 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
   }, [tmux]);
   const { data: paletteSessions } = usePolledData<readonly string[]>(
     sessionsFetcher,
-    intervalMs * 2,
-    paletteVisible && tmux !== undefined,
+    paletteVisible ? intervalMs * 2 : intervalMs * 4,
+    tmux !== undefined,
   );
 
-  // Poll session costs for status bar display
+  // Poll session costs — skip if provider doesn't support it (15B)
+  const hasCosts = isCostProvider(provider);
   const costFetcher = useCallback(async () => {
-    const cp = provider as unknown as {
-      getSessionCosts?: () => Promise<{ totalCostUsd: number; totalTokens: number }>;
-    };
-    if (!cp.getSessionCosts) return undefined;
-    return cp.getSessionCosts();
-  }, [provider]);
+    if (!hasCosts) return undefined;
+    return (
+      provider as TuiDataProvider & {
+        getSessionCosts: () => Promise<{ totalCostUsd: number; totalTokens: number }>;
+      }
+    ).getSessionCosts();
+  }, [provider, hasCosts]);
   const { data: sessionCosts } = usePolledData<
     { totalCostUsd: number; totalTokens: number } | undefined
   >(
     costFetcher,
-    intervalMs * 3, // Cold tier — poll every 3x base interval
-    true,
+    intervalMs * 3,
+    hasCosts, // Only poll when provider actually supports costs
   );
 
   // Poll active PR and set context on SpawnManager so agents get env vars
-  const hasGitHub =
-    "getActivePR" in provider &&
-    typeof (provider as unknown as TuiGitHubProvider).getActivePR === "function";
+  const hasGitHub = isGitHubProvider(provider);
   const prFetcher = useCallback(async (): Promise<GitHubPRSummary | undefined> => {
     if (!hasGitHub) return undefined;
-    return (provider as unknown as TuiGitHubProvider).getActivePR();
+    return (
+      provider as TuiDataProvider & { getActivePR: () => Promise<GitHubPRSummary | undefined> }
+    ).getActivePR();
   }, [provider, hasGitHub]);
   const { data: activePR } = usePolledData<GitHubPRSummary | undefined>(
     prFetcher,
-    intervalMs * 4, // Cold tier — PR context changes infrequently
+    intervalMs * 4,
     hasGitHub,
   );
 
@@ -218,6 +386,30 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
   }, []);
   const { data: agentProfiles } = usePolledData(profilesFetcher, intervalMs * 10, true);
 
+  // Build terminal buffer map for cross-agent transcript search (item 17)
+  const activeGroveSessions = useMemo(
+    () => paletteSessions?.filter((s) => s.startsWith("grove-")) ?? [],
+    [paletteSessions],
+  );
+  const terminalBuffersFetcher = useCallback(async () => {
+    if (!tmux || activeGroveSessions.length === 0) return new Map<string, string>();
+    const map = new Map<string, string>();
+    for (const s of activeGroveSessions) {
+      try {
+        const out = await tmux.capturePanes(s);
+        map.set(s, out);
+      } catch {
+        // skip failed captures
+      }
+    }
+    return map;
+  }, [tmux, activeGroveSessions]);
+  const { data: terminalBuffers } = usePolledData<Map<string, string>>(
+    terminalBuffersFetcher,
+    intervalMs * 5, // cold tier — transcript search is infrequent
+    activeGroveSessions.length > 0,
+  );
+
   const paletteItems = useMemo(
     () =>
       buildPaletteItems(
@@ -250,17 +442,6 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
 
   const handleRowCountChanged = useCallback((count: number) => {
     setRowCount(count);
-  }, []);
-
-  const handleCompareSelect = useCallback((cid: string) => {
-    setCompareCids((prev) => {
-      if (prev.includes(cid)) return prev.filter((c) => c !== cid);
-      if (prev.length >= 2) {
-        const second = prev[1] ?? prev[0] ?? cid;
-        return [second, cid]; // Replace oldest
-      }
-      return [...prev, cid];
-    });
   }, []);
 
   const handleFrontierCidsChanged = useCallback((cids: readonly string[]) => {
@@ -314,7 +495,6 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
           return;
         }
         // Fallback: POST to boardroom endpoint (works for remote providers)
-        // Detect base URL from provider label or default
         const rp = provider as unknown as { baseUrl?: string };
         const baseUrl = rp.baseUrl ?? "http://localhost:4515";
         const resp = await fetch(`${baseUrl}/api/boardroom/message`, {
@@ -340,7 +520,6 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
   /** Delegate work to a gossip peer by calling its /api/agents/spawn endpoint. */
   const handleDelegate = useCallback(
     async (peerAddress: string) => {
-      // Use first topology role, or fallback to "worker"
       const role = topology?.roles[0]?.name ?? "worker";
       try {
         const resp = await fetch(`${peerAddress.replace(/\/+$/, "")}/api/agents/spawn`, {
@@ -385,416 +564,6 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
     renderer.destroy();
   }, [provider, renderer]);
 
-  // Main keyboard handler — delegates to extracted routeKey for testability.
-  // Complex palette actions (spawn/kill/register/delegate) remain here
-  // because they need closure access to spawnManagerRef, agentProfiles, etc.
-  useKeyboard((key) => {
-    const input = key.name;
-    const isCtrl = key.ctrl;
-
-    // Dismiss first-launch tooltips on any key press
-    if (showTooltips) {
-      dismissTooltips();
-      return;
-    }
-
-    // Command palette toggle (works in all modes except help)
-    if (isCtrl && input === "p") {
-      if (panels.state.mode === InputMode.CommandPalette) {
-        panels.setMode(InputMode.Normal);
-      } else {
-        setPaletteIndex(0);
-        panels.setMode(InputMode.CommandPalette);
-      }
-      return;
-    }
-
-    // Escape: exit mode → pop detail → reduce zoom
-    if (input === "escape") {
-      if (panels.state.mode !== InputMode.Normal) {
-        panels.setMode(InputMode.Normal);
-        return;
-      }
-      if (nav.isDetailView) {
-        nav.popDetail();
-        return;
-      }
-      // Reduce zoom level on Esc in normal mode
-      if (zoomLevel !== "normal") {
-        setZoomLevel("normal");
-      }
-      return;
-    }
-
-    // Help mode: ? toggles off
-    if (panels.state.mode === InputMode.Help) {
-      if (input === "?" || (key.shift && input === "/")) {
-        panels.setMode(InputMode.Normal);
-      }
-      return;
-    }
-
-    // Terminal input: forward to tmux with paste safety validation
-    if (panels.state.mode === InputMode.TerminalInput) {
-      if (tmux && selectedSession && input) {
-        // Validate paste safety before forwarding to tmux
-        void (async () => {
-          const { isPasteSafe } = await import("./utils/paste-safety.js");
-          if (!isPasteSafe(input)) {
-            showError("Blocked: input contains potentially dangerous escape sequences");
-            return;
-          }
-          void safeCleanup(tmux.sendKeys(selectedSession, input), "sendKeys to tmux session", {
-            silent: true,
-          });
-        })();
-      }
-      return;
-    }
-
-    // Command palette: nav + execute
-    if (panels.state.mode === InputMode.CommandPalette) {
-      const itemCount = paletteItems.length;
-      if ((input === "j" || input === "down") && itemCount > 0) {
-        setPaletteIndex((i) => Math.min(i + 1, itemCount - 1));
-        return;
-      }
-      if ((input === "k" || input === "up") && itemCount > 0) {
-        setPaletteIndex((i) => Math.max(i - 1, 0));
-        return;
-      }
-      if (input === "return" && itemCount > 0) {
-        const item = paletteItems[paletteIndex];
-        if (item?.enabled) {
-          if (item.kind === "spawn") {
-            const profileCommand = agentProfiles?.find((p) => p.role === item.id)?.command;
-            const roleCommand = topology?.roles.find((r) => r.name === item.id)?.command;
-            const shell = profileCommand ?? roleCommand ?? process.env.SHELL ?? "bash";
-            handleSpawn(item.id, shell, "HEAD", paletteParentId);
-          } else if (item.kind === "kill") {
-            handleKill(item.id);
-          } else if (item.kind === "register") {
-            void (async () => {
-              try {
-                const { existsSync, writeFileSync, mkdirSync } = await import("node:fs");
-                const { resolve } = await import("node:path");
-                const dir = resolve(process.cwd(), ".grove");
-                const path = resolve(dir, "agents.json");
-                if (!existsSync(path)) {
-                  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-                  const template = JSON.stringify(
-                    {
-                      profiles: [
-                        {
-                          name: "@agent-1",
-                          role: topology?.roles[0]?.name ?? "worker",
-                          platform: "claude-code",
-                          command: "claude --dangerously-skip-permissions",
-                        },
-                      ],
-                    },
-                    null,
-                    2,
-                  );
-                  writeFileSync(path, template);
-                  showError(`Created ${path} — edit to add agent profiles`);
-                } else {
-                  showError(
-                    `Profiles loaded from ${path} (${String(agentProfiles?.length ?? 0)} profiles)`,
-                  );
-                }
-              } catch (err) {
-                showError(err instanceof Error ? err.message : "Registration failed");
-              }
-            })();
-          } else if (item.kind === "delegate") {
-            void handleDelegate(item.id);
-          }
-          panels.setMode(InputMode.Normal);
-          setPaletteIndex(0);
-        }
-        return;
-      }
-      return;
-    }
-
-    // Search input mode
-    if (panels.state.mode === InputMode.SearchInput) {
-      if (input === "return") {
-        setSearchQuery(searchBuffer);
-        panels.setMode(InputMode.Normal);
-        return;
-      }
-      if (input === "backspace") {
-        setSearchBuffer((b) => b.slice(0, -1));
-        return;
-      }
-      if (input && input.length === 1 && !isCtrl) {
-        setSearchBuffer((b) => b + input);
-        return;
-      }
-      return;
-    }
-
-    // Message input mode
-    if (panels.state.mode === InputMode.MessageInput) {
-      if (input === "return") {
-        const buf = messageBuffer.trim();
-        if (buf) {
-          if (messageRecipients === "@direct") {
-            const match = buf.match(/^(@\S+)\s+(.+)/s);
-            if (match) {
-              void sendTuiMessage(match[1]!, match[2]!);
-            } else {
-              showError("Usage: @recipient message");
-            }
-          } else if (messageRecipients) {
-            void sendTuiMessage(messageRecipients, buf);
-          }
-        }
-        panels.setMode(InputMode.Normal);
-        return;
-      }
-      if (input === "backspace") {
-        setMessageBuffer((b) => b.slice(0, -1));
-        return;
-      }
-      if (input && input.length === 1 && !isCtrl) {
-        setMessageBuffer((b) => b + input);
-        return;
-      }
-      return;
-    }
-
-    // Normal mode — help toggle
-    if (input === "?" || (key.shift && input === "/")) {
-      panels.setMode(InputMode.Help);
-      return;
-    }
-
-    if (input === "q") {
-      handleQuit();
-      return;
-    }
-
-    // Panel focus: 1-4
-    if (input === "1") {
-      panels.focus(Panel.Dag);
-      return;
-    }
-    if (input === "2") {
-      panels.focus(Panel.Detail);
-      return;
-    }
-    if (input === "3") {
-      panels.focus(Panel.Frontier);
-      return;
-    }
-    if (input === "4") {
-      panels.focus(Panel.Claims);
-      return;
-    }
-
-    // Panel toggle: 5-=, [, ], \, ;, '
-    if (input === "5") {
-      panels.toggle(Panel.AgentList);
-      return;
-    }
-    if (input === "6") {
-      panels.toggle(Panel.Terminal);
-      return;
-    }
-    if (input === "7") {
-      panels.toggle(Panel.Artifact);
-      return;
-    }
-    if (input === "8") {
-      panels.toggle(Panel.Vfs);
-      return;
-    }
-    if (input === "9") {
-      panels.toggle(Panel.Activity);
-      return;
-    }
-    if (input === "0") {
-      panels.toggle(Panel.Search);
-      return;
-    }
-    if (input === "-") {
-      panels.toggle(Panel.Threads);
-      return;
-    }
-    if (input === "=") {
-      panels.toggle(Panel.Outcomes);
-      return;
-    }
-    if (input === "[") {
-      panels.toggle(Panel.Bounties);
-      return;
-    }
-    if (input === "]") {
-      panels.toggle(Panel.Gossip);
-      return;
-    }
-    if (input === "\\") {
-      panels.toggle(Panel.Inbox);
-      return;
-    }
-    if (input === ";") {
-      panels.toggle(Panel.Decisions);
-      return;
-    }
-    if (input === "'") {
-      panels.toggle(Panel.GitHub);
-      return;
-    }
-
-    // Tab/Shift+Tab: cycle focus
-    if (input === "tab") {
-      if (key.shift) {
-        panels.cyclePrev();
-      } else {
-        panels.cycleNext();
-      }
-      return;
-    }
-
-    // Zoom cycle: + key
-    if (input === "+" || (key.shift && input === "=")) {
-      setZoomLevel((z) => nextZoom(z));
-      return;
-    }
-
-    // Terminal input mode entry
-    if (input === "i" && panels.state.focused === Panel.Terminal) {
-      panels.setMode(InputMode.TerminalInput);
-      return;
-    }
-
-    // Search input mode entry
-    if (input === "/" && panels.state.focused === Panel.Search) {
-      setSearchBuffer(searchQuery);
-      panels.setMode(InputMode.SearchInput);
-      return;
-    }
-
-    // Messaging
-    if (input === "b") {
-      setMessageBuffer("");
-      setMessageRecipients("@all");
-      panels.setMode(InputMode.MessageInput);
-      return;
-    }
-    if (input === "@") {
-      setMessageBuffer("@");
-      setMessageRecipients("@direct");
-      panels.setMode(InputMode.MessageInput);
-      return;
-    }
-
-    // Decisions panel
-    if (input === "a" && panels.state.focused === Panel.Decisions) {
-      void handleApproveQuestion();
-      return;
-    }
-    if (input === "d" && panels.state.focused === Panel.Decisions) {
-      void handleDenyQuestion();
-      return;
-    }
-
-    // MCP/ask-user
-    if (input === "m") {
-      setPaletteIndex(0);
-      panels.setMode(InputMode.CommandPalette);
-      return;
-    }
-
-    // Compare artifacts (Frontier)
-    if (input === "C" && panels.state.focused === Panel.Frontier) {
-      setCompareMode((v) => {
-        if (!v) setCompareCids([]);
-        return !v;
-      });
-      return;
-    }
-
-    // Within-panel navigation
-    if (input === "j" || input === "down") {
-      nav.cursorDown(Math.max(0, rowCount - 1));
-      return;
-    }
-    if (input === "k" || input === "up") {
-      nav.cursorUp();
-      return;
-    }
-
-    if (input === "return") {
-      if (panels.state.focused === Panel.Vfs) {
-        setVfsNavigateTrigger((n) => n + 1);
-        return;
-      }
-      if (compareMode && panels.state.focused === Panel.Frontier && frontierCids.length > 0) {
-        const cid = frontierCids[nav.state.cursor];
-        if (cid) handleCompareSelect(cid);
-        return;
-      }
-      const isClaimsPanel = panels.state.focused === Panel.Claims;
-      if (!nav.isDetailView && !isClaimsPanel && rowCount > 0) {
-        handleSelect(nav.state.cursor);
-      }
-      return;
-    }
-
-    if (input === "n") {
-      const hasFullPage = rowCount >= PAGE_SIZE;
-      const totalItems = hasFullPage
-        ? nav.state.pageOffset + rowCount + 1
-        : nav.state.pageOffset + rowCount;
-      nav.nextPage(PAGE_SIZE, totalItems);
-      return;
-    }
-    if (input === "p") {
-      nav.prevPage(PAGE_SIZE);
-      return;
-    }
-
-    // Artifact panel actions
-    if (panels.state.focused === Panel.Artifact && compareMode && compareCids.length === 2) {
-      if (input === "a") {
-        showError(`Adopted: ${(compareCids[0] ?? "").slice(0, 16)}...`);
-        setCompareMode(false);
-        setCompareCids([]);
-        return;
-      }
-      if (input === "b") {
-        showError(`Adopted: ${(compareCids[1] ?? "").slice(0, 16)}...`);
-        setCompareMode(false);
-        setCompareCids([]);
-        return;
-      }
-    }
-    if (panels.state.focused === Panel.Artifact) {
-      if (input === "h" || input === "left") {
-        setArtifactIndex((i) => Math.max(0, i - 1));
-        return;
-      }
-      if (input === "l" || input === "right") {
-        setArtifactIndex((i) => i + 1);
-        return;
-      }
-      if (input === "d") {
-        setShowArtifactDiff((v) => !v);
-        return;
-      }
-    }
-
-    if (input === "r") return; // refresh — handled by polling
-  });
-
-  const handleCommandPaletteClose = useCallback(() => {
-    panels.setMode(InputMode.Normal);
-  }, [panels]);
-
   /**
    * Spawn a new agent session via SpawnManager.
    * Validates topology constraints, then delegates lifecycle to SpawnManager.
@@ -834,6 +603,195 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
     [showError],
   );
 
+  const handleCommandPaletteClose = useCallback(() => {
+    panels.setMode(InputMode.Normal);
+  }, [panels]);
+
+  // ---------------------------------------------------------------------------
+  // KeyboardActions adapter — maps routeKey callbacks to state transitions.
+  // Complex palette execution (spawn/kill/register/delegate) and paste safety
+  // remain here because they need closure access to spawnManagerRef, etc.
+  // ---------------------------------------------------------------------------
+
+  const keyboardActions: KeyboardActions = useMemo(
+    () => ({
+      panels,
+      nav,
+      onQuit: handleQuit,
+      onSpawnPalette: () => dispatch({ type: "PALETTE_RESET" }),
+      onZoomCycle: () => dispatch({ type: "ZOOM_CYCLE" }),
+      onZoomReset: () => dispatch({ type: "ZOOM_RESET" }),
+      onTerminalScrollUp: () => dispatch({ type: "TERMINAL_SCROLL_UP" }),
+      onTerminalScrollDown: () => dispatch({ type: "TERMINAL_SCROLL_DOWN" }),
+      onTerminalScrollBottom: () => dispatch({ type: "TERMINAL_SCROLL_BOTTOM" }),
+      onVfsNavigate: () => dispatch({ type: "VFS_NAVIGATE" }),
+      onArtifactPrev: () => dispatch({ type: "ARTIFACT_PREV" }),
+      onArtifactNext: () => dispatch({ type: "ARTIFACT_NEXT" }),
+      onArtifactDiffToggle: () => dispatch({ type: "ARTIFACT_DIFF_TOGGLE" }),
+      onCompareToggle: () => dispatch({ type: "COMPARE_TOGGLE" }),
+      onCompareSelect: (cid: string) => dispatch({ type: "COMPARE_SELECT", cid }),
+      onCompareAdopt: (side: "a" | "b") => {
+        const cid = side === "a" ? ks.compareCids[0] : ks.compareCids[1];
+        showError(`Adopted: ${(cid ?? "").slice(0, 16)}...`);
+        dispatch({ type: "COMPARE_ADOPT" });
+      },
+      onSearchStart: () => {
+        dispatch({ type: "SEARCH_START", currentQuery: ks.searchQuery });
+        panels.setMode(InputMode.SearchInput);
+      },
+      onSearchSubmit: () => {
+        dispatch({ type: "SEARCH_SUBMIT" });
+        panels.setMode(InputMode.Normal);
+      },
+      onSearchChar: (char: string) => dispatch({ type: "SEARCH_CHAR", char }),
+      onSearchBackspace: () => dispatch({ type: "SEARCH_BACKSPACE" }),
+      onMessageSubmit: () => {
+        const buf = ks.messageBuffer.trim();
+        if (buf) {
+          if (ks.messageRecipients === "@direct") {
+            const match = buf.match(/^(@\S+)\s+(.+)/s);
+            if (match) {
+              const recipient = match[1] ?? "";
+              const body = match[2] ?? "";
+              void sendTuiMessage(recipient, body);
+            } else {
+              showError("Usage: @recipient message");
+            }
+          } else if (ks.messageRecipients) {
+            void sendTuiMessage(ks.messageRecipients, buf);
+          }
+        }
+        dispatch({ type: "MESSAGE_CLEAR" });
+        panels.setMode(InputMode.Normal);
+      },
+      onMessageChar: (char: string) => dispatch({ type: "MESSAGE_CHAR", char }),
+      onMessageBackspace: () => dispatch({ type: "MESSAGE_BACKSPACE" }),
+      onBroadcastMode: () => {
+        dispatch({ type: "BROADCAST_MODE" });
+        panels.setMode(InputMode.MessageInput);
+      },
+      onDirectMessageMode: () => {
+        dispatch({ type: "DIRECT_MESSAGE_MODE" });
+        panels.setMode(InputMode.MessageInput);
+      },
+      onApproveQuestion: () => void handleApproveQuestion(),
+      onDenyQuestion: () => void handleDenyQuestion(),
+      onSendKeys: (key: string) => {
+        if (!tmux || !selectedSession) return;
+        void (async () => {
+          const { isPasteSafe } = await import("./utils/paste-safety.js");
+          if (!isPasteSafe(key)) {
+            showError("Blocked: input contains potentially dangerous escape sequences");
+            return;
+          }
+          void safeCleanup(tmux.sendKeys(selectedSession, key), "sendKeys to tmux session", {
+            silent: true,
+          });
+        })();
+      },
+      onPaletteUp: () => dispatch({ type: "PALETTE_UP" }),
+      onPaletteDown: (maxIndex: number) => dispatch({ type: "PALETTE_DOWN", maxIndex }),
+      onPaletteSelect: () => {
+        const item = paletteItems[ks.paletteIndex];
+        if (!item?.enabled) return;
+        if (item.kind === "spawn") {
+          const profileCommand = agentProfiles?.find((p) => p.role === item.id)?.command;
+          const roleCommand = topology?.roles.find((r) => r.name === item.id)?.command;
+          const shell = profileCommand ?? roleCommand ?? process.env.SHELL ?? "bash";
+          handleSpawn(item.id, shell, "HEAD", paletteParentId);
+        } else if (item.kind === "kill") {
+          handleKill(item.id);
+        } else if (item.kind === "register") {
+          void (async () => {
+            try {
+              const { existsSync, writeFileSync, mkdirSync } = await import("node:fs");
+              const { resolve } = await import("node:path");
+              const dir = resolve(process.cwd(), ".grove");
+              const path = resolve(dir, "agents.json");
+              if (!existsSync(path)) {
+                if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+                const template = JSON.stringify(
+                  {
+                    profiles: [
+                      {
+                        name: "@agent-1",
+                        role: topology?.roles[0]?.name ?? "worker",
+                        platform: "claude-code",
+                        command: "claude --dangerously-skip-permissions",
+                      },
+                    ],
+                  },
+                  null,
+                  2,
+                );
+                writeFileSync(path, template);
+                showError(`Created ${path} — edit to add agent profiles`);
+              } else {
+                showError(
+                  `Profiles loaded from ${path} (${String(agentProfiles?.length ?? 0)} profiles)`,
+                );
+              }
+            } catch (err) {
+              showError(err instanceof Error ? err.message : "Registration failed");
+            }
+          })();
+        } else if (item.kind === "delegate") {
+          void handleDelegate(item.id);
+        }
+        panels.setMode(InputMode.Normal);
+        dispatch({ type: "PALETTE_RESET" });
+      },
+      onSelect: handleSelect,
+      rowCount,
+      pageSize: PAGE_SIZE,
+      paletteItemCount: paletteItems.length,
+      compareMode: ks.compareMode,
+      frontierCids,
+      selectedSession,
+      hasTmux: tmux !== undefined,
+      keybindingOverrides,
+    }),
+    [
+      panels,
+      nav,
+      handleQuit,
+      handleSelect,
+      handleApproveQuestion,
+      handleDenyQuestion,
+      handleSpawn,
+      handleKill,
+      handleDelegate,
+      sendTuiMessage,
+      showError,
+      tmux,
+      selectedSession,
+      rowCount,
+      paletteItems,
+      ks.compareMode,
+      ks.compareCids,
+      ks.searchQuery,
+      ks.messageBuffer,
+      ks.messageRecipients,
+      ks.paletteIndex,
+      frontierCids,
+      agentProfiles,
+      topology,
+      paletteParentId,
+      keybindingOverrides,
+    ],
+  );
+
+  // Main keyboard handler — delegates to routeKey as single source of truth.
+  useKeyboard((key) => {
+    // Dismiss first-launch tooltips on any key press
+    if (showTooltips) {
+      dismissTooltips();
+      return;
+    }
+
+    routeKey(key, keyboardActions);
+  });
+
   return (
     <box flexDirection="column" width="100%" height="100%">
       <TooltipOverlay visible={showTooltips} onDismissAll={dismissTooltips} />
@@ -851,7 +809,7 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
         onKill={handleKill}
         topology={topology}
         activeClaims={activeClaims ?? undefined}
-        selectedIndex={paletteIndex}
+        selectedIndex={ks.paletteIndex}
         sessions={paletteSessions ?? undefined}
         parentAgentId={paletteParentId}
         items={paletteItems}
@@ -864,7 +822,7 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
         sessionName={selectedSession}
         messageLabel={
           panels.state.mode === InputMode.MessageInput
-            ? `Message ${messageRecipients}: ${messageBuffer}`
+            ? `Message ${ks.messageRecipients}: ${ks.messageBuffer}`
             : undefined
         }
       />
@@ -880,18 +838,20 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
         selectedSession={selectedSession}
         topology={topology}
         onSelectSession={setSelectedSession}
-        vfsNavigateTrigger={vfsNavigateTrigger}
-        artifactIndex={artifactIndex}
-        showArtifactDiff={showArtifactDiff}
+        vfsNavigateTrigger={ks.vfsNavigateTrigger}
+        artifactIndex={ks.artifactIndex}
+        showArtifactDiff={ks.showArtifactDiff}
         activeClaims={activeClaims ?? undefined}
-        searchQuery={panels.state.mode === InputMode.SearchInput ? searchBuffer : searchQuery}
+        searchQuery={panels.state.mode === InputMode.SearchInput ? ks.searchBuffer : ks.searchQuery}
         isSearchInputMode={panels.state.mode === InputMode.SearchInput}
-        compareMode={compareMode}
-        compareCids={compareCids}
-        onCompareSelect={handleCompareSelect}
+        compareMode={ks.compareMode}
+        compareCids={ks.compareCids}
+        onCompareSelect={(cid: string) => dispatch({ type: "COMPARE_SELECT", cid })}
         onFrontierCidsChanged={handleFrontierCidsChanged}
-        zoomLevel={zoomLevel}
+        zoomLevel={ks.zoomLevel}
         activeSessions={paletteSessions?.filter((s) => s.startsWith("grove-"))}
+        terminalScrollOffset={ks.terminalScrollOffset}
+        terminalBuffers={terminalBuffers ?? undefined}
       />
       <StatusBar
         mode={panels.state.mode}
@@ -899,6 +859,7 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
         error={lastError}
         focusedPanel={panels.state.focused}
         agentCount={paletteSessions?.filter((s) => s.startsWith("grove-")).length}
+        viewMode={panels.state.viewMode}
         costLabel={
           sessionCosts
             ? `$${sessionCosts.totalCostUsd.toFixed(2)} | ${formatTokens(sessionCosts.totalTokens)}`

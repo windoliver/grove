@@ -94,6 +94,9 @@ export const InputMode = {
 } as const;
 export type InputMode = (typeof InputMode)[keyof typeof InputMode];
 
+/** View mode for the main layout — grid (default) or pipeline (item 11). */
+export type ViewMode = "grid" | "pipeline";
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -106,6 +109,8 @@ export interface PanelFocusState {
   readonly visibleOperator: ReadonlySet<Panel>;
   /** Current input mode. */
   readonly mode: InputMode;
+  /** Current view mode (grid or pipeline). */
+  readonly viewMode: ViewMode;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,7 +123,13 @@ export function initialPanelState(): PanelFocusState {
     focused: Panel.Dag,
     visibleOperator: new Set(),
     mode: InputMode.Normal,
+    viewMode: "grid",
   };
+}
+
+/** Cycle view mode: grid → pipeline → grid. */
+export function panelCycleViewMode(state: PanelFocusState): PanelFocusState {
+  return { ...state, viewMode: state.viewMode === "grid" ? "pipeline" : "grid" };
 }
 
 /** Focus a specific panel (only if visible). */
@@ -202,6 +213,7 @@ export interface PanelFocusActions {
   readonly cycleNext: () => void;
   readonly cyclePrev: () => void;
   readonly setMode: (mode: InputMode) => void;
+  readonly cycleViewMode: () => void;
   readonly isVisible: (panel: Panel) => boolean;
   readonly visiblePanels: readonly Panel[];
 }
@@ -217,6 +229,7 @@ export function usePanelFocus(): PanelFocusActions {
     cycleNext: useCallback(() => setState((s) => panelCycleNext(s)), []),
     cyclePrev: useCallback(() => setState((s) => panelCyclePrev(s)), []),
     setMode: useCallback((m: InputMode) => setState((s) => panelSetMode(s, m)), []),
+    cycleViewMode: useCallback(() => setState((s) => panelCycleViewMode(s)), []),
     isVisible: isPanelVisible.bind(null, state),
     visiblePanels: getVisiblePanels(state),
   };

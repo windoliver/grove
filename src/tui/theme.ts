@@ -61,3 +61,25 @@ export const AGENT_COLORS: readonly string[] = [
   "#ff0088",
   "#88ff00",
 ];
+
+/** Signature colors by agent platform/runtime (item 10). */
+export const PLATFORM_COLORS: Readonly<Record<string, string>> = {
+  "claude-code": "#ff8800",
+  codex: "#0088ff",
+  gemini: "#00cc88",
+  custom: "#888888",
+};
+
+/** Braille spinner frames for animated agent status (item 8). */
+export const BRAILLE_SPINNER: readonly string[] = [
+  "\u280b",
+  "\u2819",
+  "\u2839",
+  "\u2838",
+  "\u283c",
+  "\u2834",
+  "\u2826",
+  "\u2827",
+  "\u2807",
+  "\u280f",
+];
