@@ -42,6 +42,9 @@ jobs:
         with:
           version: 0.14.0
 
+      - name: Pin dependency hash
+        run: zig fetch --save=ghostty "https://github.com/ghostty-org/ghostty/archive/600f59ae313adf377c0bf0d754fa258257f5f65f.tar.gz"
+
       - name: Build libghostty-vt
         run: zig build lib-vt -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast
 
@@ -57,24 +60,63 @@ jobs:
           name: libghostty-vt-${{ matrix.platform_dir }}
           path: packages/libghostty/platforms/${{ matrix.platform_dir }}/libghostty-vt.${{ matrix.lib_ext }}
 
-  # After all platform builds, create a combined artifact
-  package:
+      - name: Upload updated build.zig.zon (with hash)
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-zig-zon-${{ matrix.platform_dir }}
+          path: packages/libghostty/build.zig.zon
+
+  # After all platform builds, commit binaries + pinned hash back to the branch
+  commit-binaries:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all platform artifacts
+      - name: Download all platform binaries
         uses: actions/download-artifact@v4
         with:
-          path: packages/libghostty/platforms/
-          merge-multiple: true
+          path: downloaded-artifacts
 
-      - name: List built binaries
-        run: find packages/libghostty/platforms/ -type f -name "libghostty-vt.*"
+      - name: Place binaries in platforms/
+        run: |
+          for dir in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
+            src="downloaded-artifacts/libghostty-vt-${dir}"
+            if [ -d "$src" ]; then
+              mkdir -p "packages/libghostty/platforms/${dir}"
+              cp "$src"/* "packages/libghostty/platforms/${dir}/"
+              # Remove .gitkeep placeholder now that real binary exists
+              rm -f "packages/libghostty/platforms/${dir}/.gitkeep"
+            fi
+          done
 
-      - name: Upload combined package
-        uses: actions/upload-artifact@v4
-        with:
-          name: libghostty-all-platforms
-          path: packages/libghostty/platforms/
+      - name: Copy pinned build.zig.zon (with hash from zig fetch)
+        run: |
+          # Use the build.zig.zon from any platform build (hash is the same)
+          for dir in downloaded-artifacts/build-zig-zon-*; do
+            if [ -f "$dir/build.zig.zon" ]; then
+              cp "$dir/build.zig.zon" packages/libghostty/build.zig.zon
+              break
+            fi
+          done
+
+      - name: List resulting binaries
+        run: find packages/libghostty/platforms/ -type f ! -name ".gitkeep"
+
+      - name: Commit and push binaries
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add packages/libghostty/platforms/ packages/libghostty/build.zig.zon
+          # Only commit if there are changes
+          if git diff --cached --quiet; then
+            echo "No binary changes to commit"
+          else
+            git commit -m "ci: add prebuilt libghostty-vt binaries for all platforms
+
+Built from Ghostty commit 600f59ae via .github/workflows/libghostty-build.yml.
+Includes pinned dependency hash in build.zig.zon."
+            git push
+          fi
