@@ -5,7 +5,7 @@
  * and Enter-to-zoom / Esc-to-unsplit support.
  */
 
-import React, { createElement, useCallback, useEffect, useState } from "react";
+import React, { useCallback } from "react";
 import type { TmuxManager } from "../agents/tmux-manager.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import { theme } from "../theme.js";

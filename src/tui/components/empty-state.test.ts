@@ -4,7 +4,7 @@
  * Verifies that the component renders title and hint props correctly.
  */
 
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 
 describe("EmptyState", () => {
   test("module exports EmptyState component", async () => {

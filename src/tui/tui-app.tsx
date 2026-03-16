@@ -8,8 +8,8 @@
  * When .grove/ already exists, renders the boardroom App directly.
  */
 
-import React, { useState, useCallback } from "react";
 import { useKeyboard, useRenderer } from "@opentui/react";
+import React, { useCallback, useState } from "react";
 import type { AppProps } from "./app.js";
 import { theme } from "./theme.js";
 

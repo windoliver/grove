@@ -218,19 +218,7 @@ export const AgentGraphView: React.NamedExoticComponent<AgentGraphProps> = React
       return warnings;
     }, [topology, claims]);
 
-    if (rendered.lines.length === 0) {
-      return (
-        <EmptyState
-          title="Empty topology."
-          hint="Add roles to GROVE.md to define the agent graph."
-        />
-      );
-    }
-
-    const headerSuffix =
-      capacityWarnings.length > 0 ? ` \u26A0 ${capacityWarnings.join(", ")}` : "";
-
-    // Build a status summary from live agents
+    // Build a status summary from live agents (must be before early return)
     const statusSummary = useMemo(() => {
       const counts: Record<string, number> = {};
       for (const [, agents] of liveAgents) {
@@ -242,6 +230,18 @@ export const AgentGraphView: React.NamedExoticComponent<AgentGraphProps> = React
         .map(([s, count]) => `${statusSymbol(s)} ${count} ${s}`)
         .join("  ");
     }, [liveAgents]);
+
+    if (rendered.lines.length === 0) {
+      return (
+        <EmptyState
+          title="Empty topology."
+          hint="Add roles to GROVE.md to define the agent graph."
+        />
+      );
+    }
+
+    const headerSuffix =
+      capacityWarnings.length > 0 ? ` \u26A0 ${capacityWarnings.join(", ")}` : "";
 
     return (
       <box flexDirection="column">

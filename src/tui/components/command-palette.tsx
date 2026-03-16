@@ -7,11 +7,11 @@
  */
 
 import React, { useMemo } from "react";
-import { theme } from "../theme.js";
 import type { Claim } from "../../core/models.js";
 import type { AgentTopology } from "../../core/topology.js";
 import { checkSpawn } from "../agents/spawn-validator.js";
 import type { TmuxManager } from "../agents/tmux-manager.js";
+import { theme } from "../theme.js";
 
 /** A single actionable entry in the palette. */
 export interface PaletteItem {

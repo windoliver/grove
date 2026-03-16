@@ -41,8 +41,12 @@ function makeMockContributionStore(contributions: Contribution[] = []): Contribu
   return {
     storeIdentity: "mock-store",
     get: async (cid: string) => contributions.find((c) => c.cid === cid),
-    put: async () => {},
-    putMany: async () => {},
+    put: async () => {
+      /* noop */
+    },
+    putMany: async () => {
+      /* noop */
+    },
     list: async (query?: { limit?: number; offset?: number }) => {
       const start = query?.offset ?? 0;
       const limit = query?.limit ?? contributions.length;
@@ -58,7 +62,9 @@ function makeMockContributionStore(contributions: Contribution[] = []): Contribu
     relatedTo: async () => [],
     findExisting: async () => undefined,
     replyCounts: async () => new Map(),
-    close: () => {},
+    close: () => {
+      /* noop */
+    },
   } as unknown as ContributionStore;
 }
 
@@ -104,7 +110,9 @@ function makeMockClaimStore(): ClaimStore {
     cleanCompleted: async () => 0,
     countActiveClaims: async () => 0,
     detectStalled: async () => [],
-    close: () => {},
+    close: () => {
+      /* noop */
+    },
   };
 }
 
@@ -259,7 +267,9 @@ describe("provider-shared", () => {
           invalidated: 0,
           acceptanceRate: 0.7,
         }),
-        close: () => {},
+        close: () => {
+          /* noop */
+        },
       };
 
       const result = await outcomeStatsFromStore(outcomes);

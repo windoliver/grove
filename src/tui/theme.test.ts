@@ -4,8 +4,8 @@
  * Verifies that all expected tokens exist and have valid values.
  */
 
-import { describe, test, expect } from "bun:test";
-import { theme, AGENT_COLORS } from "./theme.js";
+import { describe, expect, test } from "bun:test";
+import { AGENT_COLORS, theme } from "./theme.js";
 
 describe("theme", () => {
   test("has all focus/chrome tokens", () => {

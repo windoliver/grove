@@ -169,7 +169,7 @@ const reviewContributions: Contribution[] = [];
 const reproductionContributions: Contribution[] = [];
 let bestValBpb = Number.POSITIVE_INFINITY;
 let bestCid = "";
-let consecutiveNoImprovement = 0;
+let _consecutiveNoImprovement = 0;
 let stoppedEarly = false;
 
 // ---------------------------------------------------------------------------
@@ -271,9 +271,9 @@ beforeAll(async () => {
       currentBestBpb = expectedBpb;
       bestCid = work.cid;
       bestValBpb = expectedBpb;
-      consecutiveNoImprovement = 0;
+      _consecutiveNoImprovement = 0;
     } else {
-      consecutiveNoImprovement += 1;
+      _consecutiveNoImprovement += 1;
     }
 
     // --- Agent B (Reviewer): Review every 3rd contribution ---

@@ -6,8 +6,7 @@
  */
 
 import React from "react";
-import type { InputMode } from "../hooks/use-panel-focus.js";
-import type { Panel } from "../hooks/use-panel-focus.js";
+import type { InputMode, Panel } from "../hooks/use-panel-focus.js";
 import { theme } from "../theme.js";
 
 /** Props for the StatusBar component. */

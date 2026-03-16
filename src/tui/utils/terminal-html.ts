@@ -42,10 +42,10 @@ export async function ptyToHtml(
 
   // Wait for write to be processed
   await new Promise<void>((resolve) => {
-    cachedTerminal!.write("", resolve);
+    cachedTerminal?.write("", resolve);
   });
 
-  return serializeAddon!.serializeAsHTML();
+  return serializeAddon?.serializeAsHTML() ?? "";
 }
 
 /**

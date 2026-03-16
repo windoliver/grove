@@ -6,9 +6,9 @@
  */
 
 import type { KeyEvent } from "@opentui/core";
-import { InputMode, Panel, type PanelFocusActions } from "./use-panel-focus.js";
-import type { NavigationActions } from "./use-navigation.js";
 import type { ZoomLevel } from "../panels/panel-manager.js";
+import type { NavigationActions } from "./use-navigation.js";
+import { InputMode, Panel, type PanelFocusActions } from "./use-panel-focus.js";
 
 // ---------------------------------------------------------------------------
 // Types

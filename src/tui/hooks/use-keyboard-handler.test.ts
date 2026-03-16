@@ -6,7 +6,7 @@
  * KeyboardActions wiring.
  */
 
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { nextZoom } from "./use-keyboard-handler.js";
 
 describe("nextZoom", () => {

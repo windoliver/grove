@@ -8,8 +8,8 @@
  * After name input, onSelect is called with (presetName, groveName).
  */
 
-import React, { useState, useCallback } from "react";
 import { useKeyboard, useRenderer } from "@opentui/react";
+import React, { useCallback, useState } from "react";
 import { theme } from "../theme.js";
 
 /** A preset entry for the welcome screen. */

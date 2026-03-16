@@ -58,7 +58,9 @@ function makeMockWorkspaceManager(): WorkspaceManager & {
     touchWorkspace: async () => {
       throw new Error("Not found");
     },
-    close: () => {},
+    close: () => {
+      /* noop */
+    },
   };
 }
 
