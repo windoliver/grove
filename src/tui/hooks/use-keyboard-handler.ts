@@ -105,11 +105,38 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
           case "zoom_cycle":
             actions.onZoomCycle();
             return true;
+          case "zoom_reset":
+            actions.onZoomReset();
+            return true;
           case "broadcast":
             actions.onBroadcastMode();
             return true;
           case "direct_message":
             actions.onDirectMessageMode();
+            return true;
+          case "search_start":
+            if (focused === Panel.Search) actions.onSearchStart();
+            return true;
+          case "terminal_input":
+            if (focused === Panel.Terminal) actions.panels.setMode(InputMode.TerminalInput);
+            return true;
+          case "compare_toggle":
+            if (focused === Panel.Frontier) actions.onCompareToggle();
+            return true;
+          case "artifact_prev":
+            if (focused === Panel.Artifact) actions.onArtifactPrev();
+            return true;
+          case "artifact_next":
+            if (focused === Panel.Artifact) actions.onArtifactNext();
+            return true;
+          case "artifact_diff":
+            if (focused === Panel.Artifact) actions.onArtifactDiffToggle();
+            return true;
+          case "approve":
+            if (focused === Panel.Decisions) actions.onApproveQuestion();
+            return true;
+          case "deny":
+            if (focused === Panel.Decisions) actions.onDenyQuestion();
             return true;
           case "refresh":
             return true;
