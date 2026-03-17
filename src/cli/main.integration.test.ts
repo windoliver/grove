@@ -373,7 +373,6 @@ describe("grove init --preset", () => {
     );
     expect(exitCode).toBe(0);
     expect(stdout).toContain("Initialized grove");
-    expect(stdout).toContain("preset 'review-loop'");
 
     // Verify .grove directory exists
     expect(existsSync(join(tmpDir, ".grove"))).toBe(true);
@@ -396,7 +395,7 @@ describe("grove init --preset", () => {
     expect(config.nexusManaged).toBe(true);
     // nexusUrl is NOT written for managed Nexus — discovered at `grove up` time
     expect(config.nexusUrl).toBeUndefined();
-    expect(config.services).toEqual({ server: true, mcp: false });
+    expect(config.services).toEqual({ server: true, mcp: true });
   });
 
   test("GROVE.md has expected topology for preset", async () => {

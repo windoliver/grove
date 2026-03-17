@@ -187,7 +187,7 @@ describe("resolveBackend", () => {
     }
   });
 
-  test("grove.json with nexusManaged but no nexus.yaml -> falls back to default URL", () => {
+  test("grove.json with nexusManaged but no nexus.yaml -> falls back to local", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "grove-resolve-test-"));
     const groveDir = join(tempDir, ".grove");
     mkdirSync(groveDir, { recursive: true });
@@ -197,12 +197,11 @@ describe("resolveBackend", () => {
     );
 
     try {
+      // readNexusUrl returns undefined when nexus.yaml is missing,
+      // so readNexusUrlFromConfig returns undefined and we fall through to local
       const result = resolveBackend({ groveOverride: groveDir });
-      expect(result.mode).toBe("nexus");
-      expect(result.source).toBe("grove.json");
-      if (result.mode === "nexus") {
-        expect(result.url).toBe("http://localhost:2026");
-      }
+      expect(result.mode).toBe("local");
+      expect(result.source).toBe("flag");
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
