@@ -5,7 +5,7 @@
  * The selected row is highlighted with a ">" indicator.
  */
 
-import React, { createElement, useMemo } from "react";
+import React, { useMemo } from "react";
 import { theme } from "../theme.js";
 
 /** Column definition for the TUI table. */
@@ -83,11 +83,9 @@ export const Table: React.NamedExoticComponent<TableProps> = React.memo(function
             .join("  ")}
         </text>
       </box>
-      {/* Rows — wrapped in scroll-box for native scrolling */}
-      {createElement(
-        "scroll-box" as string,
-        { flexGrow: 1 },
-        ...displayRows.map((row, i) => {
+      {/* Rows */}
+      <box flexDirection="column" flexGrow={1}>
+        {displayRows.map((row, i) => {
           const isSelected = cursor !== undefined && cursor === startIndex + i;
           return (
             <box key={row.cid ?? row.id ?? String(i)}>
@@ -101,12 +99,12 @@ export const Table: React.NamedExoticComponent<TableProps> = React.memo(function
               </text>
             </box>
           );
-        }),
-      )}
+        })}
+      </box>
       {truncated && (
         <box>
           <text color={theme.dimmed}>
-            Showing {maxItems} of {rows.length} — use search to narrow
+            {`Showing ${maxItems} of ${rows.length} — use search to narrow`}
           </text>
         </box>
       )}

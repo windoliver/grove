@@ -124,7 +124,7 @@ export const AgentSplitPane: React.NamedExoticComponent<AgentSplitPaneProps> = R
         {overflowCount > 0 && (
           <box>
             <text color={theme.dimmed}>
-              +{overflowCount} more agent{overflowCount > 1 ? "s" : ""} (not shown)
+              {`+${overflowCount} more agent${overflowCount > 1 ? "s" : ""} (not shown)`}
             </text>
           </box>
         )}

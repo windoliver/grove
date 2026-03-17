@@ -132,11 +132,10 @@ export const SearchPanelView: React.NamedExoticComponent<SearchPanelProps> = Rea
     if (isTranscriptMode && !isInputMode) {
       return (
         <box flexDirection="column">
-          <box marginBottom={1}>
+          <box marginBottom={1} flexDirection="row">
             <text>Search</text>
             <text opacity={0.5}>
-              {"  "}transcript: &quot;{transcriptQuery}&quot; ({transcriptResults.length} matches)
-              [/ to search]
+              {`  transcript: "${transcriptQuery}" (${transcriptResults.length} matches) [/ to search]`}
             </text>
           </box>
           <Table columns={[...TRANSCRIPT_COLUMNS]} rows={transcriptResults} cursor={cursor} />
@@ -146,7 +145,7 @@ export const SearchPanelView: React.NamedExoticComponent<SearchPanelProps> = Rea
 
     return (
       <box flexDirection="column">
-        <box marginBottom={1}>
+        <box marginBottom={1} flexDirection="row">
           <text>Search</text>
           <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
           {isInputMode ? (
@@ -157,12 +156,12 @@ export const SearchPanelView: React.NamedExoticComponent<SearchPanelProps> = Rea
             </text>
           ) : searchQuery ? (
             <text opacity={0.5}>
-              {"  "}query: &quot;{searchQuery}&quot; ({contributions.length} results) [/ to search]
+              {`  query: "${searchQuery}" (${contributions.length} results) [/ to search]`}
             </text>
           ) : (
             <text opacity={0.5}>
               {"  "}
-              {contributions.length} contributions [/ to search, t:query for transcripts]
+              {`${contributions.length} contributions [/ to search, t:query for transcripts]`}
             </text>
           )}
         </box>

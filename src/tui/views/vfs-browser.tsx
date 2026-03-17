@@ -116,17 +116,19 @@ export const VfsBrowserView: React.NamedExoticComponent<VfsBrowserProps> = React
     return (
       <box flexDirection="column">
         <box marginBottom={1} flexDirection="column">
-          <text color={theme.muted}>
-            Path:{" "}
+          <box flexDirection="row">
+            <text color={theme.muted}>{"Path: "}</text>
             {currentPath === "/" ? (
               <text bold>/</text>
             ) : (
               <>
-                {currentPath.replace(/\/$/, "").split("/").slice(0, -1).join("/")}/
+                <text color={theme.muted}>
+                  {`${currentPath.replace(/\/$/, "").split("/").slice(0, -1).join("/")}/`}
+                </text>
                 <text bold>{currentPath.replace(/\/$/, "").split("/").pop()}</text>
               </>
             )}
-          </text>
+          </box>
           {rows.length > 0 ? <text color={theme.dimmed}>Enter:browse Esc:back</text> : null}
         </box>
         {rows.length === 0 ? (

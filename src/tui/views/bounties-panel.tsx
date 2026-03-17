@@ -113,12 +113,12 @@ export const BountiesPanelView: React.NamedExoticComponent<BountiesPanelProps> =
 
     return (
       <box flexDirection="column">
-        <box marginBottom={1}>
+        <box marginBottom={1} flexDirection="row">
           <text>Bounties</text>
           <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
           <text opacity={0.5}>
             {"  "}
-            {bounties.length} records
+            {`${bounties.length} records`}
           </text>
         </box>
         {bounties.length === 0 ? (

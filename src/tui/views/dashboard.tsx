@@ -96,17 +96,16 @@ export const DashboardView: React.NamedExoticComponent<DashboardProps> = React.m
 
     return (
       <box flexDirection="column">
-        <box marginBottom={1}>
+        <box marginBottom={1} flexDirection="row">
           <text color={theme.success}>{metadata.name}</text>
           <text opacity={0.5}>
             {"  "}
-            {metadata.backendLabel} contributions:{metadata.contributionCount} claims:
-            {metadata.activeClaimCount}
+            {`${metadata.backendLabel} contributions:${metadata.contributionCount} claims:${metadata.activeClaimCount}`}
           </text>
         </box>
 
         <box flexDirection="column" marginBottom={1}>
-          <text>Active Claims ({activeClaims.length})</text>
+          <text>{`Active Claims (${activeClaims.length})`}</text>
           {activeClaims.length === 0 ? (
             <EmptyState
               title="No active claims."
@@ -121,22 +120,22 @@ export const DashboardView: React.NamedExoticComponent<DashboardProps> = React.m
           <box flexDirection="column" marginBottom={1}>
             <text>Frontier</text>
             {frontierSummary.topByMetric.map((m) => (
-              <text key={m.metric}>
-                <text color={theme.review}>{m.metric}</text>: {truncateCid(m.cid)} {m.summary} (
-                {m.value.toFixed(2)})
-              </text>
+              <box key={m.metric} flexDirection="row">
+                <text color={theme.review}>{m.metric}</text>
+                <text>{`: ${truncateCid(m.cid)} ${m.summary} (${m.value.toFixed(2)})`}</text>
+              </box>
             ))}
             {frontierSummary.topByAdoption.map((a) => (
-              <text key={a.cid}>
-                <text color={theme.adoption}>adoption</text>: {truncateCid(a.cid)} {a.summary} (
-                {a.count} refs)
-              </text>
+              <box key={a.cid} flexDirection="row">
+                <text color={theme.adoption}>adoption</text>
+                <text>{`: ${truncateCid(a.cid)} ${a.summary} (${a.count} refs)`}</text>
+              </box>
             ))}
           </box>
         )}
 
         <box flexDirection="column">
-          <text>Recent Contributions ({recentContributions.length})</text>
+          <text>{`Recent Contributions (${recentContributions.length})`}</text>
           <Table columns={[...CONTRIBUTION_COLUMNS]} rows={contributionRows} cursor={cursor} />
         </box>
       </box>

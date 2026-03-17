@@ -253,10 +253,9 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
 
     return (
       <box flexDirection="column">
-        <box marginBottom={1}>
-          <text>
-            Agents ({agentRows.length}){!tmux && <text opacity={0.5}> [no tmux]</text>}
-          </text>
+        <box marginBottom={1} flexDirection="row">
+          <text>{`Agents (${agentRows.length})`}</text>
+          {!tmux && <text opacity={0.5}> [no tmux]</text>}
           <DataStatus
             loading={claimsLoading && !claims}
             isStale={combinedStale}

@@ -68,7 +68,7 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
 
   return (
     <box flexDirection="column">
-      <box marginBottom={1}>
+      <box marginBottom={1} flexDirection="row">
         <text color={theme.focus}>{c.cid}</text>
         <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
         {outcome && (
@@ -129,7 +129,7 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
 
       {c.relations.length > 0 && (
         <box flexDirection="column" marginBottom={1}>
-          <text>Relations ({c.relations.length})</text>
+          <text>{`Relations (${c.relations.length})`}</text>
           {c.relations.map((r, i) => (
             <text key={`rel-${String(i)}`}>
               {r.relationType} → {truncateCid(r.targetCid)}
@@ -140,7 +140,7 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
 
       {Object.keys(c.artifacts).length > 0 && (
         <box flexDirection="column" marginBottom={1}>
-          <text>Artifacts ({Object.keys(c.artifacts).length})</text>
+          <text>{`Artifacts (${Object.keys(c.artifacts).length})`}</text>
           {Object.entries(c.artifacts).map(([name, hash]) => (
             <text key={name}>
               {name}: {truncateCid(hash)}
@@ -151,7 +151,7 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
 
       {ancestors.length > 0 && (
         <box flexDirection="column" marginBottom={1}>
-          <text>Ancestors ({ancestors.length})</text>
+          <text>{`Ancestors (${ancestors.length})`}</text>
           {ancestors.map((a) => (
             <text key={a.cid}>
               {truncateCid(a.cid)} [{a.kind}] {a.summary.slice(0, 50)}
@@ -162,7 +162,7 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
 
       {children.length > 0 && (
         <box flexDirection="column" marginBottom={1}>
-          <text>Children ({children.length})</text>
+          <text>{`Children (${children.length})`}</text>
           {children.map((ch) => (
             <text key={ch.cid}>
               {truncateCid(ch.cid)} [{ch.kind}] {ch.summary.slice(0, 50)}
@@ -173,7 +173,7 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
 
       {thread.length > 1 && (
         <box flexDirection="column">
-          <text>Discussion ({thread.length - 1} replies)</text>
+          <text>{`Discussion (${thread.length - 1} replies)`}</text>
           {thread.slice(1).map((node) => (
             <text key={node.contribution.cid}>
               {"  ".repeat(node.depth)}

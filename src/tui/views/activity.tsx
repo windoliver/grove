@@ -75,11 +75,11 @@ export const ActivityView: React.NamedExoticComponent<ActivityProps> = React.mem
 
     return (
       <box flexDirection="column">
-        <box marginBottom={1}>
+        <box marginBottom={1} flexDirection="row">
           <text>Activity Stream</text>
           {contributions.length > 0 ? (
             <text opacity={0.5}>
-              {"  "}showing {pageOffset + 1}-{pageOffset + contributions.length}
+              {`  showing ${pageOffset + 1}-${pageOffset + contributions.length}`}
             </text>
           ) : pageOffset > 0 ? (
             <text opacity={0.5}>{"  "}(no more results — press p to go back)</text>

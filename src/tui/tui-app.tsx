@@ -11,7 +11,7 @@
  */
 
 import { useKeyboard, useRenderer } from "@opentui/react";
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import type { AppProps } from "./app.js";
 import { theme } from "./theme.js";
 
@@ -39,7 +39,13 @@ export interface TuiAppProps {
   /** Presets for the welcome screen. */
   readonly presets?: readonly TuiPresetEntry[] | undefined;
   /** Callback to run init for a selected preset + grove name. Returns AppProps on success. */
-  readonly onInit?: ((presetName: string, groveName: string) => Promise<AppProps>) | undefined;
+  readonly onInit?:
+    | ((
+        presetName: string,
+        groveName: string,
+        onProgress?: (step: string) => void,
+      ) => Promise<AppProps>)
+    | undefined;
   /** Callback to start services for an existing grove. Accepts a progress reporter. */
   readonly onStart?: ((onProgress?: (step: string) => void) => Promise<AppProps>) | undefined;
   /** Callback to connect to a remote Nexus URL. Returns AppProps on success. */
@@ -105,7 +111,15 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
           // Mark first step immediately
           markStep(0);
 
-          const result = await onInit(presetName, groveName);
+          const result = await onInit(presetName, groveName, (step) => {
+            // Mark all existing static steps done, then append the live progress step
+            setInitSteps((prev) => {
+              const updated = prev.map((s) => ({ ...s, done: true }));
+              // Avoid duplicate labels
+              if (updated.some((s) => s.label === step)) return updated;
+              return [...updated, { label: step, done: false }];
+            });
+          });
 
           // Mark all steps done on success
           setInitSteps((prev) => prev.map((s) => ({ ...s, done: true })));
@@ -180,11 +194,21 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
     [onConnect],
   );
 
+  // Use refs to avoid stale closures in useKeyboard (opentui may not
+  // re-subscribe when the callback reference changes).
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  const initErrorRef = useRef(initError);
+  initErrorRef.current = initError;
+
   // Keyboard handler for error states (q to quit, Esc to go back to setup)
   useKeyboard(
     useCallback(
       (key) => {
-        if ((mode === "initializing" || mode === "starting") && initError) {
+        if (
+          (modeRef.current === "initializing" || modeRef.current === "starting") &&
+          initErrorRef.current
+        ) {
           if (key.name === "q") {
             handleQuit();
           } else if (key.name === "escape") {
@@ -193,7 +217,7 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
           }
         }
       },
-      [mode, initError, handleQuit],
+      [handleQuit],
     ),
   );
 

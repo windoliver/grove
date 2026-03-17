@@ -31,7 +31,7 @@ export const DataStatus: React.NamedExoticComponent<DataStatusProps> = React.mem
 
     if (isStale) {
       return (
-        <box>
+        <box flexDirection="row">
           <text color={theme.stale}> [stale]</text>
           {error && <text color={theme.error}> {error}</text>}
         </box>

@@ -84,7 +84,7 @@ export const StatusBar: React.NamedExoticComponent<StatusBarProps> = React.memo(
           <text color={theme.error}>Error: {error}</text>
         </box>
       )}
-      <box>
+      <box flexDirection="row">
         <text color={theme.focus}>[{modeLabel}]</text>
         {viewMode === "pipeline" && <text color={theme.warning}> [PIPELINE]</text>}
         <text opacity={0.5}>{hints}</text>

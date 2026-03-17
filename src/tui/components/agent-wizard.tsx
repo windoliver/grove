@@ -82,7 +82,7 @@ export const AgentWizard: React.NamedExoticComponent<AgentWizardProps> = React.m
               state.profiles.map((p, i) => {
                 const isSelected = cursorIndex === i;
                 return (
-                  <box key={p.name}>
+                  <box key={p.name} flexDirection="row">
                     <text color={isSelected ? theme.focus : theme.text}>
                       {isSelected ? "> " : "  "}
                       {p.name}
@@ -124,7 +124,7 @@ export const AgentWizard: React.NamedExoticComponent<AgentWizardProps> = React.m
             </text>
             <text color={theme.text}>Target: {state.targetRef}</text>
             <text color={theme.muted} />
-            <box>
+            <box flexDirection="row">
               <text color={cursorIndex === 0 ? theme.focus : theme.text}>
                 {cursorIndex === 0 ? "> " : "  "}
                 Spawn

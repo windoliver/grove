@@ -28,7 +28,7 @@ export const InputBar: React.NamedExoticComponent<InputBarProps> = React.memo(fu
 
   if (messageLabel) {
     return (
-      <box paddingLeft={1} paddingRight={1}>
+      <box paddingLeft={1} paddingRight={1} flexDirection="row">
         <text color={theme.warning}>[MESSAGE]</text>
         <text color={theme.muted}> </text>
         <text color={theme.text}>{messageLabel}</text>
@@ -40,7 +40,7 @@ export const InputBar: React.NamedExoticComponent<InputBarProps> = React.memo(fu
   const target = sessionName ?? "(none)";
 
   return (
-    <box paddingLeft={1} paddingRight={1}>
+    <box paddingLeft={1} paddingRight={1} flexDirection="row">
       <text color={theme.warning}>[INPUT MODE]</text>
       <text color={theme.muted}> Sending to: </text>
       <text color={theme.text}>{target}</text>

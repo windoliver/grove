@@ -114,12 +114,12 @@ export const GossipPanelView: React.NamedExoticComponent<GossipPanelProps> = Rea
 
     return (
       <box flexDirection="column">
-        <box marginBottom={1}>
+        <box marginBottom={1} flexDirection="row">
           <text>Gossip</text>
           <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
           <text opacity={0.5}>
             {"  "}
-            {peers.length} peers
+            {`${peers.length} peers`}
           </text>
         </box>
         {peers.length === 0 ? (

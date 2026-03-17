@@ -112,12 +112,12 @@ export const InboxPanelView: React.NamedExoticComponent<InboxPanelProps> = React
 
     return (
       <box flexDirection="column">
-        <box marginBottom={1}>
+        <box marginBottom={1} flexDirection="row">
           <text>Inbox</text>
           <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
           <text opacity={0.5}>
             {"  "}
-            {messages.length} messages
+            {`${messages.length} messages`}
           </text>
         </box>
         {messages.length === 0 ? (

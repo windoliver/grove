@@ -77,7 +77,7 @@ export const GitHubPanelView: React.NamedExoticComponent<GitHubPanelProps> = Rea
 
     return (
       <box flexDirection="column">
-        <box marginBottom={1}>
+        <box marginBottom={1} flexDirection="row">
           <text>GitHub</text>
           <DataStatus
             loading={loading && data === undefined}
@@ -92,11 +92,11 @@ export const GitHubPanelView: React.NamedExoticComponent<GitHubPanelProps> = Rea
           />
         ) : (
           <box flexDirection="column">
-            <box>
-              <text color={theme.focus}>PR #{pr.number}</text>
+            <box flexDirection="row">
+              <text color={theme.focus}>{`PR #${pr.number}`}</text>
               <text> {pr.title}</text>
             </box>
-            <box>
+            <box flexDirection="row">
               <text opacity={0.5}>State: </text>
               <text>{pr.state}</text>
               <text opacity={0.5}> Checks: </text>
@@ -104,11 +104,11 @@ export const GitHubPanelView: React.NamedExoticComponent<GitHubPanelProps> = Rea
               <text opacity={0.5}> Review: </text>
               <text>{pr.reviewStatus}</text>
             </box>
-            <box>
+            <box flexDirection="row">
               <text opacity={0.5}>Files: </text>
-              <text>{pr.filesChanged}</text>
-              <text color={theme.success}> +{pr.additions}</text>
-              <text color={theme.error}> -{pr.deletions}</text>
+              <text>{String(pr.filesChanged)}</text>
+              <text color={theme.success}>{` +${pr.additions}`}</text>
+              <text color={theme.error}>{` -${pr.deletions}`}</text>
             </box>
           </box>
         )}

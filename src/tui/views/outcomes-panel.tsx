@@ -107,12 +107,12 @@ export const OutcomesPanelView: React.NamedExoticComponent<OutcomesPanelProps> =
 
     return (
       <box flexDirection="column">
-        <box marginBottom={1}>
+        <box marginBottom={1} flexDirection="row">
           <text>Outcomes</text>
           <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
           <text opacity={0.5}>
             {"  "}
-            {outcomes.length} annotations
+            {`${outcomes.length} annotations`}
           </text>
         </box>
         {outcomes.length === 0 ? (

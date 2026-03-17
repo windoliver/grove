@@ -28,6 +28,8 @@ export interface ServiceStartOptions {
   readonly nexusSource?: string | undefined;
   /** Optional progress callback — captures status messages for TUI display instead of stderr. */
   readonly onProgress?: ((step: string) => void) | undefined;
+  /** Force re-init nexus.yaml (e.g. "New grove" — get fresh ports). */
+  readonly force?: boolean | undefined;
 }
 
 /** Running service state — returned by startServices, passed to stopServices. */
@@ -75,14 +77,20 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
         build: options.build ?? false,
         nexusSource: options.nexusSource,
         onProgress: options.onProgress,
+        force: options.force,
       });
       nexusManaged = true;
       process.env.GROVE_NEXUS_URL = nexusInfo.url;
       if (nexusInfo.apiKey) {
         process.env.NEXUS_API_KEY = nexusInfo.apiKey;
       }
-    } catch {
-      // Nexus start failed — continue without it (TUI will fall back to local)
+    } catch (err) {
+      // If user explicitly asked for --build, don't silently fall back — surface the error
+      if (options.build) {
+        throw err;
+      }
+      // Otherwise fall back to local mode silently
+      options.onProgress?.(`Nexus unavailable, using local mode`);
     }
   }
 

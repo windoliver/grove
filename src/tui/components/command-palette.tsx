@@ -217,7 +217,7 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
             const detailColor = isSelected ? theme.focus : dimmed ? theme.inactive : theme.muted;
             const cursor = isSelected ? "> " : "  ";
             return (
-              <box key={`${item.kind}-${item.id}`}>
+              <box key={`${item.kind}-${item.id}`} flexDirection="row">
                 <text color={labelColor}>
                   {cursor}
                   {item.label}

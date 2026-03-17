@@ -395,15 +395,13 @@ export const TerminalView: React.NamedExoticComponent<TerminalProps> = React.mem
     const isInputMode = mode === "terminal_input";
 
     const header = (
-      <box>
-        <text color={theme.muted}>
-          session: {sessionName}
-          {isInputMode ? (
-            <text color={theme.focus}> [INPUT]</text>
-          ) : (
-            <text opacity={0.5}> (press i to type)</text>
-          )}
-        </text>
+      <box flexDirection="row">
+        <text color={theme.muted}>{`session: ${sessionName}`}</text>
+        {isInputMode ? (
+          <text color={theme.focus}> [INPUT]</text>
+        ) : (
+          <text opacity={0.5}> (press i to type)</text>
+        )}
       </box>
     );
 
@@ -427,7 +425,7 @@ export const TerminalView: React.NamedExoticComponent<TerminalProps> = React.mem
           <box flexDirection="column">
             {displayLines.map((line, y) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: terminal lines have no stable identity
-              <box key={y}>
+              <box key={y} flexDirection="row">
                 {line.spans.map((span, x) => (
                   // biome-ignore lint/suspicious/noArrayIndexKey: spans have no stable identity
                   <text key={x} color={span.color} bold={span.bold} backgroundColor={span.bgColor}>

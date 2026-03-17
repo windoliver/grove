@@ -75,12 +75,12 @@ export const ActivityPanelView: React.NamedExoticComponent<ActivityPanelProps> =
 
     return (
       <box flexDirection="column">
-        <box marginBottom={1}>
+        <box marginBottom={1} flexDirection="row">
           <text>Activity</text>
           <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
           <text opacity={0.5}>
             {"  "}
-            {contributions.length} recent
+            {`${contributions.length} recent`}
           </text>
         </box>
         {rows.length === 0 ? (

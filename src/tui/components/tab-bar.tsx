@@ -19,7 +19,7 @@ export const PanelBar: React.NamedExoticComponent<PanelBarProps> = React.memo(fu
   const visible = getVisiblePanels(panelState);
 
   return (
-    <box>
+    <box flexDirection="row">
       {visible.map((panel) => {
         const isActive = panel === panelState.focused;
         return (

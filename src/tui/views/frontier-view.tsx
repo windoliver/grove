@@ -197,7 +197,7 @@ export const FrontierView: React.NamedExoticComponent<FrontierViewProps> = React
 
     return (
       <box flexDirection="column">
-        <box marginBottom={1}>
+        <box marginBottom={1} flexDirection="row">
           <text>Frontier Rankings</text>
           {compareMode && <text color={theme.compare}> [COMPARE]</text>}
           <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />

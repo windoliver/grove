@@ -9,7 +9,7 @@
  * containers directly — Nexus owns its own lifecycle and dependency chain.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { GroveConfig } from "../core/config.js";
 
@@ -24,7 +24,7 @@ export const DEFAULT_NEXUS_URL = "http://localhost:2026";
 export const DEFAULT_NEXUS_CHANNEL = "edge";
 
 /** Default health-check timeout (ms). */
-const HEALTH_TIMEOUT_MS = 30_000;
+const HEALTH_TIMEOUT_MS = 120_000;
 
 /** Health-check poll interval (ms). */
 const HEALTH_POLL_MS = 1_000;
@@ -42,6 +42,10 @@ const NEXUS_UP_TIMEOUT_S = 180;
  * This is a pure mapping — Nexus preset concepts stay out of PresetConfig.
  */
 export function inferNexusPreset(config: GroveConfig): "local" | "shared" {
+  // Any config that needs a running Nexus server (mode=nexus, nexusManaged,
+  // or backend=nexus in the grove preset) requires the "shared" Docker preset.
+  // The "local" preset is embedded-only (no Docker, no ports, no compose).
+  if (config.mode === "nexus" || config.nexusManaged) return "shared";
   if (config.preset === "swarm-ops") return "shared";
   return "local";
 }
@@ -84,15 +88,16 @@ export async function nexusInit(
   projectRoot: string,
   presetOrOptions: "local" | "shared" | "demo" | NexusInitOptions,
 ): Promise<void> {
-  const nexusYaml = join(projectRoot, "nexus.yaml");
-  if (existsSync(nexusYaml)) return;
-
   const opts: NexusInitOptions =
     typeof presetOrOptions === "string" ? { preset: presetOrOptions } : presetOrOptions;
 
-  const channel = opts.channel ?? DEFAULT_NEXUS_CHANNEL;
-
-  const proc = Bun.spawn(["nexus", "init", "--preset", opts.preset, "--channel", channel], {
+  // nexus init writes default ports to nexus.yaml.
+  // Port conflict resolution happens later during `nexus up` (--port-strategy auto).
+  const args = ["nexus", "init", "--preset", opts.preset];
+  if (opts.channel) {
+    args.push("--channel", opts.channel);
+  }
+  const proc = Bun.spawn(args, {
     cwd: projectRoot,
     stdout: "pipe",
     stderr: "pipe",
@@ -130,6 +135,8 @@ export interface NexusUpOptions {
   readonly nexusSource?: string | undefined;
   /** Optional progress callback — replaces stderr writes when provided (e.g. TUI context). */
   readonly onProgress?: ((step: string) => void) | undefined;
+  /** Force re-init nexus.yaml even if it exists (e.g. "New grove" flow). */
+  readonly force?: boolean | undefined;
 }
 
 /**
@@ -161,7 +168,7 @@ function resolveNexusSource(explicit?: string): string | undefined {
  * Falls back to `nexus up` without `--timeout` if the installed
  * CLI doesn't support the flag (nexus-ai-fs < 0.9.0).
  */
-export async function nexusUp(projectRoot: string, opts: NexusUpOptions = {}): Promise<void> {
+export async function nexusUp(projectRoot: string, opts: NexusUpOptions = {}): Promise<string> {
   const timeout = opts.timeoutSeconds ?? NEXUS_UP_TIMEOUT_S;
   const wantsBuild = opts.build || !!opts.nexusSource;
 
@@ -187,7 +194,7 @@ export async function nexusUp(projectRoot: string, opts: NexusUpOptions = {}): P
     }
   }
 
-  const args = ["nexus", "up", "--timeout", String(timeout)];
+  const args = ["nexus", "up", "--timeout", String(timeout), "--port-strategy", "auto"];
   if (wantsBuild && sourceDir) {
     args.push("--build");
     args.push("--compose-file", join(sourceDir, "nexus-stack.yml"));
@@ -198,12 +205,12 @@ export async function nexusUp(projectRoot: string, opts: NexusUpOptions = {}): P
     stdout: "pipe",
     stderr: "pipe",
   });
-  const code = await proc.exited;
+  const [code, stdout] = await Promise.all([proc.exited, new Response(proc.stdout).text()]);
   if (code !== 0) {
     const stderr = await new Response(proc.stderr).text();
     // Retry without --timeout if the flag is unsupported
     if (stderr.includes("no such option") || stderr.includes("unrecognized arguments")) {
-      const fallbackArgs = ["nexus", "up"];
+      const fallbackArgs = ["nexus", "up", "--port-strategy", "auto"];
       if (wantsBuild && sourceDir) {
         fallbackArgs.push("--build");
         fallbackArgs.push("--compose-file", join(sourceDir, "nexus-stack.yml"));
@@ -213,15 +220,19 @@ export async function nexusUp(projectRoot: string, opts: NexusUpOptions = {}): P
         stdout: "pipe",
         stderr: "pipe",
       });
-      const fallbackCode = await fallback.exited;
+      const [fallbackCode, fallbackStdout] = await Promise.all([
+        fallback.exited,
+        new Response(fallback.stdout).text(),
+      ]);
       if (fallbackCode !== 0) {
         const fallbackStderr = await new Response(fallback.stderr).text();
         throw new Error(`nexus up failed (exit ${fallbackCode}): ${fallbackStderr.trim()}`);
       }
-      return;
+      return fallbackStdout;
     }
     throw new Error(`nexus up failed (exit ${code}): ${stderr.trim()}`);
   }
+  return stdout;
 }
 
 /**
@@ -255,14 +266,15 @@ export async function nexusDown(projectRoot: string): Promise<void> {
  * nexus.yaml (see `init_cmd.py:_build_config`). The HTTP port is the
  * one grove cares about for health checks and API calls.
  *
- * Uses regex-based parsing (no YAML parser dependency). Falls back to
- * DEFAULT_NEXUS_URL if the file is missing or the port can't be
- * determined.
+ * Uses regex-based parsing (no YAML parser dependency). Returns
+ * undefined if the file is missing or the port can't be determined
+ * — callers should not fall back to a hardcoded default to avoid
+ * accidentally connecting to another user's Nexus instance.
  */
-export function readNexusUrl(projectRoot: string): string {
+export function readNexusUrl(projectRoot: string): string | undefined {
   try {
     const yamlPath = join(projectRoot, "nexus.yaml");
-    if (!existsSync(yamlPath)) return DEFAULT_NEXUS_URL;
+    if (!existsSync(yamlPath)) return undefined;
 
     const content = readFileSync(yamlPath, "utf-8");
 
@@ -286,9 +298,25 @@ export function readNexusUrl(projectRoot: string): string {
       }
     }
   } catch {
-    // Fall through to default
+    // Fall through
   }
-  return DEFAULT_NEXUS_URL;
+  return undefined;
+}
+
+/**
+ * Parse the Nexus HTTP URL from `nexus up` stdout.
+ *
+ * `nexus up` prints a service table like:
+ *   nexus       http://localhost:2122
+ *
+ * We extract the URL from the line matching "nexus" + "http://".
+ */
+function parseNexusUrlFromOutput(stdout: string): string | undefined {
+  for (const line of stdout.split("\n")) {
+    const match = line.match(/nexus\s+(https?:\/\/\S+)/i);
+    if (match?.[1]) return match[1];
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -402,12 +430,52 @@ export async function ensureNexusRunning(
     );
   }
 
-  // Auto-init if nexus.yaml is missing
+  // Re-init nexus.yaml when:
+  // - force flag set (user chose "New grove" — stop existing, delete yaml, init fresh)
+  // - Missing entirely (init, but no need to stop — nothing running)
+  // - Lacks a ports: block (legacy config — stop existing, delete yaml, init fresh)
+  // If nexus.yaml exists with ports: block — skip init, just `nexus up` below.
   const nexusYaml = join(projectRoot, "nexus.yaml");
-  if (!existsSync(nexusYaml)) {
+  let needsInit: "force" | "missing" | "legacy" | false = false;
+
+  if (upOpts?.force) {
+    needsInit = "force";
+  } else if (!existsSync(nexusYaml)) {
+    needsInit = "missing";
+  } else {
+    try {
+      const content = readFileSync(nexusYaml, "utf-8");
+      if (!content.includes("ports:")) {
+        needsInit = "legacy";
+      }
+    } catch {
+      needsInit = "missing";
+    }
+  }
+
+  if (needsInit) {
+    // Stop existing Nexus before re-init (force / legacy config).
+    // When yaml is simply missing there's nothing to stop.
+    if (needsInit === "force" || needsInit === "legacy") {
+      report("Stopping existing Nexus...");
+      await nexusDown(projectRoot);
+    }
+
+    // Remove stale nexus.yaml so `nexus init` writes a fresh one with ports
+    try {
+      unlinkSync(nexusYaml);
+    } catch {
+      // Didn't exist — fine
+    }
     const preset = inferNexusPreset(config);
-    const channel = config.nexusChannel ?? DEFAULT_NEXUS_CHANNEL;
-    report(`Initializing Nexus (preset: ${preset}, channel: ${channel})...`);
+    // When building from source, skip channel — it only selects which prebuilt
+    // Docker image to pull (edge/stable). Source builds use the local Dockerfile.
+    const isBuildingFromSource = upOpts?.build || !!upOpts?.nexusSource;
+    const channel = isBuildingFromSource
+      ? undefined
+      : (config.nexusChannel ?? DEFAULT_NEXUS_CHANNEL);
+    const channelLabel = channel ? `, channel: ${channel}` : ", source build";
+    report(`Initializing Nexus (preset: ${preset}${channelLabel})...`);
     await nexusInit(projectRoot, { preset, channel });
   }
 
@@ -418,11 +486,19 @@ export async function ensureNexusRunning(
       ? " (--build)"
       : "";
   report(`Starting Nexus${buildLabel}...`);
-  await nexusUp(projectRoot, upOpts);
+  const upStdout = await nexusUp(projectRoot, upOpts);
 
-  // Discover actual URL — nexus.yaml may have been updated with a
-  // different port if the default was already in use (nexus#2918).
-  const nexusUrl = config.nexusUrl ?? readNexusUrl(projectRoot);
+  // Discover actual URL — priority:
+  // 1. Explicit config (grove.json nexusUrl — user set it)
+  // 2. Read from nexus.yaml ports block — `nexus up` writes resolved ports back
+  //    to nexus.yaml after conflict resolution, so this is authoritative
+  // 3. Parse from `nexus up` stdout as fallback
+  // 4. Default URL (nexus init always writes default ports, nexus up resolves conflicts)
+  const nexusUrl =
+    config.nexusUrl ??
+    readNexusUrl(projectRoot) ??
+    parseNexusUrlFromOutput(upStdout) ??
+    DEFAULT_NEXUS_URL;
   report(`Waiting for Nexus at ${nexusUrl}...`);
   await waitForNexusHealth(nexusUrl);
 

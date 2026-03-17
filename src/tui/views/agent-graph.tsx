@@ -247,7 +247,7 @@ export const AgentGraphView: React.NamedExoticComponent<AgentGraphProps> = React
       <box flexDirection="column">
         <box marginBottom={1} flexDirection="column">
           <text color={theme.muted}>
-            Topology: {topology.structure} ({topology.roles.length} roles){headerSuffix}
+            {`Topology: ${topology.structure} (${topology.roles.length} roles)${headerSuffix}`}
           </text>
           {statusSummary ? <text color={theme.muted}>{statusSummary}</text> : null}
         </box>

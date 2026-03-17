@@ -77,12 +77,12 @@ export const ThreadsPanelView: React.NamedExoticComponent<ThreadsPanelProps> = R
 
     return (
       <box flexDirection="column">
-        <box marginBottom={1}>
+        <box marginBottom={1} flexDirection="row">
           <text>Threads</text>
           <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
           <text opacity={0.5}>
             {"  "}
-            {threads.length} active
+            {`${threads.length} active`}
           </text>
         </box>
         {threads.length === 0 ? (

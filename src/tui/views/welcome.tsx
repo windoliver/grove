@@ -251,7 +251,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
               Connect to remote Nexus
             </text>
             <text color={theme.muted}>{""}</text>
-            <box>
+            <box flexDirection="row">
               <text color={theme.text}>Nexus URL: </text>
               <text color={theme.focus} bold>
                 {urlBuffer}
@@ -281,7 +281,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
             </text>
             <text color={theme.muted}>Preset: {selectedPreset}</text>
             <text color={theme.muted}>{""}</text>
-            <box>
+            <box flexDirection="row">
               <text color={theme.text}>Grove name: </text>
               <text color={theme.focus} bold>
                 {nameBuffer}
@@ -325,16 +325,16 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
               const selected = i === cursor;
               const prefix = selected ? "> " : "  ";
               return (
-                <text
+                <box
                   key={preset.name}
-                  color={selected ? theme.focus : theme.text}
+                  flexDirection="row"
                   backgroundColor={selected ? theme.selectedBg : undefined}
-                  bold={selected}
                 >
-                  {prefix}
-                  {preset.name.padEnd(20)}
+                  <text color={selected ? theme.focus : theme.text} bold={selected}>
+                    {`${prefix}${preset.name.padEnd(20)}`}
+                  </text>
                   <text color={theme.muted}>{preset.description}</text>
-                </text>
+                </box>
               );
             })}
           </box>
@@ -437,11 +437,11 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
           <text color={theme.text}>with human oversight.</text>
           <text color={theme.muted}>{""}</text>
           {GLOSSARY.map((entry) => (
-            <text key={entry.term} color={theme.text}>
-              {"  "}
+            <box key={entry.term} flexDirection="row">
+              <text color={theme.text}>{"  "}</text>
               <text color={theme.info}>{entry.term.padEnd(16)}</text>
               <text color={theme.muted}>{entry.definition}</text>
-            </text>
+            </box>
           ))}
         </box>
 

@@ -44,12 +44,12 @@ export const SplitDiff: React.NamedExoticComponent<SplitDiffProps> = React.memo(
     <box flexDirection="column">
       {/* Headers */}
       <box flexDirection="row">
-        <box flexGrow={1}>
+        <box flexGrow={1} flexDirection="row">
           <text color={theme.focus}>{leftLabel}</text>
           {leftMetric && <text opacity={0.5}> {leftMetric}</text>}
         </box>
         <text opacity={0.3}>|</text>
-        <box flexGrow={1}>
+        <box flexGrow={1} flexDirection="row">
           <text color={theme.compare}>{rightLabel}</text>
           {rightMetric && <text opacity={0.5}> {rightMetric}</text>}
         </box>
@@ -68,7 +68,7 @@ export const SplitDiff: React.NamedExoticComponent<SplitDiffProps> = React.memo(
         </box>
       ))}
       {maxLines > MAX_VISIBLE_LINES && (
-        <text opacity={0.5}>... {maxLines - MAX_VISIBLE_LINES} more lines</text>
+        <text opacity={0.5}>{`... ${maxLines - MAX_VISIBLE_LINES} more lines`}</text>
       )}
     </box>
   );

@@ -368,7 +368,7 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
             <text color={theme.muted}>{selectorHeader}</text>
           </box>
         )}
-        <box marginBottom={1}>
+        <box marginBottom={1} flexDirection="row">
           <text color={theme.focus}>{preview.header}</text>
           <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
           {hasDiffSupport && (

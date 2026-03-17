@@ -113,7 +113,7 @@ function renderSection(title: string, bindings: readonly KeyBinding[]): React.Re
         </text>
       </box>
       {bindings.map((b) => (
-        <box key={b.key} paddingLeft={1}>
+        <box key={b.key} paddingLeft={1} flexDirection="row">
           <text color={theme.text} bold>
             {b.key.padEnd(14)}
           </text>

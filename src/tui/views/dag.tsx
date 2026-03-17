@@ -114,15 +114,20 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
 
   return (
     <box flexDirection="column">
-      <box marginBottom={1}>
-        <text>Contribution DAG ({contributions.length} nodes) </text>
+      <box marginBottom={1} flexDirection="row">
+        <text>{`Contribution DAG (${contributions.length} nodes) `}</text>
         <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
-        <text opacity={0.5}>
-          <text color={theme.work}>work</text> <text color={theme.review}>review</text>{" "}
-          <text color={theme.discussion}>discussion</text>{" "}
-          <text color={theme.adoption}>adoption</text>{" "}
+        <box opacity={0.5} flexDirection="row">
+          <text color={theme.work}>work</text>
+          <text> </text>
+          <text color={theme.review}>review</text>
+          <text> </text>
+          <text color={theme.discussion}>discussion</text>
+          <text> </text>
+          <text color={theme.adoption}>adoption</text>
+          <text> </text>
           <text color={theme.reproduction}>reproduction</text>
-        </text>
+        </box>
       </box>
       {dagLines.map((line, i) => {
         const isNodeLine = line.label !== "";
@@ -138,7 +143,7 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
         const outcome = fullCid ? outcomes?.get(fullCid) : undefined;
 
         return (
-          <box key={`dag-${String(i)}`}>
+          <box key={`dag-${String(i)}`} flexDirection="row">
             {isSelected ? <text color={theme.focus}>{"> "}</text> : <text> </text>}
             <text opacity={0.5}>{line.graphPrefix}</text>
             {isNodeLine && (

@@ -46,15 +46,15 @@ export const InitProgressView: React.NamedExoticComponent<InitProgressProps> = R
           const isCurrent = !step.done && (i === 0 || (steps[i - 1]?.done ?? false));
 
           return (
-            <text
-              key={step.label}
-              color={isCurrent ? theme.text : step.done ? theme.success : theme.muted}
-            >
-              {"  "}
+            <box key={step.label} flexDirection="row">
+              <text color={isCurrent ? theme.text : step.done ? theme.success : theme.muted}>
+                {"  "}
+              </text>
               <text color={iconColor}>{icon}</text>
-              {"  "}
-              {step.label}
-            </text>
+              <text color={isCurrent ? theme.text : step.done ? theme.success : theme.muted}>
+                {`  ${step.label}`}
+              </text>
+            </box>
           );
         })}
 

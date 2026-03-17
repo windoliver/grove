@@ -107,12 +107,12 @@ export const DecisionsPanelView: React.NamedExoticComponent<DecisionsPanelProps>
 
     return (
       <box flexDirection="column">
-        <box marginBottom={1}>
+        <box marginBottom={1} flexDirection="row">
           <text>Decisions</text>
           <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
           <text opacity={0.5}>
             {"  "}
-            {questions.length} pending
+            {`${questions.length} pending`}
           </text>
         </box>
         {questions.length === 0 ? (
