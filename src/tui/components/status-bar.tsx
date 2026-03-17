@@ -25,6 +25,8 @@ export interface StatusBarProps {
   readonly agentCount?: number | undefined;
   /** Current view mode (grid or pipeline). */
   readonly viewMode?: ViewMode | undefined;
+  /** Current goal text to display in the status bar. */
+  readonly goalLabel?: string | undefined;
 }
 
 /** Mode labels for the status bar. */
@@ -71,6 +73,7 @@ export const StatusBar: React.NamedExoticComponent<StatusBarProps> = React.memo(
   focusedPanel,
   agentCount,
   viewMode,
+  goalLabel,
 }: StatusBarProps): React.ReactNode {
   const modeLabel = MODE_LABELS[mode];
   const hints = panelHints(focusedPanel, isDetailView);
@@ -79,6 +82,11 @@ export const StatusBar: React.NamedExoticComponent<StatusBarProps> = React.memo(
 
   return (
     <box flexDirection="column">
+      {goalLabel && (
+        <box>
+          <text color={theme.muted}>Goal: {goalLabel}</text>
+        </box>
+      )}
       {error && (
         <box>
           <text color={theme.error}>Error: {error}</text>

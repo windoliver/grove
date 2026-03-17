@@ -48,6 +48,7 @@ export interface KeyboardActions {
   readonly onTerminalScrollUp: () => void;
   readonly onTerminalScrollDown: () => void;
   readonly onTerminalScrollBottom: () => void;
+  readonly onLayoutToggle: () => void;
   readonly onSelect: (index: number) => void;
   readonly rowCount: number;
   readonly pageSize: number;
@@ -337,9 +338,9 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     return true;
   }
 
-  // Zoom cycle: + key
+  // Layout toggle: + key (tab <-> grid)
   if (input === "+" || (key.shift && input === "=")) {
-    actions.onZoomCycle();
+    actions.onLayoutToggle();
     return true;
   }
 

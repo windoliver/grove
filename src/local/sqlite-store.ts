@@ -37,6 +37,7 @@ import type {
 } from "../core/store.js";
 import { ExpiryReason } from "../core/store.js";
 import { BOUNTY_DDL, SqliteBountyStore } from "./sqlite-bounty-store.js";
+import { SqliteGoalSessionStore } from "./sqlite-goal-session-store.js";
 import { SqliteOutcomeStore } from "./sqlite-outcome-store.js";
 
 // ---------------------------------------------------------------------------
@@ -319,6 +320,7 @@ export function createSqliteStores(dbPath: string): {
   claimStore: SqliteClaimStore;
   bountyStore: SqliteBountyStore;
   outcomeStore: SqliteOutcomeStore;
+  goalSessionStore: SqliteGoalSessionStore;
   close: () => void;
 } {
   const db = initSqliteDb(dbPath);
@@ -327,6 +329,7 @@ export function createSqliteStores(dbPath: string): {
     claimStore: new SqliteClaimStore(db),
     bountyStore: new SqliteBountyStore(db),
     outcomeStore: new SqliteOutcomeStore(db),
+    goalSessionStore: new SqliteGoalSessionStore(db),
     close: () => {
       db.run("PRAGMA optimize");
       db.close();

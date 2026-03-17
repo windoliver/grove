@@ -12,10 +12,20 @@ const grove: HonoType<ServerEnv> = new Hono<ServerEnv>();
 
 /** GET /api/grove — Grove instance metadata. */
 grove.get("/", async (c) => {
-  const { contributionStore, claimStore, gossip: gossipService } = c.get("deps");
+  const { contributionStore, claimStore, gossip: gossipService, goalSessionStore } = c.get("deps");
 
   const contributionCount = await contributionStore.count();
   const activeClaimCount = await claimStore.countActiveClaims();
+
+  // Fetch goal and active session info when the store is available
+  let goal: string | undefined;
+  let activeSessionId: string | undefined;
+  if (goalSessionStore) {
+    const goalData = await goalSessionStore.getGoal();
+    goal = goalData?.goal;
+    const activeSessions = await goalSessionStore.listSessions({ status: "active" });
+    activeSessionId = activeSessions.length > 0 ? activeSessions[0]?.sessionId : undefined;
+  }
 
   return c.json({
     version: "0.1.0",
@@ -26,6 +36,8 @@ grove.get("/", async (c) => {
       contributions: contributionCount,
       activeClaims: activeClaimCount,
     },
+    goal,
+    activeSessionId,
     gossip: gossipService
       ? {
           enabled: true,

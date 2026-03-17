@@ -12,6 +12,7 @@ import type { GossipService } from "../core/gossip/types.js";
 import type { OutcomeStore } from "../core/outcome.js";
 import type { ClaimStore, ContributionStore } from "../core/store.js";
 import type { AgentTopology } from "../core/topology.js";
+import type { GoalSessionStore } from "../local/sqlite-goal-session-store.js";
 
 /** Dependencies injected into the Hono application. */
 export interface ServerDeps {
@@ -27,6 +28,8 @@ export interface ServerDeps {
   readonly bountyStore?: BountyStore | undefined;
   /** Optional agent topology. Routes return 404 when not configured. */
   readonly topology?: AgentTopology | undefined;
+  /** Optional goal/session store. Routes return 501 when not configured. */
+  readonly goalSessionStore?: GoalSessionStore | undefined;
 }
 
 /** Hono environment type carrying injected dependencies. */

@@ -1,8 +1,8 @@
 /**
  * Tests for bounty and gossip provider methods across all backends.
  *
- * Verifies that the bounties and gossip panels can discover and call
- * listBounties() / getGossipPeers() on each provider type.
+ * Verifies that the bounties and gossip panels can discover capabilities
+ * via isBountyProvider() / isGossipProvider() type guards from provider.ts.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -10,38 +10,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Bounty } from "../core/bounty.js";
-import type { BountyStore } from "../core/bounty-store.js";
-import type { PeerInfo } from "../core/gossip/types.js";
 import { createSqliteStores } from "../local/sqlite-store.js";
 import { MockNexusClient } from "../nexus/mock-client.js";
 import { LocalDataProvider, type LocalProviderDeps } from "./local-provider.js";
 import { NexusDataProvider } from "./nexus-provider.js";
-import type { TuiDataProvider } from "./provider.js";
+import { isBountyProvider, isGossipProvider } from "./provider.js";
 import { RemoteDataProvider } from "./remote-provider.js";
-
-// ---------------------------------------------------------------------------
-// Duck-type checkers (same as panels use)
-// ---------------------------------------------------------------------------
-
-function hasBounties(
-  provider: TuiDataProvider,
-): provider is TuiDataProvider & Pick<BountyStore, "listBounties"> {
-  return (
-    "listBounties" in provider &&
-    typeof (provider as unknown as BountyStore).listBounties === "function"
-  );
-}
-
-interface GossipPeerProvider {
-  getGossipPeers(): Promise<readonly PeerInfo[]>;
-}
-
-function hasGossip(provider: TuiDataProvider): provider is TuiDataProvider & GossipPeerProvider {
-  return (
-    "getGossipPeers" in provider &&
-    typeof (provider as unknown as GossipPeerProvider).getGossipPeers === "function"
-  );
-}
 
 // ---------------------------------------------------------------------------
 // LocalDataProvider tests
@@ -62,7 +36,7 @@ describe("LocalDataProvider bounty/gossip", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("passes hasBounties() duck-type check when bountyStore is provided", () => {
+  it("passes isBountyProvider() type guard check when bountyStore is provided", () => {
     const deps: LocalProviderDeps = {
       contributionStore: stores.contributionStore,
       claimStore: stores.claimStore,
@@ -71,11 +45,11 @@ describe("LocalDataProvider bounty/gossip", () => {
       bountyStore: stores.bountyStore,
     };
     const provider = new LocalDataProvider(deps);
-    expect(hasBounties(provider)).toBe(true);
+    expect(isBountyProvider(provider)).toBe(true);
     provider.close();
   });
 
-  it("fails hasBounties() duck-type check when bountyStore is NOT provided", () => {
+  it("fails isBountyProvider() type guard check when bountyStore is NOT provided", () => {
     const deps: LocalProviderDeps = {
       contributionStore: stores.contributionStore,
       claimStore: stores.claimStore,
@@ -83,7 +57,7 @@ describe("LocalDataProvider bounty/gossip", () => {
       groveName: "test",
     };
     const provider = new LocalDataProvider(deps);
-    expect(hasBounties(provider)).toBe(true); // method exists, just returns []
+    expect(isBountyProvider(provider)).toBe(true); // method exists, just returns []
     provider.close();
   });
 
@@ -139,7 +113,7 @@ describe("LocalDataProvider bounty/gossip", () => {
       groveName: "test",
     };
     const provider = new LocalDataProvider(deps);
-    expect(hasGossip(provider)).toBe(false);
+    expect(isGossipProvider(provider)).toBe(false);
     provider.close();
   });
 });
@@ -159,11 +133,11 @@ describe("NexusDataProvider bounty/gossip", () => {
     mockClient.close();
   });
 
-  it("passes hasBounties() duck-type check", () => {
+  it("passes isBountyProvider() type guard check", () => {
     const provider = new NexusDataProvider({
       nexusConfig: { client: mockClient, zoneId: "test-zone" },
     });
-    expect(hasBounties(provider)).toBe(true);
+    expect(isBountyProvider(provider)).toBe(true);
     provider.close();
   });
 
@@ -176,11 +150,11 @@ describe("NexusDataProvider bounty/gossip", () => {
     provider.close();
   });
 
-  it("passes hasGossip() duck-type check", () => {
+  it("passes isGossipProvider() type guard check", () => {
     const provider = new NexusDataProvider({
       nexusConfig: { client: mockClient, zoneId: "test-zone" },
     });
-    expect(hasGossip(provider)).toBe(true);
+    expect(isGossipProvider(provider)).toBe(true);
     provider.close();
   });
 
@@ -250,20 +224,20 @@ describe("NexusDataProvider bounty/gossip", () => {
 // ---------------------------------------------------------------------------
 
 describe("RemoteDataProvider bounty/gossip", () => {
-  it("passes hasBounties() duck-type check", () => {
+  it("passes isBountyProvider() type guard check", () => {
     const provider = new RemoteDataProvider("http://localhost:4515");
-    expect(hasBounties(provider)).toBe(true);
+    expect(isBountyProvider(provider)).toBe(true);
     provider.close();
   });
 
-  it("passes hasGossip() duck-type check", () => {
+  it("passes isGossipProvider() type guard check", () => {
     const provider = new RemoteDataProvider("http://localhost:4515");
-    expect(hasGossip(provider)).toBe(true);
+    expect(isGossipProvider(provider)).toBe(true);
     provider.close();
   });
 
   // NOTE: Actual HTTP calls are tested via server integration tests.
-  // These tests verify the duck-type detection that panels rely on.
+  // These tests verify the type guard detection that panels rely on.
 });
 
 // ---------------------------------------------------------------------------

@@ -33,6 +33,3 @@ export const PanelBar: React.NamedExoticComponent<PanelBarProps> = React.memo(fu
     </box>
   );
 });
-
-// Keep the old TabBar export for backwards compatibility during migration
-export { PanelBar as TabBar };

@@ -20,6 +20,7 @@
  *   grove tree          — DAG visualization
  *   grove gossip        — Gossip protocol commands
  *   grove outcome       — Manage outcome annotations
+ *   grove goal          — View or set the current goal
  *   grove tui           — Operator TUI dashboard
  */
 
@@ -311,6 +312,15 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       },
     },
     {
+      name: "goal",
+      description: "View or set the current goal",
+      needsStore: false,
+      handler: async (args) => {
+        const { handleGoal } = await import("./commands/goal.js");
+        await handleGoal(args);
+      },
+    },
+    {
       name: "tui",
       description: "Operator TUI dashboard",
       needsStore: false,
@@ -335,6 +345,15 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       handler: async (args) => {
         const { handleDown } = await import("./commands/down.js");
         await handleDown(args, groveOverride);
+      },
+    },
+    {
+      name: "skill",
+      description: "Manage AI assistant skill files",
+      needsStore: false,
+      handler: async (args) => {
+        const { handleSkill } = await import("./commands/skill.js");
+        await handleSkill(args);
       },
     },
     {
@@ -455,6 +474,10 @@ Usage:
   grove outcome list [--status]    List outcomes
   grove outcome stats              Show outcome statistics
 
+  grove goal                       Show current goal
+  grove goal set <text>            Set a new goal
+    --acceptance <criterion>       Add acceptance criterion (repeatable)
+
   grove export --to-discussion <owner/repo> <cid>   Export to GitHub Discussion
   grove export --to-pr <owner/repo> <cid>           Export to GitHub PR
   grove import --from-pr <owner/repo#number>        Import GitHub PR
@@ -472,6 +495,9 @@ Usage:
   grove gossip daemon   <seeds>               Run persistent gossip loop
   grove gossip add-peer <id@address>          Add peer to local store
   grove gossip remove-peer <id>               Remove peer from local store
+
+  grove skill install [--server-url <url>] [--mcp-url <url>]
+                                           Install SKILL.md into AI assistant skill directories
 
   grove completions bash|zsh|fish          Generate shell completion scripts
 

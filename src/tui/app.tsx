@@ -30,6 +30,7 @@ import { useSessionPersistence } from "./hooks/use-session-persistence.js";
 import type { ZoomLevel } from "./panels/panel-manager.js";
 import { PanelManager } from "./panels/panel-manager.js";
 import {
+  type DashboardData,
   type GitHubPRSummary,
   isCostProvider,
   isGitHubProvider,
@@ -72,6 +73,7 @@ export interface TuiKeyboardState {
   readonly compareCids: readonly string[];
   readonly zoomLevel: ZoomLevel;
   readonly terminalScrollOffset: number;
+  readonly layoutMode: "grid" | "tab";
 }
 
 /** Actions for the TUI keyboard state reducer. */
@@ -99,7 +101,8 @@ export type TuiAction =
   | { readonly type: "ZOOM_RESET" }
   | { readonly type: "TERMINAL_SCROLL_UP" }
   | { readonly type: "TERMINAL_SCROLL_DOWN" }
-  | { readonly type: "TERMINAL_SCROLL_BOTTOM" };
+  | { readonly type: "TERMINAL_SCROLL_BOTTOM" }
+  | { readonly type: "LAYOUT_TOGGLE" };
 
 const INITIAL_KEYBOARD_STATE: TuiKeyboardState = {
   vfsNavigateTrigger: 0,
@@ -114,6 +117,7 @@ const INITIAL_KEYBOARD_STATE: TuiKeyboardState = {
   compareCids: [],
   zoomLevel: "normal",
   terminalScrollOffset: 0,
+  layoutMode: "tab",
 };
 
 /** Pure reducer for TUI keyboard state — testable and serializable. */
@@ -180,6 +184,8 @@ export function tuiReducer(state: TuiKeyboardState, action: TuiAction): TuiKeybo
       return { ...state, terminalScrollOffset: Math.max(0, state.terminalScrollOffset - 5) };
     case "TERMINAL_SCROLL_BOTTOM":
       return state.terminalScrollOffset === 0 ? state : { ...state, terminalScrollOffset: 0 };
+    case "LAYOUT_TOGGLE":
+      return { ...state, layoutMode: state.layoutMode === "tab" ? "grid" : "tab" };
   }
 }
 
@@ -325,6 +331,14 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
     prFetcher,
     intervalMs * 4,
     hasGitHub,
+  );
+
+  // Poll dashboard for goal metadata (shown in status bar)
+  const dashboardFetcher = useCallback(() => provider.getDashboard(), [provider]);
+  const { data: dashboardData } = usePolledData<DashboardData>(
+    dashboardFetcher,
+    intervalMs * 3,
+    true,
   );
 
   // Sync PR context to SpawnManager whenever it changes
@@ -624,6 +638,7 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
       onTerminalScrollUp: () => dispatch({ type: "TERMINAL_SCROLL_UP" }),
       onTerminalScrollDown: () => dispatch({ type: "TERMINAL_SCROLL_DOWN" }),
       onTerminalScrollBottom: () => dispatch({ type: "TERMINAL_SCROLL_BOTTOM" }),
+      onLayoutToggle: () => dispatch({ type: "LAYOUT_TOGGLE" }),
       onVfsNavigate: () => dispatch({ type: "VFS_NAVIGATE" }),
       onArtifactPrev: () => dispatch({ type: "ARTIFACT_PREV" }),
       onArtifactNext: () => dispatch({ type: "ARTIFACT_NEXT" }),
@@ -852,6 +867,7 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
         activeSessions={paletteSessions?.filter((s) => s.startsWith("grove-"))}
         terminalScrollOffset={ks.terminalScrollOffset}
         terminalBuffers={terminalBuffers ?? undefined}
+        layoutMode={ks.layoutMode}
       />
       <StatusBar
         mode={panels.state.mode}
@@ -865,6 +881,7 @@ export function App({ provider, intervalMs, tmux, topology }: AppProps): React.R
             ? `$${sessionCosts.totalCostUsd.toFixed(2)} | ${formatTokens(sessionCosts.totalTokens)}`
             : undefined
         }
+        goalLabel={dashboardData?.metadata.goal}
       />
     </box>
   );

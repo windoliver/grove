@@ -8,13 +8,13 @@
 
 import React, { useCallback, useEffect } from "react";
 import type { Bounty } from "../../core/bounty.js";
-import type { BountyQuery, BountyStore } from "../../core/bounty-store.js";
+import type { BountyQuery } from "../../core/bounty-store.js";
 import { formatTimestamp, truncateCid } from "../../shared/format.js";
 import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
-import type { TuiDataProvider } from "../provider.js";
+import { isBountyProvider, type TuiDataProvider } from "../provider.js";
 
 /** Props for the BountiesPanel view. */
 export interface BountiesPanelProps {
@@ -43,16 +43,6 @@ const COLUMNS = [
   { header: "DEADLINE", key: "deadline", width: 10 },
 ] as const;
 
-/** Check if a provider exposes a listBounties method. */
-function hasBounties(
-  provider: TuiDataProvider,
-): provider is TuiDataProvider & Pick<BountyStore, "listBounties"> {
-  return (
-    "listBounties" in provider &&
-    typeof (provider as unknown as BountyStore).listBounties === "function"
-  );
-}
-
 /** Bounties panel showing bounty records. */
 export const BountiesPanelView: React.NamedExoticComponent<BountiesPanelProps> = React.memo(
   function BountiesPanelView({
@@ -62,15 +52,13 @@ export const BountiesPanelView: React.NamedExoticComponent<BountiesPanelProps> =
     cursor,
     onRowCountChanged,
   }: BountiesPanelProps): React.ReactNode {
-    const supportsBounties = hasBounties(provider);
+    const supportsBounties = isBountyProvider(provider);
 
     const fetcher = useCallback(async (): Promise<readonly BountyRow[]> => {
-      if (!supportsBounties) return [];
+      if (!isBountyProvider(provider)) return [];
 
       const query: BountyQuery = { limit: 30 };
-      const all: readonly Bounty[] = await (
-        provider as unknown as Pick<BountyStore, "listBounties">
-      ).listBounties(query);
+      const all: readonly Bounty[] = await provider.listBounties(query);
       return all.map((b) => ({
         id: truncateCid(b.bountyId),
         title: b.title.length > 24 ? `${b.title.slice(0, 22)}..` : b.title,
@@ -79,7 +67,7 @@ export const BountiesPanelView: React.NamedExoticComponent<BountiesPanelProps> =
         creator: b.creator.role ?? b.creator.agentName ?? b.creator.agentId,
         deadline: formatTimestamp(b.deadline),
       }));
-    }, [provider, supportsBounties]);
+    }, [provider]);
 
     const { data, loading, isStale, error } = usePolledData<readonly BountyRow[]>(
       fetcher,

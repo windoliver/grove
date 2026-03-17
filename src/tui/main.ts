@@ -275,6 +275,31 @@ async function buildAppProps(
 }
 
 // ---------------------------------------------------------------------------
+// Post-startup skill update
+// ---------------------------------------------------------------------------
+
+/**
+ * Fire-and-forget update of SKILL.md with actual server URLs.
+ *
+ * Called after services start so that AI agent skill files point at
+ * the running grove server and MCP endpoints.
+ */
+function updateSkillAfterStartup(): void {
+  const serverPort = process.env.PORT ?? "4515";
+  const mcpPort = process.env.MCP_PORT ?? "4015";
+  void import("../cli/commands/skill.js")
+    .then(({ handleSkillInstall }) =>
+      handleSkillInstall({
+        serverUrl: `http://localhost:${serverPort}`,
+        mcpUrl: `http://localhost:${mcpPort}`,
+      }),
+    )
+    .catch(() => {
+      /* skill update is best-effort */
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Main entry points
 // ---------------------------------------------------------------------------
 
@@ -367,6 +392,9 @@ export async function handleTui(
       activeProvider = result.provider;
       activeStopGc = result.stopGc;
 
+      // Post-startup: update agent skill SKILL.md (non-blocking)
+      updateSkillAfterStartup();
+
       const { App } = await import("./app.js");
       root.render(React.createElement(App, result.appProps));
 
@@ -405,6 +433,10 @@ export async function handleTui(
       const result = await buildAppProps(effectiveGrove, opts);
       activeProvider = result.provider;
       activeStopGc = result.stopGc;
+
+      // Post-startup: update agent skill SKILL.md (non-blocking)
+      updateSkillAfterStartup();
+
       return result.appProps;
     };
 
@@ -424,6 +456,10 @@ export async function handleTui(
       const result = await buildAppProps(effectiveGrove, opts);
       activeProvider = result.provider;
       activeStopGc = result.stopGc;
+
+      // Post-startup: update agent skill SKILL.md (non-blocking)
+      updateSkillAfterStartup();
+
       return result.appProps;
     };
 

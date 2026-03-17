@@ -17,14 +17,14 @@ export const reviewLoopPreset: PresetConfig = {
       {
         name: "coder",
         description: "Writes and iterates on code",
-        maxInstances: 2,
+        maxInstances: 1,
         edges: [{ target: "reviewer", edgeType: "delegates" }],
         command: "claude --role coder",
       },
       {
         name: "reviewer",
         description: "Reviews code and provides feedback",
-        maxInstances: 2,
+        maxInstances: 1,
         edges: [{ target: "coder", edgeType: "feedback" }],
         command: "claude --role reviewer",
       },

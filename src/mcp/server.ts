@@ -13,10 +13,12 @@ import type { McpDeps } from "./deps.js";
 import { registerBountyTools } from "./tools/bounties.js";
 import { registerClaimTools } from "./tools/claims.js";
 import { registerContributionTools } from "./tools/contributions.js";
+import { registerGoalTools } from "./tools/goal.js";
 import { registerIngestTools } from "./tools/ingest.js";
 import { registerMessagingTools } from "./tools/messaging.js";
 import { registerOutcomeTools } from "./tools/outcomes.js";
 import { registerQueryTools } from "./tools/queries.js";
+import { registerSessionTools } from "./tools/session.js";
 import { registerStopTools } from "./tools/stop.js";
 import { registerWorkspaceTools } from "./tools/workspace.js";
 
@@ -41,6 +43,8 @@ export async function createMcpServer(deps: McpDeps): Promise<McpServer> {
   registerOutcomeTools(server, deps);
   registerIngestTools(server, deps);
   registerMessagingTools(server, deps);
+  registerGoalTools(server, deps);
+  registerSessionTools(server, deps);
   await registerAskUserTools(server);
 
   return server;

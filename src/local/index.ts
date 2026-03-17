@@ -5,6 +5,10 @@ export { ingestGitDiff } from "./ingest/git-diff.js";
 export { ingestGitTree } from "./ingest/git-tree.js";
 export { ingestReport } from "./ingest/report.js";
 export {
+  type GoalSessionStore,
+  SqliteGoalSessionStore,
+} from "./sqlite-goal-session-store.js";
+export {
   createSqliteStores,
   initSqliteDb,
   SqliteClaimStore,

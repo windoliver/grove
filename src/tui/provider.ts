@@ -34,6 +34,10 @@ export interface ProviderCapabilities {
   readonly costTracking: boolean;
   readonly askUser: boolean;
   readonly github: boolean;
+  readonly bounties: boolean;
+  readonly gossip: boolean;
+  readonly goals: boolean;
+  readonly sessions: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -47,6 +51,8 @@ export interface GroveMetadata {
   readonly activeClaimCount: number;
   readonly mode: string;
   readonly backendLabel: string;
+  readonly goal?: string | undefined;
+  readonly activeSessionId?: string | undefined;
 }
 
 /** Aggregated dashboard data fetched in a single call. */
@@ -191,6 +197,30 @@ export interface GitHubPRSummary {
   readonly deletions: number;
 }
 
+/** Goal information for the active session. */
+export interface GoalData {
+  readonly goal: string;
+  readonly acceptance: readonly string[];
+  readonly status: "active" | "completed" | "abandoned";
+  readonly setAt: string;
+  readonly setBy: string;
+}
+
+/** Session record for grouping work. */
+export interface SessionRecord {
+  readonly sessionId: string;
+  readonly goal?: string | undefined;
+  readonly status: "active" | "archived";
+  readonly startedAt: string;
+  readonly endedAt?: string | undefined;
+  readonly contributionCount: number;
+}
+
+/** Input for creating a session. */
+export interface SessionInput {
+  readonly goal?: string | undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Base provider (unchanged from pre-#65)
 // ---------------------------------------------------------------------------
@@ -296,6 +326,33 @@ export interface TuiGitHubProvider {
   getActivePR(): Promise<GitHubPRSummary | undefined>;
 }
 
+/** Bounty queries — available when capabilities.bounties is true. */
+export interface TuiBountyProvider {
+  listBounties(
+    query?: import("../core/bounty-store.js").BountyQuery,
+  ): Promise<readonly import("../core/bounty.js").Bounty[]>;
+}
+
+/** Gossip peer access — available when capabilities.gossip is true. */
+export interface TuiGossipProvider {
+  getGossipPeers(): Promise<readonly import("../core/gossip/types.js").PeerInfo[]>;
+}
+
+/** Goal management — available when capabilities.goals is true. */
+export interface TuiGoalProvider {
+  getGoal(): Promise<GoalData | undefined>;
+  setGoal(goal: string, acceptance: readonly string[]): Promise<GoalData>;
+}
+
+/** Session management — available when capabilities.sessions is true. */
+export interface TuiSessionProvider {
+  listSessions(query?: { status?: "active" | "archived" }): Promise<readonly SessionRecord[]>;
+  createSession(input: SessionInput): Promise<SessionRecord>;
+  getSession(sessionId: string): Promise<SessionRecord | undefined>;
+  archiveSession(sessionId: string): Promise<void>;
+  addContributionToSession(sessionId: string, cid: string): Promise<void>;
+}
+
 // ---------------------------------------------------------------------------
 // Type guards — use these instead of `as unknown as { method? }` casts
 // ---------------------------------------------------------------------------
@@ -347,4 +404,32 @@ export function isGitHubProvider(
   provider: TuiDataProvider,
 ): provider is TuiDataProvider & TuiGitHubProvider {
   return provider.capabilities.github;
+}
+
+/** Check if provider supports bounty queries. */
+export function isBountyProvider(
+  provider: TuiDataProvider,
+): provider is TuiDataProvider & TuiBountyProvider {
+  return provider.capabilities.bounties;
+}
+
+/** Check if provider supports gossip peer access. */
+export function isGossipProvider(
+  provider: TuiDataProvider,
+): provider is TuiDataProvider & TuiGossipProvider {
+  return provider.capabilities.gossip;
+}
+
+/** Check if provider supports goal management. */
+export function isGoalProvider(
+  provider: TuiDataProvider,
+): provider is TuiDataProvider & TuiGoalProvider {
+  return provider.capabilities.goals;
+}
+
+/** Check if provider supports session management. */
+export function isSessionProvider(
+  provider: TuiDataProvider,
+): provider is TuiDataProvider & TuiSessionProvider {
+  return provider.capabilities.sessions;
 }

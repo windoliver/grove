@@ -43,9 +43,11 @@ import type {
   SessionCostSummary,
   TuiArtifactProvider,
   TuiAskUserProvider,
+  TuiBountyProvider,
   TuiCostProvider,
   TuiDataProvider,
   TuiGitHubProvider,
+  TuiGossipProvider,
   TuiMessagingProvider,
   TuiOutcomeProvider,
 } from "./provider.js";
@@ -61,7 +63,9 @@ export class RemoteDataProvider
     TuiMessagingProvider,
     TuiCostProvider,
     TuiAskUserProvider,
-    TuiGitHubProvider
+    TuiGitHubProvider,
+    TuiBountyProvider,
+    TuiGossipProvider
 {
   readonly capabilities: ProviderCapabilities = {
     outcomes: true,
@@ -71,6 +75,10 @@ export class RemoteDataProvider
     costTracking: true,
     askUser: true,
     github: true,
+    bounties: true,
+    gossip: true,
+    goals: false,
+    sessions: false,
   };
 
   private readonly baseUrl: string;
@@ -537,6 +545,8 @@ export class RemoteDataProvider
       if (resp.ok) {
         const data = (await resp.json()) as {
           name?: string;
+          goal?: string;
+          activeSessionId?: string;
           stats?: {
             contributions?: number;
             activeClaims?: number;
@@ -548,6 +558,8 @@ export class RemoteDataProvider
           activeClaimCount: data.stats?.activeClaims ?? 0,
           mode: "remote",
           backendLabel: this.label,
+          ...(data.goal !== undefined ? { goal: data.goal } : {}),
+          ...(data.activeSessionId !== undefined ? { activeSessionId: data.activeSessionId } : {}),
         };
       }
     } catch {

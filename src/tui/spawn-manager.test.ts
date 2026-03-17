@@ -43,6 +43,10 @@ function makeMockProvider(): TuiDataProvider & {
       costTracking: false,
       askUser: false,
       github: false,
+      bounties: false,
+      gossip: false,
+      goals: false,
+      sessions: false,
     },
 
     async getDashboard() {

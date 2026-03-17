@@ -28,10 +28,12 @@ import { contributions } from "./routes/contributions.js";
 import { dag } from "./routes/dag.js";
 import { diff } from "./routes/diff.js";
 import { frontier } from "./routes/frontier.js";
+import { goals } from "./routes/goals.js";
 import { gossip } from "./routes/gossip.js";
 import { grove } from "./routes/grove.js";
 import { outcomes } from "./routes/outcomes.js";
 import { search } from "./routes/search.js";
+import { sessions } from "./routes/sessions.js";
 import { threads } from "./routes/threads.js";
 
 /**
@@ -66,6 +68,8 @@ export function createApp(deps: ServerDeps): Hono<ServerEnv> {
   app.route("/api/gossip", gossip);
   app.route("/api/grove", grove);
   app.route("/api/outcomes", outcomes);
+  app.route("/api/session", goals);
+  app.route("/api/sessions", sessions);
 
   // Centralized error handling
   app.onError(handleError);

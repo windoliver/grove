@@ -13,7 +13,7 @@ import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
-import type { TuiDataProvider } from "../provider.js";
+import { isGossipProvider, type TuiDataProvider } from "../provider.js";
 
 /** Props for the GossipPanel view. */
 export interface GossipPanelProps {
@@ -22,11 +22,6 @@ export interface GossipPanelProps {
   readonly active: boolean;
   readonly cursor: number;
   readonly onRowCountChanged?: ((count: number) => void) | undefined;
-}
-
-/** Minimal interface for gossip peer access. */
-interface GossipPeerProvider {
-  getGossipPeers(): Promise<readonly PeerInfo[]>;
 }
 
 interface PeerRow {
@@ -45,14 +40,6 @@ const COLUMNS = [
   { header: "LAST SEEN", key: "lastSeen", width: 12 },
 ] as const;
 
-/** Check if a provider exposes a getGossipPeers method. */
-function hasGossip(provider: TuiDataProvider): provider is TuiDataProvider & GossipPeerProvider {
-  return (
-    "getGossipPeers" in provider &&
-    typeof (provider as unknown as GossipPeerProvider).getGossipPeers === "function"
-  );
-}
-
 /** Gossip panel showing peer network status. */
 export const GossipPanelView: React.NamedExoticComponent<GossipPanelProps> = React.memo(
   function GossipPanelView({
@@ -62,14 +49,12 @@ export const GossipPanelView: React.NamedExoticComponent<GossipPanelProps> = Rea
     cursor,
     onRowCountChanged,
   }: GossipPanelProps): React.ReactNode {
-    const supportsGossip = hasGossip(provider);
+    const supportsGossip = isGossipProvider(provider);
 
     const fetcher = useCallback(async (): Promise<readonly PeerRow[]> => {
-      if (!supportsGossip) return [];
+      if (!isGossipProvider(provider)) return [];
 
-      const peers: readonly PeerInfo[] = await (
-        provider as unknown as GossipPeerProvider
-      ).getGossipPeers();
+      const peers: readonly PeerInfo[] = await provider.getGossipPeers();
       return peers.map((p) => ({
         peerId: p.peerId.length > 18 ? `${p.peerId.slice(0, 16)}..` : p.peerId,
         address: p.address.length > 24 ? `${p.address.slice(0, 22)}..` : p.address,
@@ -80,7 +65,7 @@ export const GossipPanelView: React.NamedExoticComponent<GossipPanelProps> = Rea
         age: String(p.age),
         lastSeen: formatTimestamp(p.lastSeen),
       }));
-    }, [provider, supportsGossip]);
+    }, [provider]);
 
     const { data, loading, isStale, error } = usePolledData<readonly PeerRow[]>(
       fetcher,
