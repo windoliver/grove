@@ -110,7 +110,7 @@ describe("PUT /api/session/goal", () => {
     expect(data.error.code).toBe("VALIDATION_ERROR");
   });
 
-  test("validates input (missing acceptance field returns 400)", async () => {
+  test("accepts missing acceptance field (defaults to empty array)", async () => {
     const res = await ctx.app.request("/api/session/goal", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -119,10 +119,13 @@ describe("PUT /api/session/goal", () => {
       }),
     });
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { goal: string; acceptance: string[] };
+    expect(data.goal).toBe("Ship it");
+    expect(data.acceptance).toEqual([]);
   });
 
-  test("validates input (empty acceptance array returns 400)", async () => {
+  test("accepts empty acceptance array (goal without criteria)", async () => {
     const res = await ctx.app.request("/api/session/goal", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -132,7 +135,10 @@ describe("PUT /api/session/goal", () => {
       }),
     });
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { goal: string; acceptance: string[] };
+    expect(data.goal).toBe("Ship it");
+    expect(data.acceptance).toEqual([]);
   });
 });
 

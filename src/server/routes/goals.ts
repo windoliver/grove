@@ -16,7 +16,7 @@ import { notConfigured } from "./shared.js";
 
 const setGoalSchema = z.object({
   goal: z.string().min(1),
-  acceptance: z.array(z.string().min(1)).min(1),
+  acceptance: z.array(z.string().min(1)).default([]),
   setBy: z.string().min(1).optional(),
 });
 
