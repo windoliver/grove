@@ -157,7 +157,13 @@ describe("runFrontier", () => {
     await deps.store.put(c);
 
     const output: string[] = [];
-    await runFrontier({ limit: 10, json: true, wide: false }, deps, (s) => output.push(s));
+    const origLog = console.log;
+    console.log = (s: string) => output.push(s);
+    try {
+      await runFrontier({ limit: 10, json: true, wide: false }, deps);
+    } finally {
+      console.log = origLog;
+    }
 
     const parsed = JSON.parse(output.join(""));
     expect(parsed.byMetric).toBeDefined();

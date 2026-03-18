@@ -32,7 +32,15 @@ import type {
   TuiGossipProvider,
   TuiVfsProvider,
 } from "./provider.js";
-import { diffArtifactsFromBuffers } from "./provider-shared.js";
+import {
+  addContributionToSessionHttp,
+  archiveSessionHttp,
+  createSessionHttp,
+  fetchGoalHttp,
+  getSessionHttp,
+  listSessionsHttp,
+  setGoalHttp,
+} from "./provider-shared.js";
 import { StoreBackedProvider } from "./store-backed-provider.js";
 
 /** Configuration for the Nexus provider. */
@@ -100,7 +108,7 @@ export class NexusDataProvider
     };
 
     this.bountyStore = new NexusBountyStore(config.nexusConfig);
-    this.serverUrl = config.serverUrl;
+    this.serverUrl = config.serverUrl?.replace(/\/+$/, "");
 
     const resolved = resolveConfig(config.nexusConfig);
     this.client = resolved.client;
@@ -171,18 +179,6 @@ export class NexusDataProvider
     return { sizeBytes: 0 };
   }
 
-  async diffArtifacts(
-    parentCid: string,
-    childCid: string,
-    name: string,
-  ): Promise<{ readonly parent: string; readonly child: string }> {
-    const [parentBuf, childBuf] = await Promise.all([
-      this.getArtifact(parentCid, name),
-      this.getArtifact(childCid, name),
-    ]);
-    return diffArtifactsFromBuffers(parentBuf, childBuf);
-  }
-
   async search(query: string): Promise<readonly Contribution[]> {
     return this.store.search(query);
   }
@@ -205,7 +201,7 @@ export class NexusDataProvider
     // peer data from its /api/gossip/peers endpoint.
     if (this.serverUrl) {
       try {
-        const resp = await fetch(`${this.serverUrl.replace(/\/+$/, "")}/api/gossip/peers`);
+        const resp = await fetch(`${this.serverUrl}/api/gossip/peers`);
         if (resp.ok) {
           const body = (await resp.json()) as { peers: readonly PeerInfo[] };
           return body.peers;
@@ -225,9 +221,7 @@ export class NexusDataProvider
   override async getGoal(): Promise<GoalData | undefined> {
     if (this.serverUrl) {
       try {
-        const resp = await fetch(`${this.serverUrl.replace(/\/+$/, "")}/api/session/goal`);
-        if (resp.ok) return (await resp.json()) as GoalData;
-        if (resp.status === 404) return undefined;
+        return await fetchGoalHttp(this.serverUrl);
       } catch {
         /* server unreachable — fall through to local store */
       }
@@ -237,13 +231,7 @@ export class NexusDataProvider
 
   override async setGoal(goal: string, acceptance: readonly string[]): Promise<GoalData> {
     if (this.serverUrl) {
-      const resp = await fetch(`${this.serverUrl.replace(/\/+$/, "")}/api/session/goal`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ goal, acceptance }),
-      });
-      if (resp.ok) return (await resp.json()) as GoalData;
-      throw new Error(`Failed to set goal: HTTP ${String(resp.status)}`);
+      return setGoalHttp(this.serverUrl, goal, acceptance);
     }
     return super.setGoal(goal, acceptance);
   }
@@ -253,16 +241,7 @@ export class NexusDataProvider
   }): Promise<readonly SessionRecord[]> {
     if (this.serverUrl) {
       try {
-        const params = new URLSearchParams();
-        if (query?.status) params.set("status", query.status);
-        const qs = params.toString();
-        const resp = await fetch(
-          `${this.serverUrl.replace(/\/+$/, "")}/api/sessions${qs ? `?${qs}` : ""}`,
-        );
-        if (resp.ok) {
-          const body = (await resp.json()) as { sessions: readonly SessionRecord[] };
-          return body.sessions;
-        }
+        return await listSessionsHttp(this.serverUrl, query);
       } catch {
         /* fall through */
       }
@@ -274,13 +253,7 @@ export class NexusDataProvider
     input: import("./provider.js").SessionInput,
   ): Promise<SessionRecord> {
     if (this.serverUrl) {
-      const resp = await fetch(`${this.serverUrl.replace(/\/+$/, "")}/api/sessions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(input),
-      });
-      if (resp.ok) return (await resp.json()) as SessionRecord;
-      throw new Error(`Failed to create session: HTTP ${String(resp.status)}`);
+      return createSessionHttp(this.serverUrl, input);
     }
     return super.createSession(input);
   }
@@ -288,11 +261,7 @@ export class NexusDataProvider
   override async getSession(sessionId: string): Promise<SessionRecord | undefined> {
     if (this.serverUrl) {
       try {
-        const resp = await fetch(
-          `${this.serverUrl.replace(/\/+$/, "")}/api/sessions/${encodeURIComponent(sessionId)}`,
-        );
-        if (resp.ok) return (await resp.json()) as SessionRecord;
-        if (resp.status === 404) return undefined;
+        return await getSessionHttp(this.serverUrl, sessionId);
       } catch {
         /* fall through */
       }
@@ -302,28 +271,14 @@ export class NexusDataProvider
 
   override async archiveSession(sessionId: string): Promise<void> {
     if (this.serverUrl) {
-      const resp = await fetch(
-        `${this.serverUrl.replace(/\/+$/, "")}/api/sessions/${encodeURIComponent(sessionId)}/archive`,
-        { method: "PUT" },
-      );
-      if (resp.ok) return;
-      throw new Error(`Failed to archive session: HTTP ${String(resp.status)}`);
+      return archiveSessionHttp(this.serverUrl, sessionId);
     }
     return super.archiveSession(sessionId);
   }
 
   override async addContributionToSession(sessionId: string, cid: string): Promise<void> {
     if (this.serverUrl) {
-      const resp = await fetch(
-        `${this.serverUrl.replace(/\/+$/, "")}/api/sessions/${encodeURIComponent(sessionId)}/contributions`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cid }),
-        },
-      );
-      if (resp.ok) return;
-      throw new Error(`Failed to add contribution to session: HTTP ${String(resp.status)}`);
+      return addContributionToSessionHttp(this.serverUrl, sessionId, cid);
     }
     return super.addContributionToSession(sessionId, cid);
   }

@@ -316,6 +316,7 @@ export function initSqliteDb(dbPath: string): Database {
  * The returned close() disposes the database connection.
  */
 export function createSqliteStores(dbPath: string): {
+  db: Database;
   contributionStore: SqliteContributionStore;
   claimStore: SqliteClaimStore;
   bountyStore: SqliteBountyStore;
@@ -325,6 +326,7 @@ export function createSqliteStores(dbPath: string): {
 } {
   const db = initSqliteDb(dbPath);
   return {
+    db,
     contributionStore: new SqliteContributionStore(db),
     claimStore: new SqliteClaimStore(db),
     bountyStore: new SqliteBountyStore(db),
@@ -381,16 +383,21 @@ function buildFilteredQuery(opts: BuildFilteredQueryOptions): BuiltQuery {
     conditions.push("c.agent_name = ?");
     params.push(query.agentName);
   }
+  if (query?.platform !== undefined) {
+    conditions.push("json_extract(c.manifest_json, '$.agent.platform') = ?");
+    params.push(query.platform);
+  }
 
   // Tag filtering via junction table — contribution must have ALL queried tags.
-  // Uses a single GROUP BY / HAVING subquery instead of N correlated EXISTS.
+  // Uses intersecting EXISTS subqueries for indexed point lookups on (tag, cid).
   if (query?.tags !== undefined && query.tags.length > 0) {
     const uniqueTags = [...new Set(query.tags)];
-    const placeholders = uniqueTags.map(() => "?").join(", ");
-    conditions.push(
-      `c.cid IN (SELECT ct.cid FROM contribution_tags ct WHERE ct.tag IN (${placeholders}) GROUP BY ct.cid HAVING COUNT(DISTINCT ct.tag) = ?)`,
-    );
-    params.push(...uniqueTags, uniqueTags.length);
+    for (const tag of uniqueTags) {
+      conditions.push(
+        `EXISTS (SELECT 1 FROM contribution_tags ct WHERE ct.cid = c.cid AND ct.tag = ?)`,
+      );
+      params.push(tag);
+    }
   }
 
   let sql = baseSelect;
@@ -476,6 +483,9 @@ export class SqliteContributionStore implements ContributionStore {
   readonly storeIdentity: string;
   private readonly db: Database;
 
+  /** Optional callback invoked after a successful write (put/putMany). */
+  onWrite?: () => void;
+
   // Cached prepared statements for fixed queries
   private readonly stmtGetByCid: Statement;
   private readonly stmtInsertContribution: Statement;
@@ -521,6 +531,7 @@ export class SqliteContributionStore implements ContributionStore {
 
   put = async (contribution: Contribution): Promise<void> => {
     this.putSync(contribution);
+    this.onWrite?.();
   };
 
   putMany = async (contributions: readonly Contribution[]): Promise<void> => {
@@ -533,6 +544,7 @@ export class SqliteContributionStore implements ContributionStore {
         }
       });
       tx();
+      this.onWrite?.();
       return;
     }
 
@@ -604,6 +616,7 @@ export class SqliteContributionStore implements ContributionStore {
       );
     });
     tx();
+    this.onWrite?.();
   };
 
   get = async (cid: string): Promise<Contribution | undefined> => {
@@ -876,25 +889,18 @@ export class SqliteContributionStore implements ContributionStore {
     const limit = opts?.limit ?? 20;
     const params: SQLQueryBindings[] = [];
 
-    // Deduplicate tags to avoid COUNT(DISTINCT ct.tag) mismatch
+    // Deduplicate tags for consistent filtering
     const uniqueTags =
       opts?.tags !== undefined && opts.tags.length > 0 ? [...new Set(opts.tags)] : undefined;
 
-    let tagJoin = "";
+    // Build EXISTS subqueries for tag filtering — indexed point lookups on (tag, cid).
     let tagWhere = "";
     if (uniqueTags !== undefined) {
-      // Require all tags to match (intersection)
-      tagJoin = " INNER JOIN contribution_tags ct ON ct.cid = c.cid";
-      const placeholders = uniqueTags.map(() => "?").join(", ");
-      tagWhere = ` AND ct.tag IN (${placeholders})`;
-      params.push(...uniqueTags);
-      // GROUP BY with HAVING ensures all tags match
+      for (const tag of uniqueTags) {
+        tagWhere += ` AND EXISTS (SELECT 1 FROM contribution_tags ct WHERE ct.cid = c.cid AND ct.tag = ?)`;
+        params.push(tag);
+      }
     }
-
-    const havingCount =
-      uniqueTags !== undefined
-        ? ` HAVING COUNT(r.source_cid) >= 1 AND COUNT(DISTINCT ct.tag) = ?`
-        : " HAVING COUNT(r.source_cid) >= 1";
 
     const sql = `
       SELECT c.manifest_json,
@@ -903,17 +909,13 @@ export class SqliteContributionStore implements ContributionStore {
       FROM contributions c
       INNER JOIN relations r ON r.target_cid = c.cid AND r.relation_type = 'responds_to'
       INNER JOIN contributions reply_c ON reply_c.cid = r.source_cid
-      ${tagJoin}
       WHERE 1=1${tagWhere}
       GROUP BY c.cid
-      ${havingCount}
+      HAVING COUNT(r.source_cid) >= 1
       ORDER BY reply_count DESC, last_reply_at DESC
       LIMIT ?
     `;
 
-    if (uniqueTags !== undefined) {
-      params.push(uniqueTags.length);
-    }
     params.push(limit);
 
     const rows = this.db.prepare(sql).all(...params) as readonly {
@@ -1018,6 +1020,19 @@ export class SqliteContributionStore implements ContributionStore {
       this.db.prepare(sql).run(...params);
     }
   }
+
+  /**
+   * Return all distinct content hashes referenced by artifacts.
+   *
+   * Used by garbage collection to determine which CAS blobs are still
+   * referenced and which can be safely deleted.
+   */
+  allContentHashes(): ReadonlySet<string> {
+    const rows = this.db.prepare("SELECT DISTINCT content_hash FROM artifacts").all() as readonly {
+      content_hash: string;
+    }[];
+    return new Set(rows.map((r) => r.content_hash));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1054,7 +1069,7 @@ export class SqliteClaimStore implements ClaimStore {
     const createdAtUtc = toUtcIso(claim.createdAt);
     const heartbeatUtc = toUtcIso(claim.heartbeatAt);
     const leaseExpiresUtc = toUtcIso(claim.leaseExpiresAt);
-    // Atomic check-and-insert: EXCLUSIVE transaction prevents TOCTOU races
+    // Atomic check-and-insert: IMMEDIATE transaction prevents TOCTOU races
     const createTx = this.db.transaction(() => {
       const existing = this.db
         .prepare("SELECT claim_id FROM claims WHERE claim_id = ?")
@@ -1086,7 +1101,16 @@ export class SqliteClaimStore implements ClaimStore {
 
       this.insertClaimRow(claim, createdAtUtc, heartbeatUtc, leaseExpiresUtc);
     });
-    createTx.exclusive();
+    try {
+      createTx.immediate();
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("database is locked")) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        createTx.immediate();
+      } else {
+        throw err;
+      }
+    }
 
     const created = this.readClaim(claim.claimId);
     if (created === null) throw new Error(`Failed to read back claim '${claim.claimId}'`);
@@ -1153,7 +1177,16 @@ export class SqliteClaimStore implements ClaimStore {
 
       this.insertClaimRow(claim, createdAtUtc, heartbeatUtc, leaseExpiresUtc);
     });
-    tx.exclusive();
+    try {
+      tx.immediate();
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("database is locked")) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        tx.immediate();
+      } else {
+        throw err;
+      }
+    }
 
     const result = this.readClaim(resultClaimId);
     if (result === null) throw new Error(`Failed to read back claim '${resultClaimId}'`);

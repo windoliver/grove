@@ -70,6 +70,9 @@ export class InMemoryContributionStore implements ContributionStore {
     if (query?.agentName !== undefined) {
       results = results.filter((c) => c.agent.agentName === query.agentName);
     }
+    if (query?.platform !== undefined) {
+      results = results.filter((c) => c.agent.platform === query.platform);
+    }
     if (query?.offset !== undefined) {
       results = results.slice(query.offset);
     }

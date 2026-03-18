@@ -9,18 +9,13 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { FrontierCalculator } from "../core/frontier.js";
-import { DefaultFrontierCalculator } from "../core/frontier.js";
 import type { OutcomeStore } from "../core/outcome.js";
 import type { ClaimStore, ContributionStore } from "../core/store.js";
 import type { WorkspaceManager } from "../core/workspace.js";
-import { FsCas } from "../local/fs-cas.js";
-import { SqliteOutcomeStore } from "../local/sqlite-outcome-store.js";
-import { initSqliteDb, SqliteClaimStore, SqliteContributionStore } from "../local/sqlite-store.js";
-import { LocalWorkspaceManager } from "../local/workspace.js";
+import type { FsCas } from "../local/fs-cas.js";
+import { createLocalRuntime } from "../local/runtime.js";
 
 const GROVE_DIR = ".grove";
-const DB_FILE = "grove.db";
-const CAS_DIR = "cas";
 
 /** All dependencies a CLI command needs. */
 export interface CliDeps {
@@ -76,34 +71,24 @@ export function initCliDeps(cwd: string, groveOverride?: string): CliDeps {
     );
   }
 
-  const groveRoot = dirname(groveDir);
-  const dbPath = join(groveDir, DB_FILE);
-  const casPath = join(groveDir, CAS_DIR);
-
-  const db = initSqliteDb(dbPath);
-  const store = new SqliteContributionStore(db);
-  const claimStore = new SqliteClaimStore(db);
-  const cas = new FsCas(casPath);
-  const frontier = new DefaultFrontierCalculator(store);
-  const outcomeStore = new SqliteOutcomeStore(db);
-  const workspace = new LocalWorkspaceManager({
-    groveRoot: groveDir,
-    db,
-    contributionStore: store,
-    cas,
+  const runtime = createLocalRuntime({
+    groveDir,
+    frontierCacheTtlMs: 0, // CLI commands are single-shot; no caching needed
+    workspace: true,
   });
 
+  if (!runtime.workspace) {
+    throw new Error("Workspace manager failed to initialize");
+  }
+
   return {
-    store,
-    claimStore,
-    frontier,
-    workspace,
-    cas,
-    groveRoot,
-    outcomeStore,
-    close: () => {
-      store.close();
-      workspace.close();
-    },
+    store: runtime.contributionStore,
+    claimStore: runtime.claimStore,
+    frontier: runtime.frontier,
+    workspace: runtime.workspace,
+    cas: runtime.cas,
+    groveRoot: runtime.groveRoot,
+    outcomeStore: runtime.outcomeStore,
+    close: runtime.close,
   };
 }

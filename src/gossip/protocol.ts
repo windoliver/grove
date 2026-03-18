@@ -12,6 +12,8 @@
  * - Liveness tracker: detects suspected/failed peers via gossip rounds
  */
 
+import { createHmac, timingSafeEqual } from "node:crypto";
+
 import {
   DEFAULT_FAILURE_TIMEOUT_MS,
   DEFAULT_FRONTIER_DIGEST_LIMIT,
@@ -86,6 +88,29 @@ interface LivenessState {
 }
 
 // ---------------------------------------------------------------------------
+// HMAC-SHA256 message signing
+// ---------------------------------------------------------------------------
+
+/** Compute HMAC-SHA256 over a payload (excluding the hmacSignature field). */
+function signPayload(payload: Record<string, unknown>, secret: string): string {
+  const { hmacSignature: _, ...data } = payload;
+  const hmac = createHmac("sha256", secret);
+  hmac.update(JSON.stringify(data));
+  return hmac.digest("hex");
+}
+
+/** Verify HMAC-SHA256 signature on a payload using timing-safe comparison. */
+function verifyPayload(
+  payload: Record<string, unknown> & { hmacSignature?: string },
+  secret: string,
+): boolean {
+  if (!payload.hmacSignature) return false;
+  const expected = signPayload(payload, secret);
+  if (payload.hmacSignature.length !== expected.length) return false;
+  return timingSafeEqual(Buffer.from(payload.hmacSignature), Buffer.from(expected));
+}
+
+// ---------------------------------------------------------------------------
 // DefaultGossipService
 // ---------------------------------------------------------------------------
 
@@ -105,6 +130,7 @@ export class DefaultGossipService implements GossipService {
     readonly digestLimit: number;
     readonly suspicionTimeoutMs: number;
     readonly failureTimeoutMs: number;
+    readonly hmacSecret: string | undefined;
   };
   private readonly sampler: CyclonPeerSampler;
   private readonly transport: GossipTransport;
@@ -119,6 +145,7 @@ export class DefaultGossipService implements GossipService {
   private localDigest: FrontierDigestEntry[] = [];
   private timer: ReturnType<typeof setTimeout> | undefined;
   private running = false;
+  private consecutiveFailures = 0;
   private readonly now: () => number;
 
   constructor(opts: {
@@ -144,6 +171,7 @@ export class DefaultGossipService implements GossipService {
       digestLimit: opts.config.digestLimit ?? DEFAULT_FRONTIER_DIGEST_LIMIT,
       suspicionTimeoutMs: opts.config.suspicionTimeoutMs ?? DEFAULT_SUSPICION_TIMEOUT_MS,
       failureTimeoutMs: opts.config.failureTimeoutMs ?? DEFAULT_FAILURE_TIMEOUT_MS,
+      hmacSecret: opts.config.hmacSecret,
     };
 
     const selfPeer: PeerInfo = {
@@ -208,6 +236,14 @@ export class DefaultGossipService implements GossipService {
   // -------------------------------------------------------------------------
 
   async handleExchange(message: GossipMessage): Promise<GossipMessage> {
+    // Verify HMAC if configured
+    if (this.config.hmacSecret) {
+      if (!verifyPayload(message as unknown as Record<string, unknown>, this.config.hmacSecret)) {
+        console.warn(`Gossip: rejecting exchange from ${message.peerId} — invalid or missing HMAC`);
+        return this.currentMessage();
+      }
+    }
+
     // Update liveness for sender
     this.markAlive(message.peerId);
 
@@ -230,6 +266,16 @@ export class DefaultGossipService implements GossipService {
   }
 
   handleShuffle(request: ShuffleRequest): ShuffleResponse {
+    // Verify HMAC if configured
+    if (this.config.hmacSecret) {
+      if (!verifyPayload(request as unknown as Record<string, unknown>, this.config.hmacSecret)) {
+        console.warn(
+          `Gossip: rejecting shuffle from ${request.sender.peerId} — invalid or missing HMAC`,
+        );
+        return { offered: [] };
+      }
+    }
+
     this.markAlive(request.sender.peerId);
     return this.sampler.handleShuffleRequest(request);
   }
@@ -270,7 +316,7 @@ export class DefaultGossipService implements GossipService {
       };
     }
 
-    return {
+    const message: GossipMessage = {
       peerId: this.config.peerId,
       address: this.config.address,
       frontier: digest,
@@ -279,6 +325,18 @@ export class DefaultGossipService implements GossipService {
       timestamp: new Date(this.now()).toISOString(),
       agentCapacity,
     };
+
+    if (this.config.hmacSecret) {
+      return {
+        ...message,
+        hmacSignature: signPayload(
+          message as unknown as Record<string, unknown>,
+          this.config.hmacSecret,
+        ),
+      };
+    }
+
+    return message;
   }
 
   mergedFrontier(): readonly FrontierDigestEntry[] {
@@ -335,13 +393,32 @@ export class DefaultGossipService implements GossipService {
     if (!this.running) return;
 
     const jitter = 1 - this.config.jitter + Math.random() * 2 * this.config.jitter;
-    const delay = Math.floor(this.config.intervalMs * jitter);
+    let delay = Math.floor(this.config.intervalMs * jitter);
+
+    // Apply exponential backoff when there are consecutive failures
+    if (this.consecutiveFailures > 0) {
+      const backoffMultiplier = Math.min(32, 2 ** (this.consecutiveFailures - 1));
+      delay *= backoffMultiplier;
+    }
 
     this.timer = setTimeout(async () => {
       try {
         await this.runRound();
+        this.consecutiveFailures = 0;
       } catch {
-        // Gossip round errors are non-fatal — log and continue
+        this.consecutiveFailures++;
+
+        this.emit({
+          type: GossipEventType.RoundFailed,
+          peerId: this.config.peerId,
+          timestamp: new Date(this.now()).toISOString(),
+        });
+
+        if (this.consecutiveFailures >= 5) {
+          console.warn(
+            `Gossip: ${this.consecutiveFailures} consecutive round failures (peer ${this.config.peerId})`,
+          );
+        }
       }
       this.scheduleNextRound();
     }, delay);
@@ -351,7 +428,16 @@ export class DefaultGossipService implements GossipService {
     const target = this.sampler.selectOldestPeer();
     if (!target) return;
 
-    const request = this.sampler.createShuffleRequest(target);
+    let request: ShuffleRequest = this.sampler.createShuffleRequest(target);
+    if (this.config.hmacSecret) {
+      request = {
+        ...request,
+        hmacSignature: signPayload(
+          request as unknown as Record<string, unknown>,
+          this.config.hmacSecret,
+        ),
+      };
+    }
 
     try {
       const response = await this.transport.shuffle(target, request);

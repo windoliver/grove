@@ -151,9 +151,7 @@ async function runBountyCreate(args: readonly string[], deps: BountyDeps): Promi
       outputJsonError(result.error);
       return;
     }
-    deps.stderr(`Error: ${result.error.message}`);
-    process.exitCode = 1;
-    return;
+    throw new Error(result.error.message);
   }
 
   if (values.json) {
@@ -198,9 +196,7 @@ async function runBountyList(args: readonly string[], deps: BountyDeps): Promise
       outputJsonError(result.error);
       return;
     }
-    deps.stderr(`Error: ${result.error.message}`);
-    process.exitCode = 1;
-    return;
+    throw new Error(result.error.message);
   }
 
   if (values.json) {
@@ -246,14 +242,21 @@ async function runBountyClaim(args: readonly string[], deps: BountyDeps): Promis
   // Pre-check: verify bounty exists and is open (the operation doesn't validate status)
   const bounty = await deps.bountyStore.getBounty(bountyId);
   if (!bounty) {
-    deps.stderr(`Error: bounty '${bountyId}' not found.`);
-    process.exitCode = 1;
-    return;
+    if (values.json) {
+      outputJsonError({ code: "NOT_FOUND", message: `bounty '${bountyId}' not found.` });
+      return;
+    }
+    throw new Error(`bounty '${bountyId}' not found.`);
   }
   if (bounty.status !== "open") {
-    deps.stderr(`Error: bounty '${bountyId}' is not open (status: ${bounty.status}).`);
-    process.exitCode = 1;
-    return;
+    if (values.json) {
+      outputJsonError({
+        code: "INVALID_STATE",
+        message: `bounty '${bountyId}' is not open (status: ${bounty.status}).`,
+      });
+      return;
+    }
+    throw new Error(`bounty '${bountyId}' is not open (status: ${bounty.status}).`);
   }
 
   const agentId = resolveAgentId(values["agent-id"]);
@@ -273,9 +276,7 @@ async function runBountyClaim(args: readonly string[], deps: BountyDeps): Promis
       outputJsonError(result.error);
       return;
     }
-    deps.stderr(`Error: ${result.error.message}`);
-    process.exitCode = 1;
-    return;
+    throw new Error(result.error.message);
   }
 
   if (values.json) {

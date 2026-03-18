@@ -193,7 +193,12 @@ export class NexusContributionStore implements ContributionStore {
 
     // Fetch matching contributions in parallel
     const fetched = await batchParallel(matchingCids, (cid) => this.get(cid));
-    const contributions = fetched.filter((c): c is Contribution => c !== undefined);
+    let contributions = fetched.filter((c): c is Contribution => c !== undefined);
+
+    // Platform is not in the FTS index, so filter on full contributions.
+    if (query?.platform !== undefined) {
+      contributions = contributions.filter((c) => c.agent.platform === query.platform);
+    }
 
     // Sort by createdAt ascending (matches SQLite store behavior)
     contributions.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());

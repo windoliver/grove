@@ -29,6 +29,7 @@ import { getActivePR } from "../github/active-pr.js";
 import type { GoalSessionStore } from "../local/sqlite-goal-session-store.js";
 import type {
   ActivityQuery,
+  ArtifactMeta,
   ClaimInput,
   ClaimsQuery,
   ContributionDetail,
@@ -45,6 +46,7 @@ import type {
   SessionCostSummary,
   SessionInput,
   SessionRecord,
+  TuiArtifactProvider,
   TuiAskUserProvider,
   TuiCostProvider,
   TuiDataProvider,
@@ -59,6 +61,7 @@ import {
   claimsFromStore,
   contributionDetailFromStore,
   dagFromStore,
+  diffArtifactsFromBuffers,
   outcomeStatsFromStore,
 } from "./provider-shared.js";
 import { buildFrontierSummary } from "./provider-utils.js";
@@ -96,6 +99,7 @@ export abstract class StoreBackedProvider
   implements
     TuiDataProvider,
     TuiOutcomeProvider,
+    TuiArtifactProvider,
     TuiMessagingProvider,
     TuiCostProvider,
     TuiAskUserProvider,
@@ -273,6 +277,39 @@ export abstract class StoreBackedProvider
   /** Hot discussion threads. */
   async getHotThreads(limit = 20): Promise<readonly ThreadSummary[]> {
     return this.store.hotThreads({ limit });
+  }
+
+  // ---------------------------------------------------------------------------
+  // TuiArtifactProvider — subclasses must implement getArtifact, getArtifactMeta,
+  // and search. The diffArtifacts default delegates to getArtifact.
+  // ---------------------------------------------------------------------------
+
+  /** Retrieve artifact content. Subclasses implement based on their storage backend. */
+  abstract getArtifact(cid: string, name: string): Promise<Buffer>;
+
+  /** Retrieve artifact metadata. Subclasses implement based on their storage backend. */
+  abstract getArtifactMeta(cid: string, name: string): Promise<ArtifactMeta>;
+
+  /** Full-text search over contributions. Subclasses implement based on their storage backend. */
+  abstract search(query: string): Promise<readonly Contribution[]>;
+
+  /**
+   * Compute a diff between two artifact versions.
+   *
+   * Default implementation fetches both artifacts via {@link getArtifact}
+   * and converts them to UTF-8 strings. Subclasses can override if they
+   * have a more efficient diff mechanism.
+   */
+  async diffArtifacts(
+    parentCid: string,
+    childCid: string,
+    name: string,
+  ): Promise<{ readonly parent: string; readonly child: string }> {
+    const [parentBuf, childBuf] = await Promise.all([
+      this.getArtifact(parentCid, name),
+      this.getArtifact(childCid, name),
+    ]);
+    return diffArtifactsFromBuffers(parentBuf, childBuf);
   }
 
   // ---------------------------------------------------------------------------

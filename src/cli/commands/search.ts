@@ -18,6 +18,7 @@ import type { ContributionQuery } from "../../core/store.js";
 import type { CliDeps, Writer } from "../context.js";
 import { formatContributions, outputJson } from "../format.js";
 import { toOperationDeps } from "../operation-adapter.js";
+import { parseLimit } from "../utils/parse-helpers.js";
 
 const DEFAULT_LIMIT = 20;
 
@@ -53,10 +54,7 @@ export function parseSearchArgs(argv: string[]): SearchOptions {
     allowPositionals: true,
   });
 
-  const limit = values.n !== undefined ? Number.parseInt(values.n, 10) : DEFAULT_LIMIT;
-  if (Number.isNaN(limit) || limit <= 0) {
-    throw new Error(`Invalid limit: '${values.n}'. Must be a positive integer.`);
-  }
+  const limit = parseLimit(values.n, DEFAULT_LIMIT);
 
   const sort = values.sort as SortField;
   if (sort !== "recency" && sort !== "adoption") {

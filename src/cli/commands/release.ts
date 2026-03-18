@@ -10,8 +10,10 @@ import { parseArgs } from "node:util";
 import type { OperationDeps } from "../../core/operations/index.js";
 import { releaseOperation } from "../../core/operations/index.js";
 import type { ClaimStore } from "../../core/store.js";
-import { outputJson, outputJsonError } from "../format.js";
+import { outputJson } from "../format.js";
+import { handleOperationError } from "../utils/handle-result.js";
 import { formatClaimSummary } from "../utils/output.js";
+import { requirePositional } from "../utils/parse-helpers.js";
 
 export interface ReleaseDeps {
   readonly claimStore: ClaimStore;
@@ -30,12 +32,7 @@ export async function runRelease(args: readonly string[], deps: ReleaseDeps): Pr
     strict: true,
   });
 
-  const claimId = positionals[0];
-  if (!claimId) {
-    deps.stderr("Error: claim-id is required.\n\nUsage: grove release <claim-id> [--completed]");
-    process.exitCode = 2;
-    return;
-  }
+  const claimId = requirePositional(positionals, 0, "claim-id");
 
   const action = values.completed ? "complete" : "release";
 
@@ -47,11 +44,8 @@ export async function runRelease(args: readonly string[], deps: ReleaseDeps): Pr
   const result = await releaseOperation({ claimId, action }, opDeps);
 
   if (!result.ok) {
-    if (values.json) {
-      outputJsonError(result.error);
-      return;
-    }
-    throw new Error(result.error.message);
+    handleOperationError(result.error, values.json);
+    return;
   }
 
   if (values.json) {

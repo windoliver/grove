@@ -208,6 +208,6 @@ describe("grove CLI integration", () => {
   test("grove claim without target shows usage error", async () => {
     const { stderr, exitCode } = await runGrove(["claim"]);
     expect(exitCode).toBe(2);
-    expect(stderr).toContain("target is required");
+    expect(stderr).toContain("Missing required argument: <target>");
   });
 });

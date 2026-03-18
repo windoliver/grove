@@ -88,6 +88,56 @@ describe("POST /api/claims", () => {
 
     expect(res.status).toBe(400);
   });
+
+  test("rejects missing targetRef", async () => {
+    const res = await ctx.app.request("/api/claims", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(claimBody({ targetRef: undefined })),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  test("rejects empty string agentId", async () => {
+    const res = await ctx.app.request("/api/claims", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(claimBody({ agent: { agentId: "" } })),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  test("rejects empty string targetRef", async () => {
+    const res = await ctx.app.request("/api/claims", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(claimBody({ targetRef: "" })),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  test("rejects empty string intentSummary", async () => {
+    const res = await ctx.app.request("/api/claims", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(claimBody({ intentSummary: "" })),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  test("rejects non-positive leaseDurationMs", async () => {
+    const res = await ctx.app.request("/api/claims", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(claimBody({ leaseDurationMs: -1 })),
+    });
+
+    expect(res.status).toBe(400);
+  });
 });
 
 describe("PATCH /api/claims/:id", () => {
@@ -184,22 +234,55 @@ describe("PATCH /api/claims/:id", () => {
     expect(completed.status).toBe("completed");
   });
 
-  test("returns error for non-existent claim", async () => {
+  test("returns 404 for non-existent claim heartbeat", async () => {
     const res = await ctx.app.request("/api/claims/nonexistent-id", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "heartbeat" }),
     });
 
-    // Store throws "not found" → error handler maps to 404
-    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error.code).toBe("NOT_FOUND");
   });
 
-  test("rejects invalid action", async () => {
+  test("returns 404 for non-existent claim release", async () => {
+    const res = await ctx.app.request("/api/claims/nonexistent-id", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "release" }),
+    });
+
+    expect(res.status).toBe(404);
+  });
+
+  test("returns 404 for non-existent claim complete", async () => {
+    const res = await ctx.app.request("/api/claims/nonexistent-id", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "complete" }),
+    });
+
+    expect(res.status).toBe(404);
+  });
+
+  test("rejects invalid action value", async () => {
     const res = await ctx.app.request("/api/claims/some-id", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "invalid" }),
+    });
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.success).toBe(false);
+  });
+
+  test("rejects PATCH with missing action field", async () => {
+    const res = await ctx.app.request("/api/claims/some-id", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
     });
 
     expect(res.status).toBe(400);

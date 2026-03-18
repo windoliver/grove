@@ -17,7 +17,6 @@ import type {
   TuiArtifactProvider,
   TuiBountyProvider,
 } from "./provider.js";
-import { diffArtifactsFromBuffers } from "./provider-shared.js";
 import { StoreBackedProvider, type StoreBackedProviderDeps } from "./store-backed-provider.js";
 
 // ---------------------------------------------------------------------------
@@ -105,18 +104,6 @@ export class LocalDataProvider
     }
 
     return { sizeBytes: 0 };
-  }
-
-  async diffArtifacts(
-    parentCid: string,
-    childCid: string,
-    name: string,
-  ): Promise<{ readonly parent: string; readonly child: string }> {
-    const [parentBuf, childBuf] = await Promise.all([
-      this.getArtifact(parentCid, name),
-      this.getArtifact(childCid, name),
-    ]);
-    return diffArtifactsFromBuffers(parentBuf, childBuf);
   }
 
   async search(query: string): Promise<readonly Contribution[]> {

@@ -19,6 +19,7 @@ import { OUTCOME_STATUSES } from "../../core/outcome.js";
 import type { CliDeps, Writer } from "../context.js";
 import { formatContributions, outputJson } from "../format.js";
 import { toOperationDeps } from "../operation-adapter.js";
+import { parseLimit } from "../utils/parse-helpers.js";
 
 const DEFAULT_LIMIT = 20;
 
@@ -46,10 +47,7 @@ export function parseLogArgs(argv: string[]): LogOptions {
     allowPositionals: false,
   });
 
-  const limit = values.n !== undefined ? Number.parseInt(values.n, 10) : DEFAULT_LIMIT;
-  if (Number.isNaN(limit) || limit <= 0) {
-    throw new Error(`Invalid limit: '${values.n}'. Must be a positive integer.`);
-  }
+  const limit = parseLimit(values.n, DEFAULT_LIMIT);
 
   if (values.outcome !== undefined && !OUTCOME_STATUSES.has(values.outcome)) {
     throw new Error(

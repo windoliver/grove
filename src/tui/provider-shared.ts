@@ -203,3 +203,122 @@ export function diffArtifactsFromBuffers(
 ): { readonly parent: string; readonly child: string } {
   return { parent: parentBuf.toString("utf-8"), child: childBuf.toString("utf-8") };
 }
+
+/**
+ * Compute a diff between two artifact versions using a provided `getArtifact`
+ * function. This is the canonical implementation shared by all providers.
+ */
+export async function diffArtifactsUsing(
+  getArtifact: (cid: string, name: string) => Promise<Buffer>,
+  parentCid: string,
+  childCid: string,
+  name: string,
+): Promise<{ readonly parent: string; readonly child: string }> {
+  const [parentBuf, childBuf] = await Promise.all([
+    getArtifact(parentCid, name),
+    getArtifact(childCid, name),
+  ]);
+  return diffArtifactsFromBuffers(parentBuf, childBuf);
+}
+
+// ---------------------------------------------------------------------------
+// Goal/session HTTP delegation helpers
+// ---------------------------------------------------------------------------
+//
+// These functions encapsulate the HTTP fetch pattern shared by
+// NexusDataProvider (when a co-located server URL is available) and
+// RemoteDataProvider (which always talks HTTP).
+// ---------------------------------------------------------------------------
+
+import type { GoalData, SessionInput, SessionRecord } from "./provider.js";
+
+/** Fetch the current goal from a grove-server HTTP API. */
+export async function fetchGoalHttp(baseUrl: string): Promise<GoalData | undefined> {
+  const resp = await fetch(`${baseUrl}/api/session/goal`);
+  if (resp.ok) return (await resp.json()) as GoalData;
+  if (resp.status === 404) return undefined;
+  return undefined;
+}
+
+/** Set a goal via a grove-server HTTP API. */
+export async function setGoalHttp(
+  baseUrl: string,
+  goal: string,
+  acceptance: readonly string[],
+): Promise<GoalData> {
+  const resp = await fetch(`${baseUrl}/api/session/goal`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ goal, acceptance }),
+  });
+  if (resp.ok) return (await resp.json()) as GoalData;
+  throw new Error(`Failed to set goal: HTTP ${String(resp.status)}`);
+}
+
+/** List sessions via a grove-server HTTP API. */
+export async function listSessionsHttp(
+  baseUrl: string,
+  query?: { status?: "active" | "archived" },
+): Promise<readonly SessionRecord[]> {
+  const params = new URLSearchParams();
+  if (query?.status) params.set("status", query.status);
+  const qs = params.toString();
+  const resp = await fetch(`${baseUrl}/api/sessions${qs ? `?${qs}` : ""}`);
+  if (resp.ok) {
+    const body = (await resp.json()) as { sessions: readonly SessionRecord[] };
+    return body.sessions;
+  }
+  return [];
+}
+
+/** Create a session via a grove-server HTTP API. */
+export async function createSessionHttp(
+  baseUrl: string,
+  input: SessionInput,
+): Promise<SessionRecord> {
+  const resp = await fetch(`${baseUrl}/api/sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (resp.ok) return (await resp.json()) as SessionRecord;
+  throw new Error(`Failed to create session: HTTP ${String(resp.status)}`);
+}
+
+/** Get a session by ID via a grove-server HTTP API. */
+export async function getSessionHttp(
+  baseUrl: string,
+  sessionId: string,
+): Promise<SessionRecord | undefined> {
+  const resp = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}`);
+  if (resp.ok) return (await resp.json()) as SessionRecord;
+  if (resp.status === 404) return undefined;
+  return undefined;
+}
+
+/** Archive a session via a grove-server HTTP API. */
+export async function archiveSessionHttp(baseUrl: string, sessionId: string): Promise<void> {
+  const resp = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/archive`, {
+    method: "PUT",
+  });
+  if (resp.ok) return;
+  throw new Error(`Failed to archive session: HTTP ${String(resp.status)}`);
+}
+
+/** Add a contribution to a session via a grove-server HTTP API. */
+export async function addContributionToSessionHttp(
+  baseUrl: string,
+  sessionId: string,
+  cid: string,
+): Promise<void> {
+  const resp = await fetch(
+    `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/contributions`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cid }),
+    },
+  );
+  if (resp.ok) return;
+  throw new Error(`Failed to add contribution to session: HTTP ${String(resp.status)}`);
+}

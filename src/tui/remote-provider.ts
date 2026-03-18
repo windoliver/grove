@@ -53,7 +53,16 @@ import type {
   TuiOutcomeProvider,
   TuiSessionProvider,
 } from "./provider.js";
-import { diffArtifactsFromBuffers } from "./provider-shared.js";
+import {
+  addContributionToSessionHttp,
+  archiveSessionHttp,
+  createSessionHttp,
+  diffArtifactsUsing,
+  fetchGoalHttp,
+  getSessionHttp,
+  listSessionsHttp,
+  setGoalHttp,
+} from "./provider-shared.js";
 import { buildFrontierSummary } from "./provider-utils.js";
 
 /** TUI data provider backed by a remote grove-server HTTP API. */
@@ -368,11 +377,7 @@ export class RemoteDataProvider
     childCid: string,
     name: string,
   ): Promise<{ readonly parent: string; readonly child: string }> {
-    const [parentBuf, childBuf] = await Promise.all([
-      this.getArtifact(parentCid, name),
-      this.getArtifact(childCid, name),
-    ]);
-    return diffArtifactsFromBuffers(parentBuf, childBuf);
+    return diffArtifactsUsing((cid, n) => this.getArtifact(cid, n), parentCid, childCid, name);
   }
 
   async search(query: string): Promise<readonly Contribution[]> {
@@ -540,14 +545,12 @@ export class RemoteDataProvider
   }
 
   // ---------------------------------------------------------------------------
-  // TuiGoalProvider
+  // TuiGoalProvider — delegates to shared HTTP helpers
   // ---------------------------------------------------------------------------
 
   async getGoal(): Promise<import("./provider.js").GoalData | undefined> {
     try {
-      const resp = await fetch(`${this.baseUrl}/api/session/goal`);
-      if (resp.ok) return (await resp.json()) as import("./provider.js").GoalData;
-      if (resp.status === 404) return undefined;
+      return await fetchGoalHttp(this.baseUrl);
     } catch {
       /* server unreachable */
     }
@@ -558,33 +561,18 @@ export class RemoteDataProvider
     goal: string,
     acceptance: readonly string[],
   ): Promise<import("./provider.js").GoalData> {
-    const resp = await fetch(`${this.baseUrl}/api/session/goal`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ goal, acceptance }),
-    });
-    if (!resp.ok) throw new Error(`Failed to set goal: HTTP ${String(resp.status)}`);
-    return (await resp.json()) as import("./provider.js").GoalData;
+    return setGoalHttp(this.baseUrl, goal, acceptance);
   }
 
   // ---------------------------------------------------------------------------
-  // TuiSessionProvider
+  // TuiSessionProvider — delegates to shared HTTP helpers
   // ---------------------------------------------------------------------------
 
   async listSessions(query?: {
     status?: "active" | "archived";
   }): Promise<readonly import("./provider.js").SessionRecord[]> {
     try {
-      const params = new URLSearchParams();
-      if (query?.status) params.set("status", query.status);
-      const qs = params.toString();
-      const resp = await fetch(`${this.baseUrl}/api/sessions${qs ? `?${qs}` : ""}`);
-      if (resp.ok) {
-        const body = (await resp.json()) as {
-          sessions: readonly import("./provider.js").SessionRecord[];
-        };
-        return body.sessions;
-      }
+      return await listSessionsHttp(this.baseUrl, query);
     } catch {
       /* fall through */
     }
@@ -594,20 +582,12 @@ export class RemoteDataProvider
   async createSession(
     input: import("./provider.js").SessionInput,
   ): Promise<import("./provider.js").SessionRecord> {
-    const resp = await fetch(`${this.baseUrl}/api/sessions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
-    });
-    if (!resp.ok) throw new Error(`Failed to create session: HTTP ${String(resp.status)}`);
-    return (await resp.json()) as import("./provider.js").SessionRecord;
+    return createSessionHttp(this.baseUrl, input);
   }
 
   async getSession(sessionId: string): Promise<import("./provider.js").SessionRecord | undefined> {
     try {
-      const resp = await fetch(`${this.baseUrl}/api/sessions/${encodeURIComponent(sessionId)}`);
-      if (resp.ok) return (await resp.json()) as import("./provider.js").SessionRecord;
-      if (resp.status === 404) return undefined;
+      return await getSessionHttp(this.baseUrl, sessionId);
     } catch {
       /* fall through */
     }
@@ -615,24 +595,11 @@ export class RemoteDataProvider
   }
 
   async archiveSession(sessionId: string): Promise<void> {
-    const resp = await fetch(
-      `${this.baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/archive`,
-      { method: "PUT" },
-    );
-    if (!resp.ok) throw new Error(`Failed to archive session: HTTP ${String(resp.status)}`);
+    return archiveSessionHttp(this.baseUrl, sessionId);
   }
 
   async addContributionToSession(sessionId: string, cid: string): Promise<void> {
-    const resp = await fetch(
-      `${this.baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/contributions`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cid }),
-      },
-    );
-    if (!resp.ok)
-      throw new Error(`Failed to add contribution to session: HTTP ${String(resp.status)}`);
+    return addContributionToSessionHttp(this.baseUrl, sessionId, cid);
   }
 
   // ---------------------------------------------------------------------------

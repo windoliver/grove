@@ -4,6 +4,7 @@ export { ingestFiles } from "./ingest/files.js";
 export { ingestGitDiff } from "./ingest/git-diff.js";
 export { ingestGitTree } from "./ingest/git-tree.js";
 export { ingestReport } from "./ingest/report.js";
+export { createLocalRuntime, type LocalRuntime, type LocalRuntimeOptions } from "./runtime.js";
 export {
   type GoalSessionStore,
   SqliteGoalSessionStore,

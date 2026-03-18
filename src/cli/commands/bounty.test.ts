@@ -291,12 +291,7 @@ describe("grove bounty", () => {
     });
 
     test("errors when bounty does not exist", async () => {
-      await runBounty(["claim", "nonexistent-id"], deps);
-
-      expect(stderr.length).toBe(1);
-      expect(stderr[0]).toContain("not found");
-      expect(process.exitCode).toBe(1);
-      process.exitCode = 0;
+      await expect(runBounty(["claim", "nonexistent-id"], deps)).rejects.toThrow("not found");
     });
 
     test("errors when bounty is not open", async () => {
@@ -322,12 +317,9 @@ describe("grove bounty", () => {
       stderr = [];
 
       // Second claim on already-claimed bounty fails
-      await runBounty(["claim", bountyId, "--agent-id", "claimer-2"], deps);
-
-      expect(stderr.length).toBe(1);
-      expect(stderr[0]).toContain("not open");
-      expect(process.exitCode).toBe(1);
-      process.exitCode = 0;
+      await expect(runBounty(["claim", bountyId, "--agent-id", "claimer-2"], deps)).rejects.toThrow(
+        "not open",
+      );
     });
   });
 });

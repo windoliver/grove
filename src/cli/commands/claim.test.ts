@@ -124,12 +124,7 @@ describe("grove claim", () => {
   });
 
   test("shows error when target is missing", async () => {
-    await runClaim([], deps);
-
-    expect(stderr.length).toBe(1);
-    expect(stderr[0]).toContain("target is required");
-    expect(process.exitCode).toBe(2);
-    process.exitCode = 0;
+    await expect(runClaim([], deps)).rejects.toThrow("Missing required argument: <target>");
   });
 
   test("outputs claim_id on success", async () => {

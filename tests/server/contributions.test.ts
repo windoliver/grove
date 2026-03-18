@@ -205,6 +205,61 @@ describe("POST /api/contributions", () => {
     expect(data.artifacts.empty).toMatch(/^blake3:/);
   });
 
+  test("rejects manifest with invalid kind value", async () => {
+    const body = validManifestBody({ kind: "invalid-kind" });
+    const res = await ctx.app.request("/api/contributions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  test("rejects manifest with empty summary", async () => {
+    const body = validManifestBody({ summary: "" });
+    const res = await ctx.app.request("/api/contributions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  test("rejects manifest with empty agentId", async () => {
+    const body = validManifestBody({ agent: { agentId: "" } });
+    const res = await ctx.app.request("/api/contributions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  test("rejects manifest with invalid mode value", async () => {
+    const body = validManifestBody({ mode: "invalid-mode" });
+    const res = await ctx.app.request("/api/contributions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  test("rejects manifest with malformed artifact hash", async () => {
+    const body = validManifestBody({ artifacts: { "file.txt": "not-a-hash" } });
+    const res = await ctx.app.request("/api/contributions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
   test("accepts contribution with pre-computed artifact hashes", async () => {
     // First, store an artifact to get a valid hash
     const hash = await ctx.cas.put(new TextEncoder().encode("hello"));
@@ -303,6 +358,26 @@ describe("GET /api/contributions", () => {
 
   test("rejects invalid pagination params", async () => {
     const res = await ctx.app.request("/api/contributions?limit=-1");
+    expect(res.status).toBe(400);
+  });
+
+  test("rejects limit=0", async () => {
+    const res = await ctx.app.request("/api/contributions?limit=0");
+    expect(res.status).toBe(400);
+  });
+
+  test("rejects negative offset", async () => {
+    const res = await ctx.app.request("/api/contributions?offset=-5");
+    expect(res.status).toBe(400);
+  });
+
+  test("rejects limit exceeding maximum", async () => {
+    const res = await ctx.app.request("/api/contributions?limit=101");
+    expect(res.status).toBe(400);
+  });
+
+  test("rejects non-numeric limit", async () => {
+    const res = await ctx.app.request("/api/contributions?limit=abc");
     expect(res.status).toBe(400);
   });
 });

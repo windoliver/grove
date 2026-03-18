@@ -110,7 +110,7 @@ describe("parseOutcomeArgs", () => {
   });
 
   test("throws on get without CID", () => {
-    expect(() => parseOutcomeArgs(["get"])).toThrow("Usage:");
+    expect(() => parseOutcomeArgs(["get"])).toThrow("Missing required argument: <cid>");
   });
 
   test("parses stats subcommand", () => {
@@ -252,11 +252,7 @@ describe("runOutcome get", () => {
 
   test("shows error for non-existent outcome", async () => {
     const args = parseOutcomeArgs(["get", "blake3:nonexistent"]);
-    await runOutcome(args, deps);
-
-    expect(stderr.length).toBe(1);
-    expect(stderr[0]).toContain("Error:");
-    expect(stdout.length).toBe(0);
+    await expect(runOutcome(args, deps)).rejects.toThrow("Outcome not found");
   });
 });
 

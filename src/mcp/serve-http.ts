@@ -18,22 +18,15 @@
  *   DELETE /mcp — Close a session
  */
 
-import { existsSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { join, resolve } from "node:path";
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 import { findGroveDir } from "../cli/context.js";
-import { parseGroveContract } from "../core/contract.js";
-import { DefaultFrontierCalculator } from "../core/frontier.js";
-import { CachedFrontierCalculator } from "../gossip/cached-frontier.js";
-import { FsCas } from "../local/fs-cas.js";
-import { SqliteBountyStore } from "../local/sqlite-bounty-store.js";
-import { initSqliteDb, SqliteClaimStore, SqliteContributionStore } from "../local/sqlite-store.js";
-import { LocalWorkspaceManager } from "../local/workspace.js";
+import { createLocalRuntime } from "../local/runtime.js";
+import { parsePort } from "../shared/env.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { McpDeps } from "./deps.js";
 import { createMcpServer } from "./server.js";
@@ -54,7 +47,7 @@ const AUTH_TOKEN = process.env.GROVE_MCP_AUTH_TOKEN ?? undefined;
 
 const groveOverride = process.env.GROVE_DIR ?? undefined;
 const cwd = process.cwd();
-const port = Number.parseInt(process.env.PORT ?? "4015", 10);
+const port = parsePort(process.env.PORT, 4015);
 
 let deps: McpDeps;
 let closeStores: () => void;
@@ -65,48 +58,29 @@ try {
     throw new Error("Not inside a grove. Run 'grove init' to create one, or set GROVE_DIR.");
   }
 
-  const dbPath = join(groveDir, "grove.db");
-  const casPath = join(groveDir, "cas");
-
-  const db = initSqliteDb(dbPath);
-  const contributionStore = new SqliteContributionStore(db);
-  const claimStore = new SqliteClaimStore(db);
-  const bountyStore = new SqliteBountyStore(db);
-  const cas = new FsCas(casPath);
-  const baseFrontier = new DefaultFrontierCalculator(contributionStore);
-  const frontier = new CachedFrontierCalculator(baseFrontier, 5_000);
-  const workspace = new LocalWorkspaceManager({
-    groveRoot: groveDir,
-    db,
-    contributionStore,
-    cas,
+  const runtime = createLocalRuntime({
+    groveDir,
+    frontierCacheTtlMs: 5_000,
+    workspace: true,
+    parseContract: true,
   });
 
-  // Parse GROVE.md contract if it exists — fail on malformed contracts
-  const groveContractPath = join(groveDir, "..", "GROVE.md");
-  const contract = existsSync(groveContractPath)
-    ? parseGroveContract(readFileSync(groveContractPath, "utf-8"))
-    : undefined;
-
-  // Workspace boundary: the project root containing .grove/
-  const workspaceBoundary = resolve(groveDir, "..");
-
   // Note: creditsService is intentionally omitted — see serve.ts for rationale.
+  if (!runtime.workspace) {
+    throw new Error("Workspace manager failed to initialize");
+  }
   deps = {
-    contributionStore,
-    claimStore,
-    bountyStore,
-    cas,
-    frontier,
-    workspace,
-    contract,
-    onContributionWrite: () => frontier.invalidate(),
-    workspaceBoundary,
+    contributionStore: runtime.contributionStore,
+    claimStore: runtime.claimStore,
+    bountyStore: runtime.bountyStore,
+    cas: runtime.cas,
+    frontier: runtime.frontier,
+    workspace: runtime.workspace,
+    contract: runtime.contract,
+    onContributionWrite: runtime.onContributionWrite,
+    workspaceBoundary: runtime.groveRoot,
   };
-  closeStores = () => {
-    workspace.close();
-    db.close();
-  };
+  closeStores = () => runtime.close();
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
   process.stderr.write(`grove-mcp-http: ${message}\n`);

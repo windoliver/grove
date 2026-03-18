@@ -14,8 +14,9 @@ import type { ContributionMode, JsonValue } from "../../core/models.js";
 import type { FrontierEntrySummary, FrontierInput } from "../../core/operations/index.js";
 import { frontierOperation } from "../../core/operations/index.js";
 import type { CliDeps, Writer } from "../context.js";
-import { formatTable } from "../format.js";
+import { formatTable, outputJson } from "../format.js";
 import { toOperationDeps } from "../operation-adapter.js";
+import { parseLimit } from "../utils/parse-helpers.js";
 
 const DEFAULT_LIMIT = 10;
 
@@ -45,10 +46,7 @@ export function parseFrontierArgs(argv: string[]): FrontierOptions {
     allowPositionals: false,
   });
 
-  const limit = values.n !== undefined ? Number.parseInt(values.n, 10) : DEFAULT_LIMIT;
-  if (Number.isNaN(limit) || limit <= 0) {
-    throw new Error(`Invalid limit: '${values.n}'. Must be a positive integer.`);
-  }
+  const limit = parseLimit(values.n, DEFAULT_LIMIT);
 
   let context: Record<string, JsonValue> | undefined;
   if (values.context !== undefined) {
@@ -97,7 +95,7 @@ export async function runFrontier(
   const frontier = result.value;
 
   if (options.json) {
-    writer(JSON.stringify(frontier, null, 2));
+    outputJson(frontier);
     return;
   }
 

@@ -362,6 +362,90 @@ export class FsCas implements ContentStore {
   }
 
   /**
+   * Garbage-collect unreferenced blobs.
+   *
+   * Walks the CAS directory tree (2-char prefix sharding: `{hex[0:2]}/{hex[2:4]}/{hex}`),
+   * checks each blob hash against the referenced set, and deletes unreferenced
+   * blobs along with their `.meta` sidecars.
+   *
+   * @param referencedHashes - Set of content hashes (in `blake3:<hex64>` format)
+   *   that are still in use and must not be deleted.
+   * @returns Number of blobs deleted.
+   */
+  async gc(referencedHashes: ReadonlySet<string>): Promise<number> {
+    const { readdir } = await import("node:fs/promises");
+    let deleted = 0;
+
+    // Level 1: first 2-char prefix directories
+    let level1Entries: string[];
+    try {
+      level1Entries = await readdir(this.rootPath);
+    } catch (err) {
+      if (isNotFound(err)) return 0;
+      throw err;
+    }
+
+    for (const l1 of level1Entries) {
+      // Skip non-directory entries (e.g., staging files)
+      if (l1.length !== 2) continue;
+
+      const l1Path = join(this.rootPath, l1);
+
+      // Level 2: second 2-char prefix directories
+      let level2Entries: string[];
+      try {
+        level2Entries = await readdir(l1Path);
+      } catch (err) {
+        if (isNotFound(err)) continue;
+        throw err;
+      }
+
+      for (const l2 of level2Entries) {
+        if (l2.length !== 2) continue;
+
+        const l2Path = join(l1Path, l2);
+
+        // Level 3: actual blob files (64-char hex names)
+        let blobEntries: string[];
+        try {
+          blobEntries = await readdir(l2Path);
+        } catch (err) {
+          if (isNotFound(err)) continue;
+          throw err;
+        }
+
+        for (const entry of blobEntries) {
+          // Skip .meta sidecars — they are cleaned up with their blob
+          if (entry.endsWith(".meta")) continue;
+          // Skip non-hash entries (e.g., temp files)
+          if (!HEX_PATTERN.test(entry)) continue;
+
+          const contentHash = `${HASH_PREFIX}${entry}`;
+          if (!referencedHashes.has(contentHash)) {
+            const blobPath = join(l2Path, entry);
+            const metaPath = `${blobPath}.meta`;
+
+            try {
+              await unlink(blobPath);
+              deleted++;
+            } catch (err) {
+              if (!isNotFound(err)) throw err;
+            }
+            // Clean up sidecar if present
+            try {
+              await unlink(metaPath);
+            } catch (err) {
+              if (!isNotFound(err)) throw err;
+            }
+          }
+        }
+      }
+    }
+
+    return deleted;
+  }
+
+  /**
    * Release resources. No-op for filesystem storage.
    */
   close(): void {

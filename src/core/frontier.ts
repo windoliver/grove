@@ -102,28 +102,16 @@ function isEphemeral(c: Contribution): boolean {
   return c.context?.ephemeral === true;
 }
 
-/** Filter contributions by query tags, platform, kind, mode, and agent. */
+/**
+ * Filter contributions by fields not pushed to the store query.
+ *
+ * Tags, platform, kind, mode, agentId, and agentName are handled by the
+ * store's SQL/indexed query. This function handles only context filters
+ * which require in-memory deep equality (nested JSON, key-order-independent).
+ */
 function matchesFilters(c: Contribution, query?: FrontierQuery): boolean {
-  if (query?.tags && query.tags.length > 0) {
-    for (const tag of query.tags) {
-      if (!c.tags.includes(tag)) return false;
-    }
-  }
-  if (query?.platform !== undefined) {
-    if (c.agent.platform !== query.platform) return false;
-  }
-  if (query?.kind !== undefined) {
-    if (c.kind !== query.kind) return false;
-  }
-  if (query?.mode !== undefined) {
-    if (c.mode !== query.mode) return false;
-  }
-  if (query?.agentId !== undefined) {
-    if (c.agent.agentId !== query.agentId) return false;
-  }
-  if (query?.agentName !== undefined) {
-    if (c.agent.agentName !== query.agentName) return false;
-  }
+  // Context filters remain in-memory: they use nested JSON deep equality
+  // that cannot be efficiently expressed in SQL.
   if (query?.context !== undefined) {
     if (c.context === undefined) return false;
     for (const [key, expected] of Object.entries(query.context)) {
@@ -150,18 +138,19 @@ export class DefaultFrontierCalculator implements FrontierCalculator {
     const limit = query?.limit ?? DEFAULT_LIMIT;
 
     // Push supported filters to the store for indexed queries.
-    // (Partially addresses the TODO(perf) — platform and context filters
-    // are not supported by ContributionQuery so they remain in-memory.)
+    // Context filters remain in-memory because they involve nested JSON
+    // comparisons with key-order-independent equality.
     const storeQuery: ContributionQuery = {
       ...(query?.kind !== undefined ? { kind: query.kind } : {}),
       ...(query?.mode !== undefined ? { mode: query.mode } : {}),
       ...(query?.agentId !== undefined ? { agentId: query.agentId } : {}),
       ...(query?.agentName !== undefined ? { agentName: query.agentName } : {}),
+      ...(query?.platform !== undefined ? { platform: query.platform } : {}),
       ...(query?.tags !== undefined && query.tags.length > 0 ? { tags: [...query.tags] } : {}),
     };
 
-    // Fetch store-filtered contributions. Platform and context filters
-    // are not supported by ContributionQuery so they remain in-memory.
+    // Fetch store-filtered contributions. Context filters remain in-memory
+    // (nested JSON with key-order-independent deep equality).
     // Ephemeral contributions (messages, transient data) are excluded
     // from frontier ranking by default to prevent inbox flooding.
     const storeContributions = await this.store.list(storeQuery);

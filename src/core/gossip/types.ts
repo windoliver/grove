@@ -98,6 +98,8 @@ export interface GossipMessage {
   readonly timestamp: string;
   /** Agent capacity for gossip-aware spawning (boardroom). */
   readonly agentCapacity?: AgentCapacity | undefined;
+  /** HMAC-SHA256 signature over the message payload (set when hmacSecret is configured). */
+  readonly hmacSignature?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +112,8 @@ export interface ShuffleRequest {
   readonly sender: PeerInfo;
   /** Subset of the sender's partial view to exchange. */
   readonly offered: readonly PeerInfo[];
+  /** HMAC-SHA256 signature over the request payload (set when hmacSecret is configured). */
+  readonly hmacSignature?: string | undefined;
 }
 
 /** A shuffle response for CYCLON peer sampling. */
@@ -129,6 +133,7 @@ export const GossipEventType = {
   PeerFailed: "peer_failed",
   PeerRecovered: "peer_recovered",
   FrontierUpdated: "frontier_updated",
+  RoundFailed: "round_failed",
 } as const;
 export type GossipEventType = (typeof GossipEventType)[keyof typeof GossipEventType];
 
@@ -170,6 +175,8 @@ export interface GossipConfig {
   readonly suspicionTimeoutMs?: number | undefined;
   /** Milliseconds before a suspected peer is declared failed (default: 150_000). */
   readonly failureTimeoutMs?: number | undefined;
+  /** Shared secret for HMAC-SHA256 message signing. When set, outgoing messages are signed and incoming unsigned messages are rejected. */
+  readonly hmacSecret?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------

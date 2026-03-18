@@ -28,8 +28,10 @@ import {
 import type { OutcomeRecord, OutcomeStats, OutcomeStore } from "../../core/outcome.js";
 import { OUTCOME_STATUSES } from "../../core/outcome.js";
 import type { Writer } from "../context.js";
-import { formatTable, outputJson, outputJsonError, truncateCid } from "../format.js";
+import { formatTable, outputJson, truncateCid } from "../format.js";
 import { resolveAgentId } from "../utils/grove-dir.js";
+import { handleOperationError } from "../utils/handle-result.js";
+import { parseLimit, requirePositional } from "../utils/parse-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Dependencies
@@ -152,10 +154,7 @@ function parseGetArgs(argv: string[]): OutcomeGetArgs {
     strict: true,
   });
 
-  const cid = positionals[0];
-  if (!cid) {
-    throw new Error("Usage: grove outcome get <cid> [--json]");
-  }
+  const cid = requirePositional(positionals, 0, "cid");
 
   return {
     subcommand: "get",
@@ -176,10 +175,7 @@ function parseListArgs(argv: string[]): OutcomeListArgs {
     allowPositionals: false,
   });
 
-  const limit = values.n !== undefined ? Number.parseInt(values.n, 10) : DEFAULT_LIMIT;
-  if (Number.isNaN(limit) || limit <= 0) {
-    throw new Error(`Invalid limit: '${values.n}'. Must be a positive integer.`);
-  }
+  const limit = parseLimit(values.n, DEFAULT_LIMIT);
 
   return {
     subcommand: "list",
@@ -286,12 +282,7 @@ async function runSet(args: OutcomeSetArgs, deps: OutcomeDeps): Promise<void> {
   );
 
   if (!result.ok) {
-    if (args.json) {
-      outputJsonError(result.error);
-      return;
-    }
-    deps.stderr(`Error: ${result.error.message}`);
-    process.exitCode = 1;
+    handleOperationError(result.error, args.json);
     return;
   }
 
@@ -310,12 +301,7 @@ async function runGet(args: OutcomeGetArgs, deps: OutcomeDeps): Promise<void> {
   const result = await getOutcomeOperation({ cid: args.cid }, toOpDeps(deps));
 
   if (!result.ok) {
-    if (args.json) {
-      outputJsonError(result.error);
-      return;
-    }
-    deps.stderr(`Error: ${result.error.message}`);
-    process.exitCode = 1;
+    handleOperationError(result.error, args.json);
     return;
   }
 

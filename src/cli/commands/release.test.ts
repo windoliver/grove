@@ -70,12 +70,7 @@ describe("grove release", () => {
   });
 
   test("shows error when claim-id is missing", async () => {
-    await runRelease([], deps);
-
-    expect(stderr.length).toBe(1);
-    expect(stderr[0]).toContain("claim-id is required");
-    expect(process.exitCode).toBe(2);
-    process.exitCode = 0;
+    await expect(runRelease([], deps)).rejects.toThrow("Missing required argument: <claim-id>");
   });
 
   test("throws when releasing non-existent claim", async () => {

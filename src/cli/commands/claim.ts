@@ -15,10 +15,12 @@ import { parseArgs } from "node:util";
 import type { OperationDeps } from "../../core/operations/index.js";
 import { claimOperation, ErrorCode } from "../../core/operations/index.js";
 import type { ClaimStore } from "../../core/store.js";
-import { outputJson, outputJsonError } from "../format.js";
+import { outputJson } from "../format.js";
 import { parseDuration } from "../utils/duration.js";
 import { resolveAgentId } from "../utils/grove-dir.js";
+import { handleOperationError } from "../utils/handle-result.js";
 import { formatClaimSummary } from "../utils/output.js";
+import { requirePositional } from "../utils/parse-helpers.js";
 
 const DEFAULT_LEASE = "5m";
 
@@ -41,14 +43,7 @@ export async function runClaim(args: readonly string[], deps: ClaimDeps): Promis
     strict: true,
   });
 
-  const target = positionals[0];
-  if (!target) {
-    deps.stderr(
-      "Error: target is required.\n\nUsage: grove claim <target> [--lease 30m] [--intent '...']",
-    );
-    process.exitCode = 2;
-    return;
-  }
+  const target = requirePositional(positionals, 0, "target");
 
   const leaseMs = parseDuration(values.lease ?? DEFAULT_LEASE);
   const agentId = resolveAgentId(values["agent-id"]);
@@ -80,13 +75,9 @@ export async function runClaim(args: readonly string[], deps: ClaimDeps): Promis
   );
 
   if (!result.ok) {
-    if (values.json) {
-      outputJsonError(result.error);
-      return;
-    }
     // For claim conflicts, produce an error message compatible with the original
     // ClaimConflictError format that includes "active claim".
-    if (result.error.code === ErrorCode.ClaimConflict) {
+    if (!values.json && result.error.code === ErrorCode.ClaimConflict) {
       const details = result.error.details as
         | { targetRef?: string; heldByAgentId?: string; heldByClaimId?: string }
         | undefined;
@@ -96,7 +87,8 @@ export async function runClaim(args: readonly string[], deps: ClaimDeps): Promis
         `Target '${target}' already has an active claim '${claimId}' by agent '${heldBy}'`,
       );
     }
-    throw new Error(result.error.message);
+    handleOperationError(result.error, values.json);
+    return;
   }
 
   if (values.json) {

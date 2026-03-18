@@ -11,6 +11,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
+import { parsePort } from "../../shared/env.js";
 import { resolveGroveDir } from "../utils/grove-dir.js";
 
 // ---------------------------------------------------------------------------
@@ -41,7 +42,7 @@ function parseUpArgs(args: readonly string[]): UpOptions {
       help: { type: "boolean", short: "h" },
     },
     allowPositionals: false,
-    strict: false,
+    strict: true,
   });
 
   if (values.help) {
@@ -106,8 +107,58 @@ export async function handleUp(args: readonly string[], groveOverride?: string):
     nexusSource: opts.nexusSource,
   });
 
+  // Initialize local runtime for periodic cleanup (claim expiry + artifact GC).
+  // Uses frontierCacheTtlMs=0 since cleanup doesn't need frontier caching.
+  const { createLocalRuntime } = await import("../../local/runtime.js");
+  const { runCleanup, runArtifactGc } = await import("../../local/cleanup.js");
+  const runtime = createLocalRuntime({
+    groveDir,
+    frontierCacheTtlMs: 0,
+    workspace: false,
+    parseContract: false,
+  });
+
+  // Claim cleanup every 60 seconds
+  const CLAIM_CLEANUP_INTERVAL_MS = 60_000;
+  // Artifact GC every 10 minutes
+  const ARTIFACT_GC_INTERVAL_MS = 10 * 60_000;
+
+  const claimCleanupTimer = setInterval(async () => {
+    try {
+      const result = await runCleanup({ claimStore: runtime.claimStore });
+      if (result.expiredClaims > 0 || result.cleanedClaims > 0) {
+        process.stderr.write(
+          `[cleanup] expired ${result.expiredClaims} stale claim(s), cleaned ${result.cleanedClaims} old claim(s)\n`,
+        );
+      }
+    } catch {
+      // Cleanup errors are non-fatal — log and continue
+      process.stderr.write("[cleanup] claim cleanup failed\n");
+    }
+  }, CLAIM_CLEANUP_INTERVAL_MS);
+
+  const artifactGcTimer = setInterval(async () => {
+    try {
+      const result = await runArtifactGc({
+        contributionStore: runtime.contributionStore,
+        cas: runtime.cas,
+      });
+      if (result.deletedBlobs > 0) {
+        process.stderr.write(
+          `[cleanup] garbage-collected ${result.deletedBlobs} unreferenced blob(s)\n`,
+        );
+      }
+    } catch {
+      // GC errors are non-fatal — log and continue
+      process.stderr.write("[cleanup] artifact GC failed\n");
+    }
+  }, ARTIFACT_GC_INTERVAL_MS);
+
   const shutdown = async () => {
     process.stderr.write("\nShutting down...\n");
+    clearInterval(claimCleanupTimer);
+    clearInterval(artifactGcTimer);
+    runtime.close();
     await stopServices(services);
   };
   process.on("SIGINT", () => {
@@ -119,8 +170,8 @@ export async function handleUp(args: readonly string[], groveOverride?: string):
 
   try {
     if (services.children.length > 0) {
-      const serverPort = Number(process.env.PORT ?? 4515);
-      const mcpPort = Number(process.env.MCP_PORT ?? 4015);
+      const serverPort = parsePort(process.env.PORT, 4515);
+      const mcpPort = parsePort(process.env.MCP_PORT, 4015);
       const serviceLines = services.children.map((c) => {
         if (c.name === "server") return `  HTTP server  \u2192 http://localhost:${serverPort}`;
         if (c.name === "mcp") return `  MCP server   \u2192 http://localhost:${mcpPort}`;
