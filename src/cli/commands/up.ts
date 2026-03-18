@@ -82,6 +82,14 @@ export async function handleUp(args: readonly string[], groveOverride?: string):
   // Non-headless: always delegate to TUI — it shows the setup screen first,
   // then handles service startup internally with progress feedback.
   if (!opts.headless && !opts.noTui) {
+    // Puppet mode: run TUI in a pty subprocess with HTTP control API
+    if (process.env.GROVE_PUPPET_PORT) {
+      const { startPuppetAndServe } = await import("../../tui/puppet-server.js");
+      const tuiArgs = ["dist/cli/main.js", "up"];
+      if (effectiveGrove) tuiArgs.push("--grove", effectiveGrove);
+      await startPuppetAndServe(tuiArgs, Number(process.env.GROVE_PUPPET_PORT));
+      return;
+    }
     const { handleTui } = await import("../../tui/main.js");
     await handleTui([], effectiveGrove, { build: opts.build, nexusSource: opts.nexusSource });
     return;
