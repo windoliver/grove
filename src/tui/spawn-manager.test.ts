@@ -11,6 +11,7 @@ import type { Claim } from "../core/models.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
 import { MockTmuxManager } from "./agents/tmux-manager.js";
 import type { ClaimInput, ClaimsQuery, TuiDataProvider } from "./provider.js";
+import type { PersistedSpawnRecord, SessionStore } from "./session-store.js";
 import { SpawnManager } from "./spawn-manager.js";
 
 // ---------------------------------------------------------------------------
@@ -458,5 +459,260 @@ describe("SpawnManager — shell injection safety", () => {
     expect(session!.env!.GROVE_PR_NUMBER).toBe("99");
     expect(session!.env!.GROVE_PR_TITLE).toBe(title);
     expect(session!.env!.GROVE_PR_FILES).toBe("10");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mock SessionStore for persistence tests
+// ---------------------------------------------------------------------------
+
+/** In-memory SessionStore mock that tracks save/remove operations. */
+function makeMockSessionStore(): SessionStore & {
+  readonly records: Map<string, PersistedSpawnRecord>;
+  readonly saveCalls: PersistedSpawnRecord[];
+  readonly removeCalls: string[];
+} {
+  const records = new Map<string, PersistedSpawnRecord>();
+  const saveCalls: PersistedSpawnRecord[] = [];
+  const removeCalls: string[] = [];
+
+  return {
+    records,
+    saveCalls,
+    removeCalls,
+
+    save(record: PersistedSpawnRecord): void {
+      saveCalls.push(record);
+      records.set(record.spawnId, record);
+    },
+
+    remove(spawnId: string): void {
+      removeCalls.push(spawnId);
+      records.delete(spawnId);
+    },
+
+    loadAll(): readonly PersistedSpawnRecord[] {
+      return [...records.values()];
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Session persistence tests
+// ---------------------------------------------------------------------------
+
+describe("SpawnManager — session persistence", () => {
+  test("spawn persists record to session store", async () => {
+    const provider = makeMockProvider();
+    const tmux = makeMockTmux();
+    const store = makeMockSessionStore();
+    const errors: string[] = [];
+    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), store);
+
+    const result = await manager.spawn("claude", "bash");
+
+    // Session store was called with the correct record
+    expect(store.saveCalls).toHaveLength(1);
+    expect(store.saveCalls[0]?.spawnId).toBe(result.spawnId);
+    expect(store.saveCalls[0]?.claimId).toBe(result.claimId);
+    expect(store.saveCalls[0]?.workspacePath).toBe(result.workspacePath);
+    expect(store.saveCalls[0]?.spawnedAt).toBeDefined();
+
+    // Record is present in store
+    expect(store.records.has(result.spawnId)).toBe(true);
+  });
+
+  test("kill removes record from session store", async () => {
+    const provider = makeMockProvider();
+    const tmux = makeMockTmux();
+    const store = makeMockSessionStore();
+    const errors: string[] = [];
+    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), store);
+
+    const result = await manager.spawn("claude", "bash");
+    const sessionName = `grove-${result.spawnId}`;
+
+    await manager.kill(sessionName);
+
+    // Remove was called with the agentId
+    expect(store.removeCalls).toContain(result.spawnId);
+
+    // Record is gone from store
+    expect(store.records.has(result.spawnId)).toBe(false);
+  });
+
+  test("spawn without session store works normally (backward compatibility)", async () => {
+    const provider = makeMockProvider();
+    const tmux = makeMockTmux();
+    const errors: string[] = [];
+    // No session store passed — must not throw
+    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg));
+
+    const result = await manager.spawn("claude", "bash");
+    expect(result.spawnId).toBeDefined();
+    expect(result.claimId).toBeDefined();
+    expect(errors).toHaveLength(0);
+  });
+
+  test("destroy does not clear session store", async () => {
+    const provider = makeMockProvider();
+    const tmux = makeMockTmux();
+    const store = makeMockSessionStore();
+    const errors: string[] = [];
+    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), store);
+
+    await manager.spawn("claude", "bash");
+    expect(store.records.size).toBe(1);
+
+    manager.destroy();
+
+    // Records should still be in the store after destroy
+    expect(store.records.size).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reconciliation tests
+// ---------------------------------------------------------------------------
+
+describe("SpawnManager — reconciliation", () => {
+  test("reconcile reattaches live tmux sessions", async () => {
+    const provider = makeMockProvider();
+    const tmux = makeMockTmux();
+    const store = makeMockSessionStore();
+    const errors: string[] = [];
+
+    // Pre-populate the store with a record that has a live tmux session
+    const record: PersistedSpawnRecord = {
+      spawnId: "agent-live",
+      claimId: "claim-live",
+      targetRef: "agent-live",
+      agentId: "agent-live",
+      workspacePath: "/tmp/ws/agent-live",
+      spawnedAt: new Date().toISOString(),
+    };
+    store.save(record);
+
+    // Simulate the tmux session being alive
+    tmux.spawnedSessions.push("grove-agent-live");
+
+    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), store);
+    const result = await manager.reconcile();
+
+    expect(result.reattached).toBe(1);
+    expect(result.released).toBe(0);
+
+    // In-memory state was restored
+    expect(manager.getSpawnRecord("agent-live")).toBeDefined();
+    expect(manager.getSpawnRecord("agent-live")?.claimId).toBe("claim-live");
+
+    // Heartbeat was restarted
+    expect(manager.hasHeartbeat("claim-live")).toBe(true);
+
+    // Store record was NOT removed (still live)
+    expect(store.records.has("agent-live")).toBe(true);
+  });
+
+  test("reconcile releases dead tmux sessions", async () => {
+    const provider = makeMockProvider();
+    const tmux = makeMockTmux();
+    const store = makeMockSessionStore();
+    const errors: string[] = [];
+
+    // Pre-populate the store with a record whose tmux session is dead
+    const record: PersistedSpawnRecord = {
+      spawnId: "agent-dead",
+      claimId: "claim-dead",
+      targetRef: "agent-dead",
+      agentId: "agent-dead",
+      workspacePath: "/tmp/ws/agent-dead",
+      spawnedAt: new Date().toISOString(),
+    };
+    store.save(record);
+
+    // tmux has no live sessions — agent-dead is orphaned
+
+    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), store);
+    const result = await manager.reconcile();
+
+    expect(result.reattached).toBe(0);
+    expect(result.released).toBe(1);
+
+    // In-memory state was NOT restored
+    expect(manager.getSpawnRecord("agent-dead")).toBeUndefined();
+
+    // Store record was removed
+    expect(store.records.has("agent-dead")).toBe(false);
+    expect(store.removeCalls).toContain("agent-dead");
+
+    // Workspace was cleaned
+    expect(provider.cleanedWorkspaces.has("agent-dead:agent-dead")).toBe(true);
+  });
+
+  test("reconcile handles mix of live and dead sessions", async () => {
+    const provider = makeMockProvider();
+    const tmux = makeMockTmux();
+    const store = makeMockSessionStore();
+    const errors: string[] = [];
+
+    store.save({
+      spawnId: "alive",
+      claimId: "claim-alive",
+      targetRef: "alive",
+      agentId: "alive",
+      workspacePath: "/tmp/ws/alive",
+      spawnedAt: new Date().toISOString(),
+    });
+    store.save({
+      spawnId: "dead",
+      claimId: "claim-dead",
+      targetRef: "dead",
+      agentId: "dead",
+      workspacePath: "/tmp/ws/dead",
+      spawnedAt: new Date().toISOString(),
+    });
+
+    // Only "alive" has a tmux session
+    tmux.spawnedSessions.push("grove-alive");
+
+    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), store);
+    const result = await manager.reconcile();
+
+    expect(result.reattached).toBe(1);
+    expect(result.released).toBe(1);
+
+    // Live session reattached
+    expect(manager.getSpawnRecord("alive")).toBeDefined();
+    expect(manager.hasHeartbeat("claim-alive")).toBe(true);
+
+    // Dead session cleaned up
+    expect(manager.getSpawnRecord("dead")).toBeUndefined();
+    expect(store.records.has("dead")).toBe(false);
+    expect(provider.cleanedWorkspaces.has("dead:dead")).toBe(true);
+  });
+
+  test("reconcile returns zeroes with no session store", async () => {
+    const provider = makeMockProvider();
+    const tmux = makeMockTmux();
+    const errors: string[] = [];
+
+    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg));
+    const result = await manager.reconcile();
+
+    expect(result.reattached).toBe(0);
+    expect(result.released).toBe(0);
+  });
+
+  test("reconcile returns zeroes with empty session store", async () => {
+    const provider = makeMockProvider();
+    const tmux = makeMockTmux();
+    const store = makeMockSessionStore();
+    const errors: string[] = [];
+
+    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), store);
+    const result = await manager.reconcile();
+
+    expect(result.reattached).toBe(0);
+    expect(result.released).toBe(0);
   });
 });

@@ -37,6 +37,7 @@ import {
   isGoalProvider,
   type TuiDataProvider,
 } from "./provider.js";
+import { FileSessionStore } from "./session-store.js";
 import { SpawnManager } from "./spawn-manager.js";
 
 /** Props for the root App component. */
@@ -290,8 +291,27 @@ export function App({
   // SpawnManager handles workspace/claim/heartbeat lifecycle
   const spawnManagerRef = useRef<SpawnManager | undefined>(undefined);
   if (spawnManagerRef.current === undefined) {
-    spawnManagerRef.current = new SpawnManager(provider, tmux, showError);
+    // Detect .grove directory for session persistence
+    let sessionStore: FileSessionStore | undefined;
+    try {
+      const { resolve, join } = require("node:path") as typeof import("node:path");
+      const { existsSync } = require("node:fs") as typeof import("node:fs");
+      const groveDir = resolve(process.cwd(), ".grove");
+      if (existsSync(join(groveDir, "grove.json"))) {
+        sessionStore = new FileSessionStore(groveDir);
+      }
+    } catch {
+      // Session persistence is best-effort
+    }
+    spawnManagerRef.current = new SpawnManager(provider, tmux, showError, sessionStore);
   }
+
+  // Reconcile persisted sessions on startup (reattach live, clean dead)
+  useEffect(() => {
+    spawnManagerRef.current?.reconcile().catch(() => {
+      // Reconciliation is best-effort — don't block TUI startup
+    });
+  }, []);
 
   // Cleanup timers on unmount
   useEffect(() => {

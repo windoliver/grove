@@ -12,6 +12,7 @@ import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
 import type { TuiDataProvider } from "./provider.js";
+import type { SessionStore } from "./session-store.js";
 
 /** Lease duration for TUI-spawned agent claims. */
 const LEASE_DURATION_MS = 300_000; // 5 minutes
@@ -52,6 +53,7 @@ export class SpawnManager {
   private readonly heartbeatTimers = new Map<string, ReturnType<typeof setInterval>>();
   private readonly spawnRecords = new Map<string, SpawnRecord>();
   private readonly onError: (message: string) => void;
+  private readonly sessionStore: SessionStore | undefined;
   private prContext: PrContext | undefined;
 
   /** Overridable heartbeat interval for testing. */
@@ -61,10 +63,12 @@ export class SpawnManager {
     provider: TuiDataProvider,
     tmux: TmuxManager | undefined,
     onError: (message: string) => void,
+    sessionStore?: SessionStore,
   ) {
     this.provider = provider;
     this.tmux = tmux;
     this.onError = onError;
+    this.sessionStore = sessionStore;
   }
 
   /**
@@ -171,6 +175,16 @@ export class SpawnManager {
         targetRef: spawnId,
         agentId: spawnId,
       });
+
+      // Step 5: Persist spawn record to session store for crash recovery.
+      this.sessionStore?.save({
+        spawnId,
+        claimId: claim.claimId,
+        targetRef: spawnId,
+        agentId: spawnId,
+        workspacePath,
+        spawnedAt: new Date().toISOString(),
+      });
     }
 
     return {
@@ -198,6 +212,7 @@ export class SpawnManager {
     if (tracked) {
       this.stopHeartbeat(tracked.claimId);
       this.spawnRecords.delete(killedAgentId);
+      this.sessionStore?.remove(killedAgentId);
 
       if (this.provider.releaseClaim) {
         await safeCleanup(
@@ -241,6 +256,61 @@ export class SpawnManager {
   /** Get the spawn record for an agentId (for testing). */
   getSpawnRecord(agentId: string): SpawnRecord | undefined {
     return this.spawnRecords.get(agentId);
+  }
+
+  /**
+   * Reconcile persisted session state with live tmux sessions.
+   *
+   * Called on TUI startup to recover from crashes:
+   * - Live tmux sessions are reattached (in-memory state + heartbeat restored)
+   * - Dead sessions are cleaned up (claim released + workspace cleaned + record removed)
+   */
+  async reconcile(): Promise<{ reattached: number; released: number }> {
+    if (!this.sessionStore) return { reattached: 0, released: 0 };
+
+    const persisted = this.sessionStore.loadAll();
+    if (persisted.length === 0) return { reattached: 0, released: 0 };
+
+    // Get live tmux sessions
+    const liveSessions = (await this.tmux?.listSessions()) ?? [];
+    const liveSet = new Set(liveSessions);
+
+    let reattached = 0;
+    let released = 0;
+
+    for (const record of persisted) {
+      const tmuxName = `grove-${record.spawnId}`;
+      if (liveSet.has(tmuxName)) {
+        // Re-attach: restore in-memory state + restart heartbeat
+        this.spawnRecords.set(record.spawnId, {
+          claimId: record.claimId,
+          targetRef: record.targetRef,
+          agentId: record.agentId,
+        });
+        this.startHeartbeat(record.claimId);
+        reattached++;
+      } else {
+        // Dead session: release claim + clean workspace + remove record
+        if (this.provider.releaseClaim) {
+          await safeCleanup(
+            this.provider.releaseClaim(record.claimId),
+            `release orphaned claim ${record.claimId}`,
+            { silent: true },
+          );
+        }
+        if (this.provider.cleanWorkspace) {
+          await safeCleanup(
+            this.provider.cleanWorkspace(record.targetRef, record.agentId),
+            `clean orphaned workspace for ${record.spawnId}`,
+            { silent: true },
+          );
+        }
+        this.sessionStore.remove(record.spawnId);
+        released++;
+      }
+    }
+
+    return { reattached, released };
   }
 
   /** Stop all timers and clear state. */
