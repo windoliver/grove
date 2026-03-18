@@ -644,7 +644,11 @@ export function App({
       const depthCheck = checkSpawnDepth(topology, depth);
       if (!depthCheck.allowed) return;
 
-      spawnManagerRef.current?.spawn(agentId, command, parentAgentId, depth).catch((err) => {
+      if (!spawnManagerRef.current) {
+        showError("SpawnManager not initialized");
+        return;
+      }
+      spawnManagerRef.current.spawn(agentId, command, parentAgentId, depth).catch((err) => {
         const msg = err instanceof Error ? err.message : "Spawn failed";
         showError(msg);
       });

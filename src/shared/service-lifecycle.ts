@@ -69,8 +69,16 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
   const { parseGroveConfig } = await import("../core/config.js");
   const config = parseGroveConfig(raw);
 
-  // Start managed Nexus if configured
-  if (config.nexusManaged || (config.mode === "nexus" && !config.nexusUrl)) {
+  // Start managed Nexus when:
+  // - nexusManaged is explicitly set, OR
+  // - mode is "nexus" and no external URL, OR
+  // - nexus.yaml exists in the project root (auto-manage local nexus)
+  const nexusYamlExists = existsSync(join(projectRoot, "nexus.yaml"));
+  if (
+    config.nexusManaged ||
+    (config.mode === "nexus" && !config.nexusUrl) ||
+    (config.mode === "nexus" && nexusYamlExists)
+  ) {
     try {
       const { ensureNexusRunning } = await import("../cli/nexus-lifecycle.js");
       const nexusInfo = await ensureNexusRunning(projectRoot, config, {

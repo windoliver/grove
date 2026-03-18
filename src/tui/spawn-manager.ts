@@ -142,9 +142,18 @@ export class SpawnManager {
           }
         : undefined;
 
+      // Resolve relative commands against the grove/project root so that
+      // topology commands like "scripts/grove-agent.sh coder" work even
+      // when the tmux session cwd is the workspace checkout directory.
+      const groveRoot = process.cwd();
+      const { resolve: resolvePath, isAbsolute } = await import("node:path");
+      const resolvedCommand = command.replace(/^(\S+)/, (match) =>
+        isAbsolute(match) ? match : resolvePath(groveRoot, match),
+      );
+
       const options: SpawnOptions = {
         agentId: spawnId,
-        command,
+        command: resolvedCommand,
         targetRef: spawnId,
         workspacePath,
         ...(prEnv ? { env: prEnv } : {}),

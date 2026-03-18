@@ -68,7 +68,7 @@ const ReadResultSchema = z.union([BytesResultSchema, LegacyReadResultSchema]);
 const WriteResultSchema = z
   .object({
     bytes_written: z.number(),
-    etag: z.string(),
+    etag: z.string().optional().default(""),
     version: z.number().optional(),
   })
   .passthrough();
