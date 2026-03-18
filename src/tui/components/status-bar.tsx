@@ -27,6 +27,8 @@ export interface StatusBarProps {
   readonly viewMode?: ViewMode | undefined;
   /** Current goal text to display in the status bar. */
   readonly goalLabel?: string | undefined;
+  /** Backend label (e.g. "nexus", "local") to show connection mode. */
+  readonly backendLabel?: string | undefined;
 }
 
 /** Mode labels for the status bar. */
@@ -75,11 +77,14 @@ export const StatusBar: React.NamedExoticComponent<StatusBarProps> = React.memo(
   agentCount,
   viewMode,
   goalLabel,
+  backendLabel,
 }: StatusBarProps): React.ReactNode {
   const modeLabel = MODE_LABELS[mode];
   const hints = panelHints(focusedPanel, isDetailView);
   const agentLabel =
-    agentCount !== undefined && agentCount > 0 ? `${String(agentCount)} agents` : undefined;
+    agentCount !== undefined && agentCount > 0
+      ? `${String(agentCount)} agent${agentCount === 1 ? "" : "s"}`
+      : undefined;
 
   return (
     <box flexDirection="column">
@@ -90,11 +95,14 @@ export const StatusBar: React.NamedExoticComponent<StatusBarProps> = React.memo(
       )}
       {error && (
         <box>
-          <text color={theme.error}>Error: {error}</text>
+          <text color={theme.error}>
+            {error.length > 80 ? `Error: ${error.slice(0, 77)}...` : `Error: ${error}`}
+          </text>
         </box>
       )}
       <box flexDirection="row">
         <text color={theme.focus}>[{modeLabel}]</text>
+        {backendLabel && <text color={theme.success}> [{backendLabel}]</text>}
         {viewMode === "pipeline" && <text color={theme.warning}> [PIPELINE]</text>}
         <text opacity={0.5}>{hints}</text>
         {agentLabel && (

@@ -40,6 +40,34 @@ import {
 import { FileSessionStore } from "./session-store.js";
 import { SpawnManager } from "./spawn-manager.js";
 
+/**
+ * Resolve a spawn command that may reference scripts/ relative to the grove package root.
+ * Commands like "scripts/grove-agent.sh coder" are resolved to absolute paths so they
+ * work when tmux spawns them in an agent's workspace directory.
+ */
+function resolveSpawnCommand(command: string): string {
+  if (command.startsWith("scripts/")) {
+    const { join, dirname, resolve } = require("node:path") as typeof import("node:path");
+    const { existsSync } = require("node:fs") as typeof import("node:fs");
+
+    // Walk up from import.meta.dir to find the grove package root (contains package.json).
+    // Works both from src/tui/ (dev) and dist/ (built).
+    let dir = resolve(import.meta.dir);
+    while (dir !== dirname(dir)) {
+      if (existsSync(join(dir, "package.json"))) {
+        // Split command into script path and arguments
+        const parts = command.split(" ");
+        const scriptPath = join(dir, parts[0] ?? command);
+        return [scriptPath, ...parts.slice(1)].join(" ");
+      }
+      dir = dirname(dir);
+    }
+    // Fallback: return as-is (will fail at tmux spawn time with a clear error)
+    return command;
+  }
+  return command;
+}
+
 /** Props for the root App component. */
 export interface AppProps {
   readonly provider: TuiDataProvider;
@@ -775,8 +803,8 @@ export function App({
         if (item.kind === "spawn") {
           const profileCommand = agentProfiles?.find((p) => p.role === item.id)?.command;
           const roleCommand = topology?.roles.find((r) => r.name === item.id)?.command;
-          const shell = profileCommand ?? roleCommand ?? process.env.SHELL ?? "bash";
-          handleSpawn(item.id, shell, "HEAD", paletteParentId);
+          const raw = profileCommand ?? roleCommand ?? process.env.SHELL ?? "bash";
+          handleSpawn(item.id, resolveSpawnCommand(raw), "HEAD", paletteParentId);
         } else if (item.kind === "kill") {
           handleKill(item.id);
         } else if (item.kind === "register") {
@@ -881,68 +909,110 @@ export function App({
     <box flexDirection="column" width="100%" height="100%">
       <TooltipOverlay visible={showTooltips} onDismissAll={dismissTooltips} />
       <PanelBar panelState={panels.state} />
-      <HelpOverlay
-        visible={panels.state.mode === InputMode.Help}
-        isDetailView={nav.isDetailView}
-        focusedPanel={panels.state.focused}
-      />
-      <CommandPalette
-        visible={paletteVisible}
-        tmux={tmux}
-        onClose={handleCommandPaletteClose}
-        onSpawn={handleSpawn}
-        onKill={handleKill}
-        topology={topology}
-        activeClaims={activeClaims ?? undefined}
-        selectedIndex={ks.paletteIndex}
-        sessions={paletteSessions ?? undefined}
-        parentAgentId={paletteParentId}
-        items={paletteItems}
-      />
-      <InputBar
-        visible={
-          panels.state.mode === InputMode.TerminalInput ||
-          panels.state.mode === InputMode.MessageInput ||
-          panels.state.mode === InputMode.GoalInput
-        }
-        sessionName={selectedSession}
-        messageLabel={
-          panels.state.mode === InputMode.MessageInput
-            ? `Message ${ks.messageRecipients}: ${ks.messageBuffer}`
-            : panels.state.mode === InputMode.GoalInput
-              ? `Goal: ${ks.goalBuffer}`
-              : undefined
-        }
-      />
-      <PanelManager
-        provider={provider}
-        intervalMs={intervalMs}
-        panelState={panels.state}
-        nav={nav}
-        onContributionsLoaded={handleContributionsLoaded}
-        onRowCountChanged={handleRowCountChanged}
-        pageSize={PAGE_SIZE}
-        tmux={tmux}
-        selectedSession={selectedSession}
-        topology={topology}
-        onSelectSession={setSelectedSession}
-        vfsNavigateTrigger={ks.vfsNavigateTrigger}
-        artifactIndex={ks.artifactIndex}
-        showArtifactDiff={ks.showArtifactDiff}
-        activeClaims={activeClaims ?? undefined}
-        searchQuery={panels.state.mode === InputMode.SearchInput ? ks.searchBuffer : ks.searchQuery}
-        isSearchInputMode={panels.state.mode === InputMode.SearchInput}
-        compareMode={ks.compareMode}
-        compareCids={ks.compareCids}
-        onCompareSelect={(cid: string) => dispatch({ type: "COMPARE_SELECT", cid })}
-        onFrontierCidsChanged={handleFrontierCidsChanged}
-        zoomLevel={ks.zoomLevel}
-        activeSessions={paletteSessions?.filter((s) => s.startsWith("grove-"))}
-        terminalScrollOffset={ks.terminalScrollOffset}
-        terminalBuffers={terminalBuffers ?? undefined}
-        layoutMode={ks.layoutMode}
-        presetName={presetName}
-      />
+      {/* Help and command palette replace the panel content to avoid text overlap */}
+      {panels.state.mode === InputMode.Help ? (
+        <box flexGrow={1}>
+          <HelpOverlay
+            visible={true}
+            isDetailView={nav.isDetailView}
+            focusedPanel={panels.state.focused}
+          />
+        </box>
+      ) : paletteVisible ? (
+        <>
+          <CommandPalette
+            visible={true}
+            tmux={tmux}
+            onClose={handleCommandPaletteClose}
+            onSpawn={handleSpawn}
+            onKill={handleKill}
+            topology={topology}
+            activeClaims={activeClaims ?? undefined}
+            selectedIndex={ks.paletteIndex}
+            sessions={paletteSessions ?? undefined}
+            parentAgentId={paletteParentId}
+            items={paletteItems}
+          />
+          <PanelManager
+            provider={provider}
+            intervalMs={intervalMs}
+            panelState={panels.state}
+            nav={nav}
+            onContributionsLoaded={handleContributionsLoaded}
+            onRowCountChanged={handleRowCountChanged}
+            pageSize={PAGE_SIZE}
+            tmux={tmux}
+            selectedSession={selectedSession}
+            topology={topology}
+            onSelectSession={setSelectedSession}
+            vfsNavigateTrigger={ks.vfsNavigateTrigger}
+            artifactIndex={ks.artifactIndex}
+            showArtifactDiff={ks.showArtifactDiff}
+            activeClaims={activeClaims ?? undefined}
+            searchQuery={ks.searchQuery}
+            isSearchInputMode={false}
+            compareMode={ks.compareMode}
+            compareCids={ks.compareCids}
+            onCompareSelect={(cid: string) => dispatch({ type: "COMPARE_SELECT", cid })}
+            onFrontierCidsChanged={handleFrontierCidsChanged}
+            zoomLevel={ks.zoomLevel}
+            activeSessions={paletteSessions?.filter((s) => s.startsWith("grove-"))}
+            terminalScrollOffset={ks.terminalScrollOffset}
+            terminalBuffers={terminalBuffers ?? undefined}
+            layoutMode={ks.layoutMode}
+            presetName={presetName}
+          />
+        </>
+      ) : (
+        <>
+          <InputBar
+            visible={
+              panels.state.mode === InputMode.TerminalInput ||
+              panels.state.mode === InputMode.MessageInput ||
+              panels.state.mode === InputMode.GoalInput
+            }
+            sessionName={selectedSession}
+            messageLabel={
+              panels.state.mode === InputMode.MessageInput
+                ? `Message ${ks.messageRecipients}: ${ks.messageBuffer}`
+                : panels.state.mode === InputMode.GoalInput
+                  ? `Goal: ${ks.goalBuffer}`
+                  : undefined
+            }
+          />
+          <PanelManager
+            provider={provider}
+            intervalMs={intervalMs}
+            panelState={panels.state}
+            nav={nav}
+            onContributionsLoaded={handleContributionsLoaded}
+            onRowCountChanged={handleRowCountChanged}
+            pageSize={PAGE_SIZE}
+            tmux={tmux}
+            selectedSession={selectedSession}
+            topology={topology}
+            onSelectSession={setSelectedSession}
+            vfsNavigateTrigger={ks.vfsNavigateTrigger}
+            artifactIndex={ks.artifactIndex}
+            showArtifactDiff={ks.showArtifactDiff}
+            activeClaims={activeClaims ?? undefined}
+            searchQuery={
+              panels.state.mode === InputMode.SearchInput ? ks.searchBuffer : ks.searchQuery
+            }
+            isSearchInputMode={panels.state.mode === InputMode.SearchInput}
+            compareMode={ks.compareMode}
+            compareCids={ks.compareCids}
+            onCompareSelect={(cid: string) => dispatch({ type: "COMPARE_SELECT", cid })}
+            onFrontierCidsChanged={handleFrontierCidsChanged}
+            zoomLevel={ks.zoomLevel}
+            activeSessions={paletteSessions?.filter((s) => s.startsWith("grove-"))}
+            terminalScrollOffset={ks.terminalScrollOffset}
+            terminalBuffers={terminalBuffers ?? undefined}
+            layoutMode={ks.layoutMode}
+            presetName={presetName}
+          />
+        </>
+      )}
       <StatusBar
         mode={panels.state.mode}
         isDetailView={nav.isDetailView}
@@ -956,6 +1026,7 @@ export function App({
             : undefined
         }
         goalLabel={dashboardData?.metadata.goal}
+        backendLabel={dashboardData?.metadata.backendLabel}
       />
     </box>
   );

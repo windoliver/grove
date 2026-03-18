@@ -129,9 +129,15 @@ export function buildPaletteItems(
     }
   }
 
-  // Kill items from live tmux sessions
+  // Kill items from live grove agent tmux sessions.
+  // Agent sessions follow the naming convention grove-{role}-{timestamp},
+  // e.g. "grove-coder-mmwb57kj". Filter out non-agent sessions like "grove-e2e".
   if (hasTmux && hasKill && sessions.length > 0) {
     for (const session of sessions) {
+      if (!session.startsWith("grove-")) continue;
+      // Agent sessions have at least 2 parts after "grove-" (role + id)
+      const agentPart = session.slice(6); // e.g. "coder-mmwb57kj"
+      if (!agentPart.includes("-")) continue;
       items.push({
         kind: "kill",
         id: session,

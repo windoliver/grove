@@ -97,6 +97,9 @@ export class ShellTmuxManager implements TmuxManager {
 
   async spawn(options: SpawnOptions): Promise<string> {
     const sessionName = tmuxSessionName(options.agentId);
+    // Unset TMUX so nested tmux sessions work when the TUI itself runs inside tmux
+    const { TMUX: _, ...cleanEnv } = { ...process.env, ...options.env };
+
     const proc = Bun.spawn(
       [
         "tmux",
@@ -111,13 +114,13 @@ export class ShellTmuxManager implements TmuxManager {
       {
         stdout: "pipe",
         stderr: "pipe",
-        ...(options.env ? { env: { ...process.env, ...options.env } } : {}),
+        env: cleanEnv,
       },
     );
     await proc.exited;
     if (proc.exitCode !== 0) {
       const stderr = await new Response(proc.stderr).text();
-      throw new Error(`tmux spawn failed: ${stderr}`);
+      throw new Error(`tmux spawn failed (exit ${proc.exitCode}): ${stderr}`);
     }
     return sessionName;
   }

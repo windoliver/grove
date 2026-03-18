@@ -11,15 +11,19 @@
 
 /**
  * Encode an arbitrary string for safe use as a VFS path segment.
- * Replaces `%` → `%25`, `/` → `%2F` (percent-encode first to avoid collisions).
+ * Replaces `%` → `%25`, `/` → `%2F`, `:` → `%3A`
+ * (percent-encode first to avoid collisions).
+ *
+ * Colons must be encoded because Nexus sys_read cannot resolve filenames
+ * containing literal colons, even though sys_write accepts them.
  */
 export function encodeSegment(s: string): string {
-  return s.replaceAll("%", "%25").replaceAll("/", "%2F");
+  return s.replaceAll("%", "%25").replaceAll("/", "%2F").replaceAll(":", "%3A");
 }
 
 /** Decode a VFS path segment back to the original string. */
 export function decodeSegment(segment: string): string {
-  return segment.replaceAll("%2F", "/").replaceAll("%25", "%");
+  return segment.replaceAll("%3A", ":").replaceAll("%2F", "/").replaceAll("%25", "%");
 }
 
 // ---------------------------------------------------------------------------

@@ -37,6 +37,7 @@ import { withRetry, withSemaphore } from "./retry.js";
 import { Semaphore } from "./semaphore.js";
 import {
   contributionPath,
+  decodeSegment,
   ftsIndexDir,
   ftsIndexPath,
   relationIndexDir,
@@ -222,7 +223,7 @@ export class NexusContributionStore implements ContributionStore {
     const cids: string[] = [];
     for (const entry of entries) {
       if (entry.isDirectory) continue;
-      const sourceCid = entry.name.replace(/\.json$/, "");
+      const sourceCid = decodeSegment(entry.name.replace(/\.json$/, ""));
       if (seen.has(sourceCid)) continue;
       seen.add(sourceCid);
       cids.push(sourceCid);
@@ -285,7 +286,7 @@ export class NexusContributionStore implements ContributionStore {
     const seen = new Set<string>();
     for (const entry of entries) {
       if (entry.isDirectory) continue;
-      const sourceCid = entry.name.replace(/\.json$/, "");
+      const sourceCid = decodeSegment(entry.name.replace(/\.json$/, ""));
       if (seen.has(sourceCid)) continue;
 
       // Filter by relationType if specified
@@ -318,7 +319,7 @@ export class NexusContributionStore implements ContributionStore {
         const contributions: Contribution[] = [];
         for (const r of results) {
           const filename = r.path.split("/").pop() ?? "";
-          const cid = filename.replace(/\.json$/, "");
+          const cid = decodeSegment(filename.replace(/\.json$/, ""));
           if (!cid) continue;
 
           const ftsData = await withSemaphore(this.semaphore, () => this.client.read(r.path));
@@ -382,7 +383,7 @@ export class NexusContributionStore implements ContributionStore {
         }
       }
 
-      const sourceCid = entry.name.replace(/\.json$/, "");
+      const sourceCid = decodeSegment(entry.name.replace(/\.json$/, ""));
       const c = await this.get(sourceCid);
       if (c !== undefined && c.agent.agentId === agentId && c.kind === kind) {
         contributions.push(c);
@@ -438,7 +439,7 @@ export class NexusContributionStore implements ContributionStore {
           const rel = decode<{ relationType: string }>(relData);
           if (rel.relationType !== "responds_to") continue;
 
-          const childCid = entry.name.replace(/\.json$/, "");
+          const childCid = decodeSegment(entry.name.replace(/\.json$/, ""));
           if (seen.has(childCid)) continue;
           seen.add(childCid);
 

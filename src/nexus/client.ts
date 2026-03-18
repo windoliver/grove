@@ -29,7 +29,8 @@ export interface WriteOptions {
 /** Result of a successful write. */
 export interface WriteResult {
   readonly bytesWritten: number;
-  readonly etag: string;
+  /** ETag of the written file. May be absent for conditional writes (if_none_match="*"). */
+  readonly etag?: string | undefined;
   readonly version?: number | undefined;
 }
 

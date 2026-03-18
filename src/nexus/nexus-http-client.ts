@@ -68,7 +68,8 @@ const ReadResultSchema = z.union([BytesResultSchema, LegacyReadResultSchema]);
 const WriteResultSchema = z
   .object({
     bytes_written: z.number(),
-    etag: z.string(),
+    // etag may be absent for conditional writes (if_none_match="*")
+    etag: z.string().optional(),
     version: z.number().optional(),
   })
   .passthrough();
@@ -83,7 +84,8 @@ const StatResultSchema = z.object({
       created_at: z.string().optional(),
       modified_at: z.string().optional(),
     })
-    .passthrough(),
+    .passthrough()
+    .nullable(),
 });
 const DeleteResultSchema = z.object({ deleted: z.boolean() });
 // Nexus list returns either flat strings or objects depending on details flag.
@@ -122,6 +124,12 @@ const SearchResultSchema = z.object({
 /**
  * JSON-RPC HTTP client for nexi-lab/nexus.
  */
+/** Max retries for rate-limited (429) requests. */
+const MAX_RATE_LIMIT_RETRIES = 3;
+
+/** Default backoff base (ms) when Retry-After header is absent. */
+const DEFAULT_BACKOFF_BASE_MS = 1_000;
+
 export class NexusHttpClient implements NexusClient {
   private readonly baseUrl: string;
   private readonly apiKey: string | undefined;
@@ -149,62 +157,92 @@ export class NexusHttpClient implements NexusClient {
     const id = ++this.requestId;
     const body = JSON.stringify({ jsonrpc: "2.0", method, params, id });
 
-    let response: Response;
-    try {
-      response = await fetch(`${this.baseUrl}/api/nfs/${method}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
-        },
-        body,
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
-    } catch (err) {
-      if (err instanceof Error && err.name === "TimeoutError") {
-        throw new NexusTimeoutError(`Request timed out after ${this.timeoutMs}ms`);
-      }
-      throw new NexusConnectionError(
-        `Failed to connect to Nexus at ${this.baseUrl}: ${err instanceof Error ? err.message : String(err)}`,
-        err,
-      );
-    }
+    let lastError: Error | undefined;
 
-    if (response.status === 401 || response.status === 403) {
-      throw new NexusAuthError(`Auth failed: HTTP ${response.status}`);
-    }
-    if (response.status === 429) {
-      const retryAfter = response.headers.get("retry-after");
-      throw new NexusConnectionError(
-        `Nexus rate limit exceeded (retry after ${retryAfter ?? "?"}s)`,
-      );
-    }
-    if (response.status >= 500) {
-      throw new NexusConnectionError(`Nexus server error: HTTP ${response.status}`);
-    }
-
-    const envelope = (await response.json()) as {
-      result?: unknown;
-      error?: JsonRpcError | string;
-      detail?: string;
-      retry_after?: number;
-    };
-
-    // Handle non-JSON-RPC error responses (e.g., rate limit responses
-    // returned as plain JSON instead of JSON-RPC envelope)
-    if (typeof envelope.error === "string") {
-      if (envelope.error.toLowerCase().includes("rate limit")) {
+    for (let attempt = 0; attempt <= MAX_RATE_LIMIT_RETRIES; attempt++) {
+      let response: Response;
+      try {
+        response = await fetch(`${this.baseUrl}/api/nfs/${method}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+          },
+          body,
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+      } catch (err) {
+        if (err instanceof Error && err.name === "TimeoutError") {
+          throw new NexusTimeoutError(`Request timed out after ${this.timeoutMs}ms`);
+        }
         throw new NexusConnectionError(
-          `Nexus rate limit: ${envelope.error} (retry after ${envelope.retry_after ?? "?"}s)`,
+          `Failed to connect to Nexus at ${this.baseUrl}: ${err instanceof Error ? err.message : String(err)}`,
+          err,
         );
       }
-      throw new NexusConnectionError(`Nexus error: ${envelope.error}`);
+
+      if (response.status === 401 || response.status === 403) {
+        throw new NexusAuthError(`Auth failed: HTTP ${response.status}`);
+      }
+
+      // Rate limit: retry with exponential backoff
+      if (response.status === 429) {
+        const retryAfter = response.headers.get("retry-after");
+        const delayMs = retryAfter
+          ? Number(retryAfter) * 1_000
+          : DEFAULT_BACKOFF_BASE_MS * 2 ** attempt;
+
+        lastError = new NexusConnectionError(
+          `Nexus rate limit exceeded (retry after ${retryAfter ?? "?"}s)`,
+        );
+
+        if (attempt < MAX_RATE_LIMIT_RETRIES) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          continue;
+        }
+        throw lastError;
+      }
+
+      if (response.status >= 500) {
+        throw new NexusConnectionError(`Nexus server error: HTTP ${response.status}`);
+      }
+
+      const envelope = (await response.json()) as {
+        result?: unknown;
+        error?: JsonRpcError | string;
+        detail?: string;
+        retry_after?: number;
+      };
+
+      // Handle non-JSON-RPC error responses (e.g., rate limit responses
+      // returned as plain JSON instead of JSON-RPC envelope)
+      if (typeof envelope.error === "string") {
+        if (envelope.error.toLowerCase().includes("rate limit")) {
+          const retryMs = envelope.retry_after
+            ? envelope.retry_after * 1_000
+            : DEFAULT_BACKOFF_BASE_MS * 2 ** attempt;
+
+          lastError = new NexusConnectionError(
+            `Nexus rate limit: ${envelope.error} (retry after ${envelope.retry_after ?? "?"}s)`,
+          );
+
+          if (attempt < MAX_RATE_LIMIT_RETRIES) {
+            await new Promise((resolve) => setTimeout(resolve, retryMs));
+            continue;
+          }
+          throw lastError;
+        }
+        throw new NexusConnectionError(`Nexus error: ${envelope.error}`);
+      }
+
+      if (envelope.error) {
+        throw mapJsonRpcError(envelope.error);
+      }
+      return schema.parse(envelope.result);
     }
 
-    if (envelope.error) {
-      throw mapJsonRpcError(envelope.error);
-    }
-    return schema.parse(envelope.result);
+    // Should not reach here, but satisfy TypeScript
+    throw lastError ?? new NexusConnectionError("Unexpected retry exhaustion");
   }
 
   // -----------------------------------------------------------------------
@@ -290,6 +328,8 @@ export class NexusHttpClient implements NexusClient {
     try {
       const result = await this.rpc("sys_stat", { path }, StatResultSchema);
       const m = result.metadata;
+      // Nexus returns metadata: null for non-existent files
+      if (m === null) return undefined;
       return {
         size: m.size ?? 0,
         etag: m.etag ?? "",

@@ -18,6 +18,16 @@ export interface DataStatusProps {
   readonly error?: string | undefined;
 }
 
+/** Shorten verbose Nexus/network error messages for panel headers. */
+function shortenError(msg: string): string {
+  if (msg.includes("Failed to connect")) return "Nexus unreachable";
+  if (msg.includes("rate limit")) return "Rate limited (retrying)";
+  if (msg.includes("Auth failed")) return "Auth failed";
+  if (msg.includes("timed out")) return "Request timeout";
+  if (msg.length > 50) return `${msg.slice(0, 47)}...`;
+  return msg;
+}
+
 /** Compact data freshness indicator for panel headers. */
 export const DataStatus: React.NamedExoticComponent<DataStatusProps> = React.memo(
   function DataStatus({ loading, isStale, error }: DataStatusProps): React.ReactNode {
@@ -33,7 +43,7 @@ export const DataStatus: React.NamedExoticComponent<DataStatusProps> = React.mem
       return (
         <box flexDirection="row">
           <text color={theme.stale}> [stale]</text>
-          {error && <text color={theme.error}> {error}</text>}
+          {error && <text color={theme.error}> {shortenError(error)}</text>}
         </box>
       );
     }
@@ -42,7 +52,7 @@ export const DataStatus: React.NamedExoticComponent<DataStatusProps> = React.mem
     if (error) {
       return (
         <box>
-          <text color={theme.error}> [error] {error}</text>
+          <text color={theme.error}> [error] {shortenError(error)}</text>
         </box>
       );
     }

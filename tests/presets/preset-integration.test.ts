@@ -211,10 +211,10 @@ describe("review-loop preset", () => {
     expect(count).toBe(0);
   });
 
-  test("GROVE.md topology roles have correct commands for claude agent", () => {
+  test("GROVE.md topology roles have correct commands for grove-agent.sh", () => {
     const preset = getPreset("review-loop")!;
-    for (const role of preset.topology?.roles) {
-      expect(role.command).toMatch(/^claude --dangerously-skip-permissions/);
+    for (const role of preset.topology?.roles ?? []) {
+      expect(role.command).toMatch(/^scripts\/grove-agent\.sh/);
     }
   });
 });
@@ -938,13 +938,13 @@ describe("Cross-preset comparisons", () => {
     }
   });
 
-  test("topology role commands all use claude agent", () => {
+  test("topology role commands all use claude agent or grove-agent.sh", () => {
     const registry = getPresetRegistry();
     for (const preset of Object.values(registry)) {
       for (const role of preset.topology?.roles ?? []) {
         if (role.command) {
-          // All preset role commands use claude
-          expect(role.command).toMatch(/^claude/);
+          // Preset role commands use either claude or grove-agent.sh
+          expect(role.command).toMatch(/^(claude|scripts\/grove-agent\.sh)/);
         }
       }
     }

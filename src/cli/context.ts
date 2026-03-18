@@ -71,7 +71,9 @@ export function findGroveDir(startDir: string): string | undefined {
  * Throws with a user-friendly message if no .grove directory is found.
  */
 export function initCliDeps(cwd: string, groveOverride?: string): CliDeps {
-  const groveDir = groveOverride ? resolve(groveOverride) : findGroveDir(cwd);
+  // Priority: explicit override > GROVE_DIR env > walk-up detection
+  const effectiveOverride = groveOverride || process.env.GROVE_DIR || undefined;
+  const groveDir = effectiveOverride ? resolve(effectiveOverride) : findGroveDir(cwd);
   if (groveDir === undefined) {
     throw new Error(
       "Not inside a grove. Run 'grove init' to create one, or navigate to an existing grove.",
@@ -83,9 +85,20 @@ export function initCliDeps(cwd: string, groveOverride?: string): CliDeps {
   if (existsSync(configPath)) {
     try {
       const groveConfig = parseGroveConfig(readFileSync(configPath, "utf-8"));
-      if (groveConfig.mode === "nexus" && groveConfig.nexusUrl) {
+      // Resolve Nexus URL: grove.json nexusUrl > GROVE_NEXUS_URL env > nexus.yaml port discovery
+      const nexusUrl =
+        groveConfig.nexusUrl ||
+        process.env.GROVE_NEXUS_URL ||
+        (groveConfig.nexusManaged
+          ? (() => {
+              const { readNexusUrl } =
+                require("../cli/nexus-lifecycle.js") as typeof import("../cli/nexus-lifecycle.js");
+              return readNexusUrl(join(groveDir, ".."));
+            })()
+          : undefined);
+      if (groveConfig.mode === "nexus" && nexusUrl) {
         const apiKey = process.env.NEXUS_API_KEY || undefined;
-        const client = new NexusHttpClient({ url: groveConfig.nexusUrl, apiKey });
+        const client = new NexusHttpClient({ url: nexusUrl, apiKey });
         const nexusConfig = { client, zoneId: "default" };
 
         const store = new NexusContributionStore(nexusConfig);
