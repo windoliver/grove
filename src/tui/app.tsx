@@ -48,6 +48,8 @@ export interface AppProps {
   readonly topology?: import("../core/topology.js").AgentTopology | undefined;
   /** Preset name — used for per-preset panel visibility filtering. */
   readonly presetName?: string | undefined;
+  /** Resolved .grove directory path for session persistence. */
+  readonly groveDir?: string | undefined;
 }
 
 const PAGE_SIZE = 20;
@@ -218,6 +220,7 @@ export function App({
   tmux,
   topology,
   presetName,
+  groveDir,
 }: AppProps): React.ReactNode {
   const renderer = useRenderer();
   const nav = useNavigation();
@@ -291,17 +294,14 @@ export function App({
   // SpawnManager handles workspace/claim/heartbeat lifecycle
   const spawnManagerRef = useRef<SpawnManager | undefined>(undefined);
   if (spawnManagerRef.current === undefined) {
-    // Detect .grove directory for session persistence
+    // Use the resolved groveDir from props for session persistence
     let sessionStore: FileSessionStore | undefined;
-    try {
-      const { resolve, join } = require("node:path") as typeof import("node:path");
-      const { existsSync } = require("node:fs") as typeof import("node:fs");
-      const groveDir = resolve(process.cwd(), ".grove");
-      if (existsSync(join(groveDir, "grove.json"))) {
+    if (groveDir) {
+      try {
         sessionStore = new FileSessionStore(groveDir);
+      } catch {
+        // Session persistence is best-effort
       }
-    } catch {
-      // Session persistence is best-effort
     }
     spawnManagerRef.current = new SpawnManager(provider, tmux, showError, sessionStore);
   }

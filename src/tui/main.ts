@@ -327,7 +327,7 @@ async function buildAppProps(
       : undefined;
 
   return {
-    appProps: { provider, intervalMs: opts.intervalMs, tmux, topology, presetName },
+    appProps: { provider, intervalMs: opts.intervalMs, tmux, topology, presetName, groveDir },
     provider,
     stopGc,
   };
