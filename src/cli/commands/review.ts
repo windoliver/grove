@@ -8,15 +8,12 @@
  */
 
 import { parseArgs } from "node:util";
-import { DefaultFrontierCalculator } from "../../core/frontier.js";
 import type { Score } from "../../core/models.js";
 import type { OperationDeps } from "../../core/operations/deps.js";
 import { reviewOperation } from "../../core/operations/index.js";
-import { FsCas } from "../../local/fs-cas.js";
-import { createSqliteStores } from "../../local/sqlite-store.js";
 import { resolveAgent } from "../agent.js";
+import { initCliDeps } from "../context.js";
 import { outputJson, outputJsonError } from "../format.js";
-import { resolveGroveDir } from "../utils/grove-dir.js";
 
 export interface ReviewOptions {
   readonly targetCid: string;
@@ -87,18 +84,14 @@ export function parseReviewArgs(args: readonly string[]): ReviewOptions {
 
 /** Execute `grove review` using the operations layer. */
 export async function runReview(options: ReviewOptions, groveOverride?: string): Promise<void> {
-  const { dbPath, groveDir } = resolveGroveDir(groveOverride);
-  const stores = createSqliteStores(dbPath);
-  const cas = new FsCas(`${groveDir}/cas`);
-  const frontier = new DefaultFrontierCalculator(stores.contributionStore);
-
+  const deps = initCliDeps(process.cwd(), groveOverride);
   try {
     const agent = resolveAgent();
     const opDeps: OperationDeps = {
-      contributionStore: stores.contributionStore,
-      claimStore: stores.claimStore,
-      cas,
-      frontier,
+      contributionStore: deps.store,
+      claimStore: deps.claimStore,
+      cas: deps.cas,
+      frontier: deps.frontier,
     };
 
     const result = await reviewOperation(
@@ -131,7 +124,7 @@ export async function runReview(options: ReviewOptions, groveOverride?: string):
       console.log(`  Summary: ${result.value.summary}`);
     }
   } finally {
-    stores.close();
+    deps.close();
   }
 }
 

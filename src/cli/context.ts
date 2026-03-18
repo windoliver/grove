@@ -6,14 +6,21 @@
  * CLI commands.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import type { ContentStore } from "../core/cas.js";
+import { parseGroveConfig } from "../core/config.js";
 import type { FrontierCalculator } from "../core/frontier.js";
+import { DefaultFrontierCalculator } from "../core/frontier.js";
 import type { OutcomeStore } from "../core/outcome.js";
 import type { ClaimStore, ContributionStore } from "../core/store.js";
 import type { WorkspaceManager } from "../core/workspace.js";
-import type { FsCas } from "../local/fs-cas.js";
 import { createLocalRuntime } from "../local/runtime.js";
+import { NexusCas } from "../nexus/nexus-cas.js";
+import { NexusClaimStore } from "../nexus/nexus-claim-store.js";
+import { NexusContributionStore } from "../nexus/nexus-contribution-store.js";
+import { NexusHttpClient } from "../nexus/nexus-http-client.js";
+import { NexusOutcomeStore } from "../nexus/nexus-outcome-store.js";
 
 const GROVE_DIR = ".grove";
 
@@ -23,7 +30,7 @@ export interface CliDeps {
   readonly claimStore: ClaimStore;
   readonly frontier: FrontierCalculator;
   readonly workspace: WorkspaceManager;
-  readonly cas: FsCas;
+  readonly cas: ContentStore;
   readonly groveRoot: string;
   readonly outcomeStore?: OutcomeStore | undefined;
   readonly close: () => void;
@@ -71,9 +78,50 @@ export function initCliDeps(cwd: string, groveOverride?: string): CliDeps {
     );
   }
 
+  // Use nexus-backed stores when grove.json declares mode "nexus"
+  const configPath = join(groveDir, "grove.json");
+  if (existsSync(configPath)) {
+    try {
+      const groveConfig = parseGroveConfig(readFileSync(configPath, "utf-8"));
+      if (groveConfig.mode === "nexus" && groveConfig.nexusUrl) {
+        const apiKey = process.env.NEXUS_API_KEY || undefined;
+        const client = new NexusHttpClient({ url: groveConfig.nexusUrl, apiKey });
+        const nexusConfig = { client, zoneId: "default" };
+
+        const store = new NexusContributionStore(nexusConfig);
+        const claimStore = new NexusClaimStore(nexusConfig);
+        const outcomeStore = new NexusOutcomeStore(nexusConfig);
+        const cas = new NexusCas(nexusConfig);
+        const frontier = new DefaultFrontierCalculator(store);
+
+        // Local runtime only for workspace manager (needs SQLite for tracking)
+        const runtime = createLocalRuntime({ groveDir, frontierCacheTtlMs: 0, workspace: true });
+
+        return {
+          store,
+          claimStore,
+          frontier,
+          workspace:
+            runtime.workspace ??
+            (() => {
+              throw new Error("Workspace manager failed");
+            })(),
+          cas,
+          groveRoot: resolve(groveDir, ".."),
+          outcomeStore,
+          close: () => {
+            runtime.close();
+          },
+        };
+      }
+    } catch {
+      // Config parse failed — fall through to local stores
+    }
+  }
+
   const runtime = createLocalRuntime({
     groveDir,
-    frontierCacheTtlMs: 0, // CLI commands are single-shot; no caching needed
+    frontierCacheTtlMs: 0,
     workspace: true,
   });
 

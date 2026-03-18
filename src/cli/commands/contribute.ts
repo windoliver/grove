@@ -277,30 +277,14 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
     throw new Error(`Invalid contribute options:\n  ${validation.errors.join("\n  ")}`);
   }
 
-  // 2. Find .grove/
-  const grovePath = join(options.cwd, ".grove");
-  try {
-    await access(grovePath);
-  } catch {
-    throw new Error("No grove found. Run 'grove init' first to create a grove in this directory.");
-  }
-
-  // Dynamic imports for lazy loading
-  const { SqliteContributionStore, SqliteClaimStore, initSqliteDb } = await import(
-    "../../local/sqlite-store.js"
-  );
-  const { FsCas } = await import("../../local/fs-cas.js");
-  const { DefaultFrontierCalculator } = await import("../../core/frontier.js");
+  // 2. Find .grove/ and initialize stores (nexus or SQLite depending on grove.json)
+  const { initCliDeps } = await import("../context.js");
   const { parseGroveContract } = await import("../../core/contract.js");
   const { EnforcingContributionStore } = await import("../../core/enforcing-store.js");
 
-  const dbPath = join(grovePath, "grove.db");
-  const casPath = join(grovePath, "cas");
-  const db = initSqliteDb(dbPath);
-  const rawStore = new SqliteContributionStore(db);
-  const claimStore = new SqliteClaimStore(db);
-  const cas = new FsCas(casPath);
-  const frontier = new DefaultFrontierCalculator(rawStore);
+  const deps = initCliDeps(options.cwd);
+  const { claimStore, cas, frontier } = deps;
+  const rawStore = deps.store;
 
   // 3. Load GROVE.md contract for enforcement, default mode, and metric directions
   const grovemdPath = join(options.cwd, "GROVE.md");
@@ -479,7 +463,7 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
 
     return { cid: value.cid };
   } finally {
-    db.close();
+    deps.close();
   }
 }
 

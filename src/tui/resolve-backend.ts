@@ -165,9 +165,12 @@ export async function checkNexusHealth(
   timeoutMs?: number,
 ): Promise<NexusHealthStatus> {
   try {
+    const apiKey = process.env.NEXUS_API_KEY;
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
     const resp = await fetch(`${url.replace(/\/+$/, "")}/api/nfs/exists`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({ jsonrpc: "2.0", method: "exists", params: { path: "/" }, id: 1 }),
       signal: AbortSignal.timeout(timeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS),
     });
