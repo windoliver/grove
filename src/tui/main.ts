@@ -262,11 +262,69 @@ async function buildAppProps(
   }
 
   // Start workspace GC for modes that have lifecycle support
-  let stopGc: (() => void) | undefined;
+  const stopCallbacks: Array<() => void> = [];
   if (provider.cleanWorkspace) {
     const { startWorkspaceGc } = await import("./workspace-gc.js");
-    stopGc = startWorkspaceGc(provider);
+    stopCallbacks.push(startWorkspaceGc(provider));
   }
+
+  // Start periodic claim cleanup + artifact GC for local backends
+  const groveDir =
+    backend.mode === "local" || backend.mode === "nexus"
+      ? (backend.groveOverride ?? findGroveDir(effectiveGrove))
+      : undefined;
+  if (groveDir) {
+    const { createLocalRuntime } = await import("../local/runtime.js");
+    const { runCleanup, runArtifactGc } = await import("../local/cleanup.js");
+    const cleanupRuntime = createLocalRuntime({
+      groveDir,
+      frontierCacheTtlMs: 0,
+      workspace: false,
+      parseContract: false,
+    });
+
+    const claimTimer = setInterval(async () => {
+      try {
+        const result = await runCleanup({ claimStore: cleanupRuntime.claimStore });
+        if (result.expiredClaims > 0 || result.cleanedClaims > 0) {
+          process.stderr.write(
+            `[cleanup] expired ${result.expiredClaims} stale claim(s), cleaned ${result.cleanedClaims} old claim(s)\n`,
+          );
+        }
+      } catch {
+        // Cleanup errors are non-fatal
+      }
+    }, 60_000);
+
+    const gcTimer = setInterval(async () => {
+      try {
+        const result = await runArtifactGc({
+          contributionStore: cleanupRuntime.contributionStore,
+          cas: cleanupRuntime.cas,
+        });
+        if (result.deletedBlobs > 0) {
+          process.stderr.write(
+            `[cleanup] garbage-collected ${result.deletedBlobs} unreferenced blob(s)\n`,
+          );
+        }
+      } catch {
+        // GC errors are non-fatal
+      }
+    }, 10 * 60_000);
+
+    stopCallbacks.push(() => {
+      clearInterval(claimTimer);
+      clearInterval(gcTimer);
+      cleanupRuntime.close();
+    });
+  }
+
+  const stopGc =
+    stopCallbacks.length > 0
+      ? () => {
+          for (const fn of stopCallbacks) fn();
+        }
+      : undefined;
 
   return {
     appProps: { provider, intervalMs: opts.intervalMs, tmux, topology, presetName },
