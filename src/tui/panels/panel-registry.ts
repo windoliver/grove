@@ -224,6 +224,14 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
     kind: "operator",
     rowPartners: [Panel.Inbox, Panel.Decisions],
   },
+
+  // Row 9: Plan (operator)
+  {
+    panel: Panel.Plan,
+    label: PANEL_LABELS[Panel.Plan],
+    rowGroup: 9,
+    kind: "operator",
+  },
 ] as const;
 
 // ---------------------------------------------------------------------------

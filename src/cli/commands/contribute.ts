@@ -26,7 +26,7 @@ import { outputJson, outputJsonError } from "../format.js";
 
 /** Parsed and validated options for `grove contribute`. */
 export interface ContributeOptions {
-  readonly kind: "work" | "review" | "discussion" | "adoption" | "reproduction";
+  readonly kind: "work" | "review" | "discussion" | "adoption" | "reproduction" | "plan";
   readonly mode: "evaluation" | "exploration" | undefined;
   readonly summary: string;
   readonly description?: string | undefined;
@@ -139,7 +139,7 @@ export function parseContributeArgs(args: readonly string[]): ContributeOptions 
 // Validation
 // ---------------------------------------------------------------------------
 
-const VALID_KINDS = ["work", "review", "discussion", "adoption", "reproduction"] as const;
+const VALID_KINDS = ["work", "review", "discussion", "adoption", "reproduction", "plan"] as const;
 const VALID_MODES = ["evaluation", "exploration"] as const;
 
 /**

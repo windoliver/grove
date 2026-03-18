@@ -26,7 +26,7 @@ import { agentSchema, relationSchema, scoreSchema } from "../schemas.js";
 
 const contributeInputSchema = z.object({
   kind: z
-    .enum(["work", "review", "discussion", "adoption", "reproduction"])
+    .enum(["work", "review", "discussion", "adoption", "reproduction", "plan"])
     .describe("Contribution kind"),
   mode: z
     .enum(["evaluation", "exploration"])
@@ -120,7 +120,13 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
     async (args) => {
       const result = await contributeOperation(
         {
-          kind: args.kind as "work" | "review" | "discussion" | "adoption" | "reproduction",
+          kind: args.kind as
+            | "work"
+            | "review"
+            | "discussion"
+            | "adoption"
+            | "reproduction"
+            | "plan",
           ...(args.mode !== undefined ? { mode: args.mode as "evaluation" | "exploration" } : {}),
           summary: args.summary,
           ...(args.description !== undefined ? { description: args.description } : {}),

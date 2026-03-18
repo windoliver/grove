@@ -49,6 +49,7 @@ const TopologyRoleWithEdgesSchema = z
       .string()
       .regex(/^#[0-9a-fA-F]{6}$/)
       .optional(),
+    prompt: z.string().max(4096).optional(),
   })
   .strict();
 
@@ -75,6 +76,7 @@ interface WireAgentTopology {
     readonly platform?: "claude-code" | "codex" | "gemini" | "custom" | undefined;
     readonly model?: string | undefined;
     readonly color?: string | undefined;
+    readonly prompt?: string | undefined;
   }[];
   readonly spawning?:
     | {
@@ -202,6 +204,8 @@ export interface AgentRole {
   readonly model?: string | undefined;
   /** TUI handle color as hex, e.g. "#00cccc" (boardroom). */
   readonly color?: string | undefined;
+  /** System prompt / instructions for this role (up to 4096 chars). */
+  readonly prompt?: string | undefined;
 }
 
 /** Spawning configuration for dynamic agent creation. */
@@ -245,6 +249,7 @@ export function wireToTopology(wire: z.infer<typeof AgentTopologySchema>): Agent
         ...(role.platform !== undefined && { platform: role.platform as AgentPlatformType }),
         ...(role.model !== undefined && { model: role.model }),
         ...(role.color !== undefined && { color: role.color }),
+        ...(role.prompt !== undefined && { prompt: role.prompt }),
       }),
     ),
     ...(wire.spawning !== undefined && {

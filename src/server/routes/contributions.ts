@@ -48,7 +48,7 @@ const cidParamSchema = z.object({
 
 const manifestSchema = z
   .object({
-    kind: z.enum(["work", "review", "discussion", "adoption", "reproduction"]),
+    kind: z.enum(["work", "review", "discussion", "adoption", "reproduction", "plan"]),
     mode: z.enum(["evaluation", "exploration"]),
     summary: z.string().min(1),
     description: z.string().optional(),

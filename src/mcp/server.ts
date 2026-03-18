@@ -17,6 +17,7 @@ import { registerGoalTools } from "./tools/goal.js";
 import { registerIngestTools } from "./tools/ingest.js";
 import { registerMessagingTools } from "./tools/messaging.js";
 import { registerOutcomeTools } from "./tools/outcomes.js";
+import { registerPlanTools } from "./tools/plans.js";
 import { registerQueryTools } from "./tools/queries.js";
 import { registerSessionTools } from "./tools/session.js";
 import { registerStopTools } from "./tools/stop.js";
@@ -43,6 +44,7 @@ export async function createMcpServer(deps: McpDeps): Promise<McpServer> {
   registerOutcomeTools(server, deps);
   registerIngestTools(server, deps);
   registerMessagingTools(server, deps);
+  registerPlanTools(server, deps);
   registerGoalTools(server, deps);
   registerSessionTools(server, deps);
   await registerAskUserTools(server);
