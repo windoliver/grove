@@ -129,10 +129,12 @@ async function handleRead(args: readonly string[], groveOverride?: string): Prom
     if (agent.role) myHandles.add(`@${agent.role}`);
     myHandles.add("@all");
 
+    // Fetch all messages (no limit) so recipient filtering doesn't miss
+    // older messages buried under unrelated traffic in the store.
     const allMessages = await readInbox(deps.store, {
       fromAgentId: values.from as string | undefined,
       since: values.since as string | undefined,
-      limit: values.limit !== undefined ? Number(values.limit) * 3 : undefined,
+      limit: 10_000,
     });
 
     const limit = values.limit !== undefined ? Number(values.limit) : 50;
