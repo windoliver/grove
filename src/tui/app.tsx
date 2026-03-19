@@ -303,7 +303,7 @@ export function App({
         // Session persistence is best-effort
       }
     }
-    spawnManagerRef.current = new SpawnManager(provider, tmux, showError, sessionStore);
+    spawnManagerRef.current = new SpawnManager(provider, tmux, showError, sessionStore, groveDir);
   }
 
   // Reconcile persisted sessions on startup (reattach live, clean dead)

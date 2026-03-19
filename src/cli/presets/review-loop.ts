@@ -21,19 +21,24 @@ export const reviewLoopPreset: PresetConfig = {
         edges: [{ target: "reviewer", edgeType: "delegates" }],
         command: "claude --dangerously-skip-permissions",
         prompt:
-          "Loop: grove_frontier → grove_claim → grove_checkout → code → " +
-          "grove_contribute (kind=work) → grove_read_inbox for feedback → repeat.",
+          "Loop: grove_wait_for_event (blocks until new work/messages arrive) → " +
+          "grove_frontier → grove_claim → grove_checkout → code → " +
+          "grove_contribute (kind=work) → repeat. " +
+          "Use grove_wait_for_event instead of polling grove_read_inbox — " +
+          "it returns new contributions and inbox messages as soon as they appear.",
       },
       {
         name: "reviewer",
         description: "Reviews code and provides feedback",
         maxInstances: 1,
         edges: [{ target: "coder", edgeType: "feedback" }],
-        command: "claude --dangerously-skip-permissions",
+        command: "codex --full-auto",
         prompt:
-          "Loop: grove_frontier (find unreviewed work) → grove_claim → grove_checkout → " +
-          "review → grove_review (with quality scores) → grove_send_message to coder if " +
-          "action needed → repeat.",
+          "Loop: grove_wait_for_event(kind='work') (blocks until new work arrives) → " +
+          "grove_claim → grove_checkout → review → grove_review (with quality scores) → " +
+          "grove_send_message to coder if action needed → repeat. " +
+          "Use grove_wait_for_event instead of polling — it notifies you instantly " +
+          "when the coder submits new work.",
       },
     ],
     spawning: { dynamic: true, maxDepth: 2 },

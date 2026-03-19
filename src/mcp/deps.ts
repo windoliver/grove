@@ -19,8 +19,9 @@ export interface McpDeps extends ServerDeps {
   readonly workspace: WorkspaceManager;
   /** GROVE.md contract for stop condition evaluation. Undefined if no contract exists. */
   readonly contract?: GroveContract | undefined;
-  /** Called after a contribution is written to invalidate caches (e.g., frontier). */
-  readonly onContributionWrite?: (() => void) | undefined;
+  /** Called after a contribution is written to invalidate caches (e.g., frontier).
+   *  Mutable so that grove_wait_for_event can chain into the callback. */
+  onContributionWrite?: (() => void) | undefined;
   readonly bountyStore?: BountyStore;
   readonly creditsService?: CreditsService;
   /**

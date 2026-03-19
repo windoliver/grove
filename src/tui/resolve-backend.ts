@@ -21,7 +21,8 @@ export type ResolvedBackend =
   | {
       readonly mode: "nexus";
       readonly url: string;
-      readonly source: "flag" | "env" | "grove.json";
+      readonly source: "flag" | "env" | "grove.json" | "persisted" | "auto-detect";
+      readonly apiKey?: string | undefined;
       readonly groveOverride?: string | undefined;
     }
   | {
@@ -35,6 +36,8 @@ export interface ResolveBackendFlags {
   readonly url?: string | undefined;
   readonly nexus?: string | undefined;
   readonly groveOverride?: string | undefined;
+  /** Enable persisted-connection and auto-detect resolution steps (steps 5-6). */
+  readonly autoDetect?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -49,9 +52,12 @@ export interface ResolveBackendFlags {
  * 2. `--nexus` flag -> nexus mode (source: "flag")
  * 3. `GROVE_NEXUS_URL` env -> nexus mode (source: "env")
  * 4. `grove.json` nexusUrl -> nexus mode (source: "grove.json")
- * 5. Fallback -> local mode
+ * 5. `~/.grove/connection.json` -> nexus mode (source: "persisted") [requires autoDetect]
+ * 6. Probe `http://localhost:2026` -> nexus mode (source: "auto-detect") [requires autoDetect]
+ * 7. Fallback -> local mode
  *
  * Steps 3-4 are short-circuited if an explicit flag (step 1 or 2) matched.
+ * Steps 5-6 only run when `autoDetect` is true.
  */
 export function resolveBackend(flags: ResolveBackendFlags): ResolvedBackend {
   // 1. Explicit --url flag -> remote
@@ -81,13 +87,40 @@ export function resolveBackend(flags: ResolveBackendFlags): ResolvedBackend {
     };
   }
 
-  // 5. Local fallback
+  // 5. Persisted connection from ~/.grove/connection.json
+  if (flags.autoDetect) {
+    const { loadPersistedConnection } =
+      require("./connection-store.js") as typeof import("./connection-store.js");
+    const persisted = loadPersistedConnection();
+    if (persisted) {
+      return {
+        mode: "nexus",
+        url: persisted.nexusUrl,
+        apiKey: persisted.apiKey,
+        source: "persisted",
+        groveOverride: flags.groveOverride,
+      };
+    }
+
+    // 6. Auto-detect localhost:2026
+    return {
+      mode: "nexus",
+      url: DEFAULT_AUTO_DETECT_URL,
+      source: "auto-detect",
+      groveOverride: flags.groveOverride,
+    };
+  }
+
+  // 7. Local fallback
   return {
     mode: "local",
     groveOverride: flags.groveOverride,
     source: flags.groveOverride ? "flag" : "default",
   };
 }
+
+/** Default URL for auto-detect probing. */
+export const DEFAULT_AUTO_DETECT_URL = "http://localhost:2026";
 
 // ---------------------------------------------------------------------------
 // Config file reader
@@ -231,11 +264,19 @@ export function backendLabel(backend: ResolvedBackend): string {
     case "remote":
       return `remote (${backend.url})`;
     case "nexus":
-      return backend.source === "flag"
-        ? `nexus (--nexus)`
-        : backend.source === "env"
-          ? `nexus (auto: env)`
-          : `nexus (auto: grove.json)`;
+      switch (backend.source) {
+        case "flag":
+          return `nexus (--nexus)`;
+        case "env":
+          return `nexus (auto: env)`;
+        case "grove.json":
+          return `nexus (auto: grove.json)`;
+        case "persisted":
+          return `nexus (persisted)`;
+        case "auto-detect":
+          return `nexus (auto-detected)`;
+      }
+      break; // exhaustive but TS needs it
     case "local":
       return "local (.grove/)";
   }

@@ -40,6 +40,10 @@ export interface TuiAppProps {
   readonly presets?: readonly TuiPresetEntry[] | undefined;
   /** Past sessions to display on the welcome screen for context. */
   readonly sessions?: readonly import("./provider.js").SessionRecord[] | undefined;
+  /** Whether Nexus was detected as available during startup probe. */
+  readonly nexusAvailable?: boolean | undefined;
+  /** The Nexus URL that was auto-detected/persisted. */
+  readonly detectedNexusUrl?: string | undefined;
   /** Callback to run init for a selected preset + grove name. Returns AppProps on success. */
   readonly onInit?:
     | ((
@@ -52,6 +56,10 @@ export interface TuiAppProps {
   readonly onStart?: ((onProgress?: (step: string) => void) => Promise<AppProps>) | undefined;
   /** Callback to connect to a remote Nexus URL. Returns AppProps on success. */
   readonly onConnect?: ((nexusUrl: string) => Promise<AppProps>) | undefined;
+  /** Callback to create a new session (lightweight, no executeInit). */
+  readonly onNewSession?:
+    | ((goal?: string, onProgress?: (step: string) => void) => Promise<AppProps>)
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,7 +83,17 @@ const INIT_STEPS = [
 export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(function TuiApp(
   props: TuiAppProps,
 ): React.ReactNode {
-  const { groveExists, groveInfo, presets, onInit, onStart, onConnect } = props;
+  const {
+    groveExists,
+    groveInfo,
+    presets,
+    onInit,
+    onStart,
+    onConnect,
+    onNewSession,
+    nexusAvailable,
+    detectedNexusUrl,
+  } = props;
   const renderer = useRenderer();
 
   const [mode, setMode] = useState<TuiMode>("setup");
@@ -196,6 +214,36 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
     [onConnect],
   );
 
+  /** Handle "Start new session" — lightweight, no executeInit(). */
+  const handleNewSession = useCallback(
+    (goal?: string) => {
+      if (!onNewSession) return;
+
+      setMode("starting");
+      setInitError(undefined);
+      setStartingDone(false);
+      setStartingSteps(["Creating new session..."]);
+
+      void (async () => {
+        try {
+          const result = await onNewSession(goal, (step) => {
+            setStartingSteps((prev) => [...prev, step]);
+          });
+
+          setStartingDone(true);
+          await new Promise<void>((resolve) => setTimeout(resolve, 300));
+
+          setAppProps(result);
+          setMode("boardroom");
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          setInitError(message);
+        }
+      })();
+    },
+    [onNewSession],
+  );
+
   // Use refs to avoid stale closures in useKeyboard (opentui may not
   // re-subscribe when the callback reference changes).
   const modeRef = useRef(mode);
@@ -270,9 +318,12 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
       groveExists,
       groveInfo,
       sessions: props.sessions,
+      nexusAvailable,
+      detectedNexusUrl,
       onSelect: handleSelect,
       onResume: handleResume,
       onConnect: handleConnect,
+      onNewSession: handleNewSession,
       onQuit: handleQuit,
     });
   }

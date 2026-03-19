@@ -34,12 +34,18 @@ export interface WelcomeProps {
   readonly groveInfo?: { name: string; preset: string } | undefined;
   /** Past sessions to display for resumption. */
   readonly sessions?: readonly import("../provider.js").SessionRecord[] | undefined;
+  /** Whether Nexus was auto-detected as available. */
+  readonly nexusAvailable?: boolean | undefined;
+  /** The auto-detected / persisted Nexus URL. */
+  readonly detectedNexusUrl?: string | undefined;
   /** Called with (presetName, groveName) after user completes the "New grove" flow. */
   readonly onSelect: (presetName: string, groveName: string) => void;
   /** Called when user picks "Resume" to start the existing grove. */
   readonly onResume: () => void;
   /** Called with a Nexus URL when user completes the "Connect" flow. */
   readonly onConnect: (nexusUrl: string) => void;
+  /** Called to create a new session (lightweight, no full init). */
+  readonly onNewSession?: ((goal?: string) => void) | undefined;
   readonly onQuit: () => void;
 }
 
@@ -55,11 +61,11 @@ const GLOSSARY: readonly { term: string; definition: string }[] = [
 
 /** Action item for the setup menu. */
 interface ActionItem {
-  readonly id: "resume" | "new" | "connect";
+  readonly id: "resume" | "new" | "connect" | "new-session";
   readonly label: string;
 }
 
-type WelcomeStep = "action" | "preset" | "name" | "connect";
+type WelcomeStep = "action" | "preset" | "name" | "connect" | "goal";
 
 /** Welcome screen shown as the first thing the user sees. */
 export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.memo(
@@ -68,9 +74,12 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
     groveExists,
     groveInfo,
     sessions,
+    nexusAvailable,
+    detectedNexusUrl,
     onSelect,
     onResume,
     onConnect,
+    onNewSession,
     onQuit,
   }: WelcomeProps): React.ReactNode {
     const [cursor, setCursor] = useState(0);
@@ -79,21 +88,47 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
     const [selectedPreset, setSelectedPreset] = useState("");
     const [nameBuffer, setNameBuffer] = useState("");
     const [urlBuffer, setUrlBuffer] = useState("http://localhost:2026");
+    const [goalBuffer, setGoalBuffer] = useState("");
     void useRenderer();
 
-    // Build action items based on whether .grove/ exists
+    // Build action items dynamically based on Nexus availability + .grove/ state
+    //
+    // | Nexus? | .grove? | Actions shown |
+    // |--------|---------|---------------|
+    // | Yes    | Any     | Start new session, Resume (if sessions), Connect to different Nexus, New grove (local) |
+    // | No     | Yes     | Resume, Start new session, Connect to Nexus, New grove (local, force) |
+    // | No     | No      | Connect to Nexus, New grove (local) |
     const actions = useMemo<readonly ActionItem[]>(() => {
       const items: ActionItem[] = [];
-      if (groveExists && groveInfo) {
-        items.push({
-          id: "resume",
-          label: `Resume "${groveInfo.name}" (${groveInfo.preset})`,
-        });
+
+      if (nexusAvailable) {
+        // Nexus detected — "Start new session" is primary
+        if (onNewSession) {
+          items.push({ id: "new-session", label: "Start new session" });
+        }
+        if (groveExists && groveInfo) {
+          items.push({ id: "resume", label: `Resume "${groveInfo.name}" (${groveInfo.preset})` });
+        }
+        items.push({ id: "connect", label: "Connect to different Nexus" });
+        items.push({ id: "new", label: "New grove (local)" });
+      } else if (groveExists) {
+        // No Nexus, .grove/ exists
+        if (groveInfo) {
+          items.push({ id: "resume", label: `Resume "${groveInfo.name}" (${groveInfo.preset})` });
+        }
+        if (onNewSession) {
+          items.push({ id: "new-session", label: "Start new session" });
+        }
+        items.push({ id: "connect", label: "Connect to Nexus" });
+        items.push({ id: "new", label: "New grove (local, force)" });
+      } else {
+        // No Nexus, no .grove/
+        items.push({ id: "connect", label: "Connect to Nexus" });
+        items.push({ id: "new", label: "New grove (local)" });
       }
-      items.push({ id: "new", label: "New grove (select preset)" });
-      items.push({ id: "connect", label: "Connect to remote Nexus" });
+
       return items;
-    }, [groveExists, groveInfo]);
+    }, [groveExists, groveInfo, nexusAvailable, onNewSession]);
 
     useKeyboard(
       useCallback(
@@ -103,6 +138,29 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
 
           if (input === "q" && step === "action" && !showDetail) {
             onQuit();
+            return;
+          }
+
+          // -- Goal input step (Start new session) --
+          if (step === "goal") {
+            if (input === "escape") {
+              setStep("action");
+              setCursor(actions.findIndex((a) => a.id === "new-session"));
+              return;
+            }
+            if (input === "return") {
+              const goal = goalBuffer.trim() || undefined;
+              onNewSession?.(goal);
+              return;
+            }
+            if (input === "backspace") {
+              setGoalBuffer((b) => b.slice(0, -1));
+              return;
+            }
+            if (input && input.length === 1 && !isCtrl) {
+              setGoalBuffer((b) => b + input);
+              return;
+            }
             return;
           }
 
@@ -214,6 +272,11 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
                 setStep("preset");
                 return;
               }
+              if (action.id === "new-session") {
+                setGoalBuffer("");
+                setStep("goal");
+                return;
+              }
               if (action.id === "connect") {
                 setUrlBuffer("http://localhost:2026");
                 setStep("connect");
@@ -229,15 +292,46 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
           onSelect,
           onResume,
           onConnect,
+          onNewSession,
           onQuit,
           step,
           selectedPreset,
           nameBuffer,
           urlBuffer,
+          goalBuffer,
           showDetail,
         ],
       ),
     );
+
+    // -- Goal input view (Start new session) --
+    if (step === "goal") {
+      return (
+        <box
+          flexDirection="column"
+          width="100%"
+          height="100%"
+          borderStyle="round"
+          borderColor={theme.focus}
+        >
+          <box flexDirection="column" paddingX={2} paddingTop={1}>
+            <text color={theme.focus} bold>
+              Start new session
+            </text>
+            <text color={theme.muted}>{""}</text>
+            <box flexDirection="row">
+              <text color={theme.text}>Goal (optional): </text>
+              <text color={theme.focus} bold>
+                {goalBuffer}
+              </text>
+              <text color={theme.focus}>_</text>
+            </box>
+            <text color={theme.muted}>{""}</text>
+            <text color={theme.dimmed}>Enter:start (empty=no goal) Esc:back Backspace:delete</text>
+          </box>
+        </box>
+      );
+    }
 
     // -- Connect URL input view --
     if (step === "connect") {
@@ -397,6 +491,15 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
           </text>
           <text color={theme.muted}>{""}</text>
         </box>
+
+        {/* Nexus status line */}
+        {nexusAvailable && detectedNexusUrl ? (
+          <box paddingX={2}>
+            <text color={theme.info}>
+              Connected to Nexus at {detectedNexusUrl} (auto-detected)
+            </text>
+          </box>
+        ) : null}
 
         {/* Action menu */}
         <box

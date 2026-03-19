@@ -9,6 +9,11 @@
  * they're bound to claims and workspaces.
  */
 
+/** Escape a string for safe use in a shell command. */
+function shellEscape(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
 /** A running agent session derived from tmux + claims. */
 export interface AgentSession {
   readonly agentId: string;
@@ -97,22 +102,20 @@ export class ShellTmuxManager implements TmuxManager {
 
   async spawn(options: SpawnOptions): Promise<string> {
     const sessionName = tmuxSessionName(options.agentId);
+
+    // Build a clean env: delete TMUX/TMUX_PANE so tmux allows new session
+    // creation when the TUI itself runs inside tmux.
+    const spawnEnv: Record<string, string | undefined> = {
+      ...process.env,
+      TERM: process.env.TERM ?? "xterm-256color",
+      ...(options.env ?? {}),
+    };
+    delete spawnEnv.TMUX;
+    delete spawnEnv.TMUX_PANE;
+
     const proc = Bun.spawn(
-      [
-        "tmux",
-        "new-session",
-        "-d",
-        "-s",
-        sessionName,
-        "-c",
-        options.workspacePath,
-        options.command,
-      ],
-      {
-        stdout: "pipe",
-        stderr: "pipe",
-        ...(options.env ? { env: { ...process.env, ...options.env } } : {}),
-      },
+      ["tmux", "new-session", "-d", "-s", sessionName, "-c", options.workspacePath, options.command],
+      { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: spawnEnv },
     );
     await proc.exited;
     if (proc.exitCode !== 0) {

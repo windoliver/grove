@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { backendLabel, checkNexusHealth, resolveBackend } from "./resolve-backend.js";
+import { backendLabel, checkNexusHealth, DEFAULT_AUTO_DETECT_URL, resolveBackend } from "./resolve-backend.js";
+import { clearPersistedConnection, savePersistedConnection } from "./connection-store.js";
 
 // ---------------------------------------------------------------------------
 // resolveBackend() — pure function tests
@@ -230,6 +231,130 @@ describe("resolveBackend", () => {
 });
 
 // ---------------------------------------------------------------------------
+// resolveBackend — autoDetect: persisted + auto-detect sources
+// ---------------------------------------------------------------------------
+
+describe("resolveBackend autoDetect", () => {
+  let savedEnv: string | undefined;
+  let savedHome: string | undefined;
+  let savedGroveDir: string | undefined;
+  let tempHome: string;
+
+  beforeEach(() => {
+    savedEnv = process.env.GROVE_NEXUS_URL;
+    delete process.env.GROVE_NEXUS_URL;
+    savedHome = process.env.HOME;
+    tempHome = mkdtempSync(join(tmpdir(), "grove-resolve-auto-"));
+    process.env.HOME = tempHome;
+    // Prevent step 4 (grove.json) from matching via cwd walk-up
+    savedGroveDir = process.env.GROVE_DIR;
+    process.env.GROVE_DIR = join(tempHome, "no-such-grove");
+  });
+
+  afterEach(() => {
+    if (savedEnv !== undefined) {
+      process.env.GROVE_NEXUS_URL = savedEnv;
+    } else {
+      delete process.env.GROVE_NEXUS_URL;
+    }
+    if (savedHome !== undefined) {
+      process.env.HOME = savedHome;
+    } else {
+      delete process.env.HOME;
+    }
+    if (savedGroveDir !== undefined) {
+      process.env.GROVE_DIR = savedGroveDir;
+    } else {
+      delete process.env.GROVE_DIR;
+    }
+    clearPersistedConnection();
+    rmSync(tempHome, { recursive: true, force: true });
+  });
+
+  test("autoDetect with persisted connection -> nexus mode, source persisted", () => {
+    savePersistedConnection({
+      nexusUrl: "http://saved-nexus:3000",
+      lastConnectedAt: "2026-03-19T00:00:00.000Z",
+    });
+    const result = resolveBackend({ autoDetect: true });
+    expect(result.mode).toBe("nexus");
+    expect(result.source).toBe("persisted");
+    if (result.mode === "nexus") {
+      expect(result.url).toBe("http://saved-nexus:3000");
+    }
+  });
+
+  test("autoDetect with persisted connection preserves apiKey", () => {
+    savePersistedConnection({
+      nexusUrl: "http://saved-nexus:3000",
+      apiKey: "my-key",
+      lastConnectedAt: "2026-03-19T00:00:00.000Z",
+    });
+    const result = resolveBackend({ autoDetect: true });
+    expect(result.mode).toBe("nexus");
+    if (result.mode === "nexus") {
+      expect(result.apiKey).toBe("my-key");
+    }
+  });
+
+  test("autoDetect without persisted -> auto-detect source (localhost:2026)", () => {
+    const result = resolveBackend({ autoDetect: true });
+    expect(result.mode).toBe("nexus");
+    expect(result.source).toBe("auto-detect");
+    if (result.mode === "nexus") {
+      expect(result.url).toBe(DEFAULT_AUTO_DETECT_URL);
+    }
+  });
+
+  test("autoDetect=false -> skips persisted and auto-detect, falls to local", () => {
+    savePersistedConnection({
+      nexusUrl: "http://saved-nexus:3000",
+      lastConnectedAt: "2026-03-19T00:00:00.000Z",
+    });
+    const result = resolveBackend({ autoDetect: false });
+    expect(result.mode).toBe("local");
+  });
+
+  test("autoDetect omitted -> skips persisted and auto-detect, falls to local", () => {
+    savePersistedConnection({
+      nexusUrl: "http://saved-nexus:3000",
+      lastConnectedAt: "2026-03-19T00:00:00.000Z",
+    });
+    const result = resolveBackend({});
+    expect(result.mode).toBe("local");
+  });
+
+  test("explicit flags still take priority over autoDetect", () => {
+    savePersistedConnection({
+      nexusUrl: "http://saved-nexus:3000",
+      lastConnectedAt: "2026-03-19T00:00:00.000Z",
+    });
+    const result = resolveBackend({ nexus: "http://flag-nexus:8080", autoDetect: true });
+    expect(result.mode).toBe("nexus");
+    expect(result.source).toBe("flag");
+  });
+
+  test("env var still takes priority over autoDetect persisted", () => {
+    process.env.GROVE_NEXUS_URL = "http://env-nexus:9090";
+    savePersistedConnection({
+      nexusUrl: "http://saved-nexus:3000",
+      lastConnectedAt: "2026-03-19T00:00:00.000Z",
+    });
+    const result = resolveBackend({ autoDetect: true });
+    expect(result.mode).toBe("nexus");
+    expect(result.source).toBe("env");
+  });
+
+  test("autoDetect preserves groveOverride", () => {
+    const result = resolveBackend({ autoDetect: true, groveOverride: "/my/.grove" });
+    expect(result.mode).toBe("nexus");
+    if (result.mode === "nexus") {
+      expect(result.groveOverride).toBe("/my/.grove");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // backendLabel()
 // ---------------------------------------------------------------------------
 
@@ -252,6 +377,16 @@ describe("backendLabel", () => {
   test("nexus from grove.json", () => {
     const label = backendLabel({ mode: "nexus", url: "http://nexus:8080", source: "grove.json" });
     expect(label).toBe("nexus (auto: grove.json)");
+  });
+
+  test("nexus from persisted", () => {
+    const label = backendLabel({ mode: "nexus", url: "http://nexus:8080", source: "persisted" });
+    expect(label).toBe("nexus (persisted)");
+  });
+
+  test("nexus from auto-detect", () => {
+    const label = backendLabel({ mode: "nexus", url: "http://localhost:2026", source: "auto-detect" });
+    expect(label).toBe("nexus (auto-detected)");
   });
 
   test("local mode", () => {

@@ -58,6 +58,8 @@ export class SpawnManager {
   private readonly onError: (message: string) => void;
   private readonly sessionStore: SessionStore | undefined;
   private prContext: PrContext | undefined;
+  /** Resolved .grove directory path for agent MCP config. */
+  private groveDir: string | undefined;
 
   /** Overridable heartbeat interval for testing. */
   heartbeatIntervalMs: number = HEARTBEAT_INTERVAL_MS;
@@ -67,11 +69,18 @@ export class SpawnManager {
     tmux: TmuxManager | undefined,
     onError: (message: string) => void,
     sessionStore?: SessionStore,
+    groveDir?: string,
   ) {
     this.provider = provider;
     this.tmux = tmux;
     this.onError = onError;
     this.sessionStore = sessionStore;
+    this.groveDir = groveDir;
+  }
+
+  /** Set the .grove directory path (may be resolved after construction). */
+  setGroveDir(dir: string | undefined): void {
+    this.groveDir = dir;
   }
 
   /**
@@ -141,11 +150,24 @@ export class SpawnManager {
     // Step 3: Start tmux session. Roll back on failure.
     // Always pass GROVE_AGENT_ID and GROVE_AGENT_ROLE as env vars.
     // If PR context is available, also pass GROVE_PR_* env vars.
+    // Step 2c: Write MCP config files so Claude Code / Codex can connect.
+    if (this.groveDir) {
+      await this.writeMcpConfig(workspacePath, spawnId, roleId);
+    }
+
     try {
       const roleEnv: Record<string, string> = {
         GROVE_AGENT_ID: spawnId,
         GROVE_AGENT_ROLE: roleId,
       };
+      // Pass GROVE_DIR so grove-mcp can find the .grove directory
+      if (this.groveDir) {
+        roleEnv.GROVE_DIR = this.groveDir;
+      }
+      // Pass GROVE_NEXUS_URL if set (for Nexus-connected agents)
+      if (process.env.GROVE_NEXUS_URL) {
+        roleEnv.GROVE_NEXUS_URL = process.env.GROVE_NEXUS_URL;
+      }
       const prEnv: Record<string, string> = this.prContext
         ? {
             GROVE_PR_NUMBER: String(this.prContext.number),
@@ -153,6 +175,18 @@ export class SpawnManager {
             GROVE_PR_FILES: String(this.prContext.filesChanged),
           }
         : {};
+
+      // Write the initial prompt to a file. After the tmux session starts,
+      // we send the prompt via tmux send-keys (avoids -p flag which runs in
+      // headless mode and exits when done).
+      if (context?.rolePrompt || context?.roleDescription) {
+        const promptText = String(
+          context?.rolePrompt ??
+          context?.roleDescription ??
+          `You are a grove agent with role "${roleId}". Use grove MCP tools to collaborate.`,
+        );
+        await writeFile(join(workspacePath, ".grove", "initial-prompt.txt"), promptText, "utf-8");
+      }
 
       const options: SpawnOptions = {
         agentId: spawnId,
@@ -162,6 +196,17 @@ export class SpawnManager {
         env: { ...roleEnv, ...prEnv },
       };
       await this.tmux?.spawn(options);
+
+      // After the tmux session starts, send the initial prompt via send-keys.
+      // Wait briefly for the agent CLI to initialize its prompt.
+      if (context?.rolePrompt || context?.roleDescription) {
+        const promptText = String(context.rolePrompt ?? context.roleDescription);
+        const sessionName = `grove-${spawnId}`;
+        // Delay to let CLI start up (Claude Code takes ~2s to render prompt)
+        await new Promise<void>((r) => setTimeout(r, 3_000));
+        await this.tmux?.sendKeys(sessionName, promptText);
+        await this.tmux?.sendKeys(sessionName, "Enter");
+      }
     } catch (spawnErr) {
       // Roll back claim + workspace
       if (claim && this.provider.releaseClaim) {
@@ -387,6 +432,53 @@ export class SpawnManager {
     this.spawnRecords.clear();
   }
 
+  /**
+   * Write MCP configuration files in the agent workspace so that
+   * Claude Code and Codex can discover the grove-mcp server.
+   */
+  private async writeMcpConfig(
+    workspacePath: string,
+    agentId: string,
+    roleId: string,
+  ): Promise<void> {
+    // Claude Code: .mcp.json at workspace root
+    const claudeMcpConfig = {
+      mcpServers: {
+        grove: {
+          command: "grove-mcp",
+          env: {
+            GROVE_DIR: this.groveDir!,
+            GROVE_AGENT_ID: agentId,
+            GROVE_AGENT_ROLE: roleId,
+            ...(process.env.GROVE_NEXUS_URL
+              ? { GROVE_NEXUS_URL: process.env.GROVE_NEXUS_URL }
+              : {}),
+          },
+        },
+      },
+    };
+    await writeFile(
+      join(workspacePath, ".mcp.json"),
+      JSON.stringify(claudeMcpConfig, null, 2) + "\n",
+      "utf-8",
+    );
+
+    // Codex: .codex directory with config
+    const codexDir = join(workspacePath, ".codex");
+    await mkdir(codexDir, { recursive: true });
+    const instructions = [
+      `You are a grove agent with role "${roleId}" (id: ${agentId}).`,
+      "",
+      "Use grove MCP tools to collaborate with other agents:",
+      "- grove_wait_for_event: block until new work/messages arrive",
+      "- grove_frontier: discover contributions to build on",
+      "- grove_claim / grove_release: coordinate work",
+      "- grove_contribute / grove_review: submit work",
+      "- grove_send_message / grove_read_inbox: messaging",
+    ].join("\n");
+    await writeFile(join(codexDir, "instructions.md"), instructions, "utf-8");
+  }
+
   private async writeAgentContext(
     workspacePath: string,
     roleId: string,
@@ -410,6 +502,7 @@ export class SpawnManager {
       "- grove_checkout — materialize artifacts into your workspace",
       "- grove_contribute — submit your work",
       "- grove_review — submit a code review",
+      "- grove_wait_for_event — block until new contributions/messages arrive (replaces polling)",
       "- grove_send_message / grove_read_inbox — agent-to-agent messaging",
       "- grove_create_plan / grove_update_plan — maintain project plans",
       "- grove_check_stop — check if stop conditions are met",
@@ -417,6 +510,21 @@ export class SpawnManager {
     );
 
     await writeFile(join(contextDir, "agent-context.md"), lines.join("\n"), "utf-8");
+
+    // Write CLAUDE.md at workspace root for Claude Code to auto-discover
+    const claudeMd = [
+      `# Grove Agent: ${roleId}`,
+      "",
+      context.roleDescription ? String(context.roleDescription) : `Agent role: ${roleId}`,
+      "",
+      context.rolePrompt ? `## Instructions\n\n${String(context.rolePrompt)}` : "",
+      "",
+      "## MCP Tools",
+      "",
+      "This workspace is configured with grove MCP tools via .mcp.json.",
+      "Use grove_wait_for_event to block until new work arrives instead of polling.",
+    ].join("\n");
+    await writeFile(join(workspacePath, "CLAUDE.md"), claudeMd, "utf-8");
   }
 
   private startHeartbeat(claimId: string): void {

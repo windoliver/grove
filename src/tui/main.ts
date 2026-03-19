@@ -10,8 +10,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { savePersistedConnection } from "./connection-store.js";
 import type { RunningServices } from "../shared/service-lifecycle.js";
-import type { SessionRecord, TuiDataProvider } from "./provider.js";
+import { isSessionProvider, type SessionRecord, type TuiDataProvider } from "./provider.js";
 import {
   backendLabel,
   checkNexusHealth,
@@ -403,13 +404,47 @@ export async function handleTui(
     }
   }
 
+  // -----------------------------------------------------------------------
+  // Nexus auto-detection phase (fast probe before rendering welcome screen)
+  // -----------------------------------------------------------------------
+  let nexusAvailable = false;
+  let detectedNexusUrl: string | undefined;
+
+  {
+    const probeBackend = resolveBackend({ ...opts, groveOverride: effectiveGrove, autoDetect: true });
+    if (probeBackend.mode === "nexus") {
+      const health = await checkNexusHealth(probeBackend.url, 2_000);
+      if (health === "ok") {
+        nexusAvailable = true;
+        detectedNexusUrl = probeBackend.url;
+        savePersistedConnection({
+          nexusUrl: probeBackend.url,
+          apiKey: probeBackend.apiKey,
+          lastConnectedAt: new Date().toISOString(),
+        });
+      }
+    }
+  }
+
   // Bun compatibility: ensure stdin is in raw mode for keyboard input
   process.stdin.resume();
 
   // Dynamic import of React/OpenTUI — only loaded when TUI is actually used
   const { createCliRenderer } = await import("@opentui/core");
-  const { createRoot } = await import("@opentui/react");
+  const opentuiReact = await import("@opentui/react");
+  const { createRoot } = opentuiReact;
   const React = await import("react");
+
+  // Workaround: @opentui registers "scrollbox" but some internal code paths
+  // create elements with the hyphenated name "scroll-box". Register the alias.
+  {
+    const mod = opentuiReact as Record<string, unknown>;
+    const base = mod.baseComponents as Record<string, unknown> | undefined;
+    const extendFn = mod.extend as ((obj: Record<string, unknown>) => void) | undefined;
+    if (base?.scrollbox && extendFn && !("scroll-box" in (base ?? {}))) {
+      extendFn({ "scroll-box": base.scrollbox });
+    }
+  }
 
   const renderer = await createCliRenderer({
     exitOnCtrlC: true,
@@ -532,11 +567,54 @@ export async function handleTui(
       return result.appProps;
     };
 
+    // onNewSession: lightweight session creation — no executeInit()
+    const onNewSession = async (
+      goal?: string,
+      onProgress?: (step: string) => void,
+    ): Promise<import("./app.js").AppProps> => {
+      // Start services if .grove/ exists
+      const resolvedGrove = groveDir ?? undefined;
+      if (resolvedGrove) {
+        onProgress?.("Starting services...");
+        const { startServices } = await import("../shared/service-lifecycle.js");
+        runningServices = await startServices({
+          groveDir: resolvedGrove,
+          build: serviceOpts?.build,
+          nexusSource: serviceOpts?.nexusSource,
+          onProgress,
+        });
+      }
+
+      onProgress?.("Connecting to backend...");
+      // Let buildAppProps re-resolve the backend — after startServices, the real
+      // Nexus URL is in grove.json / GROVE_NEXUS_URL env, which may differ from
+      // the auto-detected URL (e.g. different port).
+      const result = await buildAppProps(effectiveGrove, opts, groveInfo?.preset);
+      activeProvider = result.provider;
+      activeStopGc = result.stopGc;
+
+      // Create a new session via the provider
+      if (isSessionProvider(result.provider)) {
+        onProgress?.("Creating session...");
+        await result.provider.createSession({ goal });
+      }
+
+      updateSkillAfterStartup();
+      return result.appProps;
+    };
+
     // onConnect: handles "Connect to remote Nexus" path — no local services
     const onConnect = async (nexusUrl: string): Promise<import("./app.js").AppProps> => {
       const result = await buildAppProps(effectiveGrove, { ...opts, nexus: nexusUrl });
       activeProvider = result.provider;
       activeStopGc = result.stopGc;
+
+      // Persist connection for future auto-detection
+      savePersistedConnection({
+        nexusUrl,
+        lastConnectedAt: new Date().toISOString(),
+      });
+
       return result.appProps;
     };
 
@@ -548,9 +626,12 @@ export async function handleTui(
         groveInfo,
         presets,
         sessions,
+        nexusAvailable,
+        detectedNexusUrl,
         onInit,
         onStart,
         onConnect,
+        onNewSession,
       }),
     );
 
