@@ -423,6 +423,33 @@ export class SpawnManager {
     }
   }
 
+  /**
+   * Resolve the grove-mcp command. Uses the installed binary if available,
+   * otherwise falls back to `bun <repo>/src/mcp/serve.ts`.
+   */
+  private async resolveMcpCommand(): Promise<string[]> {
+    // Try installed binary first
+    try {
+      const proc = Bun.spawn(["which", "grove-mcp"], { stdout: "pipe", stderr: "pipe" });
+      await proc.exited;
+      if (proc.exitCode === 0) {
+        return ["grove-mcp"];
+      }
+    } catch { /* not found */ }
+
+    // Fall back to bun + source file
+    const srcPath = join(this.groveDir ?? ".", "..", "src", "mcp", "serve.ts");
+    try {
+      const { existsSync } = require("node:fs") as typeof import("node:fs");
+      if (existsSync(srcPath)) {
+        return ["bun", srcPath];
+      }
+    } catch { /* not found */ }
+
+    // Last resort: hope grove-mcp is on PATH at runtime
+    return ["grove-mcp"];
+  }
+
   /** Stop all timers and clear state. */
   destroy(): void {
     for (const timer of this.heartbeatTimers.values()) {
@@ -442,10 +469,15 @@ export class SpawnManager {
     roleId: string,
   ): Promise<void> {
     // Claude Code: .mcp.json at workspace root
+    // Resolve the MCP server command. Prefer installed `grove-mcp` binary;
+    // fall back to `bun <source>/mcp/serve.ts` for development.
+    const mcpCommand = await this.resolveMcpCommand();
+
     const claudeMcpConfig = {
       mcpServers: {
         grove: {
-          command: "grove-mcp",
+          command: mcpCommand[0],
+          args: mcpCommand.slice(1),
           env: {
             GROVE_DIR: this.groveDir!,
             GROVE_AGENT_ID: agentId,

@@ -19,7 +19,7 @@ export const reviewLoopPreset: PresetConfig = {
         description: "Writes and iterates on code",
         maxInstances: 1,
         edges: [{ target: "reviewer", edgeType: "delegates" }],
-        command: "claude --dangerously-skip-permissions",
+        command: "claude --allowedTools 'mcp__grove__*'",
         prompt:
           "Loop: grove_wait_for_event (blocks until new work/messages arrive) → " +
           "grove_frontier → grove_claim → grove_checkout → code → " +
