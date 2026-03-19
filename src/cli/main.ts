@@ -357,6 +357,35 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       },
     },
     {
+      name: "inbox",
+      description: "Send and read agent messages",
+      needsStore: false,
+      handler: async (args) => {
+        const { handleInbox } = await import("./commands/inbox.js");
+        await handleInbox(args, groveOverride);
+      },
+    },
+    {
+      name: "whoami",
+      description: "Show resolved agent identity",
+      needsStore: false,
+      handler: async (args) => {
+        const { handleWhoami } = await import("./commands/whoami.js");
+        await handleWhoami(args);
+      },
+    },
+    {
+      name: "status",
+      description: "Show agent status overview",
+      needsStore: false,
+      handler: async (args) => {
+        const { parseStatusArgs, runStatus } = await import("./commands/status.js");
+        await withCliDeps(async (a, deps) => {
+          await runStatus(parseStatusArgs([...a]), deps);
+        }, args);
+      },
+    },
+    {
       name: "completions",
       description: "Generate shell completion scripts",
       needsStore: false,
@@ -477,6 +506,11 @@ Usage:
   grove goal                       Show current goal
   grove goal set <text>            Set a new goal
     --acceptance <criterion>       Add acceptance criterion (repeatable)
+
+  grove inbox send "msg" --to @agent  Send a message to an agent
+  grove inbox read [--from <id>]     Read inbox messages
+  grove whoami                       Show resolved agent identity
+  grove status [--json]              Show agent status overview
 
   grove export --to-discussion <owner/repo> <cid>   Export to GitHub Discussion
   grove export --to-pr <owner/repo> <cid>           Export to GitHub PR

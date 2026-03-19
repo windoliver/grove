@@ -30,6 +30,7 @@ export const Panel = {
   Inbox: 15,
   Decisions: 16,
   GitHub: 17,
+  Plan: 18,
 } as const;
 export type Panel = (typeof Panel)[keyof typeof Panel];
 
@@ -52,6 +53,7 @@ export const PANEL_LABELS: Readonly<Record<Panel, string>> = {
   [Panel.Inbox]: "Inbox",
   [Panel.Decisions]: "Decisions",
   [Panel.GitHub]: "GitHub",
+  [Panel.Plan]: "Plan",
 };
 
 /** Protocol core panels — always visible. */
@@ -77,6 +79,7 @@ export const OPERATOR_PANELS: readonly Panel[] = [
   Panel.Inbox,
   Panel.Decisions,
   Panel.GitHub,
+  Panel.Plan,
 ];
 
 // ---------------------------------------------------------------------------

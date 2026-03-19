@@ -644,10 +644,18 @@ export function App({
       const depthCheck = checkSpawnDepth(topology, depth);
       if (!depthCheck.allowed) return;
 
-      spawnManagerRef.current?.spawn(agentId, command, parentAgentId, depth).catch((err) => {
-        const msg = err instanceof Error ? err.message : "Spawn failed";
-        showError(msg);
-      });
+      // Look up role prompt/description from topology to inject as agent context.
+      const role = topology?.roles.find((r) => r.name === agentId);
+      const context: Record<string, unknown> = {};
+      if (role?.prompt) context.rolePrompt = role.prompt;
+      if (role?.description) context.roleDescription = role.description;
+
+      spawnManagerRef.current
+        ?.spawn(agentId, command, parentAgentId, depth, context)
+        .catch((err) => {
+          const msg = err instanceof Error ? err.message : "Spawn failed";
+          showError(msg);
+        });
     },
     [topology, activeClaims, showError],
   );

@@ -75,6 +75,9 @@ export {
   outcomeStatsOperation,
   setOutcomeOperation,
 } from "./outcome.js";
+// Plan operations
+export type { CreatePlanInput, PlanResult, PlanTask, UpdatePlanInput } from "./plan.js";
+export { createPlanOperation, updatePlanOperation } from "./plan.js";
 // Query operations
 export type {
   ContributionSummary,

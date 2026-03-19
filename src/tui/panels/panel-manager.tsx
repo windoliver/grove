@@ -46,6 +46,7 @@ import { GossipPanelView } from "../views/gossip-panel.js";
 import { InboxPanelView } from "../views/inbox-panel.js";
 import { OutcomesPanelView } from "../views/outcomes-panel.js";
 import { PipelineView } from "../views/pipeline-view.js";
+import { PlanPanelView } from "../views/plan-panel.js";
 import { SearchPanelView } from "../views/search-panel.js";
 import { TerminalView } from "../views/terminal.js";
 import { ThreadsPanelView } from "../views/threads-panel.js";
@@ -431,6 +432,15 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
               active={isPanelVisible(panelState, Panel.GitHub)}
               cursor={isFocused(Panel.GitHub) ? nav.state.cursor : -1}
               onRowCountChanged={onRowCountChanged}
+            />
+          );
+        case Panel.Plan:
+          return (
+            <PlanPanelView
+              provider={provider}
+              intervalMs={intervalMs}
+              active={isPanelVisible(panelState, Panel.Plan)}
+              cursor={isFocused(Panel.Plan) ? nav.state.cursor : -1}
             />
           );
         default:

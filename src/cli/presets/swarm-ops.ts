@@ -31,18 +31,29 @@ export const swarmOpsPreset: PresetConfig = {
           { target: "qa", edgeType: "delegates" },
         ],
         command: "claude --role coordinator",
+        prompt:
+          "Loop: grove_frontier (survey state) → grove_list_claims → grove_read_inbox → " +
+          "grove_create_plan/grove_update_plan → grove_send_message to delegate → " +
+          "grove_check_stop → repeat.",
       },
       {
         name: "worker",
         description: "Executes assigned tasks",
         maxInstances: 5,
         command: "claude --role worker",
+        prompt:
+          "Loop: grove_frontier → grove_claim → grove_checkout → code → " +
+          "grove_contribute (kind=work) → grove_read_inbox for feedback → repeat.",
       },
       {
         name: "qa",
         description: "Reviews and validates completed work",
         maxInstances: 2,
         command: "claude --role qa",
+        prompt:
+          "Loop: grove_frontier (find unreviewed work) → grove_claim → grove_checkout → " +
+          "review → grove_review (with quality scores) → grove_send_message if action " +
+          "needed → repeat.",
       },
     ],
     spawning: { dynamic: true, maxDepth: 2, maxChildrenPerAgent: 5 },

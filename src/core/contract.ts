@@ -133,14 +133,21 @@ const RelationRequirementsSchema = z
     message: "duplicate relation types",
   });
 
-const ContributionKindEnum = z.enum(["work", "review", "discussion", "adoption", "reproduction"]);
+const ContributionKindEnum = z.enum([
+  "work",
+  "review",
+  "discussion",
+  "adoption",
+  "reproduction",
+  "plan",
+]);
 
 const AgentConstraintsSchema = z
   .object({
     allowed_kinds: z
       .array(ContributionKindEnum)
       .min(1)
-      .max(5)
+      .max(6)
       .refine((items) => new Set(items).size === items.length, { message: "duplicate kinds" })
       .optional(),
     required_artifacts: z
@@ -150,6 +157,7 @@ const AgentConstraintsSchema = z
         discussion: ArtifactRequirementsSchema.optional(),
         adoption: ArtifactRequirementsSchema.optional(),
         reproduction: ArtifactRequirementsSchema.optional(),
+        plan: ArtifactRequirementsSchema.optional(),
       })
       .strict()
       .optional(),
@@ -160,6 +168,7 @@ const AgentConstraintsSchema = z
         discussion: RelationRequirementsSchema.optional(),
         adoption: RelationRequirementsSchema.optional(),
         reproduction: RelationRequirementsSchema.optional(),
+        plan: RelationRequirementsSchema.optional(),
       })
       .strict()
       .optional(),

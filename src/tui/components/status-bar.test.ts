@@ -37,9 +37,9 @@ describe("Panel hint coverage", () => {
 
   test("Panel enum has expected count", () => {
     const values = Object.values(Panel).filter((v) => typeof v === "number");
-    // 4 core + 13 operator = 17 panels
-    expect(values.length).toBe(17);
-    expect(ALL_PANELS.length).toBe(17);
+    // 4 core + 14 operator = 18 panels
+    expect(values.length).toBe(18);
+    expect(ALL_PANELS.length).toBe(18);
   });
 
   test("status-bar.tsx uses Panel enum constants (not magic numbers)", async () => {

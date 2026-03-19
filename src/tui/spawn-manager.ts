@@ -7,6 +7,9 @@
  * On tmux failure: roll back claim + workspace.
  */
 
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
 import type { AgentIdentity, Claim } from "../core/models.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
@@ -130,24 +133,33 @@ export class SpawnManager {
       });
     }
 
+    // Step 2b: Write agent context file if role prompt/description available.
+    if (context?.rolePrompt || context?.roleDescription) {
+      await this.writeAgentContext(workspacePath, roleId, context);
+    }
+
     // Step 3: Start tmux session. Roll back on failure.
-    // If PR context is available, pass GROVE_PR_* as env vars
-    // so the agent process sees them from the start.
+    // Always pass GROVE_AGENT_ID and GROVE_AGENT_ROLE as env vars.
+    // If PR context is available, also pass GROVE_PR_* env vars.
     try {
-      const prEnv: Record<string, string> | undefined = this.prContext
+      const roleEnv: Record<string, string> = {
+        GROVE_AGENT_ID: spawnId,
+        GROVE_AGENT_ROLE: roleId,
+      };
+      const prEnv: Record<string, string> = this.prContext
         ? {
             GROVE_PR_NUMBER: String(this.prContext.number),
             GROVE_PR_TITLE: this.prContext.title,
             GROVE_PR_FILES: String(this.prContext.filesChanged),
           }
-        : undefined;
+        : {};
 
       const options: SpawnOptions = {
         agentId: spawnId,
         command,
         targetRef: spawnId,
         workspacePath,
-        ...(prEnv ? { env: prEnv } : {}),
+        env: { ...roleEnv, ...prEnv },
       };
       await this.tmux?.spawn(options);
     } catch (spawnErr) {
@@ -373,6 +385,38 @@ export class SpawnManager {
     }
     this.heartbeatTimers.clear();
     this.spawnRecords.clear();
+  }
+
+  private async writeAgentContext(
+    workspacePath: string,
+    roleId: string,
+    context: Record<string, unknown>,
+  ): Promise<void> {
+    const contextDir = join(workspacePath, ".grove");
+    await mkdir(contextDir, { recursive: true });
+
+    const lines: string[] = [`# Agent Context: ${roleId}`, ""];
+    if (context.roleDescription) {
+      lines.push(`## Role`, "", String(context.roleDescription), "");
+    }
+    if (context.rolePrompt) {
+      lines.push(`## Instructions`, "", String(context.rolePrompt), "");
+    }
+    lines.push(
+      `## Available MCP Tools`,
+      "",
+      "- grove_frontier — discover best contributions to build on",
+      "- grove_claim / grove_release — coordinate work to avoid duplication",
+      "- grove_checkout — materialize artifacts into your workspace",
+      "- grove_contribute — submit your work",
+      "- grove_review — submit a code review",
+      "- grove_send_message / grove_read_inbox — agent-to-agent messaging",
+      "- grove_create_plan / grove_update_plan — maintain project plans",
+      "- grove_check_stop — check if stop conditions are met",
+      "",
+    );
+
+    await writeFile(join(contextDir, "agent-context.md"), lines.join("\n"), "utf-8");
   }
 
   private startHeartbeat(claimId: string): void {

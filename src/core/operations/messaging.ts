@@ -47,6 +47,8 @@ export interface InboxMessage {
 export interface InboxQuery {
   /** Filter to messages addressed to this handle (e.g., "@claude-eng"). */
   readonly recipient?: string | undefined;
+  /** Filter to messages addressed to any of these handles (e.g., ["@agent-id", "@role", "@all"]). */
+  readonly recipients?: readonly string[] | undefined;
   /** Filter to messages from this agent ID. */
   readonly fromAgentId?: string | undefined;
   /** Only return messages after this ISO timestamp. */
@@ -120,9 +122,18 @@ export async function readInbox(
   store: ContributionStore,
   query?: InboxQuery,
 ): Promise<readonly InboxMessage[]> {
+  // When filtering by recipient(s), we must fetch all discussions so
+  // post-fetch filtering doesn't miss older messages buried under
+  // unrelated traffic. Only apply a store-level limit when no
+  // recipient filtering is requested.
+  const needsRecipientFilter =
+    query?.recipient !== undefined ||
+    (query?.recipients !== undefined && query.recipients.length > 0);
+  const storeLimit = needsRecipientFilter ? undefined : (query?.limit ?? 50) * 3;
+
   const contributions = await store.list({
     kind: ContributionKind.Discussion,
-    limit: (query?.limit ?? 50) * 3, // Over-fetch to compensate for filtering
+    ...(storeLimit !== undefined ? { limit: storeLimit } : {}),
   });
 
   let messages = contributions.filter((c) => {
@@ -131,12 +142,21 @@ export async function readInbox(
     return true;
   });
 
-  // Filter by recipient
+  // Filter by single recipient (legacy)
   if (query?.recipient !== undefined) {
     const target = query.recipient;
     messages = messages.filter((c) => {
       const recipients = c.context?.recipients as string[];
       return recipients.includes(target) || recipients.includes("@all");
+    });
+  }
+
+  // Filter by multiple recipients (matches if any handle appears in the message)
+  if (query?.recipients !== undefined && query.recipients.length > 0) {
+    const handles = new Set(query.recipients);
+    messages = messages.filter((c) => {
+      const recipients = c.context?.recipients as string[];
+      return recipients.some((r) => handles.has(r));
     });
   }
 

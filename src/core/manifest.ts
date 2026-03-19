@@ -115,7 +115,14 @@ function stripUndefined<T extends Record<string, unknown>>(obj: T): T {
 
 const ScoreDirectionSchema = z.enum(["minimize", "maximize"]);
 
-const ContributionKindSchema = z.enum(["work", "review", "discussion", "adoption", "reproduction"]);
+const ContributionKindSchema = z.enum([
+  "work",
+  "review",
+  "discussion",
+  "adoption",
+  "reproduction",
+  "plan",
+]);
 
 const ContributionModeSchema = z.enum(["evaluation", "exploration"]);
 
@@ -137,6 +144,7 @@ const AgentIdentitySchema = z
     version: z.string().optional(),
     toolchain: z.string().optional(),
     runtime: z.string().optional(),
+    role: z.string().optional(),
   })
   .strict();
 

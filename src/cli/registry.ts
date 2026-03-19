@@ -210,6 +210,33 @@ export const COMMANDS: readonly CommandMeta[] = [
     ],
   },
   {
+    name: "inbox",
+    description: "Send and read agent messages",
+    flags: [],
+    subcommands: [
+      {
+        name: "send",
+        description: "Send a message to an agent",
+        flags: ["to", "reply-to", "tag", "agent-id", "agent-name", "json"],
+      },
+      {
+        name: "read",
+        description: "Read inbox messages",
+        flags: ["from", "since", "limit", "json"],
+      },
+    ],
+  },
+  {
+    name: "whoami",
+    description: "Show resolved agent identity",
+    flags: ["json"],
+  },
+  {
+    name: "status",
+    description: "Show agent status overview",
+    flags: ["json"],
+  },
+  {
     name: "completions",
     description: "Generate shell completion scripts",
     flags: [],

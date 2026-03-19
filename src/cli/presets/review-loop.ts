@@ -20,6 +20,9 @@ export const reviewLoopPreset: PresetConfig = {
         maxInstances: 1,
         edges: [{ target: "reviewer", edgeType: "delegates" }],
         command: "claude --dangerously-skip-permissions",
+        prompt:
+          "Loop: grove_frontier → grove_claim → grove_checkout → code → " +
+          "grove_contribute (kind=work) → grove_read_inbox for feedback → repeat.",
       },
       {
         name: "reviewer",
@@ -27,6 +30,10 @@ export const reviewLoopPreset: PresetConfig = {
         maxInstances: 1,
         edges: [{ target: "coder", edgeType: "feedback" }],
         command: "claude --dangerously-skip-permissions",
+        prompt:
+          "Loop: grove_frontier (find unreviewed work) → grove_claim → grove_checkout → " +
+          "review → grove_review (with quality scores) → grove_send_message to coder if " +
+          "action needed → repeat.",
       },
     ],
     spawning: { dynamic: true, maxDepth: 2 },
