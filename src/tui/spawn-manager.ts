@@ -470,6 +470,7 @@ You are part of a multi-agent grove session. You have grove MCP tools available:
 
 - \`grove_contribute\` — record your work (kind=work), reviews (kind=review), or questions (kind=ask_user)
 - \`grove_review\` — review another agent's contribution by CID
+- \`grove_done\` — signal you are finished (other agents see this and can wrap up too)
 - \`grove_log\` — see recent contributions from all agents
 - \`grove_frontier\` — see the best contributions
 - \`grove_search\` — search contributions
@@ -477,6 +478,7 @@ You are part of a multi-agent grove session. You have grove MCP tools available:
 You will receive notifications automatically via Nexus IPC when other agents
 contribute work relevant to your role. Act on notifications according to your role.
 When you complete work, call \`grove_contribute\` to record it in the DAG.
+When you have no more work to do, call \`grove_done\` to signal completion.
 
 Start by working on the session goal. Use \`grove_log\` to see what others have done.
 `;

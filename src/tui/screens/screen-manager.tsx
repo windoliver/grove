@@ -113,6 +113,43 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     const sessionStartRef = useRef<number>(Date.now());
 
     // ---------------------------------------------------------------------------
+    // Done detection — watch for grove_done contributions from all roles
+    // ---------------------------------------------------------------------------
+    useEffect(() => {
+      if (state.screen !== "running" && state.screen !== "advanced") return;
+      if (!topology) return;
+
+      const roleNames = new Set(topology.roles.map((r) => r.name));
+      const timer = setInterval(async () => {
+        try {
+          const contributions = await provider.getContributions({ limit: 50 });
+          if (!contributions) return;
+
+          // Find done signals: contributions with [DONE] prefix or context.done
+          const doneRoles = new Set<string>();
+          for (const c of contributions) {
+            const isDone =
+              c.summary.startsWith("[DONE]") ||
+              (c.context && (c.context as Record<string, unknown>).done === true);
+            if (isDone) {
+              const role = c.agent.role;
+              if (role) doneRoles.add(role);
+            }
+          }
+
+          // Check if all topology roles have signaled done
+          const allDone = [...roleNames].every((r) => doneRoles.has(r));
+          if (allDone && roleNames.size > 0) {
+            setState((s) => ({ ...s, screen: "complete" }));
+          }
+        } catch {
+          // Non-fatal
+        }
+      }, 5000);
+      return () => clearInterval(timer);
+    }, [state.screen, topology, provider]);
+
+    // ---------------------------------------------------------------------------
     // Global permission prompt detection — works across ALL screens
     // ---------------------------------------------------------------------------
     const [pendingPermissions, setPendingPermissions] = useState<

@@ -23,6 +23,7 @@ import { registerOutcomeTools } from "./tools/outcomes.js";
 import { registerPlanTools } from "./tools/plans.js";
 import { registerQueryTools } from "./tools/queries.js";
 import { registerSessionTools } from "./tools/session.js";
+import { registerDoneTools } from "./tools/done.js";
 import { registerStopTools } from "./tools/stop.js";
 import { registerWorkspaceTools } from "./tools/workspace.js";
 
@@ -78,8 +79,9 @@ export async function createMcpServer(deps: McpDeps, preset?: McpPresetConfig): 
     { capabilities: { tools: {} } },
   );
 
-  // Contribution tools are always registered (core functionality).
+  // Contribution + done tools are always registered (core functionality).
   registerContributionTools(server, deps);
+  registerDoneTools(server, deps);
 
   if (preset?.claims !== false) registerClaimTools(server, deps);
   if (preset?.queries !== false) registerQueryTools(server, deps);
