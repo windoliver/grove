@@ -11,6 +11,7 @@
  */
 
 import { useRenderer } from "@opentui/react";
+import { useKeyboard } from "@opentui/react";
 import React, { useCallback, useRef, useState } from "react";
 import type { AppProps } from "../app.js";
 import { App } from "../app.js";
@@ -287,7 +288,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         return (
           <box flexDirection="column" width="100%" height="100%">
             <box paddingX={2}>
-              <text color={theme.dimmed}>Tab:back to simple view</text>
+              <text color={theme.dimmed}>Ctrl+B:back to simple view</text>
             </box>
             <box flexGrow={1}>
               <AdvancedModeWrapper
@@ -324,17 +325,20 @@ interface AdvancedModeWrapperProps {
 const AdvancedModeWrapper: React.NamedExoticComponent<AdvancedModeWrapperProps> = React.memo(
   function AdvancedModeWrapper({
     appProps,
-    onBack: _onBack,
+    onBack,
   }: AdvancedModeWrapperProps): React.ReactNode {
-    // The App component has its own keyboard handling via useKeyboard.
-    // We render it directly — the Tab hint is shown above by ScreenManager.
-    // The App's own Tab handler cycles panels; the user uses Shift+Tab
-    // or we add a dedicated back key. For simplicity, we let the
-    // "Tab:back to simple view" hint at the top serve as documentation,
-    // and the actual back is handled by the parent's useKeyboard.
-    //
-    // Since App uses routeKey which handles Tab for panel cycling,
-    // we'll use Escape as the back key from advanced mode.
+    // Intercept Ctrl+B (back) to return to simple view.
+    // Tab is used by App for panel cycling, so we use a dedicated back key.
+    useKeyboard(
+      useCallback(
+        (key) => {
+          if (key.ctrl && key.name === "b") {
+            onBack();
+          }
+        },
+        [onBack],
+      ),
+    );
     return React.createElement(App, appProps);
   },
 );
