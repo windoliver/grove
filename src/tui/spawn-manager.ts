@@ -133,7 +133,13 @@ export class SpawnManager {
       });
     }
 
-    // Step 2b: Write agent context file if role prompt/description available.
+    // Step 2b: Write .mcp.json so the agent discovers grove MCP tools.
+    await this.writeMcpConfig(workspacePath);
+
+    // Step 2c: Write CLAUDE.md with role instructions for the agent.
+    await this.writeAgentInstructions(workspacePath, roleId, context);
+
+    // Step 2d: Write agent context file if role prompt/description available.
     if (context?.rolePrompt || context?.roleDescription) {
       await this.writeAgentContext(workspacePath, roleId, context);
     }
@@ -385,6 +391,68 @@ export class SpawnManager {
     }
     this.heartbeatTimers.clear();
     this.spawnRecords.clear();
+  }
+
+  /**
+   * Write .mcp.json into the agent workspace so the agent CLI (claude, codex)
+   * discovers grove MCP tools automatically.
+   */
+  private async writeMcpConfig(workspacePath: string): Promise<void> {
+    // Resolve the .grove directory — workspaces live under .grove/workspaces/
+    const groveDir = join(workspacePath, "..", "..");
+    const mcpConfig = {
+      mcpServers: {
+        grove: {
+          command: "grove-mcp",
+          env: {
+            GROVE_DIR: groveDir,
+          },
+        },
+      },
+    };
+    await writeFile(
+      join(workspacePath, ".mcp.json"),
+      JSON.stringify(mcpConfig, null, 2),
+      "utf-8",
+    );
+  }
+
+  /**
+   * Write CLAUDE.md (agent instructions) into the workspace.
+   * Tells the agent its role. Communication happens automatically via
+   * Nexus IPC — agents receive events when other agents contribute.
+   */
+  private async writeAgentInstructions(
+    workspacePath: string,
+    roleId: string,
+    context?: Record<string, unknown>,
+  ): Promise<void> {
+    const roleDescription = context?.roleDescription ?? "";
+    const rolePrompt = context?.rolePrompt ?? "";
+
+    const instructions = `# Grove Agent: ${roleId}
+
+## Your Role
+${roleDescription}
+
+${rolePrompt ? `## Instructions\n${rolePrompt}\n` : ""}
+
+## Grove MCP Tools
+
+You have grove MCP tools available. Use them to participate in the session:
+
+- \`grove_contribute\` — record your work (kind=work), reviews (kind=review), or questions (kind=ask_user)
+- \`grove_review\` — review another agent's contribution
+- \`grove_log\` — see recent contributions
+- \`grove_frontier\` — see the best contributions
+- \`grove_search\` — search contributions
+
+You will receive notifications automatically when other agents contribute work relevant to your role.
+When you receive a notification, act on it according to your role.
+When you complete work, call \`grove_contribute\` to record it.
+`;
+
+    await writeFile(join(workspacePath, "CLAUDE.md"), instructions, "utf-8");
   }
 
   private async writeAgentContext(

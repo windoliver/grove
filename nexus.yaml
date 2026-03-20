@@ -1,0 +1,24 @@
+preset: shared
+data_dir: /Users/tafeng/grove/.claude/worktrees/drifting-cooking-lerdorf/nexus-data
+auth: static
+tls: false
+services:
+- nexus
+- postgres
+- dragonfly
+- zoekt
+ports:
+  http: 2026
+  grpc: 2028
+  postgres: 5432
+  dragonfly: 6379
+  zoekt: 6070
+compose_profiles:
+- core
+- cache
+- search
+api_key: sk-DX9UkP4ODqIPI9eCsQ0GEKBrv4SeVfkEwnHi3D5gogw
+compose_file: /Users/tafeng/grove/.claude/worktrees/drifting-cooking-lerdorf/nexus-stack.yml
+image_accelerator: cpu
+image_ref: ghcr.io/nexi-lab/nexus:edge
+image_channel: edge
