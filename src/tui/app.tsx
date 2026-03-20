@@ -747,6 +747,10 @@ export function App({
             }
           })();
         }
+        // Also set on SpawnManager so agents receive the goal in CLAUDE.md + command args
+        if (buf) {
+          spawnManagerRef.current?.setSessionGoal(buf);
+        }
         dispatch({ type: "GOAL_SUBMIT" });
         panels.setMode(InputMode.Normal);
       },
