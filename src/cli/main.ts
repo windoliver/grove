@@ -366,6 +366,15 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       },
     },
     {
+      name: "grove-status",
+      description: "Show grove-level summary",
+      needsStore: false,
+      handler: async () => {
+        const { handleGroveStatus } = await import("./commands/grove-status.js");
+        await handleGroveStatus(groveOverride);
+      },
+    },
+    {
       name: "whoami",
       description: "Show resolved agent identity",
       needsStore: false,
@@ -509,6 +518,7 @@ Usage:
 
   grove inbox send "msg" --to @agent  Send a message to an agent
   grove inbox read [--from <id>]     Read inbox messages
+  grove grove-status                 Show grove-level summary (name, mode, preset, contributions)
   grove whoami                       Show resolved agent identity
   grove status [--json]              Show agent status overview
 
