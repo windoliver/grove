@@ -46,6 +46,16 @@ Items discovered during Grove v2 CEO review (2026-03-20).
 - **Why:** Tie-breaking affects frontier ranking and outcome derivation. Need a consistent policy.
 - **Effort:** S | **Depends on:** Phase 1 (outcome derivation)
 
+### Create DESIGN.md
+- **What:** Document Grove's design system: spacing scale, typography, component patterns, voice/tone. Currently only `theme.ts` exists with color tokens.
+- **Why:** Web dashboard (12-month roadmap) needs a design system reference to avoid diverging from the TUI's established aesthetic.
+- **Effort:** M (via /design-consultation) | **Depends on:** Nothing (can be done anytime)
+
+### Raise dimmed color to #777 for WCAG AA contrast
+- **What:** Change `theme.dimmed` from `#666666` to `#777777` in `theme.ts`. Current value fails WCAG AA contrast (3.9:1 vs required 4.5:1).
+- **Why:** Accessibility compliance. Minimal visual change — dimmed still looks dimmed.
+- **Effort:** S (1 line change) | **Depends on:** Nothing
+
 ### Contract watcher debounce tuning
 - **What:** The contract file watcher (cherry-pick #6) needs a debounce interval to handle rapid saves (e.g., editor auto-save). Start with 1s, tune based on usage.
 - **Why:** Without debounce, rapid GROVE.md edits trigger multiple diff/notification cycles.
