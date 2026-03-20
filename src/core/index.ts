@@ -1,3 +1,6 @@
+export type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
+export { MockRuntime } from "./mock-runtime.js";
+export { SubprocessRuntime } from "./subprocess-runtime.js";
 export {
   canRetry,
   computeBackoffMs,
