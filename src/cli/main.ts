@@ -280,6 +280,17 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       },
     },
     {
+      name: "export-dag",
+      description: "Export all contributions as JSON",
+      needsStore: false,
+      handler: async (args) => {
+        await withCliDeps(async (a, deps) => {
+          const { parseExportDagArgs, runExportDag } = await import("./commands/export-dag.js");
+          await runExportDag(parseExportDagArgs([...a]), deps);
+        }, args);
+      },
+    },
+    {
       name: "gossip",
       description: "Gossip protocol commands",
       needsStore: false,
@@ -504,6 +515,7 @@ Usage:
   grove search [--query <text>]     Search contributions
   grove log [-n <count>]            Recent contributions
   grove tree [--from <cid>]         DAG visualization
+  grove export-dag [--pretty]       Export all contributions as JSON
   grove thread <cid>                View a discussion thread
   grove threads [--tag <tag>]       List active discussion threads
 
