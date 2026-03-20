@@ -62,6 +62,9 @@ export {
   MAX_GOSSIP_OFFERED_PEERS,
   MAX_MERGED_FRONTIER_ENTRIES,
 } from "./constants.js";
+export type { EventBus, EventHandler, GroveEvent } from "./event-bus.js";
+export { LocalEventBus } from "./local-event-bus.js";
+export { TopologyRouter } from "./topology-router.js";
 export type {
   AgentConstraints,
   AgentRole,
