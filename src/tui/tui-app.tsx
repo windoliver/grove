@@ -12,8 +12,11 @@
 
 import { useKeyboard, useRenderer } from "@opentui/react";
 import React, { useCallback, useRef, useState } from "react";
+import { App } from "./app.js";
 import type { AppProps } from "./app.js";
 import { theme } from "./theme.js";
+import { InitProgressView } from "./views/init-progress.js";
+import { WelcomeScreen } from "./views/welcome.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -228,14 +231,10 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
   // ---------------------------------------------------------------------------
 
   if (mode === "boardroom" && appProps) {
-    // Lazy import App to avoid circular deps — rendered via React.createElement
-    const { App } = require("./app.js") as typeof import("./app.js");
     return React.createElement(App, appProps);
   }
 
   if (mode === "initializing") {
-    const { InitProgressView } =
-      require("./views/init-progress.js") as typeof import("./views/init-progress.js");
     return React.createElement(InitProgressView, {
       presetName: initPreset,
       steps: initSteps,
@@ -244,8 +243,6 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
   }
 
   if (mode === "starting") {
-    const { InitProgressView } =
-      require("./views/init-progress.js") as typeof import("./views/init-progress.js");
     const steps = startingSteps.map((label, i) => ({
       label,
       done: startingDone || i < startingSteps.length - 1,
@@ -264,7 +261,6 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
 
   // Setup mode — always shown first
   if (presets && presets.length > 0) {
-    const { WelcomeScreen } = require("./views/welcome.js") as typeof import("./views/welcome.js");
     return React.createElement(WelcomeScreen, {
       presets,
       groveExists,
