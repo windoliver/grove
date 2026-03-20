@@ -35,7 +35,6 @@ import { runRelease } from "./commands/release.js";
 import { parseSearchArgs, runSearch } from "./commands/search.js";
 import { parseThreadArgs, runThread } from "./commands/thread.js";
 import { parseThreadsArgs, runThreads } from "./commands/threads.js";
-import { parseExportDagArgs, runExportDag } from "./commands/export-dag.js";
 import { parseTreeArgs, runTree } from "./commands/tree.js";
 import { initCliDeps } from "./context.js";
 import { UsageError } from "./errors.js";
@@ -393,6 +392,15 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
         await withCliDeps(async (a, deps) => {
           await runStatus(parseStatusArgs([...a]), deps);
         }, args);
+      },
+    },
+    {
+      name: "ping",
+      description: "Print pong",
+      needsStore: false,
+      handler: async () => {
+        const { handlePing } = await import("./commands/ping.js");
+        await handlePing();
       },
     },
     {

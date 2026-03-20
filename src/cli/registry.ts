@@ -237,6 +237,11 @@ export const COMMANDS: readonly CommandMeta[] = [
     flags: ["json"],
   },
   {
+    name: "ping",
+    description: "Print pong",
+    flags: [],
+  },
+  {
     name: "completions",
     description: "Generate shell completion scripts",
     flags: [],
