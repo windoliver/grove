@@ -122,6 +122,8 @@ const ContributionKindSchema = z.enum([
   "adoption",
   "reproduction",
   "plan",
+  "ask_user",
+  "response",
 ]);
 
 const ContributionModeSchema = z.enum(["evaluation", "exploration"]);
