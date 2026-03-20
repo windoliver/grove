@@ -171,9 +171,16 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
 
         // Auto-spawn all roles from topology
         if (topology) {
+          // Set session goal so agents receive it as their initial prompt
+          spawnManagerRef.current?.setSessionGoal(goal);
+
           for (const role of topology.roles) {
-            const command = role.command ?? process.env.SHELL ?? "bash";
-            void spawnManagerRef.current?.spawn(role.name, command).catch(() => {
+            const command = role.command ?? "claude";
+            const context: Record<string, unknown> = {};
+            if (role.prompt) context.rolePrompt = role.prompt;
+            if (role.description) context.roleDescription = role.description;
+
+            void spawnManagerRef.current?.spawn(role.name, command, undefined, 0, context).catch(() => {
               // Spawn failures are shown in RunningView via provider polling
             });
           }

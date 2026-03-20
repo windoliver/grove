@@ -58,6 +58,7 @@ export class SpawnManager {
   private readonly onError: (message: string) => void;
   private readonly sessionStore: SessionStore | undefined;
   private prContext: PrContext | undefined;
+  private sessionGoal: string | undefined;
 
   /** Overridable heartbeat interval for testing. */
   heartbeatIntervalMs: number = HEARTBEAT_INTERVAL_MS;
@@ -86,6 +87,14 @@ export class SpawnManager {
   /** Get the current PR context (for testing). */
   getPrContext(): PrContext | undefined {
     return this.prContext;
+  }
+
+  /**
+   * Set the session goal. When set, spawned agents receive this as their
+   * initial prompt along with their role description.
+   */
+  setSessionGoal(goal: string | undefined): void {
+    this.sessionGoal = goal;
   }
 
   /**
@@ -187,7 +196,26 @@ export class SpawnManager {
       throw spawnErr;
     }
 
-    // Step 4: Start heartbeat + record tracking info.
+    // Step 4: Send initial prompt (role goal + session goal).
+    // The agent receives this as its first message and starts working.
+    const sessionName = `grove-${spawnId}`;
+    const roleDesc = context?.roleDescription ? String(context.roleDescription) : `Fulfill the ${roleId} role`;
+    const roleInstr = context?.rolePrompt ? String(context.rolePrompt) : "";
+    const goalLine = this.sessionGoal ? `Session goal: ${this.sessionGoal}` : "";
+    const initialPrompt = [goalLine, `Your role (${roleId}): ${roleDesc}`, roleInstr]
+      .filter(Boolean)
+      .join(". ");
+
+    if (initialPrompt && this.tmux) {
+      // Small delay to let the agent CLI initialize before sending
+      setTimeout(() => {
+        this.tmux?.sendKeys(sessionName, initialPrompt).catch(() => {
+          // Non-fatal — agent may not be ready yet
+        });
+      }, 3000);
+    }
+
+    // Step 5: Start heartbeat + record tracking info.
     if (claim) {
       this.startHeartbeat(claim.claimId);
       this.spawnRecords.set(spawnId, {
@@ -196,7 +224,7 @@ export class SpawnManager {
         agentId: spawnId,
       });
 
-      // Step 5: Persist spawn record to session store for crash recovery.
+      // Step 6: Persist spawn record to session store for crash recovery.
       this.sessionStore?.save({
         spawnId,
         claimId: claim.claimId,
