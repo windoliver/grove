@@ -7,4 +7,5 @@
 
 export type { McpDeps } from "./deps.js";
 export { handleToolError, McpErrorCode, notFoundError, validationError } from "./error-handler.js";
+export type { McpPresetConfig } from "./server.js";
 export { createMcpServer } from "./server.js";
