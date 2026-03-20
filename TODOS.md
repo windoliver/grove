@@ -24,6 +24,11 @@ Items discovered during Grove v2 CEO review (2026-03-20).
 - **Why:** New features currently require adding a new interface + type guard + conditional logic everywhere. Fragile and hard to trace.
 - **Effort:** M | **Depends on:** Phase 2 (AgentRuntime) shipped
 
+### Incremental stop condition evaluation for swarm-scale
+- **What:** `evaluateStopConditions()` in lifecycle.ts scans all contributions (O(n)). At 1000+ contributions, this adds 50-100ms per contribute. Maintain running state (current best score, contribution count, last improvement round) and update incrementally to O(1).
+- **Why:** Swarm-scale (50+ agents) produces contributions rapidly. O(n) evaluation becomes a bottleneck.
+- **Effort:** M | **Depends on:** Swarm runtime (prior CEO plan)
+
 ## P3 — Edge cases and polish
 
 ### Contract re-evaluation on mid-session change
