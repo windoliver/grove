@@ -9,7 +9,7 @@
  */
 
 import type { GroveContract, MetricDefinition } from "./contract.js";
-import type { Contribution, JsonValue, RelationType } from "./models.js";
+import type { Contribution, ContributionMode, JsonValue, RelationType } from "./models.js";
 import type { ContributionStore } from "./store.js";
 
 // ---------------------------------------------------------------------------
@@ -91,8 +91,11 @@ export async function deriveLifecycleState(
 /**
  * Derive lifecycle states for multiple contributions in a single pass.
  *
- * Loads all contributions once, then computes states in-memory.
- * Much more efficient than calling `deriveLifecycleState()` per CID.
+ * Uses `store.incomingSources(cids)` to load only the contributions that
+ * have relations pointing to the given CIDs, avoiding a full store scan.
+ * Much more efficient than calling `deriveLifecycleState()` per CID,
+ * and O(k) memory where k is the number of incoming edges rather than
+ * O(n) where n is the total contribution count.
  */
 export async function deriveLifecycleStates(
   cids: readonly string[],
@@ -100,17 +103,17 @@ export async function deriveLifecycleStates(
 ): Promise<ReadonlyMap<string, LifecycleState>> {
   if (cids.length === 0) return new Map();
 
-  // Load all contributions for relation scanning
-  const allContributions = await store.list();
+  // Load only contributions that have relations targeting any of the given CIDs
+  const incomingContributions = await store.incomingSources(cids);
   const cidSet = new Set(cids);
 
-  // Build incoming relation index: target CID → source contributions
+  // Build incoming relation index: target CID → source contributions by type
   const incomingByType = new Map<string, Map<string, Contribution[]>>();
   for (const cid of cids) {
     incomingByType.set(cid, new Map());
   }
 
-  for (const c of allContributions) {
+  for (const c of incomingContributions) {
     for (const rel of c.relations) {
       if (cidSet.has(rel.targetCid)) {
         const byType = incomingByType.get(rel.targetCid);
@@ -129,7 +132,7 @@ export async function deriveLifecycleStates(
 
   for (const cid of cids) {
     const byType = incomingByType.get(cid) ?? new Map();
-    result.set(cid, deriveStateFromRelations(cid, byType, allContributions));
+    result.set(cid, deriveStateFromRelations(cid, byType));
   }
 
   return result;
@@ -139,7 +142,6 @@ export async function deriveLifecycleStates(
 function deriveStateFromRelations(
   cid: string,
   byType: Map<string, Contribution[]>,
-  _allContributions: readonly Contribution[],
 ): LifecycleState {
   // Check superseded: derives_from with metadata.relationship === "supersedes"
   const derivesFromSources = byType.get("derives_from") ?? [];
@@ -222,8 +224,9 @@ export interface DeliberationResult {
  * Returns a structured result indicating which conditions are met.
  * The grove is considered stopped if ANY condition is met.
  *
- * Loads contributions once and passes them to each evaluator to avoid
- * redundant store.list() calls.
+ * Each evaluator loads only the data it needs via targeted queries
+ * (filtered list, count, or thread traversal) instead of loading all
+ * contributions into memory up front.
  */
 export async function evaluateStopConditions(
   contract: GroveContract,
@@ -236,42 +239,39 @@ export async function evaluateStopConditions(
     return { stopped: false, conditions: {}, evaluatedAt: new Date().toISOString() };
   }
 
-  // Load all contributions once for all evaluators that need them
-  const allContributions = await store.list();
-
   if (stopConditions.maxRoundsWithoutImprovement !== undefined) {
-    conditions.max_rounds_without_improvement = evaluateMaxRoundsWithoutImprovement(
+    conditions.max_rounds_without_improvement = await evaluateMaxRoundsWithoutImprovement(
       stopConditions.maxRoundsWithoutImprovement,
       contract.metrics ?? {},
-      allContributions,
+      store,
     );
   }
 
   if (stopConditions.targetMetric !== undefined) {
-    conditions.target_metric = evaluateTargetMetric(
+    conditions.target_metric = await evaluateTargetMetric(
       stopConditions.targetMetric.metric,
       stopConditions.targetMetric.value,
       contract.metrics ?? {},
-      allContributions,
+      store,
     );
   }
 
   if (stopConditions.budget !== undefined) {
-    conditions.budget = evaluateBudget(stopConditions.budget, allContributions);
+    conditions.budget = await evaluateBudget(stopConditions.budget, store);
   }
 
   if (stopConditions.quorumReviewScore !== undefined) {
     conditions.quorum_review_score = evaluateQuorumReviewScore(
       stopConditions.quorumReviewScore.minReviews,
       stopConditions.quorumReviewScore.minScore,
-      allContributions,
+      await store.list(),
     );
   }
 
   if (stopConditions.deliberationLimit !== undefined) {
     conditions.deliberation_limit = await evaluateDeliberationLimit(
       stopConditions.deliberationLimit,
-      allContributions,
+      await store.list(),
       store,
     );
   }
@@ -284,11 +284,11 @@ export async function evaluateStopConditions(
 // Individual stop condition evaluators
 // ---------------------------------------------------------------------------
 
-function evaluateMaxRoundsWithoutImprovement(
+async function evaluateMaxRoundsWithoutImprovement(
   maxRounds: number,
   metrics: Readonly<Record<string, MetricDefinition>>,
-  allContributions: readonly Contribution[],
-): StopConditionResult {
+  store: ContributionStore,
+): Promise<StopConditionResult> {
   const metricNames = Object.keys(metrics);
   if (metricNames.length === 0) {
     return {
@@ -297,6 +297,10 @@ function evaluateMaxRoundsWithoutImprovement(
       details: { max_rounds: maxRounds },
     };
   }
+
+  // Load all contributions — we need the full count for the "last N" window,
+  // and exploration contributions count as rounds even though they don't set scores.
+  const allContributions = await store.list();
 
   if (allContributions.length < maxRounds) {
     return {
@@ -362,12 +366,12 @@ function evaluateMaxRoundsWithoutImprovement(
   };
 }
 
-function evaluateTargetMetric(
+async function evaluateTargetMetric(
   metricName: string,
   targetValue: number,
   metrics: Readonly<Record<string, MetricDefinition>>,
-  allContributions: readonly Contribution[],
-): StopConditionResult {
+  store: ContributionStore,
+): Promise<StopConditionResult> {
   const metricDef = metrics[metricName];
   if (metricDef === undefined) {
     return {
@@ -379,9 +383,12 @@ function evaluateTargetMetric(
 
   const isMinimize = metricDef.direction === "minimize";
 
+  // Load only evaluation-mode contributions — exploration contributions
+  // never contribute scores toward target metrics.
+  const evalContributions = await store.list({ mode: "evaluation" as ContributionMode });
+
   let bestScore: number | undefined;
-  for (const c of allContributions) {
-    if (c.mode === "exploration") continue;
+  for (const c of evalContributions) {
     const score = c.scores?.[metricName];
     if (score === undefined) continue;
     if (bestScore === undefined) {
@@ -414,14 +421,15 @@ function evaluateTargetMetric(
   };
 }
 
-function evaluateBudget(
+async function evaluateBudget(
   budget: {
     readonly maxContributions?: number | undefined;
     readonly maxWallClockSeconds?: number | undefined;
   },
-  allContributions: readonly Contribution[],
-): StopConditionResult {
-  const totalContributions = allContributions.length;
+  store: ContributionStore,
+): Promise<StopConditionResult> {
+  // Use count() for contribution count — avoids materializing all objects.
+  const totalContributions = await store.count();
 
   if (totalContributions === 0) {
     return {
@@ -450,11 +458,10 @@ function evaluateBudget(
   let wallClockBudgetMet = false;
   let secondsElapsed = 0;
   if (budget.maxWallClockSeconds !== undefined) {
-    if (allContributions.length > 0) {
-      const sorted = [...allContributions].sort(
-        (a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt),
-      );
-      const first = sorted[0];
+    // Fetch only the first (oldest) contribution for its timestamp.
+    const oldest = await store.list({ limit: 1 });
+    if (oldest.length > 0) {
+      const first = oldest[0];
       const startTime = first !== undefined ? Date.parse(first.createdAt) : Date.now();
       secondsElapsed = Math.floor((Date.now() - startTime) / 1000);
       if (secondsElapsed >= budget.maxWallClockSeconds) {

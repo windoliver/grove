@@ -106,6 +106,25 @@ export class PolicyEnforcer {
    * PolicyViolationError. In lenient mode (exploration), violations are
    * returned as flags.
    *
+   * Design decisions (Issue 6):
+   *
+   * - **Accept-then-flag**: Contributions are always written to the DAG.
+   *   Gate failures in lenient mode are returned as violation flags in
+   *   the result, not rejections. Only strict mode throws. This ensures
+   *   the contribution graph is append-only and hook failures are metadata.
+   *
+   * - **Linear pipeline**: The enforcement sequence is: role-kind check →
+   *   score requirements → relation requirements → artifact requirements →
+   *   gate checks → outcome derivation → stop condition check. There is
+   *   no re-entrant evaluation — outcome derivation and stop checks run
+   *   exactly once per enforce() call, never recursively.
+   *
+   * - **Contract hot-reload**: Deferred. The contract is parsed once at
+   *   startup (or session init) and passed to the PolicyEnforcer
+   *   constructor. Runtime contract reloading is not supported — callers
+   *   must construct a new PolicyEnforcer instance with the updated
+   *   contract.
+   *
    * @param contribution - The contribution to enforce (already created but not yet stored).
    * @param strict - If true, violations throw instead of being returned as flags.
    */
