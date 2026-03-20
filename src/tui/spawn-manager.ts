@@ -169,9 +169,19 @@ export class SpawnManager {
           }
         : {};
 
+      // Compose the agent command with the session goal as initial prompt.
+      // e.g., "claude" becomes 'claude "Session goal: X. Your role (coder): Y."'
+      // This triggers Claude Code to start working immediately.
+      let agentCommand = command;
+      if (this.sessionGoal) {
+        const roleDesc = context?.roleDescription ? String(context.roleDescription) : roleId;
+        const prompt = `Session goal: ${this.sessionGoal}. Your role (${roleId}): ${roleDesc}. Read CLAUDE.md for full instructions.`;
+        agentCommand = `${command} "${prompt.replace(/"/g, '\\"')}"`;
+      }
+
       const options: SpawnOptions = {
         agentId: spawnId,
-        command,
+        command: agentCommand,
         targetRef: spawnId,
         workspacePath,
         env: { ...roleEnv, ...prEnv },
