@@ -406,6 +406,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             goal={state.goal}
             sessionId={state.sessionId}
             tmux={appProps.tmux}
+            eventBus={appProps.eventBus}
             onToggleAdvanced={handleToggleAdvanced}
             onComplete={handleComplete}
             onQuit={handleQuit}

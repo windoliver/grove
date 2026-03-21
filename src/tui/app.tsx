@@ -50,6 +50,8 @@ export interface AppProps {
   readonly presetName?: string | undefined;
   /** Resolved .grove directory path for session persistence. */
   readonly groveDir?: string | undefined;
+  /** EventBus for event-driven data updates (Nexus mode). */
+  readonly eventBus?: import("../core/event-bus.js").EventBus | undefined;
 }
 
 const PAGE_SIZE = 20;

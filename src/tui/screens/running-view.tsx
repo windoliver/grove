@@ -13,6 +13,8 @@ import { useKeyboard } from "@opentui/react";
 import React, { useCallback, useEffect, useState } from "react";
 import type { Contribution } from "../../core/models.js";
 import type { AgentTopology } from "../../core/topology.js";
+import type { EventBus } from "../../core/event-bus.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { DashboardData, TuiDataProvider } from "../provider.js";
 import { isVfsProvider } from "../provider.js";
@@ -34,6 +36,7 @@ export interface RunningViewProps {
   readonly goal?: string | undefined;
   readonly sessionId?: string | undefined;
   readonly tmux?: import("../agents/tmux-manager.js").TmuxManager | undefined;
+  readonly eventBus?: EventBus | undefined;
   readonly onToggleAdvanced: () => void;
   readonly onComplete: (reason: string) => void;
   readonly onQuit: () => void;
@@ -59,6 +62,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     topology,
     goal,
     tmux,
+    eventBus,
     onToggleAdvanced,
     onComplete: _onComplete,
     onQuit,
@@ -138,20 +142,21 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       return () => clearInterval(timer);
     }, [tmux]);
 
-    // Poll dashboard data
+    // Data fetching — event-driven when EventBus available, polling as fallback
     const dashboardFetcher = useCallback(() => provider.getDashboard(), [provider]);
-    const { data: dashboard } = usePolledData<DashboardData>(dashboardFetcher, intervalMs, true);
-
-    // Poll recent contributions for the feed
     const contributionsFetcher = useCallback(
       () => provider.getContributions({ limit: MAX_FEED_ITEMS }),
       [provider],
     );
-    const { data: contributions } = usePolledData<readonly Contribution[]>(
-      contributionsFetcher,
-      intervalMs,
-      true,
-    );
+
+    // Use event-driven when EventBus is available (Nexus mode), polling otherwise
+    const dashboardEvent = useEventDrivenData<DashboardData>(dashboardFetcher, eventBus, "system", true);
+    const contributionsEvent = useEventDrivenData<readonly Contribution[]>(contributionsFetcher, eventBus, "system", true);
+    const dashboardPoll = usePolledData<DashboardData>(dashboardFetcher, intervalMs, !eventBus);
+    const contributionsPoll = usePolledData<readonly Contribution[]>(contributionsFetcher, intervalMs, !eventBus);
+
+    const dashboard = eventBus ? dashboardEvent.data : dashboardPoll.data;
+    const contributions = eventBus ? contributionsEvent.data : contributionsPoll.data;
 
     const feed = contributions ?? [];
 
