@@ -106,7 +106,7 @@ export class NexusDataProvider
       bounties: true,
       gossip: true,
       goals: hasGoalSession,
-      sessions: hasGoalSession,
+      sessions: true, // Always available via NexusSessionStore
     };
 
     this.bountyStore = new NexusBountyStore(config.nexusConfig);

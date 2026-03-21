@@ -156,19 +156,23 @@ export class SpawnManager {
     // Step 2: Create claim.
     let claim: Claim | undefined;
     if (this.provider.createClaim) {
-      claim = await this.provider.createClaim({
-        targetRef: spawnId,
-        agent,
-        intentSummary: `TUI-spawned: ${command}`,
-        leaseDurationMs: LEASE_DURATION_MS,
-        context: {
-          tuiSpawned: true,
-          spawnId,
-          workspacePath,
-          ...(parentAgentId !== undefined ? { parentAgentId, depth } : {}),
-          ...context,
-        },
-      });
+      try {
+        claim = await this.provider.createClaim({
+          targetRef: spawnId,
+          agent,
+          intentSummary: `TUI-spawned: ${command}`,
+          leaseDurationMs: LEASE_DURATION_MS,
+          context: {
+            tuiSpawned: true,
+            spawnId,
+            workspacePath,
+            ...(parentAgentId !== undefined ? { parentAgentId, depth } : {}),
+            ...context,
+          },
+        });
+      } catch {
+        // Claim creation may fail with Nexus (stat compat). Proceed without claim.
+      }
     }
 
     // Step 2b: Write .mcp.json so the agent discovers grove MCP tools.
