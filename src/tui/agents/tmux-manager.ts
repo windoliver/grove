@@ -69,6 +69,12 @@ export function agentIdFromSession(sessionName: string): string | undefined {
  *
  * Falls back gracefully when tmux is not installed.
  */
+/**
+ * Dedicated tmux socket name for grove agent sessions.
+ * Isolates grove's tmux sessions from other tmux users (e.g., Nexus TUI).
+ */
+const TMUX_SOCKET = "grove";
+
 export class ShellTmuxManager implements TmuxManager {
   async isAvailable(): Promise<boolean> {
     try {
@@ -82,7 +88,7 @@ export class ShellTmuxManager implements TmuxManager {
 
   async listSessions(): Promise<readonly string[]> {
     try {
-      const proc = Bun.spawn(["tmux", "list-sessions", "-F", "#{session_name}"], {
+      const proc = Bun.spawn(["tmux", "-L", TMUX_SOCKET, "list-sessions", "-F", "#{session_name}"], {
         stdout: "pipe",
         stderr: "pipe",
       });
@@ -99,7 +105,7 @@ export class ShellTmuxManager implements TmuxManager {
     const sessionName = tmuxSessionName(options.agentId);
     const proc = Bun.spawn(
       [
-        "tmux",
+        "tmux", "-L", TMUX_SOCKET,
         "new-session",
         "-d",
         "-s",
@@ -123,7 +129,7 @@ export class ShellTmuxManager implements TmuxManager {
   }
 
   async kill(sessionName: string): Promise<void> {
-    const proc = Bun.spawn(["tmux", "kill-session", "-t", sessionName], {
+    const proc = Bun.spawn(["tmux", "-L", TMUX_SOCKET, "kill-session", "-t", sessionName], {
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -131,7 +137,7 @@ export class ShellTmuxManager implements TmuxManager {
   }
 
   async capturePanes(sessionName: string): Promise<string> {
-    const proc = Bun.spawn(["tmux", "capture-pane", "-p", "-e", "-t", sessionName], {
+    const proc = Bun.spawn(["tmux", "-L", TMUX_SOCKET, "capture-pane", "-p", "-e", "-t", sessionName], {
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -141,7 +147,7 @@ export class ShellTmuxManager implements TmuxManager {
   }
 
   async sendKeys(sessionName: string, keys: string): Promise<void> {
-    const proc = Bun.spawn(["tmux", "send-keys", "-t", sessionName, keys], {
+    const proc = Bun.spawn(["tmux", "-L", TMUX_SOCKET, "send-keys", "-t", sessionName, keys], {
       stdout: "pipe",
       stderr: "pipe",
     });

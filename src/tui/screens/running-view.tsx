@@ -198,9 +198,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             const prompt = pendingPermissions[0];
             if (prompt && tmux) {
               void tmux.sendKeys(prompt.sessionName, "").then(() => {
-                // sendKeys doesn't send Enter — use raw tmux command
                 const proc = Bun.spawn(
-                  ["tmux", "send-keys", "-t", prompt.sessionName, "Enter"],
+                  ["tmux", "-L", "grove", "send-keys", "-t", prompt.sessionName, "Enter"],
                   { stdout: "pipe", stderr: "pipe" },
                 );
                 void proc.exited;
@@ -213,7 +212,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             const prompt = pendingPermissions[0];
             if (prompt && tmux) {
               const proc = Bun.spawn(
-                ["tmux", "send-keys", "-t", prompt.sessionName, "Escape"],
+                ["tmux", "-L", "grove", "send-keys", "-t", prompt.sessionName, "Escape"],
                 { stdout: "pipe", stderr: "pipe" },
               );
               void proc.exited;

@@ -197,7 +197,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             const prompt = pendingPermissions[0];
             if (prompt) {
               const proc = Bun.spawn(
-                ["tmux", "send-keys", "-t", prompt.sessionName, "Enter"],
+                ["tmux", "-L", "grove", "send-keys", "-t", prompt.sessionName, "Enter"],
                 { stdout: "pipe", stderr: "pipe" },
               );
               void proc.exited;
@@ -207,7 +207,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             const prompt = pendingPermissions[0];
             if (prompt) {
               const proc = Bun.spawn(
-                ["tmux", "send-keys", "-t", prompt.sessionName, "Escape"],
+                ["tmux", "-L", "grove", "send-keys", "-t", prompt.sessionName, "Escape"],
                 { stdout: "pipe", stderr: "pipe" },
               );
               void proc.exited;
