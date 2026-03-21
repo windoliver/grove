@@ -237,6 +237,11 @@ export const COMMANDS: readonly CommandMeta[] = [
     flags: ["json"],
   },
   {
+    name: "uptime",
+    description: "Print seconds since grove init",
+    flags: ["json"],
+  },
+  {
     name: "completions",
     description: "Generate shell completion scripts",
     flags: [],
