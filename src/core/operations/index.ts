@@ -58,6 +58,9 @@ export {
 } from "./contribute.js";
 // Foundation
 export type { OperationDeps } from "./deps.js";
+// Enforcement pipeline
+export type { EnforcedContributeResult, EnforcementRejection } from "./enforcement-pipeline.js";
+export { enforcedContributeOperation } from "./enforcement-pipeline.js";
 // Lifecycle operation
 export type { CheckStopResult, StopConditionStatus } from "./lifecycle.js";
 export { checkStopOperation } from "./lifecycle.js";
