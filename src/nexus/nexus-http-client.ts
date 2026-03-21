@@ -83,7 +83,8 @@ const StatResultSchema = z.object({
       created_at: z.string().optional().nullable(),
       modified_at: z.string().optional().nullable(),
     })
-    .passthrough(),
+    .passthrough()
+    .nullable(),
 });
 const DeleteResultSchema = z.object({ deleted: z.boolean() });
 // Nexus list returns either flat strings or objects depending on details flag.
@@ -290,6 +291,7 @@ export class NexusHttpClient implements NexusClient {
     try {
       const result = await this.rpc("sys_stat", { path }, StatResultSchema);
       const m = result.metadata;
+      if (!m) return { size: 0, etag: "" };
       return {
         size: m.size ?? 0,
         etag: m.etag ?? "",
