@@ -386,6 +386,15 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       },
     },
     {
+      name: "hello",
+      description: "Print a greeting",
+      needsStore: false,
+      handler: async () => {
+        const { handleHello } = await import("./commands/hello.js");
+        await handleHello();
+      },
+    },
+    {
       name: "completions",
       description: "Generate shell completion scripts",
       needsStore: false,
