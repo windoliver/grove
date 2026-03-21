@@ -8,11 +8,11 @@ services:
 - dragonfly
 - zoekt
 ports:
-  http: 2036
-  grpc: 2037
-  postgres: 5438
-  dragonfly: 6384
-  zoekt: 6075
+  http: 2038
+  grpc: 2039
+  postgres: 5439
+  dragonfly: 6385
+  zoekt: 6076
 compose_profiles:
 - core
 - cache

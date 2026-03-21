@@ -40,6 +40,15 @@ mode: exploration
 #     max_contributions: 100
 #     max_wall_clock_seconds: 3600
 
+agent_constraints:
+  required_artifacts:
+    work: ["diff.patch"]
+  required_relations:
+    review: ["reviews"]
+
+evaluation:
+  required_context: ["pr_number", "branch"]
+
 concurrency:
   max_active_claims: 4
   max_claims_per_agent: 1
@@ -53,7 +62,7 @@ agent_topology:
   roles:
     - name: coder
       description: "Writes and iterates on code"
-      prompt: "Write the code for the session goal. Keep changes minimal — one file, under 100 lines. Create a git branch, commit, push, and create a PR with gh pr create. Then call grove_contribute(kind=work) with the PR number in context. Call grove_done when finished."
+      prompt: "Write code for the session goal. Keep changes small. Steps: 1) Write code 2) git checkout -b feat/<name> 3) Commit and push 4) gh pr create 5) grove_ingest_git_diff to get diff hash 6) grove_contribute kind=work artifacts={diff.patch: hash} context={pr_number: N, branch: name}. CONTRACT ENFORCES: diff.patch artifact and pr_number/branch in context are REQUIRED or grove_contribute will reject."
       max_instances: 1
       command: "claude"
       edges:
@@ -61,7 +70,7 @@ agent_topology:
           edge_type: delegates
     - name: reviewer
       description: "Reviews code and provides feedback"
-      prompt: "Check grove_log for work contributions with PR numbers. Read the PR diff with gh pr diff. Review the code quality. Leave a GitHub review with gh pr review. Call grove_contribute(kind=review) with your assessment. Call grove_done when finished."
+      prompt: "Check grove_log for work contributions. Find one with a PR number and diff.patch artifact. Read the diff with gh pr diff <number>. Review code quality. Leave a GitHub review with gh pr review. Call grove_contribute kind=review with a reviews relation to the work CID. CONTRACT ENFORCES: review must have a reviews relation or it will be rejected. Call grove_done when finished."
       max_instances: 1
       command: "claude"
       edges:
