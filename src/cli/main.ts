@@ -366,6 +366,15 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       },
     },
     {
+      name: "greet",
+      description: "Print a greeting",
+      needsStore: false,
+      handler: async (args) => {
+        const { handleGreet } = await import("./commands/greet.js");
+        await handleGreet(args);
+      },
+    },
+    {
       name: "whoami",
       description: "Show resolved agent identity",
       needsStore: false,
@@ -509,6 +518,7 @@ Usage:
 
   grove inbox send "msg" --to @agent  Send a message to an agent
   grove inbox read [--from <id>]     Read inbox messages
+  grove greet <name>                  Print a greeting
   grove whoami                       Show resolved agent identity
   grove status [--json]              Show agent status overview
 
