@@ -12,6 +12,7 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
+import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { AgentIdentity, Claim } from "../core/models.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
@@ -55,8 +56,10 @@ export interface SpawnResult {
 export class SpawnManager {
   private readonly provider: TuiDataProvider;
   private readonly tmux: TmuxManager | undefined;
+  private readonly agentRuntime: AgentRuntime | undefined;
   private readonly heartbeatTimers = new Map<string, ReturnType<typeof setInterval>>();
   private readonly spawnRecords = new Map<string, SpawnRecord>();
+  private readonly agentSessions = new Map<string, AgentSession>();
   private readonly onError: (message: string) => void;
   private readonly sessionStore: SessionStore | undefined;
   private prContext: PrContext | undefined;
@@ -72,9 +75,11 @@ export class SpawnManager {
     onError: (message: string) => void,
     sessionStore?: SessionStore,
     groveDir?: string,
+    agentRuntime?: AgentRuntime,
   ) {
     this.provider = provider;
     this.tmux = tmux;
+    this.agentRuntime = agentRuntime;
     this.onError = onError;
     this.sessionStore = sessionStore;
     this.groveDir = groveDir;
@@ -186,9 +191,7 @@ export class SpawnManager {
       await this.writeAgentContext(workspacePath, roleId, context);
     }
 
-    // Step 3: Start tmux session. Roll back on failure.
-    // Always pass GROVE_AGENT_ID and GROVE_AGENT_ROLE as env vars.
-    // If PR context is available, also pass GROVE_PR_* env vars.
+    // Step 3: Start agent session via AgentRuntime (preferred) or tmux (fallback).
     try {
       const roleEnv: Record<string, string> = {
         GROVE_AGENT_ID: spawnId,
@@ -202,42 +205,54 @@ export class SpawnManager {
           }
         : {};
 
-      // Compose the agent command with auto-approve flags and session goal.
-      // claude → claude --dangerously-skip-permissions "prompt"
-      // codex  → codex --full-auto "prompt"
-      let agentCommand = command;
-      {
-        // Add auto-approve flags based on agent CLI
-        const baseCmd = command.split(/\s+/)[0] ?? command;
-        if (baseCmd === "claude") {
-          // Remove remote-settings.json before each launch (it syncs back)
-          agentCommand = `rm -f ~/.claude/remote-settings.json; ${command} --dangerously-skip-permissions`;
-        } else if (baseCmd === "codex") {
-          agentCommand = `${command} --full-auto`;
-        }
-
-        // Append session goal + role prompt as initial prompt.
-        // The role prompt comes from GROVE.md topology (role.prompt field),
-        // not hardcoded here. The TUI's guided flow lets users edit these.
-        if (this.sessionGoal || context?.rolePrompt) {
-          const parts: string[] = [];
-          if (this.sessionGoal) parts.push(this.sessionGoal);
-          if (context?.rolePrompt) parts.push(String(context.rolePrompt));
-          else if (context?.roleDescription) parts.push(String(context.roleDescription));
-          parts.push("Read CLAUDE.md for full instructions.");
-          const prompt = parts.join(". ");
-          agentCommand = `${agentCommand} "${prompt.replace(/"/g, '\\"')}"`;
-        }
+      // Build initial prompt from goal + role
+      let initialPrompt: string | undefined;
+      if (this.sessionGoal || context?.rolePrompt) {
+        const parts: string[] = [];
+        if (this.sessionGoal) parts.push(this.sessionGoal);
+        if (context?.rolePrompt) parts.push(String(context.rolePrompt));
+        else if (context?.roleDescription) parts.push(String(context.roleDescription));
+        parts.push("Read CLAUDE.md for full instructions.");
+        initialPrompt = parts.join(". ");
       }
 
-      const options: SpawnOptions = {
-        agentId: spawnId,
-        command: agentCommand,
-        targetRef: spawnId,
-        workspacePath,
-        env: { ...roleEnv, ...prEnv },
-      };
-      await this.tmux?.spawn(options);
+      // Compose agent command with auto-approve flags
+      let agentCommand = command;
+      const baseCmd = command.split(/\s+/)[0] ?? command;
+      if (baseCmd === "claude") {
+        agentCommand = `rm -f ~/.claude/remote-settings.json; ${command} --dangerously-skip-permissions`;
+      } else if (baseCmd === "codex") {
+        agentCommand = `${command} --full-auto`;
+      }
+      if (initialPrompt) {
+        agentCommand = `${agentCommand} "${initialPrompt.replace(/"/g, '\\"')}"`;
+      }
+
+      if (this.agentRuntime) {
+        // Use AgentRuntime interface — works with acpx, subprocess, or any runtime
+        const agentConfig: AgentConfig = {
+          role: roleId,
+          command: agentCommand,
+          cwd: workspacePath,
+          env: { ...roleEnv, ...prEnv },
+          goal: this.sessionGoal,
+          prompt: initialPrompt,
+        };
+        const session = await this.agentRuntime.spawn(roleId, agentConfig);
+        this.agentSessions.set(spawnId, session);
+      } else if (this.tmux) {
+        // Fallback: tmux (for TUI testing)
+        const options: SpawnOptions = {
+          agentId: spawnId,
+          command: agentCommand,
+          targetRef: spawnId,
+          workspacePath,
+          env: { ...roleEnv, ...prEnv },
+        };
+        await this.tmux.spawn(options);
+      } else {
+        throw new Error("No agent runtime or tmux available for spawning");
+      }
     } catch (spawnErr) {
       // Roll back claim + workspace
       if (claim && this.provider.releaseClaim) {

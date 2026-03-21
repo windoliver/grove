@@ -32,7 +32,7 @@ export class TmuxRuntime implements AgentRuntime {
 
   async isAvailable(): Promise<boolean> {
     try {
-      execSync("tmux -V", { encoding: "utf-8", stdio: "pipe" });
+      execSync("tmux -L grove -V", { encoding: "utf-8", stdio: "pipe" });
       return true;
     } catch {
       return false;
@@ -46,7 +46,7 @@ export class TmuxRuntime implements AgentRuntime {
 
     try {
       execSync(
-        `tmux new-session -d -s ${shellEscape(sessionName)} -c ${shellEscape(config.cwd)} ${shellEscape(config.command)}`,
+        `tmux -L grove new-session -d -s ${shellEscape(sessionName)} -c ${shellEscape(config.cwd)} ${shellEscape(config.command)}`,
         {
           encoding: "utf-8",
           stdio: "pipe",
@@ -82,7 +82,7 @@ export class TmuxRuntime implements AgentRuntime {
 
     try {
       execSync(
-        `tmux send-keys -t ${shellEscape(session.id)} ${shellEscape(message)} Enter`,
+        `tmux -L grove send-keys -t ${shellEscape(session.id)} ${shellEscape(message)} Enter`,
         { encoding: "utf-8", stdio: "pipe" },
       );
     } catch {
@@ -98,7 +98,7 @@ export class TmuxRuntime implements AgentRuntime {
     }
 
     try {
-      execSync(`tmux kill-session -t ${shellEscape(session.id)}`, {
+      execSync(`tmux -L grove kill-session -t ${shellEscape(session.id)}`, {
         encoding: "utf-8",
         stdio: "pipe",
       });

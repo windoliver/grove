@@ -52,7 +52,10 @@ export function registerDoneTools(server: McpServer, deps: McpDeps): void {
             done: true,
             reason: args.summary,
           } as Readonly<Record<string, JsonValue>>,
-          agent: args.agent as import("../../core/operations/agent.js").AgentOverrides,
+          agent: {
+            ...(args.agent as import("../../core/operations/agent.js").AgentOverrides),
+            ...(process.env.GROVE_AGENT_ROLE ? { role: process.env.GROVE_AGENT_ROLE } : {}),
+          },
         },
         opDeps,
       );
