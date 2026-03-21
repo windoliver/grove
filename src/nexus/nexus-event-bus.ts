@@ -62,7 +62,7 @@ export class NexusEventBus implements EventBus {
     if (!this.pollers.has(role)) {
       const poller = setInterval(() => {
         void this.pollInbox(role);
-      }, 3000);
+      }, 10000); // 10s to avoid Nexus rate limits
       this.pollers.set(role, poller);
     }
   }

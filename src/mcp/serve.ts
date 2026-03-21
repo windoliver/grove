@@ -71,9 +71,7 @@ try {
     });
 
     contributionStore = new NexusContributionStore({ client: nexusClient, zoneId });
-    // Claims stay local — NexusClaimStore has etag compatibility issues with some Nexus versions.
-    // Claims are ephemeral coordination objects, not durable data — local SQLite is fine.
-    // claimStore = new NexusClaimStore({ client: nexusClient, zoneId });
+    claimStore = new NexusClaimStore({ client: nexusClient, zoneId });
     bountyStore = new NexusBountyStore({ client: nexusClient, zoneId });
     outcomeStore = new NexusOutcomeStore({ client: nexusClient, zoneId });
     cas = new NexusCas({ client: nexusClient, zoneId });
