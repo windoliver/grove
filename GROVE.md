@@ -62,7 +62,7 @@ agent_topology:
   roles:
     - name: coder
       description: "Writes and iterates on code"
-      prompt: "Write code for the session goal. Keep changes small. Steps: 1) Write code 2) git checkout -b feat/<name> 3) Commit and push 4) gh pr create 5) grove_ingest_git_diff to get diff hash 6) grove_contribute kind=work artifacts={diff.patch: hash} context={pr_number: N, branch: name}. CONTRACT ENFORCES: diff.patch artifact and pr_number/branch context are REQUIRED or grove_contribute REJECTS."
+      prompt: "Write code for the session goal. Keep changes small — one file, under 80 lines. Steps: 1) Write code 2) git checkout -b feat/<name> 3) Commit and push 4) gh pr create 5) grove_ingest_git_diff to get diff hash 6) grove_contribute kind=work artifacts={diff.patch: hash} context={pr_number: N, branch: name}. CONTRACT ENFORCES: diff.patch artifact and pr_number/branch are REQUIRED. After contributing, check grove_log for reviewer feedback. If reviewer requests changes, fix them, push, and grove_contribute again. Only call grove_done after reviewer approves."
       max_instances: 1
       command: "claude"
       edges:
@@ -70,7 +70,7 @@ agent_topology:
           edge_type: delegates
     - name: reviewer
       description: "Reviews code and provides feedback"
-      prompt: "Check grove_log for work contributions with diff.patch artifact and pr_number. Read the PR diff with gh pr diff <number>. Review code quality. gh pr review to leave GitHub review. grove_contribute kind=review with reviews relation to the work CID. CONTRACT ENFORCES: reviews relation REQUIRED or grove_contribute REJECTS. Call grove_done when finished."
+      prompt: "Loop: 1) Check grove_log for work contributions with pr_number. 2) Read PR diff with gh pr diff <number>. 3) Review code — if issues found, gh pr review --request-changes with feedback, then grove_contribute kind=review with reviews relation. 4) Check grove_log again — wait for coder to fix and resubmit. 5) Re-review the updated PR. 6) When code is good, gh pr review --approve, grove_contribute kind=review, then grove_done. Do NOT call grove_done until you have approved. CONTRACT ENFORCES: reviews relation REQUIRED."
       max_instances: 1
       command: "claude"
       edges:
