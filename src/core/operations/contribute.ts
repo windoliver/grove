@@ -7,6 +7,7 @@
  * discussOperation    — Sugar: kind=discussion with responds_to relation
  */
 
+import type { AgentConstraints } from "../contract.js";
 import { createContribution } from "../manifest.js";
 import type {
   ContributionInput,
@@ -165,6 +166,53 @@ async function validateArtifacts(
 }
 
 /**
+ * Validate agent constraints from the GROVE.md contract.
+ * Checks allowedKinds, requiredArtifacts, and requiredRelations.
+ * Returns a validation error on violation, or undefined if all valid.
+ */
+function validateAgentConstraints(
+  kind: ContributionKind,
+  artifacts: Readonly<Record<string, string>>,
+  relations: readonly Relation[],
+  constraints: AgentConstraints,
+): OperationResult<void> | undefined {
+  // 1. Check allowedKinds
+  if (constraints.allowedKinds && constraints.allowedKinds.length > 0) {
+    if (!constraints.allowedKinds.includes(kind)) {
+      return validationErr(
+        `Contract violation (allowedKinds): kind '${kind}' is not allowed. Allowed: ${constraints.allowedKinds.join(", ")}`,
+      );
+    }
+  }
+
+  // 2. Check requiredArtifacts for this kind
+  const reqArtifacts = constraints.requiredArtifacts?.[kind];
+  if (reqArtifacts && reqArtifacts.length > 0) {
+    const providedNames = new Set(Object.keys(artifacts));
+    const missing = reqArtifacts.filter((name) => !providedNames.has(name));
+    if (missing.length > 0) {
+      return validationErr(
+        `Contract violation (requiredArtifacts): kind '${kind}' requires artifacts: ${missing.join(", ")}`,
+      );
+    }
+  }
+
+  // 3. Check requiredRelations for this kind
+  const reqRelations = constraints.requiredRelations?.[kind];
+  if (reqRelations && reqRelations.length > 0) {
+    const providedTypes = new Set(relations.map((r) => r.relationType));
+    const missing = reqRelations.filter((rt) => !providedTypes.has(rt));
+    if (missing.length > 0) {
+      return validationErr(
+        `Contract violation (requiredRelations): kind '${kind}' requires relations: ${missing.join(", ")}`,
+      );
+    }
+  }
+
+  return undefined;
+}
+
+/**
  * Resolve the contribution mode.
  * If a contract is present and specifies a mode, use it (unless explicitly overridden).
  */
@@ -205,6 +253,17 @@ export async function contributeOperation(
     if (Object.keys(artifacts).length > 0) {
       const artErr = await validateArtifacts(deps, artifacts);
       if (artErr !== undefined) return artErr as OperationResult<ContributeResult>;
+    }
+
+    // Validate agent constraints from contract
+    if (deps.contract?.agentConstraints) {
+      const acErr = validateAgentConstraints(
+        input.kind,
+        artifacts,
+        relations,
+        deps.contract.agentConstraints,
+      );
+      if (acErr !== undefined) return acErr as OperationResult<ContributeResult>;
     }
 
     const agent = resolveAgent(input.agent);

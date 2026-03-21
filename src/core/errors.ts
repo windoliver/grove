@@ -156,6 +156,24 @@ export class StateConflictError extends GroveError {
   }
 }
 
+/** Thrown when a contribution violates agent constraints from the GROVE.md contract. */
+export class ContractViolationError extends GroveError {
+  readonly field: "allowedKinds" | "requiredArtifacts" | "requiredRelations";
+  readonly hint: string;
+
+  constructor(opts: {
+    field: "allowedKinds" | "requiredArtifacts" | "requiredRelations";
+    hint: string;
+    message?: string;
+  }) {
+    const msg = opts.message ?? `Contract violation (${opts.field}): ${opts.hint}`;
+    super(msg);
+    this.name = "ContractViolationError";
+    this.field = opts.field;
+    this.hint = opts.hint;
+  }
+}
+
 /** Thrown when a lease duration violates policy (exceeds max). */
 export class LeaseViolationError extends GroveError {
   readonly requestedSeconds: number;
