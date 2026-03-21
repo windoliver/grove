@@ -375,6 +375,17 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       },
     },
     {
+      name: "stats",
+      description: "Show contribution statistics",
+      needsStore: false,
+      handler: async (args) => {
+        const { parseStatsArgs, runStats } = await import("./commands/stats.js");
+        await withCliDeps(async (a, deps) => {
+          await runStats(parseStatsArgs([...a]), deps);
+        }, args);
+      },
+    },
+    {
       name: "status",
       description: "Show agent status overview",
       needsStore: false,
