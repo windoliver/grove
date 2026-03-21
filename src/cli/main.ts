@@ -35,7 +35,6 @@ import { runRelease } from "./commands/release.js";
 import { parseSearchArgs, runSearch } from "./commands/search.js";
 import { parseThreadArgs, runThread } from "./commands/thread.js";
 import { parseThreadsArgs, runThreads } from "./commands/threads.js";
-import { parseExportDagArgs, runExportDag } from "./commands/export-dag.js";
 import { parseTreeArgs, runTree } from "./commands/tree.js";
 import { initCliDeps } from "./context.js";
 import { UsageError } from "./errors.js";
@@ -376,6 +375,15 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       },
     },
     {
+      name: "time",
+      description: "Print current timestamp",
+      needsStore: false,
+      handler: async (args) => {
+        const { handleTime } = await import("./commands/time.js");
+        await handleTime(args);
+      },
+    },
+    {
       name: "whoami",
       description: "Show resolved agent identity",
       needsStore: false,
@@ -519,6 +527,7 @@ Usage:
 
   grove inbox send "msg" --to @agent  Send a message to an agent
   grove inbox read [--from <id>]     Read inbox messages
+  grove time                         Print current timestamp
   grove whoami                       Show resolved agent identity
   grove status [--json]              Show agent status overview
 
