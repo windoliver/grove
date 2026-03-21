@@ -232,6 +232,11 @@ export const COMMANDS: readonly CommandMeta[] = [
     flags: ["json"],
   },
   {
+    name: "stats",
+    description: "Show contribution statistics",
+    flags: ["json"],
+  },
+  {
     name: "status",
     description: "Show agent status overview",
     flags: ["json"],
