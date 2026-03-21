@@ -199,6 +199,66 @@ describe("grove CLI integration", () => {
     }
   });
 
+  test("grove whoami prints agent identity", async () => {
+    const { stdout, exitCode } = await runGrove(["whoami"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Agent ID:");
+    expect(stdout).toContain("test-agent");
+  });
+
+  test("grove whoami --json returns valid JSON with agentId", async () => {
+    const { stdout, exitCode } = await runGrove(["whoami", "--json"]);
+    expect(exitCode).toBe(0);
+    const data = JSON.parse(stdout);
+    expect(data.agentId).toBe("test-agent");
+  });
+
+  test("grove whoami shows optional fields from env vars", async () => {
+    const proc = Bun.spawn(
+      ["bun", join(import.meta.dir, "main.ts"), "--grove", groveDir, "whoami"],
+      {
+        cwd: tempDir,
+        stdout: "pipe",
+        stderr: "pipe",
+        env: {
+          ...process.env,
+          GROVE_AGENT_ID: "test-agent",
+          GROVE_AGENT_ROLE: "coder",
+          GROVE_AGENT_MODEL: "claude-opus-4-6",
+        },
+      },
+    );
+    const stdout = await new Response(proc.stdout).text();
+    const exitCode = await proc.exited;
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Role:      coder");
+    expect(stdout).toContain("Model:     claude-opus-4-6");
+  });
+
+  test("grove whoami --json includes optional fields", async () => {
+    const proc = Bun.spawn(
+      ["bun", join(import.meta.dir, "main.ts"), "--grove", groveDir, "whoami", "--json"],
+      {
+        cwd: tempDir,
+        stdout: "pipe",
+        stderr: "pipe",
+        env: {
+          ...process.env,
+          GROVE_AGENT_ID: "test-agent",
+          GROVE_AGENT_ROLE: "reviewer",
+          GROVE_AGENT_NAME: "Test Bot",
+        },
+      },
+    );
+    const stdout = await new Response(proc.stdout).text();
+    const exitCode = await proc.exited;
+    expect(exitCode).toBe(0);
+    const data = JSON.parse(stdout);
+    expect(data.agentId).toBe("test-agent");
+    expect(data.role).toBe("reviewer");
+    expect(data.agentName).toBe("Test Bot");
+  });
+
   test("grove unknown-command shows error", async () => {
     const { stderr, exitCode } = await runGrove(["nonexistent"]);
     expect(exitCode).toBe(2); // usage error
