@@ -366,6 +366,15 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       },
     },
     {
+      name: "greet",
+      description: "Greet someone by name",
+      needsStore: false,
+      handler: async (args) => {
+        const { handleGreet } = await import("./commands/greet.js");
+        await handleGreet(args);
+      },
+    },
+    {
       name: "whoami",
       description: "Show resolved agent identity",
       needsStore: false,
