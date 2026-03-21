@@ -257,6 +257,10 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
       actions.onGoalBackspace();
       return true;
     }
+    if (input === "space") {
+      actions.onGoalChar(" ");
+      return true;
+    }
     if (input && input.length === 1 && !isCtrl) {
       actions.onGoalChar(input);
       return true;
