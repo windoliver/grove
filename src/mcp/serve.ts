@@ -48,10 +48,13 @@ try {
     throw new Error("Workspace manager failed to initialize");
   }
 
-  // When Nexus URL is set, use Nexus stores for contributions + claims
-  // so all data flows through Nexus VFS (not just local SQLite)
+  // When Nexus URL is set, use ALL Nexus stores — contributions, claims,
+  // bounties, outcomes, CAS — so everything flows through Nexus VFS.
   let contributionStore = runtime.contributionStore as import("../core/store.js").ContributionStore;
   let claimStore = runtime.claimStore as import("../core/store.js").ClaimStore;
+  let bountyStore = runtime.bountyStore as import("../core/bounty-store.js").BountyStore;
+  let outcomeStore: import("../core/outcome.js").OutcomeStore | undefined;
+  let cas = runtime.cas as import("../core/cas.js").ContentStore;
   let nexusClient: import("../nexus/nexus-http-client.js").NexusHttpClient | undefined;
   const zoneId = process.env.GROVE_ZONE_ID ?? "default";
 
@@ -59,6 +62,9 @@ try {
     const { NexusHttpClient } = await import("../nexus/nexus-http-client.js");
     const { NexusContributionStore } = await import("../nexus/nexus-contribution-store.js");
     const { NexusClaimStore } = await import("../nexus/nexus-claim-store.js");
+    const { NexusBountyStore } = await import("../nexus/nexus-bounty-store.js");
+    const { NexusOutcomeStore } = await import("../nexus/nexus-outcome-store.js");
+    const { NexusCas } = await import("../nexus/nexus-cas.js");
 
     nexusClient = new NexusHttpClient({
       url: nexusUrl,
@@ -67,6 +73,9 @@ try {
 
     contributionStore = new NexusContributionStore({ client: nexusClient, zoneId });
     claimStore = new NexusClaimStore({ client: nexusClient, zoneId });
+    bountyStore = new NexusBountyStore({ client: nexusClient, zoneId });
+    outcomeStore = new NexusOutcomeStore({ client: nexusClient, zoneId });
+    cas = new NexusCas({ client: nexusClient, zoneId });
     process.stderr.write(`grove-mcp: using Nexus stores at ${nexusUrl} (zone: ${zoneId})\n`);
   }
 
@@ -88,13 +97,14 @@ try {
   deps = {
     contributionStore,
     claimStore,
-    bountyStore: runtime.bountyStore,
-    cas: runtime.cas,
+    bountyStore,
+    cas,
     frontier: runtime.frontier,
     workspace: runtime.workspace,
     contract: runtime.contract,
     onContributionWrite: runtime.onContributionWrite,
     workspaceBoundary: runtime.groveRoot,
+    ...(outcomeStore ? { outcomeStore } : {}),
     ...(eventBus ? { eventBus } : {}),
     ...(topologyRouter ? { topologyRouter } : {}),
   };
