@@ -386,6 +386,17 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       },
     },
     {
+      name: "uptime",
+      description: "Print seconds since grove init",
+      needsStore: false,
+      handler: async (args) => {
+        const { parseUptimeArgs, runUptime } = await import("./commands/uptime.js");
+        await withCliDeps(async (a, deps) => {
+          await runUptime(parseUptimeArgs([...a]), deps);
+        }, args);
+      },
+    },
+    {
       name: "completions",
       description: "Generate shell completion scripts",
       needsStore: false,
