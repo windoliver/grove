@@ -140,7 +140,7 @@ export class SpawnManager {
           await mkdir(baseDir, { recursive: true });
         }
         execSync(
-          `git worktree add "${workspacePath}" -b "${branch}" HEAD`,
+          `git worktree add "${workspacePath}" -b "${branch}" origin/main`,
           { cwd: projectRoot, encoding: "utf-8", stdio: "pipe" },
         );
       } catch {
