@@ -375,6 +375,15 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       },
     },
     {
+      name: "uptime",
+      description: "Show grove uptime since init",
+      needsStore: false,
+      handler: async (args) => {
+        const { handleUptime } = await import("./commands/uptime.js");
+        await handleUptime(args, groveOverride);
+      },
+    },
+    {
       name: "status",
       description: "Show agent status overview",
       needsStore: false,
@@ -511,6 +520,7 @@ Usage:
   grove inbox read [--from <id>]     Read inbox messages
   grove whoami                       Show resolved agent identity
   grove status [--json]              Show agent status overview
+  grove uptime [--json]              Show grove uptime since init
 
   grove export --to-discussion <owner/repo> <cid>   Export to GitHub Discussion
   grove export --to-pr <owner/repo> <cid>           Export to GitHub PR
