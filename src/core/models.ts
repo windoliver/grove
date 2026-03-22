@@ -16,6 +16,8 @@ export const ContributionKind = {
   Adoption: "adoption",
   Reproduction: "reproduction",
   Plan: "plan",
+  AskUser: "ask_user",
+  Response: "response",
 } as const;
 export type ContributionKind = (typeof ContributionKind)[keyof typeof ContributionKind];
 

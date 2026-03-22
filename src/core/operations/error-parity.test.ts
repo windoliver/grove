@@ -14,6 +14,7 @@ import {
   ConcurrencyLimitError,
   GroveError,
   LeaseViolationError,
+  PolicyViolationError,
   RateLimitError,
   RetryExhaustedError,
 } from "../errors.js";
@@ -83,6 +84,15 @@ const ERROR_MAPPING: ReadonlyArray<{
     expectedCode: OperationErrorCode.LeaseViolation,
   },
   {
+    name: "PolicyViolationError",
+    error: new PolicyViolationError({
+      violationType: "missing_score",
+      details: { metric: "val_bpb" },
+      message: "Metric 'val_bpb' is required by contract",
+    }),
+    expectedCode: OperationErrorCode.PolicyViolation,
+  },
+  {
     name: "Generic GroveError",
     error: new GroveError("generic"),
     expectedCode: OperationErrorCode.ValidationError,
@@ -143,9 +153,10 @@ describe("error codes are exhaustive", () => {
     expect(codes).toContain("LEASE_VIOLATION");
     expect(codes).toContain("NOT_FOUND");
     expect(codes).toContain("STATE_CONFLICT");
+    expect(codes).toContain("POLICY_VIOLATION");
     expect(codes).toContain("VALIDATION_ERROR");
     expect(codes).toContain("INTERNAL_ERROR");
-    expect(codes.length).toBe(10);
+    expect(codes.length).toBe(11);
   });
 
   test("OperationErrorCode matches MCP McpErrorCode", async () => {

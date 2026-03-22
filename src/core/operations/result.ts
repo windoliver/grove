@@ -13,6 +13,7 @@ import {
   GroveError,
   LeaseViolationError,
   NotFoundError,
+  PolicyViolationError,
   RateLimitError,
   RetryExhaustedError,
   StateConflictError,
@@ -32,6 +33,7 @@ export const OperationErrorCode = {
   LeaseViolation: "LEASE_VIOLATION",
   NotFound: "NOT_FOUND",
   StateConflict: "STATE_CONFLICT",
+  PolicyViolation: "POLICY_VIOLATION",
   ValidationError: "VALIDATION_ERROR",
   InternalError: "INTERNAL_ERROR",
 } as const;
@@ -169,6 +171,17 @@ export function fromGroveError(error: unknown): OperationErr {
       details: {
         requestedSeconds: error.requestedSeconds,
         maxSeconds: error.maxSeconds,
+      },
+    });
+  }
+
+  if (error instanceof PolicyViolationError) {
+    return err({
+      code: OperationErrorCode.PolicyViolation,
+      message: error.message,
+      details: {
+        violationType: error.violationType,
+        ...error.details,
       },
     });
   }

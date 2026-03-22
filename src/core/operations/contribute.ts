@@ -17,6 +17,8 @@ import type {
   Score,
 } from "../models.js";
 import { ContributionKind as CK, ContributionMode as CM, RelationType } from "../models.js";
+import type { PolicyEnforcementResult } from "../policy-enforcer.js";
+import { PolicyEnforcer } from "../policy-enforcer.js";
 import type { ContributionStore } from "../store.js";
 import { toUtcIso } from "../time.js";
 import type { AgentOverrides } from "./agent.js";
@@ -38,6 +40,8 @@ export interface ContributeResult {
   readonly artifactCount: number;
   readonly relationCount: number;
   readonly createdAt: string;
+  /** Policy enforcement result (present when a contract is loaded). */
+  readonly policy?: PolicyEnforcementResult | undefined;
 }
 
 /** Result of a review operation. */
@@ -227,8 +231,101 @@ export async function contributeOperation(
     };
 
     const contribution = createContribution(contributionInput);
+
+    // --- Policy enforcement (fast path: validate before write) ---
+    //
+    // Serialization model (Issue 14):
+    //
+    // The PolicyEnforcer.enforce() call runs BEFORE deps.contributionStore.put(),
+    // which means enforce() and put() are NOT atomic — there is a TOCTOU window
+    // between the gate check and the write. Two concurrent contributions could
+    // both pass the gate check against the same stale frontier.
+    //
+    // Why this is acceptable for the current architecture:
+    // - Single-process deployment: one SQLite file, one Node.js process.
+    // - EnforcingContributionStore.put() runs inside a mutex, so writes are
+    //   serialized. The enforce() call reads happen before mutex acquisition,
+    //   but the JS event loop is single-threaded, so the enforce() → put()
+    //   sequence runs without interruption unless there is an await between
+    //   them that yields to another contributor — which only happens if two
+    //   contributeOperation() calls are racing via Promise.all() or similar.
+    // - In practice, CLI callers are sequential and agent callers use claim
+    //   leases to coordinate, so concurrent gate checks are rare.
+    //
+    // Proper fix (deferred): Either (a) move enforcement into
+    // EnforcingContributionStore as a pre-write hook that runs inside the
+    // mutex, or (b) add a preWriteHook callback to EnforcingContributionStore
+    // that runs after rate-limit checks but before the inner store.put().
+    let policyResult: PolicyEnforcementResult | undefined;
+    if (deps.contract !== undefined && deps.contributionStore !== undefined) {
+      const enforcer = new PolicyEnforcer(
+        deps.contract,
+        deps.contributionStore,
+        deps.outcomeStore,
+      );
+      // Strict enforcement for structural constraints (required artifacts,
+      // relations, context) — these apply in ALL modes. Gate checks
+      // (metric_improves etc) are only strict in evaluation mode.
+      const hasStructuralConstraints =
+        deps.contract.agentConstraints?.requiredArtifacts !== undefined ||
+        deps.contract.agentConstraints?.requiredRelations !== undefined ||
+        deps.contract.evaluation?.requiredContext !== undefined;
+      const hasGateEnforcement =
+        deps.contract.gates !== undefined && deps.contract.gates.length > 0;
+      const isStrict =
+        hasStructuralConstraints ||
+        (hasGateEnforcement &&
+          deps.contract.mode === CM.Evaluation &&
+          deps.contract.outcomePolicy?.requireManualReview !== true);
+      policyResult = await enforcer.enforce(contribution, isStrict);
+
+      // In strict mode, PolicyViolationError is thrown by enforce() and
+      // caught below by fromGroveError(). We only reach here if passed.
+    }
+
     await deps.contributionStore.put(contribution);
     deps.onContributionWrite?.();
+
+    // --- Post-write: persist derived outcome (outside mutex scope) ---
+    if (policyResult?.derivedOutcome !== undefined && deps.contract !== undefined) {
+      const enforcer = new PolicyEnforcer(
+        deps.contract,
+        deps.contributionStore,
+        deps.outcomeStore,
+      );
+      await enforcer.persistOutcome(contribution.cid, policyResult.derivedOutcome);
+    }
+
+    // --- Post-write: route events via topology (outside mutex scope) ---
+    if (deps.topologyRouter !== undefined && contribution.agent.role !== undefined) {
+      deps.topologyRouter.route(contribution.agent.role, {
+        cid: contribution.cid,
+        kind: contribution.kind,
+        summary: contribution.summary,
+        agentId: contribution.agent.agentId,
+      });
+    }
+
+    // If stop condition met, broadcast stop to all agents
+    if (policyResult?.stopResult?.stopped && deps.topologyRouter !== undefined) {
+      deps.topologyRouter.broadcastStop(policyResult.stopResult.reason ?? "Stop condition met");
+    }
+
+    // --- Post-write: execute after_contribute hook (outside mutex scope) ---
+    if (
+      deps.hookRunner !== undefined &&
+      deps.hookCwd !== undefined &&
+      deps.contract !== undefined
+    ) {
+      if (deps.contract.hooks?.after_contribute !== undefined) {
+        const hookEntry = deps.contract.hooks.after_contribute;
+        // Fire and forget — hook failures don't block the contribution
+        // (accept-then-flag semantics).
+        deps.hookRunner.run(hookEntry, deps.hookCwd).catch(() => {
+          // Intentionally swallowed — hook failure is non-fatal
+        });
+      }
+    }
 
     return ok({
       cid: contribution.cid,
@@ -238,188 +335,138 @@ export async function contributeOperation(
       artifactCount: Object.keys(contribution.artifacts).length,
       relationCount: contribution.relations.length,
       createdAt: contribution.createdAt,
+      ...(policyResult !== undefined ? { policy: policyResult } : {}),
     });
   } catch (error) {
     return fromGroveError(error);
   }
 }
 
-/** Submit a review of an existing contribution. */
+/**
+ * Submit a review of an existing contribution.
+ * Sugar over contributeOperation: sets kind=review, adds reviews relation.
+ */
 export async function reviewOperation(
   input: ReviewInput,
   deps: OperationDeps,
 ): Promise<OperationResult<ReviewResult>> {
-  try {
-    if (deps.contributionStore === undefined) {
-      return validationErr("Contribution operations not available (missing contributionStore)");
-    }
+  const relations: Relation[] = [
+    {
+      targetCid: input.targetCid,
+      relationType: RelationType.Reviews,
+      ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+    },
+  ];
 
-    const relations: Relation[] = [
-      {
-        targetCid: input.targetCid,
-        relationType: RelationType.Reviews,
-        ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
-      },
-    ];
-
-    // Validate target exists
-    const relErr = await validateRelations(deps.contributionStore, relations);
-    if (relErr !== undefined) return relErr as OperationResult<ReviewResult>;
-
-    const agent = resolveAgent(input.agent);
-    const now = new Date().toISOString();
-
-    const contributionInput: ContributionInput = {
+  const result = await contributeOperation(
+    {
       kind: CK.Review,
       mode: CM.Evaluation,
       summary: input.summary,
       ...(input.description !== undefined ? { description: input.description } : {}),
-      artifacts: {},
       relations,
       ...(input.scores !== undefined ? { scores: input.scores } : {}),
-      tags: [...(input.tags ?? [])],
+      tags: input.tags,
       ...(input.context !== undefined ? { context: input.context } : {}),
-      agent,
-      createdAt: now,
-    };
+      agent: input.agent,
+    },
+    deps,
+  );
 
-    const contribution = createContribution(contributionInput);
-    await deps.contributionStore.put(contribution);
-    deps.onContributionWrite?.();
+  if (!result.ok) return result as OperationResult<ReviewResult>;
 
-    return ok({
-      cid: contribution.cid,
-      kind: "review" as const,
-      targetCid: input.targetCid,
-      summary: contribution.summary,
-      createdAt: contribution.createdAt,
-    });
-  } catch (error) {
-    return fromGroveError(error);
-  }
+  return ok({
+    cid: result.value.cid,
+    kind: "review" as const,
+    targetCid: input.targetCid,
+    summary: result.value.summary,
+    createdAt: result.value.createdAt,
+  });
 }
 
-/** Submit a reproduction attempt of an existing contribution. */
+/**
+ * Submit a reproduction attempt of an existing contribution.
+ * Sugar over contributeOperation: sets kind=reproduction, adds reproduces relation.
+ */
 export async function reproduceOperation(
   input: ReproduceInput,
   deps: OperationDeps,
 ): Promise<OperationResult<ReproduceResult>> {
-  try {
-    if (deps.contributionStore === undefined) {
-      return validationErr("Contribution operations not available (missing contributionStore)");
-    }
+  const reproResult = input.result ?? "confirmed";
 
-    const result = input.result ?? "confirmed";
-    if (deps.contributionStore === undefined) {
-      return validationErr("Contribution operations not available (missing contributionStore)");
-    }
+  const relations: Relation[] = [
+    {
+      targetCid: input.targetCid,
+      relationType: RelationType.Reproduces,
+      metadata: { result: reproResult } as Readonly<Record<string, JsonValue>>,
+    },
+  ];
 
-    const artifacts = input.artifacts ?? {};
-
-    const relations: Relation[] = [
-      {
-        targetCid: input.targetCid,
-        relationType: RelationType.Reproduces,
-        metadata: { result } as Readonly<Record<string, JsonValue>>,
-      },
-    ];
-
-    // Validate target exists
-    const relErr = await validateRelations(deps.contributionStore, relations);
-    if (relErr !== undefined) return relErr as OperationResult<ReproduceResult>;
-
-    // Validate artifacts
-    if (Object.keys(artifacts).length > 0) {
-      const artErr = await validateArtifacts(deps, artifacts);
-      if (artErr !== undefined) return artErr as OperationResult<ReproduceResult>;
-    }
-
-    const agent = resolveAgent(input.agent);
-    const now = new Date().toISOString();
-
-    const contributionInput: ContributionInput = {
+  const result = await contributeOperation(
+    {
       kind: CK.Reproduction,
       mode: CM.Evaluation,
       summary: input.summary,
       ...(input.description !== undefined ? { description: input.description } : {}),
-      artifacts,
+      artifacts: input.artifacts,
       relations,
       ...(input.scores !== undefined ? { scores: input.scores } : {}),
-      tags: [...(input.tags ?? [])],
+      tags: input.tags,
       ...(input.context !== undefined ? { context: input.context } : {}),
-      agent,
-      createdAt: now,
-    };
+      agent: input.agent,
+    },
+    deps,
+  );
 
-    const contribution = createContribution(contributionInput);
-    await deps.contributionStore.put(contribution);
-    deps.onContributionWrite?.();
+  if (!result.ok) return result as OperationResult<ReproduceResult>;
 
-    return ok({
-      cid: contribution.cid,
-      kind: "reproduction" as const,
-      targetCid: input.targetCid,
-      result,
-      summary: contribution.summary,
-      createdAt: contribution.createdAt,
-    });
-  } catch (error) {
-    return fromGroveError(error);
-  }
+  return ok({
+    cid: result.value.cid,
+    kind: "reproduction" as const,
+    targetCid: input.targetCid,
+    result: reproResult,
+    summary: result.value.summary,
+    createdAt: result.value.createdAt,
+  });
 }
 
-/** Post a discussion or reply. */
+/**
+ * Post a discussion or reply.
+ * Sugar over contributeOperation: sets kind=discussion, mode=exploration.
+ */
 export async function discussOperation(
   input: DiscussInput,
   deps: OperationDeps,
 ): Promise<OperationResult<DiscussResult>> {
-  try {
-    if (deps.contributionStore === undefined) {
-      return validationErr("Contribution operations not available (missing contributionStore)");
-    }
+  const relations: Relation[] = [];
+  if (input.targetCid !== undefined) {
+    relations.push({
+      targetCid: input.targetCid,
+      relationType: RelationType.RespondsTo,
+    });
+  }
 
-    const relations: Relation[] = [];
-    if (input.targetCid !== undefined) {
-      relations.push({
-        targetCid: input.targetCid,
-        relationType: RelationType.RespondsTo,
-      });
-    }
-
-    // Validate target exists (if replying)
-    if (relations.length > 0) {
-      const relErr = await validateRelations(deps.contributionStore, relations);
-      if (relErr !== undefined) return relErr as OperationResult<DiscussResult>;
-    }
-
-    const agent = resolveAgent(input.agent);
-    const now = new Date().toISOString();
-
-    const contributionInput: ContributionInput = {
+  const result = await contributeOperation(
+    {
       kind: CK.Discussion,
       mode: CM.Exploration,
       summary: input.summary,
       ...(input.description !== undefined ? { description: input.description } : {}),
-      artifacts: {},
       relations,
-      tags: [...(input.tags ?? [])],
+      tags: input.tags,
       ...(input.context !== undefined ? { context: input.context } : {}),
-      agent,
-      createdAt: now,
-    };
+      agent: input.agent,
+    },
+    deps,
+  );
 
-    const contribution = createContribution(contributionInput);
-    await deps.contributionStore.put(contribution);
-    deps.onContributionWrite?.();
+  if (!result.ok) return result as OperationResult<DiscussResult>;
 
-    return ok({
-      cid: contribution.cid,
-      kind: "discussion" as const,
-      ...(input.targetCid !== undefined ? { targetCid: input.targetCid } : {}),
-      summary: contribution.summary,
-      createdAt: contribution.createdAt,
-    });
-  } catch (error) {
-    return fromGroveError(error);
-  }
+  return ok({
+    cid: result.value.cid,
+    kind: "discussion" as const,
+    ...(input.targetCid !== undefined ? { targetCid: input.targetCid } : {}),
+    summary: result.value.summary,
+    createdAt: result.value.createdAt,
+  });
 }

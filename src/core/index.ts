@@ -1,3 +1,8 @@
+export type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
+export { AcpxRuntime } from "./acpx-runtime.js";
+export { MockRuntime } from "./mock-runtime.js";
+export { SubprocessRuntime } from "./subprocess-runtime.js";
+export { TmuxRuntime } from "./tmux-runtime.js";
 export {
   canRetry,
   computeBackoffMs,
@@ -59,6 +64,9 @@ export {
   MAX_GOSSIP_OFFERED_PEERS,
   MAX_MERGED_FRONTIER_ENTRIES,
 } from "./constants.js";
+export type { EventBus, EventHandler, GroveEvent } from "./event-bus.js";
+export { LocalEventBus } from "./local-event-bus.js";
+export { TopologyRouter } from "./topology-router.js";
 export type {
   AgentConstraints,
   AgentRole,
@@ -80,6 +88,8 @@ export type {
   RoleEdge,
   SpawningConfig,
   StopConditions,
+  EvaluationConfig,
+  ReproducibilityConfig,
   TargetMetric,
 } from "./contract.js";
 export { parseGroveContract, parseGroveContractObject } from "./contract.js";
@@ -90,11 +100,19 @@ export type {
   TransferResult,
 } from "./credits.js";
 export { EnforcingClaimStore, EnforcingContributionStore } from "./enforcing-store.js";
+export type {
+  DerivedOutcome,
+  PolicyEnforcementResult,
+  PolicyViolation,
+  StopCheckResult,
+} from "./policy-enforcer.js";
+export { PolicyEnforcer } from "./policy-enforcer.js";
 export {
   ArtifactLimitError,
   ConcurrencyLimitError,
   GroveError,
   LeaseViolationError,
+  PolicyViolationError,
   RateLimitError,
   RetryExhaustedError,
 } from "./errors.js";
@@ -178,6 +196,20 @@ export type {
   ExpireStaleOptions,
 } from "./store.js";
 export { ExpiryReason } from "./store.js";
+export type {
+  SessionConfig,
+  SessionStatus,
+  AgentSessionInfo,
+} from "./session-orchestrator.js";
+export { SessionOrchestrator } from "./session-orchestrator.js";
+export {
+  extractChoices,
+  extractQuestion,
+  findPendingQuestions,
+  formatAskUser,
+  isAskUser,
+  isResponse,
+} from "./ask-user-detection.js";
 export { type SpawnOptions, type SpawnResult, spawnCommand, spawnOrThrow } from "./subprocess.js";
 export { toUtcIso } from "./time.js";
 export type {
@@ -188,3 +220,27 @@ export type {
   WorkspaceQuery,
 } from "./workspace.js";
 export { WorkspaceStatus } from "./workspace.js";
+export type {
+  WorkspaceConstraints,
+  WorkspaceValidationResult,
+  WorkspaceViolation,
+} from "./workspace-validator.js";
+export { validateWorkspaceMutations } from "./workspace-validator.js";
+export type {
+  ProvisionedWorkspace,
+  SessionWorkspaces,
+  WorkspaceProvisionError,
+  WorkspaceProvisionOptions,
+} from "./workspace-provisioner.js";
+export {
+  cleanupSessionWorkspaces,
+  provisionSessionWorkspaces,
+  provisionWorkspace,
+} from "./workspace-provisioner.js";
+export type {
+  CreateSessionInput,
+  Session,
+  SessionStore,
+} from "./session-manager.js";
+export { SessionManager } from "./session-manager.js";
+export { InMemorySessionStore } from "./in-memory-session-store.js";

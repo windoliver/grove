@@ -29,6 +29,7 @@ import { dag } from "./routes/dag.js";
 import { diff } from "./routes/diff.js";
 import { frontier } from "./routes/frontier.js";
 import { goals } from "./routes/goals.js";
+import { health } from "./routes/health.js";
 import { gossip } from "./routes/gossip.js";
 import { grove } from "./routes/grove.js";
 import { outcomes } from "./routes/outcomes.js";
@@ -55,6 +56,7 @@ export function createApp(deps: ServerDeps): Hono<ServerEnv> {
   });
 
   // Mount route groups
+  app.route("/api/health", health);
   app.route("/api/agents", agents);
   app.route("/api/boardroom", boardroom);
   app.route("/api/contributions", contributions);

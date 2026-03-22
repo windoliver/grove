@@ -35,7 +35,7 @@ const frontierInputSchema = z.object({
   metric: z.string().optional().describe("Filter to a specific metric name"),
   tags: z.array(z.string()).optional().describe("Filter by tags (all must match)"),
   kind: z
-    .enum(["work", "review", "discussion", "adoption", "reproduction", "plan"])
+    .enum(["work", "review", "discussion", "adoption", "reproduction", "plan", "ask_user", "response"])
     .optional()
     .describe("Filter by contribution kind"),
   mode: z.enum(["evaluation", "exploration"]).optional().describe("Filter by contribution mode"),
@@ -60,7 +60,7 @@ const frontierInputSchema = z.object({
 const searchInputSchema = z.object({
   query: z.string().describe("Full-text search query"),
   kind: z
-    .enum(["work", "review", "discussion", "adoption", "reproduction", "plan"])
+    .enum(["work", "review", "discussion", "adoption", "reproduction", "plan", "ask_user", "response"])
     .optional()
     .describe("Filter by contribution kind"),
   mode: z.enum(["evaluation", "exploration"]).optional().describe("Filter by contribution mode"),
@@ -80,7 +80,7 @@ const searchInputSchema = z.object({
 
 const logInputSchema = z.object({
   kind: z
-    .enum(["work", "review", "discussion", "adoption", "reproduction", "plan"])
+    .enum(["work", "review", "discussion", "adoption", "reproduction", "plan", "ask_user", "response"])
     .optional()
     .describe("Filter by contribution kind"),
   mode: z.enum(["evaluation", "exploration"]).optional().describe("Filter by contribution mode"),

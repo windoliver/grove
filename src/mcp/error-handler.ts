@@ -13,6 +13,7 @@ import {
   GroveError,
   LeaseViolationError,
   NotFoundError,
+  PolicyViolationError,
   RateLimitError,
   RetryExhaustedError,
   StateConflictError,
@@ -28,6 +29,7 @@ export const McpErrorCode = {
   LeaseViolation: "LEASE_VIOLATION",
   NotFound: "NOT_FOUND",
   StateConflict: "STATE_CONFLICT",
+  PolicyViolation: "POLICY_VIOLATION",
   ValidationError: "VALIDATION_ERROR",
   InternalError: "INTERNAL_ERROR",
 } as const;
@@ -79,6 +81,13 @@ export function handleToolError(error: unknown): CallToolResult {
     return toolError(
       McpErrorCode.LeaseViolation,
       `Lease violation: requested ${error.requestedSeconds}s exceeds max ${error.maxSeconds}s`,
+    );
+  }
+
+  if (error instanceof PolicyViolationError) {
+    return toolError(
+      McpErrorCode.PolicyViolation,
+      `Policy violation (${error.violationType}): ${error.message}`,
     );
   }
 

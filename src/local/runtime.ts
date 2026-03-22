@@ -33,7 +33,7 @@ export interface LocalRuntimeOptions {
   readonly frontierCacheTtlMs?: number;
   /** Whether to initialize a workspace manager. Default: `true`. */
   readonly workspace?: boolean;
-  /** Whether to parse the GROVE.md contract. Default: `false`. */
+  /** Whether to parse the GROVE.md contract. Default: `true`. */
   readonly parseContract?: boolean;
 }
 
@@ -68,7 +68,7 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
     groveDir,
     frontierCacheTtlMs = 30_000,
     workspace: createWorkspace = true,
-    parseContract: shouldParseContract = false,
+    parseContract: shouldParseContract = true,
   } = options;
 
   const dbPath = join(groveDir, "grove.db");

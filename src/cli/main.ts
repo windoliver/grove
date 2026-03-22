@@ -35,6 +35,7 @@ import { runRelease } from "./commands/release.js";
 import { parseSearchArgs, runSearch } from "./commands/search.js";
 import { parseThreadArgs, runThread } from "./commands/thread.js";
 import { parseThreadsArgs, runThreads } from "./commands/threads.js";
+import { parseExportDagArgs, runExportDag } from "./commands/export-dag.js";
 import { parseTreeArgs, runTree } from "./commands/tree.js";
 import { initCliDeps } from "./context.js";
 import { UsageError } from "./errors.js";
@@ -318,6 +319,15 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       handler: async (args) => {
         const { handleGoal } = await import("./commands/goal.js");
         await handleGoal(args);
+      },
+    },
+    {
+      name: "session",
+      description: "Manage agent sessions (start, list, status, stop)",
+      needsStore: false,
+      handler: async (args) => {
+        const { executeSession } = await import("./commands/session.js");
+        await executeSession(args);
       },
     },
     {

@@ -68,7 +68,7 @@ const ReadResultSchema = z.union([BytesResultSchema, LegacyReadResultSchema]);
 const WriteResultSchema = z
   .object({
     bytes_written: z.number(),
-    etag: z.string(),
+    etag: z.string().optional(),
     version: z.number().optional(),
   })
   .passthrough();
@@ -80,10 +80,11 @@ const StatResultSchema = z.object({
       etag: z.string().optional(),
       content_type: z.string().optional().nullable(),
       mime_type: z.string().optional().nullable(),
-      created_at: z.string().optional(),
-      modified_at: z.string().optional(),
+      created_at: z.string().optional().nullable(),
+      modified_at: z.string().optional().nullable(),
     })
-    .passthrough(),
+    .passthrough()
+    .nullable(),
 });
 const DeleteResultSchema = z.object({ deleted: z.boolean() });
 // Nexus list returns either flat strings or objects depending on details flag.
@@ -263,7 +264,7 @@ export class NexusHttpClient implements NexusClient {
     const result = await this.rpc("sys_write", params, WriteResultSchema);
     return {
       bytesWritten: result.bytes_written,
-      etag: result.etag,
+      etag: result.etag ?? "",
       version: result.version,
     };
   }
@@ -290,12 +291,13 @@ export class NexusHttpClient implements NexusClient {
     try {
       const result = await this.rpc("sys_stat", { path }, StatResultSchema);
       const m = result.metadata;
+      if (!m) return { size: 0, etag: "" };
       return {
         size: m.size ?? 0,
         etag: m.etag ?? "",
         contentType: m.content_type ?? m.mime_type ?? undefined,
-        createdAt: m.created_at,
-        modifiedAt: m.modified_at,
+        createdAt: m.created_at ?? undefined,
+        modifiedAt: m.modified_at ?? undefined,
       };
     } catch (err) {
       if (err instanceof NexusNotFoundError) return undefined;

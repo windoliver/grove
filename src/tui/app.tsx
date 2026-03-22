@@ -50,6 +50,8 @@ export interface AppProps {
   readonly presetName?: string | undefined;
   /** Resolved .grove directory path for session persistence. */
   readonly groveDir?: string | undefined;
+  /** EventBus for event-driven data updates (Nexus mode). */
+  readonly eventBus?: import("../core/event-bus.js").EventBus | undefined;
 }
 
 const PAGE_SIZE = 20;
@@ -303,7 +305,7 @@ export function App({
         // Session persistence is best-effort
       }
     }
-    spawnManagerRef.current = new SpawnManager(provider, tmux, showError, sessionStore);
+    spawnManagerRef.current = new SpawnManager(provider, tmux, showError, sessionStore, groveDir);
   }
 
   // Reconcile persisted sessions on startup (reattach live, clean dead)
@@ -746,6 +748,10 @@ export function App({
               showError(err instanceof Error ? err.message : "Failed to set goal");
             }
           })();
+        }
+        // Also set on SpawnManager so agents receive the goal in CLAUDE.md + command args
+        if (buf) {
+          spawnManagerRef.current?.setSessionGoal(buf);
         }
         dispatch({ type: "GOAL_SUBMIT" });
         panels.setMode(InputMode.Normal);

@@ -44,6 +44,20 @@ afterAll(() => {
   server.stop(true);
 });
 
+describe("E2E: health check", () => {
+  it("GET /api/health returns ok status", async () => {
+    const res = await fetch(`${baseUrl}/api/health`);
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as Json;
+    expect(data.status).toBe("ok");
+    expect(data.checks.contributionStore).toBe("ok");
+    expect(data.checks.claimStore).toBe("ok");
+    expect(data.checks.cas).toBe("ok");
+    expect(typeof data.uptime).toBe("number");
+    expect(typeof data.timestamp).toBe("string");
+  });
+});
+
 describe("E2E: grove metadata", () => {
   it("GET /api/grove returns metadata", async () => {
     const res = await fetch(`${baseUrl}/api/grove`);

@@ -375,7 +375,7 @@ describe("E2E: research-loop (local)", () => {
     const log = await groveLocal(dir, "log");
     expect(log.exitCode).toBe(0);
 
-    // Contribute as researcher
+    // Contribute as researcher (must include required metric from gate)
     const contribute = await groveLocal(
       dir,
       "contribute",
@@ -385,6 +385,8 @@ describe("E2E: research-loop (local)", () => {
       "Experiment: learning rate sweep",
       "--mode",
       "evaluation",
+      "--score",
+      "val_bpb=1.12",
     );
     expect(contribute.exitCode).toBe(0);
 

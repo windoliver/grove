@@ -430,6 +430,26 @@ export async function ensureNexusRunning(
     );
   }
 
+  // Fast path: check if Nexus is already healthy before doing anything.
+  // This avoids the slow nexus up + health-check cycle when restarting the TUI.
+  const existingUrl =
+    config.nexusUrl ??
+    readNexusUrl(projectRoot) ??
+    process.env.GROVE_NEXUS_URL ??
+    undefined;
+  if (existingUrl && !upOpts?.force) {
+    try {
+      const res = await fetch(`${existingUrl}/health`, { signal: AbortSignal.timeout(3000) });
+      if (res.ok) {
+        const apiKey = readNexusApiKey(projectRoot);
+        report("Nexus is ready (already running)");
+        return { url: existingUrl, apiKey };
+      }
+    } catch {
+      // Not running — fall through to normal startup
+    }
+  }
+
   // Re-init nexus.yaml when:
   // - force flag set (user chose "New grove" — stop existing, delete yaml, init fresh)
   // - Missing entirely (init, but no need to stop — nothing running)

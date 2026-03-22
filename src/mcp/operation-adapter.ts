@@ -32,6 +32,8 @@ export function toOperationDeps(deps: McpDeps): OperationDeps {
     ...(deps.onContributionWrite !== undefined
       ? { onContributionWrite: deps.onContributionWrite }
       : {}),
+    ...(deps.eventBus !== undefined ? { eventBus: deps.eventBus } : {}),
+    ...(deps.topologyRouter !== undefined ? { topologyRouter: deps.topologyRouter } : {}),
   };
 }
 

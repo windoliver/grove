@@ -317,8 +317,25 @@ async function buildAppProps(
         }
       : undefined;
 
+  // Create EventBus for Nexus mode — enables event-driven data instead of polling
+  let eventBus: import("../core/event-bus.js").EventBus | undefined;
+  if (backend.mode === "nexus") {
+    const nexusUrl = process.env.GROVE_NEXUS_URL ?? (backend as { url?: string }).url;
+    const apiKey = process.env.NEXUS_API_KEY;
+    if (nexusUrl) {
+      const { NexusEventBus } = await import("../nexus/nexus-event-bus.js");
+      const { NexusHttpClient } = await import("../nexus/nexus-http-client.js");
+      const nexusClient = new NexusHttpClient({
+        url: nexusUrl,
+        ...(apiKey ? { apiKey } : {}),
+      });
+      eventBus = new NexusEventBus(nexusClient, "default");
+      stopCallbacks.push(() => eventBus?.close());
+    }
+  }
+
   return {
-    appProps: { provider, intervalMs: opts.intervalMs, tmux, topology, presetName, groveDir },
+    appProps: { provider, intervalMs: opts.intervalMs, tmux, topology, presetName, groveDir, eventBus },
     provider,
     stopGc,
   };

@@ -156,6 +156,35 @@ export class StateConflictError extends GroveError {
   }
 }
 
+/** Thrown when a contribution violates contract policy (semantic enforcement). */
+export class PolicyViolationError extends GroveError {
+  readonly violationType:
+    | "missing_score"
+    | "gate_failed"
+    | "role_kind"
+    | "missing_relation"
+    | "missing_artifact"
+    | "missing_context";
+  readonly details: Record<string, unknown>;
+
+  constructor(opts: {
+    violationType:
+      | "missing_score"
+      | "gate_failed"
+      | "role_kind"
+      | "missing_relation"
+      | "missing_artifact"
+      | "missing_context";
+    details: Record<string, unknown>;
+    message: string;
+  }) {
+    super(opts.message);
+    this.name = "PolicyViolationError";
+    this.violationType = opts.violationType;
+    this.details = opts.details;
+  }
+}
+
 /** Thrown when a lease duration violates policy (exceeds max). */
 export class LeaseViolationError extends GroveError {
   readonly requestedSeconds: number;

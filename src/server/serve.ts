@@ -3,18 +3,24 @@
  *
  * Creates stores from environment/flags and starts Bun.serve().
  * Optionally enables gossip federation when GOSSIP_SEEDS is set.
+ * Optionally enables WebSocket push via SessionService when a contract
+ * with topology is available and GROVE_AGENT_RUNTIME is set.
  *
  * This is the only file excluded from test coverage — use createApp() for testing.
  */
 
 import { join } from "node:path";
 import type { GossipService } from "../core/gossip/types.js";
+import { LocalEventBus } from "../core/local-event-bus.js";
+import { TmuxRuntime } from "../core/tmux-runtime.js";
 import { HttpGossipTransport } from "../gossip/http-transport.js";
 import { DefaultGossipService } from "../gossip/protocol.js";
 import { createLocalRuntime } from "../local/runtime.js";
 import { parseGossipSeeds, parsePort } from "../shared/env.js";
 import { createApp } from "./app.js";
 import type { ServerDeps } from "./deps.js";
+import { SessionService } from "./session-service.js";
+import { createWsHandler } from "./ws-handler.js";
 
 const GROVE_DIR = process.env.GROVE_DIR ?? join(process.cwd(), ".grove");
 const PORT = parsePort(process.env.PORT, 4515);
@@ -67,11 +73,77 @@ const deps: ServerDeps = {
 
 const app = createApp(deps);
 
-const server = Bun.serve({
-  port: PORT,
-  ...(HOST ? { hostname: HOST } : {}),
-  fetch: app.fetch,
-});
+// ---------------------------------------------------------------------------
+// Optional SessionService + WebSocket push
+// ---------------------------------------------------------------------------
+
+let sessionService: SessionService | undefined;
+let wsHandler: ReturnType<typeof createWsHandler> | undefined;
+
+if (runtime.contract?.topology !== undefined) {
+  // Create an agent runtime — default to tmux for now
+  const agentRuntime = new TmuxRuntime();
+
+  const eventBus = new LocalEventBus();
+
+  sessionService = new SessionService({
+    contract: runtime.contract,
+    runtime: agentRuntime,
+    eventBus,
+    projectRoot: runtime.groveRoot,
+    workspaceBaseDir: join(GROVE_DIR, "workspaces"),
+  });
+
+  wsHandler = createWsHandler(sessionService);
+  console.log("session-service enabled (topology found in contract)");
+}
+
+// ---------------------------------------------------------------------------
+// Start server (with optional WebSocket upgrade)
+// ---------------------------------------------------------------------------
+
+function startServer() {
+  const hostnameOpts = HOST ? { hostname: HOST } : {};
+
+  if (wsHandler !== undefined) {
+    const wsh = wsHandler;
+    return Bun.serve({
+      port: PORT,
+      ...hostnameOpts,
+      fetch(req, server) {
+        const url = new URL(req.url);
+        if (url.pathname === "/ws") {
+          const upgraded = server.upgrade(req);
+          if (upgraded) return undefined;
+          return new Response("WebSocket upgrade failed", { status: 400 });
+        }
+        return app.fetch(req);
+      },
+      websocket: {
+        open(ws) {
+          wsh.open(ws as unknown as import("./ws-handler.js").WsSocket);
+        },
+        message(ws, message) {
+          wsh.message(
+            ws as unknown as import("./ws-handler.js").WsSocket,
+            typeof message === "string" ? message : new TextDecoder().decode(message),
+          );
+        },
+        close(ws) {
+          wsh.close(ws as unknown as import("./ws-handler.js").WsSocket);
+        },
+      },
+    });
+  }
+
+  return Bun.serve({
+    port: PORT,
+    ...hostnameOpts,
+    fetch: app.fetch,
+  });
+}
+
+const server = startServer();
 
 // Warn when bound to a non-localhost address (no auth is enforced).
 const LOCALHOST_ADDRESSES = new Set(["localhost", "127.0.0.1", "::1"]);
@@ -92,6 +164,9 @@ console.log(`grove-server listening on http://${HOST ?? "localhost"}:${server.po
 // Graceful shutdown
 async function shutdown(): Promise<void> {
   console.log("Shutting down...");
+  if (sessionService) {
+    sessionService.destroy();
+  }
   if (gossipService) {
     await gossipService.stop();
   }

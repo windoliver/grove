@@ -1,0 +1,20 @@
+{
+  "ports": {
+    "http": 2036,
+    "grpc": 2037,
+    "postgres": 5438,
+    "dragonfly": 6384,
+    "zoekt": 6075
+  },
+  "api_key": "sk-DX9UkP4ODqIPI9eCsQ0GEKBrv4SeVfkEwnHi3D5gogw",
+  "image_used": "ghcr.io/nexi-lab/nexus:edge",
+  "build_mode": "remote",
+  "project_name": "nexus-9b088faa",
+  "started_at": "2026-03-21T00:40:48.044917+00:00",
+  "tls": {
+    "cert": "/Users/tafeng/grove/.claude/worktrees/drifting-cooking-lerdorf/nexus-data/tls/node.pem",
+    "key": "/Users/tafeng/grove/.claude/worktrees/drifting-cooking-lerdorf/nexus-data/tls/node-key.pem",
+    "ca": "/Users/tafeng/grove/.claude/worktrees/drifting-cooking-lerdorf/nexus-data/tls/ca.pem"
+  },
+  "version": 1
+}

@@ -20,6 +20,7 @@ import { NexusBountyStore } from "../nexus/nexus-bounty-store.js";
 import { NexusClaimStore } from "../nexus/nexus-claim-store.js";
 import { NexusContributionStore } from "../nexus/nexus-contribution-store.js";
 import { NexusOutcomeStore } from "../nexus/nexus-outcome-store.js";
+import { NexusSessionStore } from "../nexus/nexus-session-store.js";
 import { casMetaPath, casPath } from "../nexus/vfs-paths.js";
 import type {
   ArtifactMeta,
@@ -73,6 +74,7 @@ export class NexusDataProvider
   private readonly zoneId: string;
   private readonly bountyStore: NexusBountyStore;
   private readonly serverUrl: string | undefined;
+  private readonly nexusSessionStore: NexusSessionStore;
 
   constructor(config: NexusProviderConfig) {
     const store = new NexusContributionStore(config.nexusConfig);
@@ -104,7 +106,7 @@ export class NexusDataProvider
       bounties: true,
       gossip: true,
       goals: hasGoalSession,
-      sessions: hasGoalSession,
+      sessions: true, // Always available via NexusSessionStore
     };
 
     this.bountyStore = new NexusBountyStore(config.nexusConfig);
@@ -113,6 +115,7 @@ export class NexusDataProvider
     const resolved = resolveConfig(config.nexusConfig);
     this.client = resolved.client;
     this.zoneId = resolved.zoneId;
+    this.nexusSessionStore = new NexusSessionStore(this.client, this.zoneId);
   }
 
   // ---------------------------------------------------------------------------
@@ -252,10 +255,21 @@ export class NexusDataProvider
   override async createSession(
     input: import("./provider.js").SessionInput,
   ): Promise<SessionRecord> {
+    let result: SessionRecord;
     if (this.serverUrl) {
-      return createSessionHttp(this.serverUrl, input);
+      result = await createSessionHttp(this.serverUrl, input);
+    } else {
+      result = await super.createSession(input);
     }
-    return super.createSession(input);
+    // Also persist to Nexus VFS for cross-session visibility
+    void this.nexusSessionStore.create({
+      id: result.sessionId,
+      goal: input.goal ?? "",
+      presetName: "review-loop",
+      createdAt: new Date().toISOString(),
+      status: "running",
+    }).catch(() => { /* best-effort */ });
+    return result;
   }
 
   override async getSession(sessionId: string): Promise<SessionRecord | undefined> {

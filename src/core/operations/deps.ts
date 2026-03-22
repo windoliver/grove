@@ -9,9 +9,12 @@ import type { BountyStore } from "../bounty-store.js";
 import type { ContentStore } from "../cas.js";
 import type { GroveContract } from "../contract.js";
 import type { CreditsService } from "../credits.js";
+import type { EventBus } from "../event-bus.js";
 import type { FrontierCalculator } from "../frontier.js";
 import type { OutcomeStore } from "../outcome.js";
 import type { ClaimStore, ContributionStore } from "../store.js";
+import type { TopologyRouter } from "../topology-router.js";
+import type { HookRunner } from "../hooks.js";
 import type { WorkspaceManager } from "../workspace.js";
 
 /**
@@ -34,4 +37,12 @@ export interface OperationDeps {
   readonly creditsService?: CreditsService | undefined;
   /** Called after a contribution is written to invalidate caches (e.g., frontier). */
   readonly onContributionWrite?: (() => void) | undefined;
+  /** Optional event bus for agent notifications. */
+  readonly eventBus?: EventBus | undefined;
+  /** Optional topology router for routing contribution events to downstream agents. */
+  readonly topologyRouter?: TopologyRouter | undefined;
+  /** Optional hook runner for executing after_contribute hooks. */
+  readonly hookRunner?: HookRunner | undefined;
+  /** Working directory for hook execution. */
+  readonly hookCwd?: string | undefined;
 }
