@@ -180,15 +180,16 @@ export class SpawnManager {
       }
     }
 
-    // Step 2b: Write .mcp.json so the agent discovers grove MCP tools.
-    await this.writeMcpConfig(workspacePath);
-
-    // Step 2c: Write CLAUDE.md with role instructions for the agent.
-    await this.writeAgentInstructions(workspacePath, roleId, context);
-
-    // Step 2d: Write agent context file if role prompt/description available.
-    if (context?.rolePrompt || context?.roleDescription) {
-      await this.writeAgentContext(workspacePath, roleId, context);
+    // Step 2b-2d: Write config files. Errors logged but non-fatal.
+    try {
+      await this.writeMcpConfig(workspacePath);
+      await this.writeAgentInstructions(workspacePath, roleId, context);
+      if (context?.rolePrompt || context?.roleDescription) {
+        await this.writeAgentContext(workspacePath, roleId, context);
+      }
+    } catch (configErr) {
+      this.onError(`Config write failed: ${configErr instanceof Error ? configErr.message : String(configErr)}`);
+      // Continue — agent can still work without configs
     }
 
     // Step 3: Start agent session via AgentRuntime (preferred) or tmux (fallback).
