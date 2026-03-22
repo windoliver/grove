@@ -9,7 +9,7 @@
  */
 
 import type { AgentConstraints } from "./contract.js";
-import type { ContributionKind } from "./models.js";
+
 import type { ContributeInput, ContributeResult } from "./operations/contribute.js";
 import { contributeOperation } from "./operations/contribute.js";
 import type { OperationDeps } from "./operations/deps.js";
@@ -48,7 +48,7 @@ export function checkAgentConstraints(
   }
 
   // 2. requiredArtifacts — does this kind require specific artifact names?
-  const requiredArts = constraints.requiredArtifacts?.[input.kind as ContributionKind];
+  const requiredArts = constraints.requiredArtifacts?.[input.kind];
   if (requiredArts && requiredArts.length > 0) {
     const provided = input.artifacts ? Object.keys(input.artifacts) : [];
     for (const name of requiredArts) {
@@ -63,7 +63,7 @@ export function checkAgentConstraints(
   }
 
   // 3. requiredRelations — does this kind require specific relation types?
-  const requiredRels = constraints.requiredRelations?.[input.kind as ContributionKind];
+  const requiredRels = constraints.requiredRelations?.[input.kind];
   if (requiredRels && requiredRels.length > 0) {
     const provided = input.relations?.map((r) => r.relationType) ?? [];
     for (const relType of requiredRels) {
