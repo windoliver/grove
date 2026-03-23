@@ -434,11 +434,8 @@ export class SpawnManager {
     }
   }
 
-  /** Stop all timers, close bridge, and clear state. */
+  /** Close bridge and clear state. */
   destroy(): void {
-    for (const timer of this.heartbeatTimers.values()) {
-      clearInterval(timer);
-    }
     this.spawnRecords.clear();
     this.wsBridge?.close();
   }
