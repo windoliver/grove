@@ -13,18 +13,13 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
-import type { AgentIdentity, Claim } from "../core/models.js";
+import type { AgentIdentity } from "../core/models.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
+import type { NexusWsBridge } from "./nexus-ws-bridge.js";
 import type { TuiDataProvider } from "./provider.js";
 import type { PersistedSpawnRecord, SessionStore } from "./session-store.js";
-
-/** Lease duration for TUI-spawned agent claims. */
-const LEASE_DURATION_MS = 300_000; // 5 minutes
-
-/** Heartbeat interval: renew at ~40% of lease duration. */
-const HEARTBEAT_INTERVAL_MS = 120_000; // 2 minutes
 
 /** PR context injected as env vars when spawning agents. */
 export interface PrContext {
@@ -57,17 +52,14 @@ export class SpawnManager {
   private readonly provider: TuiDataProvider;
   private readonly tmux: TmuxManager | undefined;
   private readonly agentRuntime: AgentRuntime | undefined;
-  private readonly heartbeatTimers = new Map<string, ReturnType<typeof setInterval>>();
   private readonly spawnRecords = new Map<string, SpawnRecord>();
   private readonly agentSessions = new Map<string, AgentSession>();
   private readonly onError: (message: string) => void;
   private readonly sessionStore: SessionStore | undefined;
+  private wsBridge: NexusWsBridge | undefined;
   private prContext: PrContext | undefined;
   private sessionGoal: string | undefined;
   private groveDir: string | undefined;
-
-  /** Overridable heartbeat interval for testing. */
-  heartbeatIntervalMs: number = HEARTBEAT_INTERVAL_MS;
 
   constructor(
     provider: TuiDataProvider,
@@ -83,6 +75,11 @@ export class SpawnManager {
     this.onError = onError;
     this.sessionStore = sessionStore;
     this.groveDir = groveDir;
+  }
+
+  /** Attach a NexusWsBridge for push-based IPC. Call after construction. */
+  setWsBridge(bridge: NexusWsBridge): void {
+    this.wsBridge = bridge;
   }
 
   /**
@@ -116,8 +113,8 @@ export class SpawnManager {
   async spawn(
     roleId: string,
     command: string,
-    parentAgentId?: string,
-    depth = 0,
+    _parentAgentId?: string,
+    _depth = 0,
     context?: Record<string, unknown>,
   ): Promise<SpawnResult> {
     const spawnId = `${roleId}-${Date.now().toString(36)}`;
@@ -144,10 +141,11 @@ export class SpawnManager {
         if (!existsSync(baseDir)) {
           await mkdir(baseDir, { recursive: true });
         }
-        execSync(
-          `git worktree add "${workspacePath}" -b "${branch}" origin/main`,
-          { cwd: projectRoot, encoding: "utf-8", stdio: "pipe" },
-        );
+        execSync(`git worktree add "${workspacePath}" -b "${branch}" origin/main`, {
+          cwd: projectRoot,
+          encoding: "utf-8",
+          stdio: "pipe",
+        });
       } catch {
         // Fallback to provider's bare workspace if git worktree fails
         if (this.provider.checkoutWorkspace) {
@@ -158,29 +156,9 @@ export class SpawnManager {
       }
     }
 
-    // Step 2: Create claim.
-    let claim: Claim | undefined;
-    if (this.provider.createClaim) {
-      try {
-        claim = await this.provider.createClaim({
-          targetRef: spawnId,
-          agent,
-          intentSummary: `TUI-spawned: ${command}`,
-          leaseDurationMs: LEASE_DURATION_MS,
-          context: {
-            tuiSpawned: true,
-            spawnId,
-            workspacePath,
-            ...(parentAgentId !== undefined ? { parentAgentId, depth } : {}),
-            ...context,
-          },
-        });
-      } catch {
-        // Claim creation may fail with Nexus (stat compat). Proceed without claim.
-      }
-    }
-
-    // Step 2b-2d: Write config files. Errors logged but non-fatal.
+    // Step 2: Write config files. Errors logged but non-fatal.
+    // Claims are NOT auto-created on spawn — agents create claims explicitly
+    // via grove_claim MCP tool when they need swarm coordination.
     try {
       await this.writeMcpConfig(workspacePath);
       await this.writeAgentInstructions(workspacePath, roleId, context);
@@ -188,7 +166,9 @@ export class SpawnManager {
         await this.writeAgentContext(workspacePath, roleId, context);
       }
     } catch (configErr) {
-      this.onError(`Config write failed: ${configErr instanceof Error ? configErr.message : String(configErr)}`);
+      this.onError(
+        `Config write failed: ${configErr instanceof Error ? configErr.message : String(configErr)}`,
+      );
       // Continue — agent can still work without configs
     }
 
@@ -255,14 +235,7 @@ export class SpawnManager {
         throw new Error("No agent runtime or tmux available for spawning");
       }
     } catch (spawnErr) {
-      // Roll back claim + workspace
-      if (claim && this.provider.releaseClaim) {
-        await safeCleanup(
-          this.provider.releaseClaim(claim.claimId),
-          "rollback claim after spawn failure",
-          { silent: true },
-        );
-      }
+      // Roll back workspace on spawn failure
       if (this.provider.cleanWorkspace) {
         await safeCleanup(
           this.provider.cleanWorkspace(spawnId, spawnId),
@@ -273,32 +246,34 @@ export class SpawnManager {
       throw spawnErr;
     }
 
-    // Step 4: Start heartbeat + record tracking info.
-    // No initial prompt is sent — the agent reads CLAUDE.md in its workspace
-    // for role instructions and session goal. Communication happens via
-    // Nexus IPC and the grove DAG, not tmux send-keys.
-    if (claim) {
-      this.startHeartbeat(claim.claimId);
-      this.spawnRecords.set(spawnId, {
-        claimId: claim.claimId,
-        targetRef: spawnId,
-        agentId: spawnId,
-      });
+    // Step 4: Record spawn + register for IPC push.
+    // No claims, no heartbeats — agents create claims themselves via grove_claim
+    // when they need swarm coordination.
+    this.spawnRecords.set(spawnId, {
+      claimId: "",
+      targetRef: spawnId,
+      agentId: spawnId,
+    });
+    this.sessionStore?.save({
+      spawnId,
+      claimId: "",
+      targetRef: spawnId,
+      agentId: spawnId,
+      workspacePath,
+      spawnedAt: new Date().toISOString(),
+    });
 
-      // Step 6: Persist spawn record to session store for crash recovery.
-      this.sessionStore?.save({
-        spawnId,
-        claimId: claim.claimId,
-        targetRef: spawnId,
-        agentId: spawnId,
-        workspacePath,
-        spawnedAt: new Date().toISOString(),
-      });
+    // Step 5: Register session with NexusWsBridge for push-based IPC.
+    // When another agent contributes, Nexus pushes via WebSocket → bridge
+    // forwards to this agent via runtime.send(). No polling.
+    const agentSession = this.agentSessions.get(spawnId);
+    if (agentSession && this.wsBridge) {
+      this.wsBridge.registerSession(roleId, agentSession);
     }
 
     return {
       spawnId,
-      claimId: claim?.claimId ?? "",
+      claimId: "",
       workspacePath,
     };
   }
@@ -315,29 +290,20 @@ export class SpawnManager {
     const agentSession = killedAgentId ? this.agentSessions.get(killedAgentId) : undefined;
     if (agentSession && this.agentRuntime) {
       await this.agentRuntime.close(agentSession);
-      this.agentSessions.delete(killedAgentId!);
+      if (killedAgentId) this.agentSessions.delete(killedAgentId);
     } else {
       await this.tmux?.kill(sessionName);
     }
 
-    // Step 2: Look up from local records
+    // Step 2: Clean up local records + workspace
     if (!killedAgentId) return;
 
     const tracked = this.spawnRecords.get(killedAgentId);
     if (tracked) {
-      this.stopHeartbeat(tracked.claimId);
       this.spawnRecords.delete(killedAgentId);
       this.sessionStore?.remove(killedAgentId);
+      this.wsBridge?.unregisterSession(killedAgentId);
 
-      if (this.provider.releaseClaim) {
-        await safeCleanup(
-          this.provider.releaseClaim(tracked.claimId),
-          "release claim during kill",
-          {
-            silent: true,
-          },
-        );
-      }
       if (this.provider.cleanWorkspace) {
         await safeCleanup(
           this.provider.cleanWorkspace(tracked.targetRef, killedAgentId),
@@ -345,32 +311,23 @@ export class SpawnManager {
           { silent: true },
         );
       }
-      return;
     }
-
-    // Fallback: query active claims
-    const claims = await this.provider.getClaims({ agentId: killedAgentId, status: "active" });
-    for (const claim of claims) {
-      if (claim.agent.agentId === killedAgentId) {
-        this.stopHeartbeat(claim.claimId);
-        if (this.provider.releaseClaim) {
-          await this.provider.releaseClaim(claim.claimId);
-        }
-        if (this.provider.cleanWorkspace) {
-          await this.provider.cleanWorkspace(claim.targetRef, killedAgentId);
-        }
-      }
-    }
-  }
-
-  /** Whether a heartbeat timer is running for the given claimId. */
-  hasHeartbeat(claimId: string): boolean {
-    return this.heartbeatTimers.has(claimId);
   }
 
   /** Get the spawn record for an agentId (for testing). */
   getSpawnRecord(agentId: string): SpawnRecord | undefined {
     return this.spawnRecords.get(agentId);
+  }
+
+  /** Count active spawns per role — used by palette for capacity checks. */
+  getActiveSpawnCounts(): ReadonlyMap<string, number> {
+    const counts = new Map<string, number>();
+    for (const [spawnId] of this.spawnRecords) {
+      // spawnId format: "roleName-timestamp"
+      const role = spawnId.replace(/-[a-z0-9]+$/i, "");
+      counts.set(role, (counts.get(role) ?? 0) + 1);
+    }
+    return counts;
   }
 
   /**
@@ -424,23 +381,15 @@ export class SpawnManager {
     for (const record of allRecords) {
       const tmuxName = `grove-${record.spawnId}`;
       if (liveSet.has(tmuxName)) {
-        // Re-attach: restore in-memory state + restart heartbeat
+        // Re-attach: restore in-memory state
         this.spawnRecords.set(record.spawnId, {
           claimId: record.claimId,
           targetRef: record.targetRef,
           agentId: record.agentId,
         });
-        this.startHeartbeat(record.claimId);
         reattached++;
       } else {
-        // Dead session: release claim + clean workspace + remove record
-        if (this.provider.releaseClaim) {
-          await safeCleanup(
-            this.provider.releaseClaim(record.claimId),
-            `release orphaned claim ${record.claimId}`,
-            { silent: true },
-          );
-        }
+        // Dead session: clean workspace + remove record
         if (this.provider.cleanWorkspace) {
           await safeCleanup(
             this.provider.cleanWorkspace(record.targetRef, record.agentId),
@@ -485,13 +434,13 @@ export class SpawnManager {
     }
   }
 
-  /** Stop all timers and clear state. */
+  /** Stop all timers, close bridge, and clear state. */
   destroy(): void {
     for (const timer of this.heartbeatTimers.values()) {
       clearInterval(timer);
     }
-    this.heartbeatTimers.clear();
     this.spawnRecords.clear();
+    this.wsBridge?.close();
   }
 
   /**
@@ -523,11 +472,7 @@ export class SpawnManager {
         },
       },
     };
-    await writeFile(
-      join(workspacePath, ".mcp.json"),
-      JSON.stringify(mcpConfig, null, 2),
-      "utf-8",
-    );
+    await writeFile(join(workspacePath, ".mcp.json"), JSON.stringify(mcpConfig, null, 2), "utf-8");
   }
 
   /**
@@ -547,34 +492,34 @@ export class SpawnManager {
     const instructions = `# Grove Agent: ${roleId}
 
 ${goal ? `## Session Goal\n${goal}\n` : ""}
-## Your Role
+## Your Role: ${roleId}
 ${roleDescription}
 
 ${rolePrompt ? `## Instructions\n${rolePrompt}\n` : ""}
 
-## How This Works
+## Identity
 
-You are part of a multi-agent grove session. You have grove MCP tools available:
+You are the **${roleId}** agent. Always pass \`agent: { role: "${roleId}" }\` in grove_contribute and grove_done calls. This is set once here — do not worry about it after this.
 
-- \`grove_contribute\` — record your work (kind=work), reviews (kind=review), or questions (kind=ask_user)
-- \`grove_review\` — review another agent's contribution by CID
-- \`grove_done\` — signal you are finished (other agents see this and can wrap up too)
-- \`grove_log\` — see recent contributions from all agents
+## Communication
+
+You will receive push notifications from the system when other agents produce work relevant to you. These arrive as messages in your session — you do NOT need to poll or check for them. Just work on the session goal, and when a notification arrives, act on it.
+
+## MCP Tools
+
+- \`grove_contribute\` — record your work (always include agent: { role: "${roleId}" })
+- \`grove_done\` — signal you are finished (always include agent: { role: "${roleId}" })
+- \`grove_log\` — see recent contributions (use once at start to see context, then rely on push)
 - \`grove_frontier\` — see the best contributions
-- \`grove_search\` — search contributions
 
-You will receive notifications automatically via Nexus IPC when other agents
-contribute work relevant to your role. Act on notifications according to your role.
-When you complete work, call \`grove_contribute\` to record it in the DAG.
-When you have no more work to do, call \`grove_done\` to signal completion.
+## Workflow
 
-Start by working on the session goal. Use \`grove_log\` to see what others have done.
+1. Start working on the session goal immediately
+2. When done, call grove_contribute to record your work
+3. You will be notified when other agents respond — act on their feedback
+4. When you have no more work, call grove_done
 
-You are in a git worktree with the full project source code. You can:
-- Edit files, run tests, commit, and push
-- Create branches and PRs via \`gh pr create\`
-- When you finish your work, commit + push + create a PR, then call \`grove_contribute\` to record it
-- Call \`grove_done\` when you have no more work to do
+You are in a git worktree. You can edit files, commit, push, and create PRs.
 `;
 
     await writeFile(join(workspacePath, "CLAUDE.md"), instructions, "utf-8");
@@ -610,25 +555,5 @@ You are in a git worktree with the full project source code. You can:
     );
 
     await writeFile(join(contextDir, "agent-context.md"), lines.join("\n"), "utf-8");
-  }
-
-  private startHeartbeat(claimId: string): void {
-    if (!this.provider.heartbeatClaim) return;
-    const heartbeatFn = this.provider.heartbeatClaim.bind(this.provider);
-    const timer = setInterval(() => {
-      heartbeatFn(claimId, LEASE_DURATION_MS).catch((err) => {
-        const msg = err instanceof Error ? err.message : "Heartbeat failed";
-        this.onError(`Heartbeat for ${claimId.slice(0, 8)}: ${msg}`);
-      });
-    }, this.heartbeatIntervalMs);
-    this.heartbeatTimers.set(claimId, timer);
-  }
-
-  private stopHeartbeat(claimId: string): void {
-    const timer = this.heartbeatTimers.get(claimId);
-    if (timer !== undefined) {
-      clearInterval(timer);
-      this.heartbeatTimers.delete(claimId);
-    }
   }
 }

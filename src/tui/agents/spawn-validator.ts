@@ -23,6 +23,8 @@ export function checkSpawn(
   roleName: string,
   activeClaims: readonly Claim[],
   parentAgentId?: string | undefined,
+  /** Active spawn count per role — used when claims are not auto-created on spawn. */
+  activeSpawnCounts?: ReadonlyMap<string, number>,
 ): SpawnCheck {
   if (topology === undefined) {
     return {
@@ -44,10 +46,10 @@ export function checkSpawn(
     };
   }
 
-  const uniqueAgents = new Set(
-    activeClaims.filter((c) => c.agent.role === roleName).map((c) => c.agent.agentId),
-  );
-  const currentInstances = uniqueAgents.size;
+  // Use spawn counts if available (no auto-claims), fall back to claim-based counting
+  const currentInstances =
+    activeSpawnCounts?.get(roleName) ??
+    new Set(activeClaims.filter((c) => c.agent.role === roleName).map((c) => c.agent.agentId)).size;
 
   if (role.maxInstances !== undefined && currentInstances >= role.maxInstances) {
     return {

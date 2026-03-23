@@ -52,6 +52,8 @@ export interface AppProps {
   readonly groveDir?: string | undefined;
   /** EventBus for event-driven data updates (Nexus mode). */
   readonly eventBus?: import("../core/event-bus.js").EventBus | undefined;
+  /** AgentRuntime for spawning agents (acpx preferred over tmux). */
+  readonly agentRuntime?: import("../core/agent-runtime.js").AgentRuntime | undefined;
 }
 
 const PAGE_SIZE = 20;
@@ -223,6 +225,7 @@ export function App({
   topology,
   presetName,
   groveDir,
+  agentRuntime,
 }: AppProps): React.ReactNode {
   const renderer = useRenderer();
   const nav = useNavigation();
@@ -305,7 +308,14 @@ export function App({
         // Session persistence is best-effort
       }
     }
-    spawnManagerRef.current = new SpawnManager(provider, tmux, showError, sessionStore, groveDir);
+    spawnManagerRef.current = new SpawnManager(
+      provider,
+      tmux,
+      showError,
+      sessionStore,
+      groveDir,
+      agentRuntime,
+    );
   }
 
   // Reconcile persisted sessions on startup (reattach live, clean dead)

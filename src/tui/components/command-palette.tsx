@@ -32,6 +32,8 @@ export interface CommandPaletteProps {
   readonly onKill?: ((sessionName: string) => void) | undefined;
   readonly topology?: AgentTopology | undefined;
   readonly activeClaims?: readonly Claim[] | undefined;
+  /** Active spawn counts per role — for capacity checks without auto-claims. */
+  readonly activeSpawnCounts?: ReadonlyMap<string, number> | undefined;
   /** Index of the currently selected palette item (driven by parent). */
   readonly selectedIndex?: number | undefined;
   /** Live tmux sessions for kill actions. */
@@ -59,13 +61,14 @@ export function buildPaletteItems(
   topology: AgentTopology | undefined,
   activeClaims: readonly Claim[],
   sessions: readonly string[],
-  hasTmux: boolean,
+  hasSpawnRuntime: boolean,
   hasSpawn: boolean,
   hasKill: boolean,
   parentAgentId?: string | undefined,
   gossipPeers?: readonly { peerId: string; address: string; freeSlots: number }[] | undefined,
   agentProfiles?: readonly LoadedProfile[] | undefined,
   hasGoals?: boolean | undefined,
+  activeSpawnCounts?: ReadonlyMap<string, number> | undefined,
 ): readonly PaletteItem[] {
   const items: PaletteItem[] = [];
 
@@ -91,11 +94,11 @@ export function buildPaletteItems(
 
   // Spawn items from registered profiles (take precedence over raw topology roles)
   const profileRoles = new Set<string>();
-  if (agentProfiles && agentProfiles.length > 0 && hasTmux && hasSpawn) {
+  if (agentProfiles && agentProfiles.length > 0 && hasSpawnRuntime && hasSpawn) {
     for (const profile of agentProfiles) {
       profileRoles.add(profile.role);
       const check = topology
-        ? checkSpawn(topology, profile.role, activeClaims, parentAgentId)
+        ? checkSpawn(topology, profile.role, activeClaims, parentAgentId, activeSpawnCounts)
         : { allowed: true, currentInstances: 0 };
       const max =
         "maxInstances" in check && check.maxInstances !== undefined
@@ -113,10 +116,10 @@ export function buildPaletteItems(
   }
 
   // Spawn items from topology roles (only those not already covered by profiles)
-  if (topology && hasTmux && hasSpawn) {
+  if (topology && hasSpawnRuntime && hasSpawn) {
     for (const role of topology.roles) {
       if (profileRoles.has(role.name)) continue;
-      const check = checkSpawn(topology, role.name, activeClaims, parentAgentId);
+      const check = checkSpawn(topology, role.name, activeClaims, parentAgentId, activeSpawnCounts);
       const max = check.maxInstances !== undefined ? String(check.maxInstances) : "\u221E";
       const suffix = !check.allowed ? " (at capacity)" : "";
       items.push({
@@ -130,7 +133,7 @@ export function buildPaletteItems(
   }
 
   // Kill items from live tmux sessions
-  if (hasTmux && hasKill && sessions.length > 0) {
+  if (hasSpawnRuntime && hasKill && sessions.length > 0) {
     for (const session of sessions) {
       items.push({
         kind: "kill",
@@ -174,9 +177,10 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
     sessions,
     parentAgentId,
     gossipPeers,
+    activeSpawnCounts,
     items: externalItems,
   }: CommandPaletteProps): React.ReactNode {
-    const hasTmux = tmux !== undefined;
+    const hasSpawnRuntime = tmux !== undefined || onSpawn !== undefined;
 
     // Suppress unused-variable lint — onClose/onSpawn/onKill are invoked by
     // the parent keyboard handler, not directly by this presentational component.
@@ -191,13 +195,22 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
           topology,
           activeClaims ?? [],
           sessions ?? [],
-          hasTmux,
+          hasSpawnRuntime,
           onSpawn !== undefined,
           onKill !== undefined,
           parentAgentId,
           gossipPeers,
         ),
-      [topology, activeClaims, sessions, hasTmux, onSpawn, onKill, parentAgentId, gossipPeers],
+      [
+        topology,
+        activeClaims,
+        sessions,
+        hasSpawnRuntime,
+        onSpawn,
+        onKill,
+        parentAgentId,
+        gossipPeers,
+      ],
     );
     const items = externalItems ?? internalItems;
 
@@ -216,7 +229,7 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
         {items.length === 0 && (
           <box paddingLeft={1}>
             <text color={theme.muted}>
-              No actions available{!hasTmux ? " (tmux not detected)" : ""}
+              No actions available{!hasSpawnRuntime ? " (no agent runtime detected)" : ""}
             </text>
           </box>
         )}

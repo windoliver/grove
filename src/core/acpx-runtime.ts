@@ -1,32 +1,36 @@
 /**
  * AcpxRuntime — AgentRuntime implementation backed by the `acpx` CLI.
  *
- * acpx provides stateful, multi-turn agent sessions (claude, codex, gemini).
+ * acpx provides stateful, multi-turn agent sessions (codex, claude, gemini).
  * Each session is a persistent conversation that survives restarts.
  *
  * When acpx is not installed this runtime gracefully reports unavailable
  * and all operations become safe no-ops or throw clear errors.
  */
 
-import { execSync } from "node:child_process";
+import { execSync, spawn as nodeSpawn } from "node:child_process";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 
 /** Default agent backend used by acpx when none is specified. */
-const DEFAULT_AGENT = "claude";
+const DEFAULT_AGENT = "codex";
 
 interface AcpxSessionEntry {
   session: AgentSession;
   agent: string;
   sessionName: string;
+  cwd: string;
+  env: Record<string, string | undefined>;
   idleCallbacks: (() => void)[];
   idleTimer: ReturnType<typeof setInterval> | null;
+  /** Active child process for the current prompt (null when idle). */
+  activeProc: ReturnType<typeof nodeSpawn> | null;
 }
 
 export class AcpxRuntime implements AgentRuntime {
   private sessions: Map<string, AcpxSessionEntry> = new Map();
   private nextId = 0;
 
-  /** Which acpx agent backend to use (claude, codex, gemini). */
+  /** Which acpx agent backend to use (codex, claude, gemini). */
   private readonly agent: string;
 
   /** How often (ms) to poll for idle detection. */
@@ -52,66 +56,86 @@ export class AcpxRuntime implements AgentRuntime {
     }
 
     const counter = this.nextId++;
-    const sessionName = `grove-${role}-${counter}`;
+    const sessionName = `grove-${role}-${counter}-${Date.now().toString(36)}`;
     const id = sessionName;
+    const mergedEnv = config.env ? { ...process.env, ...config.env } : { ...process.env };
 
     // Create a new acpx session
+    const cmd = `acpx ${shellEscape(this.agent)} sessions new --name ${shellEscape(sessionName)}`;
     try {
-      execSync(
-        `acpx ${shellEscape(this.agent)} sessions new -s ${shellEscape(sessionName)} --cwd ${shellEscape(config.cwd)}`,
-        { encoding: "utf-8", stdio: "pipe" },
-      );
+      execSync(cmd, { encoding: "utf-8", stdio: "pipe", cwd: config.cwd, env: mergedEnv });
     } catch (err) {
-      throw new Error(
-        `acpx session creation failed for role "${role}": ${err instanceof Error ? err.message : String(err)}`,
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `[AcpxRuntime] spawn failed: ${msg}\n  cmd: ${cmd}\n  cwd: ${config.cwd}\n`,
       );
+      throw new Error(`acpx session creation failed for role "${role}": ${msg}`);
     }
+    process.stderr.write(`[AcpxRuntime] created session ${sessionName} in ${config.cwd}\n`);
 
     const session: AgentSession = { id, role, status: "running" };
     const entry: AcpxSessionEntry = {
       session,
       agent: this.agent,
       sessionName,
+      cwd: config.cwd,
+      env: mergedEnv,
       idleCallbacks: [],
       idleTimer: null,
+      activeProc: null,
     };
     this.sessions.set(id, entry);
 
-    // Send initial prompt if provided
+    // Send initial prompt non-blocking so multiple agents can run concurrently
     const initialMessage = config.goal ?? config.prompt;
     if (initialMessage) {
-      await this.send(session, initialMessage);
+      this.sendAsync(entry, initialMessage);
     }
 
     return session;
   }
 
+  /**
+   * Fire-and-forget send: spawns acpx in the background.
+   * When the prompt completes, fires idle callbacks.
+   */
+  private sendAsync(entry: AcpxSessionEntry, message: string): void {
+    entry.session = { ...entry.session, status: "running" };
+
+    const child = nodeSpawn("acpx", [entry.agent, "-s", entry.sessionName, message], {
+      cwd: entry.cwd,
+      env: entry.env as NodeJS.ProcessEnv,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    entry.activeProc = child;
+
+    child.on("close", (code) => {
+      entry.activeProc = null;
+      if (code === 0) {
+        entry.session = { ...entry.session, status: "idle" };
+        for (const cb of entry.idleCallbacks) {
+          try {
+            cb();
+          } catch {
+            /* ignore */
+          }
+        }
+      } else {
+        entry.session = { ...entry.session, status: "crashed" };
+      }
+    });
+
+    child.on("error", () => {
+      entry.activeProc = null;
+      entry.session = { ...entry.session, status: "crashed" };
+    });
+  }
+
   async send(session: AgentSession, message: string): Promise<void> {
     const entry = this.sessions.get(session.id);
     if (!entry) return;
-
-    try {
-      entry.session = { ...entry.session, status: "running" };
-      execSync(
-        `acpx ${shellEscape(entry.agent)} -s ${shellEscape(entry.sessionName)} ${shellEscape(message)}`,
-        { encoding: "utf-8", stdio: "pipe", timeout: 300_000 },
-      );
-      entry.session = { ...entry.session, status: "idle" };
-
-      // Fire idle callbacks after send completes (acpx is synchronous per turn)
-      for (const cb of entry.idleCallbacks) {
-        try {
-          cb();
-        } catch {
-          // Don't let callback errors propagate
-        }
-      }
-    } catch (err) {
-      entry.session = { ...entry.session, status: "crashed" };
-      throw new Error(
-        `acpx send failed for session "${session.id}": ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    this.sendAsync(entry, message);
   }
 
   async close(session: AgentSession): Promise<void> {
@@ -119,12 +143,17 @@ export class AcpxRuntime implements AgentRuntime {
     if (entry?.idleTimer) {
       clearInterval(entry.idleTimer);
     }
+    // Kill active prompt if running
+    if (entry?.activeProc) {
+      entry.activeProc.kill();
+      entry.activeProc = null;
+    }
 
     try {
       if (entry) {
         execSync(
-          `acpx ${shellEscape(entry.agent)} sessions delete -s ${shellEscape(entry.sessionName)}`,
-          { encoding: "utf-8", stdio: "pipe" },
+          `acpx ${shellEscape(entry.agent)} sessions close ${shellEscape(entry.sessionName)}`,
+          { encoding: "utf-8", stdio: "pipe", cwd: entry.cwd, env: entry.env as NodeJS.ProcessEnv },
         );
       }
     } catch {
@@ -143,7 +172,6 @@ export class AcpxRuntime implements AgentRuntime {
 
     entry.idleCallbacks.push(callback);
 
-    // For acpx, idle detection is polling-based: check session status
     if (!entry.idleTimer) {
       entry.idleTimer = setInterval(() => {
         this.checkIdle(session.id);
@@ -157,21 +185,18 @@ export class AcpxRuntime implements AgentRuntime {
     }
 
     try {
-      const output = execSync(
-        `acpx ${shellEscape(this.agent)} sessions list`,
-        { encoding: "utf-8", stdio: "pipe" },
-      );
+      const output = execSync(`acpx ${shellEscape(this.agent)} sessions list`, {
+        encoding: "utf-8",
+        stdio: "pipe",
+      });
 
-      // Return tracked sessions supplemented by acpx reality
       const lines = output.trim().split("\n").filter(Boolean);
       const result: AgentSession[] = [];
 
-      // Include all tracked sessions
       for (const entry of this.sessions.values()) {
         result.push(entry.session);
       }
 
-      // Also report any grove sessions found in acpx that we aren't tracking
       for (const line of lines) {
         const name = line.trim();
         if (name.startsWith("grove-") && !this.sessions.has(name)) {
@@ -182,26 +207,22 @@ export class AcpxRuntime implements AgentRuntime {
 
       return result;
     } catch {
-      // Fall back to tracked sessions only
       return [...this.sessions.values()].map((e) => e.session);
     }
   }
 
-  /** Poll acpx session status for idle detection. */
+  /** Poll-based idle detection fallback. */
   private checkIdle(sessionId: string): void {
     const entry = this.sessions.get(sessionId);
     if (!entry) return;
 
-    // acpx send is synchronous, so the session is idle between sends.
-    // This timer is a fallback for cases where external mutations occur.
-    if (entry.session.status === "running") {
-      // Optimistic: after idlePollMs without a new send, assume idle
+    if (entry.session.status === "running" && !entry.activeProc) {
       entry.session = { ...entry.session, status: "idle" };
       for (const cb of entry.idleCallbacks) {
         try {
           cb();
         } catch {
-          // Don't let callback errors kill the poll loop
+          /* ignore */
         }
       }
     }

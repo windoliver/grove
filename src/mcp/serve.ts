@@ -21,8 +21,25 @@ import { createMcpServer } from "./server.js";
 
 // --- Initialization (eager — catches config errors at startup) ------------
 
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
 const groveOverride = process.env.GROVE_DIR ?? undefined;
 const cwd = process.cwd();
+
+// Auto-detect GROVE_AGENT_ROLE from workspace .grove-role file if not set in env.
+// This allows per-workspace role identity when the MCP server is registered globally.
+// The MCP server inherits CWD from the agent that spawned it (codex/claude).
+if (!process.env.GROVE_AGENT_ROLE) {
+  const roleFile = join(cwd, ".grove-role");
+  if (existsSync(roleFile)) {
+    process.env.GROVE_AGENT_ROLE = readFileSync(roleFile, "utf-8").trim();
+    process.stderr.write(
+      `grove-mcp: detected role "${process.env.GROVE_AGENT_ROLE}" from ${roleFile}\n`,
+    );
+  }
+}
+process.stderr.write(`grove-mcp: cwd=${cwd} role=${process.env.GROVE_AGENT_ROLE ?? "unset"}\n`);
 
 let deps: McpDeps;
 let close: () => void;

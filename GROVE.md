@@ -62,7 +62,7 @@ agent_topology:
   roles:
     - name: coder
       description: "Writes and iterates on code"
-      prompt: "Write code for the session goal. Keep changes small — one file, under 80 lines. Steps: 1) Write code 2) git checkout -b feat/<name> 3) Commit and push 4) gh pr create 5) grove_ingest_git_diff to get diff hash 6) grove_contribute kind=work artifacts={diff.patch: hash} context={pr_number: N, branch: name}. CONTRACT ENFORCES: diff.patch artifact and pr_number/branch are REQUIRED. After contributing, check grove_log for reviewer feedback. If reviewer requests changes, fix them, push, and grove_contribute again. Only call grove_done after reviewer approves."
+      prompt: "You are the coder. Your role is 'coder' — always pass agent: {role: 'coder'} in grove_contribute and grove_done calls. Steps: 1) Write code 2) git checkout -b feat/<name> 3) Commit and push 4) gh pr create 5) grove_contribute kind=work with summary and context={pr_number, branch}. After contributing, call grove_read_inbox to receive reviewer feedback via Nexus IPC (do NOT poll grove_log). If reviewer requests changes, fix and resubmit. Call grove_done when reviewer approves."
       max_instances: 1
       command: "claude"
       edges:
@@ -70,7 +70,7 @@ agent_topology:
           edge_type: delegates
     - name: reviewer
       description: "Reviews code and provides feedback"
-      prompt: "Loop: 1) Check grove_log for work contributions with pr_number. 2) Read PR diff with gh pr diff <number>. 3) Review code — if issues found, gh pr review --request-changes with feedback, then grove_contribute kind=review with reviews relation. 4) Check grove_log again — wait for coder to fix and resubmit. 5) Re-review the updated PR. 6) When code is good, gh pr review --approve, grove_contribute kind=review, then grove_done. Do NOT call grove_done until you have approved. CONTRACT ENFORCES: reviews relation REQUIRED."
+      prompt: "You are the reviewer. Your role is 'reviewer' — always pass agent: {role: 'reviewer'} in grove_contribute and grove_done calls. Loop: 1) Call grove_read_inbox to receive coder's work via Nexus IPC (do NOT poll grove_log). 2) When you receive a contribution with pr_number, run gh pr diff <number>. 3) Review — if issues, gh pr review --request-changes, then grove_contribute kind=review. 4) grove_read_inbox again for coder's fix. 5) When code is good, gh pr review --approve (or --comment if same user), grove_contribute kind=review, then grove_done."
       max_instances: 1
       command: "claude"
       edges:

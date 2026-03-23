@@ -252,6 +252,15 @@ async function buildAppProps(
     tmux = available ? mgr : undefined;
   }
 
+  // Create AcpxRuntime for agent spawning (preferred over tmux)
+  let agentRuntime: import("../core/agent-runtime.js").AgentRuntime | undefined;
+  {
+    const { AcpxRuntime } = await import("../core/acpx-runtime.js");
+    const runtime = new AcpxRuntime({ agent: "codex" });
+    const available = await runtime.isAvailable();
+    agentRuntime = available ? runtime : undefined;
+  }
+
   // Start workspace GC for modes that have lifecycle support
   const stopCallbacks: Array<() => void> = [];
   if (provider.cleanWorkspace) {
@@ -335,7 +344,16 @@ async function buildAppProps(
   }
 
   return {
-    appProps: { provider, intervalMs: opts.intervalMs, tmux, topology, presetName, groveDir, eventBus },
+    appProps: {
+      provider,
+      intervalMs: opts.intervalMs,
+      tmux,
+      topology,
+      presetName,
+      groveDir,
+      eventBus,
+      agentRuntime,
+    },
     provider,
     stopGc,
   };
@@ -430,7 +448,7 @@ export async function handleTui(
 
   const renderer = await createCliRenderer({
     exitOnCtrlC: true,
-    useAlternateScreen: true,
+    useAlternateScreen: !process.env.GROVE_NO_ALT_SCREEN,
   });
 
   const root = createRoot(renderer);

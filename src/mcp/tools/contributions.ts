@@ -26,7 +26,16 @@ import { agentSchema, relationSchema, scoreSchema } from "../schemas.js";
 
 const contributeInputSchema = z.object({
   kind: z
-    .enum(["work", "review", "discussion", "adoption", "reproduction", "plan", "ask_user", "response"])
+    .enum([
+      "work",
+      "review",
+      "discussion",
+      "adoption",
+      "reproduction",
+      "plan",
+      "ask_user",
+      "response",
+    ])
     .describe("Contribution kind"),
   mode: z
     .enum(["evaluation", "exploration"])
@@ -104,11 +113,21 @@ const discussInputSchema = z.object({
 // Tool registration
 // ---------------------------------------------------------------------------
 
-/** Inject GROVE_AGENT_ROLE into agent overrides if not already set. */
+/**
+ * Inject GROVE_AGENT_ROLE into agent overrides if not already set.
+ * Falls back to extracting role from agentId pattern "role-timestamp".
+ */
 function withDefaultRole(agent: AgentOverrides | undefined): AgentOverrides {
-  const role = process.env.GROVE_AGENT_ROLE;
-  if (!role || agent?.role) return agent ?? {};
-  return { ...agent, role };
+  if (agent?.role) return agent;
+  const envRole = process.env.GROVE_AGENT_ROLE;
+  if (envRole) return { ...agent, role: envRole } as AgentOverrides;
+  // Fallback: extract role from agentId if it matches "role-xxx" pattern
+  const agentId = agent?.agentId;
+  if (agentId?.includes("-")) {
+    const role = agentId.replace(/-[a-z0-9]+$/i, "");
+    if (role && role !== agentId) return { ...agent, role } as AgentOverrides;
+  }
+  return agent ?? {};
 }
 
 export function registerContributionTools(server: McpServer, deps: McpDeps): void {

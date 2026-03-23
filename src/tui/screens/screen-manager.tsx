@@ -10,8 +10,7 @@
  *   Tab: toggle to App (advanced mode) / back to RunningView
  */
 
-import { useRenderer } from "@opentui/react";
-import { useKeyboard } from "@opentui/react";
+import { useKeyboard, useRenderer } from "@opentui/react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { AppProps } from "../app.js";
 import { App } from "../app.js";
@@ -107,7 +106,23 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         },
         sessionStore,
         appProps.groveDir,
+        appProps.agentRuntime,
       );
+
+      // Wire NexusWsBridge for push-based IPC: TUI watches inboxes, pushes to agents
+      const rt = appProps.agentRuntime;
+      const eb = appProps.eventBus;
+      if (rt && topology && eb) {
+        void import("../nexus-ws-bridge.js")
+          .then(({ NexusWsBridge }) => {
+            const bridge = new NexusWsBridge({ topology, runtime: rt, eventBus: eb });
+            bridge.connect();
+            spawnManagerRef.current?.setWsBridge(bridge);
+          })
+          .catch(() => {
+            /* best-effort */
+          });
+      }
     }
 
     // Track session start time for duration calculation
@@ -172,7 +187,15 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
               let cmd = "";
               for (const line of lines) {
                 const t = line.trim();
-                if (t && !t.startsWith("Permission") && !t.startsWith("Do you") && !t.startsWith("❯") && !t.startsWith("Esc") && !t.startsWith("1.") && !t.startsWith("2.")) {
+                if (
+                  t &&
+                  !t.startsWith("Permission") &&
+                  !t.startsWith("Do you") &&
+                  !t.startsWith("❯") &&
+                  !t.startsWith("Esc") &&
+                  !t.startsWith("1.") &&
+                  !t.startsWith("2.")
+                ) {
                   cmd = t;
                 }
               }
@@ -236,7 +259,11 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // Screen 2 -> Screen 3: agents detected, continue with edited prompts
     const rolePromptsRef = useRef<Map<string, string>>(new Map());
     const handleAgentDetectContinue = useCallback(
-      (detected: Map<string, boolean>, roleMapping: Map<string, string>, rolePrompts: Map<string, string>) => {
+      (
+        detected: Map<string, boolean>,
+        roleMapping: Map<string, string>,
+        rolePrompts: Map<string, string>,
+      ) => {
         rolePromptsRef.current = rolePrompts;
         setState((s) => ({
           ...s,
@@ -290,9 +317,11 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             context.rolePrompt = editedPrompt ?? role.prompt ?? "";
             if (role.description) context.roleDescription = role.description;
 
-            void spawnManagerRef.current?.spawn(role.name, command, undefined, 0, context).catch(() => {
-              // Spawn failures are shown in RunningView via provider polling
-            });
+            void spawnManagerRef.current
+              ?.spawn(role.name, command, undefined, 0, context)
+              .catch(() => {
+                // Spawn failures are shown in RunningView via provider polling
+              });
           }
         }
       },
@@ -352,7 +381,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
               <text color={theme.text}>{p.command}</text>
             </box>
           ))}
-          <text color={theme.dimmed}>y:approve  n:deny</text>
+          <text color={theme.dimmed}>y:approve n:deny</text>
         </box>
       ) : null;
 
@@ -464,10 +493,7 @@ interface AdvancedModeWrapperProps {
  * to the simple RunningView.
  */
 const AdvancedModeWrapper: React.NamedExoticComponent<AdvancedModeWrapperProps> = React.memo(
-  function AdvancedModeWrapper({
-    appProps,
-    onBack,
-  }: AdvancedModeWrapperProps): React.ReactNode {
+  function AdvancedModeWrapper({ appProps, onBack }: AdvancedModeWrapperProps): React.ReactNode {
     // Intercept Ctrl+B (back) to return to simple view.
     // Tab is used by App for panel cycling, so we use a dedicated back key.
     useKeyboard(
