@@ -316,6 +316,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             const editedPrompt = rolePromptsRef.current.get(role.name);
             context.rolePrompt = editedPrompt ?? role.prompt ?? "";
             if (role.description) context.roleDescription = role.description;
+            if (topology) context.topology = topology;
 
             void spawnManagerRef.current
               ?.spawn(role.name, command, undefined, 0, context)

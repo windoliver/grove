@@ -661,6 +661,7 @@ export function App({
       const context: Record<string, unknown> = {};
       if (role?.prompt) context.rolePrompt = role.prompt;
       if (role?.description) context.roleDescription = role.description;
+      if (topology) context.topology = topology;
 
       spawnManagerRef.current
         ?.spawn(agentId, command, parentAgentId, depth, context)

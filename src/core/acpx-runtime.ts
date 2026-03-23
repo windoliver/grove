@@ -86,10 +86,12 @@ export class AcpxRuntime implements AgentRuntime {
     };
     this.sessions.set(id, entry);
 
-    // Send initial prompt non-blocking so multiple agents can run concurrently
-    const initialMessage = config.goal ?? config.prompt;
-    if (initialMessage) {
-      this.sendAsync(entry, initialMessage);
+    // Send initial prompt unless this role waits for push (e.g., reviewer waits for coder)
+    if (!config.waitForPush) {
+      const initialMessage = config.goal ?? config.prompt;
+      if (initialMessage) {
+        this.sendAsync(entry, initialMessage);
+      }
     }
 
     return session;

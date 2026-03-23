@@ -211,6 +211,10 @@ export class SpawnManager {
 
       if (this.agentRuntime) {
         // Use AgentRuntime interface — works with acpx, subprocess, or any runtime
+        // Determine if this role should wait for IPC push instead of starting immediately.
+        // Roles targeted by edges from other roles wait (e.g., reviewer waits for coder).
+        const waitForPush = context?.waitForPush === true || this.hasIncomingEdges(roleId, context);
+
         const agentConfig: AgentConfig = {
           role: roleId,
           command: agentCommand,
@@ -218,6 +222,7 @@ export class SpawnManager {
           env: { ...roleEnv, ...prEnv },
           goal: this.sessionGoal,
           prompt: initialPrompt,
+          waitForPush,
         };
         const session = await this.agentRuntime.spawn(roleId, agentConfig);
         this.agentSessions.set(spawnId, session);
@@ -432,6 +437,22 @@ export class SpawnManager {
       // Claims query may fail (e.g., Nexus unreachable) — degrade gracefully
       return [];
     }
+  }
+
+  /**
+   * Check if a role has incoming edges from other roles in the topology.
+   * Roles with incoming edges wait for push (they receive work from others).
+   */
+  private hasIncomingEdges(roleId: string, context?: Record<string, unknown>): boolean {
+    const topology = context?.topology as
+      | { roles: Array<{ name: string; edges?: Array<{ target: string }> }> }
+      | undefined;
+    if (!topology) return false;
+    for (const role of topology.roles) {
+      if (role.name === roleId) continue;
+      if (role.edges?.some((e) => e.target === roleId)) return true;
+    }
+    return false;
   }
 
   /** Close bridge and clear state. */

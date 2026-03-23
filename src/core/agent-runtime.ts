@@ -12,6 +12,8 @@ export interface AgentConfig {
   readonly env?: Record<string, string> | undefined;
   readonly goal?: string | undefined;
   readonly prompt?: string | undefined;
+  /** If true, don't send initial prompt — agent waits for push via IPC. */
+  readonly waitForPush?: boolean | undefined;
 }
 
 /** A running agent session. */
