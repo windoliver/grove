@@ -15,9 +15,9 @@ import { parseArgs } from "node:util";
 
 import type { GroveContract } from "../../core/contract.js";
 import { parseGroveContract } from "../../core/contract.js";
+import { InMemorySessionStore } from "../../core/in-memory-session-store.js";
 import { LocalEventBus } from "../../core/local-event-bus.js";
 import { MockRuntime } from "../../core/mock-runtime.js";
-import { InMemorySessionStore } from "../../core/in-memory-session-store.js";
 import { SessionManager } from "../../core/session-manager.js";
 import { SessionOrchestrator } from "../../core/session-orchestrator.js";
 import { outputJson, outputJsonError } from "../format.js";
@@ -102,13 +102,18 @@ async function sessionStart(args: readonly string[]): Promise<void> {
   }
 
   if (!contract?.topology) {
-    outputJsonError({ code: "VALIDATION_ERROR", message: "GROVE.md must define a topology for session management" });
+    outputJsonError({
+      code: "VALIDATION_ERROR",
+      message: "GROVE.md must define a topology for session management",
+    });
     process.exitCode = 1;
     return;
   }
 
-  // Create runtime (mock for now — real runtimes require agent CLIs)
-  const runtime = new MockRuntime();
+  // Create runtime — prefer acpx, fall back to mock
+  const { AcpxRuntime } = await import("../../core/acpx-runtime.js");
+  const acpx = new AcpxRuntime();
+  const runtime = (await acpx.isAvailable()) ? acpx : new MockRuntime();
   const eventBus = new LocalEventBus();
 
   const store = new InMemorySessionStore();

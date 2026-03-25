@@ -116,11 +116,14 @@ export class SessionOrchestrator {
       });
     }
 
-    // Subscribe all agents to their event channels
+    // Subscribe all agents to their event channels (store handlers for cleanup)
+    if (!this.eventHandlers) this.eventHandlers = new Map();
     for (const agent of this.agents) {
-      this.config.eventBus.subscribe(agent.role, (event: GroveEvent) => {
+      const handler = (event: GroveEvent) => {
         void this.handleEvent(agent, event);
-      });
+      };
+      this.eventHandlers.set(agent.role, handler);
+      this.config.eventBus.subscribe(agent.role, handler);
     }
 
     return this.getStatus();
@@ -173,6 +176,20 @@ export class SessionOrchestrator {
         stdio: "pipe",
       });
       agentCwd = wsDir;
+
+      // Bootstrap workspace with .mcp.json + CLAUDE.md
+      const { bootstrapWorkspace } = await import("./workspace-bootstrap.js");
+      await bootstrapWorkspace({
+        workspacePath: wsDir,
+        roleId: role.name,
+        goal: this.config.goal,
+        rolePrompt: role.prompt,
+        roleDescription: role.description,
+        groveDir: join(this.config.projectRoot, ".grove"),
+        mcpServePath: join(this.config.projectRoot, "src", "mcp", "serve.ts"),
+        nexusUrl: process.env.GROVE_NEXUS_URL,
+        nexusApiKey: process.env.NEXUS_API_KEY,
+      });
     } catch {
       // Fall back to project root if worktree creation fails
     }

@@ -138,8 +138,17 @@ export class EnforcingContributionStore implements ContributionStore {
   private readonly clock: () => Date;
   private readonly writeMutex: AsyncMutex;
 
-  /** Optional pre-write hook for policy enforcement inside the mutex (TOCTOU-safe). */
-  preWriteHook?: ((contribution: Contribution) => Promise<void>) | undefined;
+  /**
+   * Per-request pre-write hooks, keyed by CID. Each contributeOperation sets
+   * its own hook before calling put(). The hook runs inside the mutex then
+   * is deleted — no shared mutable state, no race between concurrent requests.
+   */
+  private readonly preWriteHooks = new Map<string, (contribution: Contribution) => Promise<void>>();
+
+  /** Register a pre-write hook for a specific contribution CID. */
+  setPreWriteHook(cid: string, hook: (contribution: Contribution) => Promise<void>): void {
+    this.preWriteHooks.set(cid, hook);
+  }
 
   constructor(
     inner: ContributionStore,
@@ -165,8 +174,12 @@ export class EnforcingContributionStore implements ContributionStore {
       }
 
       await this.enforceContributionLimits(contribution, 0, []);
-      // Run policy enforcement inside mutex (TOCTOU-safe)
-      if (this.preWriteHook) await this.preWriteHook(contribution);
+      // Run per-CID policy enforcement inside mutex (TOCTOU-safe, no shared state race)
+      const hook = this.preWriteHooks.get(contribution.cid);
+      if (hook) {
+        this.preWriteHooks.delete(contribution.cid);
+        await hook(contribution);
+      }
       return await this.inner.put(contribution);
     });
   };

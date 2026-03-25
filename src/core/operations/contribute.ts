@@ -240,17 +240,17 @@ export async function contributeOperation(
     if (deps.contract !== undefined && deps.contributionStore !== undefined) {
       const enforcer = new PolicyEnforcer(deps.contract, deps.contributionStore, deps.outcomeStore);
 
-      // Wire preWriteHook for atomic enforce+put (fixes TOCTOU window).
-      // The hook runs inside EnforcingContributionStore's writeMutex.
+      // Register per-CID preWriteHook for atomic enforce+put (TOCTOU-safe).
+      // Keyed by CID so concurrent contributes don't overwrite each other's hooks.
       const store = deps.contributionStore as {
-        preWriteHook?: ((c: Contribution) => Promise<void>) | undefined;
+        setPreWriteHook?: (cid: string, hook: (c: Contribution) => Promise<void>) => void;
       };
-      if ("preWriteHook" in store) {
-        store.preWriteHook = async (c: Contribution) => {
+      if (store.setPreWriteHook) {
+        store.setPreWriteHook(contribution.cid, async (c: Contribution) => {
           policyResult = await enforcer.enforce(c, true);
-        };
+        });
       } else {
-        // Fallback: enforce outside mutex (legacy path)
+        // Fallback: enforce outside mutex (non-EnforcingContributionStore)
         policyResult = await enforcer.enforce(contribution, true);
       }
     }
