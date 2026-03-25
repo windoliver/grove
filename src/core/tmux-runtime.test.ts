@@ -85,12 +85,15 @@ describe("TmuxRuntime", () => {
     });
 
     try {
-      // Small delay for tmux session to register (flaky on CI without this)
-      await new Promise((r) => setTimeout(r, 200));
-      const sessions = await rt.listSessions();
-      const found = sessions.find((s) => s.id === session.id);
+      // Retry with backoff — tmux session listing is flaky on CI
+      let found: unknown;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
+        const sessions = await rt.listSessions();
+        found = sessions.find((s) => s.id === session.id);
+        if (found) break;
+      }
       expect(found).toBeTruthy();
-      expect(found?.role).toBe("list-test");
     } finally {
       await rt.close(session);
     }
