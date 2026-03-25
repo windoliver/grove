@@ -165,6 +165,14 @@ export class SpawnManager {
       if (context?.rolePrompt || context?.roleDescription) {
         await this.writeAgentContext(workspacePath, roleId, context);
       }
+      // Step 2c: Protect config files from agent mutation (#7 Workspace Mutation Constraints)
+      const { chmod } = await import("node:fs/promises");
+      for (const protectedFile of [".mcp.json", "CLAUDE.md", "CODEX.md"]) {
+        const filePath = join(workspacePath, protectedFile);
+        await chmod(filePath, 0o444).catch(() => {
+          // File may not exist — non-fatal
+        });
+      }
     } catch (configErr) {
       this.onError(
         `Config write failed: ${configErr instanceof Error ? configErr.message : String(configErr)}`,

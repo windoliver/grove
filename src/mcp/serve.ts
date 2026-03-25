@@ -43,6 +43,7 @@ process.stderr.write(`grove-mcp: cwd=${cwd} role=${process.env.GROVE_AGENT_ROLE 
 
 let deps: McpDeps;
 let close: () => void;
+let preset: import("./server.js").McpPresetConfig | undefined;
 
 try {
   const groveDir = groveOverride ?? findGroveDir(cwd);
@@ -124,6 +125,38 @@ try {
     ...(eventBus ? { eventBus } : {}),
     ...(topologyRouter ? { topologyRouter } : {}),
   };
+  // Derive MCP tool preset from contract mode — #11 MCP Tool Surface + #12 Concept Usage
+  const contractMode = runtime.contract?.mode ?? "exploration";
+  const hasMetrics =
+    runtime.contract?.metrics !== undefined && Object.keys(runtime.contract.metrics).length > 0;
+
+  preset =
+    contractMode === "evaluation"
+      ? {
+          queries: true,
+          claims: true,
+          bounties: true,
+          outcomes: true,
+          workspace: true,
+          stop: true,
+          ingest: true,
+          messaging: false,
+          plans: true,
+          goals: true,
+        }
+      : {
+          queries: true,
+          claims: true,
+          bounties: false,
+          outcomes: hasMetrics,
+          workspace: false,
+          stop: false,
+          ingest: false,
+          messaging: false,
+          plans: false,
+          goals: true,
+        };
+
   close = () => {
     eventBus?.close();
     nexusClient?.close();
@@ -138,7 +171,7 @@ try {
 
 // --- Server setup ---------------------------------------------------------
 
-const server = await createMcpServer(deps);
+const server = await createMcpServer(deps, preset);
 const transport = new StdioServerTransport();
 
 await server.connect(transport);
