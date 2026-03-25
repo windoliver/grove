@@ -258,26 +258,11 @@ export async function contributeOperation(
     // that runs after rate-limit checks but before the inner store.put().
     let policyResult: PolicyEnforcementResult | undefined;
     if (deps.contract !== undefined && deps.contributionStore !== undefined) {
-      const enforcer = new PolicyEnforcer(
-        deps.contract,
-        deps.contributionStore,
-        deps.outcomeStore,
-      );
-      // Strict enforcement for structural constraints (required artifacts,
-      // relations, context) — these apply in ALL modes. Gate checks
-      // (metric_improves etc) are only strict in evaluation mode.
-      const hasStructuralConstraints =
-        deps.contract.agentConstraints?.requiredArtifacts !== undefined ||
-        deps.contract.agentConstraints?.requiredRelations !== undefined ||
-        deps.contract.evaluation?.requiredContext !== undefined;
-      const hasGateEnforcement =
-        deps.contract.gates !== undefined && deps.contract.gates.length > 0;
-      const isStrict =
-        hasStructuralConstraints ||
-        (hasGateEnforcement &&
-          deps.contract.mode === CM.Evaluation &&
-          deps.contract.outcomePolicy?.requireManualReview !== true);
-      policyResult = await enforcer.enforce(contribution, isStrict);
+      const enforcer = new PolicyEnforcer(deps.contract, deps.contributionStore, deps.outcomeStore);
+      // #4: System-owned enforcement — always strict.
+      // Structural violations (artifacts, relations, role-kind) reject in all modes.
+      // Evaluation-specific checks (scores, gates) only run in evaluation mode.
+      policyResult = await enforcer.enforce(contribution, true);
 
       // In strict mode, PolicyViolationError is thrown by enforce() and
       // caught below by fromGroveError(). We only reach here if passed.
@@ -288,11 +273,7 @@ export async function contributeOperation(
 
     // --- Post-write: persist derived outcome (outside mutex scope) ---
     if (policyResult?.derivedOutcome !== undefined && deps.contract !== undefined) {
-      const enforcer = new PolicyEnforcer(
-        deps.contract,
-        deps.contributionStore,
-        deps.outcomeStore,
-      );
+      const enforcer = new PolicyEnforcer(deps.contract, deps.contributionStore, deps.outcomeStore);
       await enforcer.persistOutcome(contribution.cid, policyResult.derivedOutcome);
     }
 
