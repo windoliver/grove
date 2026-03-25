@@ -70,6 +70,7 @@ describe("createMcpServer preset scoping", () => {
     "grove_create_plan",
     "grove_create_session",
     "grove_discuss",
+    "grove_done",
     "grove_frontier",
     "grove_get_outcome",
     "grove_goal",
@@ -258,8 +259,8 @@ describe("createMcpServer preset scoping", () => {
     // ask_user always present
     expect(names).toContain("ask_user");
 
-    // Only contribution tools + ask_user
-    expect(names).toEqual(["ask_user", ...contributionTools].sort());
+    // Only contribution tools + done + ask_user
+    expect(names).toEqual(["ask_user", "grove_done", ...contributionTools].sort());
   });
 
   test("review-loop preset example (selective disabling)", async () => {
