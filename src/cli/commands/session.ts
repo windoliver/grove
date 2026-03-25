@@ -155,11 +155,27 @@ async function sessionStart(args: readonly string[]): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function sessionList(_args: readonly string[]): Promise<void> {
-  // Sessions are in-memory for now — list from the store
-  outputJson({
-    message: "Session list requires persistent store (not yet wired to SQLite)",
-    sessions: [],
-  });
+  const { existsSync, readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { resolveGroveDir } = await import("../utils/grove-dir.js");
+
+  let sessions: unknown[] = [];
+  try {
+    const { groveDir } = resolveGroveDir();
+    const dbPath = join(groveDir, "grove.db");
+    if (existsSync(dbPath)) {
+      const { initSqliteDb } = await import("../../local/sqlite-store.js");
+      const db = initSqliteDb(dbPath);
+      const { SqliteGoalSessionStore } = await import("../../local/sqlite-goal-session-store.js");
+      const store = new SqliteGoalSessionStore(db);
+      sessions = [...(await store.listSessions())];
+      db.close();
+    }
+  } catch {
+    // Fall through with empty list
+  }
+
+  outputJson({ sessions, count: sessions.length });
 }
 
 // ---------------------------------------------------------------------------
@@ -167,9 +183,44 @@ async function sessionList(_args: readonly string[]): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function sessionStatus(): Promise<void> {
-  outputJson({
-    message: "Session status requires persistent store (not yet wired to SQLite)",
-  });
+  const { existsSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { resolveGroveDir } = await import("../utils/grove-dir.js");
+
+  try {
+    const { groveDir } = resolveGroveDir();
+    const dbPath = join(groveDir, "grove.db");
+    if (!existsSync(dbPath)) {
+      outputJson({ status: "no_sessions", message: "No grove database found" });
+      return;
+    }
+    const { initSqliteDb } = await import("../../local/sqlite-store.js");
+    const db = initSqliteDb(dbPath);
+    const { SqliteGoalSessionStore } = await import("../../local/sqlite-goal-session-store.js");
+    const store = new SqliteGoalSessionStore(db);
+    const allSessions = await store.listSessions();
+    const latest = allSessions.length > 0 ? allSessions[0] : undefined;
+    db.close();
+
+    if (!latest) {
+      outputJson({ status: "no_sessions", message: "No sessions found" });
+      return;
+    }
+
+    outputJson({
+      sessionId: latest.sessionId,
+      status: latest.status,
+      goal: latest.goal,
+      startedAt: latest.startedAt,
+      endedAt: latest.endedAt,
+      contributionCount: latest.contributionCount,
+    });
+  } catch (err) {
+    outputJsonError({
+      code: "SESSION_ERROR",
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------

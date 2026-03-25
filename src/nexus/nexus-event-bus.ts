@@ -1,13 +1,11 @@
 /**
- * Nexus-backed EventBus — uses Nexus VFS inboxes for cross-process IPC.
+ * Nexus-backed EventBus — publish writes to Nexus IPC API + VFS inbox.
  *
- * When an event is published, it writes a message file to the target
- * agent's inbox at /agents/{agentId}/inbox/{timestamp}-{type}.json.
+ * On publish: sends via POST /api/v2/ipc/send and writes to VFS inbox.
+ * Both paths trigger Nexus SSE events which NexusWsBridge receives.
  *
- * Subscribers poll their inbox for new messages (with EventBus push
- * as optimization when available).
- *
- * This replaces LocalEventBus (in-process EventEmitter) for Nexus mode.
+ * On subscribe: registers in-process handlers only (no polling).
+ * Cross-process push is handled by NexusWsBridge via Nexus SSE stream.
  */
 
 import type { EventBus, EventHandler, GroveEvent } from "../core/event-bus.js";
@@ -20,7 +18,6 @@ export class NexusEventBus implements EventBus {
   private readonly client: NexusClient;
 
   private readonly handlers = new Map<string, EventHandler[]>();
-  private pollers = new Map<string, ReturnType<typeof setInterval>>();
 
   constructor(client: NexusClient, _zoneId: string) {
     this.client = client;
@@ -76,14 +73,8 @@ export class NexusEventBus implements EventBus {
       this.handlers.set(role, handlers);
     }
     handlers.push(handler);
-
-    // Start polling this role's inbox if not already
-    if (!this.pollers.has(role)) {
-      const poller = setInterval(() => {
-        void this.pollInbox(role);
-      }, 10000); // 10s to avoid Nexus rate limits
-      this.pollers.set(role, poller);
-    }
+    // No polling — cross-process push is handled by NexusWsBridge (SSE).
+    // This subscribe only registers local in-process handlers for publish().
   }
 
   unsubscribe(role: string, handler: EventHandler): void {
@@ -94,54 +85,10 @@ export class NexusEventBus implements EventBus {
 
     if (handlers.length === 0) {
       this.handlers.delete(role);
-      const poller = this.pollers.get(role);
-      if (poller) {
-        clearInterval(poller);
-        this.pollers.delete(role);
-      }
     }
   }
 
   close(): void {
-    for (const poller of this.pollers.values()) {
-      clearInterval(poller);
-    }
-    this.pollers.clear();
     this.handlers.clear();
-  }
-
-  /** Track processed message filenames to avoid reprocessing. */
-  private processed = new Set<string>();
-
-  /** Poll an agent's inbox for new messages. */
-  private async pollInbox(role: string): Promise<void> {
-    try {
-      const inboxPath = `${AGENTS_ROOT}/${role}/inbox`;
-      const result = await this.client.list(inboxPath);
-      if (!result || result.files.length === 0) return;
-
-      const handlers = this.handlers.get(role);
-      if (!handlers || handlers.length === 0) return;
-
-      for (const entry of result.files) {
-        const filePath = entry.path || `${inboxPath}/${entry.name}`;
-        if (this.processed.has(filePath)) continue;
-
-        try {
-          const data = await this.client.read(filePath);
-          if (!data) continue;
-          const event = JSON.parse(new TextDecoder().decode(data)) as GroveEvent;
-          for (const handler of handlers) {
-            handler(event);
-          }
-          this.processed.add(filePath);
-        } catch {
-          // Skip malformed messages
-          this.processed.add(filePath);
-        }
-      }
-    } catch {
-      // Inbox may not exist yet — non-fatal
-    }
   }
 }
