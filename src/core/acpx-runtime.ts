@@ -110,9 +110,17 @@ export class AcpxRuntime implements AgentRuntime {
   private sendAsync(entry: AcpxSessionEntry, message: string): void {
     entry.session = { ...entry.session, status: "running" };
 
-    // Sending prompt to acpx session
+    // Wrap message with system-reminder that enforces MCP tool usage
+    // (Relay pattern: agents "forget" tools without per-message reinforcement)
+    const wrappedMessage = `<system-reminder>
+After completing this task, you MUST call the grove_contribute MCP tool to record your work.
+Example: grove_contribute({ kind: "work", summary: "description of what you did", mode: "exploration", agent: { agentId: "${entry.session.id}" } })
+Without calling grove_contribute, other agents cannot see your work.
+When finished with all work, call grove_done({ agent: { agentId: "${entry.session.id}" } }).
+</system-reminder>
+${message}`;
 
-    const child = nodeSpawn("acpx", ["--approve-all", entry.agent, "-s", entry.sessionName, message], {
+    const child = nodeSpawn("acpx", ["--approve-all", entry.agent, "-s", entry.sessionName, wrappedMessage], {
       cwd: entry.cwd,
       env: entry.env as NodeJS.ProcessEnv,
       stdio: ["ignore", "pipe", "pipe"],
