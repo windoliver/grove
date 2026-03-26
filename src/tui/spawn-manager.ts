@@ -509,44 +509,24 @@ export class SpawnManager {
     };
     await writeFile(join(workspacePath, ".mcp.json"), JSON.stringify(mcpConfig, null, 2), "utf-8");
 
-    // Also update ~/.codex/config.toml for Codex agents (codex uses global TOML, not .mcp.json)
+    // Update codex MCP config via CLI (codex uses ~/.codex/config.toml, not .mcp.json).
+    // Uses `codex mcp add` which is the safe, supported way to manage MCP servers.
+    // This overwrites the "grove" server entry but is idempotent — the latest
+    // grove session's MCP config is always correct for the active workspace.
     try {
-      const codexHome = join(process.env.CODEX_HOME ?? join(process.env.HOME ?? "", ".codex"));
-      const codexConfig = join(codexHome, "config.toml");
-      if (existsSync(codexConfig)) {
-        let toml = await readFile(codexConfig, "utf-8");
-        // Replace existing [mcp_servers.grove] section or append
-        const groveSection = `[mcp_servers.grove]\ncommand = "bun"\nargs = ["run", "${mcpServePath}"]\n\n[mcp_servers.grove.env]\nGROVE_DIR = "${groveDir}"${mcpEnv.GROVE_NEXUS_URL ? `\nGROVE_NEXUS_URL = "${mcpEnv.GROVE_NEXUS_URL}"` : ""}${mcpEnv.NEXUS_API_KEY ? `\nNEXUS_API_KEY = "${mcpEnv.NEXUS_API_KEY}"` : ""}`;
+      const envArgs: string[] = [];
+      envArgs.push("--env", `GROVE_DIR=${groveDir}`);
+      if (mcpEnv.GROVE_NEXUS_URL) envArgs.push("--env", `GROVE_NEXUS_URL=${mcpEnv.GROVE_NEXUS_URL}`);
+      if (mcpEnv.NEXUS_API_KEY) envArgs.push("--env", `NEXUS_API_KEY=${mcpEnv.NEXUS_API_KEY}`);
 
-        if (toml.includes("[mcp_servers.grove]")) {
-          // Replace from [mcp_servers.grove] to next section or EOF
-          toml = toml.replace(
-            /\[mcp_servers\.grove\][\s\S]*?(?=\n\[(?!mcp_servers\.grove)|$)/,
-            groveSection + "\n",
-          );
-        } else {
-          toml += `\n${groveSection}\n`;
-        }
-        await writeFile(codexConfig, toml, "utf-8");
-      }
+      // Remove existing grove server first (codex mcp add fails if it exists)
+      execSync("codex mcp remove grove 2>/dev/null || true", { stdio: "pipe", timeout: 5000 });
+      execSync(
+        `codex mcp add grove ${envArgs.join(" ")} -- bun run ${mcpServePath}`,
+        { stdio: "pipe", timeout: 10000 },
+      );
     } catch {
-      // Non-fatal — codex config update is best-effort
-    }
-
-    // Also trust the workspace in codex config
-    try {
-      const codexHome = join(process.env.CODEX_HOME ?? join(process.env.HOME ?? "", ".codex"));
-      const codexConfig = join(codexHome, "config.toml");
-      if (existsSync(codexConfig)) {
-        let toml = await readFile(codexConfig, "utf-8");
-        const trustKey = `[projects."${workspacePath}"]`;
-        if (!toml.includes(trustKey)) {
-          toml += `\n${trustKey}\ntrust_level = "trusted"\n`;
-          await writeFile(codexConfig, toml, "utf-8");
-        }
-      }
-    } catch {
-      // Non-fatal
+      // Non-fatal — codex may not be installed, or CLI may not support mcp subcommand
     }
   }
 

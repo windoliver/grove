@@ -60,16 +60,6 @@ export class AcpxRuntime implements AgentRuntime {
     const id = sessionName;
     const mergedEnv = config.env ? { ...process.env, ...config.env } : { ...process.env };
 
-    // Kill any existing codex-acp process so it restarts with fresh config
-    // (codex loads ~/.codex/config.toml at startup — stale processes miss MCP config updates)
-    if (this.nextId <= 1) {
-      try {
-        execSync("pkill -f codex-acp 2>/dev/null || true", { stdio: "pipe", timeout: 3000 });
-        // Brief pause for process cleanup
-        execSync("sleep 1", { stdio: "pipe" });
-      } catch { /* ignore */ }
-    }
-
     // Create a new acpx session with --approve-all (layer 1: acpx client-side auto-approve)
     const createCmd = `acpx --approve-all ${shellEscape(this.agent)} sessions new --name ${shellEscape(sessionName)}`;
     try {
