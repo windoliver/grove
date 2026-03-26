@@ -165,6 +165,7 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
           setMode("boardroom");
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
+          process.stderr.write(`[grove init failed] ${message}\n`);
           setInitError(message);
         }
       })();

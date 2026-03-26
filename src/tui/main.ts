@@ -549,7 +549,8 @@ export async function handleTui(
         force: true,
       });
 
-      const result = await buildAppProps(effectiveGrove, opts, presetName);
+      // Pass the newly created .grove dir so buildAppProps can find GROVE.md
+      const result = await buildAppProps(newGroveDir, opts, presetName);
       activeProvider = result.provider;
       activeStopGc = result.stopGc;
 

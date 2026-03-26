@@ -214,7 +214,17 @@ function renderTopology(topology: AgentTopology | undefined, version: 2 | 3): st
   for (const role of topology.roles) {
     lines.push(`    - name: ${role.name}`);
     if (role.description) lines.push(`      description: "${role.description}"`);
-    if (role.prompt) lines.push(`      prompt: "${role.prompt}"`);
+    if (role.prompt) {
+      if (role.prompt.includes("\n")) {
+        // Multiline prompt — use YAML block scalar
+        lines.push("      prompt: |");
+        for (const line of role.prompt.split("\n")) {
+          lines.push(`        ${line}`);
+        }
+      } else {
+        lines.push(`      prompt: "${role.prompt}"`);
+      }
+    }
     if (role.maxInstances !== undefined) lines.push(`      max_instances: ${role.maxInstances}`);
     if (role.platform) lines.push(`      platform: ${role.platform}`);
     if (role.command) lines.push(`      command: "${role.command}"`);
