@@ -422,6 +422,24 @@ export async function handleTui(
     }
   }
 
+  // Pre-flight: ensure Nexus is healthy BEFORE starting the TUI.
+  // This avoids blocking the TUI render with Nexus init/startup.
+  try {
+    const { ensureNexusRunning, checkNexusCli } = await import("../cli/nexus-lifecycle.js");
+    const hasNexus = await checkNexusCli();
+    if (hasNexus) {
+      // Minimal config — just need Nexus running, don't care about grove mode yet
+      const minConfig = { name: "preflight", mode: "nexus" as const, nexusManaged: true };
+      const nexusInfo = await ensureNexusRunning(process.cwd(), minConfig, {
+        onProgress: (step) => process.stderr.write(`${step}\n`),
+      });
+      process.env.GROVE_NEXUS_URL = nexusInfo.url;
+      if (nexusInfo.apiKey) process.env.NEXUS_API_KEY = nexusInfo.apiKey;
+    }
+  } catch {
+    // Non-fatal — TUI can still work in local mode
+  }
+
   // Load past sessions for the welcome screen (informational context)
   let sessions: SessionRecord[] = [];
   if (groveDir) {
