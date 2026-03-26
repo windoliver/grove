@@ -218,7 +218,14 @@ async function buildAppProps(
     groveOverride: effectiveGrove,
   });
 
-  // Health check for nexus backends
+  // When the TUI starts its own local HTTP + MCP servers, they write to SQLite.
+  // Force the TUI provider to use local mode too, so it reads from the same SQLite.
+  // The Nexus provider would read from Nexus which doesn't have the local data.
+  if (backend.mode === "nexus" && backend.source !== "flag") {
+    backend = { mode: "local", groveOverride: effectiveGrove, source: "default" };
+  }
+
+  // Health check for nexus backends (only when user explicitly requested nexus via flag)
   if (backend.mode === "nexus") {
     const health = await checkNexusHealth(backend.url);
     if (health !== "ok") {
