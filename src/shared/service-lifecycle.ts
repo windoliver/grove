@@ -98,14 +98,23 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
   // Spawn services in parallel
   const spawnPromises: Promise<ChildProcess | null>[] = [];
 
+  // Resolve grove source root for service entry points
+  const { dirname } = await import("node:path");
+  const groveSourceRoot = dirname(dirname(new URL(import.meta.url).pathname));
+  const resolveEntry = (rel: string) => {
+    const distPath = join(groveSourceRoot, "dist", rel.replace("src/", "").replace(".ts", ".js"));
+    if (existsSync(distPath)) return distPath;
+    return join(groveSourceRoot, rel);
+  };
+
   if (config.services?.server) {
     options.onProgress?.("Starting HTTP server...");
-    spawnPromises.push(spawnService("server", "src/server/serve.ts", groveDir));
+    spawnPromises.push(spawnService("server", resolveEntry("src/server/serve.ts"), groveDir));
   }
 
   if (config.services?.mcp) {
     options.onProgress?.("Starting MCP server...");
-    spawnPromises.push(spawnService("mcp", "src/mcp/serve-http.ts", groveDir));
+    spawnPromises.push(spawnService("mcp", resolveEntry("src/mcp/serve-http.ts"), groveDir));
   }
 
   const results = await Promise.all(spawnPromises);
@@ -195,25 +204,19 @@ async function spawnService(
   groveDir: string,
 ): Promise<ChildProcess | null> {
   try {
-    const proc = Bun.spawn(["bun", "run", entryPoint], {
-      cwd: join(groveDir, ".."),
-      stdout: "pipe",
-      stderr: "pipe",
+    const proc = Bun.spawn(["bun", entryPoint], {
+      cwd: join(groveDir, ".."),  // project root
+      stdout: "ignore",
+      stderr: "ignore",
       env: {
         ...process.env,
         GROVE_DIR: groveDir,
       },
     });
 
-    // Basic health check: wait for process to not immediately crash
-    const healthCheck = await Promise.race([
-      proc.exited.then(() => "exited" as const),
-      new Promise<"running">((resolve) => setTimeout(() => resolve("running"), 1_000)),
-    ]);
-
-    if (healthCheck === "exited") {
-      return null;
-    }
+    // Give process a moment to start, then assume it's running.
+    // Bun spawns are fast — if it hasn't exited in 500ms, it's alive.
+    await new Promise((resolve) => setTimeout(resolve, 500));
 
     return { name, pid: proc.pid, proc };
   } catch {

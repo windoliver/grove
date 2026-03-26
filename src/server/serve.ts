@@ -28,12 +28,15 @@ const HOST = process.env.HOST; // optional — defaults to localhost via Bun
 const NEXUS_URL = process.env.GROVE_NEXUS_URL;
 const NEXUS_API_KEY = process.env.NEXUS_API_KEY;
 
-// Use Nexus stores when GROVE_NEXUS_URL is set, local SQLite otherwise.
-// This ensures the server writes to Nexus (the single source of truth for
-// multi-agent coordination and SSE/IPC push notifications).
-const runtime = NEXUS_URL
-  ? await createNexusRuntime(GROVE_DIR, NEXUS_URL, NEXUS_API_KEY)
-  : createLocalRuntime({ groveDir: GROVE_DIR, workspace: false, parseContract: true });
+// Use local SQLite stores for contribution data (immediate consistency).
+// Nexus is used for IPC/SSE push notifications between agents, not as the
+// contribution data store — Nexus VFS has eventual consistency issues with
+// directory listings that break the list/query path.
+const runtime = createLocalRuntime({
+  groveDir: GROVE_DIR,
+  workspace: false,
+  parseContract: true,
+});
 
 async function createNexusRuntime(groveDir: string, nexusUrl: string, apiKey?: string) {
   const { NexusHttpClient } = await import("../nexus/nexus-http-client.js");

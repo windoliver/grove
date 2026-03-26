@@ -218,6 +218,14 @@ async function buildAppProps(
     groveOverride: effectiveGrove,
   });
 
+  // The server and MCP write to local SQLite. The TUI should read from the same
+  // SQLite for immediate consistency. Nexus VFS has eventual consistency issues
+  // with directory listings. Use local provider unless explicitly connecting to
+  // a remote Nexus via --nexus flag.
+  if (backend.mode === "nexus" && backend.source !== "flag") {
+    backend = { mode: "local", groveOverride: effectiveGrove, source: "default" };
+  }
+
   // Health check for nexus backends
   if (backend.mode === "nexus") {
     const health = await checkNexusHealth(backend.url);
