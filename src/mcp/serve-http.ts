@@ -223,9 +223,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
+    let body = "";
+    req.setEncoding("utf-8");
+    req.on("data", (chunk: string) => {
+      body += chunk;
+    });
+    req.on("end", () => resolve(body));
     req.on("error", reject);
   });
 }

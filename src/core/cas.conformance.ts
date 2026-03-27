@@ -168,9 +168,8 @@ export function runContentStoreTests(factory: ContentStoreFactory): void {
       const found = await store.getToFile(hash, outPath);
       expect(found).toBe(true);
 
-      const file = Bun.file(outPath);
-      const written = new Uint8Array(await file.arrayBuffer());
-      expect(written).toEqual(data);
+      const written = await Bun.file(outPath).bytes();
+      expect(written).toEqual(new Uint8Array(data));
     });
 
     test("getToFile returns false for non-existent content", async () => {
