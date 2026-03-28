@@ -40,7 +40,7 @@ function capturePane(): string {
   return tmuxCommand(`capture-pane -t ${SESSION} -p`);
 }
 
-function sendKeys(keys: string): void {
+function _sendKeys(keys: string): void {
   tmuxCommand(`send-keys -t ${SESSION} ${keys}`);
 }
 

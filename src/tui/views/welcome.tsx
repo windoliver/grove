@@ -143,7 +143,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
                 return;
               }
               if (input === "space") {
-                setSessionFilter((f) => f + " ");
+                setSessionFilter((f) => `${f} `);
                 return;
               }
               return;
@@ -314,7 +314,6 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
           urlBuffer,
           showDetail,
           sessionFilterMode,
-          sessionFilter,
           sessionCursor,
           filteredSessions,
         ],
@@ -594,7 +593,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
               Sessions ({activeSessions.length} active
               {archivedCount > 0 ? `, ${archivedCount} archived` : ""})
             </text>
-            {sessions.slice(0, 5).map((s, i) => (
+            {sessions.slice(0, 5).map((s, _i) => (
               <text key={s.sessionId} color={s.status === "active" ? theme.text : theme.dimmed}>
                 {"  "}
                 {s.status === "active" ? "●" : "○"} {`"${(s.goal ?? "untitled").slice(0, 50)}"`}

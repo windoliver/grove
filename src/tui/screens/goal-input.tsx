@@ -74,7 +74,7 @@ export const GoalInput: React.NamedExoticComponent<GoalInputProps> = React.memo(
         }
         // Space key comes through as key.name === "space"
         if (input === "space") {
-          setBuffer((b) => b + " ");
+          setBuffer((b) => `${b} `);
           return;
         }
         if (input && input.length === 1 && !isCtrl) {

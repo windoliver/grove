@@ -199,7 +199,7 @@ export class NexusWsBridge {
 
   private async readAndPush(
     path: string,
-    targetRole: string,
+    _targetRole: string,
     session: AgentSession,
     sender: string,
   ): Promise<void> {

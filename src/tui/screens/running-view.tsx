@@ -197,7 +197,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         }
       }, 5000);
       return () => clearInterval(timer);
-    }, [hasTmuxAgents, topology]);
+    }, [topology, tmux]);
 
     // Poll agent log files for live output (AcpxRuntime writes to .grove/agent-logs/)
     useEffect(() => {
@@ -409,7 +409,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
               return;
             }
             if (key.name === "space") {
-              setPromptText((t) => t + " ");
+              setPromptText((t) => `${t} `);
               return;
             }
             return;
@@ -646,7 +646,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       );
     }
 
-    const contribCount = dashboard?.metadata.contributionCount ?? 0;
+    const _contribCount = dashboard?.metadata.contributionCount ?? 0;
     const claimCount = dashboard?.activeClaims.length ?? 0;
     const frontier = dashboard?.frontierSummary;
 

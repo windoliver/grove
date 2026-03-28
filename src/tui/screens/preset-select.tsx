@@ -86,7 +86,7 @@ export const PresetSelect: React.NamedExoticComponent<PresetSelectProps> = React
         </box>
 
         {/* Active session resume */}
-        {sessions && sessions.some((s) => s.status === "active") ? (
+        {sessions?.some((s) => s.status === "active") ? (
           <box flexDirection="column" marginX={2} paddingX={1}>
             {sessions
               .filter((s) => s.status === "active")

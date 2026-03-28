@@ -306,7 +306,7 @@ export async function contributeOperation(
     // --- Post-write: route events via topology (outside mutex scope) ---
     if (deps.topologyRouter !== undefined && contribution.agent.role !== undefined) {
       fireAndForget("topology routing", () =>
-        deps.topologyRouter!.route(contribution.agent.role!, {
+        deps.topologyRouter?.route(contribution.agent.role!, {
           cid: contribution.cid,
           kind: contribution.kind,
           summary: contribution.summary,
@@ -318,8 +318,8 @@ export async function contributeOperation(
     // If stop condition met, broadcast stop to all agents
     if (policyResult?.stopResult?.stopped && deps.topologyRouter !== undefined) {
       fireAndForget("broadcast stop", () =>
-        deps.topologyRouter!.broadcastStop(
-          policyResult!.stopResult!.reason ?? "Stop condition met",
+        deps.topologyRouter?.broadcastStop(
+          policyResult?.stopResult?.reason ?? "Stop condition met",
         ),
       );
     }
@@ -333,7 +333,7 @@ export async function contributeOperation(
       if (deps.contract.hooks?.after_contribute !== undefined) {
         const hookEntry = deps.contract.hooks.after_contribute;
         fireAndForget("after_contribute hook", () =>
-          deps.hookRunner!.run(hookEntry, deps.hookCwd!),
+          deps.hookRunner?.run(hookEntry, deps.hookCwd!),
         );
       }
     }

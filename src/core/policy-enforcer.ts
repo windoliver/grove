@@ -813,7 +813,7 @@ export class PolicyEnforcer {
    */
   private async findBestScore(
     metricName: string,
-    metricDef: MetricDefinition,
+    _metricDef: MetricDefinition,
   ): Promise<{ value: number; cid: string; createdAt: string } | undefined> {
     // Populate cache on first access (cold start)
     if (this.bestScoreCache === undefined) {

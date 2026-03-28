@@ -353,7 +353,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           setState((s) => ({ ...s, screen: "running", goal, sessionStartedAt }));
         }
       },
-      [provider, topology],
+      [provider, topology, state.roleMapping?.get],
     );
 
     // Screen 3.5 -> Screen 4: all spawns resolved

@@ -153,7 +153,7 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
               return;
             }
             if (key.name === "space") {
-              setEditBuffer((b) => b + " ");
+              setEditBuffer((b) => `${b} `);
               return;
             }
             if (key.name && key.name.length === 1 && !key.ctrl) {
@@ -281,8 +281,9 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
             <text color={theme.text} bold>
               Topology
             </text>
-            {dagLines.map((line, i) => (
-              <text key={i} color={theme.muted}>
+            {dagLines.map((line) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: dag lines have no stable identity
+              <text key={line} color={theme.muted}>
                 {line}
               </text>
             ))}
