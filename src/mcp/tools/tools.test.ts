@@ -1,5 +1,5 @@
 /**
- * Unified MCP tool tests covering grove_contribute, grove_frontier,
+ * Unified MCP tool tests covering grove_submit_work, grove_frontier,
  * grove_claim, grove_search, and grove_checkout.
  *
  * Each tool is tested for valid inputs (success), invalid inputs (error),
@@ -51,7 +51,7 @@ async function callTool(
 // grove_contribute
 // ---------------------------------------------------------------------------
 
-describe("grove_contribute (tools.test)", () => {
+describe("grove_submit_work (tools.test)", () => {
   let testDeps: TestMcpDeps;
   let deps: McpDeps;
   let server: McpServer;
@@ -68,12 +68,9 @@ describe("grove_contribute (tools.test)", () => {
   });
 
   test("succeeds with minimal required fields", async () => {
-    const result = await callTool(server, "grove_contribute", {
-      kind: "work",
+    const result = await callTool(server, "grove_submit_work", {
       summary: "Minimal contribution",
-      relations: [],
       artifacts: {},
-      tags: [],
     });
 
     expect(result.isError).toBeUndefined();
@@ -86,9 +83,7 @@ describe("grove_contribute (tools.test)", () => {
   test("succeeds with all optional fields populated", async () => {
     const hash = await storeTestContent(deps.cas, "artifact content");
 
-    const result = await callTool(server, "grove_contribute", {
-      kind: "work",
-      mode: "evaluation",
+    const result = await callTool(server, "grove_submit_work", {
       summary: "Full contribution",
       description: "A detailed description",
       artifacts: { "main.py": hash },
@@ -106,14 +101,11 @@ describe("grove_contribute (tools.test)", () => {
   });
 
   test("returns error for non-existent artifact hash", async () => {
-    const result = await callTool(server, "grove_contribute", {
-      kind: "work",
+    const result = await callTool(server, "grove_submit_work", {
       summary: "Bad artifact ref",
-      relations: [],
       artifacts: {
         "missing.txt": "blake3:0000000000000000000000000000000000000000000000000000000000000000",
       },
-      tags: [],
       agent: { agentId: "agent-1" },
     });
 
@@ -123,17 +115,15 @@ describe("grove_contribute (tools.test)", () => {
   });
 
   test("returns error when relation targets non-existent contribution", async () => {
-    const result = await callTool(server, "grove_contribute", {
-      kind: "work",
+    const result = await callTool(server, "grove_submit_work", {
       summary: "Dangling relation",
+      artifacts: {},
       relations: [
         {
           targetCid: "blake3:0000000000000000000000000000000000000000000000000000000000000000",
           relationType: "derives_from",
         },
       ],
-      artifacts: {},
-      tags: [],
       agent: { agentId: "agent-1" },
     });
 
@@ -141,14 +131,10 @@ describe("grove_contribute (tools.test)", () => {
     expect(result.text).toContain(McpErrorCode.NotFound);
   });
 
-  test("exploration mode contribution succeeds without scores", async () => {
-    const result = await callTool(server, "grove_contribute", {
-      kind: "work",
-      mode: "exploration",
-      summary: "Exploratory work without scores",
-      relations: [],
+  test("work contribution succeeds without optional fields", async () => {
+    const result = await callTool(server, "grove_submit_work", {
+      summary: "Simple work without optional fields",
       artifacts: {},
-      tags: ["experiment"],
       agent: { agentId: "explorer-1" },
     });
 

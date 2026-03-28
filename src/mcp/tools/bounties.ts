@@ -146,16 +146,21 @@ export function registerBountyTools(server: McpServer, deps: McpDeps): void {
     },
   );
 
-  // --- grove_bounty_claim --------------------------------------------------
+  // --- grove_bounty_claim --- DEPRECATED ------------------------------------
+  // DEPRECATED: Use grove_claim instead. Agents should call grove_claim with the
+  // bounty ID as targetRef. grove_bounty_claim is kept for backwards compatibility.
   server.registerTool(
     "grove_bounty_claim",
     {
       description:
-        "Claim an open bounty. Creates a claim via the existing claim system " +
-        "and transitions the bounty to 'claimed' status.",
+        "[DEPRECATED — Use grove_claim instead] " +
+        "Claim an open bounty by bounty ID. " +
+        "grove_bounty_claim calls claim internally. Agents should use grove_claim directly.",
       inputSchema: claimBountySchema,
     },
     async (args) => {
+      // Forward to grove_claim behavior via claimBountyOperation
+      // (kept for backwards compatibility; agents should use grove_claim)
       const result = await claimBountyOperation(
         {
           bountyId: args.bountyId,
