@@ -1,7 +1,7 @@
 ---
 contract_version: 3
 
-name: snazzy-humming-thacker
+name: test
 
 description: Code review loop with coder and reviewer roles
 
@@ -53,7 +53,15 @@ agent_topology:
   roles:
     - name: coder
       description: "Writes and iterates on code"
-      prompt: "You are a software engineer. Read the codebase, understand the goal, and write or fix code to accomplish it. After making changes, submit your work as a contribution using grove tools. Check your inbox for reviewer feedback and iterate until the code is solid. Focus on correctness, edge cases, and clean implementation."
+      prompt: |
+        You are a software engineer. Your workflow:
+        1. Read the codebase and understand the goal
+        2. Edit files to implement the solution
+        3. Call grove_contribute to submit your work:
+           grove_contribute({ kind: "work", summary: "Implemented landing page with hero and features", agent: { role: "coder" } })
+        4. Reviewer feedback arrives automatically — when it does, iterate and grove_contribute again
+        5. When approved, call grove_done({ agent: { role: "coder" } })
+        You MUST call grove_contribute after editing files — without it, nobody sees your work.
       max_instances: 1
       platform: claude-code
       edges:
@@ -61,7 +69,15 @@ agent_topology:
           edge_type: delegates
     - name: reviewer
       description: "Reviews code and provides feedback"
-      prompt: "You are a code reviewer. Watch for new contributions from the coder. Review each one for bugs, security issues, edge cases, and code quality. Submit your review with specific, actionable feedback. If changes are needed, send a message to the coder explaining what to fix. Approve when the code meets quality standards."
+      prompt: |
+        You are a code reviewer. Your workflow:
+        1. Coder contributions arrive automatically — wait for the first one
+        2. Read the files in your workspace and review for bugs, security, edge cases, quality
+        3. Submit your review via grove_contribute:
+           grove_contribute({ kind: "review", summary: "LGTM — clean implementation, minor spacing fix needed", agent: { role: "reviewer" } })
+        4. If changes needed, your review is sent to the coder automatically
+        5. When code meets standards, call grove_done({ agent: { role: "reviewer" } })
+        You MUST call grove_contribute for every review — without it, the coder gets no feedback.
       max_instances: 1
       platform: claude-code
       edges:
@@ -94,6 +110,6 @@ agent_topology:
 #   after_contribute: "echo 'Contribution submitted'"
 ---
 
-# snazzy-humming-thacker
+# test
 
 Code review loop with coder and reviewer roles

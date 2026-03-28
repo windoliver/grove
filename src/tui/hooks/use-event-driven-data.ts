@@ -4,9 +4,8 @@
  * Replaces usePolledData when EventBus is available:
  * 1. Fetches once on mount
  * 2. Subscribes to EventBus — re-fetches when events arrive
- * 3. Falls back to slow poll (30s) as safety net
  *
- * This avoids the 3-5s polling that overwhelms Nexus rate limits.
+ * NO polling. EventBus is the single source of truth.
  */
 
 import { useCallback, useEffect, useReducer, useRef } from "react";
@@ -45,13 +44,12 @@ function reducer<T>(state: State<T>, action: Action<T>): State<T> {
   }
 }
 
-const SAFETY_NET_INTERVAL_MS = 30_000; // 30s fallback poll
-
 /**
  * Hook that fetches data once, then re-fetches on EventBus events.
+ * No polling — EventBus push is the only update trigger.
  *
  * @param fetcher — async function to get data
- * @param eventBus — EventBus to subscribe to (if undefined, falls back to polling)
+ * @param eventBus — EventBus to subscribe to (if undefined, no updates after initial fetch)
  * @param role — role to subscribe to (receives events targeted at this role)
  * @param active — whether to fetch at all
  */
@@ -104,14 +102,7 @@ export function useEventDrivenData<T>(
     };
   }, [active, eventBus, role, doFetch]);
 
-  // Safety net: slow poll in case events are missed
-  useEffect(() => {
-    if (!active) return;
-    const timer = setInterval(() => {
-      void doFetch();
-    }, SAFETY_NET_INTERVAL_MS);
-    return () => clearInterval(timer);
-  }, [active, doFetch]);
+  // No polling. EventBus is the single update path.
 
   return {
     data: state.data,

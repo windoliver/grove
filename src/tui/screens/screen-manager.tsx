@@ -11,7 +11,7 @@
  */
 
 import { useKeyboard, useRenderer } from "@opentui/react";
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { AppProps } from "../app.js";
 import { App } from "../app.js";
 import { useDoneDetection } from "../hooks/use-done-detection.js";
@@ -53,6 +53,8 @@ export interface ScreenState {
   roleMapping?: Map<string, string>;
   goal?: string;
   sessionId?: string;
+  /** ISO timestamp when the current session started — used to scope contribution feed. */
+  sessionStartedAt?: string;
   /** Per-agent spawn progress for the spawning screen. */
   spawnStates?: AgentSpawnState[];
   /** Snapshot data captured on transition to complete screen. */
@@ -137,6 +139,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
               runtime: rt,
               nexusUrl,
               apiKey,
+              eventBus: appProps.eventBus,
             });
             bridge.connect();
             spawnManagerRef.current?.setWsBridge(bridge);
@@ -147,8 +150,39 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       }
     }
 
+    // Reconcile agent sessions when entering running view (reattach to acpx).
+    // Always bump reconcileVersion after reconcile to force RunningView re-render
+    // with updated activeRoles from SpawnManager.
+    const [reconcileVersion, setReconcileVersion] = useState(0);
+    const lastReconciledScreenRef = useRef<string>("");
+    useEffect(() => {
+      if (
+        state.screen === "running" &&
+        lastReconciledScreenRef.current !== "running" &&
+        spawnManagerRef.current
+      ) {
+        lastReconciledScreenRef.current = "running";
+        void spawnManagerRef.current
+          .reconcile()
+          .then(() => {
+            // Always bump — even if reattached=0, we need RunningView to pick up
+            // the reconciled state (getActiveRoles may have changed).
+            setReconcileVersion((v) => v + 1);
+          })
+          .catch(() => {
+            setReconcileVersion((v) => v + 1); // Force re-render even on error
+          });
+      }
+      // Reset when leaving running screen so we reconcile again on re-entry
+      if (state.screen !== "running") {
+        lastReconciledScreenRef.current = "";
+      }
+    }, [state.screen]);
+
     // Track session start time for duration calculation
     const sessionStartRef = useRef<number>(Date.now());
+    // Track if grove_done was signaled — stops IPC routing to prevent ping-pong
+    const doneSignaledRef = useRef(false);
 
     // ---------------------------------------------------------------------------
     // Done detection — extracted to custom hook (supports event-driven + polling)
@@ -162,11 +196,19 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         } catch {
           // Best-effort
         }
-        setState((s) => ({
-          ...s,
-          screen: "complete",
-          completeSnapshot: { reason, contributionCount },
-        }));
+        // Archive session on completion
+        setState((s) => {
+          if (s.sessionId && isSessionProvider(provider)) {
+            void provider.archiveSession(s.sessionId).catch(() => {
+              /* best-effort */
+            });
+          }
+          return {
+            ...s,
+            screen: "complete",
+            completeSnapshot: { reason, contributionCount },
+          };
+        });
       },
       [provider],
     );
@@ -181,10 +223,16 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     const pendingPermissions = usePermissionDetection(appProps.tmux);
 
     const handleQuit = useCallback(() => {
+      // Archive active session (persists to DB, agents stay alive in acpx)
+      if (state.sessionId && isSessionProvider(provider)) {
+        void provider.archiveSession(state.sessionId).catch(() => {
+          /* best-effort */
+        });
+      }
       spawnManagerRef.current?.destroy();
       provider.close();
       renderer.destroy();
-    }, [provider, renderer]);
+    }, [provider, renderer, state.sessionId]);
 
     // Screen 1 -> Screen 2: preset selected
     const handlePresetSelect = useCallback((presetName: string) => {
@@ -223,6 +271,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     const handleGoalSubmit = useCallback(
       (goal: string) => {
         sessionStartRef.current = Date.now();
+        const sessionStartedAt = new Date().toISOString();
 
         // Set goal on provider if supported
         if (isGoalProvider(provider)) {
@@ -250,7 +299,13 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             command: state.roleMapping?.get(role.name) ?? role.command ?? "codex",
             status: "waiting" as const,
           }));
-          setState((s) => ({ ...s, screen: "spawning", goal, spawnStates: initialStates }));
+          setState((s) => ({
+            ...s,
+            screen: "spawning",
+            goal,
+            sessionStartedAt,
+            spawnStates: initialStates,
+          }));
 
           spawnManagerRef.current?.setSessionGoal(goal);
 
@@ -295,7 +350,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           }
         } else {
           // No topology — go straight to running
-          setState((s) => ({ ...s, screen: "running", goal }));
+          setState((s) => ({ ...s, screen: "running", goal, sessionStartedAt }));
         }
       },
       [provider, topology],
@@ -427,26 +482,45 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             topology={topology}
             goal={state.goal}
             sessionId={state.sessionId}
+            sessionStartedAt={state.sessionStartedAt}
             tmux={appProps.tmux}
             eventBus={appProps.eventBus}
+            groveDir={appProps.groveDir}
+            onNewContribution={(c) => {
+              // Once grove_done fires, stop ALL routing (prevents infinite ping-pong)
+              if (doneSignaledRef.current) return;
+              const isDone =
+                c.summary.startsWith("[DONE]") ||
+                (c.context &&
+                  typeof c.context === "object" &&
+                  (c.context as Record<string, unknown>).done === true);
+              if (isDone) {
+                doneSignaledRef.current = true;
+                return;
+              }
+              if (c.agent?.role && spawnManagerRef.current) {
+                void spawnManagerRef.current.routeContribution(
+                  c.agent.role,
+                  c.summary,
+                  c.kind,
+                  topology,
+                );
+              }
+              if (state.sessionId && isSessionProvider(provider)) {
+                void provider.addContributionToSession(state.sessionId, c.cid).catch(() => {});
+              }
+            }}
+            onSendToAgent={async (role, message) => {
+              if (!spawnManagerRef.current) return false;
+              return spawnManagerRef.current.sendToAgent(role, message);
+            }}
+            activeRoles={
+              reconcileVersion >= 0 ? (spawnManagerRef.current?.getActiveRoles() ?? []) : []
+            }
             onToggleAdvanced={handleToggleAdvanced}
             onComplete={handleComplete}
             onQuit={handleQuit}
           />,
-        );
-
-      case "complete":
-        return (
-          <CompleteView
-            reason={state.completeSnapshot?.reason ?? "Session ended"}
-            contributionCount={state.completeSnapshot?.contributionCount ?? 0}
-            duration={getDuration()}
-            presetName={state.selectedPreset}
-            metricResult={state.completeSnapshot?.metricResult}
-            cost={state.completeSnapshot?.cost}
-            onNewSession={handleNewSession}
-            onQuit={handleQuit}
-          />
         );
 
       case "advanced":
@@ -462,6 +536,20 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
               />
             </box>
           </box>,
+        );
+
+      case "complete":
+        return (
+          <CompleteView
+            reason={state.completeSnapshot?.reason ?? "Session ended"}
+            contributionCount={state.completeSnapshot?.contributionCount ?? 0}
+            duration={getDuration()}
+            presetName={state.selectedPreset}
+            metricResult={state.completeSnapshot?.metricResult}
+            cost={state.completeSnapshot?.cost}
+            onNewSession={handleNewSession}
+            onQuit={handleQuit}
+          />
         );
 
       default:

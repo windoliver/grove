@@ -75,14 +75,14 @@ export const PLATFORM_COLORS: Readonly<Record<string, string>> = {
  * Uses box-drawing / geometric characters for accessibility.
  */
 export const KIND_ICONS: Readonly<Record<string, string>> = {
-  work: "\u2592",       // ▒
-  review: "\u25b7",     // ▷
+  work: "\u2592", // ▒
+  review: "\u25b7", // ▷
   discussion: "\u25c7", // ◇
-  ask_user: "\u2753",   // ❓
-  response: "\u25b6",   // ▶
-  plan: "\u25a1",       // □
+  ask_user: "\u2753", // ❓
+  response: "\u25b6", // ▶
+  plan: "\u25a1", // □
   reproduction: "\u25d0", // ◐
-  adoption: "\u25b2",   // ▲
+  adoption: "\u25b2", // ▲
 };
 
 /** Braille spinner frames for animated agent status (item 8). */

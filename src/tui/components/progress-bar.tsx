@@ -54,7 +54,11 @@ export const ProgressBar: React.NamedExoticComponent<ProgressBarProps> = React.m
         <text color={theme.muted}>{label} </text>
         <text color={color}>{bar}</text>
         <text color={theme.text}> {percent}%</text>
-        <text color={theme.dimmed}> ({op}{target})</text>
+        <text color={theme.dimmed}>
+          {" "}
+          ({op}
+          {target})
+        </text>
       </box>
     );
   },

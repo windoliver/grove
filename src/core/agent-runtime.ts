@@ -34,6 +34,8 @@ export interface AgentRuntime {
   close(session: AgentSession): Promise<void>;
   /** Register a callback for when an agent becomes idle. */
   onIdle(session: AgentSession, callback: () => void): void;
+  /** Register a callback for agent stdout output (streaming). */
+  onOutput?(session: AgentSession, callback: (chunk: string) => void): void;
   /** List all active sessions. */
   listSessions(): Promise<readonly AgentSession[]>;
   /** Check if the runtime's dependencies are available. */

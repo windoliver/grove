@@ -55,11 +55,11 @@ const GLOSSARY: readonly { term: string; definition: string }[] = [
 
 /** Action item for the setup menu. */
 interface ActionItem {
-  readonly id: "resume" | "new" | "connect";
+  readonly id: string;
   readonly label: string;
 }
 
-type WelcomeStep = "action" | "preset" | "name" | "connect";
+type WelcomeStep = "action" | "sessions" | "preset" | "name" | "connect";
 
 /** Welcome screen shown as the first thing the user sees. */
 export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.memo(
@@ -79,21 +79,36 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
     const [selectedPreset, setSelectedPreset] = useState("");
     const [nameBuffer, setNameBuffer] = useState("");
     const [urlBuffer, setUrlBuffer] = useState("http://localhost:2026");
+    const [sessionCursor, setSessionCursor] = useState(0);
+    const [sessionFilter, setSessionFilter] = useState("");
+    const [sessionFilterMode, setSessionFilterMode] = useState(false);
     void useRenderer();
 
-    // Build action items based on whether .grove/ exists
+    // Session data
+    const allSessions = sessions ?? [];
+    const activeSessions = allSessions.filter((s) => s.status === "active");
+    const archivedCount = allSessions.length - activeSessions.length;
+    const filteredSessions = sessionFilter
+      ? allSessions.filter((s) =>
+          (s.goal ?? "").toLowerCase().includes(sessionFilter.toLowerCase()),
+        )
+      : allSessions;
+
+    // Build action items
     const actions = useMemo<readonly ActionItem[]>(() => {
       const items: ActionItem[] = [];
-      if (groveExists && groveInfo) {
+      if (allSessions.length > 0) {
         items.push({
-          id: "resume",
-          label: `Resume "${groveInfo.name}" (${groveInfo.preset})`,
+          id: "sessions",
+          label: `Continue session  ▸  (${activeSessions.length} active${archivedCount > 0 ? `, ${archivedCount} archived` : ""})`,
         });
+      } else if (groveExists && groveInfo) {
+        items.push({ id: "resume", label: `Resume "${groveInfo.name}" (${groveInfo.preset})` });
       }
-      items.push({ id: "new", label: "New grove (select preset)" });
+      items.push({ id: "new", label: "New session (select preset)" });
       items.push({ id: "connect", label: "Connect to remote Nexus" });
       return items;
-    }, [groveExists, groveInfo]);
+    }, [groveExists, groveInfo, allSessions.length, activeSessions.length, archivedCount]);
 
     useKeyboard(
       useCallback(
@@ -103,6 +118,63 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
 
           if (input === "q" && step === "action" && !showDetail) {
             onQuit();
+            return;
+          }
+
+          // -- Session browser step --
+          if (step === "sessions") {
+            if (sessionFilterMode) {
+              if (input === "escape") {
+                setSessionFilterMode(false);
+                setSessionFilter("");
+                return;
+              }
+              if (input === "return") {
+                setSessionFilterMode(false);
+                setSessionCursor(0);
+                return;
+              }
+              if (input === "backspace") {
+                setSessionFilter((f) => f.slice(0, -1));
+                return;
+              }
+              if (input && input.length === 1 && !isCtrl) {
+                setSessionFilter((f) => f + input);
+                return;
+              }
+              if (input === "space") {
+                setSessionFilter((f) => f + " ");
+                return;
+              }
+              return;
+            }
+
+            if (input === "escape") {
+              setStep("action");
+              setSessionFilter("");
+              setSessionFilterMode(false);
+              return;
+            }
+            if (input === "j" || input === "down") {
+              setSessionCursor((c) => Math.min(c + 1, filteredSessions.length - 1));
+              return;
+            }
+            if (input === "k" || input === "up") {
+              setSessionCursor((c) => Math.max(c - 1, 0));
+              return;
+            }
+            if (key.sequence === "/") {
+              setSessionFilterMode(true);
+              setSessionFilter("");
+              return;
+            }
+            if (input === "return") {
+              const session = filteredSessions[sessionCursor];
+              if (session) {
+                onResume();
+              }
+              return;
+            }
             return;
           }
 
@@ -205,7 +277,13 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
               const action = actions[cursor];
               if (!action) return;
 
-              if (action.id === "resume") {
+              if (action.id === "sessions") {
+                setStep("sessions");
+                setSessionCursor(0);
+                setSessionFilter("");
+                return;
+              }
+              if (action.id === "resume" || action.id.startsWith("continue:")) {
                 onResume();
                 return;
               }
@@ -235,9 +313,88 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
           nameBuffer,
           urlBuffer,
           showDetail,
+          sessionFilterMode,
+          sessionFilter,
+          sessionCursor,
+          filteredSessions,
         ],
       ),
     );
+
+    // -- Session browser view --
+    if (step === "sessions") {
+      const visibleStart = Math.max(0, sessionCursor - 10);
+      const visibleSessions = filteredSessions.slice(visibleStart, visibleStart + 20);
+      return (
+        <box
+          flexDirection="column"
+          width="100%"
+          height="100%"
+          borderStyle="round"
+          borderColor={theme.focus}
+        >
+          <box flexDirection="column" paddingX={2} paddingTop={1}>
+            <text color={theme.focus} bold>
+              Continue session ({activeSessions.length} active
+              {archivedCount > 0 ? `, ${archivedCount} archived` : ""})
+            </text>
+            {sessionFilterMode ? (
+              <box flexDirection="row">
+                <text color={theme.focus}>{"/ "}</text>
+                <text>{sessionFilter}</text>
+                <text color={theme.focus}>▌</text>
+              </box>
+            ) : null}
+          </box>
+          <box
+            flexDirection="column"
+            marginX={2}
+            borderStyle="single"
+            borderColor={theme.border}
+            paddingX={1}
+          >
+            {visibleSessions.length === 0 ? (
+              <text color={theme.dimmed}>
+                {sessionFilter ? "No sessions match filter" : "No sessions"}
+              </text>
+            ) : null}
+            {visibleSessions.map((s, i) => {
+              const globalIdx = visibleStart + i;
+              const selected = globalIdx === sessionCursor;
+              const prefix = selected ? "> " : "  ";
+              const icon = s.status === "active" ? "●" : "○";
+              const goal = (s.goal ?? "untitled").slice(0, 50);
+              const date = s.startedAt
+                ? new Date(s.startedAt).toLocaleDateString("en-US", {
+                    month: "short",
+                    day: "numeric",
+                  })
+                : "";
+              return (
+                <box
+                  key={s.sessionId}
+                  flexDirection="row"
+                  backgroundColor={selected ? theme.selectedBg : undefined}
+                >
+                  <text
+                    color={
+                      selected ? theme.focus : s.status === "active" ? theme.text : theme.dimmed
+                    }
+                    bold={selected}
+                  >
+                    {`${prefix}${icon} "${goal}"`}
+                  </text>
+                  <text color={theme.muted}>{` (${s.contributionCount}c) ${date}`}</text>
+                </box>
+              );
+            })}
+          </box>
+          <box paddingX={2}>
+            <text color={theme.dimmed}>j/k:navigate Enter:continue /:search Esc:back</text>
+          </box>
+        </box>
+      );
+    }
 
     // -- Connect URL input view --
     if (step === "connect") {
@@ -434,17 +591,14 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
             paddingX={1}
           >
             <text color={theme.focus} bold>
-              Recent sessions
+              Sessions ({activeSessions.length} active
+              {archivedCount > 0 ? `, ${archivedCount} archived` : ""})
             </text>
             {sessions.slice(0, 5).map((s, i) => (
-              <text key={s.sessionId} color={theme.text}>
+              <text key={s.sessionId} color={s.status === "active" ? theme.text : theme.dimmed}>
                 {"  "}
-                {i + 1}. {`"${s.goal ?? "untitled"}"`}
-                <text color={theme.muted}>
-                  {" "}
-                  ({s.contributionCount} contribution{s.contributionCount === 1 ? "" : "s"},{" "}
-                  {s.status})
-                </text>
+                {s.status === "active" ? "●" : "○"} {`"${(s.goal ?? "untitled").slice(0, 50)}"`}
+                <text color={theme.muted}> ({s.contributionCount}c)</text>
               </text>
             ))}
           </box>

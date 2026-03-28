@@ -221,6 +221,43 @@ export async function contributeOperation(
     // Normalize to UTC Z-format so lexicographic ORDER BY works without datetime().
     const createdAt = toUtcIso(input.createdAt ?? new Date().toISOString());
 
+    // Idempotency check: skip if same summary + agent role exists within last 60s.
+    // Prevents duplicate contributions from MCP tool retries or agent calling the tool multiple times.
+    {
+      const recentWindow = new Date(Date.now() - 60_000).toISOString();
+      try {
+        const recent = await deps.contributionStore.list({ limit: 20 });
+        const agentMatch = (c: Contribution) =>
+          agent.role ? c.agent.role === agent.role : c.agent.agentId === agent.agentId;
+        const isDuplicate = recent.some(
+          (c) =>
+            c.summary === input.summary &&
+            agentMatch(c) &&
+            c.kind === input.kind &&
+            c.createdAt >= recentWindow,
+        );
+        if (isDuplicate) {
+          // Return the existing contribution's info instead of creating a duplicate
+          const existing = recent.find(
+            (c) => c.summary === input.summary && agentMatch(c) && c.kind === input.kind,
+          );
+          if (existing) {
+            return ok({
+              cid: existing.cid,
+              kind: existing.kind,
+              mode: existing.mode,
+              summary: existing.summary,
+              artifactCount: Object.keys(existing.artifacts).length,
+              relationCount: existing.relations.length,
+              createdAt: existing.createdAt,
+            });
+          }
+        }
+      } catch {
+        // Best-effort — continue with normal contribution if check fails
+      }
+    }
+
     const contributionInput: ContributionInput = {
       kind: input.kind,
       mode,
@@ -281,7 +318,9 @@ export async function contributeOperation(
     // If stop condition met, broadcast stop to all agents
     if (policyResult?.stopResult?.stopped && deps.topologyRouter !== undefined) {
       fireAndForget("broadcast stop", () =>
-        deps.topologyRouter!.broadcastStop(policyResult!.stopResult!.reason ?? "Stop condition met"),
+        deps.topologyRouter!.broadcastStop(
+          policyResult!.stopResult!.reason ?? "Stop condition met",
+        ),
       );
     }
 

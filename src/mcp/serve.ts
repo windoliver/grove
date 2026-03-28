@@ -66,37 +66,54 @@ try {
     throw new Error("Workspace manager failed to initialize");
   }
 
-  // When Nexus URL is set, use ALL Nexus stores so everything flows through Nexus VFS
+  // Try Nexus stores (source of truth), fall back to local SQLite if unavailable.
   let contributionStore = runtime.contributionStore as import("../core/store.js").ContributionStore;
   let claimStore = runtime.claimStore as import("../core/store.js").ClaimStore;
   let bountyStore = runtime.bountyStore as import("../core/bounty-store.js").BountyStore;
   let outcomeStore: import("../core/outcome.js").OutcomeStore | undefined;
   let cas = runtime.cas as import("../core/cas.js").ContentStore;
-  let nexusClient: import("../nexus/nexus-http-client.js").NexusHttpClient | undefined;
   const zoneId = process.env.GROVE_ZONE_ID ?? "default";
+  let nexusClient: import("../nexus/nexus-http-client.js").NexusHttpClient | undefined;
 
   if (nexusUrl) {
-    const { NexusHttpClient } = await import("../nexus/nexus-http-client.js");
-    const { NexusContributionStore } = await import("../nexus/nexus-contribution-store.js");
-    const { NexusClaimStore } = await import("../nexus/nexus-claim-store.js");
-    const { NexusBountyStore } = await import("../nexus/nexus-bounty-store.js");
-    const { NexusOutcomeStore } = await import("../nexus/nexus-outcome-store.js");
-    const { NexusCas } = await import("../nexus/nexus-cas.js");
+    try {
+      const { NexusHttpClient } = await import("../nexus/nexus-http-client.js");
+      const { NexusContributionStore } = await import("../nexus/nexus-contribution-store.js");
+      const { NexusClaimStore } = await import("../nexus/nexus-claim-store.js");
+      const { NexusBountyStore } = await import("../nexus/nexus-bounty-store.js");
+      const { NexusOutcomeStore } = await import("../nexus/nexus-outcome-store.js");
+      const { NexusCas } = await import("../nexus/nexus-cas.js");
 
-    nexusClient = new NexusHttpClient({
-      url: nexusUrl,
-      ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
-    });
+      nexusClient = new NexusHttpClient({
+        url: nexusUrl,
+        ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+      });
 
-    contributionStore = new NexusContributionStore({ client: nexusClient, zoneId });
-    claimStore = new NexusClaimStore({ client: nexusClient, zoneId });
-    bountyStore = new NexusBountyStore({ client: nexusClient, zoneId });
-    outcomeStore = new NexusOutcomeStore({ client: nexusClient, zoneId });
-    cas = new NexusCas({ client: nexusClient, zoneId });
-    process.stderr.write(`grove-mcp: using Nexus stores at ${nexusUrl} (zone: ${zoneId})\n`);
+      // Quick health check — don't block if Nexus is down
+      const health = await Promise.race([
+        fetch(`${nexusUrl}/health`, { signal: AbortSignal.timeout(3000) }).then((r) => r.ok),
+        new Promise<boolean>((r) => setTimeout(() => r(false), 3000)),
+      ]).catch(() => false);
+
+      if (health) {
+        contributionStore = new NexusContributionStore({ client: nexusClient, zoneId });
+        claimStore = new NexusClaimStore({ client: nexusClient, zoneId });
+        bountyStore = new NexusBountyStore({ client: nexusClient, zoneId });
+        outcomeStore = new NexusOutcomeStore({ client: nexusClient, zoneId });
+        cas = new NexusCas({ client: nexusClient, zoneId });
+        process.stderr.write(`grove-mcp: using Nexus stores at ${nexusUrl}\n`);
+      } else {
+        process.stderr.write(`grove-mcp: Nexus unreachable, using local stores\n`);
+        nexusClient = undefined;
+      }
+    } catch (err) {
+      process.stderr.write(`grove-mcp: Nexus failed, using local: ${err}\n`);
+    }
+  } else {
+    process.stderr.write(`grove-mcp: using local stores at ${groveDir}\n`);
   }
 
-  // Wire EventBus + TopologyRouter for IPC when topology exists
+  // Wire EventBus + TopologyRouter for IPC when topology exists.
   let eventBus: import("../core/event-bus.js").EventBus | undefined;
   let topologyRouter: TopologyRouter | undefined;
 
@@ -104,6 +121,7 @@ try {
     if (nexusClient) {
       const { NexusEventBus } = await import("../nexus/nexus-event-bus.js");
       eventBus = new NexusEventBus(nexusClient, zoneId);
+      process.stderr.write(`grove-mcp: IPC via Nexus EventBus at ${nexusUrl}\n`);
     } else {
       const { LocalEventBus } = await import("../core/local-event-bus.js");
       eventBus = new LocalEventBus();

@@ -27,7 +27,7 @@ export const reviewLoopPreset: PresetConfig = {
           "3. Call grove_contribute to submit your work:\n" +
           '   grove_contribute({ kind: "work", summary: "Implemented landing page with hero and features", agent: { role: "coder" } })\n' +
           "4. Reviewer feedback arrives automatically — when it does, iterate and grove_contribute again\n" +
-          "5. When approved, call grove_done({ agent: { role: \"coder\" } })\n" +
+          '5. When approved, call grove_done({ agent: { role: "coder" } })\n' +
           "You MUST call grove_contribute after editing files — without it, nobody sees your work.",
       },
       {
@@ -43,7 +43,7 @@ export const reviewLoopPreset: PresetConfig = {
           "3. Submit your review via grove_contribute:\n" +
           '   grove_contribute({ kind: "review", summary: "LGTM — clean implementation, minor spacing fix needed", agent: { role: "reviewer" } })\n' +
           "4. If changes needed, your review is sent to the coder automatically\n" +
-          "5. When code meets standards, call grove_done({ agent: { role: \"reviewer\" } })\n" +
+          '5. When code meets standards, call grove_done({ agent: { role: "reviewer" } })\n' +
           "You MUST call grove_contribute for every review — without it, the coder gets no feedback.",
       },
     ],

@@ -8,8 +8,8 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { theme, BRAILLE_SPINNER, PLATFORM_COLORS } from "../theme.js";
 import { BreadcrumbBar } from "../components/breadcrumb-bar.js";
+import { BRAILLE_SPINNER, PLATFORM_COLORS, theme } from "../theme.js";
 
 /** Spawn status for a single agent role. */
 export type SpawnStatus = "waiting" | "spawning" | "started" | "failed";
@@ -30,10 +30,10 @@ export interface SpawnProgressProps {
 }
 
 const STATUS_ICON: Record<SpawnStatus, string> = {
-  waiting: "\u25cb",  // ○
-  spawning: "",       // filled by spinner
-  started: "\u25cf",  // ●
-  failed: "\u2717",   // ✗
+  waiting: "\u25cb", // ○
+  spawning: "", // filled by spinner
+  started: "\u25cf", // ●
+  failed: "\u2717", // ✗
 };
 
 const STATUS_COLOR: Record<SpawnStatus, string> = {
@@ -67,9 +67,7 @@ export const SpawnProgress: React.NamedExoticComponent<SpawnProgressProps> = Rea
     const onAllResolvedRef = useRef(onAllResolved);
     onAllResolvedRef.current = onAllResolved;
     useEffect(() => {
-      const allResolved = agents.every(
-        (a) => a.status === "started" || a.status === "failed",
-      );
+      const allResolved = agents.every((a) => a.status === "started" || a.status === "failed");
       if (allResolved && agents.length > 0) {
         // Small delay so user can see final state
         const timeout = setTimeout(() => onAllResolvedRef.current(), 800);
@@ -109,9 +107,7 @@ export const SpawnProgress: React.NamedExoticComponent<SpawnProgressProps> = Rea
               PLATFORM_COLORS[agent.command] ?? PLATFORM_COLORS.custom ?? theme.text;
             return (
               <box key={agent.role} flexDirection="row">
-                <text color={STATUS_COLOR[agent.status]}>
-                  {getIcon(agent.status)}{" "}
-                </text>
+                <text color={STATUS_COLOR[agent.status]}>{getIcon(agent.status)} </text>
                 <text color={theme.text}>{agent.role}</text>
                 <text color={theme.dimmed}> ({agent.command})</text>
                 <text color={platformColor}>

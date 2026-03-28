@@ -16,11 +16,7 @@ export interface PendingPermission {
 }
 
 /** Prompt patterns to detect in tmux pane content. */
-const PROMPT_PATTERNS = [
-  "Do you want to proceed",
-  "Allow this action?",
-  "Proceed?",
-] as const;
+const PROMPT_PATTERNS = ["Do you want to proceed", "Allow this action?", "Proceed?"] as const;
 
 function containsPermissionPrompt(paneContent: string): boolean {
   return PROMPT_PATTERNS.some((p) => paneContent.includes(p));

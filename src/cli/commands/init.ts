@@ -236,15 +236,13 @@ export async function executeInit(
         discoverRunningNexus,
       } = await import("../nexus-lifecycle.js");
 
-      // Reuse existing Nexus if any stack is running (avoid creating duplicate stacks)
+      // Reuse existing Nexus if any stack is running (avoid creating duplicate stacks).
+      // API key is read from .state.json (authoritative) via readNexusApiKey.
       const existingUrl = await discoverRunningNexus();
       if (existingUrl) {
-        // Set env vars so downstream startServices() can connect without re-init
         process.env.GROVE_NEXUS_URL = existingUrl;
         const { readNexusApiKey } = await import("../nexus-lifecycle.js");
-        const { join } = await import("node:path");
-        const groveHome = join(process.env.HOME ?? "", ".grove");
-        const key = readNexusApiKey(groveHome) ?? readNexusApiKey(options.cwd);
+        const key = readNexusApiKey(options.cwd);
         if (key) process.env.NEXUS_API_KEY = key;
         console.log(`Reusing existing Nexus at ${existingUrl}`);
       } else {

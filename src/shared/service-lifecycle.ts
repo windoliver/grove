@@ -69,8 +69,11 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
   const { parseGroveConfig } = await import("../core/config.js");
   const config = parseGroveConfig(raw);
 
-  // Start managed Nexus if configured
-  if (config.nexusManaged || (config.mode === "nexus" && !config.nexusUrl)) {
+  // Start managed Nexus if configured — skip if GROVE_NEXUS_URL already set (reuse existing)
+  if (
+    !process.env.GROVE_NEXUS_URL &&
+    (config.nexusManaged || (config.mode === "nexus" && !config.nexusUrl))
+  ) {
     try {
       const { ensureNexusRunning } = await import("../cli/nexus-lifecycle.js");
       // Never pass force to Nexus — "new grove" means reinit the grove,
@@ -81,8 +84,11 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
         onProgress: options.onProgress,
       });
       nexusManaged = true;
-      process.env.GROVE_NEXUS_URL = nexusInfo.url;
-      if (nexusInfo.apiKey) {
+      // Only set env vars if not already configured (user may have set explicit Nexus URL)
+      if (!process.env.GROVE_NEXUS_URL) {
+        process.env.GROVE_NEXUS_URL = nexusInfo.url;
+      }
+      if (!process.env.NEXUS_API_KEY && nexusInfo.apiKey) {
         process.env.NEXUS_API_KEY = nexusInfo.apiKey;
       }
     } catch (err) {
@@ -90,8 +96,9 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
       if (options.build) {
         throw err;
       }
-      // Otherwise fall back to local mode silently
-      options.onProgress?.(`Nexus unavailable, using local mode`);
+      // Fall back to local mode — log the reason for debugging
+      const errMsg = err instanceof Error ? err.message : String(err);
+      options.onProgress?.(`Nexus unavailable (${errMsg}), using local mode`);
     }
   }
 
@@ -100,7 +107,8 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
 
   // Resolve grove source root for service entry points
   const { dirname } = await import("node:path");
-  const groveSourceRoot = dirname(dirname(new URL(import.meta.url).pathname));
+  // import.meta.url → src/shared/service-lifecycle.ts → need 3 levels up to repo root
+  const groveSourceRoot = dirname(dirname(dirname(new URL(import.meta.url).pathname)));
   const resolveEntry = (rel: string) => {
     const distPath = join(groveSourceRoot, "dist", rel.replace("src/", "").replace(".ts", ".js"));
     if (existsSync(distPath)) return distPath;
@@ -203,22 +211,62 @@ async function spawnService(
   entryPoint: string,
   groveDir: string,
 ): Promise<ChildProcess | null> {
+  // Check if the port is already in use (server=4515, mcp=4015)
+  const defaultPorts: Record<string, number> = { server: 4515, mcp: 4015 };
+  const port = defaultPorts[name];
+  if (port) {
+    try {
+      const resp = await fetch(`http://localhost:${port}/health`, {
+        signal: AbortSignal.timeout(2000),
+      }).catch(() => null);
+      if (resp?.ok) {
+        // Service already running — skip spawn, return null (not an error)
+        return null;
+      }
+    } catch {
+      // Port not in use — proceed with spawn
+    }
+  }
+
   try {
-    const proc = Bun.spawn(["bun", entryPoint], {
-      cwd: join(groveDir, ".."),  // project root
-      stdout: "ignore",
-      stderr: "ignore",
-      env: {
-        ...process.env,
-        GROVE_DIR: groveDir,
-      },
+    // Spawn detached so the server survives TUI exit.
+    const { spawn: nodeSpawn } = await import("node:child_process");
+    const child = nodeSpawn("bun", [entryPoint], {
+      cwd: join(groveDir, ".."),
+      stdio: "ignore",
+      env: { ...process.env, GROVE_DIR: groveDir },
+      detached: true,
     });
+    const pid = child.pid ?? 0;
+    child.unref();
 
-    // Give process a moment to start, then assume it's running.
-    // Bun spawns are fast — if it hasn't exited in 500ms, it's alive.
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // Wait for process to start. Server with Nexus stores may take longer
+    // to initialize (dynamic imports + NexusHttpClient construction).
+    await new Promise((resolve) => setTimeout(resolve, 5000));
 
-    return { name, pid: proc.pid, proc };
+    // Check if the process is running
+    try {
+      process.kill(pid, 0); // Signal 0 = check existence
+    } catch {
+      return null; // Process died during startup
+    }
+
+    // Wrap for the ChildProcess interface
+    const proc = {
+      pid,
+      kill: (signal?: string) => {
+        try {
+          process.kill(pid, (signal ?? "SIGTERM") as NodeJS.Signals);
+        } catch {
+          /* already dead */
+        }
+      },
+      exited: new Promise<number>(() => {
+        /* detached — never resolves from parent */
+      }),
+    } as unknown as ReturnType<typeof Bun.spawn>;
+
+    return { name, pid, proc };
   } catch {
     return null;
   }

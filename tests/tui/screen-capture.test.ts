@@ -79,7 +79,9 @@ describe.skipIf(!hasTmux)("TUI screen capture verification", () => {
     // Create a temporary grove directory with a preset
     const { mkdtempSync, writeFileSync, mkdirSync } = await import("node:fs");
     const { join } = await import("node:path");
-    const tmpDir = mkdtempSync(join(await import("node:os").then((o) => o.tmpdir()), "grove-test-"));
+    const tmpDir = mkdtempSync(
+      join(await import("node:os").then((o) => o.tmpdir()), "grove-test-"),
+    );
     mkdirSync(join(tmpDir, ".grove"), { recursive: true });
     writeFileSync(
       join(tmpDir, ".grove", "grove.json"),

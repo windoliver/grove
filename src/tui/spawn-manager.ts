@@ -389,8 +389,6 @@ export class SpawnManager {
       }
     }
 
-    if (allRecords.length === 0) return { reattached: 0, released: 0 };
-
     // Get live agent sessions from runtime or tmux
     let liveSet: Set<string>;
     if (this.agentRuntime) {
@@ -404,6 +402,14 @@ export class SpawnManager {
     let reattached = 0;
     let released = 0;
 
+    // Build a map of live sessions for quick lookup
+    const liveSessionMap = new Map<string, import("../core/agent-runtime.js").AgentSession>();
+    if (this.agentRuntime) {
+      for (const session of await this.agentRuntime.listSessions()) {
+        liveSessionMap.set(session.id, session);
+      }
+    }
+
     for (const record of allRecords) {
       const tmuxName = `grove-${record.spawnId}`;
       if (liveSet.has(tmuxName)) {
@@ -413,6 +419,11 @@ export class SpawnManager {
           targetRef: record.targetRef,
           agentId: record.agentId,
         });
+        // Also restore agent session so sendToAgent/getActiveRoles work
+        const liveSession = liveSessionMap.get(tmuxName);
+        if (liveSession) {
+          this.agentSessions.set(record.spawnId, liveSession);
+        }
         reattached++;
       } else {
         // Dead session: clean workspace + remove record
@@ -425,6 +436,37 @@ export class SpawnManager {
         }
         this.sessionStore?.remove(record.spawnId);
         released++;
+      }
+    }
+
+    // Fallback: scan live acpx sessions and reattach those whose workspace
+    // is under this grove's workspaces directory (filters out other projects).
+    if (reattached === 0 && this.agentRuntime && this.groveDir) {
+      const workspacesPrefix = join(this.groveDir, "workspaces");
+      // acpx sessions list includes the cwd — use it to filter
+      try {
+        const output = execSync("acpx codex sessions list", { encoding: "utf-8", stdio: "pipe" });
+        for (const line of output.trim().split("\n").filter(Boolean)) {
+          const fields = line.split("\t");
+          const name = (fields[1] ?? "").trim();
+          const cwd = (fields[2] ?? "").trim();
+          const isClosed = line.includes("[closed]");
+          if (!name.startsWith("grove-") || isClosed) continue;
+          if (!cwd.startsWith(workspacesPrefix) && !cwd.startsWith(`/private${workspacesPrefix}`))
+            continue;
+
+          const role = name.replace(/^grove-/, "").replace(/-\d+-.*$/, "");
+          if (role && !this.agentSessions.has(role)) {
+            const session = liveSessionMap.get(name);
+            if (session) {
+              this.agentSessions.set(role, session);
+              this.spawnRecords.set(role, { claimId: "", targetRef: role, agentId: role });
+              reattached++;
+            }
+          }
+        }
+      } catch {
+        // Best-effort
       }
     }
 
@@ -460,7 +502,114 @@ export class SpawnManager {
     }
   }
 
-  /** Close bridge and clear state. */
+  /**
+   * Route a contribution to downstream agents via topology edges.
+   *
+   * This is the local IPC mechanism: when a contribution appears from a source
+   * role, look up topology edges and push a message to each target role's
+   * agent session via runtime.send().
+   */
+  async routeContribution(
+    sourceRole: string,
+    summary: string,
+    kind: string,
+    topology?: import("../core/topology.js").AgentTopology,
+  ): Promise<void> {
+    if (!topology || !this.agentRuntime) return;
+
+    // Find target roles from topology edges
+    const sourceRoleDef = topology.roles.find((r) => r.name === sourceRole);
+    if (!sourceRoleDef?.edges) return;
+
+    // Find source workspace path
+    let sourceWorkspace: string | undefined;
+    for (const spawnId of this.spawnRecords.keys()) {
+      if (spawnId.startsWith(sourceRole) && this.groveDir) {
+        sourceWorkspace = join(this.groveDir, "workspaces", spawnId);
+        break;
+      }
+    }
+    // Also check agentSessions keys (reconciled sessions use role as key)
+    if (!sourceWorkspace && this.groveDir) {
+      for (const key of this.agentSessions.keys()) {
+        if (key.startsWith(sourceRole)) {
+          sourceWorkspace = join(this.groveDir, "workspaces", key);
+          break;
+        }
+      }
+    }
+
+    const targetRoles = sourceRoleDef.edges.map((e) => e.target);
+    for (const targetRole of targetRoles) {
+      // Find the agent session for this target role
+      for (const [spawnId, session] of this.agentSessions) {
+        if (spawnId.startsWith(targetRole)) {
+          // Sync source workspace files to target workspace before sending IPC.
+          // Each agent has its own git worktree — files created by one agent
+          // are invisible to others without syncing.
+          if (sourceWorkspace && this.groveDir) {
+            const targetWorkspace = join(this.groveDir, "workspaces", spawnId);
+            try {
+              execSync(
+                `rsync -a --exclude='.git' --exclude='.mcp.json' --exclude='CODEX.md' --exclude='CLAUDE.md' --exclude='.grove-role' "${sourceWorkspace}/" "${targetWorkspace}/"`,
+                { stdio: "pipe", timeout: 10_000 },
+              );
+            } catch {
+              // Best-effort — agent can still work without sync
+            }
+          }
+
+          const message = `[IPC from ${sourceRole}] New ${kind}: ${summary}. Please review and respond.`;
+
+          // Send via Nexus IPC (persists message + triggers SSE) AND direct runtime.send
+          if (this.wsBridge) {
+            void (this.wsBridge as import("./nexus-ws-bridge.js").NexusWsBridge)
+              .send(sourceRole, targetRole, { summary, kind })
+              .catch(() => {
+                /* best-effort */
+              });
+          }
+          try {
+            await this.agentRuntime.send(session, message);
+          } catch {
+            // Non-fatal
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  /**
+   * Send a user message to a specific agent role.
+   *
+   * Looks up the active agent session for the given role and pushes the
+   * message via runtime.send(). This triggers the agent to process the
+   * message as if it were an IPC notification.
+   */
+  async sendToAgent(role: string, message: string): Promise<boolean> {
+    if (!this.agentRuntime) return false;
+
+    for (const [spawnId, session] of this.agentSessions) {
+      if (spawnId.startsWith(role)) {
+        await this.agentRuntime.send(session, message);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Get list of active agent roles (for UI display). */
+  getActiveRoles(): string[] {
+    const roles: string[] = [];
+    for (const spawnId of this.agentSessions.keys()) {
+      const role = spawnId.replace(/-[a-z0-9]+$/i, "");
+      if (!roles.includes(role)) roles.push(role);
+    }
+    return roles;
+  }
+
+  /** Close bridge and clear state (agents stay alive in acpx). */
   destroy(): void {
     this.spawnRecords.clear();
     this.wsBridge?.close();
@@ -475,16 +624,12 @@ export class SpawnManager {
     const groveDir = join(workspacePath, "..", "..");
     // Resolve the project root (parent of .grove) for finding src/mcp/serve.ts
     const projectRoot = join(groveDir, "..");
-    // Pass Nexus URL to MCP server for IPC event routing
+    // MCP server writes to local SQLite (same DB as HTTP server).
+    // Do NOT pass GROVE_NEXUS_URL — Nexus VFS reads hit rate limits.
+    // IPC routing uses Nexus separately via NexusWsBridge.
     const mcpEnv: Record<string, string> = {
       GROVE_DIR: groveDir,
     };
-    if (process.env.GROVE_NEXUS_URL) {
-      mcpEnv.GROVE_NEXUS_URL = process.env.GROVE_NEXUS_URL;
-    }
-    if (process.env.NEXUS_API_KEY) {
-      mcpEnv.NEXUS_API_KEY = process.env.NEXUS_API_KEY;
-    }
 
     // Find the grove MCP server: check dist/ first (installed), then src/ (dev)
     const { dirname } = await import("node:path");
@@ -509,24 +654,15 @@ export class SpawnManager {
     };
     await writeFile(join(workspacePath, ".mcp.json"), JSON.stringify(mcpConfig, null, 2), "utf-8");
 
-    // Update codex MCP config via CLI (codex uses ~/.codex/config.toml, not .mcp.json).
-    // Each agent gets a unique MCP server name (grove-<spawnId>) so concurrent
-    // sessions don't overwrite each other's config.
+    // Register MCP with codex globally (codex uses ~/.codex/config.toml, not .mcp.json).
+    // Use a single stable name "grove" so we don't accumulate stale per-spawn entries.
+    // MCP writes to local SQLite only — no Nexus env vars.
     try {
-      const { basename } = await import("node:path");
-      const spawnId = basename(workspacePath);
-      const serverName = `grove-${spawnId}`;
-
-      const envArgs: string[] = [];
-      envArgs.push("--env", `GROVE_DIR=${groveDir}`);
-      if (mcpEnv.GROVE_NEXUS_URL) envArgs.push("--env", `GROVE_NEXUS_URL=${mcpEnv.GROVE_NEXUS_URL}`);
-      if (mcpEnv.NEXUS_API_KEY) envArgs.push("--env", `NEXUS_API_KEY=${mcpEnv.NEXUS_API_KEY}`);
-
-      execSync(`codex mcp remove ${serverName} 2>/dev/null || true`, { stdio: "pipe", timeout: 5000 });
-      execSync(
-        `codex mcp add ${serverName} ${envArgs.join(" ")} -- bun run ${mcpServePath}`,
-        { stdio: "pipe", timeout: 10000 },
-      );
+      execSync(`codex mcp remove grove 2>/dev/null || true`, { stdio: "pipe", timeout: 5000 });
+      execSync(`codex mcp add grove --env GROVE_DIR=${groveDir} -- bun run ${mcpServePath}`, {
+        stdio: "pipe",
+        timeout: 10000,
+      });
     } catch {
       // Non-fatal — codex may not be installed
     }
@@ -566,15 +702,32 @@ You will receive push notifications from the system when other agents produce wo
 
 ## MCP Tools — YOU MUST USE THESE
 
-- \`grove_contribute\` — **REQUIRED** after editing files. This is how other agents see your work.
+- \`grove_contribute\` — **REQUIRED** after editing files or reviewing. This is how other agents see your work.
+  Use \`kind: "work"\` for code changes, \`kind: "review"\` for reviews, \`kind: "discussion"\` for clarifications.
   Example: \`grove_contribute({ kind: "work", summary: "Built landing page", agent: { role: "${roleId}" } })\`
-- \`grove_done\` — Signal complete: \`grove_done({ agent: { role: "${roleId}" } })\`
+- \`grove_done\` — Signal the entire session is complete. See STRICT RULES below.
 
-**CRITICAL: Always call grove_contribute after making changes. Without it, nobody sees your work. Feedback from other agents arrives automatically via push notifications — no need to poll.**
+**CRITICAL: Always call grove_contribute after making changes. Without it, nobody sees your work.**
+
+## STRICT RULES FOR grove_done — READ CAREFULLY
+
+**grove_done TERMINATES THE ENTIRE SESSION. Calling it prematurely will destroy the collaboration.**
+
+- After calling \`grove_contribute\`, you MUST STOP and WAIT for a message from the system.
+- Do NOT call \`grove_done\` after your first contribution. The session needs multiple rounds.
+- If you are a **coder**: NEVER call \`grove_done\` until a reviewer has explicitly approved your work. You will receive a review message — wait for it.
+- If you are a **reviewer**: NEVER call \`grove_done\` until the coder has addressed ALL your feedback. Multiple rounds may be needed.
+- The ONLY time to call \`grove_done\` is when you receive explicit confirmation that the full coder→reviewer→fix→approve loop is complete.
 
 ## Workflow
 
-Follow the Instructions above. After editing files, always call \`grove_contribute\`. When feedback arrives (automatic), iterate and contribute again.
+1. Do your work (code or review) and call \`grove_contribute\` to record it.
+2. **STOP. Wait for a message.** Do NOT call grove_done. Do NOT proceed without receiving feedback.
+3. When feedback arrives (as a push notification message), iterate: fix issues or re-review, then call \`grove_contribute\` again.
+4. Repeat steps 2-3 until the reviewer approves.
+5. **Calling grove_done:**
+   - **Reviewer**: After you approve the coder's work (no more issues), call \`grove_done\` to end the session.
+   - **Coder**: NEVER call grove_done yourself. Only the reviewer ends the session after approving.
 `;
 
     await writeFile(join(workspacePath, "CLAUDE.md"), instructions, "utf-8");

@@ -8,9 +8,9 @@
  */
 
 import { useCallback, useEffect, useRef } from "react";
-import type { TuiDataProvider } from "../provider.js";
-import type { AgentTopology } from "../../core/topology.js";
 import type { EventBus, GroveEvent } from "../../core/event-bus.js";
+import type { AgentTopology } from "../../core/topology.js";
+import type { TuiDataProvider } from "../provider.js";
 import type { Screen } from "../screens/screen-manager.js";
 
 function isDoneContribution(c: { summary: string; context?: unknown }): boolean {
@@ -68,7 +68,10 @@ export function useDoneDetection(
       const handler = (event: GroveEvent) => {
         if (event.type === "contribution") {
           const payload = event.payload as { summary?: string; context?: unknown };
-          if (payload.summary && isDoneContribution(payload as { summary: string; context?: unknown })) {
+          if (
+            payload.summary &&
+            isDoneContribution(payload as { summary: string; context?: unknown })
+          ) {
             checkDone(role.name);
           }
         }

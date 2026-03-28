@@ -95,7 +95,9 @@ export class PolicyEnforcer {
    * incrementally when new contributions with scores are processed.
    * Avoids O(n) scans on every gate/outcome/stop check within a single enforce() call.
    */
-  private bestScoreCache: Map<string, { value: number; cid: string; createdAt: string }> | undefined;
+  private bestScoreCache:
+    | Map<string, { value: number; cid: string; createdAt: string }>
+    | undefined;
 
   constructor(
     contract: GroveContract,

@@ -123,12 +123,7 @@ export const GoalInput: React.NamedExoticComponent<GoalInputProps> = React.memo(
 
       {/* Spawn preview — what will happen on Enter */}
       {agentCount > 0 ? (
-        <box
-          flexDirection="column"
-          marginX={2}
-          marginTop={1}
-          paddingX={1}
-        >
+        <box flexDirection="column" marginX={2} marginTop={1} paddingX={1}>
           <text color={theme.muted}>
             {agentCount} agent{agentCount !== 1 ? "s" : ""} will spawn:
           </text>
@@ -137,7 +132,7 @@ export const GoalInput: React.NamedExoticComponent<GoalInputProps> = React.memo(
             const platformColor = PLATFORM_COLORS[role.platform ?? "claude-code"] ?? theme.text;
             return (
               <box key={role.name} flexDirection="row">
-                <text color={theme.dimmed}>  </text>
+                <text color={theme.dimmed}> </text>
                 <text color={theme.text}>{role.name}</text>
                 <text color={theme.dimmed}> (</text>
                 <text color={platformColor}>{cli}</text>

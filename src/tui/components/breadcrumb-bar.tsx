@@ -9,8 +9,8 @@
  */
 
 import React from "react";
-import { theme } from "../theme.js";
 import type { Screen } from "../screens/screen-manager.js";
+import { theme } from "../theme.js";
 
 export interface BreadcrumbBarProps {
   readonly screen: Screen;
@@ -30,7 +30,12 @@ const SCREEN_LABELS: Record<Screen, string> = {
 };
 
 export const BreadcrumbBar: React.NamedExoticComponent<BreadcrumbBarProps> = React.memo(
-  function BreadcrumbBar({ screen, presetName, sessionId, width }: BreadcrumbBarProps): React.ReactNode {
+  function BreadcrumbBar({
+    screen,
+    presetName,
+    sessionId,
+    width,
+  }: BreadcrumbBarProps): React.ReactNode {
     const label = SCREEN_LABELS[screen] ?? screen;
     const shortSession = sessionId?.slice(0, 8);
 
@@ -38,7 +43,9 @@ export const BreadcrumbBar: React.NamedExoticComponent<BreadcrumbBarProps> = Rea
     if (width < 40) {
       return (
         <box paddingX={1}>
-          <text color={theme.focus} bold>{label}</text>
+          <text color={theme.focus} bold>
+            {label}
+          </text>
         </box>
       );
     }
@@ -47,7 +54,9 @@ export const BreadcrumbBar: React.NamedExoticComponent<BreadcrumbBarProps> = Rea
     if (width < 70) {
       return (
         <box paddingX={1} flexDirection="row">
-          <text color={theme.focus} bold>{label}</text>
+          <text color={theme.focus} bold>
+            {label}
+          </text>
           {screen !== "preset-select" ? (
             <text color={theme.dimmed}> [Esc]</text>
           ) : (
@@ -61,36 +70,87 @@ export const BreadcrumbBar: React.NamedExoticComponent<BreadcrumbBarProps> = Rea
     if (width < 100) {
       const parts: React.ReactNode[] = [];
       if (presetName) {
-        parts.push(<text key="preset" color={theme.muted}>{presetName}</text>);
-        parts.push(<text key="sep1" color={theme.dimmed}> {"\u203a"} </text>);
+        parts.push(
+          <text key="preset" color={theme.muted}>
+            {presetName}
+          </text>,
+        );
+        parts.push(
+          <text key="sep1" color={theme.dimmed}>
+            {" "}
+            {"\u203a"}{" "}
+          </text>,
+        );
       }
-      parts.push(<text key="screen" color={theme.focus} bold>{label}</text>);
+      parts.push(
+        <text key="screen" color={theme.focus} bold>
+          {label}
+        </text>,
+      );
       if (shortSession) {
-        parts.push(<text key="sep2" color={theme.dimmed}> {"\u203a"} </text>);
-        parts.push(<text key="sess" color={theme.muted}>{shortSession}</text>);
+        parts.push(
+          <text key="sep2" color={theme.dimmed}>
+            {" "}
+            {"\u203a"}{" "}
+          </text>,
+        );
+        parts.push(
+          <text key="sess" color={theme.muted}>
+            {shortSession}
+          </text>,
+        );
       }
       return (
         <box paddingX={1} flexDirection="row">
           {parts}
-          {screen !== "preset-select" ? (
-            <text color={theme.dimmed}> [Esc]</text>
-          ) : null}
+          {screen !== "preset-select" ? <text color={theme.dimmed}> [Esc]</text> : null}
         </box>
       );
     }
 
     // Full: >= 100 cols
     const parts: React.ReactNode[] = [];
-    parts.push(<text key="grove" color={theme.text} bold>Grove</text>);
-    parts.push(<text key="sep0" color={theme.dimmed}> {"\u203a"} </text>);
+    parts.push(
+      <text key="grove" color={theme.text} bold>
+        Grove
+      </text>,
+    );
+    parts.push(
+      <text key="sep0" color={theme.dimmed}>
+        {" "}
+        {"\u203a"}{" "}
+      </text>,
+    );
     if (presetName) {
-      parts.push(<text key="preset" color={theme.muted}>{presetName}</text>);
-      parts.push(<text key="sep1" color={theme.dimmed}> {"\u203a"} </text>);
+      parts.push(
+        <text key="preset" color={theme.muted}>
+          {presetName}
+        </text>,
+      );
+      parts.push(
+        <text key="sep1" color={theme.dimmed}>
+          {" "}
+          {"\u203a"}{" "}
+        </text>,
+      );
     }
-    parts.push(<text key="screen" color={theme.focus} bold>{label}</text>);
+    parts.push(
+      <text key="screen" color={theme.focus} bold>
+        {label}
+      </text>,
+    );
     if (shortSession) {
-      parts.push(<text key="sep2" color={theme.dimmed}> {"\u203a"} </text>);
-      parts.push(<text key="sess" color={theme.muted}>{shortSession}</text>);
+      parts.push(
+        <text key="sep2" color={theme.dimmed}>
+          {" "}
+          {"\u203a"}{" "}
+        </text>,
+      );
+      parts.push(
+        <text key="sess" color={theme.muted}>
+          {shortSession}
+        </text>,
+      );
     }
 
     return (

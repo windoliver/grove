@@ -81,7 +81,8 @@ export const CompleteView: React.NamedExoticComponent<CompleteViewProps> = React
               {metricResult.reached ? "target metric reached" : "target metric not reached"}
             </text>
             <text color={theme.text}>
-              {metricResult.metric}: {metricResult.value.toFixed(4)} ({"\u2264"}{metricResult.target})
+              {metricResult.metric}: {metricResult.value.toFixed(4)} ({"\u2264"}
+              {metricResult.target})
             </text>
           </box>
         ) : null}

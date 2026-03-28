@@ -769,7 +769,7 @@ describe("PolicyEnforcer: max_rounds_without_improvement", () => {
     const t2 = "2025-01-01T00:02:00Z";
     const t3 = "2025-01-01T00:03:00Z";
     const store = makeStore([
-      makeContribution({ mode: "evaluation", scores: { val_bpb: score(0.90) }, createdAt: t0 }),
+      makeContribution({ mode: "evaluation", scores: { val_bpb: score(0.9) }, createdAt: t0 }),
       makeContribution({ mode: "evaluation", scores: { val_bpb: score(0.95) }, createdAt: t1 }),
       makeContribution({ mode: "evaluation", scores: { val_bpb: score(0.92) }, createdAt: t2 }),
       makeContribution({ mode: "evaluation", scores: { val_bpb: score(0.94) }, createdAt: t3 }),
@@ -829,9 +829,21 @@ describe("PolicyEnforcer: max_rounds_without_improvement", () => {
     const t1 = "2025-01-01T00:01:00Z";
     const t2 = "2025-01-01T00:02:00Z";
     const store = makeStore([
-      makeContribution({ mode: "evaluation", scores: { accuracy: score(0.95, "maximize") }, createdAt: t0 }),
-      makeContribution({ mode: "evaluation", scores: { accuracy: score(0.80, "maximize") }, createdAt: t1 }),
-      makeContribution({ mode: "evaluation", scores: { accuracy: score(0.85, "maximize") }, createdAt: t2 }),
+      makeContribution({
+        mode: "evaluation",
+        scores: { accuracy: score(0.95, "maximize") },
+        createdAt: t0,
+      }),
+      makeContribution({
+        mode: "evaluation",
+        scores: { accuracy: score(0.8, "maximize") },
+        createdAt: t1,
+      }),
+      makeContribution({
+        mode: "evaluation",
+        scores: { accuracy: score(0.85, "maximize") },
+        createdAt: t2,
+      }),
     ]);
 
     const enforcer = new PolicyEnforcer(contract, store);
@@ -854,7 +866,11 @@ describe("PolicyEnforcer: max_rounds_without_improvement", () => {
     });
 
     const store = makeStore([
-      makeContribution({ mode: "evaluation", scores: { val_bpb: score(1.0) }, createdAt: "2025-01-01T00:00:00Z" }),
+      makeContribution({
+        mode: "evaluation",
+        scores: { val_bpb: score(1.0) },
+        createdAt: "2025-01-01T00:00:00Z",
+      }),
     ]);
 
     const enforcer = new PolicyEnforcer(contract, store);

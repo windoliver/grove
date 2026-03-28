@@ -200,8 +200,13 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
             return;
           }
           // Any of these keys: continue to goal input
-          if (key.name === "return" || key.name === "tab" || key.name === "right" ||
-              key.name === "enter" || key.name === "space") {
+          if (
+            key.name === "return" ||
+            key.name === "tab" ||
+            key.name === "right" ||
+            key.name === "enter" ||
+            key.name === "space"
+          ) {
             if (!scanning) {
               onContinue(detected, roleMapping, rolePrompts);
             }
@@ -273,9 +278,13 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
         {/* Topology DAG */}
         {dagLines.length > 0 ? (
           <box flexDirection="column" marginX={2} marginTop={1} paddingX={1}>
-            <text color={theme.text} bold>Topology</text>
+            <text color={theme.text} bold>
+              Topology
+            </text>
             {dagLines.map((line, i) => (
-              <text key={i} color={theme.muted}>{line}</text>
+              <text key={i} color={theme.muted}>
+                {line}
+              </text>
             ))}
           </box>
         ) : null}
@@ -283,7 +292,9 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
         {/* Role Mapping summary */}
         {roles.length > 0 ? (
           <box flexDirection="column" marginX={2} marginTop={1} paddingX={1}>
-            <text color={theme.text} bold>Role Mapping</text>
+            <text color={theme.text} bold>
+              Role Mapping
+            </text>
             {roles.map((role) => {
               const cli = roleMapping.get(role.name) ?? "?";
               const cliFound = detected.get(cli) ?? false;
@@ -294,7 +305,9 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
                   <text color={color}> {icon} </text>
                   <text color={theme.text}>{role.name.padEnd(12)}</text>
                   <text color={theme.dimmed}>{"\u2192"} </text>
-                  <text color={PLATFORM_COLORS[role.platform ?? "claude-code"] ?? theme.text}>{cli}</text>
+                  <text color={PLATFORM_COLORS[role.platform ?? "claude-code"] ?? theme.text}>
+                    {cli}
+                  </text>
                   <text color={color}> {icon}</text>
                 </box>
               );

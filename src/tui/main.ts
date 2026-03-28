@@ -20,8 +20,8 @@ import {
   resolveBackend,
 } from "./resolve-backend.js";
 
-/** Default polling interval: 5 seconds. */
-const DEFAULT_INTERVAL_MS = 5_000;
+/** Default polling interval: 30s safety net. Primary updates are via Nexus SSE (instant). */
+const DEFAULT_INTERVAL_MS = 30_000;
 
 /** Parse TUI command-line arguments. */
 export function parseTuiArgs(args: readonly string[]): {
@@ -123,11 +123,17 @@ function findGroveDir(groveOverride?: string): string | undefined {
     return existsSync(configPath) ? envDir : undefined;
   }
 
-  // Walk up from cwd looking for .grove/grove.json
+  // Check CWD first — each project/worktree should use its OWN .grove/, not a parent's.
   const { dirname } = require("node:path") as typeof import("node:path");
   const { resolve } = require("node:path") as typeof import("node:path");
-  let current = resolve(process.cwd());
+  const cwd = resolve(process.cwd());
+  const cwdCandidate = join(cwd, ".grove");
+  if (existsSync(join(cwdCandidate, "grove.json"))) {
+    return cwdCandidate;
+  }
 
+  // Walk up only if CWD has no .grove/ — supports nested repos
+  let current = dirname(cwd);
   while (true) {
     const candidate = join(current, ".grove");
     const configPath = join(candidate, "grove.json");
@@ -218,15 +224,25 @@ async function buildAppProps(
     groveOverride: effectiveGrove,
   });
 
-  // The server and MCP write to local SQLite. The TUI should read from the same
-  // SQLite for immediate consistency. Nexus VFS has eventual consistency issues
-  // with directory listings. Use local provider unless explicitly connecting to
-  // a remote Nexus via --nexus flag.
+  // Server and MCP write to Nexus (single source of truth).
+  // TUI reads from the co-located grove server (port 4515) via RemoteProvider.
+  // This avoids hitting Nexus rate limits (the server already reads from Nexus).
   if (backend.mode === "nexus" && backend.source !== "flag") {
-    backend = { mode: "local", groveOverride: effectiveGrove, source: "default" };
+    const serverPort = process.env.PORT ?? "4515";
+    const serverUrl = `http://localhost:${serverPort}`;
+    try {
+      const resp = await fetch(`${serverUrl}/api/contributions?limit=1`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (resp.ok) {
+        backend = { mode: "remote", url: serverUrl, source: "flag" };
+      }
+    } catch {
+      // Server not up — fall back to direct Nexus VFS reads
+    }
   }
 
-  // Health check for nexus backends
+  // Health check for explicit --nexus flag (direct Nexus connection)
   if (backend.mode === "nexus") {
     const health = await checkNexusHealth(backend.url);
     if (health !== "ok") {
@@ -238,8 +254,6 @@ async function buildAppProps(
         }
         throw new Error(`Nexus at ${backend.url} is unreachable (${health})`);
       }
-      // Suppress stderr in TUI mode — the fallback is silent.
-      // The warning would corrupt the alternate screen.
       backend = { mode: "local", groveOverride: effectiveGrove, source: "default" };
     }
   }
@@ -264,7 +278,12 @@ async function buildAppProps(
   let agentRuntime: import("../core/agent-runtime.js").AgentRuntime | undefined;
   {
     const { AcpxRuntime } = await import("../core/acpx-runtime.js");
-    const runtime = new AcpxRuntime({ agent: "codex" });
+    // Resolve log dir from effective grove path (groveDir is computed later)
+    const effectiveGrovePath = effectiveGrove ?? findGroveDir(effectiveGrove);
+    const runtime = new AcpxRuntime({
+      agent: "codex",
+      ...(effectiveGrovePath ? { logDir: join(effectiveGrovePath, "agent-logs") } : {}),
+    });
     const available = await runtime.isAvailable();
     agentRuntime = available ? runtime : undefined;
   }
@@ -276,11 +295,9 @@ async function buildAppProps(
     stopCallbacks.push(startWorkspaceGc(provider));
   }
 
-  // Start periodic claim cleanup + artifact GC for local backends
-  const groveDir =
-    backend.mode === "local" || backend.mode === "nexus"
-      ? (backend.groveOverride ?? findGroveDir(effectiveGrove))
-      : undefined;
+  // Resolve groveDir for workspace management (agent spawning, file sync).
+  // Always resolve it — even in "remote" mode, agents need workspace paths.
+  const groveDir = effectiveGrove ?? findGroveDir(effectiveGrove);
   if (groveDir) {
     const { createLocalRuntime } = await import("../local/runtime.js");
     const { runCleanup, runArtifactGc } = await import("../local/cleanup.js");
@@ -334,19 +351,17 @@ async function buildAppProps(
         }
       : undefined;
 
-  // Create EventBus for Nexus mode — enables event-driven data instead of polling
+  // Create EventBus when Nexus is available. NexusWsBridge (in screen-manager.tsx)
+  // connects SSE and publishes events into this bus, which triggers re-fetches
+  // in RunningView via useEventDrivenData. Without bridge connection, the
+  // usePolledData fallback (30s interval) handles updates.
   let eventBus: import("../core/event-bus.js").EventBus | undefined;
-  if (backend.mode === "nexus") {
-    const nexusUrl = process.env.GROVE_NEXUS_URL ?? (backend as { url?: string }).url;
+  {
+    const nexusUrl = process.env.GROVE_NEXUS_URL;
     const apiKey = process.env.NEXUS_API_KEY;
-    if (nexusUrl) {
-      const { NexusEventBus } = await import("../nexus/nexus-event-bus.js");
-      const { NexusHttpClient } = await import("../nexus/nexus-http-client.js");
-      const nexusClient = new NexusHttpClient({
-        url: nexusUrl,
-        ...(apiKey ? { apiKey } : {}),
-      });
-      eventBus = new NexusEventBus(nexusClient, "default");
+    if (nexusUrl && apiKey) {
+      const { LocalEventBus } = await import("../core/local-event-bus.js");
+      eventBus = new LocalEventBus();
       stopCallbacks.push(() => eventBus?.close());
     }
   }
@@ -430,23 +445,9 @@ export async function handleTui(
     }
   }
 
-  // Pre-flight: ensure Nexus is healthy BEFORE starting the TUI.
-  // This avoids blocking the TUI render with Nexus init/startup.
-  try {
-    const { ensureNexusRunning, checkNexusCli } = await import("../cli/nexus-lifecycle.js");
-    const hasNexus = await checkNexusCli();
-    if (hasNexus) {
-      // Minimal config — just need Nexus running, don't care about grove mode yet
-      const minConfig = { name: "preflight", mode: "nexus" as const, nexusManaged: true };
-      const nexusInfo = await ensureNexusRunning(process.cwd(), minConfig, {
-        onProgress: (step) => process.stderr.write(`${step}\n`),
-      });
-      process.env.GROVE_NEXUS_URL = nexusInfo.url;
-      if (nexusInfo.apiKey) process.env.NEXUS_API_KEY = nexusInfo.apiKey;
-    }
-  } catch {
-    // Non-fatal — TUI can still work in local mode
-  }
+  // Nexus lifecycle is handled by startServices() during grove setup.
+  // No pre-flight discovery — each project/worktree has its own Nexus
+  // instance initialized during "New session" setup flow.
 
   // Load past sessions for the welcome screen (informational context)
   let sessions: SessionRecord[] = [];

@@ -123,31 +123,31 @@ export const PresetSelect: React.NamedExoticComponent<PresetSelectProps> = React
 
         {/* Preset list */}
         {presets.length > 0 ? (
-        <box
-          flexDirection="column"
-          marginX={2}
-          marginTop={1}
-          borderStyle="single"
-          borderColor={theme.border}
-          paddingX={1}
-        >
-          {presets.map((preset, i) => {
-            const selected = i === cursor;
-            const prefix = selected ? "> " : "  ";
-            return (
-              <box
-                key={preset.name}
-                flexDirection="row"
-                backgroundColor={selected ? theme.selectedBg : undefined}
-              >
-                <text color={selected ? theme.focus : theme.text} bold={selected}>
-                  {`${prefix}${preset.name.padEnd(20)}`}
-                </text>
-                <text color={theme.muted}>{preset.description}</text>
-              </box>
-            );
-          })}
-        </box>
+          <box
+            flexDirection="column"
+            marginX={2}
+            marginTop={1}
+            borderStyle="single"
+            borderColor={theme.border}
+            paddingX={1}
+          >
+            {presets.map((preset, i) => {
+              const selected = i === cursor;
+              const prefix = selected ? "> " : "  ";
+              return (
+                <box
+                  key={preset.name}
+                  flexDirection="row"
+                  backgroundColor={selected ? theme.selectedBg : undefined}
+                >
+                  <text color={selected ? theme.focus : theme.text} bold={selected}>
+                    {`${prefix}${preset.name.padEnd(20)}`}
+                  </text>
+                  <text color={theme.muted}>{preset.description}</text>
+                </box>
+              );
+            })}
+          </box>
         ) : null}
 
         {/* Detail overlay */}

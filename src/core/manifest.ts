@@ -257,6 +257,7 @@ function toManifestDict(contribution: Contribution | ContributionInput): Record<
     version: contribution.agent.version,
     toolchain: contribution.agent.toolchain,
     runtime: contribution.agent.runtime,
+    role: contribution.agent.role,
   });
 
   const relations = contribution.relations.map((r) =>
@@ -420,6 +421,7 @@ export function fromManifest(data: unknown, options?: FromManifestOptions): Cont
     version: parsed.agent.version,
     toolchain: parsed.agent.toolchain,
     runtime: parsed.agent.runtime,
+    role: parsed.agent.role,
   });
 
   const relations: readonly Relation[] = parsed.relations.map((r) =>

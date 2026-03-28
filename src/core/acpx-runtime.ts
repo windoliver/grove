@@ -9,6 +9,8 @@
  */
 
 import { execSync, spawn as nodeSpawn } from "node:child_process";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 
 /** Default agent backend used by acpx when none is specified. */
@@ -21,9 +23,12 @@ interface AcpxSessionEntry {
   cwd: string;
   env: Record<string, string | undefined>;
   idleCallbacks: (() => void)[];
+  outputCallbacks: ((chunk: string) => void)[];
   idleTimer: ReturnType<typeof setInterval> | null;
   /** Active child process for the current prompt (null when idle). */
   activeProc: ReturnType<typeof nodeSpawn> | null;
+  /** Log file path for agent output (debug/streaming). */
+  logFile: string | null;
 }
 
 export class AcpxRuntime implements AgentRuntime {
@@ -36,9 +41,20 @@ export class AcpxRuntime implements AgentRuntime {
   /** How often (ms) to poll for idle detection. */
   private readonly idlePollMs: number;
 
-  constructor(options?: { agent?: string; idlePollMs?: number }) {
+  /** Directory for per-agent log files. */
+  private readonly logDir: string | undefined;
+
+  constructor(options?: { agent?: string; idlePollMs?: number; logDir?: string }) {
     this.agent = options?.agent ?? DEFAULT_AGENT;
     this.idlePollMs = options?.idlePollMs ?? 5000;
+    this.logDir = options?.logDir;
+    if (this.logDir) {
+      try {
+        mkdirSync(this.logDir, { recursive: true });
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   async isAvailable(): Promise<boolean> {
@@ -80,6 +96,7 @@ export class AcpxRuntime implements AgentRuntime {
     }
 
     const session: AgentSession = { id, role, status: "running" };
+    const logFile = this.logDir ? join(this.logDir, `${role}-${counter}.log`) : null;
     const entry: AcpxSessionEntry = {
       session,
       agent: this.agent,
@@ -87,10 +104,22 @@ export class AcpxRuntime implements AgentRuntime {
       cwd: config.cwd,
       env: mergedEnv,
       idleCallbacks: [],
+      outputCallbacks: [],
       idleTimer: null,
       activeProc: null,
+      logFile,
     };
     this.sessions.set(id, entry);
+
+    // Write initial log header
+    if (logFile) {
+      const header = `[${new Date().toISOString()}] === Session ${sessionName} (role: ${role}) ===\n`;
+      try {
+        appendFileSync(logFile, header);
+      } catch {
+        /* ignore */
+      }
+    }
 
     // Send initial prompt unless this role waits for push (e.g., reviewer waits for coder)
     if (!config.waitForPush) {
@@ -105,6 +134,7 @@ export class AcpxRuntime implements AgentRuntime {
 
   /**
    * Fire-and-forget send: spawns acpx in the background.
+   * Streams stdout to output callbacks + log file.
    * When the prompt completes, fires idle callbacks.
    */
   private sendAsync(entry: AcpxSessionEntry, message: string): void {
@@ -113,32 +143,88 @@ export class AcpxRuntime implements AgentRuntime {
     // Wrap message with system-reminder that enforces MCP tool usage
     // (Relay pattern: agents "forget" tools without per-message reinforcement)
     const wrappedMessage = `<system-reminder>
-After completing this task, you MUST call the grove_contribute MCP tool to record your work.
-Example: grove_contribute({ kind: "work", summary: "description of what you did", mode: "exploration", agent: { agentId: "${entry.session.id}" } })
+You MUST call grove_contribute after completing work or a review.
+Example: grove_contribute({ kind: "work", summary: "what you did", agent: { role: "${entry.session.role}" } })
 Without calling grove_contribute, other agents cannot see your work.
-When finished with all work, call grove_done({ agent: { agentId: "${entry.session.id}" } }).
+
+CRITICAL RULE ABOUT grove_done:
+- Do NOT call grove_done after contributing. grove_done ends the ENTIRE session.
+- After calling grove_contribute, STOP and WAIT for a message from the system.
+- If you are a coder: NEVER call grove_done. Only the reviewer ends the session.
+- If you are a reviewer: Call grove_done AFTER you approve the coder's work (no more issues to fix).
+Violating this rule will terminate the session prematurely and lose work.
 </system-reminder>
 ${message}`;
 
-    const child = nodeSpawn("acpx", ["--approve-all", entry.agent, "-s", entry.sessionName, wrappedMessage], {
-      cwd: entry.cwd,
-      env: entry.env as NodeJS.ProcessEnv,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    // Log the outgoing prompt
+    if (entry.logFile) {
+      const ts = new Date().toISOString();
+      try {
+        appendFileSync(
+          entry.logFile,
+          `\n[${ts}] >>> PROMPT >>>\n${message}\n[${ts}] <<< END PROMPT <<<\n`,
+        );
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const child = nodeSpawn(
+      "acpx",
+      ["--approve-all", entry.agent, "-s", entry.sessionName, wrappedMessage],
+      {
+        cwd: entry.cwd,
+        env: entry.env as NodeJS.ProcessEnv,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
 
     entry.activeProc = child;
 
-    // Capture stderr for debugging
-    let stderr = "";
+    // Stream stdout to output callbacks + log file
+    child.stdout?.on("data", (chunk: Buffer) => {
+      const text = chunk.toString();
+      // Write to log file
+      if (entry.logFile) {
+        try {
+          appendFileSync(entry.logFile, text);
+        } catch {
+          /* ignore */
+        }
+      }
+      // Forward to output callbacks
+      for (const cb of entry.outputCallbacks) {
+        try {
+          cb(text);
+        } catch {
+          /* ignore */
+        }
+      }
+    });
+
+    // Capture stderr to log file
     child.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
+      if (entry.logFile) {
+        try {
+          appendFileSync(entry.logFile, `[stderr] ${chunk.toString()}`);
+        } catch {
+          /* ignore */
+        }
+      }
     });
 
     child.on("close", (code) => {
       entry.activeProc = null;
+      const ts = new Date().toISOString();
       if (code === 0) {
-        // Session completed
         entry.session = { ...entry.session, status: "idle" };
+        if (entry.logFile) {
+          try {
+            appendFileSync(entry.logFile, `\n[${ts}] === IDLE (exit 0) ===\n`);
+          } catch {
+            /* ignore */
+          }
+        }
         for (const cb of entry.idleCallbacks) {
           try {
             cb();
@@ -147,21 +233,48 @@ ${message}`;
           }
         }
       } else {
-        // Agent exited with error — mark as crashed
         entry.session = { ...entry.session, status: "crashed" };
+        if (entry.logFile) {
+          try {
+            appendFileSync(entry.logFile, `\n[${ts}] === CRASHED (exit ${code}) ===\n`);
+          } catch {
+            /* ignore */
+          }
+        }
       }
     });
 
     child.on("error", (err) => {
       entry.activeProc = null;
-      // Spawn error — mark as crashed
       entry.session = { ...entry.session, status: "crashed" };
+      if (entry.logFile) {
+        try {
+          appendFileSync(entry.logFile, `\n[ERROR] ${err.message}\n`);
+        } catch {
+          /* ignore */
+        }
+      }
     });
   }
 
   async send(session: AgentSession, message: string): Promise<void> {
-    const entry = this.sessions.get(session.id);
-    if (!entry) return;
+    let entry = this.sessions.get(session.id);
+    // For reattached sessions (not spawned by this runtime), create a minimal entry
+    if (!entry) {
+      entry = {
+        session,
+        agent: this.agent,
+        sessionName: session.id,
+        cwd: process.cwd(),
+        env: { ...process.env },
+        idleCallbacks: [],
+        outputCallbacks: [],
+        idleTimer: null,
+        activeProc: null,
+        logFile: this.logDir ? join(this.logDir, `${session.role}-reattach.log`) : null,
+      };
+      this.sessions.set(session.id, entry);
+    }
     this.sendAsync(entry, message);
   }
 
@@ -206,6 +319,12 @@ ${message}`;
     }
   }
 
+  onOutput(session: AgentSession, callback: (chunk: string) => void): void {
+    const entry = this.sessions.get(session.id);
+    if (!entry) return;
+    entry.outputCallbacks.push(callback);
+  }
+
   async listSessions(): Promise<readonly AgentSession[]> {
     if (!(await this.isAvailable())) {
       return [];
@@ -225,9 +344,12 @@ ${message}`;
       }
 
       for (const line of lines) {
-        const name = line.trim();
-        if (name.startsWith("grove-") && !this.sessions.has(name)) {
-          const role = name.slice(6).replace(/-\d+$/, "");
+        // acpx output: UUID\tname\tpath\ttimestamp (tab-separated)
+        const fields = line.split("\t");
+        const name = (fields[1] ?? line).trim();
+        const isClosed = line.includes("[closed]");
+        if (name.startsWith("grove-") && !this.sessions.has(name) && !isClosed) {
+          const role = name.replace(/^grove-/, "").replace(/-\d+-.*$/, "");
           result.push({ id: name, role, status: "idle" });
         }
       }

@@ -25,64 +25,16 @@ import { createWsHandler } from "./ws-handler.js";
 const GROVE_DIR = process.env.GROVE_DIR ?? join(process.cwd(), ".grove");
 const PORT = parsePort(process.env.PORT, 4515);
 const HOST = process.env.HOST; // optional — defaults to localhost via Bun
-const NEXUS_URL = process.env.GROVE_NEXUS_URL;
-const NEXUS_API_KEY = process.env.NEXUS_API_KEY;
+// Nexus env vars — available for IPC routing but NOT for data stores.
+// Data stores use local SQLite to avoid Nexus VFS rate limits.
 
-// Use local SQLite stores for contribution data (immediate consistency).
-// Nexus is used for IPC/SSE push notifications between agents, not as the
-// contribution data store — Nexus VFS has eventual consistency issues with
-// directory listings that break the list/query path.
+// Local runtime for contract parsing, workspace, frontier, goal sessions.
+// Contribution stores are overridden with Nexus when available.
 const runtime = createLocalRuntime({
   groveDir: GROVE_DIR,
   workspace: false,
   parseContract: true,
 });
-
-async function createNexusRuntime(groveDir: string, nexusUrl: string, apiKey?: string) {
-  const { NexusHttpClient } = await import("../nexus/nexus-http-client.js");
-  const { NexusContributionStore } = await import("../nexus/nexus-contribution-store.js");
-  const { NexusClaimStore } = await import("../nexus/nexus-claim-store.js");
-  const { NexusCas } = await import("../nexus/nexus-cas.js");
-  const { NexusBountyStore } = await import("../nexus/nexus-bounty-store.js");
-  const { NexusOutcomeStore } = await import("../nexus/nexus-outcome-store.js");
-  const { NexusSessionStore } = await import("../nexus/nexus-session-store.js");
-  const { DefaultFrontierCalculator } = await import("../core/frontier.js");
-  const { parseGroveContract } = await import("../core/contract.js");
-  const { existsSync, readFileSync } = await import("node:fs");
-
-  const client = new NexusHttpClient({ url: nexusUrl, apiKey });
-  const zoneId = process.env.GROVE_ZONE_ID ?? "default";
-  const contributionStore = new NexusContributionStore({ client, zoneId });
-  const claimStore = new NexusClaimStore({ client, zoneId });
-  const cas = new NexusCas({ client, zoneId });
-  const bountyStore = new NexusBountyStore({ client, zoneId });
-  const outcomeStore = new NexusOutcomeStore({ client, zoneId });
-  // NexusSessionStore is available but has a different interface from GoalSessionStore
-  // Sessions are managed locally for now
-  const frontier = new DefaultFrontierCalculator(contributionStore);
-
-  // Parse contract from local GROVE.md
-  let contract;
-  const groveRoot = join(groveDir, "..");
-  const groveMdPath = join(groveRoot, "GROVE.md");
-  if (existsSync(groveMdPath)) {
-    try {
-      contract = parseGroveContract(readFileSync(groveMdPath, "utf-8"));
-    } catch { /* contract is optional */ }
-  }
-
-  return {
-    contributionStore,
-    claimStore,
-    cas,
-    bountyStore,
-    outcomeStore,
-    frontier,
-    contract,
-    groveRoot,
-    close() { /* Nexus client has no close */ },
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Optional gossip federation
@@ -111,14 +63,29 @@ if (seedPeers.length > 0) {
 // Start server
 // ---------------------------------------------------------------------------
 
+// Use Nexus stores when URL is available (single source of truth).
+// Fall back to local SQLite when Nexus is not configured.
+const serverContributionStore: import("../core/store.js").ContributionStore =
+  runtime.contributionStore;
+const serverClaimStore: import("../core/store.js").ClaimStore = runtime.claimStore;
+const serverOutcomeStore: import("../core/outcome.js").OutcomeStore | undefined =
+  runtime.outcomeStore;
+const serverBountyStore: import("../core/bounty-store.js").BountyStore = runtime.bountyStore;
+const serverCas: import("../core/cas.js").ContentStore = runtime.cas;
+const serverFrontier: import("../core/frontier.js").FrontierCalculator = runtime.frontier;
+
+// Server uses local SQLite for reads (same DB as MCP agents write to).
+// Nexus VFS hits rate limits with N reads per list() call.
+// Nexus is used for IPC only (via NexusWsBridge SSE), not for data storage.
+
 const deps: ServerDeps = {
-  contributionStore: runtime.contributionStore,
-  claimStore: runtime.claimStore,
-  outcomeStore: runtime.outcomeStore,
-  bountyStore: runtime.bountyStore,
+  contributionStore: serverContributionStore,
+  claimStore: serverClaimStore,
+  outcomeStore: serverOutcomeStore,
+  bountyStore: serverBountyStore,
   goalSessionStore: runtime.goalSessionStore,
-  cas: runtime.cas,
-  frontier: runtime.frontier,
+  cas: serverCas,
+  frontier: serverFrontier,
   gossip: gossipService,
   topology: runtime.contract?.topology,
 };

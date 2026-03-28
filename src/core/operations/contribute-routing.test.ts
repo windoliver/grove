@@ -370,7 +370,14 @@ describe("contributeOperation: hook execution", () => {
     const hookRunner: HookRunner = {
       run: async (entry: HookEntry, cwd: string): Promise<HookResult> => {
         hookCalls.push({ entry, cwd });
-        return { success: true, exitCode: 0, stdout: "", stderr: "", command: "test", durationMs: 0 };
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          command: "test",
+          durationMs: 0,
+        };
       },
     };
 
@@ -461,7 +468,14 @@ describe("contributeOperation: hook execution", () => {
     const hookRunner: HookRunner = {
       run: async (entry: HookEntry): Promise<HookResult> => {
         hookCalls.push(entry);
-        return { success: true, exitCode: 0, stdout: "", stderr: "", command: "test", durationMs: 0 };
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          command: "test",
+          durationMs: 0,
+        };
       },
     };
 
