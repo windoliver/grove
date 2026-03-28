@@ -32,7 +32,7 @@ async function callTool(
   };
 }
 
-describe("grove_contribute", () => {
+describe("grove_submit_work", () => {
   let testDeps: TestMcpDeps;
   let deps: McpDeps;
   let server: McpServer;
@@ -49,12 +49,8 @@ describe("grove_contribute", () => {
   });
 
   test("creates a work contribution", async () => {
-    const result = await callTool(server, "grove_contribute", {
-      kind: "work",
-      mode: "evaluation",
+    const result = await callTool(server, "grove_submit_work", {
       summary: "Test work",
-      tags: ["test"],
-      relations: [],
       artifacts: {},
       agent: { agentId: "agent-1" },
     });
@@ -67,12 +63,8 @@ describe("grove_contribute", () => {
   });
 
   test("validates artifact hashes exist in CAS", async () => {
-    const result = await callTool(server, "grove_contribute", {
-      kind: "work",
-      mode: "evaluation",
+    const result = await callTool(server, "grove_submit_work", {
       summary: "Bad artifacts",
-      tags: [],
-      relations: [],
       artifacts: {
         "file.txt": "blake3:0000000000000000000000000000000000000000000000000000000000000000",
       },
@@ -87,12 +79,8 @@ describe("grove_contribute", () => {
   test("creates contribution with valid artifact hash", async () => {
     const hash = await storeTestContent(deps.cas, "hello world");
 
-    const result = await callTool(server, "grove_contribute", {
-      kind: "work",
-      mode: "evaluation",
+    const result = await callTool(server, "grove_submit_work", {
       summary: "With artifact",
-      tags: [],
-      relations: [],
       artifacts: { "file.txt": hash },
       agent: { agentId: "agent-1" },
     });
@@ -103,18 +91,15 @@ describe("grove_contribute", () => {
   });
 
   test("validates relation target CIDs exist", async () => {
-    const result = await callTool(server, "grove_contribute", {
-      kind: "work",
-      mode: "evaluation",
+    const result = await callTool(server, "grove_submit_work", {
       summary: "Bad relation",
-      tags: [],
+      artifacts: {},
       relations: [
         {
           targetCid: "blake3:0000000000000000000000000000000000000000000000000000000000000000",
           relationType: "derives_from",
         },
       ],
-      artifacts: {},
       agent: { agentId: "agent-1" },
     });
 
@@ -128,13 +113,10 @@ describe("grove_contribute", () => {
     const parent = makeContribution({ summary: "Parent" });
     await deps.contributionStore.put(parent);
 
-    const result = await callTool(server, "grove_contribute", {
-      kind: "work",
-      mode: "evaluation",
+    const result = await callTool(server, "grove_submit_work", {
       summary: "Child",
-      tags: [],
-      relations: [{ targetCid: parent.cid, relationType: "derives_from" }],
       artifacts: {},
+      relations: [{ targetCid: parent.cid, relationType: "derives_from" }],
       agent: { agentId: "agent-1" },
     });
 
@@ -144,7 +126,7 @@ describe("grove_contribute", () => {
   });
 });
 
-describe("grove_review", () => {
+describe("grove_submit_review", () => {
   let testDeps: TestMcpDeps;
   let deps: McpDeps;
   let server: McpServer;
@@ -164,11 +146,11 @@ describe("grove_review", () => {
     const target = makeContribution({ summary: "Target work" });
     await deps.contributionStore.put(target);
 
-    const result = await callTool(server, "grove_review", {
+    const result = await callTool(server, "grove_submit_review", {
       targetCid: target.cid,
       summary: "Looks good",
+      scores: { quality: { value: 0.8, direction: "maximize" } },
       agent: { agentId: "reviewer-1" },
-      tags: [],
     });
 
     expect(result.isError).toBeUndefined();
@@ -178,11 +160,11 @@ describe("grove_review", () => {
   });
 
   test("returns not-found for non-existent target", async () => {
-    const result = await callTool(server, "grove_review", {
+    const result = await callTool(server, "grove_submit_review", {
       targetCid: "blake3:0000000000000000000000000000000000000000000000000000000000000000",
       summary: "Review of nothing",
+      scores: { quality: { value: 0.5, direction: "maximize" } },
       agent: { agentId: "reviewer-1" },
-      tags: [],
     });
 
     expect(result.isError).toBe(true);
@@ -193,7 +175,7 @@ describe("grove_review", () => {
     const target = makeContribution({ summary: "Target" });
     await deps.contributionStore.put(target);
 
-    const result = await callTool(server, "grove_review", {
+    const result = await callTool(server, "grove_submit_review", {
       targetCid: target.cid,
       summary: "Detailed review",
       scores: { quality: { value: 0.8, direction: "maximize" } },

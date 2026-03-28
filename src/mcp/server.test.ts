@@ -48,10 +48,10 @@ describe("createMcpServer preset scoping", () => {
   // --- Contribution tool names (always registered) -------------------------
 
   const contributionTools = [
-    "grove_contribute",
+    "grove_submit_work",
+    "grove_submit_review",
     "grove_discuss",
     "grove_reproduce",
-    "grove_review",
   ];
 
   // --- Full tool list (matches integration test expectation) ---------------
@@ -66,7 +66,6 @@ describe("createMcpServer preset scoping", () => {
     "grove_check_stop",
     "grove_checkout",
     "grove_claim",
-    "grove_contribute",
     "grove_create_plan",
     "grove_create_session",
     "grove_discuss",
@@ -85,11 +84,12 @@ describe("createMcpServer preset scoping", () => {
     "grove_release",
     "grove_report_usage",
     "grove_reproduce",
-    "grove_review",
     "grove_search",
     "grove_send_message",
     "grove_set_goal",
     "grove_set_outcome",
+    "grove_submit_review",
+    "grove_submit_work",
     "grove_thread",
     "grove_threads",
     "grove_tree",
@@ -281,7 +281,7 @@ describe("createMcpServer preset scoping", () => {
     expect(names).not.toContain("grove_check_stop");
 
     // Included groups
-    expect(names).toContain("grove_contribute");
+    expect(names).toContain("grove_submit_work");
     expect(names).toContain("grove_frontier");
     expect(names).toContain("grove_checkout");
     expect(names).toContain("grove_send_message");

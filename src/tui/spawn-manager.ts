@@ -524,7 +524,7 @@ ${rolePrompt ? `## Instructions\n${rolePrompt}\n` : ""}
 
 ## Identity
 
-You are the **${roleId}** agent. Always pass \`agent: { role: "${roleId}" }\` in grove_contribute and grove_done calls. This is set once here — do not worry about it after this.
+You are the **${roleId}** agent. Always pass \`agent: { role: "${roleId}" }\` in grove_submit_work and grove_done calls. This is set once here — do not worry about it after this.
 
 ## Communication
 
@@ -532,8 +532,10 @@ You will receive push notifications from the system when other agents produce wo
 
 ## MCP Tools (use sparingly)
 
-- \`grove_contribute\` — record your work (always include agent: { role: "${roleId}" })
-- \`grove_done\` — signal session complete (only after approval from other agents)
+- \`grove_submit_work\` — submit completed work with summary + artifacts (ALWAYS include artifacts, or reviewers will reject your work)
+- \`grove_submit_review\` — submit a code review with targetCid + scores (ALWAYS include scores, or frontier won't rank your review)
+- \`grove_discuss\` — post a discussion or reply (use tags for @mentions)
+- \`grove_done\` — signal session complete (only after all work is done and approved)
 
 Do NOT call grove_log, grove_search, grove_frontier, grove_checkout, grove_goal, or grove_read_inbox. You receive everything you need via push notifications.
 
@@ -566,9 +568,9 @@ Follow the Instructions section above exactly. You are in a git worktree with fu
       "- grove_frontier — discover best contributions to build on",
       "- grove_claim / grove_release — coordinate work to avoid duplication",
       "- grove_checkout — materialize artifacts into your workspace",
-      "- grove_contribute — submit your work",
-      "- grove_review — submit a code review",
-      "- grove_send_message / grove_read_inbox — agent-to-agent messaging",
+      "- grove_submit_work — submit completed work (requires summary + artifacts)",
+      "- grove_submit_review — submit a review (requires targetCid + summary + scores)",
+      "- grove_discuss — post a discussion or reply (replaces grove_send_message)",
       "- grove_create_plan / grove_update_plan — maintain project plans",
       "- grove_check_stop — check if stop conditions are met",
       "",
