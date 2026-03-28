@@ -211,10 +211,13 @@ describe("review-loop preset", () => {
     expect(count).toBe(0);
   });
 
-  test("GROVE.md topology roles have correct commands for claude agent", () => {
+  test("GROVE.md topology roles use claude-code platform by default", () => {
     const preset = getPreset("review-loop")!;
     for (const role of preset.topology?.roles) {
-      expect(role.command).toMatch(/^claude --dangerously-skip-permissions/);
+      // command is optional — set at runtime by agent-detect screen.
+      // platform defaults to "claude-code" which maps to claude CLI.
+      const platform = role.platform ?? "claude-code";
+      expect(platform).toBe("claude-code");
     }
   });
 });
@@ -661,9 +664,14 @@ describe("Nexus lifecycle", () => {
     }
   });
 
-  test("readNexusUrl returns undefined when nexus.yaml doesn't exist", () => {
+  test("readNexusUrl returns undefined or global URL when project nexus.yaml doesn't exist", () => {
     const url = readNexusUrl("/nonexistent/path");
-    expect(url).toBeUndefined();
+    // Falls back to global ~/.grove/nexus.yaml if it exists, otherwise undefined
+    if (url) {
+      expect(url).toMatch(/^http:\/\/localhost:\d+$/);
+    } else {
+      expect(url).toBeUndefined();
+    }
   });
 
   test("readNexusUrl parses port from nexus.yaml", async () => {

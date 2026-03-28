@@ -321,11 +321,10 @@ export async function nexusDown(_projectRoot: string): Promise<void> {
  * accidentally connecting to another user's Nexus instance.
  */
 export function readNexusUrl(projectRoot: string): string | undefined {
-  // Read from nexus.yaml (configured ports). .state.json ports may be stale
-  // if Nexus was restarted with different port resolution.
-  const globalYaml = join(getGroveHome(), "nexus.yaml");
+  // Read from nexus.yaml (configured ports). Check project-local first, then global.
   const localYaml = join(projectRoot, "nexus.yaml");
-  const yamlPath = existsSync(globalYaml) ? globalYaml : localYaml;
+  const globalYaml = join(getGroveHome(), "nexus.yaml");
+  const yamlPath = existsSync(localYaml) ? localYaml : globalYaml;
   try {
     if (!existsSync(yamlPath)) return undefined;
 
