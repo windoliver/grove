@@ -3,7 +3,7 @@
  *
  * Determines which data provider to use based on CLI flags,
  * environment variables, and grove.json configuration.
- * Priority chain: --url > --nexus > GROVE_NEXUS_URL > grove.json nexusUrl > local.
+ * Priority chain: --url > --nexus > GROVE_NEXUS_URL > grove.json nexusUrl > Docker discovery > local.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -21,7 +21,7 @@ export type ResolvedBackend =
   | {
       readonly mode: "nexus";
       readonly url: string;
-      readonly source: "flag" | "env" | "grove.json";
+      readonly source: "flag" | "env" | "grove.json" | "docker";
       readonly groveOverride?: string | undefined;
     }
   | {
@@ -38,7 +38,7 @@ export interface ResolveBackendFlags {
 }
 
 // ---------------------------------------------------------------------------
-// resolveBackend — pure function
+// resolveBackend — now async to support Docker discovery
 // ---------------------------------------------------------------------------
 
 /**
@@ -49,11 +49,10 @@ export interface ResolveBackendFlags {
  * 2. `--nexus` flag -> nexus mode (source: "flag")
  * 3. `GROVE_NEXUS_URL` env -> nexus mode (source: "env")
  * 4. `grove.json` nexusUrl -> nexus mode (source: "grove.json")
- * 5. Fallback -> local mode
- *
- * Steps 3-4 are short-circuited if an explicit flag (step 1 or 2) matched.
+ * 5. Docker container discovery -> nexus mode (source: "docker")
+ * 6. Fallback -> local mode
  */
-export function resolveBackend(flags: ResolveBackendFlags): ResolvedBackend {
+export async function resolveBackend(flags: ResolveBackendFlags): Promise<ResolvedBackend> {
   // 1. Explicit --url flag -> remote
   if (flags.url) {
     return { mode: "remote", url: flags.url, source: "flag" };
@@ -70,18 +69,58 @@ export function resolveBackend(flags: ResolveBackendFlags): ResolvedBackend {
     return { mode: "nexus", url: envUrl, source: "env", groveOverride: flags.groveOverride };
   }
 
-  // 4. grove.json nexusUrl
-  const nexusFromConfig = readNexusUrlFromConfig(flags.groveOverride);
-  if (nexusFromConfig) {
-    return {
-      mode: "nexus",
-      url: nexusFromConfig,
-      source: "grove.json",
-      groveOverride: flags.groveOverride,
-    };
+  // 4. grove.json nexusUrl or nexus.yaml port
+  const { url: configUrl, fromExplicit } = readNexusUrlFromConfig(flags.groveOverride);
+  if (configUrl) {
+    if (fromExplicit) {
+      // Explicit nexusUrl in grove.json — trust it without health check
+      return {
+        mode: "nexus",
+        url: configUrl,
+        source: "grove.json",
+        groveOverride: flags.groveOverride,
+      };
+    }
+    // URL from nexus.yaml (internal Docker port) — verify reachability
+    const reachable = await isReachable(configUrl);
+    if (reachable) {
+      return {
+        mode: "nexus",
+        url: configUrl,
+        source: "grove.json",
+        groveOverride: flags.groveOverride,
+      };
+    }
+    // nexus.yaml URL not reachable (Docker port remapping) — fall through to Docker discovery
   }
 
-  // 5. Local fallback
+  // 5. Docker container discovery — only when we found a nexus.yaml URL that wasn't
+  // reachable (Docker remapped the port). Don't speculatively discover if no config found.
+  if (configUrl && !fromExplicit) {
+    try {
+      const { discoverRunningNexus, readNexusApiKey } =
+        require("../cli/nexus-lifecycle.js") as typeof import("../cli/nexus-lifecycle.js");
+      const discovered = await discoverRunningNexus();
+      if (discovered) {
+        // Set the API key env so downstream code (health checks, providers) can use it
+        const { groveDir } = resolveGroveDir(flags.groveOverride);
+        const apiKey = readNexusApiKey(join(groveDir, ".."));
+        if (apiKey && !process.env.NEXUS_API_KEY) {
+          process.env.NEXUS_API_KEY = apiKey;
+        }
+        return {
+          mode: "nexus",
+          url: discovered,
+          source: "docker",
+          groveOverride: flags.groveOverride,
+        };
+      }
+    } catch {
+      // Docker not available or no container running — fall through
+    }
+  }
+
+  // 6. Local fallback
   return {
     mode: "local",
     groveOverride: flags.groveOverride,
@@ -90,15 +129,51 @@ export function resolveBackend(flags: ResolveBackendFlags): ResolvedBackend {
 }
 
 // ---------------------------------------------------------------------------
-// Config file reader
+// Helpers
 // ---------------------------------------------------------------------------
 
-/** Read nexusUrl from .grove/grove.json if it exists. Returns undefined on any failure. */
-function readNexusUrlFromConfig(groveOverride?: string): string | undefined {
+/** Quick reachability check — does the URL respond to /health within 2s? */
+async function isReachable(url: string): Promise<boolean> {
+  try {
+    const apiKey = process.env.NEXUS_API_KEY;
+    const resp = await fetch(`${url.replace(/\/+$/, "")}/health`, {
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+      signal: AbortSignal.timeout(2_000),
+    });
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Check if grove.json explicitly indicates a managed Nexus deployment. */
+function isNexusManagedConfig(groveOverride?: string): boolean {
   try {
     const { groveDir } = resolveGroveDir(groveOverride);
     const configPath = join(groveDir, "grove.json");
-    if (!existsSync(configPath)) return undefined;
+    if (!existsSync(configPath)) return false;
+    const raw = readFileSync(configPath, "utf-8");
+    const parsed = JSON.parse(raw) as { nexusManaged?: boolean };
+    // Only true when explicitly managed — not just mode: "nexus"
+    return parsed.nexusManaged === true;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Config file reader
+// ---------------------------------------------------------------------------
+
+/** Read nexusUrl from .grove/grove.json if it exists. Returns the URL and whether it was explicit. */
+function readNexusUrlFromConfig(
+  groveOverride?: string,
+): { url: string; fromExplicit: boolean } | { url: undefined; fromExplicit: false } {
+  const none = { url: undefined, fromExplicit: false } as const;
+  try {
+    const { groveDir } = resolveGroveDir(groveOverride);
+    const configPath = join(groveDir, "grove.json");
+    if (!existsSync(configPath)) return none;
 
     const raw = readFileSync(configPath, "utf-8");
 
@@ -107,7 +182,7 @@ function readNexusUrlFromConfig(groveOverride?: string): string | undefined {
       const { parseGroveConfig } =
         require("../core/config.js") as typeof import("../core/config.js");
       const config = parseGroveConfig(raw);
-      if (config.nexusUrl) return config.nexusUrl;
+      if (config.nexusUrl) return { url: config.nexusUrl, fromExplicit: true };
 
       // Managed Nexus: no nexusUrl in grove.json — discover from nexus.yaml.
       // This handles standalone `grove tui` on a managed-Nexus grove where
@@ -115,17 +190,19 @@ function readNexusUrlFromConfig(groveOverride?: string): string | undefined {
       if (config.nexusManaged && config.mode === "nexus") {
         const { readNexusUrl } =
           require("../cli/nexus-lifecycle.js") as typeof import("../cli/nexus-lifecycle.js");
-        return readNexusUrl(join(groveDir, ".."));
+        const yamlUrl = readNexusUrl(join(groveDir, ".."));
+        if (yamlUrl) return { url: yamlUrl, fromExplicit: false };
       }
 
-      return undefined;
+      return none;
     } catch {
       // Fall back to untyped parse for legacy grove.json files
       const parsed = JSON.parse(raw) as { nexusUrl?: string };
-      return parsed.nexusUrl || undefined;
+      if (parsed.nexusUrl) return { url: parsed.nexusUrl, fromExplicit: true };
+      return none;
     }
   } catch {
-    return undefined;
+    return none;
   }
 }
 
@@ -239,7 +316,9 @@ export function backendLabel(backend: ResolvedBackend): string {
         ? `nexus (--nexus)`
         : backend.source === "env"
           ? `nexus (auto: env)`
-          : `nexus (auto: grove.json)`;
+          : backend.source === "docker"
+            ? `nexus (auto: docker)`
+            : `nexus (auto: grove.json)`;
     case "local":
       return "local (.grove/)";
   }
