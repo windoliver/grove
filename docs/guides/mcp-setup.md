@@ -167,8 +167,8 @@ http://host:4015/mcp
 
 | Tool | Description |
 |------|-------------|
-| `grove_contribute` | Submit a contribution with artifacts |
-| `grove_review` | Submit a review of a contribution |
+| `grove_submit_work` | Submit a work contribution with artifacts |
+| `grove_submit_review` | Submit a review of a contribution |
 | `grove_reproduce` | Submit a reproduction attempt |
 | `grove_claim` | Claim work to prevent duplication |
 | `grove_release` | Release or complete a claim |

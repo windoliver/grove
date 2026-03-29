@@ -210,7 +210,9 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         try {
           if (!existsSync(logDir)) return;
           const files = readdirSync(logDir).filter((f: string) => f.endsWith(".log"));
-          const outputs = new Map<string, string[]>();
+          // Accumulate lines across all log files for each role (multiple
+          // files may exist: coder-0.log, coder-1.log, etc.)
+          const accumulated = new Map<string, string[]>();
           for (const file of files) {
             const role = file.replace(/\.log$/, "").replace(/-\d+$/, "");
             try {
@@ -231,12 +233,17 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
                     !t.includes("=== Session")
                   );
                 })
-                .map((l: string) => stripAnsi(l))
-                .slice(-AGENT_OUTPUT_LINES);
-              outputs.set(role, lines);
+                .map((l: string) => stripAnsi(l));
+              const existing = accumulated.get(role) ?? [];
+              accumulated.set(role, [...existing, ...lines]);
             } catch {
               // File might be being written to
             }
+          }
+          // Take last N lines per role from accumulated output
+          const outputs = new Map<string, string[]>();
+          for (const [role, lines] of accumulated) {
+            outputs.set(role, lines.slice(-AGENT_OUTPUT_LINES));
           }
           if (outputs.size > 0) {
             setAgentOutputs(outputs);
@@ -501,6 +508,15 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             }
             return;
           }
+          // Enter: open detail view for selected feed item
+          if (key.name === "return" && feed.length > 0) {
+            const selected = feed[cursor];
+            if (selected) {
+              // Switch to advanced mode — the Detail panel shows the selected contribution
+              onToggleAdvanced();
+            }
+            return;
+          }
           // r: respond to ask_user question (scroll to it)
           if (key.name === "r") {
             const askIdx = feed.findIndex((c) => c.kind === "ask_user");
@@ -526,6 +542,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           promptMode,
           promptText,
           promptTarget,
+          cursor,
           activeRoles,
           onSendToAgent,
           onToggleAdvanced,
@@ -734,16 +751,49 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
                         ? theme.adoption
                         : theme.text;
               const kindIcon = KIND_ICONS[c.kind] ?? "\u25a0";
+              const agentLabel = c.agent.role ?? c.agent.agentName ?? c.agent.agentId;
+
+              // Cursor preview line: scores, artifacts, relations
+              const scoreEntries = Object.entries(c.scores ?? {});
+              const artifactCount = Object.keys(c.artifacts ?? {}).length;
+              const relationCount = (c.relations ?? []).length;
+              const hasPreview =
+                selected && (scoreEntries.length > 0 || artifactCount > 0 || relationCount > 0);
+
               return (
-                <box
-                  key={c.cid}
-                  flexDirection="row"
-                  backgroundColor={selected ? theme.selectedBg : undefined}
-                >
-                  <text color={theme.dimmed}>{formatTime(c.createdAt)} </text>
-                  <text color={kindColor}>{kindIcon} </text>
-                  <text color={kindColor}>{c.kind.padEnd(12)}</text>
-                  <text color={selected ? theme.text : theme.muted}>{c.summary.slice(0, 60)}</text>
+                <box key={c.cid} flexDirection="column">
+                  <box
+                    flexDirection="row"
+                    backgroundColor={selected ? theme.selectedBg : undefined}
+                  >
+                    <text color={theme.dimmed}>{formatTime(c.createdAt)} </text>
+                    <text color={kindColor}>{kindIcon} </text>
+                    <text color={kindColor}>{c.kind.padEnd(12)}</text>
+                    <text color={theme.info}>{agentLabel.padEnd(10)} </text>
+                    <text color={selected ? theme.text : theme.muted}>
+                      {c.summary.slice(0, 55)}
+                    </text>
+                  </box>
+                  {hasPreview ? (
+                    <box flexDirection="row" marginLeft={28}>
+                      {scoreEntries.slice(0, 3).map(([name, score]) => (
+                        <text key={name} color={theme.dimmed}>
+                          {name}:{(score as { value: number }).value.toFixed(2)}{" "}
+                        </text>
+                      ))}
+                      {artifactCount > 0 ? (
+                        <text color={theme.dimmed}>
+                          {artifactCount} file{artifactCount !== 1 ? "s" : ""}{" "}
+                        </text>
+                      ) : null}
+                      {relationCount > 0 ? (
+                        <text color={theme.dimmed}>
+                          {relationCount} rel{relationCount !== 1 ? "s" : ""}{" "}
+                        </text>
+                      ) : null}
+                      <text color={theme.dimmed}> Enter:detail</text>
+                    </box>
+                  ) : null}
                 </box>
               );
             })

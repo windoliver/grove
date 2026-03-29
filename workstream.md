@@ -175,10 +175,10 @@ commands, MCP tools, operator TUI. Depends on Stream 2 core engine.
 **MCP tools mapped to proposal §12.3:**
 | Proposal tool | Issue |
 |--------------|-------|
-| `grove_contribute` | #16 |
+| `grove_submit_work` | #16 |
+| `grove_submit_review` | #16 |
 | `grove_claim` | #16 |
 | `grove_release` | #16 |
-| `grove_review` | #16 |
 | `grove_reproduce` | #16 |
 | `grove_frontier` | #16 |
 | `grove_search` | #16 |

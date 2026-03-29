@@ -41,6 +41,8 @@ export type {
 export { claimOperation, listClaimsOperation, releaseOperation } from "./claim.js";
 // Contribute operations
 export type {
+  AdoptInput,
+  AdoptResult,
   ContributeInput,
   ContributeResult,
   DiscussInput,
@@ -51,6 +53,7 @@ export type {
   ReviewResult,
 } from "./contribute.js";
 export {
+  adoptOperation,
   contributeOperation,
   discussOperation,
   reproduceOperation,

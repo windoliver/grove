@@ -58,7 +58,7 @@ describe("MCP server integration", () => {
     const toolNames = tools.tools.map((t) => t.name).sort();
     expect(toolNames).toEqual([
       "ask_user",
-      "grove_bounty_claim",
+      "grove_adopt",
       "grove_bounty_create",
       "grove_bounty_list",
       "grove_bounty_settle",
@@ -66,7 +66,6 @@ describe("MCP server integration", () => {
       "grove_check_stop",
       "grove_checkout",
       "grove_claim",
-      "grove_contribute",
       "grove_create_plan",
       "grove_create_session",
       "grove_discuss",
@@ -85,11 +84,12 @@ describe("MCP server integration", () => {
       "grove_release",
       "grove_report_usage",
       "grove_reproduce",
-      "grove_review",
       "grove_search",
       "grove_send_message",
       "grove_set_goal",
       "grove_set_outcome",
+      "grove_submit_review",
+      "grove_submit_work",
       "grove_thread",
       "grove_threads",
       "grove_tree",
@@ -97,15 +97,12 @@ describe("MCP server integration", () => {
     ]);
   });
 
-  test("grove_contribute round-trip", async () => {
+  test("grove_submit_work round-trip", async () => {
     const result = await client.callTool({
-      name: "grove_contribute",
+      name: "grove_submit_work",
       arguments: {
-        kind: "work",
-        mode: "evaluation",
         summary: "Integration test contribution",
         tags: ["integration"],
-        relations: [],
         artifacts: {},
         agent: { agentId: "integration-agent" },
       },
@@ -162,16 +159,17 @@ describe("MCP server integration", () => {
     expect(releaseData.status).toBe("completed");
   });
 
-  test("grove_review round-trip", async () => {
+  test("grove_submit_review round-trip", async () => {
     // Create target
     const target = makeContribution({ summary: "Reviewable work" });
     await deps.contributionStore.put(target);
 
     const result = await client.callTool({
-      name: "grove_review",
+      name: "grove_submit_review",
       arguments: {
         targetCid: target.cid,
         summary: "LGTM",
+        scores: { quality: { value: 0.9, direction: "maximize" } },
         agent: { agentId: "reviewer" },
       },
     });

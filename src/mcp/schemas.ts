@@ -41,6 +41,42 @@ export const relationSchema: z.ZodTypeAny = z.object({
 /** Named numeric score with direction. */
 export const scoreSchema: z.ZodTypeAny = z.object({
   value: z.number().describe("Numeric score value"),
-  direction: z.enum(["minimize", "maximize"]).describe("Whether lower or higher is better"),
-  unit: z.string().optional().describe("Unit of measurement"),
+  direction: z
+    .enum(["minimize", "maximize"])
+    .describe("Whether lower or higher is better for this metric"),
+  unit: z.string().optional().describe("Unit of measurement (e.g., 'ms', 'percent', 'lines')"),
 });
+
+/**
+ * Artifacts schema — map of file path to CAS content hash.
+ *
+ * Used by grove_submit_work to attach file artifacts to contributions.
+ * Artifacts must be pre-stored in CAS (via grove_cas_put); pass their
+ * blake3 content hashes here.
+ */
+export const artifactsSchema = z
+  .record(z.string(), z.string())
+  .describe(
+    "File artifacts as a map of path to CAS content hash (blake3:<hex64>). " +
+      "Artifacts must already exist in CAS — use grove_cas_put to store them first. " +
+      'Example: {"src/main.ts": "blake3:a1b2c3..."}. ' +
+      "Without artifacts, reviewers cannot inspect your files.",
+  );
+
+/**
+ * Scores schema for reviews — requires at least one named score.
+ *
+ * Each score has a numeric value and direction (minimize/maximize).
+ * The frontier uses these scores to rank contributions.
+ */
+export const reviewScoresSchema = z
+  .record(z.string(), scoreSchema)
+  .refine((scores) => Object.keys(scores).length >= 1, {
+    message:
+      "Reviews must include at least one score. " +
+      'Example: {"correctness": {"value": 0.9, "direction": "maximize"}}',
+  })
+  .describe(
+    "Named scores for the review. At least one score is required so the frontier can rank contributions. " +
+      'Example: {"correctness": {"value": 0.9, "direction": "maximize"}, "style": {"value": 0.8, "direction": "maximize"}}',
+  );

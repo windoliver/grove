@@ -132,6 +132,25 @@ export interface DiscussInput {
   readonly agent?: AgentOverrides | undefined;
 }
 
+/** Input for the adopt operation. */
+export interface AdoptInput {
+  readonly targetCid: string;
+  readonly summary: string;
+  readonly description?: string | undefined;
+  readonly tags?: readonly string[] | undefined;
+  readonly context?: Readonly<Record<string, JsonValue>> | undefined;
+  readonly agent?: AgentOverrides | undefined;
+}
+
+/** Result of an adopt operation. */
+export interface AdoptResult {
+  readonly cid: string;
+  readonly kind: "adoption";
+  readonly targetCid: string;
+  readonly summary: string;
+  readonly createdAt: string;
+}
+
 // ---------------------------------------------------------------------------
 // Shared validation
 // ---------------------------------------------------------------------------
@@ -472,6 +491,45 @@ export async function discussOperation(
     cid: result.value.cid,
     kind: "discussion" as const,
     ...(input.targetCid !== undefined ? { targetCid: input.targetCid } : {}),
+    summary: result.value.summary,
+    createdAt: result.value.createdAt,
+  });
+}
+
+/**
+ * Adopt an existing contribution.
+ * Sugar over contributeOperation: sets kind=adoption, adds adopts relation.
+ */
+export async function adoptOperation(
+  input: AdoptInput,
+  deps: OperationDeps,
+): Promise<OperationResult<AdoptResult>> {
+  const relations: Relation[] = [
+    {
+      targetCid: input.targetCid,
+      relationType: RelationType.Adopts,
+    },
+  ];
+
+  const result = await contributeOperation(
+    {
+      kind: CK.Adoption,
+      mode: CM.Evaluation,
+      summary: input.summary,
+      relations,
+      tags: input.tags,
+      agent: input.agent,
+      ...pickDefined(input, ["description", "context"]),
+    },
+    deps,
+  );
+
+  if (!result.ok) return result as OperationResult<AdoptResult>;
+
+  return ok({
+    cid: result.value.cid,
+    kind: "adoption" as const,
+    targetCid: input.targetCid,
     summary: result.value.summary,
     createdAt: result.value.createdAt,
   });

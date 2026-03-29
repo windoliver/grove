@@ -5,7 +5,7 @@ Your loop:
 2. grove_claim — claim a review (use the contribution CID as targetRef)
 3. grove_checkout — read the train.py changes
 4. Review: correctness, fair comparison, no bugs, simplicity
-5. grove_contribute — submit review with quality score (kind=review)
+5. grove_submit_review — submit review with quality score
 6. Repeat until grove stop conditions are met
 
 Focus on:

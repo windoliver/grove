@@ -40,17 +40,36 @@ export function toOperationDeps(deps: McpDeps): OperationDeps {
 /**
  * Convert an OperationResult into a MCP CallToolResult.
  *
- * On success: returns the value as JSON text.
+ * On success: returns the value as JSON text. If a warning is provided,
+ * it is included as a separate text content block.
  * On error: returns `[CODE] message` with isError: true (matching existing error-handler.ts format).
  */
-export function toMcpResult<T>(result: OperationResult<T>): CallToolResult {
+export function toMcpResult<T>(result: OperationResult<T>, warning?: string): CallToolResult {
   if (result.ok) {
-    return {
-      content: [{ type: "text" as const, text: JSON.stringify(result.value) }],
-    };
+    const content: Array<{ type: "text"; text: string }> = [
+      { type: "text" as const, text: JSON.stringify(result.value) },
+    ];
+    if (warning !== undefined) {
+      content.push({ type: "text" as const, text: `WARNING: ${warning}` });
+    }
+    return { content };
   }
   return {
     isError: true,
     content: [{ type: "text" as const, text: `[${result.error.code}] ${result.error.message}` }],
+  };
+}
+
+/**
+ * Create a tool-level validation error with actionable guidance.
+ *
+ * Use this for business rule violations detected at the tool handler level
+ * (before delegating to the operations layer). The message should name the
+ * specific field and include an example of correct input.
+ */
+export function toolValidationError(message: string): CallToolResult {
+  return {
+    isError: true,
+    content: [{ type: "text" as const, text: `VALIDATION_ERROR: ${message}` }],
   };
 }

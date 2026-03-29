@@ -357,12 +357,12 @@ bun run src/mcp/serve-http.ts
 
 | Tool family | Tools |
 | --- | --- |
-| Contributions | `grove_contribute`, `grove_review`, `grove_reproduce`, `grove_discuss` |
+| Contributions | `grove_submit_work`, `grove_submit_review`, `grove_reproduce`, `grove_discuss` |
 | Claims | `grove_claim`, `grove_release` |
 | Queries | `grove_frontier`, `grove_search`, `grove_log`, `grove_tree`, `grove_thread` |
 | Workspace | `grove_checkout` |
 | Stop conditions | `grove_check_stop` |
-| Bounties | `grove_bounty_create`, `grove_bounty_list`, `grove_bounty_claim`, `grove_bounty_settle` |
+| Bounties | `grove_bounty_create`, `grove_bounty_list`, `grove_bounty_settle` (claim via `grove_claim`) |
 | Outcomes | `grove_set_outcome`, `grove_get_outcome`, `grove_list_outcomes` |
 | Messaging | `grove_send_message`, `grove_read_messages` |
 | Ask-user | `ask_user` |

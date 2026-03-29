@@ -1,5 +1,5 @@
 /**
- * Unified MCP tool tests covering grove_contribute, grove_frontier,
+ * Unified MCP tool tests covering grove_submit_work, grove_frontier,
  * grove_claim, grove_search, and grove_checkout.
  *
  * Each tool is tested for valid inputs (success), invalid inputs (error),
@@ -48,10 +48,10 @@ async function callTool(
 }
 
 // ---------------------------------------------------------------------------
-// grove_contribute
+// grove_submit_work
 // ---------------------------------------------------------------------------
 
-describe("grove_contribute (tools.test)", () => {
+describe("grove_submit_work (tools.test)", () => {
   let testDeps: TestMcpDeps;
   let deps: McpDeps;
   let server: McpServer;
@@ -67,32 +67,29 @@ describe("grove_contribute (tools.test)", () => {
     await testDeps.cleanup();
   });
 
-  test("succeeds with minimal required fields", async () => {
-    const result = await callTool(server, "grove_contribute", {
-      kind: "work",
-      summary: "Minimal contribution",
-      relations: [],
-      artifacts: {},
-      tags: [],
+  test("succeeds with required fields", async () => {
+    const hash = await storeTestContent(deps.cas, "artifact content");
+
+    const result = await callTool(server, "grove_submit_work", {
+      summary: "Minimal work contribution",
+      artifacts: { "main.py": hash },
     });
 
     expect(result.isError).toBeUndefined();
     const data = JSON.parse(result.text);
     expect(data.cid).toMatch(/^blake3:/);
     expect(data.kind).toBe("work");
-    expect(data.summary).toBe("Minimal contribution");
+    expect(data.summary).toBe("Minimal work contribution");
+    expect(data.artifactCount).toBe(1);
   });
 
   test("succeeds with all optional fields populated", async () => {
     const hash = await storeTestContent(deps.cas, "artifact content");
 
-    const result = await callTool(server, "grove_contribute", {
-      kind: "work",
-      mode: "evaluation",
+    const result = await callTool(server, "grove_submit_work", {
       summary: "Full contribution",
       description: "A detailed description",
       artifacts: { "main.py": hash },
-      relations: [],
       scores: { accuracy: { value: 0.95, direction: "maximize" } },
       tags: ["ml", "transformer"],
       context: { hardware: "H100", dataset: "wikitext" },
@@ -106,25 +103,20 @@ describe("grove_contribute (tools.test)", () => {
   });
 
   test("returns error for non-existent artifact hash", async () => {
-    const result = await callTool(server, "grove_contribute", {
-      kind: "work",
+    const result = await callTool(server, "grove_submit_work", {
       summary: "Bad artifact ref",
-      relations: [],
       artifacts: {
         "missing.txt": "blake3:0000000000000000000000000000000000000000000000000000000000000000",
       },
-      tags: [],
       agent: { agentId: "agent-1" },
     });
 
     expect(result.isError).toBe(true);
-    expect(result.text).toContain(McpErrorCode.ValidationError);
     expect(result.text).toContain("non-existent hash");
   });
 
   test("returns error when relation targets non-existent contribution", async () => {
-    const result = await callTool(server, "grove_contribute", {
-      kind: "work",
+    const result = await callTool(server, "grove_submit_work", {
       summary: "Dangling relation",
       relations: [
         {
@@ -133,7 +125,6 @@ describe("grove_contribute (tools.test)", () => {
         },
       ],
       artifacts: {},
-      tags: [],
       agent: { agentId: "agent-1" },
     });
 
@@ -141,13 +132,11 @@ describe("grove_contribute (tools.test)", () => {
     expect(result.text).toContain(McpErrorCode.NotFound);
   });
 
-  test("exploration mode contribution succeeds without scores", async () => {
-    const result = await callTool(server, "grove_contribute", {
-      kind: "work",
-      mode: "exploration",
+  test("exploration mode succeeds without scores", async () => {
+    const result = await callTool(server, "grove_submit_work", {
       summary: "Exploratory work without scores",
-      relations: [],
       artifacts: {},
+      mode: "exploration",
       tags: ["experiment"],
       agent: { agentId: "explorer-1" },
     });

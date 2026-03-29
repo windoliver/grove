@@ -13,7 +13,7 @@
 #   ./examples/multi-agent/launch.sh
 #
 # Each agent gets:
-#   - grove MCP tools (grove_frontier, grove_claim, grove_contribute, etc.)
+#   - grove MCP tools (grove_frontier, grove_claim, grove_submit_work, grove_submit_review, etc.)
 #   - @grove/ask-user MCP (answers clarifying questions headlessly)
 #
 # Agents will run until stop conditions in GROVE.md are met.
@@ -54,7 +54,7 @@ Your workflow:
 1. Call grove_frontier to see current best results and what needs work.
 2. Call grove_claim with a targetRef describing what you'll work on.
 3. Implement the optimization (write code, run tests).
-4. Call grove_contribute with kind=work, your scores, and artifacts.
+4. Call grove_submit_work with your scores and artifacts.
 5. Call grove_check_stop — if stopped, exit. Otherwise loop to step 1.
 
 Focus on implementation. Build on the best existing work (derives_from).
@@ -73,7 +73,7 @@ Your workflow:
 1. Call grove_frontier to see contributions that need review.
 2. Call grove_claim with targetRef=<CID of contribution to review>.
 3. Review the contribution thoroughly (read code, check logic).
-4. Call grove_review with your assessment and a score (0.0-1.0).
+4. Call grove_submit_review with your assessment and a score (0.0-1.0).
 5. Call grove_check_stop — if stopped, exit. Otherwise loop to step 1.
 
 Focus on reviewing other agents' contributions. Be thorough but fair.

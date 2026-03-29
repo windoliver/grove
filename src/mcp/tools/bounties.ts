@@ -3,8 +3,11 @@
  *
  * grove_bounty_create  — Create a new bounty with credit reservation
  * grove_bounty_list    — List bounties with filters
- * grove_bounty_claim   — Claim an open bounty
  * grove_bounty_settle  — Settle a completed bounty (distribute credits)
+ *
+ * NOTE: grove_bounty_claim was removed — agents claim bounties via
+ * grove_claim with targetRef "bounty:<bountyId>". This routes through
+ * claimBountyOperation which creates the claim AND transitions the bounty.
  *
  * All business logic is delegated to the shared operations layer.
  */
@@ -15,7 +18,6 @@ import type { BountyCriteria, BountyStatus } from "../../core/bounty.js";
 import type { JsonValue } from "../../core/models.js";
 import type { AgentOverrides } from "../../core/operations/agent.js";
 import {
-  claimBountyOperation,
   createBountyOperation,
   listBountiesOperation,
   settleBountyOperation,
@@ -73,18 +75,6 @@ const listBountiesSchema = z.object({
   limit: z.number().int().positive().optional().default(20).describe("Max results (default: 20)"),
 });
 
-const claimBountySchema = z.object({
-  bountyId: z.string().describe("ID of the bounty to claim"),
-  agent: agentSchema,
-  leaseDurationMs: z
-    .number()
-    .int()
-    .positive()
-    .optional()
-    .default(1_800_000)
-    .describe("Claim lease duration in ms (default: 30 minutes)"),
-});
-
 const settleBountySchema = z.object({
   bountyId: z.string().describe("ID of the bounty to settle"),
   contributionCid: z.string().describe("CID of the contribution that fulfilled the bounty"),
@@ -139,28 +129,6 @@ export function registerBountyTools(server: McpServer, deps: McpDeps): void {
           ...(args.status !== undefined ? { status: args.status as BountyStatus } : {}),
           ...(args.creatorAgentId !== undefined ? { creatorAgentId: args.creatorAgentId } : {}),
           ...(args.limit !== undefined ? { limit: args.limit } : {}),
-        },
-        opDeps,
-      );
-      return toMcpResult(result);
-    },
-  );
-
-  // --- grove_bounty_claim --------------------------------------------------
-  server.registerTool(
-    "grove_bounty_claim",
-    {
-      description:
-        "Claim an open bounty. Creates a claim via the existing claim system " +
-        "and transitions the bounty to 'claimed' status.",
-      inputSchema: claimBountySchema,
-    },
-    async (args) => {
-      const result = await claimBountyOperation(
-        {
-          bountyId: args.bountyId,
-          agent: args.agent as AgentOverrides,
-          ...(args.leaseDurationMs !== undefined ? { leaseDurationMs: args.leaseDurationMs } : {}),
         },
         opDeps,
       );

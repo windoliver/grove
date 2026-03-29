@@ -242,12 +242,12 @@ This listens on `http://localhost:4015/mcp` by default and exposes:
 
 Registered Grove tools include:
 
-- `grove_contribute`, `grove_review`, `grove_reproduce`, `grove_discuss`
+- `grove_submit_work`, `grove_submit_review`, `grove_reproduce`, `grove_discuss`
 - `grove_claim`, `grove_release`
 - `grove_frontier`, `grove_search`, `grove_log`, `grove_tree`, `grove_thread`
 - `grove_checkout`
 - `grove_check_stop`
-- `grove_bounty_create`, `grove_bounty_list`, `grove_bounty_claim`, `grove_bounty_settle`
+- `grove_bounty_create`, `grove_bounty_list`, `grove_bounty_settle` (claim bounties via `grove_claim`)
 - `grove_set_outcome`, `grove_get_outcome`, `grove_list_outcomes`
 - `ask_user`
 

@@ -6,7 +6,7 @@ Your loop:
 3. grove_checkout — get the best train.py so far
 4. Modify train.py with your idea
 5. Run: ./train-locked.sh (takes 5 min, outputs val_bpb)
-6. grove_contribute — submit result with val_bpb metric and outcome (accepted/rejected/crashed)
+6. grove_submit_work — submit result with val_bpb metric and outcome (accepted/rejected/crashed)
 7. Repeat until grove stop conditions are met
 
 Be creative. Try different architectures, optimizers, hyperparameters.

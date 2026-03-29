@@ -43,7 +43,7 @@ export const swarmOpsPreset: PresetConfig = {
         command: "claude --role worker",
         prompt:
           "Loop: grove_frontier → grove_claim → grove_checkout → code → " +
-          "grove_contribute (kind=work) → grove_read_inbox for feedback → repeat.",
+          "grove_submit_work (with artifacts) → grove_read_inbox for feedback → repeat.",
       },
       {
         name: "qa",
@@ -52,7 +52,7 @@ export const swarmOpsPreset: PresetConfig = {
         command: "claude --role qa",
         prompt:
           "Loop: grove_frontier (find unreviewed work) → grove_claim → grove_checkout → " +
-          "review → grove_review (with quality scores) → grove_send_message if action " +
+          "review → grove_submit_review (with quality scores) → grove_send_message if action " +
           "needed → repeat.",
       },
     ],

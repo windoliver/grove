@@ -4,13 +4,13 @@
 # ============================================================
 #
 # Tests the full multi-turn review loop with all data in Nexus:
-#   1. Coder writes code → grove_contribute (stored in Nexus VFS)
+#   1. Coder writes code → grove_submit_work (stored in Nexus VFS)
 #   2. IPC routes to reviewer via Nexus SSE
-#   3. Reviewer reviews → grove_contribute (NOT grove_done)
+#   3. Reviewer reviews → grove_submit_review (NOT grove_done)
 #   4. IPC routes back to coder
-#   5. Coder fixes → grove_contribute
+#   5. Coder fixes → grove_submit_work
 #   6. IPC routes to reviewer again
-#   7. Reviewer approves → grove_contribute + grove_done
+#   7. Reviewer approves → grove_submit_review + grove_done
 #   8. New task sent to coder after done
 #   9. Session tracks all contributions
 #
@@ -137,7 +137,8 @@ EOF
   cat > .grove/workspaces/$role/CODEX.md << EOF
 # Grove Agent: $role
 ## MCP Tools
-- grove_contribute — REQUIRED after work/review. grove_contribute({ kind: "work", summary: "...", agent: { role: "$role" } })
+- grove_submit_work — REQUIRED after code changes. grove_submit_work({ summary: "...", artifacts: {...}, agent: { role: "$role" } })
+- grove_submit_review — REQUIRED after reviews. grove_submit_review({ targetCid: "...", summary: "...", scores: {...}, agent: { role: "$role" } })
 - grove_done — ONLY call when the ENTIRE task is complete (reviewer approved). Do NOT call after each round.
 EOF
 done
@@ -169,9 +170,9 @@ echo ""
 echo "[round 1] Coder implementing..."
 cd /tmp/grove-e2e/.grove/workspaces/coder
 acpx --approve-all codex -s grove-e2e-coder '<system-reminder>
-You MUST call grove_contribute after work. Do NOT call grove_done yet — wait for reviewer approval.
+You MUST call grove_submit_work after work. Do NOT call grove_done yet — wait for reviewer approval.
 </system-reminder>
-Create utils/math.ts with fibonacci(n) and isPrime(n). Use Number.isSafeInteger validation. Add JSDoc. Call grove_contribute when done writing code. Do NOT call grove_done.' \
+Create utils/math.ts with fibonacci(n) and isPrime(n). Use Number.isSafeInteger validation. Add JSDoc. Call grove_submit_work when done writing code. Do NOT call grove_done.' \
   &>"$GROVE_DIR/agent-logs/r1-coder.log" &
 
 for i in $(seq 1 30); do
@@ -205,10 +206,10 @@ echo ""
 echo "[round 2] Reviewer reviewing..."
 cd /tmp/grove-e2e/.grove/workspaces/reviewer
 acpx --approve-all codex -s grove-e2e-reviewer "<system-reminder>
-Call grove_contribute with kind 'review'. Do NOT call grove_done yet.
+Call grove_submit_review with targetCid and scores. Do NOT call grove_done yet.
 </system-reminder>
 [IPC from coder] New work: $SUMMARY
-Review utils/math.ts. Call grove_contribute with your review. Do NOT call grove_done." \
+Review utils/math.ts. Call grove_submit_review with your review and scores. Do NOT call grove_done." \
   &>"$GROVE_DIR/agent-logs/r2-reviewer.log" &
 
 for i in $(seq 1 30); do
@@ -242,10 +243,10 @@ echo "[round 3] Coder fixing..."
 WORK_BEFORE=$(count_contributions work)
 cd /tmp/grove-e2e/.grove/workspaces/coder
 acpx --approve-all codex -s grove-e2e-coder "<system-reminder>
-Call grove_contribute after fixing. Do NOT call grove_done.
+Call grove_submit_work after fixing. Do NOT call grove_done.
 </system-reminder>
 [IPC from reviewer] $(echo "$REVIEW" | head -c 200)
-Fix the issues. Call grove_contribute. Do NOT call grove_done." \
+Fix the issues. Call grove_submit_work. Do NOT call grove_done." \
   &>"$GROVE_DIR/agent-logs/r3-coder.log" &
 
 for i in $(seq 1 24); do
@@ -275,7 +276,7 @@ echo "[round 4] Reviewer final review..."
 REVIEW_BEFORE=$(count_contributions review)
 cd /tmp/grove-e2e/.grove/workspaces/reviewer
 acpx --approve-all codex -s grove-e2e-reviewer "<system-reminder>
-If the fix is correct, call grove_contribute with your approval, then call grove_done.
+If the fix is correct, call grove_submit_review with your approval and scores, then call grove_done.
 </system-reminder>
 [IPC from coder] Fix: $FIX
 Re-review utils/math.ts. If correct, approve and call grove_done." \
@@ -297,9 +298,9 @@ echo "[round 5] Sending new task to coder..."
 WORK_BEFORE=$(count_contributions work)
 cd /tmp/grove-e2e/.grove/workspaces/coder
 acpx --approve-all codex -s grove-e2e-coder '<system-reminder>
-Call grove_contribute after work.
+Call grove_submit_work after work.
 </system-reminder>
-[New task] Add gcd(a,b) function to utils/math.ts. Call grove_contribute when done.' \
+[New task] Add gcd(a,b) function to utils/math.ts. Call grove_submit_work when done.' \
   &>"$GROVE_DIR/agent-logs/r5-coder.log" &
 
 for i in $(seq 1 24); do

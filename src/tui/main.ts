@@ -218,7 +218,7 @@ async function buildAppProps(
   provider: TuiDataProvider;
   stopGc?: (() => void) | undefined;
 }> {
-  let backend = resolveBackend({
+  let backend = await resolveBackend({
     url: opts.url,
     nexus: opts.nexus,
     groveOverride: effectiveGrove,

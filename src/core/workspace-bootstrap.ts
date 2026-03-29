@@ -68,7 +68,7 @@ ${opts.rolePrompt ? `## Instructions\n${opts.rolePrompt}\n` : ""}
 
 ## Identity
 
-You are the **${roleId}** agent. Always pass \`agent: { role: "${roleId}" }\` in grove_contribute and grove_done calls.
+You are the **${roleId}** agent. Always pass \`agent: { role: "${roleId}" }\` in all grove tool calls.
 
 ## Communication
 
@@ -76,7 +76,8 @@ You will receive push notifications when other agents produce work. Do NOT poll.
 
 ## MCP Tools (use sparingly)
 
-- \`grove_contribute\` — record your work (always include agent: { role: "${roleId}" })
+- \`grove_submit_work\` — record work with artifacts (always include agent: { role: "${roleId}" })
+- \`grove_submit_review\` — review another agent's work with scores (always include agent: { role: "${roleId}" })
 - \`grove_done\` — signal session complete (only after approval from other agents)
 
 Follow the Instructions section above exactly. You can edit files, commit, push, create PRs, and use gh CLI.

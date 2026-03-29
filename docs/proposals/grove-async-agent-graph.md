@@ -590,10 +590,10 @@ later; v1 can express them through `grove contribute --kind ...`.
 
 Minimum tools:
 
-- `grove_contribute`
+- `grove_submit_work`
+- `grove_submit_review`
 - `grove_claim`
 - `grove_release`
-- `grove_review`
 - `grove_reproduce`
 - `grove_frontier`
 - `grove_search`

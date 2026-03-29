@@ -1,5 +1,8 @@
 /**
  * Tests for MCP bounty tools.
+ *
+ * grove_bounty_claim was merged into grove_claim — bounty claim tests
+ * now use grove_claim with targetRef "bounty:<bountyId>".
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -12,6 +15,7 @@ import type { McpDeps } from "../deps.js";
 import type { TestMcpDeps } from "../test-helpers.js";
 import { createTestMcpDeps } from "../test-helpers.js";
 import { registerBountyTools } from "./bounties.js";
+import { registerClaimTools } from "./claims.js";
 
 /** Helper to call a tool handler directly. */
 async function callTool(
@@ -35,6 +39,54 @@ async function callTool(
     text: result.content[0]?.text ?? "",
   };
 }
+
+/** Register both bounty and claim tools (needed for bounty claim via grove_claim). */
+function registerAllBountyTools(server: McpServer, deps: McpDeps): void {
+  registerBountyTools(server, deps);
+  registerClaimTools(server, deps);
+}
+
+/** Helper: claim a bounty via grove_claim with "bounty:<id>" targetRef. */
+async function claimBountyViaClaim(
+  server: McpServer,
+  bountyId: string,
+  agentId: string,
+): Promise<{ isError: boolean | undefined; text: string }> {
+  return callTool(server, "grove_claim", {
+    targetRef: `bounty:${bountyId}`,
+    agent: { agentId },
+    intentSummary: `Claiming bounty ${bountyId}`,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// grove_bounty_claim is NOT registered (regression)
+// ---------------------------------------------------------------------------
+
+describe("regression: grove_bounty_claim removed", () => {
+  let testDeps: TestMcpDeps;
+  let server: McpServer;
+
+  beforeEach(async () => {
+    testDeps = await createTestMcpDeps();
+    server = new McpServer({ name: "test", version: "0.0.1" }, { capabilities: { tools: {} } });
+    registerBountyTools(server, testDeps.deps);
+  });
+
+  afterEach(async () => {
+    await testDeps.cleanup();
+  });
+
+  test("grove_bounty_claim is NOT registered", () => {
+    const registeredTools = (server as unknown as { _registeredTools: Record<string, unknown> })
+      ._registeredTools;
+    expect("grove_bounty_claim" in registeredTools).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// grove_bounty_create
+// ---------------------------------------------------------------------------
 
 describe("grove_bounty_create", () => {
   let testDeps: TestMcpDeps;
@@ -130,6 +182,10 @@ describe("grove_bounty_create", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// grove_bounty_list
+// ---------------------------------------------------------------------------
+
 describe("grove_bounty_list", () => {
   let testDeps: TestMcpDeps;
   let deps: McpDeps;
@@ -209,7 +265,11 @@ describe("grove_bounty_list", () => {
   });
 });
 
-describe("grove_bounty_claim", () => {
+// ---------------------------------------------------------------------------
+// Bounty claim via grove_claim (previously grove_bounty_claim)
+// ---------------------------------------------------------------------------
+
+describe("bounty claim via grove_claim", () => {
   let testDeps: TestMcpDeps;
   let deps: McpDeps;
   let server: McpServer;
@@ -219,14 +279,14 @@ describe("grove_bounty_claim", () => {
     deps = testDeps.deps;
     (deps.creditsService as InMemoryCreditsService).seed("creator", 1000);
     server = new McpServer({ name: "test", version: "0.0.1" }, { capabilities: { tools: {} } });
-    registerBountyTools(server, deps);
+    registerAllBountyTools(server, deps);
   });
 
   afterEach(async () => {
     await testDeps.cleanup();
   });
 
-  test("claims an open bounty", async () => {
+  test("claims an open bounty via grove_claim", async () => {
     const createResult = await callTool(server, "grove_bounty_create", {
       title: "Claimable bounty",
       amount: 100,
@@ -235,10 +295,7 @@ describe("grove_bounty_claim", () => {
     });
     const bountyId = JSON.parse(createResult.text).bountyId;
 
-    const result = await callTool(server, "grove_bounty_claim", {
-      bountyId,
-      agent: { agentId: "claimer" },
-    });
+    const result = await claimBountyViaClaim(server, bountyId, "claimer");
 
     expect(result.isError).toBeUndefined();
     const data = JSON.parse(result.text);
@@ -249,15 +306,16 @@ describe("grove_bounty_claim", () => {
   });
 
   test("returns not-found for non-existent bounty", async () => {
-    const result = await callTool(server, "grove_bounty_claim", {
-      bountyId: "nonexistent",
-      agent: { agentId: "claimer" },
-    });
+    const result = await claimBountyViaClaim(server, "nonexistent", "claimer");
 
     expect(result.isError).toBe(true);
     expect(result.text).toContain("not found");
   });
 });
+
+// ---------------------------------------------------------------------------
+// grove_bounty_settle
+// ---------------------------------------------------------------------------
 
 describe("grove_bounty_settle", () => {
   let testDeps: TestMcpDeps;
@@ -269,7 +327,7 @@ describe("grove_bounty_settle", () => {
     deps = testDeps.deps;
     (deps.creditsService as InMemoryCreditsService).seed("creator", 5000);
     server = new McpServer({ name: "test", version: "0.0.1" }, { capabilities: { tools: {} } });
-    registerBountyTools(server, deps);
+    registerAllBountyTools(server, deps);
   });
 
   afterEach(async () => {
@@ -290,11 +348,8 @@ describe("grove_bounty_settle", () => {
     });
     const bountyId = JSON.parse(createResult.text).bountyId;
 
-    // Claim
-    await callTool(server, "grove_bounty_claim", {
-      bountyId,
-      agent: { agentId: "worker" },
-    });
+    // Claim via grove_claim
+    await claimBountyViaClaim(server, bountyId, "worker");
 
     // Settle with real contribution CID
     const result = await callTool(server, "grove_bounty_settle", {
@@ -327,10 +382,7 @@ describe("grove_bounty_settle", () => {
     });
     const bountyId = JSON.parse(createResult.text).bountyId;
 
-    await callTool(server, "grove_bounty_claim", {
-      bountyId,
-      agent: { agentId: "worker" },
-    });
+    await claimBountyViaClaim(server, bountyId, "worker");
 
     const result = await callTool(server, "grove_bounty_settle", {
       bountyId,
@@ -355,10 +407,7 @@ describe("grove_bounty_settle", () => {
     });
     const bountyId = JSON.parse(createResult.text).bountyId;
 
-    await callTool(server, "grove_bounty_claim", {
-      bountyId,
-      agent: { agentId: "worker" },
-    });
+    await claimBountyViaClaim(server, bountyId, "worker");
 
     const result = await callTool(server, "grove_bounty_settle", {
       bountyId,
@@ -382,7 +431,7 @@ describe("grove_bounty_settle", () => {
   test("settles without creditsService when bounty has no escrow (local dev mode)", async () => {
     const noCreditsDeps = { ...deps, creditsService: undefined } as unknown as McpDeps;
     const s = new McpServer({ name: "test", version: "0.0.1" }, { capabilities: { tools: {} } });
-    registerBountyTools(s, noCreditsDeps);
+    registerAllBountyTools(s, noCreditsDeps);
 
     const contribution = makeContribution({ summary: "Fulfills bounty" });
     await deps.contributionStore.put(contribution);
@@ -396,10 +445,11 @@ describe("grove_bounty_settle", () => {
     });
     const bountyId = JSON.parse(createResult.text).bountyId;
 
-    // Claim
-    await callTool(s, "grove_bounty_claim", {
-      bountyId,
+    // Claim via grove_claim
+    await callTool(s, "grove_claim", {
+      targetRef: `bounty:${bountyId}`,
       agent: { agentId: "worker" },
+      intentSummary: "Claiming bounty",
     });
 
     // Settle — should succeed without creditsService since no escrow
@@ -427,10 +477,7 @@ describe("grove_bounty_settle", () => {
     const created = JSON.parse(createResult.text);
     expect(created.reservationId).toBeDefined();
 
-    await callTool(server, "grove_bounty_claim", {
-      bountyId: created.bountyId,
-      agent: { agentId: "worker" },
-    });
+    await claimBountyViaClaim(server, created.bountyId, "worker");
 
     // Now try to settle without creditsService — should refuse
     const noCreditsDeps = { ...deps, creditsService: undefined } as unknown as McpDeps;

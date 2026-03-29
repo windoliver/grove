@@ -694,7 +694,7 @@ ${rolePrompt ? `## Instructions\n${rolePrompt}\n` : ""}
 
 ## Identity
 
-You are the **${roleId}** agent. Always pass \`agent: { role: "${roleId}" }\` in grove_contribute and grove_done calls. This is set once here — do not worry about it after this.
+You are the **${roleId}** agent. Always pass \`agent: { role: "${roleId}" }\` in all grove tool calls. This is set once here — do not worry about it after this.
 
 ## Communication
 
@@ -702,32 +702,77 @@ You will receive push notifications from the system when other agents produce wo
 
 ## MCP Tools — YOU MUST USE THESE
 
-- \`grove_contribute\` — **REQUIRED** after editing files or reviewing. This is how other agents see your work.
-  Use \`kind: "work"\` for code changes, \`kind: "review"\` for reviews, \`kind: "discussion"\` for clarifications.
-  Example: \`grove_contribute({ kind: "work", summary: "Built landing page", agent: { role: "${roleId}" } })\`
-- \`grove_done\` — Signal the entire session is complete. See STRICT RULES below.
+Each tool has specific required fields. Do NOT skip them.
 
-**CRITICAL: Always call grove_contribute after making changes. Without it, nobody sees your work.**
+### Submitting work (coder)
+
+**Step 1: Store files in CAS** — call \`grove_cas_put\` with raw file content:
+\`\`\`
+grove_cas_put({ content: "Hello World", agent: { role: "${roleId}" } })
+→ returns { hash: "blake3:a1b2c3..." }
+\`\`\`
+
+**Step 2: Submit work with hashes** — call \`grove_submit_work\`:
+\`\`\`
+grove_submit_work({
+  summary: "Created hello.txt",
+  artifacts: { "hello.txt": "blake3:a1b2c3..." },
+  agent: { role: "${roleId}" }
+})
+\`\`\`
+
+Do NOT skip step 1. If you pass a hash that doesn't exist in CAS, the tool returns VALIDATION_ERROR.
+
+### Submitting reviews (reviewer)
+
+First find work to review with \`grove_frontier\` or \`grove_log\`, then:
+\`\`\`
+grove_submit_review({
+  targetCid: "blake3:...",
+  summary: "Code is correct, minor style issue",
+  scores: { "correctness": { "value": 0.9, "direction": "maximize" } },
+  agent: { role: "${roleId}" }
+})
+\`\`\`
+
+You MUST include at least one score. Without scores the frontier cannot rank work.
+
+### Other tools
+- \`grove_discuss\` — Questions and clarifications. NOT for code reviews.
+- \`grove_adopt\` — Build on another agent's contribution. Requires \`targetCid\`.
+- \`grove_frontier\` — See ranked contributions.
+- \`grove_log\` — See all contributions chronologically.
+- \`grove_done\` — Signal session complete. See STRICT RULES below.
+
+**CRITICAL: Always call grove_submit_work after making code changes. Without it, nobody sees your work.**
+**CRITICAL: Always call grove_submit_review when reviewing. Include scores so the frontier can rank work.**
 
 ## STRICT RULES FOR grove_done — READ CAREFULLY
 
 **grove_done TERMINATES THE ENTIRE SESSION. Calling it prematurely will destroy the collaboration.**
 
-- After calling \`grove_contribute\`, you MUST STOP and WAIT for a message from the system.
-- Do NOT call \`grove_done\` after your first contribution. The session needs multiple rounds.
-- If you are a **coder**: NEVER call \`grove_done\` until a reviewer has explicitly approved your work. You will receive a review message — wait for it.
-- If you are a **reviewer**: NEVER call \`grove_done\` until the coder has addressed ALL your feedback. Multiple rounds may be needed.
-- The ONLY time to call \`grove_done\` is when you receive explicit confirmation that the full coder→reviewer→fix→approve loop is complete.
+### If you are a CODER:
+- After calling \`grove_submit_work\`, **STOP and WAIT** for a review message.
+- **NEVER** call grove_done yourself. Only the reviewer ends the session.
+- When review feedback arrives, fix the issues and call \`grove_submit_work\` again.
+
+### If you are a REVIEWER:
+- **Requesting changes?** Call \`grove_submit_review\` with low scores, then **STOP and WAIT** for the coder to fix.
+- **Approving?** Call \`grove_submit_review\` with high scores, then **IMMEDIATELY call \`grove_done\`** in the same turn. Do not stop between them.
 
 ## Workflow
 
-1. Do your work (code or review) and call \`grove_contribute\` to record it.
-2. **STOP. Wait for a message.** Do NOT call grove_done. Do NOT proceed without receiving feedback.
-3. When feedback arrives (as a push notification message), iterate: fix issues or re-review, then call \`grove_contribute\` again.
-4. Repeat steps 2-3 until the reviewer approves.
-5. **Calling grove_done:**
-   - **Reviewer**: After you approve the coder's work (no more issues), call \`grove_done\` to end the session.
-   - **Coder**: NEVER call grove_done yourself. Only the reviewer ends the session after approving.
+### Coder workflow:
+1. Write code and call \`grove_submit_work\` (with artifacts).
+2. **STOP. Wait for review.** Do NOT call grove_done.
+3. When review arrives, fix issues and \`grove_submit_work\` again.
+4. Repeat until reviewer approves.
+
+### Reviewer workflow:
+1. Wait for coder's work to arrive.
+2. Review the code. Call \`grove_submit_review\` with scores.
+3. If requesting changes: **STOP. Wait for coder to fix.**
+4. If approving: **Call \`grove_done\` immediately after \`grove_submit_review\`.** This ends the session.
 `;
 
     await writeFile(join(workspacePath, "CLAUDE.md"), instructions, "utf-8");
@@ -753,11 +798,15 @@ You will receive push notifications from the system when other agents produce wo
     lines.push(
       `## Available MCP Tools`,
       "",
+      "- grove_submit_work — submit work with file artifacts (required: summary, artifacts)",
+      "- grove_submit_review — submit a code review with scores (required: targetCid, summary, scores)",
+      "- grove_discuss — post a discussion or reply",
+      "- grove_reproduce — submit a reproduction attempt",
+      "- grove_adopt — adopt a contribution to build on (required: targetCid)",
+      "- grove_done — signal session completion",
       "- grove_frontier — discover best contributions to build on",
       "- grove_claim / grove_release — coordinate work to avoid duplication",
       "- grove_checkout — materialize artifacts into your workspace",
-      "- grove_contribute — submit your work",
-      "- grove_review — submit a code review",
       "- grove_send_message / grove_read_inbox — agent-to-agent messaging",
       "- grove_create_plan / grove_update_plan — maintain project plans",
       "- grove_check_stop — check if stop conditions are met",

@@ -23,10 +23,11 @@ Server: ${opts.serverUrl}
 Connect via: grove-mcp (stdio) or HTTP at ${opts.mcpUrl}
 
 ### Tools
-- grove_contribute — publish work
+- grove_submit_work — publish work with artifacts
+- grove_submit_review — review with scores
 - grove_claim — claim a task
-- grove_review — review a contribution
 - grove_discuss — post discussion
+- grove_adopt — adopt a contribution
 - grove_frontier — see rankings
 - grove_goal — read current goal
 - grove_send_message — message agents
@@ -36,7 +37,7 @@ Connect via: grove-mcp (stdio) or HTTP at ${opts.mcpUrl}
 1. Read the goal (grove_goal)
 2. Claim work (grove_claim)
 3. Do your work in YOUR code folder
-4. Publish results (grove_contribute)
+4. Publish results (grove_submit_work)
 5. Read reviews, iterate
 `;
 }

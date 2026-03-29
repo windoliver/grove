@@ -169,7 +169,7 @@ try {
           outcomes: hasMetrics,
           workspace: false,
           stop: false,
-          ingest: false,
+          ingest: true, // Required: grove_submit_work needs grove_cas_put for artifact ingestion
           messaging: false,
           plans: false,
           goals: true,

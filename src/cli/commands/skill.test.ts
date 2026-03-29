@@ -102,7 +102,7 @@ describe("handleSkillInstall", () => {
     expect(content).toContain("### MCP Server");
     expect(content).toContain("### Tools");
     expect(content).toContain("### Workflow");
-    expect(content).toContain("grove_contribute");
+    expect(content).toContain("grove_submit_work");
     expect(content).toContain("grove_frontier");
     expect(content).toContain("grove_goal");
   });

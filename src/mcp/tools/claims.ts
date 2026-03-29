@@ -1,7 +1,8 @@
 /**
  * MCP tools for claim operations.
  *
- * grove_claim       — Create or renew a claim to prevent duplicate work
+ * grove_claim       — Create or renew a claim to prevent duplicate work.
+ *                     Also handles bounty claims when targetRef starts with "bounty:".
  * grove_release     — Release or complete a claim
  * grove_list_claims — List claims with optional filters
  *
@@ -14,6 +15,7 @@ import { z } from "zod";
 import type { JsonValue } from "../../core/models.js";
 import type { AgentOverrides } from "../../core/operations/agent.js";
 import {
+  claimBountyOperation,
   claimOperation,
   listClaimsOperation,
   releaseOperation,
@@ -23,7 +25,12 @@ import { toMcpResult, toOperationDeps } from "../operation-adapter.js";
 import { agentSchema } from "../schemas.js";
 
 const claimInputSchema = z.object({
-  targetRef: z.string().describe("Reference to the work target (e.g., a CID or task identifier)"),
+  targetRef: z
+    .string()
+    .describe(
+      "Reference to the work target (e.g., a CID or task identifier). " +
+        'To claim a bounty, use "bounty:<bountyId>" — this will also transition the bounty to claimed status.',
+    ),
   agent: agentSchema,
   intentSummary: z.string().describe("What the agent intends to do with this claim"),
   leaseDurationMs: z
@@ -66,10 +73,30 @@ export function registerClaimTools(server: McpServer, deps: McpDeps): void {
       description:
         "Claim a work target to prevent duplicate effort. If the same agent already has an " +
         "active claim on the target, the lease is renewed. If a different agent has an active " +
-        "claim, an error is returned. Claims expire automatically after the lease duration.",
+        "claim, an error is returned. Claims expire automatically after the lease duration. " +
+        'To claim a bounty, use targetRef "bounty:<bountyId>" — this will create the claim ' +
+        "and transition the bounty to claimed status in one step.",
       inputSchema: claimInputSchema,
     },
     async (args) => {
+      // Detect bounty claims: targetRef starting with "bounty:" delegates to claimBountyOperation
+      // which creates the claim AND transitions the bounty to "claimed" status.
+      const bountyMatch = args.targetRef.match(/^bounty:(.+)$/);
+      if (bountyMatch !== null) {
+        const bountyId = bountyMatch[1];
+        const result = await claimBountyOperation(
+          {
+            bountyId,
+            agent: args.agent as AgentOverrides,
+            ...(args.leaseDurationMs !== undefined
+              ? { leaseDurationMs: args.leaseDurationMs }
+              : {}),
+          },
+          opDeps,
+        );
+        return toMcpResult(result);
+      }
+
       const result = await claimOperation(
         {
           targetRef: args.targetRef,
