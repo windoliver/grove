@@ -18,7 +18,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-import type { Relation, Score } from "../../core/models.js";
+import type { JsonValue, Relation, Score } from "../../core/models.js";
 import type { AgentOverrides } from "../../core/operations/agent.js";
 import {
   adoptOperation,
@@ -27,7 +27,6 @@ import {
   reproduceOperation,
   reviewOperation,
 } from "../../core/operations/index.js";
-import { pickDefined } from "../../shared/pick-defined.js";
 import type { McpDeps } from "../deps.js";
 import { toMcpResult, toOperationDeps, toolValidationError } from "../operation-adapter.js";
 import {
@@ -179,7 +178,7 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
       inputSchema: submitWorkInputSchema,
     },
     async (args) => {
-      const artifacts = args.artifacts;
+      const artifacts = args.artifacts as Record<string, string>;
       const warning =
         Object.keys(artifacts).length === 0
           ? "No artifacts provided. Reviewers cannot inspect your work without file artifacts. " +
@@ -191,7 +190,11 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
           kind: "work",
           summary: args.summary,
           artifacts,
-          ...pickDefined(args, ["mode", "description", "context"]),
+          ...(args.mode !== undefined ? { mode: args.mode as "evaluation" | "exploration" } : {}),
+          ...(args.description !== undefined ? { description: args.description } : {}),
+          ...(args.context !== undefined
+            ? { context: args.context as Readonly<Record<string, JsonValue>> }
+            : {}),
           ...(args.scores !== undefined
             ? { scores: args.scores as Readonly<Record<string, Score>> }
             : {}),
@@ -235,7 +238,13 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
           scores,
           tags: args.tags,
           agent: withDefaultRole(args.agent as AgentOverrides),
-          ...pickDefined(args, ["description", "context", "metadata"]),
+          ...(args.description !== undefined ? { description: args.description } : {}),
+          ...(args.context !== undefined
+            ? { context: args.context as Readonly<Record<string, JsonValue>> }
+            : {}),
+          ...(args.metadata !== undefined
+            ? { metadata: args.metadata as Readonly<Record<string, JsonValue>> }
+            : {}),
         },
         opDeps,
       );
@@ -263,7 +272,16 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
           artifacts: args.artifacts,
           tags: args.tags,
           agent: withDefaultRole(args.agent as AgentOverrides),
-          ...pickDefined(args, ["description", "result", "scores", "context"]),
+          ...(args.description !== undefined ? { description: args.description } : {}),
+          ...(args.result !== undefined
+            ? { result: args.result as "confirmed" | "challenged" | "partial" }
+            : {}),
+          ...(args.scores !== undefined
+            ? { scores: args.scores as Readonly<Record<string, Score>> }
+            : {}),
+          ...(args.context !== undefined
+            ? { context: args.context as Readonly<Record<string, JsonValue>> }
+            : {}),
         },
         opDeps,
       );
@@ -290,7 +308,11 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
           summary: args.summary,
           tags: args.tags,
           agent: withDefaultRole(args.agent as AgentOverrides),
-          ...pickDefined(args, ["targetCid", "description", "context"]),
+          ...(args.targetCid !== undefined ? { targetCid: args.targetCid } : {}),
+          ...(args.description !== undefined ? { description: args.description } : {}),
+          ...(args.context !== undefined
+            ? { context: args.context as Readonly<Record<string, JsonValue>> }
+            : {}),
         },
         opDeps,
       );
@@ -316,7 +338,10 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
           summary: args.summary,
           tags: args.tags,
           agent: withDefaultRole(args.agent as AgentOverrides),
-          ...pickDefined(args, ["description", "context"]),
+          ...(args.description !== undefined ? { description: args.description } : {}),
+          ...(args.context !== undefined
+            ? { context: args.context as Readonly<Record<string, JsonValue>> }
+            : {}),
         },
         opDeps,
       );

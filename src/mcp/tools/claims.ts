@@ -82,8 +82,8 @@ export function registerClaimTools(server: McpServer, deps: McpDeps): void {
       // Detect bounty claims: targetRef starting with "bounty:" delegates to claimBountyOperation
       // which creates the claim AND transitions the bounty to "claimed" status.
       const bountyMatch = args.targetRef.match(/^bounty:(.+)$/);
-      if (bountyMatch !== null) {
-        const bountyId = bountyMatch[1];
+      if (bountyMatch !== null && bountyMatch[1] !== undefined) {
+        const bountyId: string = bountyMatch[1];
         const result = await claimBountyOperation(
           {
             bountyId,

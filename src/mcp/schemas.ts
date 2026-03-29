@@ -54,7 +54,7 @@ export const scoreSchema: z.ZodTypeAny = z.object({
  * Artifacts must be pre-stored in CAS (via grove_cas_put); pass their
  * blake3 content hashes here.
  */
-export const artifactsSchema = z
+export const artifactsSchema: z.ZodTypeAny = z
   .record(z.string(), z.string())
   .describe(
     "File artifacts as a map of path to CAS content hash (blake3:<hex64>). " +
@@ -69,7 +69,7 @@ export const artifactsSchema = z
  * Each score has a numeric value and direction (minimize/maximize).
  * The frontier uses these scores to rank contributions.
  */
-export const reviewScoresSchema = z
+export const reviewScoresSchema: z.ZodTypeAny = z
   .record(z.string(), scoreSchema)
   .refine((scores) => Object.keys(scores).length >= 1, {
     message:
