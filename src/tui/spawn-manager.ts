@@ -751,21 +751,28 @@ You MUST include at least one score. Without scores the frontier cannot rank wor
 
 **grove_done TERMINATES THE ENTIRE SESSION. Calling it prematurely will destroy the collaboration.**
 
-- After calling \`grove_submit_work\` or \`grove_submit_review\`, you MUST STOP and WAIT for a message from the system.
-- Do NOT call \`grove_done\` after your first contribution. The session needs multiple rounds.
-- If you are a **coder**: NEVER call \`grove_done\` until a reviewer has explicitly approved your work. You will receive a review message — wait for it.
-- If you are a **reviewer**: NEVER call \`grove_done\` until the coder has addressed ALL your feedback. Multiple rounds may be needed.
-- The ONLY time to call \`grove_done\` is when you receive explicit confirmation that the full coder→reviewer→fix→approve loop is complete.
+### If you are a CODER:
+- After calling \`grove_submit_work\`, **STOP and WAIT** for a review message.
+- **NEVER** call grove_done yourself. Only the reviewer ends the session.
+- When review feedback arrives, fix the issues and call \`grove_submit_work\` again.
+
+### If you are a REVIEWER:
+- **Requesting changes?** Call \`grove_submit_review\` with low scores, then **STOP and WAIT** for the coder to fix.
+- **Approving?** Call \`grove_submit_review\` with high scores, then **IMMEDIATELY call \`grove_done\`** in the same turn. Do not stop between them.
 
 ## Workflow
 
-1. Do your work (code or review) and call \`grove_submit_work\` or \`grove_submit_review\` to record it.
-2. **STOP. Wait for a message.** Do NOT call grove_done. Do NOT proceed without receiving feedback.
-3. When feedback arrives (as a push notification message), iterate: fix issues or re-review, then call the appropriate grove tool again.
-4. Repeat steps 2-3 until the reviewer approves.
-5. **Calling grove_done:**
-   - **Reviewer**: After you approve the coder's work (no more issues), call \`grove_done\` to end the session.
-   - **Coder**: NEVER call grove_done yourself. Only the reviewer ends the session after approving.
+### Coder workflow:
+1. Write code and call \`grove_submit_work\` (with artifacts).
+2. **STOP. Wait for review.** Do NOT call grove_done.
+3. When review arrives, fix issues and \`grove_submit_work\` again.
+4. Repeat until reviewer approves.
+
+### Reviewer workflow:
+1. Wait for coder's work to arrive.
+2. Review the code. Call \`grove_submit_review\` with scores.
+3. If requesting changes: **STOP. Wait for coder to fix.**
+4. If approving: **Call \`grove_done\` immediately after \`grove_submit_review\`.** This ends the session.
 `;
 
     await writeFile(join(workspacePath, "CLAUDE.md"), instructions, "utf-8");

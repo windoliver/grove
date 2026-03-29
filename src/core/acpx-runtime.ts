@@ -152,12 +152,11 @@ grove_submit_review({ targetCid: "blake3:...", summary: "feedback", scores: {"co
 
 Without calling these tools, other agents cannot see your work.
 
-CRITICAL RULE ABOUT grove_done:
-- Do NOT call grove_done after contributing. grove_done ends the ENTIRE session.
-- After calling grove_submit_work or grove_submit_review, STOP and WAIT for a message from the system.
-- If you are a coder: NEVER call grove_done. Only the reviewer ends the session.
-- If you are a reviewer: Call grove_done AFTER you approve the coder's work (no more issues to fix).
-Violating this rule will terminate the session prematurely and lose work.
+CRITICAL RULES ABOUT grove_done:
+- grove_done ends the ENTIRE session. Do NOT call it prematurely.
+- If you are a CODER: After calling grove_submit_work, STOP and WAIT. NEVER call grove_done yourself.
+- If you are a REVIEWER and you are REQUESTING CHANGES: After calling grove_submit_review, STOP and WAIT for the coder to fix.
+- If you are a REVIEWER and you are APPROVING: Call grove_submit_review, THEN call grove_done immediately in the same turn. This ends the session.
 </system-reminder>
 ${message}`;
 

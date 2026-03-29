@@ -210,7 +210,9 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         try {
           if (!existsSync(logDir)) return;
           const files = readdirSync(logDir).filter((f: string) => f.endsWith(".log"));
-          const outputs = new Map<string, string[]>();
+          // Accumulate lines across all log files for each role (multiple
+          // files may exist: coder-0.log, coder-1.log, etc.)
+          const accumulated = new Map<string, string[]>();
           for (const file of files) {
             const role = file.replace(/\.log$/, "").replace(/-\d+$/, "");
             try {
@@ -231,12 +233,17 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
                     !t.includes("=== Session")
                   );
                 })
-                .map((l: string) => stripAnsi(l))
-                .slice(-AGENT_OUTPUT_LINES);
-              outputs.set(role, lines);
+                .map((l: string) => stripAnsi(l));
+              const existing = accumulated.get(role) ?? [];
+              accumulated.set(role, [...existing, ...lines]);
             } catch {
               // File might be being written to
             }
+          }
+          // Take last N lines per role from accumulated output
+          const outputs = new Map<string, string[]>();
+          for (const [role, lines] of accumulated) {
+            outputs.set(role, lines.slice(-AGENT_OUTPUT_LINES));
           }
           if (outputs.size > 0) {
             setAgentOutputs(outputs);
