@@ -171,7 +171,7 @@ describe("resolveBackend", () => {
     }
   });
 
-  test("grove.json with nexusManaged -> discovers nexus URL from nexus.yaml or Docker", async () => {
+  test("grove.json with nexusManaged -> discovers nexus URL from nexus.yaml ports.http", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "grove-resolve-test-"));
     const groveDir = join(tempDir, ".grove");
     mkdirSync(groveDir, { recursive: true });
@@ -189,9 +189,7 @@ describe("resolveBackend", () => {
     try {
       const result = await resolveBackend({ groveOverride: groveDir });
       expect(result.mode).toBe("nexus");
-      // Source is "grove.json" if nexus.yaml port is reachable, or "docker" if
-      // Docker remapped the port (common in development). Both are valid.
-      expect(["grove.json", "docker"]).toContain(result.source);
+      expect(result.source).toBe("grove.json");
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

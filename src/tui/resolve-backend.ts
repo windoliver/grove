@@ -69,34 +69,22 @@ export async function resolveBackend(flags: ResolveBackendFlags): Promise<Resolv
     return { mode: "nexus", url: envUrl, source: "env", groveOverride: flags.groveOverride };
   }
 
-  // 4. grove.json nexusUrl or nexus.yaml port
-  const { url: configUrl, fromExplicit } = readNexusUrlFromConfig(flags.groveOverride);
+  // 4. grove.json nexusUrl or nexus.yaml port — trust config without health check.
+  // The URL comes from user configuration (nexusUrl) or managed Nexus (nexus.yaml).
+  // Both are authoritative. Health checking happens downstream at connect time.
+  const { url: configUrl } = readNexusUrlFromConfig(flags.groveOverride);
   if (configUrl) {
-    if (fromExplicit) {
-      // Explicit nexusUrl in grove.json — trust it without health check
-      return {
-        mode: "nexus",
-        url: configUrl,
-        source: "grove.json",
-        groveOverride: flags.groveOverride,
-      };
-    }
-    // URL from nexus.yaml (internal Docker port) — verify reachability
-    const reachable = await isReachable(configUrl);
-    if (reachable) {
-      return {
-        mode: "nexus",
-        url: configUrl,
-        source: "grove.json",
-        groveOverride: flags.groveOverride,
-      };
-    }
-    // nexus.yaml URL not reachable (Docker port remapping) — fall through to Docker discovery
+    return {
+      mode: "nexus",
+      url: configUrl,
+      source: "grove.json",
+      groveOverride: flags.groveOverride,
+    };
   }
 
-  // 5. Docker container discovery — only when we found a nexus.yaml URL that wasn't
-  // reachable (Docker remapped the port). Don't speculatively discover if no config found.
-  if (configUrl && !fromExplicit) {
+  // 5. Docker container discovery — when grove.json says nexusManaged but no URL
+  // was found (no nexus.yaml, no explicit nexusUrl). Try Docker port mapping.
+  if (isNexusManagedConfig(flags.groveOverride)) {
     try {
       const { discoverRunningNexus, readNexusApiKey } =
         require("../cli/nexus-lifecycle.js") as typeof import("../cli/nexus-lifecycle.js");
@@ -131,20 +119,6 @@ export async function resolveBackend(flags: ResolveBackendFlags): Promise<Resolv
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Quick reachability check — does the URL respond to /health within 2s? */
-async function isReachable(url: string): Promise<boolean> {
-  try {
-    const apiKey = process.env.NEXUS_API_KEY;
-    const resp = await fetch(`${url.replace(/\/+$/, "")}/health`, {
-      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
-      signal: AbortSignal.timeout(2_000),
-    });
-    return resp.ok;
-  } catch {
-    return false;
-  }
-}
 
 /** Check if grove.json explicitly indicates a managed Nexus deployment. */
 function isNexusManagedConfig(groveOverride?: string): boolean {
