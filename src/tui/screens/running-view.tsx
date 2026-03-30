@@ -233,7 +233,6 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       [expandedPanel, zoomLevel, showHelp, showVfs, confirmQuit, promptMode, promptText],
     );
 
-    // biome-ignore lint/correctness/useExhaustiveDependencies: actions object captures current closures intentionally
     const keyboardActions: RunningKeyboardActions = useMemo(
       () => ({
         expandPanel: (panel: RunningPanel) => {

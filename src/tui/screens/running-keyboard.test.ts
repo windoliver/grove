@@ -461,7 +461,7 @@ describe("routeRunningKey — prompt entry", () => {
 
   test("m does NOT enter prompt when no sendToAgent", () => {
     const { actions, log } = mockActions({ hasSendToAgent: false, hasActiveRoles: true });
-    const handled = routeRunningKey(keyEvent("m"), defaultState(), actions);
+    routeRunningKey(keyEvent("m"), defaultState(), actions);
     // m is unhandled if no sendToAgent
     expect(log.calls).not.toContain("enterPromptMode");
   });
