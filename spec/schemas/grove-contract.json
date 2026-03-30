@@ -659,6 +659,11 @@
             "$ref": "#/$defs/role_edge"
           },
           "maxItems": 50
+        },
+        "goal": {
+          "type": "string",
+          "description": "Behavioral objective for this role — what it should achieve, distinct from prompt (how to behave).",
+          "maxLength": 512
         }
       },
       "unevaluatedProperties": false

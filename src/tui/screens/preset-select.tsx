@@ -134,6 +134,9 @@ export const PresetSelect: React.NamedExoticComponent<PresetSelectProps> = React
             {presets.map((preset, i) => {
               const selected = i === cursor;
               const prefix = selected ? "> " : "  ";
+              const presetSessions = sessions?.filter((s) => s.presetName === preset.name) ?? [];
+              const sessionHint =
+                presetSessions.length > 0 ? ` (${presetSessions.length} sessions)` : "";
               return (
                 <box
                   key={preset.name}
@@ -144,6 +147,7 @@ export const PresetSelect: React.NamedExoticComponent<PresetSelectProps> = React
                     {`${prefix}${preset.name.padEnd(20)}`}
                   </text>
                   <text color={theme.muted}>{preset.description}</text>
+                  <text color={theme.dimmed}>{sessionHint}</text>
                 </box>
               );
             })}
@@ -194,6 +198,7 @@ export const PresetSelect: React.NamedExoticComponent<PresetSelectProps> = React
             {sessions.slice(0, 5).map((s) => (
               <text key={s.sessionId} color={theme.muted}>
                 {"  "}
+                {s.presetName ? `[${s.presetName}] ` : ""}
                 {`"${s.goal ?? "untitled"}"`} ({s.contributionCount} contributions, {s.status})
               </text>
             ))}

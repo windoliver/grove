@@ -50,6 +50,7 @@ const TopologyRoleWithEdgesSchema = z
       .regex(/^#[0-9a-fA-F]{6}$/)
       .optional(),
     prompt: z.string().max(4096).optional(),
+    goal: z.string().max(512).optional(),
   })
   .strict();
 
@@ -77,6 +78,7 @@ interface WireAgentTopology {
     readonly model?: string | undefined;
     readonly color?: string | undefined;
     readonly prompt?: string | undefined;
+    readonly goal?: string | undefined;
   }[];
   readonly spawning?:
     | {
@@ -206,6 +208,8 @@ export interface AgentRole {
   readonly color?: string | undefined;
   /** System prompt / instructions for this role (up to 4096 chars). */
   readonly prompt?: string | undefined;
+  /** Behavioral objective for this role (up to 512 chars). */
+  readonly goal?: string | undefined;
 }
 
 /** Spawning configuration for dynamic agent creation. */
@@ -250,6 +254,7 @@ export function wireToTopology(wire: z.infer<typeof AgentTopologySchema>): Agent
         ...(role.model !== undefined && { model: role.model }),
         ...(role.color !== undefined && { color: role.color }),
         ...(role.prompt !== undefined && { prompt: role.prompt }),
+        ...(role.goal !== undefined && { goal: role.goal }),
       }),
     ),
     ...(wire.spawning !== undefined && {

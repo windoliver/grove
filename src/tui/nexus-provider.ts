@@ -241,6 +241,7 @@ export class NexusDataProvider
 
   override async listSessions(query?: {
     status?: "active" | "archived";
+    presetName?: string;
   }): Promise<readonly SessionRecord[]> {
     if (this.serverUrl) {
       try {

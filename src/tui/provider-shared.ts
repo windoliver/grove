@@ -258,10 +258,11 @@ export async function setGoalHttp(
 /** List sessions via a grove-server HTTP API. */
 export async function listSessionsHttp(
   baseUrl: string,
-  query?: { status?: "active" | "archived" },
+  query?: { status?: "active" | "archived"; presetName?: string },
 ): Promise<readonly SessionRecord[]> {
   const params = new URLSearchParams();
   if (query?.status) params.set("status", query.status);
+  if (query?.presetName) params.set("preset_name", query.presetName);
   const qs = params.toString();
   const resp = await fetch(`${baseUrl}/api/sessions${qs ? `?${qs}` : ""}`);
   if (resp.ok) {
