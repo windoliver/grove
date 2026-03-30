@@ -124,6 +124,9 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     const [expandedPanel, setExpandedPanel] = useState<RunningPanel | null>(null);
     const [zoomLevel, setZoomLevel] = useState<"normal" | "half" | "full">("normal");
 
+    // ─── Agent output expansion (e key toggles) ───
+    const [agentsExpanded, setAgentsExpanded] = useState(false);
+
     // ─── Overlay state ───
     const [showVfs, setShowVfs] = useState(false);
     const [showHelp, setShowHelp] = useState(false);
@@ -248,6 +251,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           setExpandedPanel(next.expandedPanel);
           setZoomLevel(next.zoomLevel);
         },
+        toggleAgentExpand: () => setAgentsExpanded((v) => !v),
         toggleHelp: () => setShowHelp((v) => !v),
         dismissHelp: () => setShowHelp(false),
         toggleVfs: () => setShowVfs((v) => !v),
@@ -484,7 +488,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     return (
       <box flexDirection="column" width="100%" height="100%">
         {/* Agent status with live output */}
-        {renderAgentSection(topology, dashboard, monitor)}
+        {renderAgentSection(topology, dashboard, monitor, agentsExpanded)}
 
         {/* Main feed area */}
         {renderFeedSection(feed, cursor, goal, pendingAskUser, frontier, DEFAULT_FEED_WINDOW)}
@@ -523,11 +527,15 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
 // Render helpers (extracted from the main component for readability)
 // ---------------------------------------------------------------------------
 
+/** Max lines of agent output to show when expanded. */
+const AGENT_OUTPUT_LINES = 12;
+
 /** Render the agent status section with live output. */
 function renderAgentSection(
   topology: AgentTopology | undefined,
   dashboard: DashboardData | undefined,
   monitor: ReturnType<typeof useAgentMonitor>,
+  expanded: boolean,
 ): React.ReactNode {
   const roles = topology?.roles ?? [];
   if (roles.length === 0) {
@@ -542,9 +550,12 @@ function renderAgentSection(
   }
   return (
     <box flexDirection="column" paddingX={2} paddingTop={1}>
-      <text color={theme.focus} bold>
-        Agents
-      </text>
+      <box flexDirection="row">
+        <text color={theme.focus} bold>
+          Agents
+        </text>
+        <text color={theme.dimmed}> (e:{expanded ? "collapse" : "expand"} traces)</text>
+      </box>
       {roles.map((role, idx) => {
         const activeClaim = dashboard?.activeClaims.find(
           (c) => c.agent.role === role.name || c.agent.agentId.startsWith(role.name),
@@ -564,13 +575,27 @@ function renderAgentSection(
         }
 
         return (
-          <box key={role.name} flexDirection="row">
-            <text color={color}>{icon} </text>
-            <text color={platformColor} bold>
-              {role.name}
-            </text>
-            <text color={theme.dimmed}> [{idx + 1}] </text>
-            {lastLine ? <text color={theme.muted}>{lastLine.slice(0, 80)}</text> : null}
+          <box key={role.name} flexDirection="column">
+            <box flexDirection="row">
+              <text color={color}>{icon} </text>
+              <text color={platformColor} bold>
+                {role.name}
+              </text>
+              <text color={theme.dimmed}> [{idx + 1}] </text>
+              {!expanded && lastLine ? (
+                <text color={theme.muted}>{lastLine.slice(0, 80)}</text>
+              ) : null}
+            </box>
+            {expanded && output && output.length > 0 ? (
+              <box flexDirection="column" marginLeft={4} marginBottom={1}>
+                {output.slice(-AGENT_OUTPUT_LINES).map((line, i) => (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: stable ordered output
+                  <text key={i} color={theme.muted}>
+                    {line.slice(0, 120)}
+                  </text>
+                ))}
+              </box>
+            ) : null}
           </box>
         );
       })}
@@ -864,6 +889,7 @@ function renderHelpOverlay(): React.ReactNode {
       </text>
       <text color={theme.text}> 1-4 Expand panel (Feed/Agents/DAG/Terminal)</text>
       <text color={theme.text}> f Toggle fullscreen (when panel expanded)</text>
+      <text color={theme.text}> e Toggle agent output traces</text>
       <text color={theme.text}> j/k Scroll contribution feed</text>
       <text color={theme.text}> m / : Send message to agent</text>
       <text color={theme.text}> r Jump to ask_user question</text>
@@ -903,7 +929,7 @@ function renderStatusBar(
       </text>
       <text color={theme.secondary}>
         {" "}
-        1-4:panels{expandedPanel !== null ? " f:full" : ""}{" "}
+        1-4:panels{expandedPanel !== null ? " f:full" : ""} e:traces{" "}
         {(activeRoles ?? []).length > 0 ? "m:message " : ""}?:help
         {hasAskUser ? " r:respond" : ""} q:quit
       </text>

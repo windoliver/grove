@@ -15,11 +15,11 @@
 import { describe, expect, test } from "bun:test";
 import type { KeyEvent } from "@opentui/core";
 import {
+  collapsePanel,
+  expandPanel,
   type RunningKeyboardActions,
   type RunningKeyboardState,
   RunningPanel,
-  collapsePanel,
-  expandPanel,
   routeRunningKey,
   toggleFullscreen,
 } from "./running-keyboard.js";
@@ -28,7 +28,10 @@ import {
 // Test helpers
 // ---------------------------------------------------------------------------
 
-function keyEvent(name: string, opts?: { ctrl?: boolean; shift?: boolean; sequence?: string }): KeyEvent {
+function keyEvent(
+  name: string,
+  opts?: { ctrl?: boolean; shift?: boolean; sequence?: string },
+): KeyEvent {
   return {
     name,
     ctrl: opts?.ctrl ?? false,
@@ -80,6 +83,7 @@ function mockActions(overrides?: {
     expandPanel: (p) => record("expandPanel", p),
     collapsePanel: () => record("collapsePanel"),
     toggleFullscreen: () => record("toggleFullscreen"),
+    toggleAgentExpand: () => record("toggleAgentExpand"),
     toggleHelp: () => record("toggleHelp"),
     dismissHelp: () => record("dismissHelp"),
     toggleVfs: () => record("toggleVfs"),
@@ -185,12 +189,48 @@ describe("f-key fullscreen transition table", () => {
     expectPanel: RunningPanel | null;
     expectZoom: "normal" | "half" | "full";
   }> = [
-    { desc: "no panel → no-op", panel: null, zoom: "normal", expectPanel: null, expectZoom: "normal" },
-    { desc: "half → full", panel: RunningPanel.Dag, zoom: "half", expectPanel: RunningPanel.Dag, expectZoom: "full" },
-    { desc: "full → half", panel: RunningPanel.Dag, zoom: "full", expectPanel: RunningPanel.Dag, expectZoom: "half" },
-    { desc: "normal with panel → full", panel: RunningPanel.Terminal, zoom: "normal", expectPanel: RunningPanel.Terminal, expectZoom: "full" },
-    { desc: "half feed → full feed", panel: RunningPanel.Feed, zoom: "half", expectPanel: RunningPanel.Feed, expectZoom: "full" },
-    { desc: "full agents → half agents", panel: RunningPanel.Agents, zoom: "full", expectPanel: RunningPanel.Agents, expectZoom: "half" },
+    {
+      desc: "no panel → no-op",
+      panel: null,
+      zoom: "normal",
+      expectPanel: null,
+      expectZoom: "normal",
+    },
+    {
+      desc: "half → full",
+      panel: RunningPanel.Dag,
+      zoom: "half",
+      expectPanel: RunningPanel.Dag,
+      expectZoom: "full",
+    },
+    {
+      desc: "full → half",
+      panel: RunningPanel.Dag,
+      zoom: "full",
+      expectPanel: RunningPanel.Dag,
+      expectZoom: "half",
+    },
+    {
+      desc: "normal with panel → full",
+      panel: RunningPanel.Terminal,
+      zoom: "normal",
+      expectPanel: RunningPanel.Terminal,
+      expectZoom: "full",
+    },
+    {
+      desc: "half feed → full feed",
+      panel: RunningPanel.Feed,
+      zoom: "half",
+      expectPanel: RunningPanel.Feed,
+      expectZoom: "full",
+    },
+    {
+      desc: "full agents → half agents",
+      panel: RunningPanel.Agents,
+      zoom: "full",
+      expectPanel: RunningPanel.Agents,
+      expectZoom: "half",
+    },
   ];
 
   for (const { desc, panel, zoom, expectPanel, expectZoom } of table) {
@@ -212,6 +252,13 @@ describe("routeRunningKey — normal mode panel keys", () => {
     const handled = routeRunningKey(keyEvent("1"), defaultState(), actions);
     expect(handled).toBe(true);
     expect(log.args.expandPanel).toEqual([RunningPanel.Feed]);
+  });
+
+  test("e toggles agent output expansion", () => {
+    const { actions, log } = mockActions();
+    const handled = routeRunningKey(keyEvent("e"), defaultState(), actions);
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("toggleAgentExpand");
   });
 
   test("2 expands Agents panel", () => {
@@ -427,7 +474,12 @@ describe("routeRunningKey — prompt entry", () => {
 describe("routeRunningKey — Escape layered dismissal", () => {
   test("Escape dismisses VFS overlay first", () => {
     const { actions, log } = mockActions();
-    const state = defaultState({ showVfs: true, expandedPanel: RunningPanel.Dag, zoomLevel: "half", confirmQuit: true });
+    const state = defaultState({
+      showVfs: true,
+      expandedPanel: RunningPanel.Dag,
+      zoomLevel: "half",
+      confirmQuit: true,
+    });
     routeRunningKey(keyEvent("escape"), state, actions);
     expect(log.calls).toContain("dismissVfs");
     expect(log.calls).not.toContain("collapsePanel");
@@ -436,7 +488,11 @@ describe("routeRunningKey — Escape layered dismissal", () => {
 
   test("Escape cancels quit confirm second", () => {
     const { actions, log } = mockActions();
-    const state = defaultState({ confirmQuit: true, expandedPanel: RunningPanel.Dag, zoomLevel: "half" });
+    const state = defaultState({
+      confirmQuit: true,
+      expandedPanel: RunningPanel.Dag,
+      zoomLevel: "half",
+    });
     routeRunningKey(keyEvent("escape"), state, actions);
     expect(log.args.setConfirmQuit).toEqual([false]);
     expect(log.calls).not.toContain("collapsePanel");
@@ -491,7 +547,11 @@ describe("routeRunningKey — prompt mode", () => {
 
   test("Enter does NOT submit when prompt text is empty", () => {
     const { actions, log } = mockActions();
-    const handled = routeRunningKey(keyEvent("return"), defaultState({ promptMode: true, promptText: "" }), actions);
+    const handled = routeRunningKey(
+      keyEvent("return"),
+      defaultState({ promptMode: true, promptText: "" }),
+      actions,
+    );
     expect(handled).toBe(true); // swallowed
     expect(log.calls).not.toContain("submitPrompt");
   });
@@ -530,7 +590,12 @@ describe("routeRunningKey — prompt mode", () => {
 
   test("f is swallowed (NOT fullscreen toggle)", () => {
     const { actions, log } = mockActions();
-    const state = defaultState({ promptMode: true, promptText: "hi", expandedPanel: RunningPanel.Dag, zoomLevel: "half" });
+    const state = defaultState({
+      promptMode: true,
+      promptText: "hi",
+      expandedPanel: RunningPanel.Dag,
+      zoomLevel: "half",
+    });
     const handled = routeRunningKey(keyEvent("f", { sequence: "f" }), state, actions);
     expect(handled).toBe(true);
     expect(log.calls).not.toContain("toggleFullscreen");
@@ -585,7 +650,11 @@ describe("routeRunningKey — help mode", () => {
 
   test("f is swallowed (NOT fullscreen)", () => {
     const { actions, log } = mockActions();
-    const state = { ...helpState, expandedPanel: RunningPanel.Dag as RunningPanel | null, zoomLevel: "half" as const };
+    const state = {
+      ...helpState,
+      expandedPanel: RunningPanel.Dag as RunningPanel | null,
+      zoomLevel: "half" as const,
+    };
     routeRunningKey(keyEvent("f"), state, actions);
     expect(log.calls).not.toContain("toggleFullscreen");
   });

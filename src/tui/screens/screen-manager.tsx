@@ -95,6 +95,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     const { provider, topology, groveDir } = appProps;
 
     // Initialize state: resumed groves start on running, new groves go goal-first
+    // Initialize state: resumed groves start on running, new groves go goal-first
     const [state, setState] = useState<ScreenState>(() => ({
       screen: startOnRunning
         ? ("running" as const)

@@ -76,6 +76,8 @@ export interface RunningKeyboardActions {
   readonly deletePromptChar: () => void;
   readonly cyclePromptTarget: () => void;
   readonly submitPrompt: () => void;
+  // Agent output
+  readonly toggleAgentExpand: () => void;
   // Feed
   readonly feedCursorDown: () => void;
   readonly feedCursorUp: () => void;
@@ -256,6 +258,12 @@ export function routeRunningKey(
   }
   if (input === "n" && actions.hasPermissions) {
     actions.denyPermission();
+    return true;
+  }
+
+  // e: toggle agent output expansion
+  if (input === "e") {
+    actions.toggleAgentExpand();
     return true;
   }
 
