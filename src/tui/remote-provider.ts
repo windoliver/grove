@@ -570,6 +570,7 @@ export class RemoteDataProvider
 
   async listSessions(query?: {
     status?: "active" | "archived";
+    presetName?: string;
   }): Promise<readonly import("./provider.js").SessionRecord[]> {
     try {
       return await listSessionsHttp(this.baseUrl, query);

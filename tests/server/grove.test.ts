@@ -36,8 +36,12 @@ describe("GET /api/grove", () => {
       lastSeen: "2025-01-01T00:00:00.000Z",
     };
     const mockGossip: GossipService = {
-      start: () => {},
-      stop: async () => {},
+      start: () => {
+        /* no-op */
+      },
+      stop: async () => {
+        /* no-op */
+      },
       handleExchange: async (msg) => msg,
       handleShuffle: () => ({ offered: [] }),
       peers: () => [mockPeer],
@@ -57,8 +61,12 @@ describe("GET /api/grove", () => {
         timestamp: new Date().toISOString(),
       }),
       mergedFrontier: () => [],
-      on: () => {},
-      off: () => {},
+      on: () => {
+        /* no-op */
+      },
+      off: () => {
+        /* no-op */
+      },
     };
 
     const depsWithGossip: ServerDeps = { ...ctx.deps, gossip: mockGossip };

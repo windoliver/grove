@@ -196,10 +196,11 @@ export class SpawnManager {
 
       // Build initial prompt from goal + role
       let initialPrompt: string | undefined;
-      if (this.sessionGoal || context?.rolePrompt) {
+      if (this.sessionGoal || context?.roleGoal || context?.rolePrompt) {
         const parts: string[] = [];
         if (this.sessionGoal) parts.push(this.sessionGoal);
-        if (context?.rolePrompt) parts.push(String(context.rolePrompt));
+        if (context?.roleGoal) parts.push(String(context.roleGoal));
+        else if (context?.rolePrompt) parts.push(String(context.rolePrompt));
         else if (context?.roleDescription) parts.push(String(context.roleDescription));
         parts.push("Read CLAUDE.md for full instructions.");
         initialPrompt = parts.join(". ");
@@ -680,16 +681,17 @@ export class SpawnManager {
   ): Promise<void> {
     const roleDescription = context?.roleDescription ?? "";
     const rolePrompt = context?.rolePrompt ?? "";
-    const goal = this.sessionGoal || rolePrompt || "Follow your role instructions below.";
+    const roleGoal = context?.roleGoal ?? "";
+    const sessionGoal = this.sessionGoal || "Follow your role instructions below.";
 
     const instructions = `# Grove Agent: ${roleId}
 
 ## Session Goal
-${goal}
+${sessionGoal}
 
 ## Your Role: ${roleId}
 ${roleDescription}
-
+${roleGoal ? `\nObjective: ${roleGoal}\n` : ""}
 ${rolePrompt ? `## Instructions\n${rolePrompt}\n` : ""}
 
 ## Identity
@@ -791,6 +793,9 @@ You MUST include at least one score. Without scores the frontier cannot rank wor
     const lines: string[] = [`# Agent Context: ${roleId}`, ""];
     if (context.roleDescription) {
       lines.push(`## Role`, "", String(context.roleDescription), "");
+    }
+    if (context.roleGoal) {
+      lines.push(`## Objective`, "", String(context.roleGoal), "");
     }
     if (context.rolePrompt) {
       lines.push(`## Instructions`, "", String(context.rolePrompt), "");

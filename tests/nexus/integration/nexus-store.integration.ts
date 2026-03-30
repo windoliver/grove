@@ -48,7 +48,9 @@ describe.skipIf(!NEXUS_URL)("NexusContributionStore integration", () => {
     };
   });
 
-  test("placeholder — skipped when NEXUS_URL not set", () => {});
+  test("placeholder — skipped when NEXUS_URL not set", () => {
+    /* intentionally empty — placeholder for skipIf */
+  });
 });
 
 describe.skipIf(!NEXUS_URL)("NexusClaimStore integration", () => {
@@ -71,5 +73,7 @@ describe.skipIf(!NEXUS_URL)("NexusClaimStore integration", () => {
     };
   });
 
-  test("placeholder — skipped when NEXUS_URL not set", () => {});
+  test("placeholder — skipped when NEXUS_URL not set", () => {
+    /* intentionally empty — placeholder for skipIf */
+  });
 });
