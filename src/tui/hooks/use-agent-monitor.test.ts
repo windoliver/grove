@@ -164,13 +164,7 @@ describe("parsePermissionPrompt", () => {
   });
 
   test("handles empty lines in pane output", () => {
-    const pane = [
-      "",
-      "npm install express",
-      "",
-      "Do you want to proceed?",
-      "",
-    ].join("\n");
+    const pane = ["", "npm install express", "", "Do you want to proceed?", ""].join("\n");
     expect(parsePermissionPrompt(pane)).toBe("npm install express");
   });
 });
