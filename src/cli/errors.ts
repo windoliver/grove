@@ -10,9 +10,12 @@
 /** Thrown for usage/validation errors. Signals exit code 2. */
 export class UsageError extends Error {
   readonly exitCode = 2;
+  /** Optional hint shown below the error message (e.g., "Run 'grove init' to create one."). */
+  readonly suggestion?: string | undefined;
 
-  constructor(message: string) {
+  constructor(message: string, suggestion?: string) {
     super(message);
     this.name = "UsageError";
+    this.suggestion = suggestion;
   }
 }

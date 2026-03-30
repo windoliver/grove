@@ -4,7 +4,7 @@
  * Top: Agent status line (braille spinner for working, bullet for active, circle for idle, x for crashed)
  * Middle: Contribution feed (last 50, scrollable with j/k)
  * Bottom: Status bar with [RUNNING] label
- * Tab: toggle to advanced mode (existing App boardroom)
+ * Ctrl+A: toggle to advanced mode (existing App boardroom)
  * Ctrl+F: Nexus folder browser overlay
  * q: confirm quit
  */
@@ -119,6 +119,22 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     const [ipcMessages, setIpcMessages] = useState<IpcMessage[]>([]);
     // Crashed agents
     const [crashedAgents, setCrashedAgents] = useState<Set<string>>(new Set());
+    // Help overlay
+    const [showHelp, setShowHelp] = useState(false);
+    // Elapsed time (updated every second)
+    const [elapsed, setElapsed] = useState("0s");
+    useEffect(() => {
+      const start = sessionStartedAt ? new Date(sessionStartedAt).getTime() : Date.now();
+      const tick = () => {
+        const ms = Date.now() - start;
+        const m = Math.floor(ms / 60_000);
+        const s = Math.floor((ms % 60_000) / 1_000);
+        setElapsed(m > 0 ? `${m}m${s}s` : `${s}s`);
+      };
+      tick();
+      const id = setInterval(tick, 1000);
+      return () => clearInterval(id);
+    }, [sessionStartedAt]);
 
     /** Strip ANSI escape codes from terminal output. */
     // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional ANSI escape stripping
@@ -423,6 +439,11 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           }
 
           // --- Normal mode ---
+          // '?': toggle help overlay
+          if (key.sequence === "?" || (key.shift && key.name === "/")) {
+            setShowHelp((v) => !v);
+            return;
+          }
           // ':' or 'm': enter prompt mode to send message to agent
           if (
             (key.sequence === ":" || key.name === "m") &&
@@ -438,13 +459,17 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             setShowVfs((v) => !v);
             return;
           }
-          // Tab: toggle advanced mode
-          if (key.name === "tab") {
+          // Ctrl+A: toggle advanced mode (deliberate entry, not accidental Tab)
+          if (key.ctrl && key.name === "a") {
             onToggleAdvanced();
             return;
           }
-          // Escape: dismiss VFS or quit confirm
+          // Escape: dismiss overlays or quit confirm
           if (key.name === "escape") {
+            if (showHelp) {
+              setShowHelp(false);
+              return;
+            }
             if (showVfs) {
               setShowVfs(false);
               return;
@@ -537,6 +562,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         },
         [
           showVfs,
+          showHelp,
           confirmQuit,
           feed,
           promptMode,
@@ -873,16 +899,41 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           </box>
         ) : null}
 
+        {/* Help overlay */}
+        {showHelp ? (
+          <box
+            flexDirection="column"
+            marginX={2}
+            borderStyle="round"
+            borderColor={theme.focus}
+            paddingX={1}
+          >
+            <text color={theme.focus} bold>
+              Keyboard Shortcuts
+            </text>
+            <text color={theme.text}> j/k Scroll contribution feed</text>
+            <text color={theme.text}> 1-9 Toggle agent output</text>
+            <text color={theme.text}> m / : Send message to agent</text>
+            <text color={theme.text}> r Jump to ask_user question</text>
+            <text color={theme.text}> Ctrl+F File browser (VFS)</text>
+            <text color={theme.text}> Ctrl+A Advanced boardroom</text>
+            <text color={theme.text}> y/n Approve/deny permission</text>
+            <text color={theme.text}> ? Toggle this help</text>
+            <text color={theme.text}> q Quit (with confirmation)</text>
+            <text color={theme.secondary}> Esc to close</text>
+          </box>
+        ) : null}
+
         {/* Status bar */}
         <box flexDirection="row" paddingX={2}>
-          <text color={theme.running}>[RUNNING]</text>
-          <text color={theme.muted}>
+          <text color={theme.running}>[RUNNING {elapsed}]</text>
+          <text color={theme.secondary}>
             {" "}
-            {feed.length}c | {claimCount} active
+            {feed.length} contribs | {claimCount} active
           </text>
-          <text color={theme.dimmed}>
+          <text color={theme.secondary}>
             {" "}
-            {(activeRoles ?? []).length > 0 ? "m:message " : ""}Tab:advanced j/k:scroll
+            {(activeRoles ?? []).length > 0 ? "m:message " : ""}?:help j/k:scroll
             {pendingAskUser ? " r:respond" : ""} q:quit
           </text>
         </box>

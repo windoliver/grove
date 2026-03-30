@@ -1,8 +1,8 @@
 /**
- * Screen 3: Goal input — text input for session goal.
+ * Screen 2: Goal input — text input for session goal.
  *
- * Shows what will happen on Enter (spawn preview) and requires
- * explicit confirmation before spawning agents.
+ * Single Enter transitions to Launch Preview (auto-detect + confirm).
+ * Goal-first flow: user says WHAT before configuring HOW.
  */
 
 import { useKeyboard } from "@opentui/react";
@@ -22,7 +22,7 @@ export interface GoalInputProps {
   readonly onBack: () => void;
 }
 
-/** Screen 3: goal text input with spawn preview and confirmation. */
+/** Screen 2: goal text input. Single Enter → launch preview. */
 export const GoalInput: React.NamedExoticComponent<GoalInputProps> = React.memo(function GoalInput({
   presetName,
   topology,
@@ -31,7 +31,7 @@ export const GoalInput: React.NamedExoticComponent<GoalInputProps> = React.memo(
   onBack,
 }: GoalInputProps): React.ReactNode {
   const [buffer, setBuffer] = useState("");
-  const [confirming, setConfirming] = useState(false);
+  const [showEmpty, setShowEmpty] = useState(false);
 
   useKeyboard(
     useCallback(
@@ -40,29 +40,20 @@ export const GoalInput: React.NamedExoticComponent<GoalInputProps> = React.memo(
         const isCtrl = key.ctrl;
 
         if (input === "escape") {
-          if (confirming) {
-            setConfirming(false);
-            return;
-          }
           onBack();
           return;
         }
         if (input === "return") {
           const goal = buffer.trim();
-          if (goal.length === 0) return;
-
-          if (!confirming) {
-            // First Enter: show confirmation
-            setConfirming(true);
+          if (goal.length === 0) {
+            setShowEmpty(true);
             return;
           }
-          // Second Enter: confirm and submit
           onSubmit(goal);
           return;
         }
 
-        // Don't allow editing during confirmation
-        if (confirming) return;
+        setShowEmpty(false);
 
         if (input === "backspace") {
           setBuffer((b) => b.slice(0, -1));
@@ -72,7 +63,6 @@ export const GoalInput: React.NamedExoticComponent<GoalInputProps> = React.memo(
           setBuffer("");
           return;
         }
-        // Space key comes through as key.name === "space"
         if (input === "space") {
           setBuffer((b) => `${b} `);
           return;
@@ -82,7 +72,7 @@ export const GoalInput: React.NamedExoticComponent<GoalInputProps> = React.memo(
           return;
         }
       },
-      [buffer, confirming, onSubmit, onBack],
+      [buffer, onSubmit, onBack],
     ),
   );
 
@@ -100,7 +90,7 @@ export const GoalInput: React.NamedExoticComponent<GoalInputProps> = React.memo(
       <BreadcrumbBar screen="goal-input" presetName={presetName} width={100} />
 
       <box flexDirection="column" paddingX={2} paddingTop={1}>
-        <text color={theme.text}>What should agents do?</text>
+        <text color={theme.text}>What should agents work on?</text>
       </box>
 
       {/* Input field */}
@@ -109,7 +99,7 @@ export const GoalInput: React.NamedExoticComponent<GoalInputProps> = React.memo(
         marginX={2}
         marginTop={1}
         borderStyle="single"
-        borderColor={confirming ? theme.warning : theme.focus}
+        borderColor={showEmpty ? theme.error : theme.focus}
         paddingX={1}
       >
         <box flexDirection="row">
@@ -117,58 +107,42 @@ export const GoalInput: React.NamedExoticComponent<GoalInputProps> = React.memo(
             {"> "}
           </text>
           <text color={theme.text}>{buffer}</text>
-          {!confirming ? <text color={theme.focus}>_</text> : null}
+          <text color={theme.focus}>_</text>
         </box>
       </box>
 
-      {/* Spawn preview — what will happen on Enter */}
+      {/* Empty validation message */}
+      {showEmpty ? (
+        <box paddingX={2} marginTop={1}>
+          <text color={theme.error}>Goal cannot be empty</text>
+        </box>
+      ) : null}
+
+      {/* Agent preview — what will be configured next */}
       {agentCount > 0 ? (
         <box flexDirection="column" marginX={2} marginTop={1} paddingX={1}>
-          <text color={theme.muted}>
-            {agentCount} agent{agentCount !== 1 ? "s" : ""} will spawn:
+          <text color={theme.secondary}>
+            {agentCount} agent{agentCount !== 1 ? "s" : ""} will be configured:
           </text>
           {roles.map((role) => {
             const cli = roleMapping?.get(role.name) ?? role.command ?? "claude";
             const platformColor = PLATFORM_COLORS[role.platform ?? "claude-code"] ?? theme.text;
             return (
               <box key={role.name} flexDirection="row">
-                <text color={theme.dimmed}> </text>
+                <text color={theme.secondary}> </text>
                 <text color={theme.text}>{role.name}</text>
-                <text color={theme.dimmed}> (</text>
+                <text color={theme.secondary}> (</text>
                 <text color={platformColor}>{cli}</text>
-                <text color={theme.dimmed}>)</text>
+                <text color={theme.secondary}>)</text>
               </box>
             );
           })}
         </box>
       ) : null}
 
-      {/* Confirmation bar */}
-      {confirming ? (
-        <box
-          flexDirection="column"
-          marginX={2}
-          marginTop={1}
-          borderStyle="single"
-          borderColor={theme.warning}
-          paddingX={1}
-        >
-          <text color={theme.warning} bold>
-            Confirm spawn?
-          </text>
-          <text color={theme.muted}>
-            Press Enter to start {agentCount} agent{agentCount !== 1 ? "s" : ""}, Esc to cancel
-          </text>
-        </box>
-      ) : null}
-
       {/* Hints */}
       <box paddingX={2} marginTop={1}>
-        <text color={theme.dimmed}>
-          {confirming
-            ? "Enter:confirm spawn  Esc:cancel"
-            : "Enter:preview spawn  Esc:back  Ctrl+U:clear"}
-        </text>
+        <text color={theme.secondary}>Enter:continue Esc:back Ctrl+U:clear</text>
       </box>
     </box>
   );

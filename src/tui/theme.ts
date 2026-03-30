@@ -9,7 +9,7 @@
 export const theme = {
   // Focus & chrome
   focus: "#00cccc",
-  inactive: "#444444",
+  inactive: "#666666",
   border: "#555555",
 
   // Status indicators
@@ -28,9 +28,13 @@ export const theme = {
 
   // Text
   text: "#ffffff",
+  /** Secondary text — labels, hints, timestamps. Replaces former muted/dimmed split. */
+  secondary: "#888888",
+  /** @deprecated Use `secondary` instead. Kept for backward compat during migration. */
   muted: "#888888",
-  dimmed: "#777777",
-  disabled: "#555555",
+  /** @deprecated Use `secondary` instead. Kept for backward compat during migration. */
+  dimmed: "#888888",
+  disabled: "#666666",
 
   // Surfaces
   panelBg: undefined as string | undefined,
@@ -48,6 +52,32 @@ export const theme = {
   agentWaiting: "◐",
   agentIdle: "○",
   agentError: "\u2717",
+} as const;
+
+/** Spacing scale in terminal character units. */
+export const spacing = {
+  xs: 0,
+  sm: 1,
+  md: 2,
+  lg: 3,
+} as const;
+
+/** Border style tokens. */
+export const borders = {
+  /** Standard panel borders. */
+  panel: "single",
+  /** Modal/overlay borders. */
+  modal: "round",
+} as const;
+
+/** Timing tokens in milliseconds. */
+export const timing = {
+  /** Braille spinner animation frame interval. */
+  spinner: 80,
+  /** Default polling interval (base). Multiply by tier. */
+  pollBase: 3000,
+  /** Polling tier multipliers: hot=1x, warm=3x, cold=5x, frozen=10x. */
+  pollTiers: { hot: 1, warm: 3, cold: 5, frozen: 10 } as const,
 } as const;
 
 /** Per-agent color palette — assigned round-robin at registration. */

@@ -1,13 +1,14 @@
 /**
- * Screen 2: Agent detection + role prompt editing.
+ * Screen 3: Launch preview (formerly Agent Detect).
  *
- * Shows detected CLIs, role-to-CLI mapping, and editable prompts
- * for each role from the GROVE.md topology. Users can review and
- * customize what each agent will do before spawning.
+ * Auto-detects installed CLIs and shows the agent configuration.
+ * Users see their goal recap, detected agents with green/yellow status,
+ * and can optionally edit role prompts via [e] key.
  *
- * j/k: navigate roles, Enter on a role: edit its prompt
- * Enter (when not editing): continue to goal screen
- * Esc: back or cancel edit
+ * Ctrl+Enter: launch agents
+ * e: edit selected role prompt
+ * j/k: navigate roles
+ * Esc: back to goal input
  */
 
 import { useKeyboard } from "@opentui/react";
@@ -26,9 +27,11 @@ const AGENT_CLIS: readonly { cli: string; platform: string; label: string }[] = 
   { cli: "gemini", platform: "gemini", label: "Gemini CLI" },
 ];
 
-/** Props for the AgentDetect screen. */
+/** Props for the AgentDetect screen (used as Launch Preview in the reordered flow). */
 export interface AgentDetectProps {
   readonly topology?: AgentTopology | undefined;
+  /** Goal from the previous screen — shown as a recap. */
+  readonly goal?: string | undefined;
   readonly onContinue: (
     detected: Map<string, boolean>,
     roleMapping: Map<string, string>,
@@ -42,9 +45,9 @@ function detectCli(name: string): boolean {
   return Bun.which(name) !== null;
 }
 
-/** Screen 2: agent detection + role prompt configuration. */
+/** Screen 3: Launch preview — agent detection + role prompt configuration. */
 export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.memo(
-  function AgentDetect({ topology, onContinue, onBack }: AgentDetectProps): React.ReactNode {
+  function AgentDetect({ topology, goal, onContinue, onBack }: AgentDetectProps): React.ReactNode {
     const [detected, setDetected] = useState<Map<string, boolean>>(new Map());
     const [scanning, setScanning] = useState(true);
     const [cursor, setCursor] = useState(0);
@@ -199,14 +202,8 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
             }
             return;
           }
-          // Any of these keys: continue to goal input
-          if (
-            key.name === "return" ||
-            key.name === "tab" ||
-            key.name === "right" ||
-            key.name === "enter" ||
-            key.name === "space"
-          ) {
+          // Enter: launch agents (only Enter, not Tab/Space/Right which caused accidental spawns)
+          if (key.name === "return" || key.name === "enter") {
             if (!scanning) {
               onContinue(detected, roleMapping, rolePrompts);
             }
@@ -391,7 +388,7 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
               ? "Type prompt, Enter:save, Esc:cancel"
               : scanning
                 ? "Scanning..."
-                : "c:change CLI  e:edit prompt  j/k:navigate  Enter/Tab:continue  Esc:back"}
+                : "c:change CLI  e:edit prompt  j/k:navigate  Enter:launch  Esc:back"}
           </text>
         </box>
       </box>
