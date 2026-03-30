@@ -11,7 +11,7 @@
 export class UsageError extends Error {
   readonly exitCode = 2;
   /** Optional hint shown below the error message (e.g., "Run 'grove init' to create one."). */
-  readonly suggestion?: string;
+  readonly suggestion?: string | undefined;
 
   constructor(message: string, suggestion?: string) {
     super(message);
