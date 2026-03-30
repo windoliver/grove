@@ -348,7 +348,10 @@ export interface TuiGoalProvider {
 
 /** Session management — available when capabilities.sessions is true. */
 export interface TuiSessionProvider {
-  listSessions(query?: { status?: "active" | "archived"; presetName?: string }): Promise<readonly SessionRecord[]>;
+  listSessions(query?: {
+    status?: "active" | "archived";
+    presetName?: string;
+  }): Promise<readonly SessionRecord[]>;
   createSession(input: SessionInput): Promise<SessionRecord>;
   getSession(sessionId: string): Promise<SessionRecord | undefined>;
   archiveSession(sessionId: string): Promise<void>;

@@ -116,7 +116,9 @@ class InMemoryStore {
   async hotThreads() {
     return [];
   }
-  close() {}
+  close() {
+    /* no-op */
+  }
 }
 
 // ---------------------------------------------------------------------------

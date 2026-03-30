@@ -98,17 +98,18 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     const { provider, topology, groveDir } = appProps;
 
     // Initialize state: use initialState override (testing), or compute from props
-    const [state, setState] = useState<ScreenState>(() =>
-      initialState ?? {
-        screen: startOnRunning
-          ? ("running" as const)
-          : topology
-            ? ("goal-input" as const) // Has topology → goal first, detect later
-            : presets && presets.length > 0
-              ? ("preset-select" as const)
-              : ("running" as const),
-        ...(appProps.presetName ? { selectedPreset: appProps.presetName } : {}),
-      },
+    const [state, setState] = useState<ScreenState>(
+      () =>
+        initialState ?? {
+          screen: startOnRunning
+            ? ("running" as const)
+            : topology
+              ? ("goal-input" as const) // Has topology → goal first, detect later
+              : presets && presets.length > 0
+                ? ("preset-select" as const)
+                : ("running" as const),
+          ...(appProps.presetName ? { selectedPreset: appProps.presetName } : {}),
+        },
     );
 
     // SpawnManager for auto-spawning agents
@@ -354,7 +355,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           setState((s) => ({ ...s, screen: "running", goal, sessionStartedAt }));
         }
       },
-      [provider, topology],
+      [provider, topology, state.selectedPreset],
     );
 
     // Screen 3 (launch preview) -> spawning: Ctrl+Enter confirmed launch
@@ -550,7 +551,9 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
                 );
               }
               if (state.sessionId && isSessionProvider(provider)) {
-                void provider.addContributionToSession(state.sessionId, c.cid).catch(() => {});
+                void provider.addContributionToSession(state.sessionId, c.cid).catch(() => {
+                  /* best-effort */
+                });
               }
             }}
             onSendToAgent={async (role, message) => {

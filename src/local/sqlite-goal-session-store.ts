@@ -84,7 +84,10 @@ export interface GoalSessionStore {
   setGoal(goal: string, acceptance: readonly string[], setBy: string): Promise<GoalData>;
 
   /** List sessions, optionally filtered by status and/or preset. */
-  listSessions(query?: { status?: "active" | "archived"; presetName?: string }): Promise<readonly SessionRecord[]>;
+  listSessions(query?: {
+    status?: "active" | "archived";
+    presetName?: string;
+  }): Promise<readonly SessionRecord[]>;
 
   /** Create a new session. */
   createSession(input: SessionInput): Promise<SessionRecord>;

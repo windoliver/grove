@@ -37,10 +37,7 @@ function initialScreen(opts: {
 }
 
 /** New session transition logic (mirrors handleNewSession). */
-function newSessionTransition(
-  state: ScreenState,
-  presetCount: number,
-): ScreenState {
+function newSessionTransition(state: ScreenState, presetCount: number): ScreenState {
   // If we have preset + role mapping from a prior run, skip to goal input
   if (state.selectedPreset && state.roleMapping) {
     const {
@@ -100,7 +97,10 @@ describe("ScreenManager — forward transitions", () => {
 
   test("agent-detect → goal-input stores roleMapping", () => {
     const state: ScreenState = { screen: "agent-detect", selectedPreset: "review-loop" };
-    const roleMapping = new Map([["coder", "claude"], ["reviewer", "codex"]]);
+    const roleMapping = new Map([
+      ["coder", "claude"],
+      ["reviewer", "codex"],
+    ]);
     const next: ScreenState = { ...state, screen: "goal-input", roleMapping };
     expect(next.screen).toBe("goal-input");
     expect(next.roleMapping?.get("coder")).toBe("claude");
@@ -129,8 +129,14 @@ describe("ScreenManager — session reuse (new session from complete)", () => {
   const completedState: ScreenState = {
     screen: "complete",
     selectedPreset: "review-loop",
-    detectedAgents: new Map([["claude", true], ["codex", true]]),
-    roleMapping: new Map([["coder", "claude"], ["reviewer", "codex"]]),
+    detectedAgents: new Map([
+      ["claude", true],
+      ["codex", true],
+    ]),
+    roleMapping: new Map([
+      ["coder", "claude"],
+      ["reviewer", "codex"],
+    ]),
     goal: "Review PR #42",
     sessionId: "abc123",
     sessionStartedAt: "2026-03-29T00:00:00.000Z",
