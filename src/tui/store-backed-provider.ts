@@ -438,6 +438,7 @@ export abstract class StoreBackedProvider
   /** List sessions. Returns an empty array when no store is configured. */
   async listSessions(query?: {
     status?: "active" | "archived";
+    presetName?: string;
   }): Promise<readonly SessionRecord[]> {
     return this.goalSession?.listSessions(query) ?? [];
   }

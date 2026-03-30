@@ -1,7 +1,7 @@
 ---
 contract_version: 3
 
-name: modular-wondering-penguin
+name: quiet-tinkering-matsumoto
 
 description: Code review loop with coder and reviewer roles
 
@@ -58,7 +58,7 @@ agent_topology:
         1. Read the codebase and understand the goal
         2. Edit files to implement the solution
         3. Call grove_submit_work to submit your work:
-           grove_submit_work({ summary: "Implemented landing page with hero and features", artifacts: {"index.html": "blake3:..."}, agent: { role: "coder" } })
+           grove_submit_work({ summary: "Implemented landing page", artifacts: {"index.html": "blake3:..."}, agent: { role: "coder" } })
         4. Reviewer feedback arrives automatically — when it does, iterate and grove_submit_work again
         5. NEVER call grove_done yourself. Only the reviewer ends the session.
         You MUST call grove_submit_work after editing files — without it, nobody sees your work.
@@ -110,6 +110,6 @@ agent_topology:
 #   after_contribute: "echo 'Contribution submitted'"
 ---
 
-# modular-wondering-penguin
+# quiet-tinkering-matsumoto
 
 Code review loop with coder and reviewer roles

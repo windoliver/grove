@@ -210,6 +210,7 @@ export interface GoalData {
 export interface SessionRecord {
   readonly sessionId: string;
   readonly goal?: string | undefined;
+  readonly presetName?: string | undefined;
   readonly status: "active" | "archived";
   readonly startedAt: string;
   readonly endedAt?: string | undefined;
@@ -219,6 +220,7 @@ export interface SessionRecord {
 /** Input for creating a session. */
 export interface SessionInput {
   readonly goal?: string | undefined;
+  readonly presetName?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -346,7 +348,10 @@ export interface TuiGoalProvider {
 
 /** Session management — available when capabilities.sessions is true. */
 export interface TuiSessionProvider {
-  listSessions(query?: { status?: "active" | "archived" }): Promise<readonly SessionRecord[]>;
+  listSessions(query?: {
+    status?: "active" | "archived";
+    presetName?: string;
+  }): Promise<readonly SessionRecord[]>;
   createSession(input: SessionInput): Promise<SessionRecord>;
   getSession(sessionId: string): Promise<SessionRecord | undefined>;
   archiveSession(sessionId: string): Promise<void>;

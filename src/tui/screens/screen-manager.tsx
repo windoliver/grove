@@ -76,6 +76,8 @@ export interface ScreenManagerProps {
   readonly sessions?: readonly SessionRecord[] | undefined;
   /** Start on RunningView (Screen 4) for resumed groves. */
   readonly startOnRunning?: boolean | undefined;
+  /** Override initial state (testing only). */
+  readonly initialState?: ScreenState | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,21 +91,25 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     presets,
     sessions,
     startOnRunning,
+    initialState,
   }: ScreenManagerProps): React.ReactNode {
     const renderer = useRenderer();
     const { provider, topology, groveDir } = appProps;
 
-    // Initialize state: resumed groves start on running, new groves go goal-first
-    const [state, setState] = useState<ScreenState>(() => ({
-      screen: startOnRunning
-        ? ("running" as const)
-        : topology
-          ? ("goal-input" as const) // Has topology → goal first, detect later
-          : presets && presets.length > 0
-            ? ("preset-select" as const)
-            : ("running" as const),
-      ...(appProps.presetName ? { selectedPreset: appProps.presetName } : {}),
-    }));
+    // Initialize state: use initialState override (testing), or compute from props
+    const [state, setState] = useState<ScreenState>(
+      () =>
+        initialState ?? {
+          screen: startOnRunning
+            ? ("running" as const)
+            : topology
+              ? ("goal-input" as const) // Has topology → goal first, detect later
+              : presets && presets.length > 0
+                ? ("preset-select" as const)
+                : ("running" as const),
+          ...(appProps.presetName ? { selectedPreset: appProps.presetName } : {}),
+        },
+    );
 
     // SpawnManager singleton — provided by tui-app.tsx via SpawnManagerContext.
     const spawnManager = useSpawnManager();
@@ -235,7 +241,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         // Create session if supported
         if (isSessionProvider(provider)) {
           void provider
-            .createSession({ goal })
+            .createSession({ goal, presetName: state.selectedPreset })
             .then((session) => {
               setState((s) => ({ ...s, sessionId: session.sessionId }));
             })
@@ -269,6 +275,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             const editedPrompt = rolePromptsRef.current.get(role.name);
             context.rolePrompt = editedPrompt ?? role.prompt ?? "";
             if (role.description) context.roleDescription = role.description;
+            if (role.goal) context.roleGoal = role.goal;
             if (topology) context.topology = topology;
 
             // Mark as spawning
@@ -305,7 +312,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           setState((s) => ({ ...s, screen: "running", goal, sessionStartedAt }));
         }
       },
-      [provider, topology],
+      [provider, topology, state.selectedPreset],
     );
 
     // Screen 3 (launch preview) -> spawning: Ctrl+Enter confirmed launch
@@ -354,10 +361,27 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       [snapshotAndComplete],
     );
 
-    // Screen 5 -> Screen 1: new session
+    // Screen 5 -> Screen 3 (reuse preset) or Screen 1 (no preset state)
     const handleNewSession = useCallback(() => {
-      setState({
-        screen: presets && presets.length > 0 ? "preset-select" : "running",
+      doneSignaledRef.current = false;
+      setState((s) => {
+        // If we have preset + role mapping from a prior run, skip to goal input
+        if (s.selectedPreset && s.roleMapping) {
+          // Destructure to omit session-specific fields, preserve preset/detection state
+          const {
+            goal: _g,
+            sessionId: _s,
+            sessionStartedAt: _st,
+            spawnStates: _sp,
+            completeSnapshot: _c,
+            ...preserved
+          } = s;
+          return { ...preserved, screen: "goal-input" as const };
+        }
+        // No prior preset state — fall back to preset selection
+        return {
+          screen: presets && presets.length > 0 ? ("preset-select" as const) : ("running" as const),
+        };
       });
     }, [presets]);
 
@@ -484,7 +508,9 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
                 );
               }
               if (state.sessionId && isSessionProvider(provider)) {
-                void provider.addContributionToSession(state.sessionId, c.cid).catch(() => {});
+                void provider.addContributionToSession(state.sessionId, c.cid).catch(() => {
+                  /* best-effort */
+                });
               }
             }}
             onSendToAgent={async (role, message) => {
