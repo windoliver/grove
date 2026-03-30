@@ -39,6 +39,7 @@ import { parseTreeArgs, runTree } from "./commands/tree.js";
 import { initCliDeps } from "./context.js";
 import { UsageError } from "./errors.js";
 import { resolveGroveDir } from "./utils/grove-dir.js";
+import { suggestCommand } from "./utils/string.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -66,12 +67,14 @@ type Command =
       readonly description: string;
       readonly needsStore: false;
       readonly handler: (args: readonly string[]) => Promise<void>;
+      readonly helpText?: string;
     }
   | {
       readonly name: string;
       readonly description: string;
       readonly needsStore: true;
       readonly handler: (args: readonly string[], deps: CommandDeps) => Promise<void>;
+      readonly helpText?: string;
     };
 
 // ---------------------------------------------------------------------------
@@ -449,11 +452,22 @@ async function main(): Promise<void> {
   const commands = buildCommands(groveOverride);
   const command = commands.find((c) => c.name === first);
   if (!command) {
-    throw new UsageError(`unknown command '${first}'. Run 'grove --help' for usage.`);
+    const suggestion = suggestCommand(
+      first,
+      commands.map((c) => c.name),
+    );
+    const hint = suggestion ? `Did you mean '${suggestion}'?` : "Run 'grove --help' for usage.";
+    throw new UsageError(`unknown command '${first}'. ${hint}`);
   }
 
-  // Dispatch
+  // Per-command help — only intercept if the command has explicit helpText.
+  // Otherwise let the command handler process --help itself (many commands
+  // like import, export, gossip, up already print detailed usage internally).
   const subArgs = args.slice(1);
+  if ((subArgs[0] === "--help" || subArgs[0] === "-h") && command.helpText) {
+    console.log(command.helpText);
+    return;
+  }
 
   if (command.needsStore) {
     const { dbPath } = resolveGroveDir(groveOverride);
@@ -477,83 +491,63 @@ async function main(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function printUsage(): void {
-  console.log(`grove — asynchronous multi-agent contribution graph
+  console.log(`grove — multi-agent contribution graph
 
-Usage:
-  grove init [name]                    Create a new grove
-  grove init --preset <name> [name]    Create from preset (review-loop, exploration, swarm-ops, research-loop)
-    --nexus-url <url>                  Use Nexus backend (or set GROVE_NEXUS_URL)
+Getting Started:
+  grove                                Launch TUI (default)
+  grove init [--preset <name>] [name]  Create a new grove
   grove up [--headless] [--no-tui]     Start all services and TUI
   grove down                           Stop all services
 
-  grove contribute            Submit a contribution
-  grove discuss [cid] <msg>   Post a discussion or reply
-  grove review <cid>          Submit a review of a contribution
-  grove reproduce <cid>       Submit a reproduction attempt
-  grove claim <target>        Claim work to prevent duplication
-  grove release <claim-id>    Release a claim
-  grove claims                List claims
-  grove ask <question>        Ask a question (interactive or AI-answered)
+Contributions:
+  grove contribute                     Submit a contribution
+  grove review <cid>                   Review a contribution
+  grove discuss [cid] <msg>            Post a discussion or reply
+  grove reproduce <cid>                Submit a reproduction attempt
 
-  grove bounty create <title> --amount <credits> --deadline <duration>
-  grove bounty list [--status <status>] [--mine]
-  grove bounty claim <bounty-id>
+Navigation:
+  grove log [-n <count>]               Recent contributions
+  grove frontier [--metric <name>]     Show current frontier
+  grove tree [--from <cid>]            DAG visualization
+  grove search [--query <text>]        Search contributions
+  grove checkout <cid> --to <dir>      Materialize contribution artifacts
+  grove thread <cid>                   View a discussion thread
+  grove threads [--tag <tag>]          List active discussion threads
 
-  grove checkout <cid> --to <dir>   Materialize contribution artifacts
-  grove frontier [--metric <name>]  Show current frontier
-  grove search [--query <text>]     Search contributions
-  grove log [-n <count>]            Recent contributions
-  grove tree [--from <cid>]         DAG visualization
-  grove thread <cid>                View a discussion thread
-  grove threads [--tag <tag>]       List active discussion threads
+Agents:
+  grove session start|list|status|stop Manage agent sessions
+  grove status [--json]                Agent status overview
+  grove inbox send|read                Agent messaging
+  grove whoami                         Show resolved agent identity
 
-  grove outcome set <cid> <status>  Set outcome for a contribution
-  grove outcome get <cid>          Get outcome for a contribution
-  grove outcome list [--status]    List outcomes
-  grove outcome stats              Show outcome statistics
+Work Coordination:
+  grove claim <target>                 Claim work to prevent duplication
+  grove release <claim-id>             Release a claim
+  grove claims                         List active claims
+  grove bounty create|list|claim       Manage bounties
+  grove goal [set <text>]              View or set the current goal
+  grove outcome set|get|list|stats     Manage outcome annotations
 
-  grove goal                       Show current goal
-  grove goal set <text>            Set a new goal
-    --acceptance <criterion>       Add acceptance criterion (repeatable)
+Collaboration:
+  grove ask <question>                 Ask a question
+  grove export --to-pr|--to-discussion Export to GitHub
+  grove import --from-pr|--from-discussion  Import from GitHub
 
-  grove inbox send "msg" --to @agent  Send a message to an agent
-  grove inbox read [--from <id>]     Read inbox messages
-  grove whoami                       Show resolved agent identity
-  grove status [--json]              Show agent status overview
-
-  grove export --to-discussion <owner/repo> <cid>   Export to GitHub Discussion
-  grove export --to-pr <owner/repo> <cid>           Export to GitHub PR
-  grove import --from-pr <owner/repo#number>        Import GitHub PR
-  grove import --from-discussion <owner/repo#number> Import GitHub Discussion
-
-  grove tui [--interval <s>] [--url <url>] [--nexus <url>]  Operator TUI dashboard (auto-detects Nexus)
-
-  grove gossip peers    [--server <url>]      List known peers
-  grove gossip status   [--server <url>]      Show gossip overview
-  grove gossip frontier [--server <url>]      Show merged frontier from gossip
-  grove gossip watch    [--server <url>]      Stream gossip events
-  grove gossip exchange <peer-url>            Push-pull frontier exchange
-  grove gossip shuffle  <peer-url>            CYCLON peer sampling shuffle
-  grove gossip sync     <seeds>               Full gossip round with seeds
-  grove gossip daemon   <seeds>               Run persistent gossip loop
-  grove gossip add-peer <id@address>          Add peer to local store
-  grove gossip remove-peer <id>               Remove peer from local store
-
-  grove skill install [--server-url <url>] [--mcp-url <url>]
-                                           Install SKILL.md into AI assistant skill directories
-
-  grove completions bash|zsh|fish          Generate shell completion scripts
+Advanced:
+  grove gossip <subcommand>            P2P federation (peers, sync, daemon, ...)
+  grove skill install                  Install AI assistant skill files
+  grove completions bash|zsh|fish      Generate shell completion scripts
+  grove tui [--nexus <url>]            Operator TUI dashboard
 
 Global options:
-  --grove <path>              Path to grove directory (or set GROVE_DIR)
-  --help, -h                  Show this help message
-  --version, -v               Show version
-  --verbose                   Show stack traces on error
+  --grove <path>    Path to grove directory (or set GROVE_DIR)
+  --help, -h        Show this help message
+  --version, -v     Show version
+  --verbose         Show stack traces on error
+  --wide            Show full values in table output (frontier, log, search, threads)
+  --json            Machine-readable JSON output
 
-Per-command options:
-  --wide                      Show full values in table output (no truncation)
-                              Supported by: frontier, log, search, threads
-  --json                      Machine-readable JSON output`);
+Run 'grove <command> --help' for details on any command.`);
 }
 
 // ---------------------------------------------------------------------------
@@ -566,6 +560,9 @@ main().catch((err: unknown) => {
 
   if (err instanceof Error) {
     console.error(`grove: ${err.message}`);
+    if (err instanceof UsageError && err.suggestion) {
+      console.error(`hint: ${err.suggestion}`);
+    }
     if (verbose && err.stack) {
       console.error(err.stack);
     }

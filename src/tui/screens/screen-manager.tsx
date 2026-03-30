@@ -3,11 +3,11 @@
  *
  * Manages transitions between:
  *   Screen 1: PresetSelect
- *   Screen 2: AgentDetect
- *   Screen 3: GoalInput -> auto-spawn agents
+ *   Screen 2: GoalInput (goal first, detect later)
+ *   Screen 3: LaunchPreview (auto-detect CLIs, Ctrl+Enter to launch)
  *   Screen 4: RunningView (contribution feed + agent status)
  *   Screen 5: CompleteView (session summary)
- *   Tab: toggle to App (advanced mode) / back to RunningView
+ *   Ctrl+A: toggle to App (advanced mode) / Ctrl+B back to RunningView
  */
 
 import { useKeyboard, useRenderer } from "@opentui/react";
@@ -40,6 +40,7 @@ export type Screen =
   | "preset-select"
   | "agent-detect"
   | "goal-input"
+  | "launch-preview"
   | "spawning"
   | "running"
   | "complete"
@@ -102,7 +103,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         screen: startOnRunning
           ? ("running" as const)
           : topology
-            ? ("agent-detect" as const) // Has topology → detect CLIs + configure before goal
+            ? ("goal-input" as const) // Has topology → goal first, detect later
             : presets && presets.length > 0
               ? ("preset-select" as const)
               : ("running" as const),
@@ -239,42 +240,36 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       renderer.destroy();
     }, [provider, renderer, state.sessionId]);
 
-    // Screen 1 -> Screen 2: preset selected
+    // Screen 1 -> Screen 2: preset selected → go to goal input
     const handlePresetSelect = useCallback((presetName: string) => {
       setState((s) => ({
         ...s,
-        screen: "agent-detect",
+        screen: "goal-input",
         selectedPreset: presetName,
       }));
     }, []);
 
-    // Screen 2 -> Screen 3: agents detected, continue with edited prompts
+    // Screen 2 -> Screen 3: goal entered → go to launch preview (auto-detect)
     const rolePromptsRef = useRef<Map<string, string>>(new Map());
-    const handleAgentDetectContinue = useCallback(
-      (
-        detected: Map<string, boolean>,
-        roleMapping: Map<string, string>,
-        rolePrompts: Map<string, string>,
-      ) => {
-        rolePromptsRef.current = rolePrompts;
-        setState((s) => ({
-          ...s,
-          screen: "goal-input" as const,
-          detectedAgents: detected,
-          roleMapping,
-        }));
-      },
-      [],
-    );
-
-    // Screen 2 -> Screen 1: back
-    const handleAgentDetectBack = useCallback(() => {
-      setState((s) => ({ ...s, screen: "preset-select" }));
+    const handleGoalToPreview = useCallback((goal: string) => {
+      setState((s) => ({
+        ...s,
+        screen: "launch-preview" as const,
+        goal,
+      }));
     }, []);
 
-    // Screen 3 -> Screen 4: goal submitted, auto-spawn agents
-    const handleGoalSubmit = useCallback(
-      (goal: string) => {
+    // Screen 3 -> Screen 2: back to goal input
+    const handleLaunchBack = useCallback(() => {
+      setState((s) => ({ ...s, screen: "goal-input" }));
+    }, []);
+
+    /**
+     * Spawn agents and transition to running view.
+     * Called from handleLaunchConfirm with explicit roleMapping.
+     */
+    const spawnAgents = useCallback(
+      (goal: string, roleMapping: Map<string, string>) => {
         sessionStartRef.current = Date.now();
         const sessionStartedAt = new Date().toISOString();
 
@@ -301,7 +296,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         if (topology && topology.roles.length > 0) {
           const initialStates: AgentSpawnState[] = topology.roles.map((role) => ({
             role: role.name,
-            command: state.roleMapping?.get(role.name) ?? role.command ?? "codex",
+            command: roleMapping.get(role.name) ?? role.command ?? "codex",
             status: "waiting" as const,
           }));
           setState((s) => ({
@@ -316,8 +311,8 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
 
           // Spawn each role and track progress
           for (const role of topology.roles) {
-            // Use roleMapping from Screen 2 (user-selected CLI), fall back to GROVE.md command
-            const command = state.roleMapping?.get(role.name) ?? role.command ?? "codex";
+            // Use roleMapping from launch preview (user-selected CLI), fall back to GROVE.md command
+            const command = roleMapping.get(role.name) ?? role.command ?? "codex";
             const context: Record<string, unknown> = {};
             const editedPrompt = rolePromptsRef.current.get(role.name);
             context.rolePrompt = editedPrompt ?? role.prompt ?? "";
@@ -359,7 +354,25 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           setState((s) => ({ ...s, screen: "running", goal, sessionStartedAt }));
         }
       },
-      [provider, topology, state.roleMapping?.get],
+      [provider, topology],
+    );
+
+    // Screen 3 (launch preview) -> spawning: Ctrl+Enter confirmed launch
+    const handleLaunchConfirm = useCallback(
+      (
+        detected: Map<string, boolean>,
+        roleMappingFromPreview: Map<string, string>,
+        rolePrompts: Map<string, string>,
+      ) => {
+        rolePromptsRef.current = rolePrompts;
+        setState((s) => ({
+          ...s,
+          detectedAgents: detected,
+          roleMapping: roleMappingFromPreview,
+        }));
+        spawnAgents(state.goal ?? "", roleMappingFromPreview);
+      },
+      [state.goal, spawnAgents],
     );
 
     // Screen 3.5 -> Screen 4: all spawns resolved
@@ -367,12 +380,17 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       setState((s) => ({ ...s, screen: "running" }));
     }, []);
 
-    // Screen 3 -> Screen 2: back
+    // Screen 2 -> back: go to preset-select if presets exist, otherwise quit
+    // (topology-first launches skip preset-select, so Esc should exit, not dead-end)
     const handleGoalBack = useCallback(() => {
-      setState((s) => ({ ...s, screen: "agent-detect" }));
-    }, []);
+      if (presets && presets.length > 0) {
+        setState((s) => ({ ...s, screen: "preset-select" }));
+      } else {
+        handleQuit();
+      }
+    }, [presets, handleQuit]);
 
-    // Screen 4 -> advanced mode toggle
+    // Screen 4 -> advanced mode (Ctrl+A, deliberate entry)
     const handleToggleAdvanced = useCallback(() => {
       setState((s) => ({ ...s, screen: "advanced" }));
     }, []);
@@ -468,11 +486,13 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         );
 
       case "agent-detect":
+      case "launch-preview":
         return (
           <AgentDetect
             topology={topology}
-            onContinue={handleAgentDetectContinue}
-            onBack={handleAgentDetectBack}
+            goal={state.goal}
+            onContinue={handleLaunchConfirm}
+            onBack={handleLaunchBack}
           />
         );
 
@@ -482,7 +502,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             presetName={state.selectedPreset ?? "default"}
             topology={topology}
             roleMapping={state.roleMapping}
-            onSubmit={handleGoalSubmit}
+            onSubmit={handleGoalToPreview}
             onBack={handleGoalBack}
           />
         );
@@ -550,7 +570,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         return wrapWithPermissions(
           <box flexDirection="column" width="100%" height="100%">
             <box paddingX={2}>
-              <text color={theme.dimmed}>Ctrl+B:back to simple view</text>
+              <text color={theme.secondary}>Ctrl+B:back to running view</text>
             </box>
             <box flexGrow={1}>
               <AdvancedModeWrapper

@@ -21,7 +21,8 @@ export interface BreadcrumbBarProps {
 
 const SCREEN_LABELS: Record<Screen, string> = {
   "preset-select": "Preset Select",
-  "agent-detect": "Agent Detect",
+  "agent-detect": "Launch Preview",
+  "launch-preview": "Launch Preview",
   "goal-input": "Goal",
   spawning: "Spawning",
   running: "Running",
