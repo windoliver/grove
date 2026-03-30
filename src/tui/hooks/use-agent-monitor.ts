@@ -65,6 +65,71 @@ const MAX_IPC_MESSAGES = 50;
 const POLL_INTERVAL_MS = 2000;
 const SPINNER_INTERVAL_MS = 80;
 
+// ---------------------------------------------------------------------------
+// Pure parsing functions (exported for testing)
+// ---------------------------------------------------------------------------
+
+/** Check whether a log line should be kept (not noise). */
+export function isLogLineKept(line: string): boolean {
+  const t = line.trim();
+  return (
+    t.length > 0 &&
+    !t.startsWith("[stderr]") &&
+    !t.startsWith("[20") &&
+    !t.startsWith(">>> PROMPT") &&
+    !t.startsWith("<<< END PROMPT") &&
+    !t.includes("=== IDLE") &&
+    !t.includes("=== CRASHED") &&
+    !t.includes("=== Session")
+  );
+}
+
+/** Extract role name from a log filename (e.g. "coder-0.log" → "coder"). */
+export function roleFromLogFilename(filename: string): string {
+  return filename.replace(/\.log$/, "").replace(/-\d+$/, "");
+}
+
+/** Extract role name from a tmux session name (e.g. "grove-coder-abc123" → "coder"). */
+export function roleFromSessionName(sessionName: string): string {
+  return sessionName.replace("grove-", "").replace(/-[a-z0-9]+$/i, "");
+}
+
+/** Parse a permission prompt from tmux pane output. Returns the command string if detected, null otherwise. */
+export function parsePermissionPrompt(paneOutput: string): string | null {
+  if (!paneOutput.includes("Do you want to proceed")) return null;
+  const lines = paneOutput.split("\n");
+  let cmd = "";
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (
+      trimmed &&
+      !trimmed.startsWith("Permission") &&
+      !trimmed.startsWith("Do you") &&
+      !trimmed.startsWith("\u276f") &&
+      !trimmed.startsWith("Esc")
+    ) {
+      cmd = trimmed;
+    }
+  }
+  return cmd.slice(0, 80);
+}
+
+/**
+ * Parse raw log content into filtered, ANSI-stripped lines.
+ * Exported for testing — used by the log polling effect.
+ */
+export function parseLogContent(content: string, maxLines: number): readonly string[] {
+  const lines = content
+    .split("\n")
+    .filter(isLogLineKept)
+    .map((l: string) => stripAnsi(l));
+  return lines.slice(-maxLines);
+}
+
+// ---------------------------------------------------------------------------
+// Hook
+// ---------------------------------------------------------------------------
+
 /** Hook that monitors agent activity via log files, tmux, and IPC events. */
 export function useAgentMonitor(options: AgentMonitorOptions): AgentMonitorState {
   const { groveDir, tmux, eventBus, topology, maxOutputLines = 8 } = options;
@@ -127,25 +192,10 @@ export function useAgentMonitor(options: AgentMonitorOptions): AgentMonitorState
         // Accumulate lines across all log files for each role
         const accumulated = new Map<string, string[]>();
         for (const file of files) {
-          const role = file.replace(/\.log$/, "").replace(/-\d+$/, "");
+          const role = roleFromLogFilename(file);
           try {
             const content = await fs.readFile(`${logDir}/${file}`, "utf-8");
-            const lines = content
-              .split("\n")
-              .filter((l: string) => {
-                const t = l.trim();
-                return (
-                  t.length > 0 &&
-                  !t.startsWith("[stderr]") &&
-                  !t.startsWith("[20") &&
-                  !t.startsWith(">>> PROMPT") &&
-                  !t.startsWith("<<< END PROMPT") &&
-                  !t.includes("=== IDLE") &&
-                  !t.includes("=== CRASHED") &&
-                  !t.includes("=== Session")
-                );
-              })
-              .map((l: string) => stripAnsi(l));
+            const lines = content.split("\n").filter(isLogLineKept).map(stripAnsi);
             const existing = accumulated.get(role) ?? [];
             accumulated.set(role, [...existing, ...lines]);
           } catch {
@@ -185,7 +235,7 @@ export function useAgentMonitor(options: AgentMonitorOptions): AgentMonitorState
           if (!sess.startsWith("grove-")) continue;
           const pane = await tmux.capturePanes(sess);
           const lines = pane.split("\n").filter((l) => l.trim().length > 0);
-          const role = sess.replace("grove-", "").replace(/-[a-z0-9]+$/i, "");
+          const role = roleFromSessionName(sess);
           outputs.set(role, lines.slice(-maxOutputLines).map(stripAnsi));
         }
         setAgentOutputs(outputs);
@@ -206,23 +256,10 @@ export function useAgentMonitor(options: AgentMonitorOptions): AgentMonitorState
         for (const sess of sessions) {
           if (!sess.startsWith("grove-")) continue;
           const pane = await tmux.capturePanes(sess);
-          if (pane.includes("Do you want to proceed")) {
-            const lines = pane.split("\n");
-            let cmd = "";
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (
-                trimmed &&
-                !trimmed.startsWith("Permission") &&
-                !trimmed.startsWith("Do you") &&
-                !trimmed.startsWith("\u276f") &&
-                !trimmed.startsWith("Esc")
-              ) {
-                cmd = trimmed;
-              }
-            }
-            const role = sess.replace("grove-", "").replace(/-[a-z0-9]+$/, "");
-            prompts.push({ sessionName: sess, agentRole: role, command: cmd.slice(0, 80) });
+          const cmd = parsePermissionPrompt(pane);
+          if (cmd !== null) {
+            const role = roleFromSessionName(sess);
+            prompts.push({ sessionName: sess, agentRole: role, command: cmd });
           }
         }
         setPendingPermissions(prompts);
