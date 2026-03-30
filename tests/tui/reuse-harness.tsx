@@ -13,6 +13,8 @@ import { createRoot } from "@opentui/react";
 import React from "react";
 import type { ScreenState } from "../../src/tui/screens/screen-manager.js";
 import { ScreenManager } from "../../src/tui/screens/screen-manager.js";
+import { SpawnManager } from "../../src/tui/spawn-manager.js";
+import { SpawnManagerContext } from "../../src/tui/spawn-manager-context.js";
 
 // Minimal mock provider — satisfies TuiDataProvider + TuiSessionProvider
 const mockProvider = {
@@ -108,23 +110,39 @@ async function main() {
   });
   const root = createRoot(renderer);
 
+  // ScreenManager requires SpawnManagerContext (provided by tui-app.tsx in production).
+  // Create a minimal SpawnManager for the test harness.
+  const spawnManager = new SpawnManager(
+    mockProvider as Parameters<typeof SpawnManager>[0],
+    undefined,
+    () => {
+      /* test harness — errors are silent */
+    },
+  );
+
+  const appProps = {
+    provider: mockProvider,
+    topology,
+    groveDir: undefined,
+    tmux: undefined,
+    intervalMs: 2000,
+    agentRuntime: undefined,
+    eventBus: undefined,
+    presetName: "review-loop",
+  } as Parameters<typeof ScreenManager>[0]["appProps"];
+
   root.render(
-    React.createElement(ScreenManager, {
-      appProps: {
-        provider: mockProvider,
-        topology,
-        groveDir: undefined,
-        tmux: undefined,
-        intervalMs: 2000,
-        agentRuntime: undefined,
-        eventBus: undefined,
-        presetName: "review-loop",
-      } as Parameters<typeof ScreenManager>[0]["appProps"],
-      presets,
-      sessions: [],
-      startOnRunning: false,
-      initialState,
-    }),
+    React.createElement(
+      SpawnManagerContext,
+      { value: spawnManager },
+      React.createElement(ScreenManager, {
+        appProps,
+        presets,
+        sessions: [],
+        startOnRunning: false,
+        initialState,
+      }),
+    ),
   );
 
   renderer.start();

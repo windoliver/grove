@@ -1,7 +1,7 @@
 ---
 contract_version: 3
 
-name: quiet-tinkering-matsumoto
+name: functional-prancing-ripple
 
 description: Code review loop with coder and reviewer roles
 
@@ -110,6 +110,6 @@ agent_topology:
 #   after_contribute: "echo 'Contribution submitted'"
 ---
 
-# quiet-tinkering-matsumoto
+# functional-prancing-ripple
 
 Code review loop with coder and reviewer roles

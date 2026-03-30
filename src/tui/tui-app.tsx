@@ -16,8 +16,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { AppProps } from "./app.js";
 import { ScreenManager } from "./screens/screen-manager.js";
 import { FileSessionStore } from "./session-store.js";
-import { SpawnManagerContext } from "./spawn-manager-context.js";
 import { SpawnManager } from "./spawn-manager.js";
+import { SpawnManagerContext } from "./spawn-manager-context.js";
 import { theme } from "./theme.js";
 import { InitProgressView } from "./views/init-progress.js";
 import { WelcomeScreen } from "./views/welcome.js";
@@ -284,8 +284,8 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
     const manager = new SpawnManager(
       provider,
       tmux,
-      () => {
-        // errors shown in RunningView via provider polling
+      (msg) => {
+        process.stderr.write(`[spawn] ${msg}\n`);
       },
       sessionStore,
       groveDir,
@@ -295,11 +295,12 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
     // Wire NexusWsBridge for push-based IPC
     const nexusUrl = process.env.GROVE_NEXUS_URL;
     const apiKey = process.env.NEXUS_API_KEY;
-    if (agentRuntime && appProps.topology && nexusUrl && apiKey) {
+    const topo = appProps.topology;
+    if (agentRuntime && topo && nexusUrl && apiKey) {
       void import("./nexus-ws-bridge.js")
         .then(({ NexusWsBridge }) => {
           const bridge = new NexusWsBridge({
-            topology: appProps.topology!,
+            topology: topo,
             runtime: agentRuntime,
             nexusUrl,
             apiKey,
