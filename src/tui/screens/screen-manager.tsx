@@ -18,8 +18,7 @@ import { useDoneDetection } from "../hooks/use-done-detection.js";
 import { usePermissionDetection } from "../hooks/use-permission-detection.js";
 import type { SessionRecord } from "../provider.js";
 import { isGoalProvider, isSessionProvider } from "../provider.js";
-import { FileSessionStore } from "../session-store.js";
-import { SpawnManager } from "../spawn-manager.js";
+import { useSpawnManager } from "../spawn-manager-context.js";
 import { theme } from "../theme.js";
 import type { TuiPresetEntry } from "../tui-app.js";
 
@@ -106,50 +105,8 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       ...(appProps.presetName ? { selectedPreset: appProps.presetName } : {}),
     }));
 
-    // SpawnManager for auto-spawning agents
-    const spawnManagerRef = useRef<SpawnManager | undefined>(undefined);
-    if (spawnManagerRef.current === undefined) {
-      let sessionStore: FileSessionStore | undefined;
-      if (groveDir) {
-        try {
-          sessionStore = new FileSessionStore(groveDir);
-        } catch {
-          // Best-effort
-        }
-      }
-      spawnManagerRef.current = new SpawnManager(
-        provider,
-        appProps.tmux,
-        () => {
-          // errors shown in RunningView via provider polling
-        },
-        sessionStore,
-        appProps.groveDir,
-        appProps.agentRuntime,
-      );
-
-      // Wire NexusWsBridge for push-based IPC: TUI watches inboxes, pushes to agents
-      const rt = appProps.agentRuntime;
-      const nexusUrl = process.env.GROVE_NEXUS_URL;
-      const apiKey = process.env.NEXUS_API_KEY;
-      if (rt && topology && nexusUrl && apiKey) {
-        void import("../nexus-ws-bridge.js")
-          .then(({ NexusWsBridge }) => {
-            const bridge = new NexusWsBridge({
-              topology,
-              runtime: rt,
-              nexusUrl,
-              apiKey,
-              eventBus: appProps.eventBus,
-            });
-            bridge.connect();
-            spawnManagerRef.current?.setWsBridge(bridge);
-          })
-          .catch(() => {
-            /* best-effort */
-          });
-      }
-    }
+    // SpawnManager singleton — provided by tui-app.tsx via SpawnManagerContext.
+    const spawnManager = useSpawnManager();
 
     // Reconcile agent sessions when entering running view (reattach to acpx).
     // Always bump reconcileVersion after reconcile to force RunningView re-render
@@ -160,10 +117,10 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       if (
         state.screen === "running" &&
         lastReconciledScreenRef.current !== "running" &&
-        spawnManagerRef.current
+        spawnManager
       ) {
         lastReconciledScreenRef.current = "running";
-        void spawnManagerRef.current
+        void spawnManager
           .reconcile()
           .then(() => {
             // Always bump — even if reattached=0, we need RunningView to pick up
@@ -230,7 +187,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           /* best-effort */
         });
       }
-      spawnManagerRef.current?.destroy();
+      // SpawnManager cleanup is owned by tui-app.tsx via useEffect
       provider.close();
       renderer.destroy();
     }, [provider, renderer, state.sessionId]);
@@ -302,7 +259,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             spawnStates: initialStates,
           }));
 
-          spawnManagerRef.current?.setSessionGoal(goal);
+          spawnManager?.setSessionGoal(goal);
 
           // Spawn each role and track progress
           for (const role of topology.roles) {
@@ -322,7 +279,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
               ),
             }));
 
-            void spawnManagerRef.current
+            void spawnManager
               ?.spawn(role.name, command, undefined, 0, context)
               .then(() => {
                 setState((s) => ({
@@ -518,8 +475,8 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
                 doneSignaledRef.current = true;
                 return;
               }
-              if (c.agent?.role && spawnManagerRef.current) {
-                void spawnManagerRef.current.routeContribution(
+              if (c.agent?.role && spawnManager) {
+                void spawnManager.routeContribution(
                   c.agent.role,
                   c.summary,
                   c.kind,
@@ -531,11 +488,11 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
               }
             }}
             onSendToAgent={async (role, message) => {
-              if (!spawnManagerRef.current) return false;
-              return spawnManagerRef.current.sendToAgent(role, message);
+              if (!spawnManager) return false;
+              return spawnManager.sendToAgent(role, message);
             }}
             activeRoles={
-              reconcileVersion >= 0 ? (spawnManagerRef.current?.getActiveRoles() ?? []) : []
+              reconcileVersion >= 0 ? (spawnManager?.getActiveRoles() ?? []) : []
             }
             onToggleAdvanced={handleToggleAdvanced}
             onComplete={handleComplete}
