@@ -186,7 +186,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       return () => eventBus.unsubscribe("system", handler);
     }, [eventBus, dashboardPoll.refresh, contributionsPoll.refresh]);
 
-    const dashboard = dashboardPoll.data;
+    const dashboard = dashboardPoll.data ?? undefined;
     const contributions = contributionsPoll.data;
 
     // Filter contributions to current session scope
