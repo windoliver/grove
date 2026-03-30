@@ -8,14 +8,16 @@
  * Used by session-reuse-e2e.test.ts via tmux capture-pane.
  */
 
+// biome-ignore lint/suspicious/noExplicitAny: test harness — mock provider shape doesn't need strict types
+// biome-ignore lint/correctness/noUnusedImports: React is needed for JSX transform
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import React from "react";
-import { ScreenManager } from "../../src/tui/screens/screen-manager.js";
 import type { ScreenState } from "../../src/tui/screens/screen-manager.js";
+import { ScreenManager } from "../../src/tui/screens/screen-manager.js";
 
 // Minimal mock provider — satisfies TuiDataProvider + TuiSessionProvider
-const mockProvider: any = {
+const mockProvider = {
   capabilities: { sessions: true, goals: true, vfs: false, search: false },
   getDashboard: async () => ({
     totalContributions: 0,
@@ -33,19 +35,25 @@ const mockProvider: any = {
   getActivity: async () => [],
   getDag: async () => ({ nodes: [], edges: [] }),
   getHotThreads: async () => [],
-  close: () => {},
+  close: () => {
+    /* no-op */
+  },
   listSessions: async () => [],
-  createSession: async (input: any) => ({
+  createSession: async (input: { goal?: string; presetName?: string }) => ({
     sessionId: "test-456",
     goal: input.goal,
     presetName: input.presetName,
-    status: "active",
+    status: "active" as const,
     startedAt: new Date().toISOString(),
     contributionCount: 0,
   }),
   getSession: async () => undefined,
-  archiveSession: async () => {},
-  addContributionToSession: async () => {},
+  archiveSession: async () => {
+    /* no-op */
+  },
+  addContributionToSession: async () => {
+    /* no-op */
+  },
 };
 
 // Mock topology with 2 roles (uses goal field)
@@ -102,20 +110,18 @@ async function main() {
   });
   const root = createRoot(renderer);
 
-  const appProps: any = {
-    provider: mockProvider,
-    topology,
-    groveDir: undefined,
-    tmux: undefined,
-    intervalMs: 2000,
-    agentRuntime: undefined,
-    eventBus: undefined,
-    presetName: "review-loop",
-  };
-
   root.render(
     React.createElement(ScreenManager, {
-      appProps,
+      appProps: {
+        provider: mockProvider,
+        topology,
+        groveDir: undefined,
+        tmux: undefined,
+        intervalMs: 2000,
+        agentRuntime: undefined,
+        eventBus: undefined,
+        presetName: "review-loop",
+      } as Parameters<typeof ScreenManager>[0]["appProps"],
       presets,
       sessions: [],
       startOnRunning: false,
@@ -127,7 +133,7 @@ async function main() {
   await renderer.idle();
 }
 
-main().catch((err) => {
+main().catch((err: unknown) => {
   console.error(err);
   process.exit(1);
 });

@@ -135,6 +135,6 @@ describe.skipIf(!hasTmux)("Session reuse E2E — tmux capture-pane", () => {
     // Goal-input should show the spawn preview with the preserved role mapping
     expect(output).toContain("coder");
     expect(output).toContain("reviewer");
-    expect(output).toContain("agents will spawn");
+    expect(output).toContain("agents will be configured");
   }, 10000);
 });
