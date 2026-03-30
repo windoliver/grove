@@ -480,80 +480,224 @@ function printUsage(): void {
   console.log(`grove — asynchronous multi-agent contribution graph
 
 Usage:
-  grove init [name]                    Create a new grove
-  grove init --preset <name> [name]    Create from preset (review-loop, exploration, swarm-ops, research-loop)
-    --nexus-url <url>                  Use Nexus backend (or set GROVE_NEXUS_URL)
-  grove up [--headless] [--no-tui]     Start all services and TUI
-  grove down                           Stop all services
+  grove <command> [options]
 
-  grove contribute            Submit a contribution
-  grove discuss [cid] <msg>   Post a discussion or reply
-  grove review <cid>          Submit a review of a contribution
-  grove reproduce <cid>       Submit a reproduction attempt
-  grove claim <target>        Claim work to prevent duplication
-  grove release <claim-id>    Release a claim
-  grove claims                List claims
-  grove ask <question>        Ask a question (interactive or AI-answered)
+Core Commands:
+  init                    Create a new grove
+    grove init [name]                           Create a new grove with optional name
+    grove init --preset <name> [name]           Create from preset
+    grove init --nexus-url <url> [name]         Use external Nexus backend
+    Example: grove init "My Project" --preset review-loop
 
-  grove bounty create <title> --amount <credits> --deadline <duration>
-  grove bounty list [--status <status>] [--mine]
-  grove bounty claim <bounty-id>
+  up                      Start all grove services and TUI
+    grove up                                    Start services + TUI (default)
+    grove up --headless                         Start services only (CI mode)
+    grove up --no-tui                           Start services, no dashboard
+    Example: grove up --headless
 
-  grove checkout <cid> --to <dir>   Materialize contribution artifacts
-  grove frontier [--metric <name>]  Show current frontier
-  grove search [--query <text>]     Search contributions
-  grove log [-n <count>]            Recent contributions
-  grove tree [--from <cid>]         DAG visualization
-  grove thread <cid>                View a discussion thread
-  grove threads [--tag <tag>]       List active discussion threads
+  down                    Stop all grove services
+    grove down                                  Graceful shutdown
+    Example: grove down
 
-  grove outcome set <cid> <status>  Set outcome for a contribution
-  grove outcome get <cid>          Get outcome for a contribution
-  grove outcome list [--status]    List outcomes
-  grove outcome stats              Show outcome statistics
+  contribute              Submit a contribution
+    grove contribute --kind <type> --summary "<text>"
+    grove contribute --parent <cid>             Link to parent contribution
+    Example: grove contribute --kind fix --summary "Fix bug in parser"
 
-  grove goal                       Show current goal
-  grove goal set <text>            Set a new goal
-    --acceptance <criterion>       Add acceptance criterion (repeatable)
+  discuss                 Post a discussion or reply
+    grove discuss <cid> "<message>"             Reply to contribution
+    grove discuss --tag <tag> "<message>"       Start new tagged discussion
+    Example: grove discuss abc123 "Great work!"
 
-  grove inbox send "msg" --to @agent  Send a message to an agent
-  grove inbox read [--from <id>]     Read inbox messages
-  grove whoami                       Show resolved agent identity
-  grove status [--json]              Show agent status overview
+  review                  Submit a review of a contribution
+    grove review <cid> --summary "<text>" --score <1-5>
+    Example: grove review abc123 --score 4 --summary "Looks good"
 
-  grove export --to-discussion <owner/repo> <cid>   Export to GitHub Discussion
-  grove export --to-pr <owner/repo> <cid>           Export to GitHub PR
-  grove import --from-pr <owner/repo#number>        Import GitHub PR
-  grove import --from-discussion <owner/repo#number> Import GitHub Discussion
+  reproduce               Submit a reproduction attempt
+    grove reproduce <cid> --result <pass|fail> --summary "<text>"
+    Example: grove reproduce abc123 --result pass
 
-  grove tui [--interval <s>] [--url <url>] [--nexus <url>]  Operator TUI dashboard (auto-detects Nexus)
+Coordination Commands:
+  claim                   Claim work to prevent duplication
+    grove claim <target> --lease <hours>        Claim with lease duration
+    grove claim <target> --intent "<description>"
+    Example: grove claim issue-42 --lease 24
 
-  grove gossip peers    [--server <url>]      List known peers
-  grove gossip status   [--server <url>]      Show gossip overview
-  grove gossip frontier [--server <url>]      Show merged frontier from gossip
-  grove gossip watch    [--server <url>]      Stream gossip events
-  grove gossip exchange <peer-url>            Push-pull frontier exchange
-  grove gossip shuffle  <peer-url>            CYCLON peer sampling shuffle
-  grove gossip sync     <seeds>               Full gossip round with seeds
-  grove gossip daemon   <seeds>               Run persistent gossip loop
-  grove gossip add-peer <id@address>          Add peer to local store
-  grove gossip remove-peer <id>               Remove peer from local store
+  release                 Release a claim
+    grove release <claim-id>                    Release specific claim
+    Example: grove release claim-123
 
-  grove skill install [--server-url <url>] [--mcp-url <url>]
-                                           Install SKILL.md into AI assistant skill directories
+  claims                  List claims
+    grove claims                              List all active claims
+    grove claims --agent <id>                   Filter by agent
+    grove claims --expired                      Show expired claims
+    Example: grove claims --expired
 
-  grove completions bash|zsh|fish          Generate shell completion scripts
+  checkout                Materialize contribution artifacts
+    grove checkout <cid> --to <directory>       Checkout to specific dir
+    Example: grove checkout abc123 --to ./output
 
-Global options:
-  --grove <path>              Path to grove directory (or set GROVE_DIR)
-  --help, -h                  Show this help message
-  --version, -v               Show version
-  --verbose                   Show stack traces on error
+Discovery Commands:
+  frontier                Show current frontier
+    grove frontier --metric <name>              Rank by specific metric
+    grove frontier --tag <tag>                  Filter by tag
+    grove frontier --json                       JSON output
+    Example: grove frontier --metric value --n 10
 
-Per-command options:
-  --wide                      Show full values in table output (no truncation)
-                              Supported by: frontier, log, search, threads
-  --json                      Machine-readable JSON output`);
+  search                  Search contributions
+    grove search --query "<text>"               Full-text search
+    grove search --kind <type>                  Filter by kind
+    Example: grove search --query "bug fix" --n 20
+
+  log                     Recent contributions
+    grove log                               Show recent contributions
+    grove log --kind <type>                     Filter by kind
+    grove log -n <count>                        Number of entries
+    Example: grove log -n 50
+
+  tree                    DAG visualization
+    grove tree --from <cid>                     Start from specific node
+    grove tree --depth <n>                      Limit depth
+    Example: grove tree --from abc123 --depth 3
+
+Discussion Commands:
+  thread                  View a discussion thread
+    grove thread <cid>                          Show full thread
+    grove thread <cid> --depth <n>              Limit depth
+    Example: grove thread abc123 --depth 5
+
+  threads                 List active discussion threads
+    grove threads                           List all threads
+    grove threads --tag <tag>                   Filter by tag
+    Example: grove threads --tag bug
+
+  ask                     Ask a question
+    grove ask "<question>"                      Interactive or AI-answered
+    grove ask --strategy <rules|llm|agent>      Answering strategy
+    Example: grove ask "How do I fix this?"
+
+Bounty Commands:
+  bounty create         Create a new bounty
+    grove bounty create <title> --amount <credits> --deadline <duration>
+    Example: grove bounty create "Fix parser" --amount 100 --deadline 7d
+
+  bounty list           List bounties
+    grove bounty list --status <status>         Filter by status
+    grove bounty list --mine                    Show your bounties
+    Example: grove bounty list --status open
+
+  bounty claim          Claim a bounty
+    grove bounty claim <bounty-id>              Claim specific bounty
+    Example: grove bounty claim bounty-42
+
+Outcome Commands:
+  outcome set           Set outcome for a contribution
+    grove outcome set <cid> <status>            Set status
+    Example: grove outcome set abc123 accepted
+
+  outcome get           Get outcome for a contribution
+    grove outcome get <cid>                     Get outcome status
+    Example: grove outcome get abc123
+
+  outcome list          List outcomes
+    grove outcome list --status <status>        Filter by status
+    Example: grove outcome list --status accepted
+
+  outcome stats         Show outcome statistics
+    grove outcome stats                     Show aggregate stats
+    Example: grove outcome stats
+
+Goal Commands:
+  goal                  View or set the current goal
+    grove goal                            Show current goal
+    grove goal set <text>                   Set new goal
+    Example: grove goal set "Improve performance"
+
+Session Commands:
+  session               Manage agent sessions
+    grove session start <agent>               Start agent session
+    grove session list                        List active sessions
+    grove session status <id>                 Show session status
+    grove session stop <id>                   Stop session
+    Example: grove session start reviewer
+
+Communication Commands:
+  inbox send            Send a message to an agent
+    grove inbox send "<msg>" --to @agent      Send to specific agent
+    Example: grove inbox send "Ready" --to @reviewer
+
+  inbox read            Read inbox messages
+    grove inbox read                      Show all messages
+    grove inbox read --from <id>              Filter by sender
+    Example: grove inbox read
+
+Identity Commands:
+  whoami                Show resolved agent identity
+    grove whoami --json                       JSON output
+    Example: grove whoami
+
+  status                Show agent status overview
+    grove status --json                       JSON output
+    Example: grove status
+
+GitHub Integration:
+  export                Export contribution to GitHub
+    grove export --to-discussion <owner/repo> <cid>
+    grove export --to-pr <owner/repo> <cid>
+    Example: grove export --to-discussion myorg/myrepo abc123
+
+  import                Import from GitHub as contribution
+    grove import --from-pr <owner/repo#number>
+    grove import --from-discussion <owner/repo#number>
+    Example: grove import --from-pr myorg/myrepo#42
+
+TUI Commands:
+  tui                   Operator TUI dashboard
+    grove tui --interval <s>                  Refresh interval
+    grove tui --url <url>                     Connect to remote server
+    Example: grove tui --interval 5
+
+Gossip Commands:
+  gossip peers          List known peers
+    grove gossip peers --server <url>
+    Example: grove gossip peers --server http://node1:4515
+
+  gossip status         Show gossip overview
+  gossip frontier       Show merged frontier
+  gossip watch          Stream gossip events
+  gossip exchange       Push-pull frontier exchange
+  gossip shuffle        CYCLON peer sampling shuffle
+  gossip sync           Full gossip round with seeds
+  gossip daemon         Run persistent gossip loop
+  gossip add-peer       Add peer to local store
+  gossip remove-peer    Remove peer from local store
+
+Utility Commands:
+  skill install         Manage AI assistant skill files
+    grove skill install --server-url <url>
+    Example: grove skill install
+
+  completions           Generate shell completion scripts
+    grove completions bash|zsh|fish
+    Example: grove completions bash > ~/.bash_completion
+
+Global Options:
+  --grove <path>        Path to grove directory (or set GROVE_DIR)
+  --help, -h            Show this help message
+  --version, -v         Show version
+  --verbose             Show stack traces on error
+  --wide                Show full values (no truncation)
+  --json                Machine-readable JSON output
+
+Presets:
+  review-loop           Code review workflows
+  exploration           Open-ended discovery
+  swarm-ops             Production multi-agent ops
+  research-loop         ML research & benchmarks
+  pr-review             GitHub PR analysis
+  federated-swarm       Gossip-coordinated teams
+
+For more info: grove <command> --help or see QUICKSTART.md`);
 }
 
 // ---------------------------------------------------------------------------
