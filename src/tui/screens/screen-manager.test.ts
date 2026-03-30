@@ -6,9 +6,9 @@
  * Part 2: Structural correctness after SpawnManager lift to tui-app.tsx (#174).
  */
 
+import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { describe, expect, test } from "bun:test";
 import type { Screen, ScreenState } from "./screen-manager.js";
 
 // ---------------------------------------------------------------------------
