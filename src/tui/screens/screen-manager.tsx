@@ -374,10 +374,15 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       setState((s) => ({ ...s, screen: "running" }));
     }, []);
 
-    // Screen 2 -> Screen 1: back to preset select
+    // Screen 2 -> back: go to preset-select if presets exist, otherwise quit
+    // (topology-first launches skip preset-select, so Esc should exit, not dead-end)
     const handleGoalBack = useCallback(() => {
-      setState((s) => ({ ...s, screen: "preset-select" }));
-    }, []);
+      if (presets && presets.length > 0) {
+        setState((s) => ({ ...s, screen: "preset-select" }));
+      } else {
+        handleQuit();
+      }
+    }, [presets, handleQuit]);
 
     // Screen 4 -> advanced mode (Ctrl+A, deliberate entry)
     const handleToggleAdvanced = useCallback(() => {

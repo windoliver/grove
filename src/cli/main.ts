@@ -460,16 +460,12 @@ async function main(): Promise<void> {
     throw new UsageError(`unknown command '${first}'. ${hint}`);
   }
 
-  // Per-command help
+  // Per-command help — only intercept if the command has explicit helpText.
+  // Otherwise let the command handler process --help itself (many commands
+  // like import, export, gossip, up already print detailed usage internally).
   const subArgs = args.slice(1);
-  if (subArgs[0] === "--help" || subArgs[0] === "-h") {
-    if (command.helpText) {
-      console.log(command.helpText);
-    } else {
-      console.log(
-        `grove ${command.name} — ${command.description}\n\nRun 'grove --help' for full usage.`,
-      );
-    }
+  if ((subArgs[0] === "--help" || subArgs[0] === "-h") && command.helpText) {
+    console.log(command.helpText);
     return;
   }
 

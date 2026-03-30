@@ -202,14 +202,8 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
             }
             return;
           }
-          // Any of these keys: continue to goal input
-          if (
-            key.name === "return" ||
-            key.name === "tab" ||
-            key.name === "right" ||
-            key.name === "enter" ||
-            key.name === "space"
-          ) {
+          // Ctrl+Enter: launch agents (deliberate confirmation, prevents accidental spawns)
+          if ((key.name === "return" || key.name === "enter") && key.ctrl) {
             if (!scanning) {
               onContinue(detected, roleMapping, rolePrompts);
             }
@@ -394,7 +388,7 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
               ? "Type prompt, Enter:save, Esc:cancel"
               : scanning
                 ? "Scanning..."
-                : "c:change CLI  e:edit prompt  j/k:navigate  Enter/Tab:continue  Esc:back"}
+                : "c:change CLI  e:edit prompt  j/k:navigate  Ctrl+Enter:launch  Esc:back"}
           </text>
         </box>
       </box>
