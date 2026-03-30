@@ -518,9 +518,37 @@ export async function handleTui(
       activeStopGc = result.stopGc;
       updateSkillAfterStartup();
       const { App } = await import("./app.js");
-      root.render(React.createElement(App, result.appProps));
+      const { SpawnManagerContext } = await import("./spawn-manager-context.js");
+      const { SpawnManager } = await import("./spawn-manager.js");
+      const { FileSessionStore } = await import("./session-store.js");
+      // Legacy --url path: create SpawnManager and wrap App in context
+      // (same pattern as tui-app.tsx for the interactive path).
+      let sessionStore: import("./session-store.js").SessionStore | undefined;
+      if (result.appProps.groveDir) {
+        try {
+          sessionStore = new FileSessionStore(result.appProps.groveDir);
+        } catch {
+          // best-effort
+        }
+      }
+      const spawnManager = new SpawnManager(
+        result.appProps.provider,
+        result.appProps.tmux,
+        (msg) => process.stderr.write(`[spawn] ${msg}\n`),
+        sessionStore,
+        result.appProps.groveDir,
+        result.appProps.agentRuntime,
+      );
+      root.render(
+        React.createElement(
+          SpawnManagerContext,
+          { value: spawnManager },
+          React.createElement(App, result.appProps),
+        ),
+      );
       renderer.start();
       await renderer.idle();
+      spawnManager.destroy();
       return;
     }
 

@@ -12,9 +12,12 @@
  */
 
 import { useKeyboard, useRenderer } from "@opentui/react";
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AppProps } from "./app.js";
 import { ScreenManager } from "./screens/screen-manager.js";
+import { FileSessionStore } from "./session-store.js";
+import { SpawnManager } from "./spawn-manager.js";
+import { SpawnManagerContext } from "./spawn-manager-context.js";
 import { theme } from "./theme.js";
 import { InitProgressView } from "./views/init-progress.js";
 import { WelcomeScreen } from "./views/welcome.js";
@@ -259,19 +262,86 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
   );
 
   // ---------------------------------------------------------------------------
+  // SpawnManager singleton — created once when AppProps first resolve.
+  // Shared via SpawnManagerContext to both ScreenManager and App (advanced mode).
+  // ---------------------------------------------------------------------------
+
+  const spawnManager = useMemo(() => {
+    if (!appProps) return undefined;
+    const { provider, tmux, groveDir, agentRuntime } = appProps;
+
+    // Null-provider guard (flagged as critical failure mode in eng review)
+    if (!provider) return undefined;
+
+    let sessionStore: FileSessionStore | undefined;
+    if (groveDir) {
+      try {
+        sessionStore = new FileSessionStore(groveDir);
+      } catch {
+        // Session persistence is best-effort
+      }
+    }
+    const manager = new SpawnManager(
+      provider,
+      tmux,
+      (msg) => {
+        process.stderr.write(`[spawn] ${msg}\n`);
+      },
+      sessionStore,
+      groveDir,
+      agentRuntime,
+    );
+
+    // Wire NexusWsBridge for push-based IPC
+    const nexusUrl = process.env.GROVE_NEXUS_URL;
+    const apiKey = process.env.NEXUS_API_KEY;
+    const topo = appProps.topology;
+    if (agentRuntime && topo && nexusUrl && apiKey) {
+      void import("./nexus-ws-bridge.js")
+        .then(({ NexusWsBridge }) => {
+          const bridge = new NexusWsBridge({
+            topology: topo,
+            runtime: agentRuntime,
+            nexusUrl,
+            apiKey,
+            eventBus: appProps.eventBus,
+          });
+          bridge.connect();
+          manager.setWsBridge(bridge);
+        })
+        .catch(() => {
+          /* best-effort */
+        });
+    }
+
+    return manager;
+  }, [appProps]);
+
+  // Cleanup SpawnManager on unmount or when appProps change
+  useEffect(() => {
+    return () => {
+      spawnManager?.destroy();
+    };
+  }, [spawnManager]);
+
+  // ---------------------------------------------------------------------------
   // Render based on mode
   // ---------------------------------------------------------------------------
 
-  if (mode === "boardroom" && appProps) {
+  if (mode === "boardroom" && appProps && spawnManager) {
     // Resumed groves start on RunningView (Screen 4); new groves start on
     // PresetSelect (Screen 1) — but for resumed groves that already went
     // through welcome, we skip directly to RunningView.
-    return React.createElement(ScreenManager, {
-      appProps,
-      presets,
-      sessions: props.sessions,
-      startOnRunning: isResumedRef.current,
-    });
+    return (
+      <SpawnManagerContext value={spawnManager}>
+        {React.createElement(ScreenManager, {
+          appProps,
+          presets,
+          sessions: props.sessions,
+          startOnRunning: isResumedRef.current,
+        })}
+      </SpawnManagerContext>
+    );
   }
 
   if (mode === "initializing") {

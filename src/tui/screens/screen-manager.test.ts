@@ -1,15 +1,14 @@
 /**
- * Screen manager state transition tests.
+ * Screen manager tests.
  *
- * Tests the state machine logic for screen transitions, focusing on:
- * - Initial screen selection
- * - Forward transitions (preset → detect → goal → spawning → running → complete)
- * - Session reuse (complete → goal-input with preset preserved)
- * - Back navigation
- * - Edge cases (missing state, no presets)
+ * Part 1: State machine logic for screen transitions (initial selection,
+ *   forward transitions, session reuse, back navigation, edge cases).
+ * Part 2: Structural correctness after SpawnManager lift to tui-app.tsx (#174).
  */
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { Screen, ScreenState } from "./screen-manager.js";
 
 // ---------------------------------------------------------------------------
@@ -57,7 +56,7 @@ function newSessionTransition(state: ScreenState, presetCount: number): ScreenSt
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// Part 1: State transition tests
 // ---------------------------------------------------------------------------
 
 describe("ScreenManager — initial screen selection", () => {
@@ -212,5 +211,36 @@ describe("ScreenManager — back navigation", () => {
     const state: ScreenState = { screen: "agent-detect", selectedPreset: "review-loop" };
     const next: ScreenState = { ...state, screen: "preset-select" };
     expect(next.screen).toBe("preset-select");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Part 2: Structural singleton guarantee (issue #174)
+// ---------------------------------------------------------------------------
+
+const SRC = readFileSync(resolve(import.meta.dir, "screen-manager.tsx"), "utf-8");
+
+describe("ScreenManager SpawnManager consumption", () => {
+  test("consumes SpawnManager via useSpawnManager() hook", () => {
+    expect(SRC).toContain("useSpawnManager()");
+  });
+
+  test("does not create its own SpawnManager instance", () => {
+    expect(SRC).not.toContain("new SpawnManager(");
+  });
+
+  test("does not create its own FileSessionStore", () => {
+    expect(SRC).not.toContain("new FileSessionStore(");
+    expect(SRC).not.toContain("FileSessionStore");
+  });
+
+  test("does not wire NexusWsBridge (owned by tui-app.tsx)", () => {
+    expect(SRC).not.toContain("NexusWsBridge");
+    expect(SRC).not.toContain("nexus-ws-bridge");
+  });
+
+  test("does not call spawnManager.destroy() (owned by tui-app.tsx)", () => {
+    expect(SRC).not.toContain("spawnManager.destroy()");
+    expect(SRC).not.toContain("spawnManager?.destroy()");
   });
 });

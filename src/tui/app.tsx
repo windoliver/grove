@@ -37,8 +37,7 @@ import {
   isGoalProvider,
   type TuiDataProvider,
 } from "./provider.js";
-import { FileSessionStore } from "./session-store.js";
-import { SpawnManager } from "./spawn-manager.js";
+import { useSpawnManager } from "./spawn-manager-context.js";
 
 /** Props for the root App component. */
 export interface AppProps {
@@ -224,8 +223,6 @@ export function App({
   tmux,
   topology,
   presetName,
-  groveDir,
-  agentRuntime,
 }: AppProps): React.ReactNode {
   const renderer = useRenderer();
   const nav = useNavigation();
@@ -296,60 +293,20 @@ export function App({
     errorTimerRef.current = setTimeout(() => setLastError(undefined), 5_000);
   }, []);
 
-  // SpawnManager handles workspace/claim/heartbeat lifecycle
-  const spawnManagerRef = useRef<SpawnManager | undefined>(undefined);
-  if (spawnManagerRef.current === undefined) {
-    // Use the resolved groveDir from props for session persistence
-    let sessionStore: FileSessionStore | undefined;
-    if (groveDir) {
-      try {
-        sessionStore = new FileSessionStore(groveDir);
-      } catch {
-        // Session persistence is best-effort
-      }
-    }
-    spawnManagerRef.current = new SpawnManager(
-      provider,
-      tmux,
-      showError,
-      sessionStore,
-      groveDir,
-      agentRuntime,
-    );
-
-    // Wire NexusWsBridge for IPC — polls Nexus inbox API, pushes to agents
-    const nexusUrl = process.env.GROVE_NEXUS_URL;
-    const apiKey = process.env.NEXUS_API_KEY;
-    if (agentRuntime && topology && nexusUrl && apiKey) {
-      void import("./nexus-ws-bridge.js")
-        .then(({ NexusWsBridge }) => {
-          const bridge = new NexusWsBridge({
-            topology,
-            runtime: agentRuntime,
-            nexusUrl,
-            apiKey,
-          });
-          bridge.connect();
-          spawnManagerRef.current?.setWsBridge(bridge);
-        })
-        .catch(() => {
-          /* best-effort */
-        });
-    }
-  }
+  // SpawnManager singleton — provided by tui-app.tsx via SpawnManagerContext.
+  const spawnManager = useSpawnManager();
 
   // Reconcile persisted sessions on startup (reattach live, clean dead)
   useEffect(() => {
-    spawnManagerRef.current?.reconcile().catch(() => {
+    spawnManager.reconcile().catch(() => {
       // Reconciliation is best-effort — don't block TUI startup
     });
-  }, []);
+  }, [spawnManager]);
 
-  // Cleanup timers on unmount
+  // Cleanup error timer on unmount (SpawnManager cleanup is owned by tui-app.tsx)
   useEffect(() => {
     return () => {
       if (errorTimerRef.current !== undefined) clearTimeout(errorTimerRef.current);
-      spawnManagerRef.current?.destroy();
     };
   }, []);
 
@@ -418,17 +375,16 @@ export function App({
 
   // Sync PR context to SpawnManager whenever it changes
   useEffect(() => {
-    if (!spawnManagerRef.current) return;
     if (activePR) {
-      spawnManagerRef.current.setPrContext({
+      spawnManager.setPrContext({
         number: activePR.number,
         title: activePR.title,
         filesChanged: activePR.filesChanged,
       });
     } else {
-      spawnManagerRef.current.setPrContext(undefined);
+      spawnManager.setPrContext(undefined);
     }
-  }, [activePR]);
+  }, [activePR, spawnManager]);
 
   // Poll gossip peers for delegate items in command palette
   const gossipFetcher = useCallback(async () => {
@@ -683,25 +639,23 @@ export function App({
       if (role?.description) context.roleDescription = role.description;
       if (topology) context.topology = topology;
 
-      spawnManagerRef.current
-        ?.spawn(agentId, command, parentAgentId, depth, context)
-        .catch((err) => {
-          const msg = err instanceof Error ? err.message : "Spawn failed";
-          showError(msg);
-        });
+      spawnManager.spawn(agentId, command, parentAgentId, depth, context).catch((err) => {
+        const msg = err instanceof Error ? err.message : "Spawn failed";
+        showError(msg);
+      });
     },
-    [topology, activeClaims, showError],
+    [topology, activeClaims, showError, spawnManager],
   );
 
   /** Kill tmux session → stop heartbeat → release claim → clean workspace. */
   const handleKill = useCallback(
     (sessionName: string) => {
-      spawnManagerRef.current?.kill(sessionName).catch((err) => {
+      spawnManager.kill(sessionName).catch((err) => {
         const msg = err instanceof Error ? err.message : "Kill failed";
         showError(msg);
       });
     },
-    [showError],
+    [showError, spawnManager],
   );
 
   const handleCommandPaletteClose = useCallback(() => {
@@ -711,7 +665,7 @@ export function App({
   // ---------------------------------------------------------------------------
   // KeyboardActions adapter — maps routeKey callbacks to state transitions.
   // Complex palette execution (spawn/kill/register/delegate) and paste safety
-  // remain here because they need closure access to spawnManagerRef, etc.
+  // remain here because they need closure access to spawnManager, etc.
   // ---------------------------------------------------------------------------
 
   const keyboardActions: KeyboardActions = useMemo(
@@ -782,7 +736,7 @@ export function App({
         }
         // Also set on SpawnManager so agents receive the goal in CLAUDE.md + command args
         if (buf) {
-          spawnManagerRef.current?.setSessionGoal(buf);
+          spawnManager.setSessionGoal(buf);
         }
         dispatch({ type: "GOAL_SUBMIT" });
         panels.setMode(InputMode.Normal);
@@ -908,6 +862,7 @@ export function App({
       paletteParentId,
       keybindingOverrides,
       provider,
+      spawnManager,
     ],
   );
 
