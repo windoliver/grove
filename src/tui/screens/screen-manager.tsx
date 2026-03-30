@@ -94,7 +94,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     initialState,
   }: ScreenManagerProps): React.ReactNode {
     const renderer = useRenderer();
-    const { provider, topology, groveDir } = appProps;
+    const { provider, topology } = appProps;
 
     // Initialize state: use initialState override (testing), or compute from props
     const [state, setState] = useState<ScreenState>(
@@ -141,7 +141,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       if (state.screen !== "running") {
         lastReconciledScreenRef.current = "";
       }
-    }, [state.screen]);
+    }, [state.screen, spawnManager]);
 
     // Track session start time for duration calculation
     const sessionStartRef = useRef<number>(Date.now());
@@ -265,7 +265,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             spawnStates: initialStates,
           }));
 
-          spawnManager?.setSessionGoal(goal);
+          spawnManager.setSessionGoal(goal);
 
           // Spawn each role and track progress
           for (const role of topology.roles) {
@@ -287,7 +287,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             }));
 
             void spawnManager
-              ?.spawn(role.name, command, undefined, 0, context)
+              .spawn(role.name, command, undefined, 0, context)
               .then(() => {
                 setState((s) => ({
                   ...s,
@@ -312,7 +312,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           setState((s) => ({ ...s, screen: "running", goal, sessionStartedAt }));
         }
       },
-      [provider, topology, state.selectedPreset],
+      [provider, topology, state.selectedPreset, spawnManager],
     );
 
     // Screen 3 (launch preview) -> spawning: Ctrl+Enter confirmed launch
@@ -500,12 +500,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
                 return;
               }
               if (c.agent?.role && spawnManager) {
-                void spawnManager.routeContribution(
-                  c.agent.role,
-                  c.summary,
-                  c.kind,
-                  topology,
-                );
+                void spawnManager.routeContribution(c.agent.role, c.summary, c.kind, topology);
               }
               if (state.sessionId && isSessionProvider(provider)) {
                 void provider.addContributionToSession(state.sessionId, c.cid).catch(() => {
@@ -517,9 +512,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
               if (!spawnManager) return false;
               return spawnManager.sendToAgent(role, message);
             }}
-            activeRoles={
-              reconcileVersion >= 0 ? (spawnManager?.getActiveRoles() ?? []) : []
-            }
+            activeRoles={reconcileVersion >= 0 ? (spawnManager.getActiveRoles() ?? []) : []}
             onToggleAdvanced={handleToggleAdvanced}
             onComplete={handleComplete}
             onQuit={handleQuit}

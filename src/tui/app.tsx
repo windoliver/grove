@@ -223,8 +223,6 @@ export function App({
   tmux,
   topology,
   presetName,
-  groveDir,
-  agentRuntime,
 }: AppProps): React.ReactNode {
   const renderer = useRenderer();
   const nav = useNavigation();
@@ -386,7 +384,7 @@ export function App({
     } else {
       spawnManager.setPrContext(undefined);
     }
-  }, [activePR]);
+  }, [activePR, spawnManager]);
 
   // Poll gossip peers for delegate items in command palette
   const gossipFetcher = useCallback(async () => {
@@ -641,14 +639,12 @@ export function App({
       if (role?.description) context.roleDescription = role.description;
       if (topology) context.topology = topology;
 
-      spawnManager
-        .spawn(agentId, command, parentAgentId, depth, context)
-        .catch((err) => {
-          const msg = err instanceof Error ? err.message : "Spawn failed";
-          showError(msg);
-        });
+      spawnManager.spawn(agentId, command, parentAgentId, depth, context).catch((err) => {
+        const msg = err instanceof Error ? err.message : "Spawn failed";
+        showError(msg);
+      });
     },
-    [topology, activeClaims, showError],
+    [topology, activeClaims, showError, spawnManager],
   );
 
   /** Kill tmux session → stop heartbeat → release claim → clean workspace. */
@@ -659,7 +655,7 @@ export function App({
         showError(msg);
       });
     },
-    [showError],
+    [showError, spawnManager],
   );
 
   const handleCommandPaletteClose = useCallback(() => {
@@ -866,6 +862,7 @@ export function App({
       paletteParentId,
       keybindingOverrides,
       provider,
+      spawnManager,
     ],
   );
 

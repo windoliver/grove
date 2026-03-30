@@ -13,8 +13,9 @@ import type React from "react";
 import { createContext, useContext } from "react";
 import type { SpawnManager } from "./spawn-manager.js";
 
-export const SpawnManagerContext: React.Context<SpawnManager | undefined> =
-  createContext<SpawnManager | undefined>(undefined);
+export const SpawnManagerContext: React.Context<SpawnManager | undefined> = createContext<
+  SpawnManager | undefined
+>(undefined);
 SpawnManagerContext.displayName = "SpawnManagerContext";
 
 /**
