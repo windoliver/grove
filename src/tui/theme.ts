@@ -128,3 +128,51 @@ export const BRAILLE_SPINNER: readonly string[] = [
   "\u2807",
   "\u280f",
 ];
+
+// ---------------------------------------------------------------------------
+// Shared agent status icon — single source of truth (DRY, issue #183)
+// ---------------------------------------------------------------------------
+
+/** Agent status for icon derivation. */
+export type AgentStatus = "running" | "claimed" | "stalled" | "idle" | "expired" | "error";
+
+/** Result of agentStatusIcon(): the symbol and its color. */
+export interface AgentStatusBadge {
+  readonly icon: string;
+  readonly color: string;
+}
+
+/**
+ * Derive the display icon and color for an agent status.
+ *
+ * When `spinnerFrame` is provided and status is "running", the icon
+ * cycles through the braille spinner. Otherwise uses a static symbol.
+ *
+ * This replaces the duplicated statusSymbol() / agentSymbol() functions
+ * in agent-list.tsx, agent-graph.tsx, running-view.tsx, and agent-split-pane.tsx.
+ */
+export function agentStatusIcon(
+  status: AgentStatus | string,
+  spinnerFrame?: number,
+): AgentStatusBadge {
+  switch (status) {
+    case "running":
+      return {
+        icon:
+          spinnerFrame !== undefined
+            ? (BRAILLE_SPINNER[spinnerFrame % BRAILLE_SPINNER.length] ?? theme.agentRunning)
+            : theme.agentRunning,
+        color: theme.running,
+      };
+    case "claimed":
+    case "stalled":
+      return { icon: theme.agentWaiting, color: theme.waiting };
+    case "expired":
+    case "idle":
+      return { icon: theme.agentIdle, color: theme.idle };
+    case "error":
+      return { icon: theme.agentError, color: theme.error };
+    default:
+      return { icon: theme.agentIdle, color: theme.idle };
+  }
+}

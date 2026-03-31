@@ -130,13 +130,21 @@ export function usePolledData<T>(
     }
   }, [intervalMs, active, doFetch]);
 
-  // Initial fetch + start polling
+  // Initial fetch + start polling.
+  // Deps are intentionally [active, intervalMs] only — NOT startPolling.
+  // Including startPolling caused interval thrashing: every re-render cleared
+  // and re-created the interval, preventing subsequent polls from firing.
   useEffect(() => {
     mountedRef.current = true;
 
-    if (active) {
+    if (active && intervalMs > 0) {
       void doFetch();
-      startPolling();
+      if (intervalRef.current !== null) {
+        clearInterval(intervalRef.current);
+      }
+      intervalRef.current = setInterval(() => {
+        void doFetch();
+      }, intervalMs);
     }
 
     return () => {
@@ -146,7 +154,7 @@ export function usePolledData<T>(
         intervalRef.current = null;
       }
     };
-  }, [active, doFetch, startPolling]);
+  }, [active, intervalMs, doFetch]);
 
   const refresh = useCallback(() => {
     void doFetch();

@@ -14,6 +14,7 @@ import { useKeyboard, useRenderer } from "@opentui/react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { AppProps } from "../app.js";
 import { App } from "../app.js";
+import { debugLog } from "../debug-log.js";
 import { useDoneDetection } from "../hooks/use-done-detection.js";
 import { usePermissionDetection } from "../hooks/use-permission-detection.js";
 import type { SessionRecord } from "../provider.js";
@@ -126,9 +127,65 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         spawnManager
       ) {
         lastReconciledScreenRef.current = "running";
+        debugLog(
+          "reconcile",
+          `starting groveDir=${appProps.groveDir} sessionId=${state.sessionId} topologyRoles=${topology?.roles.map((r) => r.name).join(",")}`,
+        );
         void spawnManager
           .reconcile()
-          .then(() => {
+          .then(async () => {
+            debugLog("reconcile", `done, creating buffers for topology roles`);
+            // Ensure log buffers exist for all topology roles (even if reconcile found no live agents)
+            if (topology) {
+              for (const role of topology.roles) {
+                spawnManager.ensureLogBuffer(role.name);
+              }
+            }
+            debugLog(
+              "reconcile",
+              `buffers=[${[...spawnManager.getLogBuffers().keys()].join(",")}]`,
+            );
+            // Load historical traces on resume.
+            // Try explicit sessionId first, then find most recent JSONL session dir.
+            let sid = state.sessionId;
+            if (!sid && appProps.groveDir) {
+              try {
+                const { readdirSync, statSync } = require("node:fs") as typeof import("node:fs");
+                const { join } = require("node:path") as typeof import("node:path");
+                const logDir = join(appProps.groveDir, "agent-logs");
+                const dirs = readdirSync(logDir).filter((d) => {
+                  try {
+                    return statSync(join(logDir, d)).isDirectory();
+                  } catch {
+                    return false;
+                  }
+                });
+                if (dirs.length > 0) {
+                  // Use most recently modified session dir
+                  dirs.sort((a, b) => {
+                    try {
+                      return statSync(join(logDir, b)).mtimeMs - statSync(join(logDir, a)).mtimeMs;
+                    } catch {
+                      return 0;
+                    }
+                  });
+                  sid = dirs[0];
+                  debugLog("reconcile", `no sessionId in state, found JSONL dir: ${sid}`);
+                }
+              } catch {
+                /* non-fatal */
+              }
+            }
+            if (sid) {
+              spawnManager.setSessionId(sid);
+              await spawnManager.loadTraces(sid).catch(() => {
+                /* non-fatal */
+              });
+            }
+            // Start polling agent log files for live output
+            spawnManager.startLogPolling();
+            // Start contribution polling outside React (React timers die on unmount)
+            spawnManager.startContributionPolling(provider, topology, state.sessionStartedAt);
             // Always bump — even if reattached=0, we need RunningView to pick up
             // the reconciled state (getActiveRoles may have changed).
             setReconcileVersion((v) => v + 1);
@@ -141,7 +198,15 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       if (state.screen !== "running") {
         lastReconciledScreenRef.current = "";
       }
-    }, [state.screen, spawnManager]);
+    }, [
+      state.screen,
+      state.sessionId,
+      state.sessionStartedAt,
+      spawnManager,
+      topology,
+      appProps.groveDir,
+      provider,
+    ]);
 
     // Track session start time for duration calculation
     const sessionStartRef = useRef<number>(Date.now());
@@ -153,6 +218,12 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // ---------------------------------------------------------------------------
     const snapshotAndComplete = useCallback(
       async (reason: string) => {
+        // Save trace history before completing
+        await spawnManager.saveTraces().catch(() => {
+          /* best-effort */
+        });
+        spawnManager.stopLogPolling();
+
         let contributionCount = 0;
         try {
           const contributions = await provider.getContributions({ limit: 1000 });
@@ -174,7 +245,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           };
         });
       },
-      [provider],
+      [provider, spawnManager],
     );
     const handleDone = useCallback(() => {
       void snapshotAndComplete("All roles signaled done");
@@ -187,16 +258,28 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     const pendingPermissions = usePermissionDetection(appProps.tmux);
 
     const handleQuit = useCallback(() => {
-      // Archive active session (persists to DB, agents stay alive in acpx)
-      if (state.sessionId && isSessionProvider(provider)) {
-        void provider.archiveSession(state.sessionId).catch(() => {
+      spawnManager.stopLogPolling();
+      // Save trace history before quitting, then teardown
+      debugLog(
+        "quit",
+        `saving traces, sessionId=${state.sessionId} buffers=[${[...spawnManager.getLogBuffers().keys()].join(",")}]`,
+      );
+      void (async () => {
+        await spawnManager.saveTraces().catch(() => {
           /* best-effort */
         });
-      }
-      // SpawnManager cleanup is owned by tui-app.tsx via useEffect
-      provider.close();
-      renderer.destroy();
-    }, [provider, renderer, state.sessionId]);
+        debugLog("quit", "traces saved");
+        // Archive active session (persists to DB, agents stay alive in acpx)
+        if (state.sessionId && isSessionProvider(provider)) {
+          await provider.archiveSession(state.sessionId).catch(() => {
+            /* best-effort */
+          });
+        }
+        // SpawnManager cleanup is owned by tui-app.tsx via useEffect
+        provider.close();
+        renderer.destroy();
+      })();
+    }, [provider, renderer, state.sessionId, spawnManager]);
 
     // Screen 1 -> Screen 2: preset selected → go to goal input
     const handlePresetSelect = useCallback((presetName: string) => {
@@ -228,6 +311,10 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
      */
     const spawnAgents = useCallback(
       (goal: string, roleMapping: Map<string, string>) => {
+        debugLog(
+          "spawnAgents",
+          `goal="${goal}" roles=[${[...roleMapping.entries()].map(([k, v]) => `${k}→${v}`).join(",")}]`,
+        );
         sessionStartRef.current = Date.now();
         const sessionStartedAt = new Date().toISOString();
 
@@ -243,6 +330,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           void provider
             .createSession({ goal, presetName: state.selectedPreset })
             .then((session) => {
+              spawnManager.setSessionId(session.sessionId);
               setState((s) => ({ ...s, sessionId: session.sessionId }));
             })
             .catch(() => {
@@ -266,6 +354,10 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           }));
 
           spawnManager.setSessionGoal(goal);
+          // SessionId may be set async — start polling after spawn completes
+          spawnManager.startLogPolling();
+          // Start contribution polling outside React (React timers die on unmount)
+          spawnManager.startContributionPolling(provider, topology, sessionStartedAt);
 
           // Spawn each role and track progress
           for (const role of topology.roles) {
@@ -487,7 +579,12 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             tmux={appProps.tmux}
             eventBus={appProps.eventBus}
             groveDir={appProps.groveDir}
+            logBuffers={reconcileVersion >= 0 ? spawnManager.getLogBuffers() : undefined}
             onNewContribution={(c) => {
+              debugLog(
+                "contribution",
+                `NEW cid=${c.cid.slice(0, 12)} kind=${c.kind} role=${c.agent?.role} summary="${c.summary.slice(0, 50)}"`,
+              );
               // Once grove_done fires, stop ALL routing (prevents infinite ping-pong)
               if (doneSignaledRef.current) return;
               const isDone =

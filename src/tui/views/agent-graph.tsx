@@ -20,7 +20,7 @@ import { renderGraph } from "../layout/edge-render.js";
 import type { LayoutEdge, LiveAgentStatus } from "../layout/graph-layout.js";
 import { layoutGraph } from "../layout/graph-layout.js";
 import type { TuiDataProvider } from "../provider.js";
-import { theme } from "../theme.js";
+import { agentStatusIcon, theme } from "../theme.js";
 
 /** Props for the AgentGraphView. */
 export interface AgentGraphProps {
@@ -67,22 +67,9 @@ function buildDynamicEdges(
   return edges;
 }
 
-/** Map a status string to its theme symbol (matches agent-list mapping). */
+/** Map a status string to its theme symbol (delegates to shared agentStatusIcon). */
 function statusSymbol(status: string): string {
-  switch (status) {
-    case "running":
-      return theme.agentRunning;
-    case "claimed":
-    case "stalled":
-      return theme.agentWaiting;
-    case "expired":
-    case "idle":
-      return theme.agentIdle;
-    case "error":
-      return theme.agentError;
-    default:
-      return theme.agentIdle;
-  }
+  return agentStatusIcon(status).icon;
 }
 
 /** Build live agent status map from claims and tmux sessions. */

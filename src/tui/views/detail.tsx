@@ -84,11 +84,11 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
           Kind: {c.kind} Mode: {c.mode} Created: {formatTimestamp(c.createdAt)}
         </text>
         <text>
-          Agent: {c.agent.agentName ?? c.agent.agentId}
-          {c.agent.model ? ` (${c.agent.model})` : ""}
-          {c.agent.platform ? ` on ${c.agent.platform}` : ""}
+          Agent: {c.agent?.agentName ?? c.agent?.agentId ?? "unknown"}
+          {c.agent?.model ? ` (${c.agent.model})` : ""}
+          {c.agent?.platform ? ` on ${c.agent.platform}` : ""}
         </text>
-        {c.tags.length > 0 && <text>Tags: {c.tags.join(", ")}</text>}
+        {(c.tags ?? []).length > 0 && <text>Tags: {(c.tags ?? []).join(", ")}</text>}
       </box>
 
       {/* Outcome annotation */}
@@ -127,10 +127,10 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
         </box>
       )}
 
-      {c.relations.length > 0 && (
+      {(c.relations ?? []).length > 0 && (
         <box flexDirection="column" marginBottom={1}>
-          <text>{`Relations (${c.relations.length})`}</text>
-          {c.relations.map((r, i) => (
+          <text>{`Relations (${(c.relations ?? []).length})`}</text>
+          {(c.relations ?? []).map((r, i) => (
             <text key={`rel-${String(i)}`}>
               {r.relationType} → {truncateCid(r.targetCid)}
             </text>

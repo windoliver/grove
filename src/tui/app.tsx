@@ -484,6 +484,7 @@ export function App({
   );
 
   const handleContributionsLoaded = useCallback((contributions: readonly Contribution[]) => {
+    if (!contributions) return;
     setContributionList(contributions);
     setRowCount(contributions.length);
   }, []);
@@ -955,7 +956,7 @@ export function App({
             ? `$${sessionCosts.totalCostUsd.toFixed(2)} | ${formatTokens(sessionCosts.totalTokens)}`
             : undefined
         }
-        goalLabel={dashboardData?.metadata.goal}
+        goalLabel={dashboardData?.metadata?.goal}
       />
     </box>
   );

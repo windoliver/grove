@@ -90,7 +90,10 @@ export const ClaimsView: React.NamedExoticComponent<ClaimsProps> = React.memo(fu
       status: statusStr,
       lease: remaining > 0 ? formatDuration(remaining) : "expired",
       heartbeat: formatTimestamp(c.heartbeatAt),
-      intent: c.intentSummary.length > 28 ? `${c.intentSummary.slice(0, 26)}..` : c.intentSummary,
+      intent:
+        (c.intentSummary ?? "").length > 28
+          ? `${(c.intentSummary ?? "").slice(0, 26)}..`
+          : (c.intentSummary ?? ""),
     };
   });
 

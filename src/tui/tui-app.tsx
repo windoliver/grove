@@ -14,6 +14,7 @@
 import { useKeyboard, useRenderer } from "@opentui/react";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AppProps } from "./app.js";
+import { debugLog } from "./debug-log.js";
 import { ScreenManager } from "./screens/screen-manager.js";
 import { FileSessionStore } from "./session-store.js";
 import { SpawnManager } from "./spawn-manager.js";
@@ -296,9 +297,14 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
     const nexusUrl = process.env.GROVE_NEXUS_URL;
     const apiKey = process.env.NEXUS_API_KEY;
     const topo = appProps.topology;
+    debugLog(
+      "wsBridge",
+      `check: agentRuntime=${!!agentRuntime} topo=${!!topo} nexusUrl=${nexusUrl ?? "none"} hasApiKey=${!!apiKey} hasEventBus=${!!appProps.eventBus}`,
+    );
     if (agentRuntime && topo && nexusUrl && apiKey) {
       void import("./nexus-ws-bridge.js")
         .then(({ NexusWsBridge }) => {
+          debugLog("wsBridge", `creating NexusWsBridge at ${nexusUrl}`);
           const bridge = new NexusWsBridge({
             topology: topo,
             runtime: agentRuntime,
@@ -308,9 +314,10 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
           });
           bridge.connect();
           manager.setWsBridge(bridge);
+          debugLog("wsBridge", "connected");
         })
-        .catch(() => {
-          /* best-effort */
+        .catch((err) => {
+          debugLog("wsBridge", `FAILED: ${String(err)}`);
         });
     }
 

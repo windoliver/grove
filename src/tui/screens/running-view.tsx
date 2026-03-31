@@ -21,15 +21,18 @@ import type { Contribution } from "../../core/models.js";
 import type { AgentTopology } from "../../core/topology.js";
 import { EmptyState } from "../components/empty-state.js";
 import { ProgressBar } from "../components/progress-bar.js";
+import type { AgentLogBuffer } from "../data/agent-log-buffer.js";
+import { debugLog } from "../debug-log.js";
 import { useAgentMonitor } from "../hooks/use-agent-monitor.js";
 import { InputMode } from "../hooks/use-panel-focus.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { DashboardData, TuiDataProvider } from "../provider.js";
 import { isVfsProvider } from "../provider.js";
-import { BRAILLE_SPINNER, KIND_ICONS, PLATFORM_COLORS, theme } from "../theme.js";
+import { agentStatusIcon, KIND_ICONS, PLATFORM_COLORS, theme } from "../theme.js";
 import { AgentListView } from "../views/agent-list.js";
 import { DagView } from "../views/dag.js";
 import { TerminalView } from "../views/terminal.js";
+import { TracePane } from "../views/trace-pane.js";
 import { VfsBrowserView } from "../views/vfs-browser.js";
 import {
   collapsePanel,
@@ -74,6 +77,8 @@ export interface RunningViewProps {
   readonly onSendToAgent?: ((role: string, message: string) => Promise<boolean>) | undefined;
   /** Active agent roles for the prompt target selector. */
   readonly activeRoles?: readonly string[] | undefined;
+  /** Per-agent log buffers for the Trace panel. Keyed by role name. */
+  readonly logBuffers?: ReadonlyMap<string, AgentLogBuffer> | undefined;
   readonly onToggleAdvanced: () => void;
   readonly onComplete: (reason: string) => void;
   readonly onQuit: () => void;
@@ -116,6 +121,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     onNewContribution,
     onSendToAgent,
     activeRoles,
+    logBuffers,
     onToggleAdvanced,
     onComplete: _onComplete,
     onQuit,
@@ -124,8 +130,9 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     const [expandedPanel, setExpandedPanel] = useState<RunningPanel | null>(null);
     const [zoomLevel, setZoomLevel] = useState<"normal" | "half" | "full">("normal");
 
-    // ─── Agent output expansion (e key toggles) ───
-    const [agentsExpanded, setAgentsExpanded] = useState(false);
+    // ─── Trace pane state ───
+    const [traceSelectedAgent, setTraceSelectedAgent] = useState(0);
+    const [traceScrollOffset, setTraceScrollOffset] = useState(0);
 
     // ─── Overlay state ───
     const [showVfs, setShowVfs] = useState(false);
@@ -160,10 +167,22 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
 
     // ─── Data fetching ───
     const dashboardFetcher = useCallback(() => provider.getDashboard(), [provider]);
-    const contributionsFetcher = useCallback(
-      () => provider.getContributions({ limit: MAX_FEED_ITEMS }),
-      [provider],
-    );
+    const fetchCountRef = React.useRef(0);
+    const contributionsFetcher = useCallback(async () => {
+      fetchCountRef.current++;
+      const result = await provider.getContributions({ limit: MAX_FEED_ITEMS });
+      if (
+        fetchCountRef.current <= 5 ||
+        fetchCountRef.current % 20 === 0 ||
+        (result && result.length > 0)
+      ) {
+        debugLog(
+          "poll",
+          `fetch #${fetchCountRef.current} returned ${result?.length ?? 0} contributions`,
+        );
+      }
+      return result;
+    }, [provider]);
 
     // Gate polling: pause contributions when panel is fullscreen and not showing feed
     const feedActive =
@@ -175,10 +194,17 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       feedActive,
     );
 
+    // NOTE: usePolledData's setInterval doesn't work in OpenTUI because the
+    // RunningView component unmounts/remounts during screen transitions, killing
+    // all React effect timers. Contribution polling is handled outside React
+    // by SpawnManager.startContributionPolling() which uses a class-level timer.
+
     // When EventBus fires (SSE push from Nexus), trigger immediate re-fetch
     useEffect(() => {
+      debugLog("eventBus", `exists=${!!eventBus}`);
       if (!eventBus) return;
       const handler = () => {
+        debugLog("eventBus", "SSE event received — refreshing polls");
         dashboardPoll.refresh();
         contributionsPoll.refresh();
       };
@@ -195,6 +221,18 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       ? allContributions.filter((c) => c.createdAt >= sessionStartedAt)
       : allContributions;
 
+    // Debug: log feed state periodically
+    const feedDebugRef = React.useRef(0);
+    useEffect(() => {
+      feedDebugRef.current++;
+      if (feedDebugRef.current <= 3 || feedDebugRef.current % 20 === 0) {
+        debugLog(
+          "feed",
+          `#${feedDebugRef.current} allContribs=${allContributions.length} feed=${feed.length} feedActive=${feedActive} sessionStartedAt=${sessionStartedAt ?? "none"}`,
+        );
+      }
+    }, [allContributions.length, feed.length, feedActive, sessionStartedAt]);
+
     // Track seen contribution CIDs and route new ones to downstream agents
     const seenCidsRef = React.useRef<Set<string>>(new Set());
     const initialSeededRef = React.useRef(false);
@@ -202,6 +240,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       if (!onNewContribution || !feed.length) return;
 
       if (!initialSeededRef.current && !sessionStartedAt) {
+        debugLog("seenCids", `seeding ${feed.length} existing CIDs (no sessionStartedAt)`);
         for (const c of feed) {
           seenCidsRef.current.add(c.cid);
         }
@@ -212,6 +251,10 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
 
       for (const c of feed) {
         if (!seenCidsRef.current.has(c.cid)) {
+          debugLog(
+            "seenCids",
+            `NEW CID detected: ${c.cid.slice(0, 20)} kind=${c.kind} role=${c.agent?.role}`,
+          );
           seenCidsRef.current.add(c.cid);
           onNewContribution(c);
         }
@@ -250,7 +293,6 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           setExpandedPanel(next.expandedPanel);
           setZoomLevel(next.zoomLevel);
         },
-        toggleAgentExpand: () => setAgentsExpanded((v) => !v),
         toggleHelp: () => setShowHelp((v) => !v),
         dismissHelp: () => setShowHelp(false),
         toggleVfs: () => setShowVfs((v) => !v),
@@ -282,6 +324,25 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         scrollToAskUser: () => {
           const askIdx = feed.findIndex((c) => c.kind === "ask_user");
           if (askIdx >= 0) setCursor(askIdx);
+        },
+        // Trace pane actions
+        traceSelectDown: () => {
+          const roleCount = (topology?.roles ?? []).length;
+          setTraceSelectedAgent((a) => Math.min(a + 1, Math.max(0, roleCount - 1)));
+          setTraceScrollOffset(0); // reset scroll when changing agent
+        },
+        traceSelectUp: () => {
+          setTraceSelectedAgent((a) => Math.max(a - 1, 0));
+          setTraceScrollOffset(0);
+        },
+        traceScrollDown: () => setTraceScrollOffset((o) => Math.max(o - 1, 0)),
+        traceScrollUp: () => setTraceScrollOffset((o) => o + 1),
+        traceScrollToBottom: () => setTraceScrollOffset(0),
+        traceScrollToTop: () => setTraceScrollOffset(Number.MAX_SAFE_INTEGER),
+        traceCycleAgent: () => {
+          const roleCount = (topology?.roles ?? []).length;
+          setTraceSelectedAgent((a) => (a + 1) % Math.max(1, roleCount));
+          setTraceScrollOffset(0);
         },
         openDetail: () => onToggleAdvanced(),
         toggleAdvanced: () => onToggleAdvanced(),
@@ -327,6 +388,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         monitor.pendingPermissions,
         tmux,
         pendingAskUser,
+        topology,
       ],
     );
 
@@ -411,6 +473,9 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             monitor,
             cursor,
             feed,
+            logBuffers,
+            traceSelectedAgent,
+            traceScrollOffset,
           })}
           {renderStatusBar(
             expandedPanel,
@@ -457,6 +522,9 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
                 monitor,
                 cursor,
                 feed,
+                logBuffers,
+                traceSelectedAgent,
+                traceScrollOffset,
               })}
             </box>
           </box>
@@ -487,7 +555,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     return (
       <box flexDirection="column" width="100%" height="100%">
         {/* Agent status with live output */}
-        {renderAgentSection(topology, dashboard, monitor, agentsExpanded)}
+        {renderAgentSection(topology, dashboard, monitor)}
 
         {/* Main feed area */}
         {renderFeedSection(feed, cursor, goal, pendingAskUser, frontier, DEFAULT_FEED_WINDOW)}
@@ -526,15 +594,11 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
 // Render helpers (extracted from the main component for readability)
 // ---------------------------------------------------------------------------
 
-/** Max lines of agent output to show when expanded. */
-const AGENT_OUTPUT_LINES = 12;
-
-/** Render the agent status section with live output. */
+/** Render the agent status section (compact — press e for trace viewer). */
 function renderAgentSection(
   topology: AgentTopology | undefined,
   dashboard: DashboardData | undefined,
   monitor: ReturnType<typeof useAgentMonitor>,
-  expanded: boolean,
 ): React.ReactNode {
   const roles = topology?.roles ?? [];
   if (roles.length === 0) {
@@ -553,7 +617,7 @@ function renderAgentSection(
         <text color={theme.focus} bold>
           Agents
         </text>
-        <text color={theme.dimmed}> (e:{expanded ? "collapse" : "expand"} traces)</text>
+        <text color={theme.dimmed}> (e:trace viewer)</text>
       </box>
       {roles.map((role, idx) => {
         const activeClaim = dashboard?.activeClaims.find(
@@ -563,38 +627,17 @@ function renderAgentSection(
         const output = monitor.agentOutputs.get(role.name);
         const lastLine = output && output.length > 0 ? (output[output.length - 1] ?? "") : "";
 
-        let icon: string;
-        let color: string;
-        if (activeClaim) {
-          icon = BRAILLE_SPINNER[monitor.spinnerFrame] ?? theme.agentRunning;
-          color = theme.running;
-        } else {
-          icon = theme.agentIdle;
-          color = theme.idle;
-        }
+        const status = activeClaim ? "running" : "idle";
+        const badge = agentStatusIcon(status, activeClaim ? monitor.spinnerFrame : undefined);
 
         return (
-          <box key={role.name} flexDirection="column">
-            <box flexDirection="row">
-              <text color={color}>{icon} </text>
-              <text color={platformColor} bold>
-                {role.name}
-              </text>
-              <text color={theme.dimmed}> [{idx + 1}] </text>
-              {!expanded && lastLine ? (
-                <text color={theme.muted}>{lastLine.slice(0, 80)}</text>
-              ) : null}
-            </box>
-            {expanded && output && output.length > 0 ? (
-              <box flexDirection="column" marginLeft={4} marginBottom={1}>
-                {output.slice(-AGENT_OUTPUT_LINES).map((line, i) => (
-                  // biome-ignore lint/suspicious/noArrayIndexKey: stable ordered output
-                  <text key={i} color={theme.muted}>
-                    {line.slice(0, 120)}
-                  </text>
-                ))}
-              </box>
-            ) : null}
+          <box key={role.name} flexDirection="row">
+            <text color={badge.color}>{badge.icon} </text>
+            <text color={platformColor} bold>
+              {role.name}
+            </text>
+            <text color={theme.dimmed}> [{idx + 1}] </text>
+            {lastLine ? <text color={theme.muted}>{lastLine.slice(0, 80)}</text> : null}
           </box>
         );
       })}
@@ -736,6 +779,9 @@ interface PanelRenderContext {
   readonly monitor: ReturnType<typeof useAgentMonitor>;
   readonly cursor: number;
   readonly feed: readonly Contribution[];
+  readonly logBuffers?: ReadonlyMap<string, AgentLogBuffer> | undefined;
+  readonly traceSelectedAgent?: number;
+  readonly traceScrollOffset?: number;
 }
 
 /** Render the content of an expanded panel. */
@@ -781,6 +827,27 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
           mode={InputMode.Normal}
         />
       );
+
+    case RunningPanel.Trace: {
+      const roles = (ctx.topology?.roles ?? []).map((r) => r.name);
+      const agentStatuses = new Map<string, string>();
+      for (const role of ctx.topology?.roles ?? []) {
+        const hasClaim = ctx.dashboard?.activeClaims.some(
+          (c) => c.agent.role === role.name || c.agent.agentId.startsWith(role.name),
+        );
+        agentStatuses.set(role.name, hasClaim ? "running" : "idle");
+      }
+      return (
+        <TracePane
+          buffers={ctx.logBuffers ?? new Map()}
+          roles={roles}
+          agentStatuses={agentStatuses}
+          spinnerFrame={ctx.monitor.spinnerFrame}
+          selectedAgent={ctx.traceSelectedAgent ?? 0}
+          traceScrollOffset={ctx.traceScrollOffset ?? 0}
+        />
+      );
+    }
   }
 }
 
@@ -888,8 +955,10 @@ function renderHelpOverlay(): React.ReactNode {
       </text>
       <text color={theme.text}> 1-4 Expand panel (Feed/Agents/DAG/Terminal)</text>
       <text color={theme.text}> f Toggle fullscreen (when panel expanded)</text>
-      <text color={theme.text}> e Toggle agent output traces</text>
-      <text color={theme.text}> j/k Scroll contribution feed</text>
+      <text color={theme.text}> e Open trace viewer (split-pane agent output)</text>
+      <text color={theme.text}> j/k Navigate (feed or trace agent list)</text>
+      <text color={theme.text}> J/K Scroll trace output (when trace open)</text>
+      <text color={theme.text}> G/g Jump to bottom/top of trace</text>
       <text color={theme.text}> m / : Send message to agent</text>
       <text color={theme.text}> r Jump to ask_user question</text>
       <text color={theme.text}> Ctrl+F File browser (VFS)</text>

@@ -17,6 +17,9 @@ import type { AgentIdentity } from "../core/models.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
+import { AgentLogBuffer } from "./data/agent-log-buffer.js";
+import { loadTraceHistory, saveTraceHistory } from "./data/trace-persistence.js";
+import { debugLog } from "./debug-log.js";
 import type { NexusWsBridge } from "./nexus-ws-bridge.js";
 import type { TuiDataProvider } from "./provider.js";
 import type { PersistedSpawnRecord, SessionStore } from "./session-store.js";
@@ -54,12 +57,20 @@ export class SpawnManager {
   private readonly agentRuntime: AgentRuntime | undefined;
   private readonly spawnRecords = new Map<string, SpawnRecord>();
   private readonly agentSessions = new Map<string, AgentSession>();
+  private readonly logBuffers = new Map<string, AgentLogBuffer>();
   private readonly onError: (message: string) => void;
   private readonly sessionStore: SessionStore | undefined;
   private wsBridge: NexusWsBridge | undefined;
   private prContext: PrContext | undefined;
   private sessionGoal: string | undefined;
+  private sessionId: string | undefined;
   private groveDir: string | undefined;
+  private logPollTimer: ReturnType<typeof setInterval> | null = null;
+  private contributionPollTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly seenCids = new Set<string>();
+  private onContributionDetected:
+    | ((c: import("../core/models.js").Contribution) => void)
+    | undefined;
 
   constructor(
     provider: TuiDataProvider,
@@ -114,9 +125,10 @@ export class SpawnManager {
     roleId: string,
     command: string,
     _parentAgentId?: string,
-    _depth = 0,
+    _depth: number = 0,
     context?: Record<string, unknown>,
   ): Promise<SpawnResult> {
+    debugLog("spawn", `role=${roleId} command=${command}`);
     const spawnId = `${roleId}-${Date.now().toString(36)}`;
     const agent: AgentIdentity = {
       agentId: spawnId,
@@ -273,9 +285,10 @@ export class SpawnManager {
       });
     }
 
-    // Step 4: Record spawn + register for IPC push.
+    // Step 4: Record spawn + register for IPC push + create log buffer.
     // No claims, no heartbeats — agents create claims themselves via grove_claim
     // when they need swarm coordination.
+    this.ensureLogBuffer(roleId);
     this.spawnRecords.set(spawnId, {
       claimId: "",
       targetRef: spawnId,
@@ -425,6 +438,9 @@ export class SpawnManager {
         if (liveSession) {
           this.agentSessions.set(record.spawnId, liveSession);
         }
+        // Ensure log buffer exists for reconciled agents
+        const role = record.spawnId.replace(/-[a-z0-9]+$/i, "");
+        this.ensureLogBuffer(role);
         reattached++;
       } else {
         // Dead session: clean workspace + remove record
@@ -516,6 +532,10 @@ export class SpawnManager {
     kind: string,
     topology?: import("../core/topology.js").AgentTopology,
   ): Promise<void> {
+    debugLog(
+      "route",
+      `from=${sourceRole} kind=${kind} summary="${summary.slice(0, 60)}" hasTopology=${!!topology} hasRuntime=${!!this.agentRuntime}`,
+    );
     if (!topology || !this.agentRuntime) return;
 
     // Find target roles from topology edges
@@ -610,8 +630,193 @@ export class SpawnManager {
     return roles;
   }
 
+  // ─── Log buffer management (issue #183) ───
+
+  /** Get all per-agent log buffers (for TracePane). */
+  getLogBuffers(): ReadonlyMap<string, AgentLogBuffer> {
+    return this.logBuffers;
+  }
+
+  /** Set the session ID for log buffer naming and persistence. */
+  setSessionId(id: string | undefined): void {
+    this.sessionId = id;
+  }
+
+  /**
+   * Ensure an AgentLogBuffer exists for a role. Creates one if missing.
+   * Called at spawn time and on reconcile.
+   */
+  ensureLogBuffer(role: string): AgentLogBuffer {
+    let buffer = this.logBuffers.get(role);
+    if (!buffer) {
+      buffer = new AgentLogBuffer(role, this.sessionId ?? "unknown");
+      this.logBuffers.set(role, buffer);
+    }
+    return buffer;
+  }
+
+  /**
+   * Start polling log files for all active agent roles.
+   * Call once after spawn/reconcile. Subsequent calls restart the timer.
+   */
+  startLogPolling(intervalMs: number = 2000): void {
+    this.stopLogPolling();
+    if (!this.groveDir) return;
+    const logDir = `${this.groveDir}/agent-logs`;
+
+    let pollCount = 0;
+    const pollAll = () => {
+      // Scan log directory for files matching each role (e.g., coder-0.log, coder-1.log)
+      try {
+        const { readdirSync } = require("node:fs") as typeof import("node:fs");
+        const files = readdirSync(logDir).filter((f: string) => f.endsWith(".log"));
+        if (pollCount < 3 || pollCount % 10 === 0) {
+          debugLog(
+            "poll",
+            `#${pollCount} logDir=${logDir} files=[${files.join(",")}] buffers=[${[...this.logBuffers.keys()].join(",")}]`,
+          );
+        }
+        for (const [role, buffer] of this.logBuffers) {
+          // Find the newest log file for this role
+          const roleFile = files
+            .filter((f: string) => f === `${role}.log` || f.startsWith(`${role}-`))
+            .sort()
+            .pop();
+          if (roleFile) {
+            void buffer
+              .pollLogFile(`${logDir}/${roleFile}`)
+              .then(() => {
+                if (buffer.size > 0 && (pollCount < 5 || pollCount % 10 === 0)) {
+                  debugLog("poll", `role=${role} file=${roleFile} bufferSize=${buffer.size}`);
+                }
+              })
+              .catch(() => {
+                /* non-fatal */
+              });
+          }
+        }
+        pollCount++;
+      } catch (err) {
+        debugLog("poll", `error: ${String(err)}`);
+      }
+    };
+
+    this.logPollTimer = setInterval(pollAll, intervalMs);
+    pollAll(); // Also poll immediately
+  }
+
+  /** Stop the log polling timer. */
+  stopLogPolling(): void {
+    if (this.logPollTimer !== null) {
+      clearInterval(this.logPollTimer);
+      this.logPollTimer = null;
+    }
+    if (this.contributionPollTimer !== null) {
+      clearInterval(this.contributionPollTimer);
+      this.contributionPollTimer = null;
+    }
+  }
+
+  /**
+   * Start polling contributions outside React (React timers die on unmount).
+   * Detects new CIDs and routes them via routeContribution.
+   */
+  startContributionPolling(
+    provider: TuiDataProvider,
+    topology: import("../core/topology.js").AgentTopology | undefined,
+    sessionStartedAt: string | undefined,
+    intervalMs: number = 3000,
+  ): void {
+    if (this.contributionPollTimer !== null) {
+      clearInterval(this.contributionPollTimer);
+    }
+
+    let pollCount = 0;
+    this.contributionPollTimer = setInterval(async () => {
+      try {
+        const contributions = await provider.getContributions({ limit: 50 });
+        const feed = sessionStartedAt
+          ? (contributions ?? []).filter((c) => c.createdAt >= sessionStartedAt)
+          : (contributions ?? []);
+
+        if (pollCount < 3 || pollCount % 20 === 0) {
+          debugLog(
+            "contribPoll",
+            `#${pollCount} fetched=${feed.length} seen=${this.seenCids.size}`,
+          );
+        }
+
+        // First poll: seed all existing CIDs to avoid re-routing old contributions on resume
+        if (pollCount === 0) {
+          for (const c of feed) {
+            this.seenCids.add(c.cid);
+          }
+          debugLog("contribPoll", `seeded ${feed.length} existing CIDs`);
+        } else {
+          // Subsequent polls: detect new contributions and route them
+          for (const c of feed) {
+            if (!this.seenCids.has(c.cid)) {
+              this.seenCids.add(c.cid);
+              debugLog(
+                "contribPoll",
+                `NEW cid=${c.cid.slice(0, 20)} kind=${c.kind} role=${c.agent?.role}`,
+              );
+              // Route to downstream agents
+              if (c.agent?.role && topology) {
+                void this.routeContribution(c.agent.role, c.summary, c.kind, topology);
+              }
+              // Notify callback (for TUI feed update)
+              this.onContributionDetected?.(c);
+            }
+          }
+        }
+        pollCount++;
+      } catch (err) {
+        debugLog("contribPoll", `error: ${String(err)}`);
+      }
+    }, intervalMs);
+  }
+
+  /** Set a callback for when new contributions are detected (for TUI feed notification). */
+  setOnContributionDetected(
+    cb: ((c: import("../core/models.js").Contribution) => void) | undefined,
+  ): void {
+    this.onContributionDetected = cb;
+  }
+
+  /**
+   * Save all trace buffers to JSONL. Called on session end.
+   * Returns immediately if no groveDir or sessionId.
+   */
+  async saveTraces(): Promise<void> {
+    debugLog(
+      "save",
+      `groveDir=${this.groveDir} sessionId=${this.sessionId} bufferCount=${this.logBuffers.size} sizes=[${[...this.logBuffers.entries()].map(([r, b]) => `${r}:${b.size}`).join(",")}]`,
+    );
+    if (!this.groveDir || !this.sessionId) return;
+    await saveTraceHistory(this.groveDir, this.sessionId, this.logBuffers);
+    debugLog("save", "done");
+  }
+
+  /**
+   * Load trace history from JSONL into buffers. Called on resume.
+   * Creates buffers for each role found in the session directory.
+   */
+  async loadTraces(sessionIdToLoad: string): Promise<void> {
+    if (!this.groveDir) return;
+    const loaded = await loadTraceHistory(this.groveDir, sessionIdToLoad);
+    for (const [role, buffer] of loaded) {
+      this.logBuffers.set(role, buffer);
+    }
+  }
+
   /** Close bridge and clear state (agents stay alive in acpx). */
   destroy(): void {
+    this.stopLogPolling();
+    for (const buffer of this.logBuffers.values()) {
+      buffer.dispose();
+    }
+    this.logBuffers.clear();
     this.spawnRecords.clear();
     this.wsBridge?.close();
   }
@@ -625,12 +830,18 @@ export class SpawnManager {
     const groveDir = join(workspacePath, "..", "..");
     // Resolve the project root (parent of .grove) for finding src/mcp/serve.ts
     const projectRoot = join(groveDir, "..");
-    // MCP server writes to local SQLite (same DB as HTTP server).
-    // Do NOT pass GROVE_NEXUS_URL — Nexus VFS reads hit rate limits.
-    // IPC routing uses Nexus separately via NexusWsBridge.
+    // MCP server needs GROVE_NEXUS_URL so contributions are written to Nexus
+    // (enables IPC push via NexusEventBus + TopologyRouter for agent routing).
+    // Without it, contributions only go to local SQLite and reviewer never gets notified.
     const mcpEnv: Record<string, string> = {
       GROVE_DIR: groveDir,
     };
+    if (process.env.GROVE_NEXUS_URL) {
+      mcpEnv.GROVE_NEXUS_URL = process.env.GROVE_NEXUS_URL;
+    }
+    if (process.env.NEXUS_API_KEY) {
+      mcpEnv.NEXUS_API_KEY = process.env.NEXUS_API_KEY;
+    }
 
     // Find the grove MCP server: check dist/ first (installed), then src/ (dev)
     const { dirname } = await import("node:path");
