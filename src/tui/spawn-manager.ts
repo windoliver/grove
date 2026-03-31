@@ -19,6 +19,7 @@ import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
 import { AgentLogBuffer } from "./data/agent-log-buffer.js";
 import { loadTraceHistory, saveTraceHistory } from "./data/trace-persistence.js";
+import { debugLog } from "./debug-log.js";
 import type { NexusWsBridge } from "./nexus-ws-bridge.js";
 import type { TuiDataProvider } from "./provider.js";
 import type { PersistedSpawnRecord, SessionStore } from "./session-store.js";
@@ -119,9 +120,10 @@ export class SpawnManager {
     roleId: string,
     command: string,
     _parentAgentId?: string,
-    _depth = 0,
+    _depth: number = 0,
     context?: Record<string, unknown>,
   ): Promise<SpawnResult> {
+    debugLog("spawn", `role=${roleId} command=${command}`);
     const spawnId = `${roleId}-${Date.now().toString(36)}`;
     const agent: AgentIdentity = {
       agentId: spawnId,
@@ -525,6 +527,10 @@ export class SpawnManager {
     kind: string,
     topology?: import("../core/topology.js").AgentTopology,
   ): Promise<void> {
+    debugLog(
+      "route",
+      `from=${sourceRole} kind=${kind} summary="${summary.slice(0, 60)}" hasTopology=${!!topology} hasRuntime=${!!this.agentRuntime}`,
+    );
     if (!topology || !this.agentRuntime) return;
 
     // Find target roles from topology edges
@@ -653,11 +659,18 @@ export class SpawnManager {
     if (!this.groveDir) return;
     const logDir = `${this.groveDir}/agent-logs`;
 
+    let pollCount = 0;
     const pollAll = () => {
       // Scan log directory for files matching each role (e.g., coder-0.log, coder-1.log)
       try {
         const { readdirSync } = require("node:fs") as typeof import("node:fs");
         const files = readdirSync(logDir).filter((f: string) => f.endsWith(".log"));
+        if (pollCount < 3 || pollCount % 10 === 0) {
+          debugLog(
+            "poll",
+            `#${pollCount} logDir=${logDir} files=[${files.join(",")}] buffers=[${[...this.logBuffers.keys()].join(",")}]`,
+          );
+        }
         for (const [role, buffer] of this.logBuffers) {
           // Find the newest log file for this role
           const roleFile = files
@@ -665,13 +678,21 @@ export class SpawnManager {
             .sort()
             .pop();
           if (roleFile) {
-            void buffer.pollLogFile(`${logDir}/${roleFile}`).catch(() => {
-              /* non-fatal */
-            });
+            void buffer
+              .pollLogFile(`${logDir}/${roleFile}`)
+              .then(() => {
+                if (buffer.size > 0 && (pollCount < 5 || pollCount % 10 === 0)) {
+                  debugLog("poll", `role=${role} file=${roleFile} bufferSize=${buffer.size}`);
+                }
+              })
+              .catch(() => {
+                /* non-fatal */
+              });
           }
         }
-      } catch {
-        /* non-fatal — directory may not exist yet */
+        pollCount++;
+      } catch (err) {
+        debugLog("poll", `error: ${String(err)}`);
       }
     };
 
@@ -692,8 +713,13 @@ export class SpawnManager {
    * Returns immediately if no groveDir or sessionId.
    */
   async saveTraces(): Promise<void> {
+    debugLog(
+      "save",
+      `groveDir=${this.groveDir} sessionId=${this.sessionId} bufferCount=${this.logBuffers.size} sizes=[${[...this.logBuffers.entries()].map(([r, b]) => `${r}:${b.size}`).join(",")}]`,
+    );
     if (!this.groveDir || !this.sessionId) return;
     await saveTraceHistory(this.groveDir, this.sessionId, this.logBuffers);
+    debugLog("save", "done");
   }
 
   /**
