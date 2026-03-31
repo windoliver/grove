@@ -652,19 +652,31 @@ export class SpawnManager {
     this.stopLogPolling();
     if (!this.groveDir) return;
     const logDir = `${this.groveDir}/agent-logs`;
-    this.logPollTimer = setInterval(() => {
-      for (const [role, buffer] of this.logBuffers) {
-        void buffer.pollLogFile(`${logDir}/${role}.log`).catch(() => {
-          /* non-fatal */
-        });
+
+    const pollAll = () => {
+      // Scan log directory for files matching each role (e.g., coder-0.log, coder-1.log)
+      try {
+        const { readdirSync } = require("node:fs") as typeof import("node:fs");
+        const files = readdirSync(logDir).filter((f: string) => f.endsWith(".log"));
+        for (const [role, buffer] of this.logBuffers) {
+          // Find the newest log file for this role
+          const roleFile = files
+            .filter((f: string) => f === `${role}.log` || f.startsWith(`${role}-`))
+            .sort()
+            .pop();
+          if (roleFile) {
+            void buffer.pollLogFile(`${logDir}/${roleFile}`).catch(() => {
+              /* non-fatal */
+            });
+          }
+        }
+      } catch {
+        /* non-fatal — directory may not exist yet */
       }
-    }, intervalMs);
-    // Also poll immediately
-    for (const [role, buffer] of this.logBuffers) {
-      void buffer.pollLogFile(`${logDir}/${role}.log`).catch(() => {
-        /* non-fatal */
-      });
-    }
+    };
+
+    this.logPollTimer = setInterval(pollAll, intervalMs);
+    pollAll(); // Also poll immediately
   }
 
   /** Stop the log polling timer. */

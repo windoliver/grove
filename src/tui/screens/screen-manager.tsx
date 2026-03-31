@@ -129,6 +129,12 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         void spawnManager
           .reconcile()
           .then(async () => {
+            // Ensure log buffers exist for all topology roles (even if reconcile found no live agents)
+            if (topology) {
+              for (const role of topology.roles) {
+                spawnManager.ensureLogBuffer(role.name);
+              }
+            }
             // Load historical traces on resume if we have a session ID
             const sid = state.sessionId;
             if (sid) {
@@ -151,7 +157,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       if (state.screen !== "running") {
         lastReconciledScreenRef.current = "";
       }
-    }, [state.screen, state.sessionId, spawnManager]);
+    }, [state.screen, state.sessionId, spawnManager, topology]);
 
     // Track session start time for duration calculation
     const sessionStartRef = useRef<number>(Date.now());
