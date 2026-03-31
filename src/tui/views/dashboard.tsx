@@ -74,7 +74,15 @@ export const DashboardView: React.NamedExoticComponent<DashboardProps> = React.m
       );
     }
 
-    const { metadata, activeClaims, recentContributions, frontierSummary } = data;
+    const metadata = data.metadata ?? {
+      name: "",
+      backendLabel: "",
+      contributionCount: 0,
+      activeClaimCount: 0,
+    };
+    const activeClaims = data.activeClaims ?? [];
+    const recentContributions = data.recentContributions ?? [];
+    const frontierSummary = data.frontierSummary ?? { topByMetric: [], topByAdoption: [] };
 
     const claimRows = activeClaims.map((c) => {
       const remaining = new Date(c.leaseExpiresAt).getTime() - Date.now();
@@ -82,7 +90,10 @@ export const DashboardView: React.NamedExoticComponent<DashboardProps> = React.m
         agent: c.agent.agentName ?? c.agent.agentId,
         target: c.targetRef.length > 24 ? `${c.targetRef.slice(0, 22)}..` : c.targetRef,
         lease: remaining > 0 ? formatDuration(remaining) : "expired",
-        intent: c.intentSummary.length > 30 ? `${c.intentSummary.slice(0, 28)}..` : c.intentSummary,
+        intent:
+          (c.intentSummary ?? "").length > 30
+            ? `${(c.intentSummary ?? "").slice(0, 28)}..`
+            : (c.intentSummary ?? ""),
       };
     });
 
