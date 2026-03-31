@@ -98,6 +98,13 @@ function mockActions(overrides?: {
     feedCursorDown: () => record("feedCursorDown"),
     feedCursorUp: () => record("feedCursorUp"),
     scrollToAskUser: () => record("scrollToAskUser"),
+    traceSelectDown: () => record("traceSelectDown"),
+    traceSelectUp: () => record("traceSelectUp"),
+    traceScrollDown: () => record("traceScrollDown"),
+    traceScrollUp: () => record("traceScrollUp"),
+    traceScrollToBottom: () => record("traceScrollToBottom"),
+    traceScrollToTop: () => record("traceScrollToTop"),
+    traceCycleAgent: () => record("traceCycleAgent"),
     openDetail: () => record("openDetail"),
     toggleAdvanced: () => record("toggleAdvanced"),
     quit: () => record("quit"),
@@ -254,11 +261,12 @@ describe("routeRunningKey — normal mode panel keys", () => {
     expect(log.args.expandPanel).toEqual([RunningPanel.Feed]);
   });
 
-  test("e toggles agent output expansion", () => {
+  test("e expands Trace panel", () => {
     const { actions, log } = mockActions();
     const handled = routeRunningKey(keyEvent("e"), defaultState(), actions);
     expect(handled).toBe(true);
-    expect(log.calls).toContain("toggleAgentExpand");
+    expect(log.calls).toContain("expandPanel");
+    expect(log.args.expandPanel).toEqual([RunningPanel.Trace]);
   });
 
   test("2 expands Agents panel", () => {
@@ -657,6 +665,132 @@ describe("routeRunningKey — help mode", () => {
     };
     routeRunningKey(keyEvent("f"), state, actions);
     expect(log.calls).not.toContain("toggleFullscreen");
+  });
+});
+
+// ===========================================================================
+// Trace panel mode (issue #183)
+// ===========================================================================
+
+describe("Trace panel mode", () => {
+  const traceState = () => defaultState({ expandedPanel: RunningPanel.Trace, zoomLevel: "half" });
+
+  test("e toggles Trace panel open", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("e"), defaultState(), actions);
+    expect(log.calls).toContain("expandPanel");
+    expect(log.args.expandPanel).toEqual([RunningPanel.Trace]);
+  });
+
+  test("e toggles Trace panel closed when already open", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("e"), traceState(), actions);
+    expect(log.calls).toContain("expandPanel");
+    expect(log.args.expandPanel).toEqual([RunningPanel.Trace]);
+  });
+
+  test("j routes to traceSelectDown when Trace is expanded", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("j"), traceState(), actions);
+    expect(log.calls).toContain("traceSelectDown");
+    expect(log.calls).not.toContain("feedCursorDown");
+  });
+
+  test("k routes to traceSelectUp when Trace is expanded", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("k"), traceState(), actions);
+    expect(log.calls).toContain("traceSelectUp");
+    expect(log.calls).not.toContain("feedCursorUp");
+  });
+
+  test("down arrow routes to traceSelectDown when Trace is expanded", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("down"), traceState(), actions);
+    expect(log.calls).toContain("traceSelectDown");
+  });
+
+  test("up arrow routes to traceSelectUp when Trace is expanded", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("up"), traceState(), actions);
+    expect(log.calls).toContain("traceSelectUp");
+  });
+
+  test("J (shift+j) routes to traceScrollDown", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("j", { shift: true, sequence: "J" }), traceState(), actions);
+    expect(log.calls).toContain("traceScrollDown");
+  });
+
+  test("K (shift+k) routes to traceScrollUp", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("k", { shift: true, sequence: "K" }), traceState(), actions);
+    expect(log.calls).toContain("traceScrollUp");
+  });
+
+  test("G (shift+g) routes to traceScrollToBottom", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("g", { shift: true, sequence: "G" }), traceState(), actions);
+    expect(log.calls).toContain("traceScrollToBottom");
+  });
+
+  test("g routes to traceScrollToTop", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("g"), traceState(), actions);
+    expect(log.calls).toContain("traceScrollToTop");
+  });
+
+  test("Tab routes to traceCycleAgent", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("tab"), traceState(), actions);
+    expect(log.calls).toContain("traceCycleAgent");
+  });
+
+  test("f toggles fullscreen when Trace is expanded", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("f"), traceState(), actions);
+    expect(log.calls).toContain("toggleFullscreen");
+  });
+
+  test("Escape collapses Trace panel", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("escape"), traceState(), actions);
+    expect(log.calls).toContain("collapsePanel");
+  });
+
+  test("j routes to feedCursorDown when Trace is NOT expanded", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("j"), defaultState(), actions);
+    expect(log.calls).toContain("feedCursorDown");
+    expect(log.calls).not.toContain("traceSelectDown");
+  });
+
+  test("k routes to feedCursorUp when Trace is NOT expanded", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("k"), defaultState(), actions);
+    expect(log.calls).toContain("feedCursorUp");
+    expect(log.calls).not.toContain("traceSelectUp");
+  });
+
+  test("j routes to feedCursorDown when other panel (Feed) is expanded", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(
+      keyEvent("j"),
+      defaultState({ expandedPanel: RunningPanel.Feed, zoomLevel: "half" }),
+      actions,
+    );
+    expect(log.calls).toContain("feedCursorDown");
+  });
+
+  test("? still opens help when Trace is expanded", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("?", { shift: true, sequence: "?" }), traceState(), actions);
+    expect(log.calls).toContain("toggleHelp");
+  });
+
+  test("Ctrl+A still toggles advanced when Trace is expanded", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("a", { ctrl: true }), traceState(), actions);
+    expect(log.calls).toContain("toggleAdvanced");
   });
 });
 

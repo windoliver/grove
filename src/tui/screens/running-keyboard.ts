@@ -13,22 +13,24 @@ import type { ZoomLevel } from "../panels/panel-registry.js";
 // Running panel identifiers
 // ---------------------------------------------------------------------------
 
-/** The 4 panels available in RunningView's progressive disclosure. */
+/** The 5 panels available in RunningView's progressive disclosure. */
 export const RunningPanel = {
   Feed: 0,
   Agents: 1,
   Dag: 2,
   Terminal: 3,
+  Trace: 4,
 } as const;
 export type RunningPanel = (typeof RunningPanel)[keyof typeof RunningPanel];
 
-export const RUNNING_PANEL_COUNT = 4;
+export const RUNNING_PANEL_COUNT = 5;
 
 export const RUNNING_PANEL_LABELS: Readonly<Record<RunningPanel, string>> = {
   [RunningPanel.Feed]: "Feed",
   [RunningPanel.Agents]: "Agents",
   [RunningPanel.Dag]: "DAG",
   [RunningPanel.Terminal]: "Terminal",
+  [RunningPanel.Trace]: "Trace",
 };
 
 // ---------------------------------------------------------------------------
@@ -82,6 +84,14 @@ export interface RunningKeyboardActions {
   readonly feedCursorDown: () => void;
   readonly feedCursorUp: () => void;
   readonly scrollToAskUser: () => void;
+  // Trace pane (split-pane agent trace viewer)
+  readonly traceSelectDown: () => void;
+  readonly traceSelectUp: () => void;
+  readonly traceScrollDown: () => void;
+  readonly traceScrollUp: () => void;
+  readonly traceScrollToBottom: () => void;
+  readonly traceScrollToTop: () => void;
+  readonly traceCycleAgent: () => void;
   // Navigation
   readonly openDetail: () => void;
   readonly toggleAdvanced: () => void;
@@ -261,9 +271,9 @@ export function routeRunningKey(
     return true;
   }
 
-  // e: toggle agent output expansion
+  // e: toggle trace pane (split-pane agent trace viewer)
   if (input === "e") {
-    actions.toggleAgentExpand();
+    actions.expandPanel(RunningPanel.Trace);
     return true;
   }
 
@@ -291,6 +301,45 @@ export function routeRunningKey(
     return true;
   }
 
+  // ─── Trace pane mode: J/K→trace scroll, j/k→agent list, G/g→jump ───
+  // Shift variants checked first since input === "j" matches both j and Shift+j.
+  if (state.expandedPanel === RunningPanel.Trace) {
+    // J/K (shift): scroll trace output (right column) — must be before j/k
+    if (key.shift && input === "j") {
+      actions.traceScrollDown();
+      return true;
+    }
+    if (key.shift && input === "k") {
+      actions.traceScrollUp();
+      return true;
+    }
+    // G: jump to bottom (resume auto-scroll)
+    if (key.shift && input === "g") {
+      actions.traceScrollToBottom();
+      return true;
+    }
+    // j/k: navigate agent list (left column)
+    if (input === "j" || input === "down") {
+      actions.traceSelectDown();
+      return true;
+    }
+    if (input === "k" || input === "up") {
+      actions.traceSelectUp();
+      return true;
+    }
+    // g: jump to top
+    if (input === "g") {
+      actions.traceScrollToTop();
+      return true;
+    }
+    // Tab: cycle to next agent
+    if (input === "tab") {
+      actions.traceCycleAgent();
+      return true;
+    }
+    return false;
+  }
+
   // Enter: open detail view for selected feed item
   if (input === "return" && actions.feedLength > 0) {
     actions.openDetail();
@@ -303,7 +352,7 @@ export function routeRunningKey(
     return true;
   }
 
-  // j/k: scroll feed (panel-specific routing handled by the view)
+  // j/k: scroll feed (default when Trace pane is not expanded)
   if (input === "j" || input === "down") {
     actions.feedCursorDown();
     return true;

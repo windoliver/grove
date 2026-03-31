@@ -14,7 +14,7 @@ import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
-import { BRAILLE_SPINNER, theme } from "../theme.js";
+import { agentStatusIcon, BRAILLE_SPINNER, timing } from "../theme.js";
 
 /** Props for the AgentList view. */
 export interface AgentListProps {
@@ -61,23 +61,9 @@ function deriveAgentStatus(
   return "running";
 }
 
-/** Map a status string to its theme symbol (with animated spinner for running). */
+/** Map a status string to its theme symbol (delegates to shared agentStatusIcon). */
 function statusSymbol(status: string, spinnerFrame?: number): string {
-  switch (status) {
-    case "running":
-      return spinnerFrame !== undefined
-        ? (BRAILLE_SPINNER[spinnerFrame % BRAILLE_SPINNER.length] ?? theme.agentRunning)
-        : theme.agentRunning;
-    case "claimed":
-    case "stalled":
-      return theme.agentWaiting;
-    case "expired":
-      return theme.agentIdle;
-    case "error":
-      return theme.agentError;
-    default:
-      return theme.agentIdle;
-  }
+  return agentStatusIcon(status, spinnerFrame).icon;
 }
 
 /** Format token count to compact string (e.g. "12K", "1.2M"). */
@@ -147,13 +133,13 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
     cursor,
     onSelectSession,
   }: AgentListProps): React.ReactNode {
-    // Animated spinner for running agents (item 8)
+    // Animated spinner for running agents — uses timing.spinner (80ms) for consistency
     const [spinnerFrame, setSpinnerFrame] = useState(0);
     useEffect(() => {
       if (!active) return;
       const timer = setInterval(() => {
         setSpinnerFrame((f) => (f + 1) % BRAILLE_SPINNER.length);
-      }, 100);
+      }, timing.spinner);
       return () => clearInterval(timer);
     }, [active]);
 

@@ -8,7 +8,7 @@
 import React, { useCallback } from "react";
 import type { TmuxManager } from "../agents/tmux-manager.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
-import { theme } from "../theme.js";
+import { agentStatusIcon, theme } from "../theme.js";
 
 /** Maximum visible agent panes. Overflow agents are listed but not rendered. */
 const MAX_VISIBLE_PANES = 4;
@@ -27,12 +27,10 @@ export interface AgentSplitPaneProps {
   readonly focusedIndex?: number | undefined;
 }
 
-/** Status symbol for agent state. */
-function agentSymbol(sessionName: string, _sessions: readonly string[]): string {
+/** Status symbol for agent state (delegates to shared agentStatusIcon). */
+function agentSymbol(_sessionName: string, _sessions: readonly string[]): string {
   // All sessions in the list are active (from tmux.listSessions)
-  void _sessions;
-  void sessionName;
-  return theme.agentRunning;
+  return agentStatusIcon("running").icon;
 }
 
 /** Single agent pane — captures and renders one agent's output. */
