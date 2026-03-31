@@ -83,7 +83,6 @@ function mockActions(overrides?: {
     expandPanel: (p) => record("expandPanel", p),
     collapsePanel: () => record("collapsePanel"),
     toggleFullscreen: () => record("toggleFullscreen"),
-    toggleAgentExpand: () => record("toggleAgentExpand"),
     toggleHelp: () => record("toggleHelp"),
     dismissHelp: () => record("dismissHelp"),
     toggleVfs: () => record("toggleVfs"),

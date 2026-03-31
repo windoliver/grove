@@ -17,6 +17,8 @@ import type { AgentIdentity } from "../core/models.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
+import { AgentLogBuffer } from "./data/agent-log-buffer.js";
+import { loadTraceHistory, saveTraceHistory } from "./data/trace-persistence.js";
 import type { NexusWsBridge } from "./nexus-ws-bridge.js";
 import type { TuiDataProvider } from "./provider.js";
 import type { PersistedSpawnRecord, SessionStore } from "./session-store.js";
@@ -54,12 +56,15 @@ export class SpawnManager {
   private readonly agentRuntime: AgentRuntime | undefined;
   private readonly spawnRecords = new Map<string, SpawnRecord>();
   private readonly agentSessions = new Map<string, AgentSession>();
+  private readonly logBuffers = new Map<string, AgentLogBuffer>();
   private readonly onError: (message: string) => void;
   private readonly sessionStore: SessionStore | undefined;
   private wsBridge: NexusWsBridge | undefined;
   private prContext: PrContext | undefined;
   private sessionGoal: string | undefined;
+  private sessionId: string | undefined;
   private groveDir: string | undefined;
+  private logPollTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     provider: TuiDataProvider,
@@ -273,9 +278,10 @@ export class SpawnManager {
       });
     }
 
-    // Step 4: Record spawn + register for IPC push.
+    // Step 4: Record spawn + register for IPC push + create log buffer.
     // No claims, no heartbeats — agents create claims themselves via grove_claim
     // when they need swarm coordination.
+    this.ensureLogBuffer(roleId);
     this.spawnRecords.set(spawnId, {
       claimId: "",
       targetRef: spawnId,
@@ -425,6 +431,9 @@ export class SpawnManager {
         if (liveSession) {
           this.agentSessions.set(record.spawnId, liveSession);
         }
+        // Ensure log buffer exists for reconciled agents
+        const role = record.spawnId.replace(/-[a-z0-9]+$/i, "");
+        this.ensureLogBuffer(role);
         reattached++;
       } else {
         // Dead session: clean workspace + remove record
@@ -610,8 +619,90 @@ export class SpawnManager {
     return roles;
   }
 
+  // ─── Log buffer management (issue #183) ───
+
+  /** Get all per-agent log buffers (for TracePane). */
+  getLogBuffers(): ReadonlyMap<string, AgentLogBuffer> {
+    return this.logBuffers;
+  }
+
+  /** Set the session ID for log buffer naming and persistence. */
+  setSessionId(id: string | undefined): void {
+    this.sessionId = id;
+  }
+
+  /**
+   * Ensure an AgentLogBuffer exists for a role. Creates one if missing.
+   * Called at spawn time and on reconcile.
+   */
+  ensureLogBuffer(role: string): AgentLogBuffer {
+    let buffer = this.logBuffers.get(role);
+    if (!buffer) {
+      buffer = new AgentLogBuffer(role, this.sessionId ?? "unknown");
+      this.logBuffers.set(role, buffer);
+    }
+    return buffer;
+  }
+
+  /**
+   * Start polling log files for all active agent roles.
+   * Call once after spawn/reconcile. Subsequent calls restart the timer.
+   */
+  startLogPolling(intervalMs: number = 2000): void {
+    this.stopLogPolling();
+    if (!this.groveDir) return;
+    const logDir = `${this.groveDir}/agent-logs`;
+    this.logPollTimer = setInterval(() => {
+      for (const [role, buffer] of this.logBuffers) {
+        void buffer.pollLogFile(`${logDir}/${role}.log`).catch(() => {
+          /* non-fatal */
+        });
+      }
+    }, intervalMs);
+    // Also poll immediately
+    for (const [role, buffer] of this.logBuffers) {
+      void buffer.pollLogFile(`${logDir}/${role}.log`).catch(() => {
+        /* non-fatal */
+      });
+    }
+  }
+
+  /** Stop the log polling timer. */
+  stopLogPolling(): void {
+    if (this.logPollTimer !== null) {
+      clearInterval(this.logPollTimer);
+      this.logPollTimer = null;
+    }
+  }
+
+  /**
+   * Save all trace buffers to JSONL. Called on session end.
+   * Returns immediately if no groveDir or sessionId.
+   */
+  async saveTraces(): Promise<void> {
+    if (!this.groveDir || !this.sessionId) return;
+    await saveTraceHistory(this.groveDir, this.sessionId, this.logBuffers);
+  }
+
+  /**
+   * Load trace history from JSONL into buffers. Called on resume.
+   * Creates buffers for each role found in the session directory.
+   */
+  async loadTraces(sessionIdToLoad: string): Promise<void> {
+    if (!this.groveDir) return;
+    const loaded = await loadTraceHistory(this.groveDir, sessionIdToLoad);
+    for (const [role, buffer] of loaded) {
+      this.logBuffers.set(role, buffer);
+    }
+  }
+
   /** Close bridge and clear state (agents stay alive in acpx). */
   destroy(): void {
+    this.stopLogPolling();
+    for (const buffer of this.logBuffers.values()) {
+      buffer.dispose();
+    }
+    this.logBuffers.clear();
     this.spawnRecords.clear();
     this.wsBridge?.close();
   }

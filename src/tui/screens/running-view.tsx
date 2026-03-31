@@ -129,9 +129,6 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     const [expandedPanel, setExpandedPanel] = useState<RunningPanel | null>(null);
     const [zoomLevel, setZoomLevel] = useState<"normal" | "half" | "full">("normal");
 
-    // ─── Agent output expansion (legacy, replaced by Trace panel) ───
-    const [agentsExpanded, setAgentsExpanded] = useState(false);
-
     // ─── Trace pane state ───
     const [traceSelectedAgent, setTraceSelectedAgent] = useState(0);
     const [traceScrollOffset, setTraceScrollOffset] = useState(0);
@@ -259,7 +256,6 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           setExpandedPanel(next.expandedPanel);
           setZoomLevel(next.zoomLevel);
         },
-        toggleAgentExpand: () => setAgentsExpanded((v) => !v),
         toggleHelp: () => setShowHelp((v) => !v),
         dismissHelp: () => setShowHelp(false),
         toggleVfs: () => setShowVfs((v) => !v),
@@ -522,7 +518,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     return (
       <box flexDirection="column" width="100%" height="100%">
         {/* Agent status with live output */}
-        {renderAgentSection(topology, dashboard, monitor, agentsExpanded)}
+        {renderAgentSection(topology, dashboard, monitor)}
 
         {/* Main feed area */}
         {renderFeedSection(feed, cursor, goal, pendingAskUser, frontier, DEFAULT_FEED_WINDOW)}
@@ -561,15 +557,11 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
 // Render helpers (extracted from the main component for readability)
 // ---------------------------------------------------------------------------
 
-/** Max lines of agent output to show when expanded. */
-const AGENT_OUTPUT_LINES = 12;
-
-/** Render the agent status section with live output. */
+/** Render the agent status section (compact — press e for trace viewer). */
 function renderAgentSection(
   topology: AgentTopology | undefined,
   dashboard: DashboardData | undefined,
   monitor: ReturnType<typeof useAgentMonitor>,
-  expanded: boolean,
 ): React.ReactNode {
   const roles = topology?.roles ?? [];
   if (roles.length === 0) {
@@ -588,7 +580,7 @@ function renderAgentSection(
         <text color={theme.focus} bold>
           Agents
         </text>
-        <text color={theme.dimmed}> (e:{expanded ? "collapse" : "expand"} traces)</text>
+        <text color={theme.dimmed}> (e:trace viewer)</text>
       </box>
       {roles.map((role, idx) => {
         const activeClaim = dashboard?.activeClaims.find(
@@ -600,31 +592,15 @@ function renderAgentSection(
 
         const status = activeClaim ? "running" : "idle";
         const badge = agentStatusIcon(status, activeClaim ? monitor.spinnerFrame : undefined);
-        const icon = badge.icon;
-        const color = badge.color;
 
         return (
-          <box key={role.name} flexDirection="column">
-            <box flexDirection="row">
-              <text color={color}>{icon} </text>
-              <text color={platformColor} bold>
-                {role.name}
-              </text>
-              <text color={theme.dimmed}> [{idx + 1}] </text>
-              {!expanded && lastLine ? (
-                <text color={theme.muted}>{lastLine.slice(0, 80)}</text>
-              ) : null}
-            </box>
-            {expanded && output && output.length > 0 ? (
-              <box flexDirection="column" marginLeft={4} marginBottom={1}>
-                {output.slice(-AGENT_OUTPUT_LINES).map((line, i) => (
-                  // biome-ignore lint/suspicious/noArrayIndexKey: stable ordered output
-                  <text key={i} color={theme.muted}>
-                    {line.slice(0, 120)}
-                  </text>
-                ))}
-              </box>
-            ) : null}
+          <box key={role.name} flexDirection="row">
+            <text color={badge.color}>{badge.icon} </text>
+            <text color={platformColor} bold>
+              {role.name}
+            </text>
+            <text color={theme.dimmed}> [{idx + 1}] </text>
+            {lastLine ? <text color={theme.muted}>{lastLine.slice(0, 80)}</text> : null}
           </box>
         );
       })}

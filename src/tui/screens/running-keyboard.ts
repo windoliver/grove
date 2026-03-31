@@ -78,8 +78,6 @@ export interface RunningKeyboardActions {
   readonly deletePromptChar: () => void;
   readonly cyclePromptTarget: () => void;
   readonly submitPrompt: () => void;
-  // Agent output
-  readonly toggleAgentExpand: () => void;
   // Feed
   readonly feedCursorDown: () => void;
   readonly feedCursorUp: () => void;
