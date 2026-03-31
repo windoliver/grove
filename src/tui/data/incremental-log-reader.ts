@@ -70,7 +70,11 @@ export class IncrementalLogReader {
       // Filter out empty strings from split
       return segments.filter((s) => s.length > 0);
     } catch {
-      // File doesn't exist or read error — return empty
+      // File doesn't exist or read error — reset so next read starts fresh
+      // (handles delete+recreate where inode may be reused on Linux)
+      this.byteOffset = 0;
+      this.partialLine = "";
+      this.lastIno = null;
       return [];
     }
   }
