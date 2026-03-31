@@ -541,21 +541,16 @@ export async function ensureNexusRunning(
 ): Promise<NexusRunningInfo> {
   const report = upOpts?.onProgress ?? ((msg: string) => process.stderr.write(`${msg}\n`));
 
-  const hasNexus = await checkNexusCli();
-  if (!hasNexus) {
-    throw new Error(
-      "nexus CLI not found. Install it with: pip install nexus-ai-fs\n" +
-        "Or provide an external Nexus URL with: grove init --nexus-url <url>",
-    );
-  }
-
   // -----------------------------------------------------------------------
-  // 1. Fast path: check known URLs for a healthy Nexus (any existing stack)
+  // 1. Fast path: check known URLs for a healthy Nexus BEFORE requiring CLI.
+  //    If Nexus is already running (from another grove, Docker, etc.), we
+  //    don't need the nexus CLI at all — just connect to it.
   // -----------------------------------------------------------------------
   const candidateUrls = [
     config.nexusUrl,
     readNexusUrl(projectRoot),
     process.env.GROVE_NEXUS_URL,
+    DEFAULT_NEXUS_URL,
   ].filter((u): u is string => !!u);
 
   const urlsToTry = [...new Set(candidateUrls)];
@@ -589,6 +584,19 @@ export async function ensureNexusRunning(
     const apiKey = readNexusApiKey(projectRoot);
     report("Nexus is ready");
     return { url: discoveredUrl, apiKey };
+  }
+
+  // -----------------------------------------------------------------------
+  // 2. No running Nexus found — need CLI to start one.
+  // -----------------------------------------------------------------------
+  const hasNexus = await checkNexusCli();
+  if (!hasNexus) {
+    throw new Error(
+      "nexus CLI not found and no running Nexus instance detected.\n" +
+        "Install it with: pip install nexus-ai-fs\n" +
+        "Or start Nexus manually with Docker: docker compose -f nexus-stack.yml up -d\n" +
+        "Or provide an external Nexus URL with: grove init --nexus-url <url>",
+    );
   }
 
   // -----------------------------------------------------------------------
