@@ -746,26 +746,28 @@ export class SpawnManager {
           );
         }
 
-        for (const c of feed) {
-          if (!this.seenCids.has(c.cid)) {
-            this.seenCids.add(c.cid);
-            debugLog(
-              "contribPoll",
-              `NEW cid=${c.cid.slice(0, 20)} kind=${c.kind} role=${c.agent?.role}`,
-            );
-            // Route to downstream agents
-            if (c.agent?.role && topology) {
-              void this.routeContribution(c.agent.role, c.summary, c.kind, topology);
-            }
-            // Notify callback (for TUI feed update)
-            this.onContributionDetected?.(c);
-          }
-        }
-
-        // Seed on first poll if we have contributions already
-        if (pollCount === 0 && !sessionStartedAt) {
+        // First poll: seed all existing CIDs to avoid re-routing old contributions on resume
+        if (pollCount === 0) {
           for (const c of feed) {
             this.seenCids.add(c.cid);
+          }
+          debugLog("contribPoll", `seeded ${feed.length} existing CIDs`);
+        } else {
+          // Subsequent polls: detect new contributions and route them
+          for (const c of feed) {
+            if (!this.seenCids.has(c.cid)) {
+              this.seenCids.add(c.cid);
+              debugLog(
+                "contribPoll",
+                `NEW cid=${c.cid.slice(0, 20)} kind=${c.kind} role=${c.agent?.role}`,
+              );
+              // Route to downstream agents
+              if (c.agent?.role && topology) {
+                void this.routeContribution(c.agent.role, c.summary, c.kind, topology);
+              }
+              // Notify callback (for TUI feed update)
+              this.onContributionDetected?.(c);
+            }
           }
         }
         pollCount++;

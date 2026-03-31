@@ -145,8 +145,37 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
               "reconcile",
               `buffers=[${[...spawnManager.getLogBuffers().keys()].join(",")}]`,
             );
-            // Load historical traces on resume if we have a session ID
-            const sid = state.sessionId;
+            // Load historical traces on resume.
+            // Try explicit sessionId first, then find most recent JSONL session dir.
+            let sid = state.sessionId;
+            if (!sid && appProps.groveDir) {
+              try {
+                const { readdirSync, statSync } = require("node:fs") as typeof import("node:fs");
+                const { join } = require("node:path") as typeof import("node:path");
+                const logDir = join(appProps.groveDir, "agent-logs");
+                const dirs = readdirSync(logDir).filter((d) => {
+                  try {
+                    return statSync(join(logDir, d)).isDirectory();
+                  } catch {
+                    return false;
+                  }
+                });
+                if (dirs.length > 0) {
+                  // Use most recently modified session dir
+                  dirs.sort((a, b) => {
+                    try {
+                      return statSync(join(logDir, b)).mtimeMs - statSync(join(logDir, a)).mtimeMs;
+                    } catch {
+                      return 0;
+                    }
+                  });
+                  sid = dirs[0];
+                  debugLog("reconcile", `no sessionId in state, found JSONL dir: ${sid}`);
+                }
+              } catch {
+                /* non-fatal */
+              }
+            }
             if (sid) {
               spawnManager.setSessionId(sid);
               await spawnManager.loadTraces(sid).catch(() => {
