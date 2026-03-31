@@ -50,7 +50,7 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
     ? (provider as unknown as TuiOutcomeProvider)
     : undefined;
 
-  const cids = useMemo(() => data?.contributions.map((c) => c.cid) ?? [], [data]);
+  const cids = useMemo(() => data?.contributions?.map((c) => c.cid) ?? [], [data]);
 
   const outcomeFetcher = useCallback(
     () => outcomeProvider?.getOutcomes(cids) ?? Promise.resolve(new Map()),
