@@ -238,12 +238,15 @@ export async function executeInit(
 
       // Reuse existing Nexus if any stack is running (avoid creating duplicate stacks).
       // API key is read from .state.json (authoritative) via readNexusApiKey.
-      const existingUrl = await discoverRunningNexus();
+      // Respect explicit GROVE_NEXUS_URL if already set (e.g., by user or parent process).
+      const existingUrl = process.env.GROVE_NEXUS_URL ?? (await discoverRunningNexus());
       if (existingUrl) {
-        process.env.GROVE_NEXUS_URL = existingUrl;
+        if (!process.env.GROVE_NEXUS_URL) {
+          process.env.GROVE_NEXUS_URL = existingUrl;
+        }
         const { readNexusApiKey } = await import("../nexus-lifecycle.js");
         const key = readNexusApiKey(options.cwd);
-        if (key) process.env.NEXUS_API_KEY = key;
+        if (key && !process.env.NEXUS_API_KEY) process.env.NEXUS_API_KEY = key;
         console.log(`Reusing existing Nexus at ${existingUrl}`);
       } else {
         const hasNexus = await checkNexusCli();

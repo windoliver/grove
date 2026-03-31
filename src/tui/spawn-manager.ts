@@ -66,6 +66,11 @@ export class SpawnManager {
   private sessionId: string | undefined;
   private groveDir: string | undefined;
   private logPollTimer: ReturnType<typeof setInterval> | null = null;
+  private contributionPollTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly seenCids = new Set<string>();
+  private onContributionDetected:
+    | ((c: import("../core/models.js").Contribution) => void)
+    | undefined;
 
   constructor(
     provider: TuiDataProvider,
@@ -706,6 +711,76 @@ export class SpawnManager {
       clearInterval(this.logPollTimer);
       this.logPollTimer = null;
     }
+    if (this.contributionPollTimer !== null) {
+      clearInterval(this.contributionPollTimer);
+      this.contributionPollTimer = null;
+    }
+  }
+
+  /**
+   * Start polling contributions outside React (React timers die on unmount).
+   * Detects new CIDs and routes them via routeContribution.
+   */
+  startContributionPolling(
+    provider: TuiDataProvider,
+    topology: import("../core/topology.js").AgentTopology | undefined,
+    sessionStartedAt: string | undefined,
+    intervalMs: number = 3000,
+  ): void {
+    this.topology = topology;
+    if (this.contributionPollTimer !== null) {
+      clearInterval(this.contributionPollTimer);
+    }
+
+    let pollCount = 0;
+    this.contributionPollTimer = setInterval(async () => {
+      try {
+        const contributions = await provider.getContributions({ limit: 50 });
+        const feed = sessionStartedAt
+          ? (contributions ?? []).filter((c) => c.createdAt >= sessionStartedAt)
+          : (contributions ?? []);
+
+        if (pollCount < 3 || pollCount % 20 === 0) {
+          debugLog(
+            "contribPoll",
+            `#${pollCount} fetched=${feed.length} seen=${this.seenCids.size}`,
+          );
+        }
+
+        for (const c of feed) {
+          if (!this.seenCids.has(c.cid)) {
+            this.seenCids.add(c.cid);
+            debugLog(
+              "contribPoll",
+              `NEW cid=${c.cid.slice(0, 20)} kind=${c.kind} role=${c.agent?.role}`,
+            );
+            // Route to downstream agents
+            if (c.agent?.role && topology) {
+              void this.routeContribution(c.agent.role, c.summary, c.kind, topology);
+            }
+            // Notify callback (for TUI feed update)
+            this.onContributionDetected?.(c);
+          }
+        }
+
+        // Seed on first poll if we have contributions already
+        if (pollCount === 0 && !sessionStartedAt) {
+          for (const c of feed) {
+            this.seenCids.add(c.cid);
+          }
+        }
+        pollCount++;
+      } catch (err) {
+        debugLog("contribPoll", `error: ${String(err)}`);
+      }
+    }, intervalMs);
+  }
+
+  /** Set a callback for when new contributions are detected (for TUI feed notification). */
+  setOnContributionDetected(
+    cb: ((c: import("../core/models.js").Contribution) => void) | undefined,
+  ): void {
+    this.onContributionDetected = cb;
   }
 
   /**

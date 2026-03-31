@@ -155,6 +155,8 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             }
             // Start polling agent log files for live output
             spawnManager.startLogPolling();
+            // Start contribution polling outside React (React timers die on unmount)
+            spawnManager.startContributionPolling(provider, topology, state.sessionStartedAt);
             // Always bump — even if reattached=0, we need RunningView to pick up
             // the reconciled state (getActiveRoles may have changed).
             setReconcileVersion((v) => v + 1);
@@ -167,7 +169,15 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       if (state.screen !== "running") {
         lastReconciledScreenRef.current = "";
       }
-    }, [state.screen, state.sessionId, spawnManager, topology, appProps.groveDir]);
+    }, [
+      state.screen,
+      state.sessionId,
+      state.sessionStartedAt,
+      spawnManager,
+      topology,
+      appProps.groveDir,
+      provider,
+    ]);
 
     // Track session start time for duration calculation
     const sessionStartRef = useRef<number>(Date.now());
@@ -317,6 +327,8 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           spawnManager.setSessionGoal(goal);
           // SessionId may be set async — start polling after spawn completes
           spawnManager.startLogPolling();
+          // Start contribution polling outside React (React timers die on unmount)
+          spawnManager.startContributionPolling(provider, topology, sessionStartedAt);
 
           // Spawn each role and track progress
           for (const role of topology.roles) {

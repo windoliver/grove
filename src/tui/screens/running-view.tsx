@@ -167,10 +167,22 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
 
     // ─── Data fetching ───
     const dashboardFetcher = useCallback(() => provider.getDashboard(), [provider]);
-    const contributionsFetcher = useCallback(
-      () => provider.getContributions({ limit: MAX_FEED_ITEMS }),
-      [provider],
-    );
+    const fetchCountRef = React.useRef(0);
+    const contributionsFetcher = useCallback(async () => {
+      fetchCountRef.current++;
+      const result = await provider.getContributions({ limit: MAX_FEED_ITEMS });
+      if (
+        fetchCountRef.current <= 5 ||
+        fetchCountRef.current % 20 === 0 ||
+        (result && result.length > 0)
+      ) {
+        debugLog(
+          "poll",
+          `fetch #${fetchCountRef.current} returned ${result?.length ?? 0} contributions`,
+        );
+      }
+      return result;
+    }, [provider]);
 
     // Gate polling: pause contributions when panel is fullscreen and not showing feed
     const feedActive =
@@ -181,6 +193,11 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       intervalMs,
       feedActive,
     );
+
+    // NOTE: usePolledData's setInterval doesn't work in OpenTUI because the
+    // RunningView component unmounts/remounts during screen transitions, killing
+    // all React effect timers. Contribution polling is handled outside React
+    // by SpawnManager.startContributionPolling() which uses a class-level timer.
 
     // When EventBus fires (SSE push from Nexus), trigger immediate re-fetch
     useEffect(() => {
