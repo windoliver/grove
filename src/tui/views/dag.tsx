@@ -63,7 +63,7 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
   );
 
   useEffect(() => {
-    if (data && onContributionsLoaded) {
+    if (data?.contributions && onContributionsLoaded) {
       onContributionsLoaded(data.contributions);
     }
   }, [data, onContributionsLoaded]);

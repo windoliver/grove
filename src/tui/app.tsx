@@ -484,6 +484,7 @@ export function App({
   );
 
   const handleContributionsLoaded = useCallback((contributions: readonly Contribution[]) => {
+    if (!contributions) return;
     setContributionList(contributions);
     setRowCount(contributions.length);
   }, []);
