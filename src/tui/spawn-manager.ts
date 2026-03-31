@@ -727,7 +727,6 @@ export class SpawnManager {
     sessionStartedAt: string | undefined,
     intervalMs: number = 3000,
   ): void {
-    this.topology = topology;
     if (this.contributionPollTimer !== null) {
       clearInterval(this.contributionPollTimer);
     }

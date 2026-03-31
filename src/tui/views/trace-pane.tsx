@@ -27,8 +27,12 @@ import { agentStatusIcon, theme } from "../theme.js";
 
 /** Fixed width of the agent list column (characters). */
 const AGENT_LIST_WIDTH = 20;
-/** Default viewport height (lines). */
-const DEFAULT_VIEWPORT_LINES = 25;
+/**
+ * Default viewport height (lines).
+ * Uses terminal rows minus chrome (header, status bar, borders ≈ 5 lines).
+ * Falls back to 30 if stdout is not a TTY.
+ */
+const DEFAULT_VIEWPORT_LINES = Math.max(10, (process.stdout.rows ?? 40) - 5);
 
 // ---------------------------------------------------------------------------
 // Types
