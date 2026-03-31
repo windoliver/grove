@@ -67,9 +67,10 @@ export const ActivityView: React.NamedExoticComponent<ActivityProps> = React.mem
       cid: truncateCid(c.cid),
       kind: c.kind,
       mode: c.mode,
-      summary: c.summary.length > 36 ? `${c.summary.slice(0, 34)}..` : c.summary,
-      agent: c.agent.agentName ?? c.agent.agentId,
-      tags: c.tags.slice(0, 3).join(", "),
+      summary:
+        (c.summary ?? "").length > 36 ? `${(c.summary ?? "").slice(0, 34)}..` : (c.summary ?? ""),
+      agent: c.agent?.agentName ?? c.agent?.agentId ?? "unknown",
+      tags: (c.tags ?? []).slice(0, 3).join(", "),
       created: formatTimestamp(c.createdAt),
     }));
 

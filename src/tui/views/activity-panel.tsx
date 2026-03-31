@@ -67,9 +67,10 @@ export const ActivityPanelView: React.NamedExoticComponent<ActivityPanelProps> =
     const rows = contributions.map((c) => ({
       cid: truncateCid(c.cid),
       kind: c.kind,
-      summary: c.summary.length > 32 ? `${c.summary.slice(0, 30)}..` : c.summary,
-      agent: c.agent.role ?? c.agent.agentName ?? c.agent.agentId,
-      tags: c.tags.slice(0, 2).join(", "),
+      summary:
+        (c.summary ?? "").length > 32 ? `${(c.summary ?? "").slice(0, 30)}..` : (c.summary ?? ""),
+      agent: c.agent?.role ?? c.agent?.agentName ?? c.agent?.agentId ?? "unknown",
+      tags: (c.tags ?? []).slice(0, 2).join(", "),
       time: formatTimestamp(c.createdAt),
     }));
 

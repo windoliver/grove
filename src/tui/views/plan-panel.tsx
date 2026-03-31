@@ -74,12 +74,12 @@ export const PlanPanelView: React.NamedExoticComponent<PlanPanelProps> = React.m
 
     const tasks = (latest.context?.tasks as unknown as PlanTask[]) ?? [];
     const title = (latest.context?.plan_title as string) ?? "Untitled Plan";
-    const done = tasks.filter((t) => t.status === "done").length;
+    const done = tasks.filter((t) => t?.status === "done").length;
 
-    const rows = tasks.map((t) => ({
-      id: t.id,
-      title: t.title.length > 36 ? `${t.title.slice(0, 34)}..` : t.title,
-      status: `${STATUS_ICON[t.status] ?? "[ ]"} ${t.status}`,
+    const rows = tasks.filter(Boolean).map((t) => ({
+      id: t.id ?? "-",
+      title: (t.title ?? "").length > 36 ? `${(t.title ?? "").slice(0, 34)}..` : (t.title ?? ""),
+      status: `${STATUS_ICON[t.status] ?? "[ ]"} ${t.status ?? "unknown"}`,
       assignee: t.assignee ?? "-",
     }));
 

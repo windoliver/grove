@@ -54,7 +54,7 @@ function flattenFrontier(frontier: Frontier): readonly FrontierRow[] {
   const rows: FrontierRow[] = [];
 
   // byMetric entries (one section per metric name)
-  for (const [metricName, entries] of Object.entries(frontier.byMetric)) {
+  for (const [metricName, entries] of Object.entries(frontier.byMetric ?? {})) {
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i] as FrontierEntry;
       rows.push({
@@ -68,8 +68,8 @@ function flattenFrontier(frontier: Frontier): readonly FrontierRow[] {
   }
 
   // byAdoption
-  for (let i = 0; i < frontier.byAdoption.length; i++) {
-    const entry = frontier.byAdoption[i] as FrontierEntry;
+  for (let i = 0; i < (frontier.byAdoption ?? []).length; i++) {
+    const entry = (frontier.byAdoption ?? [])[i] as FrontierEntry;
     rows.push({
       rank: i + 1,
       cid: entry.cid,
@@ -80,8 +80,8 @@ function flattenFrontier(frontier: Frontier): readonly FrontierRow[] {
   }
 
   // byRecency
-  for (let i = 0; i < frontier.byRecency.length; i++) {
-    const entry = frontier.byRecency[i] as FrontierEntry;
+  for (let i = 0; i < (frontier.byRecency ?? []).length; i++) {
+    const entry = (frontier.byRecency ?? [])[i] as FrontierEntry;
     rows.push({
       rank: i + 1,
       cid: entry.cid,
@@ -92,8 +92,8 @@ function flattenFrontier(frontier: Frontier): readonly FrontierRow[] {
   }
 
   // byReviewScore
-  for (let i = 0; i < frontier.byReviewScore.length; i++) {
-    const entry = frontier.byReviewScore[i] as FrontierEntry;
+  for (let i = 0; i < (frontier.byReviewScore ?? []).length; i++) {
+    const entry = (frontier.byReviewScore ?? [])[i] as FrontierEntry;
     rows.push({
       rank: i + 1,
       cid: entry.cid,
@@ -104,8 +104,8 @@ function flattenFrontier(frontier: Frontier): readonly FrontierRow[] {
   }
 
   // byReproduction
-  for (let i = 0; i < frontier.byReproduction.length; i++) {
-    const entry = frontier.byReproduction[i] as FrontierEntry;
+  for (let i = 0; i < (frontier.byReproduction ?? []).length; i++) {
+    const entry = (frontier.byReproduction ?? [])[i] as FrontierEntry;
     rows.push({
       rank: i + 1,
       cid: entry.cid,
