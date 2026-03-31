@@ -22,6 +22,7 @@ import type { AgentTopology } from "../../core/topology.js";
 import { EmptyState } from "../components/empty-state.js";
 import { ProgressBar } from "../components/progress-bar.js";
 import type { AgentLogBuffer } from "../data/agent-log-buffer.js";
+import { debugLog } from "../debug-log.js";
 import { useAgentMonitor } from "../hooks/use-agent-monitor.js";
 import { InputMode } from "../hooks/use-panel-focus.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
@@ -183,8 +184,10 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
 
     // When EventBus fires (SSE push from Nexus), trigger immediate re-fetch
     useEffect(() => {
+      debugLog("eventBus", `exists=${!!eventBus}`);
       if (!eventBus) return;
       const handler = () => {
+        debugLog("eventBus", "SSE event received — refreshing polls");
         dashboardPoll.refresh();
         contributionsPoll.refresh();
       };
@@ -201,6 +204,18 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       ? allContributions.filter((c) => c.createdAt >= sessionStartedAt)
       : allContributions;
 
+    // Debug: log feed state periodically
+    const feedDebugRef = React.useRef(0);
+    useEffect(() => {
+      feedDebugRef.current++;
+      if (feedDebugRef.current <= 3 || feedDebugRef.current % 20 === 0) {
+        debugLog(
+          "feed",
+          `#${feedDebugRef.current} allContribs=${allContributions.length} feed=${feed.length} feedActive=${feedActive} sessionStartedAt=${sessionStartedAt ?? "none"}`,
+        );
+      }
+    }, [allContributions.length, feed.length, feedActive, sessionStartedAt]);
+
     // Track seen contribution CIDs and route new ones to downstream agents
     const seenCidsRef = React.useRef<Set<string>>(new Set());
     const initialSeededRef = React.useRef(false);
@@ -208,6 +223,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       if (!onNewContribution || !feed.length) return;
 
       if (!initialSeededRef.current && !sessionStartedAt) {
+        debugLog("seenCids", `seeding ${feed.length} existing CIDs (no sessionStartedAt)`);
         for (const c of feed) {
           seenCidsRef.current.add(c.cid);
         }
@@ -218,6 +234,10 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
 
       for (const c of feed) {
         if (!seenCidsRef.current.has(c.cid)) {
+          debugLog(
+            "seenCids",
+            `NEW CID detected: ${c.cid.slice(0, 20)} kind=${c.kind} role=${c.agent?.role}`,
+          );
           seenCidsRef.current.add(c.cid);
           onNewContribution(c);
         }

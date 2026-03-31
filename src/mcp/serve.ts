@@ -54,6 +54,17 @@ try {
   const nexusUrl = process.env.GROVE_NEXUS_URL;
   const nexusApiKey = process.env.NEXUS_API_KEY;
 
+  // Debug: log MCP server config to file (stderr is ignored in detached mode)
+  try {
+    const { appendFileSync } = await import("node:fs");
+    appendFileSync(
+      "/tmp/grove-debug.log",
+      `[${new Date().toISOString()}] [mcp-serve] groveDir=${groveDir} nexusUrl=${nexusUrl ?? "none"} hasApiKey=${!!nexusApiKey}\n`,
+    );
+  } catch {
+    /* non-fatal */
+  }
+
   // Always create local runtime for workspace, contract, frontier, CAS
   const runtime = createLocalRuntime({
     groveDir,
@@ -102,8 +113,22 @@ try {
         outcomeStore = new NexusOutcomeStore({ client: nexusClient, zoneId });
         cas = new NexusCas({ client: nexusClient, zoneId });
         process.stderr.write(`grove-mcp: using Nexus stores at ${nexusUrl}\n`);
+        try {
+          const { appendFileSync } = await import("node:fs");
+          appendFileSync(
+            "/tmp/grove-debug.log",
+            `[${new Date().toISOString()}] [mcp-serve] NEXUS STORES active at ${nexusUrl}\n`,
+          );
+        } catch {}
       } else {
         process.stderr.write(`grove-mcp: Nexus unreachable, using local stores\n`);
+        try {
+          const { appendFileSync } = await import("node:fs");
+          appendFileSync(
+            "/tmp/grove-debug.log",
+            `[${new Date().toISOString()}] [mcp-serve] LOCAL STORES (Nexus unreachable at ${nexusUrl})\n`,
+          );
+        } catch {}
         nexusClient = undefined;
       }
     } catch (err) {
@@ -127,6 +152,13 @@ try {
       eventBus = new LocalEventBus();
     }
     topologyRouter = new TopologyRouter(runtime.contract.topology, eventBus);
+    try {
+      const { appendFileSync } = await import("node:fs");
+      appendFileSync(
+        "/tmp/grove-debug.log",
+        `[${new Date().toISOString()}] [mcp-serve] TopologyRouter created, eventBus=${nexusClient ? "NexusEventBus" : "LocalEventBus"}\n`,
+      );
+    } catch {}
   }
 
   deps = {

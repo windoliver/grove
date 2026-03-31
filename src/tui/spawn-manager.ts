@@ -754,12 +754,18 @@ export class SpawnManager {
     const groveDir = join(workspacePath, "..", "..");
     // Resolve the project root (parent of .grove) for finding src/mcp/serve.ts
     const projectRoot = join(groveDir, "..");
-    // MCP server writes to local SQLite (same DB as HTTP server).
-    // Do NOT pass GROVE_NEXUS_URL — Nexus VFS reads hit rate limits.
-    // IPC routing uses Nexus separately via NexusWsBridge.
+    // MCP server needs GROVE_NEXUS_URL so contributions are written to Nexus
+    // (enables IPC push via NexusEventBus + TopologyRouter for agent routing).
+    // Without it, contributions only go to local SQLite and reviewer never gets notified.
     const mcpEnv: Record<string, string> = {
       GROVE_DIR: groveDir,
     };
+    if (process.env.GROVE_NEXUS_URL) {
+      mcpEnv.GROVE_NEXUS_URL = process.env.GROVE_NEXUS_URL;
+    }
+    if (process.env.NEXUS_API_KEY) {
+      mcpEnv.NEXUS_API_KEY = process.env.NEXUS_API_KEY;
+    }
 
     // Find the grove MCP server: check dist/ first (installed), then src/ (dev)
     const { dirname } = await import("node:path");
