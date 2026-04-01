@@ -240,13 +240,27 @@ import type { GoalData, SessionInput, SessionRecord } from "./provider.js";
  * those back to the canonical `Session` field names (`id`, `createdAt`,
  * `completedAt`).
  */
-function mapApiSession(raw: Record<string, unknown>): SessionRecord {
+interface ApiSessionResponse {
+  readonly sessionId?: string;
+  readonly id?: string;
+  readonly goal?: string;
+  readonly presetName?: string;
+  readonly status: string;
+  readonly startedAt?: string;
+  readonly createdAt?: string;
+  readonly endedAt?: string;
+  readonly completedAt?: string;
+  readonly topology?: import("../core/topology.js").AgentTopology;
+  readonly contributionCount?: number;
+}
+
+function mapApiSession(raw: ApiSessionResponse): SessionRecord {
   return {
-    id: raw.sessionId ?? raw.id,
+    id: (raw.sessionId ?? raw.id) as string,
     goal: raw.goal,
     presetName: raw.presetName,
-    status: raw.status,
-    createdAt: raw.startedAt ?? raw.createdAt,
+    status: raw.status as SessionRecord["status"],
+    createdAt: (raw.startedAt ?? raw.createdAt) as string,
     completedAt: raw.endedAt ?? raw.completedAt,
     topology: raw.topology,
     contributionCount: raw.contributionCount ?? 0,
@@ -287,7 +301,7 @@ export async function listSessionsHttp(
   const qs = params.toString();
   const resp = await fetch(`${baseUrl}/api/sessions${qs ? `?${qs}` : ""}`);
   if (resp.ok) {
-    const body = (await resp.json()) as { sessions: readonly Record<string, unknown>[] };
+    const body = (await resp.json()) as { sessions: readonly ApiSessionResponse[] };
     return body.sessions.map(mapApiSession);
   }
   return [];
@@ -303,7 +317,7 @@ export async function createSessionHttp(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
-  if (resp.ok) return mapApiSession(await resp.json());
+  if (resp.ok) return mapApiSession((await resp.json()) as ApiSessionResponse);
   throw new Error(`Failed to create session: HTTP ${String(resp.status)}`);
 }
 
@@ -313,7 +327,7 @@ export async function getSessionHttp(
   sessionId: string,
 ): Promise<SessionRecord | undefined> {
   const resp = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}`);
-  if (resp.ok) return mapApiSession(await resp.json());
+  if (resp.ok) return mapApiSession((await resp.json()) as ApiSessionResponse);
   if (resp.status === 404) return undefined;
   return undefined;
 }
