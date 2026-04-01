@@ -108,6 +108,7 @@ const manifestSchema = z
       })
       .strict(),
     createdAt: z.string().datetime({ offset: true }).optional(),
+    sessionId: z.string().min(1).optional(),
   })
   .strict();
 
@@ -242,7 +243,16 @@ contributions.post("/", async (c) => {
     ...(parsed.createdAt !== undefined ? { createdAt: parsed.createdAt } : {}),
   };
 
-  const opDeps = toOperationDeps(serverDeps);
+  // Resolve per-session config when sessionId is provided.
+  // This ensures contributions are enforced against the session's frozen
+  // contract snapshot, not the server's global startup-time contract.
+  let opDeps = toOperationDeps(serverDeps);
+  if (parsed.sessionId !== undefined && serverDeps.goalSessionStore) {
+    const sessionConfig = await serverDeps.goalSessionStore.getSessionConfig(parsed.sessionId);
+    if (sessionConfig) {
+      opDeps = { ...opDeps, contract: sessionConfig };
+    }
+  }
   const result = await contributeOperation(input, opDeps);
 
   if (!result.ok) {

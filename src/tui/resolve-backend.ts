@@ -296,6 +296,12 @@ export async function loadTopology(backend: ResolvedBackend): Promise<AgentTopol
 /**
  * Load the full parsed GroveContract from a resolved backend.
  * Returns undefined if no GROVE.md is found or parsing fails.
+ *
+ * Priority:
+ * - Remote mode: fetch from server's /api/grove/contract
+ * - Nexus mode: prefer co-located server contract over local GROVE.md
+ *   (prevents version skew when operator checkout is stale)
+ * - Local mode: read local GROVE.md
  */
 export async function loadContract(backend: ResolvedBackend): Promise<GroveContract | undefined> {
   if (backend.mode === "remote") {
@@ -311,7 +317,34 @@ export async function loadContract(backend: ResolvedBackend): Promise<GroveContr
     return undefined;
   }
 
-  // Local + nexus: read from local GROVE.md contract.
+  // Nexus mode: prefer co-located server contract to avoid version skew
+  // between the operator's local GROVE.md and the server's parsed contract.
+  if (backend.mode === "nexus") {
+    try {
+      const { groveDir } = resolveGroveDir(backend.groveOverride);
+      const configPath = join(groveDir, "grove.json");
+      if (existsSync(configPath)) {
+        const raw = readFileSync(configPath, "utf-8");
+        const parsed = JSON.parse(raw) as { services?: { server?: boolean } };
+        if (parsed.services?.server) {
+          const port = process.env.PORT ?? "4515";
+          const serverUrl = `http://localhost:${port}`;
+          try {
+            const resp = await fetch(`${serverUrl}/api/grove/contract`);
+            if (resp.ok) {
+              return (await resp.json()) as GroveContract;
+            }
+          } catch {
+            // Server not reachable — fall through to local GROVE.md
+          }
+        }
+      }
+    } catch {
+      // Config read failed — fall through to local GROVE.md
+    }
+  }
+
+  // Local (or nexus fallback): read from local GROVE.md contract.
   try {
     const { parseGroveContract } = await import("../core/contract.js");
     const { groveDir } = resolveGroveDir(backend.groveOverride);
