@@ -8,6 +8,8 @@
         "@grove/ask-user": "workspace:*",
         "@hono/zod-validator": "0.7.6",
         "@modelcontextprotocol/sdk": "^1.27.0",
+        "@opentui-ui/dialog": "0.1.2",
+        "@opentui-ui/toast": "0.0.5",
         "@opentui/core": "^0.1.87",
         "@opentui/react": "^0.1.87",
         "@xterm/addon-serialize": "0.14.0",
@@ -202,6 +204,10 @@
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
     "@modelcontextprotocol/sdk": ["@modelcontextprotocol/sdk@1.27.1", "", { "dependencies": { "@hono/node-server": "^1.19.9", "ajv": "^8.17.1", "ajv-formats": "^3.0.1", "content-type": "^1.0.5", "cors": "^2.8.5", "cross-spawn": "^7.0.5", "eventsource": "^3.0.2", "eventsource-parser": "^3.0.0", "express": "^5.2.1", "express-rate-limit": "^8.2.1", "hono": "^4.11.4", "jose": "^6.1.3", "json-schema-typed": "^8.0.2", "pkce-challenge": "^5.0.0", "raw-body": "^3.0.0", "zod": "^3.25 || ^4.0", "zod-to-json-schema": "^3.25.1" }, "peerDependencies": { "@cfworker/json-schema": "^4.1.1" }, "optionalPeers": ["@cfworker/json-schema"] }, "sha512-sr6GbP+4edBwFndLbM60gf07z0FQ79gaExpnsjMGePXqFcSSb7t6iscpjk9DhFhwd+mTEQrzNafGP8/iGGFYaA=="],
+
+    "@opentui-ui/dialog": ["@opentui-ui/dialog@0.1.2", "", { "peerDependencies": { "@opentui/core": "^0.1.69", "@opentui/react": "^0.1.69", "@opentui/solid": "^0.1.69" }, "optionalPeers": ["@opentui/react", "@opentui/solid"] }, "sha512-EZ4FG5u5sxU75+6pcsJsLzsD5JqO05So/1ceZUKUu7nxZ9IF7gcZEi+MU4HnYC9cb2Q7w6hM9y3/iW+jE1C53w=="],
+
+    "@opentui-ui/toast": ["@opentui-ui/toast@0.0.5", "", { "peerDependencies": { "@opentui/core": "^0.1.63", "@opentui/react": "^0.1.63", "@opentui/solid": "^0.1.63" }, "optionalPeers": ["@opentui/react", "@opentui/solid"] }, "sha512-LOT5Bw0F5AEyhjSqpKgS7aSe7M7v+ahaAa4t3/K2dtWiT0CJ711UHXqM31KKN6yuHoUKRNs+g+643ety/a3lEw=="],
 
     "@opentui/core": ["@opentui/core@0.1.87", "", { "dependencies": { "bun-ffi-structs": "0.1.2", "diff": "8.0.2", "jimp": "1.6.0", "marked": "17.0.1", "yoga-layout": "3.2.1" }, "optionalDependencies": { "@dimforge/rapier2d-simd-compat": "^0.17.3", "@opentui/core-darwin-arm64": "0.1.87", "@opentui/core-darwin-x64": "0.1.87", "@opentui/core-linux-arm64": "0.1.87", "@opentui/core-linux-x64": "0.1.87", "@opentui/core-win32-arm64": "0.1.87", "@opentui/core-win32-x64": "0.1.87", "bun-webgpu": "0.1.5", "planck": "^1.4.2", "three": "0.177.0" }, "peerDependencies": { "web-tree-sitter": "0.25.10" } }, "sha512-dhsmMv0IqKftwG7J/pBrLBj2armsYIg5R3LBvciRQI/6X89GufP4l1u0+QTACAx6iR4SYJJNVNQ2tdX8LM9rMw=="],
 

@@ -4,7 +4,7 @@
  * Includes outcome annotation when available (Phase 5).
  */
 
-import React, { createElement, useCallback } from "react";
+import React, { useCallback } from "react";
 import type { OutcomeRecord } from "../../core/outcome.js";
 import { formatScore, formatTimestamp, truncateCid } from "../../shared/format.js";
 import { DataStatus } from "../components/data-status.js";
@@ -108,10 +108,10 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
 
       <box flexDirection="column" marginBottom={1}>
         <text>Summary</text>
-        <text>{c.summary}</text>
+        <markdown>{c.summary}</markdown>
         {c.description && (
           <box marginTop={1}>
-            {createElement("markdown" as string, {}, c.description.slice(0, 500))}
+            <markdown>{c.description.slice(0, 500)}</markdown>
           </box>
         )}
       </box>

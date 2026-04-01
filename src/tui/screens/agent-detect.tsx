@@ -47,7 +47,12 @@ function detectCli(name: string): boolean {
 
 /** Screen 3: Launch preview — agent detection + role prompt configuration. */
 export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.memo(
-  function AgentDetect({ topology, goal, onContinue, onBack }: AgentDetectProps): React.ReactNode {
+  function AgentDetect({
+    topology,
+    goal: _goal,
+    onContinue,
+    onBack,
+  }: AgentDetectProps): React.ReactNode {
     const [detected, setDetected] = useState<Map<string, boolean>>(new Map());
     const [scanning, setScanning] = useState(true);
     const [cursor, setCursor] = useState(0);
@@ -135,11 +140,7 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
         (key) => {
           if (editing) {
             if (key.name === "escape") {
-              setEditing(false);
-              return;
-            }
-            if (key.name === "return") {
-              // Save edit
+              // Save on exit
               const roleName = roles[cursor]?.name;
               if (roleName) {
                 setRolePrompts((prev) => {
@@ -151,18 +152,7 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
               setEditing(false);
               return;
             }
-            if (key.name === "backspace") {
-              setEditBuffer((b) => b.slice(0, -1));
-              return;
-            }
-            if (key.name === "space") {
-              setEditBuffer((b) => `${b} `);
-              return;
-            }
-            if (key.name && key.name.length === 1 && !key.ctrl) {
-              setEditBuffer((b) => b + key.name);
-              return;
-            }
+            // textarea handles all other input
             return;
           }
 
@@ -324,7 +314,7 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
             flexDirection="column"
             marginX={2}
             marginTop={1}
-            borderStyle="single"
+            borderStyle="round"
             borderColor={theme.border}
             paddingX={1}
           >
@@ -357,12 +347,12 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
                     <text color={theme.muted}> ({cli})</text>
                   </box>
                   {isEditing ? (
-                    <box flexDirection="row" marginLeft={4}>
-                      <text color={theme.focus}>prompt: </text>
-                      <text color={theme.text}>
-                        {editBuffer}
-                        <text color={theme.focus}>_</text>
-                      </text>
+                    <box flexDirection="column" marginLeft={4} height={4}>
+                      <textarea
+                        focused={true}
+                        value={editBuffer}
+                        onChange={(val: string) => setEditBuffer(val)}
+                      />
                     </box>
                   ) : (
                     <box marginLeft={4} flexDirection="column">
@@ -385,7 +375,7 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
         <box paddingX={2} marginTop={1}>
           <text color={theme.dimmed}>
             {editing
-              ? "Type prompt, Enter:save, Esc:cancel"
+              ? "Edit prompt (vim keys)  Esc:save & close"
               : scanning
                 ? "Scanning..."
                 : "c:change CLI  e:edit prompt  j/k:navigate  Enter:launch  Esc:back"}

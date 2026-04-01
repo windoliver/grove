@@ -257,6 +257,24 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // ---------------------------------------------------------------------------
     const pendingPermissions = usePermissionDetection(appProps.tmux);
 
+    // Back to main: archive session and return to preset select
+    const handleBackToMain = useCallback(() => {
+      spawnManager.stopLogPolling();
+      void (async () => {
+        await spawnManager.saveTraces().catch(() => {
+          /* best-effort */
+        });
+        if (state.sessionId && isSessionProvider(provider)) {
+          await provider.archiveSession(state.sessionId).catch(() => {
+            /* best-effort */
+          });
+        }
+      })();
+      setState({
+        screen: "preset-select",
+      });
+    }, [provider, state.sessionId, spawnManager]);
+
     const handleQuit = useCallback(() => {
       spawnManager.stopLogPolling();
       // Save trace history before quitting, then teardown
@@ -494,7 +512,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         <box
           flexDirection="column"
           marginX={2}
-          borderStyle="single"
+          borderStyle="round"
           borderColor={theme.warning}
           paddingX={1}
         >
@@ -613,6 +631,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             onToggleAdvanced={handleToggleAdvanced}
             onComplete={handleComplete}
             onQuit={handleQuit}
+            onBackToMain={handleBackToMain}
           />,
         );
 

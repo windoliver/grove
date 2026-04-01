@@ -71,6 +71,7 @@ export interface RunningKeyboardActions {
   readonly toggleVfs: () => void;
   readonly dismissVfs: () => void;
   readonly setConfirmQuit: (v: boolean) => void;
+  readonly showQuitDialog: () => void;
   // Prompt
   readonly enterPromptMode: () => void;
   readonly exitPromptMode: () => void;
@@ -81,6 +82,7 @@ export interface RunningKeyboardActions {
   // Feed
   readonly feedCursorDown: () => void;
   readonly feedCursorUp: () => void;
+  readonly feedScrollToBottom: () => void;
   readonly scrollToAskUser: () => void;
   // Trace pane (split-pane agent trace viewer)
   readonly traceSelectDown: () => void;
@@ -228,7 +230,7 @@ export function routeRunningKey(
     return true;
   }
 
-  // Escape: layered dismissal — overlay → panel collapse → quit confirm
+  // Escape: layered dismissal — overlay → panel collapse
   if (input === "escape") {
     if (state.showVfs) {
       actions.dismissVfs();
@@ -245,17 +247,13 @@ export function routeRunningKey(
     return true;
   }
 
-  // q: quit with confirmation
+  // q: quit with dialog confirmation
   if (input === "q") {
     if (state.showVfs) {
       actions.dismissVfs();
       return true;
     }
-    if (state.confirmQuit) {
-      actions.quit();
-      return true;
-    }
-    actions.setConfirmQuit(true);
+    actions.showQuitDialog();
     return true;
   }
 
@@ -357,6 +355,12 @@ export function routeRunningKey(
   }
   if (input === "k" || input === "up") {
     actions.feedCursorUp();
+    return true;
+  }
+
+  // G (Shift+G): jump to bottom of feed and re-enable auto-follow
+  if (key.shift && input === "g") {
+    actions.feedScrollToBottom();
     return true;
   }
 

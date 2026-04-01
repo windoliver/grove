@@ -120,6 +120,8 @@ function mockActions(overrides?: {
     onPaletteUp: () => record("onPaletteUp"),
     onPaletteDown: (max) => record("onPaletteDown", max),
     onPaletteSelect: () => record("onPaletteSelect"),
+    onPaletteChar: (char) => record("onPaletteChar", char),
+    onPaletteBackspace: () => record("onPaletteBackspace"),
     onZoomCycle: () => record("onZoomCycle"),
     onZoomReset: () => record("onZoomReset"),
     onTerminalScrollUp: () => record("onTerminalScrollUp"),
@@ -386,11 +388,18 @@ describe("routeKey — command palette mode", () => {
     expect(log.calls).toContain("onPaletteSelect");
   });
 
-  test("other keys are consumed but not acted on", () => {
+  test("printable keys build fuzzy query", () => {
     const { actions, log } = mockActions({ mode: InputMode.CommandPalette });
     const handled = routeKey(keyEvent("x"), actions);
     expect(handled).toBe(true);
-    expect(log.calls).toEqual([]);
+    expect(log.calls).toContain("onPaletteChar");
+  });
+
+  test("backspace removes from fuzzy query", () => {
+    const { actions, log } = mockActions({ mode: InputMode.CommandPalette });
+    const handled = routeKey(keyEvent("backspace"), actions);
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("onPaletteBackspace");
   });
 });
 

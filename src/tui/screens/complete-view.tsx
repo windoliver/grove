@@ -92,7 +92,7 @@ export const CompleteView: React.NamedExoticComponent<CompleteViewProps> = React
           flexDirection="column"
           marginX={2}
           marginTop={1}
-          borderStyle="single"
+          borderStyle="round"
           borderColor={theme.border}
           paddingX={1}
         >
@@ -107,7 +107,7 @@ export const CompleteView: React.NamedExoticComponent<CompleteViewProps> = React
           flexDirection="column"
           marginX={2}
           marginTop={1}
-          borderStyle="single"
+          borderStyle="round"
           borderColor={theme.border}
           paddingX={1}
         >

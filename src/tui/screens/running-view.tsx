@@ -15,7 +15,9 @@
  */
 
 import { useKeyboard } from "@opentui/react";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useDialog } from "@opentui-ui/dialog/react";
+import { toast } from "@opentui-ui/toast/react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { EventBus } from "../../core/event-bus.js";
 import type { Contribution } from "../../core/models.js";
 import type { AgentTopology } from "../../core/topology.js";
@@ -26,6 +28,7 @@ import { debugLog } from "../debug-log.js";
 import { useAgentMonitor } from "../hooks/use-agent-monitor.js";
 import { InputMode } from "../hooks/use-panel-focus.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
+import { useTuiStatePersistence } from "../hooks/use-session-persistence.js";
 import type { DashboardData, TuiDataProvider } from "../provider.js";
 import { isVfsProvider } from "../provider.js";
 import { agentStatusIcon, KIND_ICONS, PLATFORM_COLORS, theme } from "../theme.js";
@@ -82,6 +85,8 @@ export interface RunningViewProps {
   readonly onToggleAdvanced: () => void;
   readonly onComplete: (reason: string) => void;
   readonly onQuit: () => void;
+  /** Return to the preset-select / main screen. */
+  readonly onBackToMain?: (() => void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -98,10 +103,6 @@ function formatTime(iso: string): string {
   }
 }
 
-const MAX_FEED_ITEMS = 50;
-/** Default number of visible feed items (used when terminal height is unavailable). */
-const DEFAULT_FEED_WINDOW = 30;
-
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -113,6 +114,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     intervalMs,
     topology,
     goal,
+    sessionId,
     sessionStartedAt,
     tmux,
     eventBus,
@@ -125,19 +127,36 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     onToggleAdvanced,
     onComplete: _onComplete,
     onQuit,
+    onBackToMain,
   }: RunningViewProps): React.ReactNode {
+    // ─── Dialog ───
+    const dialog = useDialog();
+
+    // ─── Session state persistence (restore on resume) ───
+    const { savedState, saveState: persistViewState } = useTuiStatePersistence(sessionId, groveDir);
+
     // ─── Panel state ───
-    const [expandedPanel, setExpandedPanel] = useState<RunningPanel | null>(null);
-    const [zoomLevel, setZoomLevel] = useState<"normal" | "half" | "full">("normal");
+    const [expandedPanel, setExpandedPanel] = useState<RunningPanel | null>(
+      () => savedState?.expandedPanel ?? null,
+    );
+    const [zoomLevel, setZoomLevel] = useState<"normal" | "half" | "full">(
+      () => savedState?.zoomLevel ?? "normal",
+    );
 
     // ─── Trace pane state ───
-    const [traceSelectedAgent, setTraceSelectedAgent] = useState(0);
+    const [traceSelectedAgent, setTraceSelectedAgent] = useState(
+      () => savedState?.traceSelectedAgent ?? 0,
+    );
     const [traceScrollOffset, setTraceScrollOffset] = useState(0);
 
     // ─── Overlay state ───
     const [showVfs, setShowVfs] = useState(false);
     const [showHelp, setShowHelp] = useState(false);
     const [confirmQuit, setConfirmQuit] = useState(false);
+
+    // ─── VFS navigation state ───
+    const [vfsCursor, setVfsCursor] = useState(0);
+    const [vfsNavTrigger, setVfsNavTrigger] = useState(0);
 
     // ─── Prompt state ───
     const [promptMode, setPromptMode] = useState(false);
@@ -146,6 +165,26 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
 
     // ─── Feed state ───
     const [cursor, setCursor] = useState(0);
+    const [autoFollow, setAutoFollow] = useState(true);
+    const [newSinceFreeze, setNewSinceFreeze] = useState(0);
+    const prevFeedLengthRef = React.useRef(0);
+
+    // ─── Restore saved state once it loads (async) ───
+    const restoredRef = useRef(false);
+    useEffect(() => {
+      if (savedState == null || restoredRef.current) return;
+      restoredRef.current = true;
+      if (savedState.expandedPanel !== undefined)
+        setExpandedPanel(savedState.expandedPanel ?? null);
+      if (savedState.zoomLevel !== undefined) setZoomLevel(savedState.zoomLevel);
+      if (savedState.traceSelectedAgent !== undefined)
+        setTraceSelectedAgent(savedState.traceSelectedAgent);
+    }, [savedState]);
+
+    // ─── Persist view state on changes (debounced via hook) ───
+    useEffect(() => {
+      persistViewState({ expandedPanel, zoomLevel, traceSelectedAgent });
+    }, [expandedPanel, zoomLevel, traceSelectedAgent, persistViewState]);
 
     // ─── Elapsed timer ───
     const [elapsed, setElapsed] = useState("0s");
@@ -165,12 +204,25 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     // ─── Agent monitoring (extracted hook) ───
     const monitor = useAgentMonitor({ groveDir, tmux, eventBus, topology });
 
+    // Toast for permission requests
+    const prevPermCountRef = useRef(0);
+    useEffect(() => {
+      const count = monitor.pendingPermissions.length;
+      if (count > prevPermCountRef.current && count > 0) {
+        const perm = monitor.pendingPermissions[0];
+        if (perm) {
+          toast.warning(`${perm.agentRole}: permission needed`, { duration: 5000 });
+        }
+      }
+      prevPermCountRef.current = count;
+    }, [monitor.pendingPermissions]);
+
     // ─── Data fetching ───
     const dashboardFetcher = useCallback(() => provider.getDashboard(), [provider]);
     const fetchCountRef = React.useRef(0);
     const contributionsFetcher = useCallback(async () => {
       fetchCountRef.current++;
-      const result = await provider.getContributions({ limit: MAX_FEED_ITEMS });
+      const result = await provider.getContributions({ limit: 100 });
       if (
         fetchCountRef.current <= 5 ||
         fetchCountRef.current % 20 === 0 ||
@@ -233,6 +285,19 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       }
     }, [allContributions.length, feed.length, feedActive, sessionStartedAt]);
 
+    // ─── Auto-follow: keep cursor at bottom when new items arrive ───
+    useEffect(() => {
+      const prev = prevFeedLengthRef.current;
+      const curr = feed.length;
+      prevFeedLengthRef.current = curr;
+      if (curr === prev) return;
+      if (autoFollow) {
+        setCursor(Math.max(0, curr - 1));
+      } else {
+        setNewSinceFreeze((n) => n + (curr - prev));
+      }
+    }, [feed.length, autoFollow]);
+
     // Track seen contribution CIDs and route new ones to downstream agents
     const seenCidsRef = React.useRef<Set<string>>(new Set());
     const initialSeededRef = React.useRef(false);
@@ -257,6 +322,13 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           );
           seenCidsRef.current.add(c.cid);
           onNewContribution(c);
+          // Toast notification for new contributions
+          const role = c.agent.role ?? c.agent.agentName ?? "agent";
+          if (c.kind === "ask_user") {
+            toast.warning(`${role}: question pending`, { duration: 5000 });
+          } else {
+            toast.info(`${role}: ${c.kind}`, { duration: 3000 });
+          }
         }
       }
     }, [feed, onNewContribution, sessionStartedAt]);
@@ -320,7 +392,15 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           setPromptText("");
         },
         feedCursorDown: () => setCursor((c) => Math.min(c + 1, Math.max(0, feed.length - 1))),
-        feedCursorUp: () => setCursor((c) => Math.max(c - 1, 0)),
+        feedCursorUp: () => {
+          setAutoFollow(false);
+          setCursor((c) => Math.max(c - 1, 0));
+        },
+        feedScrollToBottom: () => {
+          setAutoFollow(true);
+          setNewSinceFreeze(0);
+          setCursor(Math.max(0, feed.length - 1));
+        },
         scrollToAskUser: () => {
           const askIdx = feed.findIndex((c) => c.kind === "ask_user");
           if (askIdx >= 0) setCursor(askIdx);
@@ -347,6 +427,26 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         openDetail: () => onToggleAdvanced(),
         toggleAdvanced: () => onToggleAdvanced(),
         quit: () => onQuit(),
+        showQuitDialog: () => {
+          if (onBackToMain) {
+            void dialog
+              .choice({
+                title: "Leave Session",
+                message: "Agents will be stopped.",
+                choices: ["Quit", "Back to main", "Cancel"],
+              })
+              .then((choice) => {
+                if (choice === "Quit") onQuit();
+                else if (choice === "Back to main") onBackToMain();
+              });
+          } else {
+            void dialog
+              .confirm({ title: "Quit Session?", message: "Agents will be stopped." })
+              .then((confirmed) => {
+                if (confirmed) onQuit();
+              });
+          }
+        },
         approvePermission: () => {
           const prompt = monitor.pendingPermissions[0];
           if (prompt && tmux) {
@@ -385,17 +485,41 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         feed,
         onToggleAdvanced,
         onQuit,
+        onBackToMain,
         monitor.pendingPermissions,
         tmux,
         pendingAskUser,
         topology,
+        dialog,
       ],
     );
 
     useKeyboard(
       useCallback(
-        (key) => routeRunningKey(key, keyboardState, keyboardActions),
-        [keyboardState, keyboardActions],
+        (key) => {
+          // VFS overlay intercepts navigation keys
+          if (showVfs) {
+            if (key.name === "j" || key.name === "down") {
+              setVfsCursor((c) => c + 1); // clamped by VfsBrowserView via allEntries.length
+              return;
+            }
+            if (key.name === "k" || key.name === "up") {
+              setVfsCursor((c) => Math.max(c - 1, 0));
+              return;
+            }
+            if (key.name === "return") {
+              setVfsNavTrigger((t) => t + 1);
+              setVfsCursor(0); // reset cursor when navigating into a directory
+              return;
+            }
+            if (key.name === "escape") {
+              setShowVfs(false);
+              return;
+            }
+          }
+          routeRunningKey(key, keyboardState, keyboardActions);
+        },
+        [showVfs, keyboardState, keyboardActions],
       ),
     );
 
@@ -429,8 +553,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
                 provider={provider}
                 intervalMs={intervalMs}
                 active={true}
-                cursor={cursor}
-                navigateTrigger={0}
+                cursor={vfsCursor}
+                navigateTrigger={vfsNavTrigger}
               />
             </box>
           </box>
@@ -460,6 +584,16 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       );
     }
 
+    // Tab bar options (shared between feed-only and half-screen views)
+    const tabOptions = [
+      { name: "Feed", description: "1" },
+      { name: "Agents", description: "2" },
+      { name: "DAG", description: "3" },
+      { name: "Terminal", description: "4" },
+      { name: "Traces", description: "e" },
+    ];
+    const tabSelectedIndex = expandedPanel !== null ? expandedPanel : 0;
+
     // ─── Fullscreen panel (takes over entire view) ───
     if (expandedPanel !== null && zoomLevel === "full") {
       return (
@@ -473,6 +607,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             monitor,
             cursor,
             feed,
+            autoFollow,
+            newSinceFreeze,
             logBuffers,
             traceSelectedAgent,
             traceScrollOffset,
@@ -494,17 +630,33 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     if (expandedPanel !== null && zoomLevel === "half") {
       return (
         <box flexDirection="column" width="100%" height="100%">
+          {/* Tab bar — visual indicator of active panel */}
+          <tab-select
+            focused={false}
+            options={tabOptions}
+            selectedIndex={tabSelectedIndex}
+            showDescription={true}
+            showUnderline={true}
+          />
           <box flexDirection="row" flexGrow={1}>
             {/* Left: feed column */}
             <box flexDirection="column" flexGrow={1} flexBasis="50%">
-              {renderFeedSection(feed, cursor, goal, pendingAskUser, frontier, DEFAULT_FEED_WINDOW)}
+              {renderFeedSection(
+                feed,
+                cursor,
+                goal,
+                pendingAskUser,
+                frontier,
+                autoFollow,
+                newSinceFreeze,
+              )}
             </box>
             {/* Right: expanded panel */}
             <box
               flexDirection="column"
               flexGrow={1}
               flexBasis="50%"
-              borderStyle="single"
+              borderStyle="round"
               borderColor={theme.focus}
             >
               <box flexDirection="row" paddingX={1}>
@@ -522,6 +674,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
                 monitor,
                 cursor,
                 feed,
+                autoFollow,
+                newSinceFreeze,
                 logBuffers,
                 traceSelectedAgent,
                 traceScrollOffset,
@@ -554,11 +708,28 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     // ─── Default: feed-only view ───
     return (
       <box flexDirection="column" width="100%" height="100%">
+        {/* Tab bar — visual indicator of active panel (keyboard 1-4/e) */}
+        <tab-select
+          focused={false}
+          options={tabOptions}
+          selectedIndex={tabSelectedIndex}
+          showDescription={true}
+          showUnderline={true}
+        />
+
         {/* Agent status with live output */}
         {renderAgentSection(topology, dashboard, monitor)}
 
         {/* Main feed area */}
-        {renderFeedSection(feed, cursor, goal, pendingAskUser, frontier, DEFAULT_FEED_WINDOW)}
+        {renderFeedSection(
+          feed,
+          cursor,
+          goal,
+          pendingAskUser,
+          frontier,
+          autoFollow,
+          newSinceFreeze,
+        )}
 
         {/* Bottom chrome: permissions, IPC, quit confirm, progress, prompt */}
         {renderBottomChrome(
@@ -652,13 +823,9 @@ function renderFeedSection(
   goal: string | undefined,
   pendingAskUser: Contribution | undefined,
   frontier: DashboardData["frontierSummary"] | undefined,
-  windowSize: number,
+  autoFollow: boolean,
+  newSinceFreeze: number,
 ): React.ReactNode {
-  // Dynamic windowing: center the cursor in the visible window
-  const halfWindow = Math.floor(windowSize / 2);
-  const windowStart = Math.max(0, Math.min(cursor - halfWindow, feed.length - windowSize));
-  const windowEnd = Math.min(feed.length, windowStart + windowSize);
-
   return (
     <box flexDirection="column" flexGrow={1}>
       {/* Goal display */}
@@ -698,7 +865,7 @@ function renderFeedSection(
         flexDirection="column"
         marginX={2}
         marginTop={1}
-        borderStyle="single"
+        borderStyle="round"
         borderColor={theme.border}
         paddingX={1}
         flexGrow={1}
@@ -709,61 +876,85 @@ function renderFeedSection(
         {feed.length === 0 ? (
           <EmptyState title="Waiting for contributions..." hint="Agents are working on your goal" />
         ) : (
-          feed.slice(windowStart, windowEnd).map((c, i) => {
-            const actualIndex = windowStart + i;
-            const selected = actualIndex === cursor;
-            const kindColor =
-              c.kind === "work"
-                ? theme.work
-                : c.kind === "review"
-                  ? theme.review
-                  : c.kind === "discussion"
-                    ? theme.discussion
-                    : c.kind === "adoption"
-                      ? theme.adoption
-                      : theme.text;
-            const kindIcon = KIND_ICONS[c.kind] ?? "\u25a0";
-            const agentLabel = c.agent.role ?? c.agent.agentName ?? c.agent.agentId;
-
-            const scoreEntries = Object.entries(c.scores ?? {});
-            const artifactCount = Object.keys(c.artifacts ?? {}).length;
-            const relationCount = (c.relations ?? []).length;
-            const hasPreview =
-              selected && (scoreEntries.length > 0 || artifactCount > 0 || relationCount > 0);
-
-            return (
-              <box key={c.cid} flexDirection="column">
-                <box flexDirection="row" backgroundColor={selected ? theme.selectedBg : undefined}>
-                  <text color={theme.dimmed}>{formatTime(c.createdAt)} </text>
-                  <text color={kindColor}>{kindIcon} </text>
-                  <text color={kindColor}>{c.kind.padEnd(12)}</text>
-                  <text color={theme.info}>{agentLabel.padEnd(10)} </text>
-                  <text color={selected ? theme.text : theme.muted}>{c.summary.slice(0, 55)}</text>
-                </box>
-                {hasPreview ? (
-                  <box flexDirection="row" marginLeft={28}>
-                    {scoreEntries.slice(0, 3).map(([name, score]) => (
-                      <text key={name} color={theme.dimmed}>
-                        {name}:{(score as { value: number }).value.toFixed(2)}{" "}
-                      </text>
-                    ))}
-                    {artifactCount > 0 ? (
-                      <text color={theme.dimmed}>
-                        {artifactCount} file{artifactCount !== 1 ? "s" : ""}{" "}
-                      </text>
-                    ) : null}
-                    {relationCount > 0 ? (
-                      <text color={theme.dimmed}>
-                        {relationCount} rel{relationCount !== 1 ? "s" : ""}{" "}
-                      </text>
-                    ) : null}
-                    <text color={theme.dimmed}> Enter:detail</text>
-                  </box>
-                ) : null}
-              </box>
+          (() => {
+            // Explicit windowing: keep cursor visible within a viewport-sized window
+            const WINDOW_SIZE = Math.max(10, (process.stdout.rows ?? 40) - 15);
+            const halfWindow = Math.floor(WINDOW_SIZE / 2);
+            const windowStart = Math.max(
+              0,
+              Math.min(cursor - halfWindow, feed.length - WINDOW_SIZE),
             );
-          })
+            const windowEnd = Math.min(feed.length, windowStart + WINDOW_SIZE);
+            return feed.slice(windowStart, windowEnd).map((c, i) => {
+              const actualIndex = windowStart + i;
+              const selected = actualIndex === cursor;
+              const KIND_COLORS: Record<string, string> = {
+                work: theme.work,
+                review: theme.review,
+                discussion: theme.discussion,
+                adoption: theme.adoption,
+                reproduction: theme.reproduction,
+                ask_user: theme.warning,
+                response: theme.info,
+                plan: theme.secondary,
+              };
+              const kindColor = KIND_COLORS[c.kind] ?? theme.text;
+              const kindIcon = KIND_ICONS[c.kind] ?? "\u25a0";
+              const agentLabel = c.agent.role ?? c.agent.agentName ?? c.agent.agentId;
+
+              const scoreEntries = Object.entries(c.scores ?? {});
+              const artifactCount = Object.keys(c.artifacts ?? {}).length;
+              const relationCount = (c.relations ?? []).length;
+              const hasPreview =
+                selected && (scoreEntries.length > 0 || artifactCount > 0 || relationCount > 0);
+
+              return (
+                <box key={c.cid} flexDirection="column">
+                  <box
+                    flexDirection="row"
+                    backgroundColor={selected ? theme.selectedBg : undefined}
+                  >
+                    <text color={kindColor}>{"\u2502"}</text>
+                    <text color={theme.dimmed}>{formatTime(c.createdAt)} </text>
+                    <text color={kindColor}>{kindIcon} </text>
+                    <text color={kindColor}>{c.kind.padEnd(12)}</text>
+                    <text color={theme.info}>{agentLabel.padEnd(10)} </text>
+                    <text color={selected ? theme.text : theme.muted}>
+                      {c.summary.slice(0, 55)}
+                    </text>
+                  </box>
+                  {hasPreview ? (
+                    <box flexDirection="row" marginLeft={28}>
+                      {scoreEntries.slice(0, 3).map(([name, score]) => (
+                        <text key={name} color={theme.dimmed}>
+                          {name}:{(score as { value: number }).value.toFixed(2)}{" "}
+                        </text>
+                      ))}
+                      {artifactCount > 0 ? (
+                        <text color={theme.dimmed}>
+                          {artifactCount} file{artifactCount !== 1 ? "s" : ""}{" "}
+                        </text>
+                      ) : null}
+                      {relationCount > 0 ? (
+                        <text color={theme.dimmed}>
+                          {relationCount} rel{relationCount !== 1 ? "s" : ""}{" "}
+                        </text>
+                      ) : null}
+                      <text color={theme.dimmed}> Enter:detail</text>
+                    </box>
+                  ) : null}
+                </box>
+              );
+            });
+          })()
         )}
+
+        {/* Auto-scroll frozen badge */}
+        {!autoFollow && newSinceFreeze > 0 ? (
+          <box paddingX={1}>
+            <text color={theme.warning}>{newSinceFreeze} new — G:jump to latest</text>
+          </box>
+        ) : null}
       </box>
     </box>
   );
@@ -779,6 +970,8 @@ interface PanelRenderContext {
   readonly monitor: ReturnType<typeof useAgentMonitor>;
   readonly cursor: number;
   readonly feed: readonly Contribution[];
+  readonly autoFollow: boolean;
+  readonly newSinceFreeze: number;
   readonly logBuffers?: ReadonlyMap<string, AgentLogBuffer> | undefined;
   readonly traceSelectedAgent?: number;
   readonly traceScrollOffset?: number;
@@ -794,7 +987,8 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
         undefined,
         undefined,
         undefined,
-        DEFAULT_FEED_WINDOW,
+        ctx.autoFollow,
+        ctx.newSinceFreeze,
       );
 
     case RunningPanel.Agents:
@@ -869,7 +1063,7 @@ function renderBottomChrome(
         <box
           flexDirection="column"
           marginX={2}
-          borderStyle="single"
+          borderStyle="round"
           borderColor={theme.warning}
           paddingX={1}
         >
@@ -906,7 +1100,7 @@ function renderBottomChrome(
         </box>
       ) : null}
 
-      {/* Quit confirmation */}
+      {/* Quit confirmation (legacy fallback — primary flow uses dialog) */}
       {confirmQuit ? (
         <box paddingX={2}>
           <text color={theme.warning}>Press q again to quit, Esc to cancel</text>
@@ -972,6 +1166,36 @@ function renderHelpOverlay(): React.ReactNode {
   );
 }
 
+/** Build contextual keybinding hints based on current state. */
+function contextualHints(
+  expandedPanel: RunningPanel | null,
+  zoomLevel: "normal" | "half" | "full",
+  activeRoles: readonly string[] | undefined,
+  hasAskUser: boolean,
+): string {
+  const hints: string[] = [];
+
+  if (expandedPanel === null) {
+    // Default feed view
+    hints.push("1-4:panels", "e:traces", "j/k:nav");
+  } else if (expandedPanel === RunningPanel.Trace) {
+    // Trace pane active
+    hints.push("j/k:agent", "J/K:scroll", "G/g:top/bottom", "Tab:cycle");
+    if (zoomLevel !== "full") hints.push("f:full");
+    hints.push("Esc:close");
+  } else {
+    // Panel expanded
+    if (zoomLevel !== "full") hints.push("f:full");
+    hints.push("Esc:close");
+  }
+
+  if ((activeRoles ?? []).length > 0) hints.push("m:msg");
+  if (hasAskUser) hints.push("r:respond");
+  hints.push("?:help", "q:quit");
+
+  return hints.join(" ");
+}
+
 /** Render the status bar at the bottom of the view. */
 function renderStatusBar(
   expandedPanel: RunningPanel | null,
@@ -993,13 +1217,11 @@ function renderStatusBar(
       {panelIndicator ? <text color={theme.focus}>{panelIndicator}</text> : null}
       <text color={theme.secondary}>
         {" "}
-        {feedLength} contribs | {claimCount} active
+        {feedLength}c | {claimCount} active
       </text>
       <text color={theme.secondary}>
         {" "}
-        1-4:panels{expandedPanel !== null ? " f:full" : ""} e:traces{" "}
-        {(activeRoles ?? []).length > 0 ? "m:message " : ""}?:help
-        {hasAskUser ? " r:respond" : ""} q:quit
+        {contextualHints(expandedPanel, zoomLevel, activeRoles, hasAskUser)}
       </text>
     </box>
   );

@@ -91,6 +91,18 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
       if (!process.env.NEXUS_API_KEY && nexusInfo.apiKey) {
         process.env.NEXUS_API_KEY = nexusInfo.apiKey;
       }
+      // Persist Nexus URL to grove.json so Resume can find it without re-discovery.
+      // This prevents spinning up a duplicate Nexus stack on subsequent TUI launches.
+      try {
+        const { writeFileSync } = await import("node:fs");
+        const currentConfig = JSON.parse(readFileSync(configPath, "utf-8"));
+        if (currentConfig.nexusUrl !== nexusInfo.url) {
+          currentConfig.nexusUrl = nexusInfo.url;
+          writeFileSync(configPath, `${JSON.stringify(currentConfig, null, 2)}\n`, "utf-8");
+        }
+      } catch {
+        // Best-effort — don't fail startup over config persistence
+      }
     } catch (err) {
       // If user explicitly asked for --build, don't silently fall back — surface the error
       if (options.build) {

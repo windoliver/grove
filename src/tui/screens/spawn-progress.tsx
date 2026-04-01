@@ -7,6 +7,8 @@
  * Auto-transitions to RunningView when all agents are resolved.
  */
 
+import { useTimeline } from "@opentui/react";
+import { toast } from "@opentui-ui/toast/react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { BreadcrumbBar } from "../components/breadcrumb-bar.js";
 import { BRAILLE_SPINNER, PLATFORM_COLORS, theme } from "../theme.js";
@@ -50,7 +52,7 @@ export const SpawnProgress: React.NamedExoticComponent<SpawnProgressProps> = Rea
     presetName,
     onAllResolved,
   }: SpawnProgressProps): React.ReactNode {
-    // Braille spinner animation
+    // Braille spinner animation (setInterval is the right pattern for discrete frame cycling)
     const [spinnerFrame, setSpinnerFrame] = useState(0);
     const timerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
@@ -62,6 +64,58 @@ export const SpawnProgress: React.NamedExoticComponent<SpawnProgressProps> = Rea
         if (timerRef.current) clearInterval(timerRef.current);
       };
     }, []);
+
+    // Smooth opacity pulse for spawning agents via useTimeline tween
+    const [spawnOpacity, setSpawnOpacity] = useState(1);
+    const pulseTarget = useRef({ opacity: 1 });
+    const timeline = useTimeline({ loop: true, duration: 900 });
+
+    useEffect(() => {
+      timeline
+        .add(
+          pulseTarget.current,
+          {
+            opacity: 0.4,
+            duration: 450,
+            ease: "easeInOutSine",
+            onUpdate: (anim: { targets: object[] }) => {
+              const t = anim.targets[0] as { opacity: number };
+              setSpawnOpacity(t.opacity);
+            },
+          },
+          0,
+        )
+        .add(
+          pulseTarget.current,
+          {
+            opacity: 1,
+            duration: 450,
+            ease: "easeInOutSine",
+            onUpdate: (anim: { targets: object[] }) => {
+              const t = anim.targets[0] as { opacity: number };
+              setSpawnOpacity(t.opacity);
+            },
+          },
+          450,
+        )
+        .play();
+    }, [timeline]);
+
+    // Toast on status changes
+    const prevStatusRef = useRef<Map<string, SpawnStatus>>(new Map());
+    useEffect(() => {
+      for (const agent of agents) {
+        const prev = prevStatusRef.current.get(agent.role);
+        if (prev !== agent.status) {
+          if (agent.status === "started") {
+            toast.success(`${agent.role} started`);
+          } else if (agent.status === "failed") {
+            toast.error(`${agent.role} failed: ${agent.error ?? "unknown"}`);
+          }
+          prevStatusRef.current.set(agent.role, agent.status);
+        }
+      }
+    }, [agents]);
 
     // Auto-transition when all agents are resolved
     const onAllResolvedRef = useRef(onAllResolved);
@@ -98,15 +152,17 @@ export const SpawnProgress: React.NamedExoticComponent<SpawnProgressProps> = Rea
           flexDirection="column"
           marginX={2}
           marginTop={1}
-          borderStyle="single"
+          borderStyle="round"
           borderColor={theme.border}
           paddingX={1}
         >
           {agents.map((agent) => {
             const platformColor =
               PLATFORM_COLORS[agent.command] ?? PLATFORM_COLORS.custom ?? theme.text;
+            // Apply pulsing opacity to agents actively spawning
+            const rowOpacity = agent.status === "spawning" ? spawnOpacity : 1;
             return (
-              <box key={agent.role} flexDirection="row">
+              <box key={agent.role} flexDirection="row" opacity={rowOpacity}>
                 <text color={STATUS_COLOR[agent.status]}>{getIcon(agent.status)} </text>
                 <text color={theme.text}>{agent.role}</text>
                 <text color={theme.dimmed}> ({agent.command})</text>

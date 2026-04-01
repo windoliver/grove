@@ -42,8 +42,12 @@ function keyEvent(
     sequence: opts?.sequence ?? name,
     raw: name,
     eventType: "keypress",
-    preventDefault: () => {},
-    stopPropagation: () => {},
+    preventDefault: () => {
+      /* noop */
+    },
+    stopPropagation: () => {
+      /* noop */
+    },
   } as unknown as KeyEvent;
 }
 
@@ -96,6 +100,7 @@ function mockActions(overrides?: {
     submitPrompt: () => record("submitPrompt"),
     feedCursorDown: () => record("feedCursorDown"),
     feedCursorUp: () => record("feedCursorUp"),
+    feedScrollToBottom: () => record("feedScrollToBottom"),
     scrollToAskUser: () => record("scrollToAskUser"),
     traceSelectDown: () => record("traceSelectDown"),
     traceSelectUp: () => record("traceSelectUp"),
@@ -107,6 +112,7 @@ function mockActions(overrides?: {
     openDetail: () => record("openDetail"),
     toggleAdvanced: () => record("toggleAdvanced"),
     quit: () => record("quit"),
+    showQuitDialog: () => record("showQuitDialog"),
     approvePermission: () => record("approvePermission"),
     denyPermission: () => record("denyPermission"),
     hasPermissions: overrides?.hasPermissions ?? false,
@@ -313,16 +319,10 @@ describe("routeRunningKey — f key fullscreen", () => {
 // ===========================================================================
 
 describe("routeRunningKey — normal mode misc", () => {
-  test("q sets confirm quit", () => {
+  test("q shows quit dialog", () => {
     const { actions, log } = mockActions();
     routeRunningKey(keyEvent("q"), defaultState(), actions);
-    expect(log.args.setConfirmQuit).toEqual([true]);
-  });
-
-  test("q with confirmQuit=true quits", () => {
-    const { actions, log } = mockActions();
-    routeRunningKey(keyEvent("q"), defaultState({ confirmQuit: true }), actions);
-    expect(log.calls).toContain("quit");
+    expect(log.calls).toContain("showQuitDialog");
   });
 
   test("? toggles help", () => {
@@ -363,7 +363,7 @@ describe("routeRunningKey — normal mode misc", () => {
   });
 
   test("r does nothing when no ask_user", () => {
-    const { actions, log } = mockActions({ hasAskUser: false });
+    const { actions } = mockActions({ hasAskUser: false });
     const handled = routeRunningKey(keyEvent("r"), defaultState(), actions);
     expect(handled).toBe(false);
   });
@@ -404,6 +404,12 @@ describe("routeRunningKey — j/k cursor routing", () => {
     expect(log.calls).toContain("feedCursorUp");
   });
 
+  test("G (Shift+G) scrolls feed to bottom in normal mode", () => {
+    const { actions, log } = mockActions();
+    routeRunningKey(keyEvent("g", { shift: true, sequence: "G" }), defaultState(), actions);
+    expect(log.calls).toContain("feedScrollToBottom");
+  });
+
   test("j works with panel expanded (feed still scrollable)", () => {
     const { actions, log } = mockActions();
     const state = defaultState({ expandedPanel: RunningPanel.Dag, zoomLevel: "half" });
@@ -431,7 +437,7 @@ describe("routeRunningKey — permission keys", () => {
   });
 
   test("y does nothing when no permissions", () => {
-    const { actions, log } = mockActions({ hasPermissions: false });
+    const { actions } = mockActions({ hasPermissions: false });
     const handled = routeRunningKey(keyEvent("y"), defaultState(), actions);
     expect(handled).toBe(false);
   });
@@ -443,7 +449,7 @@ describe("routeRunningKey — permission keys", () => {
   });
 
   test("n does nothing when no permissions", () => {
-    const { actions, log } = mockActions({ hasPermissions: false });
+    const { actions } = mockActions({ hasPermissions: false });
     const handled = routeRunningKey(keyEvent("n"), defaultState(), actions);
     expect(handled).toBe(false);
   });

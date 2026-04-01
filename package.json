@@ -58,6 +58,8 @@
     "@grove/ask-user": "workspace:*",
     "@hono/zod-validator": "0.7.6",
     "@modelcontextprotocol/sdk": "^1.27.0",
+    "@opentui-ui/dialog": "0.1.2",
+    "@opentui-ui/toast": "0.0.5",
     "@opentui/core": "^0.1.87",
     "@opentui/react": "^0.1.87",
     "@xterm/addon-serialize": "0.14.0",

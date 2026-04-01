@@ -14,7 +14,7 @@ import type { Claim, Contribution } from "../core/models.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import { checkSpawn, checkSpawnDepth } from "./agents/spawn-validator.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
-import { buildPaletteItems, CommandPalette } from "./components/command-palette.js";
+import { buildPaletteItems, CommandPalette, fuzzyMatch } from "./components/command-palette.js";
 import { HelpOverlay } from "./components/help-overlay.js";
 import { InputBar } from "./components/input-bar.js";
 import { StatusBar } from "./components/status-bar.js";
@@ -74,6 +74,7 @@ export interface TuiKeyboardState {
   readonly artifactIndex: number;
   readonly showArtifactDiff: boolean;
   readonly paletteIndex: number;
+  readonly paletteQuery: string;
   readonly searchQuery: string;
   readonly searchBuffer: string;
   readonly messageBuffer: string;
@@ -95,6 +96,8 @@ export type TuiAction =
   | { readonly type: "PALETTE_UP" }
   | { readonly type: "PALETTE_DOWN"; readonly maxIndex: number }
   | { readonly type: "PALETTE_RESET" }
+  | { readonly type: "PALETTE_CHAR"; readonly char: string }
+  | { readonly type: "PALETTE_BACKSPACE" }
   | { readonly type: "SEARCH_START"; readonly currentQuery: string }
   | { readonly type: "SEARCH_CHAR"; readonly char: string }
   | { readonly type: "SEARCH_BACKSPACE" }
@@ -123,6 +126,7 @@ const INITIAL_KEYBOARD_STATE: TuiKeyboardState = {
   artifactIndex: 0,
   showArtifactDiff: false,
   paletteIndex: 0,
+  paletteQuery: "",
   searchQuery: "",
   searchBuffer: "",
   messageBuffer: "",
@@ -151,7 +155,11 @@ export function tuiReducer(state: TuiKeyboardState, action: TuiAction): TuiKeybo
     case "PALETTE_DOWN":
       return { ...state, paletteIndex: Math.min(state.paletteIndex + 1, action.maxIndex) };
     case "PALETTE_RESET":
-      return { ...state, paletteIndex: 0 };
+      return { ...state, paletteIndex: 0, paletteQuery: "" };
+    case "PALETTE_CHAR":
+      return { ...state, paletteQuery: state.paletteQuery + action.char, paletteIndex: 0 };
+    case "PALETTE_BACKSPACE":
+      return { ...state, paletteQuery: state.paletteQuery.slice(0, -1), paletteIndex: 0 };
     case "SEARCH_START":
       return { ...state, searchBuffer: action.currentQuery };
     case "SEARCH_CHAR":
@@ -483,6 +491,19 @@ export function App({
     ],
   );
 
+  // Filtered + ranked palette items — matches CommandPalette's rendering order
+  // so Enter always executes the visually selected item.
+  const filteredPaletteItems = useMemo(() => {
+    const q = ks.paletteQuery.trim();
+    if (!q) return paletteItems;
+    const ranked = paletteItems
+      .map((item) => ({ item, score: fuzzyMatch(q, item.label) }))
+      .filter((r) => r.score.match)
+      .sort((a, b) => b.score.score - a.score.score)
+      .map((r) => r.item);
+    return ranked;
+  }, [paletteItems, ks.paletteQuery]);
+
   const handleContributionsLoaded = useCallback((contributions: readonly Contribution[]) => {
     if (!contributions) return;
     setContributionList(contributions);
@@ -769,8 +790,10 @@ export function App({
       },
       onPaletteUp: () => dispatch({ type: "PALETTE_UP" }),
       onPaletteDown: (maxIndex: number) => dispatch({ type: "PALETTE_DOWN", maxIndex }),
+      onPaletteChar: (char: string) => dispatch({ type: "PALETTE_CHAR", char }),
+      onPaletteBackspace: () => dispatch({ type: "PALETTE_BACKSPACE" }),
       onPaletteSelect: () => {
-        const item = paletteItems[ks.paletteIndex];
+        const item = filteredPaletteItems[ks.paletteIndex];
         if (!item?.enabled) return;
         if (item.kind === "spawn") {
           const profileCommand = agentProfiles?.find((p) => p.role === item.id)?.command;
@@ -827,7 +850,7 @@ export function App({
       onSelect: handleSelect,
       rowCount,
       pageSize: PAGE_SIZE,
-      paletteItemCount: paletteItems.length,
+      paletteItemCount: filteredPaletteItems.length,
       compareMode: ks.compareMode,
       frontierCids,
       selectedSession,
@@ -849,7 +872,7 @@ export function App({
       tmux,
       selectedSession,
       rowCount,
-      paletteItems,
+      filteredPaletteItems,
       ks.compareMode,
       ks.compareCids,
       ks.searchQuery,
@@ -899,6 +922,7 @@ export function App({
         sessions={paletteSessions ?? undefined}
         parentAgentId={paletteParentId}
         items={paletteItems}
+        query={ks.paletteQuery}
       />
       <InputBar
         visible={

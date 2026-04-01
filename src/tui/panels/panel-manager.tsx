@@ -18,6 +18,7 @@
  * +- Agents ----------------+- Terminal ---------------+
  */
 
+import { useTerminalDimensions } from "@opentui/react";
 import React, { useCallback } from "react";
 import type { Contribution } from "../../core/models.js";
 import type { AgentTopology } from "../../core/topology.js";
@@ -132,6 +133,7 @@ function PanelChrome({
       border
       borderStyle="round"
       borderColor={borderColor}
+      opacity={focused ? 1.0 : 0.7}
     >
       <box>
         <text color={titleColor} bold={focused}>
@@ -177,6 +179,13 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
     const isFocused = (p: Panel) => panelState.focused === p;
     const zoom = zoomLevel ?? "normal";
     const mode = layoutMode ?? "grid";
+
+    // Responsive layout — adapt based on terminal dimensions
+    const { width, height } = useTerminalDimensions();
+    const isSmall = height < 20 || width < 80;
+    const isMedium = !isSmall && (height < 35 || width < 120);
+    // In small mode force tab layout, in medium collapse operator rows
+    const effectiveMode: typeof mode = isSmall ? "tab" : mode;
 
     // Suppress unused variable warnings for props used by other panel configurations
     void pageSize;
@@ -450,10 +459,14 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
 
     // ------------------------------------------------------------------
     // Tab mode — single focused panel, full screen
+    // (also used when terminal is too small via effectiveMode)
     // ------------------------------------------------------------------
-    if (mode === "tab") {
+    if (effectiveMode === "tab") {
       return (
         <box flexDirection="column" flexGrow={1}>
+          {height < 15 ? (
+            <text color={theme.warning}>Terminal too small — resize for full view</text>
+          ) : null}
           <PanelChrome panel={panelState.focused} focused>
             {renderPanel(panelState.focused)}
           </PanelChrome>
@@ -464,10 +477,20 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
     // ------------------------------------------------------------------
     // Grid mode — data-driven row groups
     // ------------------------------------------------------------------
+    // In medium mode, limit to at most 2 rows (hide operator/secondary rows)
+    const MAX_MEDIUM_ROWS = 2;
+    let mediumRowCount = 0;
+
     return (
       <box flexDirection="column" flexGrow={1}>
         {[...getRowGroups().entries()].map(([rowGroup, panels]) => {
           if (!isRowVisible(rowGroup, focusedRowGroup, zoom)) return null;
+          // Medium breakpoint: collapse rows beyond the first two,
+          // but always keep the row containing the focused panel visible
+          if (isMedium && rowGroup !== focusedRowGroup) {
+            mediumRowCount++;
+            if (mediumRowCount > MAX_MEDIUM_ROWS) return null;
+          }
           const visibleInRow = panels.filter(
             (def) =>
               (def.kind === "core" || isPanelVisible(panelState, def.panel)) &&

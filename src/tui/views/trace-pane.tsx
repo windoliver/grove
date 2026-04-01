@@ -55,24 +55,6 @@ export interface TracePaneProps {
   readonly viewportLines?: number;
 }
 
-// ---------------------------------------------------------------------------
-// Line coloring by type
-// ---------------------------------------------------------------------------
-
-function lineColor(line: LogLine): string {
-  if (line.historical) return theme.disabled;
-  switch (line.type) {
-    case "tool":
-      return theme.info;
-    case "ipc":
-      return theme.focus;
-    case "turn":
-      return theme.secondary;
-    default:
-      return theme.text;
-  }
-}
-
 function formatTimestamp(ts: number): string {
   const d = new Date(ts);
   const h = String(d.getHours()).padStart(2, "0");
@@ -160,7 +142,7 @@ export const TracePane: React.NamedExoticComponent<TracePaneProps> = React.memo(
         <box
           flexDirection="column"
           width={AGENT_LIST_WIDTH}
-          borderStyle="single"
+          borderStyle="round"
           borderColor={theme.border}
         >
           <box paddingX={1}>
@@ -172,7 +154,7 @@ export const TracePane: React.NamedExoticComponent<TracePaneProps> = React.memo(
         </box>
 
         {/* Right: Trace output */}
-        <box flexDirection="column" flexGrow={1} borderStyle="single" borderColor={theme.focus}>
+        <box flexDirection="column" flexGrow={1} borderStyle="round" borderColor={theme.focus}>
           <box flexDirection="row" paddingX={1}>
             <text color={theme.focus} bold>
               {selectedRole ?? "—"} trace
@@ -195,7 +177,7 @@ export const TracePane: React.NamedExoticComponent<TracePaneProps> = React.memo(
                 // biome-ignore lint/suspicious/noArrayIndexKey: trace lines have no stable identity
                 <box key={i} flexDirection="row">
                   <text color={theme.disabled}>{formatTimestamp(line.ts)} </text>
-                  <text color={lineColor(line)}>{line.line}</text>
+                  <code>{line.line}</code>
                 </box>
               ))}
             </box>
