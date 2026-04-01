@@ -206,22 +206,13 @@ export interface GoalData {
   readonly setBy: string;
 }
 
-/** Session record for grouping work. */
-export interface SessionRecord {
-  readonly sessionId: string;
-  readonly goal?: string | undefined;
-  readonly presetName?: string | undefined;
-  readonly status: "active" | "archived";
-  readonly startedAt: string;
-  readonly endedAt?: string | undefined;
-  readonly contributionCount: number;
-}
-
-/** Input for creating a session. */
-export interface SessionInput {
-  readonly goal?: string | undefined;
-  readonly presetName?: string | undefined;
-}
+// Session types — re-exported from core for convenience.
+// The canonical definitions live in src/core/session.ts.
+// Import locally so the aliases can be used within this file (e.g. TuiSessionProvider).
+import type { CreateSessionInput, Session } from "../core/session.js";
+export type { Session as SessionRecord, CreateSessionInput as SessionInput };
+type SessionRecord = Session;
+type SessionInput = CreateSessionInput;
 
 // ---------------------------------------------------------------------------
 // Base provider (unchanged from pre-#65)
@@ -349,7 +340,7 @@ export interface TuiGoalProvider {
 /** Session management — available when capabilities.sessions is true. */
 export interface TuiSessionProvider {
   listSessions(query?: {
-    status?: "active" | "archived";
+    status?: import("../core/session.js").SessionStatus;
     presetName?: string;
   }): Promise<readonly SessionRecord[]>;
   createSession(input: SessionInput): Promise<SessionRecord>;

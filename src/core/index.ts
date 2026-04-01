@@ -186,6 +186,8 @@ export type {
   StopCheckResult,
 } from "./policy-enforcer.js";
 export { PolicyEnforcer } from "./policy-enforcer.js";
+export type { CorePresetConfig } from "./presets.js";
+export { getPresetTopologyRegistry, listPresetNames, lookupPresetTopology } from "./presets.js";
 export type {
   ReconcileResult,
   Reconciler,
@@ -196,13 +198,14 @@ export { DefaultReconciler } from "./reconciler.js";
 export type {
   CreateSessionInput,
   Session,
+  SessionQuery,
+  SessionStatus,
   SessionStore,
-} from "./session-manager.js";
+} from "./session.js";
 export { SessionManager } from "./session-manager.js";
 export type {
   AgentSessionInfo,
   SessionConfig,
-  SessionStatus,
 } from "./session-orchestrator.js";
 export { SessionOrchestrator } from "./session-orchestrator.js";
 export type {
@@ -218,6 +221,7 @@ export { type SpawnOptions, type SpawnResult, spawnCommand, spawnOrThrow } from 
 export { SubprocessRuntime } from "./subprocess-runtime.js";
 export { toUtcIso } from "./time.js";
 export { TmuxRuntime } from "./tmux-runtime.js";
+export { resolveTopology } from "./topology-resolver.js";
 export { TopologyRouter } from "./topology-router.js";
 export type {
   CheckoutOptions,

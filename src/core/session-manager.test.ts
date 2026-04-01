@@ -28,8 +28,8 @@ describe("SessionManager", () => {
     });
     await manager.startSession(session.id);
 
-    const updated = await store.get(session.id);
-    expect(updated!.status).toBe("running");
+    const updated = await store.getSession(session.id);
+    expect(updated!.status).toBe("active");
   });
 
   test("completeSession marks session as completed", async () => {
@@ -43,7 +43,7 @@ describe("SessionManager", () => {
     await manager.startSession(session.id);
     await manager.completeSession(session.id, "Target metric reached");
 
-    const updated = await store.get(session.id);
+    const updated = await store.getSession(session.id);
     expect(updated!.status).toBe("completed");
     expect(updated!.stopReason).toBe("Target metric reached");
     expect(updated!.completedAt).toBeTruthy();
@@ -59,7 +59,7 @@ describe("SessionManager", () => {
     });
     await manager.cancelSession(session.id);
 
-    const updated = await store.get(session.id);
+    const updated = await store.getSession(session.id);
     expect(updated!.status).toBe("cancelled");
   });
 
@@ -77,7 +77,7 @@ describe("SessionManager", () => {
     const all = await manager.listSessions();
     expect(all).toHaveLength(3);
 
-    const reviewOnly = await manager.listSessions("review-loop");
+    const reviewOnly = await manager.listSessions({ presetName: "review-loop" });
     expect(reviewOnly).toHaveLength(2);
   });
 
@@ -130,7 +130,7 @@ describe("SessionManager", () => {
     expect(s1.id).not.toBe(s2.id);
     expect(s1.presetName).toBe(s2.presetName);
 
-    const all = await manager.listSessions("review-loop");
+    const all = await manager.listSessions({ presetName: "review-loop" });
     expect(all).toHaveLength(2);
   });
 });

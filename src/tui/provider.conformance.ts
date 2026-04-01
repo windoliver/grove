@@ -336,10 +336,10 @@ export function runProviderSessionTests(suiteName: string, factory: ProviderFact
         const sessionProvider = provider as TuiDataProvider & TuiSessionProvider;
         const session = await sessionProvider.createSession({});
         expect(session).toBeDefined();
-        expect(typeof session.sessionId).toBe("string");
-        expect(session.sessionId.length).toBeGreaterThan(0);
+        expect(typeof session.id).toBe("string");
+        expect(session.id.length).toBeGreaterThan(0);
         expect(session.status).toBe("active");
-        expect(typeof session.startedAt).toBe("string");
+        expect(typeof session.createdAt).toBe("string");
       } finally {
         cleanup();
       }
@@ -357,7 +357,7 @@ export function runProviderSessionTests(suiteName: string, factory: ProviderFact
 
         const sessions = await sessionProvider.listSessions();
         expect(sessions.length).toBeGreaterThanOrEqual(1);
-        const found = sessions.find((s) => s.sessionId === session.sessionId);
+        const found = sessions.find((s) => s.id === session.id);
         expect(found).toBeDefined();
         expect(found?.status).toBe("active");
       } finally {
@@ -375,9 +375,9 @@ export function runProviderSessionTests(suiteName: string, factory: ProviderFact
         const sessionProvider = provider as TuiDataProvider & TuiSessionProvider;
         const session = await sessionProvider.createSession({ goal: "Lookup test" });
 
-        const fetched = await sessionProvider.getSession(session.sessionId);
+        const fetched = await sessionProvider.getSession(session.id);
         expect(fetched).toBeDefined();
-        expect(fetched?.sessionId).toBe(session.sessionId);
+        expect(fetched?.id).toBe(session.id);
         expect(fetched?.status).toBe("active");
       } finally {
         cleanup();
@@ -394,10 +394,10 @@ export function runProviderSessionTests(suiteName: string, factory: ProviderFact
         const sessionProvider = provider as TuiDataProvider & TuiSessionProvider;
         const session = await sessionProvider.createSession({ goal: "Archive test" });
 
-        await sessionProvider.archiveSession(session.sessionId);
+        await sessionProvider.archiveSession(session.id);
 
         // Verify the session is archived
-        const fetched = await sessionProvider.getSession(session.sessionId);
+        const fetched = await sessionProvider.getSession(session.id);
         expect(fetched).toBeDefined();
         expect(fetched?.status).toBe("archived");
       } finally {
@@ -414,10 +414,10 @@ export function runProviderSessionTests(suiteName: string, factory: ProviderFact
 
         const sessionProvider = provider as TuiDataProvider & TuiSessionProvider;
         const session = await sessionProvider.createSession({ goal: "Filter test" });
-        await sessionProvider.archiveSession(session.sessionId);
+        await sessionProvider.archiveSession(session.id);
 
         const activeSessions = await sessionProvider.listSessions({ status: "active" });
-        const found = activeSessions.find((s) => s.sessionId === session.sessionId);
+        const found = activeSessions.find((s) => s.id === session.id);
         expect(found).toBeUndefined();
       } finally {
         cleanup();
@@ -435,10 +435,10 @@ export function runProviderSessionTests(suiteName: string, factory: ProviderFact
         const session = await sessionProvider.createSession({ goal: "Contribution link test" });
 
         // Should not throw
-        await sessionProvider.addContributionToSession(session.sessionId, testCid);
+        await sessionProvider.addContributionToSession(session.id, testCid);
 
         // Verify contribution count increased
-        const fetched = await sessionProvider.getSession(session.sessionId);
+        const fetched = await sessionProvider.getSession(session.id);
         expect(fetched).toBeDefined();
         expect(fetched?.contributionCount).toBeGreaterThanOrEqual(1);
       } finally {

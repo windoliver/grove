@@ -165,7 +165,7 @@ export abstract class StoreBackedProvider
       mode: this.mode,
       backendLabel: this.label,
       ...(goalData ? { goal: goalData.goal } : {}),
-      ...(activeSessions.length > 0 ? { activeSessionId: activeSessions[0]?.sessionId } : {}),
+      ...(activeSessions.length > 0 ? { activeSessionId: activeSessions[0]?.id } : {}),
     };
 
     return {

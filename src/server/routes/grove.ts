@@ -24,7 +24,7 @@ grove.get("/", async (c) => {
     const goalData = await goalSessionStore.getGoal();
     goal = goalData?.goal;
     const activeSessions = await goalSessionStore.listSessions({ status: "active" });
-    activeSessionId = activeSessions.length > 0 ? activeSessions[0]?.sessionId : undefined;
+    activeSessionId = activeSessions.length > 0 ? activeSessions[0]?.id : undefined;
   }
 
   return c.json({

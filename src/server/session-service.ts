@@ -138,6 +138,7 @@ export class SessionService {
     this.orchestrator = new SessionOrchestrator({
       goal,
       contract: this.config.contract,
+      topology: this.topology,
       runtime: this.config.runtime,
       eventBus: this.config.eventBus,
       projectRoot: this.config.projectRoot,

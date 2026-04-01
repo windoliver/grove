@@ -5,6 +5,7 @@
  * configuration. Used by `grove init --preset <name>`.
  */
 
+import type { CorePresetConfig } from "../../core/presets.js";
 import type { AgentTopology } from "../../core/topology.js";
 import type {
   ConcurrencyConfig,
@@ -37,10 +38,8 @@ export interface SeedContribution {
   readonly role?: string | undefined;
 }
 
-/** A complete preset configuration. */
-export interface PresetConfig {
-  readonly name: string;
-  readonly description: string;
+/** A complete preset configuration (extends CorePresetConfig with CLI-specific fields). */
+export interface PresetConfig extends CorePresetConfig {
   readonly mode: "evaluation" | "exploration";
   readonly metrics?: readonly MetricEntry[] | undefined;
   readonly topology?: AgentTopology | undefined;
@@ -72,8 +71,12 @@ export { researchLoopPreset } from "./research-loop.js";
 export { reviewLoopPreset } from "./review-loop.js";
 export { swarmOpsPreset } from "./swarm-ops.js";
 
-/** All available presets indexed by name. */
+let _registry: Readonly<Record<string, PresetConfig>> | undefined;
+
+/** All available presets indexed by name (memoized after first call). */
 export function getPresetRegistry(): Readonly<Record<string, PresetConfig>> {
+  if (_registry) return _registry;
+
   // Lazy import to avoid circular deps and keep startup fast
   const { reviewLoopPreset } = require("./review-loop.js") as typeof import("./review-loop.js");
   const { explorationPreset } = require("./exploration.js") as typeof import("./exploration.js");
@@ -84,7 +87,7 @@ export function getPresetRegistry(): Readonly<Record<string, PresetConfig>> {
   const { federatedSwarmPreset } =
     require("./federated-swarm.js") as typeof import("./federated-swarm.js");
 
-  return {
+  _registry = {
     "review-loop": reviewLoopPreset,
     exploration: explorationPreset,
     "swarm-ops": swarmOpsPreset,
@@ -92,6 +95,8 @@ export function getPresetRegistry(): Readonly<Record<string, PresetConfig>> {
     "pr-review": prReviewPreset,
     "federated-swarm": federatedSwarmPreset,
   };
+
+  return _registry;
 }
 
 /** Get a preset by name, or undefined if not found. */

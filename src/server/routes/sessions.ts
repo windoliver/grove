@@ -10,6 +10,11 @@
 
 import { Hono } from "hono";
 import { z } from "zod";
+import { lookupPresetTopology } from "../../core/presets.js";
+import type { Session } from "../../core/session.js";
+import type { AgentTopology } from "../../core/topology.js";
+import { AgentTopologySchema, wireToTopology } from "../../core/topology.js";
+import { resolveTopology } from "../../core/topology-resolver.js";
 import type { ServerEnv } from "../deps.js";
 import { notConfigured } from "./shared.js";
 
@@ -19,11 +24,35 @@ import { notConfigured } from "./shared.js";
 
 const createSessionSchema = z.object({
   goal: z.string().min(1).optional(),
+  // Accept both "preset" (external API) and "presetName" (TUI/internal)
+  preset: z.string().min(1).optional(),
+  presetName: z.string().min(1).optional(),
+  // Topology accepted as opaque object — parsed in handler to support
+  // both snake_case wire format (external) and camelCase (TUI/internal)
+  topology: z.record(z.string(), z.unknown()).optional(),
 });
 
 const addContributionSchema = z.object({
   cid: z.string().min(1),
 });
+
+// ---------------------------------------------------------------------------
+// Response mapper
+// ---------------------------------------------------------------------------
+
+/** Map Session to API response (preserve sessionId for API backwards compat). */
+function toSessionResponse(session: Session) {
+  return {
+    sessionId: session.id,
+    goal: session.goal,
+    presetName: session.presetName,
+    status: session.status,
+    startedAt: session.createdAt,
+    endedAt: session.completedAt,
+    contributionCount: session.contributionCount,
+    ...(session.topology !== undefined && { topology: session.topology }),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Routes
@@ -42,8 +71,62 @@ sessions.post("/", async (c) => {
     return c.json({ error: { code: "VALIDATION_ERROR", details: parsed.error.issues } }, 400);
   }
 
-  const session = await goalSessionStore.createSession(parsed.data);
-  return c.json(session, 201);
+  // Normalize: accept both "preset" and "presetName"
+  const presetName = parsed.data.preset ?? parsed.data.presetName;
+
+  // Parse inline topology — try snake_case wire format first, then validate as camelCase
+  let inlineTopology: AgentTopology | undefined;
+  if (parsed.data.topology) {
+    const wireResult = AgentTopologySchema.safeParse(parsed.data.topology);
+    if (wireResult.success) {
+      inlineTopology = wireToTopology(wireResult.data);
+    } else {
+      // Try camelCase (TUI sends camelCase directly) — validate structure/roles exist
+      const t = parsed.data.topology;
+      if (
+        typeof t.structure === "string" &&
+        ["graph", "tree", "flat"].includes(t.structure) &&
+        Array.isArray(t.roles) &&
+        t.roles.length > 0 &&
+        t.roles.every(
+          (r: unknown) =>
+            typeof r === "object" &&
+            r !== null &&
+            typeof (r as Record<string, unknown>).name === "string",
+        )
+      ) {
+        inlineTopology = t as unknown as AgentTopology;
+      } else {
+        return c.json(
+          {
+            error: {
+              code: "VALIDATION_ERROR",
+              message:
+                "Invalid topology: must have structure (graph|tree|flat) and at least one role with a name",
+            },
+          },
+          400,
+        );
+      }
+    }
+  }
+
+  // Resolve topology if preset or inline topology provided
+  let resolvedTopology: AgentTopology | undefined;
+  if (presetName || inlineTopology) {
+    const resolution = resolveTopology({ inlineTopology, presetName }, lookupPresetTopology);
+    if (!resolution.ok) {
+      return c.json({ error: { code: "VALIDATION_ERROR", message: resolution.error } }, 400);
+    }
+    resolvedTopology = resolution.topology;
+  }
+
+  const session = await goalSessionStore.createSession({
+    goal: parsed.data.goal,
+    presetName,
+    topology: resolvedTopology,
+  });
+  return c.json(toSessionResponse(session), 201);
 });
 
 /** GET /api/sessions — List sessions with optional status filter. */
@@ -58,7 +141,7 @@ sessions.get("/", async (c) => {
       : undefined;
 
   const results = await goalSessionStore.listSessions(query);
-  return c.json({ sessions: results });
+  return c.json({ sessions: results.map(toSessionResponse) });
 });
 
 /** GET /api/sessions/:id — Get a single session. */
@@ -74,7 +157,7 @@ sessions.get("/:id", async (c) => {
       404,
     );
   }
-  return c.json(session);
+  return c.json(toSessionResponse(session));
 });
 
 /** PUT /api/sessions/:id/archive — Archive a session. */

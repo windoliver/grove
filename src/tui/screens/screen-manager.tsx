@@ -12,6 +12,7 @@
 
 import { useKeyboard, useRenderer } from "@opentui/react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { lookupPresetTopology } from "../../core/presets.js";
 import type { AppProps } from "../app.js";
 import { App } from "../app.js";
 import { debugLog } from "../debug-log.js";
@@ -54,6 +55,8 @@ export interface ScreenState {
   roleMapping?: Map<string, string>;
   goal?: string;
   sessionId?: string;
+  /** Warning message when session record failed to save. */
+  sessionWarning?: string;
   /** ISO timestamp when the current session started — used to scope contribution feed. */
   sessionStartedAt?: string;
   /** Per-agent spawn progress for the spawning screen. */
@@ -95,7 +98,10 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     initialState,
   }: ScreenManagerProps): React.ReactNode {
     const renderer = useRenderer();
-    const { provider, topology } = appProps;
+    const { provider, topology: initialTopology } = appProps;
+
+    // Resolved topology — starts from GROVE.md default, overridden when user picks a preset.
+    const [topology, setTopology] = useState(initialTopology);
 
     // Initialize state: use initialState override (testing), or compute from props
     const [state, setState] = useState<ScreenState>(
@@ -281,8 +287,13 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       })();
     }, [provider, renderer, state.sessionId, spawnManager]);
 
-    // Screen 1 -> Screen 2: preset selected → go to goal input
+    // Screen 1 -> Screen 2: preset selected → resolve topology and go to goal input
     const handlePresetSelect = useCallback((presetName: string) => {
+      // Resolve topology from preset, falling back to GROVE.md default
+      const presetTopology = lookupPresetTopology(presetName);
+      if (presetTopology) {
+        setTopology(presetTopology);
+      }
       setState((s) => ({
         ...s,
         screen: "goal-input",
@@ -328,13 +339,15 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         // Create session if supported
         if (isSessionProvider(provider)) {
           void provider
-            .createSession({ goal, presetName: state.selectedPreset })
+            .createSession({ goal, presetName: state.selectedPreset, topology })
             .then((session) => {
-              spawnManager.setSessionId(session.sessionId);
-              setState((s) => ({ ...s, sessionId: session.sessionId }));
+              spawnManager.setSessionId(session.id);
+              setState((s) => ({ ...s, sessionId: session.id }));
             })
-            .catch(() => {
-              // Session creation is best-effort
+            .catch((err) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              process.stderr.write(`[grove] session record failed to save: ${msg}\n`);
+              setState((s) => ({ ...s, sessionWarning: `Session record failed to save: ${msg}` }));
             });
         }
 

@@ -262,18 +262,11 @@ export class NexusDataProvider
     } else {
       result = await super.createSession(input);
     }
-    // Also persist to Nexus VFS for cross-session visibility
-    void this.nexusSessionStore
-      .create({
-        id: result.sessionId,
-        goal: input.goal ?? "",
-        presetName: "review-loop",
-        createdAt: new Date().toISOString(),
-        status: "running",
-      })
-      .catch(() => {
-        /* best-effort */
-      });
+    // Mirror to Nexus VFS for cross-session visibility — write the authoritative
+    // record directly to preserve the real session ID (createSession would generate a new one)
+    void this.nexusSessionStore.putSession(result).catch(() => {
+      /* best-effort */
+    });
     return result;
   }
 
