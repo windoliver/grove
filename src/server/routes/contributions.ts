@@ -261,9 +261,18 @@ contributions.post("/", async (c) => {
       );
     }
     const sessionConfig = await serverDeps.goalSessionStore.getSessionConfig(parsed.sessionId);
-    if (sessionConfig) {
-      opDeps = { ...opDeps, contract: sessionConfig };
+    if (!sessionConfig) {
+      return c.json(
+        {
+          error: {
+            code: "VALIDATION_ERROR",
+            message: `Session ${parsed.sessionId} has no stored config. Contributions cannot be enforced against this session. Migrate or backfill the session config before submitting.`,
+          },
+        },
+        400,
+      );
     }
+    opDeps = { ...opDeps, contract: sessionConfig };
   }
   const result = await contributeOperation(input, opDeps);
 
@@ -275,9 +284,9 @@ contributions.post("/", async (c) => {
   // Auto-attach contribution to session when sessionId was provided.
   // Note: contribution creation and session attachment are two separate store
   // operations — not a single DB transaction. If attachment fails, the
-  // contribution is already committed (CID-based, idempotent). We return 500
-  // so the client knows to retry, and addContributionToSession uses INSERT OR
-  // IGNORE so retries are safe.
+  // contribution is already committed. Do NOT retry the full create request
+  // (no idempotency key — would duplicate the contribution). Instead, retry
+  // only the attach via POST /api/sessions/:id/contributions with the CID.
   if (parsed.sessionId !== undefined && serverDeps.goalSessionStore) {
     try {
       await serverDeps.goalSessionStore.addContributionToSession(
@@ -289,7 +298,7 @@ contributions.post("/", async (c) => {
         {
           error: {
             code: "INTERNAL_ERROR",
-            message: `Contribution ${result.value.cid} created but session attachment failed. Retry is safe.`,
+            message: `Contribution created but session attachment failed. Do NOT retry this request. Instead, attach the contribution manually via POST /api/sessions/${parsed.sessionId}/contributions with cid: ${result.value.cid}`,
             cid: result.value.cid,
           },
         },

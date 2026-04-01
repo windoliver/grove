@@ -117,12 +117,13 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
       if (sessionConfig) {
         contract = sessionConfig;
       } else {
-        // Session ID is set but no config found — fail closed.
-        // Log a warning and proceed without a contract (no enforcement)
-        // rather than silently using a potentially stale GROVE.md.
-        process.stderr.write(
-          `[grove] WARNING: GROVE_SESSION_ID=${sessionId} set but no session config found. ` +
-            `Policy enforcement disabled for this session.\n`,
+        // Session ID is set but no config found — hard error.
+        // Proceeding without enforcement would silently bypass gates,
+        // artifact requirements, and role restrictions.
+        throw new Error(
+          `GROVE_SESSION_ID=${sessionId} is set but no session config found. ` +
+            `The session may have been deleted or the database may be corrupted. ` +
+            `Unset GROVE_SESSION_ID to use the global GROVE.md contract instead.`,
         );
       }
     } else {

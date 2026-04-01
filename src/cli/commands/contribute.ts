@@ -329,9 +329,10 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
     const sessionStore = new SqliteGoalSessionStore(db);
     contract = sessionStore.getSessionConfigSync(sessionId);
     if (!contract) {
-      process.stderr.write(
-        `[grove] WARNING: GROVE_SESSION_ID=${sessionId} set but no session config found. ` +
-          `Policy enforcement disabled for this contribution.\n`,
+      throw new Error(
+        `GROVE_SESSION_ID=${sessionId} is set but no session config found. ` +
+          `The session may have been deleted or the database may be corrupted. ` +
+          `Unset GROVE_SESSION_ID to use the global GROVE.md contract instead.`,
       );
     }
   } else {
