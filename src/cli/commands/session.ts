@@ -172,7 +172,47 @@ async function sessionStart(args: readonly string[]): Promise<void> {
     sessionId: session.id,
   });
 
-  const status = await orchestrator.start();
+  let status: import("../../core/session-orchestrator.js").SessionStatus;
+  try {
+    status = await orchestrator.start();
+  } catch (err) {
+    // Mark session as cancelled on spawn failure
+    await goalSessionStore.archiveSession(session.id);
+    db.close();
+    throw err;
+  }
+
+  // Register cleanup: mark session completed/cancelled on exit
+  const markDone = async (reason: string) => {
+    try {
+      await goalSessionStore.updateSession(session.id, {
+        status: "completed",
+        completedAt: new Date().toISOString(),
+        stopReason: reason,
+      });
+    } catch {
+      // Best-effort — DB may already be closed
+    }
+  };
+
+  process.on("SIGINT", () => {
+    void markDone("User interrupted (SIGINT)").then(() => {
+      db.close();
+      process.exit(130);
+    });
+  });
+  process.on("SIGTERM", () => {
+    void markDone("Terminated (SIGTERM)").then(() => {
+      db.close();
+      process.exit(143);
+    });
+  });
+
+  // If orchestrator auto-stopped (all agents idle), mark completed immediately
+  if (status.stopped) {
+    await markDone(status.stopReason ?? "Orchestrator stopped");
+    db.close();
+  }
 
   outputJson({
     sessionId: session.id,
@@ -271,8 +311,54 @@ async function sessionStop(args: readonly string[]): Promise<void> {
     strict: false,
   });
 
-  outputJson({
-    message: "Session stop requires persistent orchestrator reference (not yet wired)",
-    reason: values.reason,
-  });
+  const { existsSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { resolveGroveDir } = await import("../utils/grove-dir.js");
+
+  try {
+    const { groveDir } = resolveGroveDir();
+    const dbPath = join(groveDir, "grove.db");
+    if (!existsSync(dbPath)) {
+      outputJsonError({ code: "NOT_FOUND", message: "No grove database found" });
+      process.exitCode = 1;
+      return;
+    }
+
+    const { initSqliteDb } = await import("../../local/sqlite-store.js");
+    const db = initSqliteDb(dbPath);
+    const store = new SqliteGoalSessionStore(db);
+
+    // Find the latest active session and archive it
+    const sessions = await store.listSessions({ status: "active" });
+    if (sessions.length === 0) {
+      outputJson({ message: "No active session to stop" });
+      db.close();
+      return;
+    }
+
+    const latest = sessions[0];
+    if (!latest) {
+      outputJson({ message: "No active session to stop" });
+      db.close();
+      return;
+    }
+    await store.updateSession(latest.id, {
+      status: "completed",
+      completedAt: new Date().toISOString(),
+      stopReason: (values.reason as string | undefined) ?? "User stopped",
+    });
+    db.close();
+
+    outputJson({
+      sessionId: latest.id,
+      status: "completed",
+      reason: values.reason,
+      message: `Session ${latest.id} stopped`,
+    });
+  } catch (err) {
+    outputJsonError({
+      code: "SESSION_ERROR",
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
 }

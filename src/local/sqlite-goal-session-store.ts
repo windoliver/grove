@@ -34,7 +34,8 @@ export const GOAL_SESSION_DDL = `
     topology_json TEXT,
     status TEXT NOT NULL DEFAULT 'active',
     started_at TEXT NOT NULL,
-    ended_at TEXT
+    ended_at TEXT,
+    stop_reason TEXT
   );
 
   CREATE TABLE IF NOT EXISTS session_contributions (
@@ -69,6 +70,7 @@ interface SessionRow {
   status: string;
   started_at: string;
   ended_at: string | null;
+  stop_reason: string | null;
 }
 
 interface SessionWithCountRow extends SessionRow {
@@ -95,6 +97,12 @@ export interface GoalSessionStore {
 
   /** Get a session by ID. */
   getSession(sessionId: string): Promise<Session | undefined>;
+
+  /** Update mutable session fields (status, completedAt, stopReason). */
+  updateSession(
+    sessionId: string,
+    updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason">>,
+  ): Promise<void>;
 
   /** Archive a session, setting its ended_at timestamp. */
   archiveSession(sessionId: string): Promise<void>;
@@ -133,6 +141,7 @@ function rowToSession(row: SessionWithCountRow): Session {
     status: row.status as Session["status"],
     createdAt: row.started_at,
     completedAt: row.ended_at ?? undefined,
+    stopReason: row.stop_reason ?? undefined,
     topology: row.topology_json ? (JSON.parse(row.topology_json) as AgentTopology) : undefined,
     contributionCount: row.contribution_count,
   };
@@ -167,6 +176,12 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     // Migration: add topology_json column for existing databases
     try {
       db.exec("ALTER TABLE sessions ADD COLUMN topology_json TEXT");
+    } catch {
+      // Column already exists — expected for new or already-migrated databases
+    }
+    // Migration: add stop_reason column for existing databases
+    try {
+      db.exec("ALTER TABLE sessions ADD COLUMN stop_reason TEXT");
     } catch {
       // Column already exists — expected for new or already-migrated databases
     }
@@ -299,6 +314,35 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
 
     const row = this.stmtGetSession.get(sessionId) as SessionWithCountRow | null;
     return row !== null ? rowToSession(row) : undefined;
+  };
+
+  /** Update mutable session fields. */
+  updateSession = async (
+    sessionId: string,
+    updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason">>,
+  ): Promise<void> => {
+    const setClauses: string[] = [];
+    const params: (string | number | null)[] = [];
+
+    if (updates.status !== undefined) {
+      setClauses.push("status = ?");
+      params.push(updates.status);
+    }
+    if (updates.completedAt !== undefined) {
+      setClauses.push("ended_at = ?");
+      params.push(updates.completedAt);
+    }
+    if (updates.stopReason !== undefined) {
+      setClauses.push("stop_reason = ?");
+      params.push(updates.stopReason);
+    }
+
+    if (setClauses.length === 0) return;
+
+    params.push(sessionId);
+    this.db
+      .prepare(`UPDATE sessions SET ${setClauses.join(", ")} WHERE session_id = ?`)
+      .run(...params);
   };
 
   /** Archive a session by setting status to 'archived' and recording ended_at. */

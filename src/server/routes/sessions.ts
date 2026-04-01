@@ -24,8 +24,12 @@ import { notConfigured } from "./shared.js";
 
 const createSessionSchema = z.object({
   goal: z.string().min(1).optional(),
+  // Accept both "preset" (external API) and "presetName" (TUI/internal)
   preset: z.string().min(1).optional(),
-  topology: AgentTopologySchema.optional(),
+  presetName: z.string().min(1).optional(),
+  // Topology accepted as opaque object — parsed in handler to support
+  // both snake_case wire format (external) and camelCase (TUI/internal)
+  topology: z.record(z.string(), z.unknown()).optional(),
 });
 
 const addContributionSchema = z.object({
@@ -67,16 +71,25 @@ sessions.post("/", async (c) => {
     return c.json({ error: { code: "VALIDATION_ERROR", details: parsed.error.issues } }, 400);
   }
 
+  // Normalize: accept both "preset" and "presetName"
+  const presetName = parsed.data.preset ?? parsed.data.presetName;
+
+  // Parse inline topology — try snake_case wire format first, fall back to camelCase pass-through
+  let inlineTopology: AgentTopology | undefined;
+  if (parsed.data.topology) {
+    const wireResult = AgentTopologySchema.safeParse(parsed.data.topology);
+    if (wireResult.success) {
+      inlineTopology = wireToTopology(wireResult.data);
+    } else {
+      // Assume already camelCase (e.g. from TUI createSessionHttp)
+      inlineTopology = parsed.data.topology as unknown as AgentTopology;
+    }
+  }
+
   // Resolve topology if preset or inline topology provided
   let resolvedTopology: AgentTopology | undefined;
-  if (parsed.data.preset || parsed.data.topology) {
-    const resolution = resolveTopology(
-      {
-        inlineTopology: parsed.data.topology ? wireToTopology(parsed.data.topology) : undefined,
-        presetName: parsed.data.preset,
-      },
-      lookupPresetTopology,
-    );
+  if (presetName || inlineTopology) {
+    const resolution = resolveTopology({ inlineTopology, presetName }, lookupPresetTopology);
     if (!resolution.ok) {
       return c.json({ error: { code: "VALIDATION_ERROR", message: resolution.error } }, 400);
     }
@@ -85,7 +98,7 @@ sessions.post("/", async (c) => {
 
   const session = await goalSessionStore.createSession({
     goal: parsed.data.goal,
-    presetName: parsed.data.preset,
+    presetName,
     topology: resolvedTopology,
   });
   return c.json(toSessionResponse(session), 201);
