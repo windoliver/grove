@@ -344,6 +344,10 @@ export async function executeInit(
     if (preset.services?.mcp) services.push("MCP server");
     const serviceList = services.length > 0 ? ` (${services.join(", ")})` : "";
     console.log(`\nNext: run 'grove up' to start all services${serviceList}.`);
+    console.log(
+      `\nThe '${preset.name}' topology in GROVE.md is the default. Override per-session with:`,
+    );
+    console.log(`  grove session start --preset <name> --goal "..."`);
   } else {
     console.log("\nNext: run 'grove up' to start, or 'grove contribute' to publish work.");
   }
@@ -355,10 +359,11 @@ export async function executeInit(
 // ---------------------------------------------------------------------------
 
 function presetToGroveMdConfig(preset: PresetConfig, options: InitOptions): GroveMdConfig {
+  const description = options.description ?? preset.description;
   return {
     contractVersion: preset.topology ? 3 : 2,
     name: options.name,
-    description: options.description ?? preset.description,
+    description,
     mode: preset.mode,
     metrics: preset.metrics,
     topology: preset.topology,
@@ -366,6 +371,12 @@ function presetToGroveMdConfig(preset: PresetConfig, options: InitOptions): Grov
     stopConditions: preset.stopConditions,
     concurrency: preset.concurrency,
     execution: preset.execution,
+    body:
+      `# ${options.name}\n\n${description}\n\n` +
+      `> The topology above is the **default** for this grove. ` +
+      `Override it per-session:\n` +
+      `> \`grove session start --preset <name> --goal "..."\`\n` +
+      `> or via the API: \`POST /api/sessions { "preset": "<name>" }\``,
   };
 }
 

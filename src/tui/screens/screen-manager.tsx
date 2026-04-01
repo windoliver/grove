@@ -12,6 +12,7 @@
 
 import { useKeyboard, useRenderer } from "@opentui/react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { lookupPresetTopology } from "../../core/presets.js";
 import type { AppProps } from "../app.js";
 import { App } from "../app.js";
 import { debugLog } from "../debug-log.js";
@@ -97,7 +98,10 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     initialState,
   }: ScreenManagerProps): React.ReactNode {
     const renderer = useRenderer();
-    const { provider, topology } = appProps;
+    const { provider, topology: initialTopology } = appProps;
+
+    // Resolved topology — starts from GROVE.md default, overridden when user picks a preset.
+    const [topology, setTopology] = useState(initialTopology);
 
     // Initialize state: use initialState override (testing), or compute from props
     const [state, setState] = useState<ScreenState>(
@@ -283,8 +287,13 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       })();
     }, [provider, renderer, state.sessionId, spawnManager]);
 
-    // Screen 1 -> Screen 2: preset selected → go to goal input
+    // Screen 1 -> Screen 2: preset selected → resolve topology and go to goal input
     const handlePresetSelect = useCallback((presetName: string) => {
+      // Resolve topology from preset, falling back to GROVE.md default
+      const presetTopology = lookupPresetTopology(presetName);
+      if (presetTopology) {
+        setTopology(presetTopology);
+      }
       setState((s) => ({
         ...s,
         screen: "goal-input",
