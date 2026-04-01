@@ -19,6 +19,7 @@ import { LocalEventBus } from "../../core/local-event-bus.js";
 import { MockRuntime } from "../../core/mock-runtime.js";
 import { lookupPresetTopology } from "../../core/presets.js";
 import { SessionOrchestrator } from "../../core/session-orchestrator.js";
+import type { AgentTopology } from "../../core/topology.js";
 import { resolveTopology } from "../../core/topology-resolver.js";
 import { SqliteGoalSessionStore } from "../../local/sqlite-goal-session-store.js";
 import { outputJson, outputJsonError } from "../format.js";
@@ -48,10 +49,12 @@ export async function executeSession(args: readonly string[]): Promise<void> {
       console.log(`grove session <subcommand>
 
 Subcommands:
-  start --goal <goal> [--preset <name>]   Start a new session
-  list                                    List all sessions
-  status                                  Show current session status
-  stop [--reason <r>]                     Stop the current session`);
+  start --goal <goal> [--preset <name>] [--roles a,b,c]   Start a new session
+  list                                                     List all sessions
+  status                                                   Show current session status
+  stop [--reason <r>]                                      Stop the current session
+
+Topology precedence: --roles > --preset > GROVE.md default`);
   }
 }
 
@@ -65,6 +68,7 @@ async function sessionStart(args: readonly string[]): Promise<void> {
     options: {
       goal: { type: "string" },
       preset: { type: "string" },
+      roles: { type: "string" },
       runtime: { type: "string", default: "mock" },
     },
     strict: false,
@@ -97,10 +101,37 @@ async function sessionStart(args: readonly string[]): Promise<void> {
     contract = parseGroveContract(readFileSync(contractPath, "utf-8"));
   }
 
-  // Resolve topology via preset, contract default, or inline
+  // Build inline topology from --roles if provided
+  const rolesArg = values.roles as string | undefined;
+  let inlineTopology: AgentTopology | undefined;
+  if (rolesArg) {
+    const roleNames = rolesArg
+      .split(",")
+      .map((r) => r.trim())
+      .filter(Boolean);
+    if (roleNames.length === 0) {
+      outputJsonError({
+        code: "VALIDATION_ERROR",
+        message: "--roles must be a comma-separated list of role names",
+      });
+      process.exitCode = 1;
+      return;
+    }
+    inlineTopology = {
+      structure: "flat",
+      roles: roleNames.map((name) => ({
+        name,
+        description: `Agent role: ${name}`,
+        platform: "claude-code" as const,
+      })),
+    };
+  }
+
+  // Resolve topology: inline (--roles) > preset (--preset) > GROVE.md default
   const presetName = values.preset as string | undefined;
   const resolution = resolveTopology(
     {
+      inlineTopology,
       presetName,
       contractDefault: contract?.topology,
     },
