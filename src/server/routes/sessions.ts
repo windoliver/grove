@@ -10,6 +10,7 @@
 
 import { Hono } from "hono";
 import { z } from "zod";
+import type { GroveContract } from "../../core/contract.js";
 import type { ServerEnv } from "../deps.js";
 import { notConfigured } from "./shared.js";
 
@@ -19,6 +20,8 @@ import { notConfigured } from "./shared.js";
 
 const createSessionSchema = z.object({
   goal: z.string().min(1).optional(),
+  presetName: z.string().min(1).optional(),
+  config: z.record(z.string(), z.unknown()).optional(),
 });
 
 const addContributionSchema = z.object({
@@ -42,7 +45,17 @@ sessions.post("/", async (c) => {
     return c.json({ error: { code: "VALIDATION_ERROR", details: parsed.error.issues } }, 400);
   }
 
-  const session = await goalSessionStore.createSession(parsed.data);
+  // Build input with only defined fields (exactOptionalPropertyTypes).
+  // Cast the loose JSON record to GroveContract — full contract validation
+  // happens at the contract layer, not at the API boundary.
+  const input: import("../../tui/provider.js").SessionInput = {
+    ...(parsed.data.goal !== undefined ? { goal: parsed.data.goal } : {}),
+    ...(parsed.data.presetName !== undefined ? { presetName: parsed.data.presetName } : {}),
+    ...(parsed.data.config !== undefined
+      ? { config: parsed.data.config as unknown as GroveContract }
+      : {}),
+  };
+  const session = await goalSessionStore.createSession(input);
   return c.json(session, 201);
 });
 

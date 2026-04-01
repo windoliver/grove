@@ -10,6 +10,7 @@
  * suites. Panels check `provider.capabilities` at runtime.
  */
 
+import type { GroveContract } from "../core/contract.js";
 import type { Frontier, FrontierQuery } from "../core/frontier.js";
 import type {
   AgentIdentity,
@@ -215,12 +216,16 @@ export interface SessionRecord {
   readonly startedAt: string;
   readonly endedAt?: string | undefined;
   readonly contributionCount: number;
+  /** Full resolved contract snapshot. Populated on get(), not list(). */
+  readonly config?: GroveContract | undefined;
 }
 
 /** Input for creating a session. */
 export interface SessionInput {
   readonly goal?: string | undefined;
   readonly presetName?: string | undefined;
+  /** Full resolved contract to snapshot into this session. */
+  readonly config?: GroveContract | undefined;
 }
 
 // ---------------------------------------------------------------------------

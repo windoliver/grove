@@ -48,7 +48,7 @@ import { DEFAULT_LEASE_DURATION_MS } from "../core/claim-logic.js";
 import { ClaimConflictError, NotFoundError, StateConflictError } from "../core/errors.js";
 import { toUtcIso } from "../core/time.js";
 
-const CURRENT_SCHEMA_VERSION = 7;
+const CURRENT_SCHEMA_VERSION = 8;
 
 // ---------------------------------------------------------------------------
 // Schema DDL
@@ -152,6 +152,37 @@ const SCHEMA_DDL = `
 
   CREATE INDEX IF NOT EXISTS idx_workspaces_status ON workspaces(status);
   CREATE INDEX IF NOT EXISTS idx_workspaces_activity ON workspaces(last_activity_at);
+
+  -- Goals (single-row upsert pattern)
+  CREATE TABLE IF NOT EXISTS goals (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    goal TEXT NOT NULL,
+    acceptance TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    set_at TEXT NOT NULL,
+    set_by TEXT NOT NULL
+  );
+
+  -- Sessions
+  CREATE TABLE IF NOT EXISTS sessions (
+    session_id TEXT PRIMARY KEY,
+    goal TEXT,
+    preset_name TEXT,
+    config_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'active',
+    started_at TEXT NOT NULL,
+    ended_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS session_contributions (
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    cid TEXT NOT NULL,
+    added_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, cid)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_session_contributions_session_id ON session_contributions(session_id);
+  CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 `;
 
 const FTS_DDL = `
@@ -280,6 +311,19 @@ export function initSqliteDb(dbPath: string): Database {
     // because '.' (0x2E) < 'Z' (0x5A), giving wrong chronological order.
     if (currentVersion === null || currentVersion < 7) {
       db.run("UPDATE contributions SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', created_at)");
+    }
+
+    // Migration → v8: add config_json column to sessions table.
+    // Column-safe: check PRAGMA table_info to avoid errors on fresh databases
+    // (where the column already exists from SCHEMA_DDL).
+    {
+      const columns = db.prepare("PRAGMA table_info(sessions)").all() as readonly {
+        name: string;
+      }[];
+      const columnNames = new Set(columns.map((c) => c.name));
+      if (!columnNames.has("config_json")) {
+        db.run("ALTER TABLE sessions ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'");
+      }
     }
 
     db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [

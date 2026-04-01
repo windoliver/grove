@@ -1001,3 +1001,107 @@ describe("PolicyEnforcer: edge cases", () => {
     expect(result.passed).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Per-session config: different session configs produce different outcomes
+// ---------------------------------------------------------------------------
+
+describe("PolicyEnforcer: per-session config", () => {
+  test("session with gates enforces them; session without gates skips", async () => {
+    const store = makeStore();
+    const contribution = makeContribution({
+      kind: "work",
+      mode: "evaluation",
+      // No scores provided — a gate requiring a metric should flag this
+    });
+
+    // Session A: has metric_improves gate
+    const contractWithGates = makeContract({
+      mode: "evaluation",
+      metrics: { perf: { direction: "maximize" } },
+      gates: [{ type: "metric_improves", metric: "perf" }],
+    });
+    const enforcerA = new PolicyEnforcer(contractWithGates, store);
+    const resultA = await enforcerA.enforce(contribution, false);
+    expect(resultA.passed).toBe(false);
+    expect(resultA.violations.some((v) => v.type === "missing_score")).toBe(true);
+
+    // Session B: no gates at all
+    const contractNoGates = makeContract({ mode: "evaluation" });
+    const enforcerB = new PolicyEnforcer(contractNoGates, store);
+    const resultB = await enforcerB.enforce(contribution, false);
+    expect(resultB.passed).toBe(true);
+  });
+
+  test("session with agentConstraints.allowedKinds restricts kinds", async () => {
+    const store = makeStore();
+    const reviewContribution = makeContribution({ kind: "review" });
+
+    // Session A: only allows "work" kind
+    const restrictive = makeContract({
+      agentConstraints: { allowedKinds: ["work"] },
+    });
+    const enforcerA = new PolicyEnforcer(restrictive, store);
+    const resultA = await enforcerA.enforce(reviewContribution, false);
+    expect(resultA.passed).toBe(false);
+    expect(resultA.violations.some((v) => v.type === "role_kind")).toBe(true);
+
+    // Session B: allows all kinds (no constraints)
+    const permissive = makeContract({});
+    const enforcerB = new PolicyEnforcer(permissive, store);
+    const resultB = await enforcerB.enforce(reviewContribution, false);
+    expect(resultB.passed).toBe(true);
+  });
+
+  test("two enforcers with different configs produce different outcomes on same contribution", async () => {
+    const store = makeStore();
+    const contribution = makeContribution({
+      kind: "work",
+      mode: "evaluation",
+      scores: { accuracy: score(0.95, "maximize") },
+    });
+
+    // Session A: min_score gate with threshold 0.99 → fails
+    const strictConfig = makeContract({
+      mode: "evaluation",
+      metrics: { accuracy: { direction: "maximize" } },
+      gates: [{ type: "min_score", metric: "accuracy", threshold: 0.99 }],
+    });
+    const enforcerStrict = new PolicyEnforcer(strictConfig, store);
+    const resultStrict = await enforcerStrict.enforce(contribution, false);
+    expect(resultStrict.passed).toBe(false);
+    expect(resultStrict.violations.some((v) => v.type === "gate_failed")).toBe(true);
+
+    // Session B: min_score gate with threshold 0.90 → passes
+    const lenientConfig = makeContract({
+      mode: "evaluation",
+      metrics: { accuracy: { direction: "maximize" } },
+      gates: [{ type: "min_score", metric: "accuracy", threshold: 0.9 }],
+    });
+    const enforcerLenient = new PolicyEnforcer(lenientConfig, store);
+    const resultLenient = await enforcerLenient.enforce(contribution, false);
+    expect(resultLenient.passed).toBe(true);
+  });
+
+  test("session with required artifacts enforces; session without does not", async () => {
+    const store = makeStore();
+    const contribution = makeContribution({ kind: "work", artifacts: {} });
+
+    // Session A: requires "benchmark.json" artifact for "work" kind
+    const withRequirements = makeContract({
+      agentConstraints: {
+        requiredArtifacts: { work: ["benchmark.json"] },
+      },
+    });
+    const enforcerA = new PolicyEnforcer(withRequirements, store);
+    const resultA = await enforcerA.enforce(contribution, false);
+    expect(resultA.passed).toBe(false);
+    expect(resultA.violations.some((v) => v.type === "missing_artifact")).toBe(true);
+
+    // Session B: no artifact requirements
+    const noRequirements = makeContract({});
+    const enforcerB = new PolicyEnforcer(noRequirements, store);
+    const resultB = await enforcerB.enforce(contribution, false);
+    expect(resultB.passed).toBe(true);
+  });
+});

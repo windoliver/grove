@@ -15,6 +15,7 @@ import type { SessionRecord, TuiDataProvider } from "./provider.js";
 import {
   backendLabel,
   checkNexusHealth,
+  loadContract,
   loadTopology,
   type ResolvedBackend,
   resolveBackend,
@@ -260,9 +261,10 @@ async function buildAppProps(
 
   const label = backendLabel(backend);
 
-  const [provider, topology] = await Promise.all([
+  const [provider, topology, contract] = await Promise.all([
     createProviderForTui(backend, label),
     loadTopology(backend),
+    loadContract(backend),
   ]);
 
   // Create TmuxManager for agent management
@@ -372,6 +374,7 @@ async function buildAppProps(
       intervalMs: opts.intervalMs,
       tmux,
       topology,
+      contract,
       presetName,
       groveDir,
       eventBus,

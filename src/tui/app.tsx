@@ -45,6 +45,8 @@ export interface AppProps {
   readonly intervalMs: number;
   readonly tmux?: import("./agents/tmux-manager.js").TmuxManager | undefined;
   readonly topology?: import("../core/topology.js").AgentTopology | undefined;
+  /** Full parsed contract for session config snapshots. */
+  readonly contract?: import("../core/contract.js").GroveContract | undefined;
   /** Preset name — used for per-preset panel visibility filtering. */
   readonly presetName?: string | undefined;
   /** Resolved .grove directory path for session persistence. */

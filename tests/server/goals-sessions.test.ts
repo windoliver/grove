@@ -349,3 +349,80 @@ describe("POST /api/sessions/:id/contributions", () => {
     expect(res.status).toBe(400);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Session Config via API
+// ---------------------------------------------------------------------------
+
+describe("Session Config via API", () => {
+  test("POST /api/sessions with config returns 201", async () => {
+    const config = { contractVersion: 3, name: "api-preset", mode: "evaluation" };
+    const res = await ctx.app.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Config test", config }),
+    });
+
+    expect(res.status).toBe(201);
+    const data = await res.json();
+    expect(data.sessionId).toBeTruthy();
+    expect(data.goal).toBe("Config test");
+    expect(data.config).toBeDefined();
+    expect(data.config.name).toBe("api-preset");
+  });
+
+  test("GET /api/sessions/:id returns config", async () => {
+    const config = { contractVersion: 3, name: "get-config", mode: "exploration" };
+    const createRes = await ctx.app.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Get config", config }),
+    });
+    const created = await createRes.json();
+
+    const getRes = await ctx.app.request(`/api/sessions/${created.sessionId}`);
+    expect(getRes.status).toBe(200);
+    const data = await getRes.json();
+    expect(data.config).toBeDefined();
+    expect(data.config.mode).toBe("exploration");
+  });
+
+  test("GET /api/sessions list does NOT include config", async () => {
+    const config = { contractVersion: 3, name: "list-test", mode: "evaluation" };
+    await ctx.app.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Listed", config }),
+    });
+
+    const listRes = await ctx.app.request("/api/sessions");
+    const data = await listRes.json();
+    expect(data.sessions.length).toBeGreaterThanOrEqual(1);
+    // Config should not be in list response
+    expect(data.sessions[0].config).toBeUndefined();
+  });
+
+  test("POST /api/sessions without config still works (backward compat)", async () => {
+    const res = await ctx.app.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "No config" }),
+    });
+
+    expect(res.status).toBe(201);
+    const data = await res.json();
+    expect(data.goal).toBe("No config");
+  });
+
+  test("POST /api/sessions with presetName stores it", async () => {
+    const res = await ctx.app.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Preset test", presetName: "review-loop" }),
+    });
+
+    expect(res.status).toBe(201);
+    const data = await res.json();
+    expect(data.presetName).toBe("review-loop");
+  });
+});

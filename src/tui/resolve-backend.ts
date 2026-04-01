@@ -9,6 +9,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveGroveDir } from "../cli/utils/grove-dir.js";
+import type { GroveContract } from "../core/contract.js";
 import type { AgentTopology } from "../core/topology.js";
 
 // ---------------------------------------------------------------------------
@@ -288,6 +289,27 @@ export async function loadTopology(backend: ResolvedBackend): Promise<AgentTopol
     }
   } catch {
     // Topology is optional
+  }
+  return undefined;
+}
+
+/**
+ * Load the full parsed GroveContract from a resolved backend.
+ * Returns undefined if no GROVE.md is found or parsing fails.
+ */
+export async function loadContract(backend: ResolvedBackend): Promise<GroveContract | undefined> {
+  if (backend.mode === "remote") return undefined;
+
+  try {
+    const { parseGroveContract } = await import("../core/contract.js");
+    const { groveDir } = resolveGroveDir(backend.groveOverride);
+    const grovemdPath = join(groveDir, "..", "GROVE.md");
+    if (existsSync(grovemdPath)) {
+      const raw = await Bun.file(grovemdPath).text();
+      return parseGroveContract(raw);
+    }
+  } catch {
+    // Contract is optional
   }
   return undefined;
 }

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { GroveContract } from "../core/contract.js";
 import type { SqliteGoalSessionStore } from "./sqlite-goal-session-store.js";
 import { createSqliteStores } from "./sqlite-store.js";
 
@@ -209,5 +210,192 @@ describe("Session Contributions", () => {
     const fetched = await store.getSession(session.sessionId);
     expect(fetched!.contributionCount).toBe(1);
     expect(fetched!.status).toBe("archived");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session Config
+// ---------------------------------------------------------------------------
+
+/** Minimal contract for testing. */
+function makeConfig(overrides: Partial<GroveContract> = {}): GroveContract {
+  return {
+    contractVersion: 3,
+    name: "test-preset",
+    ...overrides,
+  };
+}
+
+/** Full contract with all sections populated. */
+function makeFullConfig(): GroveContract {
+  return {
+    contractVersion: 3,
+    name: "full-preset",
+    description: "A full preset with all sections",
+    mode: "evaluation",
+    metrics: {
+      val_bpb: { direction: "minimize", unit: "bpb", description: "Validation BPB" },
+      accuracy: { direction: "maximize", unit: "%", description: "Accuracy" },
+    },
+    gates: [
+      { type: "metric_improves", metric: "val_bpb" },
+      { type: "min_score", metric: "accuracy", threshold: 0.9 },
+    ],
+    stopConditions: {
+      maxRoundsWithoutImprovement: 5,
+      targetMetric: { metric: "val_bpb", value: 1.0 },
+      budget: { maxContributions: 100, maxWallClockSeconds: 3600 },
+    },
+    agentConstraints: {
+      allowedKinds: ["work", "review"],
+      requiredRelations: { review: ["reviews"] },
+    },
+    concurrency: { maxActiveClaims: 5, maxClaimsPerAgent: 2 },
+    execution: { defaultLeaseSeconds: 300, maxLeaseSeconds: 600 },
+    topology: {
+      structure: "graph",
+      roles: [
+        {
+          name: "coder",
+          description: "Write code",
+          prompt: "You are a coder. Write high-quality code.",
+          command: "claude",
+          edges: [{ target: "reviewer", edgeType: "delegates" }],
+        },
+        {
+          name: "reviewer",
+          description: "Review code",
+          prompt: "You are a reviewer. Review code carefully.",
+          command: "claude",
+          edges: [{ target: "coder", edgeType: "feedback" }],
+        },
+      ],
+    },
+  };
+}
+
+describe("Session Config", () => {
+  it("stores config on creation and retrieves on get", async () => {
+    const config = makeConfig({ mode: "exploration" });
+    const session = await store.createSession({ goal: "Test", config });
+
+    const fetched = await store.getSession(session.sessionId);
+    expect(fetched).toBeDefined();
+    expect(fetched!.config).toBeDefined();
+    expect(fetched!.config!.name).toBe("test-preset");
+    expect(fetched!.config!.mode).toBe("exploration");
+  });
+
+  it("config survives archive", async () => {
+    const config = makeConfig({ mode: "evaluation" });
+    const session = await store.createSession({ goal: "Test", config });
+    await store.archiveSession(session.sessionId);
+
+    const fetched = await store.getSession(session.sessionId);
+    expect(fetched!.status).toBe("archived");
+    expect(fetched!.config).toBeDefined();
+    expect(fetched!.config!.mode).toBe("evaluation");
+  });
+
+  it("backward compat: sessions without config return config undefined", async () => {
+    const session = await store.createSession({ goal: "No config" });
+
+    const fetched = await store.getSession(session.sessionId);
+    expect(fetched).toBeDefined();
+    expect(fetched!.config).toBeUndefined();
+  });
+
+  it("JSON round-trip preserves full GroveContract", async () => {
+    const config = makeFullConfig();
+    const session = await store.createSession({ goal: "Full", config });
+
+    const fetched = await store.getSession(session.sessionId);
+    expect(fetched!.config).toBeDefined();
+    const c = fetched!.config!;
+
+    expect(c.contractVersion).toBe(3);
+    expect(c.name).toBe("full-preset");
+    expect(c.mode).toBe("evaluation");
+    expect(c.metrics!.val_bpb!.direction).toBe("minimize");
+    expect(c.metrics!.accuracy!.direction).toBe("maximize");
+    expect(c.gates).toHaveLength(2);
+    expect(c.stopConditions!.maxRoundsWithoutImprovement).toBe(5);
+    expect(c.agentConstraints!.allowedKinds).toEqual(["work", "review"]);
+    expect(c.concurrency!.maxActiveClaims).toBe(5);
+    expect(c.execution!.defaultLeaseSeconds).toBe(300);
+    expect(c.topology!.roles).toHaveLength(2);
+    expect(c.topology!.roles[0]!.name).toBe("coder");
+    expect(c.topology!.roles[0]!.prompt).toBe("You are a coder. Write high-quality code.");
+  });
+
+  it("list sessions does NOT include config", async () => {
+    const config = makeConfig({ mode: "evaluation" });
+    await store.createSession({ goal: "Listed", config });
+
+    const sessions = await store.listSessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]!.config).toBeUndefined();
+  });
+
+  it("getSessionConfig returns config for valid session", async () => {
+    const config = makeConfig({ mode: "exploration" });
+    const session = await store.createSession({ goal: "Test", config });
+
+    const retrieved = await store.getSessionConfig(session.sessionId);
+    expect(retrieved).toBeDefined();
+    expect(retrieved!.mode).toBe("exploration");
+    expect(retrieved!.name).toBe("test-preset");
+  });
+
+  it("getSessionConfig returns undefined for missing session", async () => {
+    const retrieved = await store.getSessionConfig("nonexistent-id");
+    expect(retrieved).toBeUndefined();
+  });
+
+  it("getSessionConfig returns undefined for session without config", async () => {
+    const session = await store.createSession({ goal: "No config" });
+    const retrieved = await store.getSessionConfig(session.sessionId);
+    expect(retrieved).toBeUndefined();
+  });
+
+  it("config with deeply nested topology edges round-trips", async () => {
+    const config = makeConfig({
+      topology: {
+        structure: "graph",
+        roles: [
+          {
+            name: "orchestrator",
+            description: "Orchestrate agents",
+            edges: [
+              { target: "worker-a", edgeType: "delegates" },
+              { target: "worker-b", edgeType: "delegates" },
+              { target: "reviewer", edgeType: "requests" },
+            ],
+          },
+          { name: "worker-a", description: "Worker A" },
+          { name: "worker-b", description: "Worker B" },
+          {
+            name: "reviewer",
+            description: "Reviewer",
+            edges: [{ target: "orchestrator", edgeType: "feedback" }],
+          },
+        ],
+      },
+    });
+    const session = await store.createSession({ goal: "Nested", config });
+
+    const fetched = await store.getSession(session.sessionId);
+    const topo = fetched!.config!.topology!;
+    expect(topo.roles).toHaveLength(4);
+    expect(topo.roles[0]!.edges).toHaveLength(3);
+    expect(topo.roles[0]!.edges![1]!.target).toBe("worker-b");
+  });
+
+  it("createSession returns config in the response", async () => {
+    const config = makeConfig({ mode: "exploration" });
+    const session = await store.createSession({ goal: "Inline", config });
+
+    expect(session.config).toBeDefined();
+    expect(session.config!.mode).toBe("exploration");
   });
 });

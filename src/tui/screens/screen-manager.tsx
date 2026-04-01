@@ -95,7 +95,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     initialState,
   }: ScreenManagerProps): React.ReactNode {
     const renderer = useRenderer();
-    const { provider, topology } = appProps;
+    const { provider, topology, contract } = appProps;
 
     // Initialize state: use initialState override (testing), or compute from props
     const [state, setState] = useState<ScreenState>(
@@ -328,7 +328,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         // Create session if supported
         if (isSessionProvider(provider)) {
           void provider
-            .createSession({ goal, presetName: state.selectedPreset })
+            .createSession({ goal, presetName: state.selectedPreset, config: contract })
             .then((session) => {
               spawnManager.setSessionId(session.sessionId);
               setState((s) => ({ ...s, sessionId: session.sessionId }));
@@ -404,7 +404,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           setState((s) => ({ ...s, screen: "running", goal, sessionStartedAt }));
         }
       },
-      [provider, topology, state.selectedPreset, spawnManager],
+      [provider, topology, contract, state.selectedPreset, spawnManager],
     );
 
     // Screen 3 (launch preview) -> spawning: Ctrl+Enter confirmed launch

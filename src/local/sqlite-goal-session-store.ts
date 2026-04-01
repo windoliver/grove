@@ -8,42 +8,8 @@
  */
 
 import type { Database, Statement } from "bun:sqlite";
+import type { GroveContract } from "../core/contract.js";
 import type { GoalData, SessionInput, SessionRecord } from "../tui/provider.js";
-
-// ---------------------------------------------------------------------------
-// Schema DDL
-// ---------------------------------------------------------------------------
-
-/** DDL for goal and session tables. Exported for use in schema initialization. */
-export const GOAL_SESSION_DDL = `
-  CREATE TABLE IF NOT EXISTS goals (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    goal TEXT NOT NULL,
-    acceptance TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'active',
-    set_at TEXT NOT NULL,
-    set_by TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS sessions (
-    session_id TEXT PRIMARY KEY,
-    goal TEXT,
-    preset_name TEXT,
-    status TEXT NOT NULL DEFAULT 'active',
-    started_at TEXT NOT NULL,
-    ended_at TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS session_contributions (
-    session_id TEXT NOT NULL REFERENCES sessions(session_id),
-    cid TEXT NOT NULL,
-    added_at TEXT NOT NULL,
-    PRIMARY KEY (session_id, cid)
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_session_contributions_session_id ON session_contributions(session_id);
-  CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
-`;
 
 // ---------------------------------------------------------------------------
 // Row types
@@ -62,6 +28,7 @@ interface SessionRow {
   session_id: string;
   goal: string | null;
   preset_name: string | null;
+  config_json: string;
   status: string;
   started_at: string;
   ended_at: string | null;
@@ -104,6 +71,9 @@ export interface GoalSessionStore {
   /** Get all contribution CIDs for a session. */
   getSessionContributions(sessionId: string): Promise<readonly string[]>;
 
+  /** Get the stored config for a session (lazy-loaded, not included in list). */
+  getSessionConfig(sessionId: string): Promise<GroveContract | undefined>;
+
   /** Release resources. */
   close(): void;
 }
@@ -125,7 +95,7 @@ function rowToGoalData(row: GoalRow): GoalData {
 
 /** Convert a SessionWithCountRow to a SessionRecord domain object. */
 function rowToSessionRecord(row: SessionWithCountRow): SessionRecord {
-  return {
+  const record: SessionRecord = {
     sessionId: row.session_id,
     goal: row.goal ?? undefined,
     presetName: row.preset_name ?? undefined,
@@ -134,6 +104,17 @@ function rowToSessionRecord(row: SessionWithCountRow): SessionRecord {
     endedAt: row.ended_at ?? undefined,
     contributionCount: row.contribution_count,
   };
+
+  // Include config when present in the row (get queries include it, list queries don't)
+  if ("config_json" in row && row.config_json && row.config_json !== "{}") {
+    try {
+      return { ...record, config: JSON.parse(row.config_json) as GroveContract };
+    } catch {
+      return record;
+    }
+  }
+
+  return record;
 }
 
 // ---------------------------------------------------------------------------
@@ -152,16 +133,12 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
   private stmtArchiveSession: Statement | undefined;
   private stmtInsertContribution: Statement | undefined;
   private stmtGetContributions: Statement | undefined;
+  private stmtGetSessionConfig: Statement | undefined;
 
   constructor(db: Database) {
     this.db = db;
-    db.exec(GOAL_SESSION_DDL);
-    // Migration: add preset_name column for existing databases
-    try {
-      db.exec("ALTER TABLE sessions ADD COLUMN preset_name TEXT");
-    } catch {
-      // Column already exists — expected for new or already-migrated databases
-    }
+    // Schema is initialized by initSqliteDb() in sqlite-store.ts.
+    // No self-managed DDL — all migrations are in the central schema_migrations system.
   }
 
   // -----------------------------------------------------------------------
@@ -214,8 +191,11 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     status?: "active" | "archived";
     presetName?: string;
   }): Promise<readonly SessionRecord[]> => {
+    // Exclude config_json from list queries for performance (P2).
+    // Config is lazy-loaded via getSession() or getSessionConfig().
     const baseSelect = `
-      SELECT s.*, COALESCE(c.cnt, 0) AS contribution_count
+      SELECT s.session_id, s.goal, s.preset_name, s.status, s.started_at, s.ended_at,
+             COALESCE(c.cnt, 0) AS contribution_count
       FROM sessions s
       LEFT JOIN (
         SELECT session_id, COUNT(*) AS cnt
@@ -246,13 +226,20 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
   /** Create a new session with a generated UUID. */
   createSession = async (input: SessionInput): Promise<SessionRecord> => {
     this.stmtInsertSession ??= this.db.prepare(`
-      INSERT INTO sessions (session_id, goal, preset_name, status, started_at)
-      VALUES (?, ?, ?, 'active', ?)
+      INSERT INTO sessions (session_id, goal, preset_name, config_json, status, started_at)
+      VALUES (?, ?, ?, ?, 'active', ?)
     `);
 
     const sessionId = crypto.randomUUID();
     const startedAt = new Date().toISOString();
-    this.stmtInsertSession.run(sessionId, input.goal ?? null, input.presetName ?? null, startedAt);
+    const configJson = input.config ? JSON.stringify(input.config) : "{}";
+    this.stmtInsertSession.run(
+      sessionId,
+      input.goal ?? null,
+      input.presetName ?? null,
+      configJson,
+      startedAt,
+    );
 
     return {
       sessionId,
@@ -262,13 +249,15 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
       startedAt,
       endedAt: undefined,
       contributionCount: 0,
+      config: input.config,
     };
   };
 
-  /** Get a single session by ID with computed contribution count. */
+  /** Get a single session by ID with computed contribution count and config. */
   getSession = async (sessionId: string): Promise<SessionRecord | undefined> => {
     this.stmtGetSession ??= this.db.prepare(`
-      SELECT s.*, COALESCE(c.cnt, 0) AS contribution_count
+      SELECT s.session_id, s.goal, s.preset_name, s.config_json, s.status, s.started_at, s.ended_at,
+             COALESCE(c.cnt, 0) AS contribution_count
       FROM sessions s
       LEFT JOIN (
         SELECT session_id, COUNT(*) AS cnt
@@ -278,7 +267,9 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
       WHERE s.session_id = ?
     `);
 
-    const row = this.stmtGetSession.get(sessionId) as SessionWithCountRow | null;
+    const row = this.stmtGetSession.get(sessionId) as
+      | (SessionWithCountRow & { config_json: string })
+      | null;
     return row !== null ? rowToSessionRecord(row) : undefined;
   };
 
@@ -313,6 +304,26 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
 
     const rows = this.stmtGetContributions.all(sessionId) as { cid: string }[];
     return rows.map((r) => r.cid);
+  };
+
+  // -----------------------------------------------------------------------
+  // Config
+  // -----------------------------------------------------------------------
+
+  /** Get the stored config for a session (lazy-loaded, not included in list). */
+  getSessionConfig = async (sessionId: string): Promise<GroveContract | undefined> => {
+    this.stmtGetSessionConfig ??= this.db.prepare(
+      "SELECT config_json FROM sessions WHERE session_id = ?",
+    );
+
+    const row = this.stmtGetSessionConfig.get(sessionId) as { config_json: string } | null;
+    if (!row || !row.config_json || row.config_json === "{}") return undefined;
+
+    try {
+      return JSON.parse(row.config_json) as GroveContract;
+    } catch {
+      return undefined;
+    }
   };
 
   // -----------------------------------------------------------------------

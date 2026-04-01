@@ -116,6 +116,7 @@ async function sessionStart(args: readonly string[]): Promise<void> {
   const session = await manager.createSession({
     goal,
     presetName: contract.name,
+    config: contract,
   });
 
   const orchestrator = new SessionOrchestrator({

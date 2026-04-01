@@ -13,11 +13,15 @@
 
 import { randomUUID } from "node:crypto";
 
+import type { GroveContract } from "./contract.js";
+
 /** A session instance within a grove. */
 export interface Session {
   readonly id: string;
   readonly goal: string;
   readonly presetName: string;
+  /** Full resolved contract snapshot, frozen at session creation time. */
+  readonly config?: GroveContract | undefined;
   readonly createdAt: string;
   readonly status: "pending" | "running" | "completed" | "cancelled";
   readonly completedAt?: string;
@@ -28,6 +32,8 @@ export interface Session {
 export interface CreateSessionInput {
   readonly goal: string;
   readonly presetName: string;
+  /** Full resolved contract to snapshot into this session. */
+  readonly config?: GroveContract | undefined;
 }
 
 /** Session store interface — persists session metadata. */
@@ -58,6 +64,7 @@ export class SessionManager {
       id: randomUUID().slice(0, 8),
       goal: input.goal,
       presetName: input.presetName,
+      ...(input.config !== undefined ? { config: input.config } : {}),
       createdAt: new Date().toISOString(),
       status: "pending",
     };
