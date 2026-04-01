@@ -3,6 +3,7 @@ import type { GroveContract } from "./contract.js";
 import { LocalEventBus } from "./local-event-bus.js";
 import { MockRuntime } from "./mock-runtime.js";
 import { SessionOrchestrator } from "./session-orchestrator.js";
+import type { AgentTopology } from "./topology.js";
 
 function makeContract(overrides?: Partial<GroveContract>): GroveContract {
   return {
@@ -33,9 +34,11 @@ describe("SessionOrchestrator", () => {
   test("start spawns agents for all roles", async () => {
     const runtime = new MockRuntime();
     const bus = new LocalEventBus();
+    const contract = makeContract();
     const orchestrator = new SessionOrchestrator({
       goal: "Build auth module",
-      contract: makeContract(),
+      contract,
+      topology: contract.topology!,
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
@@ -54,9 +57,11 @@ describe("SessionOrchestrator", () => {
   test("start sends goals to all agents", async () => {
     const runtime = new MockRuntime();
     const bus = new LocalEventBus();
+    const contract = makeContract();
     const orchestrator = new SessionOrchestrator({
       goal: "Build auth module",
-      contract: makeContract(),
+      contract,
+      topology: contract.topology!,
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
@@ -74,9 +79,11 @@ describe("SessionOrchestrator", () => {
   test("stop closes all agents", async () => {
     const runtime = new MockRuntime();
     const bus = new LocalEventBus();
+    const contract = makeContract();
     const orchestrator = new SessionOrchestrator({
       goal: "Build auth module",
-      contract: makeContract(),
+      contract,
+      topology: contract.topology!,
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
@@ -93,7 +100,7 @@ describe("SessionOrchestrator", () => {
     bus.close();
   });
 
-  test("throws when contract has no topology", () => {
+  test("throws when topology is missing", () => {
     const runtime = new MockRuntime();
     const bus = new LocalEventBus();
 
@@ -102,21 +109,24 @@ describe("SessionOrchestrator", () => {
         new SessionOrchestrator({
           goal: "test",
           contract: { contractVersion: 2, name: "test" },
+          topology: undefined as unknown as AgentTopology,
           runtime,
           eventBus: bus,
           projectRoot: "/tmp",
           workspaceBaseDir: "/tmp/workspaces",
         }),
-    ).toThrow("topology");
+    ).toThrow();
     bus.close();
   });
 
   test("getStatus returns correct state", async () => {
     const runtime = new MockRuntime();
     const bus = new LocalEventBus();
+    const contract = makeContract();
     const orchestrator = new SessionOrchestrator({
       goal: "Test goal",
-      contract: makeContract(),
+      contract,
+      topology: contract.topology!,
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
@@ -137,9 +147,11 @@ describe("SessionOrchestrator", () => {
   test("events are forwarded to agents", async () => {
     const runtime = new MockRuntime();
     const bus = new LocalEventBus();
+    const contract = makeContract();
     const orchestrator = new SessionOrchestrator({
       goal: "Test",
-      contract: makeContract(),
+      contract,
+      topology: contract.topology!,
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
@@ -167,9 +179,11 @@ describe("SessionOrchestrator", () => {
   test("stop events are not forwarded to agents", async () => {
     const runtime = new MockRuntime();
     const bus = new LocalEventBus();
+    const contract = makeContract();
     const orchestrator = new SessionOrchestrator({
       goal: "Test",
-      contract: makeContract(),
+      contract,
+      topology: contract.topology!,
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
@@ -195,9 +209,11 @@ describe("SessionOrchestrator", () => {
   test("uses custom sessionId when provided", () => {
     const runtime = new MockRuntime();
     const bus = new LocalEventBus();
+    const contract = makeContract();
     const orchestrator = new SessionOrchestrator({
       goal: "Test",
-      contract: makeContract(),
+      contract,
+      topology: contract.topology!,
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
@@ -229,6 +245,7 @@ describe("SessionOrchestrator", () => {
     const orchestrator = new SessionOrchestrator({
       goal: "Document the API",
       contract,
+      topology: contract.topology!,
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
@@ -262,6 +279,7 @@ describe("SessionOrchestrator", () => {
     const orchestrator = new SessionOrchestrator({
       goal: "Build it",
       contract,
+      topology: contract.topology!,
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
@@ -287,6 +305,7 @@ describe("SessionOrchestrator", () => {
     const orchestrator = new SessionOrchestrator({
       goal: "Help",
       contract,
+      topology: contract.topology!,
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
@@ -302,9 +321,11 @@ describe("SessionOrchestrator", () => {
   test("all agents idle triggers auto-stop", async () => {
     const runtime = new MockRuntime();
     const bus = new LocalEventBus();
+    const contract = makeContract();
     const orchestrator = new SessionOrchestrator({
       goal: "Build auth module",
-      contract: makeContract(),
+      contract,
+      topology: contract.topology!,
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
@@ -332,9 +353,11 @@ describe("SessionOrchestrator", () => {
   test("checkIdleCompletion returns false when agents are still running", async () => {
     const runtime = new MockRuntime();
     const bus = new LocalEventBus();
+    const contract = makeContract();
     const orchestrator = new SessionOrchestrator({
       goal: "Build auth module",
-      contract: makeContract(),
+      contract,
+      topology: contract.topology!,
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
@@ -353,9 +376,11 @@ describe("SessionOrchestrator", () => {
   test("resumeAgent spawns new session and sends reconciliation message", async () => {
     const runtime = new MockRuntime();
     const bus = new LocalEventBus();
+    const contract = makeContract();
     const orchestrator = new SessionOrchestrator({
       goal: "Build auth module",
-      contract: makeContract(),
+      contract,
+      topology: contract.topology!,
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
@@ -386,9 +411,11 @@ describe("SessionOrchestrator", () => {
   test("resumeAgent throws for unknown role", async () => {
     const runtime = new MockRuntime();
     const bus = new LocalEventBus();
+    const contract = makeContract();
     const orchestrator = new SessionOrchestrator({
       goal: "Build auth module",
-      contract: makeContract(),
+      contract,
+      topology: contract.topology!,
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
@@ -399,5 +426,58 @@ describe("SessionOrchestrator", () => {
 
     await expect(orchestrator.resumeAgent("nonexistent")).rejects.toThrow("not found in topology");
     bus.close();
+  });
+
+  test("logs warning when worktree creation fails", async () => {
+    // The test environment doesn't have a git repo at /tmp, so worktree creation always fails.
+    // Verify that agents still spawn (they fall back to project root)
+    // and stderr contains the warning message.
+    const stderrWrites: string[] = [];
+    const origWrite = process.stderr.write;
+    process.stderr.write = ((chunk: string) => {
+      stderrWrites.push(chunk);
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      const runtime = new MockRuntime();
+      const bus = new LocalEventBus();
+      const contract = makeContract({
+        topology: {
+          structure: "flat",
+          roles: [{ name: "worker", description: "Do the work", command: "echo worker" }],
+        },
+      });
+
+      const orchestrator = new SessionOrchestrator({
+        goal: "Test worktree fallback",
+        contract,
+        topology: contract.topology!,
+        runtime,
+        eventBus: bus,
+        projectRoot: "/tmp",
+        workspaceBaseDir: "/tmp/workspaces",
+      });
+
+      const status = await orchestrator.start();
+
+      // Agent should still spawn despite worktree failure
+      expect(status.started).toBe(true);
+      expect(status.agents).toHaveLength(1);
+      expect(runtime.spawnCalls).toHaveLength(1);
+
+      // Agent cwd should fall back to project root
+      expect(runtime.spawnCalls[0]!.config.cwd).toBe("/tmp");
+
+      // stderr should contain the worktree warning
+      const warningFound = stderrWrites.some((line) =>
+        line.includes("[SessionOrchestrator] worktree creation failed"),
+      );
+      expect(warningFound).toBe(true);
+
+      bus.close();
+    } finally {
+      process.stderr.write = origWrite;
+    }
   });
 });

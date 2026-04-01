@@ -107,11 +107,11 @@ describe("grove_create_session", () => {
 
     expect(result.isError).toBeUndefined();
     const data = JSON.parse(result.text);
-    expect(data.sessionId).toBeTruthy();
-    expect(typeof data.sessionId).toBe("string");
+    expect(data.id).toBeTruthy();
+    expect(typeof data.id).toBe("string");
     expect(data.status).toBe("active");
     expect(data.contributionCount).toBe(0);
-    expect(typeof data.startedAt).toBe("string");
+    expect(typeof data.createdAt).toBe("string");
   });
 
   test("creates a session with a goal", async () => {

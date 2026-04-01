@@ -2,13 +2,17 @@
  * Tests for SqliteGoalSessionStore.
  *
  * Uses real SQLite in temp directories for integration-level coverage.
+ * Includes the SessionStore conformance suite via an adapter.
  */
 
+import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SqliteGoalSessionStore } from "./sqlite-goal-session-store.js";
+import type { Session, SessionStore } from "../core/session.js";
+import { sessionStoreConformance } from "../core/session-store.conformance.js";
+import type { GoalSessionStore, SqliteGoalSessionStore } from "./sqlite-goal-session-store.js";
 import { createSqliteStores } from "./sqlite-store.js";
 
 // ---------------------------------------------------------------------------
@@ -86,12 +90,12 @@ describe("Goals", () => {
 describe("Sessions", () => {
   it("createSession() creates with auto-generated ID", async () => {
     const session = await store.createSession({});
-    expect(session.sessionId).toBeTruthy();
-    expect(typeof session.sessionId).toBe("string");
+    expect(session.id).toBeTruthy();
+    expect(typeof session.id).toBe("string");
     expect(session.status).toBe("active");
     expect(session.contributionCount).toBe(0);
-    expect(typeof session.startedAt).toBe("string");
-    expect(session.endedAt).toBeUndefined();
+    expect(typeof session.createdAt).toBe("string");
+    expect(session.completedAt).toBeUndefined();
   });
 
   it("createSession() with goal parameter", async () => {
@@ -110,7 +114,7 @@ describe("Sessions", () => {
   it("listSessions({ status: 'active' }) filters", async () => {
     const s1 = await store.createSession({});
     await store.createSession({});
-    await store.archiveSession(s1.sessionId);
+    await store.archiveSession(s1.id);
 
     const active = await store.listSessions({ status: "active" });
     expect(active.length).toBe(1);
@@ -121,9 +125,9 @@ describe("Sessions", () => {
 
   it("getSession() returns by ID", async () => {
     const created = await store.createSession({ goal: "Test goal" });
-    const fetched = await store.getSession(created.sessionId);
+    const fetched = await store.getSession(created.id);
     expect(fetched).toBeDefined();
-    expect(fetched!.sessionId).toBe(created.sessionId);
+    expect(fetched!.id).toBe(created.id);
     expect(fetched!.goal).toBe("Test goal");
     expect(fetched!.status).toBe("active");
   });
@@ -135,21 +139,21 @@ describe("Sessions", () => {
 
   it("archiveSession() changes status", async () => {
     const session = await store.createSession({});
-    await store.archiveSession(session.sessionId);
+    await store.archiveSession(session.id);
 
-    const fetched = await store.getSession(session.sessionId);
+    const fetched = await store.getSession(session.id);
     expect(fetched).toBeDefined();
     expect(fetched!.status).toBe("archived");
   });
 
   it("archiveSession() sets ended_at", async () => {
     const session = await store.createSession({});
-    await store.archiveSession(session.sessionId);
+    await store.archiveSession(session.id);
 
-    const fetched = await store.getSession(session.sessionId);
+    const fetched = await store.getSession(session.id);
     expect(fetched).toBeDefined();
-    expect(fetched!.endedAt).toBeDefined();
-    expect(typeof fetched!.endedAt).toBe("string");
+    expect(fetched!.completedAt).toBeDefined();
+    expect(typeof fetched!.completedAt).toBe("string");
   });
 });
 
@@ -160,19 +164,19 @@ describe("Sessions", () => {
 describe("Session Contributions", () => {
   it("addContributionToSession() links a CID", async () => {
     const session = await store.createSession({});
-    await store.addContributionToSession(session.sessionId, "blake3:abc123");
+    await store.addContributionToSession(session.id, "blake3:abc123");
 
-    const cids = await store.getSessionContributions(session.sessionId);
+    const cids = await store.getSessionContributions(session.id);
     expect(cids).toEqual(["blake3:abc123"]);
   });
 
   it("getSessionContributions() returns linked CIDs", async () => {
     const session = await store.createSession({});
-    await store.addContributionToSession(session.sessionId, "blake3:aaa");
-    await store.addContributionToSession(session.sessionId, "blake3:bbb");
-    await store.addContributionToSession(session.sessionId, "blake3:ccc");
+    await store.addContributionToSession(session.id, "blake3:aaa");
+    await store.addContributionToSession(session.id, "blake3:bbb");
+    await store.addContributionToSession(session.id, "blake3:ccc");
 
-    const cids = await store.getSessionContributions(session.sessionId);
+    const cids = await store.getSessionContributions(session.id);
     expect(cids.length).toBe(3);
     expect(cids).toContain("blake3:aaa");
     expect(cids).toContain("blake3:bbb");
@@ -181,33 +185,92 @@ describe("Session Contributions", () => {
 
   it("addContributionToSession() is idempotent (duplicate CID ignored)", async () => {
     const session = await store.createSession({});
-    await store.addContributionToSession(session.sessionId, "blake3:dup");
-    await store.addContributionToSession(session.sessionId, "blake3:dup");
+    await store.addContributionToSession(session.id, "blake3:dup");
+    await store.addContributionToSession(session.id, "blake3:dup");
 
-    const cids = await store.getSessionContributions(session.sessionId);
+    const cids = await store.getSessionContributions(session.id);
     expect(cids.length).toBe(1);
   });
 
   it("SessionRecord.contributionCount reflects count", async () => {
     const session = await store.createSession({});
-    await store.addContributionToSession(session.sessionId, "blake3:c1");
-    await store.addContributionToSession(session.sessionId, "blake3:c2");
+    await store.addContributionToSession(session.id, "blake3:c1");
+    await store.addContributionToSession(session.id, "blake3:c2");
 
-    const fetched = await store.getSession(session.sessionId);
+    const fetched = await store.getSession(session.id);
     expect(fetched).toBeDefined();
     expect(fetched!.contributionCount).toBe(2);
   });
 
   it("archiving doesn't remove contributions", async () => {
     const session = await store.createSession({});
-    await store.addContributionToSession(session.sessionId, "blake3:kept");
-    await store.archiveSession(session.sessionId);
+    await store.addContributionToSession(session.id, "blake3:kept");
+    await store.archiveSession(session.id);
 
-    const cids = await store.getSessionContributions(session.sessionId);
+    const cids = await store.getSessionContributions(session.id);
     expect(cids).toEqual(["blake3:kept"]);
 
-    const fetched = await store.getSession(session.sessionId);
+    const fetched = await store.getSession(session.id);
     expect(fetched!.contributionCount).toBe(1);
     expect(fetched!.status).toBe("archived");
   });
 });
+
+// ---------------------------------------------------------------------------
+// SessionStore conformance suite via adapter
+// ---------------------------------------------------------------------------
+
+/**
+ * Adapt a GoalSessionStore (+ raw Database) to the SessionStore interface.
+ *
+ * GoalSessionStore uses different method names (addContributionToSession,
+ * getSessionContributions) and lacks updateSession. This thin adapter
+ * bridges the gap so the conformance suite can run against it.
+ * The raw `db` handle is used to implement `updateSession` via direct SQL.
+ */
+function adaptGoalSessionStore(gs: GoalSessionStore, db: Database): SessionStore {
+  return {
+    createSession: (input) => gs.createSession(input),
+    getSession: (id) => gs.getSession(id),
+    updateSession: async (
+      id: string,
+      updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason">>,
+    ) => {
+      const setClauses: string[] = [];
+      const params: (string | null)[] = [];
+      if (updates.status !== undefined) {
+        setClauses.push("status = ?");
+        params.push(updates.status);
+      }
+      if (updates.completedAt !== undefined) {
+        setClauses.push("ended_at = ?");
+        params.push(updates.completedAt);
+      }
+      if (setClauses.length === 0) return;
+      params.push(id);
+      db.prepare(`UPDATE sessions SET ${setClauses.join(", ")} WHERE session_id = ?`).run(
+        ...params,
+      );
+    },
+    listSessions: (query) => gs.listSessions(query),
+    archiveSession: (id) => gs.archiveSession(id),
+    addContribution: (sid, cid) => gs.addContributionToSession(sid, cid),
+    getContributions: (sid) => gs.getSessionContributions(sid),
+  };
+}
+
+let conformanceTempDir: string;
+let conformanceStores: ReturnType<typeof createSqliteStores>;
+
+sessionStoreConformance(
+  () => {
+    conformanceTempDir = mkdtempSync(join(tmpdir(), "grove-session-conformance-"));
+    const dbPath = join(conformanceTempDir, "grove.db");
+    conformanceStores = createSqliteStores(dbPath);
+    return adaptGoalSessionStore(conformanceStores.goalSessionStore, conformanceStores.db);
+  },
+  () => {
+    conformanceStores.close();
+    rmSync(conformanceTempDir, { recursive: true, force: true });
+  },
+);

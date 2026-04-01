@@ -598,8 +598,11 @@ function wireV1ToContract(wire: z.infer<typeof GroveContractV1Schema>): GroveCon
   };
 }
 
-/** Convert a validated V2 snake_case wire object to a camelCase GroveContract. */
-function wireV2ToContract(wire: z.infer<typeof GroveContractV2Schema>): GroveContract {
+/** Shared V2/V3 converter — the only difference is the topology field name. */
+function wireVxToContract(
+  wire: z.infer<typeof GroveContractV2Schema> | z.infer<typeof GroveContractV3Schema>,
+  rawTopology: z.infer<typeof AgentTopologySchema> | undefined,
+): GroveContract {
   const base = wireToContractBase(wire);
 
   return {
@@ -626,44 +629,20 @@ function wireV2ToContract(wire: z.infer<typeof GroveContractV2Schema>): GroveCon
       evaluation: wireToEvaluation(wire.evaluation),
     }),
     ...(wire.hooks !== undefined && { hooks: wire.hooks }),
-    ...(wire.topology !== undefined && {
-      topology: wireToTopology(wire.topology),
+    ...(rawTopology !== undefined && {
+      topology: wireToTopology(rawTopology),
     }),
   };
 }
 
+/** Convert a validated V2 snake_case wire object to a camelCase GroveContract. */
+function wireV2ToContract(wire: z.infer<typeof GroveContractV2Schema>): GroveContract {
+  return wireVxToContract(wire, wire.topology);
+}
+
 /** Convert a validated V3 snake_case wire object to a camelCase GroveContract. */
 function wireV3ToContract(wire: z.infer<typeof GroveContractV3Schema>): GroveContract {
-  const base = wireToContractBase(wire);
-
-  return {
-    ...base,
-    ...(wire.concurrency !== undefined && {
-      concurrency: wireToConcurrency(wire.concurrency),
-    }),
-    ...(wire.execution !== undefined && {
-      execution: wireToExecution(wire.execution),
-    }),
-    ...(wire.rate_limits !== undefined && {
-      rateLimits: wireToRateLimits(wire.rate_limits),
-    }),
-    ...(wire.retry !== undefined && {
-      retry: wireToRetry(wire.retry),
-    }),
-    ...(wire.gossip !== undefined && {
-      gossip: wireToGossip(wire.gossip),
-    }),
-    ...(wire.outcome_policy !== undefined && {
-      outcomePolicy: wireToOutcomePolicy(wire.outcome_policy),
-    }),
-    ...(wire.evaluation !== undefined && {
-      evaluation: wireToEvaluation(wire.evaluation),
-    }),
-    ...(wire.hooks !== undefined && { hooks: wire.hooks }),
-    ...(wire.agent_topology !== undefined && {
-      topology: wireToTopology(wire.agent_topology),
-    }),
-  };
+  return wireVxToContract(wire, wire.agent_topology);
 }
 
 /** Shared base fields for V1, V2, and V3. */

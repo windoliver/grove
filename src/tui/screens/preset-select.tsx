@@ -92,9 +92,8 @@ export const PresetSelect: React.NamedExoticComponent<PresetSelectProps> = React
               .filter((s) => s.status === "active")
               .slice(0, 1)
               .map((s) => (
-                <text key={s.sessionId} color={theme.warning}>
-                  {"\u26a0"} Active session found: Resume {s.sessionId.slice(0, 8)}{" "}
-                  {s.contributionCount}c
+                <text key={s.id} color={theme.warning}>
+                  {"\u26a0"} Active session found: Resume {s.id.slice(0, 8)} {s.contributionCount}c
                 </text>
               ))}
           </box>
@@ -196,7 +195,7 @@ export const PresetSelect: React.NamedExoticComponent<PresetSelectProps> = React
               Recent sessions
             </text>
             {sessions.slice(0, 5).map((s) => (
-              <text key={s.sessionId} color={theme.muted}>
+              <text key={s.id} color={theme.muted}>
                 {"  "}
                 {s.presetName ? `[${s.presetName}] ` : ""}
                 {`"${s.goal ?? "untitled"}"`} ({s.contributionCount} contributions, {s.status})

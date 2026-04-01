@@ -363,15 +363,15 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
               const prefix = selected ? "> " : "  ";
               const icon = s.status === "active" ? "●" : "○";
               const goal = (s.goal ?? "untitled").slice(0, 50);
-              const date = s.startedAt
-                ? new Date(s.startedAt).toLocaleDateString("en-US", {
+              const date = s.createdAt
+                ? new Date(s.createdAt).toLocaleDateString("en-US", {
                     month: "short",
                     day: "numeric",
                   })
                 : "";
               return (
                 <box
-                  key={s.sessionId}
+                  key={s.id}
                   flexDirection="row"
                   backgroundColor={selected ? theme.selectedBg : undefined}
                 >
@@ -594,7 +594,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
               {archivedCount > 0 ? `, ${archivedCount} archived` : ""})
             </text>
             {sessions.slice(0, 5).map((s, _i) => (
-              <text key={s.sessionId} color={s.status === "active" ? theme.text : theme.dimmed}>
+              <text key={s.id} color={s.status === "active" ? theme.text : theme.dimmed}>
                 {"  "}
                 {s.status === "active" ? "●" : "○"} {`"${(s.goal ?? "untitled").slice(0, 50)}"`}
                 <text color={theme.muted}> ({s.contributionCount}c)</text>

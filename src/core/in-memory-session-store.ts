@@ -1,4 +1,5 @@
-import type { Session, SessionStore } from "./session-manager.js";
+import { randomUUID } from "node:crypto";
+import type { CreateSessionInput, Session, SessionQuery, SessionStore } from "./session.js";
 
 /**
  * In-memory session store. Suitable for testing and single-process CLI usage.
@@ -6,16 +7,30 @@ import type { Session, SessionStore } from "./session-manager.js";
  */
 export class InMemorySessionStore implements SessionStore {
   private sessions: Session[] = [];
+  private readonly contributions = new Map<string, string[]>();
 
-  async create(session: Session): Promise<void> {
+  async createSession(input: CreateSessionInput): Promise<Session> {
+    const session: Session = {
+      id: randomUUID().slice(0, 8),
+      goal: input.goal,
+      presetName: input.presetName,
+      topology: input.topology,
+      status: "pending",
+      createdAt: new Date().toISOString(),
+      contributionCount: 0,
+    };
     this.sessions.push(session);
+    return session;
   }
 
-  async get(id: string): Promise<Session | undefined> {
-    return this.sessions.find((s) => s.id === id);
+  async getSession(id: string): Promise<Session | undefined> {
+    const session = this.sessions.find((s) => s.id === id);
+    if (!session) return undefined;
+    const cids = this.contributions.get(id) ?? [];
+    return { ...session, contributionCount: cids.length };
   }
 
-  async update(
+  async updateSession(
     id: string,
     updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason">>,
   ): Promise<void> {
@@ -26,17 +41,45 @@ export class InMemorySessionStore implements SessionStore {
     this.sessions[idx] = { ...existing, ...updates };
   }
 
-  async list(presetName?: string): Promise<readonly Session[]> {
-    const filtered = presetName
-      ? this.sessions.filter((s) => s.presetName === presetName)
-      : this.sessions;
-    // Most recent first — reverse preserves insertion-order tiebreak
-    // when timestamps are identical (sub-millisecond creates)
-    return [...filtered].reverse();
+  async listSessions(query?: SessionQuery): Promise<readonly Session[]> {
+    let filtered = this.sessions;
+    if (query?.status) {
+      filtered = filtered.filter((s) => s.status === query.status);
+    }
+    if (query?.presetName) {
+      filtered = filtered.filter((s) => s.presetName === query.presetName);
+    }
+    // Most recent first
+    return [...filtered].reverse().map((s) => {
+      const cids = this.contributions.get(s.id) ?? [];
+      return { ...s, contributionCount: cids.length };
+    });
   }
 
-  async latest(presetName?: string): Promise<Session | undefined> {
-    const all = await this.list(presetName);
-    return all[0];
+  async archiveSession(id: string): Promise<void> {
+    const idx = this.sessions.findIndex((s) => s.id === id);
+    if (idx === -1) return;
+    const existing = this.sessions[idx];
+    if (!existing) return;
+    this.sessions[idx] = {
+      ...existing,
+      status: "archived",
+      completedAt: new Date().toISOString(),
+    };
+  }
+
+  async addContribution(sessionId: string, cid: string): Promise<void> {
+    let cids = this.contributions.get(sessionId);
+    if (!cids) {
+      cids = [];
+      this.contributions.set(sessionId, cids);
+    }
+    if (!cids.includes(cid)) {
+      cids.push(cid);
+    }
+  }
+
+  async getContributions(sessionId: string): Promise<readonly string[]> {
+    return this.contributions.get(sessionId) ?? [];
   }
 }

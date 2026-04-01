@@ -2,7 +2,7 @@
  * `grove session` command — headless session lifecycle management.
  *
  * Exercises the full Phase 5/6 flow:
- *   grove session start --goal "Build auth module"
+ *   grove session start --goal "Build auth module" [--preset review-loop]
  *   grove session list
  *   grove session status
  *   grove session stop [--reason "Done"]
@@ -15,11 +15,12 @@ import { parseArgs } from "node:util";
 
 import type { GroveContract } from "../../core/contract.js";
 import { parseGroveContract } from "../../core/contract.js";
-import { InMemorySessionStore } from "../../core/in-memory-session-store.js";
 import { LocalEventBus } from "../../core/local-event-bus.js";
 import { MockRuntime } from "../../core/mock-runtime.js";
-import { SessionManager } from "../../core/session-manager.js";
+import { lookupPresetTopology } from "../../core/presets.js";
 import { SessionOrchestrator } from "../../core/session-orchestrator.js";
+import { resolveTopology } from "../../core/topology-resolver.js";
+import { SqliteGoalSessionStore } from "../../local/sqlite-goal-session-store.js";
 import { outputJson, outputJsonError } from "../format.js";
 
 // ---------------------------------------------------------------------------
@@ -47,10 +48,10 @@ export async function executeSession(args: readonly string[]): Promise<void> {
       console.log(`grove session <subcommand>
 
 Subcommands:
-  start --goal <goal>   Start a new session
-  list                  List all sessions
-  status                Show current session status
-  stop [--reason <r>]   Stop the current session`);
+  start --goal <goal> [--preset <name>]   Start a new session
+  list                                    List all sessions
+  status                                  Show current session status
+  stop [--reason <r>]                     Stop the current session`);
   }
 }
 
@@ -63,6 +64,7 @@ async function sessionStart(args: readonly string[]): Promise<void> {
     args: [...args],
     options: {
       goal: { type: "string" },
+      preset: { type: "string" },
       runtime: { type: "string", default: "mock" },
     },
     strict: false,
@@ -95,11 +97,18 @@ async function sessionStart(args: readonly string[]): Promise<void> {
     contract = parseGroveContract(readFileSync(contractPath, "utf-8"));
   }
 
-  if (!contract?.topology) {
-    outputJsonError({
-      code: "VALIDATION_ERROR",
-      message: "GROVE.md must define a topology for session management",
-    });
+  // Resolve topology via preset, contract default, or inline
+  const presetName = values.preset as string | undefined;
+  const resolution = resolveTopology(
+    {
+      presetName,
+      contractDefault: contract?.topology,
+    },
+    lookupPresetTopology,
+  );
+
+  if (!resolution.ok) {
+    outputJsonError({ code: "VALIDATION_ERROR", message: resolution.error });
     process.exitCode = 1;
     return;
   }
@@ -110,17 +119,21 @@ async function sessionStart(args: readonly string[]): Promise<void> {
   const runtime = (await acpx.isAvailable()) ? acpx : new MockRuntime();
   const eventBus = new LocalEventBus();
 
-  const store = new InMemorySessionStore();
-  const manager = new SessionManager(store);
+  // Open SQLite database and create session
+  const { initSqliteDb } = await import("../../local/sqlite-store.js");
+  const db = initSqliteDb(join(groveDir, "grove.db"));
+  const goalSessionStore = new SqliteGoalSessionStore(db);
 
-  const session = await manager.createSession({
+  const session = await goalSessionStore.createSession({
     goal,
-    presetName: contract.name,
+    presetName: presetName ?? contract?.name,
+    topology: resolution.topology,
   });
 
   const orchestrator = new SessionOrchestrator({
     goal,
-    contract,
+    contract: contract ?? { contractVersion: 3, name: presetName ?? "default" },
+    topology: resolution.topology,
     runtime,
     eventBus,
     projectRoot: groveRoot,
@@ -128,13 +141,12 @@ async function sessionStart(args: readonly string[]): Promise<void> {
     sessionId: session.id,
   });
 
-  await manager.startSession(session.id);
   const status = await orchestrator.start();
 
   outputJson({
     sessionId: session.id,
     goal,
-    preset: contract.name,
+    preset: presetName ?? contract?.name,
     agents: status.agents.map((a) => ({
       role: a.role,
       sessionId: a.session.id,
@@ -160,7 +172,6 @@ async function sessionList(_args: readonly string[]): Promise<void> {
     if (existsSync(dbPath)) {
       const { initSqliteDb } = await import("../../local/sqlite-store.js");
       const db = initSqliteDb(dbPath);
-      const { SqliteGoalSessionStore } = await import("../../local/sqlite-goal-session-store.js");
       const store = new SqliteGoalSessionStore(db);
       sessions = [...(await store.listSessions())];
       db.close();
@@ -190,7 +201,6 @@ async function sessionStatus(): Promise<void> {
     }
     const { initSqliteDb } = await import("../../local/sqlite-store.js");
     const db = initSqliteDb(dbPath);
-    const { SqliteGoalSessionStore } = await import("../../local/sqlite-goal-session-store.js");
     const store = new SqliteGoalSessionStore(db);
     const allSessions = await store.listSessions();
     const latest = allSessions.length > 0 ? allSessions[0] : undefined;
@@ -202,11 +212,11 @@ async function sessionStatus(): Promise<void> {
     }
 
     outputJson({
-      sessionId: latest.sessionId,
+      sessionId: latest.id,
       status: latest.status,
       goal: latest.goal,
-      startedAt: latest.startedAt,
-      endedAt: latest.endedAt,
+      startedAt: latest.createdAt,
+      completedAt: latest.completedAt,
       contributionCount: latest.contributionCount,
     });
   } catch (err) {

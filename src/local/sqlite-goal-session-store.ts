@@ -8,7 +8,9 @@
  */
 
 import type { Database, Statement } from "bun:sqlite";
-import type { GoalData, SessionInput, SessionRecord } from "../tui/provider.js";
+import type { CreateSessionInput, Session, SessionQuery } from "../core/session.js";
+import type { AgentTopology } from "../core/topology.js";
+import type { GoalData } from "../tui/provider.js";
 
 // ---------------------------------------------------------------------------
 // Schema DDL
@@ -29,6 +31,7 @@ export const GOAL_SESSION_DDL = `
     session_id TEXT PRIMARY KEY,
     goal TEXT,
     preset_name TEXT,
+    topology_json TEXT,
     status TEXT NOT NULL DEFAULT 'active',
     started_at TEXT NOT NULL,
     ended_at TEXT
@@ -62,6 +65,7 @@ interface SessionRow {
   session_id: string;
   goal: string | null;
   preset_name: string | null;
+  topology_json: string | null;
   status: string;
   started_at: string;
   ended_at: string | null;
@@ -84,16 +88,13 @@ export interface GoalSessionStore {
   setGoal(goal: string, acceptance: readonly string[], setBy: string): Promise<GoalData>;
 
   /** List sessions, optionally filtered by status and/or preset. */
-  listSessions(query?: {
-    status?: "active" | "archived";
-    presetName?: string;
-  }): Promise<readonly SessionRecord[]>;
+  listSessions(query?: SessionQuery): Promise<readonly Session[]>;
 
   /** Create a new session. */
-  createSession(input: SessionInput): Promise<SessionRecord>;
+  createSession(input: CreateSessionInput): Promise<Session>;
 
   /** Get a session by ID. */
-  getSession(sessionId: string): Promise<SessionRecord | undefined>;
+  getSession(sessionId: string): Promise<Session | undefined>;
 
   /** Archive a session, setting its ended_at timestamp. */
   archiveSession(sessionId: string): Promise<void>;
@@ -123,15 +124,16 @@ function rowToGoalData(row: GoalRow): GoalData {
   };
 }
 
-/** Convert a SessionWithCountRow to a SessionRecord domain object. */
-function rowToSessionRecord(row: SessionWithCountRow): SessionRecord {
+/** Convert a SessionWithCountRow to a Session domain object. */
+function rowToSession(row: SessionWithCountRow): Session {
   return {
-    sessionId: row.session_id,
+    id: row.session_id,
     goal: row.goal ?? undefined,
     presetName: row.preset_name ?? undefined,
-    status: row.status as SessionRecord["status"],
-    startedAt: row.started_at,
-    endedAt: row.ended_at ?? undefined,
+    status: row.status as Session["status"],
+    createdAt: row.started_at,
+    completedAt: row.ended_at ?? undefined,
+    topology: row.topology_json ? (JSON.parse(row.topology_json) as AgentTopology) : undefined,
     contributionCount: row.contribution_count,
   };
 }
@@ -159,6 +161,12 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     // Migration: add preset_name column for existing databases
     try {
       db.exec("ALTER TABLE sessions ADD COLUMN preset_name TEXT");
+    } catch {
+      // Column already exists — expected for new or already-migrated databases
+    }
+    // Migration: add topology_json column for existing databases
+    try {
+      db.exec("ALTER TABLE sessions ADD COLUMN topology_json TEXT");
     } catch {
       // Column already exists — expected for new or already-migrated databases
     }
@@ -210,12 +218,10 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
   // -----------------------------------------------------------------------
 
   /** List sessions with computed contribution counts, optionally filtered by status and/or preset. */
-  listSessions = async (query?: {
-    status?: "active" | "archived";
-    presetName?: string;
-  }): Promise<readonly SessionRecord[]> => {
+  listSessions = async (query?: SessionQuery): Promise<readonly Session[]> => {
     const baseSelect = `
-      SELECT s.*, COALESCE(c.cnt, 0) AS contribution_count
+      SELECT s.session_id, s.goal, s.preset_name, s.status, s.started_at, s.ended_at,
+             COALESCE(c.cnt, 0) AS contribution_count
       FROM sessions s
       LEFT JOIN (
         SELECT session_id, COUNT(*) AS cnt
@@ -240,46 +246,59 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     const rows = this.db
       .prepare(`${baseSelect}${where} ORDER BY s.started_at DESC`)
       .all(...params) as SessionWithCountRow[];
-    return rows.map(rowToSessionRecord);
+    return rows.map((row) => ({
+      id: row.session_id,
+      goal: row.goal ?? undefined,
+      presetName: row.preset_name ?? undefined,
+      status: row.status as Session["status"],
+      createdAt: row.started_at,
+      completedAt: row.ended_at ?? undefined,
+      topology: undefined,
+      contributionCount: row.contribution_count,
+    }));
   };
 
   /** Create a new session with a generated UUID. */
-  createSession = async (input: SessionInput): Promise<SessionRecord> => {
+  createSession = async (input: CreateSessionInput): Promise<Session> => {
     this.stmtInsertSession ??= this.db.prepare(`
-      INSERT INTO sessions (session_id, goal, preset_name, status, started_at)
-      VALUES (?, ?, ?, 'active', ?)
+      INSERT INTO sessions (session_id, goal, preset_name, topology_json, status, started_at)
+      VALUES (?, ?, ?, ?, 'active', ?)
     `);
 
     const sessionId = crypto.randomUUID();
     const startedAt = new Date().toISOString();
-    this.stmtInsertSession.run(sessionId, input.goal ?? null, input.presetName ?? null, startedAt);
+    const topologyJson = input.topology ? JSON.stringify(input.topology) : null;
+    this.stmtInsertSession.run(
+      sessionId,
+      input.goal ?? null,
+      input.presetName ?? null,
+      topologyJson,
+      startedAt,
+    );
 
     return {
-      sessionId,
+      id: sessionId,
       goal: input.goal,
       presetName: input.presetName,
       status: "active",
-      startedAt,
-      endedAt: undefined,
+      createdAt: startedAt,
+      completedAt: undefined,
+      topology: input.topology,
       contributionCount: 0,
     };
   };
 
   /** Get a single session by ID with computed contribution count. */
-  getSession = async (sessionId: string): Promise<SessionRecord | undefined> => {
+  getSession = async (sessionId: string): Promise<Session | undefined> => {
     this.stmtGetSession ??= this.db.prepare(`
-      SELECT s.*, COALESCE(c.cnt, 0) AS contribution_count
+      SELECT s.*,
+        (SELECT COUNT(*) FROM session_contributions WHERE session_id = s.session_id) AS contribution_count
       FROM sessions s
-      LEFT JOIN (
-        SELECT session_id, COUNT(*) AS cnt
-        FROM session_contributions
-        GROUP BY session_id
-      ) c ON c.session_id = s.session_id
       WHERE s.session_id = ?
     `);
 
     const row = this.stmtGetSession.get(sessionId) as SessionWithCountRow | null;
-    return row !== null ? rowToSessionRecord(row) : undefined;
+    return row !== null ? rowToSession(row) : undefined;
   };
 
   /** Archive a session by setting status to 'archived' and recording ended_at. */

@@ -54,6 +54,8 @@ export interface ScreenState {
   roleMapping?: Map<string, string>;
   goal?: string;
   sessionId?: string;
+  /** Warning message when session record failed to save. */
+  sessionWarning?: string;
   /** ISO timestamp when the current session started — used to scope contribution feed. */
   sessionStartedAt?: string;
   /** Per-agent spawn progress for the spawning screen. */
@@ -328,13 +330,15 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         // Create session if supported
         if (isSessionProvider(provider)) {
           void provider
-            .createSession({ goal, presetName: state.selectedPreset })
+            .createSession({ goal, presetName: state.selectedPreset, topology })
             .then((session) => {
-              spawnManager.setSessionId(session.sessionId);
-              setState((s) => ({ ...s, sessionId: session.sessionId }));
+              spawnManager.setSessionId(session.id);
+              setState((s) => ({ ...s, sessionId: session.id }));
             })
-            .catch(() => {
-              // Session creation is best-effort
+            .catch((err) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              process.stderr.write(`[grove] session record failed to save: ${msg}\n`);
+              setState((s) => ({ ...s, sessionWarning: `Session record failed to save: ${msg}` }));
             });
         }
 

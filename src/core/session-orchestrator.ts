@@ -8,15 +8,17 @@
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 import type { GroveContract } from "./contract.js";
 import type { EventBus, GroveEvent } from "./event-bus.js";
-import type { AgentRole } from "./topology.js";
+import type { AgentRole, AgentTopology } from "./topology.js";
 import { TopologyRouter } from "./topology-router.js";
 
 /** Configuration for starting a session. */
 export interface SessionConfig {
   /** The session goal (what agents should accomplish). */
   readonly goal: string;
-  /** The parsed contract (includes topology, metrics, etc.). */
+  /** The parsed contract (metrics, gates, etc. — topology is separate). */
   readonly contract: GroveContract;
+  /** Resolved topology for this session (from preset, inline, or GROVE.md default). */
+  readonly topology: AgentTopology;
   /** The agent runtime for spawning processes. */
   readonly runtime: AgentRuntime;
   /** The event bus for inter-agent notifications. */
@@ -60,18 +62,12 @@ export class SessionOrchestrator {
     this.sessionId =
       config.sessionId ?? `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-    const topology = config.contract.topology;
-    if (topology === undefined) {
-      throw new Error("Contract must define a topology for auto-spawn");
-    }
-
-    this.router = new TopologyRouter(topology, config.eventBus);
+    this.router = new TopologyRouter(config.topology, config.eventBus);
   }
 
   /** Start the session: spawn all agents and send goals. */
   async start(): Promise<SessionStatus> {
-    const topology = this.config.contract.topology;
-    if (!topology) throw new Error("Contract must define a topology");
+    const topology = this.config.topology;
 
     // Spawn all agents in parallel with timeout via AbortController
     const SPAWN_TIMEOUT_MS = 30_000;
@@ -194,8 +190,10 @@ export class SessionOrchestrator {
         nexusUrl: process.env.GROVE_NEXUS_URL,
         nexusApiKey: process.env.NEXUS_API_KEY,
       });
-    } catch {
-      // Fall back to project root if worktree creation fails
+    } catch (err) {
+      process.stderr.write(
+        `[SessionOrchestrator] worktree creation failed for '${role.name}', falling back to project root: ${err instanceof Error ? err.message : err}\n`,
+      );
     }
 
     const agentConfig: AgentConfig = {

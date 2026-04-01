@@ -264,12 +264,10 @@ export class NexusDataProvider
     }
     // Also persist to Nexus VFS for cross-session visibility
     void this.nexusSessionStore
-      .create({
-        id: result.sessionId,
+      .createSession({
         goal: input.goal ?? "",
-        presetName: "review-loop",
-        createdAt: new Date().toISOString(),
-        status: "running",
+        presetName: input.presetName ?? "review-loop",
+        topology: input.topology,
       })
       .catch(() => {
         /* best-effort */

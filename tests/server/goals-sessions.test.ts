@@ -349,3 +349,143 @@ describe("POST /api/sessions/:id/contributions", () => {
     expect(res.status).toBe(400);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Topology and Preset
+// ---------------------------------------------------------------------------
+
+describe("POST /api/sessions — topology and preset", () => {
+  test("creates session with preset field", async () => {
+    const res = await ctx.app.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ preset: "review-loop" }),
+    });
+
+    expect(res.status).toBe(201);
+    const data = await res.json();
+    expect(data.sessionId).toBeTruthy();
+    expect(data.presetName).toBe("review-loop");
+    // Topology should be resolved from the review-loop preset
+    expect(data.topology).toBeDefined();
+    expect(data.topology.structure).toBe("graph");
+    expect(data.topology.roles.length).toBeGreaterThanOrEqual(2);
+    // Roles should include coder and reviewer (camelCase in response)
+    const roleNames = data.topology.roles.map((r: { name: string }) => r.name);
+    expect(roleNames).toContain("coder");
+    expect(roleNames).toContain("reviewer");
+  });
+
+  test("creates session with inline topology", async () => {
+    const res = await ctx.app.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        topology: {
+          structure: "flat",
+          roles: [{ name: "worker", description: "Does the work" }],
+        },
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const data = await res.json();
+    expect(data.sessionId).toBeTruthy();
+    expect(data.topology).toBeDefined();
+    expect(data.topology.structure).toBe("flat");
+    expect(data.topology.roles).toHaveLength(1);
+    expect(data.topology.roles[0].name).toBe("worker");
+  });
+
+  test("rejects unknown preset name", async () => {
+    const res = await ctx.app.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ preset: "nonexistent-preset" }),
+    });
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toBeDefined();
+    expect(data.error.code).toBe("VALIDATION_ERROR");
+    expect(data.error.message).toContain("nonexistent-preset");
+  });
+
+  test("GET /:id includes topology for preset session", async () => {
+    // Create with preset
+    const createRes = await ctx.app.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ preset: "review-loop" }),
+    });
+    const created = await createRes.json();
+
+    // GET by ID should include topology
+    const res = await ctx.app.request(`/api/sessions/${created.sessionId}`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.topology).toBeDefined();
+    expect(data.topology.structure).toBe("graph");
+    expect(data.topology.roles.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("GET / (list) omits topology", async () => {
+    // Create a session with preset (which has topology)
+    await ctx.app.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ preset: "review-loop" }),
+    });
+
+    // List should NOT include topology (it is omitted for performance)
+    const res = await ctx.app.request("/api/sessions");
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.sessions.length).toBeGreaterThanOrEqual(1);
+    for (const session of data.sessions) {
+      expect(session.topology).toBeUndefined();
+    }
+  });
+
+  test("inline topology overrides preset", async () => {
+    const inlineTopology = {
+      structure: "flat" as const,
+      roles: [{ name: "custom-worker", description: "Custom worker" }],
+    };
+
+    const res = await ctx.app.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        preset: "review-loop",
+        topology: inlineTopology,
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const data = await res.json();
+    // The inline topology should win over the preset
+    expect(data.topology).toBeDefined();
+    expect(data.topology.structure).toBe("flat");
+    expect(data.topology.roles).toHaveLength(1);
+    expect(data.topology.roles[0].name).toBe("custom-worker");
+  });
+
+  test("creates session with goal + preset", async () => {
+    const res = await ctx.app.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        goal: "Fix bugs",
+        preset: "review-loop",
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const data = await res.json();
+    expect(data.goal).toBe("Fix bugs");
+    expect(data.presetName).toBe("review-loop");
+    expect(data.topology).toBeDefined();
+    expect(data.topology.structure).toBe("graph");
+  });
+});

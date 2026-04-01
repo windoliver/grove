@@ -1,9 +1,7 @@
 /**
  * Manages session lifecycle within a grove.
  *
- * A grove has one preset (the topology/contract). Sessions are instances
- * of that preset, each with a different goal. Previous sessions are
- * preserved in the DAG for reference.
+ * Wraps a SessionStore with state-machine validation for status transitions.
  *
  * Flow:
  *   grove init --preset review-loop  -> creates GROVE.md (one-time)
@@ -11,39 +9,16 @@
  *   next time: grove up              -> SessionManager.createSession(newGoal)
  */
 
-import { randomUUID } from "node:crypto";
-
-/** A session instance within a grove. */
-export interface Session {
-  readonly id: string;
-  readonly goal: string;
-  readonly presetName: string;
-  readonly createdAt: string;
-  readonly status: "pending" | "running" | "completed" | "cancelled";
-  readonly completedAt?: string;
-  readonly stopReason?: string;
-}
-
-/** Session creation input. */
-export interface CreateSessionInput {
-  readonly goal: string;
-  readonly presetName: string;
-}
-
-/** Session store interface — persists session metadata. */
-export interface SessionStore {
-  create(session: Session): Promise<void>;
-  get(id: string): Promise<Session | undefined>;
-  update(
-    id: string,
-    updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason">>,
-  ): Promise<void>;
-  list(presetName?: string): Promise<readonly Session[]>;
-  latest(presetName?: string): Promise<Session | undefined>;
-}
+import type {
+  CreateSessionInput,
+  Session,
+  SessionQuery,
+  SessionStatus,
+  SessionStore,
+} from "./session.js";
 
 /**
- * Manages sessions for a grove.
+ * Manages sessions for a grove with validated state transitions.
  */
 export class SessionManager {
   private readonly store: SessionStore;
@@ -52,30 +27,23 @@ export class SessionManager {
     this.store = store;
   }
 
-  /** Create a new session. */
-  async createSession(input: CreateSessionInput): Promise<Session> {
-    const session: Session = {
-      id: randomUUID().slice(0, 8),
-      goal: input.goal,
-      presetName: input.presetName,
-      createdAt: new Date().toISOString(),
-      status: "pending",
-    };
-    await this.store.create(session);
-    return session;
-  }
-
   /** Valid state transitions. */
-  private static readonly VALID_TRANSITIONS: Record<string, readonly string[]> = {
-    pending: ["running", "cancelled"],
-    running: ["completed", "cancelled"],
-    completed: [],
-    cancelled: [],
+  private static readonly VALID_TRANSITIONS: Record<SessionStatus, readonly SessionStatus[]> = {
+    pending: ["active", "cancelled"],
+    active: ["completed", "cancelled", "archived"],
+    completed: ["archived"],
+    cancelled: ["archived"],
+    archived: [],
   };
 
-  /** Mark a session as running. */
+  /** Create a new session. */
+  async createSession(input: CreateSessionInput): Promise<Session> {
+    return this.store.createSession(input);
+  }
+
+  /** Mark a session as active (agents running). */
   async startSession(id: string): Promise<void> {
-    await this.transitionState(id, "running");
+    await this.transitionState(id, "active");
   }
 
   /** Mark a session as completed. */
@@ -94,13 +62,18 @@ export class SessionManager {
     });
   }
 
+  /** Archive a session. */
+  async archiveSession(id: string): Promise<void> {
+    await this.store.archiveSession(id);
+  }
+
   /** Validate and perform a state transition. */
   private async transitionState(
     id: string,
-    newStatus: string,
+    newStatus: SessionStatus,
     extraFields?: Record<string, unknown>,
   ): Promise<void> {
-    const session = await this.store.get(id);
+    const session = await this.store.getSession(id);
     if (session) {
       const allowed = SessionManager.VALID_TRANSITIONS[session.status] ?? [];
       if (!allowed.includes(newStatus)) {
@@ -109,25 +82,31 @@ export class SessionManager {
         );
       }
     }
-    await this.store.update(id, {
-      status: newStatus as "pending" | "running" | "completed" | "cancelled",
+    await this.store.updateSession(id, {
+      status: newStatus,
       ...extraFields,
     });
   }
 
+  /** Get a session by ID. */
+  async getSession(id: string): Promise<Session | undefined> {
+    return this.store.getSession(id);
+  }
+
   /** Get the most recent session. */
   async latestSession(presetName?: string): Promise<Session | undefined> {
-    return this.store.latest(presetName);
+    const sessions = await this.store.listSessions(presetName ? { presetName } : undefined);
+    return sessions[0];
   }
 
-  /** List all sessions, optionally filtered by preset. */
-  async listSessions(presetName?: string): Promise<readonly Session[]> {
-    return this.store.list(presetName);
+  /** List all sessions, optionally filtered. */
+  async listSessions(query?: SessionQuery): Promise<readonly Session[]> {
+    return this.store.listSessions(query);
   }
 
-  /** Check if there's an active (running) session. */
+  /** Check if there's an active session. */
   async hasActiveSession(): Promise<boolean> {
-    const sessions = await this.store.list();
-    return sessions.some((s) => s.status === "running");
+    const sessions = await this.store.listSessions();
+    return sessions.some((s) => s.status === "active");
   }
 }

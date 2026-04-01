@@ -232,6 +232,27 @@ export async function diffArtifactsUsing(
 
 import type { GoalData, SessionInput, SessionRecord } from "./provider.js";
 
+/**
+ * Map from API response format (backwards-compat fields) to Session format.
+ *
+ * The HTTP API's `toSessionResponse` mapper preserves backwards compat by
+ * sending `sessionId`, `startedAt`, `endedAt`. This function normalises
+ * those back to the canonical `Session` field names (`id`, `createdAt`,
+ * `completedAt`).
+ */
+function mapApiSession(raw: Record<string, unknown>): SessionRecord {
+  return {
+    id: raw.sessionId ?? raw.id,
+    goal: raw.goal,
+    presetName: raw.presetName,
+    status: raw.status,
+    createdAt: raw.startedAt ?? raw.createdAt,
+    completedAt: raw.endedAt ?? raw.completedAt,
+    topology: raw.topology,
+    contributionCount: raw.contributionCount ?? 0,
+  };
+}
+
 /** Fetch the current goal from a grove-server HTTP API. */
 export async function fetchGoalHttp(baseUrl: string): Promise<GoalData | undefined> {
   const resp = await fetch(`${baseUrl}/api/session/goal`);
@@ -266,8 +287,8 @@ export async function listSessionsHttp(
   const qs = params.toString();
   const resp = await fetch(`${baseUrl}/api/sessions${qs ? `?${qs}` : ""}`);
   if (resp.ok) {
-    const body = (await resp.json()) as { sessions: readonly SessionRecord[] };
-    return body.sessions;
+    const body = (await resp.json()) as { sessions: readonly Record<string, unknown>[] };
+    return body.sessions.map(mapApiSession);
   }
   return [];
 }
@@ -282,7 +303,7 @@ export async function createSessionHttp(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
-  if (resp.ok) return (await resp.json()) as SessionRecord;
+  if (resp.ok) return mapApiSession(await resp.json());
   throw new Error(`Failed to create session: HTTP ${String(resp.status)}`);
 }
 
@@ -292,7 +313,7 @@ export async function getSessionHttp(
   sessionId: string,
 ): Promise<SessionRecord | undefined> {
   const resp = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}`);
-  if (resp.ok) return (await resp.json()) as SessionRecord;
+  if (resp.ok) return mapApiSession(await resp.json());
   if (resp.status === 404) return undefined;
   return undefined;
 }
