@@ -43,6 +43,11 @@ export class NexusSessionStore implements SessionStore {
     return session;
   }
 
+  /** Write an existing session record (preserving its ID) — used for mirroring. */
+  async putSession(session: Session): Promise<void> {
+    await this.client.write(this.sessionPath(session.id), encoder.encode(JSON.stringify(session)));
+  }
+
   async getSession(id: string): Promise<Session | undefined> {
     try {
       const data = await this.client.read(this.sessionPath(id));

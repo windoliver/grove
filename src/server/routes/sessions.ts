@@ -74,15 +74,40 @@ sessions.post("/", async (c) => {
   // Normalize: accept both "preset" and "presetName"
   const presetName = parsed.data.preset ?? parsed.data.presetName;
 
-  // Parse inline topology — try snake_case wire format first, fall back to camelCase pass-through
+  // Parse inline topology — try snake_case wire format first, then validate as camelCase
   let inlineTopology: AgentTopology | undefined;
   if (parsed.data.topology) {
     const wireResult = AgentTopologySchema.safeParse(parsed.data.topology);
     if (wireResult.success) {
       inlineTopology = wireToTopology(wireResult.data);
     } else {
-      // Assume already camelCase (e.g. from TUI createSessionHttp)
-      inlineTopology = parsed.data.topology as unknown as AgentTopology;
+      // Try camelCase (TUI sends camelCase directly) — validate structure/roles exist
+      const t = parsed.data.topology;
+      if (
+        typeof t.structure === "string" &&
+        ["graph", "tree", "flat"].includes(t.structure) &&
+        Array.isArray(t.roles) &&
+        t.roles.length > 0 &&
+        t.roles.every(
+          (r: unknown) =>
+            typeof r === "object" &&
+            r !== null &&
+            typeof (r as Record<string, unknown>).name === "string",
+        )
+      ) {
+        inlineTopology = t as unknown as AgentTopology;
+      } else {
+        return c.json(
+          {
+            error: {
+              code: "VALIDATION_ERROR",
+              message:
+                "Invalid topology: must have structure (graph|tree|flat) and at least one role with a name",
+            },
+          },
+          400,
+        );
+      }
     }
   }
 

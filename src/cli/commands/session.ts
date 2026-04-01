@@ -342,18 +342,35 @@ async function sessionStop(args: readonly string[]): Promise<void> {
       db.close();
       return;
     }
+    const reason = (values.reason as string | undefined) ?? "User stopped";
     await store.updateSession(latest.id, {
       status: "completed",
       completedAt: new Date().toISOString(),
-      stopReason: (values.reason as string | undefined) ?? "User stopped",
+      stopReason: reason,
     });
+
+    // Best-effort: kill agent processes associated with this session.
+    // The orchestrator spawns agents via acpx/subprocess — try to signal them.
+    try {
+      const { execSync } = await import("node:child_process");
+      // Agent processes have GROVE_SESSION_ID in their env
+      execSync(`pkill -f "GROVE_SESSION_ID=${latest.id}" 2>/dev/null || true`, {
+        stdio: "pipe",
+        encoding: "utf-8",
+      });
+    } catch {
+      // pkill not available or no matching processes — acceptable
+    }
+
     db.close();
 
     outputJson({
       sessionId: latest.id,
       status: "completed",
-      reason: values.reason,
+      reason,
       message: `Session ${latest.id} stopped`,
+      warning:
+        "Agent processes may still be running if they don't respond to signals. Use 'ps aux | grep grove' to check.",
     });
   } catch (err) {
     outputJsonError({
