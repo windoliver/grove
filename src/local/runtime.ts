@@ -107,9 +107,26 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
 
   let contract: GroveContract | undefined;
   if (shouldParseContract) {
-    const contractPath = join(groveRoot, "GROVE.md");
-    if (existsSync(contractPath)) {
-      contract = parseGroveContract(readFileSync(contractPath, "utf-8"));
+    // Prefer per-session config over global GROVE.md when running inside
+    // a session (GROVE_SESSION_ID env var set by SessionOrchestrator).
+    const sessionId = process.env.GROVE_SESSION_ID;
+    if (sessionId) {
+      try {
+        const sessionConfig = stores.goalSessionStore.getSessionConfigSync(sessionId);
+        if (sessionConfig) {
+          contract = sessionConfig;
+        }
+      } catch {
+        // Fall through to GROVE.md if session config lookup fails
+      }
+    }
+
+    // Fall back to global GROVE.md
+    if (!contract) {
+      const contractPath = join(groveRoot, "GROVE.md");
+      if (existsSync(contractPath)) {
+        contract = parseGroveContract(readFileSync(contractPath, "utf-8"));
+      }
     }
   }
 

@@ -61,4 +61,13 @@ grove.get("/topology", (c) => {
   return c.json(topology);
 });
 
+/** GET /api/grove/contract — Full parsed GroveContract. */
+grove.get("/contract", (c) => {
+  const { contract } = c.get("deps");
+  if (!contract) {
+    return c.json({ error: { code: "NOT_FOUND", message: "Contract is not configured" } }, 404);
+  }
+  return c.json(contract);
+});
+
 export { grove };

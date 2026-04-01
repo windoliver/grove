@@ -312,6 +312,14 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
 
   /** Get the stored config for a session (lazy-loaded, not included in list). */
   getSessionConfig = async (sessionId: string): Promise<GroveContract | undefined> => {
+    return this.getSessionConfigSync(sessionId);
+  };
+
+  /**
+   * Synchronous version of getSessionConfig.
+   * Used by createLocalRuntime() which is synchronous.
+   */
+  getSessionConfigSync(sessionId: string): GroveContract | undefined {
     this.stmtGetSessionConfig ??= this.db.prepare(
       "SELECT config_json FROM sessions WHERE session_id = ?",
     );
@@ -324,7 +332,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     } catch {
       return undefined;
     }
-  };
+  }
 
   // -----------------------------------------------------------------------
   // Lifecycle

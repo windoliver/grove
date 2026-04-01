@@ -319,19 +319,32 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
   const cas = new FsCas(casPath);
   const frontier = new DefaultFrontierCalculator(rawStore);
 
-  // 3. Load GROVE.md contract for enforcement, default mode, and metric directions
-  const grovemdPath = join(options.cwd, "GROVE.md");
+  // 3. Load contract for enforcement, default mode, and metric directions.
+  // Prefer per-session config over global GROVE.md when inside a session.
   let contract: Awaited<ReturnType<typeof parseGroveContract>> | undefined;
-  let grovemdContent: string | undefined;
-  try {
-    grovemdContent = await readFile(grovemdPath, "utf-8");
-  } catch {
-    // GROVE.md does not exist — proceed without enforcement
+  const sessionId = process.env.GROVE_SESSION_ID;
+  if (sessionId) {
+    try {
+      const { SqliteGoalSessionStore } = await import("../../local/sqlite-goal-session-store.js");
+      const sessionStore = new SqliteGoalSessionStore(db);
+      contract = sessionStore.getSessionConfigSync(sessionId);
+    } catch {
+      // Fall through to GROVE.md
+    }
   }
-  if (grovemdContent !== undefined) {
-    // File exists — parse errors must propagate so malformed contracts
-    // are not silently ignored (which would bypass enforcement).
-    contract = parseGroveContract(grovemdContent);
+  if (!contract) {
+    const grovemdPath = join(options.cwd, "GROVE.md");
+    let grovemdContent: string | undefined;
+    try {
+      grovemdContent = await readFile(grovemdPath, "utf-8");
+    } catch {
+      // GROVE.md does not exist — proceed without enforcement
+    }
+    if (grovemdContent !== undefined) {
+      // File exists — parse errors must propagate so malformed contracts
+      // are not silently ignored (which would bypass enforcement).
+      contract = parseGroveContract(grovemdContent);
+    }
   }
 
   // Wrap store with enforcement if contract is available

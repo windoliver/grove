@@ -298,8 +298,20 @@ export async function loadTopology(backend: ResolvedBackend): Promise<AgentTopol
  * Returns undefined if no GROVE.md is found or parsing fails.
  */
 export async function loadContract(backend: ResolvedBackend): Promise<GroveContract | undefined> {
-  if (backend.mode === "remote") return undefined;
+  if (backend.mode === "remote") {
+    // Fetch contract from remote grove-server
+    try {
+      const resp = await fetch(`${backend.url.replace(/\/+$/, "")}/api/grove/contract`);
+      if (resp.ok) {
+        return (await resp.json()) as GroveContract;
+      }
+    } catch {
+      // Contract not available from remote
+    }
+    return undefined;
+  }
 
+  // Local + nexus: read from local GROVE.md contract.
   try {
     const { parseGroveContract } = await import("../core/contract.js");
     const { groveDir } = resolveGroveDir(backend.groveOverride);

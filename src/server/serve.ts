@@ -88,6 +88,7 @@ const deps: ServerDeps = {
   frontier: serverFrontier,
   gossip: gossipService,
   topology: runtime.contract?.topology,
+  contract: runtime.contract,
 };
 
 const app = createApp(deps);
