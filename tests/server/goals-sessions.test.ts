@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Hono } from "hono";
 import { DefaultFrontierCalculator } from "../../src/core/frontier.js";
+import { makeContribution } from "../../src/core/test-helpers.js";
 import { FsCas } from "../../src/local/fs-cas.js";
 import { createSqliteStores } from "../../src/local/sqlite-store.js";
 import { createApp } from "../../src/server/app.js";
@@ -22,6 +23,7 @@ import type { ServerDeps, ServerEnv } from "../../src/server/deps.js";
 
 interface GoalSessionTestContext {
   readonly app: Hono<ServerEnv>;
+  readonly stores: ReturnType<typeof createSqliteStores>;
   readonly tempDir: string;
   readonly cleanup: () => Promise<void>;
 }
@@ -48,6 +50,7 @@ async function createGoalSessionContext(): Promise<GoalSessionTestContext> {
 
   return {
     app,
+    stores,
     tempDir,
     cleanup: async () => {
       stores.close();
@@ -311,10 +314,14 @@ describe("POST /api/sessions/:id/contributions", () => {
     });
     const created = await createRes.json();
 
+    // Create a real contribution in the store first
+    const contrib = makeContribution({ summary: "session contrib" });
+    await ctx.stores.contributionStore.put(contrib);
+
     const res = await ctx.app.request(`/api/sessions/${created.sessionId}/contributions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cid: "blake3:abc123" }),
+      body: JSON.stringify({ cid: contrib.cid }),
     });
     expect(res.status).toBe(204);
 

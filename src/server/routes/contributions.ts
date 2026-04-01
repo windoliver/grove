@@ -244,10 +244,22 @@ contributions.post("/", async (c) => {
   };
 
   // Resolve per-session config when sessionId is provided.
-  // This ensures contributions are enforced against the session's frozen
-  // contract snapshot, not the server's global startup-time contract.
+  // Reject unknown session IDs so callers can't bypass enforcement by
+  // sending a nonexistent ID that silently falls back to the global contract.
   let opDeps = toOperationDeps(serverDeps);
   if (parsed.sessionId !== undefined && serverDeps.goalSessionStore) {
+    const session = await serverDeps.goalSessionStore.getSession(parsed.sessionId);
+    if (!session) {
+      return c.json(
+        {
+          error: {
+            code: "NOT_FOUND",
+            message: `Session not found: ${parsed.sessionId}`,
+          },
+        },
+        404,
+      );
+    }
     const sessionConfig = await serverDeps.goalSessionStore.getSessionConfig(parsed.sessionId);
     if (sessionConfig) {
       opDeps = { ...opDeps, contract: sessionConfig };
@@ -258,6 +270,13 @@ contributions.post("/", async (c) => {
   if (!result.ok) {
     const { data, status } = toHttpResult(result);
     return c.json(data, status);
+  }
+
+  // Auto-attach contribution to session when sessionId was provided.
+  // This makes create+attach atomic — the caller can't create an unenforced
+  // contribution and attach it to a session separately.
+  if (parsed.sessionId !== undefined && serverDeps.goalSessionStore) {
+    await serverDeps.goalSessionStore.addContributionToSession(parsed.sessionId, result.value.cid);
   }
 
   // Fetch the full contribution to preserve the existing response shape

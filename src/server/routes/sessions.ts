@@ -123,9 +123,16 @@ sessions.put("/:id/archive", async (c) => {
   return c.body(null, 204);
 });
 
-/** POST /api/sessions/:id/contributions — Record a contribution against a session. */
+/**
+ * POST /api/sessions/:id/contributions — Attach an existing contribution to a session.
+ *
+ * Note: The preferred path for session-scoped contributions is to include
+ * `sessionId` in `POST /api/contributions`, which performs enforcement + attachment
+ * atomically. This endpoint is for attaching contributions that were already created
+ * (e.g., via CLI with GROVE_SESSION_ID).
+ */
 sessions.post("/:id/contributions", async (c) => {
-  const { goalSessionStore } = c.get("deps");
+  const { goalSessionStore, contributionStore } = c.get("deps");
   if (!goalSessionStore) return notConfigured(c, "Goal/session store is not configured");
 
   const sessionId = c.req.param("id");
@@ -143,6 +150,21 @@ sessions.post("/:id/contributions", async (c) => {
   const parsed = addContributionSchema.safeParse(body);
   if (!parsed.success) {
     return c.json({ error: { code: "VALIDATION_ERROR", details: parsed.error.issues } }, 400);
+  }
+
+  // Verify contribution exists in the store before attaching.
+  // This prevents attaching phantom CIDs that bypass enforcement.
+  const contribution = await contributionStore.get(parsed.data.cid);
+  if (!contribution) {
+    return c.json(
+      {
+        error: {
+          code: "NOT_FOUND",
+          message: `Contribution not found: ${parsed.data.cid}`,
+        },
+      },
+      404,
+    );
   }
 
   await goalSessionStore.addContributionToSession(sessionId, parsed.data.cid);

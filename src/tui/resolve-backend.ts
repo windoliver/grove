@@ -344,7 +344,23 @@ export async function loadContract(backend: ResolvedBackend): Promise<GroveContr
     }
   }
 
-  // Local (or nexus fallback): read from local GROVE.md contract.
+  // For nexus mode with a remote URL (not localhost), do NOT fall back to
+  // local GROVE.md — the local checkout may be stale and would create version
+  // skew between the operator's contract and the server's. Only local mode
+  // and localhost-nexus should use local GROVE.md.
+  if (backend.mode === "nexus") {
+    try {
+      const nexusHost = new URL(backend.url).hostname;
+      if (nexusHost !== "localhost" && nexusHost !== "127.0.0.1" && nexusHost !== "::1") {
+        // Remote Nexus with no reachable server — no authoritative contract source
+        return undefined;
+      }
+    } catch {
+      // Invalid URL — fall through to local GROVE.md
+    }
+  }
+
+  // Local (or localhost-nexus fallback): read from local GROVE.md contract.
   try {
     const { parseGroveContract } = await import("../core/contract.js");
     const { groveDir } = resolveGroveDir(backend.groveOverride);
