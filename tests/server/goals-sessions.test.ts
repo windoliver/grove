@@ -10,6 +10,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Hono } from "hono";
+import type { GroveContract } from "../../src/core/contract.js";
 import { DefaultFrontierCalculator } from "../../src/core/frontier.js";
 import { makeContribution } from "../../src/core/test-helpers.js";
 import { FsCas } from "../../src/local/fs-cas.js";
@@ -37,6 +38,13 @@ async function createGoalSessionContext(): Promise<GoalSessionTestContext> {
   const cas = new FsCas(casDir);
   const frontier = new DefaultFrontierCalculator(stores.contributionStore);
 
+  // Server contract used as the authoritative session config snapshot
+  const serverContract: GroveContract = {
+    contractVersion: 3,
+    name: "test-server-contract",
+    mode: "evaluation",
+  };
+
   const deps: ServerDeps = {
     contributionStore: stores.contributionStore,
     claimStore: stores.claimStore,
@@ -44,6 +52,7 @@ async function createGoalSessionContext(): Promise<GoalSessionTestContext> {
     cas,
     frontier,
     goalSessionStore: stores.goalSessionStore,
+    contract: serverContract,
   };
 
   const app = createApp(deps);
@@ -362,28 +371,28 @@ describe("POST /api/sessions/:id/contributions", () => {
 // ---------------------------------------------------------------------------
 
 describe("Session Config via API", () => {
-  test("POST /api/sessions with config returns 201", async () => {
-    const config = { contract_version: 3, name: "api-preset", mode: "evaluation" };
+  test("POST /api/sessions snapshots server contract into session", async () => {
     const res = await ctx.app.request("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ goal: "Config test", config }),
+      body: JSON.stringify({ goal: "Config test" }),
     });
 
     expect(res.status).toBe(201);
     const data = await res.json();
     expect(data.sessionId).toBeTruthy();
     expect(data.goal).toBe("Config test");
+    // Config comes from server's contract, not client input
     expect(data.config).toBeDefined();
-    expect(data.config.name).toBe("api-preset");
+    expect(data.config.name).toBe("test-server-contract");
+    expect(data.config.mode).toBe("evaluation");
   });
 
-  test("GET /api/sessions/:id returns config", async () => {
-    const config = { contract_version: 3, name: "get-config", mode: "exploration" };
+  test("GET /api/sessions/:id returns server-snapshotted config", async () => {
     const createRes = await ctx.app.request("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ goal: "Get config", config }),
+      body: JSON.stringify({ goal: "Get config" }),
     });
     const created = await createRes.json();
 
@@ -391,15 +400,14 @@ describe("Session Config via API", () => {
     expect(getRes.status).toBe(200);
     const data = await getRes.json();
     expect(data.config).toBeDefined();
-    expect(data.config.mode).toBe("exploration");
+    expect(data.config.name).toBe("test-server-contract");
   });
 
   test("GET /api/sessions list does NOT include config", async () => {
-    const config = { contract_version: 3, name: "list-test", mode: "evaluation" };
     await ctx.app.request("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ goal: "Listed", config }),
+      body: JSON.stringify({ goal: "Listed" }),
     });
 
     const listRes = await ctx.app.request("/api/sessions");
@@ -407,18 +415,6 @@ describe("Session Config via API", () => {
     expect(data.sessions.length).toBeGreaterThanOrEqual(1);
     // Config should not be in list response
     expect(data.sessions[0].config).toBeUndefined();
-  });
-
-  test("POST /api/sessions without config still works (backward compat)", async () => {
-    const res = await ctx.app.request("/api/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ goal: "No config" }),
-    });
-
-    expect(res.status).toBe(201);
-    const data = await res.json();
-    expect(data.goal).toBe("No config");
   });
 
   test("POST /api/sessions with presetName stores it", async () => {
@@ -433,33 +429,20 @@ describe("Session Config via API", () => {
     expect(data.presetName).toBe("review-loop");
   });
 
-  test("POST /api/sessions with invalid config returns 400", async () => {
-    // Missing required contractVersion and name fields
-    const res = await ctx.app.request("/api/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ goal: "Bad config", config: { mode: "evaluation" } }),
-    });
-
-    expect(res.status).toBe(400);
-    const data = await res.json();
-    expect(data.error.code).toBe("VALIDATION_ERROR");
-    expect(data.error.message).toContain("Invalid session config");
-  });
-
-  test("POST /api/sessions with partial config (missing gates) returns 400", async () => {
-    // Config with contractVersion but no name — should fail validation
+  test("POST /api/sessions ignores client-supplied config (uses server contract)", async () => {
+    // Client tries to supply a permissive config — server should ignore it
     const res = await ctx.app.request("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        goal: "Partial config",
-        config: { contract_version: 3 },
+        goal: "Sneaky config",
+        config: { contract_version: 3, name: "attacker-config", mode: "exploration" },
       }),
     });
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(201);
     const data = await res.json();
-    expect(data.error.code).toBe("VALIDATION_ERROR");
+    // Config should be the server's contract, not the client's
+    expect(data.config.name).toBe("test-server-contract");
   });
 });

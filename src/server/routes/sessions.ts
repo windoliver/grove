@@ -10,7 +10,6 @@
 
 import { Hono } from "hono";
 import { z } from "zod";
-import { parseGroveContractObject } from "../../core/contract.js";
 import type { ServerEnv } from "../deps.js";
 import { notConfigured } from "./shared.js";
 
@@ -21,7 +20,6 @@ import { notConfigured } from "./shared.js";
 const createSessionSchema = z.object({
   goal: z.string().min(1).optional(),
   presetName: z.string().min(1).optional(),
-  config: z.record(z.string(), z.unknown()).optional(),
 });
 
 const addContributionSchema = z.object({
@@ -45,29 +43,16 @@ sessions.post("/", async (c) => {
     return c.json({ error: { code: "VALIDATION_ERROR", details: parsed.error.issues } }, 400);
   }
 
-  // Validate config through the contract parser if provided.
-  // This prevents clients from storing malformed configs that could
-  // weaken or bypass per-session policy enforcement.
+  // Session config always comes from the server's own contract — never from
+  // the client. This prevents callers from injecting permissive configs that
+  // weaken policy enforcement. The client can specify goal and presetName;
+  // the server resolves the authoritative contract snapshot.
+  const { contract } = c.get("deps");
   const input: import("../../tui/provider.js").SessionInput = {
     ...(parsed.data.goal !== undefined ? { goal: parsed.data.goal } : {}),
     ...(parsed.data.presetName !== undefined ? { presetName: parsed.data.presetName } : {}),
+    ...(contract !== undefined ? { config: contract } : {}),
   };
-  if (parsed.data.config !== undefined) {
-    try {
-      const validatedConfig = parseGroveContractObject(parsed.data.config);
-      (input as Record<string, unknown>).config = validatedConfig;
-    } catch (err) {
-      return c.json(
-        {
-          error: {
-            code: "VALIDATION_ERROR",
-            message: `Invalid session config: ${err instanceof Error ? err.message : String(err)}`,
-          },
-        },
-        400,
-      );
-    }
-  }
   const session = await goalSessionStore.createSession(input);
   return c.json(session, 201);
 });

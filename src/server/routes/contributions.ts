@@ -273,10 +273,29 @@ contributions.post("/", async (c) => {
   }
 
   // Auto-attach contribution to session when sessionId was provided.
-  // This makes create+attach atomic — the caller can't create an unenforced
-  // contribution and attach it to a session separately.
+  // Note: contribution creation and session attachment are two separate store
+  // operations — not a single DB transaction. If attachment fails, the
+  // contribution is already committed (CID-based, idempotent). We return 500
+  // so the client knows to retry, and addContributionToSession uses INSERT OR
+  // IGNORE so retries are safe.
   if (parsed.sessionId !== undefined && serverDeps.goalSessionStore) {
-    await serverDeps.goalSessionStore.addContributionToSession(parsed.sessionId, result.value.cid);
+    try {
+      await serverDeps.goalSessionStore.addContributionToSession(
+        parsed.sessionId,
+        result.value.cid,
+      );
+    } catch (_err) {
+      return c.json(
+        {
+          error: {
+            code: "INTERNAL_ERROR",
+            message: `Contribution ${result.value.cid} created but session attachment failed. Retry is safe.`,
+            cid: result.value.cid,
+          },
+        },
+        500,
+      );
+    }
   }
 
   // Fetch the full contribution to preserve the existing response shape

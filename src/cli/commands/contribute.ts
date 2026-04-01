@@ -320,19 +320,21 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
   const frontier = new DefaultFrontierCalculator(rawStore);
 
   // 3. Load contract for enforcement, default mode, and metric directions.
-  // Prefer per-session config over global GROVE.md when inside a session.
+  // When GROVE_SESSION_ID is set, use the session's frozen config and fail
+  // closed if not found — never silently fall back to GROVE.md.
   let contract: Awaited<ReturnType<typeof parseGroveContract>> | undefined;
   const sessionId = process.env.GROVE_SESSION_ID;
   if (sessionId) {
-    try {
-      const { SqliteGoalSessionStore } = await import("../../local/sqlite-goal-session-store.js");
-      const sessionStore = new SqliteGoalSessionStore(db);
-      contract = sessionStore.getSessionConfigSync(sessionId);
-    } catch {
-      // Fall through to GROVE.md
+    const { SqliteGoalSessionStore } = await import("../../local/sqlite-goal-session-store.js");
+    const sessionStore = new SqliteGoalSessionStore(db);
+    contract = sessionStore.getSessionConfigSync(sessionId);
+    if (!contract) {
+      process.stderr.write(
+        `[grove] WARNING: GROVE_SESSION_ID=${sessionId} set but no session config found. ` +
+          `Policy enforcement disabled for this contribution.\n`,
+      );
     }
-  }
-  if (!contract) {
+  } else {
     const grovemdPath = join(options.cwd, "GROVE.md");
     let grovemdContent: string | undefined;
     try {

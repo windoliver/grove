@@ -107,22 +107,26 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
 
   let contract: GroveContract | undefined;
   if (shouldParseContract) {
-    // Prefer per-session config over global GROVE.md when running inside
-    // a session (GROVE_SESSION_ID env var set by SessionOrchestrator).
+    // When GROVE_SESSION_ID is set (agent running inside a session),
+    // use the session's frozen config. Fail closed if the session
+    // doesn't exist or has no config — never silently fall back to
+    // GROVE.md, which could enforce a different policy.
     const sessionId = process.env.GROVE_SESSION_ID;
     if (sessionId) {
-      try {
-        const sessionConfig = stores.goalSessionStore.getSessionConfigSync(sessionId);
-        if (sessionConfig) {
-          contract = sessionConfig;
-        }
-      } catch {
-        // Fall through to GROVE.md if session config lookup fails
+      const sessionConfig = stores.goalSessionStore.getSessionConfigSync(sessionId);
+      if (sessionConfig) {
+        contract = sessionConfig;
+      } else {
+        // Session ID is set but no config found — fail closed.
+        // Log a warning and proceed without a contract (no enforcement)
+        // rather than silently using a potentially stale GROVE.md.
+        process.stderr.write(
+          `[grove] WARNING: GROVE_SESSION_ID=${sessionId} set but no session config found. ` +
+            `Policy enforcement disabled for this session.\n`,
+        );
       }
-    }
-
-    // Fall back to global GROVE.md
-    if (!contract) {
+    } else {
+      // No session — use global GROVE.md
       const contractPath = join(groveRoot, "GROVE.md");
       if (existsSync(contractPath)) {
         contract = parseGroveContract(readFileSync(contractPath, "utf-8"));
