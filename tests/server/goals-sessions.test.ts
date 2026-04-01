@@ -356,7 +356,7 @@ describe("POST /api/sessions/:id/contributions", () => {
 
 describe("Session Config via API", () => {
   test("POST /api/sessions with config returns 201", async () => {
-    const config = { contractVersion: 3, name: "api-preset", mode: "evaluation" };
+    const config = { contract_version: 3, name: "api-preset", mode: "evaluation" };
     const res = await ctx.app.request("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -372,7 +372,7 @@ describe("Session Config via API", () => {
   });
 
   test("GET /api/sessions/:id returns config", async () => {
-    const config = { contractVersion: 3, name: "get-config", mode: "exploration" };
+    const config = { contract_version: 3, name: "get-config", mode: "exploration" };
     const createRes = await ctx.app.request("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -388,7 +388,7 @@ describe("Session Config via API", () => {
   });
 
   test("GET /api/sessions list does NOT include config", async () => {
-    const config = { contractVersion: 3, name: "list-test", mode: "evaluation" };
+    const config = { contract_version: 3, name: "list-test", mode: "evaluation" };
     await ctx.app.request("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -424,5 +424,35 @@ describe("Session Config via API", () => {
     expect(res.status).toBe(201);
     const data = await res.json();
     expect(data.presetName).toBe("review-loop");
+  });
+
+  test("POST /api/sessions with invalid config returns 400", async () => {
+    // Missing required contractVersion and name fields
+    const res = await ctx.app.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Bad config", config: { mode: "evaluation" } }),
+    });
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error.code).toBe("VALIDATION_ERROR");
+    expect(data.error.message).toContain("Invalid session config");
+  });
+
+  test("POST /api/sessions with partial config (missing gates) returns 400", async () => {
+    // Config with contractVersion but no name — should fail validation
+    const res = await ctx.app.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        goal: "Partial config",
+        config: { contract_version: 3 },
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error.code).toBe("VALIDATION_ERROR");
   });
 });

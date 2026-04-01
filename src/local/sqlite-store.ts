@@ -313,14 +313,21 @@ export function initSqliteDb(dbPath: string): Database {
       db.run("UPDATE contributions SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', created_at)");
     }
 
-    // Migration → v8: add config_json column to sessions table.
+    // Migration → v8: add preset_name and config_json columns to sessions table.
     // Column-safe: check PRAGMA table_info to avoid errors on fresh databases
-    // (where the column already exists from SCHEMA_DDL).
+    // (where columns already exist from SCHEMA_DDL) and on legacy databases
+    // that predate the centralized migration system.
     {
       const columns = db.prepare("PRAGMA table_info(sessions)").all() as readonly {
         name: string;
       }[];
       const columnNames = new Set(columns.map((c) => c.name));
+      // preset_name was previously added by SqliteGoalSessionStore's try/catch
+      // ALTER TABLE. That self-managed migration was removed — ensure the column
+      // exists for databases created before it was part of SCHEMA_DDL.
+      if (!columnNames.has("preset_name")) {
+        db.run("ALTER TABLE sessions ADD COLUMN preset_name TEXT");
+      }
       if (!columnNames.has("config_json")) {
         db.run("ALTER TABLE sessions ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'");
       }

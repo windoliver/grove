@@ -10,7 +10,7 @@
 
 import { Hono } from "hono";
 import { z } from "zod";
-import type { GroveContract } from "../../core/contract.js";
+import { parseGroveContractObject } from "../../core/contract.js";
 import type { ServerEnv } from "../deps.js";
 import { notConfigured } from "./shared.js";
 
@@ -45,16 +45,29 @@ sessions.post("/", async (c) => {
     return c.json({ error: { code: "VALIDATION_ERROR", details: parsed.error.issues } }, 400);
   }
 
-  // Build input with only defined fields (exactOptionalPropertyTypes).
-  // Cast the loose JSON record to GroveContract — full contract validation
-  // happens at the contract layer, not at the API boundary.
+  // Validate config through the contract parser if provided.
+  // This prevents clients from storing malformed configs that could
+  // weaken or bypass per-session policy enforcement.
   const input: import("../../tui/provider.js").SessionInput = {
     ...(parsed.data.goal !== undefined ? { goal: parsed.data.goal } : {}),
     ...(parsed.data.presetName !== undefined ? { presetName: parsed.data.presetName } : {}),
-    ...(parsed.data.config !== undefined
-      ? { config: parsed.data.config as unknown as GroveContract }
-      : {}),
   };
+  if (parsed.data.config !== undefined) {
+    try {
+      const validatedConfig = parseGroveContractObject(parsed.data.config);
+      (input as Record<string, unknown>).config = validatedConfig;
+    } catch (err) {
+      return c.json(
+        {
+          error: {
+            code: "VALIDATION_ERROR",
+            message: `Invalid session config: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        },
+        400,
+      );
+    }
+  }
   const session = await goalSessionStore.createSession(input);
   return c.json(session, 201);
 });
