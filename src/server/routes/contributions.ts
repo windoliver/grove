@@ -283,32 +283,34 @@ contributions.post("/", async (c) => {
 
   // Auto-attach contribution to session when sessionId was provided.
   // Note: contribution creation and session attachment are two separate store
-  // operations — not a single DB transaction. If attachment fails, the
-  // contribution is already committed. Do NOT retry the full create request
-  // (no idempotency key — would duplicate the contribution). Instead, retry
-  // only the attach via POST /api/sessions/:id/contributions with the CID.
+  // operations — not a single DB transaction. On attachment failure, return
+  // 201 (not 5xx) with attachmentFailed flag so automated retriers don't
+  // duplicate the contribution. The CID is returned for manual recovery via
+  // POST /api/sessions/:id/contributions.
+  let attachmentFailed = false;
   if (parsed.sessionId !== undefined && serverDeps.goalSessionStore) {
     try {
       await serverDeps.goalSessionStore.addContributionToSession(
         parsed.sessionId,
         result.value.cid,
       );
-    } catch (_err) {
-      return c.json(
-        {
-          error: {
-            code: "INTERNAL_ERROR",
-            message: `Contribution created but session attachment failed. Do NOT retry this request. Instead, attach the contribution manually via POST /api/sessions/${parsed.sessionId}/contributions with cid: ${result.value.cid}`,
-            cid: result.value.cid,
-          },
-        },
-        500,
-      );
+    } catch {
+      attachmentFailed = true;
     }
   }
 
   // Fetch the full contribution to preserve the existing response shape
   const contribution = await serverDeps.contributionStore.get(result.value.cid);
+  if (attachmentFailed) {
+    return c.json(
+      {
+        ...contribution,
+        _attachmentFailed: true,
+        _attachmentRecovery: `POST /api/sessions/${parsed.sessionId}/contributions with {"cid":"${result.value.cid}"}`,
+      },
+      201,
+    );
+  }
   return c.json(contribution, 201);
 });
 

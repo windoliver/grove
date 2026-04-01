@@ -44,14 +44,24 @@ sessions.post("/", async (c) => {
   }
 
   // Session config always comes from the server's own contract — never from
-  // the client. This prevents callers from injecting permissive configs that
-  // weaken policy enforcement. The client can specify goal and presetName;
-  // the server resolves the authoritative contract snapshot.
+  // the client. Reject session creation when no server contract is configured,
+  // because contributions would later fail against a configless session.
   const { contract } = c.get("deps");
+  if (!contract) {
+    return c.json(
+      {
+        error: {
+          code: "NOT_CONFIGURED",
+          message: "Cannot create session: no contract (GROVE.md) configured on the server",
+        },
+      },
+      501,
+    );
+  }
   const input: import("../../tui/provider.js").SessionInput = {
     ...(parsed.data.goal !== undefined ? { goal: parsed.data.goal } : {}),
     ...(parsed.data.presetName !== undefined ? { presetName: parsed.data.presetName } : {}),
-    ...(contract !== undefined ? { config: contract } : {}),
+    config: contract,
   };
   const session = await goalSessionStore.createSession(input);
   return c.json(session, 201);
@@ -150,6 +160,27 @@ sessions.post("/:id/contributions", async (c) => {
       },
       404,
     );
+  }
+
+  // Re-run policy enforcement against the session's frozen config before
+  // allowing attachment. This prevents contributions created outside the
+  // session (or under a different policy) from being attached post-hoc.
+  const sessionConfig = await goalSessionStore.getSessionConfig(sessionId);
+  if (sessionConfig) {
+    const { PolicyEnforcer } = await import("../../core/policy-enforcer.js");
+    const enforcer = new PolicyEnforcer(sessionConfig, contributionStore);
+    const result = await enforcer.enforce(contribution, false);
+    if (!result.passed) {
+      return c.json(
+        {
+          error: {
+            code: "VALIDATION_ERROR",
+            message: `Contribution ${parsed.data.cid} does not pass session policy: ${result.violations.map((v) => v.message).join("; ")}`,
+          },
+        },
+        400,
+      );
+    }
   }
 
   await goalSessionStore.addContributionToSession(sessionId, parsed.data.cid);
