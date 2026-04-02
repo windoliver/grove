@@ -401,7 +401,37 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
 
     // ─── Derived data ───
     const claimCount = dashboard?.activeClaims.length ?? 0;
-    const frontier = dashboard?.frontierSummary;
+
+    // Scope frontier to session: when sessionStartedAt is set, compute frontier
+    // from session-scoped feed instead of the global dashboard frontier.
+    // This prevents metrics from other sessions leaking into the current view.
+    const frontier = useMemo(() => {
+      if (!sessionStartedAt || feed.length === 0) {
+        // No session scope or no contributions yet — use global (or nothing)
+        return sessionStartedAt ? undefined : dashboard?.frontierSummary;
+      }
+      // Compute session-local frontier: best score per metric from feed
+      const bestByMetric = new Map<string, { value: number; summary: string; cid: string }>();
+      for (const c of feed) {
+        if (!c.scores) continue;
+        for (const [metric, score] of Object.entries(c.scores)) {
+          const existing = bestByMetric.get(metric);
+          if (!existing || score.value > existing.value) {
+            bestByMetric.set(metric, { value: score.value, summary: c.summary, cid: c.cid });
+          }
+        }
+      }
+      if (bestByMetric.size === 0) return undefined;
+      return {
+        topByMetric: [...bestByMetric.entries()].map(([metric, entry]) => ({
+          metric,
+          cid: entry.cid,
+          summary: entry.summary,
+          value: entry.value,
+        })),
+        topByAdoption: [],
+      };
+    }, [sessionStartedAt, feed, dashboard?.frontierSummary]);
     const currentBestScore =
       targetMetric && frontier?.topByMetric
         ? frontier.topByMetric.find((m) => m.metric === targetMetric.metric)?.value
@@ -555,7 +585,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     return (
       <box flexDirection="column" width="100%" height="100%">
         {/* Agent status with live output */}
-        {renderAgentSection(topology, dashboard, monitor)}
+        {renderAgentSection(topology, dashboard, monitor, sessionStartedAt, feed.length)}
 
         {/* Main feed area */}
         {renderFeedSection(feed, cursor, goal, pendingAskUser, frontier, DEFAULT_FEED_WINDOW)}
@@ -599,6 +629,8 @@ function renderAgentSection(
   topology: AgentTopology | undefined,
   dashboard: DashboardData | undefined,
   monitor: ReturnType<typeof useAgentMonitor>,
+  sessionStartedAt?: string,
+  sessionContribCount?: number,
 ): React.ReactNode {
   const roles = topology?.roles ?? [];
   if (roles.length === 0) {
@@ -627,6 +659,12 @@ function renderAgentSection(
         const output = monitor.agentOutputs.get(role.name);
         const lastLine = output && output.length > 0 ? (output[output.length - 1] ?? "") : "";
 
+        // When session-scoped and no contributions yet, agents haven't started
+        // for this session. Don't show stale output from previous sessions.
+        const isSessionScoped = sessionStartedAt !== undefined;
+        const sessionHasActivity = (sessionContribCount ?? 0) > 0;
+        const showLastLine = !isSessionScoped || sessionHasActivity;
+
         const status = activeClaim ? "running" : "idle";
         const badge = agentStatusIcon(status, activeClaim ? monitor.spinnerFrame : undefined);
 
@@ -637,7 +675,11 @@ function renderAgentSection(
               {role.name}
             </text>
             <text color={theme.dimmed}> [{idx + 1}] </text>
-            {lastLine ? <text color={theme.muted}>{lastLine.slice(0, 80)}</text> : null}
+            {showLastLine && lastLine ? (
+              <text color={theme.muted}>{lastLine.slice(0, 80)}</text>
+            ) : isSessionScoped && !sessionHasActivity ? (
+              <text color={theme.dimmed}>waiting for session start</text>
+            ) : null}
           </box>
         );
       })}
