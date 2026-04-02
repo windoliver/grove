@@ -310,6 +310,14 @@ export class NexusDataProvider
     }));
   }
 
+  async readFile(path: string, maxBytes?: number): Promise<Buffer | undefined> {
+    const vfsPath = `/zones/${this.zoneId}${path.startsWith("/") ? path : `/${path}`}`;
+    const data = await this.client.read(vfsPath);
+    if (data === undefined) return undefined;
+    const buf = Buffer.from(data);
+    return maxBytes !== undefined && buf.length > maxBytes ? buf.subarray(0, maxBytes) : buf;
+  }
+
   // ---------------------------------------------------------------------------
   // Lifecycle
   // ---------------------------------------------------------------------------

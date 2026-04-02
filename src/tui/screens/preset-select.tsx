@@ -1,8 +1,8 @@
 /**
  * Screen 1: Preset selection — choose a preset or recent session.
  *
- * Shows available presets and recent sessions. j/k navigate, Enter selects,
- * c creates custom, q quits, ? shows details.
+ * Shows available presets and recent sessions. Enter selects,
+ * ? shows details, q quits.
  */
 
 import { useKeyboard } from "@opentui/react";
@@ -24,7 +24,7 @@ export interface PresetSelectProps {
   readonly onQuit: () => void;
 }
 
-/** Screen 1: preset selection with j/k navigation. */
+/** Screen 1: preset selection using <select> for navigation. */
 export const PresetSelect: React.NamedExoticComponent<PresetSelectProps> = React.memo(
   function PresetSelect({
     presets,
@@ -34,7 +34,7 @@ export const PresetSelect: React.NamedExoticComponent<PresetSelectProps> = React
     onSelect,
     onQuit,
   }: PresetSelectProps): React.ReactNode {
-    const [cursor, setCursor] = useState(0);
+    const [highlightedIndex, setHighlightedIndex] = useState(0);
     const [showDetail, setShowDetail] = useState(false);
 
     useKeyboard(
@@ -43,19 +43,6 @@ export const PresetSelect: React.NamedExoticComponent<PresetSelectProps> = React
           const input = key.name;
           if (input === "q" && !showDetail) {
             onQuit();
-            return;
-          }
-          if (input === "j" || input === "down") {
-            setCursor((c) => Math.min(c + 1, presets.length - 1));
-            return;
-          }
-          if (input === "k" || input === "up") {
-            setCursor((c) => Math.max(c - 1, 0));
-            return;
-          }
-          if (input === "return") {
-            const selected = presets[cursor];
-            if (selected) onSelect(selected.name);
             return;
           }
           if (input === "?" || (key.shift && input === "/")) {
@@ -67,7 +54,7 @@ export const PresetSelect: React.NamedExoticComponent<PresetSelectProps> = React
             return;
           }
         },
-        [presets, cursor, onSelect, onQuit, showDetail],
+        [onQuit, showDetail],
       ),
     );
 
@@ -122,54 +109,44 @@ export const PresetSelect: React.NamedExoticComponent<PresetSelectProps> = React
 
         {/* Preset list */}
         {presets.length > 0 ? (
-          <box
-            flexDirection="column"
-            marginX={2}
-            marginTop={1}
-            borderStyle="single"
-            borderColor={theme.border}
-            paddingX={1}
-          >
-            {presets.map((preset, i) => {
-              const selected = i === cursor;
-              const prefix = selected ? "> " : "  ";
-              const presetSessions = sessions?.filter((s) => s.presetName === preset.name) ?? [];
-              const sessionHint =
-                presetSessions.length > 0 ? ` (${presetSessions.length} sessions)` : "";
-              return (
-                <box
-                  key={preset.name}
-                  flexDirection="row"
-                  backgroundColor={selected ? theme.selectedBg : undefined}
-                >
-                  <text color={selected ? theme.focus : theme.text} bold={selected}>
-                    {`${prefix}${preset.name.padEnd(20)}`}
-                  </text>
-                  <text color={theme.muted}>{preset.description}</text>
-                  <text color={theme.dimmed}>{sessionHint}</text>
-                </box>
-              );
-            })}
+          <box flexDirection="column" marginX={2} marginTop={1}>
+            <select
+              focused={!showDetail}
+              options={presets.map((p) => {
+                const presetSessions = sessions?.filter((s) => s.presetName === p.name) ?? [];
+                const sessionHint =
+                  presetSessions.length > 0 ? ` (${presetSessions.length} sessions)` : "";
+                return {
+                  name: p.name,
+                  value: p.name,
+                  description: `${p.description}${sessionHint}`,
+                };
+              })}
+              onChange={(index: number) => setHighlightedIndex(index)}
+              onSelect={(_index: number, option: { value?: unknown } | null) => {
+                if (option?.value != null) onSelect(option.value as string);
+              }}
+            />
           </box>
         ) : null}
 
         {/* Detail overlay */}
-        {showDetail && presets[cursor] ? (
+        {showDetail && presets[highlightedIndex] ? (
           <box
             flexDirection="column"
             marginX={2}
             marginTop={1}
-            borderStyle="single"
+            borderStyle="round"
             borderColor={theme.info}
             paddingX={1}
           >
             <text color={theme.info} bold>
-              Preset: {presets[cursor]?.name ?? ""}
+              Preset: {presets[highlightedIndex]?.name ?? ""}
             </text>
-            <text color={theme.text}>{presets[cursor]?.description ?? ""}</text>
-            {presets[cursor]?.details ? (
+            <text color={theme.text}>{presets[highlightedIndex]?.description ?? ""}</text>
+            {presets[highlightedIndex]?.details ? (
               <box flexDirection="column" marginTop={1}>
-                {presets[cursor]?.details?.split("\n").map((line, i) => (
+                {presets[highlightedIndex]?.details?.split("\n").map((line, i) => (
                   // biome-ignore lint/suspicious/noArrayIndexKey: detail lines have no stable identity
                   <text key={i} color={theme.muted}>
                     {line}
@@ -187,7 +164,7 @@ export const PresetSelect: React.NamedExoticComponent<PresetSelectProps> = React
             flexDirection="column"
             marginX={2}
             marginTop={1}
-            borderStyle="single"
+            borderStyle="round"
             borderColor={theme.border}
             paddingX={1}
           >
@@ -206,7 +183,7 @@ export const PresetSelect: React.NamedExoticComponent<PresetSelectProps> = React
 
         {/* Keyboard hints */}
         <box paddingX={2} marginTop={1}>
-          <text color={theme.dimmed}>j/k:navigate Enter:select ?:details q:quit</text>
+          <text color={theme.dimmed}>Enter:select ?:details q:quit</text>
         </box>
       </box>
     );

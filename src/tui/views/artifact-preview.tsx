@@ -1,9 +1,11 @@
 /**
  * Artifact preview panel — shows artifact content based on media type.
  *
- * - JSON/text/markdown: raw content (first 100 lines)
+ * - Markdown (.md): rendered via <markdown>
+ * - Code files: syntax-highlighted via <code> with language detection
+ * - Plain text: scrollable raw content
  * - Binary/large: hex dump header (first 256 bytes)
- * - Missing/empty: placeholder message
+ * - Empty artifacts: styled empty state with artifact name and hint
  */
 
 import React, { createElement, useCallback, useMemo } from "react";
@@ -72,6 +74,53 @@ function getExtension(name: string): string {
   const dot = name.lastIndexOf(".");
   if (dot < 0) return "";
   return name.slice(dot).toLowerCase();
+}
+
+/**
+ * Map a file name to a tree-sitter language identifier for <code>.
+ * Returns undefined for unknown or plain-text extensions.
+ */
+function detectLanguage(name: string): string | undefined {
+  const ext = name.split(".").pop()?.toLowerCase();
+  const map: Record<string, string> = {
+    ts: "typescript",
+    tsx: "tsx",
+    js: "javascript",
+    jsx: "jsx",
+    py: "python",
+    go: "go",
+    rs: "rust",
+    json: "json",
+    md: "markdown",
+    yaml: "yaml",
+    yml: "yaml",
+    toml: "toml",
+    sh: "bash",
+    css: "css",
+    html: "html",
+    sql: "sql",
+    c: "c",
+    cpp: "cpp",
+    h: "c",
+    rb: "ruby",
+    java: "java",
+    kt: "kotlin",
+    swift: "swift",
+    zig: "zig",
+    xml: "xml",
+  };
+  return ext ? map[ext] : undefined;
+}
+
+/** Return true when a buffer contains non-printable bytes (likely binary). */
+function isBinaryBuffer(buf: Buffer): boolean {
+  const checkLen = Math.min(buf.length, 512);
+  for (let i = 0; i < checkLen; i++) {
+    const b = buf[i];
+    // Null byte or control characters below HT (\x09) indicate binary
+    if (b !== undefined && (b === 0x00 || b < 0x09)) return true;
+  }
+  return false;
 }
 
 /** Determine whether content is text-like from name and/or mediaType. */
@@ -268,28 +317,36 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
     }, [allArtifactNames, artifactIndex]);
 
     // Compute preview content from fetched data
-    const preview = useMemo((): { readonly header: string; readonly body: string } => {
+    const preview = useMemo((): {
+      readonly header: string;
+      readonly body: string;
+      /** How the body should be rendered. */
+      readonly renderAs: "markdown" | "code" | "hex" | "empty" | "text";
+      /** Language identifier for <code> rendering. */
+      readonly language?: string | undefined;
+    } => {
       if (!cid || !artifactName) {
-        return { header: "", body: "(no artifact selected)" };
+        return { header: "", body: "(no artifact selected)", renderAs: "text" };
       }
 
       if (!artifactProvider) {
         return {
           header: artifactName,
           body: "(artifact preview not available — provider does not support artifacts)",
+          renderAs: "text",
         };
       }
 
       if (loading && !data) {
-        return { header: artifactName, body: "Loading..." };
+        return { header: artifactName, body: "Loading...", renderAs: "text" };
       }
 
       if (error && !data) {
-        return { header: artifactName, body: `Error: ${error.message}` };
+        return { header: artifactName, body: `Error: ${error.message}`, renderAs: "text" };
       }
 
       if (!data) {
-        return { header: artifactName, body: "(no data)" };
+        return { header: artifactName, body: "(no data)", renderAs: "text" };
       }
 
       const { meta, content } = data;
@@ -304,28 +361,46 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
       const header = `${artifactName}  (${sizeLabel}, ${typeLabel})`;
 
       if (content.length === 0) {
-        return { header, body: "(empty artifact)" };
+        return { header, body: "", renderAs: "empty" };
       }
 
-      if (isTextContent(artifactName, meta.mediaType)) {
-        const text = content.toString("utf-8");
-        const lines = text.split("\n");
-        const truncated = lines.slice(0, MAX_TEXT_LINES);
-        const body =
-          truncated.join("\n") +
-          (lines.length > MAX_TEXT_LINES
-            ? `\n... (${lines.length - MAX_TEXT_LINES} more lines)`
-            : "");
-        return { header, body };
+      // Markdown files — render with <markdown>, capped to prevent render stalls
+      const MAX_PREVIEW_TEXT = 64 * 1024;
+      if (/\.md$/i.test(artifactName)) {
+        const raw = content.toString("utf-8");
+        const text =
+          raw.length > MAX_PREVIEW_TEXT
+            ? `${raw.slice(0, MAX_PREVIEW_TEXT)}\n\n--- truncated (${raw.length} bytes total) ---`
+            : raw;
+        return { header, body: text, renderAs: "markdown" };
       }
 
-      // Binary content — show hex dump
-      const hexBody = formatHexDump(content);
-      const suffix =
-        content.length > MAX_HEX_BYTES
-          ? `\n... (${content.length - MAX_HEX_BYTES} more bytes)`
-          : "";
-      return { header, body: hexBody + suffix };
+      // Binary detection — check actual bytes rather than extension only
+      if (!isTextContent(artifactName, meta.mediaType) || isBinaryBuffer(content)) {
+        const hexBody = formatHexDump(content);
+        const suffix =
+          content.length > MAX_HEX_BYTES
+            ? `\n... (${content.length - MAX_HEX_BYTES} more bytes)`
+            : "";
+        return { header, body: hexBody + suffix, renderAs: "hex" };
+      }
+
+      // Text / code content
+      const text = content.toString("utf-8");
+      const lines = text.split("\n");
+      const truncated = lines.slice(0, MAX_TEXT_LINES);
+      const body =
+        truncated.join("\n") +
+        (lines.length > MAX_TEXT_LINES
+          ? `\n... (${lines.length - MAX_TEXT_LINES} more lines)`
+          : "");
+
+      const lang = detectLanguage(artifactName);
+      if (lang !== undefined) {
+        return { header, body, renderAs: "code", language: lang };
+      }
+
+      return { header, body, renderAs: "text" };
     }, [cid, artifactName, artifactProvider, data, loading, error]);
 
     // Compute diff body
@@ -352,14 +427,6 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
 
     const hasDiffSupport = Boolean(parentCid && artifactProvider);
 
-    // Determine if content looks like code (for <code> primitive)
-    const isCode = artifactName
-      ? /\.(ts|tsx|js|jsx|py|rs|go|java|c|cpp|h|rb|sh|zig|zon|css|html|json|yaml|yml|toml)$/i.test(
-          artifactName,
-        )
-      : false;
-    const isMarkdown = artifactName ? /\.md$/i.test(artifactName) : false;
-
     return (
       <box flexDirection="column">
         {/* Artifact selector header */}
@@ -379,19 +446,54 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
         </box>
         <box flexGrow={1}>
           {diffBody !== undefined ? (
-            <text>{diffBody}</text>
-          ) : isCode ? (
-            // Use OpenTUI <code> primitive for syntax-highlighted preview
+            // Diff view — plain text, typically contains unified diff output
             createElement(
-              "code" as string,
-              { language: artifactName?.split(".").pop() ?? "text" },
-              preview.body,
+              "scrollbox" as string,
+              { flexGrow: 1 },
+              React.createElement("text", {}, diffBody),
             )
-          ) : isMarkdown ? (
-            // Use OpenTUI <markdown> primitive for rendered markdown
-            createElement("markdown" as string, {}, preview.body)
+          ) : preview.renderAs === "empty" ? (
+            // Empty artifact — styled empty state
+            <box flexDirection="column" paddingTop={1}>
+              <text color={theme.muted} italic>
+                {artifactName} is empty.
+              </text>
+              <text color={theme.dimmed} opacity={0.7}>
+                The artifact exists but has no content yet.
+              </text>
+            </box>
+          ) : preview.renderAs === "markdown" ? (
+            // Markdown — rendered via OpenTUI <markdown>
+            createElement(
+              "scrollbox" as string,
+              { flexGrow: 1 },
+              createElement("markdown" as string, {}, preview.body),
+            )
+          ) : preview.renderAs === "code" ? (
+            // Code — syntax-highlighted via OpenTUI <code>
+            createElement(
+              "scrollbox" as string,
+              { flexGrow: 1 },
+              createElement(
+                "code" as string,
+                { language: preview.language ?? "text" },
+                preview.body,
+              ),
+            )
+          ) : preview.renderAs === "hex" ? (
+            // Binary hex dump — monospace plain text
+            createElement(
+              "scrollbox" as string,
+              { flexGrow: 1 },
+              React.createElement("text", { color: theme.muted }, preview.body),
+            )
           ) : (
-            <text>{preview.body}</text>
+            // Plain text
+            createElement(
+              "scrollbox" as string,
+              { flexGrow: 1 },
+              React.createElement("text", {}, preview.body),
+            )
           )}
         </box>
       </box>

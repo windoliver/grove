@@ -546,9 +546,26 @@ export async function ensureNexusRunning(
   //    If Nexus is already running (from another grove, Docker, etc.), we
   //    don't need the nexus CLI at all — just connect to it.
   // -----------------------------------------------------------------------
+  // Also check the global Nexus state file for the last-known port
+  let stateFileUrl: string | undefined;
+  try {
+    const statePath = join(getGroveHome(), "nexus-data", ".state.json");
+    if (existsSync(statePath)) {
+      const stateData = JSON.parse(readFileSync(statePath, "utf-8")) as {
+        ports?: { http?: number };
+      };
+      if (stateData.ports?.http) {
+        stateFileUrl = `http://localhost:${stateData.ports.http}`;
+      }
+    }
+  } catch {
+    // best-effort
+  }
+
   const candidateUrls = [
     config.nexusUrl,
     readNexusUrl(projectRoot),
+    stateFileUrl,
     process.env.GROVE_NEXUS_URL,
     DEFAULT_NEXUS_URL,
   ].filter((u): u is string => !!u);

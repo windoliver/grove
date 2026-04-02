@@ -348,7 +348,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
           <box
             flexDirection="column"
             marginX={2}
-            borderStyle="single"
+            borderStyle="round"
             borderColor={theme.border}
             paddingX={1}
           >
@@ -476,7 +476,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
           <box
             flexDirection="column"
             marginX={2}
-            borderStyle="single"
+            borderStyle="round"
             borderColor={theme.border}
             paddingX={1}
           >
@@ -504,7 +504,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
               flexDirection="column"
               marginX={2}
               marginTop={1}
-              borderStyle="single"
+              borderStyle="round"
               borderColor={theme.info}
               paddingX={1}
             >
@@ -558,7 +558,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
         <box
           flexDirection="column"
           marginX={2}
-          borderStyle="single"
+          borderStyle="round"
           borderColor={theme.border}
           paddingX={1}
         >
@@ -585,7 +585,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
             flexDirection="column"
             marginX={2}
             marginTop={1}
-            borderStyle="single"
+            borderStyle="round"
             borderColor={theme.border}
             paddingX={1}
           >
@@ -608,7 +608,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
           flexDirection="column"
           marginX={2}
           marginTop={1}
-          borderStyle="single"
+          borderStyle="round"
           borderColor={theme.border}
           paddingX={1}
         >

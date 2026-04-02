@@ -46,6 +46,8 @@ export interface KeyboardActions {
   readonly onPaletteUp: () => void;
   readonly onPaletteDown: (maxIndex: number) => void;
   readonly onPaletteSelect: () => void;
+  readonly onPaletteChar: (char: string) => void;
+  readonly onPaletteBackspace: () => void;
   readonly onZoomCycle: () => void;
   readonly onZoomReset: () => void;
   readonly onTerminalScrollUp: () => void;
@@ -196,7 +198,7 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     return true;
   }
 
-  // Command palette navigation
+  // Command palette navigation + fuzzy filter
   if (mode === InputMode.CommandPalette) {
     if (input === "j" || input === "down") {
       actions.onPaletteDown(Math.max(0, actions.paletteItemCount - 1));
@@ -208,6 +210,15 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     }
     if (input === "return") {
       actions.onPaletteSelect();
+      return true;
+    }
+    if (input === "backspace") {
+      actions.onPaletteBackspace();
+      return true;
+    }
+    // Single printable characters → build fuzzy query
+    if (input && input.length === 1 && !key.ctrl && !key.meta) {
+      actions.onPaletteChar(input);
       return true;
     }
     return true;

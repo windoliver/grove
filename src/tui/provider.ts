@@ -293,6 +293,9 @@ export interface TuiArtifactProvider {
 /** Nexus VFS browsing — available when capabilities.vfs is true. */
 export interface TuiVfsProvider {
   listPath(path: string): Promise<readonly FsEntry[]>;
+  /** Read a file at the given VFS path. Returns undefined when the path does not exist.
+   *  When maxBytes is provided, the provider should return at most that many bytes. */
+  readFile(path: string, maxBytes?: number): Promise<Buffer | undefined>;
 }
 
 /** Messaging queries — available when capabilities.messaging is true. */

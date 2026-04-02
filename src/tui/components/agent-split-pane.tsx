@@ -63,7 +63,7 @@ const AgentPane = React.memo(function AgentPane({
       flexGrow={1}
       flexShrink={1}
       border
-      borderStyle="single"
+      borderStyle="round"
       borderColor={focused ? theme.focus : theme.inactive}
     >
       <box>

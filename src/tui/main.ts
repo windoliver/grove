@@ -472,6 +472,8 @@ export async function handleTui(
   const { createCliRenderer } = await import("@opentui/core");
   const { createRoot } = await import("@opentui/react");
   const React = await import("react");
+  const { Toaster } = await import("@opentui-ui/toast/react");
+  const { DialogProvider } = await import("@opentui-ui/dialog/react");
 
   const renderer = await createCliRenderer({
     exitOnCtrlC: true,
@@ -541,9 +543,14 @@ export async function handleTui(
       );
       root.render(
         React.createElement(
-          SpawnManagerContext,
-          { value: spawnManager },
-          React.createElement(App, result.appProps),
+          DialogProvider,
+          null,
+          React.createElement(
+            SpawnManagerContext,
+            { value: spawnManager },
+            React.createElement(App, result.appProps),
+          ),
+          React.createElement(Toaster, { position: "bottom-right" }),
         ),
       );
       renderer.start();
@@ -631,16 +638,21 @@ export async function handleTui(
     const { TuiApp } = await import("./tui-app.js");
 
     root.render(
-      React.createElement(TuiApp, {
-        groveExists,
-        groveInfo,
-        presets,
-        sessions,
-        onInit,
-        onStart,
-        onConnect,
-        autoConnectNexus: opts.nexus,
-      }),
+      React.createElement(
+        DialogProvider,
+        null,
+        React.createElement(TuiApp, {
+          groveExists,
+          groveInfo,
+          presets,
+          sessions,
+          onInit,
+          onStart,
+          onConnect,
+          autoConnectNexus: opts.nexus,
+        }),
+        React.createElement(Toaster, { position: "bottom-right" }),
+      ),
     );
 
     renderer.start();

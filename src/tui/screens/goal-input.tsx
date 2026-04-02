@@ -98,7 +98,7 @@ export const GoalInput: React.NamedExoticComponent<GoalInputProps> = React.memo(
         flexDirection="column"
         marginX={2}
         marginTop={1}
-        borderStyle="single"
+        borderStyle="round"
         borderColor={showEmpty ? theme.error : theme.focus}
         paddingX={1}
       >

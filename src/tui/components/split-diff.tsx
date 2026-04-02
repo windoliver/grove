@@ -1,15 +1,12 @@
 /**
  * Side-by-side diff comparison component.
  *
- * Renders two content panes side-by-side with labels and optional
- * metric badges, suitable for comparing artifact versions.
+ * Delegates to OpenTUI's <diff> intrinsic for built-in syntax-aware
+ * split rendering. Labels and optional metric badges are rendered above.
  */
 
 import React from "react";
 import { theme } from "../theme.js";
-
-/** Maximum lines displayed before truncation. */
-const MAX_VISIBLE_LINES = 20;
 
 /** Props for the SplitDiff component. */
 export interface SplitDiffProps {
@@ -36,9 +33,16 @@ export const SplitDiff: React.NamedExoticComponent<SplitDiffProps> = React.memo(
   leftMetric,
   rightMetric,
 }: SplitDiffProps): React.ReactNode {
-  const leftLines = leftContent.split("\n");
-  const rightLines = rightContent.split("\n");
-  const maxLines = Math.max(leftLines.length, rightLines.length, 1);
+  // Cap content to prevent render freezes on large contributions
+  const MAX_DIFF_CHARS = 32 * 1024;
+  const left =
+    leftContent.length > MAX_DIFF_CHARS
+      ? `${leftContent.slice(0, MAX_DIFF_CHARS)}\n\n--- truncated (${leftContent.length} chars) ---`
+      : leftContent;
+  const right =
+    rightContent.length > MAX_DIFF_CHARS
+      ? `${rightContent.slice(0, MAX_DIFF_CHARS)}\n\n--- truncated (${rightContent.length} chars) ---`
+      : rightContent;
 
   return (
     <box flexDirection="column">
@@ -54,22 +58,8 @@ export const SplitDiff: React.NamedExoticComponent<SplitDiffProps> = React.memo(
           {rightMetric && <text opacity={0.5}> {rightMetric}</text>}
         </box>
       </box>
-      {/* Content */}
-      {Array.from({ length: Math.min(maxLines, MAX_VISIBLE_LINES) }, (_, i) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: diff lines have no stable identity
-        <box key={i} flexDirection="row">
-          <box flexGrow={1}>
-            <text>{leftLines[i] ?? ""}</text>
-          </box>
-          <text opacity={0.3}>|</text>
-          <box flexGrow={1}>
-            <text>{rightLines[i] ?? ""}</text>
-          </box>
-        </box>
-      ))}
-      {maxLines > MAX_VISIBLE_LINES && (
-        <text opacity={0.5}>{`... ${maxLines - MAX_VISIBLE_LINES} more lines`}</text>
-      )}
+      {/* Diff content */}
+      <diff oldContent={left} newContent={right} mode="split" />
     </box>
   );
 });
