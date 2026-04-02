@@ -267,7 +267,8 @@ export class NexusDataProvider
       .create({
         id: result.sessionId,
         goal: input.goal ?? "",
-        presetName: "review-loop",
+        presetName: input.presetName ?? result.presetName ?? "default",
+        ...(input.config !== undefined ? { config: input.config } : {}),
         createdAt: new Date().toISOString(),
         status: "running",
       })
