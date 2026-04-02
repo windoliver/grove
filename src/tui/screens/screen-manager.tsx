@@ -97,20 +97,34 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     const renderer = useRenderer();
     const { provider, topology, contract } = appProps;
 
-    // Initialize state: use initialState override (testing), or compute from props
-    const [state, setState] = useState<ScreenState>(
-      () =>
-        initialState ?? {
-          screen: startOnRunning
-            ? ("running" as const)
-            : topology
-              ? ("goal-input" as const) // Has topology → goal first, detect later
-              : presets && presets.length > 0
-                ? ("preset-select" as const)
-                : ("running" as const),
-          ...(appProps.presetName ? { selectedPreset: appProps.presetName } : {}),
-        },
-    );
+    // Initialize state: use initialState override (testing), or compute from props.
+    // When resuming (startOnRunning), populate sessionId and sessionStartedAt from
+    // the most recent active session so the contribution feed is scoped correctly.
+    const [state, setState] = useState<ScreenState>(() => {
+      if (initialState) return initialState;
+
+      const activeSession = startOnRunning
+        ? sessions?.find((s) => s.status === "active")
+        : undefined;
+
+      return {
+        screen: startOnRunning
+          ? ("running" as const)
+          : topology
+            ? ("goal-input" as const)
+            : presets && presets.length > 0
+              ? ("preset-select" as const)
+              : ("running" as const),
+        ...(appProps.presetName ? { selectedPreset: appProps.presetName } : {}),
+        ...(activeSession
+          ? {
+              sessionId: activeSession.sessionId,
+              ...(activeSession.goal !== undefined ? { goal: activeSession.goal } : {}),
+              sessionStartedAt: activeSession.startedAt,
+            }
+          : {}),
+      };
+    });
 
     // SpawnManager singleton — provided by tui-app.tsx via SpawnManagerContext.
     const spawnManager = useSpawnManager();
