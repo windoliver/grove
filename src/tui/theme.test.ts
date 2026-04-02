@@ -44,8 +44,24 @@ describe("theme", () => {
     expect(theme.agentError).toBe("\u2717");
   });
 
-  test("all color tokens are hex strings", () => {
+  test("all color tokens are hex strings or valid ANSI color names", () => {
+    // On terminals with limited color support, resolveColor() returns ANSI names
+    // instead of hex. Both are valid OpenTUI color values.
     const hexRegex = /^#[0-9a-fA-F]{6}$/;
+    const validAnsiNames = new Set([
+      "black",
+      "red",
+      "green",
+      "yellow",
+      "blue",
+      "magenta",
+      "cyan",
+      "white",
+      "gray",
+      "grey",
+      "darkGray",
+      "darkGrey",
+    ]);
     for (const [key, value] of Object.entries(theme)) {
       if (
         typeof value === "string" &&
@@ -54,7 +70,8 @@ describe("theme", () => {
         key !== "agentIdle" &&
         key !== "agentError"
       ) {
-        expect(value).toMatch(hexRegex);
+        const isValid = hexRegex.test(value) || validAnsiNames.has(value);
+        expect(isValid).toBe(true);
       }
     }
   });
