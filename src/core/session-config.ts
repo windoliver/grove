@@ -25,9 +25,9 @@ export type SessionRuntimeConfig = Pick<
   | "topology"
 >;
 
-export function getSessionRuntimeConfig(
-  session: { config?: GroveContract },
-): SessionRuntimeConfig | undefined {
+export function getSessionRuntimeConfig(session: {
+  config?: GroveContract;
+}): SessionRuntimeConfig | undefined {
   if (!session.config) return undefined;
   const c = session.config;
   return {

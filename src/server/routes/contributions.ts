@@ -264,7 +264,12 @@ contributions.post("/", async (c) => {
     const sessionConfig = await goalSessionStore.getSessionConfig(parsed.sessionId);
     if (!sessionConfig) {
       return c.json(
-        { error: { code: "VALIDATION_ERROR", message: `Session ${parsed.sessionId} has no stored config` } },
+        {
+          error: {
+            code: "VALIDATION_ERROR",
+            message: `Session ${parsed.sessionId} has no stored config`,
+          },
+        },
         400,
       );
     }

@@ -447,7 +447,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           setState((s) => ({ ...s, screen: "running", goal, sessionStartedAt }));
         }
       },
-      [provider, topology, state.selectedPreset, spawnManager],
+      [provider, topology, contract, state.selectedPreset, spawnManager],
     );
 
     // Screen 3 (launch preview) -> spawning: Ctrl+Enter confirmed launch

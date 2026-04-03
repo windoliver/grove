@@ -346,7 +346,11 @@ export async function loadContract(
   // Local: read from GROVE.md
   try {
     const { parseGroveContract } = await import("../core/contract.js");
-    const { groveDir } = resolveGroveDir(backend.mode === "local" ? backend.groveOverride : (backend as { groveOverride?: string }).groveOverride);
+    const { groveDir } = resolveGroveDir(
+      backend.mode === "local"
+        ? backend.groveOverride
+        : (backend as { groveOverride?: string }).groveOverride,
+    );
     const grovemdPath = join(groveDir, "..", "GROVE.md");
     if (existsSync(grovemdPath)) {
       const raw = readFileSync(grovemdPath, "utf-8");

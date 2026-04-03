@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { CreateSessionInput, Session } from "../core/session.js";
+import type { Session } from "../core/session.js";
 import type { NexusClient } from "./client.js";
 import { NexusSessionStore } from "./nexus-session-store.js";
 
@@ -16,7 +16,7 @@ import { NexusSessionStore } from "./nexus-session-store.js";
 
 function createMockClient(): NexusClient {
   const files = new Map<string, Uint8Array>();
-  const encoder = new TextEncoder();
+  const _encoder = new TextEncoder();
 
   return {
     read: async (path: string) => files.get(path) ?? null,

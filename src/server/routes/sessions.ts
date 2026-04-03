@@ -66,7 +66,12 @@ sessions.post("/", async (c) => {
   if (!goalSessionStore) return notConfigured(c, "Goal/session store is not configured");
   if (!contract) {
     return c.json(
-      { error: { code: "NOT_CONFIGURED", message: "No contract loaded — cannot snapshot session config" } },
+      {
+        error: {
+          code: "NOT_CONFIGURED",
+          message: "No contract loaded — cannot snapshot session config",
+        },
+      },
       501,
     );
   }

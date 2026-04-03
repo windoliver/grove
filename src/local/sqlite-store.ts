@@ -287,11 +287,9 @@ export function initSqliteDb(dbPath: string): Database {
     // so it may not exist yet on fresh databases. Only migrate if it does.
     {
       const sessionTableExists =
-        (
-          db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'").get() as
-            | { name: string }
-            | null
-        ) !== null;
+        (db
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'")
+          .get() as { name: string } | null) !== null;
       if (sessionTableExists) {
         const sessionCols = db.prepare("PRAGMA table_info(sessions)").all() as readonly {
           name: string;

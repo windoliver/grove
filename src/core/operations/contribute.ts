@@ -306,7 +306,7 @@ export async function contributeOperation(
       };
       if (store.setPreWriteHook) {
         store.setPreWriteHook(contribution.cid, async (c: Contribution) => {
-          policyResult = await enforcer!.enforce(c, true);
+          policyResult = await enforcer?.enforce(c, true);
         });
       } else {
         // Fallback: enforce outside mutex (non-EnforcingContributionStore)
@@ -353,9 +353,7 @@ export async function contributeOperation(
       if (deps.contract.hooks?.after_contribute !== undefined) {
         const hookEntry = deps.contract.hooks.after_contribute;
         const hookCwd = deps.hookCwd;
-        fireAndForget("after_contribute hook", () =>
-          deps.hookRunner?.run(hookEntry, hookCwd),
-        );
+        fireAndForget("after_contribute hook", () => deps.hookRunner?.run(hookEntry, hookCwd));
       }
     }
 
