@@ -62,8 +62,14 @@ export const sessions: Hono<ServerEnv> = new Hono<ServerEnv>();
 
 /** POST /api/sessions — Create a new session. */
 sessions.post("/", async (c) => {
-  const { goalSessionStore } = c.get("deps");
+  const { goalSessionStore, contract } = c.get("deps");
   if (!goalSessionStore) return notConfigured(c, "Goal/session store is not configured");
+  if (!contract) {
+    return c.json(
+      { error: { code: "NOT_CONFIGURED", message: "No contract loaded — cannot snapshot session config" } },
+      501,
+    );
+  }
 
   const body = await c.req.json();
   const parsed = createSessionSchema.safeParse(body);
@@ -125,6 +131,7 @@ sessions.post("/", async (c) => {
     goal: parsed.data.goal,
     presetName,
     topology: resolvedTopology,
+    config: contract,
   });
   return c.json(toSessionResponse(session), 201);
 });
@@ -182,7 +189,8 @@ sessions.put("/:id/archive", async (c) => {
 
 /** POST /api/sessions/:id/contributions — Record a contribution against a session. */
 sessions.post("/:id/contributions", async (c) => {
-  const { goalSessionStore } = c.get("deps");
+  const deps = c.get("deps");
+  const { goalSessionStore, contributionStore } = deps;
   if (!goalSessionStore) return notConfigured(c, "Goal/session store is not configured");
 
   const sessionId = c.req.param("id");
@@ -200,6 +208,29 @@ sessions.post("/:id/contributions", async (c) => {
   const parsed = addContributionSchema.safeParse(body);
   if (!parsed.success) {
     return c.json({ error: { code: "VALIDATION_ERROR", details: parsed.error.issues } }, 400);
+  }
+
+  // Verify contribution exists and run policy enforcement when possible
+  const contribution = await contributionStore.get(parsed.data.cid);
+  if (contribution) {
+    // Policy enforcement against session config (only when contribution is available)
+    const sessionConfig = await goalSessionStore.getSessionConfig(sessionId);
+    if (sessionConfig) {
+      const { PolicyEnforcer } = await import("../../core/policy-enforcer.js");
+      const enforcer = new PolicyEnforcer(sessionConfig, contributionStore);
+      const result = await enforcer.enforce(contribution, false);
+      if (result.violations && result.violations.length > 0) {
+        return c.json(
+          {
+            error: {
+              code: "VALIDATION_ERROR",
+              message: `Contribution violates session policy: ${result.violations.map((v: { message: string }) => v.message).join(", ")}`,
+            },
+          },
+          400,
+        );
+      }
+    }
   }
 
   await goalSessionStore.addContributionToSession(sessionId, parsed.data.cid);

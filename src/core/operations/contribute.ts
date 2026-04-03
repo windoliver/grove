@@ -295,8 +295,9 @@ export async function contributeOperation(
 
     // --- Policy enforcement (TOCTOU-safe: runs inside store mutex) ---
     let policyResult: PolicyEnforcementResult | undefined;
+    let enforcer: PolicyEnforcer | undefined;
     if (deps.contract !== undefined && deps.contributionStore !== undefined) {
-      const enforcer = new PolicyEnforcer(deps.contract, deps.contributionStore, deps.outcomeStore);
+      enforcer = new PolicyEnforcer(deps.contract, deps.contributionStore, deps.outcomeStore);
 
       // Register per-CID preWriteHook for atomic enforce+put (TOCTOU-safe).
       // Keyed by CID so concurrent contributes don't overwrite each other's hooks.
@@ -305,7 +306,7 @@ export async function contributeOperation(
       };
       if (store.setPreWriteHook) {
         store.setPreWriteHook(contribution.cid, async (c: Contribution) => {
-          policyResult = await enforcer.enforce(c, true);
+          policyResult = await enforcer!.enforce(c, true);
         });
       } else {
         // Fallback: enforce outside mutex (non-EnforcingContributionStore)
@@ -317,15 +318,15 @@ export async function contributeOperation(
     deps.onContributionWrite?.();
 
     // --- Post-write: persist derived outcome (outside mutex scope) ---
-    if (policyResult?.derivedOutcome !== undefined && deps.contract !== undefined) {
-      const enforcer = new PolicyEnforcer(deps.contract, deps.contributionStore, deps.outcomeStore);
+    if (policyResult?.derivedOutcome !== undefined && enforcer !== undefined) {
       await enforcer.persistOutcome(contribution.cid, policyResult.derivedOutcome);
     }
 
     // --- Post-write: route events via topology (outside mutex scope) ---
     if (deps.topologyRouter !== undefined && contribution.agent.role !== undefined) {
+      const agentRole = contribution.agent.role;
       fireAndForget("topology routing", () =>
-        deps.topologyRouter?.route(contribution.agent.role!, {
+        deps.topologyRouter?.route(agentRole, {
           cid: contribution.cid,
           kind: contribution.kind,
           summary: contribution.summary,
@@ -351,8 +352,9 @@ export async function contributeOperation(
     ) {
       if (deps.contract.hooks?.after_contribute !== undefined) {
         const hookEntry = deps.contract.hooks.after_contribute;
+        const hookCwd = deps.hookCwd;
         fireAndForget("after_contribute hook", () =>
-          deps.hookRunner?.run(hookEntry, deps.hookCwd!),
+          deps.hookRunner?.run(hookEntry, hookCwd),
         );
       }
     }

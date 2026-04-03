@@ -107,9 +107,24 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
 
   let contract: GroveContract | undefined;
   if (shouldParseContract) {
-    const contractPath = join(groveRoot, "GROVE.md");
-    if (existsSync(contractPath)) {
-      contract = parseGroveContract(readFileSync(contractPath, "utf-8"));
+    // Session-scoped config: when GROVE_SESSION_ID is set, load the frozen
+    // contract snapshot from the session record instead of reading GROVE.md.
+    const envSessionId = process.env.GROVE_SESSION_ID;
+    if (envSessionId) {
+      const sessionConfig = stores.goalSessionStore.getSessionConfigSync(envSessionId);
+      if (sessionConfig) {
+        contract = sessionConfig;
+      } else {
+        throw new Error(
+          `Session ${envSessionId} has no stored config. ` +
+            `Cannot load contract for GROVE_SESSION_ID=${envSessionId}.`,
+        );
+      }
+    } else {
+      const contractPath = join(groveRoot, "GROVE.md");
+      if (existsSync(contractPath)) {
+        contract = parseGroveContract(readFileSync(contractPath, "utf-8"));
+      }
     }
   }
 

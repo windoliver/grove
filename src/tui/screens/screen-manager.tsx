@@ -98,25 +98,37 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     initialState,
   }: ScreenManagerProps): React.ReactNode {
     const renderer = useRenderer();
-    const { provider, topology: initialTopology } = appProps;
+    const { provider, topology: initialTopology, contract } = appProps;
 
     // Resolved topology — starts from GROVE.md default, overridden when user picks a preset.
     const [topology, setTopology] = useState(initialTopology);
 
     // Initialize state: use initialState override (testing), or compute from props
-    const [state, setState] = useState<ScreenState>(
-      () =>
-        initialState ?? {
-          screen: startOnRunning
-            ? ("running" as const)
-            : topology
-              ? ("goal-input" as const) // Has topology → goal first, detect later
-              : presets && presets.length > 0
-                ? ("preset-select" as const)
-                : ("running" as const),
-          ...(appProps.presetName ? { selectedPreset: appProps.presetName } : {}),
-        },
-    );
+    const [state, setState] = useState<ScreenState>(() => {
+      if (initialState) return initialState;
+      // On resume, populate sessionStartedAt from the most recent active session
+      let resumeSessionStartedAt: string | undefined;
+      let resumeSessionId: string | undefined;
+      if (startOnRunning && sessions && sessions.length > 0) {
+        const active = sessions.find((s) => s.status === "active");
+        if (active) {
+          resumeSessionStartedAt = active.createdAt;
+          resumeSessionId = active.id;
+        }
+      }
+      return {
+        screen: startOnRunning
+          ? ("running" as const)
+          : topology
+            ? ("goal-input" as const) // Has topology → goal first, detect later
+            : presets && presets.length > 0
+              ? ("preset-select" as const)
+              : ("running" as const),
+        ...(appProps.presetName ? { selectedPreset: appProps.presetName } : {}),
+        ...(resumeSessionStartedAt ? { sessionStartedAt: resumeSessionStartedAt } : {}),
+        ...(resumeSessionId ? { sessionId: resumeSessionId } : {}),
+      };
+    });
 
     // SpawnManager singleton — provided by tui-app.tsx via SpawnManagerContext.
     const spawnManager = useSpawnManager();
@@ -357,7 +369,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         // Create session if supported
         if (isSessionProvider(provider)) {
           void provider
-            .createSession({ goal, presetName: state.selectedPreset, topology })
+            .createSession({ goal, presetName: state.selectedPreset, topology, config: contract })
             .then((session) => {
               spawnManager.setSessionId(session.id);
               setState((s) => ({ ...s, sessionId: session.id }));

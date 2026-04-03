@@ -8,6 +8,7 @@
  */
 
 import type { Database, Statement } from "bun:sqlite";
+import type { GroveContract } from "../core/contract.js";
 import type { CreateSessionInput, Session, SessionQuery } from "../core/session.js";
 import type { AgentTopology } from "../core/topology.js";
 import type { GoalData } from "../tui/provider.js";
@@ -32,6 +33,7 @@ export const GOAL_SESSION_DDL = `
     goal TEXT,
     preset_name TEXT,
     topology_json TEXT,
+    config_json TEXT NOT NULL DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'active',
     started_at TEXT NOT NULL,
     ended_at TEXT,
@@ -67,6 +69,7 @@ interface SessionRow {
   goal: string | null;
   preset_name: string | null;
   topology_json: string | null;
+  config_json: string | null;
   status: string;
   started_at: string;
   ended_at: string | null;
@@ -113,6 +116,12 @@ export interface GoalSessionStore {
   /** Get all contribution CIDs for a session. */
   getSessionContributions(sessionId: string): Promise<readonly string[]>;
 
+  /** Get the frozen contract config for a session by ID. */
+  getSessionConfig(sessionId: string): Promise<GroveContract | undefined>;
+
+  /** Synchronous variant — used by runtime bootstrap where async is unavailable. */
+  getSessionConfigSync(sessionId: string): GroveContract | undefined;
+
   /** Release resources. */
   close(): void;
 }
@@ -134,6 +143,14 @@ function rowToGoalData(row: GoalRow): GoalData {
 
 /** Convert a SessionWithCountRow to a Session domain object. */
 function rowToSession(row: SessionWithCountRow): Session {
+  let config: GroveContract | undefined;
+  if (row.config_json && row.config_json !== "{}") {
+    try {
+      config = JSON.parse(row.config_json) as GroveContract;
+    } catch {
+      // Malformed config_json — treat as missing
+    }
+  }
   return {
     id: row.session_id,
     goal: row.goal ?? undefined,
@@ -144,6 +161,7 @@ function rowToSession(row: SessionWithCountRow): Session {
     stopReason: row.stop_reason ?? undefined,
     topology: row.topology_json ? (JSON.parse(row.topology_json) as AgentTopology) : undefined,
     contributionCount: row.contribution_count,
+    config,
   };
 }
 
@@ -182,6 +200,12 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     // Migration: add stop_reason column for existing databases
     try {
       db.exec("ALTER TABLE sessions ADD COLUMN stop_reason TEXT");
+    } catch {
+      // Column already exists — expected for new or already-migrated databases
+    }
+    // Migration: add config_json column for existing databases
+    try {
+      db.exec("ALTER TABLE sessions ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'");
     } catch {
       // Column already exists — expected for new or already-migrated databases
     }
@@ -232,10 +256,12 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
   // Sessions
   // -----------------------------------------------------------------------
 
-  /** List sessions with computed contribution counts, optionally filtered by status and/or preset. */
+  /** List sessions with computed contribution counts, optionally filtered by status and/or preset.
+   *  Excludes config_json and topology_json for performance — use getSession()/getSessionConfig(). */
   listSessions = async (query?: SessionQuery): Promise<readonly Session[]> => {
     const baseSelect = `
       SELECT s.session_id, s.goal, s.preset_name, s.status, s.started_at, s.ended_at,
+             s.stop_reason,
              COALESCE(c.cnt, 0) AS contribution_count
       FROM sessions s
       LEFT JOIN (
@@ -268,26 +294,30 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
       status: row.status as Session["status"],
       createdAt: row.started_at,
       completedAt: row.ended_at ?? undefined,
+      stopReason: row.stop_reason ?? undefined,
       topology: undefined,
       contributionCount: row.contribution_count,
+      // config and topology intentionally omitted from list results for performance
     }));
   };
 
   /** Create a new session with a generated UUID. */
   createSession = async (input: CreateSessionInput): Promise<Session> => {
     this.stmtInsertSession ??= this.db.prepare(`
-      INSERT INTO sessions (session_id, goal, preset_name, topology_json, status, started_at)
-      VALUES (?, ?, ?, ?, 'active', ?)
+      INSERT INTO sessions (session_id, goal, preset_name, topology_json, config_json, status, started_at)
+      VALUES (?, ?, ?, ?, ?, 'active', ?)
     `);
 
     const sessionId = crypto.randomUUID();
     const startedAt = new Date().toISOString();
     const topologyJson = input.topology ? JSON.stringify(input.topology) : null;
+    const configJson = input.config ? JSON.stringify(input.config) : "{}";
     this.stmtInsertSession.run(
       sessionId,
       input.goal ?? null,
       input.presetName ?? null,
       topologyJson,
+      configJson,
       startedAt,
     );
 
@@ -300,6 +330,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
       completedAt: undefined,
       topology: input.topology,
       contributionCount: 0,
+      config: input.config,
     };
   };
 
@@ -314,6 +345,24 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
 
     const row = this.stmtGetSession.get(sessionId) as SessionWithCountRow | null;
     return row !== null ? rowToSession(row) : undefined;
+  };
+
+  /** Get the frozen contract config for a session by ID. */
+  getSessionConfig = async (sessionId: string): Promise<GroveContract | undefined> => {
+    return this.getSessionConfigSync(sessionId);
+  };
+
+  /** Synchronous variant — used by runtime bootstrap where async is unavailable. */
+  getSessionConfigSync = (sessionId: string): GroveContract | undefined => {
+    const row = this.db
+      .prepare("SELECT config_json FROM sessions WHERE session_id = ?")
+      .get(sessionId) as { config_json: string | null } | null;
+    if (!row?.config_json || row.config_json === "{}") return undefined;
+    try {
+      return JSON.parse(row.config_json) as GroveContract;
+    } catch {
+      return undefined;
+    }
   };
 
   /** Update mutable session fields. */

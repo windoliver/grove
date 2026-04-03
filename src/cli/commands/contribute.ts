@@ -319,19 +319,34 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
   const cas = new FsCas(casPath);
   const frontier = new DefaultFrontierCalculator(rawStore);
 
-  // 3. Load GROVE.md contract for enforcement, default mode, and metric directions
-  const grovemdPath = join(options.cwd, "GROVE.md");
+  // 3. Load contract for enforcement, default mode, and metric directions.
+  //    Session-scoped: when GROVE_SESSION_ID is set, load the frozen contract
+  //    from the session record to guarantee all agents see the same config.
   let contract: Awaited<ReturnType<typeof parseGroveContract>> | undefined;
-  let grovemdContent: string | undefined;
-  try {
-    grovemdContent = await readFile(grovemdPath, "utf-8");
-  } catch {
-    // GROVE.md does not exist — proceed without enforcement
-  }
-  if (grovemdContent !== undefined) {
-    // File exists — parse errors must propagate so malformed contracts
-    // are not silently ignored (which would bypass enforcement).
-    contract = parseGroveContract(grovemdContent);
+  const envSessionId = process.env.GROVE_SESSION_ID;
+  if (envSessionId) {
+    const { SqliteGoalSessionStore } = await import("../../local/sqlite-goal-session-store.js");
+    const sessionConfig = new SqliteGoalSessionStore(db).getSessionConfigSync(envSessionId);
+    if (!sessionConfig) {
+      throw new Error(
+        `Session ${envSessionId} has no stored config. ` +
+          `Cannot enforce contract for GROVE_SESSION_ID=${envSessionId}.`,
+      );
+    }
+    contract = sessionConfig;
+  } else {
+    const grovemdPath = join(options.cwd, "GROVE.md");
+    let grovemdContent: string | undefined;
+    try {
+      grovemdContent = await readFile(grovemdPath, "utf-8");
+    } catch {
+      // GROVE.md does not exist — proceed without enforcement
+    }
+    if (grovemdContent !== undefined) {
+      // File exists — parse errors must propagate so malformed contracts
+      // are not silently ignored (which would bypass enforcement).
+      contract = parseGroveContract(grovemdContent);
+    }
   }
 
   // Wrap store with enforcement if contract is available

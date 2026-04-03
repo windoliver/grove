@@ -217,6 +217,137 @@ describe("Session Contributions", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Session Config (config round-trip)
+// ---------------------------------------------------------------------------
+
+describe("Session Config", () => {
+  const sampleConfig = {
+    contractVersion: 3,
+    name: "test-config",
+    mode: "evaluation" as const,
+    metrics: {
+      accuracy: { direction: "maximize" as const },
+    },
+  };
+
+  it("createSession() stores config and getSession() returns it", async () => {
+    const session = await store.createSession({
+      goal: "Config test",
+      config: sampleConfig as import("../core/contract.js").GroveContract,
+    });
+    expect(session.config).toBeDefined();
+    expect(session.config?.name).toBe("test-config");
+
+    const fetched = await store.getSession(session.id);
+    expect(fetched).toBeDefined();
+    expect(fetched!.config).toBeDefined();
+    expect(fetched!.config?.name).toBe("test-config");
+    expect(fetched!.config?.mode).toBe("evaluation");
+  });
+
+  it("createSession() without config stores empty config", async () => {
+    const session = await store.createSession({ goal: "No config" });
+    expect(session.config).toBeUndefined();
+
+    const fetched = await store.getSession(session.id);
+    expect(fetched).toBeDefined();
+    expect(fetched!.config).toBeUndefined();
+  });
+
+  it("listSessions() omits config for performance", async () => {
+    await store.createSession({
+      goal: "Has config",
+      config: sampleConfig as import("../core/contract.js").GroveContract,
+    });
+    const sessions = await store.listSessions();
+    expect(sessions.length).toBe(1);
+    // config should not be present in list results
+    expect(sessions[0]!.config).toBeUndefined();
+  });
+
+  it("getSessionConfig() returns config by ID", async () => {
+    const session = await store.createSession({
+      goal: "Config lookup",
+      config: sampleConfig as import("../core/contract.js").GroveContract,
+    });
+    const config = await store.getSessionConfig(session.id);
+    expect(config).toBeDefined();
+    expect(config?.name).toBe("test-config");
+  });
+
+  it("getSessionConfig() returns undefined for session without config", async () => {
+    const session = await store.createSession({ goal: "No config" });
+    const config = await store.getSessionConfig(session.id);
+    expect(config).toBeUndefined();
+  });
+
+  it("getSessionConfigSync() returns config synchronously", async () => {
+    const session = await store.createSession({
+      goal: "Sync config",
+      config: sampleConfig as import("../core/contract.js").GroveContract,
+    });
+    const config = store.getSessionConfigSync(session.id);
+    expect(config).toBeDefined();
+    expect(config?.name).toBe("test-config");
+  });
+
+  it("getSessionConfigSync() returns undefined for missing session", () => {
+    const config = store.getSessionConfigSync("nonexistent-id");
+    expect(config).toBeUndefined();
+  });
+
+  it("config survives JSON round-trip with complex fields", async () => {
+    const complexConfig = {
+      contractVersion: 3,
+      name: "complex",
+      mode: "evaluation" as const,
+      metrics: {
+        loss: { direction: "minimize" as const, unit: "%" },
+        accuracy: { direction: "maximize" as const },
+      },
+      gates: [{ type: "metric_improves" as const, metric: "loss" }],
+      stopConditions: { maxContributions: 100 },
+      topology: {
+        structure: "flat" as const,
+        roles: [{ name: "worker", description: "Does work", platform: "claude-code" as const }],
+      },
+    };
+    const session = await store.createSession({
+      goal: "Complex config",
+      config: complexConfig as unknown as import("../core/contract.js").GroveContract,
+    });
+    const fetched = await store.getSession(session.id);
+    expect(fetched!.config?.metrics?.loss?.direction).toBe("minimize");
+    expect(fetched!.config?.topology?.roles[0]?.name).toBe("worker");
+  });
+
+  it("config with undefined fields round-trips correctly", async () => {
+    const minimalConfig = {
+      contractVersion: 3,
+      name: "minimal",
+    };
+    const session = await store.createSession({
+      goal: "Minimal config",
+      config: minimalConfig as import("../core/contract.js").GroveContract,
+    });
+    const fetched = await store.getSession(session.id);
+    expect(fetched!.config?.name).toBe("minimal");
+    expect(fetched!.config?.metrics).toBeUndefined();
+    expect(fetched!.config?.topology).toBeUndefined();
+  });
+
+  it("getSessionConfig returns undefined for malformed config_json", async () => {
+    // Insert a session with malformed config_json directly
+    stores.db.run(
+      "INSERT INTO sessions (session_id, goal, config_json, status, started_at) VALUES (?, ?, ?, 'active', ?)",
+      ["bad-config", "test", "not-valid-json", new Date().toISOString()],
+    );
+    const config = store.getSessionConfigSync("bad-config");
+    expect(config).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // SessionStore conformance suite via adapter
 // ---------------------------------------------------------------------------
 

@@ -42,6 +42,7 @@ async function createGoalSessionContext(): Promise<GoalSessionTestContext> {
     cas,
     frontier,
     goalSessionStore: stores.goalSessionStore,
+    contract: { contractVersion: 3, name: "test-contract" },
   };
 
   const app = createApp(deps);
@@ -487,5 +488,107 @@ describe("POST /api/sessions — topology and preset", () => {
     expect(data.presetName).toBe("review-loop");
     expect(data.topology).toBeDefined();
     expect(data.topology.structure).toBe("graph");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session Config (server snapshots its own contract)
+// ---------------------------------------------------------------------------
+
+describe("POST /api/sessions (config snapshot)", () => {
+  test("session creation snapshots server contract as config", async () => {
+    const res = await ctx.app.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Config snapshot test" }),
+    });
+
+    expect(res.status).toBe(201);
+    const data = (await res.json()) as { sessionId: string };
+    expect(data.sessionId).toBeDefined();
+
+    // Retrieve the session and check config is stored
+    const getRes = await ctx.app.request(`/api/sessions/${data.sessionId}`);
+    expect(getRes.status).toBe(200);
+  });
+
+  test("session creation without server contract returns 501", async () => {
+    // Create a context without contract
+    const tempDir2 = await (await import("node:fs/promises")).mkdtemp(
+      (await import("node:path")).join((await import("node:os")).tmpdir(), "grove-no-contract-"),
+    );
+    const stores2 = createSqliteStores((await import("node:path")).join(tempDir2, "test.db"));
+    const cas2 = new FsCas((await import("node:path")).join(tempDir2, "cas"));
+    const frontier2 = new DefaultFrontierCalculator(stores2.contributionStore);
+    const deps2: ServerDeps = {
+      contributionStore: stores2.contributionStore,
+      claimStore: stores2.claimStore,
+      cas: cas2,
+      frontier: frontier2,
+      goalSessionStore: stores2.goalSessionStore,
+      // No contract!
+    };
+    const app2 = createApp(deps2);
+
+    const res = await app2.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Should fail" }),
+    });
+
+    expect(res.status).toBe(501);
+    stores2.close();
+    cas2.close();
+    await (await import("node:fs/promises")).rm(tempDir2, { recursive: true, force: true });
+  });
+
+  test("GET /api/grove/contract returns configured contract", async () => {
+    const res = await ctx.app.request("/api/grove/contract");
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { name: string };
+    expect(data.name).toBe("test-contract");
+  });
+
+  test("GET /api/grove/contract returns 404 when no contract", async () => {
+    const tempDir3 = await (await import("node:fs/promises")).mkdtemp(
+      (await import("node:path")).join((await import("node:os")).tmpdir(), "grove-no-contract2-"),
+    );
+    const stores3 = createSqliteStores((await import("node:path")).join(tempDir3, "test.db"));
+    const cas3 = new FsCas((await import("node:path")).join(tempDir3, "cas"));
+    const frontier3 = new DefaultFrontierCalculator(stores3.contributionStore);
+    const deps3: ServerDeps = {
+      contributionStore: stores3.contributionStore,
+      claimStore: stores3.claimStore,
+      cas: cas3,
+      frontier: frontier3,
+    };
+    const app3 = createApp(deps3);
+
+    const res = await app3.request("/api/grove/contract");
+    expect(res.status).toBe(404);
+    stores3.close();
+    cas3.close();
+    await (await import("node:fs/promises")).rm(tempDir3, { recursive: true, force: true });
+  });
+
+  test("session config persists through full lifecycle", async () => {
+    // Create session
+    const createRes = await ctx.app.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Lifecycle test" }),
+    });
+    expect(createRes.status).toBe(201);
+    const { sessionId } = (await createRes.json()) as { sessionId: string };
+
+    // Archive session
+    const archiveRes = await ctx.app.request(`/api/sessions/${sessionId}/archive`, {
+      method: "PUT",
+    });
+    expect(archiveRes.status).toBe(204);
+
+    // Config should still be retrievable
+    const getRes = await ctx.app.request(`/api/sessions/${sessionId}`);
+    expect(getRes.status).toBe(200);
   });
 });

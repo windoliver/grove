@@ -53,6 +53,8 @@ export interface AppProps {
   readonly eventBus?: import("../core/event-bus.js").EventBus | undefined;
   /** AgentRuntime for spawning agents (acpx preferred over tmux). */
   readonly agentRuntime?: import("../core/agent-runtime.js").AgentRuntime | undefined;
+  /** Frozen contract for session creation. */
+  readonly contract?: import("../core/contract.js").GroveContract | undefined;
 }
 
 const PAGE_SIZE = 20;

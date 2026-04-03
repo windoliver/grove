@@ -25,6 +25,7 @@ export function toOperationDeps(deps: ServerDeps): OperationDeps {
     cas: deps.cas,
     frontier: deps.frontier,
     ...(deps.outcomeStore !== undefined ? { outcomeStore: deps.outcomeStore } : {}),
+    ...(deps.contract !== undefined ? { contract: deps.contract } : {}),
   };
 }
 

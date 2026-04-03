@@ -159,6 +159,7 @@ async function sessionStart(args: readonly string[]): Promise<void> {
     goal,
     presetName: presetName ?? contract?.name,
     topology: resolution.topology,
+    config: contract,
   });
 
   const orchestrator = new SessionOrchestrator({
