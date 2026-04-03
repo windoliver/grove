@@ -38,6 +38,7 @@ export class NexusSessionStore implements SessionStore {
       status: "active",
       createdAt: new Date().toISOString(),
       contributionCount: 0,
+      config: input.config,
     };
     await this.client.write(this.sessionPath(session.id), encoder.encode(JSON.stringify(session)));
     return session;

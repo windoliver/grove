@@ -48,7 +48,7 @@ import { DEFAULT_LEASE_DURATION_MS } from "../core/claim-logic.js";
 import { ClaimConflictError, NotFoundError, StateConflictError } from "../core/errors.js";
 import { toUtcIso } from "../core/time.js";
 
-const CURRENT_SCHEMA_VERSION = 7;
+const CURRENT_SCHEMA_VERSION = 8;
 
 // ---------------------------------------------------------------------------
 // Schema DDL
@@ -280,6 +280,34 @@ export function initSqliteDb(dbPath: string): Database {
     // because '.' (0x2E) < 'Z' (0x5A), giving wrong chronological order.
     if (currentVersion === null || currentVersion < 7) {
       db.run("UPDATE contributions SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', created_at)");
+    }
+
+    // Migration → v8: add config_json column to sessions (column-safe).
+    // The sessions table is created by SqliteGoalSessionStore (lazy init),
+    // so it may not exist yet on fresh databases. Only migrate if it does.
+    {
+      const sessionTableExists =
+        (db
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'")
+          .get() as { name: string } | null) !== null;
+      if (sessionTableExists) {
+        const sessionCols = db.prepare("PRAGMA table_info(sessions)").all() as readonly {
+          name: string;
+        }[];
+        const sessionColNames = new Set(sessionCols.map((c) => c.name));
+        if (!sessionColNames.has("config_json")) {
+          db.run("ALTER TABLE sessions ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'");
+        }
+        if (!sessionColNames.has("preset_name")) {
+          db.run("ALTER TABLE sessions ADD COLUMN preset_name TEXT");
+        }
+        if (!sessionColNames.has("topology_json")) {
+          db.run("ALTER TABLE sessions ADD COLUMN topology_json TEXT");
+        }
+        if (!sessionColNames.has("stop_reason")) {
+          db.run("ALTER TABLE sessions ADD COLUMN stop_reason TEXT");
+        }
+      }
     }
 
     db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [

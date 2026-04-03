@@ -7,6 +7,7 @@
 
 import type { BountyStore } from "../core/bounty-store.js";
 import type { ContentStore } from "../core/cas.js";
+import type { GroveContract } from "../core/contract.js";
 import type { FrontierCalculator } from "../core/frontier.js";
 import type { GossipService } from "../core/gossip/types.js";
 import type { OutcomeStore } from "../core/outcome.js";
@@ -30,6 +31,8 @@ export interface ServerDeps {
   readonly topology?: AgentTopology | undefined;
   /** Optional goal/session store. Routes return 501 when not configured. */
   readonly goalSessionStore?: GoalSessionStore | undefined;
+  /** Optional contract snapshot. Routes return 501 when not configured. */
+  readonly contract?: GroveContract | undefined;
 }
 
 /** Hono environment type carrying injected dependencies. */

@@ -5,6 +5,7 @@
  * SessionRecord (tui/provider.ts) types with a single source of truth.
  */
 
+import type { GroveContract } from "./contract.js";
 import type { AgentTopology } from "./topology.js";
 
 // ---------------------------------------------------------------------------
@@ -39,6 +40,8 @@ export interface Session {
   readonly topology?: AgentTopology | undefined;
   /** Number of contributions linked to this session. */
   readonly contributionCount: number;
+  /** Frozen contract snapshot at session creation time. */
+  readonly config?: GroveContract | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -51,6 +54,8 @@ export interface CreateSessionInput {
   readonly presetName?: string | undefined;
   /** Fully resolved topology to store with the session. */
   readonly topology?: AgentTopology | undefined;
+  /** Frozen contract snapshot to store with the session. */
+  readonly config?: GroveContract | undefined;
 }
 
 // ---------------------------------------------------------------------------

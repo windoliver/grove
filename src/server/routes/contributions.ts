@@ -108,6 +108,7 @@ const manifestSchema = z
       })
       .strict(),
     createdAt: z.string().datetime({ offset: true }).optional(),
+    sessionId: z.string().min(1).optional(),
   })
   .strict();
 
@@ -242,12 +243,58 @@ contributions.post("/", async (c) => {
     ...(parsed.createdAt !== undefined ? { createdAt: parsed.createdAt } : {}),
   };
 
-  const opDeps = toOperationDeps(serverDeps);
+  let opDeps = toOperationDeps(serverDeps);
+
+  // Session-scoped enforcement: override contract with session config
+  if (parsed.sessionId) {
+    const { goalSessionStore } = serverDeps;
+    if (!goalSessionStore) {
+      return c.json(
+        { error: { code: "NOT_CONFIGURED", message: "Goal/session store is not configured" } },
+        501,
+      );
+    }
+    const session = await goalSessionStore.getSession(parsed.sessionId);
+    if (!session) {
+      return c.json(
+        { error: { code: "NOT_FOUND", message: `Session not found: ${parsed.sessionId}` } },
+        404,
+      );
+    }
+    const sessionConfig = await goalSessionStore.getSessionConfig(parsed.sessionId);
+    if (!sessionConfig) {
+      return c.json(
+        {
+          error: {
+            code: "VALIDATION_ERROR",
+            message: `Session ${parsed.sessionId} has no stored config`,
+          },
+        },
+        400,
+      );
+    }
+    opDeps = { ...opDeps, contract: sessionConfig };
+  }
+
   const result = await contributeOperation(input, opDeps);
 
   if (!result.ok) {
     const { data, status } = toHttpResult(result);
     return c.json(data, status);
+  }
+
+  // Auto-attach contribution to session
+  if (parsed.sessionId) {
+    const { goalSessionStore } = serverDeps;
+    if (goalSessionStore) {
+      try {
+        await goalSessionStore.addContributionToSession(parsed.sessionId, result.value.cid);
+      } catch {
+        // Fetch the full contribution but flag attachment failure
+        const contribution = await serverDeps.contributionStore.get(result.value.cid);
+        return c.json({ ...contribution, _attachmentFailed: true }, 201);
+      }
+    }
   }
 
   // Fetch the full contribution to preserve the existing response shape

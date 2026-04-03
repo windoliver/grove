@@ -293,6 +293,76 @@ export async function loadTopology(backend: ResolvedBackend): Promise<AgentTopol
 }
 
 // ---------------------------------------------------------------------------
+// loadContract
+// ---------------------------------------------------------------------------
+
+/**
+ * Load the grove contract for the resolved backend.
+ *
+ * - remote: fetches from `${url}/api/grove/contract`
+ * - nexus: tries co-located server first, falls back to local GROVE.md
+ * - local: reads GROVE.md contract from the parent of .grove/
+ */
+export async function loadContract(
+  backend: ResolvedBackend,
+): Promise<import("../core/contract.js").GroveContract | undefined> {
+  if (backend.mode === "remote") {
+    try {
+      const resp = await fetch(`${backend.url.replace(/\/+$/, "")}/api/grove/contract`);
+      if (resp.ok) {
+        return (await resp.json()) as import("../core/contract.js").GroveContract;
+      }
+    } catch {
+      // Contract not available from remote
+    }
+    return undefined;
+  }
+
+  if (backend.mode === "nexus") {
+    // Try co-located server first
+    const serverPort = process.env.PORT ?? "4515";
+    const serverUrl = `http://localhost:${serverPort}`;
+    try {
+      const resp = await fetch(`${serverUrl}/api/grove/contract`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (resp.ok) {
+        return (await resp.json()) as import("../core/contract.js").GroveContract;
+      }
+    } catch {
+      // Server not up — fall through to local GROVE.md
+    }
+    // Skip local GROVE.md for truly remote nexus URLs (not localhost)
+    try {
+      const url = new URL(backend.url);
+      if (url.hostname !== "localhost" && url.hostname !== "127.0.0.1" && url.hostname !== "::1") {
+        return undefined;
+      }
+    } catch {
+      // Invalid URL — fall through
+    }
+  }
+
+  // Local: read from GROVE.md
+  try {
+    const { parseGroveContract } = await import("../core/contract.js");
+    const { groveDir } = resolveGroveDir(
+      backend.mode === "local"
+        ? backend.groveOverride
+        : (backend as { groveOverride?: string }).groveOverride,
+    );
+    const grovemdPath = join(groveDir, "..", "GROVE.md");
+    if (existsSync(grovemdPath)) {
+      const raw = readFileSync(grovemdPath, "utf-8");
+      return parseGroveContract(raw);
+    }
+  } catch {
+    // Contract is optional
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
 // backendLabel helper
 // ---------------------------------------------------------------------------
 

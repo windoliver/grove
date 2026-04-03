@@ -61,4 +61,13 @@ grove.get("/topology", (c) => {
   return c.json(topology);
 });
 
+/** GET /api/grove/contract — Return the server's loaded contract. */
+grove.get("/contract", (c) => {
+  const { contract } = c.get("deps");
+  if (!contract) {
+    return c.json({ error: { code: "NOT_FOUND", message: "No contract loaded" } }, 404);
+  }
+  return c.json(contract);
+});
+
 export { grove };

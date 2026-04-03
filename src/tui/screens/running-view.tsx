@@ -525,7 +525,33 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
 
     // ─── Derived data ───
     const claimCount = dashboard?.activeClaims.length ?? 0;
-    const frontier = dashboard?.frontierSummary;
+    // Session-scoped frontier: when session is active, compute from session feed
+    const sessionFrontier: DashboardData["frontierSummary"] | undefined = useMemo(() => {
+      if (!sessionStartedAt || feed.length === 0) return undefined;
+      // Find the latest contribution per metric for session-local view
+      const byMetric = new Map<string, { cid: string; summary: string; value: number }>();
+      for (const c of feed) {
+        if (c.scores) {
+          for (const [name, s] of Object.entries(c.scores)) {
+            const current = byMetric.get(name);
+            if (current === undefined || s.value > current.value) {
+              byMetric.set(name, { cid: c.cid, summary: c.summary, value: s.value });
+            }
+          }
+        }
+      }
+      if (byMetric.size === 0) return undefined;
+      return {
+        topByMetric: [...byMetric.entries()].map(([metric, entry]) => ({
+          metric,
+          cid: entry.cid,
+          summary: entry.summary,
+          value: entry.value,
+        })),
+        topByAdoption: [],
+      };
+    }, [feed, sessionStartedAt]);
+    const frontier = sessionFrontier ?? dashboard?.frontierSummary;
     const currentBestScore =
       targetMetric && frontier?.topByMetric
         ? frontier.topByMetric.find((m) => m.metric === targetMetric.metric)?.value
@@ -718,7 +744,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         />
 
         {/* Agent status with live output */}
-        {renderAgentSection(topology, dashboard, monitor)}
+        {renderAgentSection(topology, dashboard, monitor, sessionStartedAt, feed.length)}
 
         {/* Main feed area */}
         {renderFeedSection(
@@ -770,6 +796,8 @@ function renderAgentSection(
   topology: AgentTopology | undefined,
   dashboard: DashboardData | undefined,
   monitor: ReturnType<typeof useAgentMonitor>,
+  sessionStartedAt?: string,
+  sessionContribCount?: number,
 ): React.ReactNode {
   const roles = topology?.roles ?? [];
   if (roles.length === 0) {
@@ -782,6 +810,8 @@ function renderAgentSection(
       </box>
     );
   }
+  // When session is active but has no contributions yet, show waiting message
+  const showWaiting = sessionStartedAt !== undefined && (sessionContribCount ?? 0) === 0;
   return (
     <box flexDirection="column" paddingX={2} paddingTop={1}>
       <box flexDirection="row">
@@ -789,6 +819,7 @@ function renderAgentSection(
           Agents
         </text>
         <text color={theme.dimmed}> (e:trace viewer)</text>
+        {showWaiting && <text color={theme.warning}> waiting for session activity...</text>}
       </box>
       {roles.map((role, idx) => {
         const activeClaim = dashboard?.activeClaims.find(
