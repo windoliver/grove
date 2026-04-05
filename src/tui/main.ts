@@ -593,9 +593,18 @@ export async function handleTui(
         });
       }
       if (groveExists) {
-        // Grove already exists: skip startServices entirely — reuse running Nexus/HTTP/MCP.
-        // "New session" only needs a new session record; services are already up.
-        onProgress?.("Using existing services...");
+        // Grove exists — start services to ensure Nexus is running (handles resume/reuse/cold-start).
+        // Even for "New session", Nexus may be stopped (e.g. machine restart).
+        // startServices + ensureNexusRunning is idempotent: reuses running Nexus if already up.
+        onProgress?.("[grove up] ensuring services are running...");
+        const { startServices } = await import("../shared/service-lifecycle.js");
+        runningServices = await startServices({
+          groveDir: newGroveDir,
+          build: serviceOpts?.build,
+          nexusSource: serviceOpts?.nexusSource,
+          onProgress,
+          force: false,
+        });
       } else {
         // New grove — start services (Nexus, HTTP server, MCP server).
         const { startServices } = await import("../shared/service-lifecycle.js");
