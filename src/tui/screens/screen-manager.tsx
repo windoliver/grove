@@ -184,19 +184,17 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             }
             // Start polling agent log files for live output
             spawnManager.startLogPolling();
-            // Detect if server-side routing is active — skip TUI routing to avoid
-            // double-delivery. Two modes:
-            // 1. GROVE_NEXUS_URL set: MCP TopologyRouter handles routing via NexusEventBus.
-            // 2. Local HTTP server (port 4515): SessionOrchestrator handles routing.
-            const nexusRoutingActive = !!process.env.GROVE_NEXUS_URL;
+            // Detect if the local HTTP server's SessionOrchestrator is routing IPC.
+            // If active, skip TUI routing to avoid double-delivery.
+            // NOTE: GROVE_NEXUS_URL does NOT skip TUI routing — MCP TopologyRouter
+            // only creates Nexus handoff records; it does NOT send tmux IPC to agent
+            // sessions. The TUI must still call routeContribution for rsync + tmux delivery.
             const serverPort = process.env.PORT ?? "4515";
-            const serverActive =
-              nexusRoutingActive ||
-              (await fetch(`http://localhost:${serverPort}/health`, {
-                signal: AbortSignal.timeout(500),
-              })
-                .then((r) => r.ok)
-                .catch(() => false));
+            const serverActive = await fetch(`http://localhost:${serverPort}/health`, {
+              signal: AbortSignal.timeout(500),
+            })
+              .then((r) => r.ok)
+              .catch(() => false);
             serverRoutingActiveRef.current = serverActive;
             spawnManager.startContributionPolling(
               provider,

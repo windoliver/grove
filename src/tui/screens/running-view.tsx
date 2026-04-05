@@ -1223,7 +1223,7 @@ function contextualHints(
 
   if (expandedPanel === null) {
     // Default feed view
-    hints.push("1-5:panels", "e:traces", "j/k:nav");
+    hints.push("1-4:panels", "e:traces", "5:handoffs", "j/k:nav");
   } else if (expandedPanel === RunningPanel.Trace) {
     // Trace pane active
     hints.push("j/k:agent", "J/K:scroll", "G/g:top/bottom", "Tab:cycle");
