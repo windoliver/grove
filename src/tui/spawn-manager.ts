@@ -660,15 +660,39 @@ export class SpawnManager {
             break;
           }
           if (this.wsBridge) {
-            debugLog("route", `wsBridge path: calling wsBridge.send`);
+            debugLog("route", `wsBridge path: calling wsBridge.send(${sourceRole}→${targetRole})`);
             // Nexus IPC path: wsBridge.send() stores the message in the agent's inbox,
-            // then NexusWsBridge SSE delivers it via runtime.send(). Don't also call
-            // runtime.send() here — that would double-deliver.
-            void (this.wsBridge as import("./nexus-ws-bridge.js").NexusWsBridge)
-              .send(sourceRole, targetRole, { summary, kind })
-              .catch(() => {
-                /* best-effort */
-              });
+            // then NexusWsBridge SSE delivers it via runtime.send().
+            // If wsBridge fails (Nexus unhealthy), fall back to direct runtime.send()
+            // so the reviewer always receives the IPC.
+            let wsBridgeDelivered = false;
+            try {
+              await (this.wsBridge as import("./nexus-ws-bridge.js").NexusWsBridge).send(
+                sourceRole,
+                targetRole,
+                { summary, kind },
+              );
+              wsBridgeDelivered = true;
+              debugLog("route", `wsBridge.send succeeded for ${sourceRole}→${targetRole}`);
+            } catch (bridgeErr) {
+              debugLog(
+                "route",
+                `wsBridge.send FAILED: ${bridgeErr instanceof Error ? bridgeErr.message : String(bridgeErr)} — falling back to agentRuntime.send`,
+              );
+            }
+            // Fallback: if wsBridge delivery failed, push directly via agentRuntime
+            if (!wsBridgeDelivered) {
+              debugLog("route", `fallback: agentRuntime.send(sessionId=${session.id})`);
+              try {
+                await this.agentRuntime.send(session, message);
+                debugLog("route", `fallback agentRuntime.send succeeded`);
+              } catch (sendErr) {
+                debugLog(
+                  "route",
+                  `fallback agentRuntime.send FAILED: ${sendErr instanceof Error ? sendErr.message : String(sendErr)}`,
+                );
+              }
+            }
           } else {
             // Local path (no Nexus): direct runtime.send() is the only delivery mechanism.
             debugLog("route", `local path: calling agentRuntime.send(sessionId=${session.id})`);
@@ -914,7 +938,16 @@ export class SpawnManager {
               // Route to downstream agents — skip when server-side SessionOrchestrator
               // is already routing via event bus (prevents double IPC delivery).
               if (c.agent?.role && topology && !serverRoutingActive) {
+                debugLog(
+                  "contribPoll",
+                  `routing cid=${c.cid.slice(0, 12)} from role=${c.agent.role} kind=${c.kind} serverRoutingActive=${String(serverRoutingActive)} hasBridge=${!!this.wsBridge}`,
+                );
                 void this.routeContribution(c.agent.role, c.summary, c.kind, topology);
+              } else {
+                debugLog(
+                  "contribPoll",
+                  `skip routing cid=${c.cid.slice(0, 12)}: role=${c.agent?.role ?? "none"} hasTopology=${!!topology} serverRoutingActive=${String(serverRoutingActive)}`,
+                );
               }
               // Mark upstream handoffs as delivered — the contribution reached the routing layer
               if ((provider as { getHandoffs?: unknown }).getHandoffs) {

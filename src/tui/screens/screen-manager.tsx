@@ -144,6 +144,9 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     const contribPollingStartedRef = useRef<string>("");
     // Whether the HTTP server's SessionOrchestrator is routing IPC (detected async, stored for sync access).
     const serverRoutingActiveRef = useRef<boolean>(false);
+    // Spawn guard: prevents duplicate spawn when user presses Escape → Enter twice on agent-detect screen.
+    // Reset when user navigates back past goal-input (handleGoalBack) or starts a new session.
+    const hasSpawnedRef = useRef<boolean>(false);
     useEffect(() => {
       if (
         state.screen === "running" &&
@@ -465,6 +468,14 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         roleMappingFromPreview: Map<string, string>,
         rolePrompts: Map<string, string>,
       ) => {
+        // Guard: prevent duplicate spawn when user presses Escape → Enter twice.
+        // hasSpawnedRef is set to true here and only reset in handleNewSession.
+        if (hasSpawnedRef.current) {
+          debugLog("handleLaunchConfirm", "DUPLICATE SPAWN PREVENTED — already spawned/spawning");
+          return;
+        }
+        hasSpawnedRef.current = true;
+        debugLog("handleLaunchConfirm", `spawning with ${roleMappingFromPreview.size} roles`);
         rolePromptsRef.current = rolePrompts;
         setState((s) => ({
           ...s,
@@ -484,6 +495,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // Screen 2 -> back: go to preset-select if presets exist, otherwise quit
     // (topology-first launches skip preset-select, so Esc should exit, not dead-end)
     const handleGoalBack = useCallback(() => {
+      hasSpawnedRef.current = false; // Reset so fresh launch is allowed after going back
       if (presets && presets.length > 0) {
         setState((s) => ({ ...s, screen: "preset-select" }));
       } else {
@@ -507,6 +519,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // Screen 5 -> Screen 3 (reuse preset) or Screen 1 (no preset state)
     const handleNewSession = useCallback(() => {
       doneSignaledRef.current = false;
+      hasSpawnedRef.current = false; // Reset spawn guard for new session
       setState((s) => {
         // If we have preset + role mapping from a prior run, skip to goal input
         if (s.selectedPreset && s.roleMapping) {
