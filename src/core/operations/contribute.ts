@@ -9,6 +9,7 @@
 
 import { fireAndForget } from "../../shared/fire-and-forget.js";
 import { pickDefined } from "../../shared/pick-defined.js";
+import type { HandoffInput } from "../handoff.js";
 import { createContribution } from "../manifest.js";
 import {
   ContributionKind as CK,
@@ -36,45 +37,44 @@ import { fromGroveError, notFound, ok, validationErr } from "./result.js";
 // Result types
 // ---------------------------------------------------------------------------
 
-/** Result of a contribute operation. */
-export interface ContributeResult {
+/** Shared fields present on every contribution operation result. */
+export interface BaseContributionResult {
   readonly cid: string;
+  readonly summary: string;
+  readonly createdAt: string;
+}
+
+/** Result of a contribute operation. */
+export interface ContributeResult extends BaseContributionResult {
   readonly kind: ContributionKind;
   readonly mode: ContributionMode;
-  readonly summary: string;
   readonly artifactCount: number;
   readonly relationCount: number;
-  readonly createdAt: string;
+  /** Roles that received a routing event for this contribution. */
+  readonly routedTo?: readonly string[] | undefined;
+  /** IDs of handoff records created for this contribution. */
+  readonly handoffIds?: readonly string[] | undefined;
   /** Policy enforcement result (present when a contract is loaded). */
   readonly policy?: PolicyEnforcementResult | undefined;
 }
 
 /** Result of a review operation. */
-export interface ReviewResult {
-  readonly cid: string;
+export interface ReviewResult extends BaseContributionResult {
   readonly kind: "review";
   readonly targetCid: string;
-  readonly summary: string;
-  readonly createdAt: string;
 }
 
 /** Result of a reproduce operation. */
-export interface ReproduceResult {
-  readonly cid: string;
+export interface ReproduceResult extends BaseContributionResult {
   readonly kind: "reproduction";
   readonly targetCid: string;
   readonly result: string;
-  readonly summary: string;
-  readonly createdAt: string;
 }
 
 /** Result of a discuss operation. */
-export interface DiscussResult {
-  readonly cid: string;
+export interface DiscussResult extends BaseContributionResult {
   readonly kind: "discussion";
   readonly targetCid?: string | undefined;
-  readonly summary: string;
-  readonly createdAt: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -143,12 +143,9 @@ export interface AdoptInput {
 }
 
 /** Result of an adopt operation. */
-export interface AdoptResult {
-  readonly cid: string;
+export interface AdoptResult extends BaseContributionResult {
   readonly kind: "adoption";
   readonly targetCid: string;
-  readonly summary: string;
-  readonly createdAt: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -163,10 +160,12 @@ async function validateRelations(
   store: ContributionStore,
   relations: readonly Relation[],
 ): Promise<OperationResult<void> | undefined> {
-  for (const rel of relations) {
-    const target = await store.get(rel.targetCid);
-    if (target === undefined) {
-      return notFound("Contribution", rel.targetCid);
+  if (relations.length === 0) return undefined;
+  const cids = relations.map((r) => r.targetCid);
+  const found = await store.getMany(cids);
+  for (const cid of cids) {
+    if (!found.has(cid)) {
+      return notFound("Contribution", cid);
     }
   }
   return undefined;
@@ -314,17 +313,109 @@ export async function contributeOperation(
       }
     }
 
-    await deps.contributionStore.put(contribution);
+    // --- Pre-write: determine routing targets synchronously (no I/O) ---
+    let routedTo: readonly string[] | undefined;
+    if (deps.topologyRouter !== undefined) {
+      if (contribution.agent.role === undefined) {
+        // Issue 4A: warn when topology is active but contributing agent has no role
+        process.stderr.write(
+          `[grove] Warning: topology router is active but agent '${contribution.agent.agentId}' has no role — routing skipped. Set agent.role to enable topology routing.\n`,
+        );
+      } else {
+        const targets = deps.topologyRouter.targetsFor(contribution.agent.role);
+        if (targets.length > 0) routedTo = [...targets];
+      }
+    }
+
+    // --- Write: contribution + handoffs atomically where possible ---
+    const handoffIds: string[] = [];
+    const needsHandoffs =
+      deps.handoffStore !== undefined && routedTo !== undefined && routedTo.length > 0;
+    const agentRole = contribution.agent.role;
+
+    // Duck-type check for atomic cowrite capability (SqliteContributionStore + SqliteHandoffStore)
+    const cowriteStore = deps.contributionStore as {
+      putWithCowrite?: (c: Contribution, fn: () => void) => void;
+    };
+    const sqliteHandoffStore = needsHandoffs
+      ? (deps.handoffStore as { insertSync?: (input: HandoffInput) => string })
+      : undefined;
+
+    if (
+      needsHandoffs &&
+      cowriteStore.putWithCowrite !== undefined &&
+      sqliteHandoffStore?.insertSync !== undefined &&
+      routedTo !== undefined &&
+      agentRole !== undefined
+    ) {
+      // Atomic path: contribution + all handoff records in one SQLite transaction
+      cowriteStore.putWithCowrite(contribution, () => {
+        for (const targetRole of routedTo) {
+          const hid = sqliteHandoffStore.insertSync?.({
+            sourceCid: contribution.cid,
+            fromRole: agentRole,
+            toRole: targetRole,
+            requiresReply: false,
+          });
+          if (hid !== undefined) handoffIds.push(hid);
+        }
+      });
+    } else {
+      // Non-atomic path: separate writes (in-memory stores or no handoff store)
+      await deps.contributionStore.put(contribution);
+      if (needsHandoffs && routedTo !== undefined && agentRole !== undefined) {
+        const handoffStore = deps.handoffStore;
+        if (handoffStore !== undefined) {
+          for (const targetRole of routedTo) {
+            const handoff = await handoffStore.create({
+              sourceCid: contribution.cid,
+              fromRole: agentRole,
+              toRole: targetRole,
+              requiresReply: false,
+            });
+            handoffIds.push(handoff.handoffId);
+          }
+        }
+      }
+    }
     deps.onContributionWrite?.();
+
+    // --- Post-write: mark upstream handoffs as replied (fire-and-forget) ---
+    // When this contribution targets another CID (reviews/responds_to), find
+    // any pending handoffs with sourceCid = targetCid and mark them replied.
+    if (deps.handoffStore !== undefined && contribution.relations.length > 0) {
+      const replyRelations = contribution.relations.filter(
+        (r) =>
+          r.relationType === "reviews" ||
+          r.relationType === "responds_to" ||
+          r.relationType === "adopts",
+      );
+      if (replyRelations.length > 0) {
+        fireAndForget("handoff reply transition", async () => {
+          for (const rel of replyRelations) {
+            try {
+              const pending = await deps.handoffStore?.list({
+                sourceCid: rel.targetCid,
+                status: "pending_pickup",
+              });
+              for (const h of pending ?? []) {
+                await deps.handoffStore?.markReplied(h.handoffId, contribution.cid);
+              }
+            } catch {
+              // Best-effort — don't fail contribution over handoff transition
+            }
+          }
+        });
+      }
+    }
 
     // --- Post-write: persist derived outcome (outside mutex scope) ---
     if (policyResult?.derivedOutcome !== undefined && enforcer !== undefined) {
       await enforcer.persistOutcome(contribution.cid, policyResult.derivedOutcome);
     }
 
-    // --- Post-write: route events via topology (outside mutex scope) ---
-    if (deps.topologyRouter !== undefined && contribution.agent.role !== undefined) {
-      const agentRole = contribution.agent.role;
+    // --- Post-write: route events via topology (fire-and-forget) ---
+    if (routedTo !== undefined && deps.topologyRouter !== undefined && agentRole !== undefined) {
       fireAndForget("topology routing", () =>
         deps.topologyRouter?.route(agentRole, {
           cid: contribution.cid,
@@ -365,6 +456,8 @@ export async function contributeOperation(
       artifactCount: Object.keys(contribution.artifacts).length,
       relationCount: contribution.relations.length,
       createdAt: contribution.createdAt,
+      ...(routedTo !== undefined ? { routedTo } : {}),
+      ...(handoffIds.length > 0 ? { handoffIds } : {}),
       ...(policyResult !== undefined ? { policy: policyResult } : {}),
     });
   } catch (error) {

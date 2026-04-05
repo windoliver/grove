@@ -568,35 +568,56 @@ export async function handleTui(
 
     const presets = await loadPresetList();
 
-    // onInit: handles "New grove" path — run init then start services
+    // onInit: handles "New session" in an existing grove, or full init for a new grove.
+    // When GROVE_DIR/groveExists — skip executeInit entirely (don't touch Nexus or GROVE.md).
+    // Only run executeInit when truly creating a new grove from scratch.
     const onInit = async (
       presetName: string,
       groveName: string,
       onProgress?: (step: string) => void,
     ): Promise<import("./app.js").AppProps> => {
-      const { executeInit } = await import("../cli/commands/init.js");
-      await executeInit({
-        name: groveName,
-        mode: "evaluation",
-        seed: [],
-        metric: [],
-        force: true,
-        agentOverrides: {},
-        cwd: process.cwd(),
-        preset: presetName,
-      });
+      const newGroveDir = groveDir ?? join(process.cwd(), ".grove");
 
-      const newGroveDir = join(process.cwd(), ".grove");
-      const { startServices } = await import("../shared/service-lifecycle.js");
-      runningServices = await startServices({
-        groveDir: newGroveDir,
-        build: serviceOpts?.build,
-        nexusSource: serviceOpts?.nexusSource,
-        onProgress,
-        force: true,
-      });
+      if (!groveExists) {
+        // Truly new grove — run full init (creates .grove/, nexus.yaml, GROVE.md)
+        const { executeInit } = await import("../cli/commands/init.js");
+        await executeInit({
+          name: groveName,
+          mode: "evaluation",
+          seed: [],
+          metric: [],
+          force: true,
+          agentOverrides: {},
+          cwd: join(newGroveDir, ".."),
+          preset: presetName,
+        });
+      }
+      if (groveExists) {
+        // Grove exists — start services to ensure Nexus is running (handles resume/reuse/cold-start).
+        // Even for "New session", Nexus may be stopped (e.g. machine restart).
+        // startServices + ensureNexusRunning is idempotent: reuses running Nexus if already up.
+        onProgress?.("[grove up] ensuring services are running...");
+        const { startServices } = await import("../shared/service-lifecycle.js");
+        runningServices = await startServices({
+          groveDir: newGroveDir,
+          build: serviceOpts?.build,
+          nexusSource: serviceOpts?.nexusSource,
+          onProgress,
+          force: false,
+        });
+      } else {
+        // New grove — start services (Nexus, HTTP server, MCP server).
+        const { startServices } = await import("../shared/service-lifecycle.js");
+        runningServices = await startServices({
+          groveDir: newGroveDir,
+          build: serviceOpts?.build,
+          nexusSource: serviceOpts?.nexusSource,
+          onProgress,
+          force: false,
+        });
+      }
 
-      // Pass the newly created .grove dir so buildAppProps can find GROVE.md
+      // Pass the grove dir so buildAppProps can find GROVE.md
       const result = await buildAppProps(newGroveDir, opts, presetName);
       activeProvider = result.provider;
       activeStopGc = result.stopGc;

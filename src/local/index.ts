@@ -9,6 +9,7 @@ export {
   type GoalSessionStore,
   SqliteGoalSessionStore,
 } from "./sqlite-goal-session-store.js";
+export { HANDOFF_DDL, SqliteHandoffStore } from "./sqlite-handoff-store.js";
 export {
   createSqliteStores,
   initSqliteDb,

@@ -177,7 +177,7 @@ export const TracePane: React.NamedExoticComponent<TracePaneProps> = React.memo(
                 // biome-ignore lint/suspicious/noArrayIndexKey: trace lines have no stable identity
                 <box key={i} flexDirection="row">
                   <text color={theme.disabled}>{formatTimestamp(line.ts)} </text>
-                  <code>{line.line}</code>
+                  <text>{line.line}</text>
                 </box>
               ))}
             </box>

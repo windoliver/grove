@@ -59,6 +59,8 @@ export interface NexusProviderConfig {
   readonly serverUrl?: string | undefined;
   /** Optional goal/session store — only used when no serverUrl is available. */
   readonly goalSessionStore?: GoalSessionStore | undefined;
+  /** Optional handoff store — reads from local grove.db, not Nexus. */
+  readonly handoffStore?: import("../core/handoff.js").HandoffStore | undefined;
 }
 
 /** TUI data provider backed by Nexus VFS. */
@@ -90,6 +92,7 @@ export class NexusDataProvider
       workspace: config.workspaceManager,
       backendLabel: config.backendLabel ?? "nexus",
       goalSessionStore: config.goalSessionStore,
+      handoffStore: config.handoffStore,
     });
 
     // Goals/sessions are available when a co-located server provides the shared
@@ -107,6 +110,8 @@ export class NexusDataProvider
       gossip: true,
       goals: hasGoalSession,
       sessions: true, // Always available via NexusSessionStore
+      // Handoffs are in local grove.db (written by MCP, readable from SQLite)
+      handoffs: !!config.handoffStore,
     };
 
     this.bountyStore = new NexusBountyStore(config.nexusConfig);

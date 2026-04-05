@@ -138,6 +138,15 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // with updated activeRoles from SpawnManager.
     const [reconcileVersion, setReconcileVersion] = useState(0);
     const lastReconciledScreenRef = useRef<string>("");
+    // Tracks the sessionId for which contribution polling was already started.
+    // Prevents duplicate startContributionPolling when spawnManager is recreated
+    // (useMemo in tui-app.tsx recreates SpawnManager when appProps change).
+    const contribPollingStartedRef = useRef<string>("");
+    // Whether the HTTP server's SessionOrchestrator is routing IPC (detected async, stored for sync access).
+    const serverRoutingActiveRef = useRef<boolean>(false);
+    // Spawn guard: prevents duplicate spawn when user presses Escape → Enter twice on agent-detect screen.
+    // Reset when user navigates back past goal-input (handleGoalBack) or starts a new session.
+    const hasSpawnedRef = useRef<boolean>(false);
     useEffect(() => {
       if (
         state.screen === "running" &&
@@ -163,37 +172,10 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
               "reconcile",
               `buffers=[${[...spawnManager.getLogBuffers().keys()].join(",")}]`,
             );
-            // Load historical traces on resume.
-            // Try explicit sessionId first, then find most recent JSONL session dir.
-            let sid = state.sessionId;
-            if (!sid && appProps.groveDir) {
-              try {
-                const { readdirSync, statSync } = require("node:fs") as typeof import("node:fs");
-                const { join } = require("node:path") as typeof import("node:path");
-                const logDir = join(appProps.groveDir, "agent-logs");
-                const dirs = readdirSync(logDir).filter((d) => {
-                  try {
-                    return statSync(join(logDir, d)).isDirectory();
-                  } catch {
-                    return false;
-                  }
-                });
-                if (dirs.length > 0) {
-                  // Use most recently modified session dir
-                  dirs.sort((a, b) => {
-                    try {
-                      return statSync(join(logDir, b)).mtimeMs - statSync(join(logDir, a)).mtimeMs;
-                    } catch {
-                      return 0;
-                    }
-                  });
-                  sid = dirs[0];
-                  debugLog("reconcile", `no sessionId in state, found JSONL dir: ${sid}`);
-                }
-              } catch {
-                /* non-fatal */
-              }
-            }
+            // Load historical traces only when resuming an explicit session.
+            // Do NOT fall back to "most recent JSONL dir" — that loads a different
+            // session's traces into a new session's buffers.
+            const sid = state.sessionId;
             if (sid) {
               spawnManager.setSessionId(sid);
               await spawnManager.loadTraces(sid).catch(() => {
@@ -202,8 +184,22 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             }
             // Start polling agent log files for live output
             spawnManager.startLogPolling();
-            // Start contribution polling outside React (React timers die on unmount)
-            spawnManager.startContributionPolling(provider, topology, state.sessionStartedAt);
+            // Detect if the HTTP server's SessionOrchestrator is already routing IPC.
+            // If yes, skip local routing to avoid double-delivery to agents.
+            const serverPort = process.env.PORT ?? "4515";
+            const serverActive = await fetch(`http://localhost:${serverPort}/health`, {
+              signal: AbortSignal.timeout(500),
+            })
+              .then((r) => r.ok)
+              .catch(() => false);
+            serverRoutingActiveRef.current = serverActive;
+            spawnManager.startContributionPolling(
+              provider,
+              topology,
+              state.sessionStartedAt,
+              3000,
+              serverActive,
+            );
             // Always bump — even if reattached=0, we need RunningView to pick up
             // the reconciled state (getActiveRoles may have changed).
             setReconcileVersion((v) => v + 1);
@@ -215,6 +211,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       // Reset when leaving running screen so we reconcile again on re-entry
       if (state.screen !== "running") {
         lastReconciledScreenRef.current = "";
+        contribPollingStartedRef.current = "";
       }
     }, [
       state.screen,
@@ -397,10 +394,24 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           }));
 
           spawnManager.setSessionGoal(goal);
-          // SessionId may be set async — start polling after spawn completes
-          spawnManager.startLogPolling();
-          // Start contribution polling outside React (React timers die on unmount)
-          spawnManager.startContributionPolling(provider, topology, sessionStartedAt);
+          // Ensure log buffers exist for all topology roles BEFORE seekToEnd.
+          // startLogPolling(seekToEnd=true) iterates logBuffers to record file
+          // offsets; if buffers don't exist yet, the loop has nothing to iterate
+          // and no positions are recorded — leaving pollLogFile() reading from 0.
+          for (const role of topology.roles) {
+            spawnManager.ensureLogBuffer(role.name);
+          }
+          // New session — record current end-of-file for ALL existing role log
+          // files so only lines written AFTER this point are shown.
+          spawnManager.startLogPolling(2000, true);
+          // Start contribution polling — server routing detected via global flag set in reconcile path.
+          spawnManager.startContributionPolling(
+            provider,
+            topology,
+            sessionStartedAt,
+            3000,
+            serverRoutingActiveRef.current,
+          );
 
           // Spawn each role and track progress
           for (const role of topology.roles) {
@@ -457,6 +468,14 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         roleMappingFromPreview: Map<string, string>,
         rolePrompts: Map<string, string>,
       ) => {
+        // Guard: prevent duplicate spawn when user presses Escape → Enter twice.
+        // hasSpawnedRef is set to true here and only reset in handleNewSession.
+        if (hasSpawnedRef.current) {
+          debugLog("handleLaunchConfirm", "DUPLICATE SPAWN PREVENTED — already spawned/spawning");
+          return;
+        }
+        hasSpawnedRef.current = true;
+        debugLog("handleLaunchConfirm", `spawning with ${roleMappingFromPreview.size} roles`);
         rolePromptsRef.current = rolePrompts;
         setState((s) => ({
           ...s,
@@ -476,6 +495,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // Screen 2 -> back: go to preset-select if presets exist, otherwise quit
     // (topology-first launches skip preset-select, so Esc should exit, not dead-end)
     const handleGoalBack = useCallback(() => {
+      hasSpawnedRef.current = false; // Reset so fresh launch is allowed after going back
       if (presets && presets.length > 0) {
         setState((s) => ({ ...s, screen: "preset-select" }));
       } else {
@@ -499,6 +519,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // Screen 5 -> Screen 3 (reuse preset) or Screen 1 (no preset state)
     const handleNewSession = useCallback(() => {
       doneSignaledRef.current = false;
+      hasSpawnedRef.current = false; // Reset spawn guard for new session
       setState((s) => {
         // If we have preset + role mapping from a prior run, skip to goal input
         if (s.selectedPreset && s.roleMapping) {
@@ -639,9 +660,8 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
                 doneSignaledRef.current = true;
                 return;
               }
-              if (c.agent?.role && spawnManager) {
-                void spawnManager.routeContribution(c.agent.role, c.summary, c.kind, topology);
-              }
+              // NOTE: routing is handled by spawnManager.startContributionPolling (seenCids dedup).
+              // Do NOT call routeContribution here — that causes duplicate IPC delivery.
               if (state.sessionId && isSessionProvider(provider)) {
                 void provider.addContributionToSession(state.sessionId, c.cid).catch(() => {
                   /* best-effort */
