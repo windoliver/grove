@@ -47,7 +47,9 @@ export function inferNexusPreset(config: GroveConfig): "local" | "shared" {
   // The "local" preset is embedded-only (no Docker, no ports, no compose).
   if (config.mode === "nexus" || config.nexusManaged) return "shared";
   if (config.preset === "swarm-ops") return "shared";
-  return "local";
+  // Default to "shared" (full Docker stack) — "local" is embedded-only with no Nexus server,
+  // which makes grove's multi-agent workflow non-functional.
+  return "shared";
 }
 
 // ---------------------------------------------------------------------------
@@ -186,8 +188,9 @@ function resolveNexusSource(explicit?: string): string | undefined {
  * CLI doesn't support the flag (nexus-ai-fs < 0.9.0).
  */
 export async function nexusUp(_projectRoot: string, opts: NexusUpOptions = {}): Promise<string> {
-  // Always run from global grove home — all projects share one Nexus stack
-  const projectRoot = getGroveHome();
+  // Run from the provided project root (worktree or grove home).
+  // Fall back to grove home if caller passes empty string.
+  const projectRoot = _projectRoot || getGroveHome();
   const timeout = opts.timeoutSeconds ?? NEXUS_UP_TIMEOUT_S;
   const wantsBuild = opts.build || !!opts.nexusSource;
 
@@ -579,20 +582,24 @@ export async function ensureNexusRunning(
   //    If Nexus is already running (from another grove, Docker, etc.), we
   //    don't need the nexus CLI at all — just connect to it.
   // -----------------------------------------------------------------------
-  // Also check the global Nexus state file for the last-known port
+  // Check state.json from projectRoot first (worktree), then fall back to grove home.
+  // This lets each worktree manage its own Nexus instance with its own ports.
   let stateFileUrl: string | undefined;
-  try {
-    const statePath = join(getGroveHome(), "nexus-data", ".state.json");
-    if (existsSync(statePath)) {
-      const stateData = JSON.parse(readFileSync(statePath, "utf-8")) as {
-        ports?: { http?: number };
-      };
-      if (stateData.ports?.http) {
-        stateFileUrl = `http://localhost:${stateData.ports.http}`;
+  for (const stateDir of [projectRoot, getGroveHome()]) {
+    try {
+      const statePath = join(stateDir, "nexus-data", ".state.json");
+      if (existsSync(statePath)) {
+        const stateData = JSON.parse(readFileSync(statePath, "utf-8")) as {
+          ports?: { http?: number };
+        };
+        if (stateData.ports?.http) {
+          stateFileUrl = `http://localhost:${stateData.ports.http}`;
+          break;
+        }
       }
+    } catch {
+      // best-effort
     }
-  } catch {
-    // best-effort
   }
 
   // Also probe container IPs directly — works even when Nexus has no host port binding
@@ -655,8 +662,8 @@ export async function ensureNexusRunning(
   // -----------------------------------------------------------------------
   // 2. Check for stopped containers we can restart (seconds, not minutes)
   // -----------------------------------------------------------------------
-  const groveHome = getGroveHome();
-  const nexusYaml = join(groveHome, "nexus.yaml");
+  // Use projectRoot (worktree or grove home) for nexus.yaml — each project owns its config.
+  const nexusYaml = join(projectRoot, "nexus.yaml");
   const hasYaml = existsSync(nexusYaml);
 
   if (hasYaml && !upOpts?.force) {
