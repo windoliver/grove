@@ -855,7 +855,6 @@ export class SpawnManager {
     // Kill ALL contribution poll timers globally (covers timers from previous instances too)
     clearAllGlobalContribTimers();
     this.allContributionPollTimers = [];
-    this.contributionPollTimer = null;
     // NOTE: do NOT clear routableSessions here — spawn() populates it before polling starts.
   }
 
@@ -877,7 +876,6 @@ export class SpawnManager {
     const prevCount = _allGlobalContribTimers.length;
     clearAllGlobalContribTimers();
     this.allContributionPollTimers = [];
-    this.contributionPollTimer = null;
     debugLog(
       "contribPoll",
       `startContributionPolling called, cleared ${prevCount} global timer(s), seenCids=${this.seenCids.size}`,
@@ -944,7 +942,6 @@ export class SpawnManager {
         debugLog("contribPoll", `error: ${String(err)}`);
       }
     }, intervalMs);
-    this.contributionPollTimer = timer;
     this.allContributionPollTimers.push(timer);
     _allGlobalContribTimers.push(timer);
   }

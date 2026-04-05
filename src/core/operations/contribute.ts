@@ -357,7 +357,7 @@ export async function contributeOperation(
             toRole: targetRole,
             requiresReply: false,
           });
-          handoffIds.push(hid);
+          if (hid !== undefined) handoffIds.push(hid);
         }
       });
     } else {
@@ -398,7 +398,7 @@ export async function contributeOperation(
                 sourceCid: rel.targetCid,
                 status: "pending_pickup",
               });
-              for (const h of pending) {
+              for (const h of pending ?? []) {
                 await deps.handoffStore?.markReplied(h.handoffId, contribution.cid);
               }
             } catch {

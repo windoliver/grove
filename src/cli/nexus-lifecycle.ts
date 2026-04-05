@@ -705,7 +705,7 @@ export async function ensureNexusRunning(
       ? " (--build)"
       : "";
   report(`Starting Nexus${buildLabel}...`);
-  const upStdout = await nexusUp(projectRoot, upOpts, report);
+  const upStdout = await nexusUp(projectRoot, upOpts);
 
   const nexusUrl =
     config.nexusUrl ??
