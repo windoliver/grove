@@ -85,6 +85,7 @@ try {
   let cas = runtime.cas as import("../core/cas.js").ContentStore;
   const zoneId = process.env.GROVE_ZONE_ID ?? "default";
   let nexusClient: import("../nexus/nexus-http-client.js").NexusHttpClient | undefined;
+  let nexusHandoffStore: import("../nexus/nexus-handoff-store.js").NexusHandoffStore | undefined;
 
   if (nexusUrl) {
     try {
@@ -112,6 +113,8 @@ try {
         bountyStore = new NexusBountyStore({ client: nexusClient, zoneId });
         outcomeStore = new NexusOutcomeStore({ client: nexusClient, zoneId });
         cas = new NexusCas({ client: nexusClient, zoneId });
+        const { NexusHandoffStore } = await import("../nexus/nexus-handoff-store.js");
+        nexusHandoffStore = new NexusHandoffStore(nexusClient, process.env.GROVE_SESSION_ID);
         process.stderr.write(`grove-mcp: using Nexus stores at ${nexusUrl}\n`);
         try {
           const { appendFileSync } = await import("node:fs");
@@ -119,7 +122,9 @@ try {
             "/tmp/grove-debug.log",
             `[${new Date().toISOString()}] [mcp-serve] NEXUS STORES active at ${nexusUrl}\n`,
           );
-        } catch {}
+        } catch {
+          /* ignore */
+        }
       } else {
         process.stderr.write(`grove-mcp: Nexus unreachable, using local stores\n`);
         try {
@@ -128,7 +133,9 @@ try {
             "/tmp/grove-debug.log",
             `[${new Date().toISOString()}] [mcp-serve] LOCAL STORES (Nexus unreachable at ${nexusUrl})\n`,
           );
-        } catch {}
+        } catch {
+          /* ignore */
+        }
         nexusClient = undefined;
       }
     } catch (err) {
@@ -158,7 +165,9 @@ try {
         "/tmp/grove-debug.log",
         `[${new Date().toISOString()}] [mcp-serve] TopologyRouter created, eventBus=${nexusClient ? "NexusEventBus" : "LocalEventBus"}\n`,
       );
-    } catch {}
+    } catch {
+      /* ignore */
+    }
   }
 
   deps = {
@@ -174,6 +183,8 @@ try {
     ...(outcomeStore ? { outcomeStore } : {}),
     ...(eventBus ? { eventBus } : {}),
     ...(topologyRouter ? { topologyRouter } : {}),
+    // Nexus handoff store when available, falls back to local SQLite
+    handoffStore: nexusHandoffStore ?? runtime.handoffStore,
   };
   // Derive MCP tool preset from contract mode — #11 MCP Tool Surface + #12 Concept Usage
   const contractMode = runtime.contract?.mode ?? "exploration";

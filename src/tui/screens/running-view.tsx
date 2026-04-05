@@ -34,6 +34,7 @@ import { isVfsProvider } from "../provider.js";
 import { agentStatusIcon, KIND_ICONS, PLATFORM_COLORS, theme } from "../theme.js";
 import { AgentListView } from "../views/agent-list.js";
 import { DagView } from "../views/dag.js";
+import { HandoffsView } from "../views/handoffs-view.js";
 import { TerminalView } from "../views/terminal.js";
 import { TracePane } from "../views/trace-pane.js";
 import { VfsBrowserView } from "../views/vfs-browser.js";
@@ -638,6 +639,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             logBuffers,
             traceSelectedAgent,
             traceScrollOffset,
+            sessionStartedAt,
           })}
           {renderStatusBar(
             expandedPanel,
@@ -1006,6 +1008,7 @@ interface PanelRenderContext {
   readonly logBuffers?: ReadonlyMap<string, AgentLogBuffer> | undefined;
   readonly traceSelectedAgent?: number;
   readonly traceScrollOffset?: number;
+  readonly sessionStartedAt?: string | undefined;
 }
 
 /** Render the content of an expanded panel. */
@@ -1073,6 +1076,16 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
         />
       );
     }
+    case RunningPanel.Handoffs:
+      return (
+        <HandoffsView
+          provider={ctx.provider}
+          intervalMs={ctx.intervalMs}
+          active
+          cursor={0}
+          sessionStartedAt={ctx.sessionStartedAt}
+        />
+      );
   }
 }
 
@@ -1208,7 +1221,7 @@ function contextualHints(
 
   if (expandedPanel === null) {
     // Default feed view
-    hints.push("1-4:panels", "e:traces", "j/k:nav");
+    hints.push("1-5:panels", "e:traces", "j/k:nav");
   } else if (expandedPanel === RunningPanel.Trace) {
     // Trace pane active
     hints.push("j/k:agent", "J/K:scroll", "G/g:top/bottom", "Tab:cycle");

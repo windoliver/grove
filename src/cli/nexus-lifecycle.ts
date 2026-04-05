@@ -466,12 +466,14 @@ export async function waitForNexusHealth(
 /**
  * Discover a running Nexus container via Docker and return its URL.
  *
- * Scans `docker ps` for containers matching the Nexus image, extracts
- * the mapped host port for 2026/tcp, and health-checks it.
- * This lets Grove reuse a Nexus stack started from any directory.
+ * First checks host-bound port mappings (0.0.0.0:PORT->2026/tcp).
+ * Then falls back to container internal IPs (for containers started without
+ * host port bindings, e.g. via docker compose without ports: section).
+ * This lets Grove reuse any Nexus stack regardless of how it was started.
  */
 export async function discoverRunningNexus(): Promise<string | undefined> {
   try {
+    // Get container IDs + ports for any container exposing 2026 (Nexus port)
     const proc = Bun.spawn(
       [
         "docker",
@@ -479,27 +481,58 @@ export async function discoverRunningNexus(): Promise<string | undefined> {
         "--filter",
         "ancestor=ghcr.io/nexi-lab/nexus:edge",
         "--format",
-        "{{.Ports}}",
+        "{{.ID}}|{{.Ports}}",
       ],
       { stdout: "pipe", stderr: "pipe" },
     );
     const [code, stdout] = await Promise.all([proc.exited, new Response(proc.stdout).text()]);
     if (code !== 0 || !stdout.trim()) return undefined;
 
-    // Parse port mappings like "0.0.0.0:27960->2026/tcp"
+    const candidateUrls: string[] = [];
+
     for (const line of stdout.trim().split("\n")) {
-      const match = line.match(/(?:0\.0\.0\.0|:::):(\d+)->2026\/tcp/);
-      if (match?.[1]) {
-        const port = match[1];
-        const url = `http://localhost:${port}`;
-        try {
-          const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(3_000) });
-          const body = (await res.json().catch(() => ({}))) as { status?: string };
-          // Accept both healthy and starting (starting = Raft election, will become healthy)
-          if (body.status === "healthy" || body.status === "starting") return url;
-        } catch {
-          // Not reachable despite container running
+      const [id, ports] = line.split("|");
+      if (!id || !ports) continue;
+
+      // 1. Prefer host-bound port: "0.0.0.0:27960->2026/tcp"
+      const hostMatch = ports.match(/(?:0\.0\.0\.0|:::):(\d+)->2026\/tcp/);
+      if (hostMatch?.[1]) {
+        candidateUrls.push(`http://localhost:${hostMatch[1]}`);
+        continue;
+      }
+
+      // 2. Fall back: inspect container for internal IP + use Nexus default port 2026
+      try {
+        const inspectProc = Bun.spawn(
+          [
+            "docker",
+            "inspect",
+            id.trim(),
+            "--format",
+            "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}",
+          ],
+          { stdout: "pipe", stderr: "pipe" },
+        );
+        const [, inspectOut] = await Promise.all([
+          inspectProc.exited,
+          new Response(inspectProc.stdout).text(),
+        ]);
+        for (const ip of inspectOut.trim().split(/\s+/)) {
+          if (ip && ip !== "") candidateUrls.push(`http://${ip}:2026`);
         }
+      } catch {
+        // Docker inspect failed — skip
+      }
+    }
+
+    for (const url of candidateUrls) {
+      try {
+        const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(3_000) });
+        const body = (await res.json().catch(() => ({}))) as { status?: string };
+        // Accept both healthy and starting (starting = Raft election, will become healthy)
+        if (body.status === "healthy" || body.status === "starting") return url;
+      } catch {
+        // Not reachable — try next candidate
       }
     }
   } catch {
@@ -562,7 +595,18 @@ export async function ensureNexusRunning(
     // best-effort
   }
 
+  // Also probe container IPs directly — works even when Nexus has no host port binding
+  // (Docker Desktop on Mac routes container IPs from the host). Forward-compatible:
+  // when Nexus fixes NEXUS_ADVERTISE_HOST, localhost:PORT will work too.
+  let containerUrl: string | undefined;
+  try {
+    containerUrl = await discoverRunningNexus();
+  } catch {
+    // best-effort
+  }
+
   const candidateUrls = [
+    containerUrl, // container IP (works without port binding)
     config.nexusUrl,
     readNexusUrl(projectRoot),
     stateFileUrl,
@@ -572,10 +616,12 @@ export async function ensureNexusRunning(
 
   const urlsToTry = [...new Set(candidateUrls)];
 
+  report(`[nexus] checking URLs: ${urlsToTry.join(", ")}`);
   for (const url of urlsToTry) {
     try {
       const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(3_000) });
       const body = (await res.json().catch(() => ({}))) as { status?: string };
+      report(`[nexus] ${url} → status=${body.status}`);
       if (body.status === "healthy") {
         const apiKey = readNexusApiKey(projectRoot);
         report("Nexus is ready (already running)");
@@ -591,16 +637,6 @@ export async function ensureNexusRunning(
     } catch {
       // Not reachable — try next
     }
-  }
-
-  // Also try discovering a running Nexus container via Docker directly.
-  const discoveredUrl = await discoverRunningNexus();
-  if (discoveredUrl) {
-    report(`Discovered Nexus at ${discoveredUrl}, waiting for healthy...`);
-    await waitForNexusHealth(discoveredUrl);
-    const apiKey = readNexusApiKey(projectRoot);
-    report("Nexus is ready");
-    return { url: discoveredUrl, apiKey };
   }
 
   // -----------------------------------------------------------------------
@@ -669,7 +705,7 @@ export async function ensureNexusRunning(
       ? " (--build)"
       : "";
   report(`Starting Nexus${buildLabel}...`);
-  const upStdout = await nexusUp(projectRoot, upOpts);
+  const upStdout = await nexusUp(projectRoot, upOpts, report);
 
   const nexusUrl =
     config.nexusUrl ??

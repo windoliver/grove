@@ -92,6 +92,7 @@ export class RemoteDataProvider
     gossip: true,
     goals: true,
     sessions: true,
+    handoffs: true, // Available via GET /api/handoffs on the local grove server
   };
 
   private readonly baseUrl: string;
@@ -641,6 +642,29 @@ export class RemoteDataProvider
       mode: "remote",
       backendLabel: this.label,
     };
+  }
+
+  async markHandoffDelivered(handoffId: string): Promise<void> {
+    await fetch(`${this.baseUrl}/api/handoffs/${encodeURIComponent(handoffId)}/delivered`, {
+      method: "POST",
+    });
+  }
+
+  async getHandoffs(
+    query?: import("../core/handoff.js").HandoffQuery,
+  ): Promise<readonly import("../core/handoff.js").Handoff[]> {
+    const params = new URLSearchParams();
+    if (query?.toRole) params.set("toRole", query.toRole);
+    if (query?.fromRole) params.set("fromRole", query.fromRole);
+    if (query?.sourceCid) params.set("sourceCid", query.sourceCid);
+    if (query?.status)
+      params.set("status", Array.isArray(query.status) ? (query.status[0] ?? "") : query.status);
+    if (query?.limit) params.set("limit", String(query.limit));
+    const qs = params.toString();
+    const resp = await fetch(`${this.baseUrl}/api/handoffs${qs ? `?${qs}` : ""}`);
+    if (!resp.ok) return [];
+    const data = (await resp.json()) as { handoffs?: import("../core/handoff.js").Handoff[] };
+    return data.handoffs ?? [];
   }
 
   close(): void {

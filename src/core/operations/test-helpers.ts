@@ -1,7 +1,8 @@
 /**
  * Shared test utilities for operation tests.
  *
- * Provides OperationDeps backed by real SQLite and filesystem CAS.
+ * Provides OperationDeps backed by real SQLite and filesystem CAS,
+ * plus a lightweight in-memory ContributionStore for routing tests.
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -19,8 +20,71 @@ import type { ContentStore } from "../cas.js";
 import type { GroveContract } from "../contract.js";
 import { DefaultFrontierCalculator } from "../frontier.js";
 import { InMemoryCreditsService } from "../in-memory-credits.js";
+import { InMemoryHandoffStore } from "../in-memory-handoff-store.js";
+import type { Contribution } from "../models.js";
 import type { OutcomeStore } from "../outcome.js";
+import type { ContributionStore } from "../store.js";
 import type { OperationDeps } from "./deps.js";
+
+/**
+ * Minimal in-memory ContributionStore for unit tests that don't need SQLite.
+ * Suitable for routing and event-bus tests where persistence is not required.
+ */
+export function makeInMemoryContributionStore(items: Contribution[] = []): ContributionStore {
+  const store = [...items];
+  return {
+    storeIdentity: undefined,
+    put: async (c: Contribution) => {
+      if (!store.find((x) => x.cid === c.cid)) store.push(c);
+    },
+    putMany: async (cs: readonly Contribution[]) => {
+      for (const c of cs) {
+        if (!store.find((x) => x.cid === c.cid)) store.push(c);
+      }
+    },
+    get: async (cid: string) => store.find((c) => c.cid === cid),
+    getMany: async (cids: readonly string[]) => {
+      const cidSet = new Set(cids);
+      const result = new Map<string, Contribution>();
+      for (const c of store) {
+        if (cidSet.has(c.cid)) result.set(c.cid, c);
+      }
+      return result;
+    },
+    list: async (query?) => {
+      let result = [...store];
+      if (query?.kind) result = result.filter((c) => c.kind === query.kind);
+      if (query?.mode) result = result.filter((c) => c.mode === query.mode);
+      if (query?.agentId) result = result.filter((c) => c.agent.agentId === query.agentId);
+      if (query?.limit) result = result.slice(0, query.limit);
+      return result;
+    },
+    children: async () => [],
+    ancestors: async () => [],
+    relationsOf: async () => [],
+    relatedTo: async () => [],
+    search: async () => [],
+    findExisting: async () => [],
+    count: async (query?) => {
+      let result = [...store];
+      if (query?.kind) result = result.filter((c) => c.kind === query.kind);
+      if (query?.mode) result = result.filter((c) => c.mode === query.mode);
+      return result.length;
+    },
+    countSince: async (query) =>
+      store.filter((c) => {
+        if (query.agentId && c.agent.agentId !== query.agentId) return false;
+        return c.createdAt >= query.since;
+      }).length,
+    thread: async () => [],
+    incomingSources: async () => [],
+    replyCounts: async () => new Map(),
+    hotThreads: async () => [],
+    close: () => {
+      /* expected */
+    },
+  };
+}
 
 /** OperationDeps with all fields guaranteed present (for tests). */
 export type FullOperationDeps = {
@@ -58,6 +122,8 @@ export async function createTestOperationDeps(): Promise<TestOperationDeps> {
     cas,
   });
 
+  const handoffStore = new InMemoryHandoffStore();
+
   const deps: FullOperationDeps = {
     contributionStore,
     claimStore,
@@ -66,6 +132,7 @@ export async function createTestOperationDeps(): Promise<TestOperationDeps> {
     cas,
     frontier,
     workspace,
+    handoffStore,
     contract: undefined as unknown as GroveContract,
     outcomeStore: undefined as unknown as OutcomeStore,
     onContributionWrite: () => {

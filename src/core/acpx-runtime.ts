@@ -13,6 +13,14 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 
+function appendLog(msg: string): void {
+  try {
+    appendFileSync("/tmp/grove-debug.log", `[${new Date().toISOString()}] ${msg}\n`);
+  } catch {
+    /* ignore */
+  }
+}
+
 /** Default agent backend used by acpx when none is specified. */
 const DEFAULT_AGENT = "codex";
 
@@ -138,6 +146,9 @@ export class AcpxRuntime implements AgentRuntime {
    * When the prompt completes, fires idle callbacks.
    */
   private sendAsync(entry: AcpxSessionEntry, message: string): void {
+    appendLog(
+      `[acpx.sendAsync] sessionName=${entry.sessionName} role=${entry.session.role} logFile=${entry.logFile} agent=${entry.agent} cwd=${entry.cwd}`,
+    );
     entry.session = { ...entry.session, status: "running" };
 
     // Wrap message with system-reminder that enforces MCP tool usage
@@ -173,6 +184,9 @@ ${message}`;
       }
     }
 
+    appendLog(
+      `[acpx.sendAsync] spawning: acpx --approve-all ${entry.agent} -s ${entry.sessionName} <message len=${wrappedMessage.length}>`,
+    );
     const child = nodeSpawn(
       "acpx",
       ["--approve-all", entry.agent, "-s", entry.sessionName, wrappedMessage],
@@ -184,6 +198,16 @@ ${message}`;
     );
 
     entry.activeProc = child;
+    child.on("spawn", () => {
+      appendLog(
+        `[acpx.sendAsync] child spawned OK pid=${child.pid} for sessionName=${entry.sessionName}`,
+      );
+    });
+    child.on("error", (spawnErr) => {
+      appendLog(
+        `[acpx.sendAsync] child error: ${spawnErr.message} for sessionName=${entry.sessionName}`,
+      );
+    });
 
     // Stream stdout to output callbacks + log file
     child.stdout?.on("data", (chunk: Buffer) => {
@@ -218,6 +242,7 @@ ${message}`;
     });
 
     child.on("close", (code) => {
+      appendLog(`[acpx.sendAsync] child closed exit=${code} sessionName=${entry.sessionName}`);
       entry.activeProc = null;
       const ts = new Date().toISOString();
       if (code === 0) {
@@ -262,9 +287,15 @@ ${message}`;
   }
 
   async send(session: AgentSession, message: string): Promise<void> {
+    appendLog(
+      `[acpx.send] called for sessionId=${session.id} role=${session.role} status=${session.status} sessionsMapSize=${this.sessions.size} sessionIds=[${[...this.sessions.keys()].join(",")}]`,
+    );
     let entry = this.sessions.get(session.id);
     // For reattached sessions (not spawned by this runtime), create a minimal entry
     if (!entry) {
+      appendLog(
+        `[acpx.send] sessionId=${session.id} NOT in sessions map → creating reattach entry`,
+      );
       entry = {
         session,
         agent: this.agent,
@@ -278,7 +309,14 @@ ${message}`;
         logFile: this.logDir ? join(this.logDir, `${session.role}-reattach.log`) : null,
       };
       this.sessions.set(session.id, entry);
+    } else {
+      appendLog(
+        `[acpx.send] sessionId=${session.id} FOUND in sessions map, logFile=${entry.logFile}, sessionName=${entry.sessionName}`,
+      );
     }
+    appendLog(
+      `[acpx.send] calling sendAsync for sessionId=${session.id} sessionName=${entry.sessionName}`,
+    );
     this.sendAsync(entry, message);
   }
 

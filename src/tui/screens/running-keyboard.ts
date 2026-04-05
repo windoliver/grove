@@ -13,17 +13,18 @@ import type { ZoomLevel } from "../panels/panel-registry.js";
 // Running panel identifiers
 // ---------------------------------------------------------------------------
 
-/** The 5 panels available in RunningView's progressive disclosure. */
+/** The 6 panels available in RunningView's progressive disclosure. */
 export const RunningPanel = {
   Feed: 0,
   Agents: 1,
   Dag: 2,
   Terminal: 3,
   Trace: 4,
+  Handoffs: 5,
 } as const;
 export type RunningPanel = (typeof RunningPanel)[keyof typeof RunningPanel];
 
-export const RUNNING_PANEL_COUNT = 5;
+export const RUNNING_PANEL_COUNT = 6;
 
 export const RUNNING_PANEL_LABELS: Readonly<Record<RunningPanel, string>> = {
   [RunningPanel.Feed]: "Feed",
@@ -31,6 +32,7 @@ export const RUNNING_PANEL_LABELS: Readonly<Record<RunningPanel, string>> = {
   [RunningPanel.Dag]: "DAG",
   [RunningPanel.Terminal]: "Terminal",
   [RunningPanel.Trace]: "Trace",
+  [RunningPanel.Handoffs]: "Handoffs",
 };
 
 // ---------------------------------------------------------------------------
@@ -294,6 +296,10 @@ export function routeRunningKey(
   }
   if (input === "4") {
     actions.expandPanel(RunningPanel.Terminal);
+    return true;
+  }
+  if (input === "5") {
+    actions.expandPanel(RunningPanel.Handoffs);
     return true;
   }
 

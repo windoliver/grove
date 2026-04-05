@@ -20,6 +20,16 @@ export interface PersistedSpawnRecord {
   readonly agentId: string;
   readonly workspacePath: string;
   readonly spawnedAt: string;
+  /**
+   * The actual runtime session ID returned by AgentRuntime.spawn()
+   * (e.g., "grove-coder-0-abc123" from AcpxRuntime).
+   *
+   * Required for reconcile() to correctly match live sessions against
+   * stored records. Without this, reconcile constructs "grove-{spawnId}"
+   * which doesn't match the acpx session name, causing reattached=0 and
+   * forcing every TUI start to fall back to scanning ALL acpx sessions.
+   */
+  readonly acpxSessionId?: string;
 }
 
 /** Interface for persisting spawn records across TUI restarts. */

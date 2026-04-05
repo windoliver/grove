@@ -11,6 +11,7 @@ import type { GroveContract } from "../contract.js";
 import type { CreditsService } from "../credits.js";
 import type { EventBus } from "../event-bus.js";
 import type { FrontierCalculator } from "../frontier.js";
+import type { HandoffStore } from "../handoff.js";
 import type { HookRunner } from "../hooks.js";
 import type { OutcomeStore } from "../outcome.js";
 import type { ClaimStore, ContributionStore } from "../store.js";
@@ -41,6 +42,8 @@ export interface OperationDeps {
   readonly eventBus?: EventBus | undefined;
   /** Optional topology router for routing contribution events to downstream agents. */
   readonly topologyRouter?: TopologyRouter | undefined;
+  /** Optional handoff store for creating durable routing coordination records. */
+  readonly handoffStore?: HandoffStore | undefined;
   /** Optional hook runner for executing after_contribute hooks. */
   readonly hookRunner?: HookRunner | undefined;
   /** Working directory for hook execution. */

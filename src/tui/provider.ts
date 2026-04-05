@@ -11,6 +11,7 @@
  */
 
 import type { Frontier, FrontierQuery } from "../core/frontier.js";
+import type { Handoff, HandoffQuery } from "../core/handoff.js";
 import type {
   AgentIdentity,
   Claim,
@@ -38,6 +39,7 @@ export interface ProviderCapabilities {
   readonly gossip: boolean;
   readonly goals: boolean;
   readonly sessions: boolean;
+  readonly handoffs: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +334,17 @@ export interface TuiBountyProvider {
 /** Gossip peer access — available when capabilities.gossip is true. */
 export interface TuiGossipProvider {
   getGossipPeers(): Promise<readonly import("../core/gossip/types.js").PeerInfo[]>;
+}
+
+/** Handoff queries — available when capabilities.handoffs is true. */
+export interface TuiHandoffProvider {
+  getHandoffs(query?: HandoffQuery): Promise<readonly Handoff[]>;
+  markHandoffDelivered(handoffId: string): Promise<void>;
+}
+
+/** Type guard: does the provider support handoff queries? */
+export function isHandoffProvider(p: unknown): p is TuiHandoffProvider {
+  return typeof (p as TuiHandoffProvider).getHandoffs === "function";
 }
 
 /** Goal management — available when capabilities.goals is true. */

@@ -73,6 +73,9 @@ export const ContributeResultSchema: z.ZodType = z.object({
   artifactCount: z.number().int().nonnegative(),
   relationCount: z.number().int().nonnegative(),
   createdAt: z.string(),
+  routedTo: z.array(z.string()).optional(),
+  handoffIds: z.array(z.string()).optional(),
+  policy: z.unknown().optional(),
 });
 
 /** Schema for ReviewResult. */

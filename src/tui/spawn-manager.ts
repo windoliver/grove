@@ -22,6 +22,22 @@ import { loadTraceHistory, saveTraceHistory } from "./data/trace-persistence.js"
 import { debugLog } from "./debug-log.js";
 import type { NexusWsBridge } from "./nexus-ws-bridge.js";
 import type { TuiDataProvider } from "./provider.js";
+
+// ---------------------------------------------------------------------------
+// Module-level global timer tracking
+// ---------------------------------------------------------------------------
+// SpawnManager may be recreated when appProps change (useMemo in tui-app.tsx).
+// A new instance can't clear timers owned by the old instance. Using a module
+// global ensures ALL contribution poll timers are cleared regardless of which
+// instance started them.
+const _allGlobalContribTimers: ReturnType<typeof setInterval>[] = [];
+function clearAllGlobalContribTimers(): void {
+  for (const t of _allGlobalContribTimers) {
+    clearInterval(t);
+  }
+  _allGlobalContribTimers.length = 0;
+}
+
 import type { PersistedSpawnRecord, SessionStore } from "./session-store.js";
 
 /** PR context injected as env vars when spawning agents. */
@@ -66,8 +82,14 @@ export class SpawnManager {
   private sessionId: string | undefined;
   private groveDir: string | undefined;
   private logPollTimer: ReturnType<typeof setInterval> | null = null;
-  private contributionPollTimer: ReturnType<typeof setInterval> | null = null;
+  // Track ALL interval handles — prevents "lost handle" leak when startContributionPolling
+  // is called multiple times (e.g. when React effect deps change during session startup).
+  private allContributionPollTimers: ReturnType<typeof setInterval>[] = [];
   private readonly seenCids = new Set<string>();
+  // spawnIds that should receive IPC routing — populated when agents are spawned
+  // or explicitly reattached for the CURRENT session. Prevents routing to stale
+  // sessions from previous sessions that reconcile() found still alive in acpx.
+  private readonly routableSessions = new Set<string>();
   private onContributionDetected:
     | ((c: import("../core/models.js").Contribution) => void)
     | undefined;
@@ -248,6 +270,7 @@ export class SpawnManager {
         };
         const session = await this.agentRuntime.spawn(roleId, agentConfig);
         this.agentSessions.set(spawnId, session);
+        this.routableSessions.add(spawnId);
       } else if (this.tmux) {
         // Fallback: tmux (for TUI testing)
         const options: SpawnOptions = {
@@ -294,6 +317,11 @@ export class SpawnManager {
       targetRef: spawnId,
       agentId: spawnId,
     });
+    // Store the actual runtime session ID so reconcile() can correctly
+    // match stored records to live acpx sessions. Without this, reconcile
+    // constructs "grove-{spawnId}" which never matches the acpx name
+    // "grove-{role}-{counter}-{ts}", causing fallback on every TUI restart.
+    const acpxSessionId = this.agentSessions.get(spawnId)?.id;
     this.sessionStore?.save({
       spawnId,
       claimId: "",
@@ -301,6 +329,7 @@ export class SpawnManager {
       agentId: spawnId,
       workspacePath,
       spawnedAt: new Date().toISOString(),
+      ...(acpxSessionId ? { acpxSessionId } : {}),
     });
 
     // Step 5: Register session with NexusWsBridge for push-based IPC.
@@ -425,8 +454,17 @@ export class SpawnManager {
     }
 
     for (const record of allRecords) {
-      const tmuxName = `grove-${record.spawnId}`;
-      if (liveSet.has(tmuxName)) {
+      // Use the stored acpx session ID when available. Without it, we'd construct
+      // "grove-{spawnId}" which never matches the actual acpx name format
+      // "grove-{role}-{counter}-{timestamp}" — causing reattached=0 every time.
+      const acpxId = (record as { acpxSessionId?: string }).acpxSessionId;
+      const lookupId = acpxId ?? `grove-${record.spawnId}`;
+      debugLog(
+        "reconcile",
+        `checking record spawnId=${record.spawnId} lookupId=${lookupId} inLiveSet=${liveSet.has(lookupId)}`,
+      );
+
+      if (liveSet.has(lookupId)) {
         // Re-attach: restore in-memory state
         this.spawnRecords.set(record.spawnId, {
           claimId: record.claimId,
@@ -434,16 +472,20 @@ export class SpawnManager {
           agentId: record.agentId,
         });
         // Also restore agent session so sendToAgent/getActiveRoles work
-        const liveSession = liveSessionMap.get(tmuxName);
+        const liveSession = liveSessionMap.get(lookupId);
         if (liveSession) {
           this.agentSessions.set(record.spawnId, liveSession);
+          // Mark as routable — this is a verified session from our store
+          this.routableSessions.add(record.spawnId);
         }
         // Ensure log buffer exists for reconciled agents
         const role = record.spawnId.replace(/-[a-z0-9]+$/i, "");
         this.ensureLogBuffer(role);
         reattached++;
+        debugLog("reconcile", `reattached spawnId=${record.spawnId} acpxId=${lookupId}`);
       } else {
         // Dead session: clean workspace + remove record
+        debugLog("reconcile", `dead session spawnId=${record.spawnId} — cleaning up`);
         if (this.provider.cleanWorkspace) {
           await safeCleanup(
             this.provider.cleanWorkspace(record.targetRef, record.agentId),
@@ -458,11 +500,21 @@ export class SpawnManager {
 
     // Fallback: scan live acpx sessions and reattach those whose workspace
     // is under this grove's workspaces directory (filters out other projects).
+    //
+    // This path fires when the session store has no records (first launch ever,
+    // store was lost, or all sessions were cleaned up). With acpxSessionId stored,
+    // this should be rare in normal operation.
+    //
+    // IMPORTANT: Only the MOST RECENT session per role is added here, and it is
+    // marked routable. This matches the expected "single active session per role"
+    // invariant. With 200+ stale sessions, the list is sorted newest-first by
+    // acpx so the most recent match is used.
     if (reattached === 0 && this.agentRuntime && this.groveDir) {
       const workspacesPrefix = join(this.groveDir, "workspaces");
       // acpx sessions list includes the cwd — use it to filter
       try {
         const output = execSync("acpx codex sessions list", { encoding: "utf-8", stdio: "pipe" });
+        debugLog("reconcile", `fallback: scanning acpx sessions (reattached=0)`);
         for (const line of output.trim().split("\n").filter(Boolean)) {
           const fields = line.split("\t");
           const name = (fields[1] ?? "").trim();
@@ -477,8 +529,10 @@ export class SpawnManager {
             const session = liveSessionMap.get(name);
             if (session) {
               this.agentSessions.set(role, session);
+              this.routableSessions.add(role); // mark as routable — first (newest) match per role
               this.spawnRecords.set(role, { claimId: "", targetRef: role, agentId: role });
               reattached++;
+              debugLog("reconcile", `fallback reattached role=${role} acpxId=${name}`);
             }
           }
         }
@@ -561,42 +615,78 @@ export class SpawnManager {
     }
 
     const targetRoles = sourceRoleDef.edges.map((e) => e.target);
+    debugLog(
+      "route",
+      `targetRoles=${targetRoles.join(",")} agentSessions=[${[...this.agentSessions.keys()].join(",")}] routableSessions=[${[...this.routableSessions].join(",")}]`,
+    );
     for (const targetRole of targetRoles) {
+      let foundSpawnId: string | undefined;
       // Find the agent session for this target role
       for (const [spawnId, session] of this.agentSessions) {
         if (spawnId.startsWith(targetRole)) {
+          foundSpawnId = spawnId;
           // Sync source workspace files to target workspace before sending IPC.
           // Each agent has its own git worktree — files created by one agent
           // are invisible to others without syncing.
           if (sourceWorkspace && this.groveDir) {
             const targetWorkspace = join(this.groveDir, "workspaces", spawnId);
+            debugLog("route", `rsync ${sourceWorkspace} → ${targetWorkspace}`);
             try {
               execSync(
                 `rsync -a --exclude='.git' --exclude='.mcp.json' --exclude='CODEX.md' --exclude='CLAUDE.md' --exclude='.grove-role' "${sourceWorkspace}/" "${targetWorkspace}/"`,
                 { stdio: "pipe", timeout: 10_000 },
               );
-            } catch {
-              // Best-effort — agent can still work without sync
+              debugLog("route", `rsync done`);
+            } catch (rsyncErr) {
+              debugLog(
+                "route",
+                `rsync failed: ${rsyncErr instanceof Error ? rsyncErr.message : String(rsyncErr)}`,
+              );
             }
           }
 
           const message = `[IPC from ${sourceRole}] New ${kind}: ${summary}. Please review and respond.`;
 
-          // Send via Nexus IPC (persists message + triggers SSE) AND direct runtime.send
+          // Only route to sessions that are marked routable (spawned or explicitly
+          // reattached for the current session). Prevents IPC delivery to stale
+          // sessions from previous sessions that reconcile() found still alive.
+          const isRoutable = this.routableSessions.has(spawnId);
+          debugLog(
+            "route",
+            `step: spawnId=${spawnId} routable=${isRoutable} sessionId=${session.id} sessionRole=${session.role} sessionStatus=${session.status} wsBridge=${!!this.wsBridge}`,
+          );
+          if (!isRoutable) {
+            debugLog("route", `SKIP: not routable, breaking`);
+            break;
+          }
           if (this.wsBridge) {
+            debugLog("route", `wsBridge path: calling wsBridge.send`);
+            // Nexus IPC path: wsBridge.send() stores the message in the agent's inbox,
+            // then NexusWsBridge SSE delivers it via runtime.send(). Don't also call
+            // runtime.send() here — that would double-deliver.
             void (this.wsBridge as import("./nexus-ws-bridge.js").NexusWsBridge)
               .send(sourceRole, targetRole, { summary, kind })
               .catch(() => {
                 /* best-effort */
               });
-          }
-          try {
-            await this.agentRuntime.send(session, message);
-          } catch {
-            // Non-fatal
+          } else {
+            // Local path (no Nexus): direct runtime.send() is the only delivery mechanism.
+            debugLog("route", `local path: calling agentRuntime.send(sessionId=${session.id})`);
+            try {
+              await this.agentRuntime.send(session, message);
+              debugLog("route", `agentRuntime.send completed for sessionId=${session.id}`);
+            } catch (sendErr) {
+              debugLog(
+                "route",
+                `agentRuntime.send FAILED: ${sendErr instanceof Error ? sendErr.message : String(sendErr)}`,
+              );
+            }
           }
           break;
         }
+      }
+      if (!foundSpawnId) {
+        debugLog("route", `NO session found for targetRole=${targetRole} — routing skipped`);
       }
     }
   }
@@ -659,10 +749,53 @@ export class SpawnManager {
    * Start polling log files for all active agent roles.
    * Call once after spawn/reconcile. Subsequent calls restart the timer.
    */
-  startLogPolling(intervalMs: number = 2000): void {
+  startLogPolling(intervalMs: number = 2000, seekToEnd = false): void {
     this.stopLogPolling();
     if (!this.groveDir) return;
     const logDir = `${this.groveDir}/agent-logs`;
+
+    // On fresh session start, record the current end-of-file byte offset for
+    // ALL existing log files for each role. This prevents old data from being
+    // shown when a new session starts.
+    //
+    // WHY per-path, not just newest file:
+    //   acpx recycles numbered log files (coder-0.log, coder-1.log) — the new
+    //   session might write to ANY of them. recordSeekPosition() stores the
+    //   current size of each file; pollLogFile() restores the offset when it
+    //   creates a new reader, even if the path differs from the current reader.
+    //
+    // WHY synchronous statSync (not async seekToEnd):
+    //   reconcile() calls startLogPolling() shortly after (same async chain).
+    //   If we used async seeks, the positions might not be set yet when the
+    //   first pollAll() fires → read from byte 0 → old data included.
+    if (seekToEnd) {
+      try {
+        const { readdirSync, statSync } = require("node:fs") as typeof import("node:fs");
+        const files = readdirSync(logDir).filter((f: string) => f.endsWith(".log"));
+        for (const [role, buffer] of this.logBuffers) {
+          const roleFiles = files.filter(
+            (f: string) => f === `${role}.log` || f.startsWith(`${role}-`),
+          );
+          let seekCount = 0;
+          for (const roleFile of roleFiles) {
+            try {
+              const fileSize = statSync(`${logDir}/${roleFile}`).size;
+              buffer.recordSeekPosition(`${logDir}/${roleFile}`, fileSize);
+              seekCount++;
+            } catch {
+              // File unreadable — skip
+            }
+          }
+          buffer.clearForNewSession();
+          debugLog(
+            "seekToEnd",
+            `role=${role} seeked ${seekCount} file(s): [${roleFiles.join(",")}]`,
+          );
+        }
+      } catch (e) {
+        debugLog("seekToEnd", `error: ${String(e)}`);
+      }
+    }
 
     let pollCount = 0;
     const pollAll = () => {
@@ -677,11 +810,17 @@ export class SpawnManager {
           );
         }
         for (const [role, buffer] of this.logBuffers) {
-          // Find the newest log file for this role
+          // Find the most recently modified log file for this role
+          const { statSync } = require("node:fs") as typeof import("node:fs");
           const roleFile = files
             .filter((f: string) => f === `${role}.log` || f.startsWith(`${role}-`))
-            .sort()
-            .pop();
+            .sort((a: string, b: string) => {
+              try {
+                return statSync(`${logDir}/${b}`).mtimeMs - statSync(`${logDir}/${a}`).mtimeMs;
+              } catch {
+                return 0;
+              }
+            })[0];
           if (roleFile) {
             void buffer
               .pollLogFile(`${logDir}/${roleFile}`)
@@ -702,7 +841,9 @@ export class SpawnManager {
     };
 
     this.logPollTimer = setInterval(pollAll, intervalMs);
-    pollAll(); // Also poll immediately
+    if (!seekToEnd) {
+      pollAll(); // Also poll immediately (skip initial sync poll when seekToEnd — async seek must complete first)
+    }
   }
 
   /** Stop the log polling timer. */
@@ -711,10 +852,11 @@ export class SpawnManager {
       clearInterval(this.logPollTimer);
       this.logPollTimer = null;
     }
-    if (this.contributionPollTimer !== null) {
-      clearInterval(this.contributionPollTimer);
-      this.contributionPollTimer = null;
-    }
+    // Kill ALL contribution poll timers globally (covers timers from previous instances too)
+    clearAllGlobalContribTimers();
+    this.allContributionPollTimers = [];
+    this.contributionPollTimer = null;
+    // NOTE: do NOT clear routableSessions here — spawn() populates it before polling starts.
   }
 
   /**
@@ -726,15 +868,25 @@ export class SpawnManager {
     topology: import("../core/topology.js").AgentTopology | undefined,
     sessionStartedAt: string | undefined,
     intervalMs: number = 3000,
+    /** When true, skip routeContribution — a server-side SessionOrchestrator is handling routing. */
+    serverRoutingActive: boolean = false,
   ): void {
-    if (this.contributionPollTimer !== null) {
-      clearInterval(this.contributionPollTimer);
-    }
+    // Kill ALL timers across ALL SpawnManager instances (module-level global).
+    // SpawnManager may be recreated when appProps change; the new instance can't
+    // see the old instance's timer handles without a shared reference.
+    const prevCount = _allGlobalContribTimers.length;
+    clearAllGlobalContribTimers();
+    this.allContributionPollTimers = [];
+    this.contributionPollTimer = null;
+    debugLog(
+      "contribPoll",
+      `startContributionPolling called, cleared ${prevCount} global timer(s), seenCids=${this.seenCids.size}`,
+    );
 
     let pollCount = 0;
-    this.contributionPollTimer = setInterval(async () => {
+    const timer = setInterval(async () => {
       try {
-        const contributions = await provider.getContributions({ limit: 50 });
+        const contributions = await provider.getContributions({ limit: 500 });
         const feed = sessionStartedAt
           ? (contributions ?? []).filter((c) => c.createdAt >= sessionStartedAt)
           : (contributions ?? []);
@@ -761,9 +913,26 @@ export class SpawnManager {
                 "contribPoll",
                 `NEW cid=${c.cid.slice(0, 20)} kind=${c.kind} role=${c.agent?.role}`,
               );
-              // Route to downstream agents
-              if (c.agent?.role && topology) {
+              // Route to downstream agents — skip when server-side SessionOrchestrator
+              // is already routing via event bus (prevents double IPC delivery).
+              if (c.agent?.role && topology && !serverRoutingActive) {
                 void this.routeContribution(c.agent.role, c.summary, c.kind, topology);
+              }
+              // Mark upstream handoffs as delivered — the contribution reached the routing layer
+              if ((provider as { getHandoffs?: unknown }).getHandoffs) {
+                const hp = provider as unknown as import("./provider.js").TuiHandoffProvider;
+                void hp
+                  .getHandoffs({ sourceCid: c.cid, status: "pending_pickup" })
+                  .then((hs) => {
+                    for (const h of hs) {
+                      void hp.markHandoffDelivered(h.handoffId).catch(() => {
+                        /* best-effort */
+                      });
+                    }
+                  })
+                  .catch(() => {
+                    /* best-effort */
+                  });
               }
               // Notify callback (for TUI feed update)
               this.onContributionDetected?.(c);
@@ -775,6 +944,9 @@ export class SpawnManager {
         debugLog("contribPoll", `error: ${String(err)}`);
       }
     }, intervalMs);
+    this.contributionPollTimer = timer;
+    this.allContributionPollTimers.push(timer);
+    _allGlobalContribTimers.push(timer);
   }
 
   /** Set a callback for when new contributions are detected (for TUI feed notification). */
@@ -810,14 +982,30 @@ export class SpawnManager {
     }
   }
 
-  /** Close bridge and clear state (agents stay alive in acpx). */
+  /**
+   * Close bridge and clear state.
+   *
+   * Closes all active agent sessions so they don't accumulate in acpx
+   * across TUI restarts. Without this, each test run leaves sessions that
+   * interfere with reconcile fallback and make `acpx sessions list` noisy.
+   */
   destroy(): void {
     this.stopLogPolling();
+    this.routableSessions.clear();
+    // Close all agent sessions via runtime to prevent accumulation
+    if (this.agentRuntime) {
+      for (const session of this.agentSessions.values()) {
+        void this.agentRuntime.close(session).catch(() => {
+          /* best-effort — session may already be gone */
+        });
+      }
+    }
     for (const buffer of this.logBuffers.values()) {
       buffer.dispose();
     }
     this.logBuffers.clear();
     this.spawnRecords.clear();
+    this.agentSessions.clear();
     this.wsBridge?.close();
   }
 
