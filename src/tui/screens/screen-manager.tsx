@@ -184,14 +184,19 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             }
             // Start polling agent log files for live output
             spawnManager.startLogPolling();
-            // Detect if the HTTP server's SessionOrchestrator is already routing IPC.
-            // If yes, skip local routing to avoid double-delivery to agents.
+            // Detect if server-side routing is active — skip TUI routing to avoid
+            // double-delivery. Two modes:
+            // 1. GROVE_NEXUS_URL set: MCP TopologyRouter handles routing via NexusEventBus.
+            // 2. Local HTTP server (port 4515): SessionOrchestrator handles routing.
+            const nexusRoutingActive = !!process.env.GROVE_NEXUS_URL;
             const serverPort = process.env.PORT ?? "4515";
-            const serverActive = await fetch(`http://localhost:${serverPort}/health`, {
-              signal: AbortSignal.timeout(500),
-            })
-              .then((r) => r.ok)
-              .catch(() => false);
+            const serverActive =
+              nexusRoutingActive ||
+              (await fetch(`http://localhost:${serverPort}/health`, {
+                signal: AbortSignal.timeout(500),
+              })
+                .then((r) => r.ok)
+                .catch(() => false));
             serverRoutingActiveRef.current = serverActive;
             spawnManager.startContributionPolling(
               provider,
@@ -340,6 +345,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
 
     // Screen 3 -> Screen 2: back to goal input
     const handleLaunchBack = useCallback(() => {
+      hasSpawnedRef.current = false; // Reset so re-entering launch preview can spawn
       setState((s) => ({ ...s, screen: "goal-input" }));
     }, []);
 

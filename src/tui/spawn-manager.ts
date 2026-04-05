@@ -201,7 +201,7 @@ export class SpawnManager {
       }
       // Step 2c: Protect config files from agent mutation (#7 Workspace Mutation Constraints)
       const { chmod } = await import("node:fs/promises");
-      for (const protectedFile of [".mcp.json", "CLAUDE.md", "CODEX.md"]) {
+      for (const protectedFile of [".mcp.json", "CLAUDE.md", "CODEX.md", ".grove-role"]) {
         const filePath = join(workspacePath, protectedFile);
         await chmod(filePath, 0o444).catch(() => {
           // File may not exist — non-fatal
@@ -916,7 +916,7 @@ export class SpawnManager {
         if (pollCount < 3 || pollCount % 20 === 0) {
           debugLog(
             "contribPoll",
-            `#${pollCount} fetched=${feed.length} seen=${this.seenCids.size}`,
+            `#${pollCount} total=${contributions?.length ?? 0} feed=${feed.length} seen=${this.seenCids.size} sessionStartedAt=${sessionStartedAt ?? "none"}`,
           );
         }
 
@@ -1062,16 +1062,55 @@ export class SpawnManager {
     }
 
     // Find the grove MCP server: check dist/ first (installed), then src/ (dev)
+    // Use process.argv[1] (entry point) not import.meta.url — bun bundles may inline
+    // this file into a chunk, making import.meta.url point to the chunk file rather
+    // than a predictable path relative to the grove root.
+    // process.argv[1] = "<groveRoot>/dist/cli/main.js" or "<groveRoot>/src/cli/main.ts"
     const { dirname } = await import("node:path");
-    const groveRoot = dirname(dirname(dirname(new URL(import.meta.url).pathname)));
-    let mcpServePath = join(groveRoot, "dist", "mcp", "serve.js");
+    const entryPoint = process.argv[1] ?? "";
+    // Climb 3 levels: main.js → cli/ → dist/ or src/ → <groveRoot>
+    const groveRootFromEntry = dirname(dirname(dirname(entryPoint)));
+    // Also try import.meta.url as a fallback
+    const groveRootFromMeta = dirname(dirname(dirname(new URL(import.meta.url).pathname)));
+    debugLog(
+      "mcpConfig",
+      `entryPoint=${entryPoint} groveRootFromEntry=${groveRootFromEntry} groveRootFromMeta=${groveRootFromMeta}`,
+    );
+    let mcpServePath = join(groveRootFromEntry, "dist", "mcp", "serve.js");
+    debugLog(
+      "mcpConfig",
+      `checking dist serve.js: ${mcpServePath} exists=${existsSync(mcpServePath)}`,
+    );
     if (!existsSync(mcpServePath)) {
-      mcpServePath = join(groveRoot, "src", "mcp", "serve.ts");
+      mcpServePath = join(groveRootFromEntry, "src", "mcp", "serve.ts");
+      debugLog(
+        "mcpConfig",
+        `checking src serve.ts: ${mcpServePath} exists=${existsSync(mcpServePath)}`,
+      );
     }
-    // Fallback to project root if neither exists
+    if (!existsSync(mcpServePath)) {
+      mcpServePath = join(groveRootFromMeta, "dist", "mcp", "serve.js");
+      debugLog(
+        "mcpConfig",
+        `fallback meta dist: ${mcpServePath} exists=${existsSync(mcpServePath)}`,
+      );
+    }
+    if (!existsSync(mcpServePath)) {
+      mcpServePath = join(groveRootFromMeta, "src", "mcp", "serve.ts");
+      debugLog(
+        "mcpConfig",
+        `fallback meta src: ${mcpServePath} exists=${existsSync(mcpServePath)}`,
+      );
+    }
+    // Final fallback: project root
     if (!existsSync(mcpServePath)) {
       mcpServePath = join(projectRoot, "src", "mcp", "serve.ts");
+      debugLog(
+        "mcpConfig",
+        `final fallback projectRoot: ${mcpServePath} exists=${existsSync(mcpServePath)}`,
+      );
     }
+    debugLog("mcpConfig", `selected mcpServePath=${mcpServePath}`);
 
     const mcpConfig = {
       mcpServers: {
@@ -1083,16 +1122,26 @@ export class SpawnManager {
       },
     };
     await writeFile(join(workspacePath, ".mcp.json"), JSON.stringify(mcpConfig, null, 2), "utf-8");
+    debugLog(
+      "mcpConfig",
+      `wrote .mcp.json: serve=${mcpServePath} hasNexusUrl=${!!mcpEnv.GROVE_NEXUS_URL} GROVE_DIR=${mcpEnv.GROVE_DIR}`,
+    );
 
     // Register MCP with codex globally (codex uses ~/.codex/config.toml, not .mcp.json).
     // Use a single stable name "grove" so we don't accumulate stale per-spawn entries.
-    // MCP writes to local SQLite only — no Nexus env vars.
+    // Pass Nexus env vars so codex agents write contributions to Nexus (cross-process IPC).
     try {
+      const nexusEnvFlags = [
+        `--env GROVE_DIR=${groveDir}`,
+        ...(mcpEnv.GROVE_NEXUS_URL ? [`--env GROVE_NEXUS_URL=${mcpEnv.GROVE_NEXUS_URL}`] : []),
+        ...(mcpEnv.NEXUS_API_KEY ? [`--env NEXUS_API_KEY=${mcpEnv.NEXUS_API_KEY}`] : []),
+      ].join(" ");
       execSync(`codex mcp remove grove 2>/dev/null || true`, { stdio: "pipe", timeout: 5000 });
-      execSync(`codex mcp add grove --env GROVE_DIR=${groveDir} -- bun run ${mcpServePath}`, {
+      execSync(`codex mcp add grove ${nexusEnvFlags} -- bun run ${mcpServePath}`, {
         stdio: "pipe",
         timeout: 10000,
       });
+      debugLog("mcpConfig", `codex mcp registered: ${nexusEnvFlags}`);
     } catch {
       // Non-fatal — codex may not be installed
     }
@@ -1209,6 +1258,10 @@ You MUST include at least one score. Without scores the frontier cannot rank wor
     await writeFile(join(workspacePath, "CLAUDE.md"), instructions, "utf-8");
     // Also write CODEX.md for codex agents (codex reads CODEX.md, not CLAUDE.md)
     await writeFile(join(workspacePath, "CODEX.md"), instructions, "utf-8");
+    // Write .grove-role so MCP server can discover GROVE_AGENT_ROLE even when
+    // registered globally (codex mcp add doesn't support per-session env vars).
+    // serve.ts reads this file at startup if GROVE_AGENT_ROLE env is not set.
+    await writeFile(join(workspacePath, ".grove-role"), roleId, "utf-8");
   }
 
   private async writeAgentContext(

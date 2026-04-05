@@ -612,12 +612,14 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     }
 
     // Tab bar options (shared between feed-only and half-screen views)
+    // Must match RunningPanel enum order: Feed=0, Agents=1, Dag=2, Terminal=3, Trace=4, Handoffs=5
     const tabOptions = [
       { name: "Feed", description: "1" },
       { name: "Agents", description: "2" },
       { name: "DAG", description: "3" },
       { name: "Terminal", description: "4" },
       { name: "Traces", description: "e" },
+      { name: "Handoffs", description: "5" },
     ];
     const tabSelectedIndex = expandedPanel !== null ? expandedPanel : 0;
 
