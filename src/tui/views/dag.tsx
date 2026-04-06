@@ -62,11 +62,10 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
     () => outcomeProvider?.getOutcomes(cids) ?? Promise.resolve(new Map()),
     [outcomeProvider, cids],
   );
-  const { data: outcomes } = usePolledData<ReadonlyMap<string, OutcomeRecord>>(
-    outcomeFetcher,
-    intervalMs,
-    active && cids.length > 0,
-  );
+  const { data: outcomes, refresh: refreshOutcomes } = usePolledData<
+    ReadonlyMap<string, OutcomeRecord>
+  >(outcomeFetcher, intervalMs, active && cids.length > 0);
+  useRefreshSignal(refreshOutcomes);
 
   useEffect(() => {
     if (data?.contributions && onContributionsLoaded) {

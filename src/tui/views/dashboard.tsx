@@ -11,6 +11,7 @@ import { formatTimestamp, truncateCid } from "../../shared/format.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
+import { useRefreshSignal } from "../hooks/use-refresh-context.js";
 import type { DashboardData, TuiDataProvider } from "../provider.js";
 import { theme } from "../theme.js";
 
@@ -48,7 +49,12 @@ export const DashboardView: React.NamedExoticComponent<DashboardProps> = React.m
     onContributionsLoaded,
   }: DashboardProps): React.ReactNode {
     const fetcher = useCallback(() => provider.getDashboard(), [provider]);
-    const { data, loading, error } = usePolledData<DashboardData>(fetcher, intervalMs, active);
+    const { data, loading, error, refresh } = usePolledData<DashboardData>(
+      fetcher,
+      intervalMs,
+      active,
+    );
+    useRefreshSignal(refresh);
 
     useEffect(() => {
       if (data && onContributionsLoaded) {
