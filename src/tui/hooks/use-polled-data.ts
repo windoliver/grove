@@ -158,9 +158,12 @@ export function usePolledData<T>(
   }, [active, intervalMs, doFetch]);
 
   const refresh = useCallback(() => {
-    if (!active) return;
+    // Always allow a forced one-shot fetch (e.g. SSE event-driven callers,
+    // manual r-key). Only interval re-scheduling is gated on `active`.
     void doFetch();
-    startPolling();
+    if (active) {
+      startPolling();
+    }
   }, [active, doFetch, startPolling]);
 
   // Subscribe to the global manual-refresh signal (r-key).

@@ -28,9 +28,11 @@ export const RefreshContext: Context<RefreshSignalContext> = createContext<Refre
  */
 export function useRefreshSignal(onRefresh: () => void): void {
   const { signal } = useContext(RefreshContext);
-  const lastSignal = useRef(0);
+  // Seed with the current signal so newly mounted pollers do NOT replay
+  // historical refreshes — only future increments trigger a re-fetch.
+  const lastSignal = useRef(signal);
   useEffect(() => {
-    if (signal > 0 && signal !== lastSignal.current) {
+    if (signal > lastSignal.current) {
       lastSignal.current = signal;
       onRefresh();
     }
