@@ -6,13 +6,15 @@
  * when the signal changes — without requiring prop-drilling into every panel.
  */
 
-import { createContext, useContext, useEffect, useRef } from "react";
+import { type Context, createContext, useContext, useEffect, useRef } from "react";
 
 export interface RefreshSignalContext {
   readonly signal: number;
 }
 
-export const RefreshContext = createContext<RefreshSignalContext>({ signal: 0 });
+export const RefreshContext: Context<RefreshSignalContext> = createContext<RefreshSignalContext>({
+  signal: 0,
+});
 
 /**
  * Subscribe a panel's usePolledData refresh() to the global refresh signal.
