@@ -20,7 +20,7 @@ import { InputBar } from "./components/input-bar.js";
 import { StatusBar } from "./components/status-bar.js";
 import { PanelBar } from "./components/tab-bar.js";
 import { TooltipOverlay, useFirstLaunchTooltips } from "./components/tooltip-overlay.js";
-import { useKeybindingOverrides } from "./hooks/use-keybinding-overrides.js";
+import { buildKeyActionMap, useKeybindingOverrides } from "./hooks/use-keybinding-overrides.js";
 import type { KeyboardActions } from "./hooks/use-keyboard-handler.js";
 import { nextZoom, routeKey } from "./hooks/use-keyboard-handler.js";
 import { useNavigation } from "./hooks/use-navigation.js";
@@ -240,6 +240,7 @@ export function App({
   const { showTooltips, dismissAll: dismissTooltips } = useFirstLaunchTooltips();
   const { persistedState, saveState } = useSessionPersistence();
   const keybindingOverrides = useKeybindingOverrides();
+  const keyActionMap = useMemo(() => buildKeyActionMap(keybindingOverrides), [keybindingOverrides]);
   const [ks, dispatch] = useReducer(tuiReducer, INITIAL_KEYBOARD_STATE);
 
   // Restore persisted state on first load (item 13)
@@ -704,6 +705,10 @@ export function App({
       onTerminalScrollDown: () => dispatch({ type: "TERMINAL_SCROLL_DOWN" }),
       onTerminalScrollBottom: () => dispatch({ type: "TERMINAL_SCROLL_BOTTOM" }),
       onLayoutToggle: () => dispatch({ type: "LAYOUT_TOGGLE" }),
+      // onRefresh: no state to update — panels use usePolledData which handles
+      // interval-based refresh. A future implementation could expose a manual
+      // trigger via a ref. For now, this satisfies the KeyboardActions interface.
+      onRefresh: () => undefined,
       onVfsNavigate: () => dispatch({ type: "VFS_NAVIGATE" }),
       onArtifactPrev: () => dispatch({ type: "ARTIFACT_PREV" }),
       onArtifactNext: () => dispatch({ type: "ARTIFACT_NEXT" }),
@@ -858,6 +863,7 @@ export function App({
       selectedSession,
       hasTmux: tmux !== undefined,
       keybindingOverrides,
+      keyActionMap,
     }),
     [
       panels,
@@ -887,6 +893,7 @@ export function App({
       topology,
       paletteParentId,
       keybindingOverrides,
+      keyActionMap,
       provider,
       spawnManager,
     ],
