@@ -693,18 +693,19 @@ export class SpawnManager {
                 `wsBridge.send FAILED: ${bridgeErr instanceof Error ? bridgeErr.message : String(bridgeErr)} — falling back to agentRuntime.send`,
               );
             }
-            // Fallback: if wsBridge delivery failed, push directly via agentRuntime
-            if (!wsBridgeDelivered) {
-              debugLog("route", `fallback: agentRuntime.send(sessionId=${session.id})`);
-              try {
-                await this.agentRuntime.send(session, message);
-                debugLog("route", `fallback agentRuntime.send succeeded`);
-              } catch (sendErr) {
-                debugLog(
-                  "route",
-                  `fallback agentRuntime.send FAILED: ${sendErr instanceof Error ? sendErr.message : String(sendErr)}`,
-                );
-              }
+            // ALWAYS deliver directly via agentRuntime — wsBridge.send stores
+            // the message in Nexus for the IPC log, but SSE delivery to the
+            // codex process is unreliable. Direct runtime.send is the only
+            // guaranteed way to push text into the agent's tmux session.
+            debugLog("route", `direct: agentRuntime.send(sessionId=${session.id})`);
+            try {
+              await this.agentRuntime.send(session, message);
+              debugLog("route", `agentRuntime.send succeeded`);
+            } catch (sendErr) {
+              debugLog(
+                "route",
+                `agentRuntime.send FAILED: ${sendErr instanceof Error ? sendErr.message : String(sendErr)}`,
+              );
             }
           } else {
             // Local path (no Nexus): direct runtime.send() is the only delivery mechanism.
