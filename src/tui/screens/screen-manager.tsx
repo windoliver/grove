@@ -184,20 +184,13 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             }
             // Start polling agent log files for live output
             spawnManager.startLogPolling();
-            // IPC routing: prefer NexusWsBridge SSE push (zero polling).
-            // Fallback to contribution polling only when wsBridge isn't connected
-            // (e.g., no API key, SSE unavailable). Polling reads VFS files individually
-            // so use limit:10 + 30s interval to stay under Nexus rate limits.
-            const hasWsBridge = !!spawnManager.getWsBridge();
-            if (!hasWsBridge) {
-              spawnManager.startContributionPolling(
-                provider,
-                topology,
-                state.sessionStartedAt,
-                30000,
-                false,
-              );
-            }
+            spawnManager.startContributionPolling(
+              provider,
+              topology,
+              state.sessionStartedAt,
+              30000,
+              false,
+            );
             // Always bump — even if reattached=0, we need RunningView to pick up
             // the reconciled state (getActiveRoles may have changed).
             setReconcileVersion((v) => v + 1);

@@ -177,6 +177,15 @@ export class NexusWsBridge {
       if (eventType !== "message_delivered") return;
 
       const event = JSON.parse(raw) as SseEvent;
+      try {
+        const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+        appendFileSync(
+          "/tmp/grove-debug.log",
+          `[${new Date().toISOString()}] [wsBridge.handleEvent] role=${role} sender=${event.sender} path=${event.path} registeredSessions=[${[...this.sessions.keys()].join(",")}]\n`,
+        );
+      } catch {
+        /* */
+      }
 
       // Notify the TUI EventBus — triggers contribution feed refresh (no polling needed)
       if (this.opts.eventBus) {
@@ -191,7 +200,18 @@ export class NexusWsBridge {
       }
 
       const session = this.sessions.get(role);
-      if (!session) return;
+      if (!session) {
+        try {
+          const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+          appendFileSync(
+            "/tmp/grove-debug.log",
+            `[${new Date().toISOString()}] [wsBridge.handleEvent] NO SESSION for role=${role} — cannot deliver\n`,
+          );
+        } catch {
+          /* */
+        }
+        return;
+      }
 
       // Rsync workspace files before delivering — the callback syncs source→target workspace
       try {
@@ -212,23 +232,52 @@ export class NexusWsBridge {
     sender: string,
   ): Promise<void> {
     try {
-      const resp = await fetch(`${this.opts.nexusUrl}/api/nfs/sys_read`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.opts.apiKey}`,
-        },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "sys_read",
-          params: { path },
-          id: 1,
-        }),
-      });
-      if (!resp.ok) return;
+      // Retry on 429 (rate limit) — the inbox read is critical for IPC delivery.
+      let resp: Response | undefined;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        resp = await fetch(`${this.opts.nexusUrl}/api/nfs/sys_read`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.opts.apiKey}`,
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            method: "sys_read",
+            params: { path },
+            id: 1,
+          }),
+        });
+        if (resp.status !== 429) break;
+        // Backoff: 2s, 4s, 8s, 16s, 32s
+        await new Promise((r) => setTimeout(r, 2000 * 2 ** attempt));
+      }
+      if (!resp || !resp.ok) {
+        try {
+          const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+          appendFileSync(
+            "/tmp/grove-debug.log",
+            `[${new Date().toISOString()}] [wsBridge.readAndPush] FAIL resp.status=${resp?.status ?? "none"} path=${path}\n`,
+          );
+        } catch {
+          /* */
+        }
+        return;
+      }
 
-      const result = (await resp.json()) as { result?: { data?: string } };
-      if (!result.result?.data) return;
+      const result = (await resp.json()) as { result?: { data?: string }; error?: unknown };
+      if (!result.result?.data) {
+        try {
+          const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+          appendFileSync(
+            "/tmp/grove-debug.log",
+            `[${new Date().toISOString()}] [wsBridge.readAndPush] NO DATA path=${path} error=${JSON.stringify(result.error ?? "none").slice(0, 100)}\n`,
+          );
+        } catch {
+          /* */
+        }
+        return;
+      }
 
       const raw = Buffer.from(result.result.data, "base64").toString();
       const msg = JSON.parse(raw) as {
@@ -243,6 +292,15 @@ export class NexusWsBridge {
         (msg.payload?.body as string) ??
         JSON.stringify(msg.payload ?? {}).slice(0, 100);
       const notification = `[IPC from ${msgSender}] ${summary}`;
+      try {
+        const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+        appendFileSync(
+          "/tmp/grove-debug.log",
+          `[${new Date().toISOString()}] [wsBridge.readAndPush] delivering to session=${session.id} role=${_targetRole} notification=${notification.slice(0, 80)}\n`,
+        );
+      } catch {
+        /* */
+      }
 
       void this.opts.runtime.send(session, notification).catch(() => {
         /* non-fatal */

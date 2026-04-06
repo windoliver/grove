@@ -113,6 +113,15 @@ export class SpawnManager {
   /** Attach a NexusWsBridge for push-based IPC. Call after construction. */
   setWsBridge(bridge: NexusWsBridge): void {
     this.wsBridge = bridge;
+    // Register any sessions that were spawned before the bridge was ready.
+    // The bridge is created async (dynamic import) so agents may already be running.
+    for (const [spawnId, session] of this.agentSessions) {
+      const role = spawnId.split("-")[0]; // "coder-abc123" → "coder"
+      if (role) {
+        bridge.registerSession(role, session);
+        debugLog("wsBridge", `late-registered ${role} (spawnId=${spawnId})`);
+      }
+    }
   }
 
   getWsBridge(): NexusWsBridge | undefined {
