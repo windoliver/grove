@@ -269,6 +269,61 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     const dashboard = dashboardPoll.data ?? undefined;
     const contributions = contributionsPoll.data;
 
+    // Fetch handoffs alongside dashboard (usePolledData's setInterval doesn't
+    // survive OpenTUI remounts, so we fetch manually in the parent).
+    const [handoffs, setHandoffs] = useState<readonly import("../../core/handoff.js").Handoff[]>(
+      [],
+    );
+    useEffect(() => {
+      const hasMethod = "getHandoffs" in provider;
+      try {
+        const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+        appendFileSync(
+          "/tmp/grove-debug.log",
+          `[${new Date().toISOString()}] [handoffs.useEffect] hasGetHandoffs=${hasMethod} sessionStartedAt=${sessionStartedAt ?? "none"}\n`,
+        );
+      } catch {
+        /* */
+      }
+      if (!hasMethod) return;
+      const p = provider as {
+        getHandoffs: (q?: unknown) => Promise<readonly import("../../core/handoff.js").Handoff[]>;
+      };
+      const doFetch = () => {
+        void p
+          .getHandoffs({ limit: 200 })
+          .then((all) => {
+            const cutoff =
+              sessionStartedAt ?? new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+            const filtered = all.filter((h) => h.createdAt >= cutoff);
+            try {
+              const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+              appendFileSync(
+                "/tmp/grove-debug.log",
+                `[${new Date().toISOString()}] [handoffs.fetch] total=${all.length} afterFilter=${filtered.length} cutoff=${cutoff}\n`,
+              );
+            } catch {
+              /* */
+            }
+            setHandoffs(filtered);
+          })
+          .catch((err) => {
+            try {
+              const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+              appendFileSync(
+                "/tmp/grove-debug.log",
+                `[${new Date().toISOString()}] [handoffs.fetch] ERROR: ${err instanceof Error ? err.message : String(err)}\n`,
+              );
+            } catch {
+              /* */
+            }
+          });
+      };
+      doFetch(); // immediate
+      const id = setInterval(doFetch, intervalMs);
+      return () => clearInterval(id);
+    }, [provider, sessionStartedAt, intervalMs]);
+
     // Filter contributions to current session scope
     const allContributions = contributions ?? [];
     const feed = sessionStartedAt
@@ -648,6 +703,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             traceSelectedAgent,
             traceScrollOffset,
             sessionStartedAt,
+            handoffs,
           })}
           {renderStatusBar(
             expandedPanel,
@@ -715,6 +771,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
                 logBuffers,
                 traceSelectedAgent,
                 traceScrollOffset,
+                sessionStartedAt,
+                handoffs,
               })}
             </box>
           </box>
@@ -1017,6 +1075,7 @@ interface PanelRenderContext {
   readonly traceSelectedAgent?: number;
   readonly traceScrollOffset?: number;
   readonly sessionStartedAt?: string | undefined;
+  readonly handoffs?: readonly import("../../core/handoff.js").Handoff[] | undefined;
 }
 
 /** Render the content of an expanded panel. */
@@ -1092,6 +1151,7 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
           active
           cursor={0}
           sessionStartedAt={ctx.sessionStartedAt}
+          handoffs={ctx.handoffs}
         />
       );
   }

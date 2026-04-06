@@ -235,7 +235,8 @@ export class NexusHandoffStore implements HandoffStore {
       /* */
     }
 
-    let results = allHandoffs;
+    // Filter out malformed entries (test files without required fields)
+    let results = allHandoffs.filter((h) => h.handoffId && h.createdAt);
     if (query?.toRole !== undefined) results = results.filter((h) => h.toRole === query.toRole);
     if (query?.fromRole !== undefined)
       results = results.filter((h) => h.fromRole === query.fromRole);
@@ -245,7 +246,7 @@ export class NexusHandoffStore implements HandoffStore {
       const statuses = Array.isArray(query.status) ? query.status : [query.status];
       results = results.filter((h) => (statuses as string[]).includes(h.status));
     }
-    results.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    results.sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
     if (query?.limit !== undefined) results = results.slice(0, query.limit);
     return results;
   }
@@ -312,7 +313,9 @@ export class NexusHandoffStore implements HandoffStore {
   private async readAllHandoffs(): Promise<Handoff[]> {
     try {
       const listing = await this.client.list(HANDOFFS_DIR);
-      const files = listing.files.filter((e) => !e.isDirectory && e.name.endsWith(".json"));
+      // Nexus list may return entries without the .json extension even though
+      // the file was written with .json — accept all non-directory entries.
+      const files = listing.files.filter((e) => !e.isDirectory);
       try {
         const { appendFileSync } = require("node:fs") as typeof import("node:fs");
         appendFileSync(

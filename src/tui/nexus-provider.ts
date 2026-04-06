@@ -151,20 +151,8 @@ export class NexusDataProvider
     (this as unknown as { calc: DefaultFrontierCalculator }).calc = new DefaultFrontierCalculator(
       scopedStore,
     );
-    // Also scope the handoff store to the same session
-    try {
-      const { NexusHandoffStore } = require("../nexus/nexus-handoff-store.js") as {
-        NexusHandoffStore: new (
-          c: NexusClient,
-          s?: string,
-        ) => import("../core/handoff.js").HandoffStore;
-      };
-      (
-        this as unknown as { handoffs: import("../core/handoff.js").HandoffStore | undefined }
-      ).handoffs = new NexusHandoffStore(this.client, sessionId);
-    } catch {
-      /* non-fatal — handoffs may use local SQLite */
-    }
+    // Handoff store uses readAllHandoffs (dir scan) — no session scoping needed.
+    // The sessionStartedAt time filter in HandoffsView handles session isolation.
   }
 
   // ---------------------------------------------------------------------------

@@ -51,6 +51,9 @@ export interface HandoffsViewProps {
   readonly toRoleFilter?: string | undefined;
   /** ISO timestamp — only show handoffs created at or after this time (current session). */
   readonly sessionStartedAt?: string | undefined;
+  /** Pre-fetched handoffs from parent. When provided, skips internal usePolledData
+   *  (which doesn't work in OpenTUI due to component unmount/remount cycles). */
+  readonly handoffs?: readonly Handoff[] | undefined;
 }
 
 /** Handoffs panel component. */
@@ -63,7 +66,10 @@ export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React
     statusFilter,
     toRoleFilter,
     sessionStartedAt,
+    handoffs: prefetched,
   }: HandoffsViewProps): React.ReactNode {
+    // usePolledData's setInterval doesn't survive OpenTUI's component unmount/remount.
+    // When parent provides pre-fetched handoffs, use those directly.
     const fetcher = useCallback(async () => {
       if (!isHandoffProvider(provider)) return [] as readonly Handoff[];
       const q: HandoffQuery = {
@@ -72,24 +78,13 @@ export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React
         limit: 200,
       };
       const all = await provider.getHandoffs(q);
-      // Show only handoffs from the current session's agent spawn time.
-      // Fall back to last 2 hours to avoid showing stale data from old sessions.
       const cutoff = sessionStartedAt ?? new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-      const filtered = all.filter((h) => h.createdAt >= cutoff);
-      // Debug: log handoff fetch results (first few calls only)
-      try {
-        const { appendFileSync } = require("node:fs") as typeof import("node:fs");
-        appendFileSync(
-          "/tmp/grove-debug.log",
-          `[${new Date().toISOString()}] [handoffsView] total=${all.length} afterFilter=${filtered.length} cutoff=${cutoff} isHandoffProvider=true\n`,
-        );
-      } catch {
-        /* */
-      }
-      return filtered;
+      return all.filter((h) => h.createdAt >= cutoff);
     }, [provider, statusFilter, toRoleFilter, sessionStartedAt]);
 
-    const { data, loading } = usePolledData<readonly Handoff[]>(fetcher, intervalMs, active);
+    const polled = usePolledData<readonly Handoff[]>(fetcher, intervalMs, active && !prefetched);
+    const data = prefetched ?? polled.data;
+    const loading = prefetched ? false : polled.loading;
 
     if (!isHandoffProvider(provider)) {
       return (
