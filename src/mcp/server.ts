@@ -18,6 +18,7 @@ import { registerClaimTools } from "./tools/claims.js";
 import { registerContributionTools } from "./tools/contributions.js";
 import { registerDoneTools } from "./tools/done.js";
 import { registerGoalTools } from "./tools/goal.js";
+import { registerHandoffTools } from "./tools/handoffs.js";
 import { registerIngestTools } from "./tools/ingest.js";
 import { registerMessagingTools } from "./tools/messaging.js";
 import { registerOutcomeTools } from "./tools/outcomes.js";
@@ -82,6 +83,8 @@ export async function createMcpServer(deps: McpDeps, preset?: McpPresetConfig): 
   // Contribution + done tools are always registered (core functionality).
   registerContributionTools(server, deps);
   registerDoneTools(server, deps);
+  // Handoff tools are always registered when topology is active (agents need to query pending work).
+  if (deps.handoffStore !== undefined) registerHandoffTools(server, deps);
 
   if (preset?.claims !== false) registerClaimTools(server, deps);
   if (preset?.queries !== false) registerQueryTools(server, deps);

@@ -44,6 +44,7 @@ export interface LocalRuntime {
   readonly bountyStore: SqliteBountyStore;
   readonly outcomeStore: SqliteOutcomeStore;
   readonly goalSessionStore: SqliteGoalSessionStore;
+  readonly handoffStore: import("./sqlite-handoff-store.js").SqliteHandoffStore;
   readonly cas: FsCas;
   readonly frontier: FrontierCalculator;
   readonly workspace: LocalWorkspaceManager | undefined;
@@ -134,6 +135,7 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
     bountyStore: stores.bountyStore,
     outcomeStore: stores.outcomeStore,
     goalSessionStore: stores.goalSessionStore,
+    handoffStore: stores.handoffStore,
     cas,
     frontier,
     workspace,

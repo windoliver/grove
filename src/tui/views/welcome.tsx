@@ -594,11 +594,13 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
               {archivedCount > 0 ? `, ${archivedCount} archived` : ""})
             </text>
             {sessions.slice(0, 5).map((s, _i) => (
-              <text key={s.id} color={s.status === "active" ? theme.text : theme.dimmed}>
-                {"  "}
-                {s.status === "active" ? "●" : "○"} {`"${(s.goal ?? "untitled").slice(0, 50)}"`}
+              <box key={s.id} flexDirection="row">
+                <text color={s.status === "active" ? theme.text : theme.dimmed}>
+                  {"  "}
+                  {s.status === "active" ? "●" : "○"} {`"${(s.goal ?? "untitled").slice(0, 50)}"`}
+                </text>
                 <text color={theme.muted}> ({s.contributionCount}c)</text>
-              </text>
+              </box>
             ))}
           </box>
         ) : null}

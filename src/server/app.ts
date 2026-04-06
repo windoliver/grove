@@ -31,6 +31,7 @@ import { frontier } from "./routes/frontier.js";
 import { goals } from "./routes/goals.js";
 import { gossip } from "./routes/gossip.js";
 import { grove } from "./routes/grove.js";
+import { handoffs } from "./routes/handoffs.js";
 import { health } from "./routes/health.js";
 import { outcomes } from "./routes/outcomes.js";
 import { search } from "./routes/search.js";
@@ -72,6 +73,7 @@ export function createApp(deps: ServerDeps): Hono<ServerEnv> {
   app.route("/api/outcomes", outcomes);
   app.route("/api/session", goals);
   app.route("/api/sessions", sessions);
+  app.route("/api/handoffs", handoffs);
 
   // Centralized error handling
   app.onError(handleError);

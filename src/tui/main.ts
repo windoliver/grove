@@ -228,20 +228,9 @@ async function buildAppProps(
   // Server and MCP write to Nexus (single source of truth).
   // TUI reads from the co-located grove server (port 4515) via RemoteProvider.
   // This avoids hitting Nexus rate limits (the server already reads from Nexus).
-  if (backend.mode === "nexus" && backend.source !== "flag") {
-    const serverPort = process.env.PORT ?? "4515";
-    const serverUrl = `http://localhost:${serverPort}`;
-    try {
-      const resp = await fetch(`${serverUrl}/api/contributions?limit=1`, {
-        signal: AbortSignal.timeout(3000),
-      });
-      if (resp.ok) {
-        backend = { mode: "remote", url: serverUrl, source: "flag" };
-      }
-    } catch {
-      // Server not up — fall back to direct Nexus VFS reads
-    }
-  }
+  // NOTE: RemoteProvider (localhost:4515) override disabled — it doesn't support
+  // session-scoped contribution paths. NexusDataProvider reads Nexus VFS directly
+  // with session scoping to avoid N+1 reads on old contributions.
 
   // Health check for explicit --nexus flag (direct Nexus connection)
   if (backend.mode === "nexus") {
@@ -490,10 +479,30 @@ export async function handleTui(
   let activeProvider: TuiDataProvider | undefined;
   let activeStopGc: (() => void) | undefined;
 
-  /** Shutdown handler — stops services, GC, and provider. */
+  /** Shutdown handler — stops services, GC, kills agent processes. */
   const cleanup = async () => {
     activeStopGc?.();
     activeProvider?.close();
+    // Kill orphan MCP server processes spawned by agent CLIs (codex/claude).
+    // These are children of agent processes, not of the TUI, so they survive
+    // even after agentRuntime.close() kills the agent. Without this, each
+    // TUI session leaks MCP server processes that accumulate memory.
+    try {
+      const { execSync } = await import("node:child_process");
+      execSync("pkill -f 'bun.*mcp/serve' 2>/dev/null || true", { stdio: "pipe", timeout: 5000 });
+    } catch {
+      // best-effort
+    }
+    // Kill all acpx agent sessions for this grove
+    try {
+      const { execSync } = await import("node:child_process");
+      execSync(
+        "acpx codex sessions list 2>/dev/null | grep grove | awk '{print $1}' | xargs -I{} acpx codex sessions close {} 2>/dev/null || true",
+        { stdio: "pipe", timeout: 10000 },
+      );
+    } catch {
+      // best-effort
+    }
     if (runningServices) {
       const { stopServices } = await import("../shared/service-lifecycle.js");
       await stopServices(runningServices);
@@ -506,6 +515,23 @@ export async function handleTui(
   };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
+
+  // Reap orphan MCP processes from previous crashed TUI sessions on startup.
+  // Each agent CLI (codex/claude) spawns an MCP server child process that
+  // survives the parent when the TUI crashes without cleanup.
+  try {
+    const { execSync } = await import("node:child_process");
+    const orphanCount = execSync("pgrep -f 'bun.*mcp/serve' 2>/dev/null | wc -l", {
+      encoding: "utf-8",
+      timeout: 3000,
+    }).trim();
+    if (Number(orphanCount) > 0) {
+      execSync("pkill -f 'bun.*mcp/serve' 2>/dev/null || true", { stdio: "pipe", timeout: 5000 });
+      process.stderr.write(`[startup] reaped ${orphanCount} orphan MCP server process(es)\n`);
+    }
+  } catch {
+    // best-effort
+  }
 
   try {
     // --url flag: legacy direct boardroom mode (no interactive screens)
@@ -568,35 +594,56 @@ export async function handleTui(
 
     const presets = await loadPresetList();
 
-    // onInit: handles "New grove" path — run init then start services
+    // onInit: handles "New session" in an existing grove, or full init for a new grove.
+    // When GROVE_DIR/groveExists — skip executeInit entirely (don't touch Nexus or GROVE.md).
+    // Only run executeInit when truly creating a new grove from scratch.
     const onInit = async (
       presetName: string,
       groveName: string,
       onProgress?: (step: string) => void,
     ): Promise<import("./app.js").AppProps> => {
-      const { executeInit } = await import("../cli/commands/init.js");
-      await executeInit({
-        name: groveName,
-        mode: "evaluation",
-        seed: [],
-        metric: [],
-        force: true,
-        agentOverrides: {},
-        cwd: process.cwd(),
-        preset: presetName,
-      });
+      const newGroveDir = groveDir ?? join(process.cwd(), ".grove");
 
-      const newGroveDir = join(process.cwd(), ".grove");
-      const { startServices } = await import("../shared/service-lifecycle.js");
-      runningServices = await startServices({
-        groveDir: newGroveDir,
-        build: serviceOpts?.build,
-        nexusSource: serviceOpts?.nexusSource,
-        onProgress,
-        force: true,
-      });
+      if (!groveExists) {
+        // Truly new grove — run full init (creates .grove/, nexus.yaml, GROVE.md)
+        const { executeInit } = await import("../cli/commands/init.js");
+        await executeInit({
+          name: groveName,
+          mode: "evaluation",
+          seed: [],
+          metric: [],
+          force: true,
+          agentOverrides: {},
+          cwd: join(newGroveDir, ".."),
+          preset: presetName,
+        });
+      }
+      if (groveExists) {
+        // Grove exists — start services to ensure Nexus is running (handles resume/reuse/cold-start).
+        // Even for "New session", Nexus may be stopped (e.g. machine restart).
+        // startServices + ensureNexusRunning is idempotent: reuses running Nexus if already up.
+        onProgress?.("[grove up] ensuring services are running...");
+        const { startServices } = await import("../shared/service-lifecycle.js");
+        runningServices = await startServices({
+          groveDir: newGroveDir,
+          build: serviceOpts?.build,
+          nexusSource: serviceOpts?.nexusSource,
+          onProgress,
+          force: false,
+        });
+      } else {
+        // New grove — start services (Nexus, HTTP server, MCP server).
+        const { startServices } = await import("../shared/service-lifecycle.js");
+        runningServices = await startServices({
+          groveDir: newGroveDir,
+          build: serviceOpts?.build,
+          nexusSource: serviceOpts?.nexusSource,
+          onProgress,
+          force: false,
+        });
+      }
 
-      // Pass the newly created .grove dir so buildAppProps can find GROVE.md
+      // Pass the grove dir so buildAppProps can find GROVE.md
       const result = await buildAppProps(newGroveDir, opts, presetName);
       activeProvider = result.provider;
       activeStopGc = result.stopGc;

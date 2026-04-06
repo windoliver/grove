@@ -244,6 +244,30 @@ describe.skipIf(!hasTmux)("TUI screen capture verification", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Panel: Handoffs (key 5)
+  // -------------------------------------------------------------------------
+  test("Handoffs panel renders routing coordination rows", async () => {
+    // Simulate the handoffs panel output (FROM → TO, STATUS, SOURCE CID, CREATED)
+    tmuxCommand(
+      `new-session -d -s ${SESSION} -x 120 -y 30 "echo 'Handoffs  3 total, 1 pending'; echo ''; echo 'FROM         TO           STATUS           SOURCE CID             CREATED'; echo 'coder        reviewer     ⏳ pending       blake3:aaaa0000000000   12:00'; echo 'reviewer     coder        ✅ replied       blake3:bbbb0000000000   11:59'; echo 'coder        reviewer     ⌛ expired       blake3:dddd0000000000   11:58'; sleep 5"`,
+    );
+    await sleep(500);
+
+    const output = capturePane();
+    expect(output).toContain("Handoffs");
+    expect(output).toContain("pending");
+    expect(output).toContain("coder");
+    expect(output).toContain("reviewer");
+    expect(output).toContain("replied");
+    expect(output).toContain("expired");
+    expect(output).toContain("FROM");
+    expect(output).toContain("TO");
+    expect(output).toContain("STATUS");
+
+    tmuxCommand(`kill-session -t ${SESSION}`);
+  });
+
+  // -------------------------------------------------------------------------
   // KIND_ICONS rendering
   // -------------------------------------------------------------------------
   test("KIND_ICONS render correctly in terminal", async () => {

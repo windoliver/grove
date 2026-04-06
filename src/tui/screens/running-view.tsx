@@ -34,6 +34,7 @@ import { isVfsProvider } from "../provider.js";
 import { agentStatusIcon, KIND_ICONS, PLATFORM_COLORS, theme } from "../theme.js";
 import { AgentListView } from "../views/agent-list.js";
 import { DagView } from "../views/dag.js";
+import { HandoffsView } from "../views/handoffs-view.js";
 import { TerminalView } from "../views/terminal.js";
 import { TracePane } from "../views/trace-pane.js";
 import { VfsBrowserView } from "../views/vfs-browser.js";
@@ -222,7 +223,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     const fetchCountRef = React.useRef(0);
     const contributionsFetcher = useCallback(async () => {
       fetchCountRef.current++;
-      const result = await provider.getContributions({ limit: 100 });
+      const result = await provider.getContributions();
+      debugLog("feed.fetch", `total=${result?.length ?? 0}`);
       if (
         fetchCountRef.current <= 5 ||
         fetchCountRef.current % 20 === 0 ||
@@ -267,11 +269,71 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     const dashboard = dashboardPoll.data ?? undefined;
     const contributions = contributionsPoll.data;
 
+    // Fetch handoffs alongside dashboard (usePolledData's setInterval doesn't
+    // survive OpenTUI remounts, so we fetch manually in the parent).
+    const [handoffs, setHandoffs] = useState<readonly import("../../core/handoff.js").Handoff[]>(
+      [],
+    );
+    useEffect(() => {
+      const hasMethod = "getHandoffs" in provider;
+      try {
+        const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+        appendFileSync(
+          "/tmp/grove-debug.log",
+          `[${new Date().toISOString()}] [handoffs.useEffect] hasGetHandoffs=${hasMethod} sessionStartedAt=${sessionStartedAt ?? "none"}\n`,
+        );
+      } catch {
+        /* */
+      }
+      if (!hasMethod) return;
+      const p = provider as {
+        getHandoffs: (q?: unknown) => Promise<readonly import("../../core/handoff.js").Handoff[]>;
+      };
+      const doFetch = () => {
+        void p
+          .getHandoffs({ limit: 200 })
+          .then((all) => {
+            const cutoff =
+              sessionStartedAt ?? new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+            const filtered = all.filter((h) => h.createdAt >= cutoff);
+            try {
+              const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+              appendFileSync(
+                "/tmp/grove-debug.log",
+                `[${new Date().toISOString()}] [handoffs.fetch] total=${all.length} afterFilter=${filtered.length} cutoff=${cutoff}\n`,
+              );
+            } catch {
+              /* */
+            }
+            setHandoffs(filtered);
+          })
+          .catch((err) => {
+            try {
+              const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+              appendFileSync(
+                "/tmp/grove-debug.log",
+                `[${new Date().toISOString()}] [handoffs.fetch] ERROR: ${err instanceof Error ? err.message : String(err)}\n`,
+              );
+            } catch {
+              /* */
+            }
+          });
+      };
+      doFetch(); // immediate
+      const id = setInterval(doFetch, intervalMs);
+      return () => clearInterval(id);
+    }, [provider, sessionStartedAt, intervalMs]);
+
     // Filter contributions to current session scope
     const allContributions = contributions ?? [];
     const feed = sessionStartedAt
       ? allContributions.filter((c) => c.createdAt >= sessionStartedAt)
       : allContributions;
+
+    debugLog(
+      "feed.fetch",
+      `total=${allContributions.length} afterSessionFilter=${feed.length} sessionStartedAt=${sessionStartedAt ?? "none"}`,
+    );
 
     // Debug: log feed state periodically
     const feedDebugRef = React.useRef(0);
@@ -611,12 +673,14 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     }
 
     // Tab bar options (shared between feed-only and half-screen views)
+    // Must match RunningPanel enum order: Feed=0, Agents=1, Dag=2, Terminal=3, Trace=4, Handoffs=5
     const tabOptions = [
       { name: "Feed", description: "1" },
       { name: "Agents", description: "2" },
       { name: "DAG", description: "3" },
       { name: "Terminal", description: "4" },
       { name: "Traces", description: "e" },
+      { name: "Handoffs", description: "5" },
     ];
     const tabSelectedIndex = expandedPanel !== null ? expandedPanel : 0;
 
@@ -638,6 +702,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             logBuffers,
             traceSelectedAgent,
             traceScrollOffset,
+            sessionStartedAt,
+            handoffs,
           })}
           {renderStatusBar(
             expandedPanel,
@@ -705,6 +771,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
                 logBuffers,
                 traceSelectedAgent,
                 traceScrollOffset,
+                sessionStartedAt,
+                handoffs,
               })}
             </box>
           </box>
@@ -1006,6 +1074,8 @@ interface PanelRenderContext {
   readonly logBuffers?: ReadonlyMap<string, AgentLogBuffer> | undefined;
   readonly traceSelectedAgent?: number;
   readonly traceScrollOffset?: number;
+  readonly sessionStartedAt?: string | undefined;
+  readonly handoffs?: readonly import("../../core/handoff.js").Handoff[] | undefined;
 }
 
 /** Render the content of an expanded panel. */
@@ -1073,6 +1143,17 @@ function renderExpandedPanel(panel: RunningPanel, ctx: PanelRenderContext): Reac
         />
       );
     }
+    case RunningPanel.Handoffs:
+      return (
+        <HandoffsView
+          provider={ctx.provider}
+          intervalMs={ctx.intervalMs}
+          active
+          cursor={0}
+          sessionStartedAt={ctx.sessionStartedAt}
+          handoffs={ctx.handoffs}
+        />
+      );
   }
 }
 
@@ -1208,7 +1289,7 @@ function contextualHints(
 
   if (expandedPanel === null) {
     // Default feed view
-    hints.push("1-4:panels", "e:traces", "j/k:nav");
+    hints.push("1-4:panels", "e:traces", "5:handoffs", "j/k:nav");
   } else if (expandedPanel === RunningPanel.Trace) {
     // Trace pane active
     hints.push("j/k:agent", "J/K:scroll", "G/g:top/bottom", "Tab:cycle");

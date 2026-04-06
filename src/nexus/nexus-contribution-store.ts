@@ -11,6 +11,7 @@
  * - FTS:        /zones/{zoneId}/indexes/fts/{cid}.json
  */
 
+import { appendFileSync as _afs } from "node:fs";
 import { fromManifest, toManifest, verifyCid } from "../core/manifest.js";
 import type {
   Contribution,
@@ -65,11 +66,18 @@ export class NexusContributionStore implements ContributionStore {
   private readonly semaphore: Semaphore;
   private readonly cache: LruCache<Contribution>;
   private readonly zoneId: string;
+  private readonly sessionId: string | undefined;
+  // TTL cache for list() — avoids the N+1 VFS read storm (1 list + N FTS + N manifest)
+  // that exhausts Nexus's 300/min rate limit when multiple callers poll independently.
+  private listCacheResult: Contribution[] | undefined;
+  private listCacheTime = 0;
+  private readonly listCacheTtlMs = 15_000; // 15s TTL
 
   constructor(config: NexusConfig) {
     this.config = resolveConfig(config);
     this.client = this.config.client;
     this.zoneId = this.config.zoneId;
+    this.sessionId = this.config.sessionId;
     this.storeIdentity = `nexus:${this.zoneId}:contributions`;
     this.semaphore = new Semaphore(this.config.maxConcurrency);
     this.cache = new LruCache(this.config.cacheMaxEntries);
@@ -82,7 +90,7 @@ export class NexusContributionStore implements ContributionStore {
       );
     }
 
-    const manifestPath = contributionPath(this.zoneId, contribution.cid);
+    const manifestPath = contributionPath(this.zoneId, contribution.cid, this.sessionId);
 
     await withRetry(
       async () => {
@@ -109,7 +117,7 @@ export class NexusContributionStore implements ContributionStore {
         }
 
         // Write FTS index entry (idempotent write)
-        const ftsPath = ftsIndexPath(this.zoneId, contribution.cid);
+        const ftsPath = ftsIndexPath(this.zoneId, contribution.cid, this.sessionId);
         await withSemaphore(this.semaphore, () =>
           this.client.write(
             ftsPath,
@@ -132,6 +140,16 @@ export class NexusContributionStore implements ContributionStore {
     );
 
     this.cache.set(contribution.cid, contribution);
+    this.listCacheResult = undefined; // Invalidate list cache on write
+    try {
+      const manifestPath = contributionPath(this.zoneId, contribution.cid, this.sessionId);
+      _afs(
+        "/tmp/grove-debug.log",
+        `[${new Date().toISOString()}] [store.put] cid=${contribution.cid.slice(0, 16)} sessionId=${this.sessionId ?? "none"} path=${manifestPath}\n`,
+      );
+    } catch {
+      /* ignore */
+    }
   }
 
   async putMany(contributions: readonly Contribution[]): Promise<void> {
@@ -158,7 +176,7 @@ export class NexusContributionStore implements ContributionStore {
     const cached = this.cache.get(cid);
     if (cached !== undefined) return cached;
 
-    const path = contributionPath(this.zoneId, cid);
+    const path = contributionPath(this.zoneId, cid, this.sessionId);
     const data = await withRetry(
       () => withSemaphore(this.semaphore, () => this.client.read(path)),
       "get",
@@ -173,35 +191,80 @@ export class NexusContributionStore implements ContributionStore {
   }
 
   async list(query?: ContributionQuery): Promise<readonly Contribution[]> {
-    const ftsDir = ftsIndexDir(this.zoneId);
-    const entries = await listAllPages(this.client, this.semaphore, this.config, ftsDir, {
-      recursive: true,
-    });
+    // TTL cache: fetch ALL contributions once, then filter in-memory.
+    // Without this, each list() does 1 + 2N VFS reads (list + N FTS + N manifest).
+    // Multiple callers with different queries (limit, kind, etc.) each triggered
+    // a full VFS scan — 35 contributions × 70 reads = 2450 reads/min, far exceeding
+    // Nexus's 300/min rate limit. Now we read once per TTL window and filter locally.
+    let allContributions: Contribution[];
+    const cacheHit =
+      this.listCacheResult !== undefined && Date.now() - this.listCacheTime < this.listCacheTtlMs;
+    const ftsDir = ftsIndexDir(this.zoneId, this.sessionId);
+    try {
+      _afs(
+        "/tmp/grove-debug.log",
+        `[${new Date().toISOString()}] [store.list] sessionId=${this.sessionId ?? "none"} ftsDir=${ftsDir} cacheHit=${cacheHit}\n`,
+      );
+    } catch {
+      /* ignore */
+    }
+    if (cacheHit) {
+      allContributions = [...(this.listCacheResult as Contribution[])];
+    } else {
+      const entries = await listAllPages(this.client, this.semaphore, this.config, ftsDir, {
+        recursive: true,
+      });
 
-    const nonDirEntries = entries.filter((e) => !e.isDirectory);
+      const nonDirEntries = entries.filter((e) => !e.isDirectory);
 
-    // Read FTS entries in parallel and filter by query
-    const ftsResults = await batchParallel(nonDirEntries, async (entry) => {
-      const ftsData = await withSemaphore(this.semaphore, () => this.client.read(entry.path));
-      if (ftsData === undefined) return undefined;
-      const fts = decode<Record<string, JsonValue>>(ftsData);
-      if (!matchesFtsQuery(fts, query)) return undefined;
-      return fts.cid as string;
-    });
+      // Read ALL FTS entries (no query filter — cache the full set)
+      const ftsResults = await batchParallel(nonDirEntries, async (entry) => {
+        const ftsData = await withSemaphore(this.semaphore, () => this.client.read(entry.path));
+        if (ftsData === undefined) return undefined;
+        const fts = decode<Record<string, JsonValue>>(ftsData);
+        return fts.cid as string;
+      });
 
-    const matchingCids = ftsResults.filter((cid): cid is string => cid !== undefined);
+      const allCids = ftsResults.filter((cid): cid is string => cid !== undefined);
 
-    // Fetch matching contributions in parallel
-    const fetched = await batchParallel(matchingCids, (cid) => this.get(cid));
-    let contributions = fetched.filter((c): c is Contribution => c !== undefined);
+      // Fetch ALL contributions
+      const fetched = await batchParallel(allCids, (cid) => this.get(cid));
+      allContributions = fetched.filter((c): c is Contribution => c !== undefined);
+      try {
+        _afs(
+          "/tmp/grove-debug.log",
+          `[${new Date().toISOString()}] [store.list] ftsEntries=${nonDirEntries.length} matchingCids=${allCids.length} total=${allContributions.length}\n`,
+        );
+      } catch {
+        /* ignore */
+      }
 
-    // Platform is not in the FTS index, so filter on full contributions.
-    if (query?.platform !== undefined) {
-      contributions = contributions.filter((c) => c.agent.platform === query.platform);
+      // Sort by createdAt ascending (matches SQLite store behavior)
+      allContributions.sort(
+        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+      );
+
+      // Cache the full unfiltered result
+      this.listCacheResult = allContributions;
+      this.listCacheTime = Date.now();
     }
 
-    // Sort by createdAt ascending (matches SQLite store behavior)
-    contributions.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    // Apply query filters in-memory (cheap — no VFS calls)
+    let contributions = allContributions;
+    if (query?.kind !== undefined)
+      contributions = contributions.filter((c) => c.kind === query.kind);
+    if (query?.mode !== undefined)
+      contributions = contributions.filter((c) => c.mode === query.mode);
+    if (query?.agentId !== undefined)
+      contributions = contributions.filter((c) => c.agent.agentId === query.agentId);
+    if (query?.agentName !== undefined)
+      contributions = contributions.filter((c) => c.agent.agentName === query.agentName);
+    if (query?.platform !== undefined)
+      contributions = contributions.filter((c) => c.agent.platform === query.platform);
+    if (query?.tags !== undefined && query.tags.length > 0) {
+      const requiredTags = query.tags;
+      contributions = contributions.filter((c) => requiredTags.every((t) => c.tags.includes(t)));
+    }
 
     // Apply limit/offset
     const offset = query?.offset ?? 0;
@@ -306,7 +369,7 @@ export class NexusContributionStore implements ContributionStore {
 
   async search(query: string, filters?: ContributionQuery): Promise<readonly Contribution[]> {
     // Try Nexus native search first (not all Nexus versions support it)
-    const ftsDir = ftsIndexDir(this.zoneId);
+    const ftsDir = ftsIndexDir(this.zoneId, this.sessionId);
     try {
       const results = await withRetry(
         () => withSemaphore(this.semaphore, () => this.client.search(query, { path: ftsDir })),

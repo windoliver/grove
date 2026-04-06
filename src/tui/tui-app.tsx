@@ -311,6 +311,10 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
             nexusUrl,
             apiKey,
             eventBus: appProps.eventBus,
+            onBeforeDeliver: (sender, recipient) => {
+              // Rsync workspace files from sender to recipient before IPC delivery
+              manager.syncWorkspaces(sender, recipient);
+            },
           });
           bridge.connect();
           manager.setWsBridge(bridge);

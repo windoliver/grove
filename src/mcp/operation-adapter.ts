@@ -34,6 +34,7 @@ export function toOperationDeps(deps: McpDeps): OperationDeps {
       : {}),
     ...(deps.eventBus !== undefined ? { eventBus: deps.eventBus } : {}),
     ...(deps.topologyRouter !== undefined ? { topologyRouter: deps.topologyRouter } : {}),
+    ...(deps.handoffStore !== undefined ? { handoffStore: deps.handoffStore } : {}),
   };
 }
 

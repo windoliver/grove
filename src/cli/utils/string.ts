@@ -16,21 +16,21 @@ export function levenshteinDistance(a: string, b: string): number {
     matrix[i] = [i];
   }
   for (let j = 0; j <= a.length; j++) {
-    matrix[0]![j] = j;
+    (matrix[0] as number[])[j] = j;
   }
 
   for (let i = 1; i <= b.length; i++) {
     for (let j = 1; j <= a.length; j++) {
       const cost = a[j - 1] === b[i - 1] ? 0 : 1;
-      matrix[i]![j] = Math.min(
-        matrix[i - 1]![j]! + 1, // deletion
-        matrix[i]![j - 1]! + 1, // insertion
-        matrix[i - 1]![j - 1]! + cost, // substitution
+      (matrix[i] as number[])[j] = Math.min(
+        ((matrix[i - 1] as number[])[j] ?? 0) + 1, // deletion
+        ((matrix[i] as number[])[j - 1] ?? 0) + 1, // insertion
+        ((matrix[i - 1] as number[])[j - 1] ?? 0) + cost, // substitution
       );
     }
   }
 
-  return matrix[b.length]![a.length]!;
+  return (matrix[b.length] as number[])[a.length] ?? 0;
 }
 
 /**

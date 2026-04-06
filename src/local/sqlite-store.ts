@@ -38,6 +38,7 @@ import type {
 import { ExpiryReason } from "../core/store.js";
 import { BOUNTY_DDL, SqliteBountyStore } from "./sqlite-bounty-store.js";
 import { SqliteGoalSessionStore } from "./sqlite-goal-session-store.js";
+import { HANDOFF_DDL, SqliteHandoffStore } from "./sqlite-handoff-store.js";
 import { SqliteOutcomeStore } from "./sqlite-outcome-store.js";
 
 // ---------------------------------------------------------------------------
@@ -207,6 +208,7 @@ export function initSqliteDb(dbPath: string): Database {
   const initSchema = db.transaction(() => {
     db.exec(SCHEMA_DDL);
     db.exec(FTS_DDL);
+    db.exec(HANDOFF_DDL);
 
     // Check current schema version for migrations
     const currentVersion = (
@@ -350,6 +352,7 @@ export function createSqliteStores(dbPath: string): {
   bountyStore: SqliteBountyStore;
   outcomeStore: SqliteOutcomeStore;
   goalSessionStore: SqliteGoalSessionStore;
+  handoffStore: SqliteHandoffStore;
   close: () => void;
 } {
   const db = initSqliteDb(dbPath);
@@ -360,6 +363,7 @@ export function createSqliteStores(dbPath: string): {
     bountyStore: new SqliteBountyStore(db),
     outcomeStore: new SqliteOutcomeStore(db),
     goalSessionStore: new SqliteGoalSessionStore(db),
+    handoffStore: new SqliteHandoffStore(db),
     close: () => {
       db.run("PRAGMA optimize");
       db.close();
@@ -561,6 +565,18 @@ export class SqliteContributionStore implements ContributionStore {
     this.putSync(contribution);
     this.onWrite?.();
   };
+
+  /**
+   * Write a contribution and run cowriteFn() inside the same SQLite transaction.
+   * Used for atomic contribution + handoff creation (outbox pattern).
+   *
+   * cowriteFn must be synchronous (SQLite transactions in bun:sqlite are sync).
+   * Called via duck-typing from contributeOperation when both stores are SQLite-backed.
+   */
+  putWithCowrite(contribution: Contribution, cowriteFn: () => void): void {
+    this.putSync(contribution, cowriteFn);
+    this.onWrite?.();
+  }
 
   putMany = async (contributions: readonly Contribution[]): Promise<void> => {
     if (contributions.length === 0) return;
@@ -973,8 +989,10 @@ export class SqliteContributionStore implements ContributionStore {
   // Private helpers
   // ========================================================================
 
-  /** Synchronous put — uses INSERT OR IGNORE for atomic idempotency. */
-  private putSync(contribution: Contribution): void {
+  /** Synchronous put — uses INSERT OR IGNORE for atomic idempotency.
+   *  @param cowrite — optional function run inside the same SQLite transaction after the insert.
+   */
+  public putSync(contribution: Contribution, cowrite?: () => void): void {
     // Verify CID integrity before persisting
     if (!verifyCid(contribution)) {
       throw new Error(
@@ -1032,6 +1050,9 @@ export class SqliteContributionStore implements ContributionStore {
       for (const [name, contentHash] of Object.entries(contribution.artifacts)) {
         this.stmtInsertArtifact.run(contribution.cid, name, contentHash);
       }
+
+      // Optional cowrite: runs inside the same transaction (used for atomic handoff creation)
+      cowrite?.();
     });
     tx();
   }

@@ -84,6 +84,7 @@ const deps: ServerDeps = {
   outcomeStore: serverOutcomeStore,
   bountyStore: serverBountyStore,
   goalSessionStore: runtime.goalSessionStore,
+  handoffStore: runtime.handoffStore,
   cas: serverCas,
   frontier: serverFrontier,
   gossip: gossipService,

@@ -13,74 +13,11 @@ import { describe, expect, test } from "bun:test";
 import type { GroveEvent } from "../event-bus.js";
 import type { HookEntry, HookResult, HookRunner } from "../hooks.js";
 import { LocalEventBus } from "../local-event-bus.js";
-import type { Contribution } from "../models.js";
-import type { ContributionStore } from "../store.js";
 import type { AgentTopology } from "../topology.js";
 import { TopologyRouter } from "../topology-router.js";
 import { contributeOperation } from "./contribute.js";
 import type { OperationDeps } from "./deps.js";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Create a minimal in-memory contribution store. */
-function makeStore(items: Contribution[] = []): ContributionStore {
-  const store = [...items];
-  return {
-    storeIdentity: undefined,
-    put: async (c: Contribution) => {
-      if (!store.find((x) => x.cid === c.cid)) store.push(c);
-    },
-    putMany: async (cs: readonly Contribution[]) => {
-      for (const c of cs) {
-        if (!store.find((x) => x.cid === c.cid)) store.push(c);
-      }
-    },
-    get: async (cid: string) => store.find((c) => c.cid === cid),
-    getMany: async (cids: readonly string[]) => {
-      const cidSet = new Set(cids);
-      const result = new Map<string, Contribution>();
-      for (const c of store) {
-        if (cidSet.has(c.cid)) result.set(c.cid, c);
-      }
-      return result;
-    },
-    list: async (query?) => {
-      let result = [...store];
-      if (query?.kind) result = result.filter((c) => c.kind === query.kind);
-      if (query?.mode) result = result.filter((c) => c.mode === query.mode);
-      if (query?.agentId) result = result.filter((c) => c.agent.agentId === query.agentId);
-      if (query?.limit) result = result.slice(0, query.limit);
-      return result;
-    },
-    children: async () => [],
-    ancestors: async () => [],
-    relationsOf: async () => [],
-    relatedTo: async () => [],
-    search: async () => [],
-    findExisting: async () => [],
-    count: async (query?) => {
-      let result = [...store];
-      if (query?.kind) result = result.filter((c) => c.kind === query.kind);
-      if (query?.mode) result = result.filter((c) => c.mode === query.mode);
-      return result.length;
-    },
-    countSince: async (query) => {
-      return store.filter((c) => {
-        if (query.agentId && c.agent.agentId !== query.agentId) return false;
-        return c.createdAt >= query.since;
-      }).length;
-    },
-    thread: async () => [],
-    incomingSources: async () => [],
-    replyCounts: async () => new Map(),
-    hotThreads: async () => [],
-    close: () => {
-      /* expected */
-    },
-  };
-}
+import { makeInMemoryContributionStore } from "./test-helpers.js";
 
 /** A simple two-role topology: coder -> reviewer -> coder. */
 const reviewLoopTopology: AgentTopology = {
@@ -105,7 +42,7 @@ describe("contributeOperation: event routing", () => {
   test("routes contribution event to downstream role via topology", async () => {
     const bus = new LocalEventBus();
     const router = new TopologyRouter(reviewLoopTopology, bus);
-    const store = makeStore();
+    const store = makeInMemoryContributionStore();
 
     const received: GroveEvent[] = [];
     bus.subscribe("reviewer", (e) => received.push(e));
@@ -135,6 +72,7 @@ describe("contributeOperation: event routing", () => {
     expect(received[0]!.payload.agentId).toBe("agent-1");
     if (result.ok) {
       expect(received[0]!.payload.cid).toBe(result.value.cid);
+      expect(result.value.routedTo).toEqual(["reviewer"]);
     }
 
     bus.close();
@@ -143,7 +81,7 @@ describe("contributeOperation: event routing", () => {
   test("reviewer contribution routes back to coder", async () => {
     const bus = new LocalEventBus();
     const router = new TopologyRouter(reviewLoopTopology, bus);
-    const store = makeStore();
+    const store = makeInMemoryContributionStore();
 
     const received: GroveEvent[] = [];
     bus.subscribe("coder", (e) => received.push(e));
@@ -184,6 +122,9 @@ describe("contributeOperation: event routing", () => {
     expect(received[0]!.type).toBe("contribution");
     expect(received[0]!.sourceRole).toBe("reviewer");
     expect(received[0]!.targetRole).toBe("coder");
+    if (reviewResult.ok) {
+      expect(reviewResult.value.routedTo).toEqual(["coder"]);
+    }
 
     bus.close();
   });
@@ -191,7 +132,7 @@ describe("contributeOperation: event routing", () => {
   test("no routing when agent has no role", async () => {
     const bus = new LocalEventBus();
     const router = new TopologyRouter(reviewLoopTopology, bus);
-    const store = makeStore();
+    const store = makeInMemoryContributionStore();
 
     const received: GroveEvent[] = [];
     bus.subscribe("reviewer", (e) => received.push(e));
@@ -214,13 +155,16 @@ describe("contributeOperation: event routing", () => {
 
     expect(result.ok).toBe(true);
     expect(received).toHaveLength(0);
+    if (result.ok) {
+      expect(result.value.routedTo).toBeUndefined();
+    }
 
     bus.close();
   });
 
   test("no routing when topologyRouter is not provided", async () => {
     const bus = new LocalEventBus();
-    const store = makeStore();
+    const store = makeInMemoryContributionStore();
 
     const received: GroveEvent[] = [];
     bus.subscribe("reviewer", (e) => received.push(e));
@@ -242,6 +186,9 @@ describe("contributeOperation: event routing", () => {
 
     expect(result.ok).toBe(true);
     expect(received).toHaveLength(0);
+    if (result.ok) {
+      expect(result.value.routedTo).toBeUndefined();
+    }
 
     bus.close();
   });
@@ -249,7 +196,7 @@ describe("contributeOperation: event routing", () => {
   test("stop condition triggers broadcastStop to all roles", async () => {
     const bus = new LocalEventBus();
     const router = new TopologyRouter(reviewLoopTopology, bus);
-    const store = makeStore();
+    const store = makeInMemoryContributionStore();
 
     const coderEvents: GroveEvent[] = [];
     const reviewerEvents: GroveEvent[] = [];
@@ -295,6 +242,7 @@ describe("contributeOperation: event routing", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
+    expect(result.value.routedTo).toEqual(["reviewer"]);
 
     // Should have the policy result with stop
     expect(result.value.policy).toBeDefined();
@@ -315,7 +263,7 @@ describe("contributeOperation: event routing", () => {
   test("no broadcastStop when stop condition is not met", async () => {
     const bus = new LocalEventBus();
     const router = new TopologyRouter(reviewLoopTopology, bus);
-    const store = makeStore();
+    const store = makeInMemoryContributionStore();
 
     const allEvents: GroveEvent[] = [];
     bus.subscribe("coder", (e) => allEvents.push(e));
@@ -353,6 +301,9 @@ describe("contributeOperation: event routing", () => {
     const contribEvents = allEvents.filter((e) => e.type === "contribution");
     expect(contribEvents).toHaveLength(1);
     expect(contribEvents[0]!.targetRole).toBe("reviewer");
+    if (result.ok) {
+      expect(result.value.routedTo).toEqual(["reviewer"]);
+    }
 
     bus.close();
   });
@@ -364,7 +315,7 @@ describe("contributeOperation: event routing", () => {
 
 describe("contributeOperation: hook execution", () => {
   test("after_contribute hook fires after successful contribution", async () => {
-    const store = makeStore();
+    const store = makeInMemoryContributionStore();
     const hookCalls: Array<{ entry: HookEntry; cwd: string }> = [];
 
     const hookRunner: HookRunner = {
@@ -412,7 +363,7 @@ describe("contributeOperation: hook execution", () => {
   });
 
   test("hook failure does not block the contribution", async () => {
-    const store = makeStore();
+    const store = makeInMemoryContributionStore();
 
     const hookRunner: HookRunner = {
       run: async (): Promise<HookResult> => {
@@ -462,7 +413,7 @@ describe("contributeOperation: hook execution", () => {
   });
 
   test("no hook execution when hookRunner or hookCwd is missing", async () => {
-    const store = makeStore();
+    const store = makeInMemoryContributionStore();
     const hookCalls: HookEntry[] = [];
 
     const hookRunner: HookRunner = {

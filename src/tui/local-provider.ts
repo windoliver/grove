@@ -28,6 +28,7 @@ export interface LocalProviderDeps extends StoreBackedProviderDeps {
   readonly bountyStore?: BountyStore | undefined;
   readonly cas?: ContentStore | undefined;
   readonly goalSessionStore?: GoalSessionStore | undefined;
+  // handoffStore inherited from StoreBackedProviderDeps
 }
 
 // ---------------------------------------------------------------------------
@@ -62,6 +63,7 @@ export class LocalDataProvider
       gossip: false,
       goals: deps.goalSessionStore !== undefined,
       sessions: deps.goalSessionStore !== undefined,
+      handoffs: deps.handoffStore !== undefined,
     };
   }
 

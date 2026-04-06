@@ -12,6 +12,11 @@ export interface NexusConfig {
   /** Zone identifier for multi-tenant scoping. All keys are prefixed with this. */
   readonly zoneId: string;
 
+  /** Session ID for per-session contribution isolation. When set, contributions
+   *  are stored under /zones/{zoneId}/sessions/{sessionId}/ instead of the zone root.
+   *  This prevents N+1 VFS reads from scanning all historical contributions. */
+  readonly sessionId?: string | undefined;
+
   /** Maximum concurrent requests to Nexus. Defaults to 20. */
   readonly maxConcurrency?: number | undefined;
 
@@ -39,6 +44,7 @@ export interface NexusConfig {
 export interface ResolvedNexusConfig {
   readonly client: NexusClient;
   readonly zoneId: string;
+  readonly sessionId: string | undefined;
   readonly maxConcurrency: number;
   readonly existsThresholdBytes: number;
   readonly cacheMaxEntries: number;
@@ -52,6 +58,7 @@ export function resolveConfig(config: NexusConfig): ResolvedNexusConfig {
   return {
     client: config.client,
     zoneId: config.zoneId,
+    sessionId: config.sessionId,
     maxConcurrency: config.maxConcurrency ?? 20,
     existsThresholdBytes: config.existsThresholdBytes ?? 65_536,
     cacheMaxEntries: config.cacheMaxEntries ?? 1_000,

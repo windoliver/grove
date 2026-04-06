@@ -131,13 +131,35 @@ async function createNexusProvider(
 
   // Goal/session state flows through the co-located server's HTTP API
   // (when serverUrl is available) so that all agents share the same state.
-  // No local SQLite needed — the server owns the authoritative store.
+  // Handoffs are stored in Nexus VFS so all agents on all machines can see them.
+  const { NexusHandoffStore } = await import("../nexus/nexus-handoff-store.js");
+  // TUI reads all sessions — no sessionId filter so it scans all session files
+  const handoffStore = new NexusHandoffStore(client);
+
+  // Local SQLite for goal/session store (still machine-local)
+  let goalSessionStore:
+    | import("../local/sqlite-goal-session-store.js").SqliteGoalSessionStore
+    | undefined;
+  try {
+    const { resolveGroveDir } = await import("../cli/utils/grove-dir.js");
+    const { groveDir } = resolveGroveDir(backend.groveOverride);
+    const groveSqlitePath = join(groveDir, "grove.db");
+    if (existsSync(groveSqlitePath)) {
+      const { createSqliteStores: createGroveStores } = await import("../local/sqlite-store.js");
+      const groveStores = createGroveStores(groveSqlitePath);
+      goalSessionStore = groveStores.goalSessionStore;
+    }
+  } catch {
+    // Best-effort — grove.db may not exist yet
+  }
 
   return new NexusDataProvider({
     nexusConfig: { client, zoneId: "default" },
     workspaceManager,
     backendLabel: label,
     serverUrl,
+    goalSessionStore,
+    handoffStore,
   });
 }
 
@@ -175,6 +197,7 @@ async function createLocalProvider(
     outcomeStore: stores.outcomeStore,
     bountyStore: stores.bountyStore,
     goalSessionStore: stores.goalSessionStore,
+    handoffStore: stores.handoffStore,
     cas: deps.cas,
     workspace: deps.workspace,
     backendLabel: label,

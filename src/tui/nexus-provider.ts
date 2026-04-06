@@ -6,6 +6,7 @@
  * Used when running `grove tui --nexus <url>`.
  */
 
+import { appendFileSync as _afs } from "node:fs";
 import type { Bounty } from "../core/bounty.js";
 import type { BountyQuery } from "../core/bounty-store.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
@@ -59,6 +60,8 @@ export interface NexusProviderConfig {
   readonly serverUrl?: string | undefined;
   /** Optional goal/session store — only used when no serverUrl is available. */
   readonly goalSessionStore?: GoalSessionStore | undefined;
+  /** Optional handoff store — reads from local grove.db, not Nexus. */
+  readonly handoffStore?: import("../core/handoff.js").HandoffStore | undefined;
 }
 
 /** TUI data provider backed by Nexus VFS. */
@@ -90,6 +93,7 @@ export class NexusDataProvider
       workspace: config.workspaceManager,
       backendLabel: config.backendLabel ?? "nexus",
       goalSessionStore: config.goalSessionStore,
+      handoffStore: config.handoffStore,
     });
 
     // Goals/sessions are available when a co-located server provides the shared
@@ -107,6 +111,8 @@ export class NexusDataProvider
       gossip: true,
       goals: hasGoalSession,
       sessions: true, // Always available via NexusSessionStore
+      // Handoffs are in local grove.db (written by MCP, readable from SQLite)
+      handoffs: !!config.handoffStore,
     };
 
     this.bountyStore = new NexusBountyStore(config.nexusConfig);
@@ -116,6 +122,37 @@ export class NexusDataProvider
     this.client = resolved.client;
     this.zoneId = resolved.zoneId;
     this.nexusSessionStore = new NexusSessionStore(this.client, this.zoneId);
+  }
+
+  /**
+   * Switch to a session-scoped contribution store.
+   * Called when a session is selected/created — subsequent reads only see
+   * contributions from this session, avoiding the N+1 VFS read storm from
+   * scanning all historical contributions.
+   */
+  setSessionScope(sessionId: string): void {
+    const oldId = this.store.storeIdentity;
+    const scopedStore = new NexusContributionStore({
+      ...({ client: this.client, zoneId: this.zoneId } as NexusConfig),
+      sessionId,
+    });
+    const newId = scopedStore.storeIdentity;
+    try {
+      _afs(
+        "/tmp/grove-debug.log",
+        `[${new Date().toISOString()}] [provider.setSessionScope] sessionId=${sessionId} oldStoreId=${oldId} newStoreId=${newId}\n`,
+      );
+    } catch {
+      /* ignore */
+    }
+    // Replace the inherited store (StoreBackedProvider.store)
+    (this as unknown as { store: NexusContributionStore }).store = scopedStore;
+    // Also update the frontier calculator to use the scoped store
+    (this as unknown as { calc: DefaultFrontierCalculator }).calc = new DefaultFrontierCalculator(
+      scopedStore,
+    );
+    // Handoff store uses readAllHandoffs (dir scan) — no session scoping needed.
+    // The sessionStartedAt time filter in HandoffsView handles session isolation.
   }
 
   // ---------------------------------------------------------------------------
@@ -258,7 +295,12 @@ export class NexusDataProvider
   ): Promise<SessionRecord> {
     let result: SessionRecord;
     if (this.serverUrl) {
-      result = await createSessionHttp(this.serverUrl, input);
+      try {
+        result = await createSessionHttp(this.serverUrl, input);
+      } catch {
+        // HTTP server not running — fall back to local SQLite
+        result = await super.createSession(input);
+      }
     } else {
       result = await super.createSession(input);
     }

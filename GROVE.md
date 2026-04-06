@@ -1,7 +1,7 @@
 ---
 contract_version: 3
 
-name: functional-prancing-ripple
+name: clever-dreaming-peacock
 
 description: Code review loop with coder and reviewer roles
 
@@ -110,6 +110,6 @@ agent_topology:
 #   after_contribute: "echo 'Contribution submitted'"
 ---
 
-# functional-prancing-ripple
+# clever-dreaming-peacock
 
 Code review loop with coder and reviewer roles

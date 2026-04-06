@@ -86,6 +86,33 @@ export class IncrementalLogReader {
   }
 
   /**
+   * Restore a previously recorded byte offset so this reader starts
+   * reading from that position. Used by AgentLogBuffer.pollLogFile to
+   * resume from a seeked position when the reader is recreated for a
+   * different file path.
+   */
+  restoreOffset(offset: number): void {
+    this.byteOffset = offset;
+    this.partialLine = "";
+  }
+
+  /**
+   * Seek to the current end of the file so subsequent readNew() calls
+   * only return lines written AFTER this point. Used when starting a new
+   * session to avoid replaying historical log data from previous sessions.
+   */
+  async seekToEnd(): Promise<void> {
+    try {
+      const fileStat = await stat(this.filePath);
+      this.byteOffset = fileStat.size;
+      this.lastIno = fileStat.ino;
+      this.partialLine = "";
+    } catch {
+      // File doesn't exist yet — offset stays 0, will read from start when created
+    }
+  }
+
+  /**
    * Read all lines from multiple log files for a role, sorted by mtime (oldest first).
    *
    * Files are matched by pattern: `{role}*.log` (e.g., coder-0.log, coder-1.log).

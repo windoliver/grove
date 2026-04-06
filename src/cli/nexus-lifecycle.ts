@@ -85,29 +85,26 @@ export interface NexusInitOptions {
  * No-ops if `nexus.yaml` already exists.
  */
 export async function nexusInit(
-  _projectRoot: string,
+  projectRoot: string,
   presetOrOptions: "local" | "shared" | "demo" | NexusInitOptions,
 ): Promise<void> {
   const opts: NexusInitOptions =
     typeof presetOrOptions === "string" ? { preset: presetOrOptions } : presetOrOptions;
 
-  // Use shared global data_dir so all worktrees reuse the same Nexus Docker stack.
-  // nexus uses data_dir as the identity anchor — same data_dir = same compose project.
-  const globalDataDir = join(getGroveHome(), "nexus-data");
+  // Data lives under the project's .grove/ dir — each project gets its own Nexus stack.
+  const dataDir = join(projectRoot, "nexus-data");
 
-  const args = ["nexus", "init", "--preset", opts.preset, "--data-dir", globalDataDir];
+  const args = ["nexus", "init", "--preset", opts.preset, "--data-dir", dataDir];
   if (opts.channel) {
     args.push("--channel", opts.channel);
   }
-  // Run nexus init from the global grove directory so nexus.yaml lives there
-  const groveHome = getGroveHome();
-  if (!existsSync(groveHome)) {
+  if (!existsSync(projectRoot)) {
     const { mkdirSync } = await import("node:fs");
-    mkdirSync(groveHome, { recursive: true });
+    mkdirSync(projectRoot, { recursive: true });
   }
 
   const proc = Bun.spawn(args, {
-    cwd: groveHome,
+    cwd: projectRoot,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -116,14 +113,6 @@ export async function nexusInit(
     const stderr = await new Response(proc.stderr).text();
     throw new Error(`nexus init failed (exit ${code}): ${stderr.trim()}`);
   }
-}
-
-/**
- * Get the global grove home directory where nexus.yaml lives.
- * All worktrees share one Nexus stack via this shared location.
- */
-function getGroveHome(): string {
-  return join(process.env.HOME ?? process.env.USERPROFILE ?? "/tmp", ".grove");
 }
 
 /** Options for `nexusUp`. */
@@ -186,8 +175,9 @@ function resolveNexusSource(explicit?: string): string | undefined {
  * CLI doesn't support the flag (nexus-ai-fs < 0.9.0).
  */
 export async function nexusUp(_projectRoot: string, opts: NexusUpOptions = {}): Promise<string> {
-  // Always run from global grove home — all projects share one Nexus stack
-  const projectRoot = getGroveHome();
+  // Run from the project root where nexus.yaml lives (written by nexusInit in the same dir).
+  const projectRoot = _projectRoot;
+  process.stderr.write(`[nexusUp] cwd=${projectRoot}\n`);
   const timeout = opts.timeoutSeconds ?? NEXUS_UP_TIMEOUT_S;
   const wantsBuild = opts.build || !!opts.nexusSource;
 
@@ -289,8 +279,7 @@ export async function nexusUp(_projectRoot: string, opts: NexusUpOptions = {}): 
  * Nexus is not running.
  */
 export async function nexusDown(_projectRoot: string): Promise<void> {
-  // Always run from global grove home
-  const cwd = getGroveHome();
+  const cwd = _projectRoot;
   try {
     const proc = Bun.spawn(["nexus", "down"], {
       cwd,
@@ -321,10 +310,8 @@ export async function nexusDown(_projectRoot: string): Promise<void> {
  * accidentally connecting to another user's Nexus instance.
  */
 export function readNexusUrl(projectRoot: string): string | undefined {
-  // Read from nexus.yaml (configured ports). Check project-local first, then global.
-  const localYaml = join(projectRoot, "nexus.yaml");
-  const globalYaml = join(getGroveHome(), "nexus.yaml");
-  const yamlPath = existsSync(localYaml) ? localYaml : globalYaml;
+  // Read from nexus.yaml in the project root (written by nexusInit there).
+  const yamlPath = join(projectRoot, "nexus.yaml");
   try {
     if (!existsSync(yamlPath)) return undefined;
 
@@ -389,10 +376,9 @@ export function readNexusApiKey(projectRoot: string): string | undefined {
   const envKey = process.env.NEXUS_API_KEY;
   if (envKey) return envKey;
 
-  // 2. Read from .state.json (authoritative — written by nexus up with resolved state)
+  // 2. Read from .state.json in the project's nexus-data dir (authoritative)
   try {
-    const globalDataDir = join(getGroveHome(), "nexus-data");
-    const stateFile = join(globalDataDir, ".state.json");
+    const stateFile = join(projectRoot, "nexus-data", ".state.json");
     if (existsSync(stateFile)) {
       const state = JSON.parse(readFileSync(stateFile, "utf-8"));
       if (typeof state.api_key === "string" && state.api_key) {
@@ -403,11 +389,9 @@ export function readNexusApiKey(projectRoot: string): string | undefined {
     // Fall through to nexus.yaml
   }
 
-  // 3. Read from nexus.yaml (global shared — all worktrees use same Nexus)
+  // 3. Read from nexus.yaml in the project root
   try {
-    const globalYaml = join(getGroveHome(), "nexus.yaml");
-    const localYaml = join(projectRoot, ".grove", "nexus.yaml");
-    const yamlPath = existsSync(localYaml) ? localYaml : globalYaml;
+    const yamlPath = join(projectRoot, "nexus.yaml");
     if (!existsSync(yamlPath)) return undefined;
 
     const content = readFileSync(yamlPath, "utf-8");
@@ -466,12 +450,14 @@ export async function waitForNexusHealth(
 /**
  * Discover a running Nexus container via Docker and return its URL.
  *
- * Scans `docker ps` for containers matching the Nexus image, extracts
- * the mapped host port for 2026/tcp, and health-checks it.
- * This lets Grove reuse a Nexus stack started from any directory.
+ * First checks host-bound port mappings (0.0.0.0:PORT->2026/tcp).
+ * Then falls back to container internal IPs (for containers started without
+ * host port bindings, e.g. via docker compose without ports: section).
+ * This lets Grove reuse any Nexus stack regardless of how it was started.
  */
 export async function discoverRunningNexus(): Promise<string | undefined> {
   try {
+    // Get container IDs + ports for any container exposing 2026 (Nexus port)
     const proc = Bun.spawn(
       [
         "docker",
@@ -479,27 +465,58 @@ export async function discoverRunningNexus(): Promise<string | undefined> {
         "--filter",
         "ancestor=ghcr.io/nexi-lab/nexus:edge",
         "--format",
-        "{{.Ports}}",
+        "{{.ID}}|{{.Ports}}",
       ],
       { stdout: "pipe", stderr: "pipe" },
     );
     const [code, stdout] = await Promise.all([proc.exited, new Response(proc.stdout).text()]);
     if (code !== 0 || !stdout.trim()) return undefined;
 
-    // Parse port mappings like "0.0.0.0:27960->2026/tcp"
+    const candidateUrls: string[] = [];
+
     for (const line of stdout.trim().split("\n")) {
-      const match = line.match(/(?:0\.0\.0\.0|:::):(\d+)->2026\/tcp/);
-      if (match?.[1]) {
-        const port = match[1];
-        const url = `http://localhost:${port}`;
-        try {
-          const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(3_000) });
-          const body = (await res.json().catch(() => ({}))) as { status?: string };
-          // Accept both healthy and starting (starting = Raft election, will become healthy)
-          if (body.status === "healthy" || body.status === "starting") return url;
-        } catch {
-          // Not reachable despite container running
+      const [id, ports] = line.split("|");
+      if (!id || !ports) continue;
+
+      // 1. Prefer host-bound port: "0.0.0.0:27960->2026/tcp"
+      const hostMatch = ports.match(/(?:0\.0\.0\.0|:::):(\d+)->2026\/tcp/);
+      if (hostMatch?.[1]) {
+        candidateUrls.push(`http://localhost:${hostMatch[1]}`);
+        continue;
+      }
+
+      // 2. Fall back: inspect container for internal IP + use Nexus default port 2026
+      try {
+        const inspectProc = Bun.spawn(
+          [
+            "docker",
+            "inspect",
+            id.trim(),
+            "--format",
+            "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}",
+          ],
+          { stdout: "pipe", stderr: "pipe" },
+        );
+        const [, inspectOut] = await Promise.all([
+          inspectProc.exited,
+          new Response(inspectProc.stdout).text(),
+        ]);
+        for (const ip of inspectOut.trim().split(/\s+/)) {
+          if (ip && ip !== "") candidateUrls.push(`http://${ip}:2026`);
         }
+      } catch {
+        // Docker inspect failed — skip
+      }
+    }
+
+    for (const url of candidateUrls) {
+      try {
+        const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(3_000) });
+        const body = (await res.json().catch(() => ({}))) as { status?: string };
+        // Accept both healthy and starting (starting = Raft election, will become healthy)
+        if (body.status === "healthy" || body.status === "starting") return url;
+      } catch {
+        // Not reachable — try next candidate
       }
     }
   } catch {
@@ -540,29 +557,50 @@ export async function ensureNexusRunning(
   upOpts?: NexusUpOptions,
 ): Promise<NexusRunningInfo> {
   const report = upOpts?.onProgress ?? ((msg: string) => process.stderr.write(`${msg}\n`));
+  // Use the project root as the working directory for nexus CLI commands.
+  // The nexus CLI derives the compose project name from CWD — running from
+  // .grove/ creates a different project than running from the project root.
+  // nexus.yaml can live in either location; the nexus CLI searches upward.
+  const groveHomeDir = projectRoot;
+  report(
+    `[ensureNexus] projectRoot=${projectRoot} groveDir=${groveHomeDir} mode=${config.mode ?? "none"} nexusManaged=${String(config.nexusManaged)}`,
+  );
 
   // -----------------------------------------------------------------------
   // 1. Fast path: check known URLs for a healthy Nexus BEFORE requiring CLI.
-  //    If Nexus is already running (from another grove, Docker, etc.), we
-  //    don't need the nexus CLI at all — just connect to it.
   // -----------------------------------------------------------------------
-  // Also check the global Nexus state file for the last-known port
+  // Read last-known port from this project's .grove/nexus-data/.state.json.
   let stateFileUrl: string | undefined;
   try {
-    const statePath = join(getGroveHome(), "nexus-data", ".state.json");
+    const statePath = join(groveHomeDir, "nexus-data", ".state.json");
+    report(
+      `[ensureNexus] checking state.json at ${statePath} exists=${String(existsSync(statePath))}`,
+    );
     if (existsSync(statePath)) {
       const stateData = JSON.parse(readFileSync(statePath, "utf-8")) as {
         ports?: { http?: number };
       };
       if (stateData.ports?.http) {
         stateFileUrl = `http://localhost:${stateData.ports.http}`;
+        report(`[ensureNexus] state.json → port=${stateData.ports.http} url=${stateFileUrl}`);
       }
     }
   } catch {
     // best-effort
   }
 
+  // Also probe container IPs directly — works even when Nexus has no host port binding
+  // (Docker Desktop on Mac routes container IPs from the host). Forward-compatible:
+  // when Nexus fixes NEXUS_ADVERTISE_HOST, localhost:PORT will work too.
+  let containerUrl: string | undefined;
+  try {
+    containerUrl = await discoverRunningNexus();
+  } catch {
+    // best-effort
+  }
+
   const candidateUrls = [
+    containerUrl, // container IP (works without port binding)
     config.nexusUrl,
     readNexusUrl(projectRoot),
     stateFileUrl,
@@ -572,10 +610,12 @@ export async function ensureNexusRunning(
 
   const urlsToTry = [...new Set(candidateUrls)];
 
+  report(`[nexus] checking URLs: ${urlsToTry.join(", ")}`);
   for (const url of urlsToTry) {
     try {
       const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(3_000) });
       const body = (await res.json().catch(() => ({}))) as { status?: string };
+      report(`[nexus] ${url} → status=${body.status}`);
       if (body.status === "healthy") {
         const apiKey = readNexusApiKey(projectRoot);
         report("Nexus is ready (already running)");
@@ -593,16 +633,6 @@ export async function ensureNexusRunning(
     }
   }
 
-  // Also try discovering a running Nexus container via Docker directly.
-  const discoveredUrl = await discoverRunningNexus();
-  if (discoveredUrl) {
-    report(`Discovered Nexus at ${discoveredUrl}, waiting for healthy...`);
-    await waitForNexusHealth(discoveredUrl);
-    const apiKey = readNexusApiKey(projectRoot);
-    report("Nexus is ready");
-    return { url: discoveredUrl, apiKey };
-  }
-
   // -----------------------------------------------------------------------
   // 2. No running Nexus found — need CLI to start one.
   // -----------------------------------------------------------------------
@@ -617,24 +647,70 @@ export async function ensureNexusRunning(
   }
 
   // -----------------------------------------------------------------------
-  // 2. Check for stopped containers we can restart (seconds, not minutes)
+  // 2. Quick restart: if known compose project exists in state.json, try
+  //    `docker compose restart` before falling back to `nexus up` (which pulls).
+  //    This handles transient crashes (OOM, signal) without a slow image pull.
   // -----------------------------------------------------------------------
-  const groveHome = getGroveHome();
-  const nexusYaml = join(groveHome, "nexus.yaml");
+  const nexusYaml = join(groveHomeDir, "nexus.yaml");
   const hasYaml = existsSync(nexusYaml);
+  report(`[ensureNexus] nexus.yaml at ${nexusYaml} exists=${String(hasYaml)}`);
 
   if (hasYaml && !upOpts?.force) {
-    // nexus.yaml exists — try `nexus up` which restarts stopped containers
-    report("Starting Nexus...");
-    const upStdout = await nexusUp(projectRoot, upOpts);
+    // Try a quick `docker compose restart` using the compose project from state.json.
+    // This avoids an image pull when the container merely crashed (vs. never started).
+    let quickRestartUrl: string | undefined;
+    try {
+      const statePath = join(groveHomeDir, "nexus-data", ".state.json");
+      if (existsSync(statePath)) {
+        const stateData = JSON.parse(readFileSync(statePath, "utf-8")) as {
+          project_name?: string;
+          ports?: { http?: number };
+        };
+        const projectName = stateData.project_name;
+        const httpPort = stateData.ports?.http;
+        if (projectName && httpPort) {
+          report(`[ensureNexus] quick restart: project=${projectName} port=${httpPort}`);
+          const restart = Bun.spawn(["docker", "compose", "-p", projectName, "restart", "nexus"], {
+            cwd: groveHomeDir,
+            stdout: "pipe",
+            stderr: "pipe",
+          });
+          const restartCode = await restart.exited;
+          if (restartCode === 0) {
+            quickRestartUrl = `http://localhost:${httpPort}`;
+            report(`[ensureNexus] quick restart done, checking health at ${quickRestartUrl}...`);
+            try {
+              await waitForNexusHealth(quickRestartUrl, 30_000);
+              const apiKey = readNexusApiKey(groveHomeDir);
+              report("Nexus is ready (quick restart)");
+              return { url: quickRestartUrl, apiKey };
+            } catch {
+              report("[ensureNexus] quick restart unhealthy, falling through to nexus up...");
+            }
+          }
+        }
+      }
+    } catch {
+      // best-effort — fall through to nexus up
+    }
+
+    // nexus.yaml exists — run `nexus up` (full restart, may pull updated image)
+    report(
+      "[ensureNexus] warm start: nexus.yaml found, running nexus up to restart stopped containers...",
+    );
+    const upStdout = await nexusUp(groveHomeDir, upOpts);
     const nexusUrl =
       config.nexusUrl ??
-      readNexusUrl(projectRoot) ??
+      readNexusUrl(groveHomeDir) ??
       parseNexusUrlFromOutput(upStdout) ??
       DEFAULT_NEXUS_URL;
+    report(
+      `[ensureNexus] nexus up stdout url: ${parseNexusUrlFromOutput(upStdout) ?? "none"}, using ${nexusUrl}`,
+    );
     report(`Waiting for Nexus at ${nexusUrl}...`);
     await waitForNexusHealth(nexusUrl);
-    const apiKey = readNexusApiKey(projectRoot);
+    const apiKey = readNexusApiKey(groveHomeDir);
+    report(`[ensureNexus] ready, apiKey=${apiKey ? "yes" : "none"}`);
     report("Nexus is ready");
     return { url: nexusUrl, apiKey };
   }
@@ -643,8 +719,8 @@ export async function ensureNexusRunning(
   // 3. Cold start: init + up (first time only, or force reinit)
   // -----------------------------------------------------------------------
   if (upOpts?.force && hasYaml) {
-    report("Stopping existing Nexus...");
-    await nexusDown(projectRoot);
+    report("[ensureNexus] force reinit: stopping existing Nexus...");
+    await nexusDown(groveHomeDir);
     try {
       unlinkSync(nexusYaml);
     } catch {
@@ -659,8 +735,10 @@ export async function ensureNexusRunning(
       ? undefined
       : (config.nexusChannel ?? DEFAULT_NEXUS_CHANNEL);
     const channelLabel = channel ? `, channel: ${channel}` : ", source build";
-    report(`Initializing Nexus (preset: ${preset}${channelLabel})...`);
-    await nexusInit(projectRoot, { preset, channel });
+    report(
+      `[ensureNexus] cold start: no nexus.yaml, initializing (preset: ${preset}${channelLabel})...`,
+    );
+    await nexusInit(groveHomeDir, { preset, channel });
   }
 
   const buildLabel = upOpts?.nexusSource
@@ -668,18 +746,22 @@ export async function ensureNexusRunning(
     : upOpts?.build
       ? " (--build)"
       : "";
-  report(`Starting Nexus${buildLabel}...`);
-  const upStdout = await nexusUp(projectRoot, upOpts);
+  report(`[ensureNexus] starting Nexus${buildLabel}...`);
+  const upStdout = await nexusUp(groveHomeDir, upOpts);
 
   const nexusUrl =
     config.nexusUrl ??
-    readNexusUrl(projectRoot) ??
+    readNexusUrl(groveHomeDir) ??
     parseNexusUrlFromOutput(upStdout) ??
     DEFAULT_NEXUS_URL;
-  report(`Waiting for Nexus at ${nexusUrl}...`);
+  report(`[ensureNexus] cold start url=${nexusUrl}, waiting for health...`);
   await waitForNexusHealth(nexusUrl);
 
-  const apiKey = readNexusApiKey(projectRoot);
-  report(apiKey ? "Nexus is ready" : "Nexus is ready (auth: none)");
+  const apiKey = readNexusApiKey(groveHomeDir);
+  report(
+    apiKey
+      ? "[ensureNexus] Nexus is ready, apiKey=yes"
+      : "[ensureNexus] Nexus is ready (auth: none)",
+  );
   return { url: nexusUrl, apiKey };
 }

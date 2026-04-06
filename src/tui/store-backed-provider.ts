@@ -8,7 +8,9 @@
  * (e.g. artifacts, VFS, search).
  */
 
+import { appendFileSync as _afs } from "node:fs";
 import type { Frontier, FrontierCalculator, FrontierQuery } from "../core/frontier.js";
+import type { Handoff, HandoffQuery, HandoffStore } from "../core/handoff.js";
 import { computeCid } from "../core/manifest.js";
 import type { AgentIdentity, Claim, Contribution } from "../core/models.js";
 import {
@@ -52,6 +54,7 @@ import type {
   TuiDataProvider,
   TuiGitHubProvider,
   TuiGoalProvider,
+  TuiHandoffProvider,
   TuiMessagingProvider,
   TuiOutcomeProvider,
   TuiSessionProvider,
@@ -80,6 +83,7 @@ export interface StoreBackedProviderDeps {
   readonly workspace?: WorkspaceManager | undefined;
   readonly backendLabel?: string | undefined;
   readonly goalSessionStore?: GoalSessionStore | undefined;
+  readonly handoffStore?: HandoffStore | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,7 +109,8 @@ export abstract class StoreBackedProvider
     TuiAskUserProvider,
     TuiGitHubProvider,
     TuiGoalProvider,
-    TuiSessionProvider
+    TuiSessionProvider,
+    TuiHandoffProvider
 {
   /** Declares which optional provider interfaces this instance supports. */
   abstract readonly capabilities: ProviderCapabilities;
@@ -124,6 +129,7 @@ export abstract class StoreBackedProvider
   protected readonly workspace: WorkspaceManager | undefined;
   protected readonly label: string;
   protected readonly goalSession: GoalSessionStore | undefined;
+  protected readonly handoffs: HandoffStore | undefined;
 
   constructor(deps: StoreBackedProviderDeps) {
     this.store = deps.contributionStore;
@@ -134,6 +140,7 @@ export abstract class StoreBackedProvider
     this.workspace = deps.workspace;
     this.label = deps.backendLabel ?? this.name;
     this.goalSession = deps.goalSessionStore;
+    this.handoffs = deps.handoffStore;
   }
 
   // ---------------------------------------------------------------------------
@@ -184,7 +191,16 @@ export abstract class StoreBackedProvider
   async getContributions(
     query?: ContributionQuery & PaginatedQuery,
   ): Promise<readonly Contribution[]> {
-    return this.store.list(query);
+    const result = await this.store.list(query);
+    try {
+      _afs(
+        "/tmp/grove-debug.log",
+        `[${new Date().toISOString()}] [provider.getContributions] count=${result.length} query=${JSON.stringify(query ?? {})}\n`,
+      );
+    } catch {
+      /* ignore */
+    }
+    return result;
   }
 
   /** Fetch full contribution detail including ancestors, children, and thread. */
@@ -501,5 +517,22 @@ export abstract class StoreBackedProvider
    */
   protected closeExtra(): void {
     // no-op — subclasses override as needed
+  }
+
+  // ---------------------------------------------------------------------------
+  // TuiHandoffProvider
+  // ---------------------------------------------------------------------------
+
+  async getHandoffs(query?: HandoffQuery): Promise<readonly Handoff[]> {
+    if (this.handoffs === undefined) return [];
+    // NOTE: do NOT call expireStale() here — it uses casUpdate which reads
+    // the handoff file, sees "not found" (Nexus VFS cross-client isolation),
+    // and OVERWRITES the MCP's handoff data with an empty array.
+    // Expiry should be handled by the MCP side only.
+    return this.handoffs.list(query);
+  }
+
+  async markHandoffDelivered(handoffId: string): Promise<void> {
+    await this.handoffs?.markDelivered(handoffId);
   }
 }
