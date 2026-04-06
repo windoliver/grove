@@ -69,6 +69,12 @@ export interface PanelDef {
   readonly kind: "core" | "operator";
   /** Row partner panels (panels that share the same row in grid mode). */
   readonly rowPartners?: readonly Panel[];
+  /**
+   * Keyboard shortcut for this panel.
+   * Core panels: key focuses the panel (1–4).
+   * Operator panels: key toggles the panel on/off.
+   */
+  readonly keybinding: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +102,7 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
     label: PANEL_LABELS[Panel.Dag],
     rowGroup: 0,
     kind: "core",
+    keybinding: "1",
     rowPartners: [Panel.Detail],
   },
   {
@@ -103,6 +110,7 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
     label: PANEL_LABELS[Panel.Detail],
     rowGroup: 0,
     kind: "core",
+    keybinding: "2",
     rowPartners: [Panel.Dag],
   },
 
@@ -112,6 +120,7 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
     label: PANEL_LABELS[Panel.Frontier],
     rowGroup: 1,
     kind: "core",
+    keybinding: "3",
   },
 
   // Row 2: Claims (core)
@@ -120,6 +129,7 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
     label: PANEL_LABELS[Panel.Claims],
     rowGroup: 2,
     kind: "core",
+    keybinding: "4",
   },
 
   // Row 3: AgentList + Terminal (operator)
@@ -128,6 +138,7 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
     label: PANEL_LABELS[Panel.AgentList],
     rowGroup: 3,
     kind: "operator",
+    keybinding: "5",
     rowPartners: [Panel.Terminal],
   },
   {
@@ -135,6 +146,7 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
     label: PANEL_LABELS[Panel.Terminal],
     rowGroup: 3,
     kind: "operator",
+    keybinding: "6",
     rowPartners: [Panel.AgentList],
   },
 
@@ -144,6 +156,7 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
     label: PANEL_LABELS[Panel.Artifact],
     rowGroup: 4,
     kind: "operator",
+    keybinding: "7",
     rowPartners: [Panel.Vfs],
   },
   {
@@ -151,6 +164,7 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
     label: PANEL_LABELS[Panel.Vfs],
     rowGroup: 4,
     kind: "operator",
+    keybinding: "8",
     rowPartners: [Panel.Artifact],
   },
 
@@ -160,6 +174,7 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
     label: PANEL_LABELS[Panel.Activity],
     rowGroup: 5,
     kind: "operator",
+    keybinding: "9",
     rowPartners: [Panel.Search],
   },
   {
@@ -167,6 +182,7 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
     label: PANEL_LABELS[Panel.Search],
     rowGroup: 5,
     kind: "operator",
+    keybinding: "0",
     rowPartners: [Panel.Activity],
   },
 
@@ -176,6 +192,7 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
     label: PANEL_LABELS[Panel.Threads],
     rowGroup: 6,
     kind: "operator",
+    keybinding: "-",
     rowPartners: [Panel.Outcomes],
   },
   {
@@ -183,6 +200,7 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
     label: PANEL_LABELS[Panel.Outcomes],
     rowGroup: 6,
     kind: "operator",
+    keybinding: "=",
     rowPartners: [Panel.Threads],
   },
 
@@ -192,6 +210,7 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
     label: PANEL_LABELS[Panel.Bounties],
     rowGroup: 7,
     kind: "operator",
+    keybinding: "[",
     rowPartners: [Panel.Gossip],
   },
   {
@@ -199,6 +218,7 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
     label: PANEL_LABELS[Panel.Gossip],
     rowGroup: 7,
     kind: "operator",
+    keybinding: "]",
     rowPartners: [Panel.Bounties],
   },
 
@@ -208,6 +228,7 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
     label: PANEL_LABELS[Panel.Inbox],
     rowGroup: 8,
     kind: "operator",
+    keybinding: "\\",
     rowPartners: [Panel.Decisions, Panel.GitHub],
   },
   {
@@ -215,6 +236,7 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
     label: PANEL_LABELS[Panel.Decisions],
     rowGroup: 8,
     kind: "operator",
+    keybinding: ";",
     rowPartners: [Panel.Inbox, Panel.GitHub],
   },
   {
@@ -222,6 +244,7 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
     label: PANEL_LABELS[Panel.GitHub],
     rowGroup: 8,
     kind: "operator",
+    keybinding: "'",
     rowPartners: [Panel.Inbox, Panel.Decisions],
   },
 
@@ -231,6 +254,7 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
     label: PANEL_LABELS[Panel.Plan],
     rowGroup: 9,
     kind: "operator",
+    keybinding: "`",
   },
 ] as const;
 
@@ -240,6 +264,9 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
 
 /** Cached panel-to-def lookup map, built on first access. */
 let _panelLookup: ReadonlyMap<Panel, PanelDef> | undefined;
+
+/** Cached row groups map, built on first access. */
+let _rowGroups: Map<number, readonly PanelDef[]> | undefined;
 
 /** Get the PanelDef for a given panel. Returns undefined for unknown panels. */
 function lookupPanel(panel: Panel): PanelDef | undefined {
@@ -262,8 +289,9 @@ export function getRegistry(): readonly PanelDef[] {
   return PANEL_REGISTRY;
 }
 
-/** Groups panel definitions by their row group number. */
+/** Groups panel definitions by their row group number. Lazily cached. */
 export function getRowGroups(): Map<number, readonly PanelDef[]> {
+  if (_rowGroups !== undefined) return _rowGroups;
   const groups = new Map<number, PanelDef[]>();
   for (const def of PANEL_REGISTRY) {
     let group = groups.get(def.rowGroup);
@@ -273,6 +301,7 @@ export function getRowGroups(): Map<number, readonly PanelDef[]> {
     }
     group.push(def);
   }
+  _rowGroups = groups;
   return groups;
 }
 

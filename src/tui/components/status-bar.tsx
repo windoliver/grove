@@ -9,10 +9,15 @@ import React from "react";
 import { type InputMode, Panel, type ViewMode } from "../hooks/use-panel-focus.js";
 import { theme } from "../theme.js";
 
+/** Which top-level screen the user is on — shown in status bar for orientation. */
+export type ScreenContext = "running" | "boardroom";
+
 /** Props for the StatusBar component. */
 export interface StatusBarProps {
   /** Current input mode. */
   readonly mode: InputMode;
+  /** Which top-level screen is active (Running vs Boardroom). */
+  readonly screenContext?: ScreenContext | undefined;
   /** Whether we're in a detail view within a panel. */
   readonly isDetailView?: boolean | undefined;
   /** Error message to display, if any. */
@@ -61,13 +66,20 @@ function panelHints(panel: Panel | undefined, isDetailView: boolean | undefined)
     case Panel.Inbox:
       return " b:broadcast  @:direct  j/k:nav  ?:help  q:quit";
     default:
-      return " 1-4:panel  5-]:toggle  Tab:cycle  j/k:nav  Enter:select  Ctrl+P:spawn  +/Esc:zoom  ?:help  q:quit";
+      return " 1-4:focus  5-`:toggle  Tab:cycle  j/k:nav  Enter:select  Ctrl+P:spawn  +/Esc:zoom  ?:help  q:quit";
   }
 }
+
+/** Screen context labels for the status bar. */
+const SCREEN_CONTEXT_LABELS: Record<ScreenContext, string> = {
+  running: "RUNNING",
+  boardroom: "BOARDROOM",
+};
 
 /** Bottom status bar with context-sensitive keybinding hints. */
 export const StatusBar: React.NamedExoticComponent<StatusBarProps> = React.memo(function StatusBar({
   mode,
+  screenContext,
   isDetailView,
   error,
   costLabel,
@@ -95,6 +107,9 @@ export const StatusBar: React.NamedExoticComponent<StatusBarProps> = React.memo(
       )}
       <box flexDirection="row">
         <text color={theme.focus}>[{modeLabel}]</text>
+        {screenContext && (
+          <text color={theme.muted}> [{SCREEN_CONTEXT_LABELS[screenContext]}]</text>
+        )}
         {viewMode === "pipeline" && <text color={theme.warning}> [PIPELINE]</text>}
         <text opacity={0.5}>{hints}</text>
         {agentLabel && (

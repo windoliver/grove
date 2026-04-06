@@ -6,6 +6,8 @@
  */
 
 import React from "react";
+import { Panel } from "../hooks/use-panel-focus.js";
+import { PANEL_REGISTRY } from "../panels/panel-registry.js";
 import { theme } from "../theme.js";
 
 /** Props for the HelpOverlay component. */
@@ -33,25 +35,11 @@ const GLOBAL_BINDINGS: readonly KeyBinding[] = [
   { key: "+", description: "Zoom cycle (Normal → Half → Full)" },
 ];
 
-const PANEL_BINDINGS: readonly KeyBinding[] = [
-  { key: "1", description: "Focus DAG panel" },
-  { key: "2", description: "Focus Detail panel" },
-  { key: "3", description: "Focus Frontier panel" },
-  { key: "4", description: "Focus Claims panel" },
-  { key: "5", description: "Toggle Agents panel" },
-  { key: "6", description: "Toggle Terminal panel" },
-  { key: "7", description: "Toggle Artifact panel" },
-  { key: "8", description: "Toggle VFS panel" },
-  { key: "9", description: "Toggle Activity panel" },
-  { key: "0", description: "Toggle Search panel" },
-  { key: "-", description: "Toggle Threads panel" },
-  { key: "=", description: "Toggle Outcomes panel" },
-  { key: "[", description: "Toggle Bounties panel" },
-  { key: "]", description: "Toggle Gossip panel" },
-  { key: "\\", description: "Toggle Inbox panel" },
-  { key: ";", description: "Toggle Decisions panel" },
-  { key: "'", description: "Toggle GitHub panel" },
-];
+/** Panel keybindings derived from the registry — single source of truth. */
+const PANEL_BINDINGS: readonly KeyBinding[] = PANEL_REGISTRY.map((def) => ({
+  key: def.keybinding,
+  description: `${def.kind === "core" ? "Focus" : "Toggle"} ${def.label} panel`,
+}));
 
 const NAVIGATION_BINDINGS: readonly KeyBinding[] = [
   { key: "j / \u2193", description: "Move cursor down" },
@@ -97,13 +85,6 @@ const DECISIONS_BINDINGS: readonly KeyBinding[] = [
 
 const FRONTIER_BINDINGS: readonly KeyBinding[] = [{ key: "C", description: "Compare artifacts" }];
 
-// Panel IDs matching use-panel-focus.ts
-const PANEL_ARTIFACT = 7;
-const PANEL_TERMINAL = 6;
-const PANEL_SEARCH = 10;
-const PANEL_DECISIONS = 16;
-const PANEL_FRONTIER = 3;
-
 function renderSection(title: string, bindings: readonly KeyBinding[]): React.ReactNode {
   return (
     <box flexDirection="column" key={title}>
@@ -141,19 +122,19 @@ export const HelpOverlay: React.NamedExoticComponent<HelpOverlayProps> = React.m
     }
 
     // Panel-specific bindings
-    if (focusedPanel === PANEL_ARTIFACT) {
+    if (focusedPanel === Panel.Artifact) {
       sections.push(renderSection("Artifact Panel", ARTIFACT_BINDINGS));
     }
-    if (focusedPanel === PANEL_TERMINAL) {
+    if (focusedPanel === Panel.Terminal) {
       sections.push(renderSection("Terminal Panel", TERMINAL_BINDINGS));
     }
-    if (focusedPanel === PANEL_SEARCH) {
+    if (focusedPanel === Panel.Search) {
       sections.push(renderSection("Search Panel", SEARCH_BINDINGS));
     }
-    if (focusedPanel === PANEL_DECISIONS) {
+    if (focusedPanel === Panel.Decisions) {
       sections.push(renderSection("Decisions Panel", DECISIONS_BINDINGS));
     }
-    if (focusedPanel === PANEL_FRONTIER) {
+    if (focusedPanel === Panel.Frontier) {
       sections.push(renderSection("Frontier Panel", FRONTIER_BINDINGS));
     }
 

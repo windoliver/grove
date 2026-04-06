@@ -8,7 +8,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { RunningServices } from "../shared/service-lifecycle.js";
 import type { SessionRecord, TuiDataProvider } from "./provider.js";
@@ -51,7 +51,7 @@ Usage:
   grove tui [options]
 
 Options:
-  -i, --interval <seconds>  Polling interval (default: 5)
+  -i, --interval <seconds>  Polling interval in seconds (default: 30, fallback only — live updates via SSE)
   -u, --url <url>           Remote grove-server URL
   -n, --nexus <url>         Override Nexus URL (bypasses auto-detection)
   -g, --grove <path>        Path to .grove directory (not the repo root)
@@ -125,8 +125,6 @@ function findGroveDir(groveOverride?: string): string | undefined {
   }
 
   // Check CWD first — each project/worktree should use its OWN .grove/, not a parent's.
-  const { dirname } = require("node:path") as typeof import("node:path");
-  const { resolve } = require("node:path") as typeof import("node:path");
   const cwd = resolve(process.cwd());
   const cwdCandidate = join(cwd, ".grove");
   if (existsSync(join(cwdCandidate, "grove.json"))) {
@@ -265,12 +263,14 @@ async function buildAppProps(
     tmux = available ? mgr : undefined;
   }
 
+  // Resolve groveDir once — used for AcpxRuntime logDir, workspace GC, and event bus.
+  const groveDir = effectiveGrove ?? findGroveDir(effectiveGrove);
+
   // Create AcpxRuntime for agent spawning (preferred over tmux)
   let agentRuntime: import("../core/agent-runtime.js").AgentRuntime | undefined;
   {
     const { AcpxRuntime } = await import("../core/acpx-runtime.js");
-    // Resolve log dir from effective grove path (groveDir is computed later)
-    const effectiveGrovePath = effectiveGrove ?? findGroveDir(effectiveGrove);
+    const effectiveGrovePath = groveDir;
     const runtime = new AcpxRuntime({
       agent: "codex",
       ...(effectiveGrovePath ? { logDir: join(effectiveGrovePath, "agent-logs") } : {}),
@@ -286,9 +286,8 @@ async function buildAppProps(
     stopCallbacks.push(startWorkspaceGc(provider));
   }
 
-  // Resolve groveDir for workspace management (agent spawning, file sync).
-  // Always resolve it — even in "remote" mode, agents need workspace paths.
-  const groveDir = effectiveGrove ?? findGroveDir(effectiveGrove);
+  // Use groveDir for workspace management (agent spawning, file sync).
+  // Always resolved — even in "remote" mode, agents need workspace paths.
   if (groveDir) {
     const { createLocalRuntime } = await import("../local/runtime.js");
     const { runCleanup, runArtifactGc } = await import("../local/cleanup.js");
