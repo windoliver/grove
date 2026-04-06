@@ -21,7 +21,9 @@ import {
 } from "../core/handoff.js";
 import type { NexusClient } from "./client.js";
 
-const HANDOFFS_DIR = "handoffs";
+// Use absolute zone-prefixed path so MCP and TUI resolve to the same VFS location.
+// Relative paths may resolve differently per Nexus zone context.
+const HANDOFFS_DIR = "/zones/default/handoffs";
 const GLOBAL_FILE = `${HANDOFFS_DIR}/_global.json`;
 const MAX_CAS_RETRIES = 8;
 
