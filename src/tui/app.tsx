@@ -323,7 +323,7 @@ export function App({
 
   // Poll active claims for topology-aware command palette
   const claimsFetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
-  const { data: activeClaims } = usePolledData<readonly Claim[]>(
+  const { data: activeClaims, refresh: refreshClaims } = usePolledData<readonly Claim[]>(
     claimsFetcher,
     intervalMs,
     topology !== undefined,
@@ -338,7 +338,7 @@ export function App({
     if (!available) return [] as readonly string[];
     return tmux.listSessions();
   }, [tmux]);
-  const { data: paletteSessions } = usePolledData<readonly string[]>(
+  const { data: paletteSessions, refresh: refreshSessions } = usePolledData<readonly string[]>(
     sessionsFetcher,
     paletteVisible ? intervalMs * 2 : intervalMs * 4,
     tmux !== undefined,
@@ -354,7 +354,7 @@ export function App({
       }
     ).getSessionCosts();
   }, [provider, hasCosts]);
-  const { data: sessionCosts } = usePolledData<
+  const { data: sessionCosts, refresh: refreshCosts } = usePolledData<
     { totalCostUsd: number; totalTokens: number } | undefined
   >(
     costFetcher,
@@ -370,7 +370,7 @@ export function App({
       provider as TuiDataProvider & { getActivePR: () => Promise<GitHubPRSummary | undefined> }
     ).getActivePR();
   }, [provider, hasGitHub]);
-  const { data: activePR } = usePolledData<GitHubPRSummary | undefined>(
+  const { data: activePR, refresh: refreshPR } = usePolledData<GitHubPRSummary | undefined>(
     prFetcher,
     intervalMs * 4,
     hasGitHub,
@@ -378,7 +378,7 @@ export function App({
 
   // Poll dashboard for goal metadata (shown in status bar)
   const dashboardFetcher = useCallback(() => provider.getDashboard(), [provider]);
-  const { data: dashboardData } = usePolledData<DashboardData>(
+  const { data: dashboardData, refresh: refreshDashboard } = usePolledData<DashboardData>(
     dashboardFetcher,
     intervalMs * 3,
     true,
@@ -413,7 +413,11 @@ export function App({
       )
       .map((p) => ({ peerId: p.peerId, address: p.address, freeSlots: p.freeSlots }));
   }, [provider]);
-  const { data: gossipPeers } = usePolledData(gossipFetcher, intervalMs * 4, paletteVisible);
+  const { data: gossipPeers, refresh: refreshGossip } = usePolledData(
+    gossipFetcher,
+    intervalMs * 4,
+    paletteVisible,
+  );
 
   // Derive parentAgentId from the selected session for lineage-aware palette display
   const paletteParentId = selectedSession ? agentIdFromSession(selectedSession) : undefined;
@@ -440,7 +444,11 @@ export function App({
       return undefined;
     }
   }, []);
-  const { data: agentProfiles } = usePolledData(profilesFetcher, intervalMs * 10, true);
+  const { data: agentProfiles, refresh: refreshProfiles } = usePolledData(
+    profilesFetcher,
+    intervalMs * 10,
+    true,
+  );
 
   // Build terminal buffer map for cross-agent transcript search (item 17)
   const activeGroveSessions = useMemo(
@@ -460,11 +468,34 @@ export function App({
     }
     return map;
   }, [tmux, activeGroveSessions]);
-  const { data: terminalBuffers } = usePolledData<Map<string, string>>(
+  const { data: terminalBuffers, refresh: refreshTerminalBuffers } = usePolledData<
+    Map<string, string>
+  >(
     terminalBuffersFetcher,
     intervalMs * 5, // cold tier — transcript search is infrequent
     activeGroveSessions.length > 0,
   );
+
+  // Fan-out refresh: triggers all active pollers for an immediate re-fetch.
+  const refreshAll = useCallback(() => {
+    refreshClaims();
+    refreshSessions();
+    refreshCosts();
+    refreshPR();
+    refreshDashboard();
+    refreshGossip();
+    refreshProfiles();
+    refreshTerminalBuffers();
+  }, [
+    refreshClaims,
+    refreshSessions,
+    refreshCosts,
+    refreshPR,
+    refreshDashboard,
+    refreshGossip,
+    refreshProfiles,
+    refreshTerminalBuffers,
+  ]);
 
   const hasGoals = isGoalProvider(provider);
   const paletteItems = useMemo(
@@ -705,10 +736,7 @@ export function App({
       onTerminalScrollDown: () => dispatch({ type: "TERMINAL_SCROLL_DOWN" }),
       onTerminalScrollBottom: () => dispatch({ type: "TERMINAL_SCROLL_BOTTOM" }),
       onLayoutToggle: () => dispatch({ type: "LAYOUT_TOGGLE" }),
-      // onRefresh: no state to update — panels use usePolledData which handles
-      // interval-based refresh. A future implementation could expose a manual
-      // trigger via a ref. For now, this satisfies the KeyboardActions interface.
-      onRefresh: () => undefined,
+      onRefresh: refreshAll,
       onVfsNavigate: () => dispatch({ type: "VFS_NAVIGATE" }),
       onArtifactPrev: () => dispatch({ type: "ARTIFACT_PREV" }),
       onArtifactNext: () => dispatch({ type: "ARTIFACT_NEXT" }),
@@ -894,6 +922,7 @@ export function App({
       paletteParentId,
       keybindingOverrides,
       keyActionMap,
+      refreshAll,
       provider,
       spawnManager,
     ],

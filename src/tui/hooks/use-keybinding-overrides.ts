@@ -63,13 +63,21 @@ async function loadKeybindings(): Promise<KeybindingOverrides> {
   }
 }
 
-/** Build a reverse map: key → action name (for quick lookup in routeKey). */
+/**
+ * Build a reverse map: key → action name (for quick lookup in routeKey).
+ *
+ * Uses first-win semantics: if two actions are mapped to the same key,
+ * the first one in iteration order wins. This preserves the behavior of
+ * the prior O(n) Object.entries scan that stopped at the first match.
+ */
 export function buildKeyActionMap(
   overrides: KeybindingOverrides,
 ): ReadonlyMap<string, RemappableAction> {
   const map = new Map<string, RemappableAction>();
   for (const [action, key] of Object.entries(overrides)) {
-    map.set(key, action as RemappableAction);
+    if (!map.has(key)) {
+      map.set(key, action as RemappableAction);
+    }
   }
   return map;
 }
