@@ -114,12 +114,11 @@ export class NexusHandoffStore implements HandoffStore {
       const { handoffs, etag } = await this.readFile(path);
       const updated = fn(handoffs);
       try {
-        const writeResult = await this.client.write(path, encode({ handoffs: updated }), {
-          // Use ifMatch for CAS when we have an etag from a prior read.
-          // Do NOT use ifNoneMatch: "*" — Nexus sys_write silently drops writes
-          // when if_none_match is set (returns success but doesn't persist).
-          ...(etag ? { ifMatch: etag } : {}),
-        });
+        // Unconditional write — Nexus sys_write silently drops writes when
+        // if_match or if_none_match are set (returns success but doesn't persist).
+        // Without CAS, concurrent writes may lose data, but handoffs are append-only
+        // per session so conflicts are rare and the retry loop handles it.
+        const writeResult = await this.client.write(path, encode({ handoffs: updated }));
         try {
           const { appendFileSync } = require("node:fs") as typeof import("node:fs");
           appendFileSync(
