@@ -261,6 +261,10 @@ export class NexusContributionStore implements ContributionStore {
       contributions = contributions.filter((c) => c.agent.agentName === query.agentName);
     if (query?.platform !== undefined)
       contributions = contributions.filter((c) => c.agent.platform === query.platform);
+    if (query?.tags !== undefined && query.tags.length > 0) {
+      const requiredTags = query.tags;
+      contributions = contributions.filter((c) => requiredTags.every((t) => c.tags.includes(t)));
+    }
 
     // Apply limit/offset
     const offset = query?.offset ?? 0;
