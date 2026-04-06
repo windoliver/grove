@@ -7,7 +7,8 @@
 
 import type { KeyEvent } from "@opentui/core";
 import type { ZoomLevel } from "../panels/panel-manager.js";
-import type { KeybindingOverrides } from "./use-keybinding-overrides.js";
+import { isHelpToggleKey } from "./shared-keyboard-core.js";
+import type { KeybindingOverrides, RemappableAction } from "./use-keybinding-overrides.js";
 import type { NavigationActions } from "./use-navigation.js";
 import { InputMode, Panel, type PanelFocusActions } from "./use-panel-focus.js";
 
@@ -54,6 +55,7 @@ export interface KeyboardActions {
   readonly onTerminalScrollDown: () => void;
   readonly onTerminalScrollBottom: () => void;
   readonly onLayoutToggle: () => void;
+  readonly onRefresh: () => void;
   readonly onSelect: (index: number) => void;
   readonly rowCount: number;
   readonly pageSize: number;
@@ -64,6 +66,11 @@ export interface KeyboardActions {
   readonly hasTmux: boolean;
   /** Keybinding overrides from .grove/keybindings.json (item 19). */
   readonly keybindingOverrides?: KeybindingOverrides | undefined;
+  /**
+   * Pre-built reverse map (key → action) derived from keybindingOverrides.
+   * Use buildKeyActionMap() to construct. Enables O(1) lookup vs O(n) scan.
+   */
+  readonly keyActionMap?: ReadonlyMap<string, RemappableAction> | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -94,63 +101,62 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
   const mode = actions.panels.state.mode;
   const focused = actions.panels.state.focused;
 
-  // Keybinding overrides (item 19): check if this key maps to a remapped action.
+  // Keybinding overrides (item 19): O(1) lookup via pre-built reverse map.
   // Override lookup only applies in normal mode to avoid breaking modal input.
-  const overrides = actions.keybindingOverrides;
-  if (mode === InputMode.Normal && overrides && input && !isCtrl) {
-    // Reverse lookup: find which action this key is mapped to
-    for (const [action, boundKey] of Object.entries(overrides)) {
-      if (boundKey === input) {
-        switch (action) {
-          case "quit":
-            actions.onQuit();
-            return true;
-          case "help":
-            actions.panels.setMode(InputMode.Help);
-            return true;
-          case "zoom_cycle":
-            actions.onZoomCycle();
-            return true;
-          case "zoom_reset":
-            actions.onZoomReset();
-            return true;
-          case "broadcast":
-            actions.onBroadcastMode();
-            return true;
-          case "direct_message":
-            actions.onDirectMessageMode();
-            return true;
-          case "search_start":
-            if (focused === Panel.Search) actions.onSearchStart();
-            return true;
-          case "terminal_input":
-            if (focused === Panel.Terminal) actions.panels.setMode(InputMode.TerminalInput);
-            return true;
-          case "compare_toggle":
-            if (focused === Panel.Frontier) actions.onCompareToggle();
-            return true;
-          case "artifact_prev":
-            if (focused === Panel.Artifact) actions.onArtifactPrev();
-            return true;
-          case "artifact_next":
-            if (focused === Panel.Artifact) actions.onArtifactNext();
-            return true;
-          case "artifact_diff":
-            if (focused === Panel.Artifact) actions.onArtifactDiffToggle();
-            return true;
-          case "approve":
-            if (focused === Panel.Decisions) actions.onApproveQuestion();
-            return true;
-          case "deny":
-            if (focused === Panel.Decisions) actions.onDenyQuestion();
-            return true;
-          case "refresh":
-            return true;
-          case "palette":
-            actions.onSpawnPalette();
-            actions.panels.setMode(InputMode.CommandPalette);
-            return true;
-        }
+  const keyActionMap = actions.keyActionMap;
+  if (mode === InputMode.Normal && keyActionMap && input && !isCtrl) {
+    const action = keyActionMap.get(input);
+    if (action !== undefined) {
+      switch (action) {
+        case "quit":
+          actions.onQuit();
+          return true;
+        case "help":
+          actions.panels.setMode(InputMode.Help);
+          return true;
+        case "zoom_cycle":
+          actions.onZoomCycle();
+          return true;
+        case "zoom_reset":
+          actions.onZoomReset();
+          return true;
+        case "broadcast":
+          actions.onBroadcastMode();
+          return true;
+        case "direct_message":
+          actions.onDirectMessageMode();
+          return true;
+        case "search_start":
+          if (focused === Panel.Search) actions.onSearchStart();
+          return true;
+        case "terminal_input":
+          if (focused === Panel.Terminal) actions.panels.setMode(InputMode.TerminalInput);
+          return true;
+        case "compare_toggle":
+          if (focused === Panel.Frontier) actions.onCompareToggle();
+          return true;
+        case "artifact_prev":
+          if (focused === Panel.Artifact) actions.onArtifactPrev();
+          return true;
+        case "artifact_next":
+          if (focused === Panel.Artifact) actions.onArtifactNext();
+          return true;
+        case "artifact_diff":
+          if (focused === Panel.Artifact) actions.onArtifactDiffToggle();
+          return true;
+        case "approve":
+          if (focused === Panel.Decisions) actions.onApproveQuestion();
+          return true;
+        case "deny":
+          if (focused === Panel.Decisions) actions.onDenyQuestion();
+          return true;
+        case "refresh":
+          actions.onRefresh();
+          return true;
+        case "palette":
+          actions.onSpawnPalette();
+          actions.panels.setMode(InputMode.CommandPalette);
+          return true;
       }
     }
   }
@@ -182,9 +188,9 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     return true;
   }
 
-  // In help mode, ? toggles off
+  // In help mode, help-toggle key exits; all other keys are consumed.
   if (mode === InputMode.Help) {
-    if (input === "?" || (key.shift && input === "/")) {
+    if (isHelpToggleKey(key)) {
       actions.panels.setMode(InputMode.Normal);
     }
     return true;
@@ -280,7 +286,7 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
   }
 
   // Help overlay toggle
-  if (input === "?" || (key.shift && input === "/")) {
+  if (isHelpToggleKey(key)) {
     actions.panels.setMode(InputMode.Help);
     return true;
   }
@@ -360,6 +366,10 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
   }
   if (input === "'") {
     actions.panels.toggle(Panel.GitHub);
+    return true;
+  }
+  if (input === "`") {
+    actions.panels.toggle(Panel.Plan);
     return true;
   }
 
@@ -519,7 +529,10 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     return true;
   }
 
-  if (input === "r") return true; // refresh — handled by polling
+  if (input === "r") {
+    actions.onRefresh();
+    return true;
+  }
 
   return false;
 }

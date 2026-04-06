@@ -7,6 +7,7 @@
  */
 
 import type { KeyEvent } from "@opentui/core";
+import { isHelpToggleKey } from "../hooks/shared-keyboard-core.js";
 import type { ZoomLevel } from "../panels/panel-registry.js";
 
 // ---------------------------------------------------------------------------
@@ -195,11 +196,7 @@ export function routeRunningKey(
 
   // ─── Help overlay (? toggles off, other keys swallowed) ───
   if (state.showHelp) {
-    if (input === "?" || (key.shift && input === "/")) {
-      actions.dismissHelp();
-      return true;
-    }
-    if (input === "escape") {
+    if (isHelpToggleKey(key) || input === "escape") {
       actions.dismissHelp();
       return true;
     }
@@ -209,7 +206,7 @@ export function routeRunningKey(
   // ─── Normal mode ───
 
   // '?': toggle help overlay
-  if (input === "?" || (key.shift && input === "/")) {
+  if (isHelpToggleKey(key)) {
     actions.toggleHelp();
     return true;
   }

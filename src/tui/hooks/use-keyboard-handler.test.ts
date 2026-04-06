@@ -7,9 +7,11 @@
 
 import { describe, expect, test } from "bun:test";
 import type { KeyEvent } from "@opentui/core";
+import { buildKeyActionMap } from "./use-keybinding-overrides.js";
 import type { KeyboardActions } from "./use-keyboard-handler.js";
 import { nextZoom, routeKey } from "./use-keyboard-handler.js";
-import { InputMode, Panel, type PanelFocusState } from "./use-panel-focus.js";
+import type { PanelFocusState } from "./use-panel-focus.js";
+import { InputMode, Panel } from "./use-panel-focus.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -53,6 +55,7 @@ function mockActions(overrides?: {
   selectedSession?: string;
   hasTmux?: boolean;
   isDetailView?: boolean;
+  keybindingOverrides?: import("./use-keybinding-overrides.js").KeybindingOverrides;
 }): { actions: KeyboardActions; log: ActionLog } {
   const log: ActionLog = { calls: [], args: {} };
 
@@ -128,6 +131,7 @@ function mockActions(overrides?: {
     onTerminalScrollDown: () => record("onTerminalScrollDown"),
     onTerminalScrollBottom: () => record("onTerminalScrollBottom"),
     onLayoutToggle: () => record("onLayoutToggle"),
+    onRefresh: () => record("onRefresh"),
     onSelect: (index) => record("onSelect", index),
     rowCount: overrides?.rowCount ?? 10,
     pageSize: 20,
@@ -136,6 +140,10 @@ function mockActions(overrides?: {
     frontierCids: overrides?.frontierCids ?? [],
     selectedSession: overrides?.selectedSession,
     hasTmux: overrides?.hasTmux ?? false,
+    keybindingOverrides: overrides?.keybindingOverrides,
+    keyActionMap: overrides?.keybindingOverrides
+      ? buildKeyActionMap(overrides.keybindingOverrides)
+      : undefined,
   };
 
   return { actions, log };
@@ -261,11 +269,18 @@ describe("routeKey — normal mode misc", () => {
     expect(l2.calls).toContain("nav.prevPage");
   });
 
-  test("r returns true (handled) but no action", () => {
+  test("r calls onRefresh", () => {
     const { actions, log } = mockActions();
     const handled = routeKey(keyEvent("r"), actions);
     expect(handled).toBe(true);
-    expect(log.calls).toEqual([]);
+    expect(log.calls).toContain("onRefresh");
+  });
+
+  test("keybinding override for 'refresh' calls onRefresh", () => {
+    const { actions, log } = mockActions({ keybindingOverrides: { refresh: "F5" } });
+    const handled = routeKey(keyEvent("F5"), actions);
+    expect(handled).toBe(true);
+    expect(log.calls).toContain("onRefresh");
   });
 
   test("unhandled key returns false", () => {
@@ -583,6 +598,30 @@ describe("routeKey — Enter key", () => {
     });
     routeKey(keyEvent("return"), actions);
     expect(log.calls).not.toContain("onSelect");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Registry completeness: every registered panel must have a routeKey binding
+// ---------------------------------------------------------------------------
+
+describe("panel registry completeness — every panel has a keybinding in routeKey", () => {
+  // This test is the CI guard that prevents a panel from being added to the
+  // registry without a corresponding keybinding in routeKey.
+  test("every PANEL_REGISTRY entry's keybinding focuses or toggles the panel", async () => {
+    const { PANEL_REGISTRY } = await import("../panels/panel-registry.js");
+    for (const def of PANEL_REGISTRY) {
+      const { actions, log } = mockActions();
+      const handled = routeKey(keyEvent(def.keybinding), actions);
+      expect(handled).toBe(true);
+      if (def.kind === "core") {
+        expect(log.calls).toContain("panels.focus");
+        expect(log.args["panels.focus"]).toEqual([def.panel]);
+      } else {
+        expect(log.calls).toContain("panels.toggle");
+        expect(log.args["panels.toggle"]).toEqual([def.panel]);
+      }
+    }
   });
 });
 

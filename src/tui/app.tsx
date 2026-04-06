@@ -20,12 +20,13 @@ import { InputBar } from "./components/input-bar.js";
 import { StatusBar } from "./components/status-bar.js";
 import { PanelBar } from "./components/tab-bar.js";
 import { TooltipOverlay, useFirstLaunchTooltips } from "./components/tooltip-overlay.js";
-import { useKeybindingOverrides } from "./hooks/use-keybinding-overrides.js";
+import { buildKeyActionMap, useKeybindingOverrides } from "./hooks/use-keybinding-overrides.js";
 import type { KeyboardActions } from "./hooks/use-keyboard-handler.js";
 import { nextZoom, routeKey } from "./hooks/use-keyboard-handler.js";
 import { useNavigation } from "./hooks/use-navigation.js";
 import { InputMode, usePanelFocus } from "./hooks/use-panel-focus.js";
 import { usePolledData } from "./hooks/use-polled-data.js";
+import { RefreshContext } from "./hooks/use-refresh-context.js";
 import { useSessionPersistence } from "./hooks/use-session-persistence.js";
 import type { ZoomLevel } from "./panels/panel-manager.js";
 import { PanelManager } from "./panels/panel-manager.js";
@@ -240,6 +241,7 @@ export function App({
   const { showTooltips, dismissAll: dismissTooltips } = useFirstLaunchTooltips();
   const { persistedState, saveState } = useSessionPersistence();
   const keybindingOverrides = useKeybindingOverrides();
+  const keyActionMap = useMemo(() => buildKeyActionMap(keybindingOverrides), [keybindingOverrides]);
   const [ks, dispatch] = useReducer(tuiReducer, INITIAL_KEYBOARD_STATE);
 
   // Restore persisted state on first load (item 13)
@@ -322,7 +324,7 @@ export function App({
 
   // Poll active claims for topology-aware command palette
   const claimsFetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
-  const { data: activeClaims } = usePolledData<readonly Claim[]>(
+  const { data: activeClaims, refresh: refreshClaims } = usePolledData<readonly Claim[]>(
     claimsFetcher,
     intervalMs,
     topology !== undefined,
@@ -337,7 +339,7 @@ export function App({
     if (!available) return [] as readonly string[];
     return tmux.listSessions();
   }, [tmux]);
-  const { data: paletteSessions } = usePolledData<readonly string[]>(
+  const { data: paletteSessions, refresh: refreshSessions } = usePolledData<readonly string[]>(
     sessionsFetcher,
     paletteVisible ? intervalMs * 2 : intervalMs * 4,
     tmux !== undefined,
@@ -353,7 +355,7 @@ export function App({
       }
     ).getSessionCosts();
   }, [provider, hasCosts]);
-  const { data: sessionCosts } = usePolledData<
+  const { data: sessionCosts, refresh: refreshCosts } = usePolledData<
     { totalCostUsd: number; totalTokens: number } | undefined
   >(
     costFetcher,
@@ -369,7 +371,7 @@ export function App({
       provider as TuiDataProvider & { getActivePR: () => Promise<GitHubPRSummary | undefined> }
     ).getActivePR();
   }, [provider, hasGitHub]);
-  const { data: activePR } = usePolledData<GitHubPRSummary | undefined>(
+  const { data: activePR, refresh: refreshPR } = usePolledData<GitHubPRSummary | undefined>(
     prFetcher,
     intervalMs * 4,
     hasGitHub,
@@ -377,7 +379,7 @@ export function App({
 
   // Poll dashboard for goal metadata (shown in status bar)
   const dashboardFetcher = useCallback(() => provider.getDashboard(), [provider]);
-  const { data: dashboardData } = usePolledData<DashboardData>(
+  const { data: dashboardData, refresh: refreshDashboard } = usePolledData<DashboardData>(
     dashboardFetcher,
     intervalMs * 3,
     true,
@@ -412,7 +414,11 @@ export function App({
       )
       .map((p) => ({ peerId: p.peerId, address: p.address, freeSlots: p.freeSlots }));
   }, [provider]);
-  const { data: gossipPeers } = usePolledData(gossipFetcher, intervalMs * 4, paletteVisible);
+  const { data: gossipPeers, refresh: refreshGossip } = usePolledData(
+    gossipFetcher,
+    intervalMs * 4,
+    paletteVisible,
+  );
 
   // Derive parentAgentId from the selected session for lineage-aware palette display
   const paletteParentId = selectedSession ? agentIdFromSession(selectedSession) : undefined;
@@ -439,7 +445,11 @@ export function App({
       return undefined;
     }
   }, []);
-  const { data: agentProfiles } = usePolledData(profilesFetcher, intervalMs * 10, true);
+  const { data: agentProfiles, refresh: refreshProfiles } = usePolledData(
+    profilesFetcher,
+    intervalMs * 10,
+    true,
+  );
 
   // Build terminal buffer map for cross-agent transcript search (item 17)
   const activeGroveSessions = useMemo(
@@ -459,11 +469,40 @@ export function App({
     }
     return map;
   }, [tmux, activeGroveSessions]);
-  const { data: terminalBuffers } = usePolledData<Map<string, string>>(
+  const { data: terminalBuffers, refresh: refreshTerminalBuffers } = usePolledData<
+    Map<string, string>
+  >(
     terminalBuffersFetcher,
     intervalMs * 5, // cold tier — transcript search is infrequent
     activeGroveSessions.length > 0,
   );
+
+  // Increments on every manual refresh — consumed by RefreshContext so panel-level
+  // usePolledData subscribers (via useRefreshSignal) trigger immediately.
+  const [refreshSignal, setRefreshSignal] = useState(0);
+
+  // Fan-out refresh: triggers App-level pollers and increments the signal so
+  // panel-level subscribers (subscribed via useRefreshSignal) also re-fetch.
+  const refreshAll = useCallback(() => {
+    setRefreshSignal((s) => s + 1);
+    refreshClaims();
+    refreshSessions();
+    refreshCosts();
+    refreshPR();
+    refreshDashboard();
+    refreshGossip();
+    refreshProfiles();
+    refreshTerminalBuffers();
+  }, [
+    refreshClaims,
+    refreshSessions,
+    refreshCosts,
+    refreshPR,
+    refreshDashboard,
+    refreshGossip,
+    refreshProfiles,
+    refreshTerminalBuffers,
+  ]);
 
   const hasGoals = isGoalProvider(provider);
   const paletteItems = useMemo(
@@ -704,6 +743,7 @@ export function App({
       onTerminalScrollDown: () => dispatch({ type: "TERMINAL_SCROLL_DOWN" }),
       onTerminalScrollBottom: () => dispatch({ type: "TERMINAL_SCROLL_BOTTOM" }),
       onLayoutToggle: () => dispatch({ type: "LAYOUT_TOGGLE" }),
+      onRefresh: refreshAll,
       onVfsNavigate: () => dispatch({ type: "VFS_NAVIGATE" }),
       onArtifactPrev: () => dispatch({ type: "ARTIFACT_PREV" }),
       onArtifactNext: () => dispatch({ type: "ARTIFACT_NEXT" }),
@@ -858,6 +898,7 @@ export function App({
       selectedSession,
       hasTmux: tmux !== undefined,
       keybindingOverrides,
+      keyActionMap,
     }),
     [
       panels,
@@ -887,6 +928,8 @@ export function App({
       topology,
       paletteParentId,
       keybindingOverrides,
+      keyActionMap,
+      refreshAll,
       provider,
       spawnManager,
     ],
@@ -904,86 +947,90 @@ export function App({
   });
 
   return (
-    <box flexDirection="column" width="100%" height="100%">
-      <TooltipOverlay visible={showTooltips} onDismissAll={dismissTooltips} />
-      <PanelBar panelState={panels.state} />
-      <HelpOverlay
-        visible={panels.state.mode === InputMode.Help}
-        isDetailView={nav.isDetailView}
-        focusedPanel={panels.state.focused}
-      />
-      <CommandPalette
-        visible={paletteVisible}
-        tmux={tmux}
-        onClose={handleCommandPaletteClose}
-        onSpawn={handleSpawn}
-        onKill={handleKill}
-        topology={topology}
-        activeClaims={activeClaims ?? undefined}
-        selectedIndex={ks.paletteIndex}
-        sessions={paletteSessions ?? undefined}
-        parentAgentId={paletteParentId}
-        items={paletteItems}
-        query={ks.paletteQuery}
-      />
-      <InputBar
-        visible={
-          panels.state.mode === InputMode.TerminalInput ||
-          panels.state.mode === InputMode.MessageInput ||
-          panels.state.mode === InputMode.GoalInput
-        }
-        sessionName={selectedSession}
-        messageLabel={
-          panels.state.mode === InputMode.MessageInput
-            ? `Message ${ks.messageRecipients}: ${ks.messageBuffer}`
-            : panels.state.mode === InputMode.GoalInput
-              ? `Goal: ${ks.goalBuffer}`
+    <RefreshContext.Provider value={{ signal: refreshSignal }}>
+      <box flexDirection="column" width="100%" height="100%">
+        <TooltipOverlay visible={showTooltips} onDismissAll={dismissTooltips} />
+        <PanelBar panelState={panels.state} />
+        <HelpOverlay
+          visible={panels.state.mode === InputMode.Help}
+          isDetailView={nav.isDetailView}
+          focusedPanel={panels.state.focused}
+        />
+        <CommandPalette
+          visible={paletteVisible}
+          tmux={tmux}
+          onClose={handleCommandPaletteClose}
+          onSpawn={handleSpawn}
+          onKill={handleKill}
+          topology={topology}
+          activeClaims={activeClaims ?? undefined}
+          selectedIndex={ks.paletteIndex}
+          sessions={paletteSessions ?? undefined}
+          parentAgentId={paletteParentId}
+          items={paletteItems}
+          query={ks.paletteQuery}
+        />
+        <InputBar
+          visible={
+            panels.state.mode === InputMode.TerminalInput ||
+            panels.state.mode === InputMode.MessageInput ||
+            panels.state.mode === InputMode.GoalInput
+          }
+          sessionName={selectedSession}
+          messageLabel={
+            panels.state.mode === InputMode.MessageInput
+              ? `Message ${ks.messageRecipients}: ${ks.messageBuffer}`
+              : panels.state.mode === InputMode.GoalInput
+                ? `Goal: ${ks.goalBuffer}`
+                : undefined
+          }
+        />
+        <PanelManager
+          provider={provider}
+          intervalMs={intervalMs}
+          panelState={panels.state}
+          nav={nav}
+          onContributionsLoaded={handleContributionsLoaded}
+          onRowCountChanged={handleRowCountChanged}
+          pageSize={PAGE_SIZE}
+          tmux={tmux}
+          selectedSession={selectedSession}
+          topology={topology}
+          onSelectSession={setSelectedSession}
+          vfsNavigateTrigger={ks.vfsNavigateTrigger}
+          artifactIndex={ks.artifactIndex}
+          showArtifactDiff={ks.showArtifactDiff}
+          activeClaims={activeClaims ?? undefined}
+          searchQuery={
+            panels.state.mode === InputMode.SearchInput ? ks.searchBuffer : ks.searchQuery
+          }
+          isSearchInputMode={panels.state.mode === InputMode.SearchInput}
+          compareMode={ks.compareMode}
+          compareCids={ks.compareCids}
+          onCompareSelect={(cid: string) => dispatch({ type: "COMPARE_SELECT", cid })}
+          onFrontierCidsChanged={handleFrontierCidsChanged}
+          zoomLevel={ks.zoomLevel}
+          activeSessions={paletteSessions?.filter((s) => s.startsWith("grove-"))}
+          terminalScrollOffset={ks.terminalScrollOffset}
+          terminalBuffers={terminalBuffers ?? undefined}
+          layoutMode={ks.layoutMode}
+          presetName={presetName}
+        />
+        <StatusBar
+          mode={panels.state.mode}
+          isDetailView={nav.isDetailView}
+          error={lastError}
+          focusedPanel={panels.state.focused}
+          agentCount={paletteSessions?.filter((s) => s.startsWith("grove-")).length}
+          viewMode={panels.state.viewMode}
+          costLabel={
+            sessionCosts
+              ? `$${sessionCosts.totalCostUsd.toFixed(2)} | ${formatTokens(sessionCosts.totalTokens)}`
               : undefined
-        }
-      />
-      <PanelManager
-        provider={provider}
-        intervalMs={intervalMs}
-        panelState={panels.state}
-        nav={nav}
-        onContributionsLoaded={handleContributionsLoaded}
-        onRowCountChanged={handleRowCountChanged}
-        pageSize={PAGE_SIZE}
-        tmux={tmux}
-        selectedSession={selectedSession}
-        topology={topology}
-        onSelectSession={setSelectedSession}
-        vfsNavigateTrigger={ks.vfsNavigateTrigger}
-        artifactIndex={ks.artifactIndex}
-        showArtifactDiff={ks.showArtifactDiff}
-        activeClaims={activeClaims ?? undefined}
-        searchQuery={panels.state.mode === InputMode.SearchInput ? ks.searchBuffer : ks.searchQuery}
-        isSearchInputMode={panels.state.mode === InputMode.SearchInput}
-        compareMode={ks.compareMode}
-        compareCids={ks.compareCids}
-        onCompareSelect={(cid: string) => dispatch({ type: "COMPARE_SELECT", cid })}
-        onFrontierCidsChanged={handleFrontierCidsChanged}
-        zoomLevel={ks.zoomLevel}
-        activeSessions={paletteSessions?.filter((s) => s.startsWith("grove-"))}
-        terminalScrollOffset={ks.terminalScrollOffset}
-        terminalBuffers={terminalBuffers ?? undefined}
-        layoutMode={ks.layoutMode}
-        presetName={presetName}
-      />
-      <StatusBar
-        mode={panels.state.mode}
-        isDetailView={nav.isDetailView}
-        error={lastError}
-        focusedPanel={panels.state.focused}
-        agentCount={paletteSessions?.filter((s) => s.startsWith("grove-")).length}
-        viewMode={panels.state.viewMode}
-        costLabel={
-          sessionCosts
-            ? `$${sessionCosts.totalCostUsd.toFixed(2)} | ${formatTokens(sessionCosts.totalTokens)}`
-            : undefined
-        }
-        goalLabel={dashboardData?.metadata?.goal}
-      />
-    </box>
+          }
+          goalLabel={dashboardData?.metadata?.goal}
+        />
+      </box>
+    </RefreshContext.Provider>
   );
 }

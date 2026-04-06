@@ -103,9 +103,7 @@ export const Table: React.NamedExoticComponent<TableProps> = React.memo(function
       </box>
       {truncated && (
         <box>
-          <text color={theme.dimmed}>
-            {`Showing ${maxItems} of ${rows.length} — use search to narrow`}
-          </text>
+          <text color={theme.dimmed}>{`Showing ${maxItems} of ${rows.length}`}</text>
         </box>
       )}
     </box>
