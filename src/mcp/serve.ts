@@ -127,7 +127,11 @@ try {
         outcomeStore = new NexusOutcomeStore({ client: nexusClient, zoneId });
         cas = new NexusCas({ client: nexusClient, zoneId });
         const { NexusHandoffStore } = await import("../nexus/nexus-handoff-store.js");
-        nexusHandoffStore = new NexusHandoffStore(nexusClient, process.env.GROVE_SESSION_ID);
+        nexusHandoffStore = new NexusHandoffStore(
+          nexusClient,
+          process.env.GROVE_SESSION_ID,
+          zoneId,
+        );
         process.stderr.write(`grove-mcp: using Nexus stores at ${nexusUrl}\n`);
         try {
           const { appendFileSync } = await import("node:fs");

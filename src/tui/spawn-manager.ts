@@ -922,11 +922,9 @@ export class SpawnManager {
     let pollCount = 0;
     const timer = setInterval(async () => {
       try {
-        // Use a small limit to avoid reading ALL historical contributions from
-        // Nexus VFS — each contribution is a separate VFS file read, so limit:500
-        // with 30+ existing contributions burns 30+ API calls per poll and exhausts
-        // Nexus rate limits. We only need the most recent contributions for routing.
-        const contributions = await provider.getContributions({ limit: 10 });
+        // Session-scoped contributions: only this session's data is read (1-5 items).
+        // No limit needed — session scoping already bounds the count.
+        const contributions = await provider.getContributions();
         const feed = sessionStartedAt
           ? (contributions ?? []).filter((c) => c.createdAt >= sessionStartedAt)
           : (contributions ?? []);

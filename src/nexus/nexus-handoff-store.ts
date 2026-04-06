@@ -21,12 +21,14 @@ import {
 } from "../core/handoff.js";
 import type { NexusClient } from "./client.js";
 
-// Use absolute zone-prefixed path so MCP and TUI resolve to the same VFS location.
-// Relative paths may resolve differently per Nexus zone context.
-const HANDOFFS_DIR = "/zones/default/handoffs";
-const GLOBAL_FILE = `${HANDOFFS_DIR}/_global.json`;
 const MAX_CAS_RETRIES = 8;
 
+function handoffsDir(zoneId: string): string {
+  return `/zones/${zoneId}/handoffs`;
+}
+function globalFile(zoneId: string): string {
+  return `${handoffsDir(zoneId)}/_global.json`;
+}
 interface HandoffFile {
   handoffs: Handoff[];
 }
@@ -35,22 +37,22 @@ function encode(obj: unknown): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(obj));
 }
 
-function sessionFile(sessionId: string): string {
-  return `${HANDOFFS_DIR}/${sessionId}.json`;
-}
-
 export class NexusHandoffStore implements HandoffStore {
   private readonly client: NexusClient;
   private readonly sessionId: string | undefined;
+  private readonly zoneId: string;
   private dirEnsured = false;
 
   constructor(
     client: NexusClient,
     /** Active session ID — determines which file handoffs are written to. */
     sessionId?: string | undefined,
+    /** Zone ID for multi-tenant scoping. Defaults to "default". */
+    zoneId?: string | undefined,
   ) {
     this.client = client;
     this.sessionId = sessionId;
+    this.zoneId = zoneId ?? "default";
   }
 
   // ---------------------------------------------------------------------------
@@ -58,14 +60,15 @@ export class NexusHandoffStore implements HandoffStore {
   // ---------------------------------------------------------------------------
 
   private filePath(): string {
-    return this.sessionId ? sessionFile(this.sessionId) : GLOBAL_FILE;
+    const dir = handoffsDir(this.zoneId);
+    return this.sessionId ? `${dir}/${this.sessionId}.json` : globalFile(this.zoneId);
   }
 
   /** Ensure the handoffs directory exists in VFS (idempotent, cached). */
   private async ensureDir(): Promise<void> {
     if (this.dirEnsured) return;
     try {
-      await this.client.mkdir(HANDOFFS_DIR, { parents: true });
+      await this.client.mkdir(handoffsDir(this.zoneId), { parents: true });
     } catch {
       // Best-effort — write may auto-create parent dirs on some Nexus versions
     }
@@ -315,7 +318,7 @@ export class NexusHandoffStore implements HandoffStore {
 
   private async readAllHandoffs(): Promise<Handoff[]> {
     try {
-      const listing = await this.client.list(HANDOFFS_DIR);
+      const listing = await this.client.list(handoffsDir(this.zoneId));
       // Nexus list may return entries without the .json extension even though
       // the file was written with .json — accept all non-directory entries.
       const files = listing.files.filter((e) => !e.isDirectory);
@@ -323,7 +326,7 @@ export class NexusHandoffStore implements HandoffStore {
         const { appendFileSync } = require("node:fs") as typeof import("node:fs");
         appendFileSync(
           "/tmp/grove-debug.log",
-          `[${new Date().toISOString()}] [NexusHandoffStore.readAllHandoffs] dir=${HANDOFFS_DIR} totalEntries=${listing.files.length} jsonFiles=${files.length} paths=${files.map((f) => f.path).join(",") || "(none)"}\n`,
+          `[${new Date().toISOString()}] [NexusHandoffStore.readAllHandoffs] dir=${handoffsDir(this.zoneId)} totalEntries=${listing.files.length} jsonFiles=${files.length} paths=${files.map((f) => f.path).join(",") || "(none)"}\n`,
         );
       } catch {
         /* non-fatal */
@@ -362,7 +365,7 @@ export class NexusHandoffStore implements HandoffStore {
         const { appendFileSync } = require("node:fs") as typeof import("node:fs");
         appendFileSync(
           "/tmp/grove-debug.log",
-          `[${new Date().toISOString()}] [NexusHandoffStore.readAllHandoffs] LIST FAIL dir=${HANDOFFS_DIR} err=${listErr instanceof Error ? listErr.message : String(listErr)}\n`,
+          `[${new Date().toISOString()}] [NexusHandoffStore.readAllHandoffs] LIST FAIL dir=${handoffsDir(this.zoneId)} err=${listErr instanceof Error ? listErr.message : String(listErr)}\n`,
         );
       } catch {
         /* non-fatal */
