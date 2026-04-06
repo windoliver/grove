@@ -340,7 +340,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
      * Called from handleLaunchConfirm with explicit roleMapping.
      */
     const spawnAgents = useCallback(
-      (goal: string, roleMapping: Map<string, string>) => {
+      async (goal: string, roleMapping: Map<string, string>) => {
         debugLog(
           "spawnAgents",
           `goal="${goal}" roles=[${[...roleMapping.entries()].map(([k, v]) => `${k}→${v}`).join(",")}]`,
@@ -355,24 +355,26 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           });
         }
 
-        // Create session if supported
+        // Create session BEFORE spawning agents so MCP gets GROVE_SESSION_ID
+        // for session-scoped contribution paths (avoids N+1 VFS reads on 47+ old contributions).
         if (isSessionProvider(provider)) {
-          void provider
-            .createSession({ goal, presetName: state.selectedPreset, topology, config: contract })
-            .then((session) => {
-              spawnManager.setSessionId(session.id);
-              // Scope contributions to this session so list() only reads this session's
-              // data — avoids N+1 VFS reads scanning all historical contributions.
-              if ("setSessionScope" in provider) {
-                (provider as { setSessionScope: (id: string) => void }).setSessionScope(session.id);
-              }
-              setState((s) => ({ ...s, sessionId: session.id }));
-            })
-            .catch((err) => {
-              const msg = err instanceof Error ? err.message : String(err);
-              process.stderr.write(`[grove] session record failed to save: ${msg}\n`);
-              setState((s) => ({ ...s, sessionWarning: `Session record failed to save: ${msg}` }));
+          try {
+            const session = await provider.createSession({
+              goal,
+              presetName: state.selectedPreset,
+              topology,
+              config: contract,
             });
+            spawnManager.setSessionId(session.id);
+            if ("setSessionScope" in provider) {
+              (provider as { setSessionScope: (id: string) => void }).setSessionScope(session.id);
+            }
+            setState((s) => ({ ...s, sessionId: session.id }));
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            process.stderr.write(`[grove] session record failed to save: ${msg}\n`);
+            setState((s) => ({ ...s, sessionWarning: `Session record failed to save: ${msg}` }));
+          }
         }
 
         // Transition to spawning screen with per-agent tracking

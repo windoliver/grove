@@ -23,7 +23,7 @@ import type { NexusClient } from "./client.js";
 
 const HANDOFFS_DIR = "handoffs";
 const GLOBAL_FILE = `${HANDOFFS_DIR}/_global.json`;
-const MAX_CAS_RETRIES = 5;
+const MAX_CAS_RETRIES = 8;
 
 interface HandoffFile {
   handoffs: Handoff[];
@@ -126,6 +126,11 @@ export class NexusHandoffStore implements HandoffStore {
         }
         // First write hit a conflict because file was just created — retry as update
         if (msg.includes("412") || msg.includes("none_match")) {
+          continue;
+        }
+        // Rate limit — backoff and retry (handoff writes are critical for IPC tracking)
+        if (msg.includes("429") || msg.toLowerCase().includes("rate limit")) {
+          await new Promise((r) => setTimeout(r, 2000 * 2 ** attempt));
           continue;
         }
         throw err;

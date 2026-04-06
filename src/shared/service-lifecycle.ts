@@ -74,10 +74,35 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
     !process.env.GROVE_NEXUS_URL &&
     (config.nexusManaged || (config.mode === "nexus" && !config.nexusUrl))
   ) {
+    // Fast path: if grove.json has nexusUrl, check health before running ensureNexusRunning.
+    // This avoids spawning a duplicate compose project when the existing Nexus just needs
+    // a moment to start up (e.g., after machine reboot or container auto-restart).
+    if (config.nexusUrl) {
+      try {
+        const { readNexusApiKey } = await import("../cli/nexus-lifecycle.js");
+        const res = await fetch(`${config.nexusUrl}/health`, {
+          signal: AbortSignal.timeout(5_000),
+        });
+        const body = (await res.json().catch(() => ({}))) as { status?: string };
+        if (body.status === "healthy" || body.status === "starting") {
+          const apiKey = readNexusApiKey(projectRoot);
+          if (body.status === "starting") {
+            const { waitForNexusHealth } = await import("../cli/nexus-lifecycle.js");
+            await waitForNexusHealth(config.nexusUrl, 60_000);
+          }
+          process.env.GROVE_NEXUS_URL = config.nexusUrl;
+          if (apiKey) process.env.NEXUS_API_KEY = apiKey;
+          nexusManaged = true;
+          options.onProgress?.("Nexus is ready (from grove.json)");
+          return { children, nexusManaged, projectRoot, pidFilePath };
+        }
+      } catch {
+        // Not reachable — fall through to ensureNexusRunning
+      }
+    }
+
     try {
       const { ensureNexusRunning } = await import("../cli/nexus-lifecycle.js");
-      // Never pass force to Nexus — "new grove" means reinit the grove,
-      // not recreate the entire Nexus Docker stack. Always reuse existing.
       const nexusInfo = await ensureNexusRunning(projectRoot, config, {
         build: options.build ?? false,
         nexusSource: options.nexusSource,
