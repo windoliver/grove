@@ -115,9 +115,10 @@ export class NexusHandoffStore implements HandoffStore {
       const updated = fn(handoffs);
       try {
         const writeResult = await this.client.write(path, encode({ handoffs: updated }), {
-          // First write: if_none_match prevents overwrite race on creation
-          // Subsequent: if_match ensures we're updating what we read
-          ...(etag ? { ifMatch: etag } : { ifNoneMatch: "*" }),
+          // Use ifMatch for CAS when we have an etag from a prior read.
+          // Do NOT use ifNoneMatch: "*" — Nexus sys_write silently drops writes
+          // when if_none_match is set (returns success but doesn't persist).
+          ...(etag ? { ifMatch: etag } : {}),
         });
         try {
           const { appendFileSync } = require("node:fs") as typeof import("node:fs");
