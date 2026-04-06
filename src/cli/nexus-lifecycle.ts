@@ -47,9 +47,7 @@ export function inferNexusPreset(config: GroveConfig): "local" | "shared" {
   // The "local" preset is embedded-only (no Docker, no ports, no compose).
   if (config.mode === "nexus" || config.nexusManaged) return "shared";
   if (config.preset === "swarm-ops") return "shared";
-  // Default to "shared" (full Docker stack) — "local" is embedded-only with no Nexus server,
-  // which makes grove's multi-agent workflow non-functional.
-  return "shared";
+  return "local";
 }
 
 // ---------------------------------------------------------------------------

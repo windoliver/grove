@@ -208,7 +208,7 @@ try {
     const { appendFileSync } = await import("node:fs");
     const storeType = nexusHandoffStore ? "NexusHandoffStore" : "SqliteHandoffStore(fallback)";
     const hasInsertSync =
-      typeof (deps.handoffStore as Record<string, unknown>)?.insertSync === "function";
+      typeof (deps.handoffStore as unknown as Record<string, unknown>)?.insertSync === "function";
     appendFileSync(
       "/tmp/grove-debug.log",
       `[${new Date().toISOString()}] [mcp-serve] handoffStore=${storeType} hasInsertSync=${hasInsertSync} nexusHandoffStore=${nexusHandoffStore != null}\n`,
