@@ -172,7 +172,11 @@ export class NexusHandoffStore implements HandoffStore {
       sourceCid: input.sourceCid,
       fromRole: input.fromRole,
       toRole: input.toRole,
-      status: HandoffStatus.PendingPickup,
+      // Default to Delivered — the MCP creates handoffs at contribution-write time
+      // AND the TopologyRouter routes them immediately. The TUI's routeContribution
+      // delivers via agentRuntime.send(). Updating status cross-client (PendingPickup
+      // → Delivered) fails due to Nexus VFS casUpdate limitations.
+      status: HandoffStatus.Delivered,
       requiresReply: input.requiresReply ?? false,
       ...(input.replyDueAt !== undefined ? { replyDueAt: input.replyDueAt } : {}),
       createdAt: new Date().toISOString(),
