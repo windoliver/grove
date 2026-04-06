@@ -937,12 +937,35 @@ export class SpawnManager {
           );
         }
 
-        // First poll: seed all existing CIDs to avoid re-routing old contributions on resume
+        // First poll: seed existing CIDs AND route any that appeared since session start
+        // (the coder may have submitted before polling started — still needs routing).
         if (pollCount === 0) {
           for (const c of feed) {
             this.seenCids.add(c.cid);
           }
           debugLog("contribPoll", `seeded ${feed.length} existing CIDs`);
+          // Route contributions from this session that arrived before polling started
+          for (const c of feed) {
+            if (c.agent?.role && topology && !serverRoutingActive) {
+              debugLog(
+                "contribPoll",
+                `first-poll routing cid=${c.cid.slice(0, 12)} role=${c.agent.role}`,
+              );
+              void this.routeContribution(c.agent.role, c.summary, c.kind, topology);
+            }
+            // Mark handoffs as delivered
+            if ((provider as { getHandoffs?: unknown }).getHandoffs) {
+              const hp = provider as unknown as import("./provider.js").TuiHandoffProvider;
+              void hp
+                .getHandoffs({ sourceCid: c.cid, status: "pending_pickup" })
+                .then((hs) => {
+                  for (const h of hs) {
+                    void hp.markHandoffDelivered(h.handoffId).catch(() => {});
+                  }
+                })
+                .catch(() => {});
+            }
+          }
         } else {
           // Subsequent polls: detect new contributions and route them
           for (const c of feed) {
