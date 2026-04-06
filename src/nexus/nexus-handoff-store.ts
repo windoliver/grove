@@ -74,8 +74,28 @@ export class NexusHandoffStore implements HandoffStore {
 
   private async readFile(path: string): Promise<{ handoffs: Handoff[]; etag: string }> {
     const result = await this.client.readWithMeta(path);
-    if (!result) return { handoffs: [], etag: "" };
+    if (!result) {
+      try {
+        const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+        appendFileSync(
+          "/tmp/grove-debug.log",
+          `[${new Date().toISOString()}] [nexus-handoff.readFile] path=${path} result=null (file not found)\n`,
+        );
+      } catch {
+        /* */
+      }
+      return { handoffs: [], etag: "" };
+    }
     const text = new TextDecoder().decode(result.content);
+    try {
+      const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+      appendFileSync(
+        "/tmp/grove-debug.log",
+        `[${new Date().toISOString()}] [nexus-handoff.readFile] path=${path} contentLen=${result.content.length} text=${text.slice(0, 80)} etag=${result.etag}\n`,
+      );
+    } catch {
+      /* */
+    }
     const parsed = JSON.parse(text) as HandoffFile;
     return { handoffs: parsed.handoffs ?? [], etag: result.etag ?? "" };
   }
@@ -200,10 +220,10 @@ export class NexusHandoffStore implements HandoffStore {
   }
 
   async list(query?: HandoffQuery): Promise<readonly Handoff[]> {
-    // When sessionId is set, only read the session file (fast path)
-    const allHandoffs = this.sessionId
-      ? (await this.readFile(this.filePath())).handoffs
-      : await this.readAllHandoffs();
+    // Always scan all handoff files — readFile fails cross-client (Nexus VFS
+    // doesn't guarantee read-after-write visibility across NexusHttpClient instances).
+    // readAllHandoffs uses directory listing which has broader visibility.
+    const allHandoffs = await this.readAllHandoffs();
     try {
       const { appendFileSync } = require("node:fs") as typeof import("node:fs");
       appendFileSync(

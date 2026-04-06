@@ -525,7 +525,10 @@ export abstract class StoreBackedProvider
 
   async getHandoffs(query?: HandoffQuery): Promise<readonly Handoff[]> {
     if (this.handoffs === undefined) return [];
-    await this.handoffs.expireStale();
+    // NOTE: do NOT call expireStale() here — it uses casUpdate which reads
+    // the handoff file, sees "not found" (Nexus VFS cross-client isolation),
+    // and OVERWRITES the MCP's handoff data with an empty array.
+    // Expiry should be handled by the MCP side only.
     return this.handoffs.list(query);
   }
 
