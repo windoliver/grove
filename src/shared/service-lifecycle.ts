@@ -60,6 +60,9 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
   const pidFilePath = join(groveDir, "grove.pid");
   const children: ChildProcess[] = [];
   let nexusManaged = false;
+  process.stderr.write(
+    `[startServices] groveDir=${groveDir} configExists=${existsSync(configPath)} GROVE_NEXUS_URL=${process.env.GROVE_NEXUS_URL ?? "unset"}\n`,
+  );
 
   if (!existsSync(configPath)) {
     return { children, nexusManaged, projectRoot, pidFilePath };
@@ -94,58 +97,62 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
           if (apiKey) process.env.NEXUS_API_KEY = apiKey;
           nexusManaged = true;
           options.onProgress?.("Nexus is ready (from grove.json)");
-          return { children, nexusManaged, projectRoot, pidFilePath };
+          // Don't return — fall through to start other services (HTTP server, etc.)
         }
       } catch {
         // Not reachable — fall through to ensureNexusRunning
       }
     }
 
-    try {
-      const { ensureNexusRunning } = await import("../cli/nexus-lifecycle.js");
-      const nexusInfo = await ensureNexusRunning(projectRoot, config, {
-        build: options.build ?? false,
-        nexusSource: options.nexusSource,
-        onProgress: options.onProgress,
-      });
-      nexusManaged = true;
-      // Only set env vars if not already configured (user may have set explicit Nexus URL)
-      if (!process.env.GROVE_NEXUS_URL) {
-        process.env.GROVE_NEXUS_URL = nexusInfo.url;
-      }
-      if (!process.env.NEXUS_API_KEY && nexusInfo.apiKey) {
-        process.env.NEXUS_API_KEY = nexusInfo.apiKey;
-      }
-      // Persist Nexus URL to grove.json so Resume can find it without re-discovery.
-      // This prevents spinning up a duplicate Nexus stack on subsequent TUI launches.
+    if (!nexusManaged)
       try {
-        const { writeFileSync } = await import("node:fs");
-        const currentConfig = JSON.parse(readFileSync(configPath, "utf-8"));
-        if (currentConfig.nexusUrl !== nexusInfo.url) {
-          currentConfig.nexusUrl = nexusInfo.url;
-          writeFileSync(configPath, `${JSON.stringify(currentConfig, null, 2)}\n`, "utf-8");
+        const { ensureNexusRunning } = await import("../cli/nexus-lifecycle.js");
+        const nexusInfo = await ensureNexusRunning(projectRoot, config, {
+          build: options.build ?? false,
+          nexusSource: options.nexusSource,
+          onProgress: options.onProgress,
+        });
+        nexusManaged = true;
+        // Only set env vars if not already configured (user may have set explicit Nexus URL)
+        if (!process.env.GROVE_NEXUS_URL) {
+          process.env.GROVE_NEXUS_URL = nexusInfo.url;
         }
-      } catch {
-        // Best-effort — don't fail startup over config persistence
+        if (!process.env.NEXUS_API_KEY && nexusInfo.apiKey) {
+          process.env.NEXUS_API_KEY = nexusInfo.apiKey;
+        }
+        // Persist Nexus URL to grove.json so Resume can find it without re-discovery.
+        // This prevents spinning up a duplicate Nexus stack on subsequent TUI launches.
+        try {
+          const { writeFileSync } = await import("node:fs");
+          const currentConfig = JSON.parse(readFileSync(configPath, "utf-8"));
+          if (currentConfig.nexusUrl !== nexusInfo.url) {
+            currentConfig.nexusUrl = nexusInfo.url;
+            writeFileSync(configPath, `${JSON.stringify(currentConfig, null, 2)}\n`, "utf-8");
+          }
+        } catch {
+          // Best-effort — don't fail startup over config persistence
+        }
+      } catch (err) {
+        // If user explicitly asked for --build, don't silently fall back — surface the error
+        if (options.build) {
+          throw err;
+        }
+        // Fall back to local mode — log the reason for debugging
+        const errMsg = err instanceof Error ? err.message : String(err);
+        options.onProgress?.(`Nexus unavailable (${errMsg}), using local mode`);
       }
-    } catch (err) {
-      // If user explicitly asked for --build, don't silently fall back — surface the error
-      if (options.build) {
-        throw err;
-      }
-      // Fall back to local mode — log the reason for debugging
-      const errMsg = err instanceof Error ? err.message : String(err);
-      options.onProgress?.(`Nexus unavailable (${errMsg}), using local mode`);
-    }
   }
 
   // Spawn services in parallel
   const spawnPromises: Promise<ChildProcess | null>[] = [];
 
-  // Resolve grove source root for service entry points
+  // Resolve grove source root for service entry points.
+  // Use process.argv[1] (the CLI entry point) not import.meta.url — bun bundles
+  // inline this file into a chunk, making import.meta.url unreliable.
+  // process.argv[1] = "<groveRoot>/dist/cli/main.js" or "<groveRoot>/src/cli/main.ts"
   const { dirname } = await import("node:path");
-  // import.meta.url → src/shared/service-lifecycle.ts → need 3 levels up to repo root
-  const groveSourceRoot = dirname(dirname(dirname(new URL(import.meta.url).pathname)));
+  const entryPoint = process.argv[1] ?? "";
+  const groveSourceRoot = dirname(dirname(dirname(entryPoint)));
   const resolveEntry = (rel: string) => {
     const distPath = join(groveSourceRoot, "dist", rel.replace("src/", "").replace(".ts", ".js"));
     if (existsSync(distPath)) return distPath;
@@ -154,7 +161,15 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
 
   if (config.services?.server) {
     options.onProgress?.("Starting HTTP server...");
-    spawnPromises.push(spawnService("server", resolveEntry("src/server/serve.ts"), groveDir));
+    const serverEntry = resolveEntry("src/server/serve.ts");
+    process.stderr.write(
+      `[startServices] spawning HTTP server: ${serverEntry} groveDir=${groveDir}\n`,
+    );
+    spawnPromises.push(spawnService("server", serverEntry, groveDir));
+  } else {
+    process.stderr.write(
+      `[startServices] HTTP server NOT configured (services.server=${String(config.services?.server)})\n`,
+    );
   }
 
   if (config.services?.mcp) {

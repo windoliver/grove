@@ -368,13 +368,26 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             spawnManager.setSessionId(session.id);
             if ("setSessionScope" in provider) {
               (provider as { setSessionScope: (id: string) => void }).setSessionScope(session.id);
+              process.stderr.write(`[spawnAgents] setSessionScope(${session.id}) called\n`);
+            } else {
+              process.stderr.write(`[spawnAgents] provider does NOT have setSessionScope\n`);
             }
             setState((s) => ({ ...s, sessionId: session.id }));
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             process.stderr.write(`[grove] session record failed to save: ${msg}\n`);
-            setState((s) => ({ ...s, sessionWarning: `Session record failed to save: ${msg}` }));
+            // Generate a local session ID even when the session store is unavailable.
+            // Without this, MCP servers have no GROVE_SESSION_ID → contributions go to
+            // the global zone → N+1 VFS reads on 47+ old contributions → rate limit.
+            const fallbackId = crypto.randomUUID();
+            spawnManager.setSessionId(fallbackId);
+            setState((s) => ({ ...s, sessionId: fallbackId }));
           }
+        } else {
+          // No session provider — generate a local session ID for MCP scoping
+          const fallbackId = crypto.randomUUID();
+          spawnManager.setSessionId(fallbackId);
+          setState((s) => ({ ...s, sessionId: fallbackId }));
         }
 
         // Transition to spawning screen with per-agent tracking

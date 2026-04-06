@@ -282,7 +282,12 @@ export class NexusDataProvider
   ): Promise<SessionRecord> {
     let result: SessionRecord;
     if (this.serverUrl) {
-      result = await createSessionHttp(this.serverUrl, input);
+      try {
+        result = await createSessionHttp(this.serverUrl, input);
+      } catch {
+        // HTTP server not running — fall back to local SQLite
+        result = await super.createSession(input);
+      }
     } else {
       result = await super.createSession(input);
     }

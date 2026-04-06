@@ -228,20 +228,9 @@ async function buildAppProps(
   // Server and MCP write to Nexus (single source of truth).
   // TUI reads from the co-located grove server (port 4515) via RemoteProvider.
   // This avoids hitting Nexus rate limits (the server already reads from Nexus).
-  if (backend.mode === "nexus" && backend.source !== "flag") {
-    const serverPort = process.env.PORT ?? "4515";
-    const serverUrl = `http://localhost:${serverPort}`;
-    try {
-      const resp = await fetch(`${serverUrl}/api/contributions?limit=1`, {
-        signal: AbortSignal.timeout(3000),
-      });
-      if (resp.ok) {
-        backend = { mode: "remote", url: serverUrl, source: "flag" };
-      }
-    } catch {
-      // Server not up — fall back to direct Nexus VFS reads
-    }
-  }
+  // NOTE: RemoteProvider (localhost:4515) override disabled — it doesn't support
+  // session-scoped contribution paths. NexusDataProvider reads Nexus VFS directly
+  // with session scoping to avoid N+1 reads on old contributions.
 
   // Health check for explicit --nexus flag (direct Nexus connection)
   if (backend.mode === "nexus") {
