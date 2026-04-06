@@ -113,6 +113,15 @@ try {
           zoneId,
           sessionId: process.env.GROVE_SESSION_ID,
         });
+        try {
+          const { appendFileSync: afs } = await import("node:fs");
+          afs(
+            "/tmp/grove-debug.log",
+            `[${new Date().toISOString()}] [mcp-store] sessionId=${process.env.GROVE_SESSION_ID ?? "none"} zoneId=${zoneId}\n`,
+          );
+        } catch {
+          /* ignore */
+        }
         claimStore = new NexusClaimStore({ client: nexusClient, zoneId });
         bountyStore = new NexusBountyStore({ client: nexusClient, zoneId });
         outcomeStore = new NexusOutcomeStore({ client: nexusClient, zoneId });

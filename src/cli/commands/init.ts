@@ -6,6 +6,7 @@
  * writes grove.json configuration, and optionally ingests seed data.
  */
 
+import { existsSync, readFileSync } from "node:fs";
 import { access, mkdir, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
@@ -205,7 +206,18 @@ export async function executeInit(
   const preferredBackend = preset?.backend ?? "local";
   let resolvedMode: "local" | "nexus" = "local";
   let nexusManaged = false;
-  const nexusUrl = options.nexusUrl;
+  // Preserve existing nexusUrl from current grove.json when reinitializing.
+  // Without this, each "New session" drops the URL → startServices runs ensureNexusRunning
+  // (slow, may create duplicate compose projects) instead of reusing the existing Nexus.
+  let nexusUrl = options.nexusUrl;
+  if (!nexusUrl && existsSync(groveJsonPath)) {
+    try {
+      const existing = JSON.parse(readFileSync(groveJsonPath, "utf-8")) as { nexusUrl?: string };
+      if (existing.nexusUrl) nexusUrl = existing.nexusUrl;
+    } catch {
+      /* best-effort */
+    }
+  }
   if (preferredBackend === "nexus") {
     resolvedMode = "nexus";
     if (!nexusUrl) {

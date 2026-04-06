@@ -8,6 +8,7 @@
  * (e.g. artifacts, VFS, search).
  */
 
+import { appendFileSync as _afs } from "node:fs";
 import type { Frontier, FrontierCalculator, FrontierQuery } from "../core/frontier.js";
 import type { Handoff, HandoffQuery, HandoffStore } from "../core/handoff.js";
 import { computeCid } from "../core/manifest.js";
@@ -190,7 +191,16 @@ export abstract class StoreBackedProvider
   async getContributions(
     query?: ContributionQuery & PaginatedQuery,
   ): Promise<readonly Contribution[]> {
-    return this.store.list(query);
+    const result = await this.store.list(query);
+    try {
+      _afs(
+        "/tmp/grove-debug.log",
+        `[${new Date().toISOString()}] [provider.getContributions] count=${result.length} query=${JSON.stringify(query ?? {})}\n`,
+      );
+    } catch {
+      /* ignore */
+    }
+    return result;
   }
 
   /** Fetch full contribution detail including ancestors, children, and thread. */

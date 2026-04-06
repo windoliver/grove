@@ -6,6 +6,7 @@
  * Used when running `grove tui --nexus <url>`.
  */
 
+import { appendFileSync as _afs } from "node:fs";
 import type { Bounty } from "../core/bounty.js";
 import type { BountyQuery } from "../core/bounty-store.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
@@ -130,16 +131,40 @@ export class NexusDataProvider
    * scanning all historical contributions.
    */
   setSessionScope(sessionId: string): void {
+    const oldId = this.store.storeIdentity;
     const scopedStore = new NexusContributionStore({
       ...({ client: this.client, zoneId: this.zoneId } as NexusConfig),
       sessionId,
     });
+    const newId = scopedStore.storeIdentity;
+    try {
+      _afs(
+        "/tmp/grove-debug.log",
+        `[${new Date().toISOString()}] [provider.setSessionScope] sessionId=${sessionId} oldStoreId=${oldId} newStoreId=${newId}\n`,
+      );
+    } catch {
+      /* ignore */
+    }
     // Replace the inherited store (StoreBackedProvider.store)
     (this as unknown as { store: NexusContributionStore }).store = scopedStore;
     // Also update the frontier calculator to use the scoped store
     (this as unknown as { calc: DefaultFrontierCalculator }).calc = new DefaultFrontierCalculator(
       scopedStore,
     );
+    // Also scope the handoff store to the same session
+    try {
+      const { NexusHandoffStore } = require("../nexus/nexus-handoff-store.js") as {
+        NexusHandoffStore: new (
+          c: NexusClient,
+          s?: string,
+        ) => import("../core/handoff.js").HandoffStore;
+      };
+      (
+        this as unknown as { handoffs: import("../core/handoff.js").HandoffStore | undefined }
+      ).handoffs = new NexusHandoffStore(this.client, sessionId);
+    } catch {
+      /* non-fatal — handoffs may use local SQLite */
+    }
   }
 
   // ---------------------------------------------------------------------------

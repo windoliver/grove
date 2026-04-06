@@ -224,6 +224,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     const contributionsFetcher = useCallback(async () => {
       fetchCountRef.current++;
       const result = await provider.getContributions();
+      debugLog("feed.fetch", `total=${result?.length ?? 0}`);
       if (
         fetchCountRef.current <= 5 ||
         fetchCountRef.current % 20 === 0 ||
@@ -273,6 +274,11 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     const feed = sessionStartedAt
       ? allContributions.filter((c) => c.createdAt >= sessionStartedAt)
       : allContributions;
+
+    debugLog(
+      "feed.fetch",
+      `total=${allContributions.length} afterSessionFilter=${feed.length} sessionStartedAt=${sessionStartedAt ?? "none"}`,
+    );
 
     // Debug: log feed state periodically
     const feedDebugRef = React.useRef(0);

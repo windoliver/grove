@@ -11,6 +11,7 @@
  * - FTS:        /zones/{zoneId}/indexes/fts/{cid}.json
  */
 
+import { appendFileSync as _afs } from "node:fs";
 import { fromManifest, toManifest, verifyCid } from "../core/manifest.js";
 import type {
   Contribution,
@@ -140,6 +141,15 @@ export class NexusContributionStore implements ContributionStore {
 
     this.cache.set(contribution.cid, contribution);
     this.listCacheResult = undefined; // Invalidate list cache on write
+    try {
+      const manifestPath = contributionPath(this.zoneId, contribution.cid, this.sessionId);
+      _afs(
+        "/tmp/grove-debug.log",
+        `[${new Date().toISOString()}] [store.put] cid=${contribution.cid.slice(0, 16)} sessionId=${this.sessionId ?? "none"} path=${manifestPath}\n`,
+      );
+    } catch {
+      /* ignore */
+    }
   }
 
   async putMany(contributions: readonly Contribution[]): Promise<void> {
@@ -187,13 +197,20 @@ export class NexusContributionStore implements ContributionStore {
     // a full VFS scan — 35 contributions × 70 reads = 2450 reads/min, far exceeding
     // Nexus's 300/min rate limit. Now we read once per TTL window and filter locally.
     let allContributions: Contribution[];
-    if (
-      this.listCacheResult !== undefined &&
-      Date.now() - this.listCacheTime < this.listCacheTtlMs
-    ) {
-      allContributions = [...this.listCacheResult];
+    const cacheHit =
+      this.listCacheResult !== undefined && Date.now() - this.listCacheTime < this.listCacheTtlMs;
+    const ftsDir = ftsIndexDir(this.zoneId, this.sessionId);
+    try {
+      _afs(
+        "/tmp/grove-debug.log",
+        `[${new Date().toISOString()}] [store.list] sessionId=${this.sessionId ?? "none"} ftsDir=${ftsDir} cacheHit=${cacheHit}\n`,
+      );
+    } catch {
+      /* ignore */
+    }
+    if (cacheHit) {
+      allContributions = [...(this.listCacheResult as Contribution[])];
     } else {
-      const ftsDir = ftsIndexDir(this.zoneId, this.sessionId);
       const entries = await listAllPages(this.client, this.semaphore, this.config, ftsDir, {
         recursive: true,
       });
@@ -213,6 +230,14 @@ export class NexusContributionStore implements ContributionStore {
       // Fetch ALL contributions
       const fetched = await batchParallel(allCids, (cid) => this.get(cid));
       allContributions = fetched.filter((c): c is Contribution => c !== undefined);
+      try {
+        _afs(
+          "/tmp/grove-debug.log",
+          `[${new Date().toISOString()}] [store.list] ftsEntries=${nonDirEntries.length} matchingCids=${allCids.length} total=${allContributions.length}\n`,
+        );
+      } catch {
+        /* ignore */
+      }
 
       // Sort by createdAt ascending (matches SQLite store behavior)
       allContributions.sort(
