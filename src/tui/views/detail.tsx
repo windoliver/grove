@@ -10,7 +10,6 @@ import { formatScore, formatTimestamp, truncateCid } from "../../shared/format.j
 import { DataStatus } from "../components/data-status.js";
 import { OutcomeBadge } from "../components/outcome-badge.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
-import { useRefreshSignal } from "../hooks/use-refresh-context.js";
 import type { ContributionDetail, TuiDataProvider, TuiOutcomeProvider } from "../provider.js";
 import { theme } from "../theme.js";
 
@@ -28,12 +27,11 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
   intervalMs,
 }: DetailProps): React.ReactNode {
   const fetcher = useCallback(() => provider.getContribution(cid), [provider, cid]);
-  const { data, loading, isStale, error, refresh } = usePolledData<ContributionDetail | undefined>(
+  const { data, loading, isStale, error } = usePolledData<ContributionDetail | undefined>(
     fetcher,
     intervalMs,
     true,
   );
-  useRefreshSignal(refresh);
 
   // Fetch outcome for this CID if available
   const outcomeProvider = provider.capabilities.outcomes
@@ -44,12 +42,11 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
     () => outcomeProvider?.getOutcome(cid) ?? Promise.resolve(undefined),
     [outcomeProvider, cid],
   );
-  const { data: outcome, refresh: refreshOutcome } = usePolledData<OutcomeRecord | undefined>(
+  const { data: outcome } = usePolledData<OutcomeRecord | undefined>(
     outcomeFetcher,
     intervalMs,
     true,
   );
-  useRefreshSignal(refreshOutcome);
 
   if (loading && !data) {
     return (

@@ -12,7 +12,6 @@ import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
-import { useRefreshSignal } from "../hooks/use-refresh-context.js";
 import type { PendingQuestion, TuiAskUserProvider, TuiDataProvider } from "../provider.js";
 
 /** Props for the DecisionsPanel view. */
@@ -76,12 +75,11 @@ export const DecisionsPanelView: React.NamedExoticComponent<DecisionsPanelProps>
       }));
     }, [provider, supportsAskUser]);
 
-    const { data, loading, isStale, error, refresh } = usePolledData<readonly DecisionRow[]>(
+    const { data, loading, isStale, error } = usePolledData<readonly DecisionRow[]>(
       fetcher,
       intervalMs,
       active,
     );
-    useRefreshSignal(refresh);
 
     useEffect(() => {
       if (data && onRowCountChanged) {

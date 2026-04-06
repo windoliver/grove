@@ -7,6 +7,7 @@
  */
 
 import { useCallback, useEffect, useReducer, useRef } from "react";
+import { useRefreshSignal } from "./use-refresh-context.js";
 
 /** Result of the usePolledData hook. */
 export interface PolledDataResult<T> {
@@ -161,6 +162,12 @@ export function usePolledData<T>(
     void doFetch();
     startPolling();
   }, [active, doFetch, startPolling]);
+
+  // Subscribe to the global manual-refresh signal (r-key).
+  // Works automatically for every usePolledData consumer inside App's
+  // RefreshContext.Provider. Outside the provider, signal stays 0 and
+  // the effect never fires (safe for RunningView, tests, etc.).
+  useRefreshSignal(refresh);
 
   return {
     data: state.data,

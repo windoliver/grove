@@ -13,7 +13,6 @@ import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { OutcomeBadge } from "../components/outcome-badge.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
-import { useRefreshSignal } from "../hooks/use-refresh-context.js";
 import type { DagData, TuiDataProvider, TuiOutcomeProvider } from "../provider.js";
 import { theme } from "../theme.js";
 
@@ -44,12 +43,7 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
   onContributionsLoaded,
 }: DagProps): React.ReactNode {
   const fetcher = useCallback(() => provider.getDag(), [provider]);
-  const { data, loading, isStale, error, refresh } = usePolledData<DagData>(
-    fetcher,
-    intervalMs,
-    active,
-  );
-  useRefreshSignal(refresh);
+  const { data, loading, isStale, error } = usePolledData<DagData>(fetcher, intervalMs, active);
 
   // Batch-fetch outcomes if provider supports it
   const outcomeProvider = provider.capabilities.outcomes
@@ -62,10 +56,11 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
     () => outcomeProvider?.getOutcomes(cids) ?? Promise.resolve(new Map()),
     [outcomeProvider, cids],
   );
-  const { data: outcomes, refresh: refreshOutcomes } = usePolledData<
-    ReadonlyMap<string, OutcomeRecord>
-  >(outcomeFetcher, intervalMs, active && cids.length > 0);
-  useRefreshSignal(refreshOutcomes);
+  const { data: outcomes } = usePolledData<ReadonlyMap<string, OutcomeRecord>>(
+    outcomeFetcher,
+    intervalMs,
+    active && cids.length > 0,
+  );
 
   useEffect(() => {
     if (data?.contributions && onContributionsLoaded) {
