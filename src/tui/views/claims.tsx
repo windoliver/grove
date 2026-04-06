@@ -10,6 +10,7 @@ import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
+import { useRefreshSignal } from "../hooks/use-refresh-context.js";
 import type { TuiDataProvider } from "../provider.js";
 
 /** Props for the Claims view. */
@@ -49,7 +50,9 @@ export const ClaimsView: React.NamedExoticComponent<ClaimsProps> = React.memo(fu
     loading,
     isStale,
     error,
+    refresh,
   } = usePolledData<readonly Claim[]>(fetcher, intervalMs, active && propClaims === undefined);
+  useRefreshSignal(refresh);
   const data = propClaims ?? polledData;
 
   useEffect(() => {

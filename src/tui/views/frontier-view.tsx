@@ -12,6 +12,7 @@ import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
+import { useRefreshSignal } from "../hooks/use-refresh-context.js";
 import type { TuiDataProvider } from "../provider.js";
 import { theme } from "../theme.js";
 
@@ -154,7 +155,12 @@ export const FrontierView: React.NamedExoticComponent<FrontierViewProps> = React
     void onCompareSelect;
 
     const fetcher = useCallback(() => provider.getFrontier(), [provider]);
-    const { data, loading, isStale, error } = usePolledData<Frontier>(fetcher, intervalMs, active);
+    const { data, loading, isStale, error, refresh } = usePolledData<Frontier>(
+      fetcher,
+      intervalMs,
+      active,
+    );
+    useRefreshSignal(refresh);
 
     const flatRows = useMemo(() => (data ? flattenFrontier(data) : []), [data]);
 

@@ -12,6 +12,7 @@ import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
+import { useRefreshSignal } from "../hooks/use-refresh-context.js";
 import type { TuiDataProvider } from "../provider.js";
 
 /** Props for the ActivityPanel view. */
@@ -42,11 +43,12 @@ export const ActivityPanelView: React.NamedExoticComponent<ActivityPanelProps> =
     onRowCountChanged,
   }: ActivityPanelProps): React.ReactNode {
     const fetcher = useCallback(() => provider.getActivity({ limit: 30 }), [provider]);
-    const { data, loading, isStale, error } = usePolledData<readonly Contribution[]>(
+    const { data, loading, isStale, error, refresh } = usePolledData<readonly Contribution[]>(
       fetcher,
       intervalMs,
       active,
     );
+    useRefreshSignal(refresh);
 
     useEffect(() => {
       if (data && onRowCountChanged) {

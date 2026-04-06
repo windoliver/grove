@@ -157,9 +157,10 @@ export function usePolledData<T>(
   }, [active, intervalMs, doFetch]);
 
   const refresh = useCallback(() => {
+    if (!active) return;
     void doFetch();
     startPolling();
-  }, [doFetch, startPolling]);
+  }, [active, doFetch, startPolling]);
 
   return {
     data: state.data,
