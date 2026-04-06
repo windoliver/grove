@@ -75,7 +75,18 @@ export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React
       // Show only handoffs from the current session's agent spawn time.
       // Fall back to last 2 hours to avoid showing stale data from old sessions.
       const cutoff = sessionStartedAt ?? new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-      return all.filter((h) => h.createdAt >= cutoff);
+      const filtered = all.filter((h) => h.createdAt >= cutoff);
+      // Debug: log handoff fetch results (first few calls only)
+      try {
+        const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+        appendFileSync(
+          "/tmp/grove-debug.log",
+          `[${new Date().toISOString()}] [handoffsView] total=${all.length} afterFilter=${filtered.length} cutoff=${cutoff} isHandoffProvider=true\n`,
+        );
+      } catch {
+        /* */
+      }
+      return filtered;
     }, [provider, statusFilter, toRoleFilter, sessionStartedAt]);
 
     const { data, loading } = usePolledData<readonly Handoff[]>(fetcher, intervalMs, active);

@@ -24,6 +24,8 @@ export interface NexusWsBridgeOptions {
   apiKey: string;
   /** EventBus to notify the TUI when SSE events arrive (triggers data refresh). */
   eventBus?: EventBus | undefined;
+  /** Called before delivering IPC to an agent — use for workspace rsync. */
+  onBeforeDeliver?: ((sender: string, recipient: string) => void) | undefined;
 }
 
 interface SseEvent {
@@ -191,6 +193,12 @@ export class NexusWsBridge {
       const session = this.sessions.get(role);
       if (!session) return;
 
+      // Rsync workspace files before delivering — the callback syncs source→target workspace
+      try {
+        this.opts.onBeforeDeliver?.(event.sender, role);
+      } catch {
+        /* non-fatal */
+      }
       void this.readAndPush(event.path, role, session, event.sender);
     } catch {
       // Skip malformed events

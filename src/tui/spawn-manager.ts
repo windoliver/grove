@@ -115,6 +115,10 @@ export class SpawnManager {
     this.wsBridge = bridge;
   }
 
+  getWsBridge(): NexusWsBridge | undefined {
+    return this.wsBridge;
+  }
+
   /**
    * Set PR context to inject into spawned agent environments.
    * When set, GROVE_PR_NUMBER, GROVE_PR_TITLE, and GROVE_PR_FILES
@@ -908,7 +912,11 @@ export class SpawnManager {
     let pollCount = 0;
     const timer = setInterval(async () => {
       try {
-        const contributions = await provider.getContributions({ limit: 500 });
+        // Use a small limit to avoid reading ALL historical contributions from
+        // Nexus VFS — each contribution is a separate VFS file read, so limit:500
+        // with 30+ existing contributions burns 30+ API calls per poll and exhausts
+        // Nexus rate limits. We only need the most recent contributions for routing.
+        const contributions = await provider.getContributions({ limit: 10 });
         const feed = sessionStartedAt
           ? (contributions ?? []).filter((c) => c.createdAt >= sessionStartedAt)
           : (contributions ?? []);
@@ -1013,6 +1021,38 @@ export class SpawnManager {
   }
 
   /**
+   * Rsync workspace files from sender role to recipient role.
+   * Called by NexusWsBridge.onBeforeDeliver — ensures the recipient sees
+   * the sender's latest files before receiving the IPC notification.
+   */
+  syncWorkspaces(senderRole: string, recipientRole: string): void {
+    if (!this.groveDir) return;
+    let sourceWs: string | undefined;
+    let targetWs: string | undefined;
+    for (const spawnId of this.spawnRecords.keys()) {
+      if (spawnId.startsWith(senderRole) && !sourceWs) {
+        sourceWs = join(this.groveDir, "workspaces", spawnId);
+      }
+      if (spawnId.startsWith(recipientRole) && !targetWs) {
+        targetWs = join(this.groveDir, "workspaces", spawnId);
+      }
+    }
+    if (!sourceWs || !targetWs) return;
+    try {
+      execSync(
+        `rsync -a --exclude='.git' --exclude='.mcp.json' --exclude='CODEX.md' --exclude='CLAUDE.md' --exclude='.grove-role' "${sourceWs}/" "${targetWs}/"`,
+        { stdio: "pipe", timeout: 10_000 },
+      );
+      debugLog("syncWorkspaces", `${senderRole}→${recipientRole} OK`);
+    } catch (err) {
+      debugLog(
+        "syncWorkspaces",
+        `${senderRole}→${recipientRole} FAIL: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /**
    * Close bridge and clear state.
    *
    * Closes all active agent sessions so they don't accumulate in acpx
@@ -1059,6 +1099,10 @@ export class SpawnManager {
     }
     if (process.env.NEXUS_API_KEY) {
       mcpEnv.NEXUS_API_KEY = process.env.NEXUS_API_KEY;
+    }
+    // Pass session ID so MCP stores scope contributions + handoffs to this session
+    if (this.sessionId) {
+      mcpEnv.GROVE_SESSION_ID = this.sessionId;
     }
 
     // Find the grove MCP server: check dist/ first (installed), then src/ (dev)
@@ -1135,6 +1179,7 @@ export class SpawnManager {
         `--env GROVE_DIR=${groveDir}`,
         ...(mcpEnv.GROVE_NEXUS_URL ? [`--env GROVE_NEXUS_URL=${mcpEnv.GROVE_NEXUS_URL}`] : []),
         ...(mcpEnv.NEXUS_API_KEY ? [`--env NEXUS_API_KEY=${mcpEnv.NEXUS_API_KEY}`] : []),
+        ...(mcpEnv.GROVE_SESSION_ID ? [`--env GROVE_SESSION_ID=${mcpEnv.GROVE_SESSION_ID}`] : []),
       ].join(" ");
       execSync(`codex mcp remove grove 2>/dev/null || true`, { stdio: "pipe", timeout: 5000 });
       execSync(`codex mcp add grove ${nexusEnvFlags} -- bun run ${mcpServePath}`, {

@@ -490,10 +490,30 @@ export async function handleTui(
   let activeProvider: TuiDataProvider | undefined;
   let activeStopGc: (() => void) | undefined;
 
-  /** Shutdown handler — stops services, GC, and provider. */
+  /** Shutdown handler — stops services, GC, kills agent processes. */
   const cleanup = async () => {
     activeStopGc?.();
     activeProvider?.close();
+    // Kill orphan MCP server processes spawned by agent CLIs (codex/claude).
+    // These are children of agent processes, not of the TUI, so they survive
+    // even after agentRuntime.close() kills the agent. Without this, each
+    // TUI session leaks MCP server processes that accumulate memory.
+    try {
+      const { execSync } = await import("node:child_process");
+      execSync("pkill -f 'bun.*mcp/serve' 2>/dev/null || true", { stdio: "pipe", timeout: 5000 });
+    } catch {
+      // best-effort
+    }
+    // Kill all acpx agent sessions for this grove
+    try {
+      const { execSync } = await import("node:child_process");
+      execSync(
+        "acpx codex sessions list 2>/dev/null | grep grove | awk '{print $1}' | xargs -I{} acpx codex sessions close {} 2>/dev/null || true",
+        { stdio: "pipe", timeout: 10000 },
+      );
+    } catch {
+      // best-effort
+    }
     if (runningServices) {
       const { stopServices } = await import("../shared/service-lifecycle.js");
       await stopServices(runningServices);
@@ -506,6 +526,23 @@ export async function handleTui(
   };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
+
+  // Reap orphan MCP processes from previous crashed TUI sessions on startup.
+  // Each agent CLI (codex/claude) spawns an MCP server child process that
+  // survives the parent when the TUI crashes without cleanup.
+  try {
+    const { execSync } = await import("node:child_process");
+    const orphanCount = execSync("pgrep -f 'bun.*mcp/serve' 2>/dev/null | wc -l", {
+      encoding: "utf-8",
+      timeout: 3000,
+    }).trim();
+    if (Number(orphanCount) > 0) {
+      execSync("pkill -f 'bun.*mcp/serve' 2>/dev/null || true", { stdio: "pipe", timeout: 5000 });
+      process.stderr.write(`[startup] reaped ${orphanCount} orphan MCP server process(es)\n`);
+    }
+  } catch {
+    // best-effort
+  }
 
   try {
     // --url flag: legacy direct boardroom mode (no interactive screens)

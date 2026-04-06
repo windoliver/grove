@@ -184,25 +184,20 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             }
             // Start polling agent log files for live output
             spawnManager.startLogPolling();
-            // Detect if the local HTTP server's SessionOrchestrator is routing IPC.
-            // If active, skip TUI routing to avoid double-delivery.
-            // NOTE: GROVE_NEXUS_URL does NOT skip TUI routing — MCP TopologyRouter
-            // only creates Nexus handoff records; it does NOT send tmux IPC to agent
-            // sessions. The TUI must still call routeContribution for rsync + tmux delivery.
-            const serverPort = process.env.PORT ?? "4515";
-            const serverActive = await fetch(`http://localhost:${serverPort}/health`, {
-              signal: AbortSignal.timeout(500),
-            })
-              .then((r) => r.ok)
-              .catch(() => false);
-            serverRoutingActiveRef.current = serverActive;
-            spawnManager.startContributionPolling(
-              provider,
-              topology,
-              state.sessionStartedAt,
-              3000,
-              serverActive,
-            );
+            // IPC routing: prefer NexusWsBridge SSE push (zero polling).
+            // Fallback to contribution polling only when wsBridge isn't connected
+            // (e.g., no API key, SSE unavailable). Polling reads VFS files individually
+            // so use limit:10 + 30s interval to stay under Nexus rate limits.
+            const hasWsBridge = !!spawnManager.getWsBridge();
+            if (!hasWsBridge) {
+              spawnManager.startContributionPolling(
+                provider,
+                topology,
+                state.sessionStartedAt,
+                30000,
+                false,
+              );
+            }
             // Always bump — even if reattached=0, we need RunningView to pick up
             // the reconciled state (getActiveRoles may have changed).
             setReconcileVersion((v) => v + 1);
@@ -373,6 +368,11 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             .createSession({ goal, presetName: state.selectedPreset, topology, config: contract })
             .then((session) => {
               spawnManager.setSessionId(session.id);
+              // Scope contributions to this session so list() only reads this session's
+              // data — avoids N+1 VFS reads scanning all historical contributions.
+              if ("setSessionScope" in provider) {
+                (provider as { setSessionScope: (id: string) => void }).setSessionScope(session.id);
+              }
               setState((s) => ({ ...s, sessionId: session.id }));
             })
             .catch((err) => {

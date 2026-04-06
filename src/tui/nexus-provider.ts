@@ -123,6 +123,25 @@ export class NexusDataProvider
     this.nexusSessionStore = new NexusSessionStore(this.client, this.zoneId);
   }
 
+  /**
+   * Switch to a session-scoped contribution store.
+   * Called when a session is selected/created — subsequent reads only see
+   * contributions from this session, avoiding the N+1 VFS read storm from
+   * scanning all historical contributions.
+   */
+  setSessionScope(sessionId: string): void {
+    const scopedStore = new NexusContributionStore({
+      ...({ client: this.client, zoneId: this.zoneId } as NexusConfig),
+      sessionId,
+    });
+    // Replace the inherited store (StoreBackedProvider.store)
+    (this as unknown as { store: NexusContributionStore }).store = scopedStore;
+    // Also update the frontier calculator to use the scoped store
+    (this as unknown as { calc: DefaultFrontierCalculator }).calc = new DefaultFrontierCalculator(
+      scopedStore,
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // TuiArtifactProvider
   // ---------------------------------------------------------------------------

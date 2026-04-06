@@ -108,7 +108,11 @@ try {
       ]).catch(() => false);
 
       if (health) {
-        contributionStore = new NexusContributionStore({ client: nexusClient, zoneId });
+        contributionStore = new NexusContributionStore({
+          client: nexusClient,
+          zoneId,
+          sessionId: process.env.GROVE_SESSION_ID,
+        });
         claimStore = new NexusClaimStore({ client: nexusClient, zoneId });
         bountyStore = new NexusBountyStore({ client: nexusClient, zoneId });
         outcomeStore = new NexusOutcomeStore({ client: nexusClient, zoneId });
@@ -186,6 +190,19 @@ try {
     // Nexus handoff store when available, falls back to local SQLite
     handoffStore: nexusHandoffStore ?? runtime.handoffStore,
   };
+  // Debug: log which handoff store is active
+  try {
+    const { appendFileSync } = await import("node:fs");
+    const storeType = nexusHandoffStore ? "NexusHandoffStore" : "SqliteHandoffStore(fallback)";
+    const hasInsertSync =
+      typeof (deps.handoffStore as Record<string, unknown>)?.insertSync === "function";
+    appendFileSync(
+      "/tmp/grove-debug.log",
+      `[${new Date().toISOString()}] [mcp-serve] handoffStore=${storeType} hasInsertSync=${hasInsertSync} nexusHandoffStore=${nexusHandoffStore != null}\n`,
+    );
+  } catch {
+    /* non-fatal */
+  }
   // Derive MCP tool preset from contract mode — #11 MCP Tool Surface + #12 Concept Usage
   const contractMode = runtime.contract?.mode ?? "exploration";
   const hasMetrics =

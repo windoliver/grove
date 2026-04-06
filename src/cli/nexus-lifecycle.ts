@@ -559,9 +559,11 @@ export async function ensureNexusRunning(
   upOpts?: NexusUpOptions,
 ): Promise<NexusRunningInfo> {
   const report = upOpts?.onProgress ?? ((msg: string) => process.stderr.write(`${msg}\n`));
-  // groveHomeDir = the .grove/ directory for this project (nexus.yaml + nexus-data/ live here).
-  // Use the project-local path, not a global ~/.grove/ — each project has its own Nexus stack.
-  const groveHomeDir = join(projectRoot, ".grove");
+  // Use the project root as the working directory for nexus CLI commands.
+  // The nexus CLI derives the compose project name from CWD — running from
+  // .grove/ creates a different project than running from the project root.
+  // nexus.yaml can live in either location; the nexus CLI searches upward.
+  const groveHomeDir = projectRoot;
   report(
     `[ensureNexus] projectRoot=${projectRoot} groveDir=${groveHomeDir} mode=${config.mode ?? "none"} nexusManaged=${String(config.nexusManaged)}`,
   );

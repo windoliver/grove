@@ -223,7 +223,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     const fetchCountRef = React.useRef(0);
     const contributionsFetcher = useCallback(async () => {
       fetchCountRef.current++;
-      const result = await provider.getContributions({ limit: 100 });
+      const result = await provider.getContributions();
       if (
         fetchCountRef.current <= 5 ||
         fetchCountRef.current % 20 === 0 ||

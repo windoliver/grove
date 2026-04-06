@@ -41,13 +41,19 @@ export function casMetaPath(zoneId: string, contentHash: string): string {
 // ---------------------------------------------------------------------------
 
 /** Path to a contribution manifest. */
-export function contributionPath(zoneId: string, cid: string): string {
-  return `/zones/${encodeSegment(zoneId)}/contributions/${encodeSegment(cid)}.json`;
+export function contributionPath(zoneId: string, cid: string, sessionId?: string): string {
+  const base = sessionId
+    ? `/zones/${encodeSegment(zoneId)}/sessions/${encodeSegment(sessionId)}`
+    : `/zones/${encodeSegment(zoneId)}`;
+  return `${base}/contributions/${encodeSegment(cid)}.json`;
 }
 
 /** Directory containing all contributions. */
-export function contributionsDir(zoneId: string): string {
-  return `/zones/${encodeSegment(zoneId)}/contributions`;
+export function contributionsDir(zoneId: string, sessionId?: string): string {
+  const base = sessionId
+    ? `/zones/${encodeSegment(zoneId)}/sessions/${encodeSegment(sessionId)}`
+    : `/zones/${encodeSegment(zoneId)}`;
+  return `${base}/contributions`;
 }
 
 // ---------------------------------------------------------------------------
@@ -65,13 +71,19 @@ export function tagIndexDir(zoneId: string, tag: string): string {
 }
 
 /** Path to a FTS index entry for a contribution. */
-export function ftsIndexPath(zoneId: string, cid: string): string {
-  return `/zones/${encodeSegment(zoneId)}/indexes/fts/${encodeSegment(cid)}.json`;
+export function ftsIndexPath(zoneId: string, cid: string, sessionId?: string): string {
+  const base = sessionId
+    ? `/zones/${encodeSegment(zoneId)}/sessions/${encodeSegment(sessionId)}`
+    : `/zones/${encodeSegment(zoneId)}`;
+  return `${base}/indexes/fts/${encodeSegment(cid)}.json`;
 }
 
 /** Directory containing all FTS index entries. */
-export function ftsIndexDir(zoneId: string): string {
-  return `/zones/${encodeSegment(zoneId)}/indexes/fts`;
+export function ftsIndexDir(zoneId: string, sessionId?: string): string {
+  const base = sessionId
+    ? `/zones/${encodeSegment(zoneId)}/sessions/${encodeSegment(sessionId)}`
+    : `/zones/${encodeSegment(zoneId)}`;
+  return `${base}/indexes/fts`;
 }
 
 /** Path to a relation index entry (from source pointing to target). */

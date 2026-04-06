@@ -149,12 +149,22 @@ export function useAgentMonitor(options: AgentMonitorOptions): AgentMonitorState
     return () => clearInterval(timer);
   }, []);
 
-  // Subscribe to EventBus for IPC message log
+  // Subscribe to EventBus for IPC message log.
+  // Deduplicate: MCP TopologyRouter AND TUI wsBridge.send BOTH fire events
+  // through Nexus /api/v2/ipc/send → SSE → same handler fires twice per routing.
+  // Use source→target with a time window to collapse duplicates.
   useEffect(() => {
     if (!eventBus || !topology) return;
+    const lastSeen = new Map<string, number>(); // key → timestamp ms
+    const DEDUP_WINDOW_MS = 30_000;
     const handlers: Array<{ role: string; handler: (e: GroveEvent) => void }> = [];
     for (const role of topology.roles) {
       const handler = (event: GroveEvent) => {
+        const pairKey = `${event.sourceRole}→${event.targetRole}`;
+        const now = Date.now();
+        const lastTime = lastSeen.get(pairKey) ?? 0;
+        if (now - lastTime < DEDUP_WINDOW_MS) return; // Skip duplicate within window
+        lastSeen.set(pairKey, now);
         const msg: IpcMessage = {
           timestamp: event.timestamp,
           sourceRole: event.sourceRole,

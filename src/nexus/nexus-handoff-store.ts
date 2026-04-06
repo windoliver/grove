@@ -40,6 +40,7 @@ function sessionFile(sessionId: string): string {
 export class NexusHandoffStore implements HandoffStore {
   private readonly client: NexusClient;
   private readonly sessionId: string | undefined;
+  private dirEnsured = false;
 
   constructor(
     client: NexusClient,
@@ -56,6 +57,17 @@ export class NexusHandoffStore implements HandoffStore {
 
   private filePath(): string {
     return this.sessionId ? sessionFile(this.sessionId) : GLOBAL_FILE;
+  }
+
+  /** Ensure the handoffs directory exists in VFS (idempotent, cached). */
+  private async ensureDir(): Promise<void> {
+    if (this.dirEnsured) return;
+    try {
+      await this.client.mkdir(HANDOFFS_DIR, { parents: true });
+    } catch {
+      // Best-effort — write may auto-create parent dirs on some Nexus versions
+    }
+    this.dirEnsured = true;
   }
 
   private async readFile(path: string): Promise<{ handoffs: Handoff[]; etag: string }> {
@@ -75,18 +87,37 @@ export class NexusHandoffStore implements HandoffStore {
     path: string,
     fn: (handoffs: Handoff[]) => Handoff[],
   ): Promise<Handoff[]> {
+    await this.ensureDir();
     for (let attempt = 0; attempt < MAX_CAS_RETRIES; attempt++) {
       const { handoffs, etag } = await this.readFile(path);
       const updated = fn(handoffs);
       try {
-        await this.client.write(path, encode({ handoffs: updated }), {
+        const writeResult = await this.client.write(path, encode({ handoffs: updated }), {
           // First write: if_none_match prevents overwrite race on creation
           // Subsequent: if_match ensures we're updating what we read
-          ...(etag ? { ifMatch: etag } : { ifNoneMatch: "*", force: false }),
+          ...(etag ? { ifMatch: etag } : { ifNoneMatch: "*" }),
         });
+        try {
+          const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+          appendFileSync(
+            "/tmp/grove-debug.log",
+            `[${new Date().toISOString()}] [NexusHandoffStore.casUpdate] WRITE OK path=${path} etag=${etag || "(empty)"} bytesWritten=${writeResult.bytesWritten} newEtag=${writeResult.etag} count=${updated.length} attempt=${attempt}\n`,
+          );
+        } catch {
+          /* non-fatal */
+        }
         return updated;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        try {
+          const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+          appendFileSync(
+            "/tmp/grove-debug.log",
+            `[${new Date().toISOString()}] [NexusHandoffStore.casUpdate] WRITE FAIL path=${path} attempt=${attempt} err=${msg}\n`,
+          );
+        } catch {
+          /* non-fatal */
+        }
         // Conflict = another writer updated between our read and write — retry
         if (msg.includes("412") || msg.includes("conflict") || msg.includes("mismatch")) {
           // Brief backoff before retry
@@ -119,11 +150,34 @@ export class NexusHandoffStore implements HandoffStore {
       createdAt: new Date().toISOString(),
     };
 
-    await this.casUpdate(this.filePath(), (existing) => {
-      // Idempotent: skip if already present
-      if (existing.some((h) => h.handoffId === handoff.handoffId)) return existing;
-      return [...existing, handoff];
-    });
+    const path = this.filePath();
+    try {
+      await this.casUpdate(path, (existing) => {
+        // Idempotent: skip if already present
+        if (existing.some((h) => h.handoffId === handoff.handoffId)) return existing;
+        return [...existing, handoff];
+      });
+      try {
+        const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+        appendFileSync(
+          "/tmp/grove-debug.log",
+          `[${new Date().toISOString()}] [nexus-handoff] WRITE OK path=${path} id=${handoff.handoffId} ${handoff.fromRole}→${handoff.toRole}\n`,
+        );
+      } catch {
+        /* */
+      }
+    } catch (err) {
+      try {
+        const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+        appendFileSync(
+          "/tmp/grove-debug.log",
+          `[${new Date().toISOString()}] [nexus-handoff] WRITE FAIL path=${path} err=${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      } catch {
+        /* */
+      }
+      throw err;
+    }
 
     return handoff;
   }
@@ -143,6 +197,15 @@ export class NexusHandoffStore implements HandoffStore {
     const allHandoffs = this.sessionId
       ? (await this.readFile(this.filePath())).handoffs
       : await this.readAllHandoffs();
+    try {
+      const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+      appendFileSync(
+        "/tmp/grove-debug.log",
+        `[${new Date().toISOString()}] [nexus-handoff] LIST sessionId=${this.sessionId ?? "none"} path=${this.filePath()} total=${allHandoffs.length}\n`,
+      );
+    } catch {
+      /* */
+    }
 
     let results = allHandoffs;
     if (query?.toRole !== undefined) results = results.filter((h) => h.toRole === query.toRole);
@@ -222,17 +285,54 @@ export class NexusHandoffStore implements HandoffStore {
     try {
       const listing = await this.client.list(HANDOFFS_DIR);
       const files = listing.files.filter((e) => !e.isDirectory && e.name.endsWith(".json"));
+      try {
+        const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+        appendFileSync(
+          "/tmp/grove-debug.log",
+          `[${new Date().toISOString()}] [NexusHandoffStore.readAllHandoffs] dir=${HANDOFFS_DIR} totalEntries=${listing.files.length} jsonFiles=${files.length} paths=${files.map((f) => f.path).join(",") || "(none)"}\n`,
+        );
+      } catch {
+        /* non-fatal */
+      }
       const results = await Promise.all(
         files.map(async (f: import("./client.js").ListEntry) => {
           try {
-            return (await this.readFile(f.path)).handoffs;
-          } catch {
+            const { handoffs } = await this.readFile(f.path);
+            try {
+              const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+              appendFileSync(
+                "/tmp/grove-debug.log",
+                `[${new Date().toISOString()}] [NexusHandoffStore.readAllHandoffs] read path=${f.path} count=${handoffs.length}\n`,
+              );
+            } catch {
+              /* non-fatal */
+            }
+            return handoffs;
+          } catch (readErr) {
+            try {
+              const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+              appendFileSync(
+                "/tmp/grove-debug.log",
+                `[${new Date().toISOString()}] [NexusHandoffStore.readAllHandoffs] FAIL path=${f.path} err=${readErr instanceof Error ? readErr.message : String(readErr)}\n`,
+              );
+            } catch {
+              /* non-fatal */
+            }
             return [];
           }
         }),
       );
       return results.flat();
-    } catch {
+    } catch (listErr) {
+      try {
+        const { appendFileSync } = require("node:fs") as typeof import("node:fs");
+        appendFileSync(
+          "/tmp/grove-debug.log",
+          `[${new Date().toISOString()}] [NexusHandoffStore.readAllHandoffs] LIST FAIL dir=${HANDOFFS_DIR} err=${listErr instanceof Error ? listErr.message : String(listErr)}\n`,
+        );
+      } catch {
+        /* non-fatal */
+      }
       return [];
     }
   }
