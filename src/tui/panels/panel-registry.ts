@@ -259,28 +259,6 @@ export const PANEL_REGISTRY: readonly PanelDef[] = [
 ] as const;
 
 // ---------------------------------------------------------------------------
-// Lookup helpers (lazily cached)
-// ---------------------------------------------------------------------------
-
-/** Cached panel-to-def lookup map, built on first access. */
-let _panelLookup: ReadonlyMap<Panel, PanelDef> | undefined;
-
-/** Cached row groups map, built on first access. */
-let _rowGroups: Map<number, readonly PanelDef[]> | undefined;
-
-/** Get the PanelDef for a given panel. Returns undefined for unknown panels. */
-function lookupPanel(panel: Panel): PanelDef | undefined {
-  if (_panelLookup === undefined) {
-    const map = new Map<Panel, PanelDef>();
-    for (const def of PANEL_REGISTRY) {
-      map.set(def.panel, def);
-    }
-    _panelLookup = map;
-  }
-  return _panelLookup.get(panel);
-}
-
-// ---------------------------------------------------------------------------
 // Public query functions
 // ---------------------------------------------------------------------------
 
@@ -289,9 +267,8 @@ export function getRegistry(): readonly PanelDef[] {
   return PANEL_REGISTRY;
 }
 
-/** Groups panel definitions by their row group number. Lazily cached. */
+/** Groups panel definitions by their row group number. */
 export function getRowGroups(): Map<number, readonly PanelDef[]> {
-  if (_rowGroups !== undefined) return _rowGroups;
   const groups = new Map<number, PanelDef[]>();
   for (const def of PANEL_REGISTRY) {
     let group = groups.get(def.rowGroup);
@@ -301,7 +278,6 @@ export function getRowGroups(): Map<number, readonly PanelDef[]> {
     }
     group.push(def);
   }
-  _rowGroups = groups;
   return groups;
 }
 
@@ -319,7 +295,7 @@ export function getVisiblePanelsForLayout(
   allowedPanels?: ReadonlySet<Panel>,
 ): readonly PanelDef[] {
   if (mode === "tab") {
-    const def = lookupPanel(panelState.focused);
+    const def = PANEL_REGISTRY.find((d) => d.panel === panelState.focused);
     return def !== undefined ? [def] : [];
   }
 
@@ -391,7 +367,7 @@ export function getRowFlex(
  * `panelRowGroup()` switch statement).
  */
 export function panelRowGroup(panel: Panel): number {
-  const def = lookupPanel(panel);
+  const def = PANEL_REGISTRY.find((d) => d.panel === panel);
   return def !== undefined ? def.rowGroup : 0;
 }
 

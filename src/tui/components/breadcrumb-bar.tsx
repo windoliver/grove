@@ -59,9 +59,9 @@ export const BreadcrumbBar: React.NamedExoticComponent<BreadcrumbBarProps> = Rea
             {label}
           </text>
           {screen !== "preset-select" ? (
-            <text color={theme.dimmed}> [Esc]</text>
+            <text color={theme.secondary}> [Esc]</text>
           ) : (
-            <text color={theme.dimmed}> [q]uit</text>
+            <text color={theme.secondary}> [q]uit</text>
           )}
         </box>
       );
@@ -72,12 +72,12 @@ export const BreadcrumbBar: React.NamedExoticComponent<BreadcrumbBarProps> = Rea
       const parts: React.ReactNode[] = [];
       if (presetName) {
         parts.push(
-          <text key="preset" color={theme.muted}>
+          <text key="preset" color={theme.secondary}>
             {presetName}
           </text>,
         );
         parts.push(
-          <text key="sep1" color={theme.dimmed}>
+          <text key="sep1" color={theme.secondary}>
             {" "}
             {"\u203a"}{" "}
           </text>,
@@ -90,13 +90,13 @@ export const BreadcrumbBar: React.NamedExoticComponent<BreadcrumbBarProps> = Rea
       );
       if (shortSession) {
         parts.push(
-          <text key="sep2" color={theme.dimmed}>
+          <text key="sep2" color={theme.secondary}>
             {" "}
             {"\u203a"}{" "}
           </text>,
         );
         parts.push(
-          <text key="sess" color={theme.muted}>
+          <text key="sess" color={theme.secondary}>
             {shortSession}
           </text>,
         );
@@ -104,7 +104,7 @@ export const BreadcrumbBar: React.NamedExoticComponent<BreadcrumbBarProps> = Rea
       return (
         <box paddingX={1} flexDirection="row">
           {parts}
-          {screen !== "preset-select" ? <text color={theme.dimmed}> [Esc]</text> : null}
+          {screen !== "preset-select" ? <text color={theme.secondary}> [Esc]</text> : null}
         </box>
       );
     }
@@ -117,19 +117,19 @@ export const BreadcrumbBar: React.NamedExoticComponent<BreadcrumbBarProps> = Rea
       </text>,
     );
     parts.push(
-      <text key="sep0" color={theme.dimmed}>
+      <text key="sep0" color={theme.secondary}>
         {" "}
         {"\u203a"}{" "}
       </text>,
     );
     if (presetName) {
       parts.push(
-        <text key="preset" color={theme.muted}>
+        <text key="preset" color={theme.secondary}>
           {presetName}
         </text>,
       );
       parts.push(
-        <text key="sep1" color={theme.dimmed}>
+        <text key="sep1" color={theme.secondary}>
           {" "}
           {"\u203a"}{" "}
         </text>,
@@ -142,13 +142,13 @@ export const BreadcrumbBar: React.NamedExoticComponent<BreadcrumbBarProps> = Rea
     );
     if (shortSession) {
       parts.push(
-        <text key="sep2" color={theme.dimmed}>
+        <text key="sep2" color={theme.secondary}>
           {" "}
           {"\u203a"}{" "}
         </text>,
       );
       parts.push(
-        <text key="sess" color={theme.muted}>
+        <text key="sess" color={theme.secondary}>
           {shortSession}
         </text>,
       );
@@ -158,9 +158,9 @@ export const BreadcrumbBar: React.NamedExoticComponent<BreadcrumbBarProps> = Rea
       <box paddingX={1} flexDirection="row">
         {parts}
         {screen === "running" || screen === "advanced" ? (
-          <text color={theme.dimmed}> [Tab]</text>
+          <text color={theme.secondary}> [Tab]</text>
         ) : screen !== "preset-select" ? (
-          <text color={theme.dimmed}> [Esc]</text>
+          <text color={theme.secondary}> [Esc]</text>
         ) : null}
       </box>
     );

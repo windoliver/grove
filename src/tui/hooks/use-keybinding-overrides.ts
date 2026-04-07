@@ -1,5 +1,5 @@
 /**
- * Customizable keybindings loader (item 19).
+ * Customizable keybindings loader.
  *
  * Loads keybinding overrides from `.grove/keybindings.json`.
  * Format: { "action": "key" } where action is a routeKey action name
@@ -12,9 +12,14 @@
  *   "zoom_cycle": "z",
  *   "broadcast": "B"
  * }
+ *
+ * Unknown action names and key conflicts are reported to stderr.
  */
 
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { useEffect, useState } from "react";
+import { z } from "zod";
 
 /** Map from action name to custom key binding. */
 export type KeybindingOverrides = Readonly<Record<string, string>>;
@@ -43,20 +48,45 @@ export type RemappableAction = (typeof REMAPPABLE_ACTIONS)[number];
 
 const KEYBINDINGS_PATH = ".grove/keybindings.json";
 
-/** Load keybinding overrides from disk. */
-async function loadKeybindings(): Promise<KeybindingOverrides> {
+/** Zod schema: keybindings file must be a flat string→string map. */
+const KeybindingFileSchema = z.record(z.string(), z.string());
+
+/** Load keybinding overrides from disk with validation and conflict reporting. */
+export async function loadKeybindings(): Promise<KeybindingOverrides> {
   try {
-    const { readFileSync } = await import("node:fs");
-    const { resolve } = await import("node:path");
     const path = resolve(process.cwd(), KEYBINDINGS_PATH);
-    const raw = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+    const raw = JSON.parse(await readFile(path, "utf-8")) as unknown;
+
+    const parsed = KeybindingFileSchema.safeParse(raw);
+    if (!parsed.success) {
+      process.stderr.write(`[grove] keybindings.json parse error: ${parsed.error.message}\n`);
+      return {};
+    }
 
     const overrides: Record<string, string> = {};
-    for (const [action, key] of Object.entries(raw)) {
-      if (typeof key === "string" && (REMAPPABLE_ACTIONS as readonly string[]).includes(action)) {
-        overrides[action] = key;
+    // Track key → list of actions mapped to it (for conflict detection)
+    const keyToActions = new Map<string, string[]>();
+
+    for (const [action, key] of Object.entries(parsed.data)) {
+      if (!(REMAPPABLE_ACTIONS as readonly string[]).includes(action)) {
+        process.stderr.write(`[grove] keybindings.json: unknown action "${action}" — ignored\n`);
+        continue;
+      }
+      const existing = keyToActions.get(key) ?? [];
+      existing.push(action);
+      keyToActions.set(key, existing);
+      overrides[action] = key;
+    }
+
+    // Report conflicts (same key mapped to multiple actions)
+    for (const [key, actions] of keyToActions) {
+      if (actions.length > 1) {
+        process.stderr.write(
+          `[grove] keybindings.json: key "${key}" mapped to multiple actions (${actions.join(", ")}) — first wins\n`,
+        );
       }
     }
+
     return overrides;
   } catch {
     return {};
@@ -64,11 +94,10 @@ async function loadKeybindings(): Promise<KeybindingOverrides> {
 }
 
 /**
- * Build a reverse map: key → action name (for quick lookup in routeKey).
+ * Build a reverse map: key → action name (for O(1) lookup in routeKey).
  *
  * Uses first-win semantics: if two actions are mapped to the same key,
- * the first one in iteration order wins. This preserves the behavior of
- * the prior O(n) Object.entries scan that stopped at the first match.
+ * the first one in iteration order wins.
  */
 export function buildKeyActionMap(
   overrides: KeybindingOverrides,

@@ -580,11 +580,11 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           {pendingPermissions.map((p) => (
             <box key={p.sessionName} flexDirection="row">
               <text color={theme.focus}>{p.agentRole}</text>
-              <text color={theme.muted}> wants to run: </text>
+              <text color={theme.secondary}> wants to run: </text>
               <text color={theme.text}>{p.command}</text>
             </box>
           ))}
-          <text color={theme.dimmed}>y:approve n:deny</text>
+          <text color={theme.secondary}>y:approve n:deny</text>
         </box>
       ) : null;
 

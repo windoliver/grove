@@ -67,7 +67,7 @@ const AgentPane = React.memo(function AgentPane({
       borderColor={focused ? theme.focus : theme.inactive}
     >
       <box>
-        <text color={focused ? theme.focus : theme.muted} bold={focused}>
+        <text color={focused ? theme.focus : theme.secondary} bold={focused}>
           {` ${agentSymbol(sessionName, [])} ${sessionName.replace("grove-", "@")} `}
         </text>
       </box>
@@ -121,7 +121,7 @@ export const AgentSplitPane: React.NamedExoticComponent<AgentSplitPaneProps> = R
         </box>
         {overflowCount > 0 && (
           <box>
-            <text color={theme.dimmed}>
+            <text color={theme.secondary}>
               {`+${overflowCount} more agent${overflowCount > 1 ? "s" : ""} (not shown)`}
             </text>
           </box>

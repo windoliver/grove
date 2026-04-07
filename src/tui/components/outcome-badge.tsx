@@ -18,7 +18,7 @@ const OUTCOME_COLORS: Record<OutcomeStatus, string> = {
   accepted: theme.success,
   rejected: theme.error,
   crashed: theme.warning,
-  invalidated: theme.muted,
+  invalidated: theme.secondary,
 };
 
 /** Short labels for outcome statuses. */

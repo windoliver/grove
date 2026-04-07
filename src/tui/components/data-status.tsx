@@ -24,7 +24,7 @@ export const DataStatus: React.NamedExoticComponent<DataStatusProps> = React.mem
     if (loading) {
       return (
         <box>
-          <text color={theme.muted}> Loading...</text>
+          <text color={theme.secondary}> Loading...</text>
         </box>
       );
     }

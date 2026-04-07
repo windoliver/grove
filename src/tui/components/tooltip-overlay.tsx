@@ -150,7 +150,7 @@ export const TooltipOverlay: React.NamedExoticComponent<TooltipOverlayProps> = R
             <text color={theme.info} bold>
               Welcome to Grove!
             </text>
-            <text color={theme.muted}>Here's a quick overview of each panel:</text>
+            <text color={theme.secondary}>Here's a quick overview of each panel:</text>
             <text> </text>
             {FIRST_LAUNCH_TOOLTIPS.map((tip) => (
               <box key={tip.panel} flexDirection="column">
@@ -159,7 +159,7 @@ export const TooltipOverlay: React.NamedExoticComponent<TooltipOverlayProps> = R
                 </text>
                 {tip.lines.map((line, i) => (
                   // biome-ignore lint/suspicious/noArrayIndexKey: tooltip lines are static
-                  <text key={i} color={theme.muted}>
+                  <text key={i} color={theme.secondary}>
                     {"  "}
                     {line}
                   </text>
@@ -167,7 +167,7 @@ export const TooltipOverlay: React.NamedExoticComponent<TooltipOverlayProps> = R
                 <text> </text>
               </box>
             ))}
-            <text color={theme.dimmed}>Press any key to dismiss | These won't appear again</text>
+            <text color={theme.secondary}>Press any key to dismiss | These won't appear again</text>
           </box>
         </box>
       </box>

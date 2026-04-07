@@ -20,6 +20,7 @@ import { InputBar } from "./components/input-bar.js";
 import { StatusBar } from "./components/status-bar.js";
 import { PanelBar } from "./components/tab-bar.js";
 import { TooltipOverlay, useFirstLaunchTooltips } from "./components/tooltip-overlay.js";
+import type { GroveUserConfig } from "./config-loader.js";
 import { buildKeyActionMap, useKeybindingOverrides } from "./hooks/use-keybinding-overrides.js";
 import type { KeyboardActions } from "./hooks/use-keyboard-handler.js";
 import { nextZoom, routeKey } from "./hooks/use-keyboard-handler.js";
@@ -27,7 +28,7 @@ import { useNavigation } from "./hooks/use-navigation.js";
 import { InputMode, usePanelFocus } from "./hooks/use-panel-focus.js";
 import { usePolledData } from "./hooks/use-polled-data.js";
 import { RefreshContext } from "./hooks/use-refresh-context.js";
-import { useSessionPersistence } from "./hooks/use-session-persistence.js";
+import { useTuiStatePersistence } from "./hooks/use-session-persistence.js";
 import type { ZoomLevel } from "./panels/panel-manager.js";
 import { PanelManager } from "./panels/panel-manager.js";
 import {
@@ -56,6 +57,8 @@ export interface AppProps {
   readonly agentRuntime?: import("../core/agent-runtime.js").AgentRuntime | undefined;
   /** Frozen contract for session creation. */
   readonly contract?: import("../core/contract.js").GroveContract | undefined;
+  /** User config preloaded in main.ts before React mounts (theme + keymap). */
+  readonly userConfig?: GroveUserConfig | undefined;
 }
 
 const PAGE_SIZE = 20;
@@ -234,50 +237,62 @@ export function App({
   tmux,
   topology,
   presetName,
+  groveDir,
+  userConfig,
 }: AppProps): React.ReactNode {
   const renderer = useRenderer();
   const nav = useNavigation();
   const panels = usePanelFocus();
   const { showTooltips, dismissAll: dismissTooltips } = useFirstLaunchTooltips();
-  const { persistedState, saveState } = useSessionPersistence();
-  const keybindingOverrides = useKeybindingOverrides();
+  const { savedState, saveState } = useTuiStatePersistence("global", groveDir);
+  const fileOverrides = useKeybindingOverrides();
+  // Merge config.json keymap (lower priority) with file-based overrides (higher priority).
+  const keybindingOverrides = useMemo(
+    () => ({ ...userConfig?.keymap, ...fileOverrides }),
+    [userConfig?.keymap, fileOverrides],
+  );
   const keyActionMap = useMemo(() => buildKeyActionMap(keybindingOverrides), [keybindingOverrides]);
   const [ks, dispatch] = useReducer(tuiReducer, INITIAL_KEYBOARD_STATE);
 
-  // Restore persisted state on first load (item 13)
+  // Restore persisted state on first load.
   // restoredRef gates both restore AND save — save must not run before restore.
+  // savedState === undefined means still loading; null means no prior state.
   const restoredRef = useRef(false);
   useEffect(() => {
-    if (restoredRef.current || !persistedState) return;
+    if (restoredRef.current || savedState === undefined || savedState === null) {
+      // null = no prior state → mark restored so saves can proceed
+      if (savedState === null) restoredRef.current = true;
+      return;
+    }
     restoredRef.current = true;
     // Restore zoom level
-    if (persistedState.zoomLevel && persistedState.zoomLevel !== "normal") {
+    if (savedState.zoomLevel && savedState.zoomLevel !== "normal") {
       let current: ZoomLevel = "normal";
-      while (current !== persistedState.zoomLevel) {
+      while (current !== savedState.zoomLevel) {
         dispatch({ type: "ZOOM_CYCLE" });
         current = nextZoom(current);
       }
     }
     // Restore search query
-    if (persistedState.searchQuery) {
-      for (const ch of persistedState.searchQuery) {
+    if (savedState.searchQuery) {
+      for (const ch of savedState.searchQuery) {
         dispatch({ type: "SEARCH_CHAR", char: ch });
       }
       dispatch({ type: "SEARCH_SUBMIT" });
     }
     // Restore visible operator panels FIRST (so focus can land on them)
-    if (persistedState.visibleOperatorPanels) {
-      for (const p of persistedState.visibleOperatorPanels) {
+    if (savedState.visibleOperatorPanels) {
+      for (const p of savedState.visibleOperatorPanels) {
         panels.toggle(p as import("./hooks/use-panel-focus.js").Panel);
       }
     }
     // Restore focused panel AFTER panels are visible
-    if (persistedState.focusedPanel !== undefined) {
-      panels.focus(persistedState.focusedPanel as import("./hooks/use-panel-focus.js").Panel);
+    if (savedState.focusedPanel !== undefined) {
+      panels.focus(savedState.focusedPanel as import("./hooks/use-panel-focus.js").Panel);
     }
-  }, [persistedState, panels]);
+  }, [savedState, panels]);
 
-  // Persist state on changes (item 13)
+  // Persist state on changes.
   // Gated by restoredRef to prevent saving default state before async restore completes.
   useEffect(() => {
     if (!restoredRef.current) return;
@@ -955,6 +970,7 @@ export function App({
           visible={panels.state.mode === InputMode.Help}
           isDetailView={nav.isDetailView}
           focusedPanel={panels.state.focused}
+          keybindingOverrides={keybindingOverrides}
         />
         <CommandPalette
           visible={paletteVisible}

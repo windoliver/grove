@@ -4,14 +4,17 @@
  * Persists to `.grove/.sessions/<sessionId>-tui-state.json`:
  * - Panel focus (which panel is selected)
  * - Zoom level (normal/half/full)
- * - Expanded panel (which panel is expanded, or null)
- * - Selected agent index in trace view
+ * - Visible operator panels
+ * - Search query
  *
  * On restart/resume, restores layout so the user picks up where they left off.
  *
- * Also maintains the legacy `.grove/tui-state.json` write for backward compat.
+ * Writes are atomic (temp-file → rename) to prevent corruption on crash.
  */
 
+import { existsSync } from "node:fs";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ZoomLevel } from "../panels/panel-registry.js";
 import type { RunningPanel } from "../screens/running-keyboard.js";
@@ -30,13 +33,9 @@ export interface TuiViewState {
   readonly traceSelectedAgent?: number | undefined;
   /** Index of the focused panel in the panel-manager (advanced mode). */
   readonly focusedPanel?: number | undefined;
-}
-
-/** Persisted TUI session state (legacy + new combined). */
-export interface PersistedTuiState {
-  readonly zoomLevel?: ZoomLevel | undefined;
-  readonly focusedPanel?: number | undefined;
+  /** Visible operator panel IDs (for grid layout restore). */
   readonly visibleOperatorPanels?: readonly number[] | undefined;
+  /** Active search query (restored on resume). */
   readonly searchQuery?: string | undefined;
 }
 
@@ -44,10 +43,8 @@ export interface PersistedTuiState {
 // Paths
 // ---------------------------------------------------------------------------
 
-const LEGACY_TUI_STATE_PATH = ".grove/tui-state.json";
-
-function sessionStatePath(groveDir: string, sessionId: string): string {
-  const { join } = require("node:path") as typeof import("node:path");
+/** Resolve the per-session state file path. */
+export function sessionStatePath(groveDir: string, sessionId: string): string {
   return join(groveDir, ".sessions", `${sessionId}-tui-state.json`);
 }
 
@@ -55,55 +52,31 @@ function sessionStatePath(groveDir: string, sessionId: string): string {
 // I/O helpers
 // ---------------------------------------------------------------------------
 
-/** Read persisted TUI state from disk. */
-async function readTuiState(): Promise<PersistedTuiState> {
-  try {
-    const { readFileSync } = await import("node:fs");
-    const { resolve } = await import("node:path");
-    const path = resolve(process.cwd(), LEGACY_TUI_STATE_PATH);
-    const json = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
-    return {
-      zoomLevel: typeof json.zoomLevel === "string" ? (json.zoomLevel as ZoomLevel) : undefined,
-      focusedPanel: typeof json.focusedPanel === "number" ? json.focusedPanel : undefined,
-      visibleOperatorPanels: Array.isArray(json.visibleOperatorPanels)
-        ? (json.visibleOperatorPanels as number[])
-        : undefined,
-      searchQuery: typeof json.searchQuery === "string" ? json.searchQuery : undefined,
-    };
-  } catch {
-    return {};
+/**
+ * Atomically write `content` to `filePath` using temp-file → rename.
+ *
+ * On POSIX filesystems, `rename` is atomic — the original file is never
+ * partially overwritten, so a crash mid-write cannot corrupt the state file.
+ */
+export async function writeAtomic(filePath: string, content: string): Promise<void> {
+  const dir = dirname(filePath);
+  if (!existsSync(dir)) {
+    await mkdir(dir, { recursive: true });
   }
+  const tmp = `${filePath}.tmp`;
+  await writeFile(tmp, content, "utf-8");
+  await rename(tmp, filePath);
 }
 
-/** Persist TUI state to disk (merges with existing state). */
-async function writeTuiState(state: PersistedTuiState): Promise<void> {
+/** Read per-session TuiViewState from disk. Returns null if not found. */
+export async function readViewState(
+  groveDir: string,
+  sessionId: string,
+): Promise<TuiViewState | null> {
   try {
-    const { existsSync, writeFileSync, mkdirSync, readFileSync } = await import("node:fs");
-    const { resolve, dirname } = await import("node:path");
-    const path = resolve(process.cwd(), LEGACY_TUI_STATE_PATH);
-    const dir = dirname(path);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-
-    let existing: Record<string, unknown> = {};
-    try {
-      existing = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
-    } catch {
-      // File doesn't exist yet
-    }
-
-    const merged = { ...existing, ...state };
-    writeFileSync(path, `${JSON.stringify(merged, null, 2)}\n`, "utf-8");
-  } catch {
-    // Best-effort persistence
-  }
-}
-
-/** Read per-session TuiViewState from `.grove/.sessions/<id>-tui-state.json`. */
-async function readViewState(groveDir: string, sessionId: string): Promise<TuiViewState | null> {
-  try {
-    const { readFileSync } = await import("node:fs");
     const path = sessionStatePath(groveDir, sessionId);
-    const json = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+    const raw = await readFile(path, "utf-8");
+    const json = JSON.parse(raw) as Record<string, unknown>;
     return {
       expandedPanel:
         json.expandedPanel === null
@@ -115,24 +88,24 @@ async function readViewState(groveDir: string, sessionId: string): Promise<TuiVi
       traceSelectedAgent:
         typeof json.traceSelectedAgent === "number" ? json.traceSelectedAgent : undefined,
       focusedPanel: typeof json.focusedPanel === "number" ? json.focusedPanel : undefined,
+      visibleOperatorPanels: Array.isArray(json.visibleOperatorPanels)
+        ? (json.visibleOperatorPanels as number[])
+        : undefined,
+      searchQuery: typeof json.searchQuery === "string" ? json.searchQuery : undefined,
     };
   } catch {
     return null;
   }
 }
 
-/** Write per-session TuiViewState to disk (debounced by caller). */
-function writeViewStateSync(groveDir: string, sessionId: string, state: TuiViewState): void {
-  try {
-    const { existsSync, writeFileSync, mkdirSync } = require("node:fs") as typeof import("node:fs");
-    const { join, dirname } = require("node:path") as typeof import("node:path");
-    const path = join(groveDir, ".sessions", `${sessionId}-tui-state.json`);
-    const dir = dirname(path);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`, "utf-8");
-  } catch {
-    // Best-effort
-  }
+/** Write per-session TuiViewState to disk atomically. */
+async function writeViewState(
+  groveDir: string,
+  sessionId: string,
+  state: TuiViewState,
+): Promise<void> {
+  const path = sessionStatePath(groveDir, sessionId);
+  await writeAtomic(path, `${JSON.stringify(state, null, 2)}\n`);
 }
 
 // ---------------------------------------------------------------------------
@@ -143,10 +116,10 @@ function writeViewStateSync(groveDir: string, sessionId: string, state: TuiViewS
  * Hook to save and restore per-session TUI view state.
  *
  * - On mount: reads `.grove/.sessions/<sessionId>-tui-state.json` if it exists.
- * - On state changes: debounced write (500 ms) to the same file.
+ * - On state changes: debounced write (500 ms) using atomic temp→rename.
  *
  * Returns `{ savedState, saveState }`.
- *   - `savedState` is null until load completes (undefined means not yet loaded).
+ *   - `savedState` is undefined while loading, null if no prior state.
  *   - `saveState` debounces writes at 500 ms.
  */
 export function useTuiStatePersistence(
@@ -164,7 +137,6 @@ export function useTuiStatePersistence(
   const loadedRef = useRef(false);
 
   // Load on mount and whenever sessionId/groveDir change.
-  // Reset load gate so writes are blocked until the new session's state is read.
   useEffect(() => {
     loadedRef.current = false;
     setSavedState(undefined); // mark as loading
@@ -181,50 +153,26 @@ export function useTuiStatePersistence(
     });
     return () => {
       cancelled = true;
+      // Cancel any pending debounced write to avoid post-unmount I/O (Issue 15A)
+      if (debounceRef.current !== null) {
+        clearTimeout(debounceRef.current);
+        debounceRef.current = null;
+      }
     };
   }, [sessionId, groveDir]);
 
   const saveState = useCallback(
     (state: TuiViewState) => {
       if (!sessionId || !groveDir) return;
-      if (!loadedRef.current) return; // block writes until restore finishes
-      if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (!loadedRef.current) return; // block writes until restore completes
+      if (debounceRef.current !== null) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => {
-        writeViewStateSync(groveDir, sessionId, state);
+        debounceRef.current = null;
+        void writeViewState(groveDir, sessionId, state);
       }, 500);
     },
     [sessionId, groveDir],
   );
 
   return { savedState, saveState };
-}
-
-// ---------------------------------------------------------------------------
-// useSessionPersistence — legacy hook (unchanged public API)
-// ---------------------------------------------------------------------------
-
-/** Hook to manage TUI session state persistence. */
-export function useSessionPersistence(): {
-  /** Loaded persisted state (undefined until loaded). */
-  persistedState: PersistedTuiState | undefined;
-  /** Save current state to disk. */
-  saveState: (state: PersistedTuiState) => void;
-} {
-  const [persistedState, setPersistedState] = useState<PersistedTuiState | undefined>(undefined);
-
-  useEffect(() => {
-    let cancelled = false;
-    readTuiState().then((state) => {
-      if (!cancelled) setPersistedState(state);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const saveState = useCallback((state: PersistedTuiState) => {
-    void writeTuiState(state);
-  }, []);
-
-  return { persistedState, saveState };
 }

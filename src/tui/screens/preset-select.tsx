@@ -148,13 +148,13 @@ export const PresetSelect: React.NamedExoticComponent<PresetSelectProps> = React
               <box flexDirection="column" marginTop={1}>
                 {presets[highlightedIndex]?.details?.split("\n").map((line, i) => (
                   // biome-ignore lint/suspicious/noArrayIndexKey: detail lines have no stable identity
-                  <text key={i} color={theme.muted}>
+                  <text key={i} color={theme.secondary}>
                     {line}
                   </text>
                 ))}
               </box>
             ) : null}
-            <text color={theme.dimmed}>Press ? to close details</text>
+            <text color={theme.secondary}>Press ? to close details</text>
           </box>
         ) : null}
 
@@ -172,7 +172,7 @@ export const PresetSelect: React.NamedExoticComponent<PresetSelectProps> = React
               Recent sessions
             </text>
             {sessions.slice(0, 5).map((s) => (
-              <text key={s.id} color={theme.muted}>
+              <text key={s.id} color={theme.secondary}>
                 {"  "}
                 {s.presetName ? `[${s.presetName}] ` : ""}
                 {`"${s.goal ?? "untitled"}"`} ({s.contributionCount} contributions, {s.status})
@@ -183,7 +183,7 @@ export const PresetSelect: React.NamedExoticComponent<PresetSelectProps> = React
 
         {/* Keyboard hints */}
         <box paddingX={2} marginTop={1}>
-          <text color={theme.dimmed}>Enter:select ?:details q:quit</text>
+          <text color={theme.secondary}>Enter:select ?:details q:quit</text>
         </box>
       </box>
     );

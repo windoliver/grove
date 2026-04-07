@@ -356,7 +356,7 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
 
         {rankedItems.length === 0 && (
           <box paddingLeft={1}>
-            <text color={theme.muted}>
+            <text color={theme.secondary}>
               {q
                 ? `No matches for "${q}"`
                 : `No actions available${!hasSpawnRuntime ? " (no agent runtime detected)" : ""}`}
@@ -369,7 +369,11 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
             const isSelected = i === idx;
             const dimmed = !item.enabled;
             const labelColor = isSelected ? theme.focus : dimmed ? theme.disabled : theme.text;
-            const detailColor = isSelected ? theme.focus : dimmed ? theme.inactive : theme.muted;
+            const detailColor = isSelected
+              ? theme.focus
+              : dimmed
+                ? theme.inactive
+                : theme.secondary;
             const cursor = isSelected ? "> " : "  ";
             return (
               <box key={`${item.kind}-${item.id}-${originalIndex}`} flexDirection="row">
@@ -386,7 +390,7 @@ export const CommandPalette: React.NamedExoticComponent<CommandPaletteProps> = R
         </box>
 
         <box marginTop={1} paddingLeft={1}>
-          <text color={theme.muted}>[j/k] navigate [Enter] execute [Esc] close</text>
+          <text color={theme.secondary}>[j/k] navigate [Enter] execute [Esc] close</text>
         </box>
       </box>
     );

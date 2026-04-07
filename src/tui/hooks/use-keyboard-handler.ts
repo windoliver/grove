@@ -7,6 +7,7 @@
 
 import type { KeyEvent } from "@opentui/core";
 import type { ZoomLevel } from "../panels/panel-manager.js";
+import { PANEL_REGISTRY } from "../panels/panel-registry.js";
 import { isHelpToggleKey } from "./shared-keyboard-core.js";
 import type { KeybindingOverrides, RemappableAction } from "./use-keybinding-overrides.js";
 import type { NavigationActions } from "./use-navigation.js";
@@ -297,80 +298,17 @@ export function routeKey(key: KeyEvent, actions: KeyboardActions): boolean {
     return true;
   }
 
-  // Panel focus: 1-4
-  if (input === "1") {
-    actions.panels.focus(Panel.Dag);
-    return true;
-  }
-  if (input === "2") {
-    actions.panels.focus(Panel.Detail);
-    return true;
-  }
-  if (input === "3") {
-    actions.panels.focus(Panel.Frontier);
-    return true;
-  }
-  if (input === "4") {
-    actions.panels.focus(Panel.Claims);
-    return true;
-  }
-
-  // Panel toggle: 5-=, [, ], \, ;, '
-  if (input === "5") {
-    actions.panels.toggle(Panel.AgentList);
-    return true;
-  }
-  if (input === "6") {
-    actions.panels.toggle(Panel.Terminal);
-    return true;
-  }
-  if (input === "7") {
-    actions.panels.toggle(Panel.Artifact);
-    return true;
-  }
-  if (input === "8") {
-    actions.panels.toggle(Panel.Vfs);
-    return true;
-  }
-  if (input === "9") {
-    actions.panels.toggle(Panel.Activity);
-    return true;
-  }
-  if (input === "0") {
-    actions.panels.toggle(Panel.Search);
-    return true;
-  }
-  if (input === "-") {
-    actions.panels.toggle(Panel.Threads);
-    return true;
-  }
-  if (input === "=") {
-    actions.panels.toggle(Panel.Outcomes);
-    return true;
-  }
-  if (input === "[") {
-    actions.panels.toggle(Panel.Bounties);
-    return true;
-  }
-  if (input === "]") {
-    actions.panels.toggle(Panel.Gossip);
-    return true;
-  }
-  if (input === "\\") {
-    actions.panels.toggle(Panel.Inbox);
-    return true;
-  }
-  if (input === ";") {
-    actions.panels.toggle(Panel.Decisions);
-    return true;
-  }
-  if (input === "'") {
-    actions.panels.toggle(Panel.GitHub);
-    return true;
-  }
-  if (input === "`") {
-    actions.panels.toggle(Panel.Plan);
-    return true;
+  // Panel dispatch: driven by PANEL_REGISTRY (Issue 4A — eliminates DRY violation
+  // and enables config-driven keybindings in the future).
+  for (const def of PANEL_REGISTRY) {
+    if (input === def.keybinding) {
+      if (def.kind === "core") {
+        actions.panels.focus(def.panel);
+      } else {
+        actions.panels.toggle(def.panel);
+      }
+      return true;
+    }
   }
 
   // Tab/Shift+Tab: cycle focus

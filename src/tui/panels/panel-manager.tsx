@@ -124,7 +124,7 @@ function PanelChrome({
   readonly children: React.ReactNode;
 }): React.ReactNode {
   const borderColor = focused ? theme.focus : theme.inactive;
-  const titleColor = focused ? theme.focus : theme.muted;
+  const titleColor = focused ? theme.focus : theme.secondary;
   return (
     <box
       flexDirection="column"

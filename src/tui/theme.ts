@@ -6,6 +6,10 @@
  *
  * Color values are resolved at module load time via `resolveColor()` so the
  * TUI degrades gracefully on terminals with limited color support.
+ *
+ * Call `configureTheme(overrides)` before React mounts to apply user
+ * customization from the config file.  All existing `import { theme }` sites
+ * continue to work unchanged — they reference the same mutable object.
  */
 
 // ---------------------------------------------------------------------------
@@ -27,34 +31,42 @@ function detectColorDepth(): ColorDepth {
 }
 
 // ---------------------------------------------------------------------------
-// 16-color fallback map
+// 16-color approximation (algorithmic — no manual map needed)
 // ---------------------------------------------------------------------------
 
 /**
- * Maps hex colors used in this theme to the nearest basic ANSI color name
- * when running on a 16-color terminal.
+ * Representative RGB values for the 10 ANSI color names accepted by OpenTUI.
+ * Nearest-neighbor distance selects the best name for any input hex color.
  */
-const ANSI_16_MAP: Record<string, string> = {
-  "#00cccc": "cyan",
-  "#cc00cc": "magenta",
-  "#cccc00": "yellow",
-  "#00cc00": "green",
-  "#ff0000": "red",
-  "#0088cc": "blue",
-  "#ffffff": "white",
-  "#888888": "gray",
-  "#666666": "darkGray",
-  "#1a1a2e": "black",
-  // Additional colors used in AGENT_COLORS / PLATFORM_COLORS
-  "#ff6600": "red",
-  "#ff0088": "magenta",
-  "#88ff00": "green",
-  "#0088ff": "blue",
-  "#00cc88": "cyan",
-  "#ff8800": "yellow",
-  "#555555": "darkGray",
-  "#0d2137": "black",
-};
+const ANSI_16_PALETTE = [
+  { name: "black", r: 0, g: 0, b: 0 },
+  { name: "red", r: 204, g: 0, b: 0 },
+  { name: "green", r: 0, g: 204, b: 0 },
+  { name: "yellow", r: 204, g: 204, b: 0 },
+  { name: "blue", r: 0, g: 136, b: 204 },
+  { name: "magenta", r: 204, g: 0, b: 204 },
+  { name: "cyan", r: 0, g: 204, b: 204 },
+  { name: "white", r: 255, g: 255, b: 255 },
+  { name: "gray", r: 136, g: 136, b: 136 },
+  { name: "darkGray", r: 102, g: 102, b: 102 },
+] as const;
+
+/** Return the nearest ANSI-16 color name for a hex color string. */
+function nearestAnsi16(hex: string): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  let best: (typeof ANSI_16_PALETTE)[number] = ANSI_16_PALETTE[0]!;
+  let bestDist = Infinity;
+  for (const entry of ANSI_16_PALETTE) {
+    const dist = (r - entry.r) ** 2 + (g - entry.g) ** 2 + (b - entry.b) ** 2;
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = entry;
+    }
+  }
+  return best.name;
+}
 
 // ---------------------------------------------------------------------------
 // 256-color approximation
@@ -90,7 +102,7 @@ function hexTo256(hex: string): string {
  *
  * - truecolor: hex returned as-is (Ink / OpenTUI accept hex directly)
  * - 256-color: nearest xterm-256 ANSI escape sequence
- * - 16-color: nearest basic ANSI color name from ANSI_16_MAP
+ * - 16-color: nearest basic ANSI color name (algorithmic)
  */
 export function resolveColor(hex: string): string {
   if (!hex.startsWith("#")) return hex; // Already an ANSI name or escape — pass through
@@ -100,45 +112,79 @@ export function resolveColor(hex: string): string {
     case "256":
       return hexTo256(hex);
     case "16":
-      return ANSI_16_MAP[hex] ?? "white";
+      return nearestAnsi16(hex);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Theme color token interface — user-overridable via configureTheme()
+// ---------------------------------------------------------------------------
+
+/** Color-only theme tokens that can be overridden via user config. */
+export interface ThemeColorTokens {
+  focus: string;
+  inactive: string;
+  border: string;
+  running: string;
+  waiting: string;
+  idle: string;
+  error: string;
+  stale: string;
+  work: string;
+  review: string;
+  discussion: string;
+  adoption: string;
+  reproduction: string;
+  text: string;
+  secondary: string;
+  disabled: string;
+  panelBg: string | undefined;
+  headerBg: string;
+  selectedBg: string;
+  success: string;
+  warning: string;
+  info: string;
+  compare: string;
 }
 
 // ---------------------------------------------------------------------------
 // Theme
 // ---------------------------------------------------------------------------
 
-/** Semantic color tokens for the TUI theme. */
-export const theme: {
-  readonly focus: string;
-  readonly inactive: string;
-  readonly border: string;
-  readonly running: string;
-  readonly waiting: string;
-  readonly idle: string;
-  readonly error: string;
-  readonly stale: string;
-  readonly work: string;
-  readonly review: string;
-  readonly discussion: string;
-  readonly adoption: string;
-  readonly reproduction: string;
-  readonly text: string;
-  readonly secondary: string;
-  readonly muted: string;
-  readonly dimmed: string;
-  readonly disabled: string;
-  readonly panelBg: string | undefined;
-  readonly headerBg: string;
-  readonly selectedBg: string;
-  readonly success: string;
-  readonly warning: string;
-  readonly info: string;
-  readonly compare: string;
-  readonly agentRunning: string;
-  readonly agentWaiting: string;
-  readonly agentIdle: string;
-  readonly agentError: string;
+/**
+ * Internal mutable theme store.  Exported as `theme` (readonly view).
+ * `configureTheme()` patches this object in-place before React mounts,
+ * so all existing `theme.X` import sites see the user's overrides without
+ * any code changes.
+ */
+const _themeStore: {
+  focus: string;
+  inactive: string;
+  border: string;
+  running: string;
+  waiting: string;
+  idle: string;
+  error: string;
+  stale: string;
+  work: string;
+  review: string;
+  discussion: string;
+  adoption: string;
+  reproduction: string;
+  text: string;
+  secondary: string;
+  disabled: string;
+  panelBg: string | undefined;
+  headerBg: string;
+  selectedBg: string;
+  success: string;
+  warning: string;
+  info: string;
+  compare: string;
+  agentRunning: string;
+  agentWaiting: string;
+  agentIdle: string;
+  agentError: string;
 } = {
   // Focus & chrome
   focus: resolveColor("#00cccc"),
@@ -161,12 +207,7 @@ export const theme: {
 
   // Text
   text: resolveColor("#ffffff"),
-  /** Secondary text — labels, hints, timestamps. Replaces former muted/dimmed split. */
   secondary: resolveColor("#888888"),
-  /** @deprecated Use `secondary` instead. Kept for backward compat during migration. */
-  muted: resolveColor("#888888"),
-  /** @deprecated Use `secondary` instead. Kept for backward compat during migration. */
-  dimmed: resolveColor("#888888"),
   disabled: resolveColor("#666666"),
 
   // Surfaces
@@ -180,12 +221,39 @@ export const theme: {
   info: resolveColor("#0088cc"),
   compare: resolveColor("#ff6600"),
 
-  // Agent status symbols
+  // Agent status symbols (not color tokens — not overridable via ThemeColorTokens)
   agentRunning: "●",
   agentWaiting: "◐",
   agentIdle: "○",
   agentError: "\u2717",
 };
+
+/**
+ * Readonly view of the theme — same object reference as `_themeStore`.
+ * Components import this and access `theme.focus`, `theme.running`, etc.
+ * Calling `configureTheme()` before React mounts updates the values in-place.
+ */
+export const theme: Readonly<typeof _themeStore> = _themeStore;
+
+/**
+ * Apply user theme overrides from config.
+ *
+ * Must be called before React mounts (e.g. in main.ts after loading config).
+ * Mutates `_themeStore` in-place so all existing `theme.X` references see
+ * the updated values on first render.
+ */
+export function configureTheme(overrides: Partial<ThemeColorTokens>): void {
+  for (const [key, value] of Object.entries(overrides)) {
+    if (key in _themeStore && typeof value === "string") {
+      (_themeStore as Record<string, unknown>)[key] = resolveColor(value);
+    }
+  }
+}
+
+/** Return the current theme (same as the exported `theme` constant). */
+export function getTheme(): Readonly<typeof _themeStore> {
+  return _themeStore;
+}
 
 /** Spacing scale in terminal character units. */
 export const spacing = {
@@ -280,9 +348,6 @@ export interface AgentStatusBadge {
  *
  * When `spinnerFrame` is provided and status is "running", the icon
  * cycles through the braille spinner. Otherwise uses a static symbol.
- *
- * This replaces the duplicated statusSymbol() / agentSymbol() functions
- * in agent-list.tsx, agent-graph.tsx, running-view.tsx, and agent-split-pane.tsx.
  */
 export function agentStatusIcon(
   status: AgentStatus | string,

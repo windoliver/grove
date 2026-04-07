@@ -21,9 +21,9 @@ export const EmptyState: React.NamedExoticComponent<EmptyStateProps> = React.mem
   function EmptyState({ title, hint }: EmptyStateProps): React.ReactNode {
     return (
       <box flexDirection="column" paddingTop={1}>
-        <text color={theme.muted}>{title}</text>
+        <text color={theme.secondary}>{title}</text>
         {hint && (
-          <text color={theme.dimmed} opacity={0.7}>
+          <text color={theme.secondary} opacity={0.7}>
             {hint}
           </text>
         )}

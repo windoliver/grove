@@ -678,14 +678,14 @@ export class SpawnManager {
             // then NexusWsBridge SSE delivers it via runtime.send().
             // If wsBridge fails (Nexus unhealthy), fall back to direct runtime.send()
             // so the reviewer always receives the IPC.
-            let wsBridgeDelivered = false;
+            let _wsBridgeDelivered = false;
             try {
               await (this.wsBridge as import("./nexus-ws-bridge.js").NexusWsBridge).send(
                 sourceRole,
                 targetRole,
                 { summary, kind },
               );
-              wsBridgeDelivered = true;
+              _wsBridgeDelivered = true;
               debugLog("route", `wsBridge.send succeeded for ${sourceRole}→${targetRole}`);
             } catch (bridgeErr) {
               debugLog(

@@ -138,7 +138,7 @@ function FilePreview({ name, content, loading, error }: FilePreviewProps): React
   if (loading && content === null) {
     return (
       <box flexDirection="column">
-        <text color={theme.muted}>Loading {name}…</text>
+        <text color={theme.secondary}>Loading {name}…</text>
       </box>
     );
   }
@@ -154,7 +154,7 @@ function FilePreview({ name, content, loading, error }: FilePreviewProps): React
   if (content === null) {
     return (
       <box flexDirection="column">
-        <text color={theme.muted}>Select a file to preview.</text>
+        <text color={theme.secondary}>Select a file to preview.</text>
       </box>
     );
   }
@@ -162,7 +162,7 @@ function FilePreview({ name, content, loading, error }: FilePreviewProps): React
   if (content.length === 0) {
     return (
       <box flexDirection="column">
-        <text color={theme.muted} italic>
+        <text color={theme.secondary} italic>
           Empty file
         </text>
       </box>
@@ -187,7 +187,7 @@ function FilePreview({ name, content, loading, error }: FilePreviewProps): React
     return createElement(
       "scrollbox" as string,
       { flexGrow: 1 },
-      React.createElement("text", { color: theme.muted }, hexDump + suffix),
+      React.createElement("text", { color: theme.secondary }, hexDump + suffix),
     );
   }
 
@@ -365,19 +365,19 @@ export const VfsBrowserView: React.NamedExoticComponent<VfsBrowserProps> = React
         {/* Path header */}
         <box marginBottom={1} flexDirection="column">
           <box flexDirection="row">
-            <text color={theme.muted}>{"Path: "}</text>
+            <text color={theme.secondary}>{"Path: "}</text>
             {currentPath === "/" ? (
               <text bold>/</text>
             ) : (
               <>
-                <text color={theme.muted}>
+                <text color={theme.secondary}>
                   {`${currentPath.replace(/\/$/, "").split("/").slice(0, -1).join("/")}/`}
                 </text>
                 <text bold>{currentPath.replace(/\/$/, "").split("/").pop()}</text>
               </>
             )}
           </box>
-          {rows.length > 0 ? <text color={theme.dimmed}>Enter:browse Esc:back</text> : null}
+          {rows.length > 0 ? <text color={theme.secondary}>Enter:browse Esc:back</text> : null}
         </box>
 
         {rows.length === 0 ? (
@@ -409,7 +409,7 @@ export const VfsBrowserView: React.NamedExoticComponent<VfsBrowserProps> = React
                 </>
               ) : (
                 <box>
-                  <text color={theme.muted} opacity={0.5}>
+                  <text color={theme.secondary} opacity={0.5}>
                     {cursorEntry?.type === "directory"
                       ? "Press Enter to open directory."
                       : "Select a file to preview."}
