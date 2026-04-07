@@ -387,7 +387,7 @@ export function isArtifactProvider(
 export function isSearchProvider(
   provider: TuiDataProvider,
 ): provider is TuiDataProvider & Pick<TuiArtifactProvider, "search"> {
-  return typeof (provider as Record<string, unknown>).search === "function";
+  return typeof (provider as unknown as Record<string, unknown>).search === "function";
 }
 
 /** Check if provider supports Nexus VFS browsing. */
