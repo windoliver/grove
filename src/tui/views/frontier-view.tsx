@@ -76,8 +76,14 @@ function flattenFrontier(frontier: Frontier): readonly FrontierRow[] {
   ];
   for (const [metric, entries] of SCALAR_DIMS) {
     for (let i = 0; i < (entries?.length ?? 0); i++) {
-      const entry = entries![i] as FrontierEntry;
-      rows.push({ rank: i + 1, cid: entry.cid, metric, value: entry.value, summary: entry.summary });
+      const entry = entries?.[i] as FrontierEntry;
+      rows.push({
+        rank: i + 1,
+        cid: entry.cid,
+        metric,
+        value: entry.value,
+        summary: entry.summary,
+      });
     }
   }
 
@@ -151,15 +157,8 @@ export const FrontierView: React.NamedExoticComponent<FrontierViewProps> = React
       onFrontierCidsChanged(frontierCids);
     }, [frontierCids, onFrontierCidsChanged]);
 
-    if (loading && !data) {
-      return (
-        <box>
-          <text opacity={0.5}>Loading frontier...</text>
-        </box>
-      );
-    }
-
     // Build display rows and group them by dimension in one pass.
+    // Must be before any early returns to satisfy Rules of Hooks.
     const { tableRows, dimensionGroups } = useMemo(() => {
       const rows: Array<{
         rank: string;
@@ -171,7 +170,8 @@ export const FrontierView: React.NamedExoticComponent<FrontierViewProps> = React
       const groups = new Map<string, { startIndex: number; count: number }>();
 
       for (let i = 0; i < flatRows.length; i++) {
-        const r = flatRows[i]!;
+        const r = flatRows[i];
+        if (!r) continue;
         const isSelected = compareMode && selectedSet.has(r.cid);
         const prefix = compareMode ? (isSelected ? "[*] " : "[ ] ") : "";
         rows.push({
@@ -184,11 +184,20 @@ export const FrontierView: React.NamedExoticComponent<FrontierViewProps> = React
         if (!groups.has(r.metric)) {
           groups.set(r.metric, { startIndex: i, count: 0 });
         }
-        groups.get(r.metric)!.count++;
+        const group = groups.get(r.metric);
+        if (group) group.count++;
       }
 
       return { tableRows: rows, dimensionGroups: groups };
     }, [flatRows, compareMode, selectedSet]);
+
+    if (loading && !data) {
+      return (
+        <box>
+          <text opacity={0.5}>Loading frontier...</text>
+        </box>
+      );
+    }
 
     return (
       <box flexDirection="column">
