@@ -133,7 +133,8 @@ export const FrontierView: React.NamedExoticComponent<FrontierViewProps> = React
     const fetcher = useCallback(() => provider.getFrontier(), [provider]);
     const { data, loading, isStale, error } = usePolledData<Frontier>(fetcher, intervalMs, active);
 
-    const flatRows = useMemo(() => (data ? flattenFrontier(data) : []), [data]);
+    // Cap total rows to avoid O(dimensions × table-limit) explosion when many score metrics exist.
+    const flatRows = useMemo(() => (data ? flattenFrontier(data).slice(0, 200) : []), [data]);
 
     // Track selected CIDs set for efficient lookup
     const selectedSet = useMemo(() => new Set(compareCids ?? []), [compareCids]);

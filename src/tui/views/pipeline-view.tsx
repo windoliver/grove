@@ -84,21 +84,12 @@ export function buildPipeline(
 interface AgentCardViewProps {
   readonly card: AgentCard;
   readonly showArrow: boolean;
-  readonly active: boolean;
+  readonly spinnerFrame: number;
 }
 
-/** Single agent card with an isolated spinner. Prevents 10/sec parent re-renders. */
+/** Single agent card — receives spinner frame from parent's shared timer. */
 const AgentCardView: React.NamedExoticComponent<AgentCardViewProps> = React.memo(
-  function AgentCardView({ card, showArrow, active }: AgentCardViewProps): React.ReactNode {
-    const [spinnerFrame, setSpinnerFrame] = useState(0);
-    useEffect(() => {
-      if (!active || card.status !== "running") return;
-      const timer = setInterval(() => {
-        setSpinnerFrame((f) => (f + 1) % BRAILLE_SPINNER.length);
-      }, 100);
-      return () => clearInterval(timer);
-    }, [active, card.status]);
-
+  function AgentCardView({ card, showArrow, spinnerFrame }: AgentCardViewProps): React.ReactNode {
     const spinner =
       card.status === "running"
         ? (BRAILLE_SPINNER[spinnerFrame % BRAILLE_SPINNER.length] ?? "\u25cf")
@@ -156,6 +147,16 @@ export const PipelineView: React.NamedExoticComponent<PipelineViewProps> = React
     intervalMs,
     active,
   }: PipelineViewProps): React.ReactNode {
+    // One shared spinner timer for all cards — avoids O(n) intervals for n running agents.
+    const [spinnerFrame, setSpinnerFrame] = useState(0);
+    useEffect(() => {
+      if (!active) return;
+      const timer = setInterval(() => {
+        setSpinnerFrame((f) => (f + 1) % BRAILLE_SPINNER.length);
+      }, 100);
+      return () => clearInterval(timer);
+    }, [active]);
+
     const claimsFetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
     const { data: claims } = usePolledData<readonly Claim[]>(claimsFetcher, intervalMs, active);
 
@@ -209,7 +210,12 @@ export const PipelineView: React.NamedExoticComponent<PipelineViewProps> = React
     return (
       <box flexDirection="row" flexWrap="wrap">
         {pipeline.map((card, i) => (
-          <AgentCardView key={card.agentId} card={card} showArrow={i > 0} active={active} />
+          <AgentCardView
+            key={card.agentId}
+            card={card}
+            showArrow={i > 0}
+            spinnerFrame={spinnerFrame}
+          />
         ))}
       </box>
     );

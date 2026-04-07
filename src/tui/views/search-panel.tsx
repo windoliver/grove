@@ -197,7 +197,12 @@ export const SearchPanelView: React.NamedExoticComponent<SearchPanelProps> = Rea
           </box>
         )}
 
-        {contributions.length === 0 && !isInputMode && searchQuery && !showSearchUnavailable ? (
+        {error && !data && searchQuery && !showSearchUnavailable ? (
+          <EmptyState
+            title={`Search failed: ${error.message}`}
+            hint="The search backend may be unavailable. Try again or press / to search."
+          />
+        ) : contributions.length === 0 && !isInputMode && searchQuery && !showSearchUnavailable ? (
           <EmptyState
             title={`No results for "${searchQuery}".`}
             hint="Try a different query or press / to search again."
