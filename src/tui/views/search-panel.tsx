@@ -5,9 +5,9 @@
  * input bar and results table. Press "/" when focused to enter
  * search input mode; type query and press Enter to search.
  *
- * Search availability is determined by provider.capabilities.artifacts
- * (search is part of TuiArtifactProvider). When unavailable, a persistent
- * banner informs the user rather than silently falling back to recent items.
+ * Search availability is determined by feature-detecting the search() method
+ * (isSearchProvider). When unavailable, a persistent banner informs the user
+ * rather than silently falling back to recent items.
  */
 
 import React, { useCallback, useEffect, useMemo } from "react";
@@ -17,7 +17,7 @@ import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
-import { isArtifactProvider, type TuiArtifactProvider, type TuiDataProvider } from "../provider.js";
+import { isSearchProvider, type TuiArtifactProvider, type TuiDataProvider } from "../provider.js";
 import { theme } from "../theme.js";
 
 /** Props for the SearchPanel view. */
@@ -111,7 +111,7 @@ export const SearchPanelView: React.NamedExoticComponent<SearchPanelProps> = Rea
     }, [isTranscriptMode, transcriptQuery, terminalBuffers]);
 
     // Determine search availability via the proper capability check.
-    const hasSearch = isArtifactProvider(provider);
+    const hasSearch = isSearchProvider(provider);
 
     const fetcher = useCallback((): Promise<readonly Contribution[]> => {
       if (!searchQuery || !hasSearch) return provider.getContributions({ limit: 20 });

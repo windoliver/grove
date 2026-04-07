@@ -383,6 +383,13 @@ export function isArtifactProvider(
   return provider.capabilities.artifacts;
 }
 
+/** Check if provider supports full-text search (independent of CAS/artifact capability). */
+export function isSearchProvider(
+  provider: TuiDataProvider,
+): provider is TuiDataProvider & Pick<TuiArtifactProvider, "search"> {
+  return typeof (provider as Record<string, unknown>).search === "function";
+}
+
 /** Check if provider supports Nexus VFS browsing. */
 export function isVfsProvider(
   provider: TuiDataProvider,

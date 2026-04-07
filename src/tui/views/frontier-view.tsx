@@ -36,7 +36,10 @@ export interface FrontierViewProps {
 interface FrontierRow {
   readonly rank: number;
   readonly cid: string;
+  /** Display label for the section header. */
   readonly metric: string;
+  /** Stable grouping key — avoids collisions between user score names and built-in scalars. */
+  readonly dimensionKey: string;
   readonly value: number;
   readonly summary: string;
 }
@@ -61,6 +64,7 @@ function flattenFrontier(frontier: Frontier): readonly FrontierRow[] {
         rank: i + 1,
         cid: entry.cid,
         metric: metricName,
+        dimensionKey: `score:${metricName}`,
         value: entry.value,
         summary: entry.summary,
       });
@@ -81,6 +85,7 @@ function flattenFrontier(frontier: Frontier): readonly FrontierRow[] {
         rank: i + 1,
         cid: entry.cid,
         metric,
+        dimensionKey: `scalar:${metric}`,
         value: entry.value,
         summary: entry.summary,
       });
@@ -167,7 +172,7 @@ export const FrontierView: React.NamedExoticComponent<FrontierViewProps> = React
         value: string;
         summary: string;
       }> = [];
-      const groups = new Map<string, { startIndex: number; count: number }>();
+      const groups = new Map<string, { startIndex: number; count: number; label: string }>();
 
       for (let i = 0; i < flatRows.length; i++) {
         const r = flatRows[i];
@@ -181,10 +186,10 @@ export const FrontierView: React.NamedExoticComponent<FrontierViewProps> = React
           value: formatValue(r.value),
           summary: r.summary.length > 40 ? `${r.summary.slice(0, 38)}..` : r.summary,
         });
-        if (!groups.has(r.metric)) {
-          groups.set(r.metric, { startIndex: i, count: 0 });
+        if (!groups.has(r.dimensionKey)) {
+          groups.set(r.dimensionKey, { startIndex: i, count: 0, label: r.metric });
         }
-        const group = groups.get(r.metric);
+        const group = groups.get(r.dimensionKey);
         if (group) group.count++;
       }
 
@@ -220,7 +225,7 @@ export const FrontierView: React.NamedExoticComponent<FrontierViewProps> = React
           />
         ) : (
           <box flexDirection="column">
-            {[...dimensionGroups.entries()].map(([metric, { startIndex, count }]) => {
+            {[...dimensionGroups.entries()].map(([dimKey, { startIndex, count, label }]) => {
               const groupRows = tableRows.slice(startIndex, startIndex + count);
               // Map global cursor to per-group cursor (-1 = not in this group)
               const groupCursor = cursor - startIndex;
@@ -228,8 +233,8 @@ export const FrontierView: React.NamedExoticComponent<FrontierViewProps> = React
                 groupCursor >= 0 && groupCursor < count ? groupCursor : undefined;
 
               return (
-                <box key={metric} flexDirection="column" marginBottom={1}>
-                  <text color={theme.secondary}>{`── ${metric} (${count}) ──`}</text>
+                <box key={dimKey} flexDirection="column" marginBottom={1}>
+                  <text color={theme.secondary}>{`── ${label} (${count}) ──`}</text>
                   <Table columns={[...COLUMNS]} rows={groupRows} cursor={validGroupCursor} />
                 </box>
               );
