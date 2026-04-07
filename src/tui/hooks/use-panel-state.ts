@@ -10,7 +10,7 @@
  *   ready    — data is available; isStale=true when last re-fetch failed
  */
 
-import { usePolledData, type PolledDataResult } from "./use-polled-data.js";
+import { type PolledDataResult, usePolledData } from "./use-polled-data.js";
 
 /** Initial fetch in progress — no data is available yet. */
 export interface LoadingState {

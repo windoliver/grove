@@ -39,9 +39,7 @@ function makeClaim(
       ...(opts.role !== undefined ? { role: opts.role } : { role: "worker" }),
       ...(opts.platform !== undefined ? { platform: opts.platform } : { platform: "claude" }),
     },
-    ...(opts.parentAgentId !== undefined
-      ? { context: { parentAgentId: opts.parentAgentId } }
-      : {}),
+    ...(opts.parentAgentId !== undefined ? { context: { parentAgentId: opts.parentAgentId } } : {}),
   };
 }
 

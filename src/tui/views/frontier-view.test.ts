@@ -44,7 +44,13 @@ function flattenFrontier(frontier: Frontier): readonly FrontierRow[] {
   for (const [metricName, entries] of Object.entries(frontier.byMetric ?? {})) {
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i] as FrontierEntry;
-      rows.push({ rank: i + 1, cid: entry.cid, metric: metricName, value: entry.value, summary: entry.summary });
+      rows.push({
+        rank: i + 1,
+        cid: entry.cid,
+        metric: metricName,
+        value: entry.value,
+        summary: entry.summary,
+      });
     }
   }
 
@@ -57,7 +63,13 @@ function flattenFrontier(frontier: Frontier): readonly FrontierRow[] {
   for (const [metric, entries] of SCALAR_DIMS) {
     for (let i = 0; i < (entries?.length ?? 0); i++) {
       const entry = entries![i] as FrontierEntry;
-      rows.push({ rank: i + 1, cid: entry.cid, metric, value: entry.value, summary: entry.summary });
+      rows.push({
+        rank: i + 1,
+        cid: entry.cid,
+        metric,
+        value: entry.value,
+        summary: entry.summary,
+      });
     }
   }
 
@@ -199,7 +211,7 @@ describe("formatValue", () => {
 
   test("float is formatted to 3 decimal places", () => {
     expect(formatValue(0.9)).toBe("0.900");
-    expect(formatValue(3.14159)).toBe("3.142");
+    expect(formatValue(Math.PI)).toBe("3.142");
     expect(formatValue(1.0)).toBe("1"); // integer check takes precedence
   });
 

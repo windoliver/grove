@@ -79,8 +79,7 @@ export const PlanPanelView: React.NamedExoticComponent<PlanPanelProps> = React.m
     const { data: contributions, isStale, error } = state;
 
     // list() returns ASC order — take the last entry for the newest plan
-    const latest =
-      contributions.length > 0 ? contributions[contributions.length - 1] : undefined;
+    const latest = contributions.length > 0 ? contributions[contributions.length - 1] : undefined;
 
     if (!latest) {
       return (
@@ -89,10 +88,7 @@ export const PlanPanelView: React.NamedExoticComponent<PlanPanelProps> = React.m
             <text>Plan</text>
             <DataStatus loading={false} isStale={isStale} error={error?.message} />
           </box>
-          <EmptyState
-            title="No plan found."
-            hint="Use grove_create_plan to create one."
-          />
+          <EmptyState title="No plan found." hint="Use grove_create_plan to create one." />
         </box>
       );
     }

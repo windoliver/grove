@@ -22,10 +22,7 @@ export interface CompareViewProps {
 
 /** Derive display label for a side, falling back through identity fields. */
 function agentLabel(detail: ContributionDetail): string {
-  return (
-    detail.contribution.agent.agentName ??
-    detail.contribution.agent.agentId
-  );
+  return detail.contribution.agent.agentName ?? detail.contribution.agent.agentId;
 }
 
 /** Build score summary string for a contribution, or undefined if no scores. */
@@ -77,14 +74,18 @@ export const CompareView: React.NamedExoticComponent<CompareViewProps> = React.m
         ? `[Error: ${leftState.error.message}]`
         : leftState.status === "loading"
           ? "Loading..."
-          : (leftState.data?.contribution.description ?? leftState.data?.contribution.summary ?? "[Not found]");
+          : (leftState.data?.contribution.description ??
+            leftState.data?.contribution.summary ??
+            "[Not found]");
 
     const rightContent =
       rightState.status === "error"
         ? `[Error: ${rightState.error.message}]`
         : rightState.status === "loading"
           ? "Loading..."
-          : (rightState.data?.contribution.description ?? rightState.data?.contribution.summary ?? "[Not found]");
+          : (rightState.data?.contribution.description ??
+            rightState.data?.contribution.summary ??
+            "[Not found]");
 
     const leftLabel =
       leftState.status === "ready" && leftState.data

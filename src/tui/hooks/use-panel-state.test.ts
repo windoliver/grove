@@ -57,7 +57,12 @@ describe("mapPollResult", () => {
 
   test("ready: data is an array (common provider case)", () => {
     const arr = [1, 2, 3];
-    const state = mapPollResult<number[]>({ data: arr, loading: false, error: null, isStale: false });
+    const state = mapPollResult<number[]>({
+      data: arr,
+      loading: false,
+      error: null,
+      isStale: false,
+    });
     expect(state.status).toBe("ready");
     if (state.status === "ready") {
       expect(state.data).toEqual([1, 2, 3]);
@@ -65,7 +70,12 @@ describe("mapPollResult", () => {
   });
 
   test("ready: data is an empty array — not an error, caller decides emptiness", () => {
-    const state = mapPollResult<string[]>({ data: [], loading: false, error: null, isStale: false });
+    const state = mapPollResult<string[]>({
+      data: [],
+      loading: false,
+      error: null,
+      isStale: false,
+    });
     expect(state.status).toBe("ready");
     if (state.status === "ready") {
       expect(state.data).toEqual([]);

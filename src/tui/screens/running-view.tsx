@@ -268,10 +268,14 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     // Aggregate poll health for the status bar: show stale/error when either poll fails.
     const pollHealth = useMemo(() => {
       const isStale = dashboardPoll.isStale || contributionsPoll.isStale;
-      const error =
-        dashboardPoll.error?.message ?? contributionsPoll.error?.message ?? undefined;
+      const error = dashboardPoll.error?.message ?? contributionsPoll.error?.message ?? undefined;
       return { isStale, error };
-    }, [dashboardPoll.isStale, dashboardPoll.error?.message, contributionsPoll.isStale, contributionsPoll.error?.message]);
+    }, [
+      dashboardPoll.isStale,
+      dashboardPoll.error?.message,
+      contributionsPoll.isStale,
+      contributionsPoll.error?.message,
+    ]);
 
     // Fetch handoffs alongside dashboard (usePolledData's setInterval doesn't
     // survive OpenTUI remounts, so we fetch manually in the parent).
@@ -302,10 +306,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             setHandoffs(filtered);
           })
           .catch((err: unknown) => {
-            debugLog(
-              "handoffs",
-              `ERROR: ${err instanceof Error ? err.message : String(err)}`,
-            );
+            debugLog("handoffs", `ERROR: ${err instanceof Error ? err.message : String(err)}`);
           });
       };
       doFetch(); // immediate

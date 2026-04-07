@@ -62,9 +62,7 @@ export function searchTranscripts(
           session,
           lineNo: String(i + 1),
           content:
-            (lines[i] ?? "").length > 50
-              ? `${(lines[i] ?? "").slice(0, 48)}..`
-              : (lines[i] ?? ""),
+            (lines[i] ?? "").length > 50 ? `${(lines[i] ?? "").slice(0, 48)}..` : (lines[i] ?? ""),
         });
       }
     }
