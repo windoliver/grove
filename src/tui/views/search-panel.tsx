@@ -4,15 +4,20 @@
  * Operator panel (toggled via key 0) with an integrated search
  * input bar and results table. Press "/" when focused to enter
  * search input mode; type query and press Enter to search.
+ *
+ * Search availability is determined by provider.capabilities.artifacts
+ * (search is part of TuiArtifactProvider). When unavailable, a persistent
+ * banner informs the user rather than silently falling back to recent items.
  */
 
 import React, { useCallback, useEffect, useMemo } from "react";
 import type { Contribution } from "../../core/models.js";
 import { formatTimestamp, truncateCid } from "../../shared/format.js";
 import { DataStatus } from "../components/data-status.js";
+import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
-import type { TuiDataProvider } from "../provider.js";
+import { isArtifactProvider, type TuiArtifactProvider, type TuiDataProvider } from "../provider.js";
 import { theme } from "../theme.js";
 
 /** Props for the SearchPanel view. */
@@ -43,7 +48,7 @@ const TRANSCRIPT_COLUMNS = [
 ] as const;
 
 /** Search terminal transcripts for a query string. */
-function searchTranscripts(
+export function searchTranscripts(
   buffers: ReadonlyMap<string, string>,
   query: string,
 ): readonly Record<string, string>[] {
@@ -57,12 +62,34 @@ function searchTranscripts(
           session,
           lineNo: String(i + 1),
           content:
-            (lines[i] ?? "").length > 50 ? `${(lines[i] ?? "").slice(0, 48)}..` : (lines[i] ?? ""),
+            (lines[i] ?? "").length > 50
+              ? `${(lines[i] ?? "").slice(0, 48)}..`
+              : (lines[i] ?? ""),
         });
       }
     }
   }
   return results.slice(0, 100); // Cap at 100 results
+}
+
+/**
+ * Select the fetcher function to use based on provider capability and query.
+ * Exported as a pure function for unit testing.
+ *
+ * @param hasSearch  Whether the provider supports full-text search.
+ * @param getContributions  Fallback fetcher for recent contributions.
+ * @param search  Full-text search fetcher (only called when hasSearch=true).
+ * @param query   The current search query string.
+ */
+export function selectFetcher(
+  hasSearch: boolean,
+  query: string,
+  getContributions: () => Promise<readonly Contribution[]>,
+  search: (q: string) => Promise<readonly Contribution[]>,
+): () => Promise<readonly Contribution[]> {
+  if (!query) return getContributions;
+  if (hasSearch) return () => search(query);
+  return getContributions;
 }
 
 /** Search panel showing full-text search results. */
@@ -84,19 +111,14 @@ export const SearchPanelView: React.NamedExoticComponent<SearchPanelProps> = Rea
       if (!isTranscriptMode || !transcriptQuery || !terminalBuffers) return [];
       return searchTranscripts(terminalBuffers, transcriptQuery);
     }, [isTranscriptMode, transcriptQuery, terminalBuffers]);
-    // Use search if available on the provider, fall back to getContributions
-    const fetcher = useCallback(async (): Promise<readonly Contribution[]> => {
-      if (!searchQuery) return provider.getContributions({ limit: 20 });
 
-      // Check if provider has search capability (TuiArtifactProvider)
-      const searchable = provider as { search?: (q: string) => Promise<readonly Contribution[]> };
-      if (searchable.search) {
-        return searchable.search(searchQuery);
-      }
+    // Determine search availability via the proper capability check.
+    const hasSearch = isArtifactProvider(provider);
 
-      // Fallback: use getContributions (no server-side search)
-      return provider.getContributions({ limit: 20 });
-    }, [provider, searchQuery]);
+    const fetcher = useCallback((): Promise<readonly Contribution[]> => {
+      if (!searchQuery || !hasSearch) return provider.getContributions({ limit: 20 });
+      return (provider as TuiDataProvider & TuiArtifactProvider).search(searchQuery);
+    }, [provider, searchQuery, hasSearch]);
 
     const { data, loading, isStale, error } = usePolledData<readonly Contribution[]>(
       fetcher,
@@ -143,6 +165,9 @@ export const SearchPanelView: React.NamedExoticComponent<SearchPanelProps> = Rea
       );
     }
 
+    // Show persistent banner when user has a query but search is unavailable.
+    const showSearchUnavailable = !hasSearch && !!searchQuery && !isInputMode;
+
     return (
       <box flexDirection="column">
         <box marginBottom={1} flexDirection="row">
@@ -165,7 +190,23 @@ export const SearchPanelView: React.NamedExoticComponent<SearchPanelProps> = Rea
             </text>
           )}
         </box>
-        <Table columns={[...COLUMNS]} rows={rows} cursor={cursor} />
+
+        {showSearchUnavailable && (
+          <box marginBottom={1}>
+            <text color={theme.stale}>
+              Full-text search unavailable — showing recent contributions.
+            </text>
+          </box>
+        )}
+
+        {contributions.length === 0 && !isInputMode && searchQuery && !showSearchUnavailable ? (
+          <EmptyState
+            title={`No results for "${searchQuery}".`}
+            hint="Try a different query or press / to search again."
+          />
+        ) : (
+          <Table columns={[...COLUMNS]} rows={rows} cursor={cursor} />
+        )}
       </box>
     );
   },

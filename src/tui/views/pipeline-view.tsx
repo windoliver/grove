@@ -6,7 +6,7 @@
  * and token count. Toggled via V key cycle (item 11).
  */
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import type { Claim } from "../../core/models.js";
 import type { TmuxManager } from "../agents/tmux-manager.js";
 import { agentIdFromSession } from "../agents/tmux-manager.js";
@@ -34,7 +34,7 @@ interface AgentCard {
 }
 
 /** Build the pipeline from claims + tmux sessions. */
-function buildPipeline(
+export function buildPipeline(
   claims: readonly Claim[],
   tmuxSessions: readonly string[],
   outputs: ReadonlyMap<string, string>,
@@ -77,6 +77,77 @@ function buildPipeline(
   return cards;
 }
 
+// ---------------------------------------------------------------------------
+// AgentCardView — owns its own spinner state so the parent doesn't re-render
+// ---------------------------------------------------------------------------
+
+interface AgentCardViewProps {
+  readonly card: AgentCard;
+  readonly showArrow: boolean;
+  readonly active: boolean;
+}
+
+/** Single agent card with an isolated spinner. Prevents 10/sec parent re-renders. */
+const AgentCardView: React.NamedExoticComponent<AgentCardViewProps> = React.memo(
+  function AgentCardView({ card, showArrow, active }: AgentCardViewProps): React.ReactNode {
+    const [spinnerFrame, setSpinnerFrame] = useState(0);
+    useEffect(() => {
+      if (!active || card.status !== "running") return;
+      const timer = setInterval(() => {
+        setSpinnerFrame((f) => (f + 1) % BRAILLE_SPINNER.length);
+      }, 100);
+      return () => clearInterval(timer);
+    }, [active, card.status]);
+
+    const spinner =
+      card.status === "running"
+        ? (BRAILLE_SPINNER[spinnerFrame % BRAILLE_SPINNER.length] ?? "\u25cf")
+        : card.status === "error"
+          ? "\u2717"
+          : "\u25cb";
+    const color = PLATFORM_COLORS[card.platform] ?? theme.muted;
+
+    return (
+      <box key={card.agentId} flexDirection="column">
+        {showArrow && (
+          <box>
+            <text color={theme.dimmed}>{" \u2192 "}</text>
+          </box>
+        )}
+        <box
+          flexDirection="column"
+          border
+          borderStyle="round"
+          borderColor={color}
+          paddingX={1}
+          width={28}
+        >
+          <text color={color} bold>
+            {spinner} {card.agentId}
+          </text>
+          <text color={theme.muted}>
+            {card.role} | {card.platform}
+          </text>
+          {card.lastLines.length > 0 && (
+            <box flexDirection="column" marginTop={1}>
+              {card.lastLines.map((line, j) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: output lines have no stable identity
+                <text key={j} color={theme.dimmed}>
+                  {line.length > 24 ? `${line.slice(0, 22)}..` : line}
+                </text>
+              ))}
+            </box>
+          )}
+        </box>
+      </box>
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// PipelineView
+// ---------------------------------------------------------------------------
+
 /** Pipeline view component. */
 export const PipelineView: React.NamedExoticComponent<PipelineViewProps> = React.memo(
   function PipelineView({
@@ -85,15 +156,6 @@ export const PipelineView: React.NamedExoticComponent<PipelineViewProps> = React
     intervalMs,
     active,
   }: PipelineViewProps): React.ReactNode {
-    const [spinnerFrame, setSpinnerFrame] = useState(0);
-    useEffect(() => {
-      if (!active) return;
-      const timer = setInterval(() => {
-        setSpinnerFrame((f) => (f + 1) % BRAILLE_SPINNER.length);
-      }, 100);
-      return () => clearInterval(timer);
-    }, [active]);
-
     const claimsFetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
     const { data: claims } = usePolledData<readonly Claim[]>(claimsFetcher, intervalMs, active);
 
@@ -109,19 +171,20 @@ export const PipelineView: React.NamedExoticComponent<PipelineViewProps> = React
       active && !!tmux,
     );
 
-    // Capture last few lines of output per session
+    // Capture last few lines of output per session — parallelized.
     const outputsFetcher = useCallback(async () => {
       if (!tmux || !sessions) return new Map<string, string>();
-      const map = new Map<string, string>();
-      for (const s of sessions) {
-        try {
-          const out = await tmux.capturePanes(s);
-          map.set(s, out);
-        } catch {
-          // skip failed captures
-        }
-      }
-      return map;
+      const entries = await Promise.all(
+        sessions.map(async (s) => {
+          try {
+            const out = await tmux.capturePanes(s);
+            return [s, out] as const;
+          } catch {
+            return [s, ""] as const;
+          }
+        }),
+      );
+      return new Map(entries);
     }, [tmux, sessions]);
     const { data: outputs } = usePolledData<Map<string, string>>(
       outputsFetcher,
@@ -129,7 +192,11 @@ export const PipelineView: React.NamedExoticComponent<PipelineViewProps> = React
       active && !!tmux && (sessions?.length ?? 0) > 0,
     );
 
-    const pipeline = buildPipeline(claims ?? [], sessions ?? [], outputs ?? new Map());
+    // Memoize buildPipeline so spinner re-renders in AgentCardView don't recompute it.
+    const pipeline = useMemo(
+      () => buildPipeline(claims ?? [], sessions ?? [], outputs ?? new Map()),
+      [claims, sessions, outputs],
+    );
 
     if (pipeline.length === 0) {
       return (
@@ -141,51 +208,9 @@ export const PipelineView: React.NamedExoticComponent<PipelineViewProps> = React
 
     return (
       <box flexDirection="row" flexWrap="wrap">
-        {pipeline.map((card, i) => {
-          const spinner =
-            card.status === "running"
-              ? (BRAILLE_SPINNER[spinnerFrame % BRAILLE_SPINNER.length] ?? "\u25cf")
-              : card.status === "error"
-                ? "\u2717"
-                : "\u25cb";
-          const color = PLATFORM_COLORS[card.platform] ?? theme.muted;
-          const arrow = i > 0 ? " \u2192 " : "";
-
-          return (
-            <box key={card.agentId} flexDirection="column">
-              {i > 0 && (
-                <box>
-                  <text color={theme.dimmed}>{arrow}</text>
-                </box>
-              )}
-              <box
-                flexDirection="column"
-                border
-                borderStyle="round"
-                borderColor={color}
-                paddingX={1}
-                width={28}
-              >
-                <text color={color} bold>
-                  {spinner} {card.agentId}
-                </text>
-                <text color={theme.muted}>
-                  {card.role} | {card.platform}
-                </text>
-                {card.lastLines.length > 0 && (
-                  <box flexDirection="column" marginTop={1}>
-                    {card.lastLines.map((line, j) => (
-                      // biome-ignore lint/suspicious/noArrayIndexKey: output lines have no stable identity
-                      <text key={j} color={theme.dimmed}>
-                        {line.length > 24 ? `${line.slice(0, 22)}..` : line}
-                      </text>
-                    ))}
-                  </box>
-                )}
-              </box>
-            </box>
-          );
-        })}
+        {pipeline.map((card, i) => (
+          <AgentCardView key={card.agentId} card={card} showArrow={i > 0} active={active} />
+        ))}
       </box>
     );
   },

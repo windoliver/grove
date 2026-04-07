@@ -225,11 +225,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       fetchCountRef.current++;
       const result = await provider.getContributions();
       debugLog("feed.fetch", `total=${result?.length ?? 0}`);
-      if (
-        fetchCountRef.current <= 5 ||
-        fetchCountRef.current % 20 === 0 ||
-        (result && result.length > 0)
-      ) {
+      if (fetchCountRef.current <= 5 || fetchCountRef.current % 20 === 0) {
         debugLog(
           "poll",
           `fetch #${fetchCountRef.current} returned ${result?.length ?? 0} contributions`,
@@ -269,6 +265,14 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     const dashboard = dashboardPoll.data ?? undefined;
     const contributions = contributionsPoll.data;
 
+    // Aggregate poll health for the status bar: show stale/error when either poll fails.
+    const pollHealth = useMemo(() => {
+      const isStale = dashboardPoll.isStale || contributionsPoll.isStale;
+      const error =
+        dashboardPoll.error?.message ?? contributionsPoll.error?.message ?? undefined;
+      return { isStale, error };
+    }, [dashboardPoll.isStale, dashboardPoll.error?.message, contributionsPoll.isStale, contributionsPoll.error?.message]);
+
     // Fetch handoffs alongside dashboard (usePolledData's setInterval doesn't
     // survive OpenTUI remounts, so we fetch manually in the parent).
     const [handoffs, setHandoffs] = useState<readonly import("../../core/handoff.js").Handoff[]>(
@@ -276,15 +280,10 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     );
     useEffect(() => {
       const hasMethod = "getHandoffs" in provider;
-      try {
-        const { appendFileSync } = require("node:fs") as typeof import("node:fs");
-        appendFileSync(
-          "/tmp/grove-debug.log",
-          `[${new Date().toISOString()}] [handoffs.useEffect] hasGetHandoffs=${hasMethod} sessionStartedAt=${sessionStartedAt ?? "none"}\n`,
-        );
-      } catch {
-        /* */
-      }
+      debugLog(
+        "handoffs",
+        `hasGetHandoffs=${hasMethod} sessionStartedAt=${sessionStartedAt ?? "none"}`,
+      );
       if (!hasMethod) return;
       const p = provider as {
         getHandoffs: (q?: unknown) => Promise<readonly import("../../core/handoff.js").Handoff[]>;
@@ -296,27 +295,17 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             const cutoff =
               sessionStartedAt ?? new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
             const filtered = all.filter((h) => h.createdAt >= cutoff);
-            try {
-              const { appendFileSync } = require("node:fs") as typeof import("node:fs");
-              appendFileSync(
-                "/tmp/grove-debug.log",
-                `[${new Date().toISOString()}] [handoffs.fetch] total=${all.length} afterFilter=${filtered.length} cutoff=${cutoff}\n`,
-              );
-            } catch {
-              /* */
-            }
+            debugLog(
+              "handoffs",
+              `total=${all.length} afterFilter=${filtered.length} cutoff=${cutoff}`,
+            );
             setHandoffs(filtered);
           })
-          .catch((err) => {
-            try {
-              const { appendFileSync } = require("node:fs") as typeof import("node:fs");
-              appendFileSync(
-                "/tmp/grove-debug.log",
-                `[${new Date().toISOString()}] [handoffs.fetch] ERROR: ${err instanceof Error ? err.message : String(err)}\n`,
-              );
-            } catch {
-              /* */
-            }
+          .catch((err: unknown) => {
+            debugLog(
+              "handoffs",
+              `ERROR: ${err instanceof Error ? err.message : String(err)}`,
+            );
           });
       };
       doFetch(); // immediate
@@ -713,6 +702,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             claimCount,
             activeRoles,
             !!pendingAskUser,
+            pollHealth,
           )}
         </box>
       );
@@ -794,6 +784,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
             claimCount,
             activeRoles,
             !!pendingAskUser,
+            pollHealth,
           )}
         </box>
       );
@@ -849,6 +840,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           claimCount,
           activeRoles,
           !!pendingAskUser,
+          pollHealth,
         )}
       </box>
     );
@@ -1308,6 +1300,12 @@ function contextualHints(
   return hints.join(" ");
 }
 
+/** Poll health info threaded into the status bar. */
+interface PollHealth {
+  readonly isStale: boolean;
+  readonly error: string | undefined;
+}
+
 /** Render the status bar at the bottom of the view. */
 function renderStatusBar(
   expandedPanel: RunningPanel | null,
@@ -1317,6 +1315,7 @@ function renderStatusBar(
   claimCount: number,
   activeRoles: readonly string[] | undefined,
   hasAskUser: boolean,
+  pollHealth?: PollHealth,
 ): React.ReactNode {
   const panelIndicator =
     expandedPanel !== null
@@ -1331,6 +1330,11 @@ function renderStatusBar(
         {" "}
         {feedLength}c | {claimCount} active
       </text>
+      {pollHealth?.isStale ? (
+        <text color={theme.stale}> [stale{pollHealth.error ? `: ${pollHealth.error}` : ""}]</text>
+      ) : pollHealth?.error ? (
+        <text color={theme.error}> [poll error: {pollHealth.error}]</text>
+      ) : null}
       <text color={theme.secondary}>
         {" "}
         {contextualHints(expandedPanel, zoomLevel, activeRoles, hasAskUser)}

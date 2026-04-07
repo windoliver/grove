@@ -111,7 +111,7 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
         <markdown>{c.summary}</markdown>
         {c.description && (
           <box marginTop={1}>
-            <markdown>{c.description.slice(0, 500)}</markdown>
+            <markdown>{c.description}</markdown>
           </box>
         )}
       </box>
@@ -188,7 +188,7 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
       {c.context && Object.keys(c.context).length > 0 && (
         <box flexDirection="column" marginTop={1}>
           <text>Context</text>
-          <text opacity={0.5}>{JSON.stringify(c.context, null, 2).slice(0, 300)}</text>
+          <text opacity={0.5}>{JSON.stringify(c.context, null, 2)}</text>
         </box>
       )}
     </box>
