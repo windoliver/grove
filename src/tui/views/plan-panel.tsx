@@ -5,8 +5,10 @@
 import React, { useCallback } from "react";
 import type { Contribution } from "../../core/models.js";
 import { formatTimestamp } from "../../shared/format.js";
+import { DataStatus } from "../components/data-status.js";
+import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
+import { usePanelState } from "../hooks/use-panel-state.js";
 import type { TuiDataProvider } from "../provider.js";
 
 /** Props for the PlanPanel view. */
@@ -51,9 +53,9 @@ export const PlanPanelView: React.NamedExoticComponent<PlanPanelProps> = React.m
       () => provider.getActivity({ kind: "plan" as Contribution["kind"] }),
       [provider],
     );
-    const { data, loading } = usePolledData<readonly Contribution[]>(fetcher, intervalMs, active);
+    const { state } = usePanelState<readonly Contribution[]>(fetcher, intervalMs, active);
 
-    if (loading && !data) {
+    if (state.status === "loading") {
       return (
         <box>
           <text opacity={0.5}>Loading plan...</text>
@@ -61,13 +63,32 @@ export const PlanPanelView: React.NamedExoticComponent<PlanPanelProps> = React.m
       );
     }
 
+    if (state.status === "error") {
+      return (
+        <box flexDirection="column">
+          <box marginBottom={1} flexDirection="row">
+            <text>Plan</text>
+            <DataStatus loading={false} isStale={false} error={state.error.message} />
+          </box>
+          <EmptyState title="Failed to load plan." />
+        </box>
+      );
+    }
+
+    // state.status === "ready"
+    const { data: contributions, isStale, error } = state;
+
     // list() returns ASC order — take the last entry for the newest plan
-    const contributions = data ?? [];
     const latest = contributions.length > 0 ? contributions[contributions.length - 1] : undefined;
+
     if (!latest) {
       return (
-        <box>
-          <text opacity={0.5}>No plan found. Use grove_create_plan to create one.</text>
+        <box flexDirection="column">
+          <box marginBottom={1} flexDirection="row">
+            <text>Plan</text>
+            <DataStatus loading={false} isStale={isStale} error={error?.message} />
+          </box>
+          <EmptyState title="No plan found." hint="Use grove_create_plan to create one." />
         </box>
       );
     }
@@ -87,6 +108,7 @@ export const PlanPanelView: React.NamedExoticComponent<PlanPanelProps> = React.m
       <box flexDirection="column">
         <box marginBottom={1} flexDirection="row">
           <text bold>{`Plan: ${title}`}</text>
+          <DataStatus loading={false} isStale={isStale} error={error?.message} />
           <text opacity={0.5}>
             {`  ${done}/${tasks.length} done  |  ${formatTimestamp(latest.createdAt)}`}
           </text>

@@ -7,8 +7,9 @@
  */
 
 import React, { useCallback } from "react";
+import { formatScore } from "../../shared/format.js";
 import { SplitDiff } from "../components/split-diff.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
+import { usePanelState } from "../hooks/use-panel-state.js";
 import type { ContributionDetail, TuiDataProvider } from "../provider.js";
 
 /** Props for the CompareView component. */
@@ -17,6 +18,20 @@ export interface CompareViewProps {
   readonly leftCid: string;
   readonly rightCid: string;
   readonly intervalMs: number;
+}
+
+/** Derive display label for a side, falling back through identity fields. */
+function agentLabel(detail: ContributionDetail): string {
+  return detail.contribution.agent.agentName ?? detail.contribution.agent.agentId;
+}
+
+/** Build score summary string for a contribution, or undefined if no scores. */
+function scoreLabel(detail: ContributionDetail): string | undefined {
+  const scores = detail.contribution.scores;
+  if (!scores || Object.keys(scores).length === 0) return undefined;
+  return Object.entries(scores)
+    .map(([k, v]) => `${k}: ${formatScore(v)}`)
+    .join(", ");
 }
 
 /** Side-by-side contribution comparison panel. */
@@ -33,18 +48,19 @@ export const CompareView: React.NamedExoticComponent<CompareViewProps> = React.m
       [provider, rightCid],
     );
 
-    const { data: left } = usePolledData<ContributionDetail | undefined>(
+    const { state: leftState } = usePanelState<ContributionDetail | undefined>(
       leftFetcher,
       intervalMs,
       true,
     );
-    const { data: right } = usePolledData<ContributionDetail | undefined>(
+    const { state: rightState } = usePanelState<ContributionDetail | undefined>(
       rightFetcher,
       intervalMs,
       true,
     );
 
-    if (!left || !right) {
+    // Show loading until at least one side has data or an error.
+    if (leftState.status === "loading" && rightState.status === "loading") {
       return (
         <box>
           <text opacity={0.5}>Loading comparison...</text>
@@ -52,26 +68,48 @@ export const CompareView: React.NamedExoticComponent<CompareViewProps> = React.m
       );
     }
 
-    // Build score comparison strings
-    const leftScores = left.contribution.scores
-      ? Object.entries(left.contribution.scores)
-          .map(([k, v]) => `${k}: ${String(v.value)}`)
-          .join(", ")
-      : undefined;
-    const rightScores = right.contribution.scores
-      ? Object.entries(right.contribution.scores)
-          .map(([k, v]) => `${k}: ${String(v.value)}`)
-          .join(", ")
-      : undefined;
+    // Resolve content for each side — error or missing data shows an inline message.
+    const leftContent =
+      leftState.status === "error"
+        ? `[Error: ${leftState.error.message}]`
+        : leftState.status === "loading"
+          ? "Loading..."
+          : (leftState.data?.contribution.description ??
+            leftState.data?.contribution.summary ??
+            "[Not found]");
+
+    const rightContent =
+      rightState.status === "error"
+        ? `[Error: ${rightState.error.message}]`
+        : rightState.status === "loading"
+          ? "Loading..."
+          : (rightState.data?.contribution.description ??
+            rightState.data?.contribution.summary ??
+            "[Not found]");
+
+    const leftLabel =
+      leftState.status === "ready" && leftState.data
+        ? agentLabel(leftState.data)
+        : leftCid.slice(0, 12);
+
+    const rightLabel =
+      rightState.status === "ready" && rightState.data
+        ? agentLabel(rightState.data)
+        : rightCid.slice(0, 12);
+
+    const leftMetric =
+      leftState.status === "ready" && leftState.data ? scoreLabel(leftState.data) : undefined;
+    const rightMetric =
+      rightState.status === "ready" && rightState.data ? scoreLabel(rightState.data) : undefined;
 
     return (
       <SplitDiff
-        leftLabel={`${left.contribution.agent.agentName ?? left.contribution.agent.agentId}`}
-        rightLabel={`${right.contribution.agent.agentName ?? right.contribution.agent.agentId}`}
-        leftContent={left.contribution.description ?? left.contribution.summary}
-        rightContent={right.contribution.description ?? right.contribution.summary}
-        leftMetric={leftScores}
-        rightMetric={rightScores}
+        leftLabel={leftLabel}
+        rightLabel={rightLabel}
+        leftContent={leftContent ?? ""}
+        rightContent={rightContent ?? ""}
+        leftMetric={leftMetric}
+        rightMetric={rightMetric}
       />
     );
   },

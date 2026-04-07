@@ -5,7 +5,7 @@
  * byRecency, byReviewScore, byReproduction) as a flat ranked table.
  */
 
-import React, { useCallback, useEffect, useMemo } from "react";
+import React, { useCallback, useEffect, useMemo, useRef } from "react";
 import type { Frontier, FrontierEntry } from "../../core/frontier.js";
 import { truncateCid } from "../../shared/format.js";
 import { DataStatus } from "../components/data-status.js";
@@ -36,17 +36,20 @@ export interface FrontierViewProps {
 interface FrontierRow {
   readonly rank: number;
   readonly cid: string;
+  /** Display label for the section header. */
   readonly metric: string;
+  /** Stable grouping key — avoids collisions between user score names and built-in scalars. */
+  readonly dimensionKey: string;
   readonly value: number;
   readonly summary: string;
 }
 
+/** Columns for the per-dimension grouped table (METRIC omitted — shown as section header). */
 const COLUMNS = [
   { header: "RANK", key: "rank", width: 6, align: "right" as const },
   { header: "CID", key: "cid", width: 22 },
-  { header: "METRIC", key: "metric", width: 14 },
   { header: "VALUE", key: "value", width: 10, align: "right" as const },
-  { header: "SUMMARY", key: "summary", width: 28 },
+  { header: "SUMMARY", key: "summary", width: 40 },
 ] as const;
 
 /** Flatten a Frontier into ranked rows for table display. */
@@ -61,58 +64,32 @@ function flattenFrontier(frontier: Frontier): readonly FrontierRow[] {
         rank: i + 1,
         cid: entry.cid,
         metric: metricName,
+        dimensionKey: `score:${metricName}`,
         value: entry.value,
         summary: entry.summary,
       });
     }
   }
 
-  // byAdoption
-  for (let i = 0; i < (frontier.byAdoption ?? []).length; i++) {
-    const entry = (frontier.byAdoption ?? [])[i] as FrontierEntry;
-    rows.push({
-      rank: i + 1,
-      cid: entry.cid,
-      metric: "adoption",
-      value: entry.value,
-      summary: entry.summary,
-    });
-  }
-
-  // byRecency
-  for (let i = 0; i < (frontier.byRecency ?? []).length; i++) {
-    const entry = (frontier.byRecency ?? [])[i] as FrontierEntry;
-    rows.push({
-      rank: i + 1,
-      cid: entry.cid,
-      metric: "recency",
-      value: entry.value,
-      summary: entry.summary,
-    });
-  }
-
-  // byReviewScore
-  for (let i = 0; i < (frontier.byReviewScore ?? []).length; i++) {
-    const entry = (frontier.byReviewScore ?? [])[i] as FrontierEntry;
-    rows.push({
-      rank: i + 1,
-      cid: entry.cid,
-      metric: "review",
-      value: entry.value,
-      summary: entry.summary,
-    });
-  }
-
-  // byReproduction
-  for (let i = 0; i < (frontier.byReproduction ?? []).length; i++) {
-    const entry = (frontier.byReproduction ?? [])[i] as FrontierEntry;
-    rows.push({
-      rank: i + 1,
-      cid: entry.cid,
-      metric: "reproduction",
-      value: entry.value,
-      summary: entry.summary,
-    });
+  // Scalar dimensions — table-driven to avoid 4 near-identical loops.
+  const SCALAR_DIMS: ReadonlyArray<readonly [string, readonly FrontierEntry[] | undefined]> = [
+    ["adoption", frontier.byAdoption],
+    ["recency", frontier.byRecency],
+    ["review", frontier.byReviewScore],
+    ["reproduction", frontier.byReproduction],
+  ];
+  for (const [metric, entries] of SCALAR_DIMS) {
+    for (let i = 0; i < (entries?.length ?? 0); i++) {
+      const entry = entries?.[i] as FrontierEntry;
+      rows.push({
+        rank: i + 1,
+        cid: entry.cid,
+        metric,
+        dimensionKey: `scalar:${metric}`,
+        value: entry.value,
+        summary: entry.summary,
+      });
+    }
   }
 
   return rows;
@@ -156,7 +133,8 @@ export const FrontierView: React.NamedExoticComponent<FrontierViewProps> = React
     const fetcher = useCallback(() => provider.getFrontier(), [provider]);
     const { data, loading, isStale, error } = usePolledData<Frontier>(fetcher, intervalMs, active);
 
-    const flatRows = useMemo(() => (data ? flattenFrontier(data) : []), [data]);
+    // Cap total rows to avoid O(dimensions × table-limit) explosion when many score metrics exist.
+    const flatRows = useMemo(() => (data ? flattenFrontier(data).slice(0, 200) : []), [data]);
 
     // Track selected CIDs set for efficient lookup
     const selectedSet = useMemo(() => new Set(compareCids ?? []), [compareCids]);
@@ -167,13 +145,57 @@ export const FrontierView: React.NamedExoticComponent<FrontierViewProps> = React
       }
     }, [flatRows.length, onRowCountChanged]);
 
-    // Report frontier CIDs to parent for cursor-to-CID resolution
+    // Report frontier CIDs to parent for cursor-to-CID resolution.
+    // Guard against spurious calls when poll returns identical CIDs.
     const frontierCids = useMemo(() => flatRows.map((r) => r.cid), [flatRows]);
+    const prevFrontierCidsRef = useRef<readonly string[] | null>(null);
     useEffect(() => {
-      if (onFrontierCidsChanged) {
-        onFrontierCidsChanged(frontierCids);
+      if (!onFrontierCidsChanged) return;
+      const prev = prevFrontierCidsRef.current;
+      if (
+        prev !== null &&
+        prev.length === frontierCids.length &&
+        prev.every((cid, i) => cid === frontierCids[i])
+      ) {
+        return;
       }
+      prevFrontierCidsRef.current = frontierCids;
+      onFrontierCidsChanged(frontierCids);
     }, [frontierCids, onFrontierCidsChanged]);
+
+    // Build display rows and group them by dimension in one pass.
+    // Must be before any early returns to satisfy Rules of Hooks.
+    const { tableRows, dimensionGroups } = useMemo(() => {
+      const rows: Array<{
+        rank: string;
+        cid: string;
+        metric: string;
+        value: string;
+        summary: string;
+      }> = [];
+      const groups = new Map<string, { startIndex: number; count: number; label: string }>();
+
+      for (let i = 0; i < flatRows.length; i++) {
+        const r = flatRows[i];
+        if (!r) continue;
+        const isSelected = compareMode && selectedSet.has(r.cid);
+        const prefix = compareMode ? (isSelected ? "[*] " : "[ ] ") : "";
+        rows.push({
+          rank: String(r.rank),
+          cid: `${prefix}${truncateCid(r.cid)}`,
+          metric: r.metric,
+          value: formatValue(r.value),
+          summary: r.summary.length > 40 ? `${r.summary.slice(0, 38)}..` : r.summary,
+        });
+        if (!groups.has(r.dimensionKey)) {
+          groups.set(r.dimensionKey, { startIndex: i, count: 0, label: r.metric });
+        }
+        const group = groups.get(r.dimensionKey);
+        if (group) group.count++;
+      }
+
+      return { tableRows: rows, dimensionGroups: groups };
+    }, [flatRows, compareMode, selectedSet]);
 
     if (loading && !data) {
       return (
@@ -182,18 +204,6 @@ export const FrontierView: React.NamedExoticComponent<FrontierViewProps> = React
         </box>
       );
     }
-
-    const tableRows = flatRows.map((r) => {
-      const isSelected = compareMode && selectedSet.has(r.cid);
-      const prefix = compareMode ? (isSelected ? "[*] " : "[ ] ") : "";
-      return {
-        rank: String(r.rank),
-        cid: `${prefix}${truncateCid(r.cid)}`,
-        metric: r.metric,
-        value: formatValue(r.value),
-        summary: r.summary.length > 28 ? `${r.summary.slice(0, 26)}..` : r.summary,
-      };
-    });
 
     return (
       <box flexDirection="column">
@@ -204,17 +214,33 @@ export const FrontierView: React.NamedExoticComponent<FrontierViewProps> = React
           {flatRows.length > 0 ? (
             <text opacity={0.5}>
               {"  "}
-              {String(flatRows.length)} entries
+              {String(flatRows.length)} entries across {String(dimensionGroups.size)} dimensions
             </text>
           ) : null}
         </box>
+
         {tableRows.length === 0 ? (
           <EmptyState
             title="Ranked leaderboard of best contributions."
             hint="Rankings appear as agents publish scored work. Spawn agents with Ctrl+P to begin."
           />
         ) : (
-          <Table columns={[...COLUMNS]} rows={tableRows} cursor={cursor} />
+          <box flexDirection="column">
+            {[...dimensionGroups.entries()].map(([dimKey, { startIndex, count, label }]) => {
+              const groupRows = tableRows.slice(startIndex, startIndex + count);
+              // Map global cursor to per-group cursor (-1 = not in this group)
+              const groupCursor = cursor - startIndex;
+              const validGroupCursor =
+                groupCursor >= 0 && groupCursor < count ? groupCursor : undefined;
+
+              return (
+                <box key={dimKey} flexDirection="column" marginBottom={1}>
+                  <text color={theme.secondary}>{`── ${label} (${count}) ──`}</text>
+                  <Table columns={[...COLUMNS]} rows={groupRows} cursor={validGroupCursor} />
+                </box>
+              );
+            })}
+          </box>
         )}
       </box>
     );
