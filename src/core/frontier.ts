@@ -47,6 +47,8 @@ export interface FrontierQuery {
   readonly agentName?: string | undefined;
   readonly context?: Readonly<Record<string, JsonValue>> | undefined;
   readonly limit?: number | undefined;
+  /** When set, only rank contributions linked to this session. */
+  readonly sessionId?: string | undefined;
 }
 
 /** Computes multi-signal frontiers from a contribution store. */
@@ -147,6 +149,7 @@ export class DefaultFrontierCalculator implements FrontierCalculator {
       ...(query?.agentName !== undefined ? { agentName: query.agentName } : {}),
       ...(query?.platform !== undefined ? { platform: query.platform } : {}),
       ...(query?.tags !== undefined && query.tags.length > 0 ? { tags: [...query.tags] } : {}),
+      ...(query?.sessionId !== undefined ? { sessionId: query.sessionId } : {}),
     };
 
     // Fetch store-filtered contributions. Context filters remain in-memory

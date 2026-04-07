@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionStore } from "../core/session.js";
 import { sessionStoreConformance } from "../core/session-store.conformance.js";
+import { makeContribution } from "../core/test-helpers.js";
 import type { GoalSessionStore, SqliteGoalSessionStore } from "./sqlite-goal-session-store.js";
 import { SESSION_GC_TTL_MS } from "./sqlite-goal-session-store.js";
 import { createSqliteStores } from "./sqlite-store.js";
@@ -322,6 +323,72 @@ describe("Session Contributions", () => {
     const fetched = await store.getSession(session.id);
     expect(fetched!.contributionCount).toBe(1);
     expect(fetched!.status).toBe("archived");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ContributionStore.list({ sessionId }) — cross-session isolation
+// ---------------------------------------------------------------------------
+
+describe("ContributionStore.list({ sessionId }) — session-scoped queries", () => {
+  it("returns only contributions linked to the given session", async () => {
+    const sessionA = await store.createSession({ goal: "task A" });
+    const sessionB = await store.createSession({ goal: "task B" });
+
+    const contribA = makeContribution({ summary: "A contribution" });
+    const contribB = makeContribution({ summary: "B contribution" });
+
+    await stores.contributionStore.put(contribA);
+    await stores.contributionStore.put(contribB);
+
+    // Link each contribution to its own session
+    await store.addContributionToSession(sessionA.id, contribA.cid);
+    await store.addContributionToSession(sessionB.id, contribB.cid);
+
+    // Session-scoped queries return only that session's contributions
+    const listA = await stores.contributionStore.list({ sessionId: sessionA.id });
+    expect(listA.map((c) => c.cid)).toEqual([contribA.cid]);
+
+    const listB = await stores.contributionStore.list({ sessionId: sessionB.id });
+    expect(listB.map((c) => c.cid)).toEqual([contribB.cid]);
+  });
+
+  it("unfiltered list() returns contributions from all sessions", async () => {
+    const sessionA = await store.createSession({ goal: "shared grove" });
+    const sessionB = await store.createSession({ goal: "shared grove 2" });
+
+    const c1 = makeContribution({ summary: "c1" });
+    const c2 = makeContribution({ summary: "c2" });
+
+    await stores.contributionStore.put(c1);
+    await stores.contributionStore.put(c2);
+    await store.addContributionToSession(sessionA.id, c1.cid);
+    await store.addContributionToSession(sessionB.id, c2.cid);
+
+    // Unfiltered: both contributions visible
+    const all = await stores.contributionStore.list();
+    const cids = all.map((c) => c.cid);
+    expect(cids).toContain(c1.cid);
+    expect(cids).toContain(c2.cid);
+  });
+
+  it("count({ sessionId }) returns only that session's count", async () => {
+    const sessionA = await store.createSession({ goal: "count test" });
+    const sessionB = await store.createSession({ goal: "count test 2" });
+
+    const cA1 = makeContribution({ summary: "cA1" });
+    const cA2 = makeContribution({ summary: "cA2" });
+    const cB1 = makeContribution({ summary: "cB1" });
+
+    await stores.contributionStore.put(cA1);
+    await stores.contributionStore.put(cA2);
+    await stores.contributionStore.put(cB1);
+    await store.addContributionToSession(sessionA.id, cA1.cid);
+    await store.addContributionToSession(sessionA.id, cA2.cid);
+    await store.addContributionToSession(sessionB.id, cB1.cid);
+
+    expect(await stores.contributionStore.count({ sessionId: sessionA.id })).toBe(2);
+    expect(await stores.contributionStore.count({ sessionId: sessionB.id })).toBe(1);
   });
 });
 

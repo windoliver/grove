@@ -478,6 +478,14 @@ function buildFilteredQuery(opts: BuildFilteredQueryOptions): BuiltQuery {
     params.push(query.platform);
   }
 
+  // Session filtering via junction table — only contributions linked to this session.
+  if (query?.sessionId !== undefined) {
+    conditions.push(
+      `EXISTS (SELECT 1 FROM session_contributions sc WHERE sc.cid = c.cid AND sc.session_id = ?)`,
+    );
+    params.push(query.sessionId);
+  }
+
   // Tag filtering via junction table — contribution must have ALL queried tags.
   // Uses intersecting EXISTS subqueries for indexed point lookups on (tag, cid).
   if (query?.tags !== undefined && query.tags.length > 0) {

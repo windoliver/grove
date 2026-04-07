@@ -38,6 +38,8 @@ export interface OperationDeps {
   readonly creditsService?: CreditsService | undefined;
   /** Called after a contribution is written to invalidate caches (e.g., frontier). */
   readonly onContributionWrite?: (() => void) | undefined;
+  /** Called after a contribution is written, receiving the CID. Used for session tagging. */
+  readonly onContributionWritten?: ((cid: string) => void) | undefined;
   /** Optional event bus for agent notifications. */
   readonly eventBus?: EventBus | undefined;
   /** Optional topology router for routing contribution events to downstream agents. */

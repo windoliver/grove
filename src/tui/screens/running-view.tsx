@@ -314,16 +314,11 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       return () => clearInterval(id);
     }, [provider, sessionStartedAt, intervalMs]);
 
-    // Filter contributions to current session scope
-    const allContributions = contributions ?? [];
-    const feed = sessionStartedAt
-      ? allContributions.filter((c) => c.createdAt >= sessionStartedAt)
-      : allContributions;
+    // Session scoping is handled server-side (provider.setSessionScope).
+    // The feed already contains only this session's contributions.
+    const feed = contributions ?? [];
 
-    debugLog(
-      "feed.fetch",
-      `total=${allContributions.length} afterSessionFilter=${feed.length} sessionStartedAt=${sessionStartedAt ?? "none"}`,
-    );
+    debugLog("feed.fetch", `total=${feed.length} sessionStartedAt=${sessionStartedAt ?? "none"}`);
 
     // Debug: log feed state periodically
     const feedDebugRef = React.useRef(0);
@@ -332,10 +327,10 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       if (feedDebugRef.current <= 3 || feedDebugRef.current % 20 === 0) {
         debugLog(
           "feed",
-          `#${feedDebugRef.current} allContribs=${allContributions.length} feed=${feed.length} feedActive=${feedActive} sessionStartedAt=${sessionStartedAt ?? "none"}`,
+          `#${feedDebugRef.current} feed=${feed.length} feedActive=${feedActive} sessionStartedAt=${sessionStartedAt ?? "none"}`,
         );
       }
-    }, [allContributions.length, feed.length, feedActive, sessionStartedAt]);
+    }, [feed.length, feedActive, sessionStartedAt]);
 
     // ─── Auto-follow: keep cursor at bottom when new items arrive ───
     useEffect(() => {

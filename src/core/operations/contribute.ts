@@ -411,6 +411,7 @@ export async function contributeOperation(
       }
     }
     deps.onContributionWrite?.();
+    deps.onContributionWritten?.(contribution.cid);
 
     // --- Post-write: mark upstream handoffs as replied (fire-and-forget) ---
     // When this contribution targets another CID (reviews/responds_to), find
