@@ -147,9 +147,19 @@ export function sessionStoreConformance(
       expect(archived.length).toBe(1);
       expect(archived[0]?.id).toBe(s1.id);
 
-      // The non-archived session should be the only active/pending one
-      const allSessions = await store.listSessions();
-      expect(allSessions.length).toBe(2);
+      // Default call excludes archived sessions
+      const liveSessions = await store.listSessions();
+      expect(liveSessions.length).toBe(1);
+      expect(liveSessions[0]?.id).not.toBe(s1.id);
+    });
+
+    test("listSessions({ includeArchived: true }) returns all sessions", async () => {
+      const s1 = await store.createSession({ goal: "will archive" });
+      await store.createSession({ goal: "stays active" });
+      await store.archiveSession(s1.id);
+
+      const all = await store.listSessions({ includeArchived: true });
+      expect(all.length).toBe(2);
     });
 
     // ------------------------------------------------------------------
