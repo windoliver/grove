@@ -233,10 +233,10 @@ export const AgentGraphView: React.NamedExoticComponent<AgentGraphProps> = React
     return (
       <box flexDirection="column">
         <box marginBottom={1} flexDirection="column">
-          <text color={theme.muted}>
+          <text color={theme.secondary}>
             {`Topology: ${topology.structure} (${topology.roles.length} roles)${headerSuffix}`}
           </text>
-          {statusSummary ? <text color={theme.muted}>{statusSummary}</text> : null}
+          {statusSummary ? <text color={theme.secondary}>{statusSummary}</text> : null}
         </box>
         <box flexDirection="column">
           {rendered.lines.map((line, i) => (

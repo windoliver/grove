@@ -244,13 +244,15 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
           {AGENT_CLIS.map((agent) => {
             const found = detected.get(agent.cli);
             const icon = found ? theme.agentRunning : theme.agentIdle;
-            const color = found ? theme.success : theme.dimmed;
+            const color = found ? theme.success : theme.secondary;
             const platformColor = PLATFORM_COLORS[agent.platform] ?? theme.text;
             return (
               <box key={agent.cli} flexDirection="row">
                 <text color={color}> {icon} </text>
                 <text color={platformColor}>{agent.label.padEnd(16)}</text>
-                <text color={theme.muted}>{found ? "found" : scanning ? "..." : "not found"}</text>
+                <text color={theme.secondary}>
+                  {found ? "found" : scanning ? "..." : "not found"}
+                </text>
               </box>
             );
           })}
@@ -270,7 +272,7 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
             </text>
             {dagLines.map((line) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: dag lines have no stable identity
-              <text key={line} color={theme.muted}>
+              <text key={line} color={theme.secondary}>
                 {line}
               </text>
             ))}
@@ -287,12 +289,12 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
               const cli = roleMapping.get(role.name) ?? "?";
               const cliFound = detected.get(cli) ?? false;
               const icon = cliFound ? theme.agentRunning : theme.agentIdle;
-              const color = cliFound ? theme.success : theme.dimmed;
+              const color = cliFound ? theme.success : theme.secondary;
               return (
                 <box key={role.name} flexDirection="row">
                   <text color={color}> {icon} </text>
                   <text color={theme.text}>{role.name.padEnd(12)}</text>
-                  <text color={theme.dimmed}>{"\u2192"} </text>
+                  <text color={theme.secondary}>{"\u2192"} </text>
                   <text color={PLATFORM_COLORS[role.platform ?? "claude-code"] ?? theme.text}>
                     {cli}
                   </text>
@@ -340,11 +342,11 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
                     <text color={selected ? theme.focus : theme.text}>
                       {selected ? "> " : "  "}
                     </text>
-                    <text color={cliFound ? theme.success : theme.dimmed}>{icon} </text>
+                    <text color={cliFound ? theme.success : theme.secondary}>{icon} </text>
                     <text color={theme.text} bold>
                       {role.name}
                     </text>
-                    <text color={theme.muted}> ({cli})</text>
+                    <text color={theme.secondary}> ({cli})</text>
                   </box>
                   {isEditing ? (
                     <box flexDirection="column" marginLeft={4} height={4}>
@@ -356,7 +358,7 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
                     </box>
                   ) : (
                     <box marginLeft={4} flexDirection="column">
-                      <text color={selected ? theme.muted : theme.dimmed} wrap="wrap">
+                      <text color={selected ? theme.secondary : theme.secondary} wrap="wrap">
                         {prompt
                           ? selected
                             ? prompt
@@ -373,7 +375,7 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
 
         {/* Hints */}
         <box paddingX={2} marginTop={1}>
-          <text color={theme.dimmed}>
+          <text color={theme.secondary}>
             {editing
               ? "Edit prompt (vim keys)  Esc:save & close"
               : scanning

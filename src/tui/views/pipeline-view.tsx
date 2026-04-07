@@ -96,13 +96,13 @@ const AgentCardView: React.NamedExoticComponent<AgentCardViewProps> = React.memo
         : card.status === "error"
           ? "\u2717"
           : "\u25cb";
-    const color = PLATFORM_COLORS[card.platform] ?? theme.muted;
+    const color = PLATFORM_COLORS[card.platform] ?? theme.secondary;
 
     return (
       <box key={card.agentId} flexDirection="column">
         {showArrow && (
           <box>
-            <text color={theme.dimmed}>{" \u2192 "}</text>
+            <text color={theme.secondary}>{" \u2192 "}</text>
           </box>
         )}
         <box
@@ -116,14 +116,14 @@ const AgentCardView: React.NamedExoticComponent<AgentCardViewProps> = React.memo
           <text color={color} bold>
             {spinner} {card.agentId}
           </text>
-          <text color={theme.muted}>
+          <text color={theme.secondary}>
             {card.role} | {card.platform}
           </text>
           {card.lastLines.length > 0 && (
             <box flexDirection="column" marginTop={1}>
               {card.lastLines.map((line, j) => (
                 // biome-ignore lint/suspicious/noArrayIndexKey: output lines have no stable identity
-                <text key={j} color={theme.dimmed}>
+                <text key={j} color={theme.secondary}>
                   {line.length > 24 ? `${line.slice(0, 22)}..` : line}
                 </text>
               ))}

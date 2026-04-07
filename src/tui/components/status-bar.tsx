@@ -97,7 +97,7 @@ export const StatusBar: React.NamedExoticComponent<StatusBarProps> = React.memo(
     <box flexDirection="column">
       {goalLabel && (
         <box>
-          <text color={theme.muted}>Goal: {goalLabel}</text>
+          <text color={theme.secondary}>Goal: {goalLabel}</text>
         </box>
       )}
       {error && (
@@ -108,18 +108,18 @@ export const StatusBar: React.NamedExoticComponent<StatusBarProps> = React.memo(
       <box flexDirection="row">
         <text color={theme.focus}>[{modeLabel}]</text>
         {screenContext && (
-          <text color={theme.muted}> [{SCREEN_CONTEXT_LABELS[screenContext]}]</text>
+          <text color={theme.secondary}> [{SCREEN_CONTEXT_LABELS[screenContext]}]</text>
         )}
         {viewMode === "pipeline" && <text color={theme.warning}> [PIPELINE]</text>}
         <text opacity={0.5}>{hints}</text>
         {agentLabel && (
-          <text color={theme.muted}>
+          <text color={theme.secondary}>
             {"  "}
             {agentLabel}
           </text>
         )}
         {costLabel && (
-          <text color={theme.muted}>
+          <text color={theme.secondary}>
             {"  "}
             {costLabel}
           </text>

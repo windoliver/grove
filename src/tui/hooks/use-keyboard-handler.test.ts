@@ -7,6 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { KeyEvent } from "@opentui/core";
+import { PANEL_REGISTRY } from "../panels/panel-registry.js";
 import { buildKeyActionMap } from "./use-keybinding-overrides.js";
 import type { KeyboardActions } from "./use-keyboard-handler.js";
 import { nextZoom, routeKey } from "./use-keyboard-handler.js";
@@ -740,5 +741,48 @@ describe("tuiReducer", () => {
     const state = tuiReducer(initial, { type: "DIRECT_MESSAGE_MODE" });
     expect(state.messageBuffer).toBe("@");
     expect(state.messageRecipients).toBe("@direct");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Parametric: registry-driven panel dispatch (Issue 4A / Issue 11A)
+// ---------------------------------------------------------------------------
+
+describe("routeKey — registry-driven panel dispatch", () => {
+  // One test per panel entry: proves the PANEL_REGISTRY loop generalizes
+  // correctly for all 17 panels and both core/operator dispatch branches.
+  for (const def of PANEL_REGISTRY) {
+    const action = def.kind === "core" ? "panels.focus" : "panels.toggle";
+    test(`key "${def.keybinding}" → ${action}(${def.panel})`, () => {
+      const { actions, log } = mockActions();
+      const handled = routeKey(keyEvent(def.keybinding), actions);
+      expect(handled).toBe(true);
+      if (def.kind === "core") {
+        expect(log.calls).toContain("panels.focus");
+        expect(log.args["panels.focus"]).toEqual([def.panel]);
+      } else {
+        expect(log.calls).toContain("panels.toggle");
+        expect(log.args["panels.toggle"]).toEqual([def.panel]);
+      }
+    });
+  }
+
+  test("core panels call focus, operator panels call toggle", () => {
+    const corePanels = PANEL_REGISTRY.filter((d) => d.kind === "core");
+    const operatorPanels = PANEL_REGISTRY.filter((d) => d.kind === "operator");
+    expect(corePanels.length).toBeGreaterThan(0);
+    expect(operatorPanels.length).toBeGreaterThan(0);
+    for (const def of corePanels) {
+      const { actions, log } = mockActions();
+      routeKey(keyEvent(def.keybinding), actions);
+      expect(log.calls).toContain("panels.focus");
+      expect(log.calls).not.toContain("panels.toggle");
+    }
+    for (const def of operatorPanels) {
+      const { actions, log } = mockActions();
+      routeKey(keyEvent(def.keybinding), actions);
+      expect(log.calls).toContain("panels.toggle");
+      expect(log.calls).not.toContain("panels.focus");
+    }
   });
 });

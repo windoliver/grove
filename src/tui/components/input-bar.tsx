@@ -30,9 +30,9 @@ export const InputBar: React.NamedExoticComponent<InputBarProps> = React.memo(fu
     return (
       <box paddingLeft={1} paddingRight={1} flexDirection="row">
         <text color={theme.warning}>[MESSAGE]</text>
-        <text color={theme.muted}> </text>
+        <text color={theme.secondary}> </text>
         <text color={theme.text}>{messageLabel}</text>
-        <text color={theme.muted}> — Enter to send, Esc to cancel</text>
+        <text color={theme.secondary}> — Enter to send, Esc to cancel</text>
       </box>
     );
   }
@@ -42,9 +42,9 @@ export const InputBar: React.NamedExoticComponent<InputBarProps> = React.memo(fu
   return (
     <box paddingLeft={1} paddingRight={1} flexDirection="row">
       <text color={theme.warning}>[INPUT MODE]</text>
-      <text color={theme.muted}> Sending to: </text>
+      <text color={theme.secondary}> Sending to: </text>
       <text color={theme.text}>{target}</text>
-      <text color={theme.muted}> — Esc to exit</text>
+      <text color={theme.secondary}> — Esc to exit</text>
     </box>
   );
 });

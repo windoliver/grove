@@ -37,7 +37,7 @@ export const InitProgressView: React.NamedExoticComponent<InitProgressProps> = R
         <text color={theme.focus} bold>
           Setting up {presetName}...
         </text>
-        <text color={theme.muted}>{""}</text>
+        <text color={theme.secondary}>{""}</text>
 
         {steps.map((step, i) => {
           const icon = step.done ? theme.agentRunning : theme.agentWaiting;
@@ -47,11 +47,11 @@ export const InitProgressView: React.NamedExoticComponent<InitProgressProps> = R
 
           return (
             <box key={step.label} flexDirection="row">
-              <text color={isCurrent ? theme.text : step.done ? theme.success : theme.muted}>
+              <text color={isCurrent ? theme.text : step.done ? theme.success : theme.secondary}>
                 {"  "}
               </text>
               <text color={iconColor}>{icon}</text>
-              <text color={isCurrent ? theme.text : step.done ? theme.success : theme.muted}>
+              <text color={isCurrent ? theme.text : step.done ? theme.success : theme.secondary}>
                 {`  ${step.label}`}
               </text>
             </box>
@@ -63,7 +63,7 @@ export const InitProgressView: React.NamedExoticComponent<InitProgressProps> = R
             <text color={theme.error} bold>
               Error: {error}
             </text>
-            <text color={theme.muted}>Esc:back to setup q:quit</text>
+            <text color={theme.secondary}>Esc:back to setup q:quit</text>
           </box>
         ) : null}
       </box>

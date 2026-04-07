@@ -432,14 +432,14 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
         {/* Artifact selector header */}
         {selectorHeader && (
           <box marginBottom={0}>
-            <text color={theme.muted}>{selectorHeader}</text>
+            <text color={theme.secondary}>{selectorHeader}</text>
           </box>
         )}
         <box marginBottom={1} flexDirection="row">
           <text color={theme.focus}>{preview.header}</text>
           <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
           {hasDiffSupport && (
-            <text color={showDiff ? theme.warning : theme.dimmed}>
+            <text color={showDiff ? theme.warning : theme.secondary}>
               {showDiff ? "  [DIFF ON]" : "  [d]iff"}
             </text>
           )}
@@ -455,10 +455,10 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
           ) : preview.renderAs === "empty" ? (
             // Empty artifact — styled empty state
             <box flexDirection="column" paddingTop={1}>
-              <text color={theme.muted} italic>
+              <text color={theme.secondary} italic>
                 {artifactName} is empty.
               </text>
-              <text color={theme.dimmed} opacity={0.7}>
+              <text color={theme.secondary} opacity={0.7}>
                 The artifact exists but has no content yet.
               </text>
             </box>
@@ -485,7 +485,7 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
             createElement(
               "scrollbox" as string,
               { flexGrow: 1 },
-              React.createElement("text", { color: theme.muted }, preview.body),
+              React.createElement("text", { color: theme.secondary }, preview.body),
             )
           ) : (
             // Plain text

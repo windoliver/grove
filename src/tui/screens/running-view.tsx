@@ -624,7 +624,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
               <text color={theme.focus} bold>
                 Nexus Folder Browser
               </text>
-              <text color={theme.dimmed}> (Esc to close)</text>
+              <text color={theme.secondary}> (Esc to close)</text>
             </box>
             <box flexDirection="column" paddingX={2} flexGrow={1}>
               <VfsBrowserView
@@ -655,7 +655,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
               hint="Browse .grove/ directory locally for session files."
             />
             <box marginTop={1}>
-              <text color={theme.dimmed}>Esc:close</text>
+              <text color={theme.secondary}>Esc:close</text>
             </box>
           </box>
         </box>
@@ -746,7 +746,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
                 <text color={theme.focus} bold>
                   {RUNNING_PANEL_LABELS[expandedPanel]}
                 </text>
-                <text color={theme.dimmed}> (f:fullscreen Esc:close)</text>
+                <text color={theme.secondary}> (f:fullscreen Esc:close)</text>
               </box>
               {renderExpandedPanel(expandedPanel, {
                 provider,
@@ -879,7 +879,7 @@ function renderAgentSection(
         <text color={theme.focus} bold>
           Agents
         </text>
-        <text color={theme.dimmed}> (e:trace viewer)</text>
+        <text color={theme.secondary}> (e:trace viewer)</text>
         {showWaiting && <text color={theme.warning}> waiting for session activity...</text>}
       </box>
       {roles.map((role, idx) => {
@@ -899,8 +899,8 @@ function renderAgentSection(
             <text color={platformColor} bold>
               {role.name}
             </text>
-            <text color={theme.dimmed}> [{idx + 1}] </text>
-            {lastLine ? <text color={theme.muted}>{lastLine.slice(0, 80)}</text> : null}
+            <text color={theme.secondary}> [{idx + 1}] </text>
+            {lastLine ? <text color={theme.secondary}>{lastLine.slice(0, 80)}</text> : null}
           </box>
         );
       })}
@@ -923,7 +923,7 @@ function renderFeedSection(
       {/* Goal display */}
       {goal ? (
         <box paddingX={2}>
-          <text color={theme.muted}>Goal: {goal}</text>
+          <text color={theme.secondary}>Goal: {goal}</text>
         </box>
       ) : null}
 
@@ -937,7 +937,7 @@ function renderFeedSection(
             <box key={entry.metric} flexDirection="row">
               <text color={theme.info}>{entry.metric}: </text>
               <text color={theme.text}>{entry.value.toFixed(4)}</text>
-              <text color={theme.dimmed}> {entry.summary.slice(0, 50)}</text>
+              <text color={theme.secondary}> {entry.summary.slice(0, 50)}</text>
             </box>
           ))}
         </box>
@@ -1007,32 +1007,32 @@ function renderFeedSection(
                     backgroundColor={selected ? theme.selectedBg : undefined}
                   >
                     <text color={kindColor}>{"\u2502"}</text>
-                    <text color={theme.dimmed}>{formatTime(c.createdAt)} </text>
+                    <text color={theme.secondary}>{formatTime(c.createdAt)} </text>
                     <text color={kindColor}>{kindIcon} </text>
                     <text color={kindColor}>{c.kind.padEnd(12)}</text>
                     <text color={theme.info}>{agentLabel.padEnd(10)} </text>
-                    <text color={selected ? theme.text : theme.muted}>
+                    <text color={selected ? theme.text : theme.secondary}>
                       {c.summary.slice(0, 55)}
                     </text>
                   </box>
                   {hasPreview ? (
                     <box flexDirection="row" marginLeft={28}>
                       {scoreEntries.slice(0, 3).map(([name, score]) => (
-                        <text key={name} color={theme.dimmed}>
+                        <text key={name} color={theme.secondary}>
                           {name}:{(score as { value: number }).value.toFixed(2)}{" "}
                         </text>
                       ))}
                       {artifactCount > 0 ? (
-                        <text color={theme.dimmed}>
+                        <text color={theme.secondary}>
                           {artifactCount} file{artifactCount !== 1 ? "s" : ""}{" "}
                         </text>
                       ) : null}
                       {relationCount > 0 ? (
-                        <text color={theme.dimmed}>
+                        <text color={theme.secondary}>
                           {relationCount} rel{relationCount !== 1 ? "s" : ""}{" "}
                         </text>
                       ) : null}
-                      <text color={theme.dimmed}> Enter:detail</text>
+                      <text color={theme.secondary}> Enter:detail</text>
                     </box>
                   ) : null}
                 </box>
@@ -1178,28 +1178,28 @@ function renderBottomChrome(
           {monitor.pendingPermissions.map((p) => (
             <box key={p.sessionName} flexDirection="row">
               <text color={theme.focus}>{p.agentRole}</text>
-              <text color={theme.muted}> wants to run: </text>
+              <text color={theme.secondary}> wants to run: </text>
               <text color={theme.text}>{p.command}</text>
             </box>
           ))}
-          <text color={theme.dimmed}>y:approve n:deny</text>
+          <text color={theme.secondary}>y:approve n:deny</text>
         </box>
       ) : null}
 
       {/* IPC message log */}
       {monitor.ipcMessages.length > 0 ? (
         <box flexDirection="column" marginX={2} marginTop={1} paddingX={1}>
-          <text color={theme.dimmed} bold>
+          <text color={theme.secondary} bold>
             IPC Messages
           </text>
           {monitor.ipcMessages.slice(-5).map((msg, i) => (
             // biome-ignore lint/suspicious/noArrayIndexKey: IPC messages are ephemeral
             <box key={i} flexDirection="row">
-              <text color={theme.dimmed}>{formatTime(msg.timestamp)} </text>
+              <text color={theme.secondary}>{formatTime(msg.timestamp)} </text>
               <text color={theme.info}>{msg.sourceRole}</text>
-              <text color={theme.dimmed}> {"\u2192"} </text>
+              <text color={theme.secondary}> {"\u2192"} </text>
               <text color={theme.focus}>{msg.targetRole}</text>
-              <text color={theme.muted}> {msg.summary.slice(0, 40)}</text>
+              <text color={theme.secondary}> {msg.summary.slice(0, 40)}</text>
             </box>
           ))}
         </box>
@@ -1231,8 +1231,8 @@ function renderBottomChrome(
             {": "}
           </text>
           <text>{promptText}</text>
-          <text color={theme.dimmed}>{"\u258c"}</text>
-          <text color={theme.dimmed}> Tab:switch role Enter:send Esc:cancel</text>
+          <text color={theme.secondary}>{"\u258c"}</text>
+          <text color={theme.secondary}> Tab:switch role Enter:send Esc:cancel</text>
         </box>
       ) : null}
     </>

@@ -99,7 +99,7 @@ export const CompleteView: React.NamedExoticComponent<CompleteViewProps> = React
           <text color={theme.text} bold>
             Reason
           </text>
-          <text color={theme.muted}>{reason}</text>
+          <text color={theme.secondary}>{reason}</text>
         </box>
 
         {/* Stats */}
@@ -140,7 +140,7 @@ export const CompleteView: React.NamedExoticComponent<CompleteViewProps> = React
 
         {/* Keyboard hints */}
         <box paddingX={2} marginTop={1}>
-          <text color={theme.dimmed}>Enter:new session (same preset) q:quit</text>
+          <text color={theme.secondary}>Enter:new session (same preset) q:quit</text>
         </box>
       </box>
     );

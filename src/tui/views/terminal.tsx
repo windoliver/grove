@@ -396,7 +396,7 @@ export const TerminalView: React.NamedExoticComponent<TerminalProps> = React.mem
 
     const header = (
       <box flexDirection="row">
-        <text color={theme.muted}>{`session: ${sessionName}`}</text>
+        <text color={theme.secondary}>{`session: ${sessionName}`}</text>
         {isInputMode ? (
           <text color={theme.focus}> [INPUT]</text>
         ) : (

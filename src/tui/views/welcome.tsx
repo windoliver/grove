@@ -353,7 +353,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
             paddingX={1}
           >
             {visibleSessions.length === 0 ? (
-              <text color={theme.dimmed}>
+              <text color={theme.secondary}>
                 {sessionFilter ? "No sessions match filter" : "No sessions"}
               </text>
             ) : null}
@@ -377,19 +377,19 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
                 >
                   <text
                     color={
-                      selected ? theme.focus : s.status === "active" ? theme.text : theme.dimmed
+                      selected ? theme.focus : s.status === "active" ? theme.text : theme.secondary
                     }
                     bold={selected}
                   >
                     {`${prefix}${icon} "${goal}"`}
                   </text>
-                  <text color={theme.muted}>{` (${s.contributionCount}c) ${date}`}</text>
+                  <text color={theme.secondary}>{` (${s.contributionCount}c) ${date}`}</text>
                 </box>
               );
             })}
           </box>
           <box paddingX={2}>
-            <text color={theme.dimmed}>j/k:navigate Enter:continue /:search Esc:back</text>
+            <text color={theme.secondary}>j/k:navigate Enter:continue /:search Esc:back</text>
           </box>
         </box>
       );
@@ -409,7 +409,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
             <text color={theme.focus} bold>
               Connect to remote Nexus
             </text>
-            <text color={theme.muted}>{""}</text>
+            <text color={theme.secondary}>{""}</text>
             <box flexDirection="row">
               <text color={theme.text}>Nexus URL: </text>
               <text color={theme.focus} bold>
@@ -417,8 +417,8 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
               </text>
               <text color={theme.focus}>_</text>
             </box>
-            <text color={theme.muted}>{""}</text>
-            <text color={theme.dimmed}>Enter:connect Esc:back Backspace:delete</text>
+            <text color={theme.secondary}>{""}</text>
+            <text color={theme.secondary}>Enter:connect Esc:back Backspace:delete</text>
           </box>
         </box>
       );
@@ -438,8 +438,8 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
             <text color={theme.focus} bold>
               Name your grove
             </text>
-            <text color={theme.muted}>Preset: {selectedPreset}</text>
-            <text color={theme.muted}>{""}</text>
+            <text color={theme.secondary}>Preset: {selectedPreset}</text>
+            <text color={theme.secondary}>{""}</text>
             <box flexDirection="row">
               <text color={theme.text}>Grove name: </text>
               <text color={theme.focus} bold>
@@ -447,8 +447,8 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
               </text>
               <text color={theme.focus}>_</text>
             </box>
-            <text color={theme.muted}>{""}</text>
-            <text color={theme.dimmed}>Enter:confirm Esc:back Backspace:delete</text>
+            <text color={theme.secondary}>{""}</text>
+            <text color={theme.secondary}>Enter:confirm Esc:back Backspace:delete</text>
           </box>
         </box>
       );
@@ -469,7 +469,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
             <text color={theme.focus} bold>
               Select a preset
             </text>
-            <text color={theme.muted}>{""}</text>
+            <text color={theme.secondary}>{""}</text>
           </box>
 
           {/* Preset list */}
@@ -492,7 +492,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
                   <text color={selected ? theme.focus : theme.text} bold={selected}>
                     {`${prefix}${preset.name.padEnd(20)}`}
                   </text>
-                  <text color={theme.muted}>{preset.description}</text>
+                  <text color={theme.secondary}>{preset.description}</text>
                 </box>
               );
             })}
@@ -518,20 +518,20 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
                     <text
                       // biome-ignore lint/suspicious/noArrayIndexKey: detail lines have no stable identity
                       key={i}
-                      color={theme.muted}
+                      color={theme.secondary}
                     >
                       {line}
                     </text>
                   ))}
                 </box>
               ) : null}
-              <text color={theme.dimmed}>Press ? to close details</text>
+              <text color={theme.secondary}>Press ? to close details</text>
             </box>
           ) : null}
 
           {/* Keyboard hints */}
           <box paddingX={2} marginTop={1}>
-            <text color={theme.dimmed}>j/k:navigate Enter:select ?:details Esc:back</text>
+            <text color={theme.secondary}>j/k:navigate Enter:select ?:details Esc:back</text>
           </box>
         </box>
       );
@@ -551,7 +551,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
           <text color={theme.focus} bold>
             Grove
           </text>
-          <text color={theme.muted}>{""}</text>
+          <text color={theme.secondary}>{""}</text>
         </box>
 
         {/* Action menu */}
@@ -595,11 +595,11 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
             </text>
             {sessions.slice(0, 5).map((s, _i) => (
               <box key={s.id} flexDirection="row">
-                <text color={s.status === "active" ? theme.text : theme.dimmed}>
+                <text color={s.status === "active" ? theme.text : theme.secondary}>
                   {"  "}
                   {s.status === "active" ? "●" : "○"} {`"${(s.goal ?? "untitled").slice(0, 50)}"`}
                 </text>
-                <text color={theme.muted}> ({s.contributionCount}c)</text>
+                <text color={theme.secondary}> ({s.contributionCount}c)</text>
               </box>
             ))}
           </box>
@@ -620,19 +620,19 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
           <text color={theme.text}>A multi-agent collaboration workspace.</text>
           <text color={theme.text}>Agents work together on a shared contribution graph</text>
           <text color={theme.text}>with human oversight.</text>
-          <text color={theme.muted}>{""}</text>
+          <text color={theme.secondary}>{""}</text>
           {GLOSSARY.map((entry) => (
             <box key={entry.term} flexDirection="row">
               <text color={theme.text}>{"  "}</text>
               <text color={theme.info}>{entry.term.padEnd(16)}</text>
-              <text color={theme.muted}>{entry.definition}</text>
+              <text color={theme.secondary}>{entry.definition}</text>
             </box>
           ))}
         </box>
 
         {/* Keyboard hints */}
         <box paddingX={2} marginTop={1}>
-          <text color={theme.dimmed}>[Enter] select [j/k] navigate [q] quit</text>
+          <text color={theme.secondary}>[Enter] select [j/k] navigate [q] quit</text>
         </box>
       </box>
     );

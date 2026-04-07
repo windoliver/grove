@@ -77,7 +77,7 @@ export const AgentWizard: React.NamedExoticComponent<AgentWizardProps> = React.m
         {state.step === "profile" && (
           <box flexDirection="column" paddingLeft={1} marginTop={1}>
             {state.profiles.length === 0 ? (
-              <text color={theme.muted}>No profiles available. Register agents first.</text>
+              <text color={theme.secondary}>No profiles available. Register agents first.</text>
             ) : (
               state.profiles.map((p, i) => {
                 const isSelected = cursorIndex === i;
@@ -87,7 +87,7 @@ export const AgentWizard: React.NamedExoticComponent<AgentWizardProps> = React.m
                       {isSelected ? "> " : "  "}
                       {p.name}
                     </text>
-                    <text color={theme.muted}>
+                    <text color={theme.secondary}>
                       {" "}
                       [{p.platform}] role: {p.role}
                     </text>
@@ -123,13 +123,13 @@ export const AgentWizard: React.NamedExoticComponent<AgentWizardProps> = React.m
               Role: {state.profiles[state.selectedProfile]?.role ?? "?"}
             </text>
             <text color={theme.text}>Target: {state.targetRef}</text>
-            <text color={theme.muted} />
+            <text color={theme.secondary} />
             <box flexDirection="row">
               <text color={cursorIndex === 0 ? theme.focus : theme.text}>
                 {cursorIndex === 0 ? "> " : "  "}
                 Spawn
               </text>
-              <text color={theme.muted}> </text>
+              <text color={theme.secondary}> </text>
               <text color={cursorIndex === 1 ? theme.focus : theme.text}>
                 {cursorIndex === 1 ? "> " : "  "}
                 Cancel
@@ -139,7 +139,7 @@ export const AgentWizard: React.NamedExoticComponent<AgentWizardProps> = React.m
         )}
 
         <box marginTop={1} paddingLeft={1}>
-          <text color={theme.muted}>[j/k] navigate [Enter] select [Esc] cancel</text>
+          <text color={theme.secondary}>[j/k] navigate [Enter] select [Esc] cancel</text>
         </box>
       </box>
     );

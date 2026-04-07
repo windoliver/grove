@@ -266,6 +266,13 @@ async function buildAppProps(
   // Resolve groveDir once — used for AcpxRuntime logDir, workspace GC, and event bus.
   const groveDir = effectiveGrove ?? findGroveDir(effectiveGrove);
 
+  // Preload user config (theme + keymap) before React mounts so configureTheme()
+  // patches the theme object in-place before the first render (Issue 14A).
+  const { loadGroveConfig } = await import("./config-loader.js");
+  const { configureTheme } = await import("./theme.js");
+  const userConfig = await loadGroveConfig(groveDir);
+  configureTheme(userConfig.theme);
+
   // Create AcpxRuntime for agent spawning (preferred over tmux)
   let agentRuntime: import("../core/agent-runtime.js").AgentRuntime | undefined;
   {
@@ -367,6 +374,7 @@ async function buildAppProps(
       eventBus,
       agentRuntime,
       contract,
+      userConfig,
     },
     provider,
     stopGc,

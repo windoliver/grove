@@ -51,10 +51,10 @@ export const ProgressBar: React.NamedExoticComponent<ProgressBarProps> = React.m
 
     return (
       <box flexDirection="row" paddingX={1}>
-        <text color={theme.muted}>{label} </text>
+        <text color={theme.secondary}>{label} </text>
         <text color={color}>{bar}</text>
         <text color={theme.text}> {percent}%</text>
-        <text color={theme.dimmed}>
+        <text color={theme.secondary}>
           {" "}
           ({op}
           {target})

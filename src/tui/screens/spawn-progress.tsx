@@ -39,7 +39,7 @@ const STATUS_ICON: Record<SpawnStatus, string> = {
 };
 
 const STATUS_COLOR: Record<SpawnStatus, string> = {
-  waiting: theme.dimmed,
+  waiting: theme.secondary,
   spawning: theme.warning,
   started: theme.success,
   failed: theme.error,
@@ -165,7 +165,7 @@ export const SpawnProgress: React.NamedExoticComponent<SpawnProgressProps> = Rea
               <box key={agent.role} flexDirection="row" opacity={rowOpacity}>
                 <text color={STATUS_COLOR[agent.status]}>{getIcon(agent.status)} </text>
                 <text color={theme.text}>{agent.role}</text>
-                <text color={theme.dimmed}> ({agent.command})</text>
+                <text color={theme.secondary}> ({agent.command})</text>
                 <text color={platformColor}>
                   {"  "}
                   {agent.status === "waiting"
@@ -184,12 +184,12 @@ export const SpawnProgress: React.NamedExoticComponent<SpawnProgressProps> = Rea
         {/* Goal and preset info */}
         <box flexDirection="column" marginX={2} marginTop={1} paddingX={1}>
           <box flexDirection="row">
-            <text color={theme.muted}>Goal: </text>
+            <text color={theme.secondary}>Goal: </text>
             <text color={theme.text}>{goal.slice(0, 60)}</text>
           </box>
           {presetName ? (
             <box flexDirection="row">
-              <text color={theme.muted}>Preset: </text>
+              <text color={theme.secondary}>Preset: </text>
               <text color={theme.text}>{presetName}</text>
             </box>
           ) : null}

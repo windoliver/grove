@@ -32,8 +32,7 @@ describe("theme", () => {
 
   test("has all text tokens", () => {
     expect(theme.text).toBeDefined();
-    expect(theme.muted).toBeDefined();
-    expect(theme.dimmed).toBeDefined();
+    expect(theme.secondary).toBeDefined();
     expect(theme.disabled).toBeDefined();
   });
 
@@ -61,6 +60,7 @@ describe("theme", () => {
       "grey",
       "darkGray",
       "darkGrey",
+      // ANSI-16 palette names from algorithmic nearest-color
     ]);
     for (const [key, value] of Object.entries(theme)) {
       if (
