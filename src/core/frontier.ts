@@ -163,10 +163,20 @@ export class DefaultFrontierCalculator implements FrontierCalculator {
     // rather than scanning the entire store. When no filters are applied,
     // storeContributions already contains everything — no second query needed.
     const filteredCids = filtered.map((c) => c.cid);
-    const allContributions =
-      Object.keys(storeQuery).length > 0
-        ? await this.store.incomingSources(filteredCids)
-        : storeContributions;
+    let allContributions: readonly Contribution[];
+    if (Object.keys(storeQuery).length > 0) {
+      const sources = await this.store.incomingSources(filteredCids);
+      if (query?.sessionId !== undefined) {
+        // Session-scoped: restrict incoming sources to the same session's
+        // contributions so cross-session adoptions/reviews do not inflate scores.
+        const sessionCidSet = new Set(storeContributions.map((c) => c.cid));
+        allContributions = sources.filter((s) => sessionCidSet.has(s.cid));
+      } else {
+        allContributions = sources;
+      }
+    } else {
+      allContributions = storeContributions;
+    }
 
     // All dimension computations are synchronous in-memory operations.
     // The only async step is the store.list() call above.

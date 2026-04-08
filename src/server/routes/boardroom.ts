@@ -24,6 +24,10 @@ import type { ServerEnv } from "../deps.js";
 // File-local schemas (not exported — avoids isolatedDeclarations issues)
 // ---------------------------------------------------------------------------
 
+const summaryQuerySchema = z.object({
+  sessionId: z.string().optional(),
+});
+
 const answerBodySchema = z.object({
   questionCid: z.string().min(1),
   answer: z.string().min(1),
@@ -81,15 +85,17 @@ export const boardroom: Hono<ServerEnv> = new Hono<ServerEnv>();
  * Aggregated hot data for the TUI boardroom.
  * Replaces multiple polling requests with a single call.
  */
-boardroom.get("/summary", async (c) => {
+boardroom.get("/summary", zValidator("query", summaryQuerySchema), async (c) => {
   const deps = c.get("deps");
   const store = deps.contributionStore;
   const claimStore = deps.claimStore;
+  const { sessionId } = c.req.valid("query");
 
-  // Fetch ephemeral discussions in a single query
+  // Fetch ephemeral discussions in a single query, optionally scoped to a session
   const discussions = await store.list({
     kind: ContributionKind.Discussion,
     limit: 200,
+    ...(sessionId !== undefined ? { sessionId } : {}),
   });
 
   const ephemeral = discussions.filter((d) => d.context?.ephemeral === true);

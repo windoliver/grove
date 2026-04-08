@@ -468,7 +468,20 @@ export abstract class StoreBackedProvider
   /** Answer a pending ask-user question. */
   async answerQuestion(questionCid: string, answer: string): Promise<void> {
     const operator = { agentId: "tui-operator", agentName: "operator" };
-    await answerQuestionOp(this.store, { questionCid, answer, operator }, computeCid);
+    const contribution = await answerQuestionOp(
+      this.store,
+      { questionCid, answer, operator },
+      computeCid,
+    );
+    // Link the answer contribution to the active session so it is visible in
+    // session-scoped reads and prevents the question from staying "pending" forever.
+    if (this.activeSessionId !== undefined && this.goalSession !== undefined) {
+      await this.goalSession
+        .addContributionToSession(this.activeSessionId, contribution.cid)
+        .catch(() => {
+          /* best-effort */
+        });
+    }
   }
 
   // ---------------------------------------------------------------------------

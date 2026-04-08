@@ -454,12 +454,20 @@ export class RemoteDataProvider
   // TuiMessagingProvider
   // ---------------------------------------------------------------------------
 
+  /** Boardroom summary URL — includes `?sessionId=` when a session scope is active. */
+  private get boardroomSummaryUrl(): string {
+    const base = this.boardroomSummaryUrl;
+    return this.activeSessionId
+      ? `${base}?sessionId=${encodeURIComponent(this.activeSessionId)}`
+      : base;
+  }
+
   async getInboxMessages(query?: {
     recipient?: string;
     limit?: number;
   }): Promise<readonly InboxMessage[]> {
     try {
-      const resp = await fetch(`${this.baseUrl}/api/boardroom/summary`);
+      const resp = await fetch(this.boardroomSummaryUrl);
       if (!resp.ok) return [];
       const body = (await resp.json()) as {
         recentMessages: readonly {
@@ -500,7 +508,7 @@ export class RemoteDataProvider
 
   async getSessionCosts(): Promise<SessionCostSummary> {
     try {
-      const resp = await fetch(`${this.baseUrl}/api/boardroom/summary`);
+      const resp = await fetch(this.boardroomSummaryUrl);
       if (!resp.ok) return { totalCostUsd: 0, totalTokens: 0, byAgent: [] };
       const body = (await resp.json()) as {
         costSummary: {
@@ -526,7 +534,7 @@ export class RemoteDataProvider
 
   async getPendingQuestions(): Promise<readonly PendingQuestion[]> {
     try {
-      const resp = await fetch(`${this.baseUrl}/api/boardroom/summary`);
+      const resp = await fetch(this.boardroomSummaryUrl);
       if (!resp.ok) return [];
       const body = (await resp.json()) as {
         pendingQuestions: readonly {
