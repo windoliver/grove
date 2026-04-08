@@ -459,6 +459,47 @@ export async function contributeOperation(
       );
     }
 
+    // --- Post-write: re-check stop conditions (outside mutex, best-effort) ---
+    // The pre-write enforce() evaluates stop conditions before the contribution is
+    // persisted, so the threshold-crossing write (e.g., the Nth review satisfying
+    // quorum) would report stopped=false. Re-evaluate now that the store includes
+    // this contribution. This runs outside the write mutex, so it doesn't block
+    // concurrent writers. Only re-checks when the pre-write result said not stopped.
+    //
+    // Best-effort: errors here must not fail the already-committed write. A store
+    // read failure during the recheck is logged but does not surface as a failed
+    // operation — the contribution is already in the DAG.
+    if (
+      policyResult !== undefined &&
+      !policyResult.stopResult?.stopped &&
+      deps.contract?.stopConditions !== undefined &&
+      deps.contributionStore !== undefined
+    ) {
+      try {
+        const { evaluateStopConditions } = await import("../stop-conditions.js");
+        const postWriteResult = await evaluateStopConditions(deps.contract, deps.contributionStore);
+        if (postWriteResult.stopped) {
+          policyResult = {
+            ...policyResult,
+            stopResult: {
+              stopped: true,
+              reason: Object.entries(postWriteResult.conditions)
+                .filter(([, c]) => c.met)
+                .map(([name, c]) => `${name}: ${c.reason}`)
+                .join("; "),
+            },
+          };
+        }
+      } catch (err) {
+        // Best-effort: the contribution is already committed. A stop-condition
+        // recheck failure does not invalidate the write, but log it so operators
+        // can detect cases where a threshold-crossing stop signal was lost.
+        process.stderr.write(
+          `[grove] Warning: post-write stop-condition recheck failed: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      }
+    }
+
     // If stop condition met, broadcast stop to all agents
     if (policyResult?.stopResult?.stopped && deps.topologyRouter !== undefined) {
       fireAndForget("broadcast stop", () =>

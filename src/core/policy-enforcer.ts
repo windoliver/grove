@@ -28,6 +28,7 @@ import type { Contribution } from "./models.js";
 import { ContributionMode } from "./models.js";
 import type { OutcomeRecord, OutcomeStore } from "./outcome.js";
 import { OutcomeStatus } from "./outcome.js";
+import { evaluateStopConditions } from "./stop-conditions.js";
 import type { ContributionStore } from "./store.js";
 
 // ---------------------------------------------------------------------------
@@ -139,6 +140,11 @@ export class PolicyEnforcer {
    * @param strict - If true, violations throw instead of being returned as flags.
    */
   async enforce(contribution: Contribution, strict = false): Promise<PolicyEnforcementResult> {
+    // Reset best-score cache so each enforce() call gets a fresh view of the store.
+    // The cache is repopulated lazily on the first findBestScore() call within
+    // this invocation, keeping per-call O(n) scan cost to at most once.
+    this.bestScoreCache = undefined;
+
     const violations: PolicyViolation[] = [];
 
     // 1. Role-kind constraints
@@ -225,7 +231,7 @@ export class PolicyEnforcer {
       }
     }
 
-    // 6. Derive outcome (post-write, so this is informational)
+    // 7. Derive outcome (post-write, so this is informational)
     let derivedOutcome: DerivedOutcome | undefined;
     if (
       contribution.mode === ContributionMode.Evaluation &&
@@ -234,10 +240,39 @@ export class PolicyEnforcer {
       derivedOutcome = await this.deriveOutcome(contribution);
     }
 
-    // 7. Stop condition check
+    // 8. Stop condition check — delegates to the canonical evaluator in
+    //    stop-conditions.ts so all five conditions use the same algorithm as
+    //    grove_check_stop (lifecycle path).
+    //
+    //    Timing note: this runs pre-write, so the contribution being enforced
+    //    is NOT yet in the store. A contribution that crosses a threshold
+    //    (e.g., the Nth review satisfying quorum) reports stopped=false here;
+    //    the next check will detect it. This is the existing accept-then-flag
+    //    design — the same pre-write timing applied to the old budget/target/
+    //    maxRounds checks and is unchanged by this refactor.
+    //
+    //    Cost note: quorum_review_score requires a full store.list() and
+    //    deliberation_limit requires per-root store.thread() calls. These
+    //    run inside the write mutex when configured. Thread walks are
+    //    parallelized and depth-capped to bound latency (see stop-conditions.ts).
     let stopResult: StopCheckResult | undefined;
     if (this.contract.stopConditions !== undefined) {
-      stopResult = await this.evaluateStopConditions(contribution);
+      try {
+        const evalResult = await evaluateStopConditions(this.contract, this.contributionStore);
+        stopResult = {
+          stopped: evalResult.stopped,
+          reason: evalResult.stopped
+            ? Object.entries(evalResult.conditions)
+                .filter(([, c]) => c.met)
+                .map(([name, c]) => `${name}: ${c.reason}`)
+                .join("; ")
+            : undefined,
+        };
+      } catch {
+        // Best-effort: stop evaluation failures (e.g., store read errors) must not
+        // reject contributions. The post-write recheck in contributeOperation
+        // provides a second chance to detect stop conditions.
+      }
     }
 
     return {
@@ -703,108 +738,9 @@ export class PolicyEnforcer {
   }
 
   // ---------------------------------------------------------------------------
-  // Stop condition evaluation (targeted queries)
-  // ---------------------------------------------------------------------------
-
-  /** Evaluate stop conditions using targeted queries instead of loading all contributions. */
-  private async evaluateStopConditions(_contribution: Contribution): Promise<StopCheckResult> {
-    const stop = this.contract.stopConditions;
-    if (stop === undefined) return { stopped: false };
-
-    // Budget check: count + first timestamp
-    if (stop.budget !== undefined) {
-      const count = await this.contributionStore.count();
-      if (stop.budget.maxContributions !== undefined && count >= stop.budget.maxContributions) {
-        return {
-          stopped: true,
-          reason: `Budget exceeded: ${count} contributions >= limit ${stop.budget.maxContributions}`,
-        };
-      }
-
-      if (stop.budget.maxWallClockSeconds !== undefined && count > 0) {
-        // Get first contribution timestamp via a limited query
-        const oldest = await this.contributionStore.list({ limit: 1 });
-        if (oldest.length > 0 && oldest[0] !== undefined) {
-          const elapsed = Math.floor((Date.now() - Date.parse(oldest[0].createdAt)) / 1000);
-          if (elapsed >= stop.budget.maxWallClockSeconds) {
-            return {
-              stopped: true,
-              reason: `Budget exceeded: ${elapsed}s elapsed >= limit ${stop.budget.maxWallClockSeconds}s`,
-            };
-          }
-        }
-      }
-    }
-
-    // Target metric check
-    if (stop.targetMetric !== undefined) {
-      const metricDef = this.contract.metrics?.[stop.targetMetric.metric];
-      if (metricDef !== undefined) {
-        const best = await this.findBestScore(stop.targetMetric.metric, metricDef);
-        if (best !== undefined) {
-          const isMinimize = metricDef.direction === "minimize";
-          const met = isMinimize
-            ? best.value <= stop.targetMetric.value
-            : best.value >= stop.targetMetric.value;
-
-          if (met) {
-            return {
-              stopped: true,
-              reason: `Target metric reached: ${stop.targetMetric.metric} = ${best.value} ${isMinimize ? "≤" : "≥"} ${stop.targetMetric.value}`,
-            };
-          }
-        }
-      }
-    }
-
-    // Max rounds without improvement
-    if (stop.maxRoundsWithoutImprovement !== undefined) {
-      const result = await this.checkMaxRoundsWithoutImprovement(stop.maxRoundsWithoutImprovement);
-      if (result.stopped) return result;
-    }
-
-    return { stopped: false };
-  }
-
-  /** Check if the best score for any metric is stale (not in the last N contributions). */
-  private async checkMaxRoundsWithoutImprovement(maxRounds: number): Promise<StopCheckResult> {
-    const metrics = this.contract.metrics;
-    if (metrics === undefined) return { stopped: false };
-
-    const totalCount = await this.contributionStore.count();
-    if (totalCount < maxRounds) return { stopped: false };
-
-    // For each metric, check if the best score was in the last N contributions.
-    // We use a targeted approach: list the last N evaluation-mode contributions
-    // and check if any of them hold the best score.
-    for (const [metricName, metricDef] of Object.entries(metrics)) {
-      const best = await this.findBestScore(metricName, metricDef);
-      if (best === undefined) continue;
-
-      // Count evaluation-mode contributions after the best score's timestamp
-      const countAfterBest = await this.contributionStore.countSince({
-        since: best.createdAt,
-      });
-      // countSince includes the best itself, so subtract 1
-      const contributionsAfterBest = countAfterBest - 1;
-
-      if (contributionsAfterBest < maxRounds) {
-        // Best was set within the last N — still improving for this metric
-        return { stopped: false };
-      }
-    }
-
-    return {
-      stopped: true,
-      reason: `No metric improved in the last ${maxRounds} contributions`,
-    };
-  }
-
-  // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 
-  /** Find the best score for a metric across all evaluation-mode contributions. */
   /**
    * Find the best score for a metric across all evaluation-mode contributions.
    *
@@ -853,17 +789,6 @@ export class PolicyEnforcer {
       ) {
         this.bestScoreCache?.set(name, { value: score.value, cid: c.cid, createdAt: c.createdAt });
       }
-    }
-  }
-
-  /**
-   * Update the cache after a new contribution is enforced.
-   * Called from enforce() so subsequent gate/outcome/stop checks
-   * within the same call reflect the new contribution's scores.
-   */
-  updateCacheForContribution(contribution: Contribution): void {
-    if (this.bestScoreCache !== undefined && contribution.mode === ContributionMode.Evaluation) {
-      this.updateCacheFromContribution(contribution);
     }
   }
 }
