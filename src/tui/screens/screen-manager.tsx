@@ -103,6 +103,10 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // Resolved topology — starts from GROVE.md default, overridden when user picks a preset.
     const [topology, setTopology] = useState(initialTopology);
 
+    // Capture the resume session ID for setSessionScope — written in the useState
+    // initializer (runs synchronously before effects) and read in the mount effect below.
+    const resumeScopeIdRef = useRef<string | undefined>(undefined);
+
     // Initialize state: use initialState override (testing), or compute from props
     const [state, setState] = useState<ScreenState>(() => {
       if (initialState) return initialState;
@@ -114,6 +118,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         if (active) {
           resumeSessionStartedAt = active.createdAt;
           resumeSessionId = active.id;
+          resumeScopeIdRef.current = active.id; // captured for mount effect
         }
       }
       return {
@@ -129,6 +134,19 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         ...(resumeSessionId ? { sessionId: resumeSessionId } : {}),
       };
     });
+
+    // Apply session scope on mount for resumed sessions (startOnRunning path).
+    // Must fire before the first contribution poll in the reconcile effect below —
+    // both are mount-only effects and React runs them top-to-bottom within the
+    // same commit, so ordering is guaranteed.
+    // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only — provider is stable, resumeScopeIdRef is set once in the useState initializer
+    useEffect(() => {
+      const id = resumeScopeIdRef.current;
+      if (id && "setSessionScope" in provider) {
+        (provider as { setSessionScope: (id: string) => void }).setSessionScope(id);
+        process.stderr.write(`[screen-manager] resume setSessionScope(${id})\n`);
+      }
+    }, []);
 
     // SpawnManager singleton — provided by tui-app.tsx via SpawnManagerContext.
     const spawnManager = useSpawnManager();

@@ -578,6 +578,26 @@ describe("gcStaleSessions", () => {
     expect(archived).toBe(1);
   });
 
+  it("does NOT archive a long-running session whose ended_at is within the TTL", () => {
+    // Session that ran for 26 hours (started > 24h ago) but completed just 1 minute ago.
+    // Regression: old predicate used started_at < cutoff, which would archive this immediately.
+    const startedAt = new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString(); // 26h ago
+    const endedAt = new Date(Date.now() - 60_000).toISOString(); // 1 min ago
+    stores.db.run(
+      `INSERT INTO sessions (session_id, status, started_at, ended_at, config_json)
+       VALUES (?, 'completed', ?, ?, '{}')`,
+      ["long-running-fresh-end", startedAt, endedAt],
+    );
+
+    const archived = store.gcStaleSessions(); // default 24h TTL
+    expect(archived).toBe(0);
+
+    const row = stores.db
+      .prepare("SELECT archived_at FROM sessions WHERE session_id = ?")
+      .get("long-running-fresh-end") as { archived_at: number | null };
+    expect(row.archived_at).toBeNull();
+  });
+
   it("archived sessions are excluded from listSessions() after GC", async () => {
     const old = new Date(Date.now() - SESSION_GC_TTL_MS - 60_000).toISOString();
     insertSessionAt("stale-1", old, "completed");

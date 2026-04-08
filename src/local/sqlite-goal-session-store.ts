@@ -535,6 +535,9 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
    */
   gcStaleSessions(ttlMs: number = SESSION_GC_TTL_MS): number {
     const cutoff = new Date(Date.now() - ttlMs).toISOString();
+    // Use ended_at as the staleness basis when available (falls back to started_at
+    // for sessions that never formally ended). This prevents long-running sessions
+    // from being GC'd immediately after completion just because they started > TTL ago.
     const result = this.db.run(
       `UPDATE sessions
        SET status = 'archived',
@@ -542,7 +545,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
            archived_at = strftime('%s', 'now')
        WHERE archived_at IS NULL
          AND status NOT IN ('active', 'pending')
-         AND started_at < ?`,
+         AND COALESCE(ended_at, started_at) < ?`,
       [cutoff],
     );
     return result.changes;
