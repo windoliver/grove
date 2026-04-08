@@ -456,7 +456,7 @@ export class RemoteDataProvider
 
   /** Boardroom summary URL — includes `?sessionId=` when a session scope is active. */
   private get boardroomSummaryUrl(): string {
-    const base = this.boardroomSummaryUrl;
+    const base = `${this.baseUrl}/api/boardroom/summary`;
     return this.activeSessionId
       ? `${base}?sessionId=${encodeURIComponent(this.activeSessionId)}`
       : base;
@@ -555,7 +555,11 @@ export class RemoteDataProvider
     const resp = await fetch(`${this.baseUrl}/api/boardroom/answer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ questionCid, answer }),
+      body: JSON.stringify({
+        questionCid,
+        answer,
+        ...(this.activeSessionId !== undefined ? { sessionId: this.activeSessionId } : {}),
+      }),
     });
     if (!resp.ok) {
       throw new Error(`Failed to answer question: HTTP ${String(resp.status)}`);

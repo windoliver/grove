@@ -31,12 +31,16 @@ const summaryQuerySchema = z.object({
 const answerBodySchema = z.object({
   questionCid: z.string().min(1),
   answer: z.string().min(1),
+  /** Optional session ID — attaches the answer contribution to the session. */
+  sessionId: z.string().optional(),
 });
 
 const messageBodySchema = z.object({
   body: z.string().min(1),
   recipients: z.array(z.string().min(1)).min(1),
   inReplyTo: z.string().optional(),
+  /** Optional session ID — attaches the message contribution to the session. */
+  sessionId: z.string().optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -216,6 +220,15 @@ boardroom.post("/answer", zValidator("json", answerBodySchema), async (c) => {
     computeCid,
   );
 
+  // Link the answer contribution to the session so it is visible in scoped reads
+  if (body.sessionId && deps.goalSessionStore) {
+    await deps.goalSessionStore
+      .addContributionToSession(body.sessionId, contribution.cid)
+      .catch(() => {
+        /* best-effort */
+      });
+  }
+
   return c.json({ cid: contribution.cid, answer: body.answer });
 });
 
@@ -237,6 +250,15 @@ boardroom.post("/message", zValidator("json", messageBodySchema), async (c) => {
     { agent: operator, body: body.body, recipients: body.recipients, inReplyTo: body.inReplyTo },
     computeCid,
   );
+
+  // Link the message contribution to the session so it is visible in scoped reads
+  if (body.sessionId && deps.goalSessionStore) {
+    await deps.goalSessionStore
+      .addContributionToSession(body.sessionId, contribution.cid)
+      .catch(() => {
+        /* best-effort */
+      });
+  }
 
   return c.json({ cid: contribution.cid, summary: contribution.summary });
 });

@@ -456,7 +456,10 @@ export async function handleTui(
   // No pre-flight discovery — each project/worktree has its own Nexus
   // instance initialized during "New session" setup flow.
 
-  // Load past sessions for the welcome screen (informational context)
+  // Load past sessions for the welcome screen (informational context).
+  // Active sessions are fetched explicitly (no LIMIT) so that a resume target
+  // is never missed when > 20 non-archived sessions exist. The default
+  // listSessions() is capped at 20 for display; we merge both lists.
   let sessions: SessionRecord[] = [];
   if (groveDir) {
     try {
@@ -464,7 +467,15 @@ export async function handleTui(
       const dbPath = join(groveDir, "grove.db");
       if (existsSync(dbPath)) {
         const stores = createSqliteStores(dbPath);
-        sessions = [...(await stores.goalSessionStore.listSessions())];
+        const [activeSessions, recentSessions] = await Promise.all([
+          stores.goalSessionStore.listSessions({ status: "active" }),
+          stores.goalSessionStore.listSessions(),
+        ]);
+        // Active sessions first (ensures resume detection works even if the
+        // active session is outside the top-20 most-recent window), then
+        // recent sessions for display, deduped.
+        const seenIds = new Set(activeSessions.map((s) => s.id));
+        sessions = [...activeSessions, ...recentSessions.filter((s) => !seenIds.has(s.id))];
         stores.close();
       }
     } catch {
