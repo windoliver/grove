@@ -8,7 +8,8 @@
  * - Relation requirements
  * - Artifact requirements
  * - Outcome derivation (auto-accept/auto-reject)
- * - Stop condition evaluation (budget, target_metric, max_rounds_without_improvement)
+ * - Stop condition evaluation (all 5: budget, target_metric, max_rounds_without_improvement,
+ *   quorum_review_score, deliberation_limit — via canonical evaluator in stop-conditions.ts)
  */
 
 import { describe, expect, test } from "bun:test";
@@ -16,8 +17,11 @@ import { describe, expect, test } from "bun:test";
 import type { GroveContract } from "./contract.js";
 import { PolicyViolationError } from "./errors.js";
 import type { Contribution, Score } from "./models.js";
+import { type ContributionInput, ContributionKind, RelationType } from "./models.js";
 import { PolicyEnforcer } from "./policy-enforcer.js";
 import type { ContributionStore } from "./store.js";
+import { makeContribution as makeContributionFromHelper } from "./test-helpers.js";
+import { InMemoryContributionStore } from "./testing.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -712,7 +716,7 @@ describe("PolicyEnforcer: stop conditions", () => {
     const result = await enforcer.enforce(contribution, false);
     expect(result.stopResult).toBeDefined();
     expect(result.stopResult!.stopped).toBe(true);
-    expect(result.stopResult!.reason).toContain("Target metric reached");
+    expect(result.stopResult!.reason).toContain("reached target");
   });
 
   test("target metric not reached → not stopped", async () => {
@@ -1066,5 +1070,150 @@ describe("PolicyEnforcer: per-session enforcement", () => {
 
     expect(strictResult.passed).toBe(false);
     expect(lenientResult.passed).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// quorum_review_score and deliberation_limit stop conditions
+// (Issue 10A: these were missing from the enforcer before the canonical
+//  evaluator was adopted in stop-conditions.ts)
+// ---------------------------------------------------------------------------
+
+// Helper for unique contributions with InMemoryContributionStore
+let enforcerUniqueCounter = 0;
+function makeFullContribution(overrides?: Partial<ContributionInput>): Contribution {
+  enforcerUniqueCounter += 1;
+  const ts = `2026-02-01T00:${String(Math.floor(enforcerUniqueCounter / 60)).padStart(2, "0")}:${String(enforcerUniqueCounter % 60).padStart(2, "0")}Z`;
+  return makeContributionFromHelper({
+    summary: `EnforcerContrib ${enforcerUniqueCounter}`,
+    createdAt: ts,
+    ...overrides,
+  });
+}
+
+describe("PolicyEnforcer: quorum_review_score stop condition", () => {
+  test("stopped when quorum is met", async () => {
+    const target = makeFullContribution({ summary: "Work to review" });
+    const review1 = makeFullContribution({
+      kind: ContributionKind.Review,
+      summary: "Review 1",
+      relations: [
+        {
+          targetCid: target.cid,
+          relationType: RelationType.Reviews,
+          metadata: { score: 0.9 },
+        },
+      ],
+    });
+    const review2 = makeFullContribution({
+      kind: ContributionKind.Review,
+      summary: "Review 2",
+      relations: [
+        {
+          targetCid: target.cid,
+          relationType: RelationType.Reviews,
+          metadata: { score: 0.85 },
+        },
+      ],
+    });
+
+    const contract: GroveContract = {
+      contractVersion: 2,
+      name: "test",
+      stopConditions: { quorumReviewScore: { minReviews: 2, minScore: 0.8 } },
+    };
+    const store = new InMemoryContributionStore([target, review1, review2]);
+    const enforcer = new PolicyEnforcer(contract, store);
+    const contribution = makeContribution();
+
+    const result = await enforcer.enforce(contribution, false);
+    expect(result.stopResult).toBeDefined();
+    expect(result.stopResult!.stopped).toBe(true);
+    expect(result.stopResult!.reason).toContain("quorum_review_score");
+  });
+
+  test("not stopped when quorum is not met", async () => {
+    const target = makeFullContribution({ summary: "Work" });
+    const review1 = makeFullContribution({
+      kind: ContributionKind.Review,
+      summary: "Single review",
+      relations: [
+        {
+          targetCid: target.cid,
+          relationType: RelationType.Reviews,
+          metadata: { score: 0.95 },
+        },
+      ],
+    });
+
+    const contract: GroveContract = {
+      contractVersion: 2,
+      name: "test",
+      stopConditions: { quorumReviewScore: { minReviews: 3, minScore: 0.8 } },
+    };
+    const store = new InMemoryContributionStore([target, review1]);
+    const enforcer = new PolicyEnforcer(contract, store);
+    const contribution = makeContribution();
+
+    const result = await enforcer.enforce(contribution, false);
+    expect(result.stopResult).toBeDefined();
+    expect(result.stopResult!.stopped).toBe(false);
+  });
+});
+
+describe("PolicyEnforcer: deliberation_limit stop condition", () => {
+  test("stopped when thread depth exceeds limit", async () => {
+    const root = makeFullContribution({ summary: "Topic root" });
+    const reply1 = makeFullContribution({
+      kind: ContributionKind.Discussion,
+      summary: "Reply 1",
+      relations: [{ targetCid: root.cid, relationType: RelationType.RespondsTo }],
+    });
+    const reply2 = makeFullContribution({
+      kind: ContributionKind.Discussion,
+      summary: "Reply 2",
+      relations: [{ targetCid: reply1.cid, relationType: RelationType.RespondsTo }],
+    });
+    const reply3 = makeFullContribution({
+      kind: ContributionKind.Discussion,
+      summary: "Reply 3",
+      relations: [{ targetCid: reply2.cid, relationType: RelationType.RespondsTo }],
+    });
+
+    const contract: GroveContract = {
+      contractVersion: 2,
+      name: "test",
+      stopConditions: { deliberationLimit: { maxRounds: 3 } },
+    };
+    const store = new InMemoryContributionStore([root, reply1, reply2, reply3]);
+    const enforcer = new PolicyEnforcer(contract, store);
+    const contribution = makeContribution();
+
+    const result = await enforcer.enforce(contribution, false);
+    expect(result.stopResult).toBeDefined();
+    expect(result.stopResult!.stopped).toBe(true);
+    expect(result.stopResult!.reason).toContain("deliberation_limit");
+  });
+
+  test("not stopped when thread is below limit", async () => {
+    const root = makeFullContribution({ summary: "Root" });
+    const reply1 = makeFullContribution({
+      kind: ContributionKind.Discussion,
+      summary: "Reply 1",
+      relations: [{ targetCid: root.cid, relationType: RelationType.RespondsTo }],
+    });
+
+    const contract: GroveContract = {
+      contractVersion: 2,
+      name: "test",
+      stopConditions: { deliberationLimit: { maxRounds: 5 } },
+    };
+    const store = new InMemoryContributionStore([root, reply1]);
+    const enforcer = new PolicyEnforcer(contract, store);
+    const contribution = makeContribution();
+
+    const result = await enforcer.enforce(contribution, false);
+    expect(result.stopResult).toBeDefined();
+    expect(result.stopResult!.stopped).toBe(false);
   });
 });
