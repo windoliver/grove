@@ -130,7 +130,8 @@ export class NexusDataProvider
    * contributions from this session, avoiding the N+1 VFS read storm from
    * scanning all historical contributions.
    */
-  setSessionScope(sessionId: string): void {
+  override setSessionScope(sessionId: string): void {
+    super.setSessionScope(sessionId); // sets this.activeSessionId
     const oldId = this.store.storeIdentity;
     const scopedStore = new NexusContributionStore({
       ...({ client: this.client, zoneId: this.zoneId } as NexusConfig),

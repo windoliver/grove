@@ -49,7 +49,7 @@ import { DEFAULT_LEASE_DURATION_MS } from "../core/claim-logic.js";
 import { ClaimConflictError, NotFoundError, StateConflictError } from "../core/errors.js";
 import { toUtcIso } from "../core/time.js";
 
-const CURRENT_SCHEMA_VERSION = 8;
+const CURRENT_SCHEMA_VERSION = 9;
 
 // ---------------------------------------------------------------------------
 // Schema DDL
@@ -312,6 +312,64 @@ export function initSqliteDb(dbPath: string): Database {
       }
     }
 
+    // Migration → v9: add archived_at and contribution_count to sessions, create triggers.
+    // archived_at (INTEGER, Unix epoch) drives default-exclude behavior in listSessions().
+    // contribution_count (denormalized INTEGER) replaces the GROUP BY subquery.
+    // Triggers keep contribution_count in sync with session_contributions.
+    {
+      const sessionTableExists =
+        (db
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'")
+          .get() as { name: string } | null) !== null;
+      if (sessionTableExists) {
+        const sessionCols = db.prepare("PRAGMA table_info(sessions)").all() as readonly {
+          name: string;
+        }[];
+        const sessionColNames = new Set(sessionCols.map((c) => c.name));
+
+        if (!sessionColNames.has("archived_at")) {
+          db.run("ALTER TABLE sessions ADD COLUMN archived_at INTEGER");
+          // Backfill: sessions that already have status='archived' get archived_at set
+          db.run(`
+            UPDATE sessions
+            SET archived_at = CAST(strftime('%s', COALESCE(ended_at, 'now')) AS INTEGER)
+            WHERE status = 'archived' AND archived_at IS NULL
+          `);
+        }
+
+        if (!sessionColNames.has("contribution_count")) {
+          db.run("ALTER TABLE sessions ADD COLUMN contribution_count INTEGER NOT NULL DEFAULT 0");
+          // Backfill from existing session_contributions rows
+          db.run(`
+            UPDATE sessions
+            SET contribution_count = (
+              SELECT COUNT(*) FROM session_contributions
+              WHERE session_id = sessions.session_id
+            )
+          `);
+        }
+
+        // Create triggers idempotently — IF NOT EXISTS handles fresh DBs that
+        // already got these from GOAL_SESSION_DDL.
+        db.run(`
+          CREATE TRIGGER IF NOT EXISTS trg_sc_insert
+          AFTER INSERT ON session_contributions
+          BEGIN
+            UPDATE sessions SET contribution_count = contribution_count + 1
+            WHERE session_id = NEW.session_id;
+          END
+        `);
+        db.run(`
+          CREATE TRIGGER IF NOT EXISTS trg_sc_delete
+          AFTER DELETE ON session_contributions
+          BEGIN
+            UPDATE sessions SET contribution_count = contribution_count - 1
+            WHERE session_id = OLD.session_id;
+          END
+        `);
+      }
+    }
+
     db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [
       CURRENT_SCHEMA_VERSION,
       new Date().toISOString(),
@@ -418,6 +476,14 @@ function buildFilteredQuery(opts: BuildFilteredQueryOptions): BuiltQuery {
   if (query?.platform !== undefined) {
     conditions.push("json_extract(c.manifest_json, '$.agent.platform') = ?");
     params.push(query.platform);
+  }
+
+  // Session filtering via junction table — only contributions linked to this session.
+  if (query?.sessionId !== undefined) {
+    conditions.push(
+      `EXISTS (SELECT 1 FROM session_contributions sc WHERE sc.cid = c.cid AND sc.session_id = ?)`,
+    );
+    params.push(query.sessionId);
   }
 
   // Tag filtering via junction table — contribution must have ALL queried tags.

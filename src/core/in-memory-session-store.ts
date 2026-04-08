@@ -44,7 +44,11 @@ export class InMemorySessionStore implements SessionStore {
   async listSessions(query?: SessionQuery): Promise<readonly Session[]> {
     let filtered = this.sessions;
     if (query?.status) {
+      // Explicit status filter takes precedence over includeArchived
       filtered = filtered.filter((s) => s.status === query.status);
+    } else if (!query?.includeArchived) {
+      // Default: exclude archived sessions
+      filtered = filtered.filter((s) => s.status !== "archived");
     }
     if (query?.presetName) {
       filtered = filtered.filter((s) => s.presetName === query.presetName);

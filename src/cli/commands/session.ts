@@ -245,7 +245,7 @@ async function sessionList(_args: readonly string[]): Promise<void> {
       const { initSqliteDb } = await import("../../local/sqlite-store.js");
       const db = initSqliteDb(dbPath);
       const store = new SqliteGoalSessionStore(db);
-      sessions = [...(await store.listSessions())];
+      sessions = [...(await store.listSessions({ includeArchived: true }))];
       db.close();
     }
   } catch {

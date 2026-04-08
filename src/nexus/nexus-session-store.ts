@@ -82,7 +82,11 @@ export class NexusSessionStore implements SessionStore {
           const data = await this.client.read(`/zones/${this.zoneId}/sessions/${f.name}`);
           if (data) {
             const s = JSON.parse(decoder.decode(data)) as Session;
-            if (query?.status && s.status !== query.status) continue;
+            if (query?.status) {
+              if (s.status !== query.status) continue;
+            } else if (!query?.includeArchived) {
+              if (s.status === "archived") continue;
+            }
             if (query?.presetName && s.presetName !== query.presetName) continue;
             const cids = await this.getContributions(s.id);
             sessions.push({ ...s, contributionCount: cids.length });

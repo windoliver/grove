@@ -55,6 +55,7 @@ export interface InboxQuery {
   readonly since?: string | undefined;
   /** Maximum number of messages to return. */
   readonly limit?: number | undefined;
+  readonly sessionId?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +135,7 @@ export async function readInbox(
   const contributions = await store.list({
     kind: ContributionKind.Discussion,
     ...(storeLimit !== undefined ? { limit: storeLimit } : {}),
+    ...(query?.sessionId !== undefined ? { sessionId: query.sessionId } : {}),
   });
 
   let messages = contributions.filter((c) => {

@@ -175,6 +175,7 @@ export interface FrontierInput {
   readonly agentName?: string | undefined;
   readonly context?: Readonly<Record<string, JsonValue>> | undefined;
   readonly limit?: number | undefined;
+  readonly sessionId?: string | undefined;
 }
 
 /** Input for the search operation. */
@@ -241,6 +242,7 @@ export async function frontierOperation(
       agentName: input.agentName,
       context: input.context,
       limit: input.limit,
+      ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
     });
 
     return ok({

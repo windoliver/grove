@@ -24,6 +24,8 @@ export interface McpDeps extends ServerDeps {
   readonly contract?: GroveContract | undefined;
   /** Called after a contribution is written to invalidate caches (e.g., frontier). */
   readonly onContributionWrite?: (() => void) | undefined;
+  /** Called after a contribution is written, receiving its CID (for session tagging). */
+  readonly onContributionWritten?: ((cid: string) => void) | undefined;
   readonly bountyStore?: BountyStore;
   readonly creditsService?: CreditsService;
   /** Optional event bus for agent notifications. */

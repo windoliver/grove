@@ -66,6 +66,13 @@ export interface CreateSessionInput {
 export interface SessionQuery {
   readonly status?: SessionStatus | undefined;
   readonly presetName?: string | undefined;
+  /**
+   * When true, include archived sessions in results.
+   * Default behavior (false/undefined) excludes archived sessions.
+   * Has no effect when `status` is explicitly set — a status filter
+   * always takes precedence.
+   */
+  readonly includeArchived?: boolean | undefined;
 }
 
 /**

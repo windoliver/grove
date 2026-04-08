@@ -101,6 +101,7 @@ export async function createPlanOperation(
   const contribution = createContribution(contributionInput);
   await store.put(contribution);
   deps.onContributionWrite?.();
+  deps.onContributionWritten?.(contribution.cid);
 
   const stats = computeStats(input.tasks);
   return ok({
@@ -159,6 +160,7 @@ export async function updatePlanOperation(
   const contribution = createContribution(contributionInput);
   await store.put(contribution);
   deps.onContributionWrite?.();
+  deps.onContributionWritten?.(contribution.cid);
 
   const stats = computeStats(input.tasks);
   return ok({

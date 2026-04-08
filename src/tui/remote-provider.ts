@@ -97,19 +97,32 @@ export class RemoteDataProvider
 
   private readonly baseUrl: string;
   private readonly label: string;
+  /** Set by {@link setSessionScope} — scopes contribution and frontier reads to this session. */
+  private activeSessionId: string | undefined;
 
   constructor(baseUrl: string, backendLabel?: string) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
     this.label = backendLabel ?? `remote (${this.baseUrl})`;
   }
 
+  /**
+   * Scope all subsequent contribution and frontier reads to the given session.
+   * Called by screen-manager.tsx when a session is started or resumed.
+   */
+  setSessionScope(sessionId: string): void {
+    this.activeSessionId = sessionId;
+  }
+
   async getDashboard(): Promise<DashboardData> {
-    const [metadata, activeClaims, recentContributions, frontier] = await Promise.all([
+    const [metadata, recentContributions, frontier] = await Promise.all([
       this.fetchGroveMetadata(),
-      this.getClaims({ status: "active" }),
       this.getContributions({ limit: 10 }),
       this.getFrontier({ limit: 3 }),
     ]);
+
+    // Claims have no session ownership — suppress when session-scoped to avoid
+    // cross-session pollution of dashboard counts and role-status indicators.
+    const activeClaims = this.activeSessionId ? [] : await this.getClaims({ status: "active" });
 
     const frontierSummary = buildFrontierSummary(frontier);
 
@@ -131,6 +144,9 @@ export class RemoteDataProvider
     if (query?.agentId) params.set("agentId", query.agentId);
     if (query?.limit) params.set("limit", String(query.limit));
     if (query?.offset) params.set("offset", String(query.offset));
+    // Prefer explicit sessionId on the query, fall back to active scope
+    const effectiveSessionId = query?.sessionId ?? this.activeSessionId;
+    if (effectiveSessionId) params.set("sessionId", effectiveSessionId);
 
     const qs = params.toString();
     const resp = await fetch(`${this.baseUrl}/api/contributions${qs ? `?${qs}` : ""}`);
@@ -204,6 +220,9 @@ export class RemoteDataProvider
     if (query?.tags?.length) params.set("tags", query.tags.join(","));
     if (query?.kind) params.set("kind", query.kind);
     if (query?.mode) params.set("mode", query.mode);
+    // Prefer explicit sessionId on the query, fall back to active scope
+    const effectiveSessionId = query?.sessionId ?? this.activeSessionId;
+    if (effectiveSessionId) params.set("sessionId", effectiveSessionId);
 
     const qs = params.toString();
     const resp = await fetch(`${this.baseUrl}/api/frontier${qs ? `?${qs}` : ""}`);
@@ -435,12 +454,20 @@ export class RemoteDataProvider
   // TuiMessagingProvider
   // ---------------------------------------------------------------------------
 
+  /** Boardroom summary URL — includes `?sessionId=` when a session scope is active. */
+  private get boardroomSummaryUrl(): string {
+    const base = `${this.baseUrl}/api/boardroom/summary`;
+    return this.activeSessionId
+      ? `${base}?sessionId=${encodeURIComponent(this.activeSessionId)}`
+      : base;
+  }
+
   async getInboxMessages(query?: {
     recipient?: string;
     limit?: number;
   }): Promise<readonly InboxMessage[]> {
     try {
-      const resp = await fetch(`${this.baseUrl}/api/boardroom/summary`);
+      const resp = await fetch(this.boardroomSummaryUrl);
       if (!resp.ok) return [];
       const body = (await resp.json()) as {
         recentMessages: readonly {
@@ -481,7 +508,7 @@ export class RemoteDataProvider
 
   async getSessionCosts(): Promise<SessionCostSummary> {
     try {
-      const resp = await fetch(`${this.baseUrl}/api/boardroom/summary`);
+      const resp = await fetch(this.boardroomSummaryUrl);
       if (!resp.ok) return { totalCostUsd: 0, totalTokens: 0, byAgent: [] };
       const body = (await resp.json()) as {
         costSummary: {
@@ -507,7 +534,7 @@ export class RemoteDataProvider
 
   async getPendingQuestions(): Promise<readonly PendingQuestion[]> {
     try {
-      const resp = await fetch(`${this.baseUrl}/api/boardroom/summary`);
+      const resp = await fetch(this.boardroomSummaryUrl);
       if (!resp.ok) return [];
       const body = (await resp.json()) as {
         pendingQuestions: readonly {
@@ -528,7 +555,11 @@ export class RemoteDataProvider
     const resp = await fetch(`${this.baseUrl}/api/boardroom/answer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ questionCid, answer }),
+      body: JSON.stringify({
+        questionCid,
+        answer,
+        ...(this.activeSessionId !== undefined ? { sessionId: this.activeSessionId } : {}),
+      }),
     });
     if (!resp.ok) {
       throw new Error(`Failed to answer question: HTTP ${String(resp.status)}`);

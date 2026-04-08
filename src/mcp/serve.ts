@@ -187,6 +187,17 @@ try {
     }
   }
 
+  // When running with a local SQLite store and GROVE_SESSION_ID is set,
+  // tag every contribution write against the session at the MCP layer.
+  // Nexus handles this via path-scoped stores; local SQLite needs the junction table.
+  const envSessionId = process.env.GROVE_SESSION_ID;
+  const onContributionWritten =
+    envSessionId && !nexusClient
+      ? (cid: string) => {
+          void runtime.goalSessionStore.addContributionToSession(envSessionId, cid).catch(() => {});
+        }
+      : undefined;
+
   deps = {
     contributionStore,
     claimStore,
@@ -196,6 +207,7 @@ try {
     workspace: runtime.workspace,
     contract: runtime.contract,
     onContributionWrite: runtime.onContributionWrite,
+    ...(onContributionWritten ? { onContributionWritten } : {}),
     workspaceBoundary: runtime.groveRoot,
     ...(outcomeStore ? { outcomeStore } : {}),
     ...(eventBus ? { eventBus } : {}),

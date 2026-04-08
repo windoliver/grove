@@ -1,12 +1,13 @@
 /**
  * Periodic storage cleanup — expires stale claims, removes completed claims,
- * and garbage-collects unreferenced CAS blobs.
+ * garbage-collects unreferenced CAS blobs, and archives stale sessions.
  *
  * Designed to be called on a timer from `grove up` (headless mode).
  */
 
 import type { ClaimStore } from "../core/store.js";
 import type { FsCas } from "./fs-cas.js";
+import type { GoalSessionStore } from "./sqlite-goal-session-store.js";
 import type { SqliteContributionStore } from "./sqlite-store.js";
 
 /** Result of a single cleanup pass. */
@@ -43,4 +44,22 @@ export async function runArtifactGc(deps: {
   const referencedHashes = deps.contributionStore.allContentHashes();
   const deletedBlobs = await deps.cas.gc(referencedHashes);
   return { deletedBlobs };
+}
+
+/** Result of a session GC pass. */
+export interface SessionGcResult {
+  readonly archivedSessions: number;
+}
+
+/**
+ * Archive sessions that have been inactive longer than the TTL and are not
+ * in an active or pending state. Safe to call repeatedly — already-archived
+ * sessions are skipped.
+ */
+export function runSessionGc(deps: {
+  goalSessionStore: Pick<GoalSessionStore, "gcStaleSessions">;
+  ttlMs?: number;
+}): SessionGcResult {
+  const archivedSessions = deps.goalSessionStore.gcStaleSessions(deps.ttlMs);
+  return { archivedSessions };
 }

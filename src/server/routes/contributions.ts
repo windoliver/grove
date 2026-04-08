@@ -40,6 +40,7 @@ const listQuerySchema = z.object({
   agentId: z.string().optional(),
   agentName: z.string().optional(),
   outcome: z.enum(["accepted", "rejected", "crashed", "invalidated"]).optional(),
+  sessionId: z.string().optional(),
 });
 
 const cidParamSchema = z.object({
@@ -121,6 +122,7 @@ function toContributionQuery(raw: {
   agentName?: string | undefined;
   limit?: number | undefined;
   offset?: number | undefined;
+  sessionId?: string | undefined;
 }): ContributionQuery {
   return {
     kind: raw.kind as ContributionKind | undefined,
@@ -130,6 +132,7 @@ function toContributionQuery(raw: {
     agentName: raw.agentName,
     limit: raw.limit,
     offset: raw.offset,
+    ...(raw.sessionId !== undefined ? { sessionId: raw.sessionId } : {}),
   };
 }
 
@@ -346,6 +349,7 @@ contributions.get("/", zValidator("query", listQuerySchema), async (c) => {
     tags: query.tags,
     agentId: query.agentId,
     agentName: query.agentName,
+    ...(query.sessionId !== undefined ? { sessionId: query.sessionId } : {}),
   });
 
   c.header("X-Total-Count", String(total));

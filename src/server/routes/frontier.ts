@@ -22,6 +22,7 @@ const querySchema = z.object({
   metric: z.string().optional(),
   context: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(10),
+  sessionId: z.string().optional(),
 });
 
 const frontier: HonoType<ServerEnv> = new Hono<ServerEnv>();
@@ -58,6 +59,7 @@ frontier.get("/", zValidator("query", querySchema), async (c) => {
       agentName: query.agentName,
       context: contextFilter,
       limit: query.limit,
+      ...(query.sessionId !== undefined ? { sessionId: query.sessionId } : {}),
     },
     deps,
   );

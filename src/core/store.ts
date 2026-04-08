@@ -54,6 +54,8 @@ export interface ContributionQuery {
   readonly platform?: string | undefined;
   readonly limit?: number | undefined;
   readonly offset?: number | undefined;
+  /** When set, only return contributions linked to this session. */
+  readonly sessionId?: string | undefined;
 }
 
 /** Store for immutable contributions and their typed relations. */

@@ -24,15 +24,23 @@ import type { ServerEnv } from "../deps.js";
 // File-local schemas (not exported — avoids isolatedDeclarations issues)
 // ---------------------------------------------------------------------------
 
+const summaryQuerySchema = z.object({
+  sessionId: z.string().optional(),
+});
+
 const answerBodySchema = z.object({
   questionCid: z.string().min(1),
   answer: z.string().min(1),
+  /** Optional session ID — attaches the answer contribution to the session. */
+  sessionId: z.string().optional(),
 });
 
 const messageBodySchema = z.object({
   body: z.string().min(1),
   recipients: z.array(z.string().min(1)).min(1),
   inReplyTo: z.string().optional(),
+  /** Optional session ID — attaches the message contribution to the session. */
+  sessionId: z.string().optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -81,15 +89,17 @@ export const boardroom: Hono<ServerEnv> = new Hono<ServerEnv>();
  * Aggregated hot data for the TUI boardroom.
  * Replaces multiple polling requests with a single call.
  */
-boardroom.get("/summary", async (c) => {
+boardroom.get("/summary", zValidator("query", summaryQuerySchema), async (c) => {
   const deps = c.get("deps");
   const store = deps.contributionStore;
   const claimStore = deps.claimStore;
+  const { sessionId } = c.req.valid("query");
 
-  // Fetch ephemeral discussions in a single query
+  // Fetch ephemeral discussions in a single query, optionally scoped to a session
   const discussions = await store.list({
     kind: ContributionKind.Discussion,
     limit: 200,
+    ...(sessionId !== undefined ? { sessionId } : {}),
   });
 
   const ephemeral = discussions.filter((d) => d.context?.ephemeral === true);
@@ -210,6 +220,15 @@ boardroom.post("/answer", zValidator("json", answerBodySchema), async (c) => {
     computeCid,
   );
 
+  // Link the answer contribution to the session so it is visible in scoped reads
+  if (body.sessionId && deps.goalSessionStore) {
+    await deps.goalSessionStore
+      .addContributionToSession(body.sessionId, contribution.cid)
+      .catch(() => {
+        /* best-effort */
+      });
+  }
+
   return c.json({ cid: contribution.cid, answer: body.answer });
 });
 
@@ -231,6 +250,15 @@ boardroom.post("/message", zValidator("json", messageBodySchema), async (c) => {
     { agent: operator, body: body.body, recipients: body.recipients, inReplyTo: body.inReplyTo },
     computeCid,
   );
+
+  // Link the message contribution to the session so it is visible in scoped reads
+  if (body.sessionId && deps.goalSessionStore) {
+    await deps.goalSessionStore
+      .addContributionToSession(body.sessionId, contribution.cid)
+      .catch(() => {
+        /* best-effort */
+      });
+  }
 
   return c.json({ cid: contribution.cid, summary: contribution.summary });
 });

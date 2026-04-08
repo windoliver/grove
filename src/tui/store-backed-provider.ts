@@ -131,6 +131,9 @@ export abstract class StoreBackedProvider
   protected readonly goalSession: GoalSessionStore | undefined;
   protected readonly handoffs: HandoffStore | undefined;
 
+  /** Set by {@link setSessionScope} — scopes all contribution queries to this session. */
+  protected activeSessionId: string | undefined;
+
   constructor(deps: StoreBackedProviderDeps) {
     this.store = deps.contributionStore;
     this.claims = deps.claimStore;
@@ -144,26 +147,40 @@ export abstract class StoreBackedProvider
   }
 
   // ---------------------------------------------------------------------------
+  // Session scoping
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Scope all subsequent contribution queries to the given session.
+   * Called by screen-manager.tsx when a session is started.
+   * NexusDataProvider overrides this to also swap the store instance.
+   */
+  setSessionScope(sessionId: string): void {
+    this.activeSessionId = sessionId;
+  }
+
+  // ---------------------------------------------------------------------------
   // TuiDataProvider — dashboard
   // ---------------------------------------------------------------------------
 
   /** Fetch aggregated dashboard data. */
   async getDashboard(): Promise<DashboardData> {
-    const [
-      contributionCount,
-      activeClaims,
-      recentContributions,
-      frontier,
-      goalData,
-      activeSessions,
-    ] = await Promise.all([
-      this.store.count(),
-      this.claims.activeClaims(),
-      this.store.list({ limit: 10 }),
-      this.calc.compute({ limit: 3 }),
-      this.goalSession ? this.goalSession.getGoal() : Promise.resolve(undefined),
-      this.goalSession ? this.goalSession.listSessions({ status: "active" }) : Promise.resolve([]),
-    ]);
+    const sessionFilter = this.activeSessionId ? { sessionId: this.activeSessionId } : undefined;
+
+    const [contributionCount, recentContributions, frontier, goalData, activeSessions] =
+      await Promise.all([
+        this.store.count(sessionFilter),
+        this.store.list({ limit: 10, ...sessionFilter }),
+        this.calc.compute({ limit: 3, ...sessionFilter }),
+        this.goalSession ? this.goalSession.getGoal() : Promise.resolve(undefined),
+        this.goalSession
+          ? this.goalSession.listSessions({ status: "active" })
+          : Promise.resolve([]),
+      ]);
+
+    // Claims have no session ownership — suppress when session-scoped to avoid
+    // cross-session pollution of dashboard counts and role-status indicators.
+    const activeClaims = this.activeSessionId ? [] : await this.claims.activeClaims();
 
     const metadata: GroveMetadata = {
       name: this.name,
@@ -191,11 +208,13 @@ export abstract class StoreBackedProvider
   async getContributions(
     query?: ContributionQuery & PaginatedQuery,
   ): Promise<readonly Contribution[]> {
-    const result = await this.store.list(query);
+    const effectiveQuery =
+      this.activeSessionId !== undefined ? { ...query, sessionId: this.activeSessionId } : query;
+    const result = await this.store.list(effectiveQuery);
     try {
       _afs(
         "/tmp/grove-debug.log",
-        `[${new Date().toISOString()}] [provider.getContributions] count=${result.length} query=${JSON.stringify(query ?? {})}\n`,
+        `[${new Date().toISOString()}] [provider.getContributions] count=${result.length} query=${JSON.stringify(effectiveQuery ?? {})}\n`,
       );
     } catch {
       /* ignore */
@@ -277,21 +296,45 @@ export abstract class StoreBackedProvider
 
   /** Compute frontier. */
   async getFrontier(query?: FrontierQuery): Promise<Frontier> {
-    return this.calc.compute(query);
+    const effectiveQuery =
+      this.activeSessionId !== undefined ? { ...query, sessionId: this.activeSessionId } : query;
+    return this.calc.compute(effectiveQuery);
   }
 
   /** Recent contributions as an activity stream. */
   async getActivity(query?: ActivityQuery): Promise<readonly Contribution[]> {
+    if (this.activeSessionId !== undefined) {
+      return this.store.list({
+        kind: query?.kind,
+        tags: query?.tags ? [...query.tags] : undefined,
+        agentId: query?.agentId,
+        limit: query?.limit ?? 100,
+        offset: query?.offset,
+        sessionId: this.activeSessionId,
+      });
+    }
     return activityFromStore(this.store, query);
   }
 
   /** Get contributions for DAG rendering. */
   async getDag(rootCid?: string): Promise<DagData> {
+    if (this.activeSessionId !== undefined) {
+      // Scope DAG to the current session's contributions only
+      const contributions = await this.store.list({
+        limit: 100,
+        sessionId: this.activeSessionId,
+      });
+      return { contributions };
+    }
     return dagFromStore(this.store, rootCid);
   }
 
   /** Hot discussion threads. */
   async getHotThreads(limit = 20): Promise<readonly ThreadSummary[]> {
+    if (this.activeSessionId !== undefined) {
+      // Hot threads are cross-session analysis — suppress when session-scoped
+      return [];
+    }
     return this.store.hotThreads({ limit });
   }
 
@@ -366,6 +409,7 @@ export abstract class StoreBackedProvider
     const messages = await readInbox(this.store, {
       recipient: query?.recipient,
       limit: query?.limit,
+      ...(this.activeSessionId !== undefined ? { sessionId: this.activeSessionId } : {}),
     });
     return messages.map((m) => ({
       cid: m.cid,
@@ -385,7 +429,10 @@ export abstract class StoreBackedProvider
 
   /** Get session cost summary aggregated across all agents. */
   async getSessionCosts(): Promise<SessionCostSummary> {
-    const costs = await getSessionCostsOp(this.store);
+    const costs = await getSessionCostsOp(
+      this.store,
+      this.activeSessionId !== undefined ? { sessionId: this.activeSessionId } : undefined,
+    );
     return {
       totalCostUsd: costs.totalCostUsd,
       totalTokens: costs.totalInputTokens + costs.totalOutputTokens,
@@ -405,7 +452,10 @@ export abstract class StoreBackedProvider
 
   /** List pending ask-user questions. */
   async getPendingQuestions(): Promise<readonly PendingQuestion[]> {
-    const questions = await listPendingQuestions(this.store);
+    const questions = await listPendingQuestions(
+      this.store,
+      this.activeSessionId !== undefined ? { sessionId: this.activeSessionId } : undefined,
+    );
     return questions.map((q) => ({
       cid: q.cid,
       ...(q.agent.agentName !== undefined ? { agentName: q.agent.agentName } : {}),
@@ -418,7 +468,20 @@ export abstract class StoreBackedProvider
   /** Answer a pending ask-user question. */
   async answerQuestion(questionCid: string, answer: string): Promise<void> {
     const operator = { agentId: "tui-operator", agentName: "operator" };
-    await answerQuestionOp(this.store, { questionCid, answer, operator }, computeCid);
+    const contribution = await answerQuestionOp(
+      this.store,
+      { questionCid, answer, operator },
+      computeCid,
+    );
+    // Link the answer contribution to the active session so it is visible in
+    // session-scoped reads and prevents the question from staying "pending" forever.
+    if (this.activeSessionId !== undefined && this.goalSession !== undefined) {
+      await this.goalSession
+        .addContributionToSession(this.activeSessionId, contribution.cid)
+        .catch(() => {
+          /* best-effort */
+        });
+    }
   }
 
   // ---------------------------------------------------------------------------
