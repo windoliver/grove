@@ -167,21 +167,20 @@ export abstract class StoreBackedProvider
   async getDashboard(): Promise<DashboardData> {
     const sessionFilter = this.activeSessionId ? { sessionId: this.activeSessionId } : undefined;
 
-    const [
-      contributionCount,
-      activeClaims,
-      recentContributions,
-      frontier,
-      goalData,
-      activeSessions,
-    ] = await Promise.all([
-      this.store.count(sessionFilter),
-      this.claims.activeClaims(),
-      this.store.list({ limit: 10, ...sessionFilter }),
-      this.calc.compute({ limit: 3, ...sessionFilter }),
-      this.goalSession ? this.goalSession.getGoal() : Promise.resolve(undefined),
-      this.goalSession ? this.goalSession.listSessions({ status: "active" }) : Promise.resolve([]),
-    ]);
+    const [contributionCount, recentContributions, frontier, goalData, activeSessions] =
+      await Promise.all([
+        this.store.count(sessionFilter),
+        this.store.list({ limit: 10, ...sessionFilter }),
+        this.calc.compute({ limit: 3, ...sessionFilter }),
+        this.goalSession ? this.goalSession.getGoal() : Promise.resolve(undefined),
+        this.goalSession
+          ? this.goalSession.listSessions({ status: "active" })
+          : Promise.resolve([]),
+      ]);
+
+    // Claims have no session ownership — suppress when session-scoped to avoid
+    // cross-session pollution of dashboard counts and role-status indicators.
+    const activeClaims = this.activeSessionId ? [] : await this.claims.activeClaims();
 
     const metadata: GroveMetadata = {
       name: this.name,
@@ -319,11 +318,23 @@ export abstract class StoreBackedProvider
 
   /** Get contributions for DAG rendering. */
   async getDag(rootCid?: string): Promise<DagData> {
+    if (this.activeSessionId !== undefined) {
+      // Scope DAG to the current session's contributions only
+      const contributions = await this.store.list({
+        limit: 100,
+        sessionId: this.activeSessionId,
+      });
+      return { contributions };
+    }
     return dagFromStore(this.store, rootCid);
   }
 
   /** Hot discussion threads. */
   async getHotThreads(limit = 20): Promise<readonly ThreadSummary[]> {
+    if (this.activeSessionId !== undefined) {
+      // Hot threads are cross-session analysis — suppress when session-scoped
+      return [];
+    }
     return this.store.hotThreads({ limit });
   }
 
@@ -398,6 +409,7 @@ export abstract class StoreBackedProvider
     const messages = await readInbox(this.store, {
       recipient: query?.recipient,
       limit: query?.limit,
+      ...(this.activeSessionId !== undefined ? { sessionId: this.activeSessionId } : {}),
     });
     return messages.map((m) => ({
       cid: m.cid,
@@ -417,7 +429,10 @@ export abstract class StoreBackedProvider
 
   /** Get session cost summary aggregated across all agents. */
   async getSessionCosts(): Promise<SessionCostSummary> {
-    const costs = await getSessionCostsOp(this.store);
+    const costs = await getSessionCostsOp(
+      this.store,
+      this.activeSessionId !== undefined ? { sessionId: this.activeSessionId } : undefined,
+    );
     return {
       totalCostUsd: costs.totalCostUsd,
       totalTokens: costs.totalInputTokens + costs.totalOutputTokens,
@@ -437,7 +452,10 @@ export abstract class StoreBackedProvider
 
   /** List pending ask-user questions. */
   async getPendingQuestions(): Promise<readonly PendingQuestion[]> {
-    const questions = await listPendingQuestions(this.store);
+    const questions = await listPendingQuestions(
+      this.store,
+      this.activeSessionId !== undefined ? { sessionId: this.activeSessionId } : undefined,
+    );
     return questions.map((q) => ({
       cid: q.cid,
       ...(q.agent.agentName !== undefined ? { agentName: q.agent.agentName } : {}),

@@ -139,9 +139,13 @@ export async function reportUsage(
 /**
  * Query aggregated cost data across agents.
  */
-export async function getSessionCosts(store: ContributionStore): Promise<SessionCostSummary> {
+export async function getSessionCosts(
+  store: ContributionStore,
+  options?: { readonly sessionId?: string | undefined },
+): Promise<SessionCostSummary> {
   const contributions = await store.list({
     kind: ContributionKind.Discussion,
+    ...(options?.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
   });
 
   const usageContributions = contributions.filter(

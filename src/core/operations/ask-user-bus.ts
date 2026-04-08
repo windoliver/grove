@@ -177,9 +177,11 @@ export async function answerQuestion(
  */
 export async function listPendingQuestions(
   store: ContributionStore,
+  options?: { readonly sessionId?: string | undefined },
 ): Promise<readonly PendingQuestion[]> {
   const contributions = await store.list({
     kind: ContributionKind.Discussion,
+    ...(options?.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
   });
 
   const questions = contributions.filter(
