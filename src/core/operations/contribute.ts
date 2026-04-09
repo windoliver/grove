@@ -172,7 +172,9 @@ async function validateRelations(
 }
 
 /**
- * Validate that all artifact hashes exist in CAS (batch).
+ * Validate that all artifact hashes exist in CAS.
+ * Existence checks run in parallel via Promise.all so a contribution with
+ * N artifacts pays 1×rtt instead of N×rtt against a remote CAS.
  * Returns a validation error if any hash is missing, or undefined if all valid.
  */
 async function validateArtifacts(
@@ -182,8 +184,12 @@ async function validateArtifacts(
   if (deps.cas === undefined) {
     return validationErr("Artifact validation not available (missing cas)");
   }
-  for (const [name, hash] of Object.entries(artifacts)) {
-    const exists = await deps.cas.exists(hash);
+  const cas = deps.cas;
+  const entries = Object.entries(artifacts);
+  const checks = await Promise.all(
+    entries.map(async ([name, hash]) => ({ name, hash, exists: await cas.exists(hash) })),
+  );
+  for (const { name, hash, exists } of checks) {
     if (!exists) {
       return validationErr(`Artifact '${name}' references non-existent hash: ${hash}`);
     }
