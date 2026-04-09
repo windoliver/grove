@@ -9,7 +9,7 @@
 
 import { fireAndForget } from "../../shared/fire-and-forget.js";
 import { pickDefined } from "../../shared/pick-defined.js";
-import type { HandoffInput } from "../handoff.js";
+import type { HandoffInput, HandoffStore } from "../handoff.js";
 import { createContribution } from "../manifest.js";
 import {
   ContributionKind as CK,
@@ -205,6 +205,115 @@ function resolveMode(
 }
 
 // ---------------------------------------------------------------------------
+// Contribution write paths
+// ---------------------------------------------------------------------------
+
+/**
+ * Atomic write path: SQLite stores supporting `putWithCowrite` write the
+ * contribution and all handoff records inside a single SQLite transaction.
+ * Used when both the contribution store and handoff store are SQLite-backed.
+ */
+function writeAtomic(
+  contribution: Contribution,
+  routedTo: readonly string[],
+  agentRole: string,
+  putWithCowrite: (c: Contribution, fn: () => void) => void,
+  insertSync: (input: HandoffInput) => string,
+): readonly string[] {
+  const handoffIds: string[] = [];
+  putWithCowrite(contribution, () => {
+    for (const targetRole of routedTo) {
+      const hid = insertSync({
+        sourceCid: contribution.cid,
+        fromRole: agentRole,
+        toRole: targetRole,
+        requiresReply: false,
+      });
+      if (hid !== undefined) handoffIds.push(hid);
+    }
+  });
+  return handoffIds;
+}
+
+/**
+ * Serial write path: write the contribution first, then create each handoff
+ * record sequentially. Used when the store does not support atomic cowrite
+ * (in-memory stores, Nexus VFS handoff store).
+ *
+ * Best-effort handoffs: a handoff insertion failure must not fail the
+ * already-committed contribution write. The contribution is in the DAG;
+ * handoff records are the secondary artifact.
+ */
+async function writeSerial(
+  contribution: Contribution,
+  routedTo: readonly string[] | undefined,
+  agentRole: string | undefined,
+  store: ContributionStore,
+  handoffStore: HandoffStore | undefined,
+): Promise<readonly string[]> {
+  await store.put(contribution);
+
+  const handoffIds: string[] = [];
+  if (handoffStore === undefined || routedTo === undefined || agentRole === undefined) {
+    return handoffIds;
+  }
+
+  for (const targetRole of routedTo) {
+    try {
+      const handoff = await handoffStore.create({
+        sourceCid: contribution.cid,
+        fromRole: agentRole,
+        toRole: targetRole,
+        requiresReply: false,
+      });
+      handoffIds.push(handoff.handoffId);
+    } catch {
+      // Best-effort: contribution is already committed.
+    }
+  }
+  return handoffIds;
+}
+
+/**
+ * Dispatch to the atomic or serial write path based on store capabilities.
+ * Centralizes the duck-typing on `putWithCowrite` / `insertSync` so the
+ * caller doesn't have to manage capability detection.
+ */
+async function writeContributionWithHandoffs(
+  contribution: Contribution,
+  routedTo: readonly string[] | undefined,
+  agentRole: string | undefined,
+  store: ContributionStore,
+  handoffStore: HandoffStore | undefined,
+): Promise<readonly string[]> {
+  const needsHandoffs =
+    handoffStore !== undefined &&
+    routedTo !== undefined &&
+    routedTo.length > 0 &&
+    agentRole !== undefined;
+
+  if (needsHandoffs) {
+    const cowriteStore = store as {
+      putWithCowrite?: (c: Contribution, fn: () => void) => void;
+    };
+    const sqliteHandoffStore = handoffStore as {
+      insertSync?: (input: HandoffInput) => string;
+    };
+    if (cowriteStore.putWithCowrite !== undefined && sqliteHandoffStore.insertSync !== undefined) {
+      return writeAtomic(
+        contribution,
+        routedTo,
+        agentRole,
+        cowriteStore.putWithCowrite.bind(cowriteStore),
+        sqliteHandoffStore.insertSync.bind(sqliteHandoffStore),
+      );
+    }
+  }
+
+  return writeSerial(contribution, routedTo, agentRole, store, handoffStore);
+}
+
+// ---------------------------------------------------------------------------
 // Operations
 // ---------------------------------------------------------------------------
 
@@ -327,63 +436,15 @@ export async function contributeOperation(
       }
     }
 
-    // --- Write: contribution + handoffs atomically where possible ---
-    const handoffIds: string[] = [];
-    const needsHandoffs =
-      deps.handoffStore !== undefined && routedTo !== undefined && routedTo.length > 0;
+    // --- Write: contribution + handoffs (atomic when supported, serial otherwise) ---
     const agentRole = contribution.agent.role;
-
-    // Duck-type check for atomic cowrite capability (SqliteContributionStore + SqliteHandoffStore)
-    const cowriteStore = deps.contributionStore as {
-      putWithCowrite?: (c: Contribution, fn: () => void) => void;
-    };
-    const sqliteHandoffStore = needsHandoffs
-      ? (deps.handoffStore as { insertSync?: (input: HandoffInput) => string })
-      : undefined;
-
-    if (
-      needsHandoffs &&
-      cowriteStore.putWithCowrite !== undefined &&
-      sqliteHandoffStore?.insertSync !== undefined &&
-      routedTo !== undefined &&
-      agentRole !== undefined
-    ) {
-      // Atomic path: contribution + all handoff records in one SQLite transaction
-      cowriteStore.putWithCowrite(contribution, () => {
-        for (const targetRole of routedTo) {
-          const hid = sqliteHandoffStore.insertSync?.({
-            sourceCid: contribution.cid,
-            fromRole: agentRole,
-            toRole: targetRole,
-            requiresReply: false,
-          });
-          if (hid !== undefined) handoffIds.push(hid);
-        }
-      });
-    } else {
-      // Non-atomic path: separate writes (in-memory stores or Nexus VFS handoff store)
-      await deps.contributionStore.put(contribution);
-      if (needsHandoffs && routedTo !== undefined && agentRole !== undefined) {
-        const handoffStore = deps.handoffStore;
-        if (handoffStore !== undefined) {
-          for (const targetRole of routedTo) {
-            try {
-              const handoff = await handoffStore.create({
-                sourceCid: contribution.cid,
-                fromRole: agentRole,
-                toRole: targetRole,
-                requiresReply: false,
-              });
-              handoffIds.push(handoff.handoffId);
-            } catch {
-              // Best-effort: a handoff insertion failure must not fail the
-              // already-committed contribution write. The contribution is in
-              // the DAG; the routing record is the secondary artifact.
-            }
-          }
-        }
-      }
-    }
+    const handoffIds = await writeContributionWithHandoffs(
+      contribution,
+      routedTo,
+      agentRole,
+      deps.contributionStore,
+      deps.handoffStore,
+    );
     deps.onContributionWrite?.();
     deps.onContributionWritten?.(contribution.cid);
 
