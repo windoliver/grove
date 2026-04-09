@@ -316,9 +316,13 @@ function writeAtomic(
 }
 
 /**
- * Serial write path: write the contribution first, then create each handoff
- * record sequentially. Used when the store does not support atomic cowrite
- * (in-memory stores, Nexus VFS handoff store).
+ * Serial write path: write the contribution first, then create the handoff
+ * records. Used when the store does not support atomic cowrite (in-memory
+ * stores, Nexus VFS handoff store).
+ *
+ * Uses handoffStore.createMany() when available to fan out N handoffs in
+ * one round-trip (Issue 15A in the #228 review). Falls back to a sequential
+ * create() loop for stores that don't implement the batch API.
  *
  * Best-effort handoffs: a handoff insertion failure must not fail the
  * already-committed contribution write. The contribution is in the DAG;
@@ -338,14 +342,26 @@ async function writeSerial(
     return handoffIds;
   }
 
-  for (const targetRole of routedTo) {
+  const inputs: HandoffInput[] = routedTo.map((targetRole) => ({
+    sourceCid: contribution.cid,
+    fromRole: agentRole,
+    toRole: targetRole,
+    requiresReply: false,
+  }));
+
+  if (handoffStore.createMany !== undefined) {
     try {
-      const handoff = await handoffStore.create({
-        sourceCid: contribution.cid,
-        fromRole: agentRole,
-        toRole: targetRole,
-        requiresReply: false,
-      });
+      const handoffs = await handoffStore.createMany(inputs);
+      for (const h of handoffs) handoffIds.push(h.handoffId);
+    } catch {
+      // Best-effort: contribution is already committed.
+    }
+    return handoffIds;
+  }
+
+  for (const input of inputs) {
+    try {
+      const handoff = await handoffStore.create(input);
       handoffIds.push(handoff.handoffId);
     } catch {
       // Best-effort: contribution is already committed.
