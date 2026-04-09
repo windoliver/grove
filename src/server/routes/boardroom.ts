@@ -17,8 +17,9 @@ import { z } from "zod";
 import { computeCid } from "../../core/manifest.js";
 import { ContributionKind, RelationType } from "../../core/models.js";
 import { answerQuestion } from "../../core/operations/ask-user-bus.js";
-import { sendMessage } from "../../core/operations/messaging.js";
+import { sendMessageAsDiscussion } from "../../core/operations/messaging.js";
 import type { ServerEnv } from "../deps.js";
+import { toOperationDeps } from "../operation-adapter.js";
 
 // ---------------------------------------------------------------------------
 // File-local schemas (not exported — avoids isolatedDeclarations issues)
@@ -240,25 +241,30 @@ boardroom.post("/answer", zValidator("json", answerBodySchema), async (c) => {
  */
 boardroom.post("/message", zValidator("json", messageBodySchema), async (c) => {
   const deps = c.get("deps");
-  const store = deps.contributionStore;
-
   const body = c.req.valid("json");
 
-  const operator = { agentId: "tui-operator", agentName: "operator" };
-  const contribution = await sendMessage(
-    store,
-    { agent: operator, body: body.body, recipients: body.recipients, inReplyTo: body.inReplyTo },
-    computeCid,
+  const result = await sendMessageAsDiscussion(
+    {
+      agent: { agentId: "tui-operator", agentName: "operator" },
+      body: body.body,
+      recipients: body.recipients,
+      ...(body.inReplyTo !== undefined ? { inReplyTo: body.inReplyTo } : {}),
+    },
+    toOperationDeps(deps),
   );
+
+  if (!result.ok) {
+    return c.json({ error: result.error.message }, 400);
+  }
 
   // Link the message contribution to the session so it is visible in scoped reads
   if (body.sessionId && deps.goalSessionStore) {
     await deps.goalSessionStore
-      .addContributionToSession(body.sessionId, contribution.cid)
+      .addContributionToSession(body.sessionId, result.value.cid)
       .catch(() => {
         /* best-effort */
       });
   }
 
-  return c.json({ cid: contribution.cid, summary: contribution.summary });
+  return c.json({ cid: result.value.cid, summary: result.value.summary });
 });

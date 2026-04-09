@@ -7,11 +7,11 @@
  */
 
 import { parseArgs } from "node:util";
-import { createContribution } from "../../core/manifest.js";
-import type { ContributionInput } from "../../core/models.js";
 import type { AgentOverrides } from "../../core/operations/agent.js";
 import { resolveAgent } from "../../core/operations/agent.js";
-import { readInbox, sendMessage } from "../../core/operations/messaging.js";
+import type { OperationDeps } from "../../core/operations/deps.js";
+import { readInbox, sendMessageAsDiscussion } from "../../core/operations/messaging.js";
+import type { CliDeps } from "../context.js";
 import { formatTable, formatTimestamp, outputJson } from "../format.js";
 
 // ---------------------------------------------------------------------------
@@ -72,33 +72,48 @@ async function handleSend(args: readonly string[], groveOverride?: string): Prom
       agentId: values["agent-id"] as string | undefined,
       agentName: values["agent-name"] as string | undefined,
     };
-    const agent = resolveAgent(agentOverrides);
 
-    const computeCid = (input: ContributionInput): string => {
-      return createContribution(input).cid;
-    };
-
-    const result = await sendMessage(
-      deps.store,
+    const result = await sendMessageAsDiscussion(
       {
-        agent,
+        agent: agentOverrides,
         body,
         recipients,
-        inReplyTo: values["reply-to"] as string | undefined,
+        ...(values["reply-to"] !== undefined ? { inReplyTo: values["reply-to"] as string } : {}),
         tags: (values.tag ?? []) as string[],
       },
-      computeCid,
+      cliDepsToOperationDeps(deps),
     );
 
+    if (!result.ok) {
+      console.error(`Error: ${result.error.message}`);
+      process.exitCode = 1;
+      return;
+    }
+
     if (values.json) {
-      outputJson({ cid: result.cid, recipients, body });
+      outputJson({ cid: result.value.cid, recipients, body });
     } else {
-      console.log(`Message sent: ${result.cid}`);
+      console.log(`Message sent: ${result.value.cid}`);
       console.log(`  to: ${recipients.join(", ")}`);
     }
   } finally {
     deps.close();
   }
+}
+
+/**
+ * Adapter: project CliDeps to the subset of OperationDeps needed for
+ * sendMessageAsDiscussion. CLI is single-process and synchronous, so
+ * topology / handoffs / hooks are not configured.
+ */
+function cliDepsToOperationDeps(deps: CliDeps): OperationDeps {
+  return {
+    contributionStore: deps.store,
+    claimStore: deps.claimStore,
+    cas: deps.cas,
+    frontier: deps.frontier,
+    ...(deps.outcomeStore !== undefined ? { outcomeStore: deps.outcomeStore } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------

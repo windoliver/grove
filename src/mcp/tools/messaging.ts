@@ -18,8 +18,9 @@ import type { AgentOverrides } from "../../core/operations/agent.js";
 import { resolveAgent } from "../../core/operations/agent.js";
 import type { UsageReport } from "../../core/operations/cost-tracking.js";
 import { reportUsage } from "../../core/operations/cost-tracking.js";
-import { readInbox, sendMessage } from "../../core/operations/messaging.js";
+import { readInbox, sendMessageAsDiscussion } from "../../core/operations/messaging.js";
 import type { McpDeps } from "../deps.js";
+import { toMcpResult, toOperationDeps } from "../operation-adapter.js";
 import { agentSchema } from "../schemas.js";
 
 // ---------------------------------------------------------------------------
@@ -81,43 +82,31 @@ const reportUsageInputSchema = z.object({
 // ---------------------------------------------------------------------------
 
 export function registerMessagingTools(server: McpServer, deps: McpDeps): void {
+  const opDeps = toOperationDeps(deps);
+
   // --- grove_send_message --------------------------------------------------
   server.registerTool(
     "grove_send_message",
     {
       description:
         "Send a message to other agents in the boardroom. Messages are stored as ephemeral " +
-        "discussion contributions. Use @all to broadcast, or specify individual agent handles " +
-        "as recipients. Supports threaded replies via in_reply_to.",
+        "discussion contributions and routed through the same enforcement pipeline as " +
+        "grove_submit_work. Use @all to broadcast, or specify individual agent handles as " +
+        "recipients. Supports threaded replies via in_reply_to.",
       inputSchema: sendMessageInputSchema,
     },
     async (args) => {
-      const agent = resolveAgent(args.agent as AgentOverrides | undefined);
-
-      const contribution = await sendMessage(
-        deps.contributionStore,
+      const result = await sendMessageAsDiscussion(
         {
-          agent,
+          agent: args.agent as AgentOverrides | undefined,
           body: args.body,
           recipients: args.recipients,
           ...(args.in_reply_to !== undefined ? { inReplyTo: args.in_reply_to } : {}),
           tags: args.tags,
         },
-        computeCid,
+        opDeps,
       );
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({
-              cid: contribution.cid,
-              summary: contribution.summary,
-              recipients: args.recipients,
-            }),
-          },
-        ],
-      };
+      return toMcpResult(result);
     },
   );
 
