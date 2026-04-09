@@ -456,3 +456,256 @@ describe("contributeOperation: hook execution", () => {
     expect(hookCalls).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Plan + ephemeral message routing semantics (Issues 1A + 13A + 12A)
+// ---------------------------------------------------------------------------
+//
+// These tests pin down the per-kind routing rules locked in during the
+// #228 review. They prevent 1A from being a silent behavior change.
+//
+//   kind            | handoffs | route event | stop conditions
+//   plan            |    no    |     yes     |       no
+//   ephemeral msg   |    no    |     no      |       no
+//   work / discuss  |    yes   |     yes     |       yes
+//
+// Without these tests, anyone refactoring the kind-based skip logic
+// in contribute.ts could silently change semantics.
+
+describe("contributeOperation: plan and ephemeral routing rules", () => {
+  test("plan kind fires the routing event but creates no handoff", async () => {
+    const bus = new LocalEventBus();
+    const router = new TopologyRouter(reviewLoopTopology, bus);
+    const store = makeInMemoryContributionStore();
+
+    const received: GroveEvent[] = [];
+    bus.subscribe("reviewer", (e) => received.push(e));
+
+    // Spy handoff store: tracks any create() calls.
+    const handoffCreates: unknown[] = [];
+    const handoffStore = {
+      create: async (input: unknown) => {
+        handoffCreates.push(input);
+        return { handoffId: "fake-handoff" };
+      },
+      get: async () => undefined,
+      list: async () => [],
+      markDelivered: async () => undefined,
+      markReplied: async () => undefined,
+      expireStale: async () => [],
+      countPending: async () => 0,
+      close: () => undefined,
+    } as unknown as NonNullable<OperationDeps["handoffStore"]>;
+
+    const deps: OperationDeps = {
+      contributionStore: store,
+      topologyRouter: router,
+      eventBus: bus,
+      handoffStore,
+    };
+
+    const result = await contributeOperation(
+      {
+        kind: "plan",
+        mode: "exploration",
+        summary: "Plan: routed but no handoff",
+        context: { plan_title: "P", tasks: [] },
+        agent: { agentId: "planner-1", role: "coder" },
+      },
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+
+    // Plans skip handoffs entirely.
+    expect(handoffCreates).toHaveLength(0);
+    if (result.ok) {
+      expect(result.value.handoffIds).toBeUndefined();
+    }
+
+    // But the routing event still fires (so live UIs can observe plan creation).
+    // Wait a tick because the event is fire-and-forget.
+    await new Promise((r) => setTimeout(r, 5));
+    expect(received).toHaveLength(1);
+    expect(received[0]!.payload.kind).toBe("plan");
+
+    bus.close();
+  });
+
+  test("ephemeral message kind skips both routing event AND handoffs", async () => {
+    const bus = new LocalEventBus();
+    const router = new TopologyRouter(reviewLoopTopology, bus);
+    const store = makeInMemoryContributionStore();
+
+    const received: GroveEvent[] = [];
+    bus.subscribe("reviewer", (e) => received.push(e));
+
+    const handoffCreates: unknown[] = [];
+    const handoffStore = {
+      create: async (input: unknown) => {
+        handoffCreates.push(input);
+        return { handoffId: "fake-handoff" };
+      },
+      get: async () => undefined,
+      list: async () => [],
+      markDelivered: async () => undefined,
+      markReplied: async () => undefined,
+      expireStale: async () => [],
+      countPending: async () => 0,
+      close: () => undefined,
+    } as unknown as NonNullable<OperationDeps["handoffStore"]>;
+
+    const deps: OperationDeps = {
+      contributionStore: store,
+      topologyRouter: router,
+      eventBus: bus,
+      handoffStore,
+    };
+
+    const result = await contributeOperation(
+      {
+        kind: "discussion",
+        mode: "exploration",
+        summary: "chat",
+        context: { ephemeral: true, recipients: ["@reviewer"], message_body: "hi" },
+        agent: { agentId: "coder-1", role: "coder" },
+      },
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+
+    // Ephemeral messages skip handoffs.
+    expect(handoffCreates).toHaveLength(0);
+
+    // And skip the routing event.
+    await new Promise((r) => setTimeout(r, 5));
+    expect(received).toHaveLength(0);
+
+    bus.close();
+  });
+
+  test("non-ephemeral discussion routes normally (creates handoff and event)", async () => {
+    const bus = new LocalEventBus();
+    const router = new TopologyRouter(reviewLoopTopology, bus);
+    const store = makeInMemoryContributionStore();
+
+    const received: GroveEvent[] = [];
+    bus.subscribe("reviewer", (e) => received.push(e));
+
+    const handoffCreates: unknown[] = [];
+    const handoffStore = {
+      create: async (input: unknown) => {
+        handoffCreates.push(input);
+        return { handoffId: "fake-handoff" };
+      },
+      get: async () => undefined,
+      list: async () => [],
+      markDelivered: async () => undefined,
+      markReplied: async () => undefined,
+      expireStale: async () => [],
+      countPending: async () => 0,
+      close: () => undefined,
+    } as unknown as NonNullable<OperationDeps["handoffStore"]>;
+
+    const deps: OperationDeps = {
+      contributionStore: store,
+      topologyRouter: router,
+      eventBus: bus,
+      handoffStore,
+    };
+
+    const result = await contributeOperation(
+      {
+        kind: "discussion",
+        mode: "exploration",
+        summary: "structured discussion",
+        // Note: NO ephemeral flag — this is a regular discussion contribution
+        agent: { agentId: "coder-1", role: "coder" },
+      },
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+
+    // Regular discussions DO generate handoffs and route events.
+    expect(handoffCreates).toHaveLength(1);
+    if (result.ok) {
+      expect(result.value.handoffIds).toBeDefined();
+      expect(result.value.handoffIds).toHaveLength(1);
+    }
+
+    await new Promise((r) => setTimeout(r, 5));
+    expect(received).toHaveLength(1);
+    expect(received[0]!.payload.kind).toBe("discussion");
+
+    bus.close();
+  });
+
+  test("plan does not trigger broadcastStop (Issue 13A: stop conditions skipped)", async () => {
+    const bus = new LocalEventBus();
+    const router = new TopologyRouter(reviewLoopTopology, bus);
+    const store = makeInMemoryContributionStore();
+
+    const coderStops: GroveEvent[] = [];
+    const reviewerStops: GroveEvent[] = [];
+    bus.subscribe("coder", (e) => {
+      if (e.type === "stop") coderStops.push(e);
+    });
+    bus.subscribe("reviewer", (e) => {
+      if (e.type === "stop") reviewerStops.push(e);
+    });
+
+    // Pre-populate so a budget=1 stop condition would normally fire.
+    await store.put({
+      cid: "blake3:0000000000000000000000000000000000000000000000000000000000000099",
+      manifestVersion: 1,
+      kind: "work",
+      mode: "evaluation",
+      summary: "pre-existing",
+      artifacts: {},
+      relations: [],
+      tags: [],
+      agent: { agentId: "agent-0" },
+      createdAt: new Date().toISOString(),
+    });
+
+    const deps: OperationDeps = {
+      contributionStore: store,
+      topologyRouter: router,
+      eventBus: bus,
+      contract: {
+        contractVersion: 2,
+        name: "plan-skip-stop-test",
+        stopConditions: { budget: { maxContributions: 1 } },
+      },
+    };
+
+    // A plan write would normally cross the budget threshold and trigger
+    // broadcastStop, but plans skip stop-condition evaluation per Issue 13A.
+    const result = await contributeOperation(
+      {
+        kind: "plan",
+        mode: "exploration",
+        summary: "Plan: skip-stop",
+        context: { plan_title: "Skip", tasks: [] },
+        agent: { agentId: "planner-1", role: "coder" },
+      },
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+
+    // Wait for any fire-and-forget broadcast.
+    await new Promise((r) => setTimeout(r, 5));
+
+    // No stop events should have been broadcast — plans bypass stop conditions.
+    expect(coderStops).toHaveLength(0);
+    expect(reviewerStops).toHaveLength(0);
+    if (result.ok) {
+      expect(result.value.policy?.stopResult?.stopped).not.toBe(true);
+    }
+
+    bus.close();
+  });
+});
