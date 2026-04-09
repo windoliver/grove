@@ -124,6 +124,18 @@ try {
     process.stderr.write(`grove-mcp: using local stores at ${groveDir}\n`);
   }
 
+  // Wrap the contribution store with rate-limit / clock-skew enforcement
+  // when a contract is loaded. Mirrors the CLI path in
+  // src/cli/commands/contribute.ts:353. Without this wrap, MCP-served
+  // contributions bypass the rate limits configured in GROVE.md (Issue 2A
+  // in the #228 review).
+  if (runtime.contract !== undefined) {
+    const { EnforcingContributionStore } = await import("../core/enforcing-store.js");
+    contributionStore = new EnforcingContributionStore(contributionStore, runtime.contract, {
+      cas,
+    });
+  }
+
   // Wire EventBus + TopologyRouter for IPC when topology exists.
   let eventBus: import("../core/event-bus.js").EventBus | undefined;
   let topologyRouter: TopologyRouter | undefined;
