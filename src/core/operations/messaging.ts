@@ -13,6 +13,7 @@
 import type { AgentIdentity, Contribution, ContributionInput } from "../models.js";
 import { ContributionKind, ContributionMode, RelationType } from "../models.js";
 import type { ContributionStore } from "../store.js";
+import { buildMessageContext, parseMessageContext } from "./context-schemas.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -93,11 +94,7 @@ export async function sendMessage(
       ? [{ targetCid: input.inReplyTo, relationType: RelationType.RespondsTo }]
       : [],
     tags: [...(input.tags ?? []), "message"],
-    context: {
-      ephemeral: true,
-      recipients: [...input.recipients],
-      message_body: input.body,
-    },
+    context: buildMessageContext({ recipients: input.recipients, body: input.body }),
     agent: input.agent,
     createdAt: new Date().toISOString(),
   };
@@ -138,63 +135,68 @@ export async function readInbox(
     ...(query?.sessionId !== undefined ? { sessionId: query.sessionId } : {}),
   });
 
-  let messages = contributions.filter((c) => {
-    if (c.context?.ephemeral !== true) return false;
-    if (!Array.isArray(c.context.recipients)) return false;
-    return true;
+  // Pair each contribution with its parsed message context up front so we
+  // don't re-parse on every filter pass and so wrong-shape contributions are
+  // dropped exactly once.
+  let messages = contributions.flatMap((c) => {
+    const ctx = parseMessageContext(c.context);
+    return ctx === undefined ? [] : [{ contribution: c, context: ctx }];
   });
 
   // Filter by single recipient (legacy)
   if (query?.recipient !== undefined) {
     const target = query.recipient;
-    messages = messages.filter((c) => {
-      const recipients = c.context?.recipients as string[];
-      return recipients.includes(target) || recipients.includes("@all");
-    });
+    messages = messages.filter(
+      ({ context }) => context.recipients.includes(target) || context.recipients.includes("@all"),
+    );
   }
 
   // Filter by multiple recipients (matches if any handle appears in the message)
   if (query?.recipients !== undefined && query.recipients.length > 0) {
     const handles = new Set(query.recipients);
-    messages = messages.filter((c) => {
-      const recipients = c.context?.recipients as string[];
-      return recipients.some((r) => handles.has(r));
-    });
+    messages = messages.filter(({ context }) => context.recipients.some((r) => handles.has(r)));
   }
 
   // Filter by sender
   if (query?.fromAgentId !== undefined) {
-    messages = messages.filter((c) => c.agent.agentId === query.fromAgentId);
+    messages = messages.filter(
+      ({ contribution }) => contribution.agent.agentId === query.fromAgentId,
+    );
   }
 
   // Filter by timestamp
   if (query?.since !== undefined) {
     const sinceMs = Date.parse(query.since);
-    messages = messages.filter((c) => Date.parse(c.createdAt) >= sinceMs);
+    messages = messages.filter(({ contribution }) => Date.parse(contribution.createdAt) >= sinceMs);
   }
 
   // Sort by most recent first
-  messages.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  messages.sort(
+    (a, b) => Date.parse(b.contribution.createdAt) - Date.parse(a.contribution.createdAt),
+  );
 
   // Apply limit
   const limit = query?.limit ?? 50;
   messages = messages.slice(0, limit);
 
-  return messages.map(contributionToMessage);
+  return messages.map(({ contribution, context }) => contributionToMessage(contribution, context));
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function contributionToMessage(c: Contribution): InboxMessage {
+function contributionToMessage(
+  c: Contribution,
+  ctx: { readonly recipients: readonly string[]; readonly message_body: string },
+): InboxMessage {
   const inReplyTo = c.relations.find((r) => r.relationType === RelationType.RespondsTo)?.targetCid;
 
   return {
     cid: c.cid,
     from: c.agent,
-    body: (c.context?.message_body as string) ?? c.description ?? c.summary,
-    recipients: (c.context?.recipients as string[]) ?? [],
+    body: ctx.message_body,
+    recipients: [...ctx.recipients],
     inReplyTo,
     createdAt: c.createdAt,
     tags: [...c.tags],

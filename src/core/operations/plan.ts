@@ -7,25 +7,21 @@
  */
 
 import { createContribution } from "../manifest.js";
-import type { ContributionInput, JsonValue } from "../models.js";
+import type { ContributionInput } from "../models.js";
 import { ContributionKind, ContributionMode, RelationType } from "../models.js";
 import type { AgentOverrides } from "./agent.js";
 import { resolveAgent } from "./agent.js";
+import { buildPlanContext, type PlanTask, parsePlanContext } from "./context-schemas.js";
 import type { OperationDeps } from "./deps.js";
 import type { OperationResult } from "./result.js";
 import { notFound, ok, validationErr } from "./result.js";
 
+// Re-export for backwards compat with existing imports.
+export type { PlanTask } from "./context-schemas.js";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-/** A single task within a plan. */
-export interface PlanTask {
-  readonly id: string;
-  readonly title: string;
-  readonly status: "todo" | "in_progress" | "done" | "blocked";
-  readonly assignee?: string | undefined;
-}
 
 /** Input for creating a new plan. */
 export interface CreatePlanInput {
@@ -90,10 +86,7 @@ export async function createPlanOperation(
     artifacts: {},
     relations: [],
     tags: [...(input.tags ?? []), "plan"],
-    context: {
-      plan_title: input.title,
-      tasks: input.tasks as unknown as JsonValue,
-    },
+    context: buildPlanContext({ title: input.title, tasks: input.tasks }),
     agent,
     createdAt: now,
   };
@@ -132,7 +125,8 @@ export async function updatePlanOperation(
     return validationErr("Plan must have at least one task");
   }
 
-  const title = input.title ?? (previous.context?.plan_title as string) ?? "Untitled Plan";
+  const previousContext = parsePlanContext(previous.context);
+  const title = input.title ?? previousContext?.plan_title ?? "Untitled Plan";
   const agent = resolveAgent(input.agent);
   const now = new Date().toISOString();
 
@@ -149,10 +143,7 @@ export async function updatePlanOperation(
       },
     ],
     tags: [...(input.tags ?? []), "plan"],
-    context: {
-      plan_title: title,
-      tasks: input.tasks as unknown as JsonValue,
-    },
+    context: buildPlanContext({ title, tasks: input.tasks }),
     agent,
     createdAt: now,
   };
