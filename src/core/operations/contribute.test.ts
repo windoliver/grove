@@ -424,6 +424,181 @@ describe("contributeOperation: idempotencyKey", () => {
     expect(second.error.code).toBe("STATE_CONFLICT");
   });
 
+  test("fingerprint rejects same key + different context (plan tasks)", async () => {
+    // Plans store their task list in context.tasks. Two calls with the
+    // same key but different task lists must be rejected, not silently
+    // return the first result.
+    const first = await contributeOperation(
+      {
+        kind: "plan",
+        mode: "exploration",
+        summary: "Phase 1",
+        context: {
+          plan_title: "Phase 1",
+          tasks: [{ id: "t1", title: "Design", status: "todo" }] as never,
+        },
+        agent: { agentId: "a1" },
+        idempotencyKey: "plan-context-key",
+      },
+      deps,
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const second = await contributeOperation(
+      {
+        kind: "plan",
+        mode: "exploration",
+        summary: "Phase 1",
+        context: {
+          plan_title: "Phase 1",
+          // Same task id, DIFFERENT status — would leave the first call's
+          // stored state behind if not rejected.
+          tasks: [{ id: "t1", title: "Design", status: "done" }] as never,
+        },
+        agent: { agentId: "a1" },
+        idempotencyKey: "plan-context-key",
+      },
+      deps,
+    );
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.error.code).toBe("STATE_CONFLICT");
+  });
+
+  test("fingerprint rejects same key + different scores", async () => {
+    const first = await contributeOperation(
+      {
+        kind: "work",
+        summary: "metric submission",
+        scores: { latency: { value: 42, direction: "minimize" } },
+        agent: { agentId: "a1" },
+        idempotencyKey: "score-key",
+      },
+      deps,
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const second = await contributeOperation(
+      {
+        kind: "work",
+        summary: "metric submission",
+        scores: { latency: { value: 99, direction: "minimize" } },
+        agent: { agentId: "a1" },
+        idempotencyKey: "score-key",
+      },
+      deps,
+    );
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.error.code).toBe("STATE_CONFLICT");
+  });
+
+  test("fingerprint rejects same key + renamed artifact (same hash)", async () => {
+    // Store a single blob in CAS, reference it under two different names.
+    const hash = await storeTestContent(deps.cas, "hello world");
+
+    const first = await contributeOperation(
+      {
+        kind: "work",
+        summary: "artifact submission",
+        artifacts: { "greeting.txt": hash },
+        agent: { agentId: "a1" },
+        idempotencyKey: "artifact-name-key",
+      },
+      deps,
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const second = await contributeOperation(
+      {
+        kind: "work",
+        summary: "artifact submission",
+        // Same hash, different filename — must be rejected, not coalesced.
+        artifacts: { "hello.txt": hash },
+        agent: { agentId: "a1" },
+        idempotencyKey: "artifact-name-key",
+      },
+      deps,
+    );
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.error.code).toBe("STATE_CONFLICT");
+  });
+
+  test("fingerprint is insensitive to context key order", async () => {
+    // { a: 1, b: 2 } and { b: 2, a: 1 } must produce the same fingerprint
+    // so equivalent payloads don't spuriously conflict. This is why
+    // canonicalizeForFingerprint deeply sorts object keys.
+    const first = await contributeOperation(
+      {
+        kind: "work",
+        summary: "key-order test",
+        context: { alpha: 1, beta: 2, nested: { x: 1, y: 2 } } as never,
+        agent: { agentId: "a1" },
+        idempotencyKey: "key-order-key",
+      },
+      deps,
+    );
+    const second = await contributeOperation(
+      {
+        kind: "work",
+        summary: "key-order test",
+        // Different insertion order at both levels — should still match.
+        context: { nested: { y: 2, x: 1 }, beta: 2, alpha: 1 } as never,
+        agent: { agentId: "a1" },
+        idempotencyKey: "key-order-key",
+      },
+      deps,
+    );
+    expect(first.ok && second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    expect(second.value.cid).toBe(first.value.cid);
+  });
+
+  test("post-commit callback failure does NOT release the idempotency slot", async () => {
+    // Simulates a scenario where a user-supplied onContributionWritten
+    // callback throws AFTER the contribution was durably committed.
+    // Previous behavior: catch handler released the slot, and a retry
+    // with the same key produced a second contribution with a new cid.
+    // Fix: slot is resolved immediately after commit — post-write
+    // failures are logged but don't undo the cache.
+    let throwOnce = true;
+    const depsWithThrowingCallback: typeof deps = {
+      ...deps,
+      onContributionWritten: () => {
+        if (throwOnce) {
+          throwOnce = false;
+          throw new Error("simulated post-commit callback failure");
+        }
+      },
+    };
+
+    const input = {
+      kind: "work" as const,
+      summary: "post-commit-failure",
+      agent: { agentId: "a1" },
+      idempotencyKey: "post-commit-key",
+    };
+    const first = await contributeOperation(input, depsWithThrowingCallback);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    // Retry with the same key — must return the cached result, not
+    // create a second contribution.
+    const second = await contributeOperation(input, depsWithThrowingCallback);
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.cid).toBe(first.value.cid);
+
+    // Store-level check: exactly ONE contribution with that summary.
+    const stored = await deps.contributionStore.list({ limit: 20 });
+    const matching = stored.filter((c) => c.summary === "post-commit-failure");
+    expect(matching).toHaveLength(1);
+  });
+
   test("ephemeral flag on non-discussion kind is rejected", async () => {
     // Regression guard: context.ephemeral=true is reserved for discussions
     // (chat messages + grove_done markers). Allowing it on work/review

@@ -276,23 +276,61 @@ function idempotencyCacheKey(agentScope: string, key: string): string {
 }
 
 /**
+ * Deeply canonicalize a JSON-like value for stable fingerprint hashing.
+ *
+ * JSON.stringify preserves object-key insertion order, so two objects
+ * with the same keys in different order would produce different
+ * strings. This walker recursively sorts object keys and normalizes
+ * arrays (preserving order, since array order is usually meaningful).
+ * Used to fingerprint the `context` and `scores` fields where field
+ * order is not semantic.
+ */
+function canonicalizeForFingerprint(value: unknown): unknown {
+  if (value === null || value === undefined) return null;
+  if (Array.isArray(value)) {
+    return value.map((v) => canonicalizeForFingerprint(v));
+  }
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(obj).sort()) {
+      out[key] = canonicalizeForFingerprint(obj[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
  * Canonical fingerprint of a contribute request's intent.
  *
- * Captures kind, mode, summary, description, sorted artifact hashes,
- * sorted relations, sorted tags, and the agent scope. Excludes `context`
- * (noisy — may carry timestamps or generated ids), `createdAt` (always
- * varies), and `idempotencyKey` (that's the lookup key).
+ * Captures the full persisted payload shape so any difference that
+ * could produce a different stored contribution is reflected in the
+ * hash:
  *
- * The agent scope mirrors the cache-key namespace: if the agent has a
- * role, role is the scope; otherwise agentId is. Two agents sharing a
- * role share an idempotency namespace, so two instances of the same
- * role submitting an identical payload with the same key are treated
- * as retries of the same logical request.
+ *   - kind, mode, summary, description
+ *   - `context` (deep-canonicalized so key order doesn't matter) —
+ *     plans store their task list here, messages store recipients +
+ *     body, grove_done stores the ephemeral flag + reason
+ *   - `scores` (deep-canonicalized) — per-metric values
+ *   - `artifacts` as sorted (name → hash) pairs, not just hashes —
+ *     a rename changes identity even if the hash is the same
+ *   - `relations` sorted by targetCid (+ type, metadata)
+ *   - `tags` sorted
+ *   - agentScope (role ?? agentId) mirroring the cache-key namespace
  *
- * Two requests with the same key + same fingerprint: treated as retries,
- * return the cached result.
- * Two requests with the same key + different fingerprint: rejected with
- * STATE_CONFLICT — the client is reusing a key across distinct intents.
+ * Excludes `createdAt` (always varies), `agent` object (scope stands
+ * in), and `idempotencyKey` (that's the lookup key itself).
+ *
+ * Two requests with the same key + same fingerprint → treat as retries,
+ * return cached result.
+ * Two requests with the same key + different fingerprint → reject with
+ * STATE_CONFLICT to surface the client bug.
+ *
+ * NB: the fingerprint must include every field that could make the
+ * stored contribution differ in an observable way. Adding new fields
+ * to ContributeInput or the contribution manifest WITHOUT adding them
+ * here re-opens the "same key, different stored payload" loophole.
  */
 function computeIdempotencyFingerprint(
   input: ContributeInput,
@@ -303,13 +341,33 @@ function computeIdempotencyFingerprint(
     mode: input.mode ?? null,
     summary: input.summary,
     description: input.description ?? null,
-    artifactHashes: input.artifacts ? Object.values(input.artifacts).slice().sort() : [],
+    // Sort artifacts by name and keep name→hash pairs so a rename
+    // (same hash, different filename) produces a different fingerprint.
+    artifacts: input.artifacts
+      ? Object.entries(input.artifacts)
+          .slice()
+          .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+          .map(([name, hash]) => ({ name, hash }))
+      : [],
     relations: input.relations
       ? [...input.relations]
-          .map((r) => ({ target: r.targetCid, type: r.relationType }))
-          .sort((a, b) => (a.target < b.target ? -1 : a.target > b.target ? 1 : 0))
+          .map((r) => ({
+            target: r.targetCid,
+            type: r.relationType,
+            metadata: canonicalizeForFingerprint(r.metadata),
+          }))
+          .sort((a, b) => {
+            if (a.target !== b.target) return a.target < b.target ? -1 : 1;
+            return a.type < b.type ? -1 : a.type > b.type ? 1 : 0;
+          })
       : [],
     tags: input.tags ? [...input.tags].sort() : [],
+    // Context varies per kind (plan tasks, message body, done marker, etc).
+    // Deep canonicalization so { a: 1, b: 2 } and { b: 2, a: 1 } hash the same.
+    context: canonicalizeForFingerprint(input.context),
+    // Scores are per-metric numeric payloads; omitting them would let a
+    // caller silently overwrite a metric by reusing an idempotency key.
+    scores: canonicalizeForFingerprint(input.scores),
     // Scope mirrors the cache key: role wins if present, else agentId.
     // Without this, two agents sharing a role would see the same cache
     // key but different fingerprints → spurious STATE_CONFLICT on what
@@ -761,8 +819,62 @@ export async function contributeOperation(
       deps.contributionStore,
       deps.handoffStore,
     );
-    deps.onContributionWrite?.();
-    deps.onContributionWritten?.(contribution.cid);
+
+    // ┌──────────────────────────────────────────────────────────────────┐
+    // │ DURABLE COMMIT BOUNDARY                                          │
+    // │                                                                  │
+    // │ The contribution (and any atomic-path handoffs) are now durably │
+    // │ written to the store. Everything below this line is post-write │
+    // │ side-effect — it must NEVER cause the already-committed write  │
+    // │ to be "undone" from the caller's perspective.                   │
+    // │                                                                  │
+    // │ Idempotency resolution happens HERE, not at the end of the     │
+    // │ function, because a throw in persistOutcome or a user-supplied │
+    // │ callback would otherwise release the slot and let a retry     │
+    // │ produce a duplicate contribution with a fresh createdAt.       │
+    // │                                                                  │
+    // │ The cached response reflects committed state only — subsequent │
+    // │ post-write updates (stop-condition recheck changing            │
+    // │ policyResult.stopResult) are NOT propagated into the cache.    │
+    // │ The first caller still sees the full updated result via the   │
+    // │ direct return below; cached retries see the committed-only    │
+    // │ snapshot, which is still correct (the contribution is the      │
+    // │ same, only the advisory stop signal differs).                  │
+    // └──────────────────────────────────────────────────────────────────┘
+    const committedResult: ContributeResult = {
+      cid: contribution.cid,
+      kind: contribution.kind,
+      mode: contribution.mode,
+      summary: contribution.summary,
+      artifactCount: Object.keys(contribution.artifacts).length,
+      relationCount: contribution.relations.length,
+      createdAt: contribution.createdAt,
+      ...(routedTo !== undefined ? { routedTo } : {}),
+      ...(handoffIds.length > 0 ? { handoffIds } : {}),
+      ...(policyResult !== undefined ? { policy: policyResult } : {}),
+    };
+
+    if (idempotencySlot !== undefined) {
+      idempotencySlot.resolve(ok(committedResult));
+      // Clear the local reference so the outer catch(error) handler can't
+      // release the slot for a post-commit failure. The contribution is
+      // durably written; retries with the same key must return this cached
+      // result, NOT re-run the write path.
+      idempotencySlot = undefined;
+    }
+
+    // Post-write callbacks — wrapped so a throw cannot escape and undo
+    // the commit from the caller's perspective.
+    try {
+      deps.onContributionWrite?.();
+      deps.onContributionWritten?.(contribution.cid);
+    } catch (callbackErr) {
+      process.stderr.write(
+        `[grove] Warning: onContributionWrite* callback threw after commit: ${
+          callbackErr instanceof Error ? callbackErr.message : String(callbackErr)
+        }\n`,
+      );
+    }
 
     // --- Post-write: mark upstream handoffs as replied (fire-and-forget) ---
     // When this contribution targets another CID (reviews/responds_to), find
@@ -794,8 +906,20 @@ export async function contributeOperation(
     }
 
     // --- Post-write: persist derived outcome (outside mutex scope) ---
+    // Wrapped: a throw from the outcome store must not undo the committed
+    // contribution write or leak to the caller as a fresh error. The
+    // contribution is already in the DAG; failed outcome persistence is
+    // a downstream bookkeeping issue, not a write failure.
     if (policyResult?.derivedOutcome !== undefined && enforcer !== undefined) {
-      await enforcer.persistOutcome(contribution.cid, policyResult.derivedOutcome);
+      try {
+        await enforcer.persistOutcome(contribution.cid, policyResult.derivedOutcome);
+      } catch (persistErr) {
+        process.stderr.write(
+          `[grove] Warning: persistOutcome failed after commit (cid=${contribution.cid.slice(0, 16)}): ${
+            persistErr instanceof Error ? persistErr.message : String(persistErr)
+          }\n`,
+        );
+      }
     }
 
     // --- Post-write: route events via topology (fire-and-forget) ---
@@ -886,6 +1010,11 @@ export async function contributeOperation(
       }
     }
 
+    // Build the final result returned to the DIRECT caller. This includes
+    // any post-write updates to policyResult (e.g., stop-condition recheck
+    // detecting a threshold crossing). Cached retries get the narrower
+    // `committedResult` built above — that's intentional, see the
+    // DURABLE COMMIT BOUNDARY comment.
     const result: ContributeResult = {
       cid: contribution.cid,
       kind: contribution.kind,
@@ -899,17 +1028,15 @@ export async function contributeOperation(
       ...(policyResult !== undefined ? { policy: policyResult } : {}),
     };
 
-    const okResult = ok(result);
-    // Resolve the slot with the successful result so concurrent retries
-    // with the same key get back the exact same response.
-    idempotencySlot?.resolve(okResult);
-    return okResult;
+    return ok(result);
   } catch (error) {
-    // Release the slot on thrown errors. The write might have partially
-    // happened (e.g., policy violation after the contribution was built
-    // but before post-write hooks). We release instead of resolving so
-    // retries can attempt the write again — the cache shouldn't hold a
-    // permanent failure for a transient error path.
+    // Release the idempotency slot ONLY if it's still reserved here. The
+    // slot is cleared (set to undefined) immediately after the durable
+    // commit boundary above — so this release path can only fire for
+    // errors that happened BEFORE the contribution was durably written
+    // (validation, policy enforcement inside the mutex, store write
+    // failure). Post-commit failures flow through the committed result
+    // path and never reach this catch.
     idempotencySlot?.release();
     return fromGroveError(error);
   }

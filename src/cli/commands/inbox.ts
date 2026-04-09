@@ -6,12 +6,13 @@
  *   grove inbox read [--from <agent-id>] [--since <iso>] [--limit <n>] [--json]
  */
 
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { AgentOverrides } from "../../core/operations/agent.js";
 import { resolveAgent } from "../../core/operations/agent.js";
 import type { OperationDeps } from "../../core/operations/deps.js";
 import { readInbox, sendMessageAsDiscussion } from "../../core/operations/messaging.js";
-import type { CliDeps } from "../context.js";
 import { formatTable, formatTimestamp, outputJson } from "../format.js";
 
 // ---------------------------------------------------------------------------
@@ -64,13 +65,55 @@ async function handleSend(args: readonly string[], groveOverride?: string): Prom
     return;
   }
 
-  const { initCliDeps } = await import("../context.js");
-  const deps = initCliDeps(process.cwd(), groveOverride);
+  // Mirror the `grove discuss` bootstrap so the CLI send path goes through
+  // the same contract-enforcement pipeline as the MCP path. Previously this
+  // command wrapped a bare `CliDeps` which carried no contract, so GROVE.md
+  // role-kind rules and rate limits silently did not apply to inbox sends —
+  // a loophole the MCP fix didn't close.
+  const { resolveGroveDir } = await import("../utils/grove-dir.js");
+  const { createSqliteStores } = await import("../../local/sqlite-store.js");
+  const { FsCas } = await import("../../local/fs-cas.js");
+  const { DefaultFrontierCalculator } = await import("../../core/frontier.js");
+  const { parseGroveContract } = await import("../../core/contract.js");
+  const { EnforcingContributionStore } = await import("../../core/enforcing-store.js");
+
+  const { groveDir, dbPath } = resolveGroveDir(groveOverride);
+  const stores = createSqliteStores(dbPath);
+  const cas = new FsCas(join(groveDir, "cas"));
+  const frontier = new DefaultFrontierCalculator(stores.contributionStore);
+
+  // Load GROVE.md from the grove root (parent of .grove/).
+  const groveRoot = join(groveDir, "..");
+  const grovemdPath = join(groveRoot, "GROVE.md");
+  let contract: Awaited<ReturnType<typeof parseGroveContract>> | undefined;
+  try {
+    const grovemdContent = await readFile(grovemdPath, "utf-8");
+    contract = parseGroveContract(grovemdContent);
+  } catch {
+    // GROVE.md does not exist — proceed without enforcement (same policy
+    // as grove discuss in a grove without a contract).
+  }
+
+  // Wrap with EnforcingContributionStore when a contract exists. Without
+  // this, rate-limits / allowed-kinds / clock-skew checks would not fire
+  // for inbox sends even when configured in GROVE.md.
+  const contributionStore = contract
+    ? new EnforcingContributionStore(stores.contributionStore, contract, { cas })
+    : stores.contributionStore;
 
   try {
     const agentOverrides: AgentOverrides = {
       agentId: values["agent-id"] as string | undefined,
       agentName: values["agent-name"] as string | undefined,
+    };
+
+    const opDeps: OperationDeps = {
+      contributionStore,
+      claimStore: stores.claimStore,
+      cas,
+      frontier,
+      handoffStore: stores.handoffStore,
+      ...(contract !== undefined ? { contract } : {}),
     };
 
     const result = await sendMessageAsDiscussion(
@@ -81,7 +124,7 @@ async function handleSend(args: readonly string[], groveOverride?: string): Prom
         ...(values["reply-to"] !== undefined ? { inReplyTo: values["reply-to"] as string } : {}),
         tags: (values.tag ?? []) as string[],
       },
-      cliDepsToOperationDeps(deps),
+      opDeps,
     );
 
     if (!result.ok) {
@@ -97,23 +140,8 @@ async function handleSend(args: readonly string[], groveOverride?: string): Prom
       console.log(`  to: ${recipients.join(", ")}`);
     }
   } finally {
-    deps.close();
+    stores.contributionStore.close();
   }
-}
-
-/**
- * Adapter: project CliDeps to the subset of OperationDeps needed for
- * sendMessageAsDiscussion. CLI is single-process and synchronous, so
- * topology / handoffs / hooks are not configured.
- */
-function cliDepsToOperationDeps(deps: CliDeps): OperationDeps {
-  return {
-    contributionStore: deps.store,
-    claimStore: deps.claimStore,
-    cas: deps.cas,
-    frontier: deps.frontier,
-    ...(deps.outcomeStore !== undefined ? { outcomeStore: deps.outcomeStore } : {}),
-  };
 }
 
 // ---------------------------------------------------------------------------
