@@ -714,15 +714,22 @@ describe("contributeOperation: plan and ephemeral routing rules", () => {
   // -------------------------------------------------------------------------
   //
   // grove_done writes a kind=discussion contribution with context.done=true
-  // plus context.ephemeral=true (see src/mcp/tools/done.ts). The ephemeral
-  // flag routes it through the same skip path as ephemeral messages: no
-  // handoff, no route event. This prevents the "[DONE] session complete"
-  // marker from waking up downstream agents with phantom work-to-pick-up.
+  // (see src/mcp/tools/done.ts). Done markers are asymmetric from chat:
   //
-  // Discovered during #228 E2E validation — before this fix, a completed
-  // review loop left 2 pending_pickup handoffs (one for the review, one
-  // for grove_done) instead of just the 1 for the review itself.
-  test("grove_done discussion (ephemeral=true, done=true) skips handoff and event", async () => {
+  //   - SKIP handoff creation: session is ending, downstream has no new
+  //     work to pick up.
+  //   - KEEP the routing event: event-driven clients like
+  //     useDoneDetection() subscribe to contribution events on the bus;
+  //     without the route event firing, they would never observe
+  //     completion and the session would be stranded in "running".
+  //
+  // An earlier version of this branch suppressed both handoff AND route
+  // event for done markers (via isEphemeralMessageContext). Codex round 3
+  // caught the regression: event-bus mode disables polling in
+  // useDoneDetection, so losing the route event meant the UI never
+  // advanced after grove_done. This test pins the correct asymmetry in
+  // place so that collapse cannot happen again.
+  test("grove_done discussion (done=true) skips handoff but fires route event", async () => {
     const bus = new LocalEventBus();
     const router = new TopologyRouter(reviewLoopTopology, bus);
     const store = makeInMemoryContributionStore();
@@ -770,10 +777,77 @@ describe("contributeOperation: plan and ephemeral routing rules", () => {
 
     expect(result.ok).toBe(true);
 
-    // No handoff created for the done marker.
+    // No handoff created for the done marker — session is ending.
     expect(handoffCreates).toHaveLength(0);
 
-    // No routing event fired for the done marker.
+    // Route event DID fire — event-driven done detection depends on this.
+    await new Promise((r) => setTimeout(r, 5));
+    expect(received).toHaveLength(1);
+    expect(received[0]!.type).toBe("contribution");
+    expect(received[0]!.payload.kind).toBe("discussion");
+    expect(received[0]!.payload.summary).toMatch(/\[DONE\]/);
+
+    bus.close();
+  });
+
+  // -------------------------------------------------------------------------
+  // Ephemeral chat vs done marker: asymmetry test
+  // -------------------------------------------------------------------------
+  //
+  // Ephemeral chat (context.ephemeral=true WITHOUT context.done) skips
+  // BOTH handoffs AND the route event — chat is background noise. Done
+  // markers (context.done=true) skip handoffs but KEEP the route event.
+  // This test asserts both legs explicitly so future refactors of the
+  // classification logic can't collapse them back together.
+  test("ephemeral chat (no done flag) skips both handoff AND route event", async () => {
+    const bus = new LocalEventBus();
+    const router = new TopologyRouter(reviewLoopTopology, bus);
+    const store = makeInMemoryContributionStore();
+
+    const received: GroveEvent[] = [];
+    bus.subscribe("reviewer", (e) => received.push(e));
+
+    const handoffCreates: unknown[] = [];
+    const handoffStore = {
+      create: async (input: unknown) => {
+        handoffCreates.push(input);
+        return { handoffId: "fake-handoff" };
+      },
+      get: async () => undefined,
+      list: async () => [],
+      markDelivered: async () => undefined,
+      markReplied: async () => undefined,
+      expireStale: async () => [],
+      countPending: async () => 0,
+      close: () => undefined,
+    } as unknown as NonNullable<OperationDeps["handoffStore"]>;
+
+    const deps: OperationDeps = {
+      contributionStore: store,
+      topologyRouter: router,
+      eventBus: bus,
+      handoffStore,
+    };
+
+    const result = await contributeOperation(
+      {
+        kind: "discussion",
+        mode: "exploration",
+        summary: "chat message",
+        // Shape sendMessageAsDiscussion writes: ephemeral + message fields,
+        // NO done flag. Must skip everything.
+        context: {
+          ephemeral: true,
+          recipients: ["@reviewer"],
+          message_body: "hi",
+        },
+        agent: { agentId: "coder-1", role: "coder" },
+      },
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(handoffCreates).toHaveLength(0);
     await new Promise((r) => setTimeout(r, 5));
     expect(received).toHaveLength(0);
 

@@ -134,7 +134,65 @@ mode: exploration
   });
 
   // -------------------------------------------------------------------------
-  // Codex finding #3 regression test: contract enforcement must apply to
+  // Codex round 3 finding #1: malformed GROVE.md must fail closed.
+  //
+  // An earlier version of this patch wrapped readFile + parseGroveContract
+  // in one broad try/catch. A YAML syntax error was indistinguishable from
+  // "file does not exist", so a broken contract silently fell through to
+  // the unenforced path — reopening the exact bypass the enforcement fix
+  // was supposed to close.
+  //
+  // Fix: only swallow ENOENT; let parse errors propagate. This test writes
+  // a GROVE.md with invalid YAML and asserts handleInbox rejects the send
+  // with an error (not a silent success).
+  // -------------------------------------------------------------------------
+  test("fails closed when GROVE.md is malformed (YAML parse error)", async () => {
+    await executeInit(makeInitOptions(dir));
+    // Malformed YAML frontmatter — unclosed bracket, invalid structure.
+    await writeFile(
+      join(dir, "GROVE.md"),
+      `---
+contract_version: 3
+name: test-grove
+mode: evaluation
+agent_constraints:
+  allowed_kinds: [work
+---
+`,
+      "utf-8",
+    );
+
+    // handleInbox re-throws parse errors through to the CLI dispatcher;
+    // the test wrapper captures uncaught rejections so we assert on that.
+    let caughtError: unknown;
+    try {
+      await runInbox(
+        ["send", "should-fail", "--to", "@reviewer", "--agent-id", "alice"],
+        join(dir, ".grove"),
+      );
+    } catch (err) {
+      caughtError = err;
+    }
+
+    // Either the command threw synchronously OR exited non-zero with an
+    // error visible. In both cases: no discussion contribution landed.
+    const db = initSqliteDb(join(dir, ".grove", "grove.db"));
+    const store = new SqliteContributionStore(db);
+    try {
+      const discussions = await store.list({ kind: "discussion" });
+      expect(discussions).toHaveLength(0);
+    } finally {
+      store.close();
+    }
+
+    // And we surfaced *some* signal of failure (thrown or exit=1).
+    // The important property is: we did NOT silently succeed with no
+    // enforcement — which is what the previous code did.
+    expect(caughtError).toBeDefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // Codex round 2 finding #3: contract enforcement must apply to
   // the CLI inbox send path, not only the MCP path.
   // -------------------------------------------------------------------------
   test("rejects when contract restricts allowed_kinds to ['work']", async () => {

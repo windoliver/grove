@@ -756,21 +756,46 @@ export async function contributeOperation(
     }
 
     // --- Routing classification ---
-    // Plans are coordination metadata (not progress); ephemeral discussions
-    // are chat / done markers (not coordination). Both opt out of parts of
-    // the side-effect pipeline so they don't pollute work-tracking surfaces:
+    // Plans are coordination metadata (not progress). Done markers
+    // (kind=discussion + context.done=true, written by grove_done) signal
+    // session termination — they should NOT create handoff records for
+    // downstream roles but MUST still fire a topology event so event-driven
+    // clients like useDoneDetection() can observe session completion.
+    // Ephemeral chat (kind=discussion + context.ephemeral=true WITHOUT
+    // context.done) is background noise that should be invisible to the
+    // routing layer entirely.
     //
-    //   kind                  | handoffs | route event | stop conditions
-    //   plan                  |    no    |     yes     |       no
-    //   discussion+ephemeral  |    no    |     no      |       no
-    //   discussion (plain)    |    yes   |     yes     |       yes
-    //   work / review / etc   |    yes   |     yes     |       yes
+    //   kind                   | handoffs | route event | stop conditions
+    //   plan                   |    no    |     yes     |       no
+    //   discussion (done)      |    no    |     yes     |       no
+    //   discussion (chat)      |    no    |     no      |       no
+    //   discussion (plain)     |    yes   |     yes     |       yes
+    //   work / review / etc    |    yes   |     yes     |       yes
+    //
+    // Earlier versions of this branch collapsed done markers into the
+    // "ephemeral discussion" row, which suppressed the route event too.
+    // That turned out to strand event-driven done detection: when an
+    // EventBus is present, useDoneDetection disables polling and waits
+    // exclusively for contribution events on the bus. Without a route
+    // event for the done marker, the UI never advanced out of "running"
+    // after all roles signaled done. The two discussion rows must remain
+    // distinct.
     const isPlan = contribution.kind === CK.Plan;
-    const isEphemeralDiscussion =
-      contribution.kind === CK.Discussion && isEphemeralMessageContext(contribution.context);
-    const skipHandoffs = isPlan || isEphemeralDiscussion;
-    const skipRouteEvent = isEphemeralDiscussion;
-    const skipStopConditions = isPlan || isEphemeralDiscussion;
+    const isDoneMarker = contribution.kind === CK.Discussion && contribution.context?.done === true;
+    const isEphemeralChat =
+      contribution.kind === CK.Discussion &&
+      isEphemeralMessageContext(contribution.context) &&
+      !isDoneMarker;
+    // Done markers + ephemeral chat + plans all skip handoff creation.
+    // A done marker is "session over — no work to pick up"; a chat message
+    // is noise; a plan is coordination metadata.
+    const skipHandoffs = isPlan || isDoneMarker || isEphemeralChat;
+    // ONLY ephemeral chat skips the route event. Plans and done markers
+    // still publish so downstream UIs / observers can react.
+    const skipRouteEvent = isEphemeralChat;
+    // None of these three count toward budget / quorum / deliberation
+    // stop conditions.
+    const skipStopConditions = isPlan || isDoneMarker || isEphemeralChat;
 
     // --- Policy enforcement (TOCTOU-safe: runs inside store mutex) ---
     let policyResult: PolicyEnforcementResult | undefined;

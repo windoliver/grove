@@ -83,15 +83,36 @@ async function handleSend(args: readonly string[], groveOverride?: string): Prom
   const frontier = new DefaultFrontierCalculator(stores.contributionStore);
 
   // Load GROVE.md from the grove root (parent of .grove/).
+  //
+  // Separate the readFile catch from the parse call so a MALFORMED contract
+  // fails closed instead of silently falling through to unenforced mode.
+  // The first pass of this patch combined both into one try/catch, which
+  // meant a YAML syntax error would be indistinguishable from "file does
+  // not exist" — any broken contract file reopened the CLI bypass we're
+  // supposed to be closing.
+  //
+  // ENOENT is the only acceptable fallthrough. Everything else (parse
+  // errors, permission denied, schema validation) propagates to the
+  // outer error handler so the operator sees the failure.
   const groveRoot = join(groveDir, "..");
   const grovemdPath = join(groveRoot, "GROVE.md");
   let contract: Awaited<ReturnType<typeof parseGroveContract>> | undefined;
+  let grovemdContent: string | undefined;
   try {
-    const grovemdContent = await readFile(grovemdPath, "utf-8");
+    grovemdContent = await readFile(grovemdPath, "utf-8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== "ENOENT") {
+      // Permission error, I/O error, etc. — surface loudly.
+      throw err;
+    }
+    // GROVE.md does not exist — proceed without enforcement, same as
+    // `grove discuss` in a grove without a contract.
+  }
+  if (grovemdContent !== undefined) {
+    // parseGroveContract intentionally runs OUTSIDE the catch: YAML/schema
+    // errors must propagate, not be swallowed as "no contract".
     contract = parseGroveContract(grovemdContent);
-  } catch {
-    // GROVE.md does not exist — proceed without enforcement (same policy
-    // as grove discuss in a grove without a contract).
   }
 
   // Wrap with EnforcingContributionStore when a contract exists. Without
