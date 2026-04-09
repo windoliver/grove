@@ -152,29 +152,46 @@ describe("sendMessageAsDiscussion", () => {
     expect(stored?.context?.recipients).toEqual(["@bob", "@charlie", "@dave"]);
   });
 
-  test("idempotencyKey collapses repeated calls", async () => {
+  test("idempotencyKey: identical retry returns cached result", async () => {
+    const store = new InMemoryContributionStore();
+    const input = {
+      agent: AGENT_ALICE,
+      body: "say once",
+      recipients: ["@bob"],
+      idempotencyKey: "broadcast-1",
+    };
+    const first = await sendMessageAsDiscussion(input, makeDeps(store));
+    const second = await sendMessageAsDiscussion({ ...input }, makeDeps(store));
+    expect(first.ok && second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    expect(second.value.cid).toBe(first.value.cid);
+  });
+
+  test("idempotencyKey: same key + different body is rejected with STATE_CONFLICT", async () => {
     const store = new InMemoryContributionStore();
     const first = await sendMessageAsDiscussion(
       {
         agent: AGENT_ALICE,
-        body: "say once",
+        body: "first body",
         recipients: ["@bob"],
-        idempotencyKey: "broadcast-1",
+        idempotencyKey: "broadcast-2",
       },
       makeDeps(store),
     );
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
     const second = await sendMessageAsDiscussion(
       {
         agent: AGENT_ALICE,
-        body: "different body, same key",
+        body: "different body",
         recipients: ["@bob"],
-        idempotencyKey: "broadcast-1",
+        idempotencyKey: "broadcast-2",
       },
       makeDeps(store),
     );
-    expect(first.ok && second.ok).toBe(true);
-    if (!first.ok || !second.ok) return;
-    expect(second.value.cid).toBe(first.value.cid);
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.error.code).toBe("STATE_CONFLICT");
   });
 
   // -------------------------------------------------------------------------

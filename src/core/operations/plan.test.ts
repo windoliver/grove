@@ -195,28 +195,44 @@ describe("createPlanOperation", () => {
   // -------------------------------------------------------------------------
   // Idempotency (Issue 4A)
   // -------------------------------------------------------------------------
-  test("idempotencyKey collapses repeated calls", async () => {
+  test("idempotencyKey: identical retry returns cached result", async () => {
+    const input = {
+      title: "Idempotent plan",
+      tasks: SAMPLE_TASKS,
+      agent: { agentId: "a" },
+      idempotencyKey: "plan-key-1",
+    };
+    const first = await createPlanOperation(input, deps);
+    const second = await createPlanOperation({ ...input }, deps);
+    expect(first.ok && second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    expect(second.value.cid).toBe(first.value.cid);
+  });
+
+  test("idempotencyKey: same key + different title is rejected with STATE_CONFLICT", async () => {
     const first = await createPlanOperation(
       {
-        title: "Idempotent plan",
+        title: "Original title",
         tasks: SAMPLE_TASKS,
         agent: { agentId: "a" },
-        idempotencyKey: "plan-key-1",
+        idempotencyKey: "plan-key-2",
       },
       deps,
     );
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
     const second = await createPlanOperation(
       {
         title: "Different title, same key",
         tasks: SAMPLE_TASKS,
         agent: { agentId: "a" },
-        idempotencyKey: "plan-key-1",
+        idempotencyKey: "plan-key-2",
       },
       deps,
     );
-    expect(first.ok && second.ok).toBe(true);
-    if (!first.ok || !second.ok) return;
-    expect(second.value.cid).toBe(first.value.cid);
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.error.code).toBe("STATE_CONFLICT");
   });
 });
 

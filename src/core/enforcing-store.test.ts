@@ -1462,3 +1462,101 @@ describe("EnforcingContributionStore delegation", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// EnforcingContributionStore — putWithCowrite preservation (Codex finding #3)
+// ---------------------------------------------------------------------------
+//
+// contributeOperation's capability detection looks for `putWithCowrite` on
+// the contribution store. Without the wrapper exposing that method,
+// wrapping a SQLite store with EnforcingContributionStore would silently
+// drop local MCP sessions from the atomic contribution+handoff write
+// path to the best-effort serial path — leaving orphaned contributions
+// on handoff failure.
+
+describe("EnforcingContributionStore: putWithCowrite preservation", () => {
+  test("exposes putWithCowrite when inner store supports it", async () => {
+    const { dir, db, contributionStore } = await setupStores();
+    try {
+      const contract = makeContract();
+      const store = new EnforcingContributionStore(contributionStore, contract);
+
+      // The wrapper must forward putWithCowrite so contributeOperation's
+      // capability check detects the atomic cowrite path.
+      expect(typeof (store as { putWithCowrite?: unknown }).putWithCowrite).toBe("function");
+
+      // Inner SQLite store also has it — confirms the pattern the wrapper
+      // delegates to.
+      expect(
+        typeof (contributionStore as unknown as { putWithCowrite?: unknown }).putWithCowrite,
+      ).toBe("function");
+    } finally {
+      await cleanup(dir, db);
+    }
+  });
+
+  test("putWithCowrite runs enforcement then delegates to inner cowrite", async () => {
+    const { dir, db, contributionStore } = await setupStores();
+    try {
+      const contract = makeContract({
+        rateLimits: { maxContributionsPerAgentPerHour: 5 },
+      });
+      const store = new EnforcingContributionStore(contributionStore, contract);
+
+      const contribution = makeRecentContribution({ summary: "atomic-cowrite" });
+
+      // Observable: the cowrite callback fires synchronously (inside the
+      // SQLite transaction) before putWithCowrite's Promise resolves.
+      let cowriteRan = false;
+      await (
+        store as unknown as {
+          putWithCowrite: (c: typeof contribution, fn: () => void) => Promise<void>;
+        }
+      ).putWithCowrite(contribution, () => {
+        cowriteRan = true;
+      });
+
+      expect(cowriteRan).toBe(true);
+      const stored = await contributionStore.get(contribution.cid);
+      expect(stored?.cid).toBe(contribution.cid);
+    } finally {
+      await cleanup(dir, db);
+    }
+  });
+
+  test("putWithCowrite still enforces rate limits", async () => {
+    const { dir, db, contributionStore } = await setupStores();
+    try {
+      const contract = makeContract({
+        rateLimits: { maxContributionsPerAgentPerHour: 1 },
+      });
+      const store = new EnforcingContributionStore(contributionStore, contract);
+      const cowriteFn = (): void => {
+        /* no handoffs in this test */
+      };
+      type CowriteStore = { putWithCowrite: (c: unknown, fn: () => void) => Promise<void> };
+
+      // First contribution from agent-X: succeeds.
+      const c1 = makeRecentContribution({
+        summary: "first",
+        agent: { agentId: "agent-X" },
+      });
+      await (store as unknown as CowriteStore).putWithCowrite(c1, cowriteFn);
+
+      // Second contribution from same agent: rate-limited.
+      const c2 = makeRecentContribution({
+        summary: "second",
+        agent: { agentId: "agent-X" },
+      });
+      await expect(
+        (store as unknown as CowriteStore).putWithCowrite(c2, cowriteFn),
+      ).rejects.toThrow(RateLimitError);
+
+      // Confirm the second was never written.
+      const stored = await contributionStore.get(c2.cid);
+      expect(stored).toBeUndefined();
+    } finally {
+      await cleanup(dir, db);
+    }
+  });
+});

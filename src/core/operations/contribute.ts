@@ -32,7 +32,7 @@ import { resolveAgent } from "./agent.js";
 import { isEphemeralMessageContext } from "./context-schemas.js";
 import type { OperationDeps } from "./deps.js";
 import type { OperationResult } from "./result.js";
-import { fromGroveError, notFound, ok, validationErr } from "./result.js";
+import { err, fromGroveError, notFound, OperationErrorCode, ok, validationErr } from "./result.js";
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -234,9 +234,25 @@ const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000;
 /** Maximum number of cached idempotency entries (LRU eviction). */
 const IDEMPOTENCY_MAX_ENTRIES = 1024;
 
-interface CachedIdempotencyResult {
-  readonly value: ContributeResult;
+/**
+ * An entry in the idempotency cache. Can be in one of two states:
+ *   - `pending`: a write is currently in-flight. Subsequent callers with
+ *     the same key must await this Promise rather than starting a second
+ *     write (single-flight).
+ *   - `value`: the write has completed and the result is cached.
+ *
+ * Both states carry a `fingerprint` — a canonical hash of the request's
+ * intent (kind, summary, agent, relations, artifacts, tags). Lookups with
+ * a mismatched fingerprint are rejected with a STATE_CONFLICT error
+ * instead of silently returning the first call's result — that matches
+ * HTTP Idempotency-Key semantics (see Stripe, AWS, RFC draft) and surfaces
+ * client bugs where the same key is reused across different intents.
+ */
+interface CachedIdempotencyEntry {
+  readonly fingerprint: string;
   readonly storedAt: number;
+  readonly pending?: Promise<OperationResult<ContributeResult>>;
+  readonly value?: ContributeResult;
 }
 
 /**
@@ -246,34 +262,165 @@ interface CachedIdempotencyResult {
  * by deleting + re-inserting on read. Entries are also expired by timestamp
  * on lookup. Not shared across processes — clients running multiple grove
  * instances must coordinate keys themselves.
+ *
+ * Single-flight: when a caller first observes a key miss, it synchronously
+ * inserts a pending entry holding a Promise the write will resolve. Any
+ * concurrent caller with the same key awaits that Promise. JavaScript is
+ * single-threaded, so the check-then-insert is atomic without a mutex.
  */
-const idempotencyCache = new Map<string, CachedIdempotencyResult>();
+const idempotencyCache = new Map<string, CachedIdempotencyEntry>();
 
 /** Build the cache key. Namespaced per agent so two agents can share keys. */
 function idempotencyCacheKey(agentScope: string, key: string): string {
   return `${agentScope}\u0000${key}`;
 }
 
-function lookupIdempotency(cacheKey: string, now: number): ContributeResult | undefined {
+/**
+ * Canonical fingerprint of a contribute request's intent.
+ *
+ * Captures kind, mode, summary, description, sorted artifact hashes,
+ * sorted relations, sorted tags, and the agent scope. Excludes `context`
+ * (noisy — may carry timestamps or generated ids), `createdAt` (always
+ * varies), and `idempotencyKey` (that's the lookup key).
+ *
+ * The agent scope mirrors the cache-key namespace: if the agent has a
+ * role, role is the scope; otherwise agentId is. Two agents sharing a
+ * role share an idempotency namespace, so two instances of the same
+ * role submitting an identical payload with the same key are treated
+ * as retries of the same logical request.
+ *
+ * Two requests with the same key + same fingerprint: treated as retries,
+ * return the cached result.
+ * Two requests with the same key + different fingerprint: rejected with
+ * STATE_CONFLICT — the client is reusing a key across distinct intents.
+ */
+function computeIdempotencyFingerprint(
+  input: ContributeInput,
+  agent: { readonly agentId: string; readonly role?: string | undefined },
+): string {
+  const canonical = JSON.stringify({
+    kind: input.kind,
+    mode: input.mode ?? null,
+    summary: input.summary,
+    description: input.description ?? null,
+    artifactHashes: input.artifacts ? Object.values(input.artifacts).slice().sort() : [],
+    relations: input.relations
+      ? [...input.relations]
+          .map((r) => ({ target: r.targetCid, type: r.relationType }))
+          .sort((a, b) => (a.target < b.target ? -1 : a.target > b.target ? 1 : 0))
+      : [],
+    tags: input.tags ? [...input.tags].sort() : [],
+    // Scope mirrors the cache key: role wins if present, else agentId.
+    // Without this, two agents sharing a role would see the same cache
+    // key but different fingerprints → spurious STATE_CONFLICT on what
+    // should be a shared-scope retry.
+    agentScope: agent.role ?? agent.agentId,
+  });
+  // Simple non-cryptographic hash — collisions would only cause a
+  // false-positive "same input" response, and the attacker would need to
+  // control the idempotency key namespace anyway (scoped per-agent).
+  let h = 0;
+  for (let i = 0; i < canonical.length; i++) {
+    h = (h * 31 + canonical.charCodeAt(i)) | 0;
+  }
+  return (h >>> 0).toString(16);
+}
+
+/**
+ * Check the cache for an existing entry. Returns:
+ *   - `{ type: "pending", promise }` — an in-flight write with the same
+ *     fingerprint. Caller should await and return.
+ *   - `{ type: "value", result }` — a completed cached result. Caller
+ *     should return it directly.
+ *   - `{ type: "conflict", message }` — a cached entry exists but with
+ *     a different fingerprint. Caller should return STATE_CONFLICT.
+ *   - `undefined` — no usable entry (miss or expired). Caller should
+ *     reserve the slot via `reserveIdempotencySlot` and run the write.
+ */
+function lookupIdempotency(
+  cacheKey: string,
+  fingerprint: string,
+  now: number,
+):
+  | { readonly type: "pending"; readonly promise: Promise<OperationResult<ContributeResult>> }
+  | { readonly type: "value"; readonly result: ContributeResult }
+  | { readonly type: "conflict"; readonly message: string }
+  | undefined {
   const entry = idempotencyCache.get(cacheKey);
   if (entry === undefined) return undefined;
   if (now - entry.storedAt > IDEMPOTENCY_TTL_MS) {
     idempotencyCache.delete(cacheKey);
     return undefined;
   }
+  if (entry.fingerprint !== fingerprint) {
+    return {
+      type: "conflict",
+      message:
+        "Idempotency key was previously used with a different request body. " +
+        "Reusing the same key with different input is rejected to prevent silent " +
+        "write divergence. Use a new key for the new intent.",
+    };
+  }
   // LRU touch: move to end of insertion order.
   idempotencyCache.delete(cacheKey);
   idempotencyCache.set(cacheKey, entry);
-  return entry.value;
+  if (entry.pending !== undefined) {
+    return { type: "pending", promise: entry.pending };
+  }
+  if (entry.value !== undefined) {
+    return { type: "value", result: entry.value };
+  }
+  return undefined;
 }
 
-function storeIdempotency(cacheKey: string, value: ContributeResult, now: number): void {
+/**
+ * Synchronously reserve a cache slot with a pending Promise. Subsequent
+ * concurrent calls with the same key will find this pending entry and
+ * await it (single-flight). Returns a resolver the caller must invoke
+ * exactly once with the final OperationResult.
+ */
+function reserveIdempotencySlot(
+  cacheKey: string,
+  fingerprint: string,
+  now: number,
+): {
+  readonly resolve: (result: OperationResult<ContributeResult>) => void;
+  readonly release: () => void;
+} {
   // Evict the oldest entry if at capacity.
   if (idempotencyCache.size >= IDEMPOTENCY_MAX_ENTRIES) {
     const oldest = idempotencyCache.keys().next().value;
     if (oldest !== undefined) idempotencyCache.delete(oldest);
   }
-  idempotencyCache.set(cacheKey, { value, storedAt: now });
+
+  let resolver!: (result: OperationResult<ContributeResult>) => void;
+  const pending = new Promise<OperationResult<ContributeResult>>((r) => {
+    resolver = r;
+  });
+
+  idempotencyCache.set(cacheKey, { fingerprint, storedAt: now, pending });
+
+  return {
+    resolve: (result) => {
+      // Transition the slot from pending → final.
+      if (result.ok) {
+        idempotencyCache.set(cacheKey, {
+          fingerprint,
+          storedAt: Date.now(),
+          value: result.value,
+        });
+      } else {
+        // On error, delete the slot so retries can make progress.
+        idempotencyCache.delete(cacheKey);
+      }
+      resolver(result);
+    },
+    release: () => {
+      // Called on unexpected exception (e.g., thrown error not caught by
+      // fromGroveError). Remove the slot so retries aren't blocked.
+      idempotencyCache.delete(cacheKey);
+    },
+  };
 }
 
 /**
@@ -292,16 +439,22 @@ export function _resetIdempotencyCacheForTests(): void {
  * Atomic write path: SQLite stores supporting `putWithCowrite` write the
  * contribution and all handoff records inside a single SQLite transaction.
  * Used when both the contribution store and handoff store are SQLite-backed.
+ *
+ * The `putWithCowrite` parameter may be sync (raw SqliteContributionStore)
+ * or async (EnforcingContributionStore wrapping a SQLite store — its
+ * enforcement hooks are async but the inner cowrite callback still runs
+ * synchronously inside the transaction, so handoff IDs are populated
+ * before the outer Promise resolves).
  */
-function writeAtomic(
+async function writeAtomic(
   contribution: Contribution,
   routedTo: readonly string[],
   agentRole: string,
-  putWithCowrite: (c: Contribution, fn: () => void) => void,
+  putWithCowrite: (c: Contribution, fn: () => void) => void | Promise<void>,
   insertSync: (input: HandoffInput) => string,
-): readonly string[] {
+): Promise<readonly string[]> {
   const handoffIds: string[] = [];
-  putWithCowrite(contribution, () => {
+  const maybePromise = putWithCowrite(contribution, () => {
     for (const targetRole of routedTo) {
       const hid = insertSync({
         sourceCid: contribution.cid,
@@ -312,6 +465,12 @@ function writeAtomic(
       if (hid !== undefined) handoffIds.push(hid);
     }
   });
+  if (
+    maybePromise !== undefined &&
+    typeof (maybePromise as { then?: unknown }).then === "function"
+  ) {
+    await maybePromise;
+  }
   return handoffIds;
 }
 
@@ -390,7 +549,7 @@ async function writeContributionWithHandoffs(
 
   if (needsHandoffs) {
     const cowriteStore = store as {
-      putWithCowrite?: (c: Contribution, fn: () => void) => void;
+      putWithCowrite?: (c: Contribution, fn: () => void) => void | Promise<void>;
     };
     const sqliteHandoffStore = handoffStore as {
       insertSync?: (input: HandoffInput) => string;
@@ -418,6 +577,17 @@ export async function contributeOperation(
   input: ContributeInput,
   deps: OperationDeps,
 ): Promise<OperationResult<ContributeResult>> {
+  // Hoisted out of the try block so the outer catch can release the slot
+  // on thrown errors. Single-flight: while a slot holds a pending Promise,
+  // concurrent callers with the same key await that Promise instead of
+  // racing through the write path.
+  let idempotencySlot:
+    | {
+        readonly resolve: (result: OperationResult<ContributeResult>) => void;
+        readonly release: () => void;
+      }
+    | undefined;
+
   try {
     if (deps.contributionStore === undefined) {
       return validationErr("Contribution operations not available (missing contributionStore)");
@@ -444,21 +614,50 @@ export async function contributeOperation(
     // Normalize to UTC Z-format so lexicographic ORDER BY works without datetime().
     const createdAt = toUtcIso(input.createdAt ?? new Date().toISOString());
 
-    // Idempotency check: explicit client-supplied key, namespaced per agent.
-    // Replaces the previous heuristic that did a 60s same-summary lookup; that
-    // approach false-positived on legitimate retries (e.g., updatePlan called
-    // twice with the same title) and missed real retries under concurrency
-    // because the window query was unbounded across all agents.
+    // --- Idempotency: single-flight with request fingerprinting ---
+    //
+    // Explicit client-supplied key, namespaced per agent. HTTP
+    // Idempotency-Key semantics (Stripe / AWS / RFC draft):
+    //
+    //   - same key + same fingerprint → return cached result (retry)
+    //   - same key + different fingerprint → STATE_CONFLICT (bug)
+    //   - same key + in-flight → await the pending Promise (single-flight)
+    //
+    // Replaces the previous heuristic that did a 60s same-summary lookup;
+    // that approach false-positived on legitimate retries (e.g., updatePlan
+    // called twice with the same title) and missed real retries under
+    // concurrency because the window query was unbounded across all agents.
+    //
+    // Critically: the check-then-reserve is synchronous (no await between
+    // lookup miss and slot insertion). JavaScript is single-threaded, so
+    // two concurrent callers cannot both observe a miss and race past the
+    // insert — the second caller sees the first caller's pending entry.
     const idempotencyAgentScope = agent.role ?? agent.agentId;
     const idempotencyCacheLookupKey =
       input.idempotencyKey !== undefined
         ? idempotencyCacheKey(idempotencyAgentScope, input.idempotencyKey)
         : undefined;
     if (idempotencyCacheLookupKey !== undefined) {
-      const cached = lookupIdempotency(idempotencyCacheLookupKey, Date.now());
+      const fingerprint = computeIdempotencyFingerprint(input, agent);
+      const cached = lookupIdempotency(idempotencyCacheLookupKey, fingerprint, Date.now());
       if (cached !== undefined) {
-        return ok(cached);
+        if (cached.type === "pending") {
+          // Concurrent caller: await their write and return the same result.
+          return cached.promise;
+        }
+        if (cached.type === "value") {
+          return ok(cached.result);
+        }
+        // type === "conflict" — key reused with different input.
+        return err({
+          code: OperationErrorCode.StateConflict,
+          message: cached.message,
+          details: { idempotencyKey: input.idempotencyKey },
+        });
       }
+      // Miss: synchronously reserve the slot. Subsequent concurrent
+      // callers observe the pending Promise and await it.
+      idempotencySlot = reserveIdempotencySlot(idempotencyCacheLookupKey, fingerprint, Date.now());
     }
 
     const contributionInput: ContributionInput = {
@@ -477,21 +676,43 @@ export async function contributeOperation(
 
     const contribution = createContribution(contributionInput);
 
+    // --- Ephemeral flag is reserved for discussions ---
+    // context.ephemeral=true is a routing/frontier skip signal intended for
+    // chat messages and grove_done session terminators, both of which are
+    // kind=discussion. Allowing it on work/review/reproduction/adoption would
+    // make real progress invisible to the topology router, handoff store,
+    // stop-condition evaluator, AND the frontier calculator (which filters
+    // out ephemeral contributions). Reject the combination explicitly so
+    // caller bugs surface instead of silently dropping work.
+    if (contribution.kind !== CK.Discussion && contribution.context?.ephemeral === true) {
+      const errResult = validationErr(
+        `context.ephemeral=true is only valid on kind=discussion contributions ` +
+          `(chat messages and session terminators). Got kind='${contribution.kind}'. ` +
+          `The ephemeral flag suppresses topology routing, handoff creation, and ` +
+          `frontier inclusion — setting it on progress contributions would make them invisible.`,
+      );
+      // Resolve the idempotency slot with this permanent error so any
+      // concurrent retry with the same key gets the same response.
+      idempotencySlot?.resolve(errResult);
+      return errResult;
+    }
+
     // --- Routing classification ---
-    // Plans are coordination metadata (not progress); ephemeral messages are
-    // chat (not coordination). Both opt out of parts of the side-effect
-    // pipeline so they don't pollute work-tracking surfaces:
+    // Plans are coordination metadata (not progress); ephemeral discussions
+    // are chat / done markers (not coordination). Both opt out of parts of
+    // the side-effect pipeline so they don't pollute work-tracking surfaces:
     //
-    //   kind            | handoffs | route event | stop conditions
-    //   plan            |    no    |     yes     |       no
-    //   ephemeral msg   |    no    |     no      |       no
-    //   discussion      |    yes   |     yes     |       yes
-    //   work / review   |    yes   |     yes     |       yes
+    //   kind                  | handoffs | route event | stop conditions
+    //   plan                  |    no    |     yes     |       no
+    //   discussion+ephemeral  |    no    |     no      |       no
+    //   discussion (plain)    |    yes   |     yes     |       yes
+    //   work / review / etc   |    yes   |     yes     |       yes
     const isPlan = contribution.kind === CK.Plan;
-    const isEphemeralMessage = isEphemeralMessageContext(contribution.context);
-    const skipHandoffs = isPlan || isEphemeralMessage;
-    const skipRouteEvent = isEphemeralMessage;
-    const skipStopConditions = isPlan || isEphemeralMessage;
+    const isEphemeralDiscussion =
+      contribution.kind === CK.Discussion && isEphemeralMessageContext(contribution.context);
+    const skipHandoffs = isPlan || isEphemeralDiscussion;
+    const skipRouteEvent = isEphemeralDiscussion;
+    const skipStopConditions = isPlan || isEphemeralDiscussion;
 
     // --- Policy enforcement (TOCTOU-safe: runs inside store mutex) ---
     let policyResult: PolicyEnforcementResult | undefined;
@@ -678,12 +899,18 @@ export async function contributeOperation(
       ...(policyResult !== undefined ? { policy: policyResult } : {}),
     };
 
-    if (idempotencyCacheLookupKey !== undefined) {
-      storeIdempotency(idempotencyCacheLookupKey, result, Date.now());
-    }
-
-    return ok(result);
+    const okResult = ok(result);
+    // Resolve the slot with the successful result so concurrent retries
+    // with the same key get back the exact same response.
+    idempotencySlot?.resolve(okResult);
+    return okResult;
   } catch (error) {
+    // Release the slot on thrown errors. The write might have partially
+    // happened (e.g., policy violation after the contribution was built
+    // but before post-write hooks). We release instead of resolving so
+    // retries can attempt the write again — the cache shouldn't hold a
+    // permanent failure for a transient error path.
+    idempotencySlot?.release();
     return fromGroveError(error);
   }
 }

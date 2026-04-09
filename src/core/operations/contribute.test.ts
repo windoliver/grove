@@ -240,7 +240,32 @@ describe("contributeOperation: idempotencyKey", () => {
     _resetIdempotencyCacheForTests();
   });
 
-  test("repeated call with same key returns the cached result", async () => {
+  test("repeated call with same key + same input returns the cached result", async () => {
+    const firstInput = {
+      kind: "work" as const,
+      summary: "first call",
+      agent: { agentId: "agent-1" },
+      idempotencyKey: "key-1",
+    };
+    const first = await contributeOperation(firstInput, deps);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    // Identical retry — should return the cached result.
+    const second = await contributeOperation({ ...firstInput }, deps);
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+
+    // Same CID proves the cache served it.
+    expect(second.value.cid).toBe(first.value.cid);
+    expect(second.value.summary).toBe("first call");
+  });
+
+  test("same key + different input is rejected with STATE_CONFLICT", async () => {
+    // Stripe/AWS Idempotency-Key semantics: reusing a key with a different
+    // request body is a client bug (the key no longer identifies a single
+    // logical operation). Reject instead of silently returning the first
+    // call's result, which would hide the mistake.
     const first = await contributeOperation(
       {
         kind: "work",
@@ -256,18 +281,40 @@ describe("contributeOperation: idempotencyKey", () => {
     const second = await contributeOperation(
       {
         kind: "work",
-        summary: "different summary, but same key",
+        summary: "different summary, same key",
         agent: { agentId: "agent-1" },
         idempotencyKey: "key-1",
       },
       deps,
     );
-    expect(second.ok).toBe(true);
-    if (!second.ok) return;
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.error.code).toBe("STATE_CONFLICT");
+    expect(second.error.message).toMatch(/different request body/i);
+  });
 
-    // Same CID and same summary as the original — proves the cache served it.
-    expect(second.value.cid).toBe(first.value.cid);
-    expect(second.value.summary).toBe("first call");
+  test("concurrent calls with same key are single-flight (one write)", async () => {
+    // Two overlapping retries with the same key must NOT both write.
+    // The first reserves the slot, the second awaits the pending Promise.
+    const input = {
+      kind: "work" as const,
+      summary: "single flight",
+      agent: { agentId: "agent-1" },
+      idempotencyKey: "single-flight-key",
+    };
+    const [r1, r2] = await Promise.all([
+      contributeOperation(input, deps),
+      contributeOperation(input, deps),
+    ]);
+    expect(r1.ok && r2.ok).toBe(true);
+    if (!r1.ok || !r2.ok) return;
+    // Both callers observe the same CID — single write occurred.
+    expect(r1.value.cid).toBe(r2.value.cid);
+
+    // Verify via the store: only one contribution with that summary.
+    const stored = await deps.contributionStore.list({ limit: 20 });
+    const matching = stored.filter((c) => c.summary === "single flight");
+    expect(matching).toHaveLength(1);
   });
 
   test("different keys produce different contributions", async () => {
@@ -320,30 +367,98 @@ describe("contributeOperation: idempotencyKey", () => {
     expect(bob.value.summary).toBe("bob's work");
   });
 
-  test("agent role takes precedence over agentId for idempotency scope", async () => {
-    // Two agents with the same role share the idempotency namespace.
+  test("agent role scopes idempotency: identical payload from two coders shares cache", async () => {
+    // When the agent has a role, the idempotency namespace is per-role —
+    // two agent instances of the same role submitting the SAME logical
+    // request (identical fingerprint) are treated as retries of one call.
+    //
+    // This models multi-instance roles (e.g., max_instances=2 for coder)
+    // where either instance might retry the same work submission.
+    const sharedPayload = {
+      kind: "work" as const,
+      summary: "shared coder work",
+      idempotencyKey: "coder-shared-key",
+    };
     const first = await contributeOperation(
-      {
-        kind: "work",
-        summary: "from agent-1",
-        agent: { agentId: "agent-1", role: "coder" },
-        idempotencyKey: "k",
-      },
+      { ...sharedPayload, agent: { agentId: "coder-instance-1", role: "coder" } },
       deps,
     );
     const second = await contributeOperation(
-      {
-        kind: "work",
-        summary: "from agent-2",
-        agent: { agentId: "agent-2", role: "coder" },
-        idempotencyKey: "k",
-      },
+      { ...sharedPayload, agent: { agentId: "coder-instance-2", role: "coder" } },
       deps,
     );
     expect(first.ok && second.ok).toBe(true);
     if (!first.ok || !second.ok) return;
+    // Same CID — both callers got the cached result.
     expect(second.value.cid).toBe(first.value.cid);
-    expect(second.value.summary).toBe("from agent-1");
+  });
+
+  test("role scope: same key + different summary across instances is STATE_CONFLICT", async () => {
+    // Within the same role namespace, reusing a key with different
+    // summary is still a conflict — scope-sharing does not mean anything
+    // goes, it just means the key identifies one logical operation
+    // across all instances of that role.
+    const first = await contributeOperation(
+      {
+        kind: "work",
+        summary: "coder-1 work",
+        agent: { agentId: "coder-instance-1", role: "coder" },
+        idempotencyKey: "role-conflict-key",
+      },
+      deps,
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const second = await contributeOperation(
+      {
+        kind: "work",
+        summary: "coder-2 different work",
+        agent: { agentId: "coder-instance-2", role: "coder" },
+        idempotencyKey: "role-conflict-key",
+      },
+      deps,
+    );
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.error.code).toBe("STATE_CONFLICT");
+  });
+
+  test("ephemeral flag on non-discussion kind is rejected", async () => {
+    // Regression guard: context.ephemeral=true is reserved for discussions
+    // (chat messages + grove_done markers). Allowing it on work/review
+    // would route real progress through the skip path — no handoff, no
+    // topology event, no stop check, AND the frontier filters out
+    // ephemeral contributions, making the work invisible.
+    for (const kind of ["work", "review", "reproduction", "adoption"] as const) {
+      const result = await contributeOperation(
+        {
+          kind,
+          summary: `ephemeral ${kind}`,
+          context: { ephemeral: true },
+          agent: { agentId: "a1", role: "coder" },
+        },
+        deps,
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.code).toBe("VALIDATION_ERROR");
+      expect(result.error.message).toMatch(/ephemeral.*only valid on kind=discussion/i);
+    }
+  });
+
+  test("ephemeral flag on discussion is allowed (normal path)", async () => {
+    const result = await contributeOperation(
+      {
+        kind: "discussion",
+        mode: "exploration",
+        summary: "ephemeral chat",
+        context: { ephemeral: true, recipients: ["@bob"], message_body: "hi" },
+        agent: { agentId: "a1", role: "coder" },
+      },
+      deps,
+    );
+    expect(result.ok).toBe(true);
   });
 
   test("no idempotencyKey means no dedup", async () => {
