@@ -169,7 +169,23 @@ export class NexusHandoffStore implements HandoffStore {
   // ---------------------------------------------------------------------------
 
   async create(input: HandoffInput): Promise<Handoff> {
-    const handoff: Handoff = {
+    const [handoff] = await this.createMany([input]);
+    if (handoff === undefined) {
+      throw new Error("createMany returned no handoff");
+    }
+    return handoff;
+  }
+
+  /**
+   * Batch creation: collapses N handoff inserts into a single VFS file
+   * write (one casUpdate, one HTTP round-trip). Avoids the N+1 pattern
+   * the contributeOperation serial path used to have when fanning out
+   * to multiple downstream roles.
+   */
+  async createMany(inputs: readonly HandoffInput[]): Promise<readonly Handoff[]> {
+    if (inputs.length === 0) return [];
+
+    const handoffs: Handoff[] = inputs.map((input) => ({
       handoffId: input.handoffId ?? crypto.randomUUID(),
       sourceCid: input.sourceCid,
       fromRole: input.fromRole,
@@ -182,38 +198,17 @@ export class NexusHandoffStore implements HandoffStore {
       requiresReply: input.requiresReply ?? false,
       ...(input.replyDueAt !== undefined ? { replyDueAt: input.replyDueAt } : {}),
       createdAt: new Date().toISOString(),
-    };
+    }));
 
     const path = this.filePath();
-    try {
-      await this.casUpdate(path, (existing) => {
-        // Idempotent: skip if already present
-        if (existing.some((h) => h.handoffId === handoff.handoffId)) return existing;
-        return [...existing, handoff];
-      });
-      try {
-        const { appendFileSync } = require("node:fs") as typeof import("node:fs");
-        appendFileSync(
-          "/tmp/grove-debug.log",
-          `[${new Date().toISOString()}] [nexus-handoff] WRITE OK path=${path} id=${handoff.handoffId} ${handoff.fromRole}→${handoff.toRole}\n`,
-        );
-      } catch {
-        /* */
-      }
-    } catch (err) {
-      try {
-        const { appendFileSync } = require("node:fs") as typeof import("node:fs");
-        appendFileSync(
-          "/tmp/grove-debug.log",
-          `[${new Date().toISOString()}] [nexus-handoff] WRITE FAIL path=${path} err=${err instanceof Error ? err.message : String(err)}\n`,
-        );
-      } catch {
-        /* */
-      }
-      throw err;
-    }
+    await this.casUpdate(path, (existing) => {
+      // Idempotent merge: skip handoffs whose id is already present.
+      const existingIds = new Set(existing.map((h) => h.handoffId));
+      const fresh = handoffs.filter((h) => !existingIds.has(h.handoffId));
+      return fresh.length === 0 ? existing : [...existing, ...fresh];
+    });
 
-    return handoff;
+    return handoffs;
   }
 
   async get(handoffId: string): Promise<Handoff | undefined> {

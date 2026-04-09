@@ -6,12 +6,13 @@
  *   grove inbox read [--from <agent-id>] [--since <iso>] [--limit <n>] [--json]
  */
 
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { createContribution } from "../../core/manifest.js";
-import type { ContributionInput } from "../../core/models.js";
 import type { AgentOverrides } from "../../core/operations/agent.js";
 import { resolveAgent } from "../../core/operations/agent.js";
-import { readInbox, sendMessage } from "../../core/operations/messaging.js";
+import type { OperationDeps } from "../../core/operations/deps.js";
+import { readInbox, sendMessageAsDiscussion } from "../../core/operations/messaging.js";
 import { formatTable, formatTimestamp, outputJson } from "../format.js";
 
 // ---------------------------------------------------------------------------
@@ -64,40 +65,103 @@ async function handleSend(args: readonly string[], groveOverride?: string): Prom
     return;
   }
 
-  const { initCliDeps } = await import("../context.js");
-  const deps = initCliDeps(process.cwd(), groveOverride);
+  // Mirror the `grove discuss` bootstrap so the CLI send path goes through
+  // the same contract-enforcement pipeline as the MCP path. Previously this
+  // command wrapped a bare `CliDeps` which carried no contract, so GROVE.md
+  // role-kind rules and rate limits silently did not apply to inbox sends —
+  // a loophole the MCP fix didn't close.
+  const { resolveGroveDir } = await import("../utils/grove-dir.js");
+  const { createSqliteStores } = await import("../../local/sqlite-store.js");
+  const { FsCas } = await import("../../local/fs-cas.js");
+  const { DefaultFrontierCalculator } = await import("../../core/frontier.js");
+  const { parseGroveContract } = await import("../../core/contract.js");
+  const { EnforcingContributionStore } = await import("../../core/enforcing-store.js");
+
+  const { groveDir, dbPath } = resolveGroveDir(groveOverride);
+  const stores = createSqliteStores(dbPath);
+  const cas = new FsCas(join(groveDir, "cas"));
+  const frontier = new DefaultFrontierCalculator(stores.contributionStore);
+
+  // Load GROVE.md from the grove root (parent of .grove/).
+  //
+  // Separate the readFile catch from the parse call so a MALFORMED contract
+  // fails closed instead of silently falling through to unenforced mode.
+  // The first pass of this patch combined both into one try/catch, which
+  // meant a YAML syntax error would be indistinguishable from "file does
+  // not exist" — any broken contract file reopened the CLI bypass we're
+  // supposed to be closing.
+  //
+  // ENOENT is the only acceptable fallthrough. Everything else (parse
+  // errors, permission denied, schema validation) propagates to the
+  // outer error handler so the operator sees the failure.
+  const groveRoot = join(groveDir, "..");
+  const grovemdPath = join(groveRoot, "GROVE.md");
+  let contract: Awaited<ReturnType<typeof parseGroveContract>> | undefined;
+  let grovemdContent: string | undefined;
+  try {
+    grovemdContent = await readFile(grovemdPath, "utf-8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== "ENOENT") {
+      // Permission error, I/O error, etc. — surface loudly.
+      throw err;
+    }
+    // GROVE.md does not exist — proceed without enforcement, same as
+    // `grove discuss` in a grove without a contract.
+  }
+  if (grovemdContent !== undefined) {
+    // parseGroveContract intentionally runs OUTSIDE the catch: YAML/schema
+    // errors must propagate, not be swallowed as "no contract".
+    contract = parseGroveContract(grovemdContent);
+  }
+
+  // Wrap with EnforcingContributionStore when a contract exists. Without
+  // this, rate-limits / allowed-kinds / clock-skew checks would not fire
+  // for inbox sends even when configured in GROVE.md.
+  const contributionStore = contract
+    ? new EnforcingContributionStore(stores.contributionStore, contract, { cas })
+    : stores.contributionStore;
 
   try {
     const agentOverrides: AgentOverrides = {
       agentId: values["agent-id"] as string | undefined,
       agentName: values["agent-name"] as string | undefined,
     };
-    const agent = resolveAgent(agentOverrides);
 
-    const computeCid = (input: ContributionInput): string => {
-      return createContribution(input).cid;
+    const opDeps: OperationDeps = {
+      contributionStore,
+      claimStore: stores.claimStore,
+      cas,
+      frontier,
+      handoffStore: stores.handoffStore,
+      ...(contract !== undefined ? { contract } : {}),
     };
 
-    const result = await sendMessage(
-      deps.store,
+    const result = await sendMessageAsDiscussion(
       {
-        agent,
+        agent: agentOverrides,
         body,
         recipients,
-        inReplyTo: values["reply-to"] as string | undefined,
+        ...(values["reply-to"] !== undefined ? { inReplyTo: values["reply-to"] as string } : {}),
         tags: (values.tag ?? []) as string[],
       },
-      computeCid,
+      opDeps,
     );
 
+    if (!result.ok) {
+      console.error(`Error: ${result.error.message}`);
+      process.exitCode = 1;
+      return;
+    }
+
     if (values.json) {
-      outputJson({ cid: result.cid, recipients, body });
+      outputJson({ cid: result.value.cid, recipients, body });
     } else {
-      console.log(`Message sent: ${result.cid}`);
+      console.log(`Message sent: ${result.value.cid}`);
       console.log(`  to: ${recipients.join(", ")}`);
     }
   } finally {
-    deps.close();
+    stores.contributionStore.close();
   }
 }
 

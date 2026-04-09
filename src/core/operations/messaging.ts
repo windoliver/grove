@@ -1,41 +1,58 @@
 /**
- * Messaging operations — send and read agent-to-agent messages.
+ * Inbox query operations.
  *
- * Messages are modeled as `discussion`-kind contributions with
- * `responds_to` relations and `recipients` + `ephemeral` context fields.
- * This reuses the existing contribution graph (DRY) while keeping
- * messages out of frontier ranking (ephemeral flag).
+ * Sending a message is just a discussion contribution with an ephemeral
+ * context payload — see `sendMessageAsDiscussion()` below for the helper
+ * that wraps `discussOperation`. This module's primary responsibility is
+ * the read side: filtering, sorting, and projecting discussion contributions
+ * back into InboxMessage shapes.
  *
- * All messages flow through the ContributionStore — Nexus-first,
- * with local SQLite as fallback.
+ * All messages flow through the ContributionStore — Nexus-first, with
+ * local SQLite as fallback.
  */
 
-import type { AgentIdentity, Contribution, ContributionInput } from "../models.js";
+import type { Contribution } from "../models.js";
 import { ContributionKind, ContributionMode, RelationType } from "../models.js";
 import type { ContributionStore } from "../store.js";
+import type { AgentOverrides } from "./agent.js";
+import { buildMessageContext, parseMessageContext } from "./context-schemas.js";
+import { contributeOperation } from "./contribute.js";
+import type { OperationDeps } from "./deps.js";
+import type { OperationResult } from "./result.js";
+import { ok, validationErr } from "./result.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-/** Input for sending a message. */
+/** Input for sending a message via the discussion-as-message helper. */
 export interface SendMessageInput {
-  /** The agent sending the message. */
-  readonly agent: AgentIdentity;
-  /** Message body text. */
+  /** Sending agent (overrides; resolved by discussOperation). */
+  readonly agent?: AgentOverrides | undefined;
+  /** Message body text. Must be non-empty after trimming. */
   readonly body: string;
-  /** Recipients: "@agent-name" handles, "@all" for broadcast. */
+  /** Recipients: "@agent-name" handles, "@all" for broadcast. Must be non-empty. */
   readonly recipients: readonly string[];
   /** Optional CID to respond to (creates responds_to relation). */
   readonly inReplyTo?: string | undefined;
   /** Optional tags for filtering. */
   readonly tags?: readonly string[] | undefined;
+  /** Optional idempotency key for retry safety. */
+  readonly idempotencyKey?: string | undefined;
+}
+
+/** Result of sending a message via the helper. */
+export interface SendMessageResult {
+  readonly cid: string;
+  readonly summary: string;
+  readonly recipients: readonly string[];
+  readonly createdAt: string;
 }
 
 /** A message read from the inbox. */
 export interface InboxMessage {
   readonly cid: string;
-  readonly from: AgentIdentity;
+  readonly from: import("../models.js").AgentIdentity;
   readonly body: string;
   readonly recipients: readonly string[];
   readonly inReplyTo?: string | undefined;
@@ -63,54 +80,53 @@ export interface InboxQuery {
 // ---------------------------------------------------------------------------
 
 /**
- * Send a message as a discussion contribution.
+ * Send a message by creating an ephemeral discussion contribution.
  *
- * The message is stored as a `discussion`-kind contribution with:
- * - `context.ephemeral = true` (excluded from frontier ranking)
- * - `context.recipients` (array of @handles)
- * - `context.message_body` (the text content)
- * - Optional `responds_to` relation for threaded replies
+ * Sugar over contributeOperation: builds a discussion-kind contribution
+ * with the ephemeral message context (recipients + body) and an optional
+ * responds_to relation. Routes through the canonical write pipeline so
+ * role-kind constraints, hooks, and idempotency apply uniformly with
+ * other contributions.
+ *
+ * Replaces the previous standalone sendMessage that took a raw store +
+ * computeCid and bypassed PolicyEnforcer / TopologyRouter (the #228 bug
+ * for the messaging path).
  */
-export async function sendMessage(
-  store: ContributionStore,
+export async function sendMessageAsDiscussion(
   input: SendMessageInput,
-  computeCid: (input: ContributionInput) => string,
-): Promise<Contribution> {
+  deps: OperationDeps,
+): Promise<OperationResult<SendMessageResult>> {
   if (input.recipients.length === 0) {
-    throw new Error("Message must have at least one recipient");
+    return validationErr("Message must have at least one recipient");
   }
   if (input.body.trim().length === 0) {
-    throw new Error("Message body cannot be empty");
+    return validationErr("Message body cannot be empty");
   }
 
-  const contributionInput: ContributionInput = {
-    kind: ContributionKind.Discussion,
-    mode: ContributionMode.Exploration,
-    summary: truncateSummary(input.body),
-    description: input.body,
-    artifacts: {},
-    relations: input.inReplyTo
-      ? [{ targetCid: input.inReplyTo, relationType: RelationType.RespondsTo }]
-      : [],
-    tags: [...(input.tags ?? []), "message"],
-    context: {
-      ephemeral: true,
-      recipients: [...input.recipients],
-      message_body: input.body,
+  const result = await contributeOperation(
+    {
+      kind: ContributionKind.Discussion,
+      mode: ContributionMode.Exploration,
+      summary: truncateSummary(input.body),
+      description: input.body,
+      relations: input.inReplyTo
+        ? [{ targetCid: input.inReplyTo, relationType: RelationType.RespondsTo }]
+        : [],
+      tags: [...(input.tags ?? []), "message"],
+      context: buildMessageContext({ recipients: input.recipients, body: input.body }),
+      ...(input.agent !== undefined ? { agent: input.agent } : {}),
+      ...(input.idempotencyKey !== undefined ? { idempotencyKey: input.idempotencyKey } : {}),
     },
-    agent: input.agent,
-    createdAt: new Date().toISOString(),
-  };
+    deps,
+  );
 
-  const cid = computeCid(contributionInput);
-  const contribution: Contribution = {
-    ...contributionInput,
-    cid,
-    manifestVersion: 1,
-  };
-
-  await store.put(contribution);
-  return contribution;
+  if (!result.ok) return result as OperationResult<SendMessageResult>;
+  return ok({
+    cid: result.value.cid,
+    summary: result.value.summary,
+    recipients: [...input.recipients],
+    createdAt: result.value.createdAt,
+  });
 }
 
 /**
@@ -138,63 +154,68 @@ export async function readInbox(
     ...(query?.sessionId !== undefined ? { sessionId: query.sessionId } : {}),
   });
 
-  let messages = contributions.filter((c) => {
-    if (c.context?.ephemeral !== true) return false;
-    if (!Array.isArray(c.context.recipients)) return false;
-    return true;
+  // Pair each contribution with its parsed message context up front so we
+  // don't re-parse on every filter pass and so wrong-shape contributions are
+  // dropped exactly once.
+  let messages = contributions.flatMap((c) => {
+    const ctx = parseMessageContext(c.context);
+    return ctx === undefined ? [] : [{ contribution: c, context: ctx }];
   });
 
   // Filter by single recipient (legacy)
   if (query?.recipient !== undefined) {
     const target = query.recipient;
-    messages = messages.filter((c) => {
-      const recipients = c.context?.recipients as string[];
-      return recipients.includes(target) || recipients.includes("@all");
-    });
+    messages = messages.filter(
+      ({ context }) => context.recipients.includes(target) || context.recipients.includes("@all"),
+    );
   }
 
   // Filter by multiple recipients (matches if any handle appears in the message)
   if (query?.recipients !== undefined && query.recipients.length > 0) {
     const handles = new Set(query.recipients);
-    messages = messages.filter((c) => {
-      const recipients = c.context?.recipients as string[];
-      return recipients.some((r) => handles.has(r));
-    });
+    messages = messages.filter(({ context }) => context.recipients.some((r) => handles.has(r)));
   }
 
   // Filter by sender
   if (query?.fromAgentId !== undefined) {
-    messages = messages.filter((c) => c.agent.agentId === query.fromAgentId);
+    messages = messages.filter(
+      ({ contribution }) => contribution.agent.agentId === query.fromAgentId,
+    );
   }
 
   // Filter by timestamp
   if (query?.since !== undefined) {
     const sinceMs = Date.parse(query.since);
-    messages = messages.filter((c) => Date.parse(c.createdAt) >= sinceMs);
+    messages = messages.filter(({ contribution }) => Date.parse(contribution.createdAt) >= sinceMs);
   }
 
   // Sort by most recent first
-  messages.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  messages.sort(
+    (a, b) => Date.parse(b.contribution.createdAt) - Date.parse(a.contribution.createdAt),
+  );
 
   // Apply limit
   const limit = query?.limit ?? 50;
   messages = messages.slice(0, limit);
 
-  return messages.map(contributionToMessage);
+  return messages.map(({ contribution, context }) => contributionToMessage(contribution, context));
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function contributionToMessage(c: Contribution): InboxMessage {
+function contributionToMessage(
+  c: Contribution,
+  ctx: { readonly recipients: readonly string[]; readonly message_body: string },
+): InboxMessage {
   const inReplyTo = c.relations.find((r) => r.relationType === RelationType.RespondsTo)?.targetCid;
 
   return {
     cid: c.cid,
     from: c.agent,
-    body: (c.context?.message_body as string) ?? c.description ?? c.summary,
-    recipients: (c.context?.recipients as string[]) ?? [],
+    body: ctx.message_body,
+    recipients: [...ctx.recipients],
     inReplyTo,
     createdAt: c.createdAt,
     tags: [...c.tags],

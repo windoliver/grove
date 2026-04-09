@@ -231,3 +231,86 @@ describe("MCP server integration", () => {
     expect(getText(result)).toContain("NOT_FOUND");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Wiring test: EnforcingContributionStore wrap for the MCP path
+// ---------------------------------------------------------------------------
+//
+// Issue 11A in the #228 review. Rate limits live on the
+// EnforcingContributionStore wrapper, which serve.ts is responsible for
+// applying. Without this test, anyone removing the wrap from serve.ts
+// would silently break GROVE.md rate-limit configuration in MCP mode.
+//
+// This test mirrors the wiring logic in src/mcp/serve.ts: build the
+// raw store, wrap it with EnforcingContributionStore when a contract
+// is loaded, then exercise it through the same MCP boundary the
+// production server uses. The 2nd contribution must be rejected with
+// a RateLimitError.
+
+describe("MCP server: rate-limit wiring (Issue 2A/11A)", () => {
+  test("rate-limited contract rejects 2nd contribution at the MCP boundary", async () => {
+    const { EnforcingContributionStore } = await import("../core/enforcing-store.js");
+    const { ContributionMode } = await import("../core/models.js");
+    const testDeps = await createTestMcpDeps();
+    try {
+      // Build a contract with a tight per-agent limit.
+      const contract = {
+        contractVersion: 1,
+        name: "rate-limit-test",
+        mode: ContributionMode.Evaluation,
+        rateLimits: { maxContributionsPerAgentPerHour: 1 },
+      };
+
+      // Wrap exactly as src/mcp/serve.ts now does (Issue 2A).
+      const wrappedStore = new EnforcingContributionStore(
+        testDeps.deps.contributionStore,
+        contract,
+        { cas: testDeps.deps.cas },
+      );
+
+      const wrappedDeps: McpDeps = {
+        ...testDeps.deps,
+        contributionStore: wrappedStore,
+        contract,
+      };
+
+      const server = await createMcpServer(wrappedDeps);
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      const client = new Client({ name: "rate-test-client", version: "0.0.1" });
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+
+      try {
+        // First call: should succeed.
+        const first = await client.callTool({
+          name: "grove_submit_work",
+          arguments: {
+            summary: "first contribution",
+            tags: ["rate-test"],
+            artifacts: {},
+            agent: { agentId: "limited-agent" },
+          },
+        });
+        expect(first.isError).toBeFalsy();
+
+        // Second call: must be rejected by the rate limit.
+        const second = await client.callTool({
+          name: "grove_submit_work",
+          arguments: {
+            summary: "second contribution",
+            tags: ["rate-test"],
+            artifacts: {},
+            agent: { agentId: "limited-agent" },
+          },
+        });
+        expect(second.isError).toBeTruthy();
+        expect(getText(second)).toMatch(/rate.?limit|RATE_LIMIT/i);
+      } finally {
+        await client.close();
+        await server.close();
+      }
+    } finally {
+      await testDeps.cleanup();
+    }
+  });
+});

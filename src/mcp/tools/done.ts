@@ -48,9 +48,15 @@ export function registerDoneTools(server: McpServer, deps: McpDeps): void {
         {
           kind: "discussion",
           summary: `[DONE] ${args.summary}`,
+          // ephemeral: true routes grove_done through the same skip-handoff /
+          // skip-route-event path as ephemeral messages. A session-terminator
+          // contribution should not create routing records that wake up
+          // downstream agents with "new work" to pick up. See the routing
+          // rules table in src/core/operations/contribute.ts (isEphemeralMessageContext).
           context: {
             done: true,
             reason: args.summary,
+            ephemeral: true,
           } as Readonly<Record<string, JsonValue>>,
           agent: {
             ...(args.agent as import("../../core/operations/agent.js").AgentOverrides),

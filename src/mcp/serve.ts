@@ -54,17 +54,6 @@ try {
   const nexusUrl = process.env.GROVE_NEXUS_URL;
   const nexusApiKey = process.env.NEXUS_API_KEY;
 
-  // Debug: log MCP server config to file (stderr is ignored in detached mode)
-  try {
-    const { appendFileSync } = await import("node:fs");
-    appendFileSync(
-      "/tmp/grove-debug.log",
-      `[${new Date().toISOString()}] [mcp-serve] groveDir=${groveDir} nexusUrl=${nexusUrl ?? "none"} hasApiKey=${!!nexusApiKey}\n`,
-    );
-  } catch {
-    /* non-fatal */
-  }
-
   // Always create local runtime for workspace, contract, frontier, CAS
   const runtime = createLocalRuntime({
     groveDir,
@@ -113,15 +102,6 @@ try {
           zoneId,
           sessionId: process.env.GROVE_SESSION_ID,
         });
-        try {
-          const { appendFileSync: afs } = await import("node:fs");
-          afs(
-            "/tmp/grove-debug.log",
-            `[${new Date().toISOString()}] [mcp-store] sessionId=${process.env.GROVE_SESSION_ID ?? "none"} zoneId=${zoneId}\n`,
-          );
-        } catch {
-          /* ignore */
-        }
         claimStore = new NexusClaimStore({ client: nexusClient, zoneId });
         bountyStore = new NexusBountyStore({ client: nexusClient, zoneId });
         outcomeStore = new NexusOutcomeStore({ client: nexusClient, zoneId });
@@ -133,26 +113,8 @@ try {
           zoneId,
         );
         process.stderr.write(`grove-mcp: using Nexus stores at ${nexusUrl}\n`);
-        try {
-          const { appendFileSync } = await import("node:fs");
-          appendFileSync(
-            "/tmp/grove-debug.log",
-            `[${new Date().toISOString()}] [mcp-serve] NEXUS STORES active at ${nexusUrl}\n`,
-          );
-        } catch {
-          /* ignore */
-        }
       } else {
         process.stderr.write(`grove-mcp: Nexus unreachable, using local stores\n`);
-        try {
-          const { appendFileSync } = await import("node:fs");
-          appendFileSync(
-            "/tmp/grove-debug.log",
-            `[${new Date().toISOString()}] [mcp-serve] LOCAL STORES (Nexus unreachable at ${nexusUrl})\n`,
-          );
-        } catch {
-          /* ignore */
-        }
         nexusClient = undefined;
       }
     } catch (err) {
@@ -160,6 +122,18 @@ try {
     }
   } else {
     process.stderr.write(`grove-mcp: using local stores at ${groveDir}\n`);
+  }
+
+  // Wrap the contribution store with rate-limit / clock-skew enforcement
+  // when a contract is loaded. Mirrors the CLI path in
+  // src/cli/commands/contribute.ts:353. Without this wrap, MCP-served
+  // contributions bypass the rate limits configured in GROVE.md (Issue 2A
+  // in the #228 review).
+  if (runtime.contract !== undefined) {
+    const { EnforcingContributionStore } = await import("../core/enforcing-store.js");
+    contributionStore = new EnforcingContributionStore(contributionStore, runtime.contract, {
+      cas,
+    });
   }
 
   // Wire EventBus + TopologyRouter for IPC when topology exists.
@@ -176,15 +150,6 @@ try {
       eventBus = new LocalEventBus();
     }
     topologyRouter = new TopologyRouter(runtime.contract.topology, eventBus);
-    try {
-      const { appendFileSync } = await import("node:fs");
-      appendFileSync(
-        "/tmp/grove-debug.log",
-        `[${new Date().toISOString()}] [mcp-serve] TopologyRouter created, eventBus=${nexusClient ? "NexusEventBus" : "LocalEventBus"}\n`,
-      );
-    } catch {
-      /* ignore */
-    }
   }
 
   // When running with a local SQLite store and GROVE_SESSION_ID is set,
@@ -215,19 +180,6 @@ try {
     // Nexus handoff store when available, falls back to local SQLite
     handoffStore: nexusHandoffStore ?? runtime.handoffStore,
   };
-  // Debug: log which handoff store is active
-  try {
-    const { appendFileSync } = await import("node:fs");
-    const storeType = nexusHandoffStore ? "NexusHandoffStore" : "SqliteHandoffStore(fallback)";
-    const hasInsertSync =
-      typeof (deps.handoffStore as unknown as Record<string, unknown>)?.insertSync === "function";
-    appendFileSync(
-      "/tmp/grove-debug.log",
-      `[${new Date().toISOString()}] [mcp-serve] handoffStore=${storeType} hasInsertSync=${hasInsertSync} nexusHandoffStore=${nexusHandoffStore != null}\n`,
-    );
-  } catch {
-    /* non-fatal */
-  }
   // Derive MCP tool preset from contract mode — #11 MCP Tool Surface + #12 Concept Usage
   const contractMode = runtime.contract?.mode ?? "exploration";
   const hasMetrics =

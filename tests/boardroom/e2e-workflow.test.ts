@@ -25,7 +25,8 @@ import {
   submitQuestion,
 } from "../../src/core/operations/ask-user-bus.js";
 import { getSessionCosts, reportUsage } from "../../src/core/operations/cost-tracking.js";
-import { readInbox, sendMessage } from "../../src/core/operations/messaging.js";
+import type { OperationDeps } from "../../src/core/operations/deps.js";
+import { readInbox, sendMessageAsDiscussion } from "../../src/core/operations/messaging.js";
 import type { AgentTopology } from "../../src/core/topology.js";
 
 // ---------------------------------------------------------------------------
@@ -209,36 +210,39 @@ describe("E2E boardroom workflow", () => {
     expect(parsed.profiles[0]?.name).toBe("@claude-eng");
 
     // Step 2: Agent 1 sends a message to Agent 2
-    const msg = await sendMessage(
-      store as never,
+    const opDeps: OperationDeps = { contributionStore: store as never };
+    const msgResult = await sendMessageAsDiscussion(
       {
         agent: agent1,
         body: "I've started reviewing the auth module, line 42 looks suspicious",
         recipients: ["@codex-rev"],
         tags: ["review"],
       },
-      mockComputeCid,
+      opDeps,
     );
-
-    expect(msg.kind).toBe(ContributionKind.Discussion);
-    expect(msg.context?.ephemeral).toBe(true);
-    expect(msg.context?.recipients).toEqual(["@codex-rev"]);
+    expect(msgResult.ok).toBe(true);
+    if (!msgResult.ok) return;
+    const msgStored = await store.get(msgResult.value.cid);
+    expect(msgStored?.kind).toBe(ContributionKind.Discussion);
+    expect(msgStored?.context?.ephemeral).toBe(true);
+    expect(msgStored?.context?.recipients).toEqual(["@codex-rev"]);
 
     // Step 3: Agent 2 replies
-    const reply = await sendMessage(
-      store as never,
+    const replyResult = await sendMessageAsDiscussion(
       {
         agent: agent2,
         body: "Good catch, that's a SQL injection vector. I'll analyze further.",
         recipients: ["@claude-eng"],
-        inReplyTo: msg.cid,
+        inReplyTo: msgResult.value.cid,
       },
-      mockComputeCid,
+      opDeps,
     );
-
-    expect(reply.relations).toHaveLength(1);
-    expect(reply.relations[0]?.relationType).toBe(RelationType.RespondsTo);
-    expect(reply.relations[0]?.targetCid).toBe(msg.cid);
+    expect(replyResult.ok).toBe(true);
+    if (!replyResult.ok) return;
+    const replyStored = await store.get(replyResult.value.cid);
+    expect(replyStored?.relations).toHaveLength(1);
+    expect(replyStored?.relations[0]?.relationType).toBe(RelationType.RespondsTo);
+    expect(replyStored?.relations[0]?.targetCid).toBe(msgResult.value.cid);
 
     // Step 4: Read inbox for Agent 2 — should see Agent 1's message
     const agent2Inbox = await readInbox(store as never, {
@@ -411,14 +415,13 @@ describe("E2E boardroom workflow", () => {
     const store = new InMemoryStore();
     cidCounter = 200;
 
-    await sendMessage(
-      store as never,
+    await sendMessageAsDiscussion(
       {
         agent: agent1,
         body: "Team standup: what's everyone working on?",
         recipients: ["@all"],
       },
-      mockComputeCid,
+      { contributionStore: store as never },
     );
 
     // Both agents should see the broadcast

@@ -184,6 +184,62 @@ export class EnforcingContributionStore implements ContributionStore {
     });
   };
 
+  /**
+   * Atomic contribution + handoff cowrite, delegated to the inner store.
+   *
+   * Without this method, wrapping a SqliteContributionStore with
+   * EnforcingContributionStore hides the atomic-cowrite capability from
+   * `contributeOperation`'s capability check, forcing it to fall back to
+   * the serial (non-atomic) write path and leaving orphaned contributions
+   * on handoff insertion failure.
+   *
+   * Flow:
+   *   1. Acquire the shared write mutex (same as put())
+   *   2. Run rate-limit / clock-skew enforcement
+   *   3. Run the per-CID preWriteHook (for TOCTOU-safe policy enforcement)
+   *   4. Delegate to inner.putWithCowrite if available (SQLite) — the
+   *      inner store runs the cowrite sync inside a single transaction
+   *   5. If the inner store doesn't support cowrite (unexpected when the
+   *      caller already checked), fall back to a serial put + sync fn
+   *      as a defensive last resort
+   *
+   * Async because enforcement involves a `countSince` DB query. The
+   * cowrite callback itself is sync (runs inside the inner transaction).
+   * Callers (`writeContributionWithHandoffs`) must handle the Promise.
+   */
+  putWithCowrite = async (contribution: Contribution, cowriteFn: () => void): Promise<void> => {
+    return this.writeMutex.runExclusive(async () => {
+      const existing = await this.inner.get(contribution.cid);
+      if (existing !== undefined) {
+        // Idempotent: contribution already present, skip enforcement and
+        // the cowrite (no handoffs to insert for an existing row).
+        return;
+      }
+
+      await this.enforceContributionLimits(contribution, 0, []);
+      const hook = this.preWriteHooks.get(contribution.cid);
+      if (hook) {
+        this.preWriteHooks.delete(contribution.cid);
+        await hook(contribution);
+      }
+
+      const innerCowrite = (
+        this.inner as unknown as {
+          putWithCowrite?: (c: Contribution, fn: () => void) => void;
+        }
+      ).putWithCowrite;
+      if (innerCowrite !== undefined) {
+        innerCowrite.call(this.inner, contribution, cowriteFn);
+      } else {
+        // Defensive fallback — inner store does not support atomic cowrite.
+        // Do the best we can: put the contribution, then run the cowrite fn
+        // serially. This loses atomicity but matches the serial write path.
+        await this.inner.put(contribution);
+        cowriteFn();
+      }
+    });
+  };
+
   putMany = async (contributions: readonly Contribution[]): Promise<void> => {
     return this.writeMutex.runExclusive(async () => {
       // Filter out already-existing CIDs and intra-batch duplicates.

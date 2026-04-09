@@ -38,6 +38,20 @@ export interface HandoffQuery {
 
 export interface HandoffStore {
   create(input: HandoffInput): Promise<Handoff>;
+  /**
+   * Create multiple handoff records in a single round-trip.
+   *
+   * Used by the contributeOperation serial write path to avoid an N+1
+   * pattern when fanning a contribution out to multiple downstream roles
+   * (e.g., coder → [reviewer, tester, auditor] would otherwise pay
+   * 3×rtt against a remote handoff store).
+   *
+   * Implementations should preserve input order in the returned array.
+   * Default implementation calls create() in a loop — override with
+   * a single batch operation when the backing store supports it
+   * (e.g., one HTTP POST for Nexus, one BEGIN/COMMIT for SQLite).
+   */
+  createMany?(inputs: readonly HandoffInput[]): Promise<readonly Handoff[]>;
   get(id: string): Promise<Handoff | undefined>;
   list(query?: HandoffQuery): Promise<readonly Handoff[]>;
   markDelivered(id: string): Promise<void>;
