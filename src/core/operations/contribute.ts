@@ -366,17 +366,6 @@ export async function contributeOperation(
       if (needsHandoffs && routedTo !== undefined && agentRole !== undefined) {
         const handoffStore = deps.handoffStore;
         if (handoffStore !== undefined) {
-          // Identify which handoff store type is in use
-          const isNexus = !("insertSync" in handoffStore);
-          try {
-            const { appendFileSync } = require("node:fs") as typeof import("node:fs");
-            appendFileSync(
-              "/tmp/grove-debug.log",
-              `[${new Date().toISOString()}] [handoff] storeType=${isNexus ? "NexusHandoffStore" : "SqliteHandoffStore"} targets=${(routedTo as readonly string[]).join(",")}\n`,
-            );
-          } catch {
-            /* */
-          }
           for (const targetRole of routedTo) {
             try {
               const handoff = await handoffStore.create({
@@ -386,25 +375,10 @@ export async function contributeOperation(
                 requiresReply: false,
               });
               handoffIds.push(handoff.handoffId);
-              try {
-                const { appendFileSync } = require("node:fs") as typeof import("node:fs");
-                appendFileSync(
-                  "/tmp/grove-debug.log",
-                  `[${new Date().toISOString()}] [handoff] CREATED ${agentRole}→${targetRole} cid=${contribution.cid.slice(0, 16)} id=${handoff.handoffId}\n`,
-                );
-              } catch {
-                /* */
-              }
-            } catch (handoffErr) {
-              try {
-                const { appendFileSync } = require("node:fs") as typeof import("node:fs");
-                appendFileSync(
-                  "/tmp/grove-debug.log",
-                  `[${new Date().toISOString()}] [handoff] FAILED ${agentRole}→${targetRole} cid=${contribution.cid.slice(0, 16)} err=${handoffErr instanceof Error ? handoffErr.message : String(handoffErr)}\n`,
-                );
-              } catch {
-                /* */
-              }
+            } catch {
+              // Best-effort: a handoff insertion failure must not fail the
+              // already-committed contribution write. The contribution is in
+              // the DAG; the routing record is the secondary artifact.
             }
           }
         }
