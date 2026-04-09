@@ -708,4 +708,75 @@ describe("contributeOperation: plan and ephemeral routing rules", () => {
 
     bus.close();
   });
+
+  // -------------------------------------------------------------------------
+  // grove_done discussion: session terminator, not new work
+  // -------------------------------------------------------------------------
+  //
+  // grove_done writes a kind=discussion contribution with context.done=true
+  // plus context.ephemeral=true (see src/mcp/tools/done.ts). The ephemeral
+  // flag routes it through the same skip path as ephemeral messages: no
+  // handoff, no route event. This prevents the "[DONE] session complete"
+  // marker from waking up downstream agents with phantom work-to-pick-up.
+  //
+  // Discovered during #228 E2E validation — before this fix, a completed
+  // review loop left 2 pending_pickup handoffs (one for the review, one
+  // for grove_done) instead of just the 1 for the review itself.
+  test("grove_done discussion (ephemeral=true, done=true) skips handoff and event", async () => {
+    const bus = new LocalEventBus();
+    const router = new TopologyRouter(reviewLoopTopology, bus);
+    const store = makeInMemoryContributionStore();
+
+    const received: GroveEvent[] = [];
+    bus.subscribe("coder", (e) => received.push(e));
+
+    const handoffCreates: unknown[] = [];
+    const handoffStore = {
+      create: async (input: unknown) => {
+        handoffCreates.push(input);
+        return { handoffId: "fake-handoff" };
+      },
+      get: async () => undefined,
+      list: async () => [],
+      markDelivered: async () => undefined,
+      markReplied: async () => undefined,
+      expireStale: async () => [],
+      countPending: async () => 0,
+      close: () => undefined,
+    } as unknown as NonNullable<OperationDeps["handoffStore"]>;
+
+    const deps: OperationDeps = {
+      contributionStore: store,
+      topologyRouter: router,
+      eventBus: bus,
+      handoffStore,
+    };
+
+    // Exact shape that src/mcp/tools/done.ts writes when a reviewer approves.
+    const result = await contributeOperation(
+      {
+        kind: "discussion",
+        mode: "exploration",
+        summary: "[DONE] Approved — code meets standards",
+        context: {
+          done: true,
+          reason: "Approved — code meets standards",
+          ephemeral: true,
+        },
+        agent: { agentId: "reviewer-1", role: "reviewer" },
+      },
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+
+    // No handoff created for the done marker.
+    expect(handoffCreates).toHaveLength(0);
+
+    // No routing event fired for the done marker.
+    await new Promise((r) => setTimeout(r, 5));
+    expect(received).toHaveLength(0);
+
+    bus.close();
+  });
 });

@@ -127,9 +127,21 @@ export function parseMessageContext(
 }
 
 /**
- * Quick predicate: true when a context represents an ephemeral message.
- * Cheaper than running the full Zod parser when callers only need the
- * boolean (e.g., to skip topology routing for chat).
+ * Quick predicate: true when a context has the ephemeral flag set.
+ *
+ * "Ephemeral" means the contribution should skip topology routing and
+ * handoff creation — it's coordination noise, not work. Callers include
+ * `contributeOperation` (to skip the routing/handoff path for chat and
+ * session terminators) and `readInbox` (indirectly, via
+ * `parseMessageContext` which requires ephemeral=true).
+ *
+ * Two known shapes trigger this:
+ *   - Chat messages: { ephemeral: true, recipients: [...], message_body: "..." }
+ *   - grove_done markers: { ephemeral: true, done: true, reason: "..." }
+ *
+ * The name includes "Message" for historical reasons — originally this
+ * predicate was only used by the messaging path. It's now a general
+ * "should this contribution be treated as ephemeral?" check.
  */
 export function isEphemeralMessageContext(
   context: Readonly<Record<string, JsonValue>> | undefined,
