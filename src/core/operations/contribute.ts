@@ -29,6 +29,7 @@ import type { ContributionStore } from "../store.js";
 import { toUtcIso } from "../time.js";
 import type { AgentOverrides } from "./agent.js";
 import { resolveAgent } from "./agent.js";
+import { isEphemeralMessageContext } from "./context-schemas.js";
 import type { OperationDeps } from "./deps.js";
 import type { OperationResult } from "./result.js";
 import { fromGroveError, notFound, ok, validationErr } from "./result.js";
@@ -460,6 +461,22 @@ export async function contributeOperation(
 
     const contribution = createContribution(contributionInput);
 
+    // --- Routing classification ---
+    // Plans are coordination metadata (not progress); ephemeral messages are
+    // chat (not coordination). Both opt out of parts of the side-effect
+    // pipeline so they don't pollute work-tracking surfaces:
+    //
+    //   kind            | handoffs | route event | stop conditions
+    //   plan            |    no    |     yes     |       no
+    //   ephemeral msg   |    no    |     no      |       no
+    //   discussion      |    yes   |     yes     |       yes
+    //   work / review   |    yes   |     yes     |       yes
+    const isPlan = contribution.kind === CK.Plan;
+    const isEphemeralMessage = isEphemeralMessageContext(contribution.context);
+    const skipHandoffs = isPlan || isEphemeralMessage;
+    const skipRouteEvent = isEphemeralMessage;
+    const skipStopConditions = isPlan || isEphemeralMessage;
+
     // --- Policy enforcement (TOCTOU-safe: runs inside store mutex) ---
     let policyResult: PolicyEnforcementResult | undefined;
     let enforcer: PolicyEnforcer | undefined;
@@ -473,11 +490,11 @@ export async function contributeOperation(
       };
       if (store.setPreWriteHook) {
         store.setPreWriteHook(contribution.cid, async (c: Contribution) => {
-          policyResult = await enforcer?.enforce(c, true);
+          policyResult = await enforcer?.enforce(c, true, { skipStopConditions });
         });
       } else {
         // Fallback: enforce outside mutex (non-EnforcingContributionStore)
-        policyResult = await enforcer.enforce(contribution, true);
+        policyResult = await enforcer.enforce(contribution, true, { skipStopConditions });
       }
     }
 
@@ -496,10 +513,13 @@ export async function contributeOperation(
     }
 
     // --- Write: contribution + handoffs (atomic when supported, serial otherwise) ---
+    // Plans + ephemeral messages skip handoff creation entirely by passing
+    // undefined as the routing-target list to the writer.
     const agentRole = contribution.agent.role;
+    const handoffsRoutedTo = skipHandoffs ? undefined : routedTo;
     const handoffIds = await writeContributionWithHandoffs(
       contribution,
-      routedTo,
+      handoffsRoutedTo,
       agentRole,
       deps.contributionStore,
       deps.handoffStore,
@@ -542,7 +562,15 @@ export async function contributeOperation(
     }
 
     // --- Post-write: route events via topology (fire-and-forget) ---
-    if (routedTo !== undefined && deps.topologyRouter !== undefined && agentRole !== undefined) {
+    // Ephemeral messages skip the routing event entirely so chat doesn't
+    // wake downstream agents. Plans still fire the event so live UIs can
+    // observe plan creation, but the handoff record was already suppressed.
+    if (
+      !skipRouteEvent &&
+      routedTo !== undefined &&
+      deps.topologyRouter !== undefined &&
+      agentRole !== undefined
+    ) {
       fireAndForget("topology routing", () =>
         deps.topologyRouter?.route(agentRole, {
           cid: contribution.cid,
@@ -560,10 +588,15 @@ export async function contributeOperation(
     // this contribution. This runs outside the write mutex, so it doesn't block
     // concurrent writers. Only re-checks when the pre-write result said not stopped.
     //
+    // Plans + ephemeral messages skip this recheck — they were excluded from the
+    // pre-write evaluation too (skipStopConditions), so there is no threshold-
+    // crossing semantics to recover here.
+    //
     // Best-effort: errors here must not fail the already-committed write. A store
     // read failure during the recheck is logged but does not surface as a failed
     // operation — the contribution is already in the DAG.
     if (
+      !skipStopConditions &&
       policyResult !== undefined &&
       !policyResult.stopResult?.stopped &&
       deps.contract?.stopConditions !== undefined &&

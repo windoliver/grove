@@ -138,8 +138,17 @@ export class PolicyEnforcer {
    *
    * @param contribution - The contribution to enforce (already created but not yet stored).
    * @param strict - If true, violations throw instead of being returned as flags.
+   * @param options.skipStopConditions - When true, skip the stop-condition
+   *   evaluation step entirely. Used by callers that route coordination kinds
+   *   (plans, ephemeral messages) through the enforcement pipeline for the
+   *   role-kind check but don't want their coordination traffic to count
+   *   toward progress-driven stop conditions or pay the O(n) scan cost.
    */
-  async enforce(contribution: Contribution, strict = false): Promise<PolicyEnforcementResult> {
+  async enforce(
+    contribution: Contribution,
+    strict = false,
+    options?: { readonly skipStopConditions?: boolean },
+  ): Promise<PolicyEnforcementResult> {
     // Reset best-score cache so each enforce() call gets a fresh view of the store.
     // The cache is repopulated lazily on the first findBestScore() call within
     // this invocation, keeping per-call O(n) scan cost to at most once.
@@ -256,7 +265,7 @@ export class PolicyEnforcer {
     //    run inside the write mutex when configured. Thread walks are
     //    parallelized and depth-capped to bound latency (see stop-conditions.ts).
     let stopResult: StopCheckResult | undefined;
-    if (this.contract.stopConditions !== undefined) {
+    if (this.contract.stopConditions !== undefined && options?.skipStopConditions !== true) {
       try {
         const evalResult = await evaluateStopConditions(this.contract, this.contributionStore);
         stopResult = {
