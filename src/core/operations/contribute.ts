@@ -95,6 +95,19 @@ export interface ContributeInput {
   readonly agent?: AgentOverrides | undefined;
   /** Optional timestamp for replay/import. Defaults to current time if omitted. */
   readonly createdAt?: string | undefined;
+  /**
+   * Optional client-supplied idempotency key. When set, repeated calls with
+   * the same key (within IDEMPOTENCY_TTL_MS) return the previously-stored
+   * contribution metadata instead of creating a new contribution.
+   *
+   * Follows HTTP `Idempotency-Key` conventions: opaque string, scoped per
+   * agent (the key is namespaced by `agent.role ?? agent.agentId`). Two
+   * different agents can use the same key without colliding.
+   *
+   * If omitted, no deduplication is performed — clients that need retry
+   * safety should generate a key and pass it on every retry.
+   */
+  readonly idempotencyKey?: string | undefined;
 }
 
 /** Input for the review operation. */
@@ -208,6 +221,66 @@ function resolveMode(
   if (explicitMode !== undefined) return explicitMode;
   if (deps.contract?.mode !== undefined) return deps.contract.mode;
   return CM.Evaluation;
+}
+
+// ---------------------------------------------------------------------------
+// Idempotency cache
+// ---------------------------------------------------------------------------
+
+/** Time window during which a cached idempotency result is reused. */
+const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000;
+
+/** Maximum number of cached idempotency entries (LRU eviction). */
+const IDEMPOTENCY_MAX_ENTRIES = 1024;
+
+interface CachedIdempotencyResult {
+  readonly value: ContributeResult;
+  readonly storedAt: number;
+}
+
+/**
+ * Per-process cache of idempotency-key → contribute result.
+ *
+ * Map iteration order is insertion order, so we can implement a simple LRU
+ * by deleting + re-inserting on read. Entries are also expired by timestamp
+ * on lookup. Not shared across processes — clients running multiple grove
+ * instances must coordinate keys themselves.
+ */
+const idempotencyCache = new Map<string, CachedIdempotencyResult>();
+
+/** Build the cache key. Namespaced per agent so two agents can share keys. */
+function idempotencyCacheKey(agentScope: string, key: string): string {
+  return `${agentScope}\u0000${key}`;
+}
+
+function lookupIdempotency(cacheKey: string, now: number): ContributeResult | undefined {
+  const entry = idempotencyCache.get(cacheKey);
+  if (entry === undefined) return undefined;
+  if (now - entry.storedAt > IDEMPOTENCY_TTL_MS) {
+    idempotencyCache.delete(cacheKey);
+    return undefined;
+  }
+  // LRU touch: move to end of insertion order.
+  idempotencyCache.delete(cacheKey);
+  idempotencyCache.set(cacheKey, entry);
+  return entry.value;
+}
+
+function storeIdempotency(cacheKey: string, value: ContributeResult, now: number): void {
+  // Evict the oldest entry if at capacity.
+  if (idempotencyCache.size >= IDEMPOTENCY_MAX_ENTRIES) {
+    const oldest = idempotencyCache.keys().next().value;
+    if (oldest !== undefined) idempotencyCache.delete(oldest);
+  }
+  idempotencyCache.set(cacheKey, { value, storedAt: now });
+}
+
+/**
+ * Test-only: clear the idempotency cache between test cases. Not exported
+ * from the package index — only intended for in-package tests.
+ */
+export function _resetIdempotencyCacheForTests(): void {
+  idempotencyCache.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -354,40 +427,20 @@ export async function contributeOperation(
     // Normalize to UTC Z-format so lexicographic ORDER BY works without datetime().
     const createdAt = toUtcIso(input.createdAt ?? new Date().toISOString());
 
-    // Idempotency check: skip if same summary + agent role exists within last 60s.
-    // Prevents duplicate contributions from MCP tool retries or agent calling the tool multiple times.
-    {
-      const recentWindow = new Date(Date.now() - 60_000).toISOString();
-      try {
-        const recent = await deps.contributionStore.list({ limit: 20 });
-        const agentMatch = (c: Contribution) =>
-          agent.role ? c.agent.role === agent.role : c.agent.agentId === agent.agentId;
-        const isDuplicate = recent.some(
-          (c) =>
-            c.summary === input.summary &&
-            agentMatch(c) &&
-            c.kind === input.kind &&
-            c.createdAt >= recentWindow,
-        );
-        if (isDuplicate) {
-          // Return the existing contribution's info instead of creating a duplicate
-          const existing = recent.find(
-            (c) => c.summary === input.summary && agentMatch(c) && c.kind === input.kind,
-          );
-          if (existing) {
-            return ok({
-              cid: existing.cid,
-              kind: existing.kind,
-              mode: existing.mode,
-              summary: existing.summary,
-              artifactCount: Object.keys(existing.artifacts).length,
-              relationCount: existing.relations.length,
-              createdAt: existing.createdAt,
-            });
-          }
-        }
-      } catch {
-        // Best-effort — continue with normal contribution if check fails
+    // Idempotency check: explicit client-supplied key, namespaced per agent.
+    // Replaces the previous heuristic that did a 60s same-summary lookup; that
+    // approach false-positived on legitimate retries (e.g., updatePlan called
+    // twice with the same title) and missed real retries under concurrency
+    // because the window query was unbounded across all agents.
+    const idempotencyAgentScope = agent.role ?? agent.agentId;
+    const idempotencyCacheLookupKey =
+      input.idempotencyKey !== undefined
+        ? idempotencyCacheKey(idempotencyAgentScope, input.idempotencyKey)
+        : undefined;
+    if (idempotencyCacheLookupKey !== undefined) {
+      const cached = lookupIdempotency(idempotencyCacheLookupKey, Date.now());
+      if (cached !== undefined) {
+        return ok(cached);
       }
     }
 
@@ -563,7 +616,7 @@ export async function contributeOperation(
       }
     }
 
-    return ok({
+    const result: ContributeResult = {
       cid: contribution.cid,
       kind: contribution.kind,
       mode: contribution.mode,
@@ -574,7 +627,13 @@ export async function contributeOperation(
       ...(routedTo !== undefined ? { routedTo } : {}),
       ...(handoffIds.length > 0 ? { handoffIds } : {}),
       ...(policyResult !== undefined ? { policy: policyResult } : {}),
-    });
+    };
+
+    if (idempotencyCacheLookupKey !== undefined) {
+      storeIdempotency(idempotencyCacheLookupKey, result, Date.now());
+    }
+
+    return ok(result);
   } catch (error) {
     return fromGroveError(error);
   }

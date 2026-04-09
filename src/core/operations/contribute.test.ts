@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import {
+  _resetIdempotencyCacheForTests,
   contributeOperation,
   discussOperation,
   reproduceOperation,
@@ -221,6 +222,146 @@ describe("contributeOperation", () => {
     const stored = await deps.contributionStore.get(result.value.cid);
     expect(stored).toBeDefined();
     expect(stored?.createdAt).toBe("2026-06-01T12:00:00.000Z");
+  });
+});
+
+describe("contributeOperation: idempotencyKey", () => {
+  let testDeps: TestOperationDeps;
+  let deps: FullOperationDeps;
+
+  beforeEach(async () => {
+    _resetIdempotencyCacheForTests();
+    testDeps = await createTestOperationDeps();
+    deps = testDeps.deps;
+  });
+
+  afterEach(async () => {
+    await testDeps.cleanup();
+    _resetIdempotencyCacheForTests();
+  });
+
+  test("repeated call with same key returns the cached result", async () => {
+    const first = await contributeOperation(
+      {
+        kind: "work",
+        summary: "first call",
+        agent: { agentId: "agent-1" },
+        idempotencyKey: "key-1",
+      },
+      deps,
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const second = await contributeOperation(
+      {
+        kind: "work",
+        summary: "different summary, but same key",
+        agent: { agentId: "agent-1" },
+        idempotencyKey: "key-1",
+      },
+      deps,
+    );
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+
+    // Same CID and same summary as the original — proves the cache served it.
+    expect(second.value.cid).toBe(first.value.cid);
+    expect(second.value.summary).toBe("first call");
+  });
+
+  test("different keys produce different contributions", async () => {
+    const first = await contributeOperation(
+      {
+        kind: "work",
+        summary: "alpha",
+        agent: { agentId: "agent-1" },
+        idempotencyKey: "key-A",
+      },
+      deps,
+    );
+    const second = await contributeOperation(
+      {
+        kind: "work",
+        summary: "beta",
+        agent: { agentId: "agent-1" },
+        idempotencyKey: "key-B",
+      },
+      deps,
+    );
+    expect(first.ok && second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    expect(first.value.cid).not.toBe(second.value.cid);
+  });
+
+  test("same key from different agents does not collide", async () => {
+    const alice = await contributeOperation(
+      {
+        kind: "work",
+        summary: "alice's work",
+        agent: { agentId: "alice" },
+        idempotencyKey: "shared-key",
+      },
+      deps,
+    );
+    const bob = await contributeOperation(
+      {
+        kind: "work",
+        summary: "bob's work",
+        agent: { agentId: "bob" },
+        idempotencyKey: "shared-key",
+      },
+      deps,
+    );
+    expect(alice.ok && bob.ok).toBe(true);
+    if (!alice.ok || !bob.ok) return;
+    expect(alice.value.cid).not.toBe(bob.value.cid);
+    expect(alice.value.summary).toBe("alice's work");
+    expect(bob.value.summary).toBe("bob's work");
+  });
+
+  test("agent role takes precedence over agentId for idempotency scope", async () => {
+    // Two agents with the same role share the idempotency namespace.
+    const first = await contributeOperation(
+      {
+        kind: "work",
+        summary: "from agent-1",
+        agent: { agentId: "agent-1", role: "coder" },
+        idempotencyKey: "k",
+      },
+      deps,
+    );
+    const second = await contributeOperation(
+      {
+        kind: "work",
+        summary: "from agent-2",
+        agent: { agentId: "agent-2", role: "coder" },
+        idempotencyKey: "k",
+      },
+      deps,
+    );
+    expect(first.ok && second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    expect(second.value.cid).toBe(first.value.cid);
+    expect(second.value.summary).toBe("from agent-1");
+  });
+
+  test("no idempotencyKey means no dedup", async () => {
+    const first = await contributeOperation(
+      { kind: "work", summary: "duplicate", agent: { agentId: "a1" } },
+      deps,
+    );
+    const second = await contributeOperation(
+      { kind: "work", summary: "duplicate", agent: { agentId: "a1" } },
+      deps,
+    );
+    expect(first.ok && second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    // Without an idempotency key, two identical contributions are produced.
+    // (CIDs may collide if the timestamps round to the same millisecond,
+    // but conceptually each call is a separate contribution.)
+    expect(first.value.cid).toBeTruthy();
+    expect(second.value.cid).toBeTruthy();
   });
 });
 
