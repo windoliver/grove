@@ -390,6 +390,22 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             } else {
               process.stderr.write(`[spawnAgents] provider does NOT have setSessionScope\n`);
             }
+            // Write the session ID to .grove/current-session.json so the HTTP
+            // MCP server (spawned before the session exists) can pick it up at
+            // startup. Best-effort; the stdio MCP path doesn't need this.
+            if (appProps.groveDir) {
+              try {
+                const { writeFileSync } = await import("node:fs");
+                const { join } = await import("node:path");
+                writeFileSync(
+                  join(appProps.groveDir, "current-session.json"),
+                  JSON.stringify({ sessionId: session.id }, null, 2),
+                  "utf-8",
+                );
+              } catch {
+                /* best-effort */
+              }
+            }
             setState((s) => ({ ...s, sessionId: session.id }));
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -488,7 +504,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           setState((s) => ({ ...s, screen: "running", goal, sessionStartedAt }));
         }
       },
-      [provider, topology, contract, state.selectedPreset, spawnManager],
+      [provider, topology, contract, state.selectedPreset, spawnManager, appProps.groveDir],
     );
 
     // Screen 3 (launch preview) -> spawning: Ctrl+Enter confirmed launch

@@ -51,6 +51,12 @@ function toSessionResponse(session: Session) {
     endedAt: session.completedAt,
     contributionCount: session.contributionCount,
     ...(session.topology !== undefined && { topology: session.topology }),
+    // Expose the frozen contract snapshot so clients (e.g. NexusProvider mirroring)
+    // and downstream MCP servers can reconstruct the full enforcement contract
+    // without hitting the local SQLite store. Without this, serve.ts running in
+    // Nexus mode has to fall back to a minimal reconstruction from topology,
+    // which loses rate limits / metrics configured in GROVE.md.
+    ...(session.config !== undefined && { config: session.config }),
   };
 }
 

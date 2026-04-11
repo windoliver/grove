@@ -214,7 +214,13 @@ export class SpawnManager {
       }
       // Step 2c: Protect config files from agent mutation (#7 Workspace Mutation Constraints)
       const { chmod } = await import("node:fs/promises");
-      for (const protectedFile of [".mcp.json", "CLAUDE.md", "CODEX.md", ".grove-role"]) {
+      for (const protectedFile of [
+        ".mcp.json",
+        ".acpxrc.json",
+        "CLAUDE.md",
+        "CODEX.md",
+        ".grove-role",
+      ]) {
         const filePath = join(workspacePath, protectedFile);
         await chmod(filePath, 0o444).catch(() => {
           // File may not exist — non-fatal
@@ -646,7 +652,7 @@ export class SpawnManager {
             debugLog("route", `rsync ${sourceWorkspace} → ${targetWorkspace}`);
             try {
               execSync(
-                `rsync -a --exclude='.git' --exclude='.mcp.json' --exclude='CODEX.md' --exclude='CLAUDE.md' --exclude='.grove-role' "${sourceWorkspace}/" "${targetWorkspace}/"`,
+                `rsync -a --exclude='.git' --exclude='.mcp.json' --exclude='.acpxrc.json' --exclude='CODEX.md' --exclude='CLAUDE.md' --exclude='.grove-role' "${sourceWorkspace}/" "${targetWorkspace}/"`,
                 { stdio: "pipe", timeout: 10_000 },
               );
               debugLog("route", `rsync done`);
@@ -1119,14 +1125,41 @@ export class SpawnManager {
     const groveDir = join(workspacePath, "..", "..");
     // Resolve the project root (parent of .grove) for finding src/mcp/serve.ts
     const projectRoot = join(groveDir, "..");
+
+    // Resolve Nexus URL: env var takes precedence (explicit override), then
+    // fall back to the nexusUrl stored in the *session*'s .grove/grove.json
+    // (set by `grove init --nexus-url` and refreshed by startServices).
+    //
+    // Note: `groveDir` here is the SHARED nexus-workspaces dir (parent of all
+    // workspace folders), not the per-session .grove dir — so we can't read
+    // grove.json from it. Use `this.groveDir` (the SpawnManager's session-level
+    // .grove path) for the config lookup instead.
+    //
+    // Agents' MCP servers need GROVE_NEXUS_URL so contributions go to Nexus
+    // (enables IPC push via NexusEventBus + TopologyRouter). Without it,
+    // contributions only land in local SQLite and the reviewer is never notified.
+    let resolvedNexusUrl: string | undefined = process.env.GROVE_NEXUS_URL;
+    if (!resolvedNexusUrl && this.groveDir) {
+      try {
+        const configPath = join(this.groveDir, "grove.json");
+        if (existsSync(configPath)) {
+          const raw = await (await import("node:fs/promises")).readFile(configPath, "utf-8");
+          const cfg = JSON.parse(raw) as { nexusUrl?: string };
+          if (cfg.nexusUrl) resolvedNexusUrl = cfg.nexusUrl;
+        }
+      } catch {
+        /* best-effort */
+      }
+    }
+
     // MCP server needs GROVE_NEXUS_URL so contributions are written to Nexus
     // (enables IPC push via NexusEventBus + TopologyRouter for agent routing).
     // Without it, contributions only go to local SQLite and reviewer never gets notified.
     const mcpEnv: Record<string, string> = {
       GROVE_DIR: groveDir,
     };
-    if (process.env.GROVE_NEXUS_URL) {
-      mcpEnv.GROVE_NEXUS_URL = process.env.GROVE_NEXUS_URL;
+    if (resolvedNexusUrl) {
+      mcpEnv.GROVE_NEXUS_URL = resolvedNexusUrl;
     }
     if (process.env.NEXUS_API_KEY) {
       mcpEnv.NEXUS_API_KEY = process.env.NEXUS_API_KEY;
@@ -1202,25 +1235,62 @@ export class SpawnManager {
       `wrote .mcp.json: serve=${mcpServePath} hasNexusUrl=${!!mcpEnv.GROVE_NEXUS_URL} GROVE_DIR=${mcpEnv.GROVE_DIR}`,
     );
 
+    // Also write .acpxrc.json — acpx (>=0.5.3) reads this, NOT .mcp.json.
+    // acpx forwards mcpServers to claude-agent-acp via ACP protocol, enabling
+    // native grove_* tool calls in the agent. Without this file, acpx launches
+    // claude with mcpServers=[] and the agent falls back to curling the HTTP
+    // MCP endpoint, which bypasses per-session Nexus scoping and handoff routing.
+    // Schema: array of servers with `name`, `type`, `command`, `args`, `env: [{name,value}]`.
+    const acpxRcConfig = {
+      mcpServers: [
+        {
+          name: "grove",
+          type: "stdio",
+          command: "bun",
+          args: ["run", mcpServePath],
+          env: Object.entries(mcpEnv).map(([name, value]) => ({ name, value })),
+        },
+      ],
+    };
+    await writeFile(
+      join(workspacePath, ".acpxrc.json"),
+      JSON.stringify(acpxRcConfig, null, 2),
+      "utf-8",
+    );
+    debugLog("mcpConfig", `wrote .acpxrc.json for acpx mcpServers forwarding`);
+
     // Register MCP with codex globally (codex uses ~/.codex/config.toml, not .mcp.json).
     // Use a single stable name "grove" so we don't accumulate stale per-spawn entries.
     // Pass Nexus env vars so codex agents write contributions to Nexus (cross-process IPC).
-    try {
-      const nexusEnvFlags = [
-        `--env GROVE_DIR=${groveDir}`,
-        ...(mcpEnv.GROVE_NEXUS_URL ? [`--env GROVE_NEXUS_URL=${mcpEnv.GROVE_NEXUS_URL}`] : []),
-        ...(mcpEnv.NEXUS_API_KEY ? [`--env NEXUS_API_KEY=${mcpEnv.NEXUS_API_KEY}`] : []),
-        ...(mcpEnv.GROVE_SESSION_ID ? [`--env GROVE_SESSION_ID=${mcpEnv.GROVE_SESSION_ID}`] : []),
-      ].join(" ");
-      execSync(`codex mcp remove grove 2>/dev/null || true`, { stdio: "pipe", timeout: 5000 });
-      execSync(`codex mcp add grove ${nexusEnvFlags} -- bun run ${mcpServePath}`, {
-        stdio: "pipe",
-        timeout: 10000,
-      });
-      debugLog("mcpConfig", `codex mcp registered: ${nexusEnvFlags}`);
-    } catch {
-      // Non-fatal — codex may not be installed
-    }
+    //
+    // Fired asynchronously (not awaited) because each codex invocation takes
+    // ~1.5s and would add several seconds to every spawn. The claude agent
+    // runtime doesn't depend on it — it reads .acpxrc.json directly — and
+    // codex reads its own config lazily when the first tool call happens, so
+    // landing the registration a few hundred ms late is safe.
+    const nexusEnvFlags = [
+      `--env GROVE_DIR=${groveDir}`,
+      ...(mcpEnv.GROVE_NEXUS_URL ? [`--env GROVE_NEXUS_URL=${mcpEnv.GROVE_NEXUS_URL}`] : []),
+      ...(mcpEnv.NEXUS_API_KEY ? [`--env NEXUS_API_KEY=${mcpEnv.NEXUS_API_KEY}`] : []),
+      ...(mcpEnv.GROVE_SESSION_ID ? [`--env GROVE_SESSION_ID=${mcpEnv.GROVE_SESSION_ID}`] : []),
+    ].join(" ");
+    void (async () => {
+      try {
+        const { spawnSync } = await import("node:child_process");
+        spawnSync("sh", ["-c", "codex mcp remove grove 2>/dev/null || true"], {
+          stdio: "pipe",
+          timeout: 5000,
+        });
+        spawnSync(
+          "sh",
+          ["-c", `codex mcp add grove ${nexusEnvFlags} -- bun run ${mcpServePath}`],
+          { stdio: "pipe", timeout: 10000 },
+        );
+        debugLog("mcpConfig", `codex mcp registered: ${nexusEnvFlags}`);
+      } catch {
+        // Non-fatal — codex may not be installed
+      }
+    })();
   }
 
   /**

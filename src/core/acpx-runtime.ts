@@ -67,8 +67,24 @@ export class AcpxRuntime implements AgentRuntime {
 
   async isAvailable(): Promise<boolean> {
     try {
-      execSync("acpx --version", { encoding: "utf-8", stdio: "pipe" });
-      return true;
+      const out = execSync("acpx --version", { encoding: "utf-8", stdio: "pipe" }).trim();
+      // acpx >=0.5.3 is required: 0.3.x uses the buggy @zed-industries/claude-agent-acp
+      // adapter that fails session/new with "Query closed before response received".
+      // 0.5.x switched to @agentclientprotocol/claude-agent-acp which works.
+      const match = /^(\d+)\.(\d+)\.(\d+)/.exec(out);
+      if (!match) return true; // unparseable — don't block
+      const [, maj, min, patch] = match;
+      const major = Number(maj);
+      const minor = Number(min);
+      const patchNum = Number(patch);
+      if (major > 0) return true;
+      if (minor > 5) return true;
+      if (minor === 5 && patchNum >= 3) return true;
+      process.stderr.write(
+        `[acpx-runtime] acpx ${out} is too old — grove requires acpx >=0.5.3. ` +
+          `Upgrade with: npm install -g acpx@latest\n`,
+      );
+      return false;
     } catch {
       return false;
     }
@@ -82,21 +98,58 @@ export class AcpxRuntime implements AgentRuntime {
     const counter = this.nextId++;
     const sessionName = `grove-${role}-${counter}-${Date.now().toString(36)}`;
     const id = sessionName;
-    const mergedEnv = config.env ? { ...process.env, ...config.env } : { ...process.env };
+
+    // Strip Claude Code harness env vars before spawning the subagent.
+    //
+    // When grove runs inside a Claude Code shell (CLAUDECODE=1), any inner
+    // `claude` subprocess detects that flag and connects back to the parent
+    // Claude Code harness via its IPC channel instead of launching a fresh
+    // session. The inner agent then inherits the parent's tool surface
+    // (ToolSearch, EnterWorktree, mcp__MaaS-*, etc.) and — critically — does
+    // NOT load the workspace's `.mcp.json` / `.acpxrc.json` grove MCP server.
+    //
+    // Unset every CLAUDE_CODE_* / CLAUDECODE / CLAUDE_PLUGIN_* var so acpx
+    // launches a pristine agent that reads its MCP config from the workspace.
+    const baseEnv = { ...process.env };
+    for (const key of Object.keys(baseEnv)) {
+      if (
+        key === "CLAUDECODE" ||
+        key.startsWith("CLAUDE_CODE_") ||
+        key.startsWith("CLAUDE_PLUGIN_")
+      ) {
+        delete baseEnv[key];
+      }
+    }
+    const mergedEnv = config.env ? { ...baseEnv, ...config.env } : baseEnv;
+
+    // Extract the agent binary name from config.command (e.g. "claude --flag" → "claude").
+    // acpx takes the agent name as a subcommand; flags and the initial prompt go through
+    // the session creation path, not the `acpx <agent>` argument.
+    //
+    // Only known acpx subcommands are accepted (claude/codex/gemini/pi/openclaw). Any
+    // other first token (including shell builtins like `echo` used in tests) falls back
+    // to the runtime-level default so we never pass acpx an unknown agent name.
+    const KNOWN_ACPX_AGENTS = new Set(["claude", "codex", "gemini", "pi", "openclaw"]);
+    const agent = (() => {
+      if (!config.command) return this.agent;
+      const stripped = config.command.replace(/^rm\s+[^;]+;\s*/, ""); // drop leading "rm -f ~/..." hooks
+      const first = stripped.trim().split(/\s+/)[0] ?? "";
+      return KNOWN_ACPX_AGENTS.has(first) ? first : this.agent;
+    })();
 
     // Create a new acpx session with --approve-all (layer 1: acpx client-side auto-approve)
-    const createCmd = `acpx --approve-all ${shellEscape(this.agent)} sessions new --name ${shellEscape(sessionName)}`;
+    const createCmd = `acpx --approve-all ${shellEscape(agent)} sessions new --name ${shellEscape(sessionName)}`;
     try {
       execSync(createCmd, { encoding: "utf-8", stdio: "pipe", cwd: config.cwd, env: mergedEnv });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`acpx session creation failed for role "${role}": ${msg}`);
+      throw new Error(`acpx session creation failed for role "${role}" (agent=${agent}): ${msg}`);
     }
 
     // Set full-access mode (layer 2: codex internal approval policy = never prompt)
     try {
       execSync(
-        `acpx --approve-all ${shellEscape(this.agent)} set-mode full-access -s ${shellEscape(sessionName)}`,
+        `acpx --approve-all ${shellEscape(agent)} set-mode full-access -s ${shellEscape(sessionName)}`,
         { encoding: "utf-8", stdio: "pipe", cwd: config.cwd, env: mergedEnv, timeout: 10_000 },
       );
     } catch {
@@ -107,7 +160,7 @@ export class AcpxRuntime implements AgentRuntime {
     const logFile = this.logDir ? join(this.logDir, `${role}-${counter}.log`) : null;
     const entry: AcpxSessionEntry = {
       session,
-      agent: this.agent,
+      agent,
       sessionName,
       cwd: config.cwd,
       env: mergedEnv,

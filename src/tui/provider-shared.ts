@@ -251,6 +251,7 @@ interface ApiSessionResponse {
   readonly endedAt?: string;
   readonly completedAt?: string;
   readonly topology?: import("../core/topology.js").AgentTopology;
+  readonly config?: import("../core/contract.js").GroveContract;
   readonly contributionCount?: number;
 }
 
@@ -263,6 +264,7 @@ function mapApiSession(raw: ApiSessionResponse): SessionRecord {
     createdAt: (raw.startedAt ?? raw.createdAt) as string,
     completedAt: raw.endedAt ?? raw.completedAt,
     topology: raw.topology,
+    config: raw.config,
     contributionCount: raw.contributionCount ?? 0,
   };
 }

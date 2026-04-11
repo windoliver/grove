@@ -54,12 +54,18 @@ try {
   const nexusUrl = process.env.GROVE_NEXUS_URL;
   const nexusApiKey = process.env.NEXUS_API_KEY;
 
-  // Always create local runtime for workspace, contract, frontier, CAS
+  // Always create local runtime for workspace, frontier, CAS.
+  //
+  // Contract loading: in local mode we read the session config from the local
+  // SQLite goalSessionStore. In Nexus mode, the session config lives only in
+  // the Nexus VFS (see NexusProvider.createSession → nexusSessionStore.putSession),
+  // so we skip the SQLite session-config lookup here and reconstruct the
+  // contract from the Nexus session record further down.
   const runtime = createLocalRuntime({
     groveDir,
     frontierCacheTtlMs: 5_000,
     workspace: true,
-    parseContract: true,
+    parseContract: !nexusUrl,
   });
 
   if (!runtime.workspace) {
@@ -124,14 +130,57 @@ try {
     process.stderr.write(`grove-mcp: using local stores at ${groveDir}\n`);
   }
 
+  // In Nexus mode we skipped the local contract parse; load it from the Nexus
+  // session record instead. The TUI mirrors the session to Nexus via
+  // NexusSessionStore.putSession with the frozen contract snapshot, so we
+  // pull the authoritative contract from there. Without this, topologyRouter
+  // is never created and coder→reviewer handoffs are never generated.
+  let loadedContract: import("../core/contract.js").GroveContract | undefined = runtime.contract;
+  if (nexusClient && !loadedContract && process.env.GROVE_SESSION_ID) {
+    try {
+      const { NexusSessionStore } = await import("../nexus/nexus-session-store.js");
+      const nexusSessionStore = new NexusSessionStore(nexusClient, zoneId);
+      const session = await nexusSessionStore.getSession(process.env.GROVE_SESSION_ID);
+      if (session?.config) {
+        loadedContract = session.config;
+        process.stderr.write(
+          `grove-mcp: loaded full contract from Nexus session ${process.env.GROVE_SESSION_ID}\n`,
+        );
+      } else if (session?.topology) {
+        // Backwards-compat fallback: older session records have only topology,
+        // no frozen config. Reconstruct a minimal contract so topology routing
+        // still works. This path should disappear once all in-flight sessions
+        // are recreated with the updated server.
+        loadedContract = {
+          contractVersion: 1,
+          name: session.presetName ?? "nexus-session",
+          mode: "exploration",
+          topology: session.topology,
+        };
+        process.stderr.write(
+          `grove-mcp: Nexus session ${process.env.GROVE_SESSION_ID} missing config; ` +
+            `reconstructed minimal contract from topology (rate limits NOT enforced)\n`,
+        );
+      } else {
+        process.stderr.write(
+          `grove-mcp: Nexus session ${process.env.GROVE_SESSION_ID} has no topology; topologyRouter disabled\n`,
+        );
+      }
+    } catch (err) {
+      process.stderr.write(
+        `grove-mcp: failed to load Nexus session config: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+
   // Wrap the contribution store with rate-limit / clock-skew enforcement
   // when a contract is loaded. Mirrors the CLI path in
   // src/cli/commands/contribute.ts:353. Without this wrap, MCP-served
   // contributions bypass the rate limits configured in GROVE.md (Issue 2A
   // in the #228 review).
-  if (runtime.contract !== undefined) {
+  if (loadedContract !== undefined) {
     const { EnforcingContributionStore } = await import("../core/enforcing-store.js");
-    contributionStore = new EnforcingContributionStore(contributionStore, runtime.contract, {
+    contributionStore = new EnforcingContributionStore(contributionStore, loadedContract, {
       cas,
     });
   }
@@ -140,7 +189,7 @@ try {
   let eventBus: import("../core/event-bus.js").EventBus | undefined;
   let topologyRouter: TopologyRouter | undefined;
 
-  if (runtime.contract?.topology) {
+  if (loadedContract?.topology) {
     if (nexusClient) {
       const { NexusEventBus } = await import("../nexus/nexus-event-bus.js");
       eventBus = new NexusEventBus(nexusClient, zoneId);
@@ -149,7 +198,7 @@ try {
       const { LocalEventBus } = await import("../core/local-event-bus.js");
       eventBus = new LocalEventBus();
     }
-    topologyRouter = new TopologyRouter(runtime.contract.topology, eventBus);
+    topologyRouter = new TopologyRouter(loadedContract.topology, eventBus);
   }
 
   // When running with a local SQLite store and GROVE_SESSION_ID is set,
@@ -170,7 +219,7 @@ try {
     cas,
     frontier: runtime.frontier,
     workspace: runtime.workspace,
-    contract: runtime.contract,
+    contract: loadedContract,
     onContributionWrite: runtime.onContributionWrite,
     ...(onContributionWritten ? { onContributionWritten } : {}),
     workspaceBoundary: runtime.groveRoot,
@@ -181,9 +230,9 @@ try {
     handoffStore: nexusHandoffStore ?? runtime.handoffStore,
   };
   // Derive MCP tool preset from contract mode — #11 MCP Tool Surface + #12 Concept Usage
-  const contractMode = runtime.contract?.mode ?? "exploration";
+  const contractMode = loadedContract?.mode ?? "exploration";
   const hasMetrics =
-    runtime.contract?.metrics !== undefined && Object.keys(runtime.contract.metrics).length > 0;
+    loadedContract?.metrics !== undefined && Object.keys(loadedContract.metrics).length > 0;
 
   preset =
     contractMode === "evaluation"

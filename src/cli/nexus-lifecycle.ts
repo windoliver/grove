@@ -600,11 +600,11 @@ export async function ensureNexusRunning(
   }
 
   const candidateUrls = [
+    process.env.GROVE_NEXUS_URL, // explicit env override takes highest priority
     containerUrl, // container IP (works without port binding)
     config.nexusUrl,
     readNexusUrl(projectRoot),
     stateFileUrl,
-    process.env.GROVE_NEXUS_URL,
     DEFAULT_NEXUS_URL,
   ].filter((u): u is string => !!u);
 

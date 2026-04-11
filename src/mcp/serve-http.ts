@@ -25,6 +25,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 import { findGroveDir } from "../cli/context.js";
+import { TopologyRouter } from "../core/topology-router.js";
 import { createLocalRuntime } from "../local/runtime.js";
 import { parsePort } from "../shared/env.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
@@ -58,27 +59,149 @@ try {
     throw new Error("Not inside a grove. Run 'grove init' to create one, or set GROVE_DIR.");
   }
 
+  // Skip the local contract parse in Nexus mode — the contract lives in the
+  // Nexus session record and is loaded below. In local mode, createLocalRuntime
+  // reads GROVE.md + local SQLite session config as usual.
+  const nexusUrl = process.env.GROVE_NEXUS_URL;
+
   const runtime = createLocalRuntime({
     groveDir,
     frontierCacheTtlMs: 5_000,
     workspace: true,
-    parseContract: true,
+    parseContract: !nexusUrl,
   });
 
-  // Note: creditsService is intentionally omitted — see serve.ts for rationale.
   if (!runtime.workspace) {
     throw new Error("Workspace manager failed to initialize");
   }
+
+  // Try Nexus stores when GROVE_NEXUS_URL is set — mirrors serve.ts setup.
+  const nexusApiKey = process.env.NEXUS_API_KEY;
+  const zoneId = process.env.GROVE_ZONE_ID ?? "default";
+  // Read session ID from env first (set by parent TUI if available), then fall
+  // back to a state file that the TUI writes when setSessionScope is called.
+  // serve-http.ts is typically spawned before the session exists, so the state
+  // file is the usual source of truth.
+  const sessionId = (() => {
+    const fromEnv = process.env.GROVE_SESSION_ID;
+    if (fromEnv) return fromEnv;
+    try {
+      const { existsSync, readFileSync } = require("node:fs") as typeof import("node:fs");
+      const sessionFile = `${groveDir}/current-session.json`;
+      if (existsSync(sessionFile)) {
+        const raw = JSON.parse(readFileSync(sessionFile, "utf-8")) as { sessionId?: string };
+        return raw.sessionId;
+      }
+    } catch {
+      /* ignore — fall through to undefined */
+    }
+    return undefined;
+  })();
+
+  let contributionStore = runtime.contributionStore as import("../core/store.js").ContributionStore;
+  let claimStore = runtime.claimStore as import("../core/store.js").ClaimStore;
+  let bountyStore = runtime.bountyStore as import("../core/bounty-store.js").BountyStore;
+  let cas = runtime.cas as import("../core/cas.js").ContentStore;
+  let nexusClient: import("../nexus/nexus-http-client.js").NexusHttpClient | undefined;
+  let nexusHandoffStore: import("../nexus/nexus-handoff-store.js").NexusHandoffStore | undefined;
+  let topologyRouter: TopologyRouter | undefined;
+
+  if (nexusUrl) {
+    try {
+      const { NexusHttpClient } = await import("../nexus/nexus-http-client.js");
+      const { NexusContributionStore } = await import("../nexus/nexus-contribution-store.js");
+      const { NexusClaimStore } = await import("../nexus/nexus-claim-store.js");
+      const { NexusBountyStore } = await import("../nexus/nexus-bounty-store.js");
+      const { NexusCas } = await import("../nexus/nexus-cas.js");
+
+      nexusClient = new NexusHttpClient({
+        url: nexusUrl,
+        ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+      });
+
+      const health = await Promise.race([
+        fetch(`${nexusUrl}/health`, { signal: AbortSignal.timeout(3000) }).then((r) => r.ok),
+        new Promise<boolean>((r) => setTimeout(() => r(false), 3000)),
+      ]).catch(() => false);
+
+      if (health) {
+        contributionStore = new NexusContributionStore({
+          client: nexusClient,
+          zoneId,
+          sessionId,
+        });
+        claimStore = new NexusClaimStore({ client: nexusClient, zoneId });
+        bountyStore = new NexusBountyStore({ client: nexusClient, zoneId });
+        cas = new NexusCas({ client: nexusClient, zoneId });
+        const { NexusHandoffStore } = await import("../nexus/nexus-handoff-store.js");
+        nexusHandoffStore = new NexusHandoffStore(nexusClient, sessionId, zoneId);
+        process.stderr.write(`grove-mcp-http: using Nexus stores at ${nexusUrl}\n`);
+      } else {
+        process.stderr.write(`grove-mcp-http: Nexus unreachable, using local stores\n`);
+        nexusClient = undefined;
+      }
+    } catch (err) {
+      process.stderr.write(`grove-mcp-http: Nexus setup failed, using local stores: ${err}\n`);
+    }
+  }
+
+  // Load contract: in Nexus mode, from the Nexus session record. In local mode,
+  // createLocalRuntime already populated runtime.contract from GROVE.md + local DB.
+  let loadedContract: import("../core/contract.js").GroveContract | undefined = runtime.contract;
+  if (nexusClient && !loadedContract && sessionId) {
+    try {
+      const { NexusSessionStore } = await import("../nexus/nexus-session-store.js");
+      const nexusSessionStore = new NexusSessionStore(nexusClient, zoneId);
+      const session = await nexusSessionStore.getSession(sessionId);
+      if (session?.config) {
+        loadedContract = session.config;
+        process.stderr.write(
+          `grove-mcp-http: loaded full contract from Nexus session ${sessionId}\n`,
+        );
+      } else if (session?.topology) {
+        // Backwards-compat: older session records have only topology.
+        loadedContract = {
+          contractVersion: 1,
+          name: session.presetName ?? "nexus-session",
+          mode: "exploration",
+          topology: session.topology,
+        };
+        process.stderr.write(
+          `grove-mcp-http: Nexus session ${sessionId} missing config; ` +
+            `reconstructed minimal contract from topology (rate limits NOT enforced)\n`,
+        );
+      }
+    } catch (err) {
+      process.stderr.write(
+        `grove-mcp-http: failed to load Nexus session config: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+
+  if (loadedContract !== undefined) {
+    const { EnforcingContributionStore } = await import("../core/enforcing-store.js");
+    contributionStore = new EnforcingContributionStore(contributionStore, loadedContract, { cas });
+  }
+
+  if (loadedContract?.topology && nexusClient) {
+    const { NexusEventBus } = await import("../nexus/nexus-event-bus.js");
+    const eventBus = new NexusEventBus(nexusClient, zoneId);
+    topologyRouter = new TopologyRouter(loadedContract.topology, eventBus);
+    process.stderr.write(`grove-mcp-http: IPC via Nexus EventBus at ${nexusUrl}\n`);
+  }
+
   deps = {
-    contributionStore: runtime.contributionStore,
-    claimStore: runtime.claimStore,
-    bountyStore: runtime.bountyStore,
-    cas: runtime.cas,
+    contributionStore,
+    claimStore,
+    bountyStore,
+    cas,
     frontier: runtime.frontier,
     workspace: runtime.workspace,
-    contract: runtime.contract,
+    contract: loadedContract,
     onContributionWrite: runtime.onContributionWrite,
     workspaceBoundary: runtime.groveRoot,
+    ...(nexusHandoffStore ? { handoffStore: nexusHandoffStore } : {}),
+    ...(topologyRouter ? { topologyRouter } : {}),
   };
   closeStores = () => runtime.close();
 } catch (error) {
