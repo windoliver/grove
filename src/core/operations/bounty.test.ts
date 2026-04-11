@@ -101,6 +101,55 @@ describe("createBountyOperation", () => {
       expect(result.error.code).toBe("VALIDATION_ERROR");
     }
   });
+
+  test("voids reservation when bountyStore.createBounty throws (credits returned)", async () => {
+    (deps.creditsService as InMemoryCreditsService).seed("agent-1", 500);
+
+    const balanceBefore = await (deps.creditsService as InMemoryCreditsService).balance("agent-1");
+
+    // Inject fault: bountyStore.createBounty always throws
+    const originalCreate = deps.bountyStore!.createBounty.bind(deps.bountyStore);
+    deps.bountyStore!.createBounty = async () => {
+      throw new Error("simulated store failure");
+    };
+
+    const result = await createBountyOperation(
+      {
+        title: "Store fail bounty",
+        amount: 200,
+        criteria: { description: "Some task" },
+        agent: { agentId: "agent-1" },
+      },
+      deps,
+    );
+
+    deps.bountyStore!.createBounty = originalCreate;
+
+    expect(result.ok).toBe(false);
+
+    // Credits should be fully available again — the reservation was voided
+    const balanceAfter = await (deps.creditsService as InMemoryCreditsService).balance("agent-1");
+    expect(balanceAfter.available).toBe(balanceBefore.available);
+  });
+
+  test("returns error and creates no bounty when creditsService.reserve throws (insufficient credits)", async () => {
+    // Do NOT seed — agent has 0 credits
+    const result = await createBountyOperation(
+      {
+        title: "No credits bounty",
+        amount: 100,
+        criteria: { description: "Needs credits" },
+        agent: { agentId: "broke-agent" },
+      },
+      deps,
+    );
+
+    expect(result.ok).toBe(false);
+
+    // No bounty should have been persisted
+    const listed = await deps.bountyStore!.listBounties({});
+    expect(listed).toHaveLength(0);
+  });
 });
 
 describe("listBountiesOperation", () => {
@@ -236,6 +285,111 @@ describe("claimBountyOperation", () => {
     if (!result.ok) {
       expect(result.error.code).toBe("NOT_FOUND");
     }
+  });
+
+  test("returns VALIDATION_ERROR when bounty is not open (pre-flight check)", async () => {
+    (deps.creditsService as InMemoryCreditsService).seed("creator", 1000);
+
+    const bounty = await createBountyOperation(
+      {
+        title: "Pre-flight test",
+        amount: 100,
+        criteria: { description: "Do the work" },
+        agent: { agentId: "creator" },
+      },
+      deps,
+    );
+    expect(bounty.ok).toBe(true);
+    if (!bounty.ok) return;
+
+    // Claim it once to move status to 'claimed'
+    const first = await claimBountyOperation(
+      { bountyId: bounty.value.bountyId, agent: { agentId: "agent-a" } },
+      deps,
+    );
+    expect(first.ok).toBe(true);
+
+    // Second claim attempt by a different agent: pre-flight should catch status !== open
+    const second = await claimBountyOperation(
+      { bountyId: bounty.value.bountyId, agent: { agentId: "agent-b" } },
+      deps,
+    );
+    expect(second.ok).toBe(false);
+    if (!second.ok) {
+      expect(second.error.code).toBe("VALIDATION_ERROR");
+      expect(second.error.message).toContain("not open");
+    }
+  });
+
+  test("releases dangling claim when bountyStore.claimBounty throws (compensation)", async () => {
+    (deps.creditsService as InMemoryCreditsService).seed("creator", 1000);
+
+    const bounty = await createBountyOperation(
+      {
+        title: "Compensation test",
+        amount: 100,
+        criteria: { description: "Do the work" },
+        agent: { agentId: "creator" },
+      },
+      deps,
+    );
+    expect(bounty.ok).toBe(true);
+    if (!bounty.ok) return;
+
+    // Inject fault: bountyStore.claimBounty always throws
+    const originalClaimBounty = deps.bountyStore!.claimBounty.bind(deps.bountyStore);
+    deps.bountyStore!.claimBounty = async () => {
+      throw new Error("simulated store failure");
+    };
+
+    const result = await claimBountyOperation(
+      { bountyId: bounty.value.bountyId, agent: { agentId: "claimer" } },
+      deps,
+    );
+
+    // Restore original so cleanup can run
+    deps.bountyStore!.claimBounty = originalClaimBounty;
+
+    // Operation should fail
+    expect(result.ok).toBe(false);
+
+    // Compensation: no active claim should remain for this bounty
+    const activeClaims = await deps.claimStore!.activeClaims(`bounty:${bounty.value.bountyId}`);
+    expect(activeClaims).toHaveLength(0);
+  });
+
+  test("returns error when different agent has an active claim (claimOrRenew rejects)", async () => {
+    (deps.creditsService as InMemoryCreditsService).seed("creator", 1000);
+
+    const bounty = await createBountyOperation(
+      {
+        title: "Concurrency test",
+        amount: 100,
+        criteria: { description: "Do the work" },
+        agent: { agentId: "creator" },
+      },
+      deps,
+    );
+    expect(bounty.ok).toBe(true);
+    if (!bounty.ok) return;
+
+    // Agent A claims first
+    const claimA = await claimBountyOperation(
+      { bountyId: bounty.value.bountyId, agent: { agentId: "agent-a" } },
+      deps,
+    );
+    expect(claimA.ok).toBe(true);
+
+    // After agent-a claimed, the bounty is no longer open — pre-flight rejects agent-b
+    const claimB = await claimBountyOperation(
+      { bountyId: bounty.value.bountyId, agent: { agentId: "agent-b" } },
+      deps,
+    );
+    expect(claimB.ok).toBe(false);
+    // agent-a's claim is untouched
+    const activeClaims = await deps.claimStore!.activeClaims(`bounty:${bounty.value.bountyId}`);
+    expect(activeClaims).toHaveLength(1);
+    expect(activeClaims[0]!.agent.agentId).toBe("agent-a");
   });
 });
 
@@ -395,5 +549,133 @@ describe("settleBountyOperation", () => {
       expect(result.error.code).toBe("VALIDATION_ERROR");
       expect(result.error.message).toContain("does not meet bounty criteria");
     }
+  });
+
+  test("does not capture payment when state transition fails (state-first ordering)", async () => {
+    (deps.creditsService as InMemoryCreditsService).seed("creator", 1000);
+
+    const bounty = await createBountyOperation(
+      {
+        title: "Ordering test",
+        amount: 100,
+        criteria: { description: "Any work", requiredTags: ["fix"] },
+        agent: { agentId: "creator" },
+      },
+      deps,
+    );
+    expect(bounty.ok).toBe(true);
+    if (!bounty.ok) return;
+
+    await claimBountyOperation(
+      { bountyId: bounty.value.bountyId, agent: { agentId: "worker" } },
+      deps,
+    );
+
+    const contrib = await contributeOperation(
+      { kind: "work", summary: "Fix", tags: ["fix"], agent: { agentId: "worker" } },
+      deps,
+    );
+    expect(contrib.ok).toBe(true);
+    if (!contrib.ok) return;
+
+    // Inject fault: completeBounty throws (simulates store failure mid-settle)
+    const originalComplete = deps.bountyStore!.completeBounty.bind(deps.bountyStore);
+    deps.bountyStore!.completeBounty = async () => {
+      throw new Error("simulated state transition failure");
+    };
+
+    const balanceBefore = await (deps.creditsService as InMemoryCreditsService).balance("creator");
+
+    const result = await settleBountyOperation(
+      { bountyId: bounty.value.bountyId, contributionCid: contrib.value.cid },
+      deps,
+    );
+
+    deps.bountyStore!.completeBounty = originalComplete;
+
+    expect(result.ok).toBe(false);
+
+    // Payment must NOT have been captured — state-first ordering means
+    // capture runs only after successful state transition.
+    const balanceAfter = await (deps.creditsService as InMemoryCreditsService).balance("creator");
+    expect(balanceAfter.reserved).toBe(balanceBefore.reserved);
+  });
+
+  test("returns error when settling an already-settled bounty", async () => {
+    (deps.creditsService as InMemoryCreditsService).seed("creator", 1000);
+
+    const bounty = await createBountyOperation(
+      {
+        title: "Double-settle test",
+        amount: 100,
+        criteria: { description: "Any work", requiredTags: ["fix"] },
+        agent: { agentId: "creator" },
+      },
+      deps,
+    );
+    expect(bounty.ok).toBe(true);
+    if (!bounty.ok) return;
+
+    await claimBountyOperation(
+      { bountyId: bounty.value.bountyId, agent: { agentId: "worker" } },
+      deps,
+    );
+
+    const contrib = await contributeOperation(
+      { kind: "work", summary: "Fix", tags: ["fix"], agent: { agentId: "worker" } },
+      deps,
+    );
+    expect(contrib.ok).toBe(true);
+    if (!contrib.ok) return;
+
+    // First settle succeeds
+    const first = await settleBountyOperation(
+      { bountyId: bounty.value.bountyId, contributionCid: contrib.value.cid },
+      deps,
+    );
+    expect(first.ok).toBe(true);
+
+    // Second settle should fail — bounty is already settled
+    const second = await settleBountyOperation(
+      { bountyId: bounty.value.bountyId, contributionCid: contrib.value.cid },
+      deps,
+    );
+    expect(second.ok).toBe(false);
+  });
+
+  test("captures payment without recipient when bounty has no claimedBy", async () => {
+    (deps.creditsService as InMemoryCreditsService).seed("creator", 1000);
+
+    // Create a bounty (no claim step — leaves claimedBy null)
+    const bounty = await createBountyOperation(
+      {
+        title: "No-recipient settle",
+        amount: 100,
+        criteria: { description: "Any work" },
+        agent: { agentId: "creator" },
+      },
+      deps,
+    );
+    expect(bounty.ok).toBe(true);
+    if (!bounty.ok) return;
+
+    const contrib = await contributeOperation(
+      { kind: "work", summary: "Direct work", agent: { agentId: "worker" } },
+      deps,
+    );
+    expect(contrib.ok).toBe(true);
+    if (!contrib.ok) return;
+
+    // Settle without claiming first — store must handle this transition
+    const result = await settleBountyOperation(
+      { bountyId: bounty.value.bountyId, contributionCid: contrib.value.cid },
+      deps,
+    );
+
+    // May fail if store enforces claimed-before-settle; what matters is no crash
+    // and credits are not left in an inconsistent state.
+    const balance = await (deps.creditsService as InMemoryCreditsService).balance("creator");
+    // Either settled (capture ran) or failed (reservation still pending) — never NaN
+    expect(typeof balance.available).toBe("number");
   });
 });

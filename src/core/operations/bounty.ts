@@ -107,6 +107,8 @@ export interface SettleBountyInput {
 
 const DEFAULT_DEADLINE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
+const MISSING_BOUNTY_STORE = "Bounty operations not available (missing bountyStore)";
+
 /** Create a new bounty with optional credit reservation. */
 export async function createBountyOperation(
   input: CreateBountyInput,
@@ -114,7 +116,7 @@ export async function createBountyOperation(
 ): Promise<OperationResult<CreateBountyResult>> {
   try {
     if (deps.bountyStore === undefined) {
-      return validationErr("Bounty operations not available (missing bountyStore)");
+      return validationErr(MISSING_BOUNTY_STORE);
     }
 
     const agent = resolveAgent(input.agent);
@@ -151,16 +153,28 @@ export async function createBountyOperation(
       ...(input.context !== undefined ? { context: input.context } : {}),
     };
 
-    const result = await deps.bountyStore.createBounty(bounty);
-
-    return ok({
-      bountyId: result.bountyId,
-      title: result.title,
-      amount: result.amount,
-      status: result.status,
-      deadline: result.deadline,
-      reservationId: result.reservationId,
-    });
+    try {
+      const result = await deps.bountyStore.createBounty(bounty);
+      return ok({
+        bountyId: result.bountyId,
+        title: result.title,
+        amount: result.amount,
+        status: result.status,
+        deadline: result.deadline,
+        reservationId: result.reservationId,
+      });
+    } catch (storeErr) {
+      // Compensating action: void the reservation so credits are returned
+      // to the agent's available balance. void() is idempotent and non-fatal.
+      if (reservationId !== undefined && deps.creditsService !== undefined) {
+        try {
+          await deps.creditsService.void(reservationId);
+        } catch {
+          // Best-effort — reservation will auto-expire at its timeout.
+        }
+      }
+      return fromGroveError(storeErr);
+    }
   } catch (error) {
     return fromGroveError(error);
   }
@@ -173,7 +187,7 @@ export async function listBountiesOperation(
 ): Promise<OperationResult<ListBountiesResult>> {
   try {
     if (deps.bountyStore === undefined) {
-      return validationErr("Bounty operations not available");
+      return validationErr(MISSING_BOUNTY_STORE);
     }
 
     const bounties = await deps.bountyStore.listBounties({
@@ -204,7 +218,7 @@ export async function claimBountyOperation(
 ): Promise<OperationResult<ClaimBountyResult>> {
   try {
     if (deps.bountyStore === undefined) {
-      return validationErr("Bounty operations not available");
+      return validationErr(MISSING_BOUNTY_STORE);
     }
 
     if (deps.claimStore === undefined) {
@@ -216,12 +230,20 @@ export async function claimBountyOperation(
       return notFound("Bounty", input.bountyId);
     }
 
+    // Pre-flight: only open bounties can be claimed. Checking here avoids
+    // creating a dangling claim record before the store rejects the transition.
+    if (bounty.status !== BS.Open) {
+      return validationErr(
+        `Bounty '${input.bountyId}' is not open (status: ${bounty.status})`,
+      );
+    }
+
     const agent = resolveAgent(input.agent);
     const now = new Date();
     const claimId = crypto.randomUUID();
     const leaseDurationMs = input.leaseDurationMs ?? 1_800_000;
 
-    // Create claim via existing claim system
+    // Step 1: Create claim via existing claim system
     const claim = await deps.claimStore.claimOrRenew({
       claimId,
       targetRef: `bounty:${input.bountyId}`,
@@ -233,7 +255,19 @@ export async function claimBountyOperation(
       leaseExpiresAt: new Date(now.getTime() + leaseDurationMs).toISOString(),
     });
 
-    const claimed = await deps.bountyStore.claimBounty(input.bountyId, agent, claim.claimId);
+    // Step 2: Update bounty status. On failure, release the claim so it doesn't
+    // block other agents from claiming until the lease expires.
+    let claimed;
+    try {
+      claimed = await deps.bountyStore.claimBounty(input.bountyId, agent, claim.claimId);
+    } catch (bountyErr) {
+      try {
+        await deps.claimStore.release(claim.claimId);
+      } catch {
+        // Best-effort: the claim lease will expire on its own.
+      }
+      return fromGroveError(bountyErr);
+    }
 
     return ok({
       bountyId: claimed.bountyId,
@@ -282,7 +316,14 @@ export async function settleBountyOperation(
       );
     }
 
-    // Capture payment before state transition
+    // Persist state transitions first, then capture payment.
+    // Order matters: a failed state update before payment leaves the bounty
+    // recoverable (retry settle); a failed state update after payment would
+    // orphan captured funds with no record to reconcile against.
+    const completed = await deps.bountyStore.completeBounty(input.bountyId, input.contributionCid);
+    const settled = await deps.bountyStore.settleBounty(completed.bountyId);
+
+    // Capture payment after state is persisted
     if (deps.creditsService && bounty.reservationId && bounty.claimedBy) {
       await deps.creditsService.capture(bounty.reservationId, {
         toAgentId: bounty.claimedBy.agentId,
@@ -290,10 +331,6 @@ export async function settleBountyOperation(
     } else if (deps.creditsService && bounty.reservationId) {
       await deps.creditsService.capture(bounty.reservationId);
     }
-
-    // Persist state transitions
-    const completed = await deps.bountyStore.completeBounty(input.bountyId, input.contributionCid);
-    const settled = await deps.bountyStore.settleBounty(completed.bountyId);
 
     return ok({
       bountyId: settled.bountyId,
