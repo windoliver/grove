@@ -11,7 +11,6 @@
  * - FTS:        /zones/{zoneId}/indexes/fts/{cid}.json
  */
 
-import { appendFileSync as _afs } from "node:fs";
 import { fromManifest, toManifest, verifyCid } from "../core/manifest.js";
 import type {
   Contribution,
@@ -28,6 +27,7 @@ import type {
   ThreadSummary,
 } from "../core/store.js";
 import { toUtcIso } from "../core/time.js";
+import { debugLog } from "../tui/debug-log.js";
 import { batchParallel } from "./batch.js";
 import type { NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
@@ -141,15 +141,10 @@ export class NexusContributionStore implements ContributionStore {
 
     this.cache.set(contribution.cid, contribution);
     this.listCacheResult = undefined; // Invalidate list cache on write
-    try {
-      const manifestPath = contributionPath(this.zoneId, contribution.cid, this.sessionId);
-      _afs(
-        "/tmp/grove-debug.log",
-        `[${new Date().toISOString()}] [store.put] cid=${contribution.cid.slice(0, 16)} sessionId=${this.sessionId ?? "none"} path=${manifestPath}\n`,
-      );
-    } catch {
-      /* ignore */
-    }
+    debugLog(
+      "store.put",
+      `cid=${contribution.cid.slice(0, 16)} sessionId=${this.sessionId ?? "none"} path=${manifestPath}`,
+    );
   }
 
   async putMany(contributions: readonly Contribution[]): Promise<void> {
@@ -200,14 +195,10 @@ export class NexusContributionStore implements ContributionStore {
     const cacheHit =
       this.listCacheResult !== undefined && Date.now() - this.listCacheTime < this.listCacheTtlMs;
     const ftsDir = ftsIndexDir(this.zoneId, this.sessionId);
-    try {
-      _afs(
-        "/tmp/grove-debug.log",
-        `[${new Date().toISOString()}] [store.list] sessionId=${this.sessionId ?? "none"} ftsDir=${ftsDir} cacheHit=${cacheHit}\n`,
-      );
-    } catch {
-      /* ignore */
-    }
+    debugLog(
+      "store.list",
+      `sessionId=${this.sessionId ?? "none"} ftsDir=${ftsDir} cacheHit=${cacheHit}`,
+    );
     if (cacheHit) {
       allContributions = [...(this.listCacheResult as Contribution[])];
     } else {
@@ -230,14 +221,10 @@ export class NexusContributionStore implements ContributionStore {
       // Fetch ALL contributions
       const fetched = await batchParallel(allCids, (cid) => this.get(cid));
       allContributions = fetched.filter((c): c is Contribution => c !== undefined);
-      try {
-        _afs(
-          "/tmp/grove-debug.log",
-          `[${new Date().toISOString()}] [store.list] ftsEntries=${nonDirEntries.length} matchingCids=${allCids.length} total=${allContributions.length}\n`,
-        );
-      } catch {
-        /* ignore */
-      }
+      debugLog(
+        "store.list",
+        `ftsEntries=${nonDirEntries.length} matchingCids=${allCids.length} total=${allContributions.length}`,
+      );
 
       // Sort by createdAt ascending (matches SQLite store behavior)
       allContributions.sort(

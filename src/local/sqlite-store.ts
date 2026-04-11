@@ -637,7 +637,14 @@ export class SqliteContributionStore implements ContributionStore {
    * Used for atomic contribution + handoff creation (outbox pattern).
    *
    * cowriteFn must be synchronous (SQLite transactions in bun:sqlite are sync).
-   * Called via duck-typing from contributeOperation when both stores are SQLite-backed.
+   *
+   * Capability extension: `contributeOperation` duck-types for this method at
+   * runtime. When both the ContributionStore and HandoffStore are SQLite-backed
+   * (i.e. both expose `putWithCowrite` and `insertSync`), the write goes through
+   * `writeAtomic` — a single SQLite transaction covering contribution + all handoffs.
+   * Stores that do NOT implement this method fall back to `writeSerial` (best-effort
+   * handoffs). Implementing stores must not add this method unless they can actually
+   * satisfy the synchronous-cowrite contract.
    */
   putWithCowrite(contribution: Contribution, cowriteFn: () => void): void {
     this.putSync(contribution, cowriteFn);
