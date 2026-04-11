@@ -590,8 +590,13 @@ async function writeSerial(
 
   // Fallback for stores without createMany: fan out in parallel so N handoffs
   // pay 1×RTT instead of N×RTT. allSettled ensures a single failure doesn't
-  // abandon the remaining handoffs.
-  const results = await Promise.allSettled(inputs.map((input) => handoffStore.create(input)));
+  // abandon the remaining handoffs. Wrap each call in Promise.resolve().then()
+  // so a synchronous throw inside create() becomes a rejected promise rather
+  // than escaping map() and bypassing allSettled (which would violate the
+  // best-effort contract: the contribution is already committed by this point).
+  const results = await Promise.allSettled(
+    inputs.map((input) => Promise.resolve().then(() => handoffStore.create(input))),
+  );
   for (const [i, result] of results.entries()) {
     if (result.status === "fulfilled") {
       handoffIds.push(result.value.handoffId);

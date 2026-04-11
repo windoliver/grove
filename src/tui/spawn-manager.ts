@@ -1196,6 +1196,14 @@ export class SpawnManager {
     if (this.sessionId) {
       mcpEnv.GROVE_SESSION_ID = this.sessionId;
     }
+    // Forward GROVE_DEBUG to spawned MCP agents. debugLog() in the agent-side
+    // NexusContributionStore / NexusHandoffStore reads this env var at module
+    // load, but those run inside a separate child process whose env is dictated
+    // by .mcp.json / .acpxrc.json — not inherited from the parent shell. Without
+    // this passthrough, GROVE_DEBUG=1 in the TUI never enables agent-side traces.
+    if (process.env.GROVE_DEBUG) {
+      mcpEnv.GROVE_DEBUG = process.env.GROVE_DEBUG;
+    }
 
     // Find the grove MCP server: check dist/ first (installed), then src/ (dev)
     // Use process.argv[1] (entry point) not import.meta.url — bun bundles may inline
@@ -1374,6 +1382,7 @@ export class SpawnManager {
     if (mcpEnv.GROVE_NEXUS_URL) addArgs.push("--env", `GROVE_NEXUS_URL=${mcpEnv.GROVE_NEXUS_URL}`);
     if (mcpEnv.NEXUS_API_KEY) addArgs.push("--env", `NEXUS_API_KEY=${mcpEnv.NEXUS_API_KEY}`);
     if (sessionId) addArgs.push("--env", `GROVE_SESSION_ID=${sessionId}`);
+    if (mcpEnv.GROVE_DEBUG) addArgs.push("--env", `GROVE_DEBUG=${mcpEnv.GROVE_DEBUG}`);
     addArgs.push("--", "bun", "run", mcpServePath);
 
     const promise = (async () => {

@@ -970,4 +970,65 @@ describe("writeSerial: best-effort handoff failure paths", () => {
 
     warnSpy.mockRestore();
   });
+
+  test("contribution survives synchronous throw from handoffStore.create() in parallel fallback", async () => {
+    // Regression for codex review finding: when a HandoffStore exposes only
+    // create() (no createMany), contribute falls back to a parallel fan-out via
+    // Promise.allSettled. If create() throws synchronously *before* returning a
+    // Promise, the throw must still be caught — otherwise the already-committed
+    // contribution would bubble out as an operation error and the idempotency
+    // slot would be released, allowing duplicate contributions on retry.
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+    // Non-async function so the throw happens synchronously, before any
+    // Promise is returned. Cast through `unknown` because the interface
+    // declares an async return type.
+    const syncThrowingCreate = (() => {
+      throw new Error("simulated synchronous throw from create()");
+    }) as unknown as NonNullable<OperationDeps["handoffStore"]>["create"];
+
+    const syncThrowingHandoffStore: OperationDeps["handoffStore"] = {
+      create: syncThrowingCreate,
+      // No createMany — forces the fallback path.
+      get: async () => undefined,
+      list: async () => [],
+      markDelivered: async () => undefined,
+      markReplied: async () => undefined,
+      expireStale: async () => [],
+      countPending: async () => 0,
+      close: () => undefined,
+    };
+
+    const deps = makeSerialDeps(syncThrowingHandoffStore);
+
+    const result = await contributeOperation(
+      {
+        kind: "work",
+        summary: "Sync-throw fallback test",
+        agent: { agentId: "worker", role: "coder" },
+      },
+      deps,
+    );
+
+    // Operation must succeed: the contribution is already committed, and
+    // best-effort handoff failure should not surface as an error.
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // No handoff IDs because every create() threw.
+    expect(result.value.handoffIds ?? []).toHaveLength(0);
+
+    // The contribution itself is durably stored.
+    const stored = await deps.contributionStore?.get(result.value.cid);
+    expect(stored).toBeDefined();
+    expect(stored!.cid).toBe(result.value.cid);
+
+    // We logged the per-item failure (not the batch failure path).
+    const warnedAboutCreate = warnSpy.mock.calls.some((call) =>
+      String(call[0] ?? "").includes("[grove] handoff create failed"),
+    );
+    expect(warnedAboutCreate).toBe(true);
+
+    warnSpy.mockRestore();
+  });
 });
