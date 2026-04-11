@@ -13,6 +13,7 @@ import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 // take 1–3s on a warm machine and 3–5s cold; the default 5s timeout races tests
 // that spawn multiple agents. Bump to 30s so CI and local runs are stable.
 setDefaultTimeout(30_000);
+
 import type { Claim } from "../core/models.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
 import { MockTmuxManager } from "./agents/tmux-manager.js";

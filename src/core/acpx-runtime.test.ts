@@ -75,24 +75,20 @@ describe("AcpxRuntime", () => {
     expect(rt).toBeDefined();
   });
 
-  test(
-    "spawn and close work when acpx is available",
-    async () => {
-      const rt = new AcpxRuntime();
-      const skip = !(await rt.isAvailable());
-      if (skip) return;
+  // Timeout bumped to 30s because acpx cold-start can take >5s when the
+  // agent adapter has to be fetched via npx or when the host is under load.
+  test("spawn and close work when acpx is available", async () => {
+    const rt = new AcpxRuntime();
+    const skip = !(await rt.isAvailable());
+    if (skip) return;
 
-      // Session names now carry a per-spawn counter and a base36 timestamp:
-      // grove-<role>-<counter>-<timestamp>
-      const session = await rt.spawn("test", config);
-      expect(session.id).toMatch(/^grove-test-\d+-[a-z0-9]+$/);
-      expect(session.role).toBe("test");
-      expect(session.status).toBe("running");
+    // Session names now carry a per-spawn counter and a base36 timestamp:
+    // grove-<role>-<counter>-<timestamp>
+    const session = await rt.spawn("test", config);
+    expect(session.id).toMatch(/^grove-test-\d+-[a-z0-9]+$/);
+    expect(session.role).toBe("test");
+    expect(session.status).toBe("running");
 
-      await rt.close(session);
-    },
-    // acpx can take >5s when the agent adapter has to be fetched via npx or
-    // when the host machine is under load — default timeout was racing.
-    30_000,
-  );
+    await rt.close(session);
+  }, 30_000);
 });
