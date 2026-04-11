@@ -145,6 +145,26 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       if (id && "setSessionScope" in provider) {
         (provider as { setSessionScope: (id: string) => void }).setSessionScope(id);
         process.stderr.write(`[screen-manager] resume setSessionScope(${id})\n`);
+        // Persist the resumed session id to current-session.json so the HTTP
+        // MCP server (serve-http.ts) re-reads and scopes subsequent
+        // requests to this session. Without this, resume would leave the
+        // HTTP server pinned to bootstrap mode or the prior session's id,
+        // and any HTTP MCP clients would see stale scope. Matches the write
+        // on new-session creation in handleLaunchConfirm.
+        if (appProps.groveDir) {
+          void (async () => {
+            try {
+              const { writeFileSync, renameSync } = await import("node:fs");
+              const { join } = await import("node:path");
+              const finalPath = join(appProps.groveDir!, "current-session.json");
+              const tmpPath = `${finalPath}.${process.pid}.${Date.now()}.tmp`;
+              writeFileSync(tmpPath, JSON.stringify({ sessionId: id }, null, 2), "utf-8");
+              renameSync(tmpPath, finalPath);
+            } catch {
+              /* best-effort */
+            }
+          })();
+        }
       }
     }, []);
 
@@ -391,17 +411,21 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
               process.stderr.write(`[spawnAgents] provider does NOT have setSessionScope\n`);
             }
             // Write the session ID to .grove/current-session.json so the HTTP
-            // MCP server (spawned before the session exists) can pick it up at
-            // startup. Best-effort; the stdio MCP path doesn't need this.
+            // MCP server (spawned before the session exists) can pick it up.
+            //
+            // Written atomically via temp-file + rename so concurrent readers
+            // in serve-http.ts never observe a truncated/partial JSON during
+            // a session switch. Without this, a POST hitting /mcp at the
+            // same moment as the write could tear down every live HTTP MCP
+            // session via invalidateStaleSessions.
             if (appProps.groveDir) {
               try {
-                const { writeFileSync } = await import("node:fs");
+                const { writeFileSync, renameSync } = await import("node:fs");
                 const { join } = await import("node:path");
-                writeFileSync(
-                  join(appProps.groveDir, "current-session.json"),
-                  JSON.stringify({ sessionId: session.id }, null, 2),
-                  "utf-8",
-                );
+                const finalPath = join(appProps.groveDir, "current-session.json");
+                const tmpPath = `${finalPath}.${process.pid}.${Date.now()}.tmp`;
+                writeFileSync(tmpPath, JSON.stringify({ sessionId: session.id }, null, 2), "utf-8");
+                renameSync(tmpPath, finalPath);
               } catch {
                 /* best-effort */
               }
@@ -410,9 +434,26 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             process.stderr.write(`[grove] session record failed to save: ${msg}\n`);
-            // Generate a local session ID even when the session store is unavailable.
-            // Without this, MCP servers have no GROVE_SESSION_ID → contributions go to
-            // the global zone → N+1 VFS reads on 47+ old contributions → rate limit.
+            // In Nexus mode, refuse to fabricate a synthetic UUID when the
+            // session record (local create OR Nexus mirror) failed. Doing
+            // so would set GROVE_SESSION_ID to an id the authoritative
+            // Nexus store has never seen, and the stdio MCP server now
+            // fails closed when it can't load that record, so every spawned
+            // agent would immediately crash against an orphaned id. Keep
+            // the synthetic-id path for local-only sessions where there is
+            // no Nexus record to be missing.
+            // NexusDataProvider exposes `mode = "nexus"`. Using a runtime
+            // duck-type check keeps this file decoupled from the provider
+            // import graph (which would create a TUI/Nexus coupling cycle).
+            const isNexus = (provider as unknown as { mode?: string }).mode === "nexus";
+            if (isNexus) {
+              setState((s) => ({
+                ...s,
+                error: `Failed to create Nexus session: ${msg}. Retry or fall back to local mode.`,
+                screen: "preset-select",
+              }));
+              return;
+            }
             const fallbackId = crypto.randomUUID();
             spawnManager.setSessionId(fallbackId);
             setState((s) => ({ ...s, sessionId: fallbackId }));
