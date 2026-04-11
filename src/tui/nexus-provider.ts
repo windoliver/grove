@@ -71,7 +71,13 @@ export class NexusDataProvider
 {
   readonly capabilities: ProviderCapabilities;
 
-  protected readonly mode = "nexus";
+  /**
+   * Public discriminator — `"nexus"` here, `"local"` on the sqlite provider.
+   * Used by the TUI to decide whether fatal session-create failures can
+   * safely fall back to a synthetic UUID (local mode: yes, Nexus mode: no,
+   * because the authoritative Nexus store has never seen the fake id).
+   */
+  readonly mode = "nexus" as const;
 
   private readonly client: NexusClient;
   private readonly zoneId: string;
@@ -305,11 +311,52 @@ export class NexusDataProvider
     } else {
       result = await super.createSession(input);
     }
-    // Mirror to Nexus VFS for cross-session visibility — write the authoritative
-    // record directly to preserve the real session ID (createSession would generate a new one)
-    void this.nexusSessionStore.putSession(result).catch(() => {
-      /* best-effort */
-    });
+    // Mirror to Nexus VFS BEFORE returning. The stdio MCP server is spawned
+    // per agent shortly after this returns (TUI → setSessionScope → spawn),
+    // and it loads its GroveContract from this exact record. A fire-and-forget
+    // write used to race the spawn and leave the MCP server with "session not
+    // found", which (since the serve.ts rewrite) now fails closed and kills
+    // the spawn. Awaiting serializes the mirror before the agent starts.
+    //
+    // Retry a few times to absorb transient Nexus blips before giving up.
+    // On final failure we ARCHIVE the local session so each retry doesn't
+    // create a new orphan `active` record without a Nexus counterpart.
+    // Without this cleanup, users pressing "retry" would accumulate
+    // abandoned local sessions that can later show up in session lists
+    // and fail closed when agents are spawned against them.
+    const retryDelaysMs = [0, 200, 500, 1000];
+    let lastErr: unknown;
+    for (const delay of retryDelaysMs) {
+      if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+      try {
+        await this.nexusSessionStore.putSession(result);
+        lastErr = undefined;
+        break;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    if (lastErr) {
+      const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+      process.stderr.write(
+        `[nexus-provider] FATAL: session mirror to Nexus failed after retries: ${msg}\n`,
+      );
+      // Compensate: archive the just-created local/server session so retries
+      // don't leave orphan active records. Best-effort — we still rethrow
+      // either way so the caller sees the original mirror error.
+      try {
+        await this.archiveSession(result.id);
+      } catch (archiveErr) {
+        process.stderr.write(
+          `[nexus-provider] WARN: failed to archive orphan session ${result.id}: ` +
+            `${archiveErr instanceof Error ? archiveErr.message : String(archiveErr)}\n`,
+        );
+      }
+      throw new Error(
+        `Failed to mirror session ${result.id} to Nexus: ${msg}. ` +
+          `The local session has been archived; please retry.`,
+      );
+    }
     return result;
   }
 

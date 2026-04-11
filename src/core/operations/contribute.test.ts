@@ -2,8 +2,11 @@
  * Tests for contribution operations.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 
+import { LocalEventBus } from "../local-event-bus.js";
+import type { AgentTopology } from "../topology.js";
+import { TopologyRouter } from "../topology-router.js";
 import {
   _resetIdempotencyCacheForTests,
   contributeOperation,
@@ -11,8 +14,22 @@ import {
   reproduceOperation,
   reviewOperation,
 } from "./contribute.js";
+import type { OperationDeps } from "./deps.js";
 import type { FullOperationDeps, TestOperationDeps } from "./test-helpers.js";
-import { createTestOperationDeps, storeTestContent } from "./test-helpers.js";
+import {
+  createTestOperationDeps,
+  makeInMemoryContributionStore,
+  storeTestContent,
+} from "./test-helpers.js";
+
+/** Minimal topology: coder routes to reviewer. Used to populate routedTo in writeSerial. */
+const twoRoleTopology: AgentTopology = {
+  structure: "graph",
+  roles: [
+    { name: "coder", edges: [{ target: "reviewer", edgeType: "delegates" }] },
+    { name: "reviewer", edges: [{ target: "coder", edgeType: "feedback" }] },
+  ],
+};
 
 describe("contributeOperation", () => {
   let testDeps: TestOperationDeps;
@@ -869,5 +886,149 @@ describe("discussOperation", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("NOT_FOUND");
+  });
+});
+
+describe("writeSerial: best-effort handoff failure paths", () => {
+  // These tests use an in-memory contribution store (no putWithCowrite) so that
+  // contributeOperation goes through writeSerial, not writeAtomic. A topology
+  // router is needed to populate routedTo so handoff creation is actually attempted.
+
+  function makeSerialDeps(handoffStore: OperationDeps["handoffStore"]): OperationDeps {
+    const store = makeInMemoryContributionStore();
+    const bus = new LocalEventBus();
+    const router = new TopologyRouter(twoRoleTopology, bus);
+    return { contributionStore: store, topologyRouter: router, eventBus: bus, handoffStore };
+  }
+
+  test("contribution is committed even when handoffStore.createMany throws", async () => {
+    const faultyHandoffStore: OperationDeps["handoffStore"] = {
+      create: async () => {
+        throw new Error("should not be called");
+      },
+      createMany: async () => {
+        throw new Error("simulated handoff store failure");
+      },
+      get: async () => undefined,
+      list: async () => [],
+      markDelivered: async () => undefined,
+      markReplied: async () => undefined,
+      expireStale: async () => [],
+      countPending: async () => 0,
+      close: () => undefined,
+    };
+
+    const deps = makeSerialDeps(faultyHandoffStore);
+
+    const result = await contributeOperation(
+      { kind: "work", summary: "Handoff fault test", agent: { agentId: "worker", role: "coder" } },
+      deps,
+    );
+
+    // Contribution must succeed despite handoff failure
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // handoffIds is empty because handoff creation failed (best-effort)
+    expect(result.value.handoffIds ?? []).toHaveLength(0);
+
+    // The contribution itself is durably stored
+    const stored = await deps.contributionStore?.get(result.value.cid);
+    expect(stored).toBeDefined();
+    expect(stored!.cid).toBe(result.value.cid);
+  });
+
+  test("emits console.warn when handoffStore.createMany throws", async () => {
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+    const faultyHandoffStore: OperationDeps["handoffStore"] = {
+      create: async () => {
+        throw new Error("should not be called");
+      },
+      createMany: async () => {
+        throw new Error("handoff store down");
+      },
+      get: async () => undefined,
+      list: async () => [],
+      markDelivered: async () => undefined,
+      markReplied: async () => undefined,
+      expireStale: async () => [],
+      countPending: async () => 0,
+      close: () => undefined,
+    };
+
+    const deps = makeSerialDeps(faultyHandoffStore);
+
+    await contributeOperation(
+      { kind: "work", summary: "Warning log test", agent: { agentId: "worker", role: "coder" } },
+      deps,
+    );
+
+    expect(warnSpy).toHaveBeenCalled();
+    const warnArg = String(warnSpy.mock.calls[0]?.[0] ?? "");
+    expect(warnArg).toContain("[grove] handoff batch failed");
+
+    warnSpy.mockRestore();
+  });
+
+  test("contribution survives synchronous throw from handoffStore.create() in parallel fallback", async () => {
+    // Regression for codex review finding: when a HandoffStore exposes only
+    // create() (no createMany), contribute falls back to a parallel fan-out via
+    // Promise.allSettled. If create() throws synchronously *before* returning a
+    // Promise, the throw must still be caught — otherwise the already-committed
+    // contribution would bubble out as an operation error and the idempotency
+    // slot would be released, allowing duplicate contributions on retry.
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+    // Non-async function so the throw happens synchronously, before any
+    // Promise is returned. Cast through `unknown` because the interface
+    // declares an async return type.
+    const syncThrowingCreate = (() => {
+      throw new Error("simulated synchronous throw from create()");
+    }) as unknown as NonNullable<OperationDeps["handoffStore"]>["create"];
+
+    const syncThrowingHandoffStore: OperationDeps["handoffStore"] = {
+      create: syncThrowingCreate,
+      // No createMany — forces the fallback path.
+      get: async () => undefined,
+      list: async () => [],
+      markDelivered: async () => undefined,
+      markReplied: async () => undefined,
+      expireStale: async () => [],
+      countPending: async () => 0,
+      close: () => undefined,
+    };
+
+    const deps = makeSerialDeps(syncThrowingHandoffStore);
+
+    const result = await contributeOperation(
+      {
+        kind: "work",
+        summary: "Sync-throw fallback test",
+        agent: { agentId: "worker", role: "coder" },
+      },
+      deps,
+    );
+
+    // Operation must succeed: the contribution is already committed, and
+    // best-effort handoff failure should not surface as an error.
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // No handoff IDs because every create() threw.
+    expect(result.value.handoffIds ?? []).toHaveLength(0);
+
+    // The contribution itself is durably stored.
+    const stored = await deps.contributionStore?.get(result.value.cid);
+    expect(stored).toBeDefined();
+    expect(stored!.cid).toBe(result.value.cid);
+
+    // We logged the per-item failure (not the batch failure path).
+    const warnedAboutCreate = warnSpy.mock.calls.some((call) =>
+      String(call[0] ?? "").includes("[grove] handoff create failed"),
+    );
+    expect(warnedAboutCreate).toBe(true);
+
+    warnSpy.mockRestore();
   });
 });

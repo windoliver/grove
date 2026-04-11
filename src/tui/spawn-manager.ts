@@ -7,7 +7,7 @@
  * On tmux failure: roll back claim + workspace.
  */
 
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -214,7 +214,13 @@ export class SpawnManager {
       }
       // Step 2c: Protect config files from agent mutation (#7 Workspace Mutation Constraints)
       const { chmod } = await import("node:fs/promises");
-      for (const protectedFile of [".mcp.json", "CLAUDE.md", "CODEX.md", ".grove-role"]) {
+      for (const protectedFile of [
+        ".mcp.json",
+        ".acpxrc.json",
+        "CLAUDE.md",
+        "CODEX.md",
+        ".grove-role",
+      ]) {
         const filePath = join(workspacePath, protectedFile);
         await chmod(filePath, 0o444).catch(() => {
           // File may not exist — non-fatal
@@ -263,6 +269,34 @@ export class SpawnManager {
       }
       if (initialPrompt) {
         agentCommand = `${agentCommand} "${initialPrompt.replace(/"/g, '\\"')}"`;
+      }
+
+      // For codex roles, require successful codex MCP registration before
+      // spawning. writeMcpConfig above runs ensureCodexMcpRegistered in a
+      // soft-catch so claude roles can proceed when codex isn't installed
+      // or registration fails, but a codex role without grove_* tools is
+      // useless — it would start successfully yet be unable to contribute.
+      // Re-invoke here to await the serialized promise and re-throw on
+      // failure, giving the caller a clear error instead of a dead spawn.
+      if (baseCmd === "codex") {
+        const codexMcpEnv: Record<string, string> = {
+          GROVE_DIR: this.groveDir ?? process.cwd(),
+        };
+        if (process.env.GROVE_NEXUS_URL) codexMcpEnv.GROVE_NEXUS_URL = process.env.GROVE_NEXUS_URL;
+        if (process.env.NEXUS_API_KEY) codexMcpEnv.NEXUS_API_KEY = process.env.NEXUS_API_KEY;
+        if (this.sessionId) codexMcpEnv.GROVE_SESSION_ID = this.sessionId;
+        // Derive mcpServePath the same way writeMcpConfig does.
+        const { dirname: d } = await import("node:path");
+        const entry = process.argv[1] ?? "";
+        const serveRoot = d(d(d(entry)));
+        const servePath = existsSync(join(serveRoot, "dist", "mcp", "serve.js"))
+          ? join(serveRoot, "dist", "mcp", "serve.js")
+          : join(serveRoot, "src", "mcp", "serve.ts");
+        await this.ensureCodexMcpRegistered(
+          codexMcpEnv,
+          servePath,
+          codexMcpEnv.GROVE_DIR ?? process.cwd(),
+        ); // throws on real registration failure (not "codex not installed")
       }
 
       if (this.agentRuntime) {
@@ -646,7 +680,7 @@ export class SpawnManager {
             debugLog("route", `rsync ${sourceWorkspace} → ${targetWorkspace}`);
             try {
               execSync(
-                `rsync -a --exclude='.git' --exclude='.mcp.json' --exclude='CODEX.md' --exclude='CLAUDE.md' --exclude='.grove-role' "${sourceWorkspace}/" "${targetWorkspace}/"`,
+                `rsync -a --exclude='.git' --exclude='.mcp.json' --exclude='.acpxrc.json' --exclude='CODEX.md' --exclude='CLAUDE.md' --exclude='.grove-role' "${sourceWorkspace}/" "${targetWorkspace}/"`,
                 { stdio: "pipe", timeout: 10_000 },
               );
               debugLog("route", `rsync done`);
@@ -1119,14 +1153,41 @@ export class SpawnManager {
     const groveDir = join(workspacePath, "..", "..");
     // Resolve the project root (parent of .grove) for finding src/mcp/serve.ts
     const projectRoot = join(groveDir, "..");
+
+    // Resolve Nexus URL: env var takes precedence (explicit override), then
+    // fall back to the nexusUrl stored in the *session*'s .grove/grove.json
+    // (set by `grove init --nexus-url` and refreshed by startServices).
+    //
+    // Note: `groveDir` here is the SHARED nexus-workspaces dir (parent of all
+    // workspace folders), not the per-session .grove dir — so we can't read
+    // grove.json from it. Use `this.groveDir` (the SpawnManager's session-level
+    // .grove path) for the config lookup instead.
+    //
+    // Agents' MCP servers need GROVE_NEXUS_URL so contributions go to Nexus
+    // (enables IPC push via NexusEventBus + TopologyRouter). Without it,
+    // contributions only land in local SQLite and the reviewer is never notified.
+    let resolvedNexusUrl: string | undefined = process.env.GROVE_NEXUS_URL;
+    if (!resolvedNexusUrl && this.groveDir) {
+      try {
+        const configPath = join(this.groveDir, "grove.json");
+        if (existsSync(configPath)) {
+          const raw = await (await import("node:fs/promises")).readFile(configPath, "utf-8");
+          const cfg = JSON.parse(raw) as { nexusUrl?: string };
+          if (cfg.nexusUrl) resolvedNexusUrl = cfg.nexusUrl;
+        }
+      } catch {
+        /* best-effort */
+      }
+    }
+
     // MCP server needs GROVE_NEXUS_URL so contributions are written to Nexus
     // (enables IPC push via NexusEventBus + TopologyRouter for agent routing).
     // Without it, contributions only go to local SQLite and reviewer never gets notified.
     const mcpEnv: Record<string, string> = {
       GROVE_DIR: groveDir,
     };
-    if (process.env.GROVE_NEXUS_URL) {
-      mcpEnv.GROVE_NEXUS_URL = process.env.GROVE_NEXUS_URL;
+    if (resolvedNexusUrl) {
+      mcpEnv.GROVE_NEXUS_URL = resolvedNexusUrl;
     }
     if (process.env.NEXUS_API_KEY) {
       mcpEnv.NEXUS_API_KEY = process.env.NEXUS_API_KEY;
@@ -1134,6 +1195,14 @@ export class SpawnManager {
     // Pass session ID so MCP stores scope contributions + handoffs to this session
     if (this.sessionId) {
       mcpEnv.GROVE_SESSION_ID = this.sessionId;
+    }
+    // Forward GROVE_DEBUG to spawned MCP agents. debugLog() in the agent-side
+    // NexusContributionStore / NexusHandoffStore reads this env var at module
+    // load, but those run inside a separate child process whose env is dictated
+    // by .mcp.json / .acpxrc.json — not inherited from the parent shell. Without
+    // this passthrough, GROVE_DEBUG=1 in the TUI never enables agent-side traces.
+    if (process.env.GROVE_DEBUG) {
+      mcpEnv.GROVE_DEBUG = process.env.GROVE_DEBUG;
     }
 
     // Find the grove MCP server: check dist/ first (installed), then src/ (dev)
@@ -1202,26 +1271,185 @@ export class SpawnManager {
       `wrote .mcp.json: serve=${mcpServePath} hasNexusUrl=${!!mcpEnv.GROVE_NEXUS_URL} GROVE_DIR=${mcpEnv.GROVE_DIR}`,
     );
 
+    // Also write .acpxrc.json — acpx (>=0.5.3) reads this, NOT .mcp.json.
+    // acpx forwards mcpServers to claude-agent-acp via ACP protocol, enabling
+    // native grove_* tool calls in the agent. Without this file, acpx launches
+    // claude with mcpServers=[] and the agent falls back to curling the HTTP
+    // MCP endpoint, which bypasses per-session Nexus scoping and handoff routing.
+    // Schema: array of servers with `name`, `type`, `command`, `args`, `env: [{name,value}]`.
+    const acpxRcConfig = {
+      mcpServers: [
+        {
+          name: "grove",
+          type: "stdio",
+          command: "bun",
+          args: ["run", mcpServePath],
+          env: Object.entries(mcpEnv).map(([name, value]) => ({ name, value })),
+        },
+      ],
+    };
+    await writeFile(
+      join(workspacePath, ".acpxrc.json"),
+      JSON.stringify(acpxRcConfig, null, 2),
+      "utf-8",
+    );
+    debugLog("mcpConfig", `wrote .acpxrc.json for acpx mcpServers forwarding`);
+
     // Register MCP with codex globally (codex uses ~/.codex/config.toml, not .mcp.json).
-    // Use a single stable name "grove" so we don't accumulate stale per-spawn entries.
-    // Pass Nexus env vars so codex agents write contributions to Nexus (cross-process IPC).
+    //
+    // Codex stores MCP servers in a single global config keyed by name.
+    // Parallel role spawns in the same session all share identical env
+    // (GROVE_DIR / GROVE_NEXUS_URL / GROVE_SESSION_ID come from the
+    // SpawnManager, not the individual role), so we only need ONE entry
+    // per session. `ensureCodexMcpRegistered` serializes concurrent calls
+    // through a per-session promise stored on the SpawnManager instance.
+    //
+    // This is best-effort from writeMcpConfig's perspective: a claude
+    // role doesn't need codex registration, and failing the claude spawn
+    // because codex isn't installed or mis-registered would be an
+    // over-reaction. If a codex role is spawned and registration failed,
+    // the caller (see spawn() codex branch below) re-calls this and the
+    // thrown error propagates up to the spawn caller.
     try {
-      const nexusEnvFlags = [
-        `--env GROVE_DIR=${groveDir}`,
-        ...(mcpEnv.GROVE_NEXUS_URL ? [`--env GROVE_NEXUS_URL=${mcpEnv.GROVE_NEXUS_URL}`] : []),
-        ...(mcpEnv.NEXUS_API_KEY ? [`--env NEXUS_API_KEY=${mcpEnv.NEXUS_API_KEY}`] : []),
-        ...(mcpEnv.GROVE_SESSION_ID ? [`--env GROVE_SESSION_ID=${mcpEnv.GROVE_SESSION_ID}`] : []),
-      ].join(" ");
-      execSync(`codex mcp remove grove 2>/dev/null || true`, { stdio: "pipe", timeout: 5000 });
-      execSync(`codex mcp add grove ${nexusEnvFlags} -- bun run ${mcpServePath}`, {
+      await this.ensureCodexMcpRegistered(mcpEnv, mcpServePath, groveDir);
+    } catch (err) {
+      debugLog(
+        "mcpConfig",
+        `codex mcp registration failed in writeMcpConfig (claude roles unaffected): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * Per-SpawnManager state: a promise chain that serializes codex MCP
+   * registration across parallel spawn() calls. Keyed by GROVE_SESSION_ID
+   * so a new session retries registration instead of reusing a stale one.
+   */
+  private codexRegistration: { sessionId: string | undefined; promise: Promise<void> } | undefined;
+
+  private ensureCodexMcpRegistered(
+    mcpEnv: Record<string, string>,
+    mcpServePath: string,
+    groveDir: string,
+  ): Promise<void> {
+    const sessionId = mcpEnv.GROVE_SESSION_ID;
+
+    // Short-circuit when codex is not installed at all — there is nothing
+    // to configure, and the claude path reads .acpxrc.json directly. Use
+    // spawnSync for a cheap `codex --version` probe, cached on the instance
+    // so we only pay it once.
+    if (this.codexAvailable === undefined) {
+      try {
+        const result = spawnSync("codex", ["--version"], {
+          stdio: "pipe",
+          timeout: 5000,
+        });
+        this.codexAvailable = result.status === 0;
+      } catch {
+        this.codexAvailable = false;
+      }
+    }
+    if (!this.codexAvailable) {
+      return Promise.resolve();
+    }
+
+    // Return an already-successful registration for this session. We only
+    // cache on success — a failure clears the cache so the next caller
+    // retries, guarding against one slow/transient `codex mcp add`
+    // poisoning every subsequent spawn in the same session.
+    if (this.codexRegistration && this.codexRegistration.sessionId === sessionId) {
+      return this.codexRegistration.promise;
+    }
+
+    // Use a stable name `grove` (not `grove-<sessionId>`) so we don't
+    // accumulate stale entries with persisted secrets (NEXUS_API_KEY,
+    // GROVE_SESSION_ID) in ~/.codex/config.toml over time. Each new
+    // session replaces the single entry in place. The serialized promise
+    // chain on `this.codexRegistration` plus the `spawn()` mutex
+    // guarantees that concurrent role spawns in the same session share
+    // one registration call rather than racing the remove/add cycle.
+    //
+    // We still sweep any `grove-*` entries left over from earlier code
+    // paths (or from crashed prior runs) so the global config stays clean.
+    const codexMcpName = "grove";
+
+    // Use argv-based spawnSync rather than a shell string so that paths
+    // containing spaces / quotes / shell metacharacters in mcpServePath,
+    // groveDir, NEXUS_API_KEY, etc. cannot break the command or inject
+    // extra arguments.
+    const addArgs: string[] = ["mcp", "add", codexMcpName];
+    addArgs.push("--env", `GROVE_DIR=${groveDir}`);
+    if (mcpEnv.GROVE_NEXUS_URL) addArgs.push("--env", `GROVE_NEXUS_URL=${mcpEnv.GROVE_NEXUS_URL}`);
+    if (mcpEnv.NEXUS_API_KEY) addArgs.push("--env", `NEXUS_API_KEY=${mcpEnv.NEXUS_API_KEY}`);
+    if (sessionId) addArgs.push("--env", `GROVE_SESSION_ID=${sessionId}`);
+    if (mcpEnv.GROVE_DEBUG) addArgs.push("--env", `GROVE_DEBUG=${mcpEnv.GROVE_DEBUG}`);
+    addArgs.push("--", "bun", "run", mcpServePath);
+
+    const promise = (async () => {
+      // Sweep any stale `grove-*` entries left by earlier code paths that
+      // used per-session names. Best-effort — list output is parsed loosely.
+      try {
+        const list = spawnSync("codex", ["mcp", "list"], {
+          stdio: "pipe",
+          timeout: 5000,
+        });
+        if (list.status === 0) {
+          const stdout = list.stdout?.toString("utf-8") ?? "";
+          for (const line of stdout.split("\n")) {
+            const match = /^\s*(grove-\S+)\b/.exec(line);
+            if (match?.[1]) {
+              spawnSync("codex", ["mcp", "remove", match[1]], {
+                stdio: "pipe",
+                timeout: 5000,
+              });
+            }
+          }
+        }
+      } catch {
+        /* best-effort cleanup */
+      }
+
+      // Remove the current stable name (noop on first registration) and
+      // re-add with the fresh session env.
+      spawnSync("codex", ["mcp", "remove", codexMcpName], {
+        stdio: "pipe",
+        timeout: 5000,
+      });
+      const result = spawnSync("codex", addArgs, {
         stdio: "pipe",
         timeout: 10000,
       });
-      debugLog("mcpConfig", `codex mcp registered: ${nexusEnvFlags}`);
-    } catch {
-      // Non-fatal — codex may not be installed
-    }
+      if (result.status !== 0) {
+        const stderr = result.stderr?.toString("utf-8") ?? "";
+        const stdout = result.stdout?.toString("utf-8") ?? "";
+        throw new Error(
+          `codex mcp add ${codexMcpName} failed (exit=${result.status ?? "signal"}): ${stderr || stdout || "no output"}`,
+        );
+      }
+      debugLog("mcpConfig", `codex mcp registered as ${codexMcpName}`);
+    })();
+
+    // Install the cache entry before awaiting so concurrent callers share
+    // the same in-flight promise. On failure we clear it so the next spawn
+    // can retry, and we RE-THROW so the caller (writeMcpConfig → spawn) can
+    // surface the failure when a codex role actually needs these tools.
+    // Note: writeMcpConfig is called for every role, even claude ones. We
+    // don't want claude spawns to fail because codex registration raced,
+    // so writeMcpConfig wraps this in a soft catch before returning.
+    this.codexRegistration = { sessionId, promise };
+    return promise.catch((err) => {
+      if (this.codexRegistration?.promise === promise) {
+        this.codexRegistration = undefined;
+      }
+      debugLog(
+        "mcpConfig",
+        `codex mcp registration failed (will retry next spawn): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw err;
+    });
   }
+
+  private codexAvailable: boolean | undefined;
 
   /**
    * Write CLAUDE.md (agent instructions) into the workspace.

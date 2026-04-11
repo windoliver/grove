@@ -263,6 +263,13 @@ interface CachedIdempotencyEntry {
  * on lookup. Not shared across processes — clients running multiple grove
  * instances must coordinate keys themselves.
  *
+ * Process-restart gap: this cache is not persisted. If a client submits a
+ * contribution, receives a timeout, and retries after a process restart, the
+ * retry will not hit the cache and may produce a duplicate contribution.
+ * Clients that need restart-safe deduplication should use content-addressed
+ * CIDs or a separate coordination layer. A store-backed idempotency table
+ * would close this gap but is deferred to a future saga-log project.
+ *
  * Single-flight: when a caller first observes a key miss, it synchronously
  * inserts a pending entry holding a Promise the write will resolve. Any
  * concurrent caller with the same key awaits that Promise. JavaScript is
@@ -570,18 +577,35 @@ async function writeSerial(
     try {
       const handoffs = await handoffStore.createMany(inputs);
       for (const h of handoffs) handoffIds.push(h.handoffId);
-    } catch {
-      // Best-effort: contribution is already committed.
+    } catch (err) {
+      // Best-effort: contribution is already committed. Log so operators can
+      // diagnose routing gaps (downstream agents may not be notified).
+      console.warn(
+        `[grove] handoff batch failed for cid=${contribution.cid} roles=${inputs.map((i) => i.toRole).join(",")}`,
+        err,
+      );
     }
     return handoffIds;
   }
 
-  for (const input of inputs) {
-    try {
-      const handoff = await handoffStore.create(input);
-      handoffIds.push(handoff.handoffId);
-    } catch {
+  // Fallback for stores without createMany: fan out in parallel so N handoffs
+  // pay 1×RTT instead of N×RTT. allSettled ensures a single failure doesn't
+  // abandon the remaining handoffs. Wrap each call in Promise.resolve().then()
+  // so a synchronous throw inside create() becomes a rejected promise rather
+  // than escaping map() and bypassing allSettled (which would violate the
+  // best-effort contract: the contribution is already committed by this point).
+  const results = await Promise.allSettled(
+    inputs.map((input) => Promise.resolve().then(() => handoffStore.create(input))),
+  );
+  for (const [i, result] of results.entries()) {
+    if (result.status === "fulfilled") {
+      handoffIds.push(result.value.handoffId);
+    } else {
       // Best-effort: contribution is already committed.
+      console.warn(
+        `[grove] handoff create failed for cid=${contribution.cid} role=${inputs[i]?.toRole}`,
+        result.reason,
+      );
     }
   }
   return handoffIds;

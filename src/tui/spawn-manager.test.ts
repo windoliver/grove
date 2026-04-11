@@ -6,7 +6,14 @@
  * in SpawnManager (not just provider methods).
  */
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+
+// spawn() does real work: git worktree add into the current repo, writeFile
+// for config artifacts, chmod, and writeMcpConfig. Individual spawns routinely
+// take 1–3s on a warm machine and 3–5s cold; the default 5s timeout races tests
+// that spawn multiple agents. Bump to 30s so CI and local runs are stable.
+setDefaultTimeout(30_000);
+
 import type { Claim } from "../core/models.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
 import { MockTmuxManager } from "./agents/tmux-manager.js";

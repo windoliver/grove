@@ -54,12 +54,18 @@ try {
   const nexusUrl = process.env.GROVE_NEXUS_URL;
   const nexusApiKey = process.env.NEXUS_API_KEY;
 
-  // Always create local runtime for workspace, contract, frontier, CAS
+  // Always create local runtime for workspace, frontier, CAS.
+  //
+  // Contract loading: in local mode we read the session config from the local
+  // SQLite goalSessionStore. In Nexus mode, the session config lives only in
+  // the Nexus VFS (see NexusProvider.createSession → nexusSessionStore.putSession),
+  // so we skip the SQLite session-config lookup here and reconstruct the
+  // contract from the Nexus session record further down.
   const runtime = createLocalRuntime({
     groveDir,
     frontierCacheTtlMs: 5_000,
     workspace: true,
-    parseContract: true,
+    parseContract: !nexusUrl,
   });
 
   if (!runtime.workspace) {
@@ -114,14 +120,125 @@ try {
         );
         process.stderr.write(`grove-mcp: using Nexus stores at ${nexusUrl}\n`);
       } else {
-        process.stderr.write(`grove-mcp: Nexus unreachable, using local stores\n`);
-        nexusClient = undefined;
+        // Fail closed: GROVE_NEXUS_URL was explicitly set, so the caller wants
+        // Nexus semantics (session scoping, handoff routing, cross-process
+        // IPC). Falling back to local SQLite here would silently split writes
+        // between Nexus and the session-scoped path the TUI subscribes to,
+        // leaving the coder→reviewer loop deadlocked without any error. We
+        // cannot know if this is a transient health blip or a real outage,
+        // so we crash and let the parent process retry / surface the error.
+        process.stderr.write(
+          `grove-mcp: FATAL: GROVE_NEXUS_URL=${nexusUrl} is set but health check failed. ` +
+            `Refusing to fall back to local stores — that would silently bypass Nexus ` +
+            `routing and handoff creation. Verify Nexus is reachable and retry.\n`,
+        );
+        process.exit(1);
       }
     } catch (err) {
-      process.stderr.write(`grove-mcp: Nexus failed, using local: ${err}\n`);
+      // Same reasoning: a configured Nexus that throws during setup is a hard
+      // failure, not a soft downgrade. Exit so the parent can retry with the
+      // full error visible instead of corrupting subsequent writes.
+      process.stderr.write(
+        `grove-mcp: FATAL: Nexus setup failed for ${nexusUrl}: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+      process.exit(1);
     }
   } else {
     process.stderr.write(`grove-mcp: using local stores at ${groveDir}\n`);
+  }
+
+  // In Nexus mode we skipped the local contract parse; load the authoritative
+  // contract from the Nexus session record instead. The TUI mirrors every
+  // session to Nexus via NexusSessionStore.putSession with the frozen
+  // GroveContract snapshot, so we pull it from there.
+  //
+  // This path fails CLOSED: if GROVE_SESSION_ID is set but no full contract
+  // is available (session missing, record has only topology, Nexus is
+  // unreachable, or the write race hasn't settled), we exit the process.
+  // Without a full contract, EnforcingContributionStore is never wired, so
+  // agent writes would bypass rate limits, cost caps, gates, and per-kind
+  // policies — a silent fail-open here corrupts every contribution until
+  // the next restart. Callers must ensure the Nexus session mirror has
+  // completed before spawning agents (nexus-provider awaits putSession).
+  //
+  // Note: the stdio serve.ts process is spawned per agent by acpx, after
+  // setSessionScope has mirrored the session. If the mirror is still in
+  // flight we retry with exponential backoff before failing.
+  let loadedContract: import("../core/contract.js").GroveContract | undefined = runtime.contract;
+  if (nexusClient && !loadedContract && process.env.GROVE_SESSION_ID) {
+    const sessionId = process.env.GROVE_SESSION_ID;
+    const { NexusSessionStore } = await import("../nexus/nexus-session-store.js");
+    const nexusSessionStore = new NexusSessionStore(nexusClient, zoneId);
+
+    const retryDelaysMs = [0, 100, 250, 500, 1000, 2000];
+    let lastErr: unknown;
+    let sessionRecord: import("../core/session.js").Session | undefined;
+    for (const delay of retryDelaysMs) {
+      if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+      try {
+        sessionRecord = await nexusSessionStore.getSession(sessionId);
+        if (sessionRecord?.config) break;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+
+    // Policy: by default we PREFER a full frozen contract but fall back to
+    // topology-only with a loud warning when the session record was
+    // created without one. This preserves backwards compatibility with
+    // legacy sessions and session-creation paths (e.g. the
+    // `grove_create_session` MCP tool) that don't ship a contract.
+    //
+    // Operators who need strict enforcement can set
+    // `GROVE_MCP_STRICT_CONTRACT=1` to invert the default and fail closed
+    // on any session without a frozen contract — recommended once every
+    // session-creation path in the deployment is persisting config.
+    const strictContract = process.env.GROVE_MCP_STRICT_CONTRACT === "1";
+
+    if (sessionRecord?.config) {
+      // Happy path: full frozen contract mirrored from the TUI's createSession.
+      loadedContract = sessionRecord.config;
+      process.stderr.write(`grove-mcp: loaded full contract from Nexus session ${sessionId}\n`);
+    } else if (sessionRecord?.topology && !strictContract) {
+      // Default degraded path: the session record exists but lacks a frozen
+      // config. Reconstruct a minimal contract so topology routing and
+      // per-kind tool presets still work. Rate limits / enforcement / gates
+      // are NOT honored; log a loud WARN so operators see the gap.
+      loadedContract = {
+        contractVersion: 1,
+        name: sessionRecord.presetName ?? "nexus-session",
+        mode: "exploration",
+        topology: sessionRecord.topology,
+      };
+      process.stderr.write(
+        `grove-mcp: WARN: Nexus session ${sessionId} has no frozen config — ` +
+          `using topology-only contract (rate limits / gates / cost caps NOT ` +
+          `applied). Recreate the session with the current TUI to get full ` +
+          `enforcement, or set GROVE_MCP_STRICT_CONTRACT=1 to fail closed here.\n`,
+      );
+    } else if (sessionRecord?.topology) {
+      // Strict mode explicitly enabled: refuse to proceed without a full
+      // contract even though the session record exists.
+      process.stderr.write(
+        `grove-mcp: FATAL: GROVE_MCP_STRICT_CONTRACT=1 is set and Nexus session ` +
+          `${sessionId} has no frozen config. Recreate the session with the ` +
+          `current TUI.\n`,
+      );
+      process.exit(1);
+    } else {
+      // No session record at all in Nexus — the agent cannot do useful work.
+      // This is distinct from "session exists without config"; here we exit
+      // because there is no topology to route with either, so spawning an
+      // agent would produce zero progress.
+      const reason = lastErr
+        ? `Nexus lookup failed: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`
+        : "session not found in Nexus";
+      process.stderr.write(
+        `grove-mcp: FATAL: cannot find Nexus session ${sessionId} — ${reason}. ` +
+          `Ensure the TUI session mirror has completed before spawning agents.\n`,
+      );
+      process.exit(1);
+    }
   }
 
   // Wrap the contribution store with rate-limit / clock-skew enforcement
@@ -129,9 +246,9 @@ try {
   // src/cli/commands/contribute.ts:353. Without this wrap, MCP-served
   // contributions bypass the rate limits configured in GROVE.md (Issue 2A
   // in the #228 review).
-  if (runtime.contract !== undefined) {
+  if (loadedContract !== undefined) {
     const { EnforcingContributionStore } = await import("../core/enforcing-store.js");
-    contributionStore = new EnforcingContributionStore(contributionStore, runtime.contract, {
+    contributionStore = new EnforcingContributionStore(contributionStore, loadedContract, {
       cas,
     });
   }
@@ -140,7 +257,7 @@ try {
   let eventBus: import("../core/event-bus.js").EventBus | undefined;
   let topologyRouter: TopologyRouter | undefined;
 
-  if (runtime.contract?.topology) {
+  if (loadedContract?.topology) {
     if (nexusClient) {
       const { NexusEventBus } = await import("../nexus/nexus-event-bus.js");
       eventBus = new NexusEventBus(nexusClient, zoneId);
@@ -149,7 +266,7 @@ try {
       const { LocalEventBus } = await import("../core/local-event-bus.js");
       eventBus = new LocalEventBus();
     }
-    topologyRouter = new TopologyRouter(runtime.contract.topology, eventBus);
+    topologyRouter = new TopologyRouter(loadedContract.topology, eventBus);
   }
 
   // When running with a local SQLite store and GROVE_SESSION_ID is set,
@@ -170,7 +287,7 @@ try {
     cas,
     frontier: runtime.frontier,
     workspace: runtime.workspace,
-    contract: runtime.contract,
+    contract: loadedContract,
     onContributionWrite: runtime.onContributionWrite,
     ...(onContributionWritten ? { onContributionWritten } : {}),
     workspaceBoundary: runtime.groveRoot,
@@ -181,9 +298,9 @@ try {
     handoffStore: nexusHandoffStore ?? runtime.handoffStore,
   };
   // Derive MCP tool preset from contract mode — #11 MCP Tool Surface + #12 Concept Usage
-  const contractMode = runtime.contract?.mode ?? "exploration";
+  const contractMode = loadedContract?.mode ?? "exploration";
   const hasMetrics =
-    runtime.contract?.metrics !== undefined && Object.keys(runtime.contract.metrics).length > 0;
+    loadedContract?.metrics !== undefined && Object.keys(loadedContract.metrics).length > 0;
 
   preset =
     contractMode === "evaluation"
