@@ -851,8 +851,8 @@ export async function contributeOperation(
           `[grove] Warning: topology router is active but agent '${contribution.agent.agentId}' has no role — routing skipped. Set agent.role to enable topology routing.\n`,
         );
       } else {
-        const targets = deps.topologyRouter.targetsFor(contribution.agent.role);
-        if (targets.length > 0) routedTo = [...targets];
+        const edges = deps.topologyRouter.targetsFor(contribution.agent.role);
+        if (edges.length > 0) routedTo = edges.map((e) => e.target);
       }
     }
 

@@ -27,6 +27,9 @@ export {
 } from "./bounty.js";
 // Checkout operation
 export type { CheckoutInput, CheckoutResult } from "./checkout.js";
+// Eval operation
+export type { EvalInput, EvalResult, EvalScore } from "./eval.js";
+export { evalOperation } from "./eval.js";
 export { checkoutOperation } from "./checkout.js";
 // Claim operations
 export type {

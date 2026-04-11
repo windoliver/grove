@@ -71,6 +71,7 @@ describe("createMcpServer preset scoping", () => {
     "grove_create_session",
     "grove_discuss",
     "grove_done",
+    "grove_eval",
     "grove_frontier",
     "grove_get_outcome",
     "grove_goal",
@@ -230,6 +231,16 @@ describe("createMcpServer preset scoping", () => {
     }
   });
 
+  test("eval: false excludes eval tool", async () => {
+    const server = await createMcpServer(deps, { eval: false });
+    const names = getRegisteredToolNames(server);
+    expect(names).not.toContain("grove_eval");
+    // Contribution tools still present
+    for (const t of contributionTools) {
+      expect(names).toContain(t);
+    }
+  });
+
   test("contribution tools are always registered even when everything is disabled", async () => {
     const allDisabled: McpPresetConfig = {
       queries: false,
@@ -242,6 +253,7 @@ describe("createMcpServer preset scoping", () => {
       messaging: false,
       plans: false,
       goals: false,
+      eval: false,
     };
 
     const server = await createMcpServer(deps, allDisabled);

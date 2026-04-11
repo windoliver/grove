@@ -16,25 +16,23 @@ metrics:
     unit: GB
     description: Peak VRAM usage during training
 outcome_policy:
-  auto_evaluate: true
-  accept_if:
-    metric: val_bpb
-    condition: improved_over_parent
+  auto_accept:
+    metric_improves: val_bpb
 stop_conditions:
-  no_improvement_rounds: 5
-  max_rounds: 20
+  max_rounds_without_improvement: 5
   target_metric:
     metric: val_bpb
-    threshold: 0.85
-  wall_clock_budget: "3h"
-enforcement:
-  claim_policy:
-    max_concurrent: 3
-    lease_duration: "10m"
+    value: 0.85
+  budget:
+    max_wall_clock_seconds: 10800
+  deliberation_limit:
+    max_rounds: 20
 concurrency:
   max_active_claims: 3
   max_claims_per_agent: 1
   max_claims_per_target: 1
+execution:
+  default_lease_seconds: 600
 rate_limits:
   max_contributions_per_agent_per_hour: 100
   max_contributions_per_grove_per_hour: 300
