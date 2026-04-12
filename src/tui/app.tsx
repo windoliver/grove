@@ -40,6 +40,7 @@ import {
   type TuiDataProvider,
 } from "./provider.js";
 import { useSpawnManager } from "./spawn-manager-context.js";
+import { theme } from "./theme.js";
 
 /** Props for the root App component. */
 export interface AppProps {
@@ -972,20 +973,31 @@ export function App({
           focusedPanel={panels.state.focused}
           keybindingOverrides={keybindingOverrides}
         />
-        <CommandPalette
-          visible={paletteVisible}
-          tmux={tmux}
-          onClose={handleCommandPaletteClose}
-          onSpawn={handleSpawn}
-          onKill={handleKill}
-          topology={topology}
-          activeClaims={activeClaims ?? undefined}
-          selectedIndex={ks.paletteIndex}
-          sessions={paletteSessions ?? undefined}
-          parentAgentId={paletteParentId}
-          items={paletteItems}
-          query={ks.paletteQuery}
-        />
+        {paletteVisible && (
+          <box
+            position="absolute"
+            top={2}
+            left={2}
+            right={2}
+            zIndex={10}
+            backgroundColor={theme.headerBg}
+          >
+            <CommandPalette
+              visible={paletteVisible}
+              tmux={tmux}
+              onClose={handleCommandPaletteClose}
+              onSpawn={handleSpawn}
+              onKill={handleKill}
+              topology={topology}
+              activeClaims={activeClaims ?? undefined}
+              selectedIndex={ks.paletteIndex}
+              sessions={paletteSessions ?? undefined}
+              parentAgentId={paletteParentId}
+              items={paletteItems}
+              query={ks.paletteQuery}
+            />
+          </box>
+        )}
         <InputBar
           visible={
             panels.state.mode === InputMode.TerminalInput ||
