@@ -26,8 +26,7 @@ import { spawn } from "node:child_process";
 
 import type { OperationDeps } from "./deps.js";
 import type { OperationResult } from "./result.js";
-import { err, ok, validationErr } from "./result.js";
-import { OperationErrorCode } from "./result.js";
+import { err, OperationErrorCode, ok, validationErr } from "./result.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -43,7 +42,8 @@ const TAIL_BYTES = 4096;
 const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes
 
 /** Pattern for score lines emitted by the eval subprocess. */
-const SCORE_LINE_RE = /^GROVE_SCORE\s+([a-z][a-z0-9_]*)=([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)$/i;
+const SCORE_LINE_RE =
+  /^GROVE_SCORE\s+([a-z][a-z0-9_]*)=([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)$/i;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -103,22 +103,33 @@ async function runEvalSubprocess(
     // Ring-buffer approach: keep the tail of output for diagnostics.
     let rawOutput = "";
 
+    // detached: true puts the child in its own process group so we can
+    // kill the entire tree (shell + any forked children) on timeout via
+    // process.kill(-pid, signal) instead of just the sh wrapper.
     const child = spawn("sh", ["-c", command], {
       env: { ...process.env, GROVE_TARGET_CID: targetCid },
       stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
     });
 
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-      // Give the process a moment to exit before SIGKILL.
-      setTimeout(() => {
+    /** Kill the full process group; fall back to the direct PID on error. */
+    const killGroup = (signal: NodeJS.Signals): void => {
+      try {
+        if (child.pid !== undefined) process.kill(-child.pid, signal);
+      } catch {
         try {
-          child.kill("SIGKILL");
+          child.kill(signal);
         } catch {
           // Already exited — ignore.
         }
-      }, 5000);
+      }
+    };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killGroup("SIGTERM");
+      // Give the process group a moment to exit before SIGKILL.
+      setTimeout(() => killGroup("SIGKILL"), 5000);
     }, timeoutMs);
 
     /** Append to the rolling output tail, respecting the cap. */
@@ -132,7 +143,7 @@ async function runEvalSubprocess(
     const parseLine = (line: string): void => {
       const match = line.trim().match(SCORE_LINE_RE);
       if (match) {
-        scores.push({ metric: match[1]!.toLowerCase(), value: parseFloat(match[2]!) });
+        scores.push({ metric: match[1]?.toLowerCase() ?? "", value: parseFloat(match[2] ?? "0") });
       }
     };
 
@@ -156,8 +167,7 @@ async function runEvalSubprocess(
       clearTimeout(timer);
       const exitCode = code ?? (timedOut ? 124 : 1);
       // Return last TAIL_BYTES for diagnostics.
-      const rawTail =
-        rawOutput.length > TAIL_BYTES ? rawOutput.slice(-TAIL_BYTES) : rawOutput;
+      const rawTail = rawOutput.length > TAIL_BYTES ? rawOutput.slice(-TAIL_BYTES) : rawOutput;
       resolve({ scores, exitCode, timedOut, rawTail });
     });
   });
@@ -169,7 +179,7 @@ async function runEvalSubprocess(
 
 /** Run the eval harness against a target CID and return structured scores. */
 export async function evalOperation(
-  deps: OperationDeps,
+  _deps: OperationDeps,
   input: EvalInput,
 ): Promise<OperationResult<EvalResult>> {
   const { targetCid, evalCommand, timeoutMs } = input;

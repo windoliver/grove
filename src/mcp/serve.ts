@@ -302,6 +302,10 @@ try {
   const hasMetrics =
     loadedContract?.metrics !== undefined && Object.keys(loadedContract.metrics).length > 0;
 
+  // grove_eval executes arbitrary sh -c. Disabled by default on all transports;
+  // enable with GROVE_MCP_EVAL_ENABLED=true (stdio) or AUTH_TOKEN +
+  // GROVE_MCP_EVAL_ENABLED=true (HTTP — enforced in serve-http.ts).
+  const evalEnabled = process.env.GROVE_MCP_EVAL_ENABLED === "true";
   preset =
     contractMode === "evaluation"
       ? {
@@ -315,6 +319,7 @@ try {
           messaging: false,
           plans: true,
           goals: true,
+          eval: evalEnabled,
         }
       : {
           queries: true,
@@ -327,6 +332,7 @@ try {
           messaging: false,
           plans: false,
           goals: true,
+          eval: evalEnabled,
         };
 
   close = () => {
