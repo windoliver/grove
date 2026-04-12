@@ -276,6 +276,7 @@ try {
   const onContributionWritten =
     envSessionId && !nexusClient
       ? (cid: string) => {
+          // biome-ignore lint/suspicious/noEmptyBlockStatements: fire-and-forget, errors intentionally swallowed
           void runtime.goalSessionStore.addContributionToSession(envSessionId, cid).catch(() => {});
         }
       : undefined;

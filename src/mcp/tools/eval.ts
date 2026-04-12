@@ -7,9 +7,8 @@
  * All business logic is delegated to the shared operations layer.
  */
 
-import { z } from "zod";
-
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
 
 import { evalOperation } from "../../core/operations/index.js";
 import type { McpDeps } from "../deps.js";
@@ -35,7 +34,9 @@ export function registerEvalTools(server: McpServer, deps: McpDeps): void {
         targetCid: z
           .string()
           .min(1)
-          .describe("CID of the contribution artifact to evaluate (passed as GROVE_TARGET_CID env var)"),
+          .describe(
+            "CID of the contribution artifact to evaluate (passed as GROVE_TARGET_CID env var)",
+          ),
         evalCommand: z
           .string()
           .min(1)

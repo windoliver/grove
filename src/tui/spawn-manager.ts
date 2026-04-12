@@ -993,9 +993,11 @@ export class SpawnManager {
                 .getHandoffs({ sourceCid: c.cid, status: "pending_pickup" })
                 .then((hs) => {
                   for (const h of hs) {
+                    // biome-ignore lint/suspicious/noEmptyBlockStatements: delivery errors silently swallowed per fire-and-forget pattern
                     void hp.markHandoffDelivered(h.handoffId).catch(() => {});
                   }
                 })
+                // biome-ignore lint/suspicious/noEmptyBlockStatements: getHandoffs errors silently swallowed
                 .catch(() => {});
             }
           }

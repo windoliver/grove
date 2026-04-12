@@ -27,9 +27,6 @@ export {
 } from "./bounty.js";
 // Checkout operation
 export type { CheckoutInput, CheckoutResult } from "./checkout.js";
-// Eval operation
-export type { EvalInput, EvalResult, EvalScore } from "./eval.js";
-export { evalOperation } from "./eval.js";
 export { checkoutOperation } from "./checkout.js";
 // Claim operations
 export type {
@@ -64,6 +61,9 @@ export {
 } from "./contribute.js";
 // Foundation
 export type { OperationDeps } from "./deps.js";
+// Eval operation
+export type { EvalInput, EvalResult, EvalScore } from "./eval.js";
+export { evalOperation } from "./eval.js";
 // Lifecycle operation
 export type { CheckStopResult, StopConditionStatus } from "./lifecycle.js";
 export { checkStopOperation } from "./lifecycle.js";

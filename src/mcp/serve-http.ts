@@ -56,6 +56,7 @@ let nexusUrl: string | undefined;
 let nexusApiKey: string | undefined;
 let zoneId = "default";
 let nexusClient: import("../nexus/nexus-http-client.js").NexusHttpClient | undefined;
+// biome-ignore lint/suspicious/noEmptyBlockStatements: default no-op replaced in try block
 let closeStores: () => void = () => {};
 
 try {
@@ -305,6 +306,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     bountyStore,
     cas,
     frontier: runtime.frontier,
+    // biome-ignore lint/style/noNonNullAssertion: checked above (workspace guard throws if undefined)
     workspace: runtime.workspace!,
     contract: loadedContract,
     onContributionWrite: runtime.onContributionWrite,

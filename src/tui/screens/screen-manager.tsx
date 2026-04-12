@@ -156,6 +156,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             try {
               const { writeFileSync, renameSync } = await import("node:fs");
               const { join } = await import("node:path");
+              // biome-ignore lint/style/noNonNullAssertion: groveDir is set at startup before any session writes
               const finalPath = join(appProps.groveDir!, "current-session.json");
               const tmpPath = `${finalPath}.${process.pid}.${Date.now()}.tmp`;
               writeFileSync(tmpPath, JSON.stringify({ sessionId: id }, null, 2), "utf-8");

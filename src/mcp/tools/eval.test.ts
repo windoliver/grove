@@ -68,8 +68,7 @@ describe("grove_eval", () => {
   test("returns parsed scores for valid GROVE_SCORE output", async () => {
     const result = await callTool(server, "grove_eval", {
       targetCid: "blake3:abc123",
-      evalCommand:
-        "echo 'GROVE_SCORE val_bpb=0.92' && echo 'GROVE_SCORE peak_vram_gb=14.3'",
+      evalCommand: "echo 'GROVE_SCORE val_bpb=0.92' && echo 'GROVE_SCORE peak_vram_gb=14.3'",
     });
 
     expect(result.isError).toBeUndefined();
