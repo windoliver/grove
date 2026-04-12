@@ -55,7 +55,7 @@ describe("createMcpServer preset scoping", () => {
     "grove_submit_work",
   ];
 
-  // --- Full tool list (matches integration test expectation) ---------------
+  // --- Full tool list (no preset — grove_eval excluded, it is opt-in via eval:true) ---
 
   const allTools = [
     "ask_user",
@@ -71,7 +71,6 @@ describe("createMcpServer preset scoping", () => {
     "grove_create_session",
     "grove_discuss",
     "grove_done",
-    "grove_eval",
     "grove_frontier",
     "grove_get_outcome",
     "grove_goal",
@@ -100,16 +99,24 @@ describe("createMcpServer preset scoping", () => {
 
   // -----------------------------------------------------------------------
 
-  test("no preset registers all tools (backwards compatible)", async () => {
+  test("no preset registers all tools except grove_eval (eval is opt-in)", async () => {
     const server = await createMcpServer(deps);
     const names = getRegisteredToolNames(server);
     expect(names).toEqual(allTools);
+    expect(names).not.toContain("grove_eval");
   });
 
-  test("empty preset object registers all tools (defaults are true)", async () => {
+  test("empty preset object registers all tools except grove_eval", async () => {
     const server = await createMcpServer(deps, {});
     const names = getRegisteredToolNames(server);
     expect(names).toEqual(allTools);
+    expect(names).not.toContain("grove_eval");
+  });
+
+  test("eval: true enables grove_eval", async () => {
+    const server = await createMcpServer(deps, { eval: true });
+    const names = getRegisteredToolNames(server);
+    expect(names).toContain("grove_eval");
   });
 
   test("claims: false excludes claim tools but keeps others", async () => {
