@@ -574,12 +574,17 @@ export async function handleTui(
     // --url flag: legacy direct boardroom mode (no interactive screens)
     if (opts.url && !opts.nexus) {
       if (groveDir) {
-        const { startServices } = await import("../shared/service-lifecycle.js");
+        const { startServices, persistNexusUrlToConfig } = await import(
+          "../shared/service-lifecycle.js"
+        );
         runningServices = await startServices({
           groveDir,
           build: serviceOpts?.build,
           nexusSource: serviceOpts?.nexusSource,
         });
+        if (runningServices.resolvedNexusUrl) {
+          persistNexusUrlToConfig(groveDir, runningServices.resolvedNexusUrl);
+        }
       }
       const result = await buildAppProps(effectiveGrove, opts, groveInfo?.preset);
       activeProvider = result.provider;
@@ -660,7 +665,9 @@ export async function handleTui(
         // Even for "New session", Nexus may be stopped (e.g. machine restart).
         // startServices + ensureNexusRunning is idempotent: reuses running Nexus if already up.
         onProgress?.("[grove up] ensuring services are running...");
-        const { startServices } = await import("../shared/service-lifecycle.js");
+        const { startServices, persistNexusUrlToConfig } = await import(
+          "../shared/service-lifecycle.js"
+        );
         runningServices = await startServices({
           groveDir: newGroveDir,
           build: serviceOpts?.build,
@@ -668,9 +675,14 @@ export async function handleTui(
           onProgress,
           force: false,
         });
+        if (runningServices.resolvedNexusUrl) {
+          persistNexusUrlToConfig(newGroveDir, runningServices.resolvedNexusUrl);
+        }
       } else {
         // New grove — start services (Nexus, HTTP server, MCP server).
-        const { startServices } = await import("../shared/service-lifecycle.js");
+        const { startServices, persistNexusUrlToConfig } = await import(
+          "../shared/service-lifecycle.js"
+        );
         runningServices = await startServices({
           groveDir: newGroveDir,
           build: serviceOpts?.build,
@@ -678,6 +690,9 @@ export async function handleTui(
           onProgress,
           force: false,
         });
+        if (runningServices.resolvedNexusUrl) {
+          persistNexusUrlToConfig(newGroveDir, runningServices.resolvedNexusUrl);
+        }
       }
 
       // Pass the grove dir so buildAppProps can find GROVE.md
@@ -696,13 +711,18 @@ export async function handleTui(
       onProgress?: (step: string) => void,
     ): Promise<import("./app.js").AppProps> => {
       const resolvedGrove = groveDir ?? join(process.cwd(), ".grove");
-      const { startServices } = await import("../shared/service-lifecycle.js");
+      const { startServices, persistNexusUrlToConfig } = await import(
+        "../shared/service-lifecycle.js"
+      );
       runningServices = await startServices({
         groveDir: resolvedGrove,
         build: serviceOpts?.build,
         nexusSource: serviceOpts?.nexusSource,
         onProgress,
       });
+      if (runningServices.resolvedNexusUrl) {
+        persistNexusUrlToConfig(resolvedGrove, runningServices.resolvedNexusUrl);
+      }
 
       const result = await buildAppProps(effectiveGrove, opts, groveInfo?.preset);
       activeProvider = result.provider;
