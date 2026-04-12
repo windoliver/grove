@@ -979,6 +979,7 @@ export function App({
             top={2}
             left={2}
             right={2}
+            bottom={2}
             zIndex={10}
             backgroundColor={theme.headerBg}
           >
