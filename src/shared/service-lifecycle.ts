@@ -5,7 +5,7 @@
  * plus graceful shutdown of all spawned processes.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -72,75 +72,49 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
   const { parseGroveConfig } = await import("../core/config.js");
   const config = parseGroveConfig(raw);
 
-  // Start managed Nexus if configured — skip if GROVE_NEXUS_URL already set (reuse existing)
+  // Start managed Nexus if configured — skip if GROVE_NEXUS_URL already set (reuse existing).
+  // Issue 3A: removed the duplicate config.nexusUrl fast-path health check that previously
+  // preceded ensureNexusRunning(). ensureNexusRunning() already probes config.nexusUrl as
+  // one of its candidates (including parallel probing per Issue 2A), so the outer check was
+  // redundant and kept two copies of the "is Nexus healthy?" logic in sync.
   if (
     !process.env.GROVE_NEXUS_URL &&
     (config.nexusManaged || (config.mode === "nexus" && !config.nexusUrl))
   ) {
-    // Fast path: if grove.json has nexusUrl, check health before running ensureNexusRunning.
-    // This avoids spawning a duplicate compose project when the existing Nexus just needs
-    // a moment to start up (e.g., after machine reboot or container auto-restart).
-    if (config.nexusUrl) {
+    try {
+      const { ensureNexusRunning } = await import("../cli/nexus-lifecycle.js");
+      const nexusInfo = await ensureNexusRunning(projectRoot, config, {
+        build: options.build ?? false,
+        nexusSource: options.nexusSource,
+        onProgress: options.onProgress,
+      });
+      nexusManaged = true;
+      // Only set env vars if not already configured (user may have set explicit Nexus URL)
+      if (!process.env.GROVE_NEXUS_URL) {
+        process.env.GROVE_NEXUS_URL = nexusInfo.url;
+      }
+      if (!process.env.NEXUS_API_KEY && nexusInfo.apiKey) {
+        process.env.NEXUS_API_KEY = nexusInfo.apiKey;
+      }
+      // Issue 15A: reuse already-parsed config and raw string — avoids a redundant readFileSync.
+      // Persist Nexus URL to grove.json so Resume can find it without re-discovery.
       try {
-        const { readNexusApiKey } = await import("../cli/nexus-lifecycle.js");
-        const res = await fetch(`${config.nexusUrl}/health`, {
-          signal: AbortSignal.timeout(5_000),
-        });
-        const body = (await res.json().catch(() => ({}))) as { status?: string };
-        if (body.status === "healthy" || body.status === "starting") {
-          const apiKey = readNexusApiKey(projectRoot);
-          if (body.status === "starting") {
-            const { waitForNexusHealth } = await import("../cli/nexus-lifecycle.js");
-            await waitForNexusHealth(config.nexusUrl, 60_000);
-          }
-          process.env.GROVE_NEXUS_URL = config.nexusUrl;
-          if (apiKey) process.env.NEXUS_API_KEY = apiKey;
-          nexusManaged = true;
-          options.onProgress?.("Nexus is ready (from grove.json)");
-          // Don't return — fall through to start other services (HTTP server, etc.)
+        if (config.nexusUrl !== nexusInfo.url) {
+          const updated = { ...JSON.parse(raw), nexusUrl: nexusInfo.url };
+          writeFileSync(configPath, `${JSON.stringify(updated, null, 2)}\n`, "utf-8");
         }
       } catch {
-        // Not reachable — fall through to ensureNexusRunning
+        // Best-effort — don't fail startup over config persistence
       }
+    } catch (err) {
+      // If user explicitly asked for --build, don't silently fall back — surface the error
+      if (options.build) {
+        throw err;
+      }
+      // Fall back to local mode — log the reason for debugging
+      const errMsg = err instanceof Error ? err.message : String(err);
+      options.onProgress?.(`Nexus unavailable (${errMsg}), using local mode`);
     }
-
-    if (!nexusManaged)
-      try {
-        const { ensureNexusRunning } = await import("../cli/nexus-lifecycle.js");
-        const nexusInfo = await ensureNexusRunning(projectRoot, config, {
-          build: options.build ?? false,
-          nexusSource: options.nexusSource,
-          onProgress: options.onProgress,
-        });
-        nexusManaged = true;
-        // Only set env vars if not already configured (user may have set explicit Nexus URL)
-        if (!process.env.GROVE_NEXUS_URL) {
-          process.env.GROVE_NEXUS_URL = nexusInfo.url;
-        }
-        if (!process.env.NEXUS_API_KEY && nexusInfo.apiKey) {
-          process.env.NEXUS_API_KEY = nexusInfo.apiKey;
-        }
-        // Persist Nexus URL to grove.json so Resume can find it without re-discovery.
-        // This prevents spinning up a duplicate Nexus stack on subsequent TUI launches.
-        try {
-          const { writeFileSync } = await import("node:fs");
-          const currentConfig = JSON.parse(readFileSync(configPath, "utf-8"));
-          if (currentConfig.nexusUrl !== nexusInfo.url) {
-            currentConfig.nexusUrl = nexusInfo.url;
-            writeFileSync(configPath, `${JSON.stringify(currentConfig, null, 2)}\n`, "utf-8");
-          }
-        } catch {
-          // Best-effort — don't fail startup over config persistence
-        }
-      } catch (err) {
-        // If user explicitly asked for --build, don't silently fall back — surface the error
-        if (options.build) {
-          throw err;
-        }
-        // Fall back to local mode — log the reason for debugging
-        const errMsg = err instanceof Error ? err.message : String(err);
-        options.onProgress?.(`Nexus unavailable (${errMsg}), using local mode`);
-      }
   }
 
   // Spawn services in parallel
@@ -247,7 +221,6 @@ export async function stopServices(services: RunningServices): Promise<void> {
 
   // Clean up PID file
   try {
-    const { unlinkSync } = require("node:fs") as typeof import("node:fs");
     unlinkSync(pidFilePath);
   } catch {
     /* ignore */
@@ -292,15 +265,38 @@ async function spawnService(
     const pid = child.pid ?? 0;
     child.unref();
 
-    // Wait for process to start. Server with Nexus stores may take longer
-    // to initialize (dynamic imports + NexusHttpClient construction).
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-
-    // Check if the process is running
-    try {
-      process.kill(pid, 0); // Signal 0 = check existence
-    } catch {
-      return null; // Process died during startup
+    // Issue 7A: poll the health endpoint with exponential backoff instead of a blind 5s sleep.
+    // In the common case (service starts in < 1s) this returns immediately rather than blocking.
+    // Cap at 10s; if the service is alive but not responding to health, return it anyway.
+    if (port) {
+      const deadline = Date.now() + 10_000;
+      let delay = 200;
+      while (Date.now() < deadline) {
+        try {
+          const resp = await fetch(`http://localhost:${port}/health`, {
+            signal: AbortSignal.timeout(500),
+          });
+          if (resp.ok) break;
+        } catch {
+          // Not ready yet
+        }
+        // Confirm the process is still alive before waiting again
+        try {
+          process.kill(pid, 0);
+        } catch {
+          return null; // process died during startup
+        }
+        await new Promise((r) => setTimeout(r, delay));
+        delay = Math.min(delay * 1.5, 2_000);
+      }
+    } else {
+      // No known port — brief wait then existence check
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return null;
+      }
     }
 
     // Wrap for the ChildProcess interface

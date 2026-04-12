@@ -72,7 +72,7 @@ export async function resolveBackend(flags: ResolveBackendFlags): Promise<Resolv
   // 4. grove.json nexusUrl or nexus.yaml port — trust config without health check.
   // The URL comes from user configuration (nexusUrl) or managed Nexus (nexus.yaml).
   // Both are authoritative. Health checking happens downstream at connect time.
-  const { url: configUrl } = readNexusUrlFromConfig(flags.groveOverride);
+  const { url: configUrl } = await readNexusUrlFromConfig(flags.groveOverride);
   if (configUrl) {
     return {
       mode: "nexus",
@@ -86,8 +86,9 @@ export async function resolveBackend(flags: ResolveBackendFlags): Promise<Resolv
   // was found (no nexus.yaml, no explicit nexusUrl). Try Docker port mapping.
   if (isNexusManagedConfig(flags.groveOverride)) {
     try {
-      const { discoverRunningNexus, readNexusApiKey } =
-        require("../cli/nexus-lifecycle.js") as typeof import("../cli/nexus-lifecycle.js");
+      // Issue 5A: use await import() consistently — require() was used here because
+      // the surrounding helper was synchronous; resolveBackend is async so import() is correct.
+      const { discoverRunningNexus, readNexusApiKey } = await import("../cli/nexus-lifecycle.js");
       const discovered = await discoverRunningNexus();
       if (discovered) {
         // Set the API key env so downstream code (health checks, providers) can use it
@@ -139,10 +140,14 @@ function isNexusManagedConfig(groveOverride?: string): boolean {
 // Config file reader
 // ---------------------------------------------------------------------------
 
-/** Read nexusUrl from .grove/grove.json if it exists. Returns the URL and whether it was explicit. */
-function readNexusUrlFromConfig(
+/**
+ * Read nexusUrl from .grove/grove.json if it exists. Returns the URL and whether it was explicit.
+ *
+ * Issue 5A: made async so it can use await import() consistently instead of require().
+ */
+async function readNexusUrlFromConfig(
   groveOverride?: string,
-): { url: string; fromExplicit: boolean } | { url: undefined; fromExplicit: false } {
+): Promise<{ url: string; fromExplicit: boolean } | { url: undefined; fromExplicit: false }> {
   const none = { url: undefined, fromExplicit: false } as const;
   try {
     const { groveDir } = resolveGroveDir(groveOverride);
@@ -153,8 +158,7 @@ function readNexusUrlFromConfig(
 
     // Try typed parsing first; fall back to raw JSON for backward compat
     try {
-      const { parseGroveConfig } =
-        require("../core/config.js") as typeof import("../core/config.js");
+      const { parseGroveConfig } = await import("../core/config.js");
       const config = parseGroveConfig(raw);
       if (config.nexusUrl) return { url: config.nexusUrl, fromExplicit: true };
 
@@ -162,8 +166,7 @@ function readNexusUrlFromConfig(
       // This handles standalone `grove tui` on a managed-Nexus grove where
       // `grove up` already started Nexus but didn't set GROVE_NEXUS_URL.
       if (config.nexusManaged && config.mode === "nexus") {
-        const { readNexusUrl } =
-          require("../cli/nexus-lifecycle.js") as typeof import("../cli/nexus-lifecycle.js");
+        const { readNexusUrl } = await import("../cli/nexus-lifecycle.js");
         const yamlUrl = readNexusUrl(join(groveDir, ".."));
         if (yamlUrl) return { url: yamlUrl, fromExplicit: false };
       }
@@ -181,8 +184,7 @@ function readNexusUrlFromConfig(
       // Managed Nexus fallback: discover from nexus.yaml
       if (parsed.nexusManaged && parsed.mode === "nexus") {
         try {
-          const { readNexusUrl } =
-            require("../cli/nexus-lifecycle.js") as typeof import("../cli/nexus-lifecycle.js");
+          const { readNexusUrl } = await import("../cli/nexus-lifecycle.js");
           const yamlUrl = readNexusUrl(join(groveDir, ".."));
           if (yamlUrl) return { url: yamlUrl, fromExplicit: false };
         } catch {

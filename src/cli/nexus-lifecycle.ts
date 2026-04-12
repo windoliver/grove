@@ -203,11 +203,13 @@ export async function nexusUp(_projectRoot: string, opts: NexusUpOptions = {}): 
     }
   }
 
-  const args = ["nexus", "up", "--timeout", String(timeout), "--port-strategy", "auto"];
-  if (wantsBuild && sourceDir) {
-    args.push("--build");
-    args.push("--compose-file", join(sourceDir, "nexus-stack.yml"));
-  }
+  // Issue 6A: build args from a shared base so the --timeout fallback path
+  // never diverges (previously the --build / --compose-file block was copy-pasted).
+  const buildArgs =
+    wantsBuild && sourceDir
+      ? ["--build", "--compose-file", join(sourceDir, "nexus-stack.yml")]
+      : [];
+  const args = ["nexus", "up", "--timeout", String(timeout), "--port-strategy", "auto", ...buildArgs];
 
   const report = opts.onProgress;
 
@@ -217,8 +219,11 @@ export async function nexusUp(_projectRoot: string, opts: NexusUpOptions = {}): 
     stderr: "pipe",
   });
 
-  // Collect stderr while optionally streaming to progress callback
-  const stderrChunks: string[] = [];
+  // Issue 16A: ring buffer — keep only the last MAX_STDERR_LINES lines.
+  // During a Docker pull, nexus up streams verbose progress to stderr (potentially MBs).
+  // We only need the tail for error reporting; the head is discarded to bound memory usage.
+  const MAX_STDERR_LINES = 50;
+  const stderrLines: string[] = [];
   const stderrPromise = (async () => {
     if (!proc.stderr) return "";
     const reader = proc.stderr.getReader();
@@ -228,7 +233,10 @@ export async function nexusUp(_projectRoot: string, opts: NexusUpOptions = {}): 
         const { done, value } = await reader.read();
         if (done) break;
         const text = decoder.decode(value, { stream: true });
-        stderrChunks.push(text);
+        for (const line of text.split("\n")) {
+          stderrLines.push(line);
+          if (stderrLines.length > MAX_STDERR_LINES) stderrLines.shift();
+        }
         if (report) {
           for (const line of text.split("\n")) {
             const trimmed = line.trim();
@@ -239,7 +247,7 @@ export async function nexusUp(_projectRoot: string, opts: NexusUpOptions = {}): 
     } catch {
       // Stream closed
     }
-    return stderrChunks.join("");
+    return stderrLines.join("\n");
   })();
 
   const [code, stdout] = await Promise.all([proc.exited, new Response(proc.stdout).text()]);
@@ -247,11 +255,8 @@ export async function nexusUp(_projectRoot: string, opts: NexusUpOptions = {}): 
   if (code !== 0) {
     // Retry without --timeout if the flag is unsupported
     if (stderr.includes("no such option") || stderr.includes("unrecognized arguments")) {
-      const fallbackArgs = ["nexus", "up", "--port-strategy", "auto"];
-      if (wantsBuild && sourceDir) {
-        fallbackArgs.push("--build");
-        fallbackArgs.push("--compose-file", join(sourceDir, "nexus-stack.yml"));
-      }
+      // Issue 6A: reuse buildArgs — no duplication of --build / --compose-file logic.
+      const fallbackArgs = ["nexus", "up", "--port-strategy", "auto", ...buildArgs];
       const fallback = Bun.spawn(fallbackArgs, {
         cwd: projectRoot,
         stdout: "pipe",
@@ -358,6 +363,23 @@ function parseNexusUrlFromOutput(stdout: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Parse the host-bound port for Nexus (2026/tcp) from a `docker ps` Ports field.
+ *
+ * Matches both IPv4 (`0.0.0.0:PORT->2026/tcp`) and IPv6 (`:::PORT->2026/tcp`) formats.
+ * Returns the host port number, or undefined if no host binding for port 2026 is found.
+ *
+ * Extracted as a pure function for testability.
+ */
+export function parseNexusPortFromDockerPs(portsField: string): number | undefined {
+  // IPv4: "0.0.0.0:PORT->2026/tcp"  — the colon is part of "0.0.0.0:"
+  // IPv6: ":::PORT->2026/tcp"        — three colons immediately precede PORT (no extra colon)
+  const match = portsField.match(/(?:0\.0\.0\.0:|:::)(\d+)->2026\/tcp/);
+  if (!match?.[1]) return undefined;
+  const port = Number.parseInt(match[1], 10);
+  return port > 0 && port <= 65535 ? port : undefined;
+}
+
 // ---------------------------------------------------------------------------
 // API key discovery
 // ---------------------------------------------------------------------------
@@ -450,48 +472,53 @@ export async function waitForNexusHealth(
 /**
  * Discover a running Nexus container via Docker and return its URL.
  *
- * First checks host-bound port mappings (0.0.0.0:PORT->2026/tcp).
- * Then falls back to container internal IPs (for containers started without
- * host port bindings, e.g. via docker compose without ports: section).
- * This lets Grove reuse any Nexus stack regardless of how it was started.
+ * Issue 1A: no image-ancestor filter — works for any channel (edge, stable, nightly)
+ * and source builds. Port 2026 presence in the docker ps output identifies candidates.
+ *
+ * Issue 13A: batch-inspects all containers needing an IP lookup in a single subprocess
+ * call, then probes all candidate URLs in parallel via Promise.any().
  */
 export async function discoverRunningNexus(): Promise<string | undefined> {
   try {
-    // Get container IDs + ports for any container exposing 2026 (Nexus port)
-    const proc = Bun.spawn(
-      [
-        "docker",
-        "ps",
-        "--filter",
-        "ancestor=ghcr.io/nexi-lab/nexus:edge",
-        "--format",
-        "{{.ID}}|{{.Ports}}",
-      ],
-      { stdout: "pipe", stderr: "pipe" },
-    );
+    // Query all running containers with their port mappings.
+    // No image filter — port 2026 presence is the selector.
+    const proc = Bun.spawn(["docker", "ps", "--format", "{{.ID}}|{{.Ports}}"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     const [code, stdout] = await Promise.all([proc.exited, new Response(proc.stdout).text()]);
     if (code !== 0 || !stdout.trim()) return undefined;
 
-    const candidateUrls: string[] = [];
+    const hostUrls: string[] = [];
+    const containerIdsForInspect: string[] = [];
 
     for (const line of stdout.trim().split("\n")) {
       const [id, ports] = line.split("|");
       if (!id || !ports) continue;
 
-      // 1. Prefer host-bound port: "0.0.0.0:27960->2026/tcp"
-      const hostMatch = ports.match(/(?:0\.0\.0\.0|:::):(\d+)->2026\/tcp/);
-      if (hostMatch?.[1]) {
-        candidateUrls.push(`http://localhost:${hostMatch[1]}`);
+      // 1. Host-bound port: "0.0.0.0:PORT->2026/tcp" or ":::PORT->2026/tcp"
+      const port = parseNexusPortFromDockerPs(ports);
+      if (port !== undefined) {
+        hostUrls.push(`http://localhost:${port}`);
         continue;
       }
 
-      // 2. Fall back: inspect container for internal IP + use Nexus default port 2026
+      // 2. Unbound internal port: "2026/tcp" without a host mapping — need container IP.
+      //    Only inspect containers that explicitly reference port 2026.
+      if (ports.includes("2026")) {
+        containerIdsForInspect.push(id.trim());
+      }
+    }
+
+    // Issue 13A: batch-inspect all containers in one subprocess call instead of N sequential ones.
+    const containerUrls: string[] = [];
+    if (containerIdsForInspect.length > 0) {
       try {
         const inspectProc = Bun.spawn(
           [
             "docker",
             "inspect",
-            id.trim(),
+            ...containerIdsForInspect,
             "--format",
             "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}",
           ],
@@ -502,22 +529,29 @@ export async function discoverRunningNexus(): Promise<string | undefined> {
           new Response(inspectProc.stdout).text(),
         ]);
         for (const ip of inspectOut.trim().split(/\s+/)) {
-          if (ip && ip !== "") candidateUrls.push(`http://${ip}:2026`);
+          if (ip && ip !== "") containerUrls.push(`http://${ip}:2026`);
         }
       } catch {
-        // Docker inspect failed — skip
+        // Docker inspect failed — skip container IP fallback
       }
     }
 
-    for (const url of candidateUrls) {
-      try {
-        const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(3_000) });
-        const body = (await res.json().catch(() => ({}))) as { status?: string };
-        // Accept both healthy and starting (starting = Raft election, will become healthy)
-        if (body.status === "healthy" || body.status === "starting") return url;
-      } catch {
-        // Not reachable — try next candidate
-      }
+    const candidateUrls = [...hostUrls, ...containerUrls];
+    if (candidateUrls.length === 0) return undefined;
+
+    // Issue 13A: parallel health probes — first healthy/starting wins.
+    try {
+      return await Promise.any(
+        candidateUrls.map(async (url) => {
+          const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(3_000) });
+          const body = (await res.json().catch(() => ({}))) as { status?: string };
+          if (body.status === "healthy" || body.status === "starting") return url;
+          throw new Error(`not healthy: ${body.status}`);
+        }),
+      );
+    } catch {
+      // All probes failed — no reachable Nexus found
+      return undefined;
     }
   } catch {
     // Docker not available or command failed
@@ -610,27 +644,36 @@ export async function ensureNexusRunning(
 
   const urlsToTry = [...new Set(candidateUrls)];
 
+  // Issue 2A: probe all candidate URLs concurrently — first healthy/starting wins.
+  // Worst-case latency drops from N×3s (sequential) to 3s (parallel).
   report(`[nexus] checking URLs: ${urlsToTry.join(", ")}`);
-  for (const url of urlsToTry) {
-    try {
-      const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(3_000) });
-      const body = (await res.json().catch(() => ({}))) as { status?: string };
-      report(`[nexus] ${url} → status=${body.status}`);
-      if (body.status === "healthy") {
-        const apiKey = readNexusApiKey(projectRoot);
-        report("Nexus is ready (already running)");
-        return { url, apiKey };
-      }
-      if (body.status === "starting") {
-        report("Nexus is starting (waiting for Raft election)...");
-        await waitForNexusHealth(url);
-        const apiKey = readNexusApiKey(projectRoot);
-        report("Nexus is ready");
-        return { url, apiKey };
-      }
-    } catch {
-      // Not reachable — try next
+  let fastResult: { url: string; starting: boolean } | undefined;
+  try {
+    fastResult = await Promise.any(
+      urlsToTry.map(async (url) => {
+        const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(3_000) });
+        if (!res.ok) throw new Error("not ok");
+        const body = (await res.json().catch(() => ({}))) as { status?: string };
+        report(`[nexus] ${url} → status=${body.status}`);
+        if (body.status === "healthy") return { url, starting: false };
+        if (body.status === "starting") return { url, starting: true };
+        throw new Error(`not healthy: ${body.status}`);
+      }),
+    );
+  } catch {
+    // All probes failed (AggregateError from Promise.any) — fall through to restart/start
+    fastResult = undefined;
+  }
+
+  if (fastResult) {
+    if (fastResult.starting) {
+      report("Nexus is starting (waiting for Raft election)...");
+      await waitForNexusHealth(fastResult.url);
     }
+    // Issue 14A: read apiKey once, scoped to this return path — avoids repeated disk reads.
+    const apiKey = readNexusApiKey(projectRoot);
+    report("Nexus is ready (already running)");
+    return { url: fastResult.url, apiKey };
   }
 
   // -----------------------------------------------------------------------
@@ -670,11 +713,17 @@ export async function ensureNexusRunning(
         const httpPort = stateData.ports?.http;
         if (projectName && httpPort) {
           report(`[ensureNexus] quick restart: project=${projectName} port=${httpPort}`);
-          const restart = Bun.spawn(["docker", "compose", "-p", projectName, "restart", "nexus"], {
-            cwd: groveHomeDir,
-            stdout: "pipe",
-            stderr: "pipe",
-          });
+          // Issue 4A: "up --no-pull -d" handles both stopped and running containers without
+          // triggering a Docker pull. "restart" only works on already-running containers and
+          // is a no-op when containers are stopped (e.g. after machine reboot).
+          const restart = Bun.spawn(
+            ["docker", "compose", "-p", projectName, "up", "--no-pull", "-d", "nexus"],
+            {
+              cwd: groveHomeDir,
+              stdout: "pipe",
+              stderr: "pipe",
+            },
+          );
           const restartCode = await restart.exited;
           if (restartCode === 0) {
             quickRestartUrl = `http://localhost:${httpPort}`;
