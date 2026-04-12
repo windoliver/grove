@@ -939,6 +939,7 @@ describe("writeSerial: best-effort handoff failure paths", () => {
   });
 
   test("emits console.warn when handoffStore.createMany throws", async () => {
+    // biome-ignore lint/suspicious/noEmptyBlockStatements: spy suppresses output intentionally
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 
     const faultyHandoffStore: OperationDeps["handoffStore"] = {
@@ -978,6 +979,7 @@ describe("writeSerial: best-effort handoff failure paths", () => {
     // Promise, the throw must still be caught — otherwise the already-committed
     // contribution would bubble out as an operation error and the idempotency
     // slot would be released, allowing duplicate contributions on retry.
+    // biome-ignore lint/suspicious/noEmptyBlockStatements: spy suppresses output intentionally
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 
     // Non-async function so the throw happens synchronously, before any

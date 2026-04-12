@@ -851,8 +851,12 @@ export async function contributeOperation(
           `[grove] Warning: topology router is active but agent '${contribution.agent.agentId}' has no role — routing skipped. Set agent.role to enable topology routing.\n`,
         );
       } else {
-        const targets = deps.topologyRouter.targetsFor(contribution.agent.role);
-        if (targets.length > 0) routedTo = [...targets];
+        const edges = deps.topologyRouter.targetsFor(contribution.agent.role);
+        // Deduplicate by target: a role may have multiple edge types (e.g.
+        // delegates + feeds) pointing at the same downstream role. Creating
+        // one handoff per (source, target) pair is correct; creating one per
+        // edge type would produce duplicate pending handoffs for the same work.
+        if (edges.length > 0) routedTo = [...new Set(edges.map((e) => e.target))];
       }
     }
 

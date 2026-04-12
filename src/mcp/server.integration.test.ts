@@ -34,7 +34,7 @@ describe("MCP server integration", () => {
     testDeps = await createTestMcpDeps();
     deps = testDeps.deps;
 
-    const server = await createMcpServer(deps);
+    const server = await createMcpServer(deps, { eval: true });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
     client = new Client({ name: "test-client", version: "0.0.1" });
@@ -53,7 +53,7 @@ describe("MCP server integration", () => {
     await testDeps.cleanup();
   });
 
-  test("lists all 37 tools", async () => {
+  test("lists all 38 tools", async () => {
     const tools = await client.listTools();
     const toolNames = tools.tools.map((t) => t.name).sort();
     expect(toolNames).toEqual([
@@ -70,6 +70,7 @@ describe("MCP server integration", () => {
       "grove_create_session",
       "grove_discuss",
       "grove_done",
+      "grove_eval",
       "grove_frontier",
       "grove_get_outcome",
       "grove_goal",

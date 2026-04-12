@@ -55,7 +55,7 @@ describe("createMcpServer preset scoping", () => {
     "grove_submit_work",
   ];
 
-  // --- Full tool list (matches integration test expectation) ---------------
+  // --- Full tool list (no preset — grove_eval excluded, it is opt-in via eval:true) ---
 
   const allTools = [
     "ask_user",
@@ -99,16 +99,24 @@ describe("createMcpServer preset scoping", () => {
 
   // -----------------------------------------------------------------------
 
-  test("no preset registers all tools (backwards compatible)", async () => {
+  test("no preset registers all tools except grove_eval (eval is opt-in)", async () => {
     const server = await createMcpServer(deps);
     const names = getRegisteredToolNames(server);
     expect(names).toEqual(allTools);
+    expect(names).not.toContain("grove_eval");
   });
 
-  test("empty preset object registers all tools (defaults are true)", async () => {
+  test("empty preset object registers all tools except grove_eval", async () => {
     const server = await createMcpServer(deps, {});
     const names = getRegisteredToolNames(server);
     expect(names).toEqual(allTools);
+    expect(names).not.toContain("grove_eval");
+  });
+
+  test("eval: true enables grove_eval", async () => {
+    const server = await createMcpServer(deps, { eval: true });
+    const names = getRegisteredToolNames(server);
+    expect(names).toContain("grove_eval");
   });
 
   test("claims: false excludes claim tools but keeps others", async () => {
@@ -230,6 +238,16 @@ describe("createMcpServer preset scoping", () => {
     }
   });
 
+  test("eval: false excludes eval tool", async () => {
+    const server = await createMcpServer(deps, { eval: false });
+    const names = getRegisteredToolNames(server);
+    expect(names).not.toContain("grove_eval");
+    // Contribution tools still present
+    for (const t of contributionTools) {
+      expect(names).toContain(t);
+    }
+  });
+
   test("contribution tools are always registered even when everything is disabled", async () => {
     const allDisabled: McpPresetConfig = {
       queries: false,
@@ -242,6 +260,7 @@ describe("createMcpServer preset scoping", () => {
       messaging: false,
       plans: false,
       goals: false,
+      eval: false,
     };
 
     const server = await createMcpServer(deps, allDisabled);

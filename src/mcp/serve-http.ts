@@ -56,6 +56,7 @@ let nexusUrl: string | undefined;
 let nexusApiKey: string | undefined;
 let zoneId = "default";
 let nexusClient: import("../nexus/nexus-http-client.js").NexusHttpClient | undefined;
+// biome-ignore lint/suspicious/noEmptyBlockStatements: default no-op replaced in try block
 let closeStores: () => void = () => {};
 
 try {
@@ -305,6 +306,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     bountyStore,
     cas,
     frontier: runtime.frontier,
+    // biome-ignore lint/style/noNonNullAssertion: checked above (workspace guard throws if undefined)
     workspace: runtime.workspace!,
     contract: loadedContract,
     onContributionWrite: runtime.onContributionWrite,
@@ -554,7 +556,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         });
       },
     });
-    const server = await createMcpServer(scopedDeps);
+    // grove_eval executes arbitrary shell commands. Disable it on the HTTP
+    // transport unless the operator has explicitly set auth (AUTH_TOKEN) AND
+    // opted in via GROVE_MCP_EVAL_ENABLED=true. Unauthenticated HTTP exposure
+    // of shell execution is a remote-code-execution risk.
+    const evalEnabled = AUTH_TOKEN !== undefined && process.env.GROVE_MCP_EVAL_ENABLED === "true";
+    const server = await createMcpServer(scopedDeps, { eval: evalEnabled });
 
     transport.onclose = () => {
       const sid = transport.sessionId;

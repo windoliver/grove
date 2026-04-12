@@ -213,17 +213,17 @@ describe("TopologyRouter", () => {
     bus.close();
   });
 
-  test("targetsFor returns correct targets", () => {
+  test("targetsFor returns RoleEdge objects for each outgoing edge", () => {
     const bus = new LocalEventBus();
     const router = new TopologyRouter(reviewLoopTopology, bus);
-    expect(router.targetsFor("coder")).toEqual(["reviewer"]);
-    expect(router.targetsFor("reviewer")).toEqual(["coder"]);
+    expect(router.targetsFor("coder")).toEqual([{ target: "reviewer", edgeType: "delegates" }]);
+    expect(router.targetsFor("reviewer")).toEqual([{ target: "coder", edgeType: "feedback" }]);
     expect(router.targetsFor("unknown")).toEqual([]);
     bus.close();
   });
 
-  test("duplicate edges are deduplicated", () => {
-    const duped: AgentTopology = {
+  test("targetsFor returns multiple RoleEdges when different edge types point to same target", () => {
+    const multiEdge: AgentTopology = {
       structure: "graph",
       roles: [
         {
@@ -237,15 +237,60 @@ describe("TopologyRouter", () => {
       ],
     };
     const bus = new LocalEventBus();
-    const router = new TopologyRouter(duped, bus);
+    const router = new TopologyRouter(multiEdge, bus);
+    const edges = router.targetsFor("coder");
+    // Both edges preserved — distinct (target, edgeType) pairs
+    expect(edges).toHaveLength(2);
+    expect(edges).toContainEqual({ target: "reviewer", edgeType: "delegates" });
+    expect(edges).toContainEqual({ target: "reviewer", edgeType: "feeds" });
+    bus.close();
+  });
+
+  test("route() publishes one event per target even when multiple edge types point to same target", () => {
+    const multiEdge: AgentTopology = {
+      structure: "graph",
+      roles: [
+        {
+          name: "coder",
+          edges: [
+            { target: "reviewer", edgeType: "delegates" },
+            { target: "reviewer", edgeType: "feeds" },
+          ],
+        },
+        { name: "reviewer" },
+      ],
+    };
+    const bus = new LocalEventBus();
+    const router = new TopologyRouter(multiEdge, bus);
     const received: GroveEvent[] = [];
     bus.subscribe("reviewer", (e) => received.push(e));
 
     const targets = router.route("coder", {});
 
-    // Should only route once to reviewer despite two edges
+    // route() deduplicates by target: one event despite two distinct edges
     expect(targets).toEqual(["reviewer"]);
     expect(received).toHaveLength(1);
+    bus.close();
+  });
+
+  test("targetsFor deduplicates exact (target, edgeType) duplicate pairs", () => {
+    const exactDupes: AgentTopology = {
+      structure: "graph",
+      roles: [
+        {
+          name: "coder",
+          edges: [
+            { target: "reviewer", edgeType: "delegates" },
+            { target: "reviewer", edgeType: "delegates" }, // exact duplicate
+          ],
+        },
+        { name: "reviewer" },
+      ],
+    };
+    const bus = new LocalEventBus();
+    const router = new TopologyRouter(exactDupes, bus);
+    // Exact (target, edgeType) duplicate is collapsed to one entry
+    expect(router.targetsFor("coder")).toEqual([{ target: "reviewer", edgeType: "delegates" }]);
     bus.close();
   });
 });

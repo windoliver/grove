@@ -193,12 +193,15 @@ export function buildPaletteItems(
           ? String(check.maxInstances)
           : "\u221E";
       const suffix = !check.allowed ? " (at capacity)" : "";
+      const roleEdges = topology?.roles.find((r) => r.name === profile.role)?.edges;
+      const edgeSuffix =
+        roleEdges && roleEdges.length > 0 ? ` → ${roleEdges.map((e) => e.target).join(", ")}` : "";
       items.push({
         kind: "spawn",
         id: profile.role,
         label: `spawn: ${profile.name} [${profile.platform}]`,
         enabled: check.allowed,
-        detail: `${check.currentInstances}/${max}${suffix}`,
+        detail: `${check.currentInstances}/${max}${suffix}${edgeSuffix}`,
       });
     }
   }
@@ -210,12 +213,16 @@ export function buildPaletteItems(
       const check = checkSpawn(topology, role.name, activeClaims, parentAgentId, activeSpawnCounts);
       const max = check.maxInstances !== undefined ? String(check.maxInstances) : "\u221E";
       const suffix = !check.allowed ? " (at capacity)" : "";
+      const edgeSuffix =
+        role.edges && role.edges.length > 0
+          ? ` → ${role.edges.map((e) => e.target).join(", ")}`
+          : "";
       items.push({
         kind: "spawn",
         id: role.name,
         label: `spawn: ${role.name}`,
         enabled: check.allowed,
-        detail: `${check.currentInstances}/${max}${suffix}`,
+        detail: `${check.currentInstances}/${max}${suffix}${edgeSuffix}`,
       });
     }
   }

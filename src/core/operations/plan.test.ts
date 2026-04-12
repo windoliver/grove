@@ -444,7 +444,8 @@ describe("plan routing semantics (Issues 1A + 13A)", () => {
     // Build a topology router that would route 'planner' -> 'coder' for any
     // contribution. Plans should still skip handoff creation.
     const topologyRouter = {
-      targetsFor: (role: string) => (role === "planner" ? ["coder"] : []),
+      targetsFor: (role: string) =>
+        role === "planner" ? [{ target: "coder", edgeType: "delegates" as const }] : [],
       route: async () => {
         /* fire-and-forget event */
       },
