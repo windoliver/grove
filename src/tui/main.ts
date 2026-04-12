@@ -278,8 +278,11 @@ async function buildAppProps(
   {
     const { AcpxRuntime } = await import("../core/acpx-runtime.js");
     const effectiveGrovePath = groveDir;
+    // Note: no `agent` override — AcpxRuntime.spawn() derives the agent
+    // (claude/codex/gemini) from each role's AgentConfig.command, which comes
+    // from the launch-preview role→CLI mapping. Setting it here would force
+    // every role to the same agent regardless of the user's selection.
     const runtime = new AcpxRuntime({
-      agent: "codex",
       ...(effectiveGrovePath ? { logDir: join(effectiveGrovePath, "agent-logs") } : {}),
     });
     const available = await runtime.isAvailable();

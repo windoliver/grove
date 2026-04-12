@@ -12,26 +12,32 @@ const CLI_PATH = join(import.meta.dir, "main.ts");
 
 describe("bare grove → TUI dispatch", () => {
   test("bare grove does not exit with usage error", async () => {
-    // When invoked without a TTY, handleTuiDirect may block or fail to render.
-    // The key assertion: it should NOT exit with code 2 ("unknown command").
-    // We give it 2s then kill it — if it hasn't exited with code 2 by then,
-    // it successfully reached the TUI path.
+    // When invoked without a TTY, handleTuiDirect may block or fail to
+    // render. The key assertion: it should NOT exit with code 2
+    // ("unknown command"). We give it 5s then kill it — if it hasn't
+    // exited with code 2 by then, it successfully reached the TUI path.
     const proc = Bun.spawn(["bun", "run", CLI_PATH], {
       stdout: "pipe",
       stderr: "pipe",
       env: { ...process.env, TERM: "dumb" },
     });
 
-    // Race: either the process exits on its own, or we kill after 2s
-    const timeout = new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 2000));
+    // Race: either the process exits on its own, or we kill after 5s.
+    // Bun's cold-start on larger entry points (grove main.ts pulls in a
+    // lot of TS) routinely takes >2s on a warm machine, so the old 2s
+    // timeout would fire before the process had a chance to exit-on-its-
+    // -own, and the subsequent `await proc.exited` would then hit the
+    // outer bun:test 5s timeout.
+    const timeout = new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 5000));
     const result = await Promise.race([
       proc.exited.then((code) => ({ kind: "exited" as const, code })),
       timeout.then((t) => ({ kind: t })),
     ]);
 
     if (result.kind === "timeout") {
-      // Process is still running (TUI is blocking) — this means it successfully
-      // dispatched to handleTuiDirect and didn't exit with "unknown command"
+      // Process is still running (TUI is blocking) — this means it
+      // successfully dispatched to handleTuiDirect and didn't exit with
+      // "unknown command"
       proc.kill();
       await proc.exited;
     } else {
@@ -40,7 +46,7 @@ describe("bare grove → TUI dispatch", () => {
       expect(result.code).not.toBe(2);
       expect(stderr).not.toContain("unknown command");
     }
-  });
+  }, 15_000); // Outer test timeout must exceed the inner 5s kill deadline.
 
   test("grove --help still works", async () => {
     const proc = Bun.spawn(["bun", "run", CLI_PATH, "--help"], {

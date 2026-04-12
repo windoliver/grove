@@ -70,6 +70,14 @@ export class SqliteHandoffStore implements HandoffStore {
     return handoff;
   }
 
+  /**
+   * Insert a handoff record synchronously inside an active SQLite transaction.
+   *
+   * Capability extension: `contributeOperation` duck-types for this method when
+   * selecting the atomic write path (`writeAtomic`). It is called as the cowrite
+   * callback inside `putWithCowrite`, so it must be synchronous. Stores that do
+   * NOT implement this method fall back to `writeSerial` (best-effort handoffs).
+   */
   insertSync(input: HandoffInput): string {
     const handoffId = input.handoffId ?? crypto.randomUUID();
     this.db

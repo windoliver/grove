@@ -17,6 +17,7 @@ import { registerBountyTools } from "./tools/bounties.js";
 import { registerClaimTools } from "./tools/claims.js";
 import { registerContributionTools } from "./tools/contributions.js";
 import { registerDoneTools } from "./tools/done.js";
+import { registerEvalTools } from "./tools/eval.js";
 import { registerGoalTools } from "./tools/goal.js";
 import { registerHandoffTools } from "./tools/handoffs.js";
 import { registerIngestTools } from "./tools/ingest.js";
@@ -54,6 +55,8 @@ export interface McpPresetConfig {
   readonly plans?: boolean;
   /** Register goal/session tools. Default: true. */
   readonly goals?: boolean;
+  /** Register eval harness tool (grove_eval). Default: false (opt-in via GROVE_MCP_EVAL_ENABLED). */
+  readonly eval?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -99,6 +102,7 @@ export async function createMcpServer(deps: McpDeps, preset?: McpPresetConfig): 
     registerGoalTools(server, deps);
     registerSessionTools(server, deps);
   }
+  if (preset?.eval === true) registerEvalTools(server, deps);
 
   // ask_user is always registered (core functionality).
   await registerAskUserTools(server);

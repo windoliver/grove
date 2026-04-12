@@ -737,11 +737,14 @@ export async function ensureNexusRunning(
   // Nexus instance (e.g. another project via OrbStack port forwarding) and
   // would cause cross-worktree session leakage.
   const candidateUrls = [
+    process.env.GROVE_NEXUS_URL,   // explicit user override (highest priority)
     containerUrl,                  // docker container on our derived port
-    process.env.GROVE_NEXUS_URL,   // explicit user override
     config.nexusUrl,               // persisted from a previous successful start
     readNexusUrl(projectRoot),     // our nexus.yaml (has our derived port)
     stateFileUrl,                  // our state.json
+    // DEFAULT_NEXUS_URL intentionally excluded — it could match any running
+    // Nexus instance (e.g. another project via OrbStack port forwarding)
+    // and would cause cross-worktree session leakage.
   ].filter((u): u is string => !!u);
 
   const urlsToTry = [...new Set(candidateUrls)];

@@ -128,7 +128,9 @@ export class TmuxRuntime implements AgentRuntime {
 
   async listSessions(): Promise<readonly AgentSession[]> {
     try {
-      const output = execSync("tmux list-sessions -F '#{session_name}'", {
+      // Must use the same `-L grove` socket as spawn(); listing without it
+      // queries the default tmux server and misses every grove session.
+      const output = execSync("tmux -L grove list-sessions -F '#{session_name}'", {
         encoding: "utf-8",
         stdio: "pipe",
       });
@@ -162,7 +164,7 @@ export class TmuxRuntime implements AgentRuntime {
     if (!entry) return;
 
     try {
-      const output = execSync(`tmux capture-pane -p -t ${shellEscape(sessionId)}`, {
+      const output = execSync(`tmux -L grove capture-pane -p -t ${shellEscape(sessionId)}`, {
         encoding: "utf-8",
         stdio: "pipe",
       });
