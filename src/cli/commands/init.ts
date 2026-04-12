@@ -241,11 +241,9 @@ export async function executeInit(
   // 6b. Initialize Nexus if grove-managed — but skip if one is already running
   if (nexusManaged) {
     try {
-      const {
-        generateNexusYaml,
-        inferNexusPreset,
-        discoverRunningNexus,
-      } = await import("../nexus-lifecycle.js");
+      const { generateNexusYaml, inferNexusPreset, discoverRunningNexus } = await import(
+        "../nexus-lifecycle.js"
+      );
 
       // Reuse existing Nexus if any stack is running (avoid creating duplicate stacks).
       // API key is read from .state.json (authoritative) via readNexusApiKey.

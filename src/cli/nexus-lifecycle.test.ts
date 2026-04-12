@@ -12,11 +12,10 @@ import { join } from "node:path";
 import { parse as yamlParse } from "yaml";
 
 import {
-  type GenerateNexusYamlOptions,
-  type NexusState,
   derivePort,
   generateNexusYaml,
   inferNexusPreset,
+  type NexusState,
   readNexusApiKey,
   readNexusState,
   readNexusUrl,
@@ -355,7 +354,7 @@ describe("readNexusUrl", () => {
     // '3456' parses as string in YAML — readNexusUrl should handle gracefully
     // (yaml package parses quoted numbers as strings, so this returns undefined)
     // This is the correct behavior — we only accept integer ports
-    const result = readNexusUrl(dir);
+    const _result = readNexusUrl(dir);
     // Either parses it (yaml coerces) or returns undefined — just don't throw
     expect(() => readNexusUrl(dir)).not.toThrow();
   });

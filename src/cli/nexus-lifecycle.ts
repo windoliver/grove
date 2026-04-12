@@ -11,7 +11,14 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parse as yamlParse, stringify as yamlStringify } from "yaml";
@@ -150,10 +157,7 @@ export interface GenerateNexusYamlOptions {
  * Derives port from the workspace path (FNV-1a hash) so each worktree gets
  * a stable, unique port. Generates an API key for presets that require auth.
  */
-export function generateNexusYaml(
-  projectRoot: string,
-  opts: GenerateNexusYamlOptions,
-): void {
+export function generateNexusYaml(projectRoot: string, opts: GenerateNexusYamlOptions): void {
   const yamlPath = join(projectRoot, "nexus.yaml");
   if (existsSync(yamlPath)) return;
 
@@ -597,10 +601,10 @@ export async function discoverRunningNexus(projectRoot?: string): Promise<string
     // --filter ancestor= because the nexus image tag varies (:edge, :latest,
     // :stable) across installations. Port 2026 is Nexus's well-known internal
     // port — every nexus container exposes it.
-    const proc = Bun.spawn(
-      ["docker", "ps", "--format", "{{.ID}}|{{.Ports}}"],
-      { stdout: "pipe", stderr: "pipe" },
-    );
+    const proc = Bun.spawn(["docker", "ps", "--format", "{{.ID}}|{{.Ports}}"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     const [code, stdout] = await Promise.all([proc.exited, new Response(proc.stdout).text()]);
     if (code !== 0 || !stdout.trim()) return undefined;
 
@@ -737,11 +741,11 @@ export async function ensureNexusRunning(
   // Nexus instance (e.g. another project via OrbStack port forwarding) and
   // would cause cross-worktree session leakage.
   const candidateUrls = [
-    process.env.GROVE_NEXUS_URL,   // explicit user override (highest priority)
-    containerUrl,                  // docker container on our derived port
-    config.nexusUrl,               // persisted from a previous successful start
-    readNexusUrl(projectRoot),     // our nexus.yaml (has our derived port)
-    stateFileUrl,                  // our state.json
+    process.env.GROVE_NEXUS_URL, // explicit user override (highest priority)
+    containerUrl, // docker container on our derived port
+    config.nexusUrl, // persisted from a previous successful start
+    readNexusUrl(projectRoot), // our nexus.yaml (has our derived port)
+    stateFileUrl, // our state.json
     // DEFAULT_NEXUS_URL intentionally excluded — it could match any running
     // Nexus instance (e.g. another project via OrbStack port forwarding)
     // and would cause cross-worktree session leakage.
