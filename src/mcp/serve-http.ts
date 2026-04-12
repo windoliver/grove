@@ -554,7 +554,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         });
       },
     });
-    const server = await createMcpServer(scopedDeps);
+    // grove_eval executes arbitrary shell commands. Disable it on the HTTP
+    // transport unless the operator has explicitly set auth (AUTH_TOKEN) AND
+    // opted in via GROVE_MCP_EVAL_ENABLED=true. Unauthenticated HTTP exposure
+    // of shell execution is a remote-code-execution risk.
+    const evalEnabled = AUTH_TOKEN !== undefined && process.env.GROVE_MCP_EVAL_ENABLED === "true";
+    const server = await createMcpServer(scopedDeps, { eval: evalEnabled });
 
     transport.onclose = () => {
       const sid = transport.sessionId;

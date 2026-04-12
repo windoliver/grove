@@ -852,7 +852,11 @@ export async function contributeOperation(
         );
       } else {
         const edges = deps.topologyRouter.targetsFor(contribution.agent.role);
-        if (edges.length > 0) routedTo = edges.map((e) => e.target);
+        // Deduplicate by target: a role may have multiple edge types (e.g.
+        // delegates + feeds) pointing at the same downstream role. Creating
+        // one handoff per (source, target) pair is correct; creating one per
+        // edge type would produce duplicate pending handoffs for the same work.
+        if (edges.length > 0) routedTo = [...new Set(edges.map((e) => e.target))];
       }
     }
 
