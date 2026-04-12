@@ -148,22 +148,35 @@ async function runEvalSubprocess(
     };
 
     /** Stream a data chunk through a line buffer, calling parseLine per line. */
-    const makeLineHandler = (): ((chunk: Buffer) => void) => {
+    const makeLineHandler = (): { handler: (chunk: Buffer) => void; flush: () => void } => {
       let buf = "";
-      return (chunk: Buffer) => {
-        const text = chunk.toString("utf8");
-        appendOutput(text);
-        const combined = buf + text;
-        const lines = combined.split("\n");
-        buf = lines.pop() ?? "";
-        for (const line of lines) parseLine(line);
+      return {
+        handler: (chunk: Buffer) => {
+          const text = chunk.toString("utf8");
+          appendOutput(text);
+          const combined = buf + text;
+          const lines = combined.split("\n");
+          buf = lines.pop() ?? "";
+          for (const line of lines) parseLine(line);
+        },
+        flush: () => {
+          if (buf) {
+            parseLine(buf);
+            buf = "";
+          }
+        },
       };
     };
 
-    child.stdout?.on("data", makeLineHandler());
-    child.stderr?.on("data", makeLineHandler());
+    const stdoutHandler = makeLineHandler();
+    const stderrHandler = makeLineHandler();
+    child.stdout?.on("data", stdoutHandler.handler);
+    child.stderr?.on("data", stderrHandler.handler);
 
     child.on("close", (code) => {
+      // Flush any partial line that didn't end with a newline (e.g. final GROVE_SCORE line).
+      stdoutHandler.flush();
+      stderrHandler.flush();
       clearTimeout(timer);
       const exitCode = code ?? (timedOut ? 124 : 1);
       // Return last TAIL_BYTES for diagnostics.
@@ -185,7 +198,7 @@ export async function evalOperation(
   const { targetCid, evalCommand, timeoutMs } = input;
 
   // Resolve the command to run.
-  const command = evalCommand ?? undefined;
+  const command = evalCommand;
   if (!command) {
     return validationErr(
       "evalCommand is required: provide it as input or configure evaluation.eval_command in GROVE.md",

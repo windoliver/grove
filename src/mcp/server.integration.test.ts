@@ -34,7 +34,7 @@ describe("MCP server integration", () => {
     testDeps = await createTestMcpDeps();
     deps = testDeps.deps;
 
-    const server = await createMcpServer(deps);
+    const server = await createMcpServer(deps, { eval: true });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
     client = new Client({ name: "test-client", version: "0.0.1" });
