@@ -242,8 +242,7 @@ export async function executeInit(
   if (nexusManaged) {
     try {
       const {
-        checkNexusCli,
-        nexusInit: runNexusInit,
+        generateNexusYaml,
         inferNexusPreset,
         discoverRunningNexus,
       } = await import("../nexus-lifecycle.js");
@@ -251,7 +250,7 @@ export async function executeInit(
       // Reuse existing Nexus if any stack is running (avoid creating duplicate stacks).
       // API key is read from .state.json (authoritative) via readNexusApiKey.
       // Respect explicit GROVE_NEXUS_URL if already set (e.g., by user or parent process).
-      const existingUrl = process.env.GROVE_NEXUS_URL ?? (await discoverRunningNexus());
+      const existingUrl = process.env.GROVE_NEXUS_URL ?? (await discoverRunningNexus(options.cwd));
       if (existingUrl) {
         if (!process.env.GROVE_NEXUS_URL) {
           process.env.GROVE_NEXUS_URL = existingUrl;
@@ -261,24 +260,19 @@ export async function executeInit(
         if (key && !process.env.NEXUS_API_KEY) process.env.NEXUS_API_KEY = key;
         console.log(`Reusing existing Nexus at ${existingUrl}`);
       } else {
-        const hasNexus = await checkNexusCli();
-        if (hasNexus) {
-          const nexusPreset = inferNexusPreset({
-            name: options.name,
-            mode: resolvedMode,
-            preset: options.preset,
-          });
-          await runNexusInit(options.cwd, {
-            preset: nexusPreset,
-            channel: options.nexusChannel,
-          });
-          const channel = options.nexusChannel ?? "edge";
-          console.log(`Initialized Nexus backend (preset: ${nexusPreset}, channel: ${channel}).`);
-        } else {
-          console.log(
-            "Nexus CLI not found. 'grove up' will install and initialize it automatically.",
-          );
-        }
+        // Generate nexus.yaml directly — no nexus CLI required for initialization.
+        // `grove up` will shell out to `nexus up` to start the Docker stack.
+        const nexusPreset = inferNexusPreset({
+          name: options.name,
+          mode: resolvedMode,
+          preset: options.preset,
+        });
+        generateNexusYaml(options.cwd, {
+          preset: nexusPreset,
+          channel: options.nexusChannel,
+        });
+        const channel = options.nexusChannel ?? "edge";
+        console.log(`Initialized Nexus config (preset: ${nexusPreset}, channel: ${channel}).`);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
