@@ -146,7 +146,7 @@ async function sessionStart(args: readonly string[]): Promise<void> {
 
   // Create runtime — prefer acpx, fall back to mock
   const { AcpxRuntime } = await import("../../core/acpx-runtime.js");
-  const acpx = new AcpxRuntime();
+  const acpx = new AcpxRuntime({ logDir: join(groveDir, "agent-logs") });
   const runtime = (await acpx.isAvailable()) ? acpx : new MockRuntime();
   const eventBus = new LocalEventBus();
 

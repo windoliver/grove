@@ -80,6 +80,8 @@ export class SessionOrchestrator {
   private eventHandlers?: Map<string, import("./event-bus.js").EventHandler>;
   private stopped = false;
   private stopReason: string | undefined;
+  private contributionCount = 0;
+  private startedAt = 0;
 
   constructor(config: SessionConfig) {
     this.config = config;
@@ -149,10 +151,10 @@ export class SessionOrchestrator {
       throw new Error("No agents spawned — all roles failed");
     }
 
-    // Send goals to all agents
-    for (const agent of this.agents) {
-      await this.config.runtime.send(agent.session, agent.goal);
-    }
+    this.startedAt = Date.now();
+
+    // Goals are already sent by AcpxRuntime.spawn() as the initial prompt.
+    // Do NOT send again here — duplicate prompts confuse the agent.
 
     // Wire idle detection
     for (const agent of this.agents) {
@@ -318,6 +320,10 @@ export class SessionOrchestrator {
       return;
     }
 
+    if (event.type === "contribution") {
+      this.contributionCount++;
+    }
+
     // Forward contribution notifications to the agent
     const message = `[grove] New ${event.type} from ${event.sourceRole}: ${JSON.stringify(event.payload)}`;
     await this.config.runtime.send(agent.session, message);
@@ -338,6 +344,15 @@ export class SessionOrchestrator {
     });
 
     if (allIdle && this.agents.length > 0) {
+      // Don't auto-stop if no contributions yet AND less than 30s have passed.
+      // Agents go idle between tool calls (e.g., coder finishes editing, goes idle
+      // briefly, then calls grove_submit_work). Stopping too early kills the session
+      // before the handoff can complete.
+      const GRACE_PERIOD_MS = 30_000;
+      const elapsed = Date.now() - this.startedAt;
+      if (this.contributionCount === 0 && elapsed < GRACE_PERIOD_MS) {
+        return; // Too early — wait for at least one contribution or grace period
+      }
       await this.stop("All agents idle — session complete");
     }
   }

@@ -83,9 +83,11 @@ describe("SessionOrchestrator", () => {
 
     const status = await orchestrator.start();
 
-    // Each agent gets a send call with the goal
-    expect(runtime.sendCalls).toHaveLength(2);
-    expect(runtime.sendCalls[0]!.message).toContain("Build auth module");
+    // Goals are sent via spawn (AgentConfig.goal), not via send().
+    // No separate send calls for goals.
+    expect(runtime.sendCalls).toHaveLength(0);
+    // Verify goals were passed through spawn
+    expect(runtime.spawnCalls[0]!.config.goal).toContain("Build auth module");
     for (const agent of status.agents) {
       expect(agent.workspaceMode.status).toBe("fallback_workspace");
     }
@@ -166,9 +168,9 @@ describe("SessionOrchestrator", () => {
     });
 
     // The reviewer agent should have received a forwarded message
-    // (2 sends from start goals + 1 from event forwarding)
-    expect(runtime.sendCalls.length).toBe(3);
-    expect(runtime.sendCalls[2]!.message).toContain("coder");
+    // (0 goal sends + 1 from event forwarding)
+    expect(runtime.sendCalls.length).toBe(1);
+    expect(runtime.sendCalls[0]!.message).toContain("coder");
     bus.close();
   });
 
@@ -190,8 +192,8 @@ describe("SessionOrchestrator", () => {
       timestamp: new Date().toISOString(),
     });
 
-    // Only 2 sends from start goals, no forwarded stop
-    expect(runtime.sendCalls.length).toBe(2);
+    // No goal sends (via spawn), no forwarded stop events
+    expect(runtime.sendCalls.length).toBe(0);
     bus.close();
   });
 
@@ -223,9 +225,9 @@ describe("SessionOrchestrator", () => {
     });
     const status = await orchestrator.start();
 
-    // The prompt should be preferred over description
-    expect(runtime.sendCalls[0]!.message).toContain("Write high-quality documentation");
-    expect(runtime.sendCalls[0]!.message).not.toContain("A writer agent");
+    // The prompt should be preferred over description (passed via spawn, not send)
+    expect(runtime.spawnCalls[0]!.config.goal).toContain("Write high-quality documentation");
+    expect(runtime.spawnCalls[0]!.config.goal).not.toContain("A writer agent");
     expect(status.agents[0]!.workspaceMode.status).toBe("fallback_workspace");
     bus.close();
   });
@@ -247,7 +249,7 @@ describe("SessionOrchestrator", () => {
     const { orchestrator, runtime, bus } = makeOrchestrator(contract, { goal: "Build it" });
     const status = await orchestrator.start();
 
-    expect(runtime.sendCalls[0]!.message).toContain("Do the work");
+    expect(runtime.spawnCalls[0]!.config.goal).toContain("Do the work");
     expect(status.agents[0]!.workspaceMode.status).toBe("fallback_workspace");
     bus.close();
   });
@@ -268,7 +270,7 @@ describe("SessionOrchestrator", () => {
     bus.close();
   });
 
-  test("all agents idle triggers auto-stop", async () => {
+  test("all agents idle triggers auto-stop after contribution", async () => {
     const contract = makeContract();
     const { orchestrator, runtime, bus } = makeOrchestrator(contract);
 
@@ -278,12 +280,22 @@ describe("SessionOrchestrator", () => {
       expect(agent.workspaceMode.status).toBe("fallback_workspace");
     }
 
+    // Simulate a contribution event (required — idle check has grace period
+    // that only expires once at least one contribution exists or 30s pass)
+    bus.publish({
+      type: "contribution",
+      sourceRole: "coder",
+      targetRole: "reviewer",
+      payload: { cid: "blake3:test", kind: "work", summary: "test" },
+      timestamp: new Date().toISOString(),
+    });
+
     // Set all agent sessions to idle
     for (const agent of status.agents) {
       runtime.setSessionStatus(agent.session.id, "idle");
     }
 
-    // Trigger idle check
+    // Trigger idle check — should now stop (contribution exists)
     const stopped = await orchestrator.checkIdleCompletion();
     expect(stopped).toBe(true);
 

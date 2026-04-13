@@ -52,6 +52,26 @@ export async function bootstrapWorkspace(opts: BootstrapOptions): Promise<void> 
       },
     };
     await writeFile(join(workspacePath, ".mcp.json"), JSON.stringify(mcpConfig, null, 2), "utf-8");
+
+    // Write .acpxrc.json — acpx (>=0.5.3) reads THIS, not .mcp.json.
+    // Without it, acpx launches agents with mcpServers=[] and grove_* tools
+    // are unavailable. Format: array of servers with name/type/command/args/env.
+    const acpxRcConfig = {
+      mcpServers: [
+        {
+          name: "grove",
+          type: "stdio",
+          command: "bun",
+          args: ["run", opts.mcpServePath],
+          env: Object.entries(mcpEnv).map(([name, value]) => ({ name, value })),
+        },
+      ],
+    };
+    await writeFile(
+      join(workspacePath, ".acpxrc.json"),
+      JSON.stringify(acpxRcConfig, null, 2),
+      "utf-8",
+    );
   }
 
   // Write CLAUDE.md / CODEX.md
@@ -91,7 +111,7 @@ Follow the Instructions section above exactly. You can edit files, commit, push,
   await mkdir(contextDir, { recursive: true });
 
   // Protect config files from agent mutation
-  for (const f of [".mcp.json", "CLAUDE.md", "CODEX.md"]) {
+  for (const f of [".mcp.json", ".acpxrc.json", "CLAUDE.md", "CODEX.md"]) {
     await chmod(join(workspacePath, f), 0o444).catch(() => {
       // File may not exist
     });
