@@ -14,6 +14,8 @@ import { join, resolve } from "node:path";
 
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { AgentIdentity } from "../core/models.js";
+import type { AgentTopology } from "../core/topology.js";
+import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
 import type { WorkspaceIsolationPolicy, WorkspaceMode } from "../core/workspace-provisioner.js";
 import { provisionWorkspace } from "../core/workspace-provisioner.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
@@ -86,6 +88,7 @@ export class SpawnManager {
   private sessionId: string | undefined;
   private groveDir: string | undefined;
   private workspaceIsolationPolicy: WorkspaceIsolationPolicy = "allow-fallback";
+  private topology: AgentTopology | undefined;
   private logPollTimer: ReturnType<typeof setInterval> | null = null;
   // Track ALL interval handles — prevents "lost handle" leak when startContributionPolling
   // is called multiple times (e.g. when React effect deps change during session startup).
@@ -161,6 +164,14 @@ export class SpawnManager {
   }
 
   /**
+   * Set the session topology so spawn() can resolve edge-type-aware base branches.
+   * Call before spawning when the topology is known (e.g. after preset selection).
+   */
+  setTopology(topology: AgentTopology | undefined): void {
+    this.topology = topology;
+  }
+
+  /**
    * Spawn a new agent session.
    *
    * Lifecycle: workspace checkout → claim → tmux session → heartbeat.
@@ -192,15 +203,26 @@ export class SpawnManager {
         ? join(groveDir, "workspaces")
         : join(projectRoot, ".grove", "workspaces");
 
+      // Resolve base branch from topology edge types.
+      // delegates/feeds/escalates → target branches off source's grove branch.
+      // All other edges (and no-topology case) → HEAD.
+      const wsSessionId = this.sessionId ?? spawnId;
+      const baseBranch = this.topology
+        ? (resolveRoleWorkspaceStrategies(this.topology, wsSessionId).get(roleId) ?? "HEAD")
+        : "HEAD";
+
       let provisioned:
         | import("../core/workspace-provisioner.js").ProvisionedWorkspace
         | undefined;
       try {
+        // Use wsSessionId (stable session-level ID) so branch names are predictable
+        // and match what resolveRoleWorkspaceStrategies() computes for dependents.
         provisioned = await provisionWorkspace({
           role: roleId,
-          sessionId: spawnId,
+          sessionId: wsSessionId,
           baseDir,
           repoRoot: projectRoot,
+          baseBranch,
         });
         workspacePath = provisioned.path;
       } catch (provisionErr) {

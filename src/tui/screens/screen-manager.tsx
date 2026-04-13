@@ -482,6 +482,9 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           }));
 
           spawnManager.setSessionGoal(goal);
+          // Give SpawnManager the topology so it can resolve edge-type-aware
+          // base branches (delegates/feeds/escalates → branch off source).
+          spawnManager.setTopology(topology);
           // Ensure log buffers exist for all topology roles BEFORE seekToEnd.
           // startLogPolling(seekToEnd=true) iterates logBuffers to record file
           // offsets; if buffers don't exist yet, the loop has nothing to iterate
