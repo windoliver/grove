@@ -27,6 +27,7 @@ import type { TuiPresetEntry } from "../tui-app.js";
 import { AgentDetect } from "./agent-detect.js";
 import { CompleteView } from "./complete-view.js";
 import { GoalInput } from "./goal-input.js";
+import { topologicalSortRoles } from "../../core/topology.js";
 import { PresetSelect } from "./preset-select.js";
 import { RunningView } from "./running-view.js";
 import type { AgentSpawnState } from "./spawn-progress.js";
@@ -504,28 +505,30 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             serverRoutingActiveRef.current,
           );
 
-          // Spawn each role and track progress
-          for (const role of topology.roles) {
-            // Use roleMapping from launch preview (user-selected CLI), fall back to GROVE.md command
-            const command = roleMapping.get(role.name) ?? role.command ?? "codex";
-            const context: Record<string, unknown> = {};
-            const editedPrompt = rolePromptsRef.current.get(role.name);
-            context.rolePrompt = editedPrompt ?? role.prompt ?? "";
-            if (role.description) context.roleDescription = role.description;
-            if (role.goal) context.roleGoal = role.goal;
-            if (topology) context.topology = topology;
+          // Spawn roles in topological order so that source branches exist before
+          // dependent roles try to base their worktrees on them (delegates/feeds/escalates).
+          // Sequential spawning is required because provisionWorkspace happens inside spawn().
+          void (async () => {
+            const orderedRoles = topologicalSortRoles(topology);
+            for (const role of orderedRoles) {
+              const command = roleMapping.get(role.name) ?? role.command ?? "codex";
+              const context: Record<string, unknown> = {};
+              const editedPrompt = rolePromptsRef.current.get(role.name);
+              context.rolePrompt = editedPrompt ?? role.prompt ?? "";
+              if (role.description) context.roleDescription = role.description;
+              if (role.goal) context.roleGoal = role.goal;
+              if (topology) context.topology = topology;
 
-            // Mark as spawning
-            setState((s) => ({
-              ...s,
-              spawnStates: (s.spawnStates ?? []).map((a) =>
-                a.role === role.name ? { ...a, status: "spawning" as const } : a,
-              ),
-            }));
+              // Mark as spawning
+              setState((s) => ({
+                ...s,
+                spawnStates: (s.spawnStates ?? []).map((a) =>
+                  a.role === role.name ? { ...a, status: "spawning" as const } : a,
+                ),
+              }));
 
-            void spawnManager
-              .spawn(role.name, command, undefined, 0, context)
-              .then((result) => {
+              try {
+                const result = await spawnManager.spawn(role.name, command, undefined, 0, context);
                 setState((s) => ({
                   ...s,
                   spawnStates: (s.spawnStates ?? []).map((a) =>
@@ -534,8 +537,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
                       : a,
                   ),
                 }));
-              })
-              .catch((err) => {
+              } catch (err) {
                 setState((s) => ({
                   ...s,
                   spawnStates: (s.spawnStates ?? []).map((a) =>
@@ -544,8 +546,9 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
                       : a,
                   ),
                 }));
-              });
-          }
+              }
+            }
+          })();
         } else {
           // No topology — go straight to running
           setState((s) => ({ ...s, screen: "running", goal, sessionStartedAt }));
