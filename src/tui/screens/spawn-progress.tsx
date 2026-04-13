@@ -12,6 +12,7 @@ import { toast } from "@opentui-ui/toast/react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { BreadcrumbBar } from "../components/breadcrumb-bar.js";
 import { BRAILLE_SPINNER, PLATFORM_COLORS, theme } from "../theme.js";
+import type { WorkspaceMode } from "../../core/workspace-provisioner.js";
 
 /** Spawn status for a single agent role. */
 export type SpawnStatus = "waiting" | "spawning" | "started" | "failed";
@@ -22,6 +23,8 @@ export interface AgentSpawnState {
   readonly command: string;
   readonly status: SpawnStatus;
   readonly error?: string | undefined;
+  /** Workspace mode — set when status is "started". */
+  readonly workspaceMode?: WorkspaceMode | undefined;
 }
 
 export interface SpawnProgressProps {
@@ -161,21 +164,44 @@ export const SpawnProgress: React.NamedExoticComponent<SpawnProgressProps> = Rea
               PLATFORM_COLORS[agent.command] ?? PLATFORM_COLORS.custom ?? theme.text;
             // Apply pulsing opacity to agents actively spawning
             const rowOpacity = agent.status === "spawning" ? spawnOpacity : 1;
+
+            // Workspace mode badge — shown only when degraded
+            const wsMode = agent.workspaceMode;
+            const degradedBadge =
+              wsMode?.status === "fallback_workspace"
+                ? " [shared workspace]"
+                : wsMode?.status === "bootstrap_failed"
+                  ? " [no config]"
+                  : "";
+
             return (
-              <box key={agent.role} flexDirection="row" opacity={rowOpacity}>
-                <text color={STATUS_COLOR[agent.status]}>{getIcon(agent.status)} </text>
-                <text color={theme.text}>{agent.role}</text>
-                <text color={theme.secondary}> ({agent.command})</text>
-                <text color={platformColor}>
-                  {"  "}
-                  {agent.status === "waiting"
-                    ? "waiting..."
-                    : agent.status === "spawning"
-                      ? "spawning..."
-                      : agent.status === "started"
-                        ? "started"
-                        : `failed: ${agent.error ?? "unknown"}`}
-                </text>
+              <box key={agent.role} flexDirection="column" opacity={rowOpacity}>
+                <box flexDirection="row">
+                  <text color={STATUS_COLOR[agent.status]}>{getIcon(agent.status)} </text>
+                  <text color={theme.text}>{agent.role}</text>
+                  <text color={theme.secondary}> ({agent.command})</text>
+                  <text color={platformColor}>
+                    {"  "}
+                    {agent.status === "waiting"
+                      ? "waiting..."
+                      : agent.status === "spawning"
+                        ? "spawning..."
+                        : agent.status === "started"
+                          ? "started"
+                          : `failed: ${agent.error ?? "unknown"}`}
+                  </text>
+                  {degradedBadge ? (
+                    <text color={theme.warning}>{degradedBadge}</text>
+                  ) : null}
+                </box>
+                {/* Show reason for degraded modes inline, truncated to fit */}
+                {wsMode?.status === "fallback_workspace" || wsMode?.status === "bootstrap_failed" ? (
+                  <box flexDirection="row" marginLeft={4}>
+                    <text color={theme.warning}>
+                      {`⚠  ${(wsMode.reason ?? "").slice(0, 80)}`}
+                    </text>
+                  </box>
+                ) : null}
               </box>
             );
           })}

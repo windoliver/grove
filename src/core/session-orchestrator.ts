@@ -5,11 +5,21 @@
  * sends goals, wires event routing, and monitors for stop conditions.
  */
 
+import { join } from "node:path";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 import type { GroveContract } from "./contract.js";
 import type { EventBus, GroveEvent } from "./event-bus.js";
 import type { AgentRole, AgentTopology } from "./topology.js";
 import { TopologyRouter } from "./topology-router.js";
+import { bootstrapWorkspace } from "./workspace-bootstrap.js";
+import {
+  type ProvisionedWorkspace,
+  type WorkspaceIsolationPolicy,
+  type WorkspaceMode,
+  provisionWorkspace,
+} from "./workspace-provisioner.js";
+
+export type { WorkspaceIsolationPolicy, WorkspaceMode };
 
 /** Configuration for starting a session. */
 export interface SessionConfig {
@@ -29,6 +39,16 @@ export interface SessionConfig {
   readonly workspaceBaseDir: string;
   /** Optional session ID (generated if not provided). */
   readonly sessionId?: string | undefined;
+  /**
+   * Controls how workspace provisioning failures are handled.
+   *
+   * - 'strict' (default): any failure — worktree creation or bootstrap — aborts
+   *   the spawn for that role.
+   * - 'allow-fallback': on worktree failure the agent uses the project root;
+   *   on bootstrap failure the agent runs without config files. Both degraded
+   *   modes are visible via AgentSessionInfo.workspaceMode.
+   */
+  readonly workspaceIsolationPolicy?: WorkspaceIsolationPolicy | undefined;
 }
 
 /** Status of a running session. */
@@ -46,6 +66,8 @@ export interface AgentSessionInfo {
   readonly role: string;
   readonly session: AgentSession;
   readonly goal: string;
+  /** Describes how this agent's workspace was provisioned. */
+  readonly workspaceMode: WorkspaceMode;
 }
 
 export class SessionOrchestrator {
@@ -156,50 +178,16 @@ export class SessionOrchestrator {
   private async spawnAgent(role: AgentRole, signal?: AbortSignal): Promise<AgentSessionInfo> {
     const roleGoal = role.prompt ?? role.description ?? `Fulfill role: ${role.name}`;
     const fullGoal = `Session goal: ${this.config.goal}\n\nYour role (${role.name}): ${roleGoal}`;
+    const policy = this.config.workspaceIsolationPolicy ?? "strict";
 
-    // Use per-agent workspace directory (git worktree), fall back to project root
-    const { join } = await import("node:path");
-    const { existsSync, mkdirSync } = await import("node:fs");
-    const wsBase =
-      this.config.workspaceBaseDir ?? join(this.config.projectRoot, ".grove", "workspaces");
-    const wsDir = join(wsBase, `${role.name}-${this.sessionId.slice(0, 8)}`);
-    let agentCwd = this.config.projectRoot;
-    try {
-      if (!existsSync(wsBase)) mkdirSync(wsBase, { recursive: true });
-      const { execSync } = await import("node:child_process");
-      const branch = `grove/session/${role.name}-${this.sessionId.slice(0, 8)}`;
-      execSync(`git worktree add "${wsDir}" -b "${branch}" origin/main`, {
-        cwd: this.config.projectRoot,
-        encoding: "utf-8",
-        stdio: "pipe",
-      });
-      agentCwd = wsDir;
+    const { cwd, workspaceMode } = await this.provisionAgentWorkspace(role, policy);
 
-      if (signal?.aborted) throw new Error(`Spawn aborted for role '${role.name}'`);
-
-      // Bootstrap workspace with .mcp.json + CLAUDE.md
-      const { bootstrapWorkspace } = await import("./workspace-bootstrap.js");
-      await bootstrapWorkspace({
-        workspacePath: wsDir,
-        roleId: role.name,
-        goal: this.config.goal,
-        rolePrompt: role.prompt,
-        roleDescription: role.description,
-        groveDir: join(this.config.projectRoot, ".grove"),
-        mcpServePath: join(this.config.projectRoot, "src", "mcp", "serve.ts"),
-        nexusUrl: process.env.GROVE_NEXUS_URL,
-        nexusApiKey: process.env.NEXUS_API_KEY,
-      });
-    } catch (err) {
-      process.stderr.write(
-        `[SessionOrchestrator] worktree creation failed for '${role.name}', falling back to project root: ${err instanceof Error ? err.message : err}\n`,
-      );
-    }
+    if (signal?.aborted) throw new Error(`Spawn aborted for role '${role.name}'`);
 
     const agentConfig: AgentConfig = {
       role: role.name,
       command: role.command ?? "claude",
-      cwd: agentCwd,
+      cwd,
       goal: fullGoal,
       env: {
         GROVE_SESSION_ID: this.sessionId,
@@ -215,6 +203,77 @@ export class SessionOrchestrator {
       role: role.name,
       session,
       goal: fullGoal,
+      workspaceMode,
+    };
+  }
+
+  /**
+   * Provision a workspace for an agent role and run bootstrap.
+   *
+   * Returns the cwd the agent should run in and a WorkspaceMode describing
+   * the outcome. When policy is 'strict', any failure throws. When
+   * 'allow-fallback', failures produce a degraded WorkspaceMode instead.
+   */
+  private async provisionAgentWorkspace(
+    role: AgentRole,
+    policy: WorkspaceIsolationPolicy,
+  ): Promise<{ readonly cwd: string; readonly workspaceMode: WorkspaceMode }> {
+    let provisioned: ProvisionedWorkspace;
+
+    // Step 1: Git worktree
+    try {
+      provisioned = await provisionWorkspace({
+        role: role.name,
+        sessionId: this.sessionId,
+        baseDir: this.config.workspaceBaseDir,
+        repoRoot: this.config.projectRoot,
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      if (policy === "strict") {
+        throw new Error(`Workspace provisioning failed for role '${role.name}': ${reason}`);
+      }
+      return {
+        cwd: this.config.projectRoot,
+        workspaceMode: {
+          status: "fallback_workspace",
+          path: this.config.projectRoot,
+          reason,
+        },
+      };
+    }
+
+    // Step 2: Bootstrap (write .mcp.json + CLAUDE.md)
+    try {
+      await bootstrapWorkspace({
+        workspacePath: provisioned.path,
+        roleId: role.name,
+        goal: this.config.goal,
+        rolePrompt: role.prompt,
+        roleDescription: role.description,
+        groveDir: join(this.config.projectRoot, ".grove"),
+        mcpServePath: join(this.config.projectRoot, "src", "mcp", "serve.ts"),
+        nexusUrl: process.env.GROVE_NEXUS_URL,
+        nexusApiKey: process.env.NEXUS_API_KEY,
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      if (policy === "strict") {
+        throw new Error(`Bootstrap failed for role '${role.name}': ${reason}`);
+      }
+      return {
+        cwd: provisioned.path,
+        workspaceMode: { status: "bootstrap_failed", path: provisioned.path, reason },
+      };
+    }
+
+    return {
+      cwd: provisioned.path,
+      workspaceMode: {
+        status: "isolated_worktree",
+        path: provisioned.path,
+        branch: provisioned.branch,
+      },
     };
   }
 

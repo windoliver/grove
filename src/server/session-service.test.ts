@@ -57,6 +57,7 @@ describe("SessionService", () => {
       eventBus: bus,
       projectRoot: "/tmp",
       workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback" as const,
     });
 
     const state = service.getState();
@@ -78,6 +79,7 @@ describe("SessionService", () => {
       eventBus: bus,
       projectRoot: "/tmp",
       workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback" as const,
     });
 
     const state = await service.startSession("Build auth module");
@@ -100,6 +102,7 @@ describe("SessionService", () => {
       eventBus: bus,
       projectRoot: "/tmp",
       workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback" as const,
     });
 
     const state = await service.startSession("Test", "my-session-42");
@@ -118,6 +121,7 @@ describe("SessionService", () => {
       eventBus: bus,
       projectRoot: "/tmp",
       workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback" as const,
     });
 
     const events: SessionEvent[] = [];
@@ -145,6 +149,7 @@ describe("SessionService", () => {
       eventBus: bus,
       projectRoot: "/tmp",
       workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback" as const,
     });
 
     const events: SessionEvent[] = [];
@@ -171,6 +176,7 @@ describe("SessionService", () => {
       eventBus: bus,
       projectRoot: "/tmp",
       workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback" as const,
     });
 
     const events: SessionEvent[] = [];
@@ -206,6 +212,7 @@ describe("SessionService", () => {
       eventBus: bus,
       projectRoot: "/tmp",
       workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback" as const,
     });
 
     const events: SessionEvent[] = [];
@@ -246,6 +253,7 @@ describe("SessionService", () => {
       eventBus: bus,
       projectRoot: "/tmp",
       workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback" as const,
     });
 
     const events: SessionEvent[] = [];
@@ -273,6 +281,7 @@ describe("SessionService", () => {
       eventBus: bus,
       projectRoot: "/tmp",
       workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback" as const,
     });
 
     // Should not throw
@@ -292,6 +301,7 @@ describe("SessionService", () => {
       eventBus: bus,
       projectRoot: "/tmp",
       workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback" as const,
     });
 
     // Should not throw
@@ -318,6 +328,7 @@ describe("SessionService", () => {
       eventBus: bus,
       projectRoot: "/tmp",
       workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback" as const,
     });
 
     const goodEvents: SessionEvent[] = [];

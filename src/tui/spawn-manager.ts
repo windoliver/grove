@@ -14,6 +14,8 @@ import { join, resolve } from "node:path";
 
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { AgentIdentity } from "../core/models.js";
+import type { WorkspaceIsolationPolicy, WorkspaceMode } from "../core/workspace-provisioner.js";
+import { provisionWorkspace } from "../core/workspace-provisioner.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
@@ -59,6 +61,8 @@ export interface SpawnResult {
   readonly spawnId: string;
   readonly claimId: string;
   readonly workspacePath: string;
+  /** Describes how this agent's workspace was provisioned. */
+  readonly workspaceMode: WorkspaceMode;
 }
 
 /**
@@ -81,6 +85,7 @@ export class SpawnManager {
   private sessionGoal: string | undefined;
   private sessionId: string | undefined;
   private groveDir: string | undefined;
+  private workspaceIsolationPolicy: WorkspaceIsolationPolicy = "allow-fallback";
   private logPollTimer: ReturnType<typeof setInterval> | null = null;
   // Track ALL interval handles — prevents "lost handle" leak when startContributionPolling
   // is called multiple times (e.g. when React effect deps change during session startup).
@@ -150,6 +155,11 @@ export class SpawnManager {
     this.sessionGoal = goal;
   }
 
+  /** Set the workspace isolation policy for subsequent spawns. */
+  setIsolationPolicy(policy: WorkspaceIsolationPolicy): void {
+    this.workspaceIsolationPolicy = policy;
+  }
+
   /**
    * Spawn a new agent session.
    *
@@ -174,63 +184,79 @@ export class SpawnManager {
     // Uses a real git worktree so the agent has actual source code,
     // can edit files, commit, push, and create PRs.
     let workspacePath: string;
+    let workspaceMode: WorkspaceMode;
     {
-      // Find the project root (parent of .grove/)
       const groveDir = this.groveDir;
       const projectRoot = groveDir ? resolve(groveDir, "..") : process.cwd();
       const baseDir = groveDir
         ? join(groveDir, "workspaces")
         : join(projectRoot, ".grove", "workspaces");
-      const branch = `grove/session/${spawnId}`;
-      workspacePath = join(baseDir, spawnId);
 
+      let provisioned:
+        | import("../core/workspace-provisioner.js").ProvisionedWorkspace
+        | undefined;
       try {
-        if (!existsSync(baseDir)) {
-          await mkdir(baseDir, { recursive: true });
-        }
-        execSync(`git worktree add "${workspacePath}" -b "${branch}" HEAD`, {
-          cwd: projectRoot,
-          encoding: "utf-8",
-          stdio: "pipe",
+        provisioned = await provisionWorkspace({
+          role: roleId,
+          sessionId: spawnId,
+          baseDir,
+          repoRoot: projectRoot,
         });
-      } catch {
-        // Fallback to provider's bare workspace if git worktree fails
+        workspacePath = provisioned.path;
+      } catch (provisionErr) {
+        const reason =
+          provisionErr instanceof Error ? provisionErr.message : String(provisionErr);
+        if (this.workspaceIsolationPolicy === "strict") {
+          throw new Error(`Workspace provisioning failed for '${roleId}': ${reason}`);
+        }
+        // allow-fallback: try provider.checkoutWorkspace
         if (this.provider.checkoutWorkspace) {
           workspacePath = await this.provider.checkoutWorkspace(spawnId, agent);
+          workspaceMode = { status: "fallback_workspace", path: workspacePath, reason };
         } else {
-          throw new Error("Failed to create git worktree and no fallback available");
+          throw new Error(`Failed to create git worktree and no fallback available: ${reason}`);
         }
       }
-    }
 
-    // Step 2: Write config files. Errors logged but non-fatal.
-    // Claims are NOT auto-created on spawn — agents create claims explicitly
-    // via grove_claim MCP tool when they need swarm coordination.
-    try {
-      await this.writeMcpConfig(workspacePath);
-      await this.writeAgentInstructions(workspacePath, roleId, context);
-      if (context?.rolePrompt || context?.roleDescription) {
-        await this.writeAgentContext(workspacePath, roleId, context);
+      // Step 2: Write config files.
+      // Claims are NOT auto-created on spawn — agents create claims explicitly
+      // via grove_claim MCP tool when they need swarm coordination.
+      if (provisioned !== undefined) {
+        try {
+          await this.writeMcpConfig(workspacePath);
+          await this.writeAgentInstructions(workspacePath, roleId, context);
+          if (context?.rolePrompt || context?.roleDescription) {
+            await this.writeAgentContext(workspacePath, roleId, context);
+          }
+          // Protect config files from agent mutation (#7 Workspace Mutation Constraints)
+          const { chmod } = await import("node:fs/promises");
+          for (const protectedFile of [
+            ".mcp.json",
+            ".acpxrc.json",
+            "CLAUDE.md",
+            "CODEX.md",
+            ".grove-role",
+          ]) {
+            const filePath = join(workspacePath, protectedFile);
+            await chmod(filePath, 0o444).catch(() => {
+              // File may not exist — non-fatal
+            });
+          }
+          workspaceMode = {
+            status: "isolated_worktree",
+            path: provisioned.path,
+            branch: provisioned.branch,
+          };
+        } catch (configErr) {
+          const reason =
+            configErr instanceof Error ? configErr.message : String(configErr);
+          if (this.workspaceIsolationPolicy === "strict") {
+            throw new Error(`Bootstrap failed for '${roleId}': ${reason}`);
+          }
+          this.onError(`Config write failed: ${reason}`);
+          workspaceMode = { status: "bootstrap_failed", path: provisioned.path, reason };
+        }
       }
-      // Step 2c: Protect config files from agent mutation (#7 Workspace Mutation Constraints)
-      const { chmod } = await import("node:fs/promises");
-      for (const protectedFile of [
-        ".mcp.json",
-        ".acpxrc.json",
-        "CLAUDE.md",
-        "CODEX.md",
-        ".grove-role",
-      ]) {
-        const filePath = join(workspacePath, protectedFile);
-        await chmod(filePath, 0o444).catch(() => {
-          // File may not exist — non-fatal
-        });
-      }
-    } catch (configErr) {
-      this.onError(
-        `Config write failed: ${configErr instanceof Error ? configErr.message : String(configErr)}`,
-      );
-      // Continue — agent can still work without configs
     }
 
     // Step 3: Start agent session via AgentRuntime (preferred) or tmux (fallback).
@@ -391,6 +417,7 @@ export class SpawnManager {
       spawnId,
       claimId: "",
       workspacePath,
+      workspaceMode: workspaceMode!,
     };
   }
 

@@ -30,6 +30,7 @@ function makeService(): {
     eventBus: bus,
     projectRoot: "/tmp",
     workspaceBaseDir: "/tmp/workspaces",
+    workspaceIsolationPolicy: "allow-fallback" as const,
   });
   return { service, runtime, bus };
 }

@@ -5,13 +5,34 @@
  * Each agent gets an isolated copy of the repo with its own branch.
  */
 
-import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+/**
+ * How an agent's workspace was provisioned.
+ *
+ * - `isolated_worktree`: dedicated git worktree with all config files written.
+ * - `fallback_workspace`: worktree creation failed; agent runs from an
+ *   alternative path (project root or provider workspace). Config files may
+ *   be missing.
+ * - `bootstrap_failed`: worktree was created but config file writes failed;
+ *   agent has a clean git checkout but no .mcp.json / CLAUDE.md.
+ */
+export type WorkspaceMode =
+  | { readonly status: "isolated_worktree"; readonly path: string; readonly branch: string }
+  | { readonly status: "fallback_workspace"; readonly path: string; readonly reason: string }
+  | { readonly status: "bootstrap_failed"; readonly path: string; readonly reason: string };
+
+/** Controls whether workspace provisioning failures cause a spawn to fail. */
+export type WorkspaceIsolationPolicy = "strict" | "allow-fallback";
 
 /** Options for provisioning a single workspace. */
 export interface WorkspaceProvisionOptions {
@@ -61,29 +82,31 @@ export interface WorkspaceProvisionError {
  * Creates a git worktree at `<baseDir>/<role>-<sessionId prefix>` on a new
  * branch named `grove/<sessionId>/<role>`. Optionally writes an `.mcp.json`
  * config file into the worktree root.
+ *
+ * Uses `execFile` (not `execSync`) so it does not block the event loop and
+ * is safe against shell injection in role names or paths.
  */
-export function provisionWorkspace(options: WorkspaceProvisionOptions): ProvisionedWorkspace {
+export async function provisionWorkspace(
+  options: WorkspaceProvisionOptions,
+): Promise<ProvisionedWorkspace> {
   const { role, sessionId, baseDir, repoRoot, mcpConfig, baseBranch } = options;
 
   const worktreePath = join(baseDir, `${role}-${sessionId.slice(0, 8)}`);
   const branch = `grove/${sessionId}/${role}`;
 
-  // Create base directory if needed
-  if (!existsSync(baseDir)) {
-    mkdirSync(baseDir, { recursive: true });
-  }
+  // Ensure base directory exists. safe to call concurrently — recursive:true is idempotent.
+  await mkdir(baseDir, { recursive: true });
 
-  // Create the git worktree
+  // Create the git worktree. execFile avoids a shell invocation, preventing
+  // injection via role name or path and allowing true async execution.
   const base = baseBranch ?? "HEAD";
-  execSync(`git worktree add "${worktreePath}" -b "${branch}" ${base}`, {
+  await execFileAsync("git", ["worktree", "add", worktreePath, "-b", branch, base], {
     cwd: repoRoot,
-    encoding: "utf-8",
-    stdio: "pipe",
   });
 
   // Write .mcp.json if provided
   if (mcpConfig !== undefined) {
-    writeFileSync(join(worktreePath, ".mcp.json"), JSON.stringify(mcpConfig, null, 2));
+    await writeFile(join(worktreePath, ".mcp.json"), JSON.stringify(mcpConfig, null, 2));
   }
 
   return { role, path: worktreePath, branch, sessionId };
@@ -105,26 +128,14 @@ export async function provisionSessionWorkspaces(
 ): Promise<SessionWorkspaces> {
   const start = Date.now();
 
+  // Pre-create baseDir once before the parallel loop to avoid N concurrent
+  // mkdir calls racing on the same path.
+  await mkdir(baseDir, { recursive: true });
+
   // Create all worktrees in parallel
   const results = await Promise.allSettled(
-    roles.map(
-      (role) =>
-        // Wrap sync operation in a microtask to allow parallel scheduling
-        new Promise<ProvisionedWorkspace>((resolve, reject) => {
-          try {
-            const result = provisionWorkspace({
-              role,
-              sessionId,
-              baseDir,
-              repoRoot,
-              mcpConfig,
-              baseBranch,
-            });
-            resolve(result);
-          } catch (error) {
-            reject(error);
-          }
-        }),
+    roles.map((role) =>
+      provisionWorkspace({ role, sessionId, baseDir, repoRoot, mcpConfig, baseBranch }),
     ),
   );
 
@@ -155,33 +166,26 @@ export async function provisionSessionWorkspaces(
 /**
  * Clean up worktrees for a session.
  *
- * Removes each worktree directory and deletes the associated branch.
- * Errors are silently ignored (best-effort cleanup).
+ * Removes each worktree directory and deletes the associated branch in
+ * parallel. Errors are silently ignored (best-effort cleanup).
  */
-export function cleanupSessionWorkspaces(
+export async function cleanupSessionWorkspaces(
   workspaces: readonly ProvisionedWorkspace[],
   repoRoot: string,
-): void {
-  for (const ws of workspaces) {
-    try {
-      execSync(`git worktree remove "${ws.path}" --force`, {
-        cwd: repoRoot,
-        encoding: "utf-8",
-        stdio: "pipe",
-      });
-    } catch {
-      // Best effort — worktree may already be removed
-    }
+): Promise<void> {
+  await Promise.allSettled(
+    workspaces.map(async (ws) => {
+      try {
+        await execFileAsync("git", ["worktree", "remove", ws.path, "--force"], { cwd: repoRoot });
+      } catch {
+        // Best effort — worktree may already be removed
+      }
 
-    // Also delete the branch
-    try {
-      execSync(`git branch -D "${ws.branch}"`, {
-        cwd: repoRoot,
-        encoding: "utf-8",
-        stdio: "pipe",
-      });
-    } catch {
-      // Best effort
-    }
-  }
+      try {
+        await execFileAsync("git", ["branch", "-D", ws.branch], { cwd: repoRoot });
+      } catch {
+        // Best effort
+      }
+    }),
+  );
 }

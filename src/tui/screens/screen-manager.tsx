@@ -522,11 +522,13 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
 
             void spawnManager
               .spawn(role.name, command, undefined, 0, context)
-              .then(() => {
+              .then((result) => {
                 setState((s) => ({
                   ...s,
                   spawnStates: (s.spawnStates ?? []).map((a) =>
-                    a.role === role.name ? { ...a, status: "started" as const } : a,
+                    a.role === role.name
+                      ? { ...a, status: "started" as const, workspaceMode: result.workspaceMode }
+                      : a,
                   ),
                 }));
               })

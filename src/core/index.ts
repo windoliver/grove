@@ -234,6 +234,8 @@ export { WorkspaceStatus } from "./workspace.js";
 export type {
   ProvisionedWorkspace,
   SessionWorkspaces,
+  WorkspaceIsolationPolicy,
+  WorkspaceMode,
   WorkspaceProvisionError,
   WorkspaceProvisionOptions,
 } from "./workspace-provisioner.js";
