@@ -14,6 +14,7 @@ import { join, resolve } from "node:path";
 
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { AgentIdentity } from "../core/models.js";
+import { resolveMcpServePath } from "../core/resolve-mcp-serve-path.js";
 import type { AgentTopology } from "../core/topology.js";
 import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
 import type { WorkspaceIsolationPolicy, WorkspaceMode } from "../core/workspace-provisioner.js";
@@ -333,13 +334,7 @@ export class SpawnManager {
         if (process.env.GROVE_NEXUS_URL) codexMcpEnv.GROVE_NEXUS_URL = process.env.GROVE_NEXUS_URL;
         if (process.env.NEXUS_API_KEY) codexMcpEnv.NEXUS_API_KEY = process.env.NEXUS_API_KEY;
         if (this.sessionId) codexMcpEnv.GROVE_SESSION_ID = this.sessionId;
-        // Derive mcpServePath the same way writeMcpConfig does.
-        const { dirname: d } = await import("node:path");
-        const entry = process.argv[1] ?? "";
-        const serveRoot = d(d(d(entry)));
-        const servePath = existsSync(join(serveRoot, "dist", "mcp", "serve.js"))
-          ? join(serveRoot, "dist", "mcp", "serve.js")
-          : join(serveRoot, "src", "mcp", "serve.ts");
+        const servePath = resolveMcpServePath();
         await this.ensureCodexMcpRegistered(
           codexMcpEnv,
           servePath,
@@ -1257,54 +1252,7 @@ export class SpawnManager {
     }
 
     // Find the grove MCP server: check dist/ first (installed), then src/ (dev)
-    // Use process.argv[1] (entry point) not import.meta.url — bun bundles may inline
-    // this file into a chunk, making import.meta.url point to the chunk file rather
-    // than a predictable path relative to the grove root.
-    // process.argv[1] = "<groveRoot>/dist/cli/main.js" or "<groveRoot>/src/cli/main.ts"
-    const { dirname } = await import("node:path");
-    const entryPoint = process.argv[1] ?? "";
-    // Climb 3 levels: main.js → cli/ → dist/ or src/ → <groveRoot>
-    const groveRootFromEntry = dirname(dirname(dirname(entryPoint)));
-    // Also try import.meta.url as a fallback
-    const groveRootFromMeta = dirname(dirname(dirname(new URL(import.meta.url).pathname)));
-    debugLog(
-      "mcpConfig",
-      `entryPoint=${entryPoint} groveRootFromEntry=${groveRootFromEntry} groveRootFromMeta=${groveRootFromMeta}`,
-    );
-    let mcpServePath = join(groveRootFromEntry, "dist", "mcp", "serve.js");
-    debugLog(
-      "mcpConfig",
-      `checking dist serve.js: ${mcpServePath} exists=${existsSync(mcpServePath)}`,
-    );
-    if (!existsSync(mcpServePath)) {
-      mcpServePath = join(groveRootFromEntry, "src", "mcp", "serve.ts");
-      debugLog(
-        "mcpConfig",
-        `checking src serve.ts: ${mcpServePath} exists=${existsSync(mcpServePath)}`,
-      );
-    }
-    if (!existsSync(mcpServePath)) {
-      mcpServePath = join(groveRootFromMeta, "dist", "mcp", "serve.js");
-      debugLog(
-        "mcpConfig",
-        `fallback meta dist: ${mcpServePath} exists=${existsSync(mcpServePath)}`,
-      );
-    }
-    if (!existsSync(mcpServePath)) {
-      mcpServePath = join(groveRootFromMeta, "src", "mcp", "serve.ts");
-      debugLog(
-        "mcpConfig",
-        `fallback meta src: ${mcpServePath} exists=${existsSync(mcpServePath)}`,
-      );
-    }
-    // Final fallback: project root
-    if (!existsSync(mcpServePath)) {
-      mcpServePath = join(projectRoot, "src", "mcp", "serve.ts");
-      debugLog(
-        "mcpConfig",
-        `final fallback projectRoot: ${mcpServePath} exists=${existsSync(mcpServePath)}`,
-      );
-    }
+    const mcpServePath = resolveMcpServePath(projectRoot);
     debugLog("mcpConfig", `selected mcpServePath=${mcpServePath}`);
 
     const mcpConfig = {

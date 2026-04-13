@@ -6,6 +6,7 @@
  */
 
 import { join } from "node:path";
+import { resolveMcpServePath } from "./resolve-mcp-serve-path.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 import type { GroveContract } from "./contract.js";
 import type { EventBus, GroveEvent } from "./event-bus.js";
@@ -281,7 +282,7 @@ export class SessionOrchestrator {
         rolePrompt: role.prompt,
         roleDescription: role.description,
         groveDir: join(this.config.projectRoot, ".grove"),
-        mcpServePath: join(this.config.projectRoot, "src", "mcp", "serve.ts"),
+        mcpServePath: resolveMcpServePath(this.config.projectRoot),
         nexusUrl: process.env.GROVE_NEXUS_URL,
         nexusApiKey: process.env.NEXUS_API_KEY,
       });
