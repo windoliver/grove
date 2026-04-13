@@ -13,7 +13,16 @@ import { z } from "zod";
 // Zod Schemas (snake_case — matches YAML frontmatter wire format)
 // ---------------------------------------------------------------------------
 
-const EdgeTypeEnum = z.enum(["delegates", "reports", "feeds", "requests", "feedback", "escalates"]);
+const EdgeTypeEnum = z.enum([
+  "delegates", // Forward work: source produces, target acts on it
+  "feedback",  // Response: target sends results back to source
+  "monitors",  // Observe-only: source watches target
+  // Legacy aliases — mapped to delegates at parse time for backward compat
+  "reports",
+  "feeds",
+  "requests",
+  "escalates",
+]);
 
 const WorkspaceStrategyEnum = z.enum(["branch_from_source", "independent"]);
 
@@ -69,10 +78,11 @@ interface WireAgentTopology {
           readonly target: string;
           readonly edge_type:
             | "delegates"
+            | "feedback"
+            | "monitors"
             | "reports"
             | "feeds"
             | "requests"
-            | "feedback"
             | "escalates";
           readonly workspace?: "branch_from_source" | "independent" | undefined;
         }[]
@@ -184,8 +194,25 @@ export const AgentTopologySchema: z.ZodType<WireAgentTopology> = z
 // TypeScript Types (camelCase, readonly)
 // ---------------------------------------------------------------------------
 
-/** Edge type between agent roles. */
-export type EdgeType = "delegates" | "reports" | "feeds" | "requests" | "feedback" | "escalates";
+/**
+ * Edge type between agent roles.
+ *
+ * Core types:
+ *   delegates — forward work: source produces, target acts on it
+ *   feedback  — response: target sends results back to source
+ *   monitors  — observe-only: source watches target without producing
+ *
+ * Legacy aliases (mapped to delegates): reports, feeds, requests, escalates
+ */
+export type EdgeType =
+  | "delegates"
+  | "feedback"
+  | "monitors"
+  // Legacy — kept for backward compat with existing GROVE.md files
+  | "reports"
+  | "feeds"
+  | "requests"
+  | "escalates";
 
 /**
  * Workspace strategy for an edge — controls whether the target role's worktree

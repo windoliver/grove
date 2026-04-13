@@ -26,7 +26,7 @@ export const prReviewPreset: PresetConfig = {
         name: "analyst",
         description: "Deep-dives into specific files or patterns",
         maxInstances: 2,
-        edges: [{ target: "reviewer", edgeType: "reports" }],
+        edges: [{ target: "reviewer", edgeType: "delegates" }],
         command: "claude --role analyst",
         platform: "claude-code",
       },

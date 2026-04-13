@@ -246,13 +246,13 @@ describe("exploration preset", () => {
     const preset = getPreset("exploration")!;
     const explorer = preset.topology?.roles.find((r) => r.name === "explorer")!;
     expect(explorer.edges).toContainEqual({ target: "critic", edgeType: "delegates" });
-    expect(explorer.edges).toContainEqual({ target: "synthesizer", edgeType: "feeds" });
+    expect(explorer.edges).toContainEqual({ target: "synthesizer", edgeType: "delegates" });
   });
 
   test("synthesizer can request from explorer (feedback loop)", () => {
     const preset = getPreset("exploration")!;
     const synth = preset.topology?.roles.find((r) => r.name === "synthesizer")!;
-    expect(synth.edges).toContainEqual({ target: "explorer", edgeType: "requests" });
+    expect(synth.edges).toContainEqual({ target: "explorer", edgeType: "delegates" });
   });
 
   test("grove init --preset exploration creates correct files", async () => {
@@ -520,7 +520,7 @@ describe("pr-review preset", () => {
     const reviewer = preset.topology?.roles.find((r) => r.name === "reviewer")!;
     const analyst = preset.topology?.roles.find((r) => r.name === "analyst")!;
     expect(reviewer.edges).toContainEqual({ target: "analyst", edgeType: "delegates" });
-    expect(analyst.edges).toContainEqual({ target: "reviewer", edgeType: "reports" });
+    expect(analyst.edges).toContainEqual({ target: "reviewer", edgeType: "delegates" });
   });
 
   test("grove init --preset pr-review creates correct files", async () => {

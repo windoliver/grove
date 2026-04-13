@@ -324,8 +324,20 @@ export class SessionOrchestrator {
       this.contributionCount++;
     }
 
-    // Forward contribution notifications to the agent
-    const message = `[grove] New ${event.type} from ${event.sourceRole}: ${JSON.stringify(event.payload)}`;
+    // Forward contribution notifications with actionable instructions.
+    // Include the source branch so the receiving agent can merge to see actual files.
+    const p = event.payload;
+    const cid = typeof p.cid === "string" ? p.cid : "";
+    const summary = typeof p.summary === "string" ? p.summary : "";
+    const sourceBranch = `grove/${this.sessionId}/${event.sourceRole}`;
+
+    const message =
+      `[grove] New ${event.type} from ${event.sourceRole}:\n` +
+      `  CID: ${cid}\n` +
+      `  Summary: ${summary}\n` +
+      `  Source branch: ${sourceBranch}\n\n` +
+      `To see the actual file changes, run: git merge ${sourceBranch}\n` +
+      `Then review the files in your workspace and use grove_submit_review or grove_submit_work as appropriate.`;
     await this.config.runtime.send(agent.session, message);
   }
 
