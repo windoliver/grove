@@ -349,6 +349,30 @@ export class SessionOrchestrator {
   }
 
   /**
+   * Wait for the session to complete (all agents idle or stopped).
+   *
+   * Polls agent status every `pollMs` and resolves when `this.stopped` is true
+   * or `timeoutMs` expires. Returns the final stop reason.
+   */
+  async waitForCompletion(timeoutMs = 300_000, pollMs = 3_000): Promise<string> {
+    if (this.stopped) return this.stopReason ?? "Already stopped";
+
+    const deadline = Date.now() + timeoutMs;
+    return new Promise<string>((resolve) => {
+      const poll = setInterval(async () => {
+        await this.checkAllIdle();
+        if (this.stopped || Date.now() >= deadline) {
+          clearInterval(poll);
+          if (!this.stopped) {
+            void this.stop("Session timed out");
+          }
+          resolve(this.stopReason ?? "Timed out");
+        }
+      }, pollMs);
+    });
+  }
+
+  /**
    * Resume an agent that crashed or hit context limits.
    * Queries the DAG for contributions since the agent last contributed,
    * and sends a summary to the new session.
