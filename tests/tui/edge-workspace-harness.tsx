@@ -68,10 +68,20 @@ if (useGitRepo) {
 // Topology: coder → reviewer with the given edge type
 // ---------------------------------------------------------------------------
 
+// For delegates/feeds/escalates with workspace test: use branch_from_source.
+// For feedback/independent test: no workspace field (default independent).
+const usesBranching = edgeType === "delegates" || edgeType === "feeds" || edgeType === "escalates";
 const topology: AgentTopology = {
   structure: "graph",
   roles: [
-    { name: "coder", edges: [{ target: "reviewer", edgeType }] },
+    {
+      name: "coder",
+      edges: [{
+        target: "reviewer",
+        edgeType,
+        ...(usesBranching ? { workspace: "branch_from_source" as const } : {}),
+      }],
+    },
     { name: "reviewer" },
   ],
 };

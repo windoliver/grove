@@ -15,10 +15,13 @@ import { z } from "zod";
 
 const EdgeTypeEnum = z.enum(["delegates", "reports", "feeds", "requests", "feedback", "escalates"]);
 
+const WorkspaceStrategyEnum = z.enum(["branch_from_source", "independent"]);
+
 const RoleEdgeSchema = z
   .object({
     target: z.string().min(1).max(64),
     edge_type: EdgeTypeEnum,
+    workspace: WorkspaceStrategyEnum.optional(),
   })
   .strict();
 
@@ -71,6 +74,7 @@ interface WireAgentTopology {
             | "requests"
             | "feedback"
             | "escalates";
+          readonly workspace?: "branch_from_source" | "independent" | undefined;
         }[]
       | undefined;
     readonly command?: string | undefined;
@@ -184,28 +188,20 @@ export const AgentTopologySchema: z.ZodType<WireAgentTopology> = z
 export type EdgeType = "delegates" | "reports" | "feeds" | "requests" | "feedback" | "escalates";
 
 /**
- * Edge types that make the target role's worktree branch off the source role's branch.
+ * Workspace strategy for an edge — controls whether the target role's worktree
+ * branches off the source role's branch or starts fresh from HEAD.
  *
- * - `delegates`: source hands work to target  → target starts from source's branch
- * - `feeds`:     source output flows to target → target starts from source's branch
- * - `escalates`: source escalates to target   → target starts from source's branch
- *
- * Other edge types (`reports`, `requests`, `feedback`) use independent worktrees
- * based on HEAD — no branch relationship is established.
+ * - `branch_from_source`: target's worktree is based on the source's grove branch.
+ *   Target can `git merge grove/<session>/<source>` to pick up source's commits.
+ * - `independent` (default): target's worktree starts from HEAD. No branch relationship.
  */
-export const WORKSPACE_BRANCH_EDGES: ReadonlySet<EdgeType> = new Set([
-  "delegates",
-  "feeds",
-  "escalates",
-]);
+export type WorkspaceStrategy = "branch_from_source" | "independent";
 
 /**
  * Resolve the git base branch for each role's worktree.
  *
- * Roles whose only incoming edges are non-workspace edges (or have no incoming
- * edges) start from HEAD. Roles with at least one WORKSPACE_BRANCH_EDGE
- * incoming edge start from the source role's grove branch so they can merge
- * the source's commits after the session starts.
+ * Only edges with explicit `workspace: "branch_from_source"` create a branch
+ * dependency. All other edges (and the default) use HEAD.
  *
  * Returns a Map<roleName, baseBranch> where baseBranch is either "HEAD" or
  * "grove/<sessionId>/<sourceRole>".
@@ -218,8 +214,7 @@ export function resolveRoleWorkspaceStrategies(
 
   for (const role of topology.roles) {
     for (const edge of role.edges ?? []) {
-      if (WORKSPACE_BRANCH_EDGES.has(edge.edgeType)) {
-        // Target branches off the source's grove branch
+      if (edge.workspace === "branch_from_source") {
         strategies.set(edge.target, `grove/${sessionId}/${role.name}`);
       }
     }
@@ -232,9 +227,9 @@ export function resolveRoleWorkspaceStrategies(
  * Topologically sort roles so that source roles are provisioned before
  * their dependents (which need the source's git branch to exist).
  *
- * Only WORKSPACE_BRANCH_EDGES create ordering constraints. Uses Kahn's
- * algorithm. Falls back to the original role order if a cycle is detected
- * (the Zod schema should prevent cycles, but this is defensive).
+ * Only edges with `workspace: "branch_from_source"` create ordering
+ * constraints. Uses Kahn's algorithm. Falls back to the original role
+ * order if a cycle is detected.
  */
 export function topologicalSortRoles(topology: AgentTopology): readonly AgentRole[] {
   const roles = topology.roles;
@@ -244,7 +239,7 @@ export function topologicalSortRoles(topology: AgentTopology): readonly AgentRol
   const deps = new Map<string, Set<string>>(roles.map((r) => [r.name, new Set()]));
   for (const role of roles) {
     for (const edge of role.edges ?? []) {
-      if (WORKSPACE_BRANCH_EDGES.has(edge.edgeType)) {
+      if (edge.workspace === "branch_from_source") {
         deps.get(edge.target)?.add(role.name);
       }
     }
@@ -279,6 +274,8 @@ export function topologicalSortRoles(topology: AgentTopology): readonly AgentRol
 export interface RoleEdge {
   readonly target: string;
   readonly edgeType: EdgeType;
+  /** Workspace strategy — default: independent (HEAD). */
+  readonly workspace?: WorkspaceStrategy | undefined;
 }
 
 /** Supported agent platform identifiers (boardroom). */
@@ -338,6 +335,7 @@ export function wireToTopology(wire: z.infer<typeof AgentTopologySchema>): Agent
             (edge): RoleEdge => ({
               target: edge.target,
               edgeType: edge.edge_type,
+              ...(edge.workspace !== undefined && { workspace: edge.workspace }),
             }),
           ),
         }),

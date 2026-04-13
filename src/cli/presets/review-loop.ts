@@ -18,7 +18,7 @@ export const reviewLoopPreset: PresetConfig = {
         name: "coder",
         description: "Writes and iterates on code",
         maxInstances: 1,
-        edges: [{ target: "reviewer", edgeType: "delegates" }],
+        edges: [{ target: "reviewer", edgeType: "delegates", workspace: "branch_from_source" }],
         platform: "claude-code",
         prompt:
           "You are a software engineer. Your workflow:\n" +

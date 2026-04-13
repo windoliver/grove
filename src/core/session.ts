@@ -45,7 +45,7 @@ export interface Session {
   /**
    * Resolved workspace base-branch per role.
    * Format: { "coder": "HEAD", "reviewer": "grove/<sessionId>/coder" }
-   * Roles with WORKSPACE_BRANCH_EDGES incoming edges branch off the source role.
+   * Edges with `workspace: "branch_from_source"` make the target branch off the source.
    */
   readonly worktreeStrategies?: Record<string, string> | undefined;
 }

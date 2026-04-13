@@ -167,7 +167,7 @@ describe("review-loop preset", () => {
     const preset = getPreset("review-loop")!;
     const coder = preset.topology?.roles.find((r) => r.name === "coder")!;
     const reviewer = preset.topology?.roles.find((r) => r.name === "reviewer")!;
-    expect(coder.edges).toContainEqual({ target: "reviewer", edgeType: "delegates" });
+    expect(coder.edges).toContainEqual({ target: "reviewer", edgeType: "delegates", workspace: "branch_from_source" });
     expect(reviewer.edges).toContainEqual({ target: "coder", edgeType: "feedback" });
   });
 

@@ -1,8 +1,9 @@
 /**
- * Unit tests for edge-type-aware workspace strategy resolution.
+ * Unit tests for workspace strategy resolution via explicit edge.workspace field.
  *
  * Verifies that resolveRoleWorkspaceStrategies() and topologicalSortRoles()
- * correctly derive base branches and ordering from topology edge types.
+ * only create branch dependencies when `workspace: "branch_from_source"` is set.
+ * Edge type alone does NOT determine workspace behavior.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -27,7 +28,7 @@ describe("resolveRoleWorkspaceStrategies", () => {
     expect(strategies.get("tester")).toBe("HEAD");
   });
 
-  test("delegates edge: target branches off source", () => {
+  test("edge without workspace field: both use HEAD (default independent)", () => {
     const topology: AgentTopology = {
       structure: "graph",
       roles: [
@@ -37,83 +38,55 @@ describe("resolveRoleWorkspaceStrategies", () => {
     };
     const strategies = resolveRoleWorkspaceStrategies(topology, "sess-abc");
     expect(strategies.get("coder")).toBe("HEAD");
-    expect(strategies.get("reviewer")).toBe("grove/sess-abc/coder");
+    expect(strategies.get("reviewer")).toBe("HEAD");
   });
 
-  test("feeds edge: target branches off source", () => {
+  test("workspace: branch_from_source: target branches off source", () => {
     const topology: AgentTopology = {
       structure: "graph",
       roles: [
-        { name: "researcher", edges: [{ target: "writer", edgeType: "feeds" }] },
-        { name: "writer" },
-      ],
-    };
-    const strategies = resolveRoleWorkspaceStrategies(topology, "sess-xyz");
-    expect(strategies.get("researcher")).toBe("HEAD");
-    expect(strategies.get("writer")).toBe("grove/sess-xyz/researcher");
-  });
-
-  test("escalates edge: target branches off source", () => {
-    const topology: AgentTopology = {
-      structure: "graph",
-      roles: [
-        { name: "worker", edges: [{ target: "supervisor", edgeType: "escalates" }] },
-        { name: "supervisor" },
-      ],
-    };
-    const strategies = resolveRoleWorkspaceStrategies(topology, "sess-123");
-    expect(strategies.get("worker")).toBe("HEAD");
-    expect(strategies.get("supervisor")).toBe("grove/sess-123/worker");
-  });
-
-  test("feedback edge: independent workspaces (HEAD)", () => {
-    const topology: AgentTopology = {
-      structure: "graph",
-      roles: [
-        { name: "coder", edges: [{ target: "reviewer", edgeType: "feedback" }] },
+        { name: "coder", edges: [{ target: "reviewer", edgeType: "delegates", workspace: "branch_from_source" }] },
         { name: "reviewer" },
       ],
     };
     const strategies = resolveRoleWorkspaceStrategies(topology, "sess-abc");
     expect(strategies.get("coder")).toBe("HEAD");
+    expect(strategies.get("reviewer")).toBe("grove/sess-abc/coder");
+  });
+
+  test("workspace: independent: explicit independent even on delegates edge", () => {
+    const topology: AgentTopology = {
+      structure: "graph",
+      roles: [
+        { name: "coder", edges: [{ target: "reviewer", edgeType: "delegates", workspace: "independent" }] },
+        { name: "reviewer" },
+      ],
+    };
+    const strategies = resolveRoleWorkspaceStrategies(topology, "sess-abc");
     expect(strategies.get("reviewer")).toBe("HEAD");
   });
 
-  test("reports edge: independent workspaces (HEAD)", () => {
+  test("branch_from_source works on any edge type", () => {
     const topology: AgentTopology = {
       structure: "graph",
       roles: [
-        { name: "agent", edges: [{ target: "monitor", edgeType: "reports" }] },
-        { name: "monitor" },
+        { name: "coder", edges: [{ target: "reviewer", edgeType: "feedback", workspace: "branch_from_source" }] },
+        { name: "reviewer" },
       ],
     };
-    const strategies = resolveRoleWorkspaceStrategies(topology, "sess-abc");
-    expect(strategies.get("agent")).toBe("HEAD");
-    expect(strategies.get("monitor")).toBe("HEAD");
+    const strategies = resolveRoleWorkspaceStrategies(topology, "sess-fb");
+    expect(strategies.get("reviewer")).toBe("grove/sess-fb/coder");
   });
 
-  test("requests edge: independent workspaces (HEAD)", () => {
-    const topology: AgentTopology = {
-      structure: "graph",
-      roles: [
-        { name: "orchestrator", edges: [{ target: "worker", edgeType: "requests" }] },
-        { name: "worker" },
-      ],
-    };
-    const strategies = resolveRoleWorkspaceStrategies(topology, "sess-abc");
-    expect(strategies.get("orchestrator")).toBe("HEAD");
-    expect(strategies.get("worker")).toBe("HEAD");
-  });
-
-  test("mixed edges: only WORKSPACE_BRANCH_EDGES create branch dependency", () => {
+  test("mixed edges: only branch_from_source creates dependency", () => {
     const topology: AgentTopology = {
       structure: "graph",
       roles: [
         {
           name: "coder",
           edges: [
-            { target: "reviewer", edgeType: "delegates" }, // workspace branch
-            { target: "monitor", edgeType: "reports" },    // independent
+            { target: "reviewer", edgeType: "delegates", workspace: "branch_from_source" },
+            { target: "monitor", edgeType: "reports" }, // no workspace field → independent
           ],
         },
         { name: "reviewer" },
@@ -145,12 +118,25 @@ describe("topologicalSortRoles", () => {
     expect(sorted.map((r) => r.name)).toEqual(["alpha", "beta", "gamma"]);
   });
 
-  test("delegates edge: source before target", () => {
+  test("edge without workspace: no ordering constraint", () => {
+    const topology: AgentTopology = {
+      structure: "graph",
+      roles: [
+        { name: "reviewer" },
+        { name: "coder", edges: [{ target: "reviewer", edgeType: "delegates" }] },
+      ],
+    };
+    // No workspace field → no ordering → original order preserved
+    const sorted = topologicalSortRoles(topology);
+    expect(sorted.map((r) => r.name)).toEqual(["reviewer", "coder"]);
+  });
+
+  test("branch_from_source: source before target", () => {
     const topology: AgentTopology = {
       structure: "graph",
       roles: [
         { name: "reviewer" }, // listed first
-        { name: "coder", edges: [{ target: "reviewer", edgeType: "delegates" }] },
+        { name: "coder", edges: [{ target: "reviewer", edgeType: "delegates", workspace: "branch_from_source" }] },
       ],
     };
     const sorted = topologicalSortRoles(topology);
@@ -159,45 +145,32 @@ describe("topologicalSortRoles", () => {
     expect(coderIdx).toBeLessThan(reviewerIdx);
   });
 
-  test("feeds edge: source before target", () => {
+  test("chain with branch_from_source: A→B→C sorted A,B,C", () => {
     const topology: AgentTopology = {
       structure: "graph",
       roles: [
-        { name: "writer" }, // listed first
-        { name: "researcher", edges: [{ target: "writer", edgeType: "feeds" }] },
-      ],
-    };
-    const sorted = topologicalSortRoles(topology);
-    const resIdx = sorted.findIndex((r) => r.name === "researcher");
-    const writerIdx = sorted.findIndex((r) => r.name === "writer");
-    expect(resIdx).toBeLessThan(writerIdx);
-  });
-
-  test("feedback edge: no ordering constraint", () => {
-    const topology: AgentTopology = {
-      structure: "graph",
-      roles: [
-        { name: "reviewer", edges: [{ target: "coder", edgeType: "feedback" }] },
-        { name: "coder" },
-      ],
-    };
-    // feedback does not create workspace ordering — both roles are roots
-    const sorted = topologicalSortRoles(topology);
-    expect(sorted).toHaveLength(2);
-  });
-
-  test("chain: A→B→C sorted A,B,C", () => {
-    const topology: AgentTopology = {
-      structure: "graph",
-      roles: [
-        { name: "C" }, // listed last
-        { name: "B", edges: [{ target: "C", edgeType: "delegates" }] },
-        { name: "A", edges: [{ target: "B", edgeType: "feeds" }] },
+        { name: "C" },
+        { name: "B", edges: [{ target: "C", edgeType: "delegates", workspace: "branch_from_source" }] },
+        { name: "A", edges: [{ target: "B", edgeType: "feeds", workspace: "branch_from_source" }] },
       ],
     };
     const sorted = topologicalSortRoles(topology);
     const names = sorted.map((r) => r.name);
     expect(names.indexOf("A")).toBeLessThan(names.indexOf("B"));
     expect(names.indexOf("B")).toBeLessThan(names.indexOf("C"));
+  });
+
+  test("independent workspace: no ordering even with delegates edge", () => {
+    const topology: AgentTopology = {
+      structure: "graph",
+      roles: [
+        { name: "reviewer", edges: [{ target: "coder", edgeType: "feedback", workspace: "independent" }] },
+        { name: "coder" },
+      ],
+    };
+    const sorted = topologicalSortRoles(topology);
+    expect(sorted).toHaveLength(2);
+    // Original order preserved — no dependency
+    expect(sorted.map((r) => r.name)).toEqual(["reviewer", "coder"]);
   });
 });
