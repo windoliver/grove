@@ -17,6 +17,7 @@
 import type { Database, Statement } from "bun:sqlite";
 import type { GroveContract } from "../core/contract.js";
 import type { CreateSessionInput, Session, SessionQuery } from "../core/session.js";
+import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
 import type { AgentTopology } from "../core/topology.js";
 import type { GoalData } from "../tui/provider.js";
 
@@ -41,6 +42,7 @@ export const GOAL_SESSION_DDL = `
     preset_name TEXT,
     topology_json TEXT,
     config_json TEXT NOT NULL DEFAULT '{}',
+    worktree_strategy_json TEXT,
     status TEXT NOT NULL DEFAULT 'active',
     started_at TEXT NOT NULL,
     ended_at TEXT,
@@ -94,6 +96,7 @@ interface SessionRow {
   preset_name: string | null;
   topology_json: string | null;
   config_json: string | null;
+  worktree_strategy_json: string | null;
   status: string;
   started_at: string;
   ended_at: string | null;
@@ -209,6 +212,9 @@ function rowToSession(row: SessionRow): Session {
     topology: row.topology_json ? (JSON.parse(row.topology_json) as AgentTopology) : undefined,
     contributionCount: row.contribution_count,
     config,
+    worktreeStrategies: row.worktree_strategy_json
+      ? (JSON.parse(row.worktree_strategy_json) as Record<string, string>)
+      : undefined,
   };
 }
 
@@ -349,20 +355,28 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
   /** Create a new session with a generated UUID. */
   createSession = async (input: CreateSessionInput): Promise<Session> => {
     this.stmtInsertSession ??= this.db.prepare(`
-      INSERT INTO sessions (session_id, goal, preset_name, topology_json, config_json, status, started_at)
-      VALUES (?, ?, ?, ?, ?, 'active', ?)
+      INSERT INTO sessions (session_id, goal, preset_name, topology_json, config_json, worktree_strategy_json, status, started_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
     `);
 
     const sessionId = crypto.randomUUID();
     const startedAt = new Date().toISOString();
     const topologyJson = input.topology ? JSON.stringify(input.topology) : null;
     const configJson = input.config ? JSON.stringify(input.config) : "{}";
+    // Resolve and store workspace strategies so operators can see which roles
+    // branched off which source branch at session creation time.
+    const worktreeStrategies = input.topology
+      ? Object.fromEntries(resolveRoleWorkspaceStrategies(input.topology, sessionId))
+      : null;
+    const worktreeStrategyJson = worktreeStrategies ? JSON.stringify(worktreeStrategies) : null;
+
     this.stmtInsertSession.run(
       sessionId,
       input.goal ?? null,
       input.presetName ?? null,
       topologyJson,
       configJson,
+      worktreeStrategyJson,
       startedAt,
     );
 
@@ -376,6 +390,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
       topology: input.topology,
       contributionCount: 0,
       config: input.config,
+      worktreeStrategies: worktreeStrategies ?? undefined,
     };
   };
 

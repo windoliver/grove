@@ -6,6 +6,7 @@
  */
 
 import type { AgentTopology } from "../core/topology.js";
+import { WORKSPACE_BRANCH_EDGES } from "../core/topology.js";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -232,7 +233,14 @@ function renderTopology(topology: AgentTopology | undefined, version: 2 | 3): st
       lines.push("      edges:");
       for (const edge of role.edges) {
         lines.push(`        - target: ${edge.target}`);
-        lines.push(`          edge_type: ${edge.edgeType}`);
+        // Annotate workspace behaviour inline so GROVE.md is self-documenting.
+        // WORKSPACE_BRANCH_EDGES (delegates, feeds, escalates): target's worktree
+        // branches off source's grove branch — target can merge source's commits.
+        // Other edges (reports, requests, feedback): independent worktrees from HEAD.
+        const wsNote = WORKSPACE_BRANCH_EDGES.has(edge.edgeType as Parameters<typeof WORKSPACE_BRANCH_EDGES.has>[0])
+          ? "  # target worktree branches off source (can merge source commits)"
+          : "  # independent worktrees";
+        lines.push(`          edge_type: ${edge.edgeType}${wsNote}`);
       }
     }
   }

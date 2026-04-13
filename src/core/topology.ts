@@ -183,6 +183,98 @@ export const AgentTopologySchema: z.ZodType<WireAgentTopology> = z
 /** Edge type between agent roles. */
 export type EdgeType = "delegates" | "reports" | "feeds" | "requests" | "feedback" | "escalates";
 
+/**
+ * Edge types that make the target role's worktree branch off the source role's branch.
+ *
+ * - `delegates`: source hands work to target  → target starts from source's branch
+ * - `feeds`:     source output flows to target → target starts from source's branch
+ * - `escalates`: source escalates to target   → target starts from source's branch
+ *
+ * Other edge types (`reports`, `requests`, `feedback`) use independent worktrees
+ * based on HEAD — no branch relationship is established.
+ */
+export const WORKSPACE_BRANCH_EDGES: ReadonlySet<EdgeType> = new Set([
+  "delegates",
+  "feeds",
+  "escalates",
+]);
+
+/**
+ * Resolve the git base branch for each role's worktree.
+ *
+ * Roles whose only incoming edges are non-workspace edges (or have no incoming
+ * edges) start from HEAD. Roles with at least one WORKSPACE_BRANCH_EDGE
+ * incoming edge start from the source role's grove branch so they can merge
+ * the source's commits after the session starts.
+ *
+ * Returns a Map<roleName, baseBranch> where baseBranch is either "HEAD" or
+ * "grove/<sessionId>/<sourceRole>".
+ */
+export function resolveRoleWorkspaceStrategies(
+  topology: AgentTopology,
+  sessionId: string,
+): Map<string, string> {
+  const strategies = new Map<string, string>(topology.roles.map((r) => [r.name, "HEAD"]));
+
+  for (const role of topology.roles) {
+    for (const edge of role.edges ?? []) {
+      if (WORKSPACE_BRANCH_EDGES.has(edge.edgeType)) {
+        // Target branches off the source's grove branch
+        strategies.set(edge.target, `grove/${sessionId}/${role.name}`);
+      }
+    }
+  }
+
+  return strategies;
+}
+
+/**
+ * Topologically sort roles so that source roles are provisioned before
+ * their dependents (which need the source's git branch to exist).
+ *
+ * Only WORKSPACE_BRANCH_EDGES create ordering constraints. Uses Kahn's
+ * algorithm. Falls back to the original role order if a cycle is detected
+ * (the Zod schema should prevent cycles, but this is defensive).
+ */
+export function topologicalSortRoles(topology: AgentTopology): readonly AgentRole[] {
+  const roles = topology.roles;
+  const roleByName = new Map(roles.map((r) => [r.name, r]));
+
+  // Build reverse dependency map: role → set of roles that must come before it
+  const deps = new Map<string, Set<string>>(roles.map((r) => [r.name, new Set()]));
+  for (const role of roles) {
+    for (const edge of role.edges ?? []) {
+      if (WORKSPACE_BRANCH_EDGES.has(edge.edgeType)) {
+        deps.get(edge.target)?.add(role.name);
+      }
+    }
+  }
+
+  // Kahn's algorithm: start from roles with no dependencies
+  const inDegree = new Map<string, number>(roles.map((r) => [r.name, deps.get(r.name)?.size ?? 0]));
+  const queue = roles.filter((r) => (inDegree.get(r.name) ?? 0) === 0);
+  const sorted: AgentRole[] = [];
+
+  while (queue.length > 0) {
+    const role = queue.shift()!;
+    sorted.push(role);
+    // Reduce in-degree for all roles that depended on this one
+    for (const [name, depSet] of deps) {
+      if (depSet.has(role.name)) {
+        const newDegree = (inDegree.get(name) ?? 1) - 1;
+        inDegree.set(name, newDegree);
+        if (newDegree === 0) {
+          const r = roleByName.get(name);
+          if (r) queue.push(r);
+        }
+      }
+    }
+  }
+
+  // Cycle detected — fall back to original order
+  return sorted.length === roles.length ? sorted : [...roles];
+}
+
 /** A directed edge from a role to a target role. */
 export interface RoleEdge {
   readonly target: string;

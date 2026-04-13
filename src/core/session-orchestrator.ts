@@ -10,6 +10,7 @@ import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js
 import type { GroveContract } from "./contract.js";
 import type { EventBus, GroveEvent } from "./event-bus.js";
 import type { AgentRole, AgentTopology } from "./topology.js";
+import { resolveRoleWorkspaceStrategies, topologicalSortRoles } from "./topology.js";
 import { TopologyRouter } from "./topology-router.js";
 import { bootstrapWorkspace } from "./workspace-bootstrap.js";
 import {
@@ -90,15 +91,38 @@ export class SessionOrchestrator {
   /** Start the session: spawn all agents and send goals. */
   async start(): Promise<SessionStatus> {
     const topology = this.config.topology;
+    const policy = this.config.workspaceIsolationPolicy ?? "strict";
 
-    // Spawn all agents in parallel with timeout via AbortController
+    // Resolve workspace strategies from edge types — delegates/feeds/escalates edges
+    // make the target role's worktree branch off the source role's branch.
+    const wsStrategies = resolveRoleWorkspaceStrategies(topology, this.sessionId);
+
+    // Provision workspaces in topological order so source branches exist before
+    // dependents try to base their worktrees on them.
+    const orderedRoles = topologicalSortRoles(topology);
+    const workspaceMap = new Map<string, { cwd: string; workspaceMode: WorkspaceMode }>();
+    for (const role of orderedRoles) {
+      const baseBranch = wsStrategies.get(role.name) ?? "HEAD";
+      const ws = await this.provisionAgentWorkspace(role, policy, baseBranch);
+      workspaceMap.set(role.name, ws);
+    }
+
+    // Spawn all agents in parallel (workspaces already provisioned above)
     const SPAWN_TIMEOUT_MS = 30_000;
     const spawnResults = await Promise.allSettled(
       topology.roles.map(async (role) => {
+        const ws = workspaceMap.get(role.name) ?? {
+          cwd: this.config.projectRoot,
+          workspaceMode: {
+            status: "fallback_workspace" as const,
+            path: this.config.projectRoot,
+            reason: "Workspace not provisioned",
+          },
+        };
         const ac = new AbortController();
         const timeoutId = setTimeout(() => ac.abort(), SPAWN_TIMEOUT_MS);
         try {
-          const result = await this.spawnAgent(role, ac.signal);
+          const result = await this.spawnAgent(role, ac.signal, ws);
           clearTimeout(timeoutId);
           return result;
         } catch (err) {
@@ -175,12 +199,15 @@ export class SessionOrchestrator {
     };
   }
 
-  private async spawnAgent(role: AgentRole, signal?: AbortSignal): Promise<AgentSessionInfo> {
+  private async spawnAgent(
+    role: AgentRole,
+    signal?: AbortSignal,
+    workspace?: { cwd: string; workspaceMode: WorkspaceMode },
+  ): Promise<AgentSessionInfo> {
     const roleGoal = role.prompt ?? role.description ?? `Fulfill role: ${role.name}`;
     const fullGoal = `Session goal: ${this.config.goal}\n\nYour role (${role.name}): ${roleGoal}`;
-    const policy = this.config.workspaceIsolationPolicy ?? "strict";
 
-    const { cwd, workspaceMode } = await this.provisionAgentWorkspace(role, policy);
+    const { cwd, workspaceMode } = workspace ?? { cwd: this.config.projectRoot, workspaceMode: { status: "fallback_workspace" as const, path: this.config.projectRoot, reason: "No workspace" } };
 
     if (signal?.aborted) throw new Error(`Spawn aborted for role '${role.name}'`);
 
@@ -217,16 +244,18 @@ export class SessionOrchestrator {
   private async provisionAgentWorkspace(
     role: AgentRole,
     policy: WorkspaceIsolationPolicy,
+    baseBranch?: string,
   ): Promise<{ readonly cwd: string; readonly workspaceMode: WorkspaceMode }> {
     let provisioned: ProvisionedWorkspace;
 
-    // Step 1: Git worktree
+    // Step 1: Git worktree — base branch determined by edge type
     try {
       provisioned = await provisionWorkspace({
         role: role.name,
         sessionId: this.sessionId,
         baseDir: this.config.workspaceBaseDir,
         repoRoot: this.config.projectRoot,
+        baseBranch: baseBranch ?? "HEAD",
       });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -329,8 +358,12 @@ export class SessionOrchestrator {
       throw new Error(`Role '${role}' not found in topology`);
     }
 
-    // Spawn a new session for the role
-    const newSession = await this.spawnAgent(roleSpec);
+    // Provision workspace and spawn a new session for the role
+    const policy = this.config.workspaceIsolationPolicy ?? "strict";
+    const wsStrategies = resolveRoleWorkspaceStrategies(this.config.topology, this.sessionId);
+    const baseBranch = wsStrategies.get(roleSpec.name) ?? "HEAD";
+    const ws = await this.provisionAgentWorkspace(roleSpec, policy, baseBranch);
+    const newSession = await this.spawnAgent(roleSpec, undefined, ws);
 
     // Send a reconciliation message
     const message = `[grove] You are resuming role '${role}'. Query the DAG via grove_log or grove_frontier to catch up on what happened while you were offline.`;

@@ -370,6 +370,26 @@ export function initSqliteDb(dbPath: string): Database {
       }
     }
 
+    // Migration → v10: add worktree_strategy_json to sessions.
+    // Stores the resolved workspace base-branch per role as JSON so operators
+    // can see which roles branched off which source at session creation time.
+    // Format: { "coder": "HEAD", "reviewer": "grove/<sessionId>/coder" }
+    {
+      const sessionTableExists =
+        (db
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'")
+          .get() as { name: string } | null) !== null;
+      if (sessionTableExists) {
+        const sessionCols = db.prepare("PRAGMA table_info(sessions)").all() as readonly {
+          name: string;
+        }[];
+        const sessionColNames = new Set(sessionCols.map((c) => c.name));
+        if (!sessionColNames.has("worktree_strategy_json")) {
+          db.run("ALTER TABLE sessions ADD COLUMN worktree_strategy_json TEXT");
+        }
+      }
+    }
+
     db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [
       CURRENT_SCHEMA_VERSION,
       new Date().toISOString(),
