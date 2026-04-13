@@ -222,23 +222,52 @@ export async function nexusUp(_projectRoot: string, opts: NexusUpOptions = {}): 
   // Issue 16A: ring buffer — keep only the last MAX_STDERR_LINES lines.
   // During a Docker pull, nexus up streams verbose progress to stderr (potentially MBs).
   // We only need the tail for error reporting; the head is discarded to bound memory usage.
+  //
+  // Chunk-safety: stream reads arrive at arbitrary byte boundaries, so a single logical
+  // line (e.g. "no such option: --timeout") can be split across two reads. We carry a
+  // partialLine buffer between reads and only commit complete lines to the ring buffer.
+  // This ensures substring checks on the joined output (the --timeout fallback) are safe.
+  //
+  // CR-safety: Docker pull progress uses \r (carriage return) to overwrite in-place, not \n.
+  // We treat both \r and \n as line boundaries so partialLine never accumulates unbounded.
+  // partialLine is also hard-capped at MAX_PARTIAL_BYTES to bound memory on pathological
+  // streams (e.g. a single very long line with neither \r nor \n).
   const MAX_STDERR_LINES = 50;
+  const MAX_PARTIAL_BYTES = 4096;
   const stderrLines: string[] = [];
   const stderrPromise = (async () => {
     if (!proc.stderr) return "";
     const reader = proc.stderr.getReader();
     const decoder = new TextDecoder();
+    let partialLine = "";
     try {
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          // Flush any remaining partial line on stream close
+          if (partialLine) {
+            stderrLines.push(partialLine);
+            if (stderrLines.length > MAX_STDERR_LINES) stderrLines.shift();
+          }
+          break;
+        }
         const text = decoder.decode(value, { stream: true });
-        for (const line of text.split("\n")) {
+        // Cap in-flight partial to avoid recopying MBs on every chunk
+        const tail =
+          partialLine.length > MAX_PARTIAL_BYTES
+            ? partialLine.slice(-MAX_PARTIAL_BYTES)
+            : partialLine;
+        const combined = tail + text;
+        // Split on \r\n, \n, or bare \r (Docker pull uses \r for in-place updates)
+        const lines = combined.split(/\r\n|\n|\r/);
+        // Last element is incomplete unless text ended with a line terminator
+        partialLine = lines.pop() ?? "";
+        for (const line of lines) {
           stderrLines.push(line);
           if (stderrLines.length > MAX_STDERR_LINES) stderrLines.shift();
         }
         if (report) {
-          for (const line of text.split("\n")) {
+          for (const line of text.split(/\r\n|\n|\r/)) {
             const trimmed = line.trim();
             if (trimmed) report(`  ${trimmed}`);
           }
@@ -633,36 +662,143 @@ export async function ensureNexusRunning(
     // best-effort
   }
 
-  const candidateUrls = [
-    process.env.GROVE_NEXUS_URL, // explicit env override takes highest priority
-    containerUrl, // container IP (works without port binding)
-    config.nexusUrl,
-    readNexusUrl(projectRoot),
-    stateFileUrl,
-    DEFAULT_NEXUS_URL,
-  ].filter((u): u is string => !!u);
+  // Issue 2A (tiered + early-return): Split candidate URLs into two tiers by trust level.
+  // Tier 1 = project-scoped sources; tier 2 = Docker-global / default port (last resort).
+  //
+  // For managed Nexus, grove.json's nexusUrl is a persisted cache of an assigned port
+  // that can go stale after a down/up cycle (ports are re-allocated). nexus.yaml and
+  // .state.json reflect the current running configuration and must outrank the cache.
+  // For non-managed projects, grove.json nexusUrl is an explicit user override and keeps
+  // its high rank. GROVE_NEXUS_URL is always highest — it's an explicit env override.
+  //
+  // Within each tier, probing is concurrent with early-return: the first healthy URL
+  // cancels remaining in-flight probes via AbortController (avoids waiting 3s per dead
+  // URL). Only when no tier-1 URL is healthy do we accept a "starting" URL (highest
+  // priority in the settled results) or probe tier 2.
+  const tier1Candidates = config.nexusManaged
+    ? [
+        process.env.GROVE_NEXUS_URL, // 1. explicit env override (always highest)
+        readNexusUrl(projectRoot), //   2. nexus.yaml — declarative, fresher than grove.json
+        stateFileUrl, //                3. .state.json — runtime state, freshest
+        config.nexusUrl, //             4. grove.json cache (may have stale port in managed mode)
+      ]
+    : [
+        process.env.GROVE_NEXUS_URL, // 1. explicit env override
+        config.nexusUrl, //             2. explicit user config (non-managed)
+        readNexusUrl(projectRoot), //   3. nexus.yaml
+        stateFileUrl, //                4. .state.json
+      ];
+  const tier1Urls = [...new Set(tier1Candidates.filter((u): u is string => !!u))];
 
-  const urlsToTry = [...new Set(candidateUrls)];
+  const tier2Urls = [
+    ...new Set(
+      [containerUrl, DEFAULT_NEXUS_URL].filter((u): u is string => !!u && !tier1Urls.includes(u)),
+    ),
+  ];
 
-  // Issue 2A: probe all candidate URLs concurrently — first healthy/starting wins.
-  // Worst-case latency drops from N×3s (sequential) to 3s (parallel).
-  report(`[nexus] checking URLs: ${urlsToTry.join(", ")}`);
-  let fastResult: { url: string; starting: boolean } | undefined;
-  try {
-    fastResult = await Promise.any(
-      urlsToTry.map(async (url) => {
-        const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(3_000) });
-        if (!res.ok) throw new Error("not ok");
-        const body = (await res.json().catch(() => ({}))) as { status?: string };
-        report(`[nexus] ${url} → status=${body.status}`);
-        if (body.status === "healthy") return { url, starting: false };
-        if (body.status === "starting") return { url, starting: true };
-        throw new Error(`not healthy: ${body.status}`);
-      }),
-    );
-  } catch {
-    // All probes failed (AggregateError from Promise.any) — fall through to restart/start
-    fastResult = undefined;
+  /**
+   * Probe a set of URLs concurrently.
+   * - Resolves immediately when the first healthy URL responds; remaining probes are
+   *   cancelled via AbortController so dead-URL timeouts don't add latency.
+   * - If no URL is healthy, waits for all probes to settle and returns the
+   *   highest-priority "starting" URL (priority = input array order).
+   */
+  async function probeTier(
+    urls: string[],
+  ): Promise<{ url: string; starting: boolean } | undefined> {
+    if (urls.length === 0) return undefined;
+    const ac = new AbortController();
+    const settled: ({ url: string; starting: boolean } | "failed" | null)[] = new Array(
+      urls.length,
+    ).fill(null);
+
+    return new Promise((resolve) => {
+      let done = false;
+      let remaining = urls.length;
+
+      function finish(result?: { url: string; starting: boolean }): void {
+        if (!done) {
+          done = true;
+          ac.abort(); // cancel remaining in-flight probes
+          resolve(result);
+        }
+      }
+
+      urls.forEach((url, idx) => {
+        // Combine per-probe timeout with the shared abort signal for early cancellation.
+        const signal =
+          typeof AbortSignal.any === "function"
+            ? AbortSignal.any([ac.signal, AbortSignal.timeout(3_000)])
+            : AbortSignal.timeout(3_000);
+
+        fetch(`${url}/health`, { signal })
+          .then(async (res) => {
+            if (!res.ok) throw new Error("not ok");
+            const body = (await res.json().catch(() => ({}))) as { status?: string };
+            report(`[nexus] ${url} → status=${body.status}`);
+            if (body.status === "healthy") {
+              settled[idx] = { url, starting: false };
+            } else if (body.status === "starting") {
+              settled[idx] = { url, starting: true };
+            } else {
+              throw new Error(`not healthy: ${body.status}`);
+            }
+          })
+          .catch(() => {
+            if (!settled[idx]) settled[idx] = "failed";
+          })
+          .finally(() => {
+            remaining--;
+            if (done) return;
+            const s = settled[idx];
+            // Priority-aware early exit: resolve immediately on healthy only when
+            // all higher-priority URLs (lower index) have already settled (success or
+            // failure). This prevents a faster low-priority URL from preempting a
+            // higher-priority URL that is still in-flight.
+            if (s && s !== "failed" && !(s as { starting: boolean }).starting) {
+              let hasPendingHigher = false;
+              for (let i = 0; i < idx; i++) {
+                if (settled[i] === null) {
+                  hasPendingHigher = true;
+                  break;
+                }
+              }
+              if (!hasPendingHigher) {
+                // Highest-priority available healthy URL — cancel remaining probes
+                finish(s as { url: string; starting: boolean });
+                return;
+              }
+              // Higher-priority URL still in-flight; fall through to wait for it
+            }
+            // All probes settled — two-pass selection: healthy first, then starting
+            if (remaining === 0) {
+              // Pass 1: healthy in priority order
+              for (const r of settled) {
+                if (r && r !== "failed" && !(r as { starting: boolean }).starting) {
+                  finish(r as { url: string; starting: boolean });
+                  return;
+                }
+              }
+              // Pass 2: starting in priority order (will be waited on via waitForNexusHealth)
+              for (const r of settled) {
+                if (r && r !== "failed") {
+                  finish(r as { url: string; starting: boolean });
+                  return;
+                }
+              }
+              finish(undefined);
+            }
+          });
+      });
+    });
+  }
+
+  report(`[nexus] checking tier-1 URLs: ${tier1Urls.join(", ")}`);
+  let fastResult = await probeTier(tier1Urls);
+
+  if (!fastResult && tier2Urls.length > 0) {
+    report(`[nexus] tier-1 miss — checking tier-2 URLs: ${tier2Urls.join(", ")}`);
+    fastResult = await probeTier(tier2Urls);
   }
 
   if (fastResult) {

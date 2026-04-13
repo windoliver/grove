@@ -171,6 +171,30 @@ describe("nexusUp fallback (--timeout not supported)", () => {
     };
   }
 
+  /**
+   * Build a fake proc whose stderr arrives in two separate chunks to simulate
+   * arbitrary stream read boundaries. Used to verify the chunk-safe ring buffer.
+   */
+  function fakeChunkedProc(exitCode: number, stdoutText: string, chunk1: string, chunk2: string) {
+    const enc = new TextEncoder();
+    return {
+      exited: Promise.resolve(exitCode),
+      stdout: new ReadableStream({
+        start(c) {
+          c.enqueue(enc.encode(stdoutText));
+          c.close();
+        },
+      }),
+      stderr: new ReadableStream({
+        start(c) {
+          c.enqueue(enc.encode(chunk1));
+          c.enqueue(enc.encode(chunk2));
+          c.close();
+        },
+      }),
+    };
+  }
+
   test("falls back to args without --timeout when CLI says 'no such option'", async () => {
     const calls: string[][] = [];
 
@@ -210,6 +234,28 @@ describe("nexusUp fallback (--timeout not supported)", () => {
     await nexusUp("/tmp/test-proj");
 
     expect(calls.length).toBe(2);
+  });
+
+  test("falls back when 'no such option' is split across two stream chunks (chunk-safety)", async () => {
+    // Regression: ring buffer previously split on read boundaries, so "no such option: --timeout"
+    // arriving as two chunks would not match the fallback trigger substring.
+    const calls: string[][] = [];
+
+    // @ts-ignore
+    Bun.spawn = (args: string[], _opts?: unknown) => {
+      calls.push(args);
+      if (args.includes("--timeout")) {
+        // Split "Error: no such option: --timeout\n" across two chunks
+        return fakeChunkedProc(1, "", "Error: no such opt", "ion: --timeout\n");
+      }
+      return fakeProc(0, "nexus  http://localhost:2026\n", "");
+    };
+
+    const { nexusUp } = await import("./nexus-lifecycle.js");
+    await nexusUp("/tmp/test-proj");
+
+    expect(calls.length).toBe(2);
+    expect(calls[1]).not.toContain("--timeout");
   });
 
   test("throws immediately for unrelated errors — no fallback attempted", async () => {
