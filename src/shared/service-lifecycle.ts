@@ -38,6 +38,38 @@ export interface RunningServices {
   readonly nexusManaged: boolean;
   readonly projectRoot: string;
   readonly pidFilePath: string;
+  /**
+   * Resolved Nexus URL after successful startup. Present when nexusManaged
+   * is true and Nexus started successfully. Callers should persist this to
+   * grove.json via persistNexusUrlToConfig so Resume can skip re-discovery.
+   */
+  readonly resolvedNexusUrl?: string | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Config persistence helper (caller responsibility, not startServices)
+// ---------------------------------------------------------------------------
+
+/**
+ * Persist the resolved Nexus URL to grove.json.
+ *
+ * Call this after startServices() returns when resolvedNexusUrl is set.
+ * Keeping this out of startServices() makes the side effect explicit and
+ * the lifecycle function easier to test.
+ *
+ * Best-effort — failures are logged but do not throw.
+ */
+export function persistNexusUrlToConfig(groveDir: string, url: string): void {
+  try {
+    const configPath = join(groveDir, "grove.json");
+    if (!existsSync(configPath)) return;
+    const current = JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
+    if (current.nexusUrl === url) return; // already correct — skip write
+    current.nexusUrl = url;
+    writeFileSync(configPath, `${JSON.stringify(current, null, 2)}\n`, "utf-8");
+  } catch {
+    // Best-effort — don't crash startup over config persistence
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -48,20 +80,27 @@ export interface RunningServices {
  * Start all configured services (HTTP server, MCP server, managed Nexus).
  *
  * Reads grove.json to determine which services to start. Returns a handle
- * for stopping services later.
+ * for stopping services later, including the resolved Nexus URL when managed.
+ *
+ * Does NOT persist nexusUrl to grove.json — call persistNexusUrlToConfig
+ * with resolvedNexusUrl after this returns if you want Resume to skip
+ * re-discovery.
  *
  * If grove.json doesn't exist or has no services configured, returns
  * an empty RunningServices (no-op shutdown).
  */
 export async function startServices(options: ServiceStartOptions): Promise<RunningServices> {
   const { groveDir } = options;
+  const report = options.onProgress ?? ((msg: string) => process.stderr.write(`${msg}\n`));
   const configPath = join(groveDir, "grove.json");
   const projectRoot = join(groveDir, "..");
   const pidFilePath = join(groveDir, "grove.pid");
   const children: ChildProcess[] = [];
   let nexusManaged = false;
-  process.stderr.write(
-    `[startServices] groveDir=${groveDir} configExists=${existsSync(configPath)} GROVE_NEXUS_URL=${process.env.GROVE_NEXUS_URL ?? "unset"}\n`,
+  let resolvedNexusUrl: string | undefined;
+
+  report(
+    `[startServices] groveDir=${groveDir} configExists=${existsSync(configPath)} GROVE_NEXUS_URL=${process.env.GROVE_NEXUS_URL ?? "unset"}`,
   );
 
   if (!existsSync(configPath)) {
@@ -72,58 +111,65 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
   const { parseGroveConfig } = await import("../core/config.js");
   const config = parseGroveConfig(raw);
 
-  // Start managed Nexus if configured — skip if GROVE_NEXUS_URL already set (reuse existing).
-  // Issue 3A: removed the duplicate config.nexusUrl fast-path health check that previously
-  // preceded ensureNexusRunning(). ensureNexusRunning() already probes config.nexusUrl as
-  // one of its candidates (including parallel probing per Issue 2A), so the outer check was
-  // redundant and kept two copies of the "is Nexus healthy?" logic in sync.
+  // Start managed Nexus if configured — skip if GROVE_NEXUS_URL already set (reuse existing)
   if (
     !process.env.GROVE_NEXUS_URL &&
     (config.nexusManaged || (config.mode === "nexus" && !config.nexusUrl))
   ) {
-    try {
-      const { ensureNexusRunning } = await import("../cli/nexus-lifecycle.js");
-      const nexusInfo = await ensureNexusRunning(projectRoot, config, {
-        build: options.build ?? false,
-        nexusSource: options.nexusSource,
-        onProgress: options.onProgress,
-      });
-      nexusManaged = true;
-      // Only set env vars if not already configured (user may have set explicit Nexus URL)
-      if (!process.env.GROVE_NEXUS_URL) {
-        process.env.GROVE_NEXUS_URL = nexusInfo.url;
-      }
-      if (!process.env.NEXUS_API_KEY && nexusInfo.apiKey) {
-        process.env.NEXUS_API_KEY = nexusInfo.apiKey;
-      }
-      // Issue 15A: reuse already-parsed config and raw string — avoids a redundant readFileSync.
-      // Persist Nexus URL to grove.json so Resume can find it without re-discovery.
+    // Fast path: if grove.json has nexusUrl, check health before running ensureNexusRunning.
+    if (config.nexusUrl) {
       try {
-        if (config.nexusUrl !== nexusInfo.url) {
-          const updated = { ...JSON.parse(raw), nexusUrl: nexusInfo.url };
-          writeFileSync(configPath, `${JSON.stringify(updated, null, 2)}\n`, "utf-8");
+        const { readNexusApiKey } = await import("../cli/nexus-lifecycle.js");
+        const res = await fetch(`${config.nexusUrl}/health`, {
+          signal: AbortSignal.timeout(5_000),
+        });
+        const body = (await res.json().catch(() => ({}))) as { status?: string };
+        if (body.status === "healthy" || body.status === "starting") {
+          const apiKey = readNexusApiKey(projectRoot);
+          if (body.status === "starting") {
+            const { waitForNexusHealth } = await import("../cli/nexus-lifecycle.js");
+            await waitForNexusHealth(config.nexusUrl, 60_000);
+          }
+          process.env.GROVE_NEXUS_URL = config.nexusUrl;
+          if (apiKey) process.env.NEXUS_API_KEY = apiKey;
+          nexusManaged = true;
+          resolvedNexusUrl = config.nexusUrl;
+          options.onProgress?.("Nexus is ready (from grove.json)");
         }
       } catch {
-        // Best-effort — don't fail startup over config persistence
+        // Not reachable — fall through to ensureNexusRunning
       }
-    } catch (err) {
-      // If user explicitly asked for --build, don't silently fall back — surface the error
-      if (options.build) {
-        throw err;
-      }
-      // Fall back to local mode — log the reason for debugging
-      const errMsg = err instanceof Error ? err.message : String(err);
-      options.onProgress?.(`Nexus unavailable (${errMsg}), using local mode`);
     }
+
+    if (!nexusManaged)
+      try {
+        const { ensureNexusRunning } = await import("../cli/nexus-lifecycle.js");
+        const nexusInfo = await ensureNexusRunning(projectRoot, config, {
+          build: options.build ?? false,
+          nexusSource: options.nexusSource,
+          onProgress: report,
+        });
+        nexusManaged = true;
+        resolvedNexusUrl = nexusInfo.url;
+        if (!process.env.GROVE_NEXUS_URL) {
+          process.env.GROVE_NEXUS_URL = nexusInfo.url;
+        }
+        if (!process.env.NEXUS_API_KEY && nexusInfo.apiKey) {
+          process.env.NEXUS_API_KEY = nexusInfo.apiKey;
+        }
+      } catch (err) {
+        // If user explicitly asked for --build, don't silently fall back — surface the error
+        if (options.build) {
+          throw err;
+        }
+        const errMsg = err instanceof Error ? err.message : String(err);
+        report(`Nexus unavailable (${errMsg}), using local mode`);
+      }
   }
 
   // Spawn services in parallel
   const spawnPromises: Promise<ChildProcess | null>[] = [];
 
-  // Resolve grove source root for service entry points.
-  // Use process.argv[1] (the CLI entry point) not import.meta.url — bun bundles
-  // inline this file into a chunk, making import.meta.url unreliable.
-  // process.argv[1] = "<groveRoot>/dist/cli/main.js" or "<groveRoot>/src/cli/main.ts"
   const { dirname } = await import("node:path");
   const entryPoint = process.argv[1] ?? "";
   const groveSourceRoot = dirname(dirname(dirname(entryPoint)));
@@ -136,13 +182,11 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
   if (config.services?.server) {
     options.onProgress?.("Starting HTTP server...");
     const serverEntry = resolveEntry("src/server/serve.ts");
-    process.stderr.write(
-      `[startServices] spawning HTTP server: ${serverEntry} groveDir=${groveDir}\n`,
-    );
+    report(`[startServices] spawning HTTP server: ${serverEntry} groveDir=${groveDir}`);
     spawnPromises.push(spawnService("server", serverEntry, groveDir));
   } else {
-    process.stderr.write(
-      `[startServices] HTTP server NOT configured (services.server=${String(config.services?.server)})\n`,
+    report(
+      `[startServices] HTTP server NOT configured (services.server=${String(config.services?.server)})`,
     );
   }
 
@@ -167,7 +211,7 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
     writeFileSync(pidFilePath, `${JSON.stringify(pidData, null, 2)}\n`, "utf-8");
   }
 
-  return { children, nexusManaged, projectRoot, pidFilePath };
+  return { children, nexusManaged, projectRoot, pidFilePath, resolvedNexusUrl };
 }
 
 // ---------------------------------------------------------------------------
@@ -231,14 +275,40 @@ export async function stopServices(services: RunningServices): Promise<void> {
 // Service spawning with health check
 // ---------------------------------------------------------------------------
 
+/** Known service ports. */
+const SERVICE_PORTS: Record<string, number> = { server: 4515, mcp: 4015 };
+
+/** Service health-check timeout (ms). */
+const SERVICE_HEALTH_TIMEOUT_MS = 10_000;
+
+/**
+ * Poll a /health endpoint until it returns 200 OK or the timeout expires.
+ *
+ * Uses exponential backoff starting at 250ms. Does not throw on timeout —
+ * the caller checks process liveness separately.
+ */
+async function waitForServiceHealth(url: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let delay = 250;
+  while (Date.now() < deadline) {
+    try {
+      const resp = await fetch(url, { signal: AbortSignal.timeout(1_000) });
+      if (resp.ok) return;
+    } catch {
+      // not ready yet
+    }
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    delay = Math.min(delay * 1.5, 2_000);
+  }
+  // Timeout — caller will check process.kill(pid, 0) to determine liveness
+}
+
 async function spawnService(
   name: string,
   entryPoint: string,
   groveDir: string,
 ): Promise<ChildProcess | null> {
-  // Check if the port is already in use (server=4515, mcp=4015)
-  const defaultPorts: Record<string, number> = { server: 4515, mcp: 4015 };
-  const port = defaultPorts[name];
+  const port = SERVICE_PORTS[name];
   if (port) {
     try {
       const resp = await fetch(`http://localhost:${port}/health`, {
@@ -254,7 +324,6 @@ async function spawnService(
   }
 
   try {
-    // Spawn detached so the server survives TUI exit.
     const { spawn: nodeSpawn } = await import("node:child_process");
     const child = nodeSpawn("bun", [entryPoint], {
       cwd: join(groveDir, ".."),
@@ -265,41 +334,18 @@ async function spawnService(
     const pid = child.pid ?? 0;
     child.unref();
 
-    // Issue 7A: poll the health endpoint with exponential backoff instead of a blind 5s sleep.
-    // In the common case (service starts in < 1s) this returns immediately rather than blocking.
-    // Cap at 10s; if the service is alive but not responding to health, return it anyway.
+    // Wait for the service to pass its health check instead of sleeping blindly.
     if (port) {
-      const deadline = Date.now() + 10_000;
-      let delay = 200;
-      while (Date.now() < deadline) {
-        try {
-          const resp = await fetch(`http://localhost:${port}/health`, {
-            signal: AbortSignal.timeout(500),
-          });
-          if (resp.ok) break;
-        } catch {
-          // Not ready yet
-        }
-        // Confirm the process is still alive before waiting again
-        try {
-          process.kill(pid, 0);
-        } catch {
-          return null; // process died during startup
-        }
-        await new Promise((r) => setTimeout(r, delay));
-        delay = Math.min(delay * 1.5, 2_000);
-      }
-    } else {
-      // No known port — brief wait then existence check
-      await new Promise((resolve) => setTimeout(resolve, 2_000));
-      try {
-        process.kill(pid, 0);
-      } catch {
-        return null;
-      }
+      await waitForServiceHealth(`http://localhost:${port}/health`, SERVICE_HEALTH_TIMEOUT_MS);
     }
 
-    // Wrap for the ChildProcess interface
+    // Verify the process is still alive after health check / timeout
+    try {
+      process.kill(pid, 0); // Signal 0 = check existence
+    } catch {
+      return null; // Process died during startup
+    }
+
     const proc = {
       pid,
       kill: (signal?: string) => {

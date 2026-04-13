@@ -100,12 +100,17 @@ export async function handleUp(args: readonly string[], groveOverride?: string):
     );
   }
 
-  const { startServices, stopServices } = await import("../../shared/service-lifecycle.js");
+  const { startServices, stopServices, persistNexusUrlToConfig } = await import(
+    "../../shared/service-lifecycle.js"
+  );
   const services = await startServices({
     groveDir,
     build: opts.build,
     nexusSource: opts.nexusSource,
   });
+  if (services.resolvedNexusUrl) {
+    persistNexusUrlToConfig(groveDir, services.resolvedNexusUrl);
+  }
 
   // Initialize local runtime for periodic cleanup (claim expiry + artifact GC).
   // Uses frontierCacheTtlMs=0 since cleanup doesn't need frontier caching.
