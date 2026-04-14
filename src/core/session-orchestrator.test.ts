@@ -387,7 +387,9 @@ describe("SessionOrchestrator — workspace isolation policy", () => {
 
     // /tmp is not a git repo so worktree creation will fail.
     // strict policy → fails fast with provisioning error (more informative than "No agents spawned")
-    await expect(orchestrator.start()).rejects.toThrow("Workspace provisioning failed for role 'worker'");
+    await expect(orchestrator.start()).rejects.toThrow(
+      "Workspace provisioning failed for role 'worker'",
+    );
 
     expect(runtime.spawnCalls).toHaveLength(0);
     bus.close();

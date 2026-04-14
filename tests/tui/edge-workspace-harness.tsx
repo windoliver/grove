@@ -16,22 +16,20 @@
  * Non-git dir: both "started [shared workspace]" (allow-fallback default)
  */
 
-import { createCliRenderer } from "@opentui/core";
-import { createRoot } from "@opentui/react";
 import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { createCliRenderer } from "@opentui/core";
+import { createRoot } from "@opentui/react";
 import React, { useEffect, useRef, useState } from "react";
-
+import type { AgentTopology, EdgeType } from "../../src/core/topology.js";
 import { MockTmuxManager } from "../../src/tui/agents/tmux-manager.js";
+import type { TuiDataProvider } from "../../src/tui/provider.js";
 import type { AgentSpawnState } from "../../src/tui/screens/spawn-progress.js";
 import { SpawnProgress } from "../../src/tui/screens/spawn-progress.js";
 import { SpawnManager } from "../../src/tui/spawn-manager.js";
-import type { TuiDataProvider } from "../../src/tui/provider.js";
-import type { AgentTopology } from "../../src/core/topology.js";
-import type { EdgeType } from "../../src/core/topology.js";
 
 // ---------------------------------------------------------------------------
 // Args
@@ -76,11 +74,13 @@ const topology: AgentTopology = {
   roles: [
     {
       name: "coder",
-      edges: [{
-        target: "reviewer",
-        edgeType,
-        ...(usesBranching ? { workspace: "branch_from_source" as const } : {}),
-      }],
+      edges: [
+        {
+          target: "reviewer",
+          edgeType,
+          ...(usesBranching ? { workspace: "branch_from_source" as const } : {}),
+        },
+      ],
     },
     { name: "reviewer" },
   ],
@@ -92,40 +92,87 @@ const topology: AgentTopology = {
 
 const mockProvider = {
   capabilities: {
-    outcomes: false, artifacts: false, vfs: false, messaging: false,
-    costTracking: false, askUser: false, github: false, bounties: false,
-    gossip: false, goals: false, sessions: false, handoffs: false,
+    outcomes: false,
+    artifacts: false,
+    vfs: false,
+    messaging: false,
+    costTracking: false,
+    askUser: false,
+    github: false,
+    bounties: false,
+    gossip: false,
+    goals: false,
+    sessions: false,
+    handoffs: false,
   },
   async getDashboard() {
     return {
-      metadata: { name: "test", contributionCount: 0, activeClaimCount: 0, mode: "test", backendLabel: "test" },
-      activeClaims: [], recentContributions: [],
+      metadata: {
+        name: "test",
+        contributionCount: 0,
+        activeClaimCount: 0,
+        mode: "test",
+        backendLabel: "test",
+      },
+      activeClaims: [],
+      recentContributions: [],
       frontierSummary: { topByMetric: [], topByAdoption: [] },
     };
   },
-  async getContributions() { return []; },
-  async getContribution() { return undefined; },
-  async getClaims() { return []; },
-  async getFrontier() { return { byMetric: {}, byAdoption: [], byRecency: [], byReviewScore: [], byReproduction: [] }; },
-  async getActivity() { return []; },
-  async getDag() { return { contributions: [] }; },
-  async getHotThreads() { return []; },
-  async createClaim(input: { targetRef: string; agent: { agentId: string }; intentSummary: string; leaseDurationMs: number }) {
+  async getContributions() {
+    return [];
+  },
+  async getContribution() {
+    return undefined;
+  },
+  async getClaims() {
+    return [];
+  },
+  async getFrontier() {
+    return { byMetric: {}, byAdoption: [], byRecency: [], byReviewScore: [], byReproduction: [] };
+  },
+  async getActivity() {
+    return [];
+  },
+  async getDag() {
+    return { contributions: [] };
+  },
+  async getHotThreads() {
+    return [];
+  },
+  async createClaim(input: {
+    targetRef: string;
+    agent: { agentId: string };
+    intentSummary: string;
+    leaseDurationMs: number;
+  }) {
     const now = new Date();
     return {
-      claimId: crypto.randomUUID(), targetRef: input.targetRef, agent: input.agent,
-      status: "active" as const, intentSummary: input.intentSummary,
-      createdAt: now.toISOString(), heartbeatAt: now.toISOString(),
+      claimId: crypto.randomUUID(),
+      targetRef: input.targetRef,
+      agent: input.agent,
+      status: "active" as const,
+      intentSummary: input.intentSummary,
+      createdAt: now.toISOString(),
+      heartbeatAt: now.toISOString(),
       leaseExpiresAt: new Date(now.getTime() + input.leaseDurationMs).toISOString(),
     };
   },
   async checkoutWorkspace(targetRef: string): Promise<string> {
     return join("/tmp", "grove-fallback-ws", targetRef);
   },
-  async heartbeatClaim() { throw new Error("no claim"); },
-  async releaseClaim() {},
-  async cleanWorkspace() {},
-  close() {},
+  async heartbeatClaim() {
+    throw new Error("no claim");
+  },
+  async releaseClaim() {
+    /* no-op */
+  },
+  async cleanWorkspace() {
+    /* no-op */
+  },
+  close() {
+    /* no-op */
+  },
 } as unknown as TuiDataProvider;
 
 // ---------------------------------------------------------------------------
@@ -158,27 +205,47 @@ function HarnessApp(): React.ReactElement {
     setAgents((prev) => prev.map((a) => ({ ...a, status: "spawning" as const })));
 
     // Spawn coder first (it's the source — reviewer depends on its branch)
-    void sm.spawn("coder", "claude").then((r) => {
-      setAgents((prev) =>
-        prev.map((a) => a.role === "coder" ? { ...a, status: "started" as const, workspaceMode: r.workspaceMode } : a),
-      );
-      // Spawn reviewer after coder (needs coder's branch for delegates/feeds/escalates)
-      void sm.spawn("reviewer", "claude").then((r2) => {
+    void sm
+      .spawn("coder", "claude")
+      .then((r) => {
         setAgents((prev) =>
-          prev.map((a) => a.role === "reviewer" ? { ...a, status: "started" as const, workspaceMode: r2.workspaceMode } : a),
+          prev.map((a) =>
+            a.role === "coder"
+              ? { ...a, status: "started" as const, workspaceMode: r.workspaceMode }
+              : a,
+          ),
         );
-      }).catch((err: unknown) => {
+        // Spawn reviewer after coder (needs coder's branch for delegates/feeds/escalates)
+        void sm
+          .spawn("reviewer", "claude")
+          .then((r2) => {
+            setAgents((prev) =>
+              prev.map((a) =>
+                a.role === "reviewer"
+                  ? { ...a, status: "started" as const, workspaceMode: r2.workspaceMode }
+                  : a,
+              ),
+            );
+          })
+          .catch((err: unknown) => {
+            setAgents((prev) =>
+              prev.map((a) =>
+                a.role === "reviewer" ? { ...a, status: "failed" as const, error: String(err) } : a,
+              ),
+            );
+          });
+      })
+      .catch((err: unknown) => {
         setAgents((prev) =>
-          prev.map((a) => a.role === "reviewer" ? { ...a, status: "failed" as const, error: String(err) } : a),
+          prev.map((a) =>
+            a.role === "coder" ? { ...a, status: "failed" as const, error: String(err) } : a,
+          ),
         );
       });
-    }).catch((err: unknown) => {
-      setAgents((prev) =>
-        prev.map((a) => a.role === "coder" ? { ...a, status: "failed" as const, error: String(err) } : a),
-      );
-    });
 
-    return () => { smRef.current = undefined; };
+    return () => {
+      smRef.current = undefined;
+    };
   }, []);
 
   return (

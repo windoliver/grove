@@ -12,14 +12,14 @@
  */
 
 import { execSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
 import { AcpxRuntime } from "../../src/core/acpx-runtime.js";
-import { provisionWorkspace } from "../../src/core/workspace-provisioner.js";
-import { resolveRoleWorkspaceStrategies } from "../../src/core/topology.js";
 import type { AgentTopology } from "../../src/core/topology.js";
+import { resolveRoleWorkspaceStrategies } from "../../src/core/topology.js";
+import { provisionWorkspace } from "../../src/core/workspace-provisioner.js";
 
 // ---------------------------------------------------------------------------
 // Args
@@ -72,7 +72,7 @@ function assert(condition: boolean, label: string, detail?: string): void {
 // ---------------------------------------------------------------------------
 
 console.log("\n=== Step 1: Provision coder worktree (base: HEAD) ===");
-const coderBaseBranch = strategies.get("coder")!;
+const coderBaseBranch = strategies.get("coder") ?? "HEAD";
 assert(coderBaseBranch === "HEAD", `coder baseBranch = ${coderBaseBranch}`);
 
 const coderWs = await provisionWorkspace({
@@ -128,10 +128,13 @@ if (coderProofExists) {
 
 // Commit coder's work
 if (coderProofExists) {
-  execSync("git add -A && git -c user.email=test@grove.test -c user.name=Grove-E2E commit -m 'coder: add proof' --quiet", {
-    cwd: coderWs.path,
-    stdio: "ignore",
-  });
+  execSync(
+    "git add -A && git -c user.email=test@grove.test -c user.name=Grove-E2E commit -m 'coder: add proof' --quiet",
+    {
+      cwd: coderWs.path,
+      stdio: "ignore",
+    },
+  );
   console.log("  Committed coder's work to branch");
 }
 
@@ -144,7 +147,7 @@ console.log("  Closed coder acpx session");
 // ---------------------------------------------------------------------------
 
 console.log("\n=== Step 3: Provision reviewer worktree (base: coder's branch) ===");
-const reviewerBaseBranch = strategies.get("reviewer")!;
+const reviewerBaseBranch = strategies.get("reviewer") ?? "HEAD";
 console.log(`  reviewer baseBranch: ${reviewerBaseBranch}`);
 assert(reviewerBaseBranch.includes("/coder"), `reviewer branches off coder: ${reviewerBaseBranch}`);
 
@@ -169,7 +172,12 @@ if (reviewerSeesProof) {
 
 // Verify git log in reviewer worktree shows coder's commit
 const reviewerLog = execSync("git log --oneline", { cwd: reviewerWs.path, encoding: "utf-8" });
-console.log(`  reviewer git log:\n${reviewerLog.split("\n").map(l => `    ${l}`).join("\n")}`);
+console.log(
+  `  reviewer git log:\n${reviewerLog
+    .split("\n")
+    .map((l) => `    ${l}`)
+    .join("\n")}`,
+);
 assert(reviewerLog.includes("coder: add proof"), "reviewer git log shows coder's commit");
 
 // ---------------------------------------------------------------------------
@@ -185,7 +193,10 @@ const reviewerSession = await runtime.spawn("reviewer", {
   env: { GROVE_SESSION_ID: SESSION_ID, GROVE_ROLE: "reviewer" },
 });
 console.log(`  acpx session: ${reviewerSession.id}`);
-assert(reviewerSession.id.startsWith("grove-reviewer-"), `session name starts with grove-reviewer-`);
+assert(
+  reviewerSession.id.startsWith("grove-reviewer-"),
+  `session name starts with grove-reviewer-`,
+);
 
 // Wait for reviewer to finish
 console.log("  Waiting for reviewer agent to create review-result.txt...");
