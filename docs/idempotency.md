@@ -53,7 +53,7 @@ grove contribute --summary "Fix parser" --idempotency-key my-unique-key
 - **Scope**: Keys are namespaced per agent (`agent.role` if set, otherwise `agent.agentId`). Two different agents can use the same key without colliding.
 - **TTL**: Cached results expire after **5 minutes**. After expiry, the key can be reused.
 - **Cache size**: Up to 1024 entries (LRU eviction when full).
-- **Process-local**: The cache is in-memory and not shared across processes. Clients running multiple grove instances must coordinate keys externally.
+- **Persistent**: The cache is backed by SQLite (`idempotency_keys` table in `grove.db`), so keys survive across CLI process restarts. An in-memory layer provides single-flight deduplication within a single process.
 - **Fingerprint coverage**: The conflict check hashes `kind`, `mode`, `summary`, `description`, `artifacts` (name + hash), `relations`, `scores`, `tags`, `context`, and agent scope. Any difference in these fields triggers `STATE_CONFLICT` on key reuse.
 
 ## Key format

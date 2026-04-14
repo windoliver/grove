@@ -725,9 +725,12 @@ export async function contributeOperation(
       input.idempotencyKey !== undefined
         ? idempotencyCacheKey(idempotencyAgentScope, input.idempotencyKey)
         : undefined;
+    // Hoisted so it's available at the durable-commit boundary for
+    // persistent store writes.
+    let idempotencyFingerprint: string | undefined;
     if (idempotencyCacheLookupKey !== undefined) {
-      const fingerprint = computeIdempotencyFingerprint(input, agent);
-      const cached = lookupIdempotency(idempotencyCacheLookupKey, fingerprint, Date.now());
+      idempotencyFingerprint = computeIdempotencyFingerprint(input, agent);
+      const cached = lookupIdempotency(idempotencyCacheLookupKey, idempotencyFingerprint, Date.now());
       if (cached !== undefined) {
         if (cached.type === "pending") {
           // Concurrent caller: await their write and return the same result.
@@ -743,9 +746,33 @@ export async function contributeOperation(
           details: { idempotencyKey: input.idempotencyKey },
         });
       }
-      // Miss: synchronously reserve the slot. Subsequent concurrent
-      // callers observe the pending Promise and await it.
-      idempotencySlot = reserveIdempotencySlot(idempotencyCacheLookupKey, fingerprint, Date.now());
+
+      // In-memory miss: check persistent store for cross-process hits.
+      if (deps.idempotencyStore !== undefined) {
+        const persisted = deps.idempotencyStore.lookup(
+          idempotencyCacheLookupKey,
+          IDEMPOTENCY_TTL_MS,
+        );
+        if (persisted !== undefined) {
+          if (persisted.fingerprint !== idempotencyFingerprint) {
+            return err({
+              code: OperationErrorCode.StateConflict,
+              message:
+                "Idempotency key was previously used with a different request body. " +
+                "Reusing the same key with different input is rejected to prevent silent " +
+                "write divergence. Use a new key for the new intent.",
+              details: { idempotencyKey: input.idempotencyKey },
+            });
+          }
+          // Same key + same fingerprint from a previous process: return cached.
+          const result = JSON.parse(persisted.resultJson) as ContributeResult;
+          return ok(result);
+        }
+      }
+
+      // Miss in both layers: synchronously reserve the in-memory slot.
+      // Subsequent concurrent callers observe the pending Promise and await it.
+      idempotencySlot = reserveIdempotencySlot(idempotencyCacheLookupKey, idempotencyFingerprint, Date.now());
     }
 
     const contributionInput: ContributionInput = {
@@ -921,6 +948,24 @@ export async function contributeOperation(
       // durably written; retries with the same key must return this cached
       // result, NOT re-run the write path.
       idempotencySlot = undefined;
+
+      // Persist to durable store so cross-process retries (e.g., separate
+      // CLI invocations) can find this entry after the process exits.
+      if (
+        deps.idempotencyStore !== undefined &&
+        idempotencyCacheLookupKey !== undefined &&
+        idempotencyFingerprint !== undefined
+      ) {
+        try {
+          deps.idempotencyStore.store(
+            idempotencyCacheLookupKey,
+            idempotencyFingerprint,
+            JSON.stringify(committedResult),
+          );
+        } catch {
+          // Best-effort — don't fail the contribution over a cache write.
+        }
+      }
     }
 
     // Post-write callbacks — wrapped so a throw cannot escape and undo

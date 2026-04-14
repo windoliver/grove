@@ -153,6 +153,16 @@ const SCHEMA_DDL = `
 
   CREATE INDEX IF NOT EXISTS idx_workspaces_status ON workspaces(status);
   CREATE INDEX IF NOT EXISTS idx_workspaces_activity ON workspaces(last_activity_at);
+
+  -- Idempotency cache: persists across process restarts so CLI retries work.
+  -- The in-memory Map in contribute.ts handles single-flight within a process;
+  -- this table handles cross-process deduplication.
+  CREATE TABLE IF NOT EXISTS idempotency_keys (
+    cache_key TEXT PRIMARY KEY,
+    fingerprint TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    stored_at INTEGER NOT NULL
+  );
 `;
 
 const FTS_DDL = `
@@ -419,6 +429,54 @@ export function initSqliteDb(dbPath: string): Database {
   return db;
 }
 
+// ---------------------------------------------------------------------------
+// SqliteIdempotencyStore
+// ---------------------------------------------------------------------------
+
+/**
+ * SQLite-backed idempotency store for cross-process deduplication.
+ *
+ * Complements the in-memory Map in contribute.ts: the Map provides
+ * single-flight (pending Promise coalescence) within a process; this
+ * store provides durable lookup so a CLI retry in a new process can
+ * detect that a key was already used.
+ */
+export class SqliteIdempotencyStore {
+  private readonly db: Database;
+  private readonly lookupStmt: Statement;
+  private readonly upsertStmt: Statement;
+
+  constructor(db: Database) {
+    this.db = db;
+    this.lookupStmt = db.prepare(
+      "SELECT fingerprint, result_json FROM idempotency_keys WHERE cache_key = ? AND stored_at > ?",
+    );
+    this.upsertStmt = db.prepare(
+      "INSERT OR REPLACE INTO idempotency_keys (cache_key, fingerprint, result_json, stored_at) VALUES (?, ?, ?, ?)",
+    );
+  }
+
+  lookup(
+    cacheKey: string,
+    ttlMs: number,
+  ): { readonly fingerprint: string; readonly resultJson: string } | undefined {
+    const cutoff = Date.now() - ttlMs;
+    const row = this.lookupStmt.get(cacheKey, cutoff) as
+      | { fingerprint: string; result_json: string }
+      | null;
+    if (row === null) return undefined;
+    return { fingerprint: row.fingerprint, resultJson: row.result_json };
+  }
+
+  store(cacheKey: string, fingerprint: string, resultJson: string): void {
+    this.upsertStmt.run(cacheKey, fingerprint, resultJson, Date.now());
+  }
+
+  clear(): void {
+    this.db.run("DELETE FROM idempotency_keys");
+  }
+}
+
 /**
  * Convenience factory that creates a shared Database and returns both stores.
  * The returned close() disposes the database connection.
@@ -431,6 +489,7 @@ export function createSqliteStores(dbPath: string): {
   outcomeStore: SqliteOutcomeStore;
   goalSessionStore: SqliteGoalSessionStore;
   handoffStore: SqliteHandoffStore;
+  idempotencyStore: SqliteIdempotencyStore;
   close: () => void;
 } {
   const db = initSqliteDb(dbPath);
@@ -442,6 +501,7 @@ export function createSqliteStores(dbPath: string): {
     outcomeStore: new SqliteOutcomeStore(db),
     goalSessionStore: new SqliteGoalSessionStore(db),
     handoffStore: new SqliteHandoffStore(db),
+    idempotencyStore: new SqliteIdempotencyStore(db),
     close: () => {
       db.run("PRAGMA optimize");
       db.close();

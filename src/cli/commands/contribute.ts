@@ -308,9 +308,8 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
   }
 
   // Dynamic imports for lazy loading
-  const { SqliteContributionStore, SqliteClaimStore, initSqliteDb } = await import(
-    "../../local/sqlite-store.js"
-  );
+  const { SqliteContributionStore, SqliteClaimStore, SqliteIdempotencyStore, initSqliteDb } =
+    await import("../../local/sqlite-store.js");
   const { FsCas } = await import("../../local/fs-cas.js");
   const { DefaultFrontierCalculator } = await import("../../core/frontier.js");
   const { parseGroveContract } = await import("../../core/contract.js");
@@ -321,6 +320,7 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
   const db = initSqliteDb(dbPath);
   const rawStore = new SqliteContributionStore(db);
   const claimStore = new SqliteClaimStore(db);
+  const idempotencyStore = new SqliteIdempotencyStore(db);
   const cas = new FsCas(casPath);
   const frontier = new DefaultFrontierCalculator(rawStore);
 
@@ -476,6 +476,7 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
       claimStore,
       cas,
       frontier,
+      idempotencyStore,
       ...(contract !== undefined ? { contract } : {}),
     };
 
