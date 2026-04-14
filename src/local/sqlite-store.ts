@@ -461,9 +461,10 @@ export class SqliteIdempotencyStore {
     ttlMs: number,
   ): { readonly fingerprint: string; readonly resultJson: string } | undefined {
     const cutoff = Date.now() - ttlMs;
-    const row = this.lookupStmt.get(cacheKey, cutoff) as
-      | { fingerprint: string; result_json: string }
-      | null;
+    const row = this.lookupStmt.get(cacheKey, cutoff) as {
+      fingerprint: string;
+      result_json: string;
+    } | null;
     if (row === null) return undefined;
     return { fingerprint: row.fingerprint, resultJson: row.result_json };
   }

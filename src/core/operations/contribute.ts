@@ -730,7 +730,11 @@ export async function contributeOperation(
     let idempotencyFingerprint: string | undefined;
     if (idempotencyCacheLookupKey !== undefined) {
       idempotencyFingerprint = computeIdempotencyFingerprint(input, agent);
-      const cached = lookupIdempotency(idempotencyCacheLookupKey, idempotencyFingerprint, Date.now());
+      const cached = lookupIdempotency(
+        idempotencyCacheLookupKey,
+        idempotencyFingerprint,
+        Date.now(),
+      );
       if (cached !== undefined) {
         if (cached.type === "pending") {
           // Concurrent caller: await their write and return the same result.
@@ -772,7 +776,11 @@ export async function contributeOperation(
 
       // Miss in both layers: synchronously reserve the in-memory slot.
       // Subsequent concurrent callers observe the pending Promise and await it.
-      idempotencySlot = reserveIdempotencySlot(idempotencyCacheLookupKey, idempotencyFingerprint, Date.now());
+      idempotencySlot = reserveIdempotencySlot(
+        idempotencyCacheLookupKey,
+        idempotencyFingerprint,
+        Date.now(),
+      );
     }
 
     const contributionInput: ContributionInput = {
