@@ -123,6 +123,7 @@ export interface ReviewInput {
   readonly context?: Readonly<Record<string, JsonValue>> | undefined;
   readonly agent?: AgentOverrides | undefined;
   readonly metadata?: Readonly<Record<string, JsonValue>> | undefined;
+  readonly idempotencyKey?: string | undefined;
 }
 
 /** Input for the reproduce operation. */
@@ -136,6 +137,7 @@ export interface ReproduceInput {
   readonly tags?: readonly string[] | undefined;
   readonly context?: Readonly<Record<string, JsonValue>> | undefined;
   readonly agent?: AgentOverrides | undefined;
+  readonly idempotencyKey?: string | undefined;
 }
 
 /** Input for the discuss operation. */
@@ -146,6 +148,7 @@ export interface DiscussInput {
   readonly tags?: readonly string[] | undefined;
   readonly context?: Readonly<Record<string, JsonValue>> | undefined;
   readonly agent?: AgentOverrides | undefined;
+  readonly idempotencyKey?: string | undefined;
 }
 
 /** Input for the adopt operation. */
@@ -156,6 +159,7 @@ export interface AdoptInput {
   readonly tags?: readonly string[] | undefined;
   readonly context?: Readonly<Record<string, JsonValue>> | undefined;
   readonly agent?: AgentOverrides | undefined;
+  readonly idempotencyKey?: string | undefined;
 }
 
 /** Result of an adopt operation. */
@@ -281,7 +285,10 @@ const idempotencyCache = new Map<string, CachedIdempotencyEntry>();
 
 /** Build the cache key. Namespaced per agent so two agents can share keys. */
 function idempotencyCacheKey(agentScope: string, key: string): string {
-  return `${agentScope}\u0000${key}`;
+  // Include session ID when available so the same key in different sessions
+  // doesn't collide (MCP HTTP sessions share one idempotency store).
+  const sessionId = process.env.GROVE_SESSION_ID ?? "";
+  return `${sessionId}\u0000${agentScope}\u0000${key}`;
 }
 
 /**
@@ -415,7 +422,10 @@ function lookupIdempotency(
   | undefined {
   const entry = idempotencyCache.get(cacheKey);
   if (entry === undefined) return undefined;
-  if (now - entry.storedAt > IDEMPOTENCY_TTL_MS) {
+  // Never TTL-expire a pending entry — the in-flight write may still be
+  // running (slow CAS, hooks, etc). Expiring it would let a retry start
+  // a second write instead of awaiting the first.
+  if (now - entry.storedAt > IDEMPOTENCY_TTL_MS && entry.pending === undefined) {
     idempotencyCache.delete(cacheKey);
     return undefined;
   }
@@ -454,10 +464,16 @@ function reserveIdempotencySlot(
   readonly resolve: (result: OperationResult<ContributeResult>) => void;
   readonly release: () => void;
 } {
-  // Evict the oldest entry if at capacity.
+  // Evict the oldest non-pending entry if at capacity. Pending entries
+  // represent in-flight writes — evicting them would break single-flight
+  // and let a retry start a duplicate write.
   if (idempotencyCache.size >= IDEMPOTENCY_MAX_ENTRIES) {
-    const oldest = idempotencyCache.keys().next().value;
-    if (oldest !== undefined) idempotencyCache.delete(oldest);
+    for (const [key, entry] of idempotencyCache) {
+      if (entry.pending === undefined) {
+        idempotencyCache.delete(key);
+        break;
+      }
+    }
   }
 
   let resolver!: (result: OperationResult<ContributeResult>) => void;
@@ -519,6 +535,7 @@ async function writeAtomic(
   agentRole: string,
   putWithCowrite: (c: Contribution, fn: () => void) => void | Promise<void>,
   insertSync: (input: HandoffInput) => string,
+  onCommit?: () => void,
 ): Promise<readonly string[]> {
   const handoffIds: string[] = [];
   const maybePromise = putWithCowrite(contribution, () => {
@@ -531,6 +548,11 @@ async function writeAtomic(
       });
       if (hid !== undefined) handoffIds.push(hid);
     }
+    // Write idempotency row inside the same SQLite transaction so a
+    // crash between contribution commit and idempotency store write
+    // cannot leave an orphaned contribution without its idempotency
+    // record.
+    onCommit?.();
   });
   if (
     maybePromise !== undefined &&
@@ -560,8 +582,14 @@ async function writeSerial(
   agentRole: string | undefined,
   store: ContributionStore,
   handoffStore: HandoffStore | undefined,
+  onCommit?: () => void,
 ): Promise<readonly string[]> {
   await store.put(contribution);
+  // For non-atomic stores (Nexus, in-memory), write the idempotency row
+  // immediately after the contribution commit. Not fully crash-safe (the
+  // contribution and idempotency row are separate writes), but the window
+  // is minimal and matches the existing handoff best-effort pattern.
+  onCommit?.();
 
   const handoffIds: string[] = [];
   if (handoffStore === undefined || routedTo === undefined || agentRole === undefined) {
@@ -624,6 +652,7 @@ async function writeContributionWithHandoffs(
   agentRole: string | undefined,
   store: ContributionStore,
   handoffStore: HandoffStore | undefined,
+  onCommit?: () => void,
 ): Promise<readonly string[]> {
   const needsHandoffs =
     handoffStore !== undefined &&
@@ -631,10 +660,11 @@ async function writeContributionWithHandoffs(
     routedTo.length > 0 &&
     agentRole !== undefined;
 
+  const cowriteStore = store as {
+    putWithCowrite?: (c: Contribution, fn: () => void) => void | Promise<void>;
+  };
+
   if (needsHandoffs) {
-    const cowriteStore = store as {
-      putWithCowrite?: (c: Contribution, fn: () => void) => void | Promise<void>;
-    };
     const sqliteHandoffStore = handoffStore as {
       insertSync?: (input: HandoffInput) => string;
     };
@@ -645,11 +675,26 @@ async function writeContributionWithHandoffs(
         agentRole,
         cowriteStore.putWithCowrite.bind(cowriteStore),
         sqliteHandoffStore.insertSync.bind(sqliteHandoffStore),
+        onCommit,
       );
     }
   }
 
-  return writeSerial(contribution, routedTo, agentRole, store, handoffStore);
+  // Even without handoffs, use the atomic path when onCommit is provided
+  // and the store supports cowrite — this ensures the idempotency row is
+  // written inside the same SQLite transaction as the contribution.
+  if (onCommit !== undefined && cowriteStore.putWithCowrite !== undefined) {
+    return writeAtomic(
+      contribution,
+      [],
+      agentRole ?? "",
+      cowriteStore.putWithCowrite.bind(cowriteStore),
+      () => "", // no-op insertSync (no handoffs)
+      onCommit,
+    );
+  }
+
+  return writeSerial(contribution, routedTo, agentRole, store, handoffStore, onCommit);
 }
 
 // ---------------------------------------------------------------------------
@@ -662,15 +707,14 @@ export async function contributeOperation(
   deps: OperationDeps,
 ): Promise<OperationResult<ContributeResult>> {
   // Hoisted out of the try block so the outer catch can release the slot
-  // on thrown errors. Single-flight: while a slot holds a pending Promise,
-  // concurrent callers with the same key await that Promise instead of
-  // racing through the write path.
+  // and roll back the durable reservation on thrown errors.
   let idempotencySlot:
     | {
         readonly resolve: (result: OperationResult<ContributeResult>) => void;
         readonly release: () => void;
       }
     | undefined;
+  let idempotencyCacheLookupKey: string | undefined;
 
   try {
     if (deps.contributionStore === undefined) {
@@ -717,13 +761,20 @@ export async function contributeOperation(
     // two concurrent callers cannot both observe a miss and race past the
     // insert — the second caller sees the first caller's pending entry.
     const idempotencyAgentScope = agent.role ?? agent.agentId;
-    const idempotencyCacheLookupKey =
+    idempotencyCacheLookupKey =
       input.idempotencyKey !== undefined
         ? idempotencyCacheKey(idempotencyAgentScope, input.idempotencyKey)
         : undefined;
+    // Hoisted so it's available at the durable-commit boundary for
+    // persistent store writes.
+    let idempotencyFingerprint: string | undefined;
     if (idempotencyCacheLookupKey !== undefined) {
-      const fingerprint = computeIdempotencyFingerprint(input, agent);
-      const cached = lookupIdempotency(idempotencyCacheLookupKey, fingerprint, Date.now());
+      idempotencyFingerprint = computeIdempotencyFingerprint(input, agent);
+      const cached = lookupIdempotency(
+        idempotencyCacheLookupKey,
+        idempotencyFingerprint,
+        Date.now(),
+      );
       if (cached !== undefined) {
         if (cached.type === "pending") {
           // Concurrent caller: await their write and return the same result.
@@ -739,9 +790,66 @@ export async function contributeOperation(
           details: { idempotencyKey: input.idempotencyKey },
         });
       }
-      // Miss: synchronously reserve the slot. Subsequent concurrent
-      // callers observe the pending Promise and await it.
-      idempotencySlot = reserveIdempotencySlot(idempotencyCacheLookupKey, fingerprint, Date.now());
+
+      // In-memory miss: check persistent store for cross-process hits.
+      if (deps.idempotencyStore !== undefined) {
+        const persisted = deps.idempotencyStore.lookup(
+          idempotencyCacheLookupKey,
+          IDEMPOTENCY_TTL_MS,
+        );
+        if (persisted !== undefined) {
+          if (persisted.fingerprint !== idempotencyFingerprint) {
+            return err({
+              code: OperationErrorCode.StateConflict,
+              message:
+                "Idempotency key was previously used with a different request body. " +
+                "Reusing the same key with different input is rejected to prevent silent " +
+                "write divergence. Use a new key for the new intent.",
+              details: { idempotencyKey: input.idempotencyKey },
+            });
+          }
+          if (persisted.status === "committed") {
+            // Same key + same fingerprint, already completed: return cached.
+            const result = JSON.parse(persisted.resultJson) as ContributeResult;
+            return ok(result);
+          }
+          // status === "pending": another process is mid-write. Return a
+          // retryable error rather than proceeding with a duplicate write
+          // or returning the placeholder result.
+          return err({
+            code: OperationErrorCode.StateConflict,
+            message:
+              "Idempotency key is currently being processed by another request. " +
+              "Retry after a short delay.",
+            details: { idempotencyKey: input.idempotencyKey, retryable: true },
+          });
+        }
+
+        // No existing row: durably reserve before writing.
+        const reserved = deps.idempotencyStore.reserve(
+          idempotencyCacheLookupKey,
+          idempotencyFingerprint,
+        );
+        if (!reserved) {
+          // Lost the race to another process that reserved between our
+          // lookup and this INSERT OR IGNORE. Return retryable error.
+          return err({
+            code: OperationErrorCode.StateConflict,
+            message:
+              "Idempotency key is currently being processed by another request. " +
+              "Retry after a short delay.",
+            details: { idempotencyKey: input.idempotencyKey, retryable: true },
+          });
+        }
+      }
+
+      // Reserve the in-memory slot for single-flight within this process.
+      // Subsequent concurrent callers observe the pending Promise and await it.
+      idempotencySlot = reserveIdempotencySlot(
+        idempotencyCacheLookupKey,
+        idempotencyFingerprint,
+        Date.now(),
+      );
     }
 
     const contributionInput: ContributionInput = {
@@ -868,12 +976,42 @@ export async function contributeOperation(
     // undefined as the routing-target list to the writer.
     const agentRole = contribution.agent.role;
     const handoffsRoutedTo = skipHandoffs ? undefined : routedTo;
+    // Build onCommit callback for atomic idempotency-store write.
+    // Runs inside the SQLite transaction (atomic path) or immediately
+    // after store.put() (serial path), closing the crash window between
+    // contribution commit and idempotency record.
+    const idempotencyOnCommit =
+      deps.idempotencyStore !== undefined &&
+      idempotencyCacheLookupKey !== undefined &&
+      idempotencyFingerprint !== undefined
+        ? () => {
+            // Build a minimal result from the contribution (routedTo and
+            // handoffIds are populated later, but the CID is the critical
+            // dedup signal — retries just need to know the write happened).
+            const earlyResult: ContributeResult = {
+              cid: contribution.cid,
+              kind: contribution.kind,
+              mode: contribution.mode,
+              summary: contribution.summary,
+              artifactCount: Object.keys(contribution.artifacts).length,
+              relationCount: contribution.relations.length,
+              createdAt: contribution.createdAt,
+            };
+            deps.idempotencyStore?.store(
+              idempotencyCacheLookupKey!,
+              idempotencyFingerprint!,
+              JSON.stringify(earlyResult),
+            );
+          }
+        : undefined;
+
     const handoffIds = await writeContributionWithHandoffs(
       contribution,
       handoffsRoutedTo,
       agentRole,
       deps.contributionStore,
       deps.handoffStore,
+      idempotencyOnCommit,
     );
 
     // ┌──────────────────────────────────────────────────────────────────┐
@@ -917,6 +1055,26 @@ export async function contributeOperation(
       // durably written; retries with the same key must return this cached
       // result, NOT re-run the write path.
       idempotencySlot = undefined;
+
+      // Update the durable idempotency row with the full result (includes
+      // routedTo, handoffIds, policy which weren't available at commit time).
+      // This is an UPDATE, not an INSERT — the row was created atomically
+      // with the contribution inside the write transaction.
+      if (
+        deps.idempotencyStore !== undefined &&
+        idempotencyCacheLookupKey !== undefined &&
+        idempotencyFingerprint !== undefined
+      ) {
+        try {
+          deps.idempotencyStore.store(
+            idempotencyCacheLookupKey,
+            idempotencyFingerprint,
+            JSON.stringify(committedResult),
+          );
+        } catch {
+          // The early result from onCommit is sufficient for dedup.
+        }
+      }
     }
 
     // Post-write callbacks — wrapped so a throw cannot escape and undo
@@ -1094,6 +1252,15 @@ export async function contributeOperation(
     // failure). Post-commit failures flow through the committed result
     // path and never reach this catch.
     idempotencySlot?.release();
+    // Roll back the durable reservation so the key doesn't stay stuck
+    // in 'pending' for the full TTL after a pre-commit failure.
+    if (idempotencyCacheLookupKey !== undefined && deps.idempotencyStore !== undefined) {
+      try {
+        deps.idempotencyStore.rollback(idempotencyCacheLookupKey);
+      } catch {
+        // Best-effort — don't mask the original error.
+      }
+    }
     return fromGroveError(error);
   }
 }
@@ -1122,7 +1289,7 @@ export async function reviewOperation(
       relations,
       tags: input.tags,
       agent: input.agent,
-      ...pickDefined(input, ["description", "scores", "context"]),
+      ...pickDefined(input, ["description", "scores", "context", "idempotencyKey"]),
     },
     deps,
   );
@@ -1165,7 +1332,7 @@ export async function reproduceOperation(
       relations,
       tags: input.tags,
       agent: input.agent,
-      ...pickDefined(input, ["description", "scores", "context"]),
+      ...pickDefined(input, ["description", "scores", "context", "idempotencyKey"]),
     },
     deps,
   );
@@ -1206,7 +1373,7 @@ export async function discussOperation(
       relations,
       tags: input.tags,
       agent: input.agent,
-      ...pickDefined(input, ["description", "context"]),
+      ...pickDefined(input, ["description", "context", "idempotencyKey"]),
     },
     deps,
   );
@@ -1245,7 +1412,7 @@ export async function adoptOperation(
       relations,
       tags: input.tags,
       agent: input.agent,
-      ...pickDefined(input, ["description", "context"]),
+      ...pickDefined(input, ["description", "context", "idempotencyKey"]),
     },
     deps,
   );

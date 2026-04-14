@@ -17,7 +17,11 @@ import { FsCas } from "./fs-cas.js";
 import type { SqliteBountyStore } from "./sqlite-bounty-store.js";
 import type { SqliteGoalSessionStore } from "./sqlite-goal-session-store.js";
 import type { SqliteOutcomeStore } from "./sqlite-outcome-store.js";
-import type { SqliteClaimStore, SqliteContributionStore } from "./sqlite-store.js";
+import type {
+  SqliteClaimStore,
+  SqliteContributionStore,
+  SqliteIdempotencyStore,
+} from "./sqlite-store.js";
 import { createSqliteStores } from "./sqlite-store.js";
 import { LocalWorkspaceManager } from "./workspace.js";
 
@@ -45,6 +49,7 @@ export interface LocalRuntime {
   readonly outcomeStore: SqliteOutcomeStore;
   readonly goalSessionStore: SqliteGoalSessionStore;
   readonly handoffStore: import("./sqlite-handoff-store.js").SqliteHandoffStore;
+  readonly idempotencyStore: SqliteIdempotencyStore;
   readonly cas: FsCas;
   readonly frontier: FrontierCalculator;
   readonly workspace: LocalWorkspaceManager | undefined;
@@ -136,6 +141,7 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
     outcomeStore: stores.outcomeStore,
     goalSessionStore: stores.goalSessionStore,
     handoffStore: stores.handoffStore,
+    idempotencyStore: stores.idempotencyStore,
     cas,
     frontier,
     workspace,

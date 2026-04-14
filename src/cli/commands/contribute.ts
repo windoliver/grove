@@ -59,6 +59,9 @@ export interface ContributeOptions {
   // Metadata
   readonly tags: readonly string[];
 
+  // Idempotency
+  readonly idempotencyKey?: string | undefined;
+
   // Agent
   readonly agentOverrides: AgentOverrides;
 
@@ -101,6 +104,7 @@ export function parseContributeArgs(args: readonly string[]): ContributeOptions 
       metric: { type: "string", multiple: true, default: [] },
       score: { type: "string", multiple: true, default: [] },
       tag: { type: "string", multiple: true, default: [] },
+      "idempotency-key": { type: "string" },
       "agent-id": { type: "string" },
       "agent-name": { type: "string" },
       provider: { type: "string" },
@@ -130,6 +134,7 @@ export function parseContributeArgs(args: readonly string[]): ContributeOptions 
     metric: values.metric as string[],
     score: values.score as string[],
     tags: values.tag as string[],
+    idempotencyKey: values["idempotency-key"] as string | undefined,
     agentOverrides: {
       agentId: values["agent-id"] as string | undefined,
       agentName: values["agent-name"] as string | undefined,
@@ -294,6 +299,23 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
     throw new Error(`Invalid contribute options:\n  ${validation.errors.join("\n  ")}`);
   }
 
+  // Warn if --idempotency-key is set without a stable agent identity.
+  // The default agentId is hostname-pid which changes on restart, making
+  // cross-process idempotency silently ineffective.
+  if (
+    options.idempotencyKey !== undefined &&
+    !options.agentOverrides.role &&
+    !options.agentOverrides.agentId &&
+    !process.env.GROVE_AGENT_ROLE &&
+    !process.env.GROVE_AGENT_ID
+  ) {
+    process.stderr.write(
+      "[grove] Warning: --idempotency-key without --role or --agent-id uses a process-scoped " +
+        "identity (hostname-pid). Cross-process retries will not match. Set --role or --agent-id " +
+        "for stable idempotency.\n",
+    );
+  }
+
   // 2. Find .grove/
   const grovePath = join(options.cwd, ".grove");
   try {
@@ -303,9 +325,8 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
   }
 
   // Dynamic imports for lazy loading
-  const { SqliteContributionStore, SqliteClaimStore, initSqliteDb } = await import(
-    "../../local/sqlite-store.js"
-  );
+  const { SqliteContributionStore, SqliteClaimStore, SqliteIdempotencyStore, initSqliteDb } =
+    await import("../../local/sqlite-store.js");
   const { FsCas } = await import("../../local/fs-cas.js");
   const { DefaultFrontierCalculator } = await import("../../core/frontier.js");
   const { parseGroveContract } = await import("../../core/contract.js");
@@ -316,6 +337,7 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
   const db = initSqliteDb(dbPath);
   const rawStore = new SqliteContributionStore(db);
   const claimStore = new SqliteClaimStore(db);
+  const idempotencyStore = new SqliteIdempotencyStore(db);
   const cas = new FsCas(casPath);
   const frontier = new DefaultFrontierCalculator(rawStore);
 
@@ -471,6 +493,7 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
       claimStore,
       cas,
       frontier,
+      idempotencyStore,
       ...(contract !== undefined ? { contract } : {}),
     };
 
@@ -484,6 +507,7 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
       ...(scores !== undefined ? { scores } : {}),
       tags: [...options.tags],
       agent: options.agentOverrides,
+      ...(options.idempotencyKey !== undefined ? { idempotencyKey: options.idempotencyKey } : {}),
     };
 
     const result = await contributeOperation(input, opDeps);

@@ -294,9 +294,18 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     contributionStore = new EnforcingContributionStore(contributionStore, loadedContract, { cas });
   }
 
-  if (loadedContract?.topology && nexusClient) {
-    const { NexusEventBus } = await import("../nexus/nexus-event-bus.js");
-    const eventBus = new NexusEventBus(nexusClient, zoneId);
+  // Wire EventBus + TopologyRouter for IPC when topology exists.
+  // Mirrors serve.ts: use NexusEventBus when Nexus is available,
+  // otherwise fall back to LocalEventBus for local-mode routing.
+  let eventBus: import("../core/event-bus.js").EventBus | undefined;
+  if (loadedContract?.topology) {
+    if (nexusClient) {
+      const { NexusEventBus } = await import("../nexus/nexus-event-bus.js");
+      eventBus = new NexusEventBus(nexusClient, zoneId);
+    } else {
+      const { LocalEventBus } = await import("../core/local-event-bus.js");
+      eventBus = new LocalEventBus();
+    }
     topologyRouter = new TopologyRouter(loadedContract.topology, eventBus);
   }
 
@@ -311,8 +320,11 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     contract: loadedContract,
     onContributionWrite: runtime.onContributionWrite,
     workspaceBoundary: runtime.groveRoot,
-    ...(nexusHandoffStore ? { handoffStore: nexusHandoffStore } : {}),
+    ...(eventBus ? { eventBus } : {}),
     ...(topologyRouter ? { topologyRouter } : {}),
+    // Nexus handoff store when available, falls back to local SQLite
+    handoffStore: nexusHandoffStore ?? runtime.handoffStore,
+    idempotencyStore: runtime.idempotencyStore,
   };
   return { deps, sessionId };
 }

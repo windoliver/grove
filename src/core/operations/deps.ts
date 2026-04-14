@@ -19,6 +19,40 @@ import type { TopologyRouter } from "../topology-router.js";
 import type { WorkspaceManager } from "../workspace.js";
 
 /**
+ * Persistent idempotency store for cross-process deduplication.
+ *
+ * The in-memory Map in contribute.ts handles single-flight within a single
+ * process (pending Promise coalescence). This store handles the case where
+ * separate CLI invocations hit the same key — without it, each process
+ * starts with an empty Map and the key is silently ignored.
+ */
+export interface IdempotencyStore {
+  /** Look up an unexpired entry. Returns fingerprint, result, and status. */
+  lookup(
+    cacheKey: string,
+    ttlMs: number,
+  ):
+    | {
+        readonly fingerprint: string;
+        readonly resultJson: string;
+        readonly status: string;
+      }
+    | undefined;
+  /**
+   * Durably reserve a key before starting the write. Returns true if this
+   * process won the reservation, false if another process already holds it.
+   * Uses INSERT OR IGNORE so concurrent callers cannot both succeed.
+   */
+  reserve(cacheKey: string, fingerprint: string): boolean;
+  /** Update an already-reserved entry with the final result. */
+  store(cacheKey: string, fingerprint: string, resultJson: string): void;
+  /** Remove a pending reservation on pre-commit failure. */
+  rollback(cacheKey: string): void;
+  /** Remove all entries (testing only). */
+  clear(): void;
+}
+
+/**
  * Dependencies required by operations.
  *
  * All operations receive a subset of these via the OperationDeps interface.
@@ -50,4 +84,6 @@ export interface OperationDeps {
   readonly hookRunner?: HookRunner | undefined;
   /** Working directory for hook execution. */
   readonly hookCwd?: string | undefined;
+  /** Persistent idempotency store for cross-process deduplication. */
+  readonly idempotencyStore?: IdempotencyStore | undefined;
 }

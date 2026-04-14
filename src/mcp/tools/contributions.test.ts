@@ -14,6 +14,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { _resetIdempotencyCacheForTests } from "../../core/operations/contribute.js";
 import { makeContribution } from "../../core/test-helpers.js";
 import type { McpDeps } from "../deps.js";
 import type { TestMcpDeps } from "../test-helpers.js";
@@ -587,5 +588,155 @@ describe("grove_adopt", () => {
     expect(result.isError).toBeUndefined();
     const data = JSON.parse(result.text);
     expect(data.kind).toBe("adoption");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Idempotency key plumbing (MCP surface)
+// ---------------------------------------------------------------------------
+
+describe("MCP idempotencyKey plumbing", () => {
+  let testDeps: TestMcpDeps;
+  let deps: McpDeps;
+  let server: McpServer;
+
+  beforeEach(async () => {
+    _resetIdempotencyCacheForTests();
+    testDeps = await createTestMcpDeps();
+    deps = testDeps.deps;
+    server = new McpServer({ name: "test", version: "0.0.1" }, { capabilities: { tools: {} } });
+    registerContributionTools(server, deps);
+  });
+
+  afterEach(async () => {
+    await testDeps.cleanup();
+    _resetIdempotencyCacheForTests();
+  });
+
+  test("grove_submit_work: same key + same input returns cached result", async () => {
+    const hash = await storeTestContent(deps.cas, "hello world");
+    const args = {
+      summary: "Idempotent work",
+      artifacts: { "file.ts": hash },
+      agent: { agentId: "coder-1", role: "coder" },
+      idempotencyKey: "work-key-1",
+    };
+
+    const first = await callTool(server, "grove_submit_work", args);
+    expect(first.isError).toBeUndefined();
+    const firstData = JSON.parse(first.text);
+
+    const second = await callTool(server, "grove_submit_work", args);
+    expect(second.isError).toBeUndefined();
+    const secondData = JSON.parse(second.text);
+
+    expect(secondData.cid).toBe(firstData.cid);
+  });
+
+  test("grove_submit_work: same key + different input returns STATE_CONFLICT", async () => {
+    const hash = await storeTestContent(deps.cas, "hello world");
+    const first = await callTool(server, "grove_submit_work", {
+      summary: "First work",
+      artifacts: { "file.ts": hash },
+      agent: { agentId: "coder-1", role: "coder" },
+      idempotencyKey: "work-conflict-key",
+    });
+    expect(first.isError).toBeUndefined();
+
+    const second = await callTool(server, "grove_submit_work", {
+      summary: "Different work, same key",
+      artifacts: { "file.ts": hash },
+      agent: { agentId: "coder-1", role: "coder" },
+      idempotencyKey: "work-conflict-key",
+    });
+    expect(second.isError).toBe(true);
+    expect(second.text).toContain("STATE_CONFLICT");
+  });
+
+  test("grove_submit_review: idempotency key flows through", async () => {
+    const target = makeContribution({ summary: "Target" });
+    await deps.contributionStore.put(target);
+
+    const args = {
+      targetCid: target.cid,
+      summary: "Review with idempotency",
+      scores: { quality: { value: 0.9, direction: "maximize" } },
+      agent: { agentId: "reviewer-1", role: "reviewer" },
+      idempotencyKey: "review-key-1",
+    };
+
+    const first = await callTool(server, "grove_submit_review", args);
+    expect(first.isError).toBeUndefined();
+    const firstData = JSON.parse(first.text);
+
+    const second = await callTool(server, "grove_submit_review", args);
+    expect(second.isError).toBeUndefined();
+    const secondData = JSON.parse(second.text);
+
+    expect(secondData.cid).toBe(firstData.cid);
+  });
+
+  test("grove_discuss: idempotency key flows through", async () => {
+    const args = {
+      summary: "Discussion with idempotency",
+      agent: { agentId: "agent-1", role: "architect" },
+      idempotencyKey: "discuss-key-1",
+    };
+
+    const first = await callTool(server, "grove_discuss", args);
+    expect(first.isError).toBeUndefined();
+    const firstData = JSON.parse(first.text);
+
+    const second = await callTool(server, "grove_discuss", args);
+    expect(second.isError).toBeUndefined();
+    const secondData = JSON.parse(second.text);
+
+    expect(secondData.cid).toBe(firstData.cid);
+  });
+
+  test("grove_reproduce: idempotency key flows through", async () => {
+    const target = makeContribution({ summary: "Experiment" });
+    await deps.contributionStore.put(target);
+
+    const args = {
+      targetCid: target.cid,
+      summary: "Reproduction with idempotency",
+      result: "confirmed",
+      agent: { agentId: "repro-1", role: "reproducer" },
+      artifacts: {},
+      idempotencyKey: "repro-key-1",
+    };
+
+    const first = await callTool(server, "grove_reproduce", args);
+    expect(first.isError).toBeUndefined();
+    const firstData = JSON.parse(first.text);
+
+    const second = await callTool(server, "grove_reproduce", args);
+    expect(second.isError).toBeUndefined();
+    const secondData = JSON.parse(second.text);
+
+    expect(secondData.cid).toBe(firstData.cid);
+  });
+
+  test("grove_adopt: idempotency key flows through", async () => {
+    const target = makeContribution({ summary: "Work to adopt" });
+    await deps.contributionStore.put(target);
+
+    const args = {
+      targetCid: target.cid,
+      summary: "Adopting with idempotency",
+      agent: { agentId: "adopter-1", role: "adopter" },
+      idempotencyKey: "adopt-key-1",
+    };
+
+    const first = await callTool(server, "grove_adopt", args);
+    expect(first.isError).toBeUndefined();
+    const firstData = JSON.parse(first.text);
+
+    const second = await callTool(server, "grove_adopt", args);
+    expect(second.isError).toBeUndefined();
+    const secondData = JSON.parse(second.text);
+
+    expect(secondData.cid).toBe(firstData.cid);
   });
 });

@@ -297,6 +297,7 @@ try {
     ...(topologyRouter ? { topologyRouter } : {}),
     // Nexus handoff store when available, falls back to local SQLite
     handoffStore: nexusHandoffStore ?? runtime.handoffStore,
+    idempotencyStore: runtime.idempotencyStore,
   };
   // Derive MCP tool preset from contract mode — #11 MCP Tool Surface + #12 Concept Usage
   const contractMode = loadedContract?.mode ?? "exploration";

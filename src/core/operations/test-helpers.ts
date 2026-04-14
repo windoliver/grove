@@ -14,6 +14,7 @@ import {
   initSqliteDb,
   SqliteClaimStore,
   SqliteContributionStore,
+  SqliteIdempotencyStore,
 } from "../../local/sqlite-store.js";
 import { LocalWorkspaceManager } from "../../local/workspace.js";
 import type { ContentStore } from "../cas.js";
@@ -123,6 +124,7 @@ export async function createTestOperationDeps(): Promise<TestOperationDeps> {
   });
 
   const handoffStore = new InMemoryHandoffStore();
+  const idempotencyStore = new SqliteIdempotencyStore(db);
 
   const deps: FullOperationDeps = {
     contributionStore,
@@ -133,6 +135,7 @@ export async function createTestOperationDeps(): Promise<TestOperationDeps> {
     frontier,
     workspace,
     handoffStore,
+    idempotencyStore,
     contract: undefined as unknown as GroveContract,
     outcomeStore: undefined as unknown as OutcomeStore,
     onContributionWrite: () => {
