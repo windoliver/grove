@@ -17,8 +17,8 @@
 import type { Database, Statement } from "bun:sqlite";
 import type { GroveContract } from "../core/contract.js";
 import type { CreateSessionInput, Session, SessionQuery } from "../core/session.js";
-import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
 import type { AgentTopology } from "../core/topology.js";
+import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
 import type { GoalData } from "../tui/provider.js";
 
 // ---------------------------------------------------------------------------

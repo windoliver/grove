@@ -53,7 +53,11 @@ function launchHarness(session: string, extraArgs = ""): void {
 }
 
 function killSession(session: string): void {
-  try { tmux(`kill-session -t ${session}`); } catch { /* already dead */ }
+  try {
+    tmux(`kill-session -t ${session}`);
+  } catch {
+    /* already dead */
+  }
 }
 
 function sleep(ms: number): Promise<void> {
@@ -81,7 +85,11 @@ const hasTmux = tmuxAvailable();
 
 describe.skipIf(!hasTmux)("Edge-type workspace E2E — tmux capture-pane", () => {
   beforeAll(() => {
-    try { execSync(`tmux -L ${TMUX_SOCKET} kill-server 2>/dev/null`, { stdio: "ignore" }); } catch { /* ok */ }
+    try {
+      execSync(`tmux -L ${TMUX_SOCKET} kill-server 2>/dev/null`, { stdio: "ignore" });
+    } catch {
+      /* ok */
+    }
   });
 
   afterEach(() => {
@@ -89,72 +97,64 @@ describe.skipIf(!hasTmux)("Edge-type workspace E2E — tmux capture-pane", () =>
   });
 
   afterAll(() => {
-    try { execSync(`tmux -L ${TMUX_SOCKET} kill-server 2>/dev/null`, { stdio: "ignore" }); } catch { /* ok */ }
+    try {
+      execSync(`tmux -L ${TMUX_SOCKET} kill-server 2>/dev/null`, { stdio: "ignore" });
+    } catch {
+      /* ok */
+    }
   });
 
   // -------------------------------------------------------------------------
   // Scenario 1: delegates + real git repo → isolated worktrees, no badge
   // -------------------------------------------------------------------------
 
-  test(
-    "delegates + real git: both agents started with isolated worktrees",
-    async () => {
-      launchHarness("grove-edge-test", "--edge-type delegates --use-git-repo");
+  test("delegates + real git: both agents started with isolated worktrees", async () => {
+    launchHarness("grove-edge-test", "--edge-type delegates --use-git-repo");
 
-      // Allow time for 2 sequential git worktree provisions
-      const output = await waitForResolved("grove-edge-test", 25_000);
+    // Allow time for 2 sequential git worktree provisions
+    const output = await waitForResolved("grove-edge-test", 25_000);
 
-      expect(output).toContain("Starting session");
-      expect(output).toContain("started");
+    expect(output).toContain("Starting session");
+    expect(output).toContain("started");
 
-      // No degraded badge — both worktrees provisioned cleanly
-      expect(output).not.toContain("[shared workspace]");
-      expect(output).not.toContain("[no config]");
-      expect(output).not.toContain("failed:");
-    },
-    35_000,
-  );
+    // No degraded badge — both worktrees provisioned cleanly
+    expect(output).not.toContain("[shared workspace]");
+    expect(output).not.toContain("[no config]");
+    expect(output).not.toContain("failed:");
+  }, 35_000);
 
   // -------------------------------------------------------------------------
   // Scenario 2: feedback + real git repo → independent isolated worktrees
   // -------------------------------------------------------------------------
 
-  test(
-    "feedback + real git: both agents started with independent worktrees",
-    async () => {
-      launchHarness("grove-edge-test", "--edge-type feedback --use-git-repo");
+  test("feedback + real git: both agents started with independent worktrees", async () => {
+    launchHarness("grove-edge-test", "--edge-type feedback --use-git-repo");
 
-      const output = await waitForResolved("grove-edge-test", 25_000);
+    const output = await waitForResolved("grove-edge-test", 25_000);
 
-      expect(output).toContain("Starting session");
-      expect(output).toContain("started");
+    expect(output).toContain("Starting session");
+    expect(output).toContain("started");
 
-      // Independent worktrees — no badge
-      expect(output).not.toContain("[shared workspace]");
-      expect(output).not.toContain("failed:");
-    },
-    35_000,
-  );
+    // Independent worktrees — no badge
+    expect(output).not.toContain("[shared workspace]");
+    expect(output).not.toContain("failed:");
+  }, 35_000);
 
   // -------------------------------------------------------------------------
   // Scenario 3: delegates + no git → fallback mode, badge visible
   // -------------------------------------------------------------------------
 
-  test(
-    "delegates + no git: both agents show [shared workspace] badge",
-    async () => {
-      launchHarness("grove-edge-test", "--edge-type delegates");
+  test("delegates + no git: both agents show [shared workspace] badge", async () => {
+    launchHarness("grove-edge-test", "--edge-type delegates");
 
-      const output = await waitForResolved("grove-edge-test", 15_000);
+    const output = await waitForResolved("grove-edge-test", 15_000);
 
-      expect(output).toContain("Starting session");
-      expect(output).toContain("started");
+    expect(output).toContain("Starting session");
+    expect(output).toContain("started");
 
-      // Fallback badge visible — operator sees the degradation
-      expect(output).toContain("[shared workspace]");
-      // Reason hint visible (git error starts with "Command failed:")
-      expect(output).toContain("Command failed:");
-    },
-    20_000,
-  );
+    // Fallback badge visible — operator sees the degradation
+    expect(output).toContain("[shared workspace]");
+    // Reason hint visible (git error starts with "Command failed:")
+    expect(output).toContain("Command failed:");
+  }, 20_000);
 });

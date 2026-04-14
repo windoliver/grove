@@ -45,7 +45,10 @@ describe("resolveRoleWorkspaceStrategies", () => {
     const topology: AgentTopology = {
       structure: "graph",
       roles: [
-        { name: "coder", edges: [{ target: "reviewer", edgeType: "delegates", workspace: "branch_from_source" }] },
+        {
+          name: "coder",
+          edges: [{ target: "reviewer", edgeType: "delegates", workspace: "branch_from_source" }],
+        },
         { name: "reviewer" },
       ],
     };
@@ -58,7 +61,10 @@ describe("resolveRoleWorkspaceStrategies", () => {
     const topology: AgentTopology = {
       structure: "graph",
       roles: [
-        { name: "coder", edges: [{ target: "reviewer", edgeType: "delegates", workspace: "independent" }] },
+        {
+          name: "coder",
+          edges: [{ target: "reviewer", edgeType: "delegates", workspace: "independent" }],
+        },
         { name: "reviewer" },
       ],
     };
@@ -70,7 +76,10 @@ describe("resolveRoleWorkspaceStrategies", () => {
     const topology: AgentTopology = {
       structure: "graph",
       roles: [
-        { name: "coder", edges: [{ target: "reviewer", edgeType: "feedback", workspace: "branch_from_source" }] },
+        {
+          name: "coder",
+          edges: [{ target: "reviewer", edgeType: "feedback", workspace: "branch_from_source" }],
+        },
         { name: "reviewer" },
       ],
     };
@@ -108,11 +117,7 @@ describe("topologicalSortRoles", () => {
   test("flat topology: original order preserved", () => {
     const topology: AgentTopology = {
       structure: "flat",
-      roles: [
-        { name: "alpha" },
-        { name: "beta" },
-        { name: "gamma" },
-      ],
+      roles: [{ name: "alpha" }, { name: "beta" }, { name: "gamma" }],
     };
     const sorted = topologicalSortRoles(topology);
     expect(sorted.map((r) => r.name)).toEqual(["alpha", "beta", "gamma"]);
@@ -136,7 +141,10 @@ describe("topologicalSortRoles", () => {
       structure: "graph",
       roles: [
         { name: "reviewer" }, // listed first
-        { name: "coder", edges: [{ target: "reviewer", edgeType: "delegates", workspace: "branch_from_source" }] },
+        {
+          name: "coder",
+          edges: [{ target: "reviewer", edgeType: "delegates", workspace: "branch_from_source" }],
+        },
       ],
     };
     const sorted = topologicalSortRoles(topology);
@@ -150,7 +158,10 @@ describe("topologicalSortRoles", () => {
       structure: "graph",
       roles: [
         { name: "C" },
-        { name: "B", edges: [{ target: "C", edgeType: "delegates", workspace: "branch_from_source" }] },
+        {
+          name: "B",
+          edges: [{ target: "C", edgeType: "delegates", workspace: "branch_from_source" }],
+        },
         { name: "A", edges: [{ target: "B", edgeType: "feeds", workspace: "branch_from_source" }] },
       ],
     };
@@ -164,7 +175,10 @@ describe("topologicalSortRoles", () => {
     const topology: AgentTopology = {
       structure: "graph",
       roles: [
-        { name: "reviewer", edges: [{ target: "coder", edgeType: "feedback", workspace: "independent" }] },
+        {
+          name: "reviewer",
+          edges: [{ target: "coder", edgeType: "feedback", workspace: "independent" }],
+        },
         { name: "coder" },
       ],
     };

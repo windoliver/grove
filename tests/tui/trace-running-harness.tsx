@@ -65,7 +65,9 @@ const mockProvider = {
   getActivity: async () => [],
   getDag: async () => ({ nodes: [], edges: [] }),
   getHotThreads: async () => [],
-  close: () => {},
+  close: () => {
+    /* no-op */
+  },
   listSessions: async () => [],
   createSession: async () => ({
     sessionId: "test-sess",
@@ -74,8 +76,12 @@ const mockProvider = {
     contributionCount: 0,
   }),
   getSession: async () => undefined,
-  archiveSession: async () => {},
-  addContributionToSession: async () => {},
+  archiveSession: async () => {
+    /* no-op */
+  },
+  addContributionToSession: async () => {
+    /* no-op */
+  },
 };
 
 const topology = {
@@ -101,7 +107,9 @@ async function main() {
   const spawnManager = new SpawnManager(
     mockProvider as Parameters<typeof SpawnManager>[0],
     undefined,
-    () => {},
+    () => {
+      /* no-op */
+    },
   );
 
   // Pre-populate log buffers on the spawn manager

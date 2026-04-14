@@ -71,7 +71,11 @@ async function waitForResolved(session: string, timeoutMs: number): Promise<stri
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const output = capturePane(session);
-    if (output.includes("HARNESS_RESOLVED") || output.includes("started") || output.includes("failed")) {
+    if (
+      output.includes("HARNESS_RESOLVED") ||
+      output.includes("started") ||
+      output.includes("failed")
+    ) {
       // Give one extra render tick to ensure final state is painted
       await sleep(800);
       return capturePane(session);
@@ -112,80 +116,68 @@ describe.skipIf(!hasTmux)("Workspace isolation E2E — tmux capture-pane", () =>
   // Test 1: allow-fallback + non-git dir → agents start (fallback_workspace)
   // -------------------------------------------------------------------------
 
-  test(
-    "allow-fallback + non-git dir: both agents show started",
-    async () => {
-      launchHarness("grove-ws-test", "--policy allow-fallback");
+  test("allow-fallback + non-git dir: both agents show started", async () => {
+    launchHarness("grove-ws-test", "--policy allow-fallback");
 
-      // Poll until harness resolves (fallback path ~2-4s)
-      const output = await waitForResolved("grove-ws-test", 15_000);
+    // Poll until harness resolves (fallback path ~2-4s)
+    const output = await waitForResolved("grove-ws-test", 15_000);
 
-      // Screen must be visible
-      expect(output).toContain("Starting session");
+    // Screen must be visible
+    expect(output).toContain("Starting session");
 
-      // Both agents should reach "started" — fallback_workspace mode continues
-      expect(output).toContain("started");
+    // Both agents should reach "started" — fallback_workspace mode continues
+    expect(output).toContain("started");
 
-      // Degraded badge must be visible — operator sees the workspace degradation
-      expect(output).toContain("[shared workspace]");
+    // Degraded badge must be visible — operator sees the workspace degradation
+    expect(output).toContain("[shared workspace]");
 
-      // Reason hint must be shown inline
-      expect(output).toContain("Command failed:");
-    },
-    20_000,
-  );
+    // Reason hint must be shown inline
+    expect(output).toContain("Command failed:");
+  }, 20_000);
 
   // -------------------------------------------------------------------------
   // Test 2: strict + non-git dir → agents show "failed: Workspace provisioning failed"
   // -------------------------------------------------------------------------
 
-  test(
-    "strict + non-git dir: both agents show failed with provisioning error",
-    async () => {
-      launchHarness("grove-ws-test", "--policy strict");
+  test("strict + non-git dir: both agents show failed with provisioning error", async () => {
+    launchHarness("grove-ws-test", "--policy strict");
 
-      // Poll until spawns reject (git error ~1-2s)
-      const output = await waitForResolved("grove-ws-test", 10_000);
+    // Poll until spawns reject (git error ~1-2s)
+    const output = await waitForResolved("grove-ws-test", 10_000);
 
-      expect(output).toContain("Starting session");
+    expect(output).toContain("Starting session");
 
-      // Both agents should fail
-      expect(output).toContain("failed");
+    // Both agents should fail
+    expect(output).toContain("failed");
 
-      // Error message must mention provisioning
-      expect(output).toContain("Workspace provisioning failed");
+    // Error message must mention provisioning
+    expect(output).toContain("Workspace provisioning failed");
 
-      // No agent should have started
-      expect(output).not.toContain("● coder");
-      expect(output).not.toContain("● reviewer");
-    },
-    15_000,
-  );
+    // No agent should have started
+    expect(output).not.toContain("● coder");
+    expect(output).not.toContain("● reviewer");
+  }, 15_000);
 
   // -------------------------------------------------------------------------
   // Test 3: allow-fallback + real git repo → agents start (isolated_worktree)
   // -------------------------------------------------------------------------
 
-  test(
-    "allow-fallback + real git repo: both agents show started (isolated worktree)",
-    async () => {
-      launchHarness("grove-ws-test", "--policy allow-fallback --use-git-repo");
+  test("allow-fallback + real git repo: both agents show started (isolated worktree)", async () => {
+    launchHarness("grove-ws-test", "--policy allow-fallback --use-git-repo");
 
-      // Git worktree creation takes longer — poll up to 20s
-      const output = await waitForResolved("grove-ws-test", 20_000);
+    // Git worktree creation takes longer — poll up to 20s
+    const output = await waitForResolved("grove-ws-test", 20_000);
 
-      expect(output).toContain("Starting session");
+    expect(output).toContain("Starting session");
 
-      // Both agents should reach "started" — real worktree provisioned
-      expect(output).toContain("started");
+    // Both agents should reach "started" — real worktree provisioned
+    expect(output).toContain("started");
 
-      // No degraded badge — this is the happy path
-      expect(output).not.toContain("[shared workspace]");
-      expect(output).not.toContain("[no config]");
+    // No degraded badge — this is the happy path
+    expect(output).not.toContain("[shared workspace]");
+    expect(output).not.toContain("[no config]");
 
-      // No agent status failure
-      expect(output).not.toContain("failed:");
-    },
-    25_000,
-  );
+    // No agent status failure
+    expect(output).not.toContain("failed:");
+  }, 25_000);
 });

@@ -13,6 +13,7 @@
 import { useKeyboard, useRenderer } from "@opentui/react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { lookupPresetTopology } from "../../core/presets.js";
+import { topologicalSortRoles } from "../../core/topology.js";
 import type { AppProps } from "../app.js";
 import { App } from "../app.js";
 import { debugLog } from "../debug-log.js";
@@ -23,11 +24,9 @@ import { isGoalProvider, isSessionProvider } from "../provider.js";
 import { useSpawnManager } from "../spawn-manager-context.js";
 import { theme } from "../theme.js";
 import type { TuiPresetEntry } from "../tui-app.js";
-
 import { AgentDetect } from "./agent-detect.js";
 import { CompleteView } from "./complete-view.js";
 import { GoalInput } from "./goal-input.js";
-import { topologicalSortRoles } from "../../core/topology.js";
 import { PresetSelect } from "./preset-select.js";
 import { RunningView } from "./running-view.js";
 import type { AgentSpawnState } from "./spawn-progress.js";

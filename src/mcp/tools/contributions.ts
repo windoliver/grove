@@ -44,9 +44,9 @@ import {
 const submitWorkInputSchema = z.object({
   summary: z.string().describe("Short summary of the work performed"),
   description: z.string().optional().describe("Longer description of the work"),
-  artifacts: artifactsSchema.optional().describe(
-    "File artifacts as path→CAS hash map. Optional when commitHash is provided.",
-  ),
+  artifacts: artifactsSchema
+    .optional()
+    .describe("File artifacts as path→CAS hash map. Optional when commitHash is provided."),
   commitHash: z
     .string()
     .regex(/^[0-9a-f]{7,40}$/)

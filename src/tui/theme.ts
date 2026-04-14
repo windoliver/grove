@@ -56,7 +56,7 @@ function nearestAnsi16(hex: string): string {
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
-  let best: (typeof ANSI_16_PALETTE)[number] = ANSI_16_PALETTE[0]!;
+  let best = ANSI_16_PALETTE[0];
   let bestDist = Infinity;
   for (const entry of ANSI_16_PALETTE) {
     const dist = (r - entry.r) ** 2 + (g - entry.g) ** 2 + (b - entry.b) ** 2;

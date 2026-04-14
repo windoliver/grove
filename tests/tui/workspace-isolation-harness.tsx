@@ -15,20 +15,19 @@
  *   allow-fallback + git     → both agents "started"  (isolated_worktree)
  */
 
-import { createCliRenderer } from "@opentui/core";
-import { createRoot } from "@opentui/react";
 import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { createCliRenderer } from "@opentui/core";
+import { createRoot } from "@opentui/react";
 import React, { useEffect, useRef, useState } from "react";
-
+import { MockTmuxManager } from "../../src/tui/agents/tmux-manager.js";
+import type { TuiDataProvider } from "../../src/tui/provider.js";
 import type { AgentSpawnState } from "../../src/tui/screens/spawn-progress.js";
 import { SpawnProgress } from "../../src/tui/screens/spawn-progress.js";
-import { MockTmuxManager } from "../../src/tui/agents/tmux-manager.js";
 import { SpawnManager } from "../../src/tui/spawn-manager.js";
-import type { TuiDataProvider } from "../../src/tui/provider.js";
 
 // ---------------------------------------------------------------------------
 // Args

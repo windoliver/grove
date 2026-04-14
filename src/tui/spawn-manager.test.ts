@@ -388,9 +388,7 @@ describe("SpawnManager", () => {
     manager.setIsolationPolicy("strict");
 
     // /tmp/no-grove is not a git repo — strict policy must throw
-    await expect(manager.spawn("claude", "bash")).rejects.toThrow(
-      /Workspace provisioning failed/,
-    );
+    await expect(manager.spawn("claude", "bash")).rejects.toThrow(/Workspace provisioning failed/);
   });
 });
 

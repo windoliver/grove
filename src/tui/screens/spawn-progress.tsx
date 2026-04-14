@@ -10,9 +10,9 @@
 import { useTimeline } from "@opentui/react";
 import { toast } from "@opentui-ui/toast/react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import type { WorkspaceMode } from "../../core/workspace-provisioner.js";
 import { BreadcrumbBar } from "../components/breadcrumb-bar.js";
 import { BRAILLE_SPINNER, PLATFORM_COLORS, theme } from "../theme.js";
-import type { WorkspaceMode } from "../../core/workspace-provisioner.js";
 
 /** Spawn status for a single agent role. */
 export type SpawnStatus = "waiting" | "spawning" | "started" | "failed";
@@ -190,16 +190,13 @@ export const SpawnProgress: React.NamedExoticComponent<SpawnProgressProps> = Rea
                           ? "started"
                           : `failed: ${agent.error ?? "unknown"}`}
                   </text>
-                  {degradedBadge ? (
-                    <text color={theme.warning}>{degradedBadge}</text>
-                  ) : null}
+                  {degradedBadge ? <text color={theme.warning}>{degradedBadge}</text> : null}
                 </box>
                 {/* Show reason for degraded modes inline, truncated to fit */}
-                {wsMode?.status === "fallback_workspace" || wsMode?.status === "bootstrap_failed" ? (
+                {wsMode?.status === "fallback_workspace" ||
+                wsMode?.status === "bootstrap_failed" ? (
                   <box flexDirection="row" marginLeft={4}>
-                    <text color={theme.warning}>
-                      {`⚠  ${(wsMode.reason ?? "").slice(0, 80)}`}
-                    </text>
+                    <text color={theme.warning}>{`⚠  ${(wsMode.reason ?? "").slice(0, 80)}`}</text>
                   </box>
                 ) : null}
               </box>
