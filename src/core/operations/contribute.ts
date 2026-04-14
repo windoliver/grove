@@ -419,7 +419,10 @@ function lookupIdempotency(
   | undefined {
   const entry = idempotencyCache.get(cacheKey);
   if (entry === undefined) return undefined;
-  if (now - entry.storedAt > IDEMPOTENCY_TTL_MS) {
+  // Never TTL-expire a pending entry — the in-flight write may still be
+  // running (slow CAS, hooks, etc). Expiring it would let a retry start
+  // a second write instead of awaiting the first.
+  if (now - entry.storedAt > IDEMPOTENCY_TTL_MS && entry.pending === undefined) {
     idempotencyCache.delete(cacheKey);
     return undefined;
   }
@@ -458,10 +461,16 @@ function reserveIdempotencySlot(
   readonly resolve: (result: OperationResult<ContributeResult>) => void;
   readonly release: () => void;
 } {
-  // Evict the oldest entry if at capacity.
+  // Evict the oldest non-pending entry if at capacity. Pending entries
+  // represent in-flight writes — evicting them would break single-flight
+  // and let a retry start a duplicate write.
   if (idempotencyCache.size >= IDEMPOTENCY_MAX_ENTRIES) {
-    const oldest = idempotencyCache.keys().next().value;
-    if (oldest !== undefined) idempotencyCache.delete(oldest);
+    for (const [key, entry] of idempotencyCache) {
+      if (entry.pending === undefined) {
+        idempotencyCache.delete(key);
+        break;
+      }
+    }
   }
 
   let resolver!: (result: OperationResult<ContributeResult>) => void;
@@ -523,6 +532,7 @@ async function writeAtomic(
   agentRole: string,
   putWithCowrite: (c: Contribution, fn: () => void) => void | Promise<void>,
   insertSync: (input: HandoffInput) => string,
+  onCommit?: () => void,
 ): Promise<readonly string[]> {
   const handoffIds: string[] = [];
   const maybePromise = putWithCowrite(contribution, () => {
@@ -535,6 +545,11 @@ async function writeAtomic(
       });
       if (hid !== undefined) handoffIds.push(hid);
     }
+    // Write idempotency row inside the same SQLite transaction so a
+    // crash between contribution commit and idempotency store write
+    // cannot leave an orphaned contribution without its idempotency
+    // record.
+    onCommit?.();
   });
   if (
     maybePromise !== undefined &&
@@ -564,8 +579,14 @@ async function writeSerial(
   agentRole: string | undefined,
   store: ContributionStore,
   handoffStore: HandoffStore | undefined,
+  onCommit?: () => void,
 ): Promise<readonly string[]> {
   await store.put(contribution);
+  // For non-atomic stores (Nexus, in-memory), write the idempotency row
+  // immediately after the contribution commit. Not fully crash-safe (the
+  // contribution and idempotency row are separate writes), but the window
+  // is minimal and matches the existing handoff best-effort pattern.
+  onCommit?.();
 
   const handoffIds: string[] = [];
   if (handoffStore === undefined || routedTo === undefined || agentRole === undefined) {
@@ -628,6 +649,7 @@ async function writeContributionWithHandoffs(
   agentRole: string | undefined,
   store: ContributionStore,
   handoffStore: HandoffStore | undefined,
+  onCommit?: () => void,
 ): Promise<readonly string[]> {
   const needsHandoffs =
     handoffStore !== undefined &&
@@ -649,11 +671,12 @@ async function writeContributionWithHandoffs(
         agentRole,
         cowriteStore.putWithCowrite.bind(cowriteStore),
         sqliteHandoffStore.insertSync.bind(sqliteHandoffStore),
+        onCommit,
       );
     }
   }
 
-  return writeSerial(contribution, routedTo, agentRole, store, handoffStore);
+  return writeSerial(contribution, routedTo, agentRole, store, handoffStore, onCommit);
 }
 
 // ---------------------------------------------------------------------------
@@ -907,12 +930,42 @@ export async function contributeOperation(
     // undefined as the routing-target list to the writer.
     const agentRole = contribution.agent.role;
     const handoffsRoutedTo = skipHandoffs ? undefined : routedTo;
+    // Build onCommit callback for atomic idempotency-store write.
+    // Runs inside the SQLite transaction (atomic path) or immediately
+    // after store.put() (serial path), closing the crash window between
+    // contribution commit and idempotency record.
+    const idempotencyOnCommit =
+      deps.idempotencyStore !== undefined &&
+      idempotencyCacheLookupKey !== undefined &&
+      idempotencyFingerprint !== undefined
+        ? () => {
+            // Build a minimal result from the contribution (routedTo and
+            // handoffIds are populated later, but the CID is the critical
+            // dedup signal — retries just need to know the write happened).
+            const earlyResult: ContributeResult = {
+              cid: contribution.cid,
+              kind: contribution.kind,
+              mode: contribution.mode,
+              summary: contribution.summary,
+              artifactCount: Object.keys(contribution.artifacts).length,
+              relationCount: contribution.relations.length,
+              createdAt: contribution.createdAt,
+            };
+            deps.idempotencyStore!.store(
+              idempotencyCacheLookupKey!,
+              idempotencyFingerprint!,
+              JSON.stringify(earlyResult),
+            );
+          }
+        : undefined;
+
     const handoffIds = await writeContributionWithHandoffs(
       contribution,
       handoffsRoutedTo,
       agentRole,
       deps.contributionStore,
       deps.handoffStore,
+      idempotencyOnCommit,
     );
 
     // ┌──────────────────────────────────────────────────────────────────┐
@@ -957,8 +1010,10 @@ export async function contributeOperation(
       // result, NOT re-run the write path.
       idempotencySlot = undefined;
 
-      // Persist to durable store so cross-process retries (e.g., separate
-      // CLI invocations) can find this entry after the process exits.
+      // Update the durable idempotency row with the full result (includes
+      // routedTo, handoffIds, policy which weren't available at commit time).
+      // This is an UPDATE, not an INSERT — the row was created atomically
+      // with the contribution inside the write transaction.
       if (
         deps.idempotencyStore !== undefined &&
         idempotencyCacheLookupKey !== undefined &&
@@ -971,7 +1026,7 @@ export async function contributeOperation(
             JSON.stringify(committedResult),
           );
         } catch {
-          // Best-effort — don't fail the contribution over a cache write.
+          // The early result from onCommit is sufficient for dedup.
         }
       }
     }
