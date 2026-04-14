@@ -90,6 +90,7 @@ const deps: ServerDeps = {
   gossip: gossipService,
   topology: runtime.contract?.topology,
   contract: runtime.contract,
+  idempotencyStore: runtime.idempotencyStore,
 };
 
 const app = createApp(deps);

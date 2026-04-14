@@ -791,49 +791,38 @@ export async function contributeOperation(
               details: { idempotencyKey: input.idempotencyKey },
             });
           }
-          // Same key + same fingerprint from a previous process: return cached.
-          const result = JSON.parse(persisted.resultJson) as ContributeResult;
-          return ok(result);
+          if (persisted.status === "committed") {
+            // Same key + same fingerprint, already completed: return cached.
+            const result = JSON.parse(persisted.resultJson) as ContributeResult;
+            return ok(result);
+          }
+          // status === "pending": another process is mid-write. Return a
+          // retryable error rather than proceeding with a duplicate write
+          // or returning the placeholder result.
+          return err({
+            code: OperationErrorCode.StateConflict,
+            message:
+              "Idempotency key is currently being processed by another request. " +
+              "Retry after a short delay.",
+            details: { idempotencyKey: input.idempotencyKey, retryable: true },
+          });
         }
-      }
 
-      // Durably reserve the key in SQLite before starting the write.
-      // INSERT OR IGNORE ensures only one process wins the reservation;
-      // a concurrent process that also passed the lookup will fail here
-      // and detect the conflict on retry.
-      if (deps.idempotencyStore !== undefined) {
+        // No existing row: durably reserve before writing.
         const reserved = deps.idempotencyStore.reserve(
           idempotencyCacheLookupKey,
           idempotencyFingerprint,
         );
         if (!reserved) {
-          // Another process reserved this key between our lookup and now.
-          // Re-check the store to determine if it's same-fingerprint (retry)
-          // or different-fingerprint (conflict).
-          const existing = deps.idempotencyStore.lookup(
-            idempotencyCacheLookupKey,
-            IDEMPOTENCY_TTL_MS,
-          );
-          if (existing !== undefined) {
-            if (existing.fingerprint !== idempotencyFingerprint) {
-              return err({
-                code: OperationErrorCode.StateConflict,
-                message:
-                  "Idempotency key was previously used with a different request body. " +
-                  "Reusing the same key with different input is rejected to prevent silent " +
-                  "write divergence. Use a new key for the new intent.",
-                details: { idempotencyKey: input.idempotencyKey },
-              });
-            }
-            // Same fingerprint — another process is writing or has written.
-            // Return its result if available, otherwise let this process
-            // proceed (the duplicate contribution is a smaller cost than
-            // blocking indefinitely on an unknown process).
-            if (existing.resultJson !== "{}") {
-              const result = JSON.parse(existing.resultJson) as ContributeResult;
-              return ok(result);
-            }
-          }
+          // Lost the race to another process that reserved between our
+          // lookup and this INSERT OR IGNORE. Return retryable error.
+          return err({
+            code: OperationErrorCode.StateConflict,
+            message:
+              "Idempotency key is currently being processed by another request. " +
+              "Retry after a short delay.",
+            details: { idempotencyKey: input.idempotencyKey, retryable: true },
+          });
         }
       }
 
@@ -991,7 +980,7 @@ export async function contributeOperation(
               relationCount: contribution.relations.length,
               createdAt: contribution.createdAt,
             };
-            deps.idempotencyStore!.store(
+            deps.idempotencyStore?.store(
               idempotencyCacheLookupKey!,
               idempotencyFingerprint!,
               JSON.stringify(earlyResult),

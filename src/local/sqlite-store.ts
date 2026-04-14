@@ -157,10 +157,12 @@ const SCHEMA_DDL = `
   -- Idempotency cache: persists across process restarts so CLI retries work.
   -- The in-memory Map in contribute.ts handles single-flight within a process;
   -- this table handles cross-process deduplication.
+  -- status: 'pending' (reservation, write in progress) or 'committed' (write done).
   CREATE TABLE IF NOT EXISTS idempotency_keys (
     cache_key TEXT PRIMARY KEY,
     fingerprint TEXT NOT NULL,
-    result_json TEXT NOT NULL,
+    result_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'pending',
     stored_at INTEGER NOT NULL
   );
 `;
@@ -445,58 +447,53 @@ export class SqliteIdempotencyStore {
   private readonly db: Database;
   private readonly lookupStmt: Statement;
   private readonly reserveStmt: Statement;
-  private readonly updateStmt: Statement;
+  private readonly commitStmt: Statement;
 
   constructor(db: Database) {
     this.db = db;
+    // Only return committed rows — pending rows are in-flight in another process.
     this.lookupStmt = db.prepare(
-      "SELECT fingerprint, result_json FROM idempotency_keys WHERE cache_key = ? AND stored_at > ?",
+      "SELECT fingerprint, result_json, status FROM idempotency_keys WHERE cache_key = ? AND stored_at > ?",
     );
-    // INSERT OR IGNORE: if a concurrent process already reserved this key,
-    // the insert silently fails and the caller detects the conflict via a
-    // follow-up lookup. This prevents the INSERT OR REPLACE race where two
-    // processes both miss the lookup and both succeed in writing.
     this.reserveStmt = db.prepare(
-      "INSERT OR IGNORE INTO idempotency_keys (cache_key, fingerprint, result_json, stored_at) VALUES (?, ?, ?, ?)",
+      "INSERT OR IGNORE INTO idempotency_keys (cache_key, fingerprint, status, stored_at) VALUES (?, ?, 'pending', ?)",
     );
-    this.updateStmt = db.prepare(
-      "UPDATE idempotency_keys SET result_json = ?, stored_at = ? WHERE cache_key = ? AND fingerprint = ?",
+    this.commitStmt = db.prepare(
+      "UPDATE idempotency_keys SET result_json = ?, status = 'committed', stored_at = ? WHERE cache_key = ? AND fingerprint = ?",
     );
   }
 
   lookup(
     cacheKey: string,
     ttlMs: number,
-  ): { readonly fingerprint: string; readonly resultJson: string } | undefined {
+  ):
+    | { readonly fingerprint: string; readonly resultJson: string; readonly status: string }
+    | undefined {
     const cutoff = Date.now() - ttlMs;
     const row = this.lookupStmt.get(cacheKey, cutoff) as {
       fingerprint: string;
       result_json: string;
+      status: string;
     } | null;
     if (row === null) return undefined;
-    return { fingerprint: row.fingerprint, resultJson: row.result_json };
+    return {
+      fingerprint: row.fingerprint,
+      resultJson: row.result_json,
+      status: row.status,
+    };
   }
 
   reserve(cacheKey: string, fingerprint: string): boolean {
-    // INSERT OR IGNORE: if another process already holds this key, the
-    // insert silently fails. Check via a follow-up SELECT whether the
-    // row we inserted is ours (fingerprint matches and result is the
-    // placeholder).
-    this.reserveStmt.run(cacheKey, fingerprint, "{}", Date.now());
+    this.reserveStmt.run(cacheKey, fingerprint, Date.now());
+    // Check if our reservation landed (fingerprint matches).
     const row = this.lookupStmt.get(cacheKey, 0) as {
       fingerprint: string;
-      result_json: string;
     } | null;
-    // Reserved successfully if the row exists with our fingerprint and
-    // still has the placeholder result (no other process has finalized it).
     return row !== null && row.fingerprint === fingerprint;
   }
 
   store(cacheKey: string, fingerprint: string, resultJson: string): void {
-    // Update the reserved row with the full result. Only affects rows
-    // where both cache_key AND fingerprint match, so a concurrent
-    // different-fingerprint reservation is not overwritten.
-    this.updateStmt.run(resultJson, Date.now(), cacheKey, fingerprint);
+    this.commitStmt.run(resultJson, Date.now(), cacheKey, fingerprint);
   }
 
   clear(): void {

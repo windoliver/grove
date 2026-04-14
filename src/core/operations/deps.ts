@@ -27,11 +27,17 @@ import type { WorkspaceManager } from "../workspace.js";
  * starts with an empty Map and the key is silently ignored.
  */
 export interface IdempotencyStore {
-  /** Look up an unexpired entry. Returns fingerprint + serialized result, or undefined. */
+  /** Look up an unexpired entry. Returns fingerprint, result, and status. */
   lookup(
     cacheKey: string,
     ttlMs: number,
-  ): { readonly fingerprint: string; readonly resultJson: string } | undefined;
+  ):
+    | {
+        readonly fingerprint: string;
+        readonly resultJson: string;
+        readonly status: string;
+      }
+    | undefined;
   /**
    * Durably reserve a key before starting the write. Returns true if this
    * process won the reservation, false if another process already holds it.

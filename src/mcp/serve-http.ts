@@ -324,6 +324,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     ...(topologyRouter ? { topologyRouter } : {}),
     // Nexus handoff store when available, falls back to local SQLite
     handoffStore: nexusHandoffStore ?? runtime.handoffStore,
+    idempotencyStore: runtime.idempotencyStore,
   };
   return { deps, sessionId };
 }

@@ -11,6 +11,7 @@ import type { GroveContract } from "../core/contract.js";
 import type { FrontierCalculator } from "../core/frontier.js";
 import type { GossipService } from "../core/gossip/types.js";
 import type { HandoffStore } from "../core/handoff.js";
+import type { IdempotencyStore } from "../core/operations/deps.js";
 import type { OutcomeStore } from "../core/outcome.js";
 import type { ClaimStore, ContributionStore } from "../core/store.js";
 import type { AgentTopology } from "../core/topology.js";
@@ -36,6 +37,8 @@ export interface ServerDeps {
   readonly contract?: GroveContract | undefined;
   /** Optional handoff store. Routes return 501 when not configured. */
   readonly handoffStore?: HandoffStore | undefined;
+  /** Optional idempotency store for cross-process deduplication. */
+  readonly idempotencyStore?: IdempotencyStore | undefined;
 }
 
 /** Hono environment type carrying injected dependencies. */
