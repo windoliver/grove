@@ -551,7 +551,6 @@ describe("nexusUp fallback (--timeout not supported)", () => {
   const originalSpawn = Bun.spawn.bind(Bun);
 
   afterEach(() => {
-    // @ts-expect-error -- mock restore
     Bun.spawn = originalSpawn;
   });
 
