@@ -1,0 +1,81 @@
+/**
+ * Deps parity tests — verify that MCP entry points forward all stores
+ * provided by LocalRuntime into the McpDeps object.
+ *
+ * Catches wiring omissions like goalSessionStore not being passed through
+ * (issue #214).
+ */
+
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { createLocalRuntime, type LocalRuntime } from "../local/runtime.js";
+import type { McpDeps } from "./deps.js";
+
+describe("MCP deps parity with LocalRuntime", () => {
+  let tempDir: string;
+  let runtime: LocalRuntime;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "grove-deps-parity-"));
+    const groveDir = join(tempDir, ".grove");
+    await Bun.write(join(groveDir, ".gitkeep"), "");
+
+    runtime = createLocalRuntime({
+      groveDir,
+      frontierCacheTtlMs: 0,
+      workspace: true,
+      parseContract: false, // no GROVE.md in temp dir
+    });
+  });
+
+  afterEach(async () => {
+    runtime.close();
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  test("LocalRuntime always provides goalSessionStore", () => {
+    expect(runtime.goalSessionStore).toBeDefined();
+  });
+
+  test("stdio MCP deps construction includes goalSessionStore", () => {
+    // Mirror the deps construction from src/mcp/serve.ts
+    const deps: McpDeps = {
+      contributionStore: runtime.contributionStore,
+      claimStore: runtime.claimStore,
+      bountyStore: runtime.bountyStore,
+      cas: runtime.cas,
+      frontier: runtime.frontier,
+      workspace: runtime.workspace!,
+      contract: runtime.contract,
+      onContributionWrite: runtime.onContributionWrite,
+      workspaceBoundary: runtime.groveRoot,
+      goalSessionStore: runtime.goalSessionStore,
+      handoffStore: runtime.handoffStore,
+    };
+
+    expect(deps.goalSessionStore).toBeDefined();
+    expect(deps.goalSessionStore).toBe(runtime.goalSessionStore);
+  });
+
+  test("HTTP MCP deps construction includes goalSessionStore", () => {
+    // Mirror the deps construction from src/mcp/serve-http.ts buildScopedDeps
+    const deps: McpDeps = {
+      contributionStore: runtime.contributionStore,
+      claimStore: runtime.claimStore,
+      bountyStore: runtime.bountyStore,
+      cas: runtime.cas,
+      frontier: runtime.frontier,
+      workspace: runtime.workspace!,
+      contract: runtime.contract,
+      onContributionWrite: runtime.onContributionWrite,
+      workspaceBoundary: runtime.groveRoot,
+      goalSessionStore: runtime.goalSessionStore,
+    };
+
+    expect(deps.goalSessionStore).toBeDefined();
+    expect(deps.goalSessionStore).toBe(runtime.goalSessionStore);
+  });
+});

@@ -292,6 +292,7 @@ try {
     onContributionWrite: runtime.onContributionWrite,
     ...(onContributionWritten ? { onContributionWritten } : {}),
     workspaceBoundary: runtime.groveRoot,
+    goalSessionStore: runtime.goalSessionStore,
     ...(outcomeStore ? { outcomeStore } : {}),
     ...(eventBus ? { eventBus } : {}),
     ...(topologyRouter ? { topologyRouter } : {}),
