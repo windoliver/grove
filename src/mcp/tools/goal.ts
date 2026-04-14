@@ -11,6 +11,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import type { McpDeps } from "../deps.js";
+import { toolError } from "../error-handler.js";
 
 // ---------------------------------------------------------------------------
 // Input schemas
@@ -44,15 +45,7 @@ export function registerGoalTools(server: McpServer, deps: McpDeps): void {
     async () => {
       const store = deps.goalSessionStore;
       if (!store) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text" as const,
-              text: "[NOT_CONFIGURED] Goal/session store is not configured",
-            },
-          ],
-        };
+        return toolError("NOT_CONFIGURED", "Goal/session store is not configured");
       }
 
       const goalData = await store.getGoal();
@@ -91,15 +84,7 @@ export function registerGoalTools(server: McpServer, deps: McpDeps): void {
     async (args) => {
       const store = deps.goalSessionStore;
       if (!store) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text" as const,
-              text: "[NOT_CONFIGURED] Goal/session store is not configured",
-            },
-          ],
-        };
+        return toolError("NOT_CONFIGURED", "Goal/session store is not configured");
       }
 
       const result = await store.setGoal(args.goal, args.acceptance, "mcp");

@@ -120,8 +120,8 @@ export function validationError(message: string): CallToolResult {
   return toolError(McpErrorCode.ValidationError, message);
 }
 
-/** Build a CallToolResult with isError: true. */
-function toolError(code: string, message: string): CallToolResult {
+/** Build a CallToolResult with isError: true. Format: `[CODE] message`. */
+export function toolError(code: string, message: string): CallToolResult {
   return {
     isError: true,
     content: [{ type: "text" as const, text: `[${code}] ${message}` }],

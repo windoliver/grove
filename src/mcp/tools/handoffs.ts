@@ -9,6 +9,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { HandoffStatus } from "../../core/handoff.js";
 import type { McpDeps } from "../deps.js";
+import { toolError } from "../error-handler.js";
 
 const listHandoffsInputSchema = z.object({
   toRole: z
@@ -60,15 +61,10 @@ export function registerHandoffTools(server: McpServer, deps: McpDeps): void {
     async (args) => {
       const { handoffStore } = deps;
       if (handoffStore === undefined) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text" as const,
-              text: "[NOT_CONFIGURED] Handoff store is not available. Topology routing must be active.",
-            },
-          ],
-        };
+        return toolError(
+          "NOT_CONFIGURED",
+          "Handoff store is not available. Topology routing must be active.",
+        );
       }
 
       // Expire stale handoffs before listing so callers always see fresh status.
@@ -97,28 +93,12 @@ export function registerHandoffTools(server: McpServer, deps: McpDeps): void {
     async (args) => {
       const { handoffStore } = deps;
       if (handoffStore === undefined) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text" as const,
-              text: "[NOT_CONFIGURED] Handoff store is not available.",
-            },
-          ],
-        };
+        return toolError("NOT_CONFIGURED", "Handoff store is not available.");
       }
 
       const handoff = await handoffStore.get(args.handoffId);
       if (handoff === undefined) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text" as const,
-              text: `[NOT_FOUND] Handoff '${args.handoffId}' not found.`,
-            },
-          ],
-        };
+        return toolError("NOT_FOUND", `Handoff '${args.handoffId}' not found.`);
       }
 
       return {

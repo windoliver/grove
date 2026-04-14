@@ -320,6 +320,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     contract: loadedContract,
     onContributionWrite: runtime.onContributionWrite,
     workspaceBoundary: runtime.groveRoot,
+    goalSessionStore: runtime.goalSessionStore,
     ...(eventBus ? { eventBus } : {}),
     ...(topologyRouter ? { topologyRouter } : {}),
     // Nexus handoff store when available, falls back to local SQLite
@@ -436,13 +437,18 @@ const reapTimer = setInterval(() => {
 
 // --- HTTP server ------------------------------------------------------------
 
+/** Format an HTTP-level JSON error response body. */
+function httpError(code: string, message: string): string {
+  return JSON.stringify({ error: { code, message } });
+}
+
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = req.url ?? "/";
 
   // Only handle /mcp endpoint
   if (url !== "/mcp") {
     res.writeHead(404, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Not found. Use /mcp endpoint." }));
+    res.end(httpError("NOT_FOUND", "Not found. Use /mcp endpoint."));
     return;
   }
 
@@ -451,7 +457,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     const authHeader = req.headers.authorization ?? "";
     if (authHeader !== `Bearer ${AUTH_TOKEN}`) {
       res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Unauthorized" }));
+      res.end(httpError("UNAUTHORIZED", "Unauthorized"));
       return;
     }
   }
@@ -467,7 +473,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     } catch (err) {
       if (err instanceof BodyTooLargeError) {
         res.writeHead(413, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Request body too large" }));
+        res.end(httpError("BODY_TOO_LARGE", "Request body too large"));
         return;
       }
       throw err;
@@ -477,7 +483,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       parsed = JSON.parse(body);
     } catch {
       res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Invalid JSON" }));
+      res.end(httpError("INVALID_JSON", "Invalid JSON"));
       return;
     }
 
@@ -522,14 +528,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(`${msg}\n`);
       res.writeHead(503, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          error: {
-            code: "SESSION_NOT_READY",
-            message: msg,
-          },
-        }),
-      );
+      res.end(httpError("SESSION_NOT_READY", msg));
       return;
     }
 
@@ -542,15 +541,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     if (nexusClient && scoped.sessionId === undefined) {
       res.writeHead(503, { "Content-Type": "application/json" });
       res.end(
-        JSON.stringify({
-          error: {
-            code: "SESSION_NOT_READY",
-            message:
-              "grove-mcp-http: no grove session selected — initialize the HTTP MCP " +
-              "after starting a session via the TUI. Mutations in bootstrap mode " +
-              "would land outside session scope and are refused.",
-          },
-        }),
+        httpError(
+          "SESSION_NOT_READY",
+          "grove-mcp-http: no grove session selected — initialize the HTTP MCP " +
+            "after starting a session via the TUI. Mutations in bootstrap mode " +
+            "would land outside session scope and are refused.",
+        ),
       );
       return;
     }
@@ -589,7 +585,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     const getSession = sessionId ? sessions.get(sessionId) : undefined;
     if (!getSession) {
       res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Missing or invalid Mcp-Session-Id header" }));
+      res.end(httpError("INVALID_SESSION", "Missing or invalid Mcp-Session-Id header"));
       return;
     }
     getSession.lastActivity = Date.now();
@@ -606,7 +602,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     const delSession = sessionId ? sessions.get(sessionId) : undefined;
     if (!delSession) {
       res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Session not found" }));
+      res.end(httpError("NOT_FOUND", "Session not found"));
       return;
     }
     await delSession.transport.handleRequest(req, res);
@@ -614,7 +610,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     if (sessionId) sessions.delete(sessionId);
   } else {
     res.writeHead(405, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Method not allowed" }));
+    res.end(httpError("METHOD_NOT_ALLOWED", "Method not allowed"));
   }
 }
 
@@ -657,7 +653,7 @@ const httpServer = createServer((req, res) => {
     process.stderr.write(`grove-mcp-http: ${String(error)}\n`);
     if (!res.headersSent) {
       res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Internal server error" }));
+      res.end(httpError("INTERNAL_ERROR", "Internal server error"));
     }
   });
 });

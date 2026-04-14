@@ -10,6 +10,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { OperationDeps } from "../core/operations/deps.js";
 import type { OperationResult } from "../core/operations/result.js";
 import type { McpDeps } from "./deps.js";
+import { McpErrorCode, toolError } from "./error-handler.js";
 
 /**
  * Convert McpDeps to OperationDeps.
@@ -73,8 +74,5 @@ export function toMcpResult<T>(result: OperationResult<T>, warning?: string): Ca
  * specific field and include an example of correct input.
  */
 export function toolValidationError(message: string): CallToolResult {
-  return {
-    isError: true,
-    content: [{ type: "text" as const, text: `VALIDATION_ERROR: ${message}` }],
-  };
+  return toolError(McpErrorCode.ValidationError, message);
 }

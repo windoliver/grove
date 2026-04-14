@@ -17,7 +17,7 @@ import { assertWithinBoundary } from "../../core/path-safety.js";
 import { ingestGitDiff } from "../../local/ingest/git-diff.js";
 import { ingestGitTree } from "../../local/ingest/git-tree.js";
 import type { McpDeps } from "../deps.js";
-import { handleToolError } from "../error-handler.js";
+import { handleToolError, toolError } from "../error-handler.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -98,26 +98,13 @@ export function registerIngestTools(server: McpServer, deps: McpDeps): void {
 
         // Validate: exactly one of content or filePath must be provided
         if (content !== undefined && filePath !== undefined) {
-          return {
-            isError: true,
-            content: [
-              {
-                type: "text" as const,
-                text: "[VALIDATION_ERROR] Provide exactly one of `content` or `filePath`, not both.",
-              },
-            ],
-          };
+          return toolError(
+            "VALIDATION_ERROR",
+            "Provide exactly one of `content` or `filePath`, not both.",
+          );
         }
         if (content === undefined && filePath === undefined) {
-          return {
-            isError: true,
-            content: [
-              {
-                type: "text" as const,
-                text: "[VALIDATION_ERROR] Provide exactly one of `content` or `filePath`.",
-              },
-            ],
-          };
+          return toolError("VALIDATION_ERROR", "Provide exactly one of `content` or `filePath`.");
         }
 
         const putOptions = mediaType !== undefined ? { mediaType } : undefined;
