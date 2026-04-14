@@ -8,6 +8,7 @@
 
 import { execSync } from "node:child_process";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
+import { shellEscape } from "./shell-utils.js";
 
 /** Prefix for all grove tmux session names. */
 const SESSION_PREFIX = "grove-";
@@ -44,13 +45,21 @@ export class TmuxRuntime implements AgentRuntime {
     const sessionName = `${SESSION_PREFIX}${role}-${counter}`;
     const id = sessionName;
 
+    // Pass platform/model as env vars so the agent process can read them
+    const spawnEnv: Record<string, string> = {
+      ...process.env,
+      ...config.env,
+    } as Record<string, string>;
+    if (config.platform) spawnEnv.GROVE_AGENT_PLATFORM = config.platform;
+    if (config.model) spawnEnv.GROVE_AGENT_MODEL = config.model;
+
     try {
       execSync(
         `tmux -L grove new-session -d -s ${shellEscape(sessionName)} -c ${shellEscape(config.cwd)} ${shellEscape(config.command)}`,
         {
           encoding: "utf-8",
           stdio: "pipe",
-          env: config.env ? { ...process.env, ...config.env } : process.env,
+          env: spawnEnv,
         },
       );
     } catch (err) {
@@ -59,7 +68,13 @@ export class TmuxRuntime implements AgentRuntime {
       );
     }
 
-    const session: AgentSession = { id, role, status: "running" };
+    const session: AgentSession = {
+      id,
+      role,
+      status: "running",
+      platform: config.platform,
+      model: config.model,
+    };
     const entry: TmuxSessionEntry = {
       session,
       idleCallbacks: [],
@@ -194,9 +209,4 @@ export class TmuxRuntime implements AgentRuntime {
       entry.session = { ...entry.session, status: "crashed" };
     }
   }
-}
-
-/** Escape a string for safe use in shell commands. */
-function shellEscape(s: string): string {
-  return `'${s.replace(/'/g, "'\\''")}'`;
 }

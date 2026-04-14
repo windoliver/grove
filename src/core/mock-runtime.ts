@@ -22,7 +22,13 @@ export class MockRuntime implements AgentRuntime {
   async spawn(role: string, config: AgentConfig): Promise<AgentSession> {
     this.spawnCalls.push({ role, config });
     const id = `mock-${role}-${this.nextId++}`;
-    const session: AgentSession = { id, role, status: "running" };
+    const session: AgentSession = {
+      id,
+      role,
+      status: "running",
+      platform: config.platform,
+      model: config.model,
+    };
     this.sessions.set(id, session);
     this.idleCallbacks.set(id, []);
     return session;
@@ -65,6 +71,15 @@ export class MockRuntime implements AgentRuntime {
   setSessionStatus(sessionId: string, status: AgentSession["status"]): void {
     const s = this.sessions.get(sessionId);
     if (s) this.sessions.set(sessionId, { ...s, status });
+  }
+
+  /** Get session metadata (platform, model, agent) for test assertions. */
+  getSessionMetadata(
+    sessionId: string,
+  ): Pick<AgentSession, "platform" | "model" | "agent"> | undefined {
+    const s = this.sessions.get(sessionId);
+    if (!s) return undefined;
+    return { platform: s.platform, model: s.model, agent: s.agent };
   }
 
   /** Reset all recorded calls. */

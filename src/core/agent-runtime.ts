@@ -4,6 +4,8 @@
  * Decouples grove from any specific agent CLI (acpx, tmux, subprocess).
  */
 
+import type { AgentPlatformType } from "./topology.js";
+
 /** Configuration for spawning an agent. */
 export interface AgentConfig {
   readonly role: string;
@@ -14,6 +16,10 @@ export interface AgentConfig {
   readonly prompt?: string | undefined;
   /** If true, don't send initial prompt — agent waits for push via IPC. */
   readonly waitForPush?: boolean | undefined;
+  /** Agent platform identifier — determines which backend CLI to invoke. */
+  readonly platform?: AgentPlatformType | undefined;
+  /** Model identifier, e.g. "claude-opus-4-6". Passed through to the runtime. */
+  readonly model?: string | undefined;
 }
 
 /** A running agent session. */
@@ -22,6 +28,12 @@ export interface AgentSession {
   readonly role: string;
   readonly pid?: number | undefined;
   readonly status: "running" | "idle" | "stopped" | "crashed";
+  /** Agent platform used for this session (e.g. "claude-code", "codex"). */
+  readonly platform?: AgentPlatformType | undefined;
+  /** Model identifier used for this session. */
+  readonly model?: string | undefined;
+  /** Agent backend name used by the runtime (e.g. "claude", "codex", "gemini"). */
+  readonly agent?: string | undefined;
 }
 
 /** Runtime for managing agent lifecycle. */

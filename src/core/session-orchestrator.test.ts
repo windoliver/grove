@@ -358,6 +358,253 @@ describe("SessionOrchestrator", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Platform/model passthrough (Issue 207)
+// ---------------------------------------------------------------------------
+
+describe("SessionOrchestrator — platform/model passthrough", () => {
+  test("passes role.platform to AgentConfig", async () => {
+    const runtime = new MockRuntime();
+    const bus = new LocalEventBus();
+    const contract = makeContract({
+      topology: {
+        structure: "flat",
+        roles: [
+          {
+            name: "coder",
+            description: "Write code",
+            command: "codex",
+            platform: "codex",
+            model: "gpt-4.1",
+          },
+        ],
+      },
+    });
+
+    const orchestrator = new SessionOrchestrator({
+      goal: "Build it",
+      contract,
+      topology: contract.topology!,
+      runtime,
+      eventBus: bus,
+      projectRoot: "/tmp",
+      workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback",
+    });
+
+    await orchestrator.start();
+
+    expect(runtime.spawnCalls[0]!.config.platform).toBe("codex");
+    expect(runtime.spawnCalls[0]!.config.model).toBe("gpt-4.1");
+    bus.close();
+  });
+
+  test("platform and model are undefined when role doesn't set them", async () => {
+    const runtime = new MockRuntime();
+    const bus = new LocalEventBus();
+    const contract = makeContract({
+      topology: {
+        structure: "flat",
+        roles: [{ name: "worker", description: "Do work", command: "echo worker" }],
+      },
+    });
+
+    const orchestrator = new SessionOrchestrator({
+      goal: "Work",
+      contract,
+      topology: contract.topology!,
+      runtime,
+      eventBus: bus,
+      projectRoot: "/tmp",
+      workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback",
+    });
+
+    await orchestrator.start();
+
+    expect(runtime.spawnCalls[0]!.config.platform).toBeUndefined();
+    expect(runtime.spawnCalls[0]!.config.model).toBeUndefined();
+    bus.close();
+  });
+
+  test("profile overlays role — platform and command override", async () => {
+    const runtime = new MockRuntime();
+    const bus = new LocalEventBus();
+    const contract = makeContract({
+      topology: {
+        structure: "flat",
+        roles: [
+          {
+            name: "coder",
+            description: "Write code",
+            command: "claude",
+            platform: "claude-code",
+          },
+        ],
+      },
+    });
+
+    const orchestrator = new SessionOrchestrator({
+      goal: "Build it",
+      contract,
+      topology: contract.topology!,
+      runtime,
+      eventBus: bus,
+      projectRoot: "/tmp",
+      workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback",
+      profiles: [
+        {
+          name: "@coder",
+          role: "coder",
+          platform: "codex",
+          command: "codex",
+          model: "gpt-4.1",
+        },
+      ],
+    });
+
+    await orchestrator.start();
+
+    // Profile overrides role
+    expect(runtime.spawnCalls[0]!.config.command).toBe("codex");
+    expect(runtime.spawnCalls[0]!.config.platform).toBe("codex");
+    expect(runtime.spawnCalls[0]!.config.model).toBe("gpt-4.1");
+    bus.close();
+  });
+
+  test("profile without command falls back to role command", async () => {
+    const runtime = new MockRuntime();
+    const bus = new LocalEventBus();
+    const contract = makeContract({
+      topology: {
+        structure: "flat",
+        roles: [
+          {
+            name: "coder",
+            description: "Write code",
+            command: "claude",
+            platform: "claude-code",
+            model: "claude-opus-4-6",
+          },
+        ],
+      },
+    });
+
+    const orchestrator = new SessionOrchestrator({
+      goal: "Build it",
+      contract,
+      topology: contract.topology!,
+      runtime,
+      eventBus: bus,
+      projectRoot: "/tmp",
+      workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback",
+      profiles: [
+        {
+          name: "@coder",
+          role: "coder",
+          platform: "gemini", // override platform only
+        },
+      ],
+    });
+
+    await orchestrator.start();
+
+    // Profile overrides platform, role provides command and model
+    expect(runtime.spawnCalls[0]!.config.command).toBe("claude");
+    expect(runtime.spawnCalls[0]!.config.platform).toBe("gemini");
+    expect(runtime.spawnCalls[0]!.config.model).toBe("claude-opus-4-6");
+    bus.close();
+  });
+
+  test("mixed topology with different platforms per role", async () => {
+    const runtime = new MockRuntime();
+    const bus = new LocalEventBus();
+    const contract = makeContract({
+      topology: {
+        structure: "graph",
+        roles: [
+          {
+            name: "coder",
+            description: "Write code",
+            command: "codex",
+            platform: "codex",
+            edges: [{ target: "reviewer", edgeType: "delegates" as const }],
+          },
+          {
+            name: "reviewer",
+            description: "Review code",
+            command: "claude",
+            platform: "claude-code",
+            model: "claude-opus-4-6",
+            edges: [{ target: "coder", edgeType: "feedback" as const }],
+          },
+        ],
+      },
+    });
+
+    const orchestrator = new SessionOrchestrator({
+      goal: "Build + review",
+      contract,
+      topology: contract.topology!,
+      runtime,
+      eventBus: bus,
+      projectRoot: "/tmp",
+      workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback",
+    });
+
+    await orchestrator.start();
+
+    const coderCall = runtime.spawnCalls.find((c) => c.role === "coder");
+    const reviewerCall = runtime.spawnCalls.find((c) => c.role === "reviewer");
+
+    expect(coderCall!.config.platform).toBe("codex");
+    expect(reviewerCall!.config.platform).toBe("claude-code");
+    expect(reviewerCall!.config.model).toBe("claude-opus-4-6");
+    bus.close();
+  });
+
+  test("uses role.goal when available", async () => {
+    const runtime = new MockRuntime();
+    const bus = new LocalEventBus();
+    const contract = makeContract({
+      topology: {
+        structure: "flat",
+        roles: [
+          {
+            name: "writer",
+            description: "A writer agent",
+            prompt: "System instructions for writing",
+            goal: "Write excellent documentation",
+            command: "echo writer",
+          },
+        ],
+      },
+    });
+
+    const orchestrator = new SessionOrchestrator({
+      goal: "Document the API",
+      contract,
+      topology: contract.topology!,
+      runtime,
+      eventBus: bus,
+      projectRoot: "/tmp",
+      workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback",
+    });
+
+    await orchestrator.start();
+
+    // goal takes precedence over prompt and description
+    expect(runtime.sendCalls[0]!.message).toContain("Write excellent documentation");
+    expect(runtime.sendCalls[0]!.message).not.toContain("System instructions for writing");
+    expect(runtime.sendCalls[0]!.message).not.toContain("A writer agent");
+    bus.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Workspace isolation policy tests
 // ---------------------------------------------------------------------------
 

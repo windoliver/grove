@@ -510,12 +510,18 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           void (async () => {
             const orderedRoles = topologicalSortRoles(topology);
             for (const role of orderedRoles) {
-              const command = roleMapping.get(role.name) ?? role.command ?? "codex";
+              const userOverrideCmd = roleMapping.get(role.name);
+              const command = userOverrideCmd ?? role.command ?? "codex";
               const context: Record<string, unknown> = {};
               const editedPrompt = rolePromptsRef.current.get(role.name);
               context.rolePrompt = editedPrompt ?? role.prompt ?? "";
               if (role.description) context.roleDescription = role.description;
               if (role.goal) context.roleGoal = role.goal;
+              // If the user explicitly changed the CLI in launch preview, don't pass
+              // the topology's platform — it would override the user's choice in
+              // resolveAgent(). Let resolveAgent fall back to command parsing instead.
+              if (!userOverrideCmd && role.platform) context.platform = role.platform;
+              if (role.model) context.model = role.model;
               if (topology) context.topology = topology;
 
               // Mark as spawning

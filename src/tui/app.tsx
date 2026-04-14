@@ -711,11 +711,14 @@ export function App({
       const depthCheck = checkSpawnDepth(topology, depth);
       if (!depthCheck.allowed) return;
 
-      // Look up role prompt/description from topology to inject as agent context.
+      // Look up role config from topology to inject as agent context.
       const role = topology?.roles.find((r) => r.name === agentId);
       const context: Record<string, unknown> = {};
       if (role?.prompt) context.rolePrompt = role.prompt;
       if (role?.description) context.roleDescription = role.description;
+      if (role?.goal) context.roleGoal = role.goal;
+      if (role?.platform) context.platform = role.platform;
+      if (role?.model) context.model = role.model;
       if (topology) context.topology = topology;
 
       spawnManager.spawn(agentId, command, parentAgentId, depth, context).catch((err) => {
