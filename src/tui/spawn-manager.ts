@@ -196,7 +196,7 @@ export class SpawnManager {
     // Uses a real git worktree so the agent has actual source code,
     // can edit files, commit, push, and create PRs.
     let workspacePath: string;
-    let workspaceMode: WorkspaceMode;
+    let workspaceMode!: WorkspaceMode;
     {
       const groveDir = this.groveDir;
       const projectRoot = groveDir ? resolve(groveDir, "..") : process.cwd();
@@ -430,7 +430,7 @@ export class SpawnManager {
       spawnId,
       claimId: "",
       workspacePath,
-      workspaceMode: workspaceMode!,
+      workspaceMode: workspaceMode,
     };
   }
 
