@@ -131,6 +131,16 @@ export class TopologyRouter {
    * Returns an empty array for unknown roles.
    */
   targetsFor(sourceRole: string): readonly RoleEdge[] {
+    const role = this.roleMap.get(sourceRole);
+    const mode = role?.mode ?? "explicit";
+
+    if (mode === "broadcast") {
+      // Broadcast: return synthetic edges to all other roles
+      return this.topology.roles
+        .filter((r) => r.name !== sourceRole)
+        .map((r) => ({ target: r.name, edgeType: "delegates" as const }));
+    }
+
     return this.edgeMap.get(sourceRole) ?? [];
   }
 }

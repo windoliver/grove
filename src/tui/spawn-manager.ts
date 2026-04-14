@@ -212,9 +212,7 @@ export class SpawnManager {
         ? (resolveRoleWorkspaceStrategies(this.topology, wsSessionId).get(roleId) ?? "HEAD")
         : "HEAD";
 
-      let provisioned:
-        | import("../core/workspace-provisioner.js").ProvisionedWorkspace
-        | undefined;
+      let provisioned: import("../core/workspace-provisioner.js").ProvisionedWorkspace | undefined;
       try {
         // Use wsSessionId (stable session-level ID) so branch names are predictable
         // and match what resolveRoleWorkspaceStrategies() computes for dependents.
@@ -227,8 +225,7 @@ export class SpawnManager {
         });
         workspacePath = provisioned.path;
       } catch (provisionErr) {
-        const reason =
-          provisionErr instanceof Error ? provisionErr.message : String(provisionErr);
+        const reason = provisionErr instanceof Error ? provisionErr.message : String(provisionErr);
         if (this.workspaceIsolationPolicy === "strict") {
           throw new Error(`Workspace provisioning failed for '${roleId}': ${reason}`);
         }
@@ -271,8 +268,7 @@ export class SpawnManager {
             branch: provisioned.branch,
           };
         } catch (configErr) {
-          const reason =
-            configErr instanceof Error ? configErr.message : String(configErr);
+          const reason = configErr instanceof Error ? configErr.message : String(configErr);
           if (this.workspaceIsolationPolicy === "strict") {
             throw new Error(`Bootstrap failed for '${roleId}': ${reason}`);
           }
@@ -683,9 +679,9 @@ export class SpawnManager {
     );
     if (!topology || !this.agentRuntime) return;
 
-    // Find target roles from topology edges
+    // Find target roles from topology edges or broadcast mode
     const sourceRoleDef = topology.roles.find((r) => r.name === sourceRole);
-    if (!sourceRoleDef?.edges) return;
+    if (!sourceRoleDef) return;
 
     // Find source workspace path
     let sourceWorkspace: string | undefined;
@@ -705,7 +701,12 @@ export class SpawnManager {
       }
     }
 
-    const targetRoles = sourceRoleDef.edges.map((e) => e.target);
+    // Broadcast mode: notify all other roles. Explicit: follow edges.
+    const targetRoles =
+      sourceRoleDef.mode === "broadcast"
+        ? topology.roles.filter((r) => r.name !== sourceRole).map((r) => r.name)
+        : (sourceRoleDef.edges ?? []).map((e) => e.target);
+    if (targetRoles.length === 0) return;
     debugLog(
       "route",
       `targetRoles=${targetRoles.join(",")} agentSessions=[${[...this.agentSessions.keys()].join(",")}] routableSessions=[${[...this.routableSessions].join(",")}]`,

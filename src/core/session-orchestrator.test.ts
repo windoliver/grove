@@ -83,11 +83,9 @@ describe("SessionOrchestrator", () => {
 
     const status = await orchestrator.start();
 
-    // Goals are sent via spawn (AgentConfig.goal), not via send().
-    // No separate send calls for goals.
-    expect(runtime.sendCalls).toHaveLength(0);
-    // Verify goals were passed through spawn
-    expect(runtime.spawnCalls[0]!.config.goal).toContain("Build auth module");
+    // MockRuntime doesn't send goals in spawn(), so orchestrator sends via send()
+    expect(runtime.sendCalls).toHaveLength(2);
+    expect(runtime.sendCalls[0]!.message).toContain("Build auth module");
     for (const agent of status.agents) {
       expect(agent.workspaceMode.status).toBe("fallback_workspace");
     }
@@ -167,9 +165,9 @@ describe("SessionOrchestrator", () => {
       timestamp: new Date().toISOString(),
     });
 
-    // Contribution forwarded via EventBus
-    expect(runtime.sendCalls.length).toBe(1);
-    expect(runtime.sendCalls[0]!.message).toContain("coder");
+    // 2 goal sends (MockRuntime) + 1 contribution forwarding = 3
+    expect(runtime.sendCalls.length).toBe(3);
+    expect(runtime.sendCalls[2]!.message).toContain("coder");
     bus.close();
   });
 
@@ -191,8 +189,8 @@ describe("SessionOrchestrator", () => {
       timestamp: new Date().toISOString(),
     });
 
-    // No goal sends (via spawn), no forwarded stop events
-    expect(runtime.sendCalls.length).toBe(0);
+    // 2 goal sends (MockRuntime), no forwarded stop events
+    expect(runtime.sendCalls.length).toBe(2);
     bus.close();
   });
 

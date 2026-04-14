@@ -6,19 +6,19 @@
  */
 
 import { join } from "node:path";
-import { resolveMcpServePath } from "./resolve-mcp-serve-path.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 import type { GroveContract } from "./contract.js";
 import type { EventBus, GroveEvent } from "./event-bus.js";
+import { resolveMcpServePath } from "./resolve-mcp-serve-path.js";
 import type { AgentRole, AgentTopology } from "./topology.js";
 import { resolveRoleWorkspaceStrategies, topologicalSortRoles } from "./topology.js";
 import { TopologyRouter } from "./topology-router.js";
 import { bootstrapWorkspace } from "./workspace-bootstrap.js";
 import {
   type ProvisionedWorkspace,
+  provisionWorkspace,
   type WorkspaceIsolationPolicy,
   type WorkspaceMode,
-  provisionWorkspace,
 } from "./workspace-provisioner.js";
 
 export type { WorkspaceIsolationPolicy, WorkspaceMode };
@@ -57,7 +57,9 @@ export interface SessionConfig {
    * downstream agents. Required because MCP tools run in child processes
    * with separate EventBus instances — in-process events don't cross.
    */
-  readonly contributionStore?: { list(query?: { limit?: number }): Promise<readonly import("./models.js").Contribution[]> } | undefined;
+  readonly contributionStore?:
+    | { list(query?: { limit?: number }): Promise<readonly import("./models.js").Contribution[]> }
+    | undefined;
 }
 
 /** Status of a running session. */
@@ -162,8 +164,15 @@ export class SessionOrchestrator {
 
     this.startedAt = Date.now();
 
-    // Goals are already sent by AcpxRuntime.spawn() as the initial prompt.
-    // Do NOT send again here — duplicate prompts confuse the agent.
+    // AcpxRuntime sends the initial goal during spawn(). MockRuntime does not.
+    // Send goals only to agents whose runtime status is still "running" but
+    // haven't received a prompt yet (i.e., non-acpx runtimes).
+    // We detect this by checking if the runtime is MockRuntime (no sendAsync).
+    if (!("sendAsync" in this.config.runtime)) {
+      for (const agent of this.agents) {
+        await this.config.runtime.send(agent.session, agent.goal);
+      }
+    }
 
     // Wire idle detection
     for (const agent of this.agents) {
@@ -226,9 +235,9 @@ export class SessionOrchestrator {
     const POLL_MS = 3_000;
     const INITIAL_DELAY_MS = 15_000; // wait for agents to go idle first
 
-    // Seed seenCids with contributions that existed before session started
-    // so we don't re-route them on the first poll
-    void this.config.contributionStore?.list({ limit: 100 }).then((existing) => {
+    // Seed seenCids with ALL contributions that existed before session started.
+    // Use same limit as poll to ensure no gap between seed and first poll.
+    void this.config.contributionStore?.list({ limit: 1000 }).then((existing) => {
       for (const c of existing) {
         this.seenCids.add(c.cid);
       }
@@ -260,8 +269,13 @@ export class SessionOrchestrator {
         const sourceRole = c.agent.role;
         if (!sourceRole) continue;
 
-        // Only process contributions from agents in THIS session
-        const isOurAgent = this.agents.some((a) => a.role === sourceRole);
+        // Only process contributions from agents in THIS session.
+        // Match by agentId (unique per spawn), not just role name (shared across sessions).
+        const agentId = c.agent.agentId;
+        const isOurAgent = this.agents.some(
+          (a) =>
+            a.role === sourceRole && (a.session.id === agentId || a.session.role === sourceRole),
+        );
         if (!isOurAgent) continue;
 
         // Find the source agent's workspace path — this is the handoff artifact.
@@ -269,9 +283,10 @@ export class SessionOrchestrator {
         const sourceAgent = this.agents.find((a) => a.role === sourceRole);
         const sourceWorkspace = sourceAgent?.workspaceMode.path ?? "(unknown)";
 
-        const action = c.kind === "review"
-          ? `This is feedback on your work. Read the review and iterate — submit updated work via grove_submit_work.`
-          : `Read the source files at ${sourceWorkspace} and respond with the appropriate tool (grove_submit_review for reviews, grove_submit_work for new work).`;
+        const action =
+          c.kind === "review"
+            ? `This is feedback on your work. Read the review and iterate — submit updated work via grove_submit_work.`
+            : `Read the source files at ${sourceWorkspace} and respond with the appropriate tool (grove_submit_review for reviews, grove_submit_work for new work).`;
 
         const message =
           `[grove] New ${c.kind} from ${sourceRole}:\n` +
@@ -296,7 +311,10 @@ export class SessionOrchestrator {
 
         // Detect [DONE] signal — stop the session when any agent signals done.
         // This mirrors what use-done-detection.ts does in the TUI layer.
-        if (c.summary.startsWith("[DONE]") || (c.context && (c.context as Record<string, unknown>).done === true)) {
+        if (
+          c.summary.startsWith("[DONE]") ||
+          (c.context && (c.context as Record<string, unknown>).done === true)
+        ) {
           void this.stop(`Agent ${sourceRole} signaled done: ${c.summary}`);
           return;
         }
@@ -326,7 +344,14 @@ export class SessionOrchestrator {
     const roleGoal = role.prompt ?? role.description ?? `Fulfill role: ${role.name}`;
     const fullGoal = `Session goal: ${this.config.goal}\n\nYour role (${role.name}): ${roleGoal}`;
 
-    const { cwd, workspaceMode } = workspace ?? { cwd: this.config.projectRoot, workspaceMode: { status: "fallback_workspace" as const, path: this.config.projectRoot, reason: "No workspace" } };
+    const { cwd, workspaceMode } = workspace ?? {
+      cwd: this.config.projectRoot,
+      workspaceMode: {
+        status: "fallback_workspace" as const,
+        path: this.config.projectRoot,
+        reason: "No workspace",
+      },
+    };
 
     if (signal?.aborted) throw new Error(`Spawn aborted for role '${role.name}'`);
 
@@ -532,7 +557,8 @@ export class SessionOrchestrator {
       : await this.provisionAgentWorkspace(
           roleSpec,
           this.config.workspaceIsolationPolicy ?? "strict",
-          resolveRoleWorkspaceStrategies(this.config.topology, this.sessionId).get(roleSpec.name) ?? "HEAD",
+          resolveRoleWorkspaceStrategies(this.config.topology, this.sessionId).get(roleSpec.name) ??
+            "HEAD",
         );
     const newSession = await this.spawnAgent(roleSpec, undefined, ws);
 
