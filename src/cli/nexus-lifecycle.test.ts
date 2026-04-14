@@ -551,7 +551,6 @@ describe("nexusUp fallback (--timeout not supported)", () => {
   const originalSpawn = Bun.spawn.bind(Bun);
 
   afterEach(() => {
-    // @ts-expect-error — Bun.spawn is readonly but we need to mock it
     Bun.spawn = originalSpawn;
   });
 
@@ -596,7 +595,6 @@ describe("nexusUp fallback (--timeout not supported)", () => {
 
   test("falls back to args without --timeout when CLI says 'no such option'", async () => {
     const calls: string[][] = [];
-    // @ts-expect-error — Bun.spawn is readonly but we need to mock it
     Bun.spawn = (args: string[], _opts?: unknown) => {
       calls.push(args);
       if (args.includes("--timeout")) {
@@ -614,7 +612,6 @@ describe("nexusUp fallback (--timeout not supported)", () => {
 
   test("falls back when CLI says 'unrecognized arguments'", async () => {
     const calls: string[][] = [];
-    // @ts-expect-error — Bun.spawn is readonly but we need to mock it
     Bun.spawn = (args: string[], _opts?: unknown) => {
       calls.push(args);
       if (args.includes("--timeout")) {
@@ -631,7 +628,6 @@ describe("nexusUp fallback (--timeout not supported)", () => {
     // Regression: partial-line carry-over ensures "no such option: --timeout"
     // arriving in two separate read() chunks still triggers the fallback.
     const calls: string[][] = [];
-    // @ts-expect-error — Bun.spawn is readonly but we need to mock it
     Bun.spawn = (args: string[], _opts?: unknown) => {
       calls.push(args);
       if (args.includes("--timeout")) {
@@ -647,7 +643,6 @@ describe("nexusUp fallback (--timeout not supported)", () => {
 
   test("throws immediately for unrelated errors — no fallback attempted", async () => {
     const calls: string[][] = [];
-    // @ts-expect-error — Bun.spawn is readonly but we need to mock it
     Bun.spawn = (args: string[], _opts?: unknown) => {
       calls.push(args);
       return fakeProc(1, "", "Docker daemon not running");
