@@ -247,7 +247,16 @@ contributions.post("/", async (c) => {
       : {}),
     agent: parsed.agent,
     ...(parsed.createdAt !== undefined ? { createdAt: parsed.createdAt } : {}),
-    ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+    // Scope idempotency key by sessionId so the same key in different
+    // sessions is treated as distinct — prevents cross-session cache
+    // contamination and policy bypass.
+    ...(idempotencyKey !== undefined
+      ? {
+          idempotencyKey: parsed.sessionId
+            ? `${idempotencyKey}\x01${parsed.sessionId}`
+            : idempotencyKey,
+        }
+      : {}),
   };
 
   let opDeps = toOperationDeps(serverDeps);

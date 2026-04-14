@@ -444,15 +444,23 @@ export function initSqliteDb(dbPath: string): Database {
 export class SqliteIdempotencyStore {
   private readonly db: Database;
   private readonly lookupStmt: Statement;
-  private readonly upsertStmt: Statement;
+  private readonly reserveStmt: Statement;
+  private readonly updateStmt: Statement;
 
   constructor(db: Database) {
     this.db = db;
     this.lookupStmt = db.prepare(
       "SELECT fingerprint, result_json FROM idempotency_keys WHERE cache_key = ? AND stored_at > ?",
     );
-    this.upsertStmt = db.prepare(
-      "INSERT OR REPLACE INTO idempotency_keys (cache_key, fingerprint, result_json, stored_at) VALUES (?, ?, ?, ?)",
+    // INSERT OR IGNORE: if a concurrent process already reserved this key,
+    // the insert silently fails and the caller detects the conflict via a
+    // follow-up lookup. This prevents the INSERT OR REPLACE race where two
+    // processes both miss the lookup and both succeed in writing.
+    this.reserveStmt = db.prepare(
+      "INSERT OR IGNORE INTO idempotency_keys (cache_key, fingerprint, result_json, stored_at) VALUES (?, ?, ?, ?)",
+    );
+    this.updateStmt = db.prepare(
+      "UPDATE idempotency_keys SET result_json = ?, stored_at = ? WHERE cache_key = ? AND fingerprint = ?",
     );
   }
 
@@ -469,8 +477,26 @@ export class SqliteIdempotencyStore {
     return { fingerprint: row.fingerprint, resultJson: row.result_json };
   }
 
+  reserve(cacheKey: string, fingerprint: string): boolean {
+    // INSERT OR IGNORE: if another process already holds this key, the
+    // insert silently fails. Check via a follow-up SELECT whether the
+    // row we inserted is ours (fingerprint matches and result is the
+    // placeholder).
+    this.reserveStmt.run(cacheKey, fingerprint, "{}", Date.now());
+    const row = this.lookupStmt.get(cacheKey, 0) as {
+      fingerprint: string;
+      result_json: string;
+    } | null;
+    // Reserved successfully if the row exists with our fingerprint and
+    // still has the placeholder result (no other process has finalized it).
+    return row !== null && row.fingerprint === fingerprint;
+  }
+
   store(cacheKey: string, fingerprint: string, resultJson: string): void {
-    this.upsertStmt.run(cacheKey, fingerprint, resultJson, Date.now());
+    // Update the reserved row with the full result. Only affects rows
+    // where both cache_key AND fingerprint match, so a concurrent
+    // different-fingerprint reservation is not overwritten.
+    this.updateStmt.run(resultJson, Date.now(), cacheKey, fingerprint);
   }
 
   clear(): void {

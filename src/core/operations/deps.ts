@@ -32,7 +32,13 @@ export interface IdempotencyStore {
     cacheKey: string,
     ttlMs: number,
   ): { readonly fingerprint: string; readonly resultJson: string } | undefined;
-  /** Persist a completed entry. */
+  /**
+   * Durably reserve a key before starting the write. Returns true if this
+   * process won the reservation, false if another process already holds it.
+   * Uses INSERT OR IGNORE so concurrent callers cannot both succeed.
+   */
+  reserve(cacheKey: string, fingerprint: string): boolean;
+  /** Update an already-reserved entry with the final result. */
   store(cacheKey: string, fingerprint: string, resultJson: string): void;
   /** Remove all entries (testing only). */
   clear(): void;

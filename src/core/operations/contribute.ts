@@ -797,7 +797,47 @@ export async function contributeOperation(
         }
       }
 
-      // Miss in both layers: synchronously reserve the in-memory slot.
+      // Durably reserve the key in SQLite before starting the write.
+      // INSERT OR IGNORE ensures only one process wins the reservation;
+      // a concurrent process that also passed the lookup will fail here
+      // and detect the conflict on retry.
+      if (deps.idempotencyStore !== undefined) {
+        const reserved = deps.idempotencyStore.reserve(
+          idempotencyCacheLookupKey,
+          idempotencyFingerprint,
+        );
+        if (!reserved) {
+          // Another process reserved this key between our lookup and now.
+          // Re-check the store to determine if it's same-fingerprint (retry)
+          // or different-fingerprint (conflict).
+          const existing = deps.idempotencyStore.lookup(
+            idempotencyCacheLookupKey,
+            IDEMPOTENCY_TTL_MS,
+          );
+          if (existing !== undefined) {
+            if (existing.fingerprint !== idempotencyFingerprint) {
+              return err({
+                code: OperationErrorCode.StateConflict,
+                message:
+                  "Idempotency key was previously used with a different request body. " +
+                  "Reusing the same key with different input is rejected to prevent silent " +
+                  "write divergence. Use a new key for the new intent.",
+                details: { idempotencyKey: input.idempotencyKey },
+              });
+            }
+            // Same fingerprint — another process is writing or has written.
+            // Return its result if available, otherwise let this process
+            // proceed (the duplicate contribution is a smaller cost than
+            // blocking indefinitely on an unknown process).
+            if (existing.resultJson !== "{}") {
+              const result = JSON.parse(existing.resultJson) as ContributeResult;
+              return ok(result);
+            }
+          }
+        }
+      }
+
+      // Reserve the in-memory slot for single-flight within this process.
       // Subsequent concurrent callers observe the pending Promise and await it.
       idempotencySlot = reserveIdempotencySlot(
         idempotencyCacheLookupKey,
