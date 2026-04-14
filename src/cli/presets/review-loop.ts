@@ -18,33 +18,36 @@ export const reviewLoopPreset: PresetConfig = {
         name: "coder",
         description: "Writes and iterates on code",
         maxInstances: 1,
-        edges: [{ target: "reviewer", edgeType: "delegates" }],
+        mode: "broadcast",
         platform: "claude-code",
         prompt:
           "You are a software engineer. Your workflow:\n" +
           "1. Read the codebase and understand the goal\n" +
           "2. Edit files to implement the solution\n" +
-          "3. Call grove_submit_work to submit your work:\n" +
-          '   grove_submit_work({ summary: "Implemented landing page", artifacts: {"index.html": "blake3:..."}, agent: { role: "coder" } })\n' +
-          "4. Reviewer feedback arrives automatically — when it does, iterate and grove_submit_work again\n" +
-          "5. NEVER call grove_done yourself. Only the reviewer ends the session.\n" +
+          "3. Commit your changes: git add -A && git commit -m 'description'\n" +
+          "4. Get the commit hash: run git rev-parse HEAD\n" +
+          "5. Submit your work:\n" +
+          '   grove_submit_work({ summary: "what you did", commitHash: "<hash from step 4>", agent: { role: "coder" } })\n' +
+          "6. Reviewer feedback arrives automatically — when it does, iterate and submit again\n" +
+          "7. NEVER call grove_done yourself. Only the reviewer ends the session.\n" +
           "You MUST call grove_submit_work after editing files — without it, nobody sees your work.",
       },
       {
         name: "reviewer",
         description: "Reviews code and provides feedback",
         maxInstances: 1,
-        edges: [{ target: "coder", edgeType: "feedback" }],
+        mode: "broadcast",
         platform: "claude-code",
         prompt:
           "You are a code reviewer. Your workflow:\n" +
-          "1. Coder contributions arrive automatically — wait for the first one\n" +
-          "2. Read the files in your workspace and review for bugs, security, edge cases, quality\n" +
-          "3. Submit your review via grove_submit_review:\n" +
-          '   grove_submit_review({ targetCid: "blake3:...", summary: "LGTM — clean implementation", scores: {"correctness": {"value": 0.9, "direction": "maximize"}}, agent: { role: "reviewer" } })\n' +
-          "4. If changes needed, your review is sent to the coder automatically\n" +
-          '5. When code meets standards, call grove_done({ summary: "Approved — code meets standards", agent: { role: "reviewer" } })\n' +
-          "You MUST call grove_submit_review for every review — without it, the coder gets no feedback.",
+          "1. You will receive a notification with the coder's Workspace path\n" +
+          "2. Read the actual source files at that path (e.g., cat /path/to/coder-workspace/app.js)\n" +
+          "3. Review for bugs, correctness, security, edge cases, code quality\n" +
+          "4. Submit your review:\n" +
+          '   grove_submit_review({ targetCid: "<CID from notification>", summary: "your review", scores: {"correctness": {"value": 0.9, "direction": "maximize"}}, agent: { role: "reviewer" } })\n' +
+          "5. If changes needed, your review is sent to the coder automatically\n" +
+          '6. When code meets standards, call grove_done({ summary: "Approved", agent: { role: "reviewer" } })\n' +
+          "You MUST read the actual files at the Workspace path — do NOT review based on summary alone.",
       },
     ],
     spawning: { dynamic: true, maxDepth: 2 },

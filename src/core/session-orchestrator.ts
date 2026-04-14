@@ -5,11 +5,23 @@
  * sends goals, wires event routing, and monitors for stop conditions.
  */
 
+import { join } from "node:path";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 import type { GroveContract } from "./contract.js";
 import type { EventBus, GroveEvent } from "./event-bus.js";
+import { resolveMcpServePath } from "./resolve-mcp-serve-path.js";
 import type { AgentRole, AgentTopology } from "./topology.js";
+import { resolveRoleWorkspaceStrategies, topologicalSortRoles } from "./topology.js";
 import { TopologyRouter } from "./topology-router.js";
+import { bootstrapWorkspace } from "./workspace-bootstrap.js";
+import {
+  type ProvisionedWorkspace,
+  provisionWorkspace,
+  type WorkspaceIsolationPolicy,
+  type WorkspaceMode,
+} from "./workspace-provisioner.js";
+
+export type { WorkspaceIsolationPolicy, WorkspaceMode };
 
 /** Configuration for starting a session. */
 export interface SessionConfig {
@@ -29,6 +41,25 @@ export interface SessionConfig {
   readonly workspaceBaseDir: string;
   /** Optional session ID (generated if not provided). */
   readonly sessionId?: string | undefined;
+  /**
+   * Controls how workspace provisioning failures are handled.
+   *
+   * - 'strict' (default): any failure — worktree creation or bootstrap — aborts
+   *   the spawn for that role.
+   * - 'allow-fallback': on worktree failure the agent uses the project root;
+   *   on bootstrap failure the agent runs without config files. Both degraded
+   *   modes are visible via AgentSessionInfo.workspaceMode.
+   */
+  readonly workspaceIsolationPolicy?: WorkspaceIsolationPolicy | undefined;
+  /**
+   * Contribution store for polling-based routing. When set, the orchestrator
+   * polls for new contributions every few seconds and forwards them to
+   * downstream agents. Required because MCP tools run in child processes
+   * with separate EventBus instances — in-process events don't cross.
+   */
+  readonly contributionStore?:
+    | { list(query?: { limit?: number }): Promise<readonly import("./models.js").Contribution[]> }
+    | undefined;
 }
 
 /** Status of a running session. */
@@ -46,6 +77,8 @@ export interface AgentSessionInfo {
   readonly role: string;
   readonly session: AgentSession;
   readonly goal: string;
+  /** Describes how this agent's workspace was provisioned. */
+  readonly workspaceMode: WorkspaceMode;
 }
 
 export class SessionOrchestrator {
@@ -56,6 +89,10 @@ export class SessionOrchestrator {
   private eventHandlers?: Map<string, import("./event-bus.js").EventHandler>;
   private stopped = false;
   private stopReason: string | undefined;
+  private contributionCount = 0;
+  private startedAt = 0;
+  private readonly seenCids = new Set<string>();
+  private contributionPollTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: SessionConfig) {
     this.config = config;
@@ -68,15 +105,38 @@ export class SessionOrchestrator {
   /** Start the session: spawn all agents and send goals. */
   async start(): Promise<SessionStatus> {
     const topology = this.config.topology;
+    const policy = this.config.workspaceIsolationPolicy ?? "strict";
 
-    // Spawn all agents in parallel with timeout via AbortController
+    // Resolve workspace strategies from edge types — delegates/feeds/escalates edges
+    // make the target role's worktree branch off the source role's branch.
+    const wsStrategies = resolveRoleWorkspaceStrategies(topology, this.sessionId);
+
+    // Provision workspaces in topological order so source branches exist before
+    // dependents try to base their worktrees on them.
+    const orderedRoles = topologicalSortRoles(topology);
+    const workspaceMap = new Map<string, { cwd: string; workspaceMode: WorkspaceMode }>();
+    for (const role of orderedRoles) {
+      const baseBranch = wsStrategies.get(role.name) ?? "HEAD";
+      const ws = await this.provisionAgentWorkspace(role, policy, baseBranch);
+      workspaceMap.set(role.name, ws);
+    }
+
+    // Spawn all agents in parallel (workspaces already provisioned above)
     const SPAWN_TIMEOUT_MS = 30_000;
     const spawnResults = await Promise.allSettled(
       topology.roles.map(async (role) => {
+        const ws = workspaceMap.get(role.name) ?? {
+          cwd: this.config.projectRoot,
+          workspaceMode: {
+            status: "fallback_workspace" as const,
+            path: this.config.projectRoot,
+            reason: "Workspace not provisioned",
+          },
+        };
         const ac = new AbortController();
         const timeoutId = setTimeout(() => ac.abort(), SPAWN_TIMEOUT_MS);
         try {
-          const result = await this.spawnAgent(role, ac.signal);
+          const result = await this.spawnAgent(role, ac.signal, ws);
           clearTimeout(timeoutId);
           return result;
         } catch (err) {
@@ -102,9 +162,16 @@ export class SessionOrchestrator {
       throw new Error("No agents spawned — all roles failed");
     }
 
-    // Send goals to all agents
-    for (const agent of this.agents) {
-      await this.config.runtime.send(agent.session, agent.goal);
+    this.startedAt = Date.now();
+
+    // AcpxRuntime sends the initial goal during spawn(). MockRuntime does not.
+    // Send goals only to agents whose runtime status is still "running" but
+    // haven't received a prompt yet (i.e., non-acpx runtimes).
+    // We detect this by checking if the runtime is MockRuntime (no sendAsync).
+    if (!("sendAsync" in this.config.runtime)) {
+      for (const agent of this.agents) {
+        await this.config.runtime.send(agent.session, agent.goal);
+      }
     }
 
     // Wire idle detection
@@ -124,6 +191,14 @@ export class SessionOrchestrator {
       this.config.eventBus.subscribe(agent.role, handler);
     }
 
+    // Start contribution polling — MCP tools run in child processes with
+    // separate EventBus instances, so in-process events don't cross process
+    // boundaries. Poll SQLite directly to detect new contributions and
+    // forward them to downstream agents.
+    if (this.config.contributionStore) {
+      this.startContributionPolling();
+    }
+
     return this.getStatus();
   }
 
@@ -132,12 +207,120 @@ export class SessionOrchestrator {
     this.stopped = true;
     this.stopReason = reason;
 
+    // Stop contribution polling
+    if (this.contributionPollTimer) {
+      clearInterval(this.contributionPollTimer);
+      this.contributionPollTimer = null;
+    }
+
     // Notify all agents
     this.router.broadcastStop(reason);
 
     // Close all agent sessions
     for (const agent of this.agents) {
       await this.config.runtime.close(agent.session);
+    }
+  }
+
+  /**
+   * Poll contribution store for new contributions and forward to downstream agents.
+   * This bridges the process boundary — MCP tools write to SQLite, we read from it.
+   *
+   * Delay the first poll so agents have time to process their initial prompt.
+   * Without this, contributions from fast agents (coder) arrive in the same
+   * acpx session turn as the initial prompt for slow agents (reviewer), and
+   * the agent treats it as context instead of a separate action trigger.
+   */
+  private startContributionPolling(): void {
+    const POLL_MS = 3_000;
+    const INITIAL_DELAY_MS = 15_000; // wait for agents to go idle first
+
+    // Seed seenCids with ALL contributions that existed before session started.
+    // Use same limit as poll to ensure no gap between seed and first poll.
+    void this.config.contributionStore?.list({ limit: 1000 }).then((existing) => {
+      for (const c of existing) {
+        this.seenCids.add(c.cid);
+      }
+    });
+
+    // Start polling after initial delay
+    setTimeout(() => {
+      if (this.stopped) return;
+      this.contributionPollTimer = setInterval(() => {
+        void this.pollContributions();
+      }, POLL_MS);
+      // Also poll immediately on first tick
+      void this.pollContributions();
+    }, INITIAL_DELAY_MS);
+  }
+
+  private async pollContributions(): Promise<void> {
+    if (this.stopped || !this.config.contributionStore) return;
+
+    try {
+      // Fetch recent contributions (newest first via DESC, then reverse for processing order).
+      // Using a large limit ensures we don't miss contributions in active sessions.
+      const contributions = await this.config.contributionStore.list({ limit: 200 });
+      for (const c of contributions) {
+        if (this.seenCids.has(c.cid)) continue;
+        this.seenCids.add(c.cid);
+        this.contributionCount++;
+
+        const sourceRole = c.agent.role;
+        if (!sourceRole) continue;
+
+        // Only process contributions from agents in THIS session.
+        // Match by agentId (unique per spawn), not just role name (shared across sessions).
+        const agentId = c.agent.agentId;
+        const isOurAgent = this.agents.some(
+          (a) =>
+            a.role === sourceRole && (a.session.id === agentId || a.session.role === sourceRole),
+        );
+        if (!isOurAgent) continue;
+
+        // Find the source agent's workspace path — this is the handoff artifact.
+        // The receiving agent reads files directly from this path, no git merge needed.
+        const sourceAgent = this.agents.find((a) => a.role === sourceRole);
+        const sourceWorkspace = sourceAgent?.workspaceMode.path ?? "(unknown)";
+
+        const action =
+          c.kind === "review"
+            ? `This is feedback on your work. Read the review and iterate — submit updated work via grove_submit_work.`
+            : `Read the source files at ${sourceWorkspace} and respond with the appropriate tool (grove_submit_review for reviews, grove_submit_work for new work).`;
+
+        const message =
+          `[grove] New ${c.kind} from ${sourceRole}:\n` +
+          `  CID: ${c.cid}\n` +
+          `  Summary: ${c.summary}\n` +
+          `  Workspace: ${sourceWorkspace}\n\n` +
+          action;
+
+        // Use topology router to find targets, then send directly
+        const targets = this.router.route(sourceRole, {
+          cid: c.cid,
+          kind: c.kind,
+          summary: c.summary,
+        });
+
+        for (const targetRole of targets) {
+          const targetAgent = this.agents.find((a) => a.role === targetRole);
+          if (targetAgent) {
+            await this.config.runtime.send(targetAgent.session, message);
+          }
+        }
+
+        // Detect [DONE] signal — stop the session when any agent signals done.
+        // This mirrors what use-done-detection.ts does in the TUI layer.
+        if (
+          c.summary.startsWith("[DONE]") ||
+          (c.context && (c.context as Record<string, unknown>).done === true)
+        ) {
+          void this.stop(`Agent ${sourceRole} signaled done: ${c.summary}`);
+          return;
+        }
+      }
+    } catch {
+      // Best effort — don't crash on poll errors
     }
   }
 
@@ -153,53 +336,29 @@ export class SessionOrchestrator {
     };
   }
 
-  private async spawnAgent(role: AgentRole, signal?: AbortSignal): Promise<AgentSessionInfo> {
+  private async spawnAgent(
+    role: AgentRole,
+    signal?: AbortSignal,
+    workspace?: { cwd: string; workspaceMode: WorkspaceMode },
+  ): Promise<AgentSessionInfo> {
     const roleGoal = role.prompt ?? role.description ?? `Fulfill role: ${role.name}`;
     const fullGoal = `Session goal: ${this.config.goal}\n\nYour role (${role.name}): ${roleGoal}`;
 
-    // Use per-agent workspace directory (git worktree), fall back to project root
-    const { join } = await import("node:path");
-    const { existsSync, mkdirSync } = await import("node:fs");
-    const wsBase =
-      this.config.workspaceBaseDir ?? join(this.config.projectRoot, ".grove", "workspaces");
-    const wsDir = join(wsBase, `${role.name}-${this.sessionId.slice(0, 8)}`);
-    let agentCwd = this.config.projectRoot;
-    try {
-      if (!existsSync(wsBase)) mkdirSync(wsBase, { recursive: true });
-      const { execSync } = await import("node:child_process");
-      const branch = `grove/session/${role.name}-${this.sessionId.slice(0, 8)}`;
-      execSync(`git worktree add "${wsDir}" -b "${branch}" origin/main`, {
-        cwd: this.config.projectRoot,
-        encoding: "utf-8",
-        stdio: "pipe",
-      });
-      agentCwd = wsDir;
+    const { cwd, workspaceMode } = workspace ?? {
+      cwd: this.config.projectRoot,
+      workspaceMode: {
+        status: "fallback_workspace" as const,
+        path: this.config.projectRoot,
+        reason: "No workspace",
+      },
+    };
 
-      if (signal?.aborted) throw new Error(`Spawn aborted for role '${role.name}'`);
-
-      // Bootstrap workspace with .mcp.json + CLAUDE.md
-      const { bootstrapWorkspace } = await import("./workspace-bootstrap.js");
-      await bootstrapWorkspace({
-        workspacePath: wsDir,
-        roleId: role.name,
-        goal: this.config.goal,
-        rolePrompt: role.prompt,
-        roleDescription: role.description,
-        groveDir: join(this.config.projectRoot, ".grove"),
-        mcpServePath: join(this.config.projectRoot, "src", "mcp", "serve.ts"),
-        nexusUrl: process.env.GROVE_NEXUS_URL,
-        nexusApiKey: process.env.NEXUS_API_KEY,
-      });
-    } catch (err) {
-      process.stderr.write(
-        `[SessionOrchestrator] worktree creation failed for '${role.name}', falling back to project root: ${err instanceof Error ? err.message : err}\n`,
-      );
-    }
+    if (signal?.aborted) throw new Error(`Spawn aborted for role '${role.name}'`);
 
     const agentConfig: AgentConfig = {
       role: role.name,
       command: role.command ?? "claude",
-      cwd: agentCwd,
+      cwd,
       goal: fullGoal,
       env: {
         GROVE_SESSION_ID: this.sessionId,
@@ -215,6 +374,79 @@ export class SessionOrchestrator {
       role: role.name,
       session,
       goal: fullGoal,
+      workspaceMode,
+    };
+  }
+
+  /**
+   * Provision a workspace for an agent role and run bootstrap.
+   *
+   * Returns the cwd the agent should run in and a WorkspaceMode describing
+   * the outcome. When policy is 'strict', any failure throws. When
+   * 'allow-fallback', failures produce a degraded WorkspaceMode instead.
+   */
+  private async provisionAgentWorkspace(
+    role: AgentRole,
+    policy: WorkspaceIsolationPolicy,
+    baseBranch?: string,
+  ): Promise<{ readonly cwd: string; readonly workspaceMode: WorkspaceMode }> {
+    let provisioned: ProvisionedWorkspace;
+
+    // Step 1: Git worktree — base branch determined by edge type
+    try {
+      provisioned = await provisionWorkspace({
+        role: role.name,
+        sessionId: this.sessionId,
+        baseDir: this.config.workspaceBaseDir,
+        repoRoot: this.config.projectRoot,
+        baseBranch: baseBranch ?? "HEAD",
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      if (policy === "strict") {
+        throw new Error(`Workspace provisioning failed for role '${role.name}': ${reason}`);
+      }
+      return {
+        cwd: this.config.projectRoot,
+        workspaceMode: {
+          status: "fallback_workspace",
+          path: this.config.projectRoot,
+          reason,
+        },
+      };
+    }
+
+    // Step 2: Bootstrap (write .mcp.json + CLAUDE.md)
+    try {
+      await bootstrapWorkspace({
+        workspacePath: provisioned.path,
+        roleId: role.name,
+        goal: this.config.goal,
+        rolePrompt: role.prompt,
+        roleDescription: role.description,
+        groveDir: join(this.config.projectRoot, ".grove"),
+        mcpServePath: resolveMcpServePath(this.config.projectRoot),
+        nexusUrl: process.env.GROVE_NEXUS_URL,
+        nexusApiKey: process.env.NEXUS_API_KEY,
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      if (policy === "strict") {
+        throw new Error(`Bootstrap failed for role '${role.name}': ${reason}`);
+      }
+      return {
+        cwd: provisioned.path,
+        workspaceMode: { status: "bootstrap_failed", path: provisioned.path, reason },
+      };
+    }
+
+    return {
+      cwd: provisioned.path,
+      workspaceMode: {
+        status: "isolated_worktree",
+        path: provisioned.path,
+        branch: provisioned.branch,
+      },
     };
   }
 
@@ -229,8 +461,21 @@ export class SessionOrchestrator {
       return;
     }
 
-    // Forward contribution notifications to the agent
-    const message = `[grove] New ${event.type} from ${event.sourceRole}: ${JSON.stringify(event.payload)}`;
+    // When contributionStore polling is active, skip EventBus contribution
+    // forwarding to avoid duplicate messages (polling handles it reliably
+    // across process boundaries). When no store is configured (e.g., server
+    // path), fall back to EventBus forwarding.
+    if (event.type === "contribution") {
+      if (this.config.contributionStore) {
+        return; // Polling handles it
+      }
+      this.contributionCount++;
+    }
+
+    // Forward events to the agent
+    const p = event.payload;
+    const summary = typeof p.summary === "string" ? p.summary : JSON.stringify(p);
+    const message = `[grove] ${event.type} from ${event.sourceRole}: ${summary}`;
     await this.config.runtime.send(agent.session, message);
   }
 
@@ -249,6 +494,15 @@ export class SessionOrchestrator {
     });
 
     if (allIdle && this.agents.length > 0) {
+      // Don't auto-stop if no contributions yet AND less than 30s have passed.
+      // Agents go idle between tool calls (e.g., coder finishes editing, goes idle
+      // briefly, then calls grove_submit_work). Stopping too early kills the session
+      // before the handoff can complete.
+      const GRACE_PERIOD_MS = 30_000;
+      const elapsed = Date.now() - this.startedAt;
+      if (this.contributionCount === 0 && elapsed < GRACE_PERIOD_MS) {
+        return; // Too early — wait for at least one contribution or grace period
+      }
       await this.stop("All agents idle — session complete");
     }
   }
@@ -257,6 +511,30 @@ export class SessionOrchestrator {
   async checkIdleCompletion(): Promise<boolean> {
     await this.checkAllIdle();
     return this.stopped;
+  }
+
+  /**
+   * Wait for the session to complete (all agents idle or stopped).
+   *
+   * Polls agent status every `pollMs` and resolves when `this.stopped` is true
+   * or `timeoutMs` expires. Returns the final stop reason.
+   */
+  async waitForCompletion(timeoutMs = 300_000, pollMs = 3_000): Promise<string> {
+    if (this.stopped) return this.stopReason ?? "Already stopped";
+
+    const deadline = Date.now() + timeoutMs;
+    return new Promise<string>((resolve) => {
+      const poll = setInterval(async () => {
+        await this.checkAllIdle();
+        if (this.stopped || Date.now() >= deadline) {
+          clearInterval(poll);
+          if (!this.stopped) {
+            void this.stop("Session timed out");
+          }
+          resolve(this.stopReason ?? "Timed out");
+        }
+      }, pollMs);
+    });
   }
 
   /**
@@ -270,8 +548,19 @@ export class SessionOrchestrator {
       throw new Error(`Role '${role}' not found in topology`);
     }
 
-    // Spawn a new session for the role
-    const newSession = await this.spawnAgent(roleSpec);
+    // Reuse the existing workspace from the old agent if available,
+    // otherwise provision a fresh one. Reprovisioning would fail because
+    // the git branch/worktree path already exists from the original spawn.
+    const existingAgent = this.agents.find((a) => a.role === role);
+    const ws = existingAgent
+      ? { cwd: existingAgent.workspaceMode.path, workspaceMode: existingAgent.workspaceMode }
+      : await this.provisionAgentWorkspace(
+          roleSpec,
+          this.config.workspaceIsolationPolicy ?? "strict",
+          resolveRoleWorkspaceStrategies(this.config.topology, this.sessionId).get(roleSpec.name) ??
+            "HEAD",
+        );
+    const newSession = await this.spawnAgent(roleSpec, undefined, ws);
 
     // Send a reconciliation message
     const message = `[grove] You are resuming role '${role}'. Query the DAG via grove_log or grove_frontier to catch up on what happened while you were offline.`;

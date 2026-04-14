@@ -40,7 +40,9 @@ function createMockClient(): NexusClient {
     delete: async (path: string) => {
       files.delete(path);
     },
-    mkdir: async () => {},
+    mkdir: async () => {
+      /* no-op */
+    },
   } as unknown as NexusClient;
 }
 

@@ -146,7 +146,7 @@ async function sessionStart(args: readonly string[]): Promise<void> {
 
   // Create runtime — prefer acpx, fall back to mock
   const { AcpxRuntime } = await import("../../core/acpx-runtime.js");
-  const acpx = new AcpxRuntime();
+  const acpx = new AcpxRuntime({ logDir: join(groveDir, "agent-logs") });
   const runtime = (await acpx.isAvailable()) ? acpx : new MockRuntime();
   const eventBus = new LocalEventBus();
 
@@ -162,6 +162,10 @@ async function sessionStart(args: readonly string[]): Promise<void> {
     config: contract,
   });
 
+  // Create contribution store for polling-based routing (MCP runs in child processes)
+  const { SqliteContributionStore } = await import("../../local/sqlite-store.js");
+  const contributionStore = new SqliteContributionStore(db);
+
   const orchestrator = new SessionOrchestrator({
     goal,
     contract: contract ?? { contractVersion: 3, name: presetName ?? "default" },
@@ -171,6 +175,7 @@ async function sessionStart(args: readonly string[]): Promise<void> {
     projectRoot: groveRoot,
     workspaceBaseDir: join(groveDir, "workspaces"),
     sessionId: session.id,
+    contributionStore,
   });
 
   let status: import("../../core/session-orchestrator.js").SessionStatus;
@@ -209,12 +214,7 @@ async function sessionStart(args: readonly string[]): Promise<void> {
     });
   });
 
-  // If orchestrator auto-stopped (all agents idle), mark completed immediately
-  if (status.stopped) {
-    await markDone(status.stopReason ?? "Orchestrator stopped");
-    db.close();
-  }
-
+  // Output initial status
   outputJson({
     sessionId: session.id,
     goal,
@@ -226,6 +226,13 @@ async function sessionStart(args: readonly string[]): Promise<void> {
     })),
     message: `Session started with ${status.agents.length} agents`,
   });
+
+  // Wait for session to complete — agents need time to work, submit, review, and call grove_done.
+  // Without this, the CLI exits immediately and the reviewer never gets routed events.
+  const SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+  const stopReason = await orchestrator.waitForCompletion(SESSION_TIMEOUT_MS);
+  await markDone(stopReason);
+  db.close();
 }
 
 // ---------------------------------------------------------------------------

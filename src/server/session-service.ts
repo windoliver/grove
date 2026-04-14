@@ -22,6 +22,7 @@ import type { GroveContract } from "../core/contract.js";
 import type { EventBus, EventHandler, GroveEvent } from "../core/event-bus.js";
 import { SessionOrchestrator } from "../core/session-orchestrator.js";
 import type { AgentTopology } from "../core/topology.js";
+import type { WorkspaceIsolationPolicy } from "../core/workspace-provisioner.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -34,6 +35,8 @@ export interface SessionServiceConfig {
   readonly eventBus: EventBus;
   readonly projectRoot: string;
   readonly workspaceBaseDir: string;
+  /** Workspace isolation policy forwarded to SessionOrchestrator. Defaults to 'strict'. */
+  readonly workspaceIsolationPolicy?: WorkspaceIsolationPolicy | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +147,7 @@ export class SessionService {
       projectRoot: this.config.projectRoot,
       workspaceBaseDir: this.config.workspaceBaseDir,
       sessionId: this.sessionId,
+      workspaceIsolationPolicy: this.config.workspaceIsolationPolicy,
     });
 
     try {

@@ -122,7 +122,9 @@ const mockProvider = {
   getHotThreads: async () => [],
   // TuiHandoffProvider
   getHandoffs: async () => stubHandoffs,
-  close: () => {},
+  close: () => {
+    /* no-op */
+  },
 };
 
 const topology = {
@@ -156,7 +158,9 @@ async function main() {
   const spawnManager = new SpawnManager(
     mockProvider as Parameters<typeof SpawnManager>[0],
     undefined,
-    () => {},
+    () => {
+      /* no-op */
+    },
   );
 
   const initialState: ScreenState = {

@@ -228,6 +228,12 @@ describe("SpawnManager", () => {
 
     // Spawn record is tracked
     expect(manager.getSpawnRecord(result.spawnId)).toBeDefined();
+
+    // Workspace mode is always present
+    expect(result.workspaceMode).toBeDefined();
+    expect(["isolated_worktree", "fallback_workspace", "bootstrap_failed"]).toContain(
+      result.workspaceMode.status,
+    );
   });
 
   test("kill cleans workspace and removes spawn record", async () => {
@@ -243,6 +249,9 @@ describe("SpawnManager", () => {
     );
 
     const result = await manager.spawn("claude", "bash");
+    // /tmp/no-grove is not a git repo → worktree fails → fallback_workspace
+    expect(result.workspaceMode.status).toBe("fallback_workspace");
+
     const sessionName = `grove-${result.spawnId}`;
 
     await manager.kill(sessionName);
@@ -279,6 +288,11 @@ describe("SpawnManager", () => {
     manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg));
 
     const result = await manager.spawn("claude", "bash");
+    // No explicit groveDir — workspace mode depends on whether process.cwd() is a git repo
+    expect(["isolated_worktree", "fallback_workspace", "bootstrap_failed"]).toContain(
+      result.workspaceMode.status,
+    );
+
     const sessionName = `grove-${result.spawnId}`;
 
     await manager.kill(sessionName);
@@ -301,6 +315,13 @@ describe("SpawnManager", () => {
 
     expect(manager.getSpawnRecord(result1.spawnId)).toBeDefined();
     expect(manager.getSpawnRecord(result2.spawnId)).toBeDefined();
+    // Both spawns have a workspace mode
+    expect(["isolated_worktree", "fallback_workspace", "bootstrap_failed"]).toContain(
+      result1.workspaceMode.status,
+    );
+    expect(["isolated_worktree", "fallback_workspace", "bootstrap_failed"]).toContain(
+      result2.workspaceMode.status,
+    );
 
     manager.destroy();
 
@@ -328,6 +349,47 @@ describe("SpawnManager", () => {
       expect(String(err)).not.toContain("Provider does not support workspace checkout");
     }
   });
+
+  test("allow-fallback policy: worktree failure falls back to provider workspace", async () => {
+    const provider = makeMockProvider();
+    const tmux = makeMockTmux();
+    const errors: string[] = [];
+    manager = new SpawnManager(
+      provider,
+      tmux,
+      (msg) => errors.push(msg),
+      undefined,
+      "/tmp/no-grove",
+    );
+    manager.setIsolationPolicy("allow-fallback");
+
+    const result = await manager.spawn("claude", "bash");
+
+    // Workspace was created via provider fallback
+    expect(result.workspacePath).toBeTruthy();
+
+    // Mode is either fallback_workspace (worktree failed) or isolated_worktree (worktree succeeded)
+    expect(["fallback_workspace", "isolated_worktree", "bootstrap_failed"]).toContain(
+      result.workspaceMode.status,
+    );
+  });
+
+  test("strict policy: worktree failure in non-git dir throws", async () => {
+    const provider = makeMockProvider();
+    const tmux = makeMockTmux();
+    const errors: string[] = [];
+    manager = new SpawnManager(
+      provider,
+      tmux,
+      (msg) => errors.push(msg),
+      undefined,
+      "/tmp/no-grove",
+    );
+    manager.setIsolationPolicy("strict");
+
+    // /tmp/no-grove is not a git repo — strict policy must throw
+    await expect(manager.spawn("claude", "bash")).rejects.toThrow(/Workspace provisioning failed/);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -348,6 +410,10 @@ describe("SpawnManager — shell injection safety", () => {
     mgr.setPrContext({ number: 42, title, filesChanged: 5 });
 
     const result = await mgr.spawn("claude", "bash");
+    // workspace mode is always present, regardless of whether worktree succeeded
+    expect(["isolated_worktree", "fallback_workspace", "bootstrap_failed"]).toContain(
+      result.workspaceMode.status,
+    );
     const sessionName = `grove-${result.spawnId}`;
     const session = tmux.sessions.get(sessionName);
     expect(session).toBeDefined();
@@ -405,6 +471,9 @@ describe("SpawnManager — shell injection safety", () => {
     manager.setPrContext({ number: 99, title, filesChanged: 10 });
 
     const result = await manager.spawn("claude", "bash");
+    expect(["isolated_worktree", "fallback_workspace", "bootstrap_failed"]).toContain(
+      result.workspaceMode.status,
+    );
     const sessionName = `grove-${result.spawnId}`;
     const session = tmux.sessions.get(sessionName);
     expect(session).toBeDefined();
@@ -482,6 +551,9 @@ describe("SpawnManager — session persistence", () => {
 
     // Record is present in store
     expect(store.records.has(result.spawnId)).toBe(true);
+
+    // workspaceMode is present on the SpawnResult
+    expect(result.workspaceMode).toBeDefined();
   });
 
   test("kill removes record from session store", async () => {
@@ -492,6 +564,9 @@ describe("SpawnManager — session persistence", () => {
     manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), store);
 
     const result = await manager.spawn("claude", "bash");
+    expect(["isolated_worktree", "fallback_workspace", "bootstrap_failed"]).toContain(
+      result.workspaceMode.status,
+    );
     const sessionName = `grove-${result.spawnId}`;
 
     await manager.kill(sessionName);
@@ -519,6 +594,7 @@ describe("SpawnManager — session persistence", () => {
     const result = await manager.spawn("claude", "bash");
     expect(result.spawnId).toBeDefined();
     expect(result.claimId).toBe("");
+    expect(result.workspaceMode.status).toBe("fallback_workspace");
   });
 
   test("destroy does not clear session store", async () => {
@@ -528,7 +604,10 @@ describe("SpawnManager — session persistence", () => {
     const errors: string[] = [];
     manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), store);
 
-    await manager.spawn("claude", "bash");
+    const result = await manager.spawn("claude", "bash");
+    expect(["isolated_worktree", "fallback_workspace", "bootstrap_failed"]).toContain(
+      result.workspaceMode.status,
+    );
     expect(store.records.size).toBe(1);
 
     manager.destroy();

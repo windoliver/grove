@@ -42,6 +42,12 @@ export interface Session {
   readonly contributionCount: number;
   /** Frozen contract snapshot at session creation time. */
   readonly config?: GroveContract | undefined;
+  /**
+   * Resolved workspace base-branch per role.
+   * Format: { "coder": "HEAD", "reviewer": "grove/<sessionId>/coder" }
+   * Edges with `workspace: "branch_from_source"` make the target branch off the source.
+   */
+  readonly worktreeStrategies?: Record<string, string> | undefined;
 }
 
 // ---------------------------------------------------------------------------

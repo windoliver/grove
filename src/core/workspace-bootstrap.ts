@@ -52,6 +52,26 @@ export async function bootstrapWorkspace(opts: BootstrapOptions): Promise<void> 
       },
     };
     await writeFile(join(workspacePath, ".mcp.json"), JSON.stringify(mcpConfig, null, 2), "utf-8");
+
+    // Write .acpxrc.json — acpx (>=0.5.3) reads THIS, not .mcp.json.
+    // Without it, acpx launches agents with mcpServers=[] and grove_* tools
+    // are unavailable. Format: array of servers with name/type/command/args/env.
+    const acpxRcConfig = {
+      mcpServers: [
+        {
+          name: "grove",
+          type: "stdio",
+          command: "bun",
+          args: ["run", opts.mcpServePath],
+          env: Object.entries(mcpEnv).map(([name, value]) => ({ name, value })),
+        },
+      ],
+    };
+    await writeFile(
+      join(workspacePath, ".acpxrc.json"),
+      JSON.stringify(acpxRcConfig, null, 2),
+      "utf-8",
+    );
   }
 
   // Write CLAUDE.md / CODEX.md
@@ -73,12 +93,28 @@ You are the **${roleId}** agent. Always pass \`agent: { role: "${roleId}" }\` in
 ## Communication
 
 You will receive push notifications when other agents produce work. Do NOT poll.
+When you receive a notification with a source branch, run \`git merge <branch>\` to see the actual file changes in your workspace.
 
-## MCP Tools (use sparingly)
+## MCP Tools
 
-- \`grove_submit_work\` — record work with artifacts (always include agent: { role: "${roleId}" })
-- \`grove_submit_review\` — review another agent's work with scores (always include agent: { role: "${roleId}" })
-- \`grove_done\` — signal session complete (only after approval from other agents)
+- \`grove_submit_work\` — submit your work. Pass commitHash (git commit SHA) so others can see your files.
+- \`grove_submit_review\` — review another agent's work. Requires targetCid from the notification.
+- \`grove_done\` — signal session complete. Only call when work is approved.
+
+## Workflow
+
+**Submitting work (coder):**
+1. Edit files in your workspace
+2. \`git add -A && git commit -m "description"\`
+3. Get the commit hash: \`git rev-parse HEAD\`
+4. \`grove_submit_work({ summary: "...", commitHash: "<hash>", agent: { role: "${roleId}" } })\`
+
+**Reviewing work (reviewer):**
+1. When notified: the notification includes a **Workspace** path — read the source files directly from that path
+2. Example: \`cat /path/to/coder-workspace/app.js\` to see the actual code
+3. Review the code for bugs, correctness, quality
+4. \`grove_submit_review({ targetCid: "<cid from notification>", summary: "...", scores: {"correctness": {"value": 0.9, "direction": "maximize"}}, agent: { role: "${roleId}" } })\`
+5. If approved: \`grove_done({ summary: "Approved", agent: { role: "${roleId}" } })\`
 
 Follow the Instructions section above exactly. You can edit files, commit, push, create PRs, and use gh CLI.
 `;
@@ -91,7 +127,7 @@ Follow the Instructions section above exactly. You can edit files, commit, push,
   await mkdir(contextDir, { recursive: true });
 
   // Protect config files from agent mutation
-  for (const f of [".mcp.json", "CLAUDE.md", "CODEX.md"]) {
+  for (const f of [".mcp.json", ".acpxrc.json", "CLAUDE.md", "CODEX.md"]) {
     await chmod(join(workspacePath, f), 0o444).catch(() => {
       // File may not exist
     });

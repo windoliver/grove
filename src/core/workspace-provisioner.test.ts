@@ -62,9 +62,9 @@ describe("WorkspaceProvisioner", () => {
     rmSync(repoDir, { recursive: true, force: true });
   });
 
-  test("provisionWorkspace creates a worktree with a clean git status", () => {
+  test("provisionWorkspace creates a worktree with a clean git status", async () => {
     const sessionId = "abcdef1234567890";
-    const result = provisionWorkspace({
+    const result = await provisionWorkspace({
       role: "coder",
       sessionId,
       baseDir,
@@ -91,12 +91,12 @@ describe("WorkspaceProvisioner", () => {
     expect(branches).toContain(`grove/${sessionId}/coder`);
   });
 
-  test("provisionWorkspace writes .mcp.json when mcpConfig is provided", () => {
+  test("provisionWorkspace writes .mcp.json when mcpConfig is provided", async () => {
     const mcpConfig = {
       mcpServers: { grove: { command: "grove-mcp", args: ["--session", "s1"] } },
     };
 
-    const result = provisionWorkspace({
+    const result = await provisionWorkspace({
       role: "reviewer",
       sessionId: "sess00001111222233",
       baseDir,
@@ -147,13 +147,13 @@ describe("WorkspaceProvisioner", () => {
     expect(session.errors[0]!.message).toBeTruthy();
   });
 
-  test("cleanupSessionWorkspaces removes worktrees and branches", () => {
+  test("cleanupSessionWorkspaces removes worktrees and branches", async () => {
     const sessionId = "cleanup-session-01";
     const roles = ["dev", "qa"];
 
     // Provision first
-    const workspaces = roles.map((role) =>
-      provisionWorkspace({ role, sessionId, baseDir, repoRoot: repoDir }),
+    const workspaces = await Promise.all(
+      roles.map((role) => provisionWorkspace({ role, sessionId, baseDir, repoRoot: repoDir })),
     );
 
     // Verify they exist
@@ -162,7 +162,7 @@ describe("WorkspaceProvisioner", () => {
     }
 
     // Clean up
-    cleanupSessionWorkspaces(workspaces, repoDir);
+    await cleanupSessionWorkspaces(workspaces, repoDir);
 
     // Verify worktree directories are gone
     for (const ws of workspaces) {
@@ -179,10 +179,10 @@ describe("WorkspaceProvisioner", () => {
     }
   });
 
-  test("worktree paths use role + sessionId prefix", () => {
+  test("worktree paths use role + sessionId prefix", async () => {
     const sessionId = "abcdef1234567890abcdef1234567890";
 
-    const result = provisionWorkspace({
+    const result = await provisionWorkspace({
       role: "planner",
       sessionId,
       baseDir,
@@ -194,7 +194,7 @@ describe("WorkspaceProvisioner", () => {
     expect(result.path).toBe(expectedPath);
   });
 
-  test("provisionWorkspace respects baseBranch option", () => {
+  test("provisionWorkspace respects baseBranch option", async () => {
     // Create a new branch in the repo
     execSync("git checkout -b feature-base", { cwd: repoDir, stdio: "pipe" });
     execSync("git commit --allow-empty -m 'feature commit'", {
@@ -203,7 +203,7 @@ describe("WorkspaceProvisioner", () => {
     });
     execSync("git checkout -", { cwd: repoDir, stdio: "pipe" });
 
-    const result = provisionWorkspace({
+    const result = await provisionWorkspace({
       role: "tester",
       sessionId: "base-branch-session",
       baseDir,

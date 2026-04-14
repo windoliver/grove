@@ -44,7 +44,17 @@ import {
 const submitWorkInputSchema = z.object({
   summary: z.string().describe("Short summary of the work performed"),
   description: z.string().optional().describe("Longer description of the work"),
-  artifacts: artifactsSchema,
+  artifacts: artifactsSchema
+    .optional()
+    .describe("File artifacts as path→CAS hash map. Optional when commitHash is provided."),
+  commitHash: z
+    .string()
+    .regex(/^[0-9a-f]{7,40}$/)
+    .optional()
+    .describe(
+      "Git commit SHA from your worktree. Preferred over artifacts — just commit your work and pass the hash. " +
+        "Other agents can git fetch + git diff to see your changes.",
+    ),
   mode: z
     .enum(["evaluation", "exploration"])
     .default("evaluation")
@@ -178,11 +188,11 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
       inputSchema: submitWorkInputSchema,
     },
     async (args) => {
-      const artifacts = args.artifacts as Record<string, string>;
+      const artifacts = (args.artifacts as Record<string, string> | undefined) ?? {};
+      const commitHash = args.commitHash as string | undefined;
       const warning =
-        Object.keys(artifacts).length === 0
-          ? "No artifacts provided. Reviewers cannot inspect your work without file artifacts. " +
-            "If you produced files, use grove_cas_put to store them in CAS first, then re-submit with their hashes."
+        Object.keys(artifacts).length === 0 && !commitHash
+          ? "No artifacts or commitHash provided. Prefer commitHash — just git commit and pass the SHA."
           : undefined;
 
       const result = await contributeOperation(
@@ -190,6 +200,7 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
           kind: "work",
           summary: args.summary,
           artifacts,
+          ...(commitHash !== undefined ? { commitHash } : {}),
           ...(args.mode !== undefined ? { mode: args.mode as "evaluation" | "exploration" } : {}),
           ...(args.description !== undefined ? { description: args.description } : {}),
           ...(args.context !== undefined

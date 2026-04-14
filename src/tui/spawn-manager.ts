@@ -14,6 +14,11 @@ import { join, resolve } from "node:path";
 
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { AgentIdentity } from "../core/models.js";
+import { resolveMcpServePath } from "../core/resolve-mcp-serve-path.js";
+import type { AgentTopology } from "../core/topology.js";
+import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
+import type { WorkspaceIsolationPolicy, WorkspaceMode } from "../core/workspace-provisioner.js";
+import { provisionWorkspace } from "../core/workspace-provisioner.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
@@ -59,6 +64,8 @@ export interface SpawnResult {
   readonly spawnId: string;
   readonly claimId: string;
   readonly workspacePath: string;
+  /** Describes how this agent's workspace was provisioned. */
+  readonly workspaceMode: WorkspaceMode;
 }
 
 /**
@@ -81,6 +88,8 @@ export class SpawnManager {
   private sessionGoal: string | undefined;
   private sessionId: string | undefined;
   private groveDir: string | undefined;
+  private workspaceIsolationPolicy: WorkspaceIsolationPolicy = "allow-fallback";
+  private topology: AgentTopology | undefined;
   private logPollTimer: ReturnType<typeof setInterval> | null = null;
   // Track ALL interval handles — prevents "lost handle" leak when startContributionPolling
   // is called multiple times (e.g. when React effect deps change during session startup).
@@ -150,6 +159,19 @@ export class SpawnManager {
     this.sessionGoal = goal;
   }
 
+  /** Set the workspace isolation policy for subsequent spawns. */
+  setIsolationPolicy(policy: WorkspaceIsolationPolicy): void {
+    this.workspaceIsolationPolicy = policy;
+  }
+
+  /**
+   * Set the session topology so spawn() can resolve edge-type-aware base branches.
+   * Call before spawning when the topology is known (e.g. after preset selection).
+   */
+  setTopology(topology: AgentTopology | undefined): void {
+    this.topology = topology;
+  }
+
   /**
    * Spawn a new agent session.
    *
@@ -174,63 +196,86 @@ export class SpawnManager {
     // Uses a real git worktree so the agent has actual source code,
     // can edit files, commit, push, and create PRs.
     let workspacePath: string;
+    let workspaceMode!: WorkspaceMode;
     {
-      // Find the project root (parent of .grove/)
       const groveDir = this.groveDir;
       const projectRoot = groveDir ? resolve(groveDir, "..") : process.cwd();
       const baseDir = groveDir
         ? join(groveDir, "workspaces")
         : join(projectRoot, ".grove", "workspaces");
-      const branch = `grove/session/${spawnId}`;
-      workspacePath = join(baseDir, spawnId);
 
+      // Resolve base branch from topology edge types.
+      // delegates/feeds/escalates → target branches off source's grove branch.
+      // All other edges (and no-topology case) → HEAD.
+      const wsSessionId = this.sessionId ?? spawnId;
+      const baseBranch = this.topology
+        ? (resolveRoleWorkspaceStrategies(this.topology, wsSessionId).get(roleId) ?? "HEAD")
+        : "HEAD";
+
+      let provisioned: import("../core/workspace-provisioner.js").ProvisionedWorkspace | undefined;
       try {
-        if (!existsSync(baseDir)) {
-          await mkdir(baseDir, { recursive: true });
-        }
-        execSync(`git worktree add "${workspacePath}" -b "${branch}" HEAD`, {
-          cwd: projectRoot,
-          encoding: "utf-8",
-          stdio: "pipe",
+        // Use wsSessionId (stable session-level ID) so branch names are predictable
+        // and match what resolveRoleWorkspaceStrategies() computes for dependents.
+        provisioned = await provisionWorkspace({
+          role: roleId,
+          sessionId: wsSessionId,
+          baseDir,
+          repoRoot: projectRoot,
+          baseBranch,
         });
-      } catch {
-        // Fallback to provider's bare workspace if git worktree fails
+        workspacePath = provisioned.path;
+      } catch (provisionErr) {
+        const reason = provisionErr instanceof Error ? provisionErr.message : String(provisionErr);
+        if (this.workspaceIsolationPolicy === "strict") {
+          throw new Error(`Workspace provisioning failed for '${roleId}': ${reason}`);
+        }
+        // allow-fallback: try provider.checkoutWorkspace
         if (this.provider.checkoutWorkspace) {
           workspacePath = await this.provider.checkoutWorkspace(spawnId, agent);
+          workspaceMode = { status: "fallback_workspace", path: workspacePath, reason };
         } else {
-          throw new Error("Failed to create git worktree and no fallback available");
+          throw new Error(`Failed to create git worktree and no fallback available: ${reason}`);
         }
       }
-    }
 
-    // Step 2: Write config files. Errors logged but non-fatal.
-    // Claims are NOT auto-created on spawn — agents create claims explicitly
-    // via grove_claim MCP tool when they need swarm coordination.
-    try {
-      await this.writeMcpConfig(workspacePath);
-      await this.writeAgentInstructions(workspacePath, roleId, context);
-      if (context?.rolePrompt || context?.roleDescription) {
-        await this.writeAgentContext(workspacePath, roleId, context);
+      // Step 2: Write config files.
+      // Claims are NOT auto-created on spawn — agents create claims explicitly
+      // via grove_claim MCP tool when they need swarm coordination.
+      if (provisioned !== undefined) {
+        try {
+          await this.writeMcpConfig(workspacePath);
+          await this.writeAgentInstructions(workspacePath, roleId, context);
+          if (context?.rolePrompt || context?.roleDescription) {
+            await this.writeAgentContext(workspacePath, roleId, context);
+          }
+          // Protect config files from agent mutation (#7 Workspace Mutation Constraints)
+          const { chmod } = await import("node:fs/promises");
+          for (const protectedFile of [
+            ".mcp.json",
+            ".acpxrc.json",
+            "CLAUDE.md",
+            "CODEX.md",
+            ".grove-role",
+          ]) {
+            const filePath = join(workspacePath, protectedFile);
+            await chmod(filePath, 0o444).catch(() => {
+              // File may not exist — non-fatal
+            });
+          }
+          workspaceMode = {
+            status: "isolated_worktree",
+            path: provisioned.path,
+            branch: provisioned.branch,
+          };
+        } catch (configErr) {
+          const reason = configErr instanceof Error ? configErr.message : String(configErr);
+          if (this.workspaceIsolationPolicy === "strict") {
+            throw new Error(`Bootstrap failed for '${roleId}': ${reason}`);
+          }
+          this.onError(`Config write failed: ${reason}`);
+          workspaceMode = { status: "bootstrap_failed", path: provisioned.path, reason };
+        }
       }
-      // Step 2c: Protect config files from agent mutation (#7 Workspace Mutation Constraints)
-      const { chmod } = await import("node:fs/promises");
-      for (const protectedFile of [
-        ".mcp.json",
-        ".acpxrc.json",
-        "CLAUDE.md",
-        "CODEX.md",
-        ".grove-role",
-      ]) {
-        const filePath = join(workspacePath, protectedFile);
-        await chmod(filePath, 0o444).catch(() => {
-          // File may not exist — non-fatal
-        });
-      }
-    } catch (configErr) {
-      this.onError(
-        `Config write failed: ${configErr instanceof Error ? configErr.message : String(configErr)}`,
-      );
-      // Continue — agent can still work without configs
     }
 
     // Step 3: Start agent session via AgentRuntime (preferred) or tmux (fallback).
@@ -285,13 +330,7 @@ export class SpawnManager {
         if (process.env.GROVE_NEXUS_URL) codexMcpEnv.GROVE_NEXUS_URL = process.env.GROVE_NEXUS_URL;
         if (process.env.NEXUS_API_KEY) codexMcpEnv.NEXUS_API_KEY = process.env.NEXUS_API_KEY;
         if (this.sessionId) codexMcpEnv.GROVE_SESSION_ID = this.sessionId;
-        // Derive mcpServePath the same way writeMcpConfig does.
-        const { dirname: d } = await import("node:path");
-        const entry = process.argv[1] ?? "";
-        const serveRoot = d(d(d(entry)));
-        const servePath = existsSync(join(serveRoot, "dist", "mcp", "serve.js"))
-          ? join(serveRoot, "dist", "mcp", "serve.js")
-          : join(serveRoot, "src", "mcp", "serve.ts");
+        const servePath = resolveMcpServePath();
         await this.ensureCodexMcpRegistered(
           codexMcpEnv,
           servePath,
@@ -391,6 +430,7 @@ export class SpawnManager {
       spawnId,
       claimId: "",
       workspacePath,
+      workspaceMode: workspaceMode,
     };
   }
 
@@ -639,9 +679,9 @@ export class SpawnManager {
     );
     if (!topology || !this.agentRuntime) return;
 
-    // Find target roles from topology edges
+    // Find target roles from topology edges or broadcast mode
     const sourceRoleDef = topology.roles.find((r) => r.name === sourceRole);
-    if (!sourceRoleDef?.edges) return;
+    if (!sourceRoleDef) return;
 
     // Find source workspace path
     let sourceWorkspace: string | undefined;
@@ -661,7 +701,12 @@ export class SpawnManager {
       }
     }
 
-    const targetRoles = sourceRoleDef.edges.map((e) => e.target);
+    // Broadcast mode: notify all other roles. Explicit: follow edges.
+    const targetRoles =
+      sourceRoleDef.mode === "broadcast"
+        ? topology.roles.filter((r) => r.name !== sourceRole).map((r) => r.name)
+        : (sourceRoleDef.edges ?? []).map((e) => e.target);
+    if (targetRoles.length === 0) return;
     debugLog(
       "route",
       `targetRoles=${targetRoles.join(",")} agentSessions=[${[...this.agentSessions.keys()].join(",")}] routableSessions=[${[...this.routableSessions].join(",")}]`,
@@ -1208,54 +1253,7 @@ export class SpawnManager {
     }
 
     // Find the grove MCP server: check dist/ first (installed), then src/ (dev)
-    // Use process.argv[1] (entry point) not import.meta.url — bun bundles may inline
-    // this file into a chunk, making import.meta.url point to the chunk file rather
-    // than a predictable path relative to the grove root.
-    // process.argv[1] = "<groveRoot>/dist/cli/main.js" or "<groveRoot>/src/cli/main.ts"
-    const { dirname } = await import("node:path");
-    const entryPoint = process.argv[1] ?? "";
-    // Climb 3 levels: main.js → cli/ → dist/ or src/ → <groveRoot>
-    const groveRootFromEntry = dirname(dirname(dirname(entryPoint)));
-    // Also try import.meta.url as a fallback
-    const groveRootFromMeta = dirname(dirname(dirname(new URL(import.meta.url).pathname)));
-    debugLog(
-      "mcpConfig",
-      `entryPoint=${entryPoint} groveRootFromEntry=${groveRootFromEntry} groveRootFromMeta=${groveRootFromMeta}`,
-    );
-    let mcpServePath = join(groveRootFromEntry, "dist", "mcp", "serve.js");
-    debugLog(
-      "mcpConfig",
-      `checking dist serve.js: ${mcpServePath} exists=${existsSync(mcpServePath)}`,
-    );
-    if (!existsSync(mcpServePath)) {
-      mcpServePath = join(groveRootFromEntry, "src", "mcp", "serve.ts");
-      debugLog(
-        "mcpConfig",
-        `checking src serve.ts: ${mcpServePath} exists=${existsSync(mcpServePath)}`,
-      );
-    }
-    if (!existsSync(mcpServePath)) {
-      mcpServePath = join(groveRootFromMeta, "dist", "mcp", "serve.js");
-      debugLog(
-        "mcpConfig",
-        `fallback meta dist: ${mcpServePath} exists=${existsSync(mcpServePath)}`,
-      );
-    }
-    if (!existsSync(mcpServePath)) {
-      mcpServePath = join(groveRootFromMeta, "src", "mcp", "serve.ts");
-      debugLog(
-        "mcpConfig",
-        `fallback meta src: ${mcpServePath} exists=${existsSync(mcpServePath)}`,
-      );
-    }
-    // Final fallback: project root
-    if (!existsSync(mcpServePath)) {
-      mcpServePath = join(projectRoot, "src", "mcp", "serve.ts");
-      debugLog(
-        "mcpConfig",
-        `final fallback projectRoot: ${mcpServePath} exists=${existsSync(mcpServePath)}`,
-      );
-    }
+    const mcpServePath = resolveMcpServePath(projectRoot);
     debugLog("mcpConfig", `selected mcpServePath=${mcpServePath}`);
 
     const mcpConfig = {

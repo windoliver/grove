@@ -5,7 +5,7 @@
  * integration tests. This file focuses on deterministic, fast-running units.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -452,9 +452,9 @@ describe("parseNexusPortFromDockerPs", () => {
   });
 
   test("multiple port mappings — picks 2026", () => {
-    expect(
-      parseNexusPortFromDockerPs("0.0.0.0:5432->5432/tcp, 0.0.0.0:33219->2026/tcp"),
-    ).toBe(33219);
+    expect(parseNexusPortFromDockerPs("0.0.0.0:5432->5432/tcp, 0.0.0.0:33219->2026/tcp")).toBe(
+      33219,
+    );
   });
 
   test("port 0 is rejected as invalid", () => {
@@ -511,9 +511,9 @@ describe("waitForNexusHealth", () => {
       },
     });
     try {
-      await expect(
-        waitForNexusHealth(`http://localhost:${server.port}`, 1_500),
-      ).rejects.toThrow("timed out");
+      await expect(waitForNexusHealth(`http://localhost:${server.port}`, 1_500)).rejects.toThrow(
+        "timed out",
+      );
     } finally {
       server.stop(true);
     }
@@ -551,7 +551,6 @@ describe("nexusUp fallback (--timeout not supported)", () => {
   const originalSpawn = Bun.spawn.bind(Bun);
 
   afterEach(() => {
-    // @ts-ignore
     Bun.spawn = originalSpawn;
   });
 
@@ -596,7 +595,7 @@ describe("nexusUp fallback (--timeout not supported)", () => {
 
   test("falls back to args without --timeout when CLI says 'no such option'", async () => {
     const calls: string[][] = [];
-    // @ts-ignore
+    // @ts-expect-error -- mock
     Bun.spawn = (args: string[], _opts?: unknown) => {
       calls.push(args);
       if (args.includes("--timeout")) {
@@ -614,7 +613,7 @@ describe("nexusUp fallback (--timeout not supported)", () => {
 
   test("falls back when CLI says 'unrecognized arguments'", async () => {
     const calls: string[][] = [];
-    // @ts-ignore
+    // @ts-expect-error -- mock
     Bun.spawn = (args: string[], _opts?: unknown) => {
       calls.push(args);
       if (args.includes("--timeout")) {
@@ -631,7 +630,7 @@ describe("nexusUp fallback (--timeout not supported)", () => {
     // Regression: partial-line carry-over ensures "no such option: --timeout"
     // arriving in two separate read() chunks still triggers the fallback.
     const calls: string[][] = [];
-    // @ts-ignore
+    // @ts-expect-error -- mock
     Bun.spawn = (args: string[], _opts?: unknown) => {
       calls.push(args);
       if (args.includes("--timeout")) {
@@ -647,7 +646,7 @@ describe("nexusUp fallback (--timeout not supported)", () => {
 
   test("throws immediately for unrelated errors — no fallback attempted", async () => {
     const calls: string[][] = [];
-    // @ts-ignore
+    // @ts-expect-error -- mock
     Bun.spawn = (args: string[], _opts?: unknown) => {
       calls.push(args);
       return fakeProc(1, "", "Docker daemon not running");

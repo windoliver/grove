@@ -226,6 +226,7 @@ function renderTopology(topology: AgentTopology | undefined, version: 2 | 3): st
       }
     }
     if (role.maxInstances !== undefined) lines.push(`      max_instances: ${role.maxInstances}`);
+    if (role.mode) lines.push(`      mode: ${role.mode}`);
     if (role.platform) lines.push(`      platform: ${role.platform}`);
     if (role.command) lines.push(`      command: "${role.command}"`);
     if (role.edges && role.edges.length > 0) {
@@ -233,6 +234,9 @@ function renderTopology(topology: AgentTopology | undefined, version: 2 | 3): st
       for (const edge of role.edges) {
         lines.push(`        - target: ${edge.target}`);
         lines.push(`          edge_type: ${edge.edgeType}`);
+        if (edge.workspace) {
+          lines.push(`          workspace: ${edge.workspace}`);
+        }
       }
     }
   }

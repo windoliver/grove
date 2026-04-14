@@ -207,20 +207,23 @@ export class AcpxRuntime implements AgentRuntime {
     // Wrap message with system-reminder that enforces MCP tool usage
     // (Relay pattern: agents "forget" tools without per-message reinforcement)
     const wrappedMessage = `<system-reminder>
-SUBMITTING WORK (2 steps — do NOT skip step 1):
-1. grove_cas_put({ content: "<file content>" }) → returns { hash: "blake3:..." }
-2. grove_submit_work({ summary: "what you did", artifacts: {"file.ts": "blake3:..."}, agent: { role: "${entry.session.role}" } })
+SUBMITTING WORK:
+1. Edit files, then: git add -A && git commit -m "description"
+2. Get hash: git rev-parse HEAD
+3. grove_submit_work({ summary: "what you did", commitHash: "<hash>", agent: { role: "${entry.session.role}" } })
 
-SUBMITTING REVIEWS:
-grove_submit_review({ targetCid: "blake3:...", summary: "feedback", scores: {"correctness": {"value": 0.9, "direction": "maximize"}}, agent: { role: "${entry.session.role}" } })
+REVIEWING WORK:
+1. When notified: read files from the Workspace path in the notification (e.g., cat /path/to/coder-workspace/app.js)
+2. Review the actual code at that path
+3. grove_submit_review({ targetCid: "<cid from notification>", summary: "feedback", scores: {"correctness": {"value": 0.9, "direction": "maximize"}}, agent: { role: "${entry.session.role}" } })
 
 Without calling these tools, other agents cannot see your work.
 
-CRITICAL RULES ABOUT grove_done:
+RULES ABOUT grove_done:
 - grove_done ends the ENTIRE session. Do NOT call it prematurely.
-- If you are a CODER: After calling grove_submit_work, STOP and WAIT. NEVER call grove_done yourself.
-- If you are a REVIEWER and you are REQUESTING CHANGES: After calling grove_submit_review, STOP and WAIT for the coder to fix.
-- If you are a REVIEWER and you are APPROVING: Call grove_submit_review, THEN call grove_done immediately in the same turn. This ends the session.
+- CODER: After grove_submit_work, STOP and WAIT. NEVER call grove_done.
+- REVIEWER requesting changes: After grove_submit_review, STOP and WAIT.
+- REVIEWER approving: Call grove_submit_review, THEN grove_done. This ends the session.
 </system-reminder>
 ${message}`;
 
