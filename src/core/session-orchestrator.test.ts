@@ -149,7 +149,7 @@ describe("SessionOrchestrator", () => {
     bus.close();
   });
 
-  test("events are forwarded to agents", async () => {
+  test("contribution events are skipped by EventBus (handled by polling)", async () => {
     const contract = makeContract();
     const { orchestrator, runtime, bus } = makeOrchestrator(contract);
 
@@ -158,7 +158,8 @@ describe("SessionOrchestrator", () => {
       expect(agent.workspaceMode.status).toBe("fallback_workspace");
     }
 
-    // Simulate a contribution event being published to the reviewer
+    // Simulate a contribution event — should NOT be forwarded via EventBus
+    // (polling handles contribution routing instead, to avoid cross-process issues)
     bus.publish({
       type: "contribution",
       sourceRole: "coder",
@@ -167,10 +168,8 @@ describe("SessionOrchestrator", () => {
       timestamp: new Date().toISOString(),
     });
 
-    // The reviewer agent should have received a forwarded message
-    // (0 goal sends + 1 from event forwarding)
-    expect(runtime.sendCalls.length).toBe(1);
-    expect(runtime.sendCalls[0]!.message).toContain("coder");
+    // No send calls — contribution routing is via polling, not EventBus
+    expect(runtime.sendCalls.length).toBe(0);
     bus.close();
   });
 
@@ -280,22 +279,16 @@ describe("SessionOrchestrator", () => {
       expect(agent.workspaceMode.status).toBe("fallback_workspace");
     }
 
-    // Simulate a contribution event (required — idle check has grace period
-    // that only expires once at least one contribution exists or 30s pass)
-    bus.publish({
-      type: "contribution",
-      sourceRole: "coder",
-      targetRole: "reviewer",
-      payload: { cid: "blake3:test", kind: "work", summary: "test" },
-      timestamp: new Date().toISOString(),
-    });
-
     // Set all agent sessions to idle
     for (const agent of status.agents) {
       runtime.setSessionStatus(agent.session.id, "idle");
     }
 
-    // Trigger idle check — should now stop (contribution exists)
+    // Force grace period to expire (normally 30s, but we can't wait)
+    // @ts-expect-error — accessing private field for test
+    orchestrator.startedAt = Date.now() - 60_000;
+
+    // Trigger idle check — should now stop (grace period expired)
     const stopped = await orchestrator.checkIdleCompletion();
     expect(stopped).toBe(true);
 

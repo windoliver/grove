@@ -216,12 +216,33 @@ export class SessionOrchestrator {
   /**
    * Poll contribution store for new contributions and forward to downstream agents.
    * This bridges the process boundary — MCP tools write to SQLite, we read from it.
+   *
+   * Delay the first poll so agents have time to process their initial prompt.
+   * Without this, contributions from fast agents (coder) arrive in the same
+   * acpx session turn as the initial prompt for slow agents (reviewer), and
+   * the agent treats it as context instead of a separate action trigger.
    */
   private startContributionPolling(): void {
     const POLL_MS = 3_000;
-    this.contributionPollTimer = setInterval(() => {
+    const INITIAL_DELAY_MS = 15_000; // wait for agents to go idle first
+
+    // Seed seenCids with contributions that existed before session started
+    // so we don't re-route them on the first poll
+    void this.config.contributionStore?.list({ limit: 100 }).then((existing) => {
+      for (const c of existing) {
+        this.seenCids.add(c.cid);
+      }
+    });
+
+    // Start polling after initial delay
+    setTimeout(() => {
+      if (this.stopped) return;
+      this.contributionPollTimer = setInterval(() => {
+        void this.pollContributions();
+      }, POLL_MS);
+      // Also poll immediately on first tick
       void this.pollContributions();
-    }, POLL_MS);
+    }, INITIAL_DELAY_MS);
   }
 
   private async pollContributions(): Promise<void> {
@@ -397,24 +418,16 @@ export class SessionOrchestrator {
       return;
     }
 
+    // Contribution routing is handled by pollContributions() which reads
+    // from SQLite directly. In-process EventBus events are unreliable because
+    // MCP tools run in child processes. Skip EventBus-based forwarding to
+    // avoid duplicate messages when both paths fire.
     if (event.type === "contribution") {
-      this.contributionCount++;
+      return;
     }
 
-    // Forward contribution notifications with actionable instructions.
-    // Include the source branch so the receiving agent can merge to see actual files.
-    const p = event.payload;
-    const cid = typeof p.cid === "string" ? p.cid : "";
-    const summary = typeof p.summary === "string" ? p.summary : "";
-    const sourceBranch = `grove/${this.sessionId}/${event.sourceRole}`;
-
-    const message =
-      `[grove] New ${event.type} from ${event.sourceRole}:\n` +
-      `  CID: ${cid}\n` +
-      `  Summary: ${summary}\n` +
-      `  Source branch: ${sourceBranch}\n\n` +
-      `To see the actual file changes, run: git merge ${sourceBranch}\n` +
-      `Then review the files in your workspace and use grove_submit_review or grove_submit_work as appropriate.`;
+    // Forward non-contribution events (e.g., system messages)
+    const message = `[grove] ${event.type} from ${event.sourceRole}: ${JSON.stringify(event.payload)}`;
     await this.config.runtime.send(agent.session, message);
   }
 
