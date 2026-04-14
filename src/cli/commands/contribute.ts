@@ -299,6 +299,23 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
     throw new Error(`Invalid contribute options:\n  ${validation.errors.join("\n  ")}`);
   }
 
+  // Warn if --idempotency-key is set without a stable agent identity.
+  // The default agentId is hostname-pid which changes on restart, making
+  // cross-process idempotency silently ineffective.
+  if (
+    options.idempotencyKey !== undefined &&
+    !options.agentOverrides.role &&
+    !options.agentOverrides.agentId &&
+    !process.env.GROVE_AGENT_ROLE &&
+    !process.env.GROVE_AGENT_ID
+  ) {
+    process.stderr.write(
+      "[grove] Warning: --idempotency-key without --role or --agent-id uses a process-scoped " +
+        "identity (hostname-pid). Cross-process retries will not match. Set --role or --agent-id " +
+        "for stable idempotency.\n",
+    );
+  }
+
   // 2. Find .grove/
   const grovePath = join(options.cwd, ".grove");
   try {

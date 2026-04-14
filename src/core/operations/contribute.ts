@@ -285,7 +285,10 @@ const idempotencyCache = new Map<string, CachedIdempotencyEntry>();
 
 /** Build the cache key. Namespaced per agent so two agents can share keys. */
 function idempotencyCacheKey(agentScope: string, key: string): string {
-  return `${agentScope}\u0000${key}`;
+  // Include session ID when available so the same key in different sessions
+  // doesn't collide (MCP HTTP sessions share one idempotency store).
+  const sessionId = process.env.GROVE_SESSION_ID ?? "";
+  return `${sessionId}\u0000${agentScope}\u0000${key}`;
 }
 
 /**

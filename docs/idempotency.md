@@ -36,8 +36,10 @@ Idempotency-Key: my-unique-key
 Pass `--idempotency-key` to `grove contribute`:
 
 ```bash
-grove contribute --summary "Fix parser" --idempotency-key my-unique-key
+grove contribute --summary "Fix parser" --idempotency-key my-unique-key --role coder
 ```
+
+**Important**: For cross-process retry safety, always set `--role` or `--agent-id` alongside `--idempotency-key`. Without a stable identity, each process generates a unique agent ID (`hostname-pid`) and cross-process retries won't match.
 
 ## Semantics
 
