@@ -102,6 +102,14 @@ export interface SettleBountyInput {
 }
 
 // ---------------------------------------------------------------------------
+// Error messages
+// ---------------------------------------------------------------------------
+
+const MISSING_BOUNTY_STORE = "Bounty operations not available (missing bountyStore)";
+const MISSING_CLAIM_STORE = "Claim operations not available (missing claimStore)";
+const MISSING_CONTRIBUTION_STORE = "Settle bounty not available (missing contributionStore)";
+
+// ---------------------------------------------------------------------------
 // Operations
 // ---------------------------------------------------------------------------
 
@@ -114,7 +122,14 @@ export async function createBountyOperation(
 ): Promise<OperationResult<CreateBountyResult>> {
   try {
     if (deps.bountyStore === undefined) {
-      return validationErr("Bounty operations not available (missing bountyStore)");
+      return validationErr(MISSING_BOUNTY_STORE);
+    }
+
+    if (!input.title || input.title.trim().length === 0) {
+      return validationErr("Bounty title must be a non-empty string");
+    }
+    if (input.amount <= 0) {
+      return validationErr("Bounty amount must be positive");
     }
 
     const agent = resolveAgent(input.agent);
@@ -173,7 +188,7 @@ export async function listBountiesOperation(
 ): Promise<OperationResult<ListBountiesResult>> {
   try {
     if (deps.bountyStore === undefined) {
-      return validationErr("Bounty operations not available");
+      return validationErr(MISSING_BOUNTY_STORE);
     }
 
     const bounties = await deps.bountyStore.listBounties({
@@ -204,16 +219,22 @@ export async function claimBountyOperation(
 ): Promise<OperationResult<ClaimBountyResult>> {
   try {
     if (deps.bountyStore === undefined) {
-      return validationErr("Bounty operations not available");
+      return validationErr(MISSING_BOUNTY_STORE);
     }
 
     if (deps.claimStore === undefined) {
-      return validationErr("Claim operations not available (missing claimStore)");
+      return validationErr(MISSING_CLAIM_STORE);
     }
 
     const bounty = await deps.bountyStore.getBounty(input.bountyId);
     if (!bounty) {
       return notFound("Bounty", input.bountyId);
+    }
+
+    if (bounty.status !== BS.Open) {
+      return validationErr(
+        `Bounty '${input.bountyId}' is not open for claims (current status: ${bounty.status})`,
+      );
     }
 
     const agent = resolveAgent(input.agent);
@@ -247,23 +268,36 @@ export async function claimBountyOperation(
   }
 }
 
-/** Settle a completed bounty. */
+/**
+ * Settle a bounty using the saga pattern:
+ *   claimed → pending_settlement (pivot) → capture → completed → settled
+ *
+ * Retryable: if the operation is called again on a pending_settlement bounty,
+ * it resumes from the capture step (capture is idempotent).
+ */
 export async function settleBountyOperation(
   input: SettleBountyInput,
   deps: OperationDeps,
 ): Promise<OperationResult<SettleBountyResult>> {
   try {
     if (deps.bountyStore === undefined) {
-      return validationErr("Bounty operations not available (missing bountyStore)");
+      return validationErr(MISSING_BOUNTY_STORE);
     }
 
     if (deps.contributionStore === undefined) {
-      return validationErr("Settle bounty not available (missing contributionStore)");
+      return validationErr(MISSING_CONTRIBUTION_STORE);
     }
 
     const bounty = await deps.bountyStore.getBounty(input.bountyId);
     if (!bounty) {
       return notFound("Bounty", input.bountyId);
+    }
+
+    // Allow both "claimed" (fresh settle) and "pending_settlement" (retry/resume)
+    if (bounty.status !== BS.Claimed && bounty.status !== BS.PendingSettlement) {
+      return validationErr(
+        `Bounty '${input.bountyId}' cannot be settled (current status: ${bounty.status})`,
+      );
     }
 
     // Validate contribution exists and meets criteria
@@ -282,7 +316,12 @@ export async function settleBountyOperation(
       );
     }
 
-    // Capture payment before state transition
+    // Step 1: Pivot — transition to pending_settlement (skip if resuming)
+    if (bounty.status === BS.Claimed) {
+      await deps.bountyStore.beginSettlement(input.bountyId, input.contributionCid);
+    }
+
+    // Step 2: Capture payment (idempotent — safe to retry)
     if (deps.creditsService && bounty.reservationId && bounty.claimedBy) {
       await deps.creditsService.capture(bounty.reservationId, {
         toAgentId: bounty.claimedBy.agentId,
@@ -291,7 +330,7 @@ export async function settleBountyOperation(
       await deps.creditsService.capture(bounty.reservationId);
     }
 
-    // Persist state transitions
+    // Step 3: Advance through completed → settled (retryable after pivot)
     const completed = await deps.bountyStore.completeBounty(input.bountyId, input.contributionCid);
     const settled = await deps.bountyStore.settleBounty(completed.bountyId);
 

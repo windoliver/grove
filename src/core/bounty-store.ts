@@ -101,12 +101,26 @@ export interface BountyStore {
   ): Promise<Bounty>;
 
   /**
-   * Mark a bounty as completed (work done, pending settlement).
+   * Transition a bounty to 'pending_settlement' — the saga pivot point.
+   *
+   * After this transition, the bounty is committed to settlement. The caller
+   * must capture credits and then advance to completed → settled. If the
+   * caller crashes, the reconciler will resume from pending_settlement.
+   *
+   * @param bountyId - The bounty entering settlement.
+   * @param fulfilledByCid - CID of the contribution that fulfilled the bounty.
+   * @returns The updated bounty snapshot.
+   * @throws BountyStateError if bounty is not in 'claimed' status.
+   */
+  beginSettlement(bountyId: string, fulfilledByCid: string): Promise<Bounty>;
+
+  /**
+   * Mark a bounty as completed (work done, credits captured).
    *
    * @param bountyId - The bounty to complete.
    * @param fulfilledByCid - CID of the contribution that fulfilled the bounty.
    * @returns The updated bounty snapshot.
-   * @throws BountyStateError if bounty is not in 'claimed' status.
+   * @throws BountyStateError if bounty is not in 'pending_settlement' status.
    */
   completeBounty(bountyId: string, fulfilledByCid: string): Promise<Bounty>;
 
@@ -138,7 +152,7 @@ export interface BountyStore {
   cancelBounty(bountyId: string): Promise<Bounty>;
 
   // -----------------------------------------------------------------------
-  // Expiry sweep
+  // Expiry sweep + index repair
   // -----------------------------------------------------------------------
 
   /**
@@ -148,6 +162,18 @@ export interface BountyStore {
    * Does NOT mutate state — callers decide what to do with the results.
    */
   findExpiredBounties(): Promise<readonly Bounty[]>;
+
+  /**
+   * Repair the status index for a bounty so it matches the authoritative
+   * document state. Idempotent — calling on an already-correct entry is a no-op.
+   *
+   * Used by BountyIndexSweep to fix dual-write gaps where the document was
+   * written but the status index was not. For stores without a separate
+   * index (e.g., SQLite), this is a no-op.
+   *
+   * Optional: stores that don't implement this will not be swept.
+   */
+  repairIndex?(bountyId: string): Promise<void>;
 
   // -----------------------------------------------------------------------
   // Reward records

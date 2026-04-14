@@ -21,6 +21,8 @@ export const BountyStatus = {
   Open: "open",
   /** Claimed by an agent (work in progress). */
   Claimed: "claimed",
+  /** Capture initiated, awaiting state advancement. Saga pivot point. */
+  PendingSettlement: "pending_settlement",
   /** Work completed, pending settlement. */
   Completed: "completed",
   /** Credits distributed to fulfiller. */
