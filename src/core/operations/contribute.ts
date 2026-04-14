@@ -89,6 +89,8 @@ export interface ContributeInput {
   readonly summary: string;
   readonly description?: string | undefined;
   readonly artifacts?: Readonly<Record<string, string>> | undefined;
+  /** Git commit SHA — preferred over CAS artifacts for code contributions. */
+  readonly commitHash?: string | undefined;
   readonly relations?: readonly Relation[] | undefined;
   readonly scores?: Readonly<Record<string, Score>> | undefined;
   readonly tags?: readonly string[] | undefined;
@@ -685,8 +687,9 @@ export async function contributeOperation(
       if (relErr !== undefined) return relErr as OperationResult<ContributeResult>;
     }
 
-    // Validate artifacts
-    if (Object.keys(artifacts).length > 0) {
+    // Validate artifacts — skip CAS validation when commitHash is provided
+    // (git commit IS the content-addressed artifact; no CAS needed)
+    if (!input.commitHash && Object.keys(artifacts).length > 0) {
       const artErr = await validateArtifacts(deps, artifacts);
       if (artErr !== undefined) return artErr as OperationResult<ContributeResult>;
     }
@@ -748,6 +751,7 @@ export async function contributeOperation(
       summary: input.summary,
       ...(input.description !== undefined ? { description: input.description } : {}),
       artifacts,
+      ...(input.commitHash !== undefined ? { commitHash: input.commitHash } : {}),
       relations,
       ...(input.scores !== undefined ? { scores: input.scores } : {}),
       tags: [...tags],

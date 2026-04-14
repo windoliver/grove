@@ -163,12 +163,12 @@ describe("review-loop preset", () => {
     expect(preset.features?.messaging).toBe(true);
   });
 
-  test("topology edges form bidirectional coder <-> reviewer loop", () => {
+  test("both roles use broadcast mode (no edges needed)", () => {
     const preset = getPreset("review-loop")!;
     const coder = preset.topology?.roles.find((r) => r.name === "coder")!;
     const reviewer = preset.topology?.roles.find((r) => r.name === "reviewer")!;
-    expect(coder.edges).toContainEqual({ target: "reviewer", edgeType: "delegates", workspace: "branch_from_source" });
-    expect(reviewer.edges).toContainEqual({ target: "coder", edgeType: "feedback" });
+    expect(coder.mode).toBe("broadcast");
+    expect(reviewer.mode).toBe("broadcast");
   });
 
   test("grove init --preset review-loop creates correct files", async () => {
@@ -931,7 +931,7 @@ describe("Cross-preset comparisons", () => {
     }
   });
 
-  test("only flat topology has no inter-agent edges", () => {
+  test("non-flat topologies have edges or broadcast mode", () => {
     const registry = getPresetRegistry();
     for (const preset of Object.values(registry)) {
       if (preset.topology?.structure === "flat") {
@@ -939,9 +939,11 @@ describe("Cross-preset comparisons", () => {
           expect(role.edges ?? []).toEqual([]);
         }
       } else {
-        // non-flat topologies should have at least one role with edges
-        const hasEdges = preset.topology?.roles.some((r) => (r.edges?.length ?? 0) > 0);
-        expect(hasEdges).toBe(true);
+        // non-flat topologies should have at least one role with edges OR broadcast mode
+        const hasRouting = preset.topology?.roles.some(
+          (r) => (r.edges?.length ?? 0) > 0 || r.mode === "broadcast",
+        );
+        expect(hasRouting).toBe(true);
       }
     }
   });

@@ -43,6 +43,8 @@ const SpawningConfigSchema = z
   })
   .strict();
 
+const RoleModeEnum = z.enum(["explicit", "broadcast"]);
+
 const TopologyRoleWithEdgesSchema = z
   .object({
     name: z
@@ -52,6 +54,8 @@ const TopologyRoleWithEdgesSchema = z
       .max(64),
     description: z.string().max(256).optional(),
     max_instances: z.number().int().min(1).max(100).optional(),
+    /** Routing mode: explicit = follow edges only; broadcast = notify all roles. */
+    mode: RoleModeEnum.optional(),
     edges: z.array(RoleEdgeSchema).max(50).optional(),
     command: z.string().max(512).optional(),
     // Profile fields — runtime agent configuration (boardroom)
@@ -73,6 +77,7 @@ interface WireAgentTopology {
     readonly name: string;
     readonly description?: string | undefined;
     readonly max_instances?: number | undefined;
+    readonly mode?: "explicit" | "broadcast" | undefined;
     readonly edges?:
       | readonly {
           readonly target: string;
@@ -313,6 +318,8 @@ export interface AgentRole {
   readonly name: string;
   readonly description?: string | undefined;
   readonly maxInstances?: number | undefined;
+  /** Routing mode: explicit = follow edges only; broadcast = notify all roles. Default: explicit. */
+  readonly mode?: "explicit" | "broadcast" | undefined;
   readonly edges?: readonly RoleEdge[] | undefined;
   /** Shell command to run when spawning this role (defaults to $SHELL). */
   readonly command?: string | undefined;
@@ -357,6 +364,7 @@ export function wireToTopology(wire: z.infer<typeof AgentTopologySchema>): Agent
         name: role.name,
         ...(role.description !== undefined && { description: role.description }),
         ...(role.max_instances !== undefined && { maxInstances: role.max_instances }),
+        ...(role.mode !== undefined && { mode: role.mode }),
         ...(role.edges !== undefined && {
           edges: role.edges.map(
             (edge): RoleEdge => ({

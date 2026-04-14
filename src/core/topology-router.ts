@@ -1,5 +1,5 @@
 import type { EventBus, GroveEvent } from "./event-bus.js";
-import type { AgentTopology, RoleEdge } from "./topology.js";
+import type { AgentRole, AgentTopology, RoleEdge } from "./topology.js";
 
 /**
  * Routes contribution events through topology edges.
@@ -21,10 +21,13 @@ export class TopologyRouter {
   private readonly eventBus: EventBus;
   // source role → outgoing edges, deduplicated by (target, edgeType) pair
   private readonly edgeMap: ReadonlyMap<string, readonly RoleEdge[]>;
+  private readonly roleMap: ReadonlyMap<string, AgentRole>;
 
   constructor(topology: AgentTopology, eventBus: EventBus) {
     this.topology = topology;
     this.eventBus = eventBus;
+    // Index roles by name for mode lookup
+    this.roleMap = new Map(topology.roles.map((r) => [r.name, r]));
     // Pre-compute: source role -> outgoing RoleEdge[], deduped by (target, edgeType).
     // Use a Set<string> keyed by "target:edgeType" for O(1) dedup instead of O(n) Array.includes.
     const map = new Map<string, RoleEdge[]>();
@@ -60,26 +63,44 @@ export class TopologyRouter {
    * target roles that received the event.
    */
   route(sourceRole: string, payload: Record<string, unknown>): readonly string[] {
-    const edges = this.edgeMap.get(sourceRole);
-    if (!edges || edges.length === 0) return [];
+    const role = this.roleMap.get(sourceRole);
+    const mode = role?.mode ?? "explicit";
 
     const timestamp = new Date().toISOString();
-    const routedTo: string[] = [];
-    const publishedTargets = new Set<string>();
+    const targets = new Set<string>();
 
-    for (const edge of edges) {
-      if (!publishedTargets.has(edge.target)) {
-        publishedTargets.add(edge.target);
-        const event: GroveEvent = {
-          type: "contribution",
-          sourceRole,
-          targetRole: edge.target,
-          payload,
-          timestamp,
-        };
-        this.eventBus.publish(event);
-        routedTo.push(edge.target);
+    // Explicit: follow defined edges
+    if (mode === "explicit") {
+      const edges = this.edgeMap.get(sourceRole);
+      if (edges) {
+        for (const edge of edges) {
+          targets.add(edge.target);
+        }
       }
+    }
+
+    // Broadcast: notify ALL other roles
+    if (mode === "broadcast") {
+      for (const r of this.topology.roles) {
+        if (r.name !== sourceRole) {
+          targets.add(r.name);
+        }
+      }
+    }
+
+    if (targets.size === 0) return [];
+
+    const routedTo: string[] = [];
+    for (const targetRole of targets) {
+      const event: GroveEvent = {
+        type: "contribution",
+        sourceRole,
+        targetRole,
+        payload,
+        timestamp,
+      };
+      this.eventBus.publish(event);
+      routedTo.push(targetRole);
     }
 
     return routedTo;

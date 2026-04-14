@@ -97,17 +97,23 @@ When you receive a notification with a source branch, run \`git merge <branch>\`
 
 ## MCP Tools
 
-- \`grove_submit_work\` — record work with artifacts (always include agent: { role: "${roleId}" })
-- \`grove_submit_review\` — review another agent's work with scores and targetCid (always include agent: { role: "${roleId}" })
-- \`grove_done\` — signal session complete (only call this when work is approved)
-- \`grove_cas_put\` — store file content, returns { hash: "blake3:..." } for use in artifacts
+- \`grove_submit_work\` — submit your work. Pass commitHash (git commit SHA) so others can see your files.
+- \`grove_submit_review\` — review another agent's work. Requires targetCid from the notification.
+- \`grove_done\` — signal session complete. Only call when work is approved.
 
 ## Workflow
 
-1. When notified of another agent's work: \`git merge <source_branch>\` to get their files
-2. Read and review/act on the files
-3. Call the appropriate MCP tool (grove_submit_work or grove_submit_review)
-4. grove_submit_review requires targetCid (the CID from the notification)
+**Submitting work (coder):**
+1. Edit files in your workspace
+2. \`git add -A && git commit -m "description"\`
+3. Get the commit hash: \`git rev-parse HEAD\`
+4. \`grove_submit_work({ summary: "...", commitHash: "<hash>", agent: { role: "${roleId}" } })\`
+
+**Reviewing work (reviewer):**
+1. When notified of another agent's work, merge their branch: \`git merge <source_branch>\`
+2. Read the files, run tests
+3. \`grove_submit_review({ targetCid: "<cid from notification>", summary: "...", scores: {...}, agent: { role: "${roleId}" } })\`
+4. If approved: \`grove_done({ summary: "Approved", agent: { role: "${roleId}" } })\`
 
 Follow the Instructions section above exactly. You can edit files, commit, push, create PRs, and use gh CLI.
 `;

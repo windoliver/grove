@@ -137,6 +137,8 @@ export interface Contribution {
   readonly summary: string;
   readonly description?: string | undefined;
   readonly artifacts: Readonly<Record<string, string>>;
+  /** Git commit SHA when work is submitted as a commit (preferred over CAS artifacts). */
+  readonly commitHash?: string | undefined;
   readonly relations: readonly Relation[];
   readonly scores?: Readonly<Record<string, Score>> | undefined;
   readonly tags: readonly string[];
