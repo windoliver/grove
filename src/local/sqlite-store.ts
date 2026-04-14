@@ -484,12 +484,26 @@ export class SqliteIdempotencyStore {
   }
 
   reserve(cacheKey: string, fingerprint: string): boolean {
+    // Purge expired rows first so the key becomes reusable after TTL.
+    // Without this, INSERT OR IGNORE permanently fails against stale rows
+    // and the key can never be reused with a different fingerprint.
+    this.db.run("DELETE FROM idempotency_keys WHERE cache_key = ? AND stored_at <= ?", [
+      cacheKey,
+      Date.now() - 5 * 60 * 1000,
+    ]);
     this.reserveStmt.run(cacheKey, fingerprint, Date.now());
     // Check if our reservation landed (fingerprint matches).
     const row = this.lookupStmt.get(cacheKey, 0) as {
       fingerprint: string;
     } | null;
     return row !== null && row.fingerprint === fingerprint;
+  }
+
+  /** Remove a pending reservation on failure (pre-commit rollback). */
+  rollback(cacheKey: string): void {
+    this.db.run("DELETE FROM idempotency_keys WHERE cache_key = ? AND status = 'pending'", [
+      cacheKey,
+    ]);
   }
 
   store(cacheKey: string, fingerprint: string, resultJson: string): void {

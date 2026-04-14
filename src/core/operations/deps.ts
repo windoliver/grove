@@ -46,6 +46,8 @@ export interface IdempotencyStore {
   reserve(cacheKey: string, fingerprint: string): boolean;
   /** Update an already-reserved entry with the final result. */
   store(cacheKey: string, fingerprint: string, resultJson: string): void;
+  /** Remove a pending reservation on pre-commit failure. */
+  rollback(cacheKey: string): void;
   /** Remove all entries (testing only). */
   clear(): void;
 }

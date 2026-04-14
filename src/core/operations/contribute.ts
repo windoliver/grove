@@ -657,10 +657,11 @@ async function writeContributionWithHandoffs(
     routedTo.length > 0 &&
     agentRole !== undefined;
 
+  const cowriteStore = store as {
+    putWithCowrite?: (c: Contribution, fn: () => void) => void | Promise<void>;
+  };
+
   if (needsHandoffs) {
-    const cowriteStore = store as {
-      putWithCowrite?: (c: Contribution, fn: () => void) => void | Promise<void>;
-    };
     const sqliteHandoffStore = handoffStore as {
       insertSync?: (input: HandoffInput) => string;
     };
@@ -676,6 +677,20 @@ async function writeContributionWithHandoffs(
     }
   }
 
+  // Even without handoffs, use the atomic path when onCommit is provided
+  // and the store supports cowrite — this ensures the idempotency row is
+  // written inside the same SQLite transaction as the contribution.
+  if (onCommit !== undefined && cowriteStore.putWithCowrite !== undefined) {
+    return writeAtomic(
+      contribution,
+      [],
+      agentRole ?? "",
+      cowriteStore.putWithCowrite.bind(cowriteStore),
+      () => "", // no-op insertSync (no handoffs)
+      onCommit,
+    );
+  }
+
   return writeSerial(contribution, routedTo, agentRole, store, handoffStore, onCommit);
 }
 
@@ -689,15 +704,14 @@ export async function contributeOperation(
   deps: OperationDeps,
 ): Promise<OperationResult<ContributeResult>> {
   // Hoisted out of the try block so the outer catch can release the slot
-  // on thrown errors. Single-flight: while a slot holds a pending Promise,
-  // concurrent callers with the same key await that Promise instead of
-  // racing through the write path.
+  // and roll back the durable reservation on thrown errors.
   let idempotencySlot:
     | {
         readonly resolve: (result: OperationResult<ContributeResult>) => void;
         readonly release: () => void;
       }
     | undefined;
+  let idempotencyCacheLookupKey: string | undefined;
 
   try {
     if (deps.contributionStore === undefined) {
@@ -744,7 +758,7 @@ export async function contributeOperation(
     // two concurrent callers cannot both observe a miss and race past the
     // insert — the second caller sees the first caller's pending entry.
     const idempotencyAgentScope = agent.role ?? agent.agentId;
-    const idempotencyCacheLookupKey =
+    idempotencyCacheLookupKey =
       input.idempotencyKey !== undefined
         ? idempotencyCacheKey(idempotencyAgentScope, input.idempotencyKey)
         : undefined;
@@ -1235,6 +1249,15 @@ export async function contributeOperation(
     // failure). Post-commit failures flow through the committed result
     // path and never reach this catch.
     idempotencySlot?.release();
+    // Roll back the durable reservation so the key doesn't stay stuck
+    // in 'pending' for the full TTL after a pre-commit failure.
+    if (idempotencyCacheLookupKey !== undefined && deps.idempotencyStore !== undefined) {
+      try {
+        deps.idempotencyStore.rollback(idempotencyCacheLookupKey);
+      } catch {
+        // Best-effort — don't mask the original error.
+      }
+    }
     return fromGroveError(error);
   }
 }
