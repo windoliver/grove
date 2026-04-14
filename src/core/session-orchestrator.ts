@@ -6,11 +6,12 @@
  */
 
 import { join } from "node:path";
+import type { AgentProfile } from "./agent-profile.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 import type { GroveContract } from "./contract.js";
 import type { EventBus, GroveEvent } from "./event-bus.js";
 import { resolveMcpServePath } from "./resolve-mcp-serve-path.js";
-import type { AgentRole, AgentTopology } from "./topology.js";
+import type { AgentPlatformType, AgentRole, AgentTopology } from "./topology.js";
 import { resolveRoleWorkspaceStrategies, topologicalSortRoles } from "./topology.js";
 import { TopologyRouter } from "./topology-router.js";
 import { bootstrapWorkspace } from "./workspace-bootstrap.js";
@@ -60,6 +61,8 @@ export interface SessionConfig {
   readonly contributionStore?:
     | { list(query?: { limit?: number }): Promise<readonly import("./models.js").Contribution[]> }
     | undefined;
+  /** Optional agent profiles — overlay role defaults with per-agent runtime config. */
+  readonly profiles?: readonly AgentProfile[] | undefined;
 }
 
 /** Status of a running session. */
@@ -79,6 +82,23 @@ export interface AgentSessionInfo {
   readonly goal: string;
   /** Describes how this agent's workspace was provisioned. */
   readonly workspaceMode: WorkspaceMode;
+}
+
+/**
+ * Merge runtime selection fields from role + profile.
+ * Precedence: profile > role > default.
+ *
+ * Exported for testability — pure function, no side effects.
+ */
+export function mergeRuntimeConfig(
+  role: AgentRole,
+  profile: AgentProfile | undefined,
+): { command: string; platform: AgentPlatformType | undefined; model: string | undefined } {
+  return {
+    command: profile?.command ?? role.command ?? "claude",
+    platform: profile?.platform ?? role.platform,
+    model: profile?.model ?? role.model,
+  };
 }
 
 export class SessionOrchestrator {
@@ -341,7 +361,7 @@ export class SessionOrchestrator {
     signal?: AbortSignal,
     workspace?: { cwd: string; workspaceMode: WorkspaceMode },
   ): Promise<AgentSessionInfo> {
-    const roleGoal = role.prompt ?? role.description ?? `Fulfill role: ${role.name}`;
+    const roleGoal = role.goal ?? role.prompt ?? role.description ?? `Fulfill role: ${role.name}`;
     const fullGoal = `Session goal: ${this.config.goal}\n\nYour role (${role.name}): ${roleGoal}`;
 
     const { cwd, workspaceMode } = workspace ?? {
@@ -355,9 +375,15 @@ export class SessionOrchestrator {
 
     if (signal?.aborted) throw new Error(`Spawn aborted for role '${role.name}'`);
 
+    // Merge profile overlay (profile > role > default)
+    const profile = this.config.profiles?.find((p) => p.role === role.name);
+    const resolved = mergeRuntimeConfig(role, profile);
+
     const agentConfig: AgentConfig = {
       role: role.name,
-      command: role.command ?? "claude",
+      command: resolved.command,
+      platform: resolved.platform,
+      model: resolved.model,
       cwd,
       goal: fullGoal,
       env: {

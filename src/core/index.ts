@@ -207,7 +207,7 @@ export type {
   AgentSessionInfo,
   SessionConfig,
 } from "./session-orchestrator.js";
-export { SessionOrchestrator } from "./session-orchestrator.js";
+export { mergeRuntimeConfig, SessionOrchestrator } from "./session-orchestrator.js";
 export type {
   ActiveClaimFilter,
   ClaimStore,

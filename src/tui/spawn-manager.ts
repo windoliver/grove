@@ -304,16 +304,15 @@ export class SpawnManager {
         initialPrompt = parts.join(". ");
       }
 
-      // Compose agent command with auto-approve flags
+      // Compose agent command with auto-approve flags.
+      // The prompt is passed via AgentConfig.prompt, NOT embedded in the command
+      // string — avoids shell injection and decouples "what to run" from "what to say".
       let agentCommand = command;
       const baseCmd = command.split(/\s+/)[0] ?? command;
       if (baseCmd === "claude") {
         agentCommand = `rm -f ~/.claude/remote-settings.json; ${command} --dangerously-skip-permissions`;
       } else if (baseCmd === "codex") {
         agentCommand = `${command} --full-auto`;
-      }
-      if (initialPrompt) {
-        agentCommand = `${agentCommand} "${initialPrompt.replace(/"/g, '\\"')}"`;
       }
 
       // For codex roles, require successful codex MCP registration before
@@ -345,14 +344,24 @@ export class SpawnManager {
         const rolePromptText = String(context?.rolePrompt ?? "").toLowerCase();
         const waitForPush = context?.waitForPush === true || rolePromptText.includes("wait for");
 
+        // Extract platform/model from context (set by topology role or profile overlay)
+        const platform = context?.platform as
+          | import("../core/topology.js").AgentPlatformType
+          | undefined;
+        const model = context?.model as string | undefined;
+
         const agentConfig: AgentConfig = {
           role: roleId,
           command: agentCommand,
           cwd: workspacePath,
           env: { ...roleEnv, ...prEnv },
-          goal: this.sessionGoal,
+          // initialPrompt already contains the session goal + role details + "Read CLAUDE.md".
+          // Use it as goal so runtimes send the complete message (not just the bare session goal).
+          goal: initialPrompt ?? this.sessionGoal,
           prompt: initialPrompt,
           waitForPush,
+          platform,
+          model,
         };
         const session = await this.agentRuntime.spawn(roleId, agentConfig);
         this.agentSessions.set(spawnId, session);

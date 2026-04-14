@@ -23,15 +23,29 @@ export class SubprocessRuntime implements AgentRuntime {
       throw new Error(`Empty command for role "${role}"`);
     }
 
+    const spawnEnv: Record<string, string> = {
+      ...process.env,
+      ...config.env,
+    } as Record<string, string>;
+    if (config.platform) spawnEnv.GROVE_AGENT_PLATFORM = config.platform;
+    if (config.model) spawnEnv.GROVE_AGENT_MODEL = config.model;
+
     const proc = Bun.spawn([cmd, ...args], {
       cwd: config.cwd,
-      env: { ...process.env, ...config.env },
+      env: spawnEnv,
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
     });
 
-    const session: AgentSession = { id, role, pid: proc.pid, status: "running" };
+    const session: AgentSession = {
+      id,
+      role,
+      pid: proc.pid,
+      status: "running",
+      platform: config.platform,
+      model: config.model,
+    };
     this.sessions.set(id, { proc, session, idleCallbacks: [] });
 
     // Monitor for exit

@@ -9,12 +9,15 @@
  */
 
 import { execSync, spawn as nodeSpawn } from "node:child_process";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { createWriteStream, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
+import { shellEscape } from "./shell-utils.js";
+import type { AgentPlatformType } from "./topology.js";
 
 function appendLog(msg: string): void {
   try {
+    const { appendFileSync } = require("node:fs") as typeof import("node:fs");
     appendFileSync("/tmp/grove-debug.log", `[${new Date().toISOString()}] ${msg}\n`);
   } catch {
     /* ignore */
@@ -23,6 +26,23 @@ function appendLog(msg: string): void {
 
 /** Default agent backend used by acpx when none is specified. */
 const DEFAULT_AGENT = "codex";
+
+/** Known acpx agent subcommands. */
+export const KNOWN_ACPX_AGENTS: Set<string> = new Set([
+  "claude",
+  "codex",
+  "gemini",
+  "pi",
+  "openclaw",
+]);
+
+/** Maps AgentPlatformType to the acpx agent subcommand. */
+export const PLATFORM_TO_AGENT: Record<AgentPlatformType, string> = {
+  "claude-code": "claude",
+  codex: "codex",
+  gemini: "gemini",
+  custom: "codex", // custom falls back to default
+};
 
 interface AcpxSessionEntry {
   session: AgentSession;
@@ -35,6 +55,8 @@ interface AcpxSessionEntry {
   idleTimer: ReturnType<typeof setInterval> | null;
   /** Active child process for the current prompt (null when idle). */
   activeProc: ReturnType<typeof nodeSpawn> | null;
+  /** Log write stream (opened at session creation, closed on session close). */
+  logStream: import("node:fs").WriteStream | null;
   /** Log file path for agent output (debug/streaming). */
   logFile: string | null;
 }
@@ -52,6 +74,12 @@ export class AcpxRuntime implements AgentRuntime {
   /** Directory for per-agent log files. */
   private readonly logDir: string | undefined;
 
+  /** Cached availability result (acpx doesn't get uninstalled mid-session). */
+  private cachedAvailable: boolean | undefined;
+
+  /** Set of distinct agent backends that have been spawned (for multi-agent listSessions). */
+  private readonly spawnedAgents: Set<string> = new Set();
+
   constructor(options?: { agent?: string; idlePollMs?: number; logDir?: string }) {
     this.agent = options?.agent ?? DEFAULT_AGENT;
     this.idlePollMs = options?.idlePollMs ?? 5000;
@@ -66,28 +94,59 @@ export class AcpxRuntime implements AgentRuntime {
   }
 
   async isAvailable(): Promise<boolean> {
+    if (this.cachedAvailable !== undefined) return this.cachedAvailable;
+
     try {
       const out = execSync("acpx --version", { encoding: "utf-8", stdio: "pipe" }).trim();
       // acpx >=0.5.3 is required: 0.3.x uses the buggy @zed-industries/claude-agent-acp
       // adapter that fails session/new with "Query closed before response received".
       // 0.5.x switched to @agentclientprotocol/claude-agent-acp which works.
       const match = /^(\d+)\.(\d+)\.(\d+)/.exec(out);
-      if (!match) return true; // unparseable — don't block
+      if (!match) {
+        this.cachedAvailable = true;
+        return true; // unparseable — don't block
+      }
       const [, maj, min, patch] = match;
       const major = Number(maj);
       const minor = Number(min);
       const patchNum = Number(patch);
-      if (major > 0) return true;
-      if (minor > 5) return true;
-      if (minor === 5 && patchNum >= 3) return true;
+      if (major > 0 || minor > 5 || (minor === 5 && patchNum >= 3)) {
+        this.cachedAvailable = true;
+        return true;
+      }
       process.stderr.write(
         `[acpx-runtime] acpx ${out} is too old — grove requires acpx >=0.5.3. ` +
           `Upgrade with: npm install -g acpx@latest\n`,
       );
+      this.cachedAvailable = false;
       return false;
     } catch {
+      this.cachedAvailable = false;
       return false;
     }
+  }
+
+  /**
+   * Resolve the acpx agent backend for a spawn request.
+   *
+   * Priority: config.platform → parsed config.command → constructor default.
+   */
+  resolveAgent(config: AgentConfig): string {
+    // 1. Explicit platform takes precedence
+    if (config.platform) {
+      const mapped = PLATFORM_TO_AGENT[config.platform];
+      if (mapped && KNOWN_ACPX_AGENTS.has(mapped)) return mapped;
+    }
+
+    // 2. Fallback: parse agent name from command string (backward compat)
+    if (config.command) {
+      const stripped = config.command.replace(/^rm\s+[^;]+;\s*/, ""); // drop leading "rm -f ~/..." hooks
+      const first = stripped.trim().split(/\s+/)[0] ?? "";
+      if (KNOWN_ACPX_AGENTS.has(first)) return first;
+    }
+
+    // 3. Constructor-level default
+    return this.agent;
   }
 
   async spawn(role: string, config: AgentConfig): Promise<AgentSession> {
@@ -122,20 +181,15 @@ export class AcpxRuntime implements AgentRuntime {
     }
     const mergedEnv = config.env ? { ...baseEnv, ...config.env } : baseEnv;
 
-    // Extract the agent binary name from config.command (e.g. "claude --flag" → "claude").
-    // acpx takes the agent name as a subcommand; flags and the initial prompt go through
-    // the session creation path, not the `acpx <agent>` argument.
-    //
-    // Only known acpx subcommands are accepted (claude/codex/gemini/pi/openclaw). Any
-    // other first token (including shell builtins like `echo` used in tests) falls back
-    // to the runtime-level default so we never pass acpx an unknown agent name.
-    const KNOWN_ACPX_AGENTS = new Set(["claude", "codex", "gemini", "pi", "openclaw"]);
-    const agent = (() => {
-      if (!config.command) return this.agent;
-      const stripped = config.command.replace(/^rm\s+[^;]+;\s*/, ""); // drop leading "rm -f ~/..." hooks
-      const first = stripped.trim().split(/\s+/)[0] ?? "";
-      return KNOWN_ACPX_AGENTS.has(first) ? first : this.agent;
-    })();
+    // Export platform/model as env vars so agent identity resolution picks them up
+    if (config.platform) mergedEnv.GROVE_AGENT_PLATFORM = config.platform;
+    if (config.model) mergedEnv.GROVE_AGENT_MODEL = config.model;
+
+    // Resolve agent backend via platform → command → default chain
+    const agent = this.resolveAgent(config);
+
+    // Track this agent type for multi-backend listSessions
+    this.spawnedAgents.add(agent);
 
     // Create a new acpx session with --approve-all (layer 1: acpx client-side auto-approve)
     const createCmd = `acpx --approve-all ${shellEscape(agent)} sessions new --name ${shellEscape(sessionName)}`;
@@ -156,8 +210,23 @@ export class AcpxRuntime implements AgentRuntime {
       // Non-fatal — some agents may not support set-mode (claude, gemini)
     }
 
-    const session: AgentSession = { id, role, status: "running" };
+    const session: AgentSession = {
+      id,
+      role,
+      status: "running",
+      platform: config.platform,
+      model: config.model,
+      agent,
+    };
     const logFile = this.logDir ? join(this.logDir, `${role}-${counter}.log`) : null;
+    let logStream: import("node:fs").WriteStream | null = null;
+    if (logFile) {
+      logStream = createWriteStream(logFile, { flags: "a" });
+      logStream.write(
+        `[${new Date().toISOString()}] === Session ${sessionName} (role: ${role}, agent: ${agent}, platform: ${config.platform ?? "unset"}, model: ${config.model ?? "unset"}) ===\n`,
+      );
+    }
+
     const entry: AcpxSessionEntry = {
       session,
       agent,
@@ -168,19 +237,10 @@ export class AcpxRuntime implements AgentRuntime {
       outputCallbacks: [],
       idleTimer: null,
       activeProc: null,
+      logStream,
       logFile,
     };
     this.sessions.set(id, entry);
-
-    // Write initial log header
-    if (logFile) {
-      const header = `[${new Date().toISOString()}] === Session ${sessionName} (role: ${role}) ===\n`;
-      try {
-        appendFileSync(logFile, header);
-      } catch {
-        /* ignore */
-      }
-    }
 
     // Send initial prompt unless this role waits for push (e.g., reviewer waits for coder)
     if (!config.waitForPush) {
@@ -228,16 +288,9 @@ RULES ABOUT grove_done:
 ${message}`;
 
     // Log the outgoing prompt
-    if (entry.logFile) {
+    if (entry.logStream) {
       const ts = new Date().toISOString();
-      try {
-        appendFileSync(
-          entry.logFile,
-          `\n[${ts}] >>> PROMPT >>>\n${message}\n[${ts}] <<< END PROMPT <<<\n`,
-        );
-      } catch {
-        /* ignore */
-      }
+      entry.logStream.write(`\n[${ts}] >>> PROMPT >>>\n${message}\n[${ts}] <<< END PROMPT <<<\n`);
     }
 
     appendLog(
@@ -265,18 +318,12 @@ ${message}`;
       );
     });
 
-    // Stream stdout to output callbacks + log file
+    // Stream stdout to output callbacks + log stream
     child.stdout?.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
-      // Write to log file
-      if (entry.logFile) {
-        try {
-          appendFileSync(entry.logFile, text);
-        } catch {
-          /* ignore */
-        }
+      if (entry.logStream) {
+        entry.logStream.write(text);
       }
-      // Forward to output callbacks
       for (const cb of entry.outputCallbacks) {
         try {
           cb(text);
@@ -286,14 +333,10 @@ ${message}`;
       }
     });
 
-    // Capture stderr to log file
+    // Capture stderr to log stream
     child.stderr?.on("data", (chunk: Buffer) => {
-      if (entry.logFile) {
-        try {
-          appendFileSync(entry.logFile, `[stderr] ${chunk.toString()}`);
-        } catch {
-          /* ignore */
-        }
+      if (entry.logStream) {
+        entry.logStream.write(`[stderr] ${chunk.toString()}`);
       }
     });
 
@@ -303,12 +346,8 @@ ${message}`;
       const ts = new Date().toISOString();
       if (code === 0) {
         entry.session = { ...entry.session, status: "idle" };
-        if (entry.logFile) {
-          try {
-            appendFileSync(entry.logFile, `\n[${ts}] === IDLE (exit 0) ===\n`);
-          } catch {
-            /* ignore */
-          }
+        if (entry.logStream) {
+          entry.logStream.write(`\n[${ts}] === IDLE (exit 0) ===\n`);
         }
         for (const cb of entry.idleCallbacks) {
           try {
@@ -319,12 +358,8 @@ ${message}`;
         }
       } else {
         entry.session = { ...entry.session, status: "crashed" };
-        if (entry.logFile) {
-          try {
-            appendFileSync(entry.logFile, `\n[${ts}] === CRASHED (exit ${code}) ===\n`);
-          } catch {
-            /* ignore */
-          }
+        if (entry.logStream) {
+          entry.logStream.write(`\n[${ts}] === CRASHED (exit ${code}) ===\n`);
         }
       }
     });
@@ -332,12 +367,8 @@ ${message}`;
     child.on("error", (err) => {
       entry.activeProc = null;
       entry.session = { ...entry.session, status: "crashed" };
-      if (entry.logFile) {
-        try {
-          appendFileSync(entry.logFile, `\n[ERROR] ${err.message}\n`);
-        } catch {
-          /* ignore */
-        }
+      if (entry.logStream) {
+        entry.logStream.write(`\n[ERROR] ${err.message}\n`);
       }
     });
   }
@@ -352,9 +383,12 @@ ${message}`;
       appendLog(
         `[acpx.send] sessionId=${session.id} NOT in sessions map → creating reattach entry`,
       );
+      // Use session metadata if available, fall back to runtime default
+      const agent = session.agent ?? this.agent;
+      this.spawnedAgents.add(agent);
       entry = {
         session,
-        agent: this.agent,
+        agent,
         sessionName: session.id,
         cwd: process.cwd(),
         env: { ...process.env },
@@ -362,8 +396,12 @@ ${message}`;
         outputCallbacks: [],
         idleTimer: null,
         activeProc: null,
+        logStream: null,
         logFile: this.logDir ? join(this.logDir, `${session.role}-reattach.log`) : null,
       };
+      if (entry.logFile) {
+        entry.logStream = createWriteStream(entry.logFile, { flags: "a" });
+      }
       this.sessions.set(session.id, entry);
     } else {
       appendLog(
@@ -400,6 +438,11 @@ ${message}`;
 
     if (entry) {
       entry.session = { ...entry.session, status: "stopped" };
+      // Close log stream
+      if (entry.logStream) {
+        entry.logStream.end();
+        entry.logStream = null;
+      }
     }
     this.sessions.delete(session.id);
   }
@@ -423,39 +466,66 @@ ${message}`;
     entry.outputCallbacks.push(callback);
   }
 
+  /**
+   * List sessions tracked in-memory. For discovering orphaned sessions
+   * from previous runs, use `discoverSessions()`.
+   */
   async listSessions(): Promise<readonly AgentSession[]> {
+    // Short-circuit: return in-memory sessions if we have any tracked
+    if (this.sessions.size > 0) {
+      return [...this.sessions.values()].map((e) => e.session);
+    }
+
+    // No in-memory sessions — fall back to discovery
+    return this.discoverSessions();
+  }
+
+  /**
+   * Discover sessions across all known agent backends via the acpx CLI.
+   * Used for reattach scenarios where sessions may exist from a prior run.
+   */
+  async discoverSessions(): Promise<readonly AgentSession[]> {
     if (!(await this.isAvailable())) {
       return [];
     }
 
-    try {
-      const output = execSync(`acpx ${shellEscape(this.agent)} sessions list`, {
-        encoding: "utf-8",
-        stdio: "pipe",
-      });
+    // Query all agents: the default + any that have been spawned
+    const agentsToQuery = new Set([this.agent, ...this.spawnedAgents, ...KNOWN_ACPX_AGENTS]);
+    const result: AgentSession[] = [];
+    const seenIds = new Set<string>();
 
-      const lines = output.trim().split("\n").filter(Boolean);
-      const result: AgentSession[] = [];
-
-      for (const entry of this.sessions.values()) {
-        result.push(entry.session);
-      }
-
-      for (const line of lines) {
-        // acpx output: UUID\tname\tpath\ttimestamp (tab-separated)
-        const fields = line.split("\t");
-        const name = (fields[1] ?? line).trim();
-        const isClosed = line.includes("[closed]");
-        if (name.startsWith("grove-") && !this.sessions.has(name) && !isClosed) {
-          const role = name.replace(/^grove-/, "").replace(/-\d+-.*$/, "");
-          result.push({ id: name, role, status: "idle" });
-        }
-      }
-
-      return result;
-    } catch {
-      return [...this.sessions.values()].map((e) => e.session);
+    // Include all in-memory sessions first
+    for (const entry of this.sessions.values()) {
+      result.push(entry.session);
+      seenIds.add(entry.session.id);
     }
+
+    // Query each agent backend for grove sessions
+    for (const agentName of agentsToQuery) {
+      try {
+        const output = execSync(`acpx ${shellEscape(agentName)} sessions list`, {
+          encoding: "utf-8",
+          stdio: "pipe",
+        });
+
+        const lines = output.trim().split("\n").filter(Boolean);
+        for (const line of lines) {
+          // acpx output: UUID\tname\tpath\ttimestamp (tab-separated)
+          const fields = line.split("\t");
+          const name = (fields[1] ?? line).trim();
+          const isClosed = line.includes("[closed]");
+          if (name.startsWith("grove-") && !seenIds.has(name) && !isClosed) {
+            const role = name.replace(/^grove-/, "").replace(/-\d+-.*$/, "");
+            result.push({ id: name, role, status: "idle", agent: agentName });
+            seenIds.add(name);
+          }
+        }
+      } catch {
+        // Agent backend may not exist or have no sessions — continue
+      }
+    }
+
+    return result;
   }
 
   /** Poll-based idle detection fallback. */
@@ -474,9 +544,4 @@ ${message}`;
       }
     }
   }
-}
-
-/** Escape a string for safe use in shell commands. */
-function shellEscape(s: string): string {
-  return `'${s.replace(/'/g, "'\\''")}'`;
 }

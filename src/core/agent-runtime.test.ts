@@ -87,4 +87,50 @@ describe("AgentRuntime contract (MockRuntime)", () => {
     const s2 = await rt.spawn("coder", config);
     expect(s1.id).not.toBe(s2.id);
   });
+
+  // --- Platform/model metadata propagation ---
+
+  test("spawn propagates platform from config to session", async () => {
+    const rt = new MockRuntime();
+    const session = await rt.spawn("coder", { ...config, platform: "claude-code" });
+    expect(session.platform).toBe("claude-code");
+  });
+
+  test("spawn propagates model from config to session", async () => {
+    const rt = new MockRuntime();
+    const session = await rt.spawn("coder", { ...config, model: "claude-opus-4-6" });
+    expect(session.model).toBe("claude-opus-4-6");
+  });
+
+  test("spawn leaves platform/model undefined when not in config", async () => {
+    const rt = new MockRuntime();
+    const session = await rt.spawn("coder", config);
+    expect(session.platform).toBeUndefined();
+    expect(session.model).toBeUndefined();
+  });
+
+  test("getSessionMetadata returns platform and model", async () => {
+    const rt = new MockRuntime();
+    const session = await rt.spawn("coder", {
+      ...config,
+      platform: "codex",
+      model: "gpt-4.1",
+    });
+    const meta = rt.getSessionMetadata(session.id);
+    expect(meta).toBeDefined();
+    expect(meta!.platform).toBe("codex");
+    expect(meta!.model).toBe("gpt-4.1");
+  });
+
+  test("getSessionMetadata returns undefined for unknown session", () => {
+    const rt = new MockRuntime();
+    expect(rt.getSessionMetadata("nonexistent")).toBeUndefined();
+  });
+
+  test("spawnCalls captures platform and model in config", async () => {
+    const rt = new MockRuntime();
+    await rt.spawn("coder", { ...config, platform: "gemini", model: "gemini-2.5" });
+    expect(rt.spawnCalls[0]!.config.platform).toBe("gemini");
+    expect(rt.spawnCalls[0]!.config.model).toBe("gemini-2.5");
+  });
 });
