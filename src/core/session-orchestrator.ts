@@ -285,6 +285,13 @@ export class SessionOrchestrator {
             await this.config.runtime.send(targetAgent.session, message);
           }
         }
+
+        // Detect [DONE] signal — stop the session when any agent signals done.
+        // This mirrors what use-done-detection.ts does in the TUI layer.
+        if (c.summary.startsWith("[DONE]") || (c.context && (c.context as Record<string, unknown>).done === true)) {
+          void this.stop(`Agent ${sourceRole} signaled done: ${c.summary}`);
+          return;
+        }
       }
     } catch {
       // Best effort — don't crash on poll errors
