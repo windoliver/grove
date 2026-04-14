@@ -149,7 +149,7 @@ describe("SessionOrchestrator", () => {
     bus.close();
   });
 
-  test("contribution events are skipped by EventBus (handled by polling)", async () => {
+  test("contribution events forwarded via EventBus when no contribution store", async () => {
     const contract = makeContract();
     const { orchestrator, runtime, bus } = makeOrchestrator(contract);
 
@@ -158,8 +158,7 @@ describe("SessionOrchestrator", () => {
       expect(agent.workspaceMode.status).toBe("fallback_workspace");
     }
 
-    // Simulate a contribution event — should NOT be forwarded via EventBus
-    // (polling handles contribution routing instead, to avoid cross-process issues)
+    // Without contributionStore, EventBus forwarding is the only path
     bus.publish({
       type: "contribution",
       sourceRole: "coder",
@@ -168,8 +167,9 @@ describe("SessionOrchestrator", () => {
       timestamp: new Date().toISOString(),
     });
 
-    // No send calls — contribution routing is via polling, not EventBus
-    expect(runtime.sendCalls.length).toBe(0);
+    // Contribution forwarded via EventBus
+    expect(runtime.sendCalls.length).toBe(1);
+    expect(runtime.sendCalls[0]!.message).toContain("coder");
     bus.close();
   });
 

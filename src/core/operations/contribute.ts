@@ -687,9 +687,8 @@ export async function contributeOperation(
       if (relErr !== undefined) return relErr as OperationResult<ContributeResult>;
     }
 
-    // Validate artifacts — skip CAS validation when commitHash is provided
-    // (git commit IS the content-addressed artifact; no CAS needed)
-    if (!input.commitHash && Object.keys(artifacts).length > 0) {
+    // Validate artifacts whenever provided (regardless of commitHash)
+    if (Object.keys(artifacts).length > 0) {
       const artErr = await validateArtifacts(deps, artifacts);
       if (artErr !== undefined) return artErr as OperationResult<ContributeResult>;
     }

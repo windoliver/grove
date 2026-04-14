@@ -249,7 +249,9 @@ export class SessionOrchestrator {
     if (this.stopped || !this.config.contributionStore) return;
 
     try {
-      const contributions = await this.config.contributionStore.list({ limit: 50 });
+      // Fetch recent contributions (newest first via DESC, then reverse for processing order).
+      // Using a large limit ensures we don't miss contributions in active sessions.
+      const contributions = await this.config.contributionStore.list({ limit: 200 });
       for (const c of contributions) {
         if (this.seenCids.has(c.cid)) continue;
         this.seenCids.add(c.cid);
@@ -258,19 +260,25 @@ export class SessionOrchestrator {
         const sourceRole = c.agent.role;
         if (!sourceRole) continue;
 
+        // Only process contributions from agents in THIS session
+        const isOurAgent = this.agents.some((a) => a.role === sourceRole);
+        if (!isOurAgent) continue;
+
         // Find the source agent's workspace path — this is the handoff artifact.
         // The receiving agent reads files directly from this path, no git merge needed.
         const sourceAgent = this.agents.find((a) => a.role === sourceRole);
         const sourceWorkspace = sourceAgent?.workspaceMode.path ?? "(unknown)";
+
+        const action = c.kind === "review"
+          ? `This is feedback on your work. Read the review and iterate — submit updated work via grove_submit_work.`
+          : `Read the source files at ${sourceWorkspace} and respond with the appropriate tool (grove_submit_review for reviews, grove_submit_work for new work).`;
 
         const message =
           `[grove] New ${c.kind} from ${sourceRole}:\n` +
           `  CID: ${c.cid}\n` +
           `  Summary: ${c.summary}\n` +
           `  Workspace: ${sourceWorkspace}\n\n` +
-          `ACTION REQUIRED: Read the source files at ${sourceWorkspace} to review the actual code.\n` +
-          `For example: cat ${sourceWorkspace}/app.js\n` +
-          `Then call grove_submit_review with targetCid "${c.cid}" and your assessment.`;
+          action;
 
         // Use topology router to find targets, then send directly
         const targets = this.router.route(sourceRole, {
@@ -428,16 +436,21 @@ export class SessionOrchestrator {
       return;
     }
 
-    // Contribution routing is handled by pollContributions() which reads
-    // from SQLite directly. In-process EventBus events are unreliable because
-    // MCP tools run in child processes. Skip EventBus-based forwarding to
-    // avoid duplicate messages when both paths fire.
+    // When contributionStore polling is active, skip EventBus contribution
+    // forwarding to avoid duplicate messages (polling handles it reliably
+    // across process boundaries). When no store is configured (e.g., server
+    // path), fall back to EventBus forwarding.
     if (event.type === "contribution") {
-      return;
+      if (this.config.contributionStore) {
+        return; // Polling handles it
+      }
+      this.contributionCount++;
     }
 
-    // Forward non-contribution events (e.g., system messages)
-    const message = `[grove] ${event.type} from ${event.sourceRole}: ${JSON.stringify(event.payload)}`;
+    // Forward events to the agent
+    const p = event.payload;
+    const summary = typeof p.summary === "string" ? p.summary : JSON.stringify(p);
+    const message = `[grove] ${event.type} from ${event.sourceRole}: ${summary}`;
     await this.config.runtime.send(agent.session, message);
   }
 
@@ -510,11 +523,17 @@ export class SessionOrchestrator {
       throw new Error(`Role '${role}' not found in topology`);
     }
 
-    // Provision workspace and spawn a new session for the role
-    const policy = this.config.workspaceIsolationPolicy ?? "strict";
-    const wsStrategies = resolveRoleWorkspaceStrategies(this.config.topology, this.sessionId);
-    const baseBranch = wsStrategies.get(roleSpec.name) ?? "HEAD";
-    const ws = await this.provisionAgentWorkspace(roleSpec, policy, baseBranch);
+    // Reuse the existing workspace from the old agent if available,
+    // otherwise provision a fresh one. Reprovisioning would fail because
+    // the git branch/worktree path already exists from the original spawn.
+    const existingAgent = this.agents.find((a) => a.role === role);
+    const ws = existingAgent
+      ? { cwd: existingAgent.workspaceMode.path, workspaceMode: existingAgent.workspaceMode }
+      : await this.provisionAgentWorkspace(
+          roleSpec,
+          this.config.workspaceIsolationPolicy ?? "strict",
+          resolveRoleWorkspaceStrategies(this.config.topology, this.sessionId).get(roleSpec.name) ?? "HEAD",
+        );
     const newSession = await this.spawnAgent(roleSpec, undefined, ws);
 
     // Send a reconciliation message
