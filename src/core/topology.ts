@@ -15,8 +15,8 @@ import { z } from "zod";
 
 const EdgeTypeEnum = z.enum([
   "delegates", // Forward work: source produces, target acts on it
-  "feedback",  // Response: target sends results back to source
-  "monitors",  // Observe-only: source watches target
+  "feedback", // Response: target sends results back to source
+  "monitors", // Observe-only: source watches target
   // Legacy aliases — mapped to delegates at parse time for backward compat
   "reports",
   "feeds",
@@ -283,7 +283,8 @@ export function topologicalSortRoles(topology: AgentTopology): readonly AgentRol
   const sorted: AgentRole[] = [];
 
   while (queue.length > 0) {
-    const role = queue.shift()!;
+    const role = queue.shift();
+    if (!role) break;
     sorted.push(role);
     // Reduce in-degree for all roles that depended on this one
     for (const [name, depSet] of deps) {

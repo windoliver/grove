@@ -53,5 +53,5 @@ export function resolveMcpServePath(projectRoot?: string): string {
 
   // Return best guess even if it doesn't exist — caller will get a clear
   // "file not found" error rather than a confusing empty path
-  return candidates[0]!;
+  return candidates[0] ?? "";
 }

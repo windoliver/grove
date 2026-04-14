@@ -271,7 +271,6 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
               Topology
             </text>
             {dagLines.map((line) => (
-              // biome-ignore lint/suspicious/noArrayIndexKey: dag lines have no stable identity
               <text key={line} color={theme.secondary}>
                 {line}
               </text>
