@@ -258,15 +258,19 @@ export class SessionOrchestrator {
         const sourceRole = c.agent.role;
         if (!sourceRole) continue;
 
-        // Route to all agents that should receive this contribution
-        const sourceBranch = `grove/${this.sessionId}/${sourceRole}`;
+        // Find the source agent's workspace path — this is the handoff artifact.
+        // The receiving agent reads files directly from this path, no git merge needed.
+        const sourceAgent = this.agents.find((a) => a.role === sourceRole);
+        const sourceWorkspace = sourceAgent?.workspaceMode.path ?? "(unknown)";
+
         const message =
           `[grove] New ${c.kind} from ${sourceRole}:\n` +
           `  CID: ${c.cid}\n` +
           `  Summary: ${c.summary}\n` +
-          `  Source branch: ${sourceBranch}\n\n` +
-          `To see the actual file changes, run: git merge ${sourceBranch}\n` +
-          `Then review the files in your workspace and use grove_submit_review or grove_submit_work as appropriate.`;
+          `  Workspace: ${sourceWorkspace}\n\n` +
+          `ACTION REQUIRED: Read the source files at ${sourceWorkspace} to review the actual code.\n` +
+          `For example: cat ${sourceWorkspace}/app.js\n` +
+          `Then call grove_submit_review with targetCid "${c.cid}" and your assessment.`;
 
         // Use topology router to find targets, then send directly
         const targets = this.router.route(sourceRole, {
@@ -275,7 +279,6 @@ export class SessionOrchestrator {
           summary: c.summary,
         });
 
-        // Also send via runtime.send() for each target agent
         for (const targetRole of targets) {
           const targetAgent = this.agents.find((a) => a.role === targetRole);
           if (targetAgent) {

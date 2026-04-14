@@ -110,10 +110,11 @@ When you receive a notification with a source branch, run \`git merge <branch>\`
 4. \`grove_submit_work({ summary: "...", commitHash: "<hash>", agent: { role: "${roleId}" } })\`
 
 **Reviewing work (reviewer):**
-1. When notified of another agent's work, merge their branch: \`git merge <source_branch>\`
-2. Read the files, run tests
-3. \`grove_submit_review({ targetCid: "<cid from notification>", summary: "...", scores: {...}, agent: { role: "${roleId}" } })\`
-4. If approved: \`grove_done({ summary: "Approved", agent: { role: "${roleId}" } })\`
+1. When notified: the notification includes a **Workspace** path — read the source files directly from that path
+2. Example: \`cat /path/to/coder-workspace/app.js\` to see the actual code
+3. Review the code for bugs, correctness, quality
+4. \`grove_submit_review({ targetCid: "<cid from notification>", summary: "...", scores: {"correctness": {"value": 0.9, "direction": "maximize"}}, agent: { role: "${roleId}" } })\`
+5. If approved: \`grove_done({ summary: "Approved", agent: { role: "${roleId}" } })\`
 
 Follow the Instructions section above exactly. You can edit files, commit, push, create PRs, and use gh CLI.
 `;

@@ -213,8 +213,8 @@ SUBMITTING WORK:
 3. grove_submit_work({ summary: "what you did", commitHash: "<hash>", agent: { role: "${entry.session.role}" } })
 
 REVIEWING WORK:
-1. When notified: git merge <source_branch> to see the files
-2. Review the code
+1. When notified: read files from the Workspace path in the notification (e.g., cat /path/to/coder-workspace/app.js)
+2. Review the actual code at that path
 3. grove_submit_review({ targetCid: "<cid from notification>", summary: "feedback", scores: {"correctness": {"value": 0.9, "direction": "maximize"}}, agent: { role: "${entry.session.role}" } })
 
 Without calling these tools, other agents cannot see your work.
