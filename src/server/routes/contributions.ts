@@ -227,6 +227,9 @@ contributions.post("/", async (c) => {
     artifacts[name] = contentHash;
   }
 
+  // Extract Idempotency-Key header (RFC 8284 / Stripe convention)
+  const idempotencyKey = c.req.header("idempotency-key");
+
   // Build operation input and delegate to shared operations layer
   const input: ContributeInput = {
     kind: parsed.kind,
@@ -244,6 +247,7 @@ contributions.post("/", async (c) => {
       : {}),
     agent: parsed.agent,
     ...(parsed.createdAt !== undefined ? { createdAt: parsed.createdAt } : {}),
+    ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
   };
 
   let opDeps = toOperationDeps(serverDeps);

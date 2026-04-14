@@ -4,10 +4,11 @@
  * Covers argument parsing, validation, execution logic, and edge cases.
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { _resetIdempotencyCacheForTests } from "../../core/operations/contribute.js";
 import type { ContributeOptions } from "./contribute.js";
 import {
   executeContribute,
@@ -264,6 +265,16 @@ describe("parseContributeArgs", () => {
     ]);
     expect(opts.agentOverrides.agentId).toBe("my-agent");
     expect(opts.agentOverrides.provider).toBe("openai");
+  });
+
+  test("parses --idempotency-key flag", () => {
+    const opts = parseContributeArgs(["--summary", "test", "--idempotency-key", "my-key-1"]);
+    expect(opts.idempotencyKey).toBe("my-key-1");
+  });
+
+  test("idempotencyKey is undefined when --idempotency-key is omitted", () => {
+    const opts = parseContributeArgs(["--summary", "test"]);
+    expect(opts.idempotencyKey).toBeUndefined();
   });
 });
 
@@ -1230,6 +1241,90 @@ describe("grove contribute E2E", () => {
 
       const { exitCode } = await runCli(["contribute"], dir);
       expect(exitCode).not.toBe(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Idempotency key plumbing (CLI surface)
+// ---------------------------------------------------------------------------
+
+describe("executeContribute: idempotencyKey", () => {
+  beforeEach(() => {
+    _resetIdempotencyCacheForTests();
+  });
+
+  afterEach(() => {
+    _resetIdempotencyCacheForTests();
+  });
+
+  test("same idempotency key + same input returns the cached CID", async () => {
+    const dir = await createTempDir();
+    try {
+      await executeInit(makeInitOptions(dir));
+
+      const opts = makeContributeOptions({
+        summary: "Idempotent CLI work",
+        idempotencyKey: "cli-key-1",
+        cwd: dir,
+      });
+
+      const first = await executeContribute(opts);
+      expect(first.cid).toMatch(/^blake3:/);
+
+      const second = await executeContribute(opts);
+      expect(second.cid).toBe(first.cid);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("same idempotency key + different input throws STATE_CONFLICT", async () => {
+    const dir = await createTempDir();
+    try {
+      await executeInit(makeInitOptions(dir));
+
+      const first = await executeContribute(
+        makeContributeOptions({
+          summary: "First CLI work",
+          idempotencyKey: "cli-conflict-key",
+          cwd: dir,
+        }),
+      );
+      expect(first.cid).toMatch(/^blake3:/);
+
+      await expect(
+        executeContribute(
+          makeContributeOptions({
+            summary: "Different work, same key",
+            idempotencyKey: "cli-conflict-key",
+            cwd: dir,
+          }),
+        ),
+      ).rejects.toThrow(/different request body/i);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("no idempotency key produces distinct contributions", async () => {
+    const dir = await createTempDir();
+    try {
+      await executeInit(makeInitOptions(dir));
+
+      const opts = makeContributeOptions({
+        summary: "No key CLI work",
+        cwd: dir,
+      });
+
+      const first = await executeContribute(opts);
+      const second = await executeContribute(opts);
+
+      expect(first.cid).toMatch(/^blake3:/);
+      expect(second.cid).toMatch(/^blake3:/);
+      expect(second.cid).not.toBe(first.cid);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

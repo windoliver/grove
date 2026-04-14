@@ -6,8 +6,9 @@
  * (e.g., streaming, headers, content negotiation).
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
+import { _resetIdempotencyCacheForTests } from "../core/operations/contribute.js";
 import { InMemoryContributionStore } from "../core/testing.js";
 import { createApp } from "./app.js";
 import type { ServerDeps } from "./deps.js";
@@ -263,5 +264,79 @@ describe("E2E: validation errors", () => {
   it("returns 400 for invalid CID format in path", async () => {
     const res = await fetch(`${baseUrl}/api/contributions/not-a-cid`);
     expect(res.status).toBe(400);
+  });
+});
+
+describe("E2E: Idempotency-Key header", () => {
+  beforeEach(() => {
+    _resetIdempotencyCacheForTests();
+  });
+
+  afterEach(() => {
+    _resetIdempotencyCacheForTests();
+  });
+
+  it("same Idempotency-Key + same body returns the same CID", async () => {
+    const body = makeManifestBody({ summary: "Idempotent HTTP contribution" });
+    const key = "http-idem-key-1";
+
+    const first = await fetch(`${baseUrl}/api/contributions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+      body: JSON.stringify(body),
+    });
+    expect(first.status).toBe(201);
+    const firstData = (await first.json()) as Json;
+
+    const second = await fetch(`${baseUrl}/api/contributions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+      body: JSON.stringify(body),
+    });
+    expect(second.status).toBe(201);
+    const secondData = (await second.json()) as Json;
+
+    expect(secondData.cid).toBe(firstData.cid);
+  });
+
+  it("same Idempotency-Key + different body returns 409 STATE_CONFLICT", async () => {
+    const key = "http-conflict-key-1";
+
+    const first = await fetch(`${baseUrl}/api/contributions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+      body: JSON.stringify(makeManifestBody({ summary: "First submission" })),
+    });
+    expect(first.status).toBe(201);
+
+    const second = await fetch(`${baseUrl}/api/contributions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+      body: JSON.stringify(makeManifestBody({ summary: "Different submission, same key" })),
+    });
+    expect(second.status).toBe(409);
+    const errorData = (await second.json()) as Json;
+    expect(errorData.error.code).toBe("STATE_CONFLICT");
+  });
+
+  it("no Idempotency-Key header allows distinct contributions with different content", async () => {
+    const first = await fetch(`${baseUrl}/api/contributions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(makeManifestBody({ summary: "First no-key contribution" })),
+    });
+    expect(first.status).toBe(201);
+    const firstData = (await first.json()) as Json;
+
+    const second = await fetch(`${baseUrl}/api/contributions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(makeManifestBody({ summary: "Second no-key contribution" })),
+    });
+    expect(second.status).toBe(201);
+    const secondData = (await second.json()) as Json;
+
+    // Without a key, different content produces different CIDs (no blocking)
+    expect(secondData.cid).not.toBe(firstData.cid);
   });
 });

@@ -38,6 +38,30 @@ import {
 } from "../schemas.js";
 
 // ---------------------------------------------------------------------------
+// Shared idempotency field
+// ---------------------------------------------------------------------------
+
+/**
+ * Optional client-supplied idempotency key, shared across all contribution tools.
+ *
+ * Follows HTTP Idempotency-Key semantics (Stripe / AWS / RFC draft):
+ *   - same key + same input → cached result (retry)
+ *   - same key + different input → STATE_CONFLICT error
+ *   - scoped per agent role (two agents can use the same key)
+ *   - TTL: 5 minutes from first use
+ */
+const idempotencyKeyField = {
+  idempotencyKey: z
+    .string()
+    .optional()
+    .describe(
+      "Client-supplied idempotency key for retry safety. " +
+        "Reusing the same key with the same input returns the cached result. " +
+        "Reusing the same key with different input returns a STATE_CONFLICT error.",
+    ),
+} as const;
+
+// ---------------------------------------------------------------------------
 // Input schemas
 // ---------------------------------------------------------------------------
 
@@ -74,6 +98,7 @@ const submitWorkInputSchema = z.object({
     .optional()
     .describe("Execution/evaluation context metadata (e.g., hardware, dataset)"),
   agent: agentSchema,
+  ...idempotencyKeyField,
 });
 
 const submitReviewInputSchema = z.object({
@@ -94,6 +119,7 @@ const submitReviewInputSchema = z.object({
     .record(z.string(), z.unknown())
     .optional()
     .describe("Relation metadata attached to the 'reviews' edge (e.g., {score: 0.8})"),
+  ...idempotencyKeyField,
 });
 
 const reproduceInputSchema = z.object({
@@ -119,6 +145,7 @@ const reproduceInputSchema = z.object({
   tags: z.array(z.string()).optional().default([]).describe("Tags"),
   context: z.record(z.string(), z.unknown()).optional().describe("Context metadata"),
   agent: agentSchema,
+  ...idempotencyKeyField,
 });
 
 const discussInputSchema = z.object({
@@ -131,6 +158,7 @@ const discussInputSchema = z.object({
   tags: z.array(z.string()).optional().default([]).describe("Tags for channel semantics"),
   context: z.record(z.string(), z.unknown()).optional().describe("Context metadata"),
   agent: agentSchema,
+  ...idempotencyKeyField,
 });
 
 const adoptInputSchema = z.object({
@@ -144,6 +172,7 @@ const adoptInputSchema = z.object({
   tags: z.array(z.string()).optional().default([]).describe("Tags"),
   context: z.record(z.string(), z.unknown()).optional().describe("Context metadata"),
   agent: agentSchema,
+  ...idempotencyKeyField,
 });
 
 // ---------------------------------------------------------------------------
@@ -212,6 +241,7 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
           relations: args.relations as unknown as readonly Relation[],
           tags: args.tags,
           agent: withDefaultRole(args.agent as AgentOverrides),
+          ...(args.idempotencyKey !== undefined ? { idempotencyKey: args.idempotencyKey } : {}),
         },
         opDeps,
       );
@@ -256,6 +286,7 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
           ...(args.metadata !== undefined
             ? { metadata: args.metadata as Readonly<Record<string, JsonValue>> }
             : {}),
+          ...(args.idempotencyKey !== undefined ? { idempotencyKey: args.idempotencyKey } : {}),
         },
         opDeps,
       );
@@ -293,6 +324,7 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
           ...(args.context !== undefined
             ? { context: args.context as Readonly<Record<string, JsonValue>> }
             : {}),
+          ...(args.idempotencyKey !== undefined ? { idempotencyKey: args.idempotencyKey } : {}),
         },
         opDeps,
       );
@@ -324,6 +356,7 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
           ...(args.context !== undefined
             ? { context: args.context as Readonly<Record<string, JsonValue>> }
             : {}),
+          ...(args.idempotencyKey !== undefined ? { idempotencyKey: args.idempotencyKey } : {}),
         },
         opDeps,
       );
@@ -353,6 +386,7 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
           ...(args.context !== undefined
             ? { context: args.context as Readonly<Record<string, JsonValue>> }
             : {}),
+          ...(args.idempotencyKey !== undefined ? { idempotencyKey: args.idempotencyKey } : {}),
         },
         opDeps,
       );

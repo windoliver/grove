@@ -123,6 +123,7 @@ export interface ReviewInput {
   readonly context?: Readonly<Record<string, JsonValue>> | undefined;
   readonly agent?: AgentOverrides | undefined;
   readonly metadata?: Readonly<Record<string, JsonValue>> | undefined;
+  readonly idempotencyKey?: string | undefined;
 }
 
 /** Input for the reproduce operation. */
@@ -136,6 +137,7 @@ export interface ReproduceInput {
   readonly tags?: readonly string[] | undefined;
   readonly context?: Readonly<Record<string, JsonValue>> | undefined;
   readonly agent?: AgentOverrides | undefined;
+  readonly idempotencyKey?: string | undefined;
 }
 
 /** Input for the discuss operation. */
@@ -146,6 +148,7 @@ export interface DiscussInput {
   readonly tags?: readonly string[] | undefined;
   readonly context?: Readonly<Record<string, JsonValue>> | undefined;
   readonly agent?: AgentOverrides | undefined;
+  readonly idempotencyKey?: string | undefined;
 }
 
 /** Input for the adopt operation. */
@@ -156,6 +159,7 @@ export interface AdoptInput {
   readonly tags?: readonly string[] | undefined;
   readonly context?: Readonly<Record<string, JsonValue>> | undefined;
   readonly agent?: AgentOverrides | undefined;
+  readonly idempotencyKey?: string | undefined;
 }
 
 /** Result of an adopt operation. */
@@ -1122,7 +1126,7 @@ export async function reviewOperation(
       relations,
       tags: input.tags,
       agent: input.agent,
-      ...pickDefined(input, ["description", "scores", "context"]),
+      ...pickDefined(input, ["description", "scores", "context", "idempotencyKey"]),
     },
     deps,
   );
@@ -1165,7 +1169,7 @@ export async function reproduceOperation(
       relations,
       tags: input.tags,
       agent: input.agent,
-      ...pickDefined(input, ["description", "scores", "context"]),
+      ...pickDefined(input, ["description", "scores", "context", "idempotencyKey"]),
     },
     deps,
   );
@@ -1206,7 +1210,7 @@ export async function discussOperation(
       relations,
       tags: input.tags,
       agent: input.agent,
-      ...pickDefined(input, ["description", "context"]),
+      ...pickDefined(input, ["description", "context", "idempotencyKey"]),
     },
     deps,
   );
@@ -1245,7 +1249,7 @@ export async function adoptOperation(
       relations,
       tags: input.tags,
       agent: input.agent,
-      ...pickDefined(input, ["description", "context"]),
+      ...pickDefined(input, ["description", "context", "idempotencyKey"]),
     },
     deps,
   );

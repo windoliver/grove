@@ -59,6 +59,9 @@ export interface ContributeOptions {
   // Metadata
   readonly tags: readonly string[];
 
+  // Idempotency
+  readonly idempotencyKey?: string | undefined;
+
   // Agent
   readonly agentOverrides: AgentOverrides;
 
@@ -101,6 +104,7 @@ export function parseContributeArgs(args: readonly string[]): ContributeOptions 
       metric: { type: "string", multiple: true, default: [] },
       score: { type: "string", multiple: true, default: [] },
       tag: { type: "string", multiple: true, default: [] },
+      "idempotency-key": { type: "string" },
       "agent-id": { type: "string" },
       "agent-name": { type: "string" },
       provider: { type: "string" },
@@ -130,6 +134,7 @@ export function parseContributeArgs(args: readonly string[]): ContributeOptions 
     metric: values.metric as string[],
     score: values.score as string[],
     tags: values.tag as string[],
+    idempotencyKey: values["idempotency-key"] as string | undefined,
     agentOverrides: {
       agentId: values["agent-id"] as string | undefined,
       agentName: values["agent-name"] as string | undefined,
@@ -484,6 +489,7 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
       ...(scores !== undefined ? { scores } : {}),
       tags: [...options.tags],
       agent: options.agentOverrides,
+      ...(options.idempotencyKey !== undefined ? { idempotencyKey: options.idempotencyKey } : {}),
     };
 
     const result = await contributeOperation(input, opDeps);
