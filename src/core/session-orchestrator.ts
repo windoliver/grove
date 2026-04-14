@@ -51,6 +51,13 @@ export interface SessionConfig {
    *   modes are visible via AgentSessionInfo.workspaceMode.
    */
   readonly workspaceIsolationPolicy?: WorkspaceIsolationPolicy | undefined;
+  /**
+   * Contribution store for polling-based routing. When set, the orchestrator
+   * polls for new contributions every few seconds and forwards them to
+   * downstream agents. Required because MCP tools run in child processes
+   * with separate EventBus instances — in-process events don't cross.
+   */
+  readonly contributionStore?: { list(query?: { limit?: number }): Promise<readonly import("./models.js").Contribution[]> } | undefined;
 }
 
 /** Status of a running session. */
@@ -82,6 +89,8 @@ export class SessionOrchestrator {
   private stopReason: string | undefined;
   private contributionCount = 0;
   private startedAt = 0;
+  private readonly seenCids = new Set<string>();
+  private contributionPollTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: SessionConfig) {
     this.config = config;
@@ -173,6 +182,14 @@ export class SessionOrchestrator {
       this.config.eventBus.subscribe(agent.role, handler);
     }
 
+    // Start contribution polling — MCP tools run in child processes with
+    // separate EventBus instances, so in-process events don't cross process
+    // boundaries. Poll SQLite directly to detect new contributions and
+    // forward them to downstream agents.
+    if (this.config.contributionStore) {
+      this.startContributionPolling();
+    }
+
     return this.getStatus();
   }
 
@@ -181,12 +198,72 @@ export class SessionOrchestrator {
     this.stopped = true;
     this.stopReason = reason;
 
+    // Stop contribution polling
+    if (this.contributionPollTimer) {
+      clearInterval(this.contributionPollTimer);
+      this.contributionPollTimer = null;
+    }
+
     // Notify all agents
     this.router.broadcastStop(reason);
 
     // Close all agent sessions
     for (const agent of this.agents) {
       await this.config.runtime.close(agent.session);
+    }
+  }
+
+  /**
+   * Poll contribution store for new contributions and forward to downstream agents.
+   * This bridges the process boundary — MCP tools write to SQLite, we read from it.
+   */
+  private startContributionPolling(): void {
+    const POLL_MS = 3_000;
+    this.contributionPollTimer = setInterval(() => {
+      void this.pollContributions();
+    }, POLL_MS);
+  }
+
+  private async pollContributions(): Promise<void> {
+    if (this.stopped || !this.config.contributionStore) return;
+
+    try {
+      const contributions = await this.config.contributionStore.list({ limit: 50 });
+      for (const c of contributions) {
+        if (this.seenCids.has(c.cid)) continue;
+        this.seenCids.add(c.cid);
+        this.contributionCount++;
+
+        const sourceRole = c.agent.role;
+        if (!sourceRole) continue;
+
+        // Route to all agents that should receive this contribution
+        const sourceBranch = `grove/${this.sessionId}/${sourceRole}`;
+        const message =
+          `[grove] New ${c.kind} from ${sourceRole}:\n` +
+          `  CID: ${c.cid}\n` +
+          `  Summary: ${c.summary}\n` +
+          `  Source branch: ${sourceBranch}\n\n` +
+          `To see the actual file changes, run: git merge ${sourceBranch}\n` +
+          `Then review the files in your workspace and use grove_submit_review or grove_submit_work as appropriate.`;
+
+        // Use topology router to find targets, then send directly
+        const targets = this.router.route(sourceRole, {
+          cid: c.cid,
+          kind: c.kind,
+          summary: c.summary,
+        });
+
+        // Also send via runtime.send() for each target agent
+        for (const targetRole of targets) {
+          const targetAgent = this.agents.find((a) => a.role === targetRole);
+          if (targetAgent) {
+            await this.config.runtime.send(targetAgent.session, message);
+          }
+        }
+      }
+    } catch {
+      // Best effort — don't crash on poll errors
     }
   }
 

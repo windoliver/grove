@@ -162,6 +162,10 @@ async function sessionStart(args: readonly string[]): Promise<void> {
     config: contract,
   });
 
+  // Create contribution store for polling-based routing (MCP runs in child processes)
+  const { SqliteContributionStore } = await import("../../local/sqlite-store.js");
+  const contributionStore = new SqliteContributionStore(db);
+
   const orchestrator = new SessionOrchestrator({
     goal,
     contract: contract ?? { contractVersion: 3, name: presetName ?? "default" },
@@ -171,6 +175,7 @@ async function sessionStart(args: readonly string[]): Promise<void> {
     projectRoot: groveRoot,
     workspaceBaseDir: join(groveDir, "workspaces"),
     sessionId: session.id,
+    contributionStore,
   });
 
   let status: import("../../core/session-orchestrator.js").SessionStatus;
