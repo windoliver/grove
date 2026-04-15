@@ -264,13 +264,18 @@ export async function claimBountyOperation(
       });
 
       // If we rotated the claim ID, update the bounty record to point at the
-      // new claim. On failure, release the orphaned new claim.
+      // new claim. On failure, only release if the bounty didn't commit the rebind.
       if (renewalClaimId !== bounty.claimId) {
         try {
           await deps.bountyStore.claimBounty(input.bountyId, agent, renewed.claimId);
         } catch (rebindErr) {
+          // Re-read: if the bounty now points at the new claim, the write
+          // committed (post-commit error) — do NOT release the live claim.
           try {
-            await deps.claimStore.release(renewed.claimId);
+            const current = await deps.bountyStore.getBounty(input.bountyId);
+            if (!current || current.claimId !== renewed.claimId) {
+              await deps.claimStore.release(renewed.claimId);
+            }
           } catch {
             // Best-effort — claim will expire via lease timeout
           }

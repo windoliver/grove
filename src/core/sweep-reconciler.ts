@@ -93,6 +93,7 @@ export class SweepReconciler {
   private readonly onError?: (error: unknown) => void;
   private timer: ReturnType<typeof setInterval> | undefined;
   private running = false;
+  private cycleInFlight = false;
 
   constructor(config?: SweepReconcilerConfig) {
     this.intervalMs = config?.intervalMs ?? DEFAULT_INTERVAL_MS;
@@ -121,26 +122,35 @@ export class SweepReconciler {
     }
   }
 
-  /** Run one sweep cycle immediately (useful for testing or on-demand). */
+  /**
+   * Run one sweep cycle immediately (useful for testing or on-demand).
+   * Serialized: if a cycle is already in flight, returns empty results.
+   */
   async runCycle(): Promise<readonly SweepResult[]> {
-    const results: SweepResult[] = [];
-    for (const strategy of this.strategies) {
-      try {
-        const result = await strategy.sweep();
-        results.push(result);
-      } catch (err) {
-        // Strategy.sweep() should not throw, but guard against it
-        results.push({
-          strategy: strategy.name,
-          found: 0,
-          repaired: 0,
-          errors: [err instanceof Error ? err : new Error(String(err))],
-        });
-        this.onError?.(err);
+    if (this.cycleInFlight) return [];
+    this.cycleInFlight = true;
+    try {
+      const results: SweepResult[] = [];
+      for (const strategy of this.strategies) {
+        try {
+          const result = await strategy.sweep();
+          results.push(result);
+        } catch (err) {
+          // Strategy.sweep() should not throw, but guard against it
+          results.push({
+            strategy: strategy.name,
+            found: 0,
+            repaired: 0,
+            errors: [err instanceof Error ? err : new Error(String(err))],
+          });
+          this.onError?.(err);
+        }
       }
+      this.onCycle?.(results);
+      return results;
+    } finally {
+      this.cycleInFlight = false;
     }
-    this.onCycle?.(results);
-    return results;
   }
 
   /** Whether the reconciler is currently running. */
