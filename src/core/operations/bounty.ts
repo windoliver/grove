@@ -102,6 +102,14 @@ export interface SettleBountyInput {
 }
 
 // ---------------------------------------------------------------------------
+// Error messages
+// ---------------------------------------------------------------------------
+
+const MISSING_BOUNTY_STORE = "Bounty operations not available (missing bountyStore)";
+const MISSING_CLAIM_STORE = "Claim operations not available (missing claimStore)";
+const MISSING_CONTRIBUTION_STORE = "Settle bounty not available (missing contributionStore)";
+
+// ---------------------------------------------------------------------------
 // Operations
 // ---------------------------------------------------------------------------
 
@@ -114,7 +122,14 @@ export async function createBountyOperation(
 ): Promise<OperationResult<CreateBountyResult>> {
   try {
     if (deps.bountyStore === undefined) {
-      return validationErr("Bounty operations not available (missing bountyStore)");
+      return validationErr(MISSING_BOUNTY_STORE);
+    }
+
+    if (!input.title || input.title.trim().length === 0) {
+      return validationErr("Bounty title must be a non-empty string");
+    }
+    if (input.amount <= 0) {
+      return validationErr("Bounty amount must be positive");
     }
 
     const agent = resolveAgent(input.agent);
@@ -173,7 +188,7 @@ export async function listBountiesOperation(
 ): Promise<OperationResult<ListBountiesResult>> {
   try {
     if (deps.bountyStore === undefined) {
-      return validationErr("Bounty operations not available");
+      return validationErr(MISSING_BOUNTY_STORE);
     }
 
     const bounties = await deps.bountyStore.listBounties({
@@ -204,11 +219,11 @@ export async function claimBountyOperation(
 ): Promise<OperationResult<ClaimBountyResult>> {
   try {
     if (deps.bountyStore === undefined) {
-      return validationErr("Bounty operations not available");
+      return validationErr(MISSING_BOUNTY_STORE);
     }
 
     if (deps.claimStore === undefined) {
-      return validationErr("Claim operations not available (missing claimStore)");
+      return validationErr(MISSING_CLAIM_STORE);
     }
 
     const bounty = await deps.bountyStore.getBounty(input.bountyId);
@@ -218,8 +233,73 @@ export async function claimBountyOperation(
 
     const agent = resolveAgent(input.agent);
     const now = new Date();
-    const claimId = crypto.randomUUID();
     const leaseDurationMs = input.leaseDurationMs ?? 1_800_000;
+
+    // Renewal path: same agent can extend the lease on an already-claimed bounty.
+    // This prevents long-running bounties from getting stranded when the claim
+    // lease expires while the worker is still active.
+    if (
+      bounty.status === BS.Claimed &&
+      bounty.claimedBy?.agentId === agent.agentId &&
+      bounty.claimId
+    ) {
+      // Check if the existing claim is still active AND the lease hasn't expired.
+      // Both conditions must hold — a claim with status "active" but expired
+      // leaseExpiresAt will collide in the claim store instead of renewing.
+      const existingClaim = await deps.claimStore.getClaim(bounty.claimId);
+      const leaseValid =
+        existingClaim?.status === "active" &&
+        new Date(existingClaim.leaseExpiresAt).getTime() > now.getTime();
+
+      const renewalClaimId = leaseValid ? bounty.claimId : crypto.randomUUID();
+      const renewed = await deps.claimStore.claimOrRenew({
+        claimId: renewalClaimId,
+        targetRef: `bounty:${input.bountyId}`,
+        agent,
+        status: "active",
+        intentSummary: `Renewing claim on bounty: ${bounty.title}`,
+        createdAt: now.toISOString(),
+        heartbeatAt: now.toISOString(),
+        leaseExpiresAt: new Date(now.getTime() + leaseDurationMs).toISOString(),
+      });
+
+      // If we rotated the claim ID, update the bounty record to point at the
+      // new claim. On failure, only release if the bounty didn't commit the rebind.
+      if (renewalClaimId !== bounty.claimId) {
+        try {
+          await deps.bountyStore.claimBounty(input.bountyId, agent, renewed.claimId);
+        } catch (rebindErr) {
+          // Re-read: if the bounty now points at the new claim, the write
+          // committed (post-commit error) — do NOT release the live claim.
+          try {
+            const current = await deps.bountyStore.getBounty(input.bountyId);
+            if (!current || current.claimId !== renewed.claimId) {
+              await deps.claimStore.release(renewed.claimId);
+            }
+          } catch {
+            // Best-effort — claim will expire via lease timeout
+          }
+          throw rebindErr;
+        }
+      }
+
+      return ok({
+        bountyId: bounty.bountyId,
+        title: bounty.title,
+        status: bounty.status,
+        claimId: renewed.claimId,
+        claimedBy: bounty.claimedBy.agentId,
+      });
+    }
+
+    // New claim: bounty must be open
+    if (bounty.status !== BS.Open) {
+      return validationErr(
+        `Bounty '${input.bountyId}' is not open for claims (current status: ${bounty.status})`,
+      );
+    }
+
+    const claimId = crypto.randomUUID();
 
     // Create claim via existing claim system
     const claim = await deps.claimStore.claimOrRenew({
@@ -233,7 +313,24 @@ export async function claimBountyOperation(
       leaseExpiresAt: new Date(now.getTime() + leaseDurationMs).toISOString(),
     });
 
-    const claimed = await deps.bountyStore.claimBounty(input.bountyId, agent, claim.claimId);
+    let claimed: Bounty;
+    try {
+      claimed = await deps.bountyStore.claimBounty(input.bountyId, agent, claim.claimId);
+    } catch (bountyErr) {
+      // If the bounty transition failed (pre-commit or CAS conflict), the
+      // claim lease is orphaned. Re-read the bounty: if it's still open,
+      // the transition didn't commit and we can safely release the claim.
+      // If it's already claimed (post-commit failure), keep the claim.
+      try {
+        const current = await deps.bountyStore.getBounty(input.bountyId);
+        if (current && current.status === BS.Open) {
+          await deps.claimStore.release(claim.claimId);
+        }
+      } catch {
+        // Best-effort release — claim will expire via lease timeout
+      }
+      throw bountyErr;
+    }
 
     return ok({
       bountyId: claimed.bountyId,
@@ -247,18 +344,24 @@ export async function claimBountyOperation(
   }
 }
 
-/** Settle a completed bounty. */
+/**
+ * Settle a bounty using the saga pattern:
+ *   claimed → pending_settlement (pivot) → capture → completed → settled
+ *
+ * Retryable: if the operation is called again on a pending_settlement bounty,
+ * it resumes from the capture step (capture is idempotent).
+ */
 export async function settleBountyOperation(
   input: SettleBountyInput,
   deps: OperationDeps,
 ): Promise<OperationResult<SettleBountyResult>> {
   try {
     if (deps.bountyStore === undefined) {
-      return validationErr("Bounty operations not available (missing bountyStore)");
+      return validationErr(MISSING_BOUNTY_STORE);
     }
 
     if (deps.contributionStore === undefined) {
-      return validationErr("Settle bounty not available (missing contributionStore)");
+      return validationErr(MISSING_CONTRIBUTION_STORE);
     }
 
     const bounty = await deps.bountyStore.getBounty(input.bountyId);
@@ -266,13 +369,37 @@ export async function settleBountyOperation(
       return notFound("Bounty", input.bountyId);
     }
 
+    // Allow "claimed" (fresh), "pending_settlement" (post-pivot), "completed" (post-capture)
+    const resumable =
+      bounty.status === BS.Claimed ||
+      bounty.status === BS.PendingSettlement ||
+      bounty.status === BS.Completed;
+    if (!resumable) {
+      return validationErr(
+        `Bounty '${input.bountyId}' cannot be settled (current status: ${bounty.status})`,
+      );
+    }
+
+    // On resume from pending_settlement or completed, the fulfillment CID
+    // is frozen — reject attempts to change it.
+    let fulfilledByCid = input.contributionCid;
+    if (bounty.status !== BS.Claimed) {
+      if (bounty.fulfilledByCid && input.contributionCid !== bounty.fulfilledByCid) {
+        return validationErr(
+          `Bounty '${input.bountyId}' is already pending settlement with contribution ` +
+            `'${bounty.fulfilledByCid}' — cannot change to '${input.contributionCid}'`,
+        );
+      }
+      fulfilledByCid = bounty.fulfilledByCid ?? input.contributionCid;
+    }
+
     // Validate contribution exists and meets criteria
-    const contribution = await deps.contributionStore.get(input.contributionCid);
+    const contribution = await deps.contributionStore.get(fulfilledByCid);
     if (!contribution) {
-      return notFound("Contribution", input.contributionCid);
+      return notFound("Contribution", fulfilledByCid);
     }
     if (!evaluateBountyCriteria(bounty.criteria, contribution)) {
-      return validationErr(`Contribution '${input.contributionCid}' does not meet bounty criteria`);
+      return validationErr(`Contribution '${fulfilledByCid}' does not meet bounty criteria`);
     }
 
     // Require credits service when escrow is active
@@ -282,7 +409,12 @@ export async function settleBountyOperation(
       );
     }
 
-    // Capture payment before state transition
+    // Step 1: Pivot — transition to pending_settlement (skip if resuming)
+    if (bounty.status === BS.Claimed) {
+      await deps.bountyStore.beginSettlement(input.bountyId, fulfilledByCid);
+    }
+
+    // Step 2: Capture payment (idempotent — safe to retry)
     if (deps.creditsService && bounty.reservationId && bounty.claimedBy) {
       await deps.creditsService.capture(bounty.reservationId, {
         toAgentId: bounty.claimedBy.agentId,
@@ -291,9 +423,11 @@ export async function settleBountyOperation(
       await deps.creditsService.capture(bounty.reservationId);
     }
 
-    // Persist state transitions
-    const completed = await deps.bountyStore.completeBounty(input.bountyId, input.contributionCid);
-    const settled = await deps.bountyStore.settleBounty(completed.bountyId);
+    // Step 3: Advance through completed → settled (skip steps already done)
+    if (bounty.status !== BS.Completed) {
+      await deps.bountyStore.completeBounty(input.bountyId, fulfilledByCid);
+    }
+    const settled = await deps.bountyStore.settleBounty(input.bountyId);
 
     return ok({
       bountyId: settled.bountyId,

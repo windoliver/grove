@@ -217,16 +217,27 @@ export function runBountyStoreTests(factory: BountyStoreFactory): void {
       await expect(store.claimBounty("claim-2", makeAgent(), "claim-id-2")).rejects.toThrow();
     });
 
-    test("completeBounty transitions claimed to completed", async () => {
-      const bounty = makeBounty({ bountyId: "complete-1", status: BountyStatus.Claimed });
+    test("beginSettlement transitions claimed to pending_settlement", async () => {
+      const bounty = makeBounty({ bountyId: "begin-settle-1", status: BountyStatus.Claimed });
+      await store.createBounty(bounty);
+      const pending = await store.beginSettlement("begin-settle-1", "cid-fulfilled");
+      expect(pending.status).toBe(BountyStatus.PendingSettlement);
+      expect(pending.fulfilledByCid).toBe("cid-fulfilled");
+    });
+
+    test("completeBounty transitions pending_settlement to completed", async () => {
+      const bounty = makeBounty({
+        bountyId: "complete-1",
+        status: BountyStatus.PendingSettlement,
+      });
       await store.createBounty(bounty);
       const completed = await store.completeBounty("complete-1", "cid-fulfilled");
       expect(completed.status).toBe(BountyStatus.Completed);
       expect(completed.fulfilledByCid).toBe("cid-fulfilled");
     });
 
-    test("completeBounty throws for non-claimed bounty", async () => {
-      const bounty = makeBounty({ bountyId: "complete-2", status: BountyStatus.Open });
+    test("completeBounty throws for claimed bounty (must use beginSettlement first)", async () => {
+      const bounty = makeBounty({ bountyId: "complete-2", status: BountyStatus.Claimed });
       await store.createBounty(bounty);
       await expect(store.completeBounty("complete-2", "cid")).rejects.toThrow();
     });
@@ -274,7 +285,7 @@ export function runBountyStoreTests(factory: BountyStoreFactory): void {
     // Full lifecycle
     // ------------------------------------------------------------------
 
-    test("full lifecycle: draft → open → claimed → completed → settled", async () => {
+    test("full lifecycle: draft → open → claimed → pending_settlement → completed → settled", async () => {
       const bounty = makeBounty({ bountyId: "lifecycle-1", status: BountyStatus.Draft });
       await store.createBounty(bounty);
 
@@ -287,6 +298,9 @@ export function runBountyStoreTests(factory: BountyStoreFactory): void {
         "claim-lc",
       );
       expect(claimed.status).toBe(BountyStatus.Claimed);
+
+      const pending = await store.beginSettlement("lifecycle-1", "cid-result");
+      expect(pending.status).toBe(BountyStatus.PendingSettlement);
 
       const completed = await store.completeBounty("lifecycle-1", "cid-result");
       expect(completed.status).toBe(BountyStatus.Completed);

@@ -21,6 +21,8 @@ export const BountyStatus = {
   Open: "open",
   /** Claimed by an agent (work in progress). */
   Claimed: "claimed",
+  /** Capture initiated, awaiting state advancement. Saga pivot point. */
+  PendingSettlement: "pending_settlement",
   /** Work completed, pending settlement. */
   Completed: "completed",
   /** Credits distributed to fulfiller. */
@@ -76,7 +78,7 @@ export interface BountyCriteria {
  * A bounty — a reward offer for completing specific work.
  *
  * Bounties are mutable coordination objects with a lifecycle
- * (draft → open → claimed → completed → settled).
+ * (draft → open → claimed → pending_settlement → completed → settled).
  * Like Claims, bounty objects returned by the store are readonly
  * snapshots; state transitions produce new snapshots.
  */

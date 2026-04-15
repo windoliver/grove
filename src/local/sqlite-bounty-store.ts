@@ -263,6 +263,20 @@ export class SqliteBountyStore implements BountyStore {
     }));
   };
 
+  beginSettlement = async (bountyId: string, fulfilledByCid: string): Promise<Bounty> => {
+    return this.transitionBounty(
+      bountyId,
+      BountyStatus.PendingSettlement,
+      "beginSettlement",
+      (bounty) => ({
+        ...bounty,
+        status: BountyStatus.PendingSettlement,
+        fulfilledByCid,
+        updatedAt: nowUtcIso(),
+      }),
+    );
+  };
+
   completeBounty = async (bountyId: string, fulfilledByCid: string): Promise<Bounty> => {
     return this.transitionBounty(bountyId, BountyStatus.Completed, "complete", (bounty) => ({
       ...bounty,
@@ -306,7 +320,7 @@ export class SqliteBountyStore implements BountyStore {
       .prepare(
         `SELECT * FROM bounties
          WHERE deadline < ?
-           AND status IN ('open', 'claimed')
+           AND status IN ('open', 'claimed', 'pending_settlement')
          ORDER BY deadline ASC`,
       )
       .all(now) as BountyRow[];

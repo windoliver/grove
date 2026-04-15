@@ -10,6 +10,7 @@
  */
 
 import type { Bounty, BountyStatus, RewardRecord } from "../core/bounty.js";
+import { validateBountyTransition } from "../core/bounty-logic.js";
 import type { BountyQuery, BountyStore, RewardQuery } from "../core/bounty-store.js";
 import { NotFoundError, StateConflictError } from "../core/errors.js";
 import type { AgentIdentity } from "../core/models.js";
@@ -191,6 +192,13 @@ export class NexusBountyStore implements BountyStore {
     }));
   }
 
+  async beginSettlement(bountyId: string, fulfilledByCid: string): Promise<Bounty> {
+    return this.transitionBounty(bountyId, "pending_settlement" as BountyStatus, (b) => ({
+      ...b,
+      fulfilledByCid,
+    }));
+  }
+
   async completeBounty(bountyId: string, fulfilledByCid: string): Promise<Bounty> {
     return this.transitionBounty(bountyId, "completed" as BountyStatus, (b) => ({
       ...b,
@@ -212,10 +220,82 @@ export class NexusBountyStore implements BountyStore {
 
   async findExpiredBounties(): Promise<readonly Bounty[]> {
     const now = new Date();
-    const openBounties = await this.listBounties({ status: "open" as BountyStatus });
-    const claimedBounties = await this.listBounties({ status: "claimed" as BountyStatus });
-    const all = [...openBounties, ...claimedBounties];
+    const statuses: BountyStatus[] = ["open", "claimed", "pending_settlement"] as BountyStatus[];
+    const all: Bounty[] = [];
+    for (const status of statuses) {
+      const bounties = await this.listBounties({ status });
+      all.push(...bounties);
+    }
     return all.filter((b) => new Date(b.deadline).getTime() < now.getTime());
+  }
+
+  async repairIndex(bountyId: string): Promise<void> {
+    const result = await this.readBountyWithEtag(bountyId);
+    if (!result) return;
+    const { bounty } = result;
+
+    // Ensure the correct status index entry exists
+    await this.writeStatusIndex(bounty);
+
+    // Check which stale index entries actually exist before deleting.
+    // Only delete entries that exist AND don't match the current status.
+    // Re-read the bounty before each delete to catch concurrent transitions.
+    const allStatuses: BountyStatus[] = [
+      "draft",
+      "open",
+      "claimed",
+      "pending_settlement",
+      "completed",
+      "settled",
+      "expired",
+      "cancelled",
+    ] as BountyStatus[];
+
+    for (const status of allStatuses) {
+      if (status === bounty.status) continue;
+      const markerPath = bountyStatusIndexPath(this.zoneId, status, bountyId);
+      const markerExists = await withSemaphore(this.semaphore, () =>
+        this.client.exists(markerPath),
+      );
+      if (!markerExists) continue;
+
+      // Re-read the authoritative document right before deleting to ensure
+      // a concurrent transition hasn't moved the bounty TO this status.
+      const fresh = await this.getBounty(bountyId);
+      if (!fresh || fresh.status === status) continue;
+
+      await safeCleanup(
+        withSemaphore(this.semaphore, () => this.client.delete(markerPath)),
+        "repairIndex: delete stale status index",
+        { silent: true },
+      );
+    }
+  }
+
+  /**
+   * Check which status index entries exist for a bounty.
+   * Returns the set of statuses that have an index marker.
+   * Used by BountyIndexSweep to detect stale entries.
+   */
+  async listIndexStatuses(bountyId: string): Promise<readonly string[]> {
+    const allStatuses: BountyStatus[] = [
+      "draft",
+      "open",
+      "claimed",
+      "pending_settlement",
+      "completed",
+      "settled",
+      "expired",
+      "cancelled",
+    ] as BountyStatus[];
+    const found: string[] = [];
+    for (const status of allStatuses) {
+      const exists = await withSemaphore(this.semaphore, () =>
+        this.client.exists(bountyStatusIndexPath(this.zoneId, status, bountyId)),
+      );
+      if (exists) found.push(status);
+    }
+    return found;
   }
 
   async recordReward(_reward: RewardRecord): Promise<void> {
@@ -253,6 +333,11 @@ export class NexusBountyStore implements BountyStore {
 
     const { bounty: existing, etag } = result;
     const oldStatus = existing.status;
+
+    // Validate the transition before writing — catches stale state from
+    // concurrent writers before the CAS round-trip.
+    validateBountyTransition(bountyId, oldStatus, newStatus, `transition to ${newStatus}`);
+
     let updated: Bounty = {
       ...existing,
       status: newStatus,

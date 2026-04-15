@@ -292,14 +292,22 @@ export class InMemoryCreditsService implements CreditsService {
   private getReserved(agentId: string): number {
     const now = Date.now();
     let reserved = 0;
-    for (const res of this.reservations.values()) {
-      if (res.agentId === agentId && !res.captured && !res.voided) {
-        // Skip expired reservations — they no longer hold funds
-        if (new Date(res.expiresAt).getTime() <= now) {
-          continue;
-        }
+    const evictable: string[] = [];
+    for (const [id, res] of this.reservations.entries()) {
+      const expired = new Date(res.expiresAt).getTime() <= now;
+      // Evict only expired reservations that were never captured or voided.
+      // Captured/voided entries must stay for idempotency checks in
+      // capture() and void().
+      if (expired && !res.captured && !res.voided) {
+        evictable.push(id);
+        continue;
+      }
+      if (res.agentId === agentId && !res.captured && !res.voided && !expired) {
         reserved += res.amount;
       }
+    }
+    for (const id of evictable) {
+      this.reservations.delete(id);
     }
     return reserved;
   }
