@@ -243,8 +243,15 @@ export async function claimBountyOperation(
       bounty.claimedBy?.agentId === agent.agentId &&
       bounty.claimId
     ) {
+      // Check if the existing claim is still active. If expired, we need a
+      // fresh claim ID — reusing the old one would collide with the persisted
+      // expired claim record instead of renewing it.
+      const existingClaim = await deps.claimStore.getClaim(bounty.claimId);
+      const claimIsActive = existingClaim?.status === "active";
+
+      const renewalClaimId = claimIsActive ? bounty.claimId : crypto.randomUUID();
       const renewed = await deps.claimStore.claimOrRenew({
-        claimId: bounty.claimId,
+        claimId: renewalClaimId,
         targetRef: `bounty:${input.bountyId}`,
         agent,
         status: "active",
@@ -253,6 +260,12 @@ export async function claimBountyOperation(
         heartbeatAt: now.toISOString(),
         leaseExpiresAt: new Date(now.getTime() + leaseDurationMs).toISOString(),
       });
+
+      // If we rotated the claim ID, update the bounty record to point at the new claim
+      if (renewalClaimId !== bounty.claimId) {
+        await deps.bountyStore.claimBounty(input.bountyId, agent, renewed.claimId);
+      }
+
       return ok({
         bountyId: bounty.bountyId,
         title: bounty.title,

@@ -352,7 +352,6 @@ try {
 // --- Background sweep reconciler ------------------------------------------
 
 import { BountyIndexSweep } from "../core/bounty-index-sweep.js";
-import { SettlementSweep } from "../core/settlement-sweep.js";
 import { SweepReconciler } from "../core/sweep-reconciler.js";
 
 let mcpSweepReconciler: SweepReconciler | undefined;
@@ -370,9 +369,11 @@ if (deps.bountyStore) {
     },
   });
   mcpSweepReconciler.register(new BountyIndexSweep(deps.bountyStore));
-  mcpSweepReconciler.register(new SettlementSweep(deps.bountyStore));
+  // SettlementSweep omitted: no CreditsService available in the MCP runtime.
+  // Escrowed bounty recovery requires #253 (production CreditsService).
+  // Non-escrowed bounties are handled by the HTTP server's SettlementSweep.
   mcpSweepReconciler.start();
-  process.stderr.write("grove-mcp: sweep-reconciler started\n");
+  process.stderr.write("grove-mcp: sweep-reconciler started (BountyIndexSweep)\n");
 }
 
 // --- Server setup ---------------------------------------------------------
