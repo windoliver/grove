@@ -131,6 +131,7 @@ try {
 // and settlement recovery are zone-wide concerns.
 
 import { BountyIndexSweep } from "../core/bounty-index-sweep.js";
+import { SettlementSweep } from "../core/settlement-sweep.js";
 import { SweepReconciler } from "../core/sweep-reconciler.js";
 
 let httpSweepReconciler: SweepReconciler | undefined;
@@ -157,11 +158,9 @@ let httpSweepReconciler: SweepReconciler | undefined;
     },
   });
   httpSweepReconciler.register(new BountyIndexSweep(reconcilerBountyStore));
-  // SettlementSweep omitted: no CreditsService in the MCP HTTP runtime.
-  // Escrowed bounty recovery requires #253. Non-escrowed bounties are
-  // handled by the HTTP server's SettlementSweep (serve.ts).
+  httpSweepReconciler.register(new SettlementSweep(reconcilerBountyStore));
   httpSweepReconciler.start();
-  process.stderr.write("grove-mcp-http: sweep-reconciler started (BountyIndexSweep)\n");
+  process.stderr.write("grove-mcp-http: sweep-reconciler started\n");
 }
 
 // --- Dynamic session-scoped deps --------------------------------------------

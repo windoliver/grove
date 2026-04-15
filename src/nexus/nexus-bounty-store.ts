@@ -230,13 +230,25 @@ export class NexusBountyStore implements BountyStore {
   }
 
   async repairIndex(bountyId: string): Promise<void> {
-    const bounty = await this.getBounty(bountyId);
-    if (!bounty) return;
+    // Read with ETag so we can detect if a concurrent transition changed
+    // the bounty between our read and the cleanup deletes.
+    const result = await this.readBountyWithEtag(bountyId);
+    if (!result) return;
+    const { bounty, etag } = result;
 
     // Ensure the correct status index entry exists
     await this.writeStatusIndex(bounty);
 
-    // Clean stale index entries for other statuses
+    // Before deleting stale markers, re-verify the bounty hasn't changed.
+    // A concurrent transitionBounty could have moved the status between our
+    // initial read and now — deleting the new status's marker would be wrong.
+    const recheck = await this.readBountyWithEtag(bountyId);
+    if (!recheck || recheck.etag !== etag) {
+      // Bounty was modified concurrently — skip cleanup, next sweep will retry
+      return;
+    }
+
+    // Safe to clean: the document hasn't changed since our read
     const allStatuses: BountyStatus[] = [
       "draft",
       "open",
