@@ -349,36 +349,11 @@ try {
   process.exit(1);
 }
 
-// --- Background sweep reconciler ------------------------------------------
-
-import { BountyIndexSweep } from "../core/bounty-index-sweep.js";
-import { SettlementSweep } from "../core/settlement-sweep.js";
-import { SweepReconciler } from "../core/sweep-reconciler.js";
-
-let mcpSweepReconciler: SweepReconciler | undefined;
-if (deps.bountyStore) {
-  mcpSweepReconciler = new SweepReconciler({
-    intervalMs: 60_000,
-    onCycle(results) {
-      for (const r of results) {
-        if (r.found > 0 || r.errors.length > 0) {
-          process.stderr.write(
-            `[sweep] ${r.strategy}: found=${r.found} repaired=${r.repaired} errors=${r.errors.length}\n`,
-          );
-        }
-      }
-    },
-  });
-  mcpSweepReconciler.register(new BountyIndexSweep(deps.bountyStore));
-  // SettlementSweep without CreditsService: recovers non-escrowed bounties
-  // and completed escrowed bounties (capture already happened). Only
-  // pending_settlement+reservationId cases log errors and wait for #253.
-  mcpSweepReconciler.register(new SettlementSweep(deps.bountyStore));
-  mcpSweepReconciler.start();
-  process.stderr.write("grove-mcp: sweep-reconciler started\n");
-}
-
 // --- Server setup ---------------------------------------------------------
+// NOTE: No sweep reconciler here. The stdio MCP server (grove-mcp) is spawned
+// per-agent — running zone-wide sweeps from every agent process would cause
+// N×load and CAS conflicts. Sweeps run in the long-lived singleton processes
+// only: src/server/serve.ts (HTTP server) and src/mcp/serve-http.ts (HTTP MCP).
 
 const server = await createMcpServer(deps, preset);
 const transport = new StdioServerTransport();
@@ -387,7 +362,6 @@ await server.connect(transport);
 
 // Graceful shutdown
 const shutdown = async (): Promise<void> => {
-  mcpSweepReconciler?.stop();
   await server.close();
   close();
   process.exit(0);

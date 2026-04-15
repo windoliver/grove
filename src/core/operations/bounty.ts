@@ -243,13 +243,15 @@ export async function claimBountyOperation(
       bounty.claimedBy?.agentId === agent.agentId &&
       bounty.claimId
     ) {
-      // Check if the existing claim is still active. If expired, we need a
-      // fresh claim ID — reusing the old one would collide with the persisted
-      // expired claim record instead of renewing it.
+      // Check if the existing claim is still active AND the lease hasn't expired.
+      // Both conditions must hold — a claim with status "active" but expired
+      // leaseExpiresAt will collide in the claim store instead of renewing.
       const existingClaim = await deps.claimStore.getClaim(bounty.claimId);
-      const claimIsActive = existingClaim?.status === "active";
+      const leaseValid =
+        existingClaim?.status === "active" &&
+        new Date(existingClaim.leaseExpiresAt).getTime() > now.getTime();
 
-      const renewalClaimId = claimIsActive ? bounty.claimId : crypto.randomUUID();
+      const renewalClaimId = leaseValid ? bounty.claimId : crypto.randomUUID();
       const renewed = await deps.claimStore.claimOrRenew({
         claimId: renewalClaimId,
         targetRef: `bounty:${input.bountyId}`,
@@ -261,9 +263,19 @@ export async function claimBountyOperation(
         leaseExpiresAt: new Date(now.getTime() + leaseDurationMs).toISOString(),
       });
 
-      // If we rotated the claim ID, update the bounty record to point at the new claim
+      // If we rotated the claim ID, update the bounty record to point at the
+      // new claim. On failure, release the orphaned new claim.
       if (renewalClaimId !== bounty.claimId) {
-        await deps.bountyStore.claimBounty(input.bountyId, agent, renewed.claimId);
+        try {
+          await deps.bountyStore.claimBounty(input.bountyId, agent, renewed.claimId);
+        } catch (rebindErr) {
+          try {
+            await deps.claimStore.release(renewed.claimId);
+          } catch {
+            // Best-effort — claim will expire via lease timeout
+          }
+          throw rebindErr;
+        }
       }
 
       return ok({
