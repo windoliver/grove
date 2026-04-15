@@ -107,19 +107,33 @@ export async function executeDiscuss(options: DiscussOptions): Promise<{ cid: st
   const cas = new FsCas(join(groveDir, "cas"));
   const frontier = new DefaultFrontierCalculator(stores.contributionStore);
 
-  // Load GROVE.md contract for enforcement and mode resolution
-  // GROVE.md lives in the parent of .grove/
-  const groveRoot = join(groveDir, "..");
-  const grovemdPath = join(groveRoot, "GROVE.md");
+  // Load contract for enforcement and mode resolution.
+  // Session-scoped: when GROVE_SESSION_ID is set, load the frozen contract
+  // from the session record to guarantee all agents see the same config.
   let contract: Awaited<ReturnType<typeof parseGroveContract>> | undefined;
-  let grovemdContent: string | undefined;
-  try {
-    grovemdContent = await readFile(grovemdPath, "utf-8");
-  } catch {
-    // GROVE.md does not exist — proceed without enforcement
-  }
-  if (grovemdContent !== undefined) {
-    contract = parseGroveContract(grovemdContent);
+  const envSessionId = process.env.GROVE_SESSION_ID;
+  if (envSessionId) {
+    const sessionConfig = stores.goalSessionStore.getSessionConfigSync(envSessionId);
+    if (!sessionConfig) {
+      throw new Error(
+        `Session ${envSessionId} has no stored config. ` +
+          `Cannot enforce contract for GROVE_SESSION_ID=${envSessionId}.`,
+      );
+    }
+    contract = sessionConfig;
+  } else {
+    // GROVE.md lives in the parent of .grove/
+    const groveRoot = join(groveDir, "..");
+    const grovemdPath = join(groveRoot, "GROVE.md");
+    let grovemdContent: string | undefined;
+    try {
+      grovemdContent = await readFile(grovemdPath, "utf-8");
+    } catch {
+      // GROVE.md does not exist — proceed without enforcement
+    }
+    if (grovemdContent !== undefined) {
+      contract = parseGroveContract(grovemdContent);
+    }
   }
 
   // Wrap store with enforcement if contract is available
