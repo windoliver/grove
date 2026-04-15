@@ -92,8 +92,8 @@ export function runHandoffStoreConformanceTests(
         });
         const fetched = await store.get(created.handoffId);
         expect(fetched).toBeDefined();
-        expect(fetched!.handoffId).toBe(created.handoffId);
-        expect(fetched!.sourceCid).toBe(created.sourceCid);
+        expect(fetched?.handoffId).toBe(created.handoffId);
+        expect(fetched?.sourceCid).toBe(created.sourceCid);
       } finally {
         store.close();
         await cleanup?.();
@@ -167,7 +167,7 @@ export function runHandoffStoreConformanceTests(
 
         const forA = await store.list({ sourceCid: "blake3:a" });
         expect(forA).toHaveLength(1);
-        expect(forA[0]!.sourceCid).toBe("blake3:a");
+        expect(forA[0]?.sourceCid).toBe("blake3:a");
       } finally {
         store.close();
         await cleanup?.();
@@ -341,9 +341,9 @@ export function runHandoffStoreConformanceTests(
         ]);
 
         expect(handoffs).toHaveLength(3);
-        expect(handoffs[0]!.toRole).toBe("reviewer");
-        expect(handoffs[1]!.toRole).toBe("tester");
-        expect(handoffs[2]!.toRole).toBe("auditor");
+        expect(handoffs[0]?.toRole).toBe("reviewer");
+        expect(handoffs[1]?.toRole).toBe("tester");
+        expect(handoffs[2]?.toRole).toBe("auditor");
 
         // All should be retrievable
         for (const h of handoffs) {
