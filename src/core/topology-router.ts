@@ -10,6 +10,8 @@ export interface RouteResult {
   readonly messageId?: string | undefined;
   /** Error message — present when publish failed. */
   readonly error?: string | undefined;
+  /** True when failure is infrastructure, not delivery rejection. */
+  readonly infrastructureError?: boolean | undefined;
 }
 
 /**
@@ -118,6 +120,7 @@ export class TopologyRouter {
         ok: result.ok,
         messageId: result.messageId,
         error: result.error,
+        infrastructureError: result.infrastructureError,
       };
     });
 

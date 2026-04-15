@@ -14,6 +14,13 @@ export interface IpcSendResult {
   readonly ok: boolean;
   readonly messageId?: string | undefined;
   readonly error?: string | undefined;
+  /**
+   * True when the failure is an infrastructure issue (endpoint not found,
+   * connection refused) rather than a delivery-level rejection. Callers
+   * should NOT dead-letter handoffs on infrastructure errors — the message
+   * was never attempted, not rejected.
+   */
+  readonly infrastructureError?: boolean | undefined;
 }
 
 /** Options for constructing a NexusIpcClient. */
@@ -25,6 +32,8 @@ export interface NexusIpcClientOptions {
 export class NexusIpcClient {
   private readonly nexusUrl: string;
   private readonly apiKey: string;
+  /** Tracks whether the IPC endpoint is reachable. Starts undefined (unknown). */
+  private endpointAvailable: boolean | undefined;
 
   constructor(opts: NexusIpcClientOptions) {
     this.nexusUrl = opts.nexusUrl;
@@ -36,12 +45,22 @@ export class NexusIpcClient {
    *
    * Returns a structured result with the IPC message ID on success.
    * Never throws — errors are returned in the result.
+   *
+   * Infrastructure errors (404, connection refused) set ok=false but also
+   * set `infrastructureError=true` so callers can distinguish "IPC endpoint
+   * doesn't exist" from "message was rejected by the IPC service."
    */
   async send(
     sender: string,
     recipient: string,
     payload: Record<string, unknown>,
   ): Promise<IpcSendResult> {
+    // Skip if we've already determined the endpoint is unavailable.
+    // Avoids repeated failed fetches that slow down every contribution.
+    if (this.endpointAvailable === false) {
+      return { ok: false, error: "IPC endpoint unavailable (cached)", infrastructureError: true };
+    }
+
     try {
       const resp = await fetch(`${this.nexusUrl}/api/v2/ipc/send`, {
         method: "POST",
@@ -55,8 +74,17 @@ export class NexusIpcClient {
       if (!resp.ok) {
         const error = `IPC send failed: HTTP ${resp.status}`;
         debugLog("nexus-ipc", `SEND FAIL sender=${sender} recipient=${recipient} status=${resp.status}`);
-        return { ok: false, error };
+        // 404/405 = endpoint doesn't exist on this Nexus version → infrastructure error
+        const isInfra = resp.status === 404 || resp.status === 405 || resp.status === 502 || resp.status === 503;
+        if (isInfra) {
+          this.endpointAvailable = false;
+        } else {
+          this.endpointAvailable = true;
+        }
+        return { ok: false, error, infrastructureError: isInfra };
       }
+
+      this.endpointAvailable = true;
 
       // Try to extract message_id from response
       let messageId: string | undefined;
@@ -75,7 +103,9 @@ export class NexusIpcClient {
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       debugLog("nexus-ipc", `SEND ERROR sender=${sender} recipient=${recipient} err=${error}`);
-      return { ok: false, error };
+      // Network errors (connection refused, DNS failure) = infrastructure
+      this.endpointAvailable = false;
+      return { ok: false, error, infrastructureError: true };
     }
   }
 }

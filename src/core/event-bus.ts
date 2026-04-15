@@ -22,6 +22,8 @@ export interface PublishResult {
   /** IPC message ID — present when the event was relayed via Nexus IPC. */
   readonly messageId?: string | undefined;
   readonly error?: string | undefined;
+  /** True when failure is infrastructure (404, connection refused), not delivery rejection. */
+  readonly infrastructureError?: boolean | undefined;
 }
 
 /** Callback for event subscriptions. */

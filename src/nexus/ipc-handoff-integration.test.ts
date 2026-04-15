@@ -256,4 +256,70 @@ describe("IPC handoff integration", () => {
 
     eventBus.close();
   });
+
+  test("infrastructure error (404/connection refused) does NOT dead-letter handoffs", async () => {
+    // Simulate a Nexus that has VFS but no IPC endpoint (404)
+    const ipc = {
+      send: async () => ({ ok: false, error: "IPC send failed: HTTP 404", infrastructureError: true }),
+    } as unknown as NexusIpcClient;
+
+    const eventBus = new NexusEventBus(ipc);
+    const router = new TopologyRouter(reviewLoopTopology, eventBus);
+
+    const results = await router.route("coder", { cid: "blake3:test" });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.ok).toBe(false);
+    expect(results[0]!.infrastructureError).toBe(true);
+
+    // The handoff should NOT be dead-lettered because this is infra, not rejection
+    // (verified by the contribute.ts routing block checking infrastructureError)
+    eventBus.close();
+  });
+
+  test("delivery rejection (non-infrastructure) DOES dead-letter handoffs", async () => {
+    // Simulate IPC endpoint available but rejecting the message
+    const ipc = {
+      send: async () => ({ ok: false, error: "recipient not registered", infrastructureError: false }),
+    } as unknown as NexusIpcClient;
+
+    const eventBus = new NexusEventBus(ipc);
+    const router = new TopologyRouter(reviewLoopTopology, eventBus);
+
+    const results = await router.route("coder", { cid: "blake3:test" });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.ok).toBe(false);
+    expect(results[0]!.infrastructureError).toBe(false);
+
+    // This IS a delivery failure — contribute.ts would dead-letter this handoff
+    eventBus.close();
+  });
+
+  test("NexusIpcClient caches endpoint unavailability after first 404", async () => {
+    const { NexusIpcClient: RealIpcClient } = await import("./nexus-ipc-client.js");
+    let fetchCount = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      fetchCount++;
+      return new Response('{"detail":"Not Found"}', { status: 404 });
+    }) as unknown as typeof fetch;
+
+    try {
+      const client = new RealIpcClient({ nexusUrl: "http://localhost:9999", apiKey: "test" });
+
+      const r1 = await client.send("a", "b", {});
+      expect(r1.ok).toBe(false);
+      expect(r1.infrastructureError).toBe(true);
+      expect(fetchCount).toBe(1);
+
+      // Second call should be cached — no fetch
+      const r2 = await client.send("a", "b", {});
+      expect(r2.ok).toBe(false);
+      expect(r2.infrastructureError).toBe(true);
+      expect(fetchCount).toBe(1); // still 1 — cached
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

@@ -1167,14 +1167,19 @@ export async function contributeOperation(
               if (result.ok && result.messageId) {
                 // IPC succeeded — store the message ID for SSE delivery tracking
                 await deps.handoffStore.setIpcMessageId?.(matching.handoffId, result.messageId);
-              } else if (!result.ok) {
-                // IPC delivery failed — dead-letter the handoff so operators
-                // can see the gap and the target agent isn't left waiting.
+              } else if (!result.ok && !result.infrastructureError) {
+                // IPC delivery was rejected by the service (not an infra issue
+                // like 404/connection refused). Dead-letter the handoff so
+                // operators can see the gap.
                 await deps.handoffStore.markDeadLettered(matching.handoffId);
                 process.stderr.write(
                   `[grove] handoff ${matching.handoffId} dead-lettered: IPC to ${result.targetRole} failed: ${result.error ?? "unknown"}\n`,
                 );
               }
+              // When !result.ok && result.infrastructureError: IPC endpoint
+              // is unavailable (404, connection refused). The handoff stays
+              // in its current status — it was never attempted, not rejected.
+              // Delivery falls back to the session orchestrator's polling path.
             } catch {
               // Best-effort — handoff record is the primary artifact
             }
