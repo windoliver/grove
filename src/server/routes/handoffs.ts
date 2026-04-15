@@ -1,10 +1,12 @@
 /**
  * Handoff endpoints.
  *
- * GET  /api/handoffs      — List handoffs (filtered by role, status, etc.)
- * GET  /api/handoffs/:id  — Get a single handoff by ID
+ * GET  /api/handoffs             — List handoffs (filtered by role, status, etc.)
+ * GET  /api/handoffs/:id         — Get a single handoff by ID
  * POST /api/handoffs/:id/delivered — Mark a handoff as delivered
  * POST /api/handoffs/:id/replied   — Mark a handoff as replied
+ * POST /api/handoffs/:id/seen      — Mark a handoff as seen
+ * POST /api/handoffs/:id/acked     — Mark a handoff as acknowledged
  */
 
 import type { Hono as HonoType } from "hono";
@@ -14,8 +16,11 @@ import type { ServerEnv } from "../deps.js";
 
 const handoffs: HonoType<ServerEnv> = new Hono<ServerEnv>();
 
-/** GET /api/handoffs — List handoffs with optional filters. */
-handoffs.get("/", async (c) => {
+/**
+ * Middleware: require handoffStore to be configured.
+ * Returns 501 if not available, otherwise passes through.
+ */
+handoffs.use("/*", async (c, next) => {
   const { handoffStore } = c.get("deps");
   if (handoffStore === undefined) {
     return c.json(
@@ -23,6 +28,14 @@ handoffs.get("/", async (c) => {
       501,
     );
   }
+  await next();
+});
+
+/** GET /api/handoffs — List handoffs with optional filters. */
+handoffs.get("/", async (c) => {
+  const { handoffStore } = c.get("deps");
+  // handoffStore is guaranteed by middleware, but TypeScript needs the check
+  if (handoffStore === undefined) return c.json({ error: "unreachable" }, 500);
 
   // Expire stale handoffs before listing so callers always see fresh status.
   await handoffStore.expireStale();
@@ -48,12 +61,7 @@ handoffs.get("/", async (c) => {
 /** GET /api/handoffs/:id — Get a single handoff. */
 handoffs.get("/:id", async (c) => {
   const { handoffStore } = c.get("deps");
-  if (handoffStore === undefined) {
-    return c.json(
-      { error: { code: "NOT_CONFIGURED", message: "Handoff store not available" } },
-      501,
-    );
-  }
+  if (handoffStore === undefined) return c.json({ error: "unreachable" }, 500);
 
   const handoff = await handoffStore.get(c.req.param("id"));
   if (handoff === undefined) {
@@ -66,12 +74,7 @@ handoffs.get("/:id", async (c) => {
 /** POST /api/handoffs/:id/delivered — Transition handoff to delivered. */
 handoffs.post("/:id/delivered", async (c) => {
   const { handoffStore } = c.get("deps");
-  if (handoffStore === undefined) {
-    return c.json(
-      { error: { code: "NOT_CONFIGURED", message: "Handoff store not available" } },
-      501,
-    );
-  }
+  if (handoffStore === undefined) return c.json({ error: "unreachable" }, 500);
 
   try {
     await handoffStore.markDelivered(c.req.param("id"));
@@ -85,12 +88,7 @@ handoffs.post("/:id/delivered", async (c) => {
 /** POST /api/handoffs/:id/replied — Transition handoff to replied. */
 handoffs.post("/:id/replied", async (c) => {
   const { handoffStore } = c.get("deps");
-  if (handoffStore === undefined) {
-    return c.json(
-      { error: { code: "NOT_CONFIGURED", message: "Handoff store not available" } },
-      501,
-    );
-  }
+  if (handoffStore === undefined) return c.json({ error: "unreachable" }, 500);
 
   let body: { resolvedByCid: string };
   try {
@@ -108,6 +106,34 @@ handoffs.post("/:id/replied", async (c) => {
 
   try {
     await handoffStore.markReplied(c.req.param("id"), body.resolvedByCid);
+    const updated = await handoffStore.get(c.req.param("id"));
+    return c.json(updated);
+  } catch {
+    return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
+  }
+});
+
+/** POST /api/handoffs/:id/seen — Record that the target agent has seen this handoff. */
+handoffs.post("/:id/seen", async (c) => {
+  const { handoffStore } = c.get("deps");
+  if (handoffStore === undefined) return c.json({ error: "unreachable" }, 500);
+
+  try {
+    await handoffStore.markSeen(c.req.param("id"));
+    const updated = await handoffStore.get(c.req.param("id"));
+    return c.json(updated);
+  } catch {
+    return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
+  }
+});
+
+/** POST /api/handoffs/:id/acked — Record that the target agent acknowledges this handoff. */
+handoffs.post("/:id/acked", async (c) => {
+  const { handoffStore } = c.get("deps");
+  if (handoffStore === undefined) return c.json({ error: "unreachable" }, 500);
+
+  try {
+    await handoffStore.markAcked(c.req.param("id"));
     const updated = await handoffStore.get(c.req.param("id"));
     return c.json(updated);
   } catch {

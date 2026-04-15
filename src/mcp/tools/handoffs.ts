@@ -1,15 +1,36 @@
 /**
- * MCP tools for querying handoff coordination records.
+ * MCP tools for querying and interacting with handoff coordination records.
  *
  * grove_list_handoffs — List handoffs, optionally filtered by role or status.
  * grove_get_handoff   — Get a single handoff by ID.
+ * grove_ack_handoff   — Signal that the target agent has seen or acknowledged a handoff.
  */
 
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { HandoffStatus } from "../../core/handoff.js";
+import { HandoffStatus, type HandoffStore } from "../../core/handoff.js";
 import type { McpDeps } from "../deps.js";
 import { toolError } from "../error-handler.js";
+
+/**
+ * Guard: require handoffStore to be configured.
+ * Returns the store if available, or a NOT_CONFIGURED error result.
+ */
+function requireHandoffStore(
+  deps: McpDeps,
+): { ok: true; store: HandoffStore } | { ok: false; error: CallToolResult } {
+  if (deps.handoffStore !== undefined) {
+    return { ok: true, store: deps.handoffStore };
+  }
+  return {
+    ok: false,
+    error: toolError(
+      "NOT_CONFIGURED",
+      "Handoff store is not available. Topology routing must be active.",
+    ),
+  };
+}
 
 const listHandoffsInputSchema = z.object({
   toRole: z
@@ -50,6 +71,15 @@ const getHandoffInputSchema = z.object({
   handoffId: z.string().min(1).describe("ID of the handoff to retrieve."),
 });
 
+const ackHandoffInputSchema = z.object({
+  handoffId: z.string().min(1).describe("ID of the handoff to acknowledge."),
+  level: z
+    .enum(["seen", "acked"])
+    .describe(
+      "Receipt level: 'seen' = agent observed the handoff; 'acked' = agent acknowledges and intends to act on it. 'acked' auto-fills 'seen' if not already set.",
+    ),
+});
+
 export function registerHandoffTools(server: McpServer, deps: McpDeps): void {
   server.registerTool(
     "grove_list_handoffs",
@@ -59,18 +89,14 @@ export function registerHandoffTools(server: McpServer, deps: McpDeps): void {
       inputSchema: listHandoffsInputSchema,
     },
     async (args) => {
-      const { handoffStore } = deps;
-      if (handoffStore === undefined) {
-        return toolError(
-          "NOT_CONFIGURED",
-          "Handoff store is not available. Topology routing must be active.",
-        );
-      }
+      const guard = requireHandoffStore(deps);
+      if (!guard.ok) return guard.error;
+      const { store } = guard;
 
       // Expire stale handoffs before listing so callers always see fresh status.
-      await handoffStore.expireStale();
+      await store.expireStale();
 
-      const handoffs = await handoffStore.list({
+      const handoffs = await store.list({
         toRole: args.toRole,
         fromRole: args.fromRole,
         status: args.status,
@@ -91,18 +117,47 @@ export function registerHandoffTools(server: McpServer, deps: McpDeps): void {
       inputSchema: getHandoffInputSchema,
     },
     async (args) => {
-      const { handoffStore } = deps;
-      if (handoffStore === undefined) {
-        return toolError("NOT_CONFIGURED", "Handoff store is not available.");
-      }
+      const guard = requireHandoffStore(deps);
+      if (!guard.ok) return guard.error;
+      const { store } = guard;
 
-      const handoff = await handoffStore.get(args.handoffId);
+      const handoff = await store.get(args.handoffId);
       if (handoff === undefined) {
         return toolError("NOT_FOUND", `Handoff '${args.handoffId}' not found.`);
       }
 
       return {
         content: [{ type: "text" as const, text: JSON.stringify(handoff) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "grove_ack_handoff",
+    {
+      description:
+        "Signal that you have seen or acknowledged a handoff. Use level='seen' when you first observe a handoff routed to your role, and level='acked' when you intend to act on it. Acknowledging auto-fills 'seen' if not already set. Idempotent — safe to call multiple times.",
+      inputSchema: ackHandoffInputSchema,
+    },
+    async (args) => {
+      const guard = requireHandoffStore(deps);
+      if (!guard.ok) return guard.error;
+      const { store } = guard;
+
+      const handoff = await store.get(args.handoffId);
+      if (handoff === undefined) {
+        return toolError("NOT_FOUND", `Handoff '${args.handoffId}' not found.`);
+      }
+
+      if (args.level === "seen") {
+        await store.markSeen(args.handoffId);
+      } else {
+        await store.markAcked(args.handoffId);
+      }
+
+      const updated = await store.get(args.handoffId);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(updated) }],
       };
     },
   );

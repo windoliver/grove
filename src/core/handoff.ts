@@ -7,6 +7,56 @@ export const HandoffStatus = {
 
 export type HandoffStatus = (typeof HandoffStatus)[keyof typeof HandoffStatus];
 
+/**
+ * Valid status transitions for handoffs.
+ *
+ * pending_pickup → delivered → replied
+ * pending_pickup → replied (direct reply without explicit delivery marking)
+ * pending_pickup → expired
+ * delivered → expired
+ *
+ * Terminal states (replied, expired) cannot transition further.
+ */
+export const VALID_TRANSITIONS: Readonly<Record<HandoffStatus, readonly HandoffStatus[]>> = {
+  [HandoffStatus.PendingPickup]: [HandoffStatus.Delivered, HandoffStatus.Replied, HandoffStatus.Expired],
+  [HandoffStatus.Delivered]: [HandoffStatus.Replied, HandoffStatus.Expired],
+  [HandoffStatus.Replied]: [],
+  [HandoffStatus.Expired]: [],
+};
+
+/**
+ * Thrown when a handoff status transition is invalid (e.g., expired → delivered).
+ */
+export class InvalidTransitionError extends Error {
+  readonly handoffId: string;
+  readonly fromStatus: HandoffStatus;
+  readonly toStatus: HandoffStatus;
+
+  constructor(handoffId: string, fromStatus: HandoffStatus, toStatus: HandoffStatus) {
+    super(
+      `Invalid handoff transition: '${fromStatus}' → '${toStatus}' for handoff '${handoffId}'`,
+    );
+    this.name = "InvalidTransitionError";
+    this.handoffId = handoffId;
+    this.fromStatus = fromStatus;
+    this.toStatus = toStatus;
+  }
+}
+
+/**
+ * Validate a handoff status transition. Throws InvalidTransitionError if invalid.
+ */
+export function validateTransition(
+  handoffId: string,
+  currentStatus: HandoffStatus,
+  targetStatus: HandoffStatus,
+): void {
+  const allowed = VALID_TRANSITIONS[currentStatus];
+  if (!allowed.includes(targetStatus)) {
+    throw new InvalidTransitionError(handoffId, currentStatus, targetStatus);
+  }
+}
+
 export interface Handoff {
   readonly handoffId: string;
   readonly sourceCid: string;
@@ -16,6 +66,10 @@ export interface Handoff {
   readonly requiresReply: boolean;
   readonly replyDueAt?: string | undefined;
   readonly resolvedByCid?: string | undefined;
+  /** ISO 8601 timestamp when the target agent first observed this handoff. */
+  readonly seenAt?: string | undefined;
+  /** ISO 8601 timestamp when the target agent acknowledged intent to act. */
+  readonly ackedAt?: string | undefined;
   readonly createdAt: string;
 }
 
@@ -56,6 +110,16 @@ export interface HandoffStore {
   list(query?: HandoffQuery): Promise<readonly Handoff[]>;
   markDelivered(id: string): Promise<void>;
   markReplied(id: string, resolvedByCid: string): Promise<void>;
+  /**
+   * Record that the target agent has seen this handoff.
+   * Sets seenAt if not already set. No-op if already seen.
+   */
+  markSeen(id: string): Promise<void>;
+  /**
+   * Record that the target agent acknowledges this handoff and intends to act.
+   * Sets ackedAt (and seenAt if not already set). No-op if already acked.
+   */
+  markAcked(id: string): Promise<void>;
   expireStale(now?: string): Promise<readonly Handoff[]>;
   countPending(toRole: string): Promise<number>;
   close(): void;

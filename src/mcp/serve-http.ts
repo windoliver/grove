@@ -309,6 +309,18 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     topologyRouter = new TopologyRouter(loadedContract.topology, eventBus);
   }
 
+  // Wire DeadlineWatcher for proactive overdue detection when both
+  // a handoff store and event bus are available.
+  let deadlineWatcher: import("../core/deadline-watcher.js").DeadlineWatcher | undefined;
+  const activeHandoffStore = nexusHandoffStore ?? runtime.handoffStore;
+  if (activeHandoffStore !== undefined && eventBus !== undefined) {
+    const { DeadlineWatcher } = await import("../core/deadline-watcher.js");
+    deadlineWatcher = new DeadlineWatcher({ handoffStore: activeHandoffStore, eventBus });
+    void deadlineWatcher.rebuildFromStore().catch(() => {
+      /* non-fatal */
+    });
+  }
+
   const deps: McpDeps = {
     contributionStore,
     claimStore,
@@ -324,8 +336,9 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     ...(eventBus ? { eventBus } : {}),
     ...(topologyRouter ? { topologyRouter } : {}),
     // Nexus handoff store when available, falls back to local SQLite
-    handoffStore: nexusHandoffStore ?? runtime.handoffStore,
+    handoffStore: activeHandoffStore,
     idempotencyStore: runtime.idempotencyStore,
+    ...(deadlineWatcher ? { deadlineWatcher } : {}),
   };
   return { deps, sessionId };
 }

@@ -17,7 +17,7 @@ import type { AgentTopology } from "../topology.js";
 import { TopologyRouter } from "../topology-router.js";
 import { contributeOperation } from "./contribute.js";
 import type { OperationDeps } from "./deps.js";
-import { makeInMemoryContributionStore } from "./test-helpers.js";
+import { createMockHandoffStore, makeInMemoryContributionStore } from "./test-helpers.js";
 
 /** A simple two-role topology: coder -> reviewer -> coder. */
 const reviewLoopTopology: AgentTopology = {
@@ -483,19 +483,12 @@ describe("contributeOperation: plan and ephemeral routing rules", () => {
 
     // Spy handoff store: tracks any create() calls.
     const handoffCreates: unknown[] = [];
-    const handoffStore = {
+    const handoffStore = createMockHandoffStore({
       create: async (input: unknown) => {
         handoffCreates.push(input);
-        return { handoffId: "fake-handoff" };
+        return { handoffId: "fake-handoff", sourceCid: "", fromRole: "", toRole: "", status: "pending_pickup" as const, requiresReply: false, createdAt: "" };
       },
-      get: async () => undefined,
-      list: async () => [],
-      markDelivered: async () => undefined,
-      markReplied: async () => undefined,
-      expireStale: async () => [],
-      countPending: async () => 0,
-      close: () => undefined,
-    } as unknown as NonNullable<OperationDeps["handoffStore"]>;
+    });
 
     const deps: OperationDeps = {
       contributionStore: store,
@@ -541,19 +534,12 @@ describe("contributeOperation: plan and ephemeral routing rules", () => {
     bus.subscribe("reviewer", (e) => received.push(e));
 
     const handoffCreates: unknown[] = [];
-    const handoffStore = {
+    const handoffStore = createMockHandoffStore({
       create: async (input: unknown) => {
         handoffCreates.push(input);
-        return { handoffId: "fake-handoff" };
+        return { handoffId: "fake-handoff", sourceCid: "", fromRole: "", toRole: "", status: "pending_pickup" as const, requiresReply: false, createdAt: "" };
       },
-      get: async () => undefined,
-      list: async () => [],
-      markDelivered: async () => undefined,
-      markReplied: async () => undefined,
-      expireStale: async () => [],
-      countPending: async () => 0,
-      close: () => undefined,
-    } as unknown as NonNullable<OperationDeps["handoffStore"]>;
+    });
 
     const deps: OperationDeps = {
       contributionStore: store,
@@ -594,19 +580,12 @@ describe("contributeOperation: plan and ephemeral routing rules", () => {
     bus.subscribe("reviewer", (e) => received.push(e));
 
     const handoffCreates: unknown[] = [];
-    const handoffStore = {
+    const handoffStore = createMockHandoffStore({
       create: async (input: unknown) => {
         handoffCreates.push(input);
-        return { handoffId: "fake-handoff" };
+        return { handoffId: "fake-handoff", sourceCid: "", fromRole: "", toRole: "", status: "pending_pickup" as const, requiresReply: false, createdAt: "" };
       },
-      get: async () => undefined,
-      list: async () => [],
-      markDelivered: async () => undefined,
-      markReplied: async () => undefined,
-      expireStale: async () => [],
-      countPending: async () => 0,
-      close: () => undefined,
-    } as unknown as NonNullable<OperationDeps["handoffStore"]>;
+    });
 
     const deps: OperationDeps = {
       contributionStore: store,
@@ -738,19 +717,12 @@ describe("contributeOperation: plan and ephemeral routing rules", () => {
     bus.subscribe("coder", (e) => received.push(e));
 
     const handoffCreates: unknown[] = [];
-    const handoffStore = {
+    const handoffStore = createMockHandoffStore({
       create: async (input: unknown) => {
         handoffCreates.push(input);
-        return { handoffId: "fake-handoff" };
+        return { handoffId: "fake-handoff", sourceCid: "", fromRole: "", toRole: "", status: "pending_pickup" as const, requiresReply: false, createdAt: "" };
       },
-      get: async () => undefined,
-      list: async () => [],
-      markDelivered: async () => undefined,
-      markReplied: async () => undefined,
-      expireStale: async () => [],
-      countPending: async () => 0,
-      close: () => undefined,
-    } as unknown as NonNullable<OperationDeps["handoffStore"]>;
+    });
 
     const deps: OperationDeps = {
       contributionStore: store,
@@ -808,19 +780,12 @@ describe("contributeOperation: plan and ephemeral routing rules", () => {
     bus.subscribe("reviewer", (e) => received.push(e));
 
     const handoffCreates: unknown[] = [];
-    const handoffStore = {
+    const handoffStore = createMockHandoffStore({
       create: async (input: unknown) => {
         handoffCreates.push(input);
-        return { handoffId: "fake-handoff" };
+        return { handoffId: "fake-handoff", sourceCid: "", fromRole: "", toRole: "", status: "pending_pickup" as const, requiresReply: false, createdAt: "" };
       },
-      get: async () => undefined,
-      list: async () => [],
-      markDelivered: async () => undefined,
-      markReplied: async () => undefined,
-      expireStale: async () => [],
-      countPending: async () => 0,
-      close: () => undefined,
-    } as unknown as NonNullable<OperationDeps["handoffStore"]>;
+    });
 
     const deps: OperationDeps = {
       contributionStore: store,

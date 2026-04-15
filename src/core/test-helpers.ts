@@ -7,6 +7,7 @@
 
 import type { Bounty, RewardRecord } from "./bounty.js";
 import { BountyStatus, RewardType } from "./bounty.js";
+import type { HandoffInput } from "./handoff.js";
 import { createContribution } from "./manifest.js";
 import type {
   AgentIdentity,
@@ -128,6 +129,16 @@ export function makeReward(overrides?: Partial<RewardRecord>): RewardRecord {
     amount: 10,
     contributionCid: "blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     createdAt: now,
+    ...overrides,
+  };
+}
+
+/** Create a HandoffInput with sensible defaults. */
+export function makeHandoffInput(overrides?: Partial<HandoffInput>): HandoffInput {
+  return {
+    sourceCid: "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    fromRole: "coder",
+    toRole: "reviewer",
     ...overrides,
   };
 }

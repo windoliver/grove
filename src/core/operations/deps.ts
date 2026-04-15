@@ -9,6 +9,7 @@ import type { BountyStore } from "../bounty-store.js";
 import type { ContentStore } from "../cas.js";
 import type { GroveContract } from "../contract.js";
 import type { CreditsService } from "../credits.js";
+import type { DeadlineWatcher } from "../deadline-watcher.js";
 import type { EventBus } from "../event-bus.js";
 import type { FrontierCalculator } from "../frontier.js";
 import type { HandoffStore } from "../handoff.js";
@@ -86,4 +87,6 @@ export interface OperationDeps {
   readonly hookCwd?: string | undefined;
   /** Persistent idempotency store for cross-process deduplication. */
   readonly idempotencyStore?: IdempotencyStore | undefined;
+  /** Optional deadline watcher for proactive overdue detection. */
+  readonly deadlineWatcher?: DeadlineWatcher | undefined;
 }

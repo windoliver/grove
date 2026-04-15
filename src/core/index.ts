@@ -111,7 +111,16 @@ export {
   RateLimitError,
   RetryExhaustedError,
 } from "./errors.js";
+export type { DeadlineWatcherOpts } from "./deadline-watcher.js";
+export { DeadlineWatcher } from "./deadline-watcher.js";
 export type { EventBus, EventHandler, GroveEvent } from "./event-bus.js";
+export type { Handoff, HandoffInput, HandoffQuery, HandoffStore } from "./handoff.js";
+export {
+  HandoffStatus,
+  InvalidTransitionError,
+  VALID_TRANSITIONS,
+  validateTransition as validateHandoffTransition,
+} from "./handoff.js";
 export type {
   Frontier,
   FrontierCalculator,

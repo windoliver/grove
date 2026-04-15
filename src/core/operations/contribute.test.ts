@@ -17,6 +17,7 @@ import {
 import type { OperationDeps } from "./deps.js";
 import type { FullOperationDeps, TestOperationDeps } from "./test-helpers.js";
 import {
+  createMockHandoffStore,
   createTestOperationDeps,
   makeInMemoryContributionStore,
   storeTestContent,
@@ -902,21 +903,10 @@ describe("writeSerial: best-effort handoff failure paths", () => {
   }
 
   test("contribution is committed even when handoffStore.createMany throws", async () => {
-    const faultyHandoffStore: OperationDeps["handoffStore"] = {
-      create: async () => {
-        throw new Error("should not be called");
-      },
-      createMany: async () => {
-        throw new Error("simulated handoff store failure");
-      },
-      get: async () => undefined,
-      list: async () => [],
-      markDelivered: async () => undefined,
-      markReplied: async () => undefined,
-      expireStale: async () => [],
-      countPending: async () => 0,
-      close: () => undefined,
-    };
+    const faultyHandoffStore = createMockHandoffStore({
+      create: async () => { throw new Error("should not be called"); },
+      createMany: async () => { throw new Error("simulated handoff store failure"); },
+    });
 
     const deps = makeSerialDeps(faultyHandoffStore);
 
@@ -942,21 +932,10 @@ describe("writeSerial: best-effort handoff failure paths", () => {
     // biome-ignore lint/suspicious/noEmptyBlockStatements: spy suppresses output intentionally
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 
-    const faultyHandoffStore: OperationDeps["handoffStore"] = {
-      create: async () => {
-        throw new Error("should not be called");
-      },
-      createMany: async () => {
-        throw new Error("handoff store down");
-      },
-      get: async () => undefined,
-      list: async () => [],
-      markDelivered: async () => undefined,
-      markReplied: async () => undefined,
-      expireStale: async () => [],
-      countPending: async () => 0,
-      close: () => undefined,
-    };
+    const faultyHandoffStore = createMockHandoffStore({
+      create: async () => { throw new Error("should not be called"); },
+      createMany: async () => { throw new Error("handoff store down"); },
+    });
 
     const deps = makeSerialDeps(faultyHandoffStore);
 
@@ -989,17 +968,10 @@ describe("writeSerial: best-effort handoff failure paths", () => {
       throw new Error("simulated synchronous throw from create()");
     }) as unknown as NonNullable<OperationDeps["handoffStore"]>["create"];
 
-    const syncThrowingHandoffStore: OperationDeps["handoffStore"] = {
+    const syncThrowingHandoffStore = createMockHandoffStore({
       create: syncThrowingCreate,
       // No createMany — forces the fallback path.
-      get: async () => undefined,
-      list: async () => [],
-      markDelivered: async () => undefined,
-      markReplied: async () => undefined,
-      expireStale: async () => [],
-      countPending: async () => 0,
-      close: () => undefined,
-    };
+    });
 
     const deps = makeSerialDeps(syncThrowingHandoffStore);
 

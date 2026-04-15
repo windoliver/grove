@@ -9,7 +9,7 @@
 
 import { fireAndForget } from "../../shared/fire-and-forget.js";
 import { pickDefined } from "../../shared/pick-defined.js";
-import type { HandoffInput, HandoffStore } from "../handoff.js";
+import { HandoffStatus, type HandoffInput, type HandoffStore } from "../handoff.js";
 import { createContribution } from "../manifest.js";
 import {
   ContributionKind as CK,
@@ -536,15 +536,20 @@ async function writeAtomic(
   putWithCowrite: (c: Contribution, fn: () => void) => void | Promise<void>,
   insertSync: (input: HandoffInput) => string,
   onCommit?: () => void,
+  replyTimeouts?: ReadonlyMap<string, number> | undefined,
 ): Promise<readonly string[]> {
   const handoffIds: string[] = [];
   const maybePromise = putWithCowrite(contribution, () => {
     for (const targetRole of routedTo) {
+      const timeoutSec = replyTimeouts?.get(targetRole);
       const hid = insertSync({
         sourceCid: contribution.cid,
         fromRole: agentRole,
         toRole: targetRole,
-        requiresReply: false,
+        requiresReply: timeoutSec !== undefined,
+        ...(timeoutSec !== undefined
+          ? { replyDueAt: new Date(Date.now() + timeoutSec * 1000).toISOString() }
+          : {}),
       });
       if (hid !== undefined) handoffIds.push(hid);
     }
@@ -583,6 +588,7 @@ async function writeSerial(
   store: ContributionStore,
   handoffStore: HandoffStore | undefined,
   onCommit?: () => void,
+  replyTimeouts?: ReadonlyMap<string, number> | undefined,
 ): Promise<readonly string[]> {
   await store.put(contribution);
   // For non-atomic stores (Nexus, in-memory), write the idempotency row
@@ -596,12 +602,18 @@ async function writeSerial(
     return handoffIds;
   }
 
-  const inputs: HandoffInput[] = routedTo.map((targetRole) => ({
-    sourceCid: contribution.cid,
-    fromRole: agentRole,
-    toRole: targetRole,
-    requiresReply: false,
-  }));
+  const inputs: HandoffInput[] = routedTo.map((targetRole) => {
+    const timeoutSec = replyTimeouts?.get(targetRole);
+    return {
+      sourceCid: contribution.cid,
+      fromRole: agentRole,
+      toRole: targetRole,
+      requiresReply: timeoutSec !== undefined,
+      ...(timeoutSec !== undefined
+        ? { replyDueAt: new Date(Date.now() + timeoutSec * 1000).toISOString() }
+        : {}),
+    };
+  });
 
   if (handoffStore.createMany !== undefined) {
     try {
@@ -653,6 +665,7 @@ async function writeContributionWithHandoffs(
   store: ContributionStore,
   handoffStore: HandoffStore | undefined,
   onCommit?: () => void,
+  replyTimeouts?: ReadonlyMap<string, number> | undefined,
 ): Promise<readonly string[]> {
   const needsHandoffs =
     handoffStore !== undefined &&
@@ -676,6 +689,7 @@ async function writeContributionWithHandoffs(
         cowriteStore.putWithCowrite.bind(cowriteStore),
         sqliteHandoffStore.insertSync.bind(sqliteHandoffStore),
         onCommit,
+        replyTimeouts,
       );
     }
   }
@@ -694,7 +708,7 @@ async function writeContributionWithHandoffs(
     );
   }
 
-  return writeSerial(contribution, routedTo, agentRole, store, handoffStore, onCommit);
+  return writeSerial(contribution, routedTo, agentRole, store, handoffStore, onCommit, replyTimeouts);
 }
 
 // ---------------------------------------------------------------------------
@@ -955,6 +969,9 @@ export async function contributeOperation(
 
     // --- Pre-write: determine routing targets synchronously (no I/O) ---
     let routedTo: readonly string[] | undefined;
+    // Map target role → reply timeout seconds (from edge config). When multiple
+    // edges point to the same target, the shortest timeout wins.
+    let replyTimeouts: ReadonlyMap<string, number> | undefined;
     if (deps.topologyRouter !== undefined) {
       if (contribution.agent.role === undefined) {
         // Issue 4A: warn when topology is active but contributing agent has no role
@@ -967,7 +984,20 @@ export async function contributeOperation(
         // delegates + feeds) pointing at the same downstream role. Creating
         // one handoff per (source, target) pair is correct; creating one per
         // edge type would produce duplicate pending handoffs for the same work.
-        if (edges.length > 0) routedTo = [...new Set(edges.map((e) => e.target))];
+        if (edges.length > 0) {
+          routedTo = [...new Set(edges.map((e) => e.target))];
+          // Collect reply timeouts from edges — shortest timeout per target wins
+          const timeoutMap = new Map<string, number>();
+          for (const edge of edges) {
+            if (edge.replyTimeoutSeconds !== undefined) {
+              const existing = timeoutMap.get(edge.target);
+              if (existing === undefined || edge.replyTimeoutSeconds < existing) {
+                timeoutMap.set(edge.target, edge.replyTimeoutSeconds);
+              }
+            }
+          }
+          if (timeoutMap.size > 0) replyTimeouts = timeoutMap;
+        }
       }
     }
 
@@ -1012,6 +1042,7 @@ export async function contributeOperation(
       deps.contributionStore,
       deps.handoffStore,
       idempotencyOnCommit,
+      replyTimeouts,
     );
 
     // ┌──────────────────────────────────────────────────────────────────┐
@@ -1090,9 +1121,27 @@ export async function contributeOperation(
       );
     }
 
+    // --- Post-write: register deadline timers for new handoffs ---
+    if (deps.deadlineWatcher !== undefined && handoffIds.length > 0 && deps.handoffStore !== undefined) {
+      fireAndForget("deadline watcher registration", async () => {
+        for (const hid of handoffIds) {
+          try {
+            const h = await deps.handoffStore?.get(hid);
+            if (h?.replyDueAt !== undefined) {
+              deps.deadlineWatcher?.watch(h);
+            }
+          } catch {
+            // Best-effort — timer registration failure is non-fatal
+          }
+        }
+      });
+    }
+
     // --- Post-write: mark upstream handoffs as replied (fire-and-forget) ---
     // When this contribution targets another CID (reviews/responds_to), find
-    // any pending handoffs with sourceCid = targetCid and mark them replied.
+    // any unresolved handoffs with sourceCid = targetCid and mark them replied.
+    // Query both pending_pickup and delivered — Nexus creates handoffs as
+    // delivered (skipping pending_pickup) due to cross-client CAS limitations.
     if (deps.handoffStore !== undefined && contribution.relations.length > 0) {
       const replyRelations = contribution.relations.filter(
         (r) =>
@@ -1104,12 +1153,14 @@ export async function contributeOperation(
         fireAndForget("handoff reply transition", async () => {
           for (const rel of replyRelations) {
             try {
-              const pending = await deps.handoffStore?.list({
+              const unresolved = await deps.handoffStore?.list({
                 sourceCid: rel.targetCid,
-                status: "pending_pickup",
+                status: [HandoffStatus.PendingPickup, HandoffStatus.Delivered],
               });
-              for (const h of pending ?? []) {
+              for (const h of unresolved ?? []) {
                 await deps.handoffStore?.markReplied(h.handoffId, contribution.cid);
+                // Cancel deadline timer for resolved handoff
+                deps.deadlineWatcher?.cancel(h.handoffId);
               }
             } catch {
               // Best-effort — don't fail contribution over handoff transition

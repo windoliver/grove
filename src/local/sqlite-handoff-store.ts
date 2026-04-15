@@ -6,6 +6,7 @@ import {
   type HandoffQuery,
   HandoffStatus,
   type HandoffStore,
+  validateTransition,
 } from "../core/handoff.js";
 
 export const HANDOFF_DDL = `
@@ -18,6 +19,8 @@ export const HANDOFF_DDL = `
     requires_reply INTEGER NOT NULL DEFAULT 0,
     reply_due_at TEXT,
     resolved_by_cid TEXT,
+    seen_at TEXT,
+    acked_at TEXT,
     created_at TEXT NOT NULL
   );
 
@@ -37,6 +40,8 @@ interface HandoffRow {
   readonly requires_reply: number;
   readonly reply_due_at: string | null;
   readonly resolved_by_cid: string | null;
+  readonly seen_at: string | null;
+  readonly acked_at: string | null;
   readonly created_at: string;
 }
 
@@ -50,15 +55,30 @@ function rowToHandoff(row: HandoffRow): Handoff {
     requiresReply: row.requires_reply !== 0,
     ...(row.reply_due_at !== null ? { replyDueAt: row.reply_due_at } : {}),
     ...(row.resolved_by_cid !== null ? { resolvedByCid: row.resolved_by_cid } : {}),
+    ...(row.seen_at !== null ? { seenAt: row.seen_at } : {}),
+    ...(row.acked_at !== null ? { ackedAt: row.acked_at } : {}),
     createdAt: row.created_at,
   };
 }
+
+const SELECT_COLS = `handoff_id, source_cid, from_role, to_role, status,
+                requires_reply, reply_due_at, resolved_by_cid, seen_at, acked_at, created_at`;
 
 export class SqliteHandoffStore implements HandoffStore {
   private readonly db: Database;
 
   constructor(db: Database) {
     this.db = db;
+    // Column-safe migration: add seen_at/acked_at if missing (pre-#164 databases).
+    const columns = (
+      this.db.prepare("PRAGMA table_info(handoffs)").all() as readonly { name: string }[]
+    ).map((c) => c.name);
+    if (!columns.includes("seen_at")) {
+      this.db.run("ALTER TABLE handoffs ADD COLUMN seen_at TEXT");
+    }
+    if (!columns.includes("acked_at")) {
+      this.db.run("ALTER TABLE handoffs ADD COLUMN acked_at TEXT");
+    }
   }
 
   async create(input: HandoffInput): Promise<Handoff> {
@@ -84,8 +104,8 @@ export class SqliteHandoffStore implements HandoffStore {
       .prepare(
         `INSERT INTO handoffs (
           handoff_id, source_cid, from_role, to_role, status,
-          requires_reply, reply_due_at, resolved_by_cid, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          requires_reply, reply_due_at, resolved_by_cid, seen_at, acked_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         handoffId,
@@ -96,6 +116,8 @@ export class SqliteHandoffStore implements HandoffStore {
         input.requiresReply ? 1 : 0,
         input.replyDueAt ?? null,
         null,
+        null,
+        null,
         new Date().toISOString(),
       );
     return handoffId;
@@ -103,12 +125,7 @@ export class SqliteHandoffStore implements HandoffStore {
 
   async get(id: string): Promise<Handoff | undefined> {
     const row = this.db
-      .prepare(
-        `SELECT handoff_id, source_cid, from_role, to_role, status,
-                requires_reply, reply_due_at, resolved_by_cid, created_at
-         FROM handoffs
-         WHERE handoff_id = ?`,
-      )
+      .prepare(`SELECT ${SELECT_COLS} FROM handoffs WHERE handoff_id = ?`)
       .get(id) as HandoffRow | null;
     return row === null ? undefined : rowToHandoff(row);
   }
@@ -135,9 +152,7 @@ export class SqliteHandoffStore implements HandoffStore {
       params.push(...statuses);
     }
 
-    let sql = `SELECT handoff_id, source_cid, from_role, to_role, status,
-                      requires_reply, reply_due_at, resolved_by_cid, created_at
-               FROM handoffs`;
+    let sql = `SELECT ${SELECT_COLS} FROM handoffs`;
     if (clauses.length > 0) {
       sql += ` WHERE ${clauses.join(" AND ")}`;
     }
@@ -152,42 +167,71 @@ export class SqliteHandoffStore implements HandoffStore {
   }
 
   async markDelivered(id: string): Promise<void> {
-    const result = this.db
-      .prepare("UPDATE handoffs SET status = ? WHERE handoff_id = ?")
-      .run(HandoffStatus.Delivered, id);
-    if (result.changes === 0) {
+    const handoff = await this.get(id);
+    if (handoff === undefined) {
       throw new NotFoundError({ resource: "Handoff", identifier: id });
     }
+    validateTransition(id, handoff.status, HandoffStatus.Delivered);
+    this.db
+      .prepare("UPDATE handoffs SET status = ? WHERE handoff_id = ?")
+      .run(HandoffStatus.Delivered, id);
   }
 
   async markReplied(id: string, resolvedByCid: string): Promise<void> {
-    const result = this.db
+    const handoff = await this.get(id);
+    if (handoff === undefined) {
+      throw new NotFoundError({ resource: "Handoff", identifier: id });
+    }
+    validateTransition(id, handoff.status, HandoffStatus.Replied);
+    this.db
       .prepare("UPDATE handoffs SET status = ?, resolved_by_cid = ? WHERE handoff_id = ?")
       .run(HandoffStatus.Replied, resolvedByCid, id);
-    if (result.changes === 0) {
+  }
+
+  async markSeen(id: string): Promise<void> {
+    const handoff = await this.get(id);
+    if (handoff === undefined) {
       throw new NotFoundError({ resource: "Handoff", identifier: id });
+    }
+    // No-op if already seen
+    if (handoff.seenAt !== undefined) return;
+    this.db
+      .prepare("UPDATE handoffs SET seen_at = ? WHERE handoff_id = ?")
+      .run(new Date().toISOString(), id);
+  }
+
+  async markAcked(id: string): Promise<void> {
+    const handoff = await this.get(id);
+    if (handoff === undefined) {
+      throw new NotFoundError({ resource: "Handoff", identifier: id });
+    }
+    // No-op if already acked
+    if (handoff.ackedAt !== undefined) return;
+    const now = new Date().toISOString();
+    // Auto-fill seenAt if not already set
+    if (handoff.seenAt === undefined) {
+      this.db
+        .prepare("UPDATE handoffs SET seen_at = ?, acked_at = ? WHERE handoff_id = ?")
+        .run(now, now, id);
+    } else {
+      this.db
+        .prepare("UPDATE handoffs SET acked_at = ? WHERE handoff_id = ?")
+        .run(now, id);
     }
   }
 
   async expireStale(now?: string): Promise<readonly Handoff[]> {
     const cutoff = now ?? new Date().toISOString();
-    this.db
+    // Use RETURNING to get only the rows that were actually transitioned
+    // (not rows that were already expired from a previous call).
+    const rows = this.db
       .prepare(
         `UPDATE handoffs
          SET status = ?
-         WHERE status = ? AND reply_due_at IS NOT NULL AND reply_due_at < ?`,
-      )
-      .run(HandoffStatus.Expired, HandoffStatus.PendingPickup, cutoff);
-
-    const rows = this.db
-      .prepare(
-        `SELECT handoff_id, source_cid, from_role, to_role, status,
-                requires_reply, reply_due_at, resolved_by_cid, created_at
-         FROM handoffs
          WHERE status = ? AND reply_due_at IS NOT NULL AND reply_due_at < ?
-         ORDER BY created_at ASC`,
+         RETURNING ${SELECT_COLS}`,
       )
-      .all(HandoffStatus.Expired, cutoff) as readonly HandoffRow[];
+      .all(HandoffStatus.Expired, HandoffStatus.PendingPickup, cutoff) as readonly HandoffRow[];
     return rows.map(rowToHandoff);
   }
 

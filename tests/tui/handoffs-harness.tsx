@@ -35,7 +35,8 @@ const stubHandoffs: readonly Handoff[] = [
     fromRole: "coder",
     toRole: "reviewer",
     status: HandoffStatus.PendingPickup,
-    requiresReply: false,
+    requiresReply: true,
+    replyDueAt: new Date(Date.now() - 120_000).toISOString(), // 2min overdue
     createdAt: new Date(Date.now() - 30_000).toISOString(),
   },
   {
@@ -46,6 +47,8 @@ const stubHandoffs: readonly Handoff[] = [
     status: HandoffStatus.Replied,
     requiresReply: false,
     resolvedByCid: "blake3:cccc0000333333333333333333333333333333333333333333333333333333333",
+    seenAt: new Date(Date.now() - 100_000).toISOString(),
+    ackedAt: new Date(Date.now() - 95_000).toISOString(),
     createdAt: new Date(Date.now() - 90_000).toISOString(),
   },
   {
@@ -57,6 +60,17 @@ const stubHandoffs: readonly Handoff[] = [
     requiresReply: true,
     replyDueAt: new Date(Date.now() - 10_000).toISOString(),
     createdAt: new Date(Date.now() - 180_000).toISOString(),
+  },
+  {
+    handoffId: "h-004",
+    sourceCid: "blake3:eeee0000555555555555555555555555555555555555555555555555555555555",
+    fromRole: "coder",
+    toRole: "tester",
+    status: HandoffStatus.Delivered,
+    requiresReply: true,
+    replyDueAt: new Date(Date.now() + 300_000).toISOString(), // 5min left
+    seenAt: new Date(Date.now() - 20_000).toISOString(),
+    createdAt: new Date(Date.now() - 60_000).toISOString(),
   },
 ];
 

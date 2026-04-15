@@ -162,4 +162,64 @@ describe("handoff integration", () => {
     expect(expired.map((item) => item.handoffId)).toContain(handoff.handoffId);
     expect(updated?.status).toBe(HandoffStatus.Expired);
   });
+
+  test("reply contribution resolves upstream handoff via resolvedByCid (E2E)", async () => {
+    const { deps, cleanup } = await createTestOperationDeps();
+    const bus = new LocalEventBus();
+    const depsWithRouter = {
+      ...deps,
+      topologyRouter: new TopologyRouter(reviewLoopTopology, bus),
+    };
+
+    try {
+      // Step 1: coder submits work → handoff created for reviewer
+      const workResult = await contributeOperation(
+        {
+          kind: "work",
+          summary: "Implement feature X",
+          agent: { agentId: "coder-1", role: "coder" },
+        },
+        depsWithRouter,
+      );
+
+      expect(workResult.ok).toBe(true);
+      if (!workResult.ok) return;
+
+      const handoffsBefore = await deps.handoffStore.list();
+      expect(handoffsBefore).toHaveLength(1);
+      const handoff = handoffsBefore[0]!;
+      expect(handoff.fromRole).toBe("coder");
+      expect(handoff.toRole).toBe("reviewer");
+
+      // Step 2: reviewer submits review targeting the work CID → handoff auto-resolved
+      const reviewResult = await contributeOperation(
+        {
+          kind: "review",
+          summary: "LGTM with minor nits",
+          scores: { quality: { value: 0.9, direction: "maximize" } },
+          relations: [
+            {
+              targetCid: workResult.value.cid,
+              relationType: "reviews",
+            },
+          ],
+          agent: { agentId: "reviewer-1", role: "reviewer" },
+        },
+        depsWithRouter,
+      );
+
+      expect(reviewResult.ok).toBe(true);
+      if (!reviewResult.ok) return;
+
+      // Fire-and-forget runs asynchronously — give it a moment to settle
+      await new Promise((r) => setTimeout(r, 50));
+
+      const resolved = await deps.handoffStore.get(handoff.handoffId);
+      expect(resolved?.status).toBe(HandoffStatus.Replied);
+      expect(resolved?.resolvedByCid).toBe(reviewResult.value.cid);
+    } finally {
+      bus.close();
+      await cleanup();
+    }
+  });
 });

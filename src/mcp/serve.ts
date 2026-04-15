@@ -281,6 +281,19 @@ try {
         }
       : undefined;
 
+  // Wire DeadlineWatcher for proactive overdue detection when both
+  // a handoff store and event bus are available.
+  let deadlineWatcher: import("../core/deadline-watcher.js").DeadlineWatcher | undefined;
+  const activeHandoffStore = nexusHandoffStore ?? runtime.handoffStore;
+  if (activeHandoffStore !== undefined && eventBus !== undefined) {
+    const { DeadlineWatcher } = await import("../core/deadline-watcher.js");
+    deadlineWatcher = new DeadlineWatcher({ handoffStore: activeHandoffStore, eventBus });
+    // Rebuild timers for any unresolved handoffs from previous sessions (best-effort)
+    void deadlineWatcher.rebuildFromStore().catch(() => {
+      /* non-fatal — timers will be registered for new handoffs going forward */
+    });
+  }
+
   deps = {
     contributionStore,
     claimStore,
@@ -297,8 +310,9 @@ try {
     ...(eventBus ? { eventBus } : {}),
     ...(topologyRouter ? { topologyRouter } : {}),
     // Nexus handoff store when available, falls back to local SQLite
-    handoffStore: nexusHandoffStore ?? runtime.handoffStore,
+    handoffStore: activeHandoffStore,
     idempotencyStore: runtime.idempotencyStore,
+    ...(deadlineWatcher ? { deadlineWatcher } : {}),
   };
   // Derive MCP tool preset from contract mode — #11 MCP Tool Surface + #12 Concept Usage
   const contractMode = loadedContract?.mode ?? "exploration";
@@ -339,6 +353,7 @@ try {
         };
 
   close = () => {
+    deadlineWatcher?.close();
     eventBus?.close();
     nexusClient?.close();
     runtime.close();

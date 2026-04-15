@@ -48,7 +48,12 @@ export class TopologyRouter {
           const key = `${edge.target}:${edge.edgeType}`;
           if (!seenForRole.has(key)) {
             seenForRole.add(key);
-            edges.push({ target: edge.target, edgeType: edge.edgeType });
+            edges.push({
+              target: edge.target,
+              edgeType: edge.edgeType,
+              ...(edge.workspace !== undefined ? { workspace: edge.workspace } : {}),
+              ...(edge.replyTimeoutSeconds !== undefined ? { replyTimeoutSeconds: edge.replyTimeoutSeconds } : {}),
+            });
           }
         }
       }
@@ -135,10 +140,20 @@ export class TopologyRouter {
     const mode = role?.mode ?? "explicit";
 
     if (mode === "broadcast") {
-      // Broadcast: return synthetic edges to all other roles
+      // Broadcast: notify all other roles. When explicit edges exist for a
+      // target, carry their metadata (replyTimeoutSeconds, workspace) so
+      // handoff creation can use edge-level config even in broadcast mode.
+      const explicitEdges = this.edgeMap.get(sourceRole);
+      const explicitByTarget = new Map<string, RoleEdge>();
+      if (explicitEdges) {
+        for (const e of explicitEdges) explicitByTarget.set(e.target, e);
+      }
       return this.topology.roles
         .filter((r) => r.name !== sourceRole)
-        .map((r) => ({ target: r.name, edgeType: "delegates" as const }));
+        .map((r) => {
+          const explicit = explicitByTarget.get(r.name);
+          return explicit ?? { target: r.name, edgeType: "delegates" as const };
+        });
     }
 
     return this.edgeMap.get(sourceRole) ?? [];

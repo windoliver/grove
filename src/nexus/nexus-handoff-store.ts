@@ -18,11 +18,15 @@ import {
   type HandoffQuery,
   HandoffStatus,
   type HandoffStore,
+  validateTransition,
 } from "../core/handoff.js";
 import { debugLog } from "../tui/debug-log.js";
 import type { NexusClient } from "./client.js";
 
 const MAX_CAS_RETRIES = 8;
+
+/** TTL for the readAllHandoffs cache (milliseconds). */
+const LIST_CACHE_TTL_MS = 15_000;
 
 function handoffsDir(zoneId: string): string {
   return `/zones/${zoneId}/handoffs`;
@@ -43,6 +47,9 @@ export class NexusHandoffStore implements HandoffStore {
   private readonly sessionId: string | undefined;
   private readonly zoneId: string;
   private dirEnsured = false;
+
+  /** Cached result of readAllHandoffs() with TTL. */
+  private listCache: { handoffs: Handoff[]; expiry: number } | undefined;
 
   constructor(
     client: NexusClient,
@@ -74,6 +81,11 @@ export class NexusHandoffStore implements HandoffStore {
       // Best-effort — write may auto-create parent dirs on some Nexus versions
     }
     this.dirEnsured = true;
+  }
+
+  /** Invalidate the list cache (called after writes). */
+  private invalidateCache(): void {
+    this.listCache = undefined;
   }
 
   private async readFile(path: string): Promise<{ handoffs: Handoff[]; etag: string }> {
@@ -114,6 +126,8 @@ export class NexusHandoffStore implements HandoffStore {
           "NexusHandoffStore.casUpdate",
           `WRITE OK path=${path} etag=${etag || "(empty)"} bytesWritten=${writeResult.bytesWritten} newEtag=${writeResult.etag} count=${updated.length} attempt=${attempt}`,
         );
+        // Invalidate cache after successful write
+        this.invalidateCache();
         return updated;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -123,12 +137,13 @@ export class NexusHandoffStore implements HandoffStore {
         );
         // Conflict = another writer updated between our read and write — retry
         if (msg.includes("412") || msg.includes("conflict") || msg.includes("mismatch")) {
-          // Brief backoff before retry
-          await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
+          // Exponential backoff with jitter to prevent retry storms
+          const backoff = Math.min(20 * 2 ** attempt, 500) + Math.random() * 50;
+          await new Promise((r) => setTimeout(r, backoff));
           continue;
         }
         // First write hit a conflict because file was just created — retry as update
-        if (msg.includes("412") || msg.includes("none_match")) {
+        if (msg.includes("none_match")) {
           continue;
         }
         // Rate limit — backoff and retry (handoff writes are critical for IPC tracking)
@@ -226,15 +241,43 @@ export class NexusHandoffStore implements HandoffStore {
   }
 
   async markDelivered(handoffId: string): Promise<void> {
-    await this.updateHandoff(handoffId, (h) => ({ ...h, status: HandoffStatus.Delivered }));
+    await this.updateHandoff(handoffId, (h) => {
+      validateTransition(handoffId, h.status, HandoffStatus.Delivered);
+      return { ...h, status: HandoffStatus.Delivered };
+    });
   }
 
   async markReplied(handoffId: string, resolvedByCid: string): Promise<void> {
-    await this.updateHandoff(handoffId, (h) => ({
-      ...h,
-      status: HandoffStatus.Replied,
-      resolvedByCid,
-    }));
+    await this.updateHandoff(handoffId, (h) => {
+      validateTransition(handoffId, h.status, HandoffStatus.Replied);
+      return {
+        ...h,
+        status: HandoffStatus.Replied,
+        resolvedByCid,
+      };
+    });
+  }
+
+  async markSeen(handoffId: string): Promise<void> {
+    await this.updateHandoff(handoffId, (h) => {
+      // No-op if already seen
+      if (h.seenAt !== undefined) return h;
+      return { ...h, seenAt: new Date().toISOString() };
+    });
+  }
+
+  async markAcked(handoffId: string): Promise<void> {
+    await this.updateHandoff(handoffId, (h) => {
+      // No-op if already acked
+      if (h.ackedAt !== undefined) return h;
+      const now = new Date().toISOString();
+      return {
+        ...h,
+        // Auto-fill seenAt if not already set
+        ...(h.seenAt === undefined ? { seenAt: now } : {}),
+        ackedAt: now,
+      };
+    });
   }
 
   async expireStale(now?: string): Promise<readonly Handoff[]> {
@@ -285,6 +328,11 @@ export class NexusHandoffStore implements HandoffStore {
   }
 
   private async readAllHandoffs(): Promise<Handoff[]> {
+    // Return cached result if fresh
+    if (this.listCache !== undefined && Date.now() < this.listCache.expiry) {
+      return this.listCache.handoffs;
+    }
+
     try {
       const listing = await this.client.list(handoffsDir(this.zoneId));
       // Nexus list may return entries without the .json extension even though
@@ -312,7 +360,12 @@ export class NexusHandoffStore implements HandoffStore {
           }
         }),
       );
-      return results.flat();
+      const handoffs = results.flat();
+
+      // Cache the result
+      this.listCache = { handoffs, expiry: Date.now() + LIST_CACHE_TTL_MS };
+
+      return handoffs;
     } catch (listErr) {
       debugLog(
         "NexusHandoffStore.readAllHandoffs",

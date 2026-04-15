@@ -5,6 +5,7 @@ import {
   type HandoffQuery,
   HandoffStatus,
   type HandoffStore,
+  validateTransition,
 } from "./handoff.js";
 
 function toHandoff(input: HandoffInput): Handoff {
@@ -62,6 +63,7 @@ export class InMemoryHandoffStore implements HandoffStore {
     if (handoff === undefined) {
       throw new NotFoundError({ resource: "Handoff", identifier: id });
     }
+    validateTransition(id, handoff.status, HandoffStatus.Delivered);
     this.handoffs.set(id, { ...handoff, status: HandoffStatus.Delivered });
   }
 
@@ -70,10 +72,37 @@ export class InMemoryHandoffStore implements HandoffStore {
     if (handoff === undefined) {
       throw new NotFoundError({ resource: "Handoff", identifier: id });
     }
+    validateTransition(id, handoff.status, HandoffStatus.Replied);
     this.handoffs.set(id, {
       ...handoff,
       status: HandoffStatus.Replied,
       resolvedByCid,
+    });
+  }
+
+  async markSeen(id: string): Promise<void> {
+    const handoff = this.handoffs.get(id);
+    if (handoff === undefined) {
+      throw new NotFoundError({ resource: "Handoff", identifier: id });
+    }
+    // No-op if already seen
+    if (handoff.seenAt !== undefined) return;
+    this.handoffs.set(id, { ...handoff, seenAt: new Date().toISOString() });
+  }
+
+  async markAcked(id: string): Promise<void> {
+    const handoff = this.handoffs.get(id);
+    if (handoff === undefined) {
+      throw new NotFoundError({ resource: "Handoff", identifier: id });
+    }
+    // No-op if already acked
+    if (handoff.ackedAt !== undefined) return;
+    const now = new Date().toISOString();
+    this.handoffs.set(id, {
+      ...handoff,
+      // Auto-fill seenAt if not already set
+      ...(handoff.seenAt === undefined ? { seenAt: now } : {}),
+      ackedAt: now,
     });
   }
 
