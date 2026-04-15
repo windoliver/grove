@@ -65,6 +65,14 @@ export class InMemoryHandoffStore implements HandoffStore {
     this.handoffs.set(id, { ...handoff, status: HandoffStatus.Delivered });
   }
 
+  async markProcessed(id: string): Promise<void> {
+    const handoff = this.handoffs.get(id);
+    if (handoff === undefined) {
+      throw new NotFoundError({ resource: "Handoff", identifier: id });
+    }
+    this.handoffs.set(id, { ...handoff, status: HandoffStatus.Processed });
+  }
+
   async markReplied(id: string, resolvedByCid: string): Promise<void> {
     const handoff = this.handoffs.get(id);
     if (handoff === undefined) {
@@ -75,6 +83,22 @@ export class InMemoryHandoffStore implements HandoffStore {
       status: HandoffStatus.Replied,
       resolvedByCid,
     });
+  }
+
+  async markDeadLettered(id: string): Promise<void> {
+    const handoff = this.handoffs.get(id);
+    if (handoff === undefined) {
+      throw new NotFoundError({ resource: "Handoff", identifier: id });
+    }
+    this.handoffs.set(id, { ...handoff, status: HandoffStatus.DeadLettered });
+  }
+
+  async setIpcMessageId(id: string, ipcMessageId: string): Promise<void> {
+    const handoff = this.handoffs.get(id);
+    if (handoff === undefined) {
+      throw new NotFoundError({ resource: "Handoff", identifier: id });
+    }
+    this.handoffs.set(id, { ...handoff, ipcMessageId });
   }
 
   async expireStale(now?: string): Promise<readonly Handoff[]> {

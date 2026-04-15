@@ -1146,14 +1146,34 @@ export async function contributeOperation(
       deps.topologyRouter !== undefined &&
       agentRole !== undefined
     ) {
-      fireAndForget("topology routing", () =>
-        deps.topologyRouter?.route(agentRole, {
+      fireAndForget("topology routing", async () => {
+        const routeResults = await deps.topologyRouter?.route(agentRole, {
           cid: contribution.cid,
           kind: contribution.kind,
           summary: contribution.summary,
           agentId: contribution.agent.agentId,
-        }),
-      );
+        });
+
+        // Link IPC message IDs back to handoff records (best-effort).
+        // Handoffs were created in writeContributionWithHandoffs; now we
+        // know the IPC message IDs from the route results.
+        if (routeResults && deps.handoffStore && handoffIds.length > 0) {
+          const handoffs = await deps.handoffStore.list({
+            sourceCid: contribution.cid,
+          });
+          for (const result of routeResults) {
+            if (!result.messageId) continue;
+            const matching = handoffs.find((h) => h.toRole === result.targetRole);
+            if (matching) {
+              try {
+                await deps.handoffStore.setIpcMessageId?.(matching.handoffId, result.messageId);
+              } catch {
+                // Best-effort — handoff record is the primary artifact
+              }
+            }
+          }
+        }
+      });
     }
 
     // --- Post-write: re-check stop conditions (outside mutex, best-effort) ---

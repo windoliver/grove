@@ -16,6 +16,7 @@
 import type { AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { EventBus, GroveEvent } from "../core/event-bus.js";
 import type { AgentTopology } from "../core/topology.js";
+import { debugLog } from "./debug-log.js";
 
 export interface NexusWsBridgeOptions {
   topology: AgentTopology;
@@ -177,15 +178,10 @@ export class NexusWsBridge {
       if (eventType !== "message_delivered") return;
 
       const event = JSON.parse(raw) as SseEvent;
-      try {
-        const { appendFileSync } = require("node:fs") as typeof import("node:fs");
-        appendFileSync(
-          "/tmp/grove-debug.log",
-          `[${new Date().toISOString()}] [wsBridge.handleEvent] role=${role} sender=${event.sender} path=${event.path} registeredSessions=[${[...this.sessions.keys()].join(",")}]\n`,
-        );
-      } catch {
-        /* */
-      }
+      debugLog(
+        "wsBridge.handleEvent",
+        `role=${role} sender=${event.sender} path=${event.path} registeredSessions=[${[...this.sessions.keys()].join(",")}]`,
+      );
 
       // Notify the TUI EventBus — triggers contribution feed refresh (no polling needed)
       if (this.opts.eventBus) {
@@ -196,20 +192,12 @@ export class NexusWsBridge {
           payload: { message_id: event.message_id },
           timestamp: new Date().toISOString(),
         };
-        this.opts.eventBus.publish(groveEvent);
+        void this.opts.eventBus.publish(groveEvent);
       }
 
       const session = this.sessions.get(role);
       if (!session) {
-        try {
-          const { appendFileSync } = require("node:fs") as typeof import("node:fs");
-          appendFileSync(
-            "/tmp/grove-debug.log",
-            `[${new Date().toISOString()}] [wsBridge.handleEvent] NO SESSION for role=${role} — cannot deliver\n`,
-          );
-        } catch {
-          /* */
-        }
+        debugLog("wsBridge.handleEvent", `NO SESSION for role=${role} — cannot deliver`);
         return;
       }
 
@@ -253,29 +241,16 @@ export class NexusWsBridge {
         await new Promise((r) => setTimeout(r, 2000 * 2 ** attempt));
       }
       if (!resp || !resp.ok) {
-        try {
-          const { appendFileSync } = require("node:fs") as typeof import("node:fs");
-          appendFileSync(
-            "/tmp/grove-debug.log",
-            `[${new Date().toISOString()}] [wsBridge.readAndPush] FAIL resp.status=${resp?.status ?? "none"} path=${path}\n`,
-          );
-        } catch {
-          /* */
-        }
+        debugLog("wsBridge.readAndPush", `FAIL resp.status=${resp?.status ?? "none"} path=${path}`);
         return;
       }
 
       const result = (await resp.json()) as { result?: { data?: string }; error?: unknown };
       if (!result.result?.data) {
-        try {
-          const { appendFileSync } = require("node:fs") as typeof import("node:fs");
-          appendFileSync(
-            "/tmp/grove-debug.log",
-            `[${new Date().toISOString()}] [wsBridge.readAndPush] NO DATA path=${path} error=${JSON.stringify(result.error ?? "none").slice(0, 100)}\n`,
-          );
-        } catch {
-          /* */
-        }
+        debugLog(
+          "wsBridge.readAndPush",
+          `NO DATA path=${path} error=${JSON.stringify(result.error ?? "none").slice(0, 100)}`,
+        );
         return;
       }
 
@@ -292,15 +267,10 @@ export class NexusWsBridge {
         (msg.payload?.body as string) ??
         JSON.stringify(msg.payload ?? {}).slice(0, 100);
       const notification = `[IPC from ${msgSender}] ${summary}`;
-      try {
-        const { appendFileSync } = require("node:fs") as typeof import("node:fs");
-        appendFileSync(
-          "/tmp/grove-debug.log",
-          `[${new Date().toISOString()}] [wsBridge.readAndPush] delivering to session=${session.id} role=${_targetRole} notification=${notification.slice(0, 80)}\n`,
-        );
-      } catch {
-        /* */
-      }
+      debugLog(
+        "wsBridge.readAndPush",
+        `delivering to session=${session.id} role=${_targetRole} notification=${notification.slice(0, 80)}`,
+      );
 
       void this.opts.runtime.send(session, notification).catch(() => {
         /* non-fatal */
