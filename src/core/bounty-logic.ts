@@ -18,7 +18,7 @@ import type { Contribution, Score } from "./models.js";
 const VALID_TRANSITIONS: Readonly<Record<BountyStatus, readonly BountyStatus[]>> = {
   draft: ["open", "cancelled"],
   open: ["claimed", "expired", "cancelled"],
-  claimed: ["pending_settlement", "completed", "open", "expired", "cancelled"],
+  claimed: ["pending_settlement", "open", "expired", "cancelled"],
   pending_settlement: ["completed", "claimed", "expired", "cancelled"],
   completed: ["settled", "expired", "cancelled"],
   settled: [],

@@ -1,15 +1,14 @@
 /**
  * BountyIndexSweep — reconciler strategy for NexusBountyStore dual-write consistency.
  *
- * Scans all bounty documents and ensures:
- * 1. Each bounty has a status index entry matching its current status.
- * 2. Stale index entries (pointing to a bounty with a different status) are deleted.
+ * Scans all bounty documents and calls repairIndex() for each one.
+ * repairIndex() ensures the correct status index entry exists AND deletes
+ * stale entries for other statuses. This covers both failure modes:
+ * 1. Missing current-status index (new index write failed)
+ * 2. Stale old-status index (old index delete failed)
  *
- * This fixes the dual-write gap where the document write succeeds but the
- * status index write fails (Issue #240, findings #2 and #3).
- *
- * Uses BountyStore.repairIndex() when available. For stores without a separate
- * index (e.g., SQLite), this sweep is detection-only.
+ * For stores without a separate index (e.g., SQLite), repairIndex is
+ * undefined and this sweep is a no-op.
  */
 
 import type { BountyStore } from "./bounty-store.js";
@@ -24,32 +23,28 @@ export class BountyIndexSweep implements SweepStrategy {
   }
 
   async sweep(): Promise<SweepResult> {
-    let found = 0;
     let repaired = 0;
     const errors: Error[] = [];
 
+    // Skip entirely if the store has no index to repair
+    if (!this.bountyStore.repairIndex) {
+      return { strategy: this.name, found: 0, repaired: 0, errors: [] };
+    }
+
     try {
-      // List ALL bounties (unfiltered) to get the authoritative document state.
       const allBounties = await this.bountyStore.listBounties();
 
       for (const bounty of allBounties) {
         try {
-          // Verify the bounty appears in its own status-filtered query.
-          const byStatus = await this.bountyStore.listBounties({ status: bounty.status });
-          const inIndex = byStatus.some((b) => b.bountyId === bounty.bountyId);
-          if (!inIndex) {
-            found++;
-            // Attempt repair if the store supports it
-            if (this.bountyStore.repairIndex) {
-              await this.bountyStore.repairIndex(bounty.bountyId);
-              repaired++;
-            }
-          }
+          // repairIndex ensures the correct status index entry exists and
+          // deletes stale entries for all other statuses. Idempotent.
+          await this.bountyStore.repairIndex(bounty.bountyId);
+          repaired++;
         } catch (err) {
           errors.push(
             err instanceof Error
               ? err
-              : new Error(`Index check failed for bounty ${bounty.bountyId}: ${String(err)}`),
+              : new Error(`Index repair failed for bounty ${bounty.bountyId}: ${String(err)}`),
           );
         }
       }
@@ -59,6 +54,7 @@ export class BountyIndexSweep implements SweepStrategy {
       );
     }
 
-    return { strategy: this.name, found, repaired, errors };
+    // "found" = total bounties scanned (all repaired unconditionally)
+    return { strategy: this.name, found: repaired, repaired, errors };
   }
 }

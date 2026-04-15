@@ -71,6 +71,15 @@ export class SettlementSweep implements SweepStrategy {
    * Handles both pending_settlement (pre-capture) and completed (post-capture).
    */
   private async resumeSettlement(bounty: Bounty): Promise<void> {
+    // Hard-fail if the bounty has an escrow but we can't capture it —
+    // settling without capture would mark the bounty paid with no funds moved.
+    if (bounty.reservationId && !this.creditsService) {
+      throw new Error(
+        `Cannot resume settlement for bounty ${bounty.bountyId}: ` +
+          "reservationId is set but no creditsService is available",
+      );
+    }
+
     // Capture credits if escrow is active (idempotent — already-captured is a no-op)
     if (this.creditsService && bounty.reservationId) {
       if (bounty.claimedBy) {
