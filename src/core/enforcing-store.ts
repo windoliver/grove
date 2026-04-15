@@ -15,7 +15,7 @@
  */
 
 import type { ContentStore } from "./cas.js";
-import type { GroveContract } from "./contract.js";
+import type { SessionRuntimeConfig } from "./session-config.js";
 import {
   ArtifactLimitError,
   ConcurrencyLimitError,
@@ -134,7 +134,7 @@ function getMutexForStore(store: ContributionStore | ClaimStore): AsyncMutex {
 export class EnforcingContributionStore implements ContributionStore {
   private readonly inner: ContributionStore;
   private readonly cas: ContentStore | undefined;
-  private readonly contract: GroveContract;
+  private readonly config: SessionRuntimeConfig;
   private readonly clock: () => Date;
   private readonly writeMutex: AsyncMutex;
 
@@ -152,14 +152,14 @@ export class EnforcingContributionStore implements ContributionStore {
 
   constructor(
     inner: ContributionStore,
-    contract: GroveContract,
+    config: SessionRuntimeConfig,
     options?: {
       cas?: ContentStore;
       clock?: () => Date;
     },
   ) {
     this.inner = inner;
-    this.contract = contract;
+    this.config = config;
     this.cas = options?.cas;
     this.clock = options?.clock ?? (() => new Date());
     this.writeMutex = getMutexForStore(inner);
@@ -318,7 +318,7 @@ export class EnforcingContributionStore implements ContributionStore {
     _batchIndex: number,
     precedingInBatch: readonly Contribution[],
   ): Promise<void> {
-    const rl = this.contract.rateLimits;
+    const rl = this.config.rateLimits;
 
     // Reject backdated / future-dated contributions to prevent rate-limit bypass.
     // Only enforced when rate limits are configured — without rate limits there is
@@ -493,12 +493,12 @@ export class EnforcingContributionStore implements ContributionStore {
  */
 export class EnforcingClaimStore implements ClaimStore {
   private readonly inner: ClaimStore;
-  private readonly contract: GroveContract;
+  private readonly config: SessionRuntimeConfig;
   private readonly writeMutex: AsyncMutex;
 
-  constructor(inner: ClaimStore, contract: GroveContract) {
+  constructor(inner: ClaimStore, config: SessionRuntimeConfig) {
     this.inner = inner;
-    this.contract = contract;
+    this.config = config;
     this.writeMutex = getMutexForStore(inner);
   }
 
@@ -511,15 +511,15 @@ export class EnforcingClaimStore implements ClaimStore {
   };
 
   heartbeat = async (claimId: string, leaseDurationMs?: number): Promise<Claim> => {
-    // Determine effective lease duration: caller > contract default > store default
+    // Determine effective lease duration: caller > config default > store default
     const contractDefaultMs =
-      this.contract.execution?.defaultLeaseSeconds !== undefined
-        ? this.contract.execution.defaultLeaseSeconds * 1000
+      this.config.execution?.defaultLeaseSeconds !== undefined
+        ? this.config.execution.defaultLeaseSeconds * 1000
         : undefined;
     const effectiveDurationMs = leaseDurationMs ?? contractDefaultMs;
 
     // Enforce max lease if configured
-    const maxLeaseSeconds = this.contract.execution?.maxLeaseSeconds;
+    const maxLeaseSeconds = this.config.execution?.maxLeaseSeconds;
     if (maxLeaseSeconds !== undefined && effectiveDurationMs !== undefined) {
       const effectiveSeconds = effectiveDurationMs / 1000;
       if (effectiveSeconds > maxLeaseSeconds) {
@@ -575,7 +575,7 @@ export class EnforcingClaimStore implements ClaimStore {
   // ========================================================================
 
   private async enforceConcurrencyLimits(claim: Claim): Promise<void> {
-    const concurrency = this.contract.concurrency;
+    const concurrency = this.config.concurrency;
     if (concurrency === undefined) return;
 
     // Check global active claim limit
@@ -620,7 +620,7 @@ export class EnforcingClaimStore implements ClaimStore {
   }
 
   private enforceLeaseLimit(claim: Claim): void {
-    const maxLeaseSeconds = this.contract.execution?.maxLeaseSeconds;
+    const maxLeaseSeconds = this.config.execution?.maxLeaseSeconds;
     if (maxLeaseSeconds === undefined) return;
 
     const leaseMs = new Date(claim.leaseExpiresAt).getTime() - new Date(claim.createdAt).getTime();
