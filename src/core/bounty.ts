@@ -78,7 +78,7 @@ export interface BountyCriteria {
  * A bounty — a reward offer for completing specific work.
  *
  * Bounties are mutable coordination objects with a lifecycle
- * (draft → open → claimed → completed → settled).
+ * (draft → open → claimed → pending_settlement → completed → settled).
  * Like Claims, bounty objects returned by the store are readonly
  * snapshots; state transitions produce new snapshots.
  */

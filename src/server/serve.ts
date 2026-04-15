@@ -100,6 +100,7 @@ const app = createApp(deps);
 // ---------------------------------------------------------------------------
 
 import { BountyIndexSweep } from "../core/bounty-index-sweep.js";
+import { SettlementSweep } from "../core/settlement-sweep.js";
 import { SweepReconciler } from "../core/sweep-reconciler.js";
 
 let sweepReconciler: SweepReconciler | undefined;
@@ -117,12 +118,13 @@ if (serverBountyStore) {
     },
   });
   sweepReconciler.register(new BountyIndexSweep(serverBountyStore));
-  // SettlementSweep requires a CreditsService to safely resume escrowed
-  // bounties. The local runtime does not provide one yet, so we only
-  // register BountyIndexSweep here. When a production CreditsService is
-  // wired in, add: sweepReconciler.register(new SettlementSweep(store, credits));
+  // SettlementSweep runs without creditsService — it can recover non-escrowed
+  // bounties. Escrowed bounties (those with reservationId) will log an error
+  // and wait for a CreditsService to be available. When a production
+  // CreditsService is wired in, pass it: new SettlementSweep(store, credits).
+  sweepReconciler.register(new SettlementSweep(serverBountyStore));
   sweepReconciler.start();
-  console.log("sweep-reconciler started (BountyIndexSweep)");
+  console.log("sweep-reconciler started (BountyIndexSweep, SettlementSweep)");
 }
 
 // ---------------------------------------------------------------------------
