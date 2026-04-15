@@ -13,12 +13,12 @@
  */
 
 import {
+  canTransition,
   type Handoff,
   type HandoffInput,
   type HandoffQuery,
   HandoffStatus,
   type HandoffStore,
-  canTransition,
 } from "../core/handoff.js";
 import { debugLog } from "../tui/debug-log.js";
 import type { NexusClient } from "./client.js";
@@ -340,7 +340,8 @@ export class NexusHandoffStore implements HandoffStore {
     const idx = handoffs.findIndex((h) => h.handoffId === handoffId);
     if (idx === -1) return; // handoff not in this file
 
-    const current = handoffs[idx]!;
+    const current = handoffs[idx];
+    if (!current) return;
     if (!canTransition(current.status, targetStatus)) {
       debugLog(
         "NexusHandoffStore.transitionHandoff",

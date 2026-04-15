@@ -67,7 +67,11 @@ export class NexusIpcClient {
   ): Promise<IpcSendResult> {
     // Skip if we've determined the endpoint permanently doesn't exist (404/405).
     if (this.endpointAvailable === false) {
-      return { ok: false, error: "IPC endpoint unavailable (permanent 404/405)", infrastructureError: true };
+      return {
+        ok: false,
+        error: "IPC endpoint unavailable (permanent 404/405)",
+        infrastructureError: true,
+      };
     }
 
     // Backoff on transient failures (502/503/network) — retry after TRANSIENT_BACKOFF_MS.
@@ -90,7 +94,10 @@ export class NexusIpcClient {
 
       if (!resp.ok) {
         const error = `IPC send failed: HTTP ${resp.status}`;
-        debugLog("nexus-ipc", `SEND FAIL sender=${sender} recipient=${recipient} status=${resp.status}`);
+        debugLog(
+          "nexus-ipc",
+          `SEND FAIL sender=${sender} recipient=${recipient} status=${resp.status}`,
+        );
         // 404/405 = endpoint doesn't exist on this Nexus version → permanent disable
         const isPermanent = resp.status === 404 || resp.status === 405;
         // 429/5xx/auth = retryable/infrastructure, NOT a delivery rejection.

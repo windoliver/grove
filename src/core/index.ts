@@ -222,8 +222,8 @@ export { SubprocessRuntime } from "./subprocess-runtime.js";
 export { toUtcIso } from "./time.js";
 export { TmuxRuntime } from "./tmux-runtime.js";
 export { resolveTopology } from "./topology-resolver.js";
-export { TopologyRouter } from "./topology-router.js";
 export type { RouteResult } from "./topology-router.js";
+export { TopologyRouter } from "./topology-router.js";
 export type {
   CheckoutOptions,
   StaleOptions,

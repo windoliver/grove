@@ -13,13 +13,10 @@ import { NexusHandoffStore } from "./nexus-handoff-store.js";
 // Conformance
 // ---------------------------------------------------------------------------
 
-runHandoffStoreConformanceTests(
-  "NexusHandoffStore",
-  () => {
-    const client = new MockNexusClient();
-    return new NexusHandoffStore(client, "test-session", "default");
-  },
-);
+runHandoffStoreConformanceTests("NexusHandoffStore", () => {
+  const client = new MockNexusClient();
+  return new NexusHandoffStore(client, "test-session", "default");
+});
 
 // ---------------------------------------------------------------------------
 // Nexus-specific tests
@@ -90,7 +87,7 @@ describe("NexusHandoffStore: Nexus-specific behavior", () => {
     const store1 = new NexusHandoffStore(client, "sess-1", "default");
     const store2 = new NexusHandoffStore(client, "sess-2", "default");
     try {
-      const h = await store2.create({
+      await store2.create({
         handoffId: "cross-session-id",
         sourceCid: "blake3:a",
         fromRole: "coder",

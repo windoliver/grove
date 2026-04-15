@@ -192,6 +192,7 @@ describe("NexusEventBus", () => {
 
   test("unsubscribe on non-existent role is a no-op", () => {
     const bus = new NexusEventBus(undefined);
+    // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op handler
     bus.unsubscribe("nonexistent", () => {});
     bus.close();
   });

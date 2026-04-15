@@ -242,7 +242,11 @@ export class NexusWsBridge {
    *
    * Best-effort — handoff store errors don't block delivery.
    */
-  private async updateHandoffDeliveryStatus(ipcMessageId: string, targetRole: string, sender?: string): Promise<void> {
+  private async updateHandoffDeliveryStatus(
+    ipcMessageId: string,
+    targetRole: string,
+    sender?: string,
+  ): Promise<void> {
     try {
       const store = this.opts.handoffStore;
       if (!store) return;

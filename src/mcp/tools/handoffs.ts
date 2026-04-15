@@ -8,7 +8,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { HandoffStatus, canTransition } from "../../core/handoff.js";
+import { canTransition, HandoffStatus } from "../../core/handoff.js";
 import type { McpDeps } from "../deps.js";
 import { toolError } from "../error-handler.js";
 

@@ -23,11 +23,7 @@ export type HandoffStatus = (typeof HandoffStatus)[keyof typeof HandoffStatus];
 const VALID_TRANSITIONS: ReadonlyMap<HandoffStatus, ReadonlySet<HandoffStatus>> = new Map([
   [
     HandoffStatus.PendingPickup,
-    new Set([
-      HandoffStatus.Delivered,
-      HandoffStatus.Expired,
-      HandoffStatus.DeadLettered,
-    ]),
+    new Set([HandoffStatus.Delivered, HandoffStatus.Expired, HandoffStatus.DeadLettered]),
   ],
   [
     HandoffStatus.Delivered,
@@ -38,13 +34,7 @@ const VALID_TRANSITIONS: ReadonlyMap<HandoffStatus, ReadonlySet<HandoffStatus>> 
       HandoffStatus.DeadLettered,
     ]),
   ],
-  [
-    HandoffStatus.Processed,
-    new Set([
-      HandoffStatus.Replied,
-      HandoffStatus.Expired,
-    ]),
-  ],
+  [HandoffStatus.Processed, new Set([HandoffStatus.Replied, HandoffStatus.Expired])],
   // Terminal states — no outgoing transitions
   [HandoffStatus.Replied, new Set()],
   [HandoffStatus.Expired, new Set()],

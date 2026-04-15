@@ -13,11 +13,11 @@ import { describe, expect, test } from "bun:test";
 import { HandoffStatus } from "../core/handoff.js";
 import { InMemoryHandoffStore } from "../core/in-memory-handoff-store.js";
 import { LocalEventBus } from "../core/local-event-bus.js";
-import type { AgentTopology } from "../core/topology.js";
-import { TopologyRouter } from "../core/topology-router.js";
 import { contributeOperation } from "../core/operations/contribute.js";
 import type { OperationDeps } from "../core/operations/deps.js";
 import { makeInMemoryContributionStore } from "../core/operations/test-helpers.js";
+import type { AgentTopology } from "../core/topology.js";
+import { TopologyRouter } from "../core/topology-router.js";
 import { NexusEventBus } from "./nexus-event-bus.js";
 import type { IpcSendResult, NexusIpcClient } from "./nexus-ipc-client.js";
 
@@ -260,7 +260,11 @@ describe("IPC handoff integration", () => {
   test("infrastructure error (404/connection refused) does NOT dead-letter handoffs", async () => {
     // Simulate a Nexus that has VFS but no IPC endpoint (404)
     const ipc = {
-      send: async () => ({ ok: false, error: "IPC send failed: HTTP 404", infrastructureError: true }),
+      send: async () => ({
+        ok: false,
+        error: "IPC send failed: HTTP 404",
+        infrastructureError: true,
+      }),
     } as unknown as NexusIpcClient;
 
     const eventBus = new NexusEventBus(ipc);
@@ -280,7 +284,11 @@ describe("IPC handoff integration", () => {
   test("delivery rejection (non-infrastructure) DOES dead-letter handoffs", async () => {
     // Simulate IPC endpoint available but rejecting the message
     const ipc = {
-      send: async () => ({ ok: false, error: "recipient not registered", infrastructureError: false }),
+      send: async () => ({
+        ok: false,
+        error: "recipient not registered",
+        infrastructureError: false,
+      }),
     } as unknown as NexusIpcClient;
 
     const eventBus = new NexusEventBus(ipc);

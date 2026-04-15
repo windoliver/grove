@@ -28,6 +28,7 @@ function makeMockRuntime(): AgentRuntime {
     spawn: mock(() => Promise.resolve(makeSession("mock"))),
     send: mock(() => Promise.resolve()),
     close: mock(() => Promise.resolve()),
+    // biome-ignore lint/suspicious/noEmptyBlockStatements: mock no-op
     onIdle: mock(() => {}),
     listSessions: mock(() => Promise.resolve([])),
     isAvailable: mock(() => Promise.resolve(true)),
@@ -69,8 +70,9 @@ class TestableNexusWsBridge extends NexusWsBridge {
   /** Expose handleEvent for testing. */
   testHandleEvent(role: string, eventType: string | null, raw: string): void {
     // Access private method — test-only subclass
-    (this as unknown as { handleEvent: (r: string, e: string | null, d: string) => void })
-      .handleEvent(role, eventType, raw);
+    (
+      this as unknown as { handleEvent: (r: string, e: string | null, d: string) => void }
+    ).handleEvent(role, eventType, raw);
   }
 }
 
@@ -98,14 +100,18 @@ describe("NexusWsBridge", () => {
     const session = makeSession("reviewer");
     bridge.registerSession("reviewer", session);
 
-    bridge.testHandleEvent("reviewer", "heartbeat", JSON.stringify({
-      event: "heartbeat",
-      message_id: "msg-1",
-      sender: "coder",
-      recipient: "reviewer",
-      type: "event",
-      path: "/inbox/msg-1",
-    }));
+    bridge.testHandleEvent(
+      "reviewer",
+      "heartbeat",
+      JSON.stringify({
+        event: "heartbeat",
+        message_id: "msg-1",
+        sender: "coder",
+        recipient: "reviewer",
+        type: "event",
+        path: "/inbox/msg-1",
+      }),
+    );
 
     // runtime.send should NOT have been called
     expect(runtime.send).not.toHaveBeenCalled();
@@ -136,14 +142,18 @@ describe("NexusWsBridge", () => {
         { status: 200 },
       )) as unknown as typeof fetch;
 
-    bridge.testHandleEvent("reviewer", "message_delivered", JSON.stringify({
-      event: "message_delivered",
-      message_id: "msg-1",
-      sender: "coder",
-      recipient: "reviewer",
-      type: "event",
-      path: "/inbox/msg-1",
-    }));
+    bridge.testHandleEvent(
+      "reviewer",
+      "message_delivered",
+      JSON.stringify({
+        event: "message_delivered",
+        message_id: "msg-1",
+        sender: "coder",
+        recipient: "reviewer",
+        type: "event",
+        path: "/inbox/msg-1",
+      }),
+    );
 
     // EventBus should have received the event
     expect(received).toHaveLength(1);
@@ -162,17 +172,20 @@ describe("NexusWsBridge", () => {
     const bridge = new TestableNexusWsBridge(makeBridgeOpts({ runtime, eventBus: bus }));
     // No session registered for "reviewer"
 
-    globalThis.fetch = (async () =>
-      new Response("{}", { status: 200 })) as unknown as typeof fetch;
+    globalThis.fetch = (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
 
-    bridge.testHandleEvent("reviewer", "message_delivered", JSON.stringify({
-      event: "message_delivered",
-      message_id: "msg-1",
-      sender: "coder",
-      recipient: "reviewer",
-      type: "event",
-      path: "/inbox/msg-1",
-    }));
+    bridge.testHandleEvent(
+      "reviewer",
+      "message_delivered",
+      JSON.stringify({
+        event: "message_delivered",
+        message_id: "msg-1",
+        sender: "coder",
+        recipient: "reviewer",
+        type: "event",
+        path: "/inbox/msg-1",
+      }),
+    );
 
     // Give async readAndPush a tick
     await new Promise((r) => setTimeout(r, 20));
@@ -199,23 +212,29 @@ describe("NexusWsBridge", () => {
         { status: 200 },
       )) as unknown as typeof fetch;
 
-    const bridge = new TestableNexusWsBridge(makeBridgeOpts({
-      runtime,
-      onBeforeDeliver: (sender, recipient) => {
-        deliverCalls.push({ sender, recipient });
-      },
-    }));
+    const bridge = new TestableNexusWsBridge(
+      makeBridgeOpts({
+        runtime,
+        onBeforeDeliver: (sender, recipient) => {
+          deliverCalls.push({ sender, recipient });
+        },
+      }),
+    );
     const session = makeSession("reviewer");
     bridge.registerSession("reviewer", session);
 
-    bridge.testHandleEvent("reviewer", "message_delivered", JSON.stringify({
-      event: "message_delivered",
-      message_id: "msg-1",
-      sender: "coder",
-      recipient: "reviewer",
-      type: "event",
-      path: "/inbox/msg-1",
-    }));
+    bridge.testHandleEvent(
+      "reviewer",
+      "message_delivered",
+      JSON.stringify({
+        event: "message_delivered",
+        message_id: "msg-1",
+        sender: "coder",
+        recipient: "reviewer",
+        type: "event",
+        path: "/inbox/msg-1",
+      }),
+    );
 
     await new Promise((r) => setTimeout(r, 20));
 
@@ -261,14 +280,18 @@ describe("NexusWsBridge", () => {
     const session = makeSession("reviewer");
     bridge.registerSession("reviewer", session);
 
-    bridge.testHandleEvent("reviewer", "message_delivered", JSON.stringify({
-      event: "message_delivered",
-      message_id: "msg-1",
-      sender: "coder",
-      recipient: "reviewer",
-      type: "event",
-      path: "/inbox/msg-1",
-    }));
+    bridge.testHandleEvent(
+      "reviewer",
+      "message_delivered",
+      JSON.stringify({
+        event: "message_delivered",
+        message_id: "msg-1",
+        sender: "coder",
+        recipient: "reviewer",
+        type: "event",
+        path: "/inbox/msg-1",
+      }),
+    );
 
     // readAndPush is async — wait for it
     await new Promise((r) => setTimeout(r, 50));
@@ -285,21 +308,24 @@ describe("NexusWsBridge", () => {
   test("readAndPush handles VFS read failure gracefully", async () => {
     const runtime = makeMockRuntime();
 
-    globalThis.fetch = (async () =>
-      new Response("", { status: 500 })) as unknown as typeof fetch;
+    globalThis.fetch = (async () => new Response("", { status: 500 })) as unknown as typeof fetch;
 
     const bridge = new TestableNexusWsBridge(makeBridgeOpts({ runtime }));
     const session = makeSession("reviewer");
     bridge.registerSession("reviewer", session);
 
-    bridge.testHandleEvent("reviewer", "message_delivered", JSON.stringify({
-      event: "message_delivered",
-      message_id: "msg-1",
-      sender: "coder",
-      recipient: "reviewer",
-      type: "event",
-      path: "/inbox/msg-1",
-    }));
+    bridge.testHandleEvent(
+      "reviewer",
+      "message_delivered",
+      JSON.stringify({
+        event: "message_delivered",
+        message_id: "msg-1",
+        sender: "coder",
+        recipient: "reviewer",
+        type: "event",
+        path: "/inbox/msg-1",
+      }),
+    );
 
     await new Promise((r) => setTimeout(r, 50));
 
@@ -318,14 +344,18 @@ describe("NexusWsBridge", () => {
     const session = makeSession("reviewer");
     bridge.registerSession("reviewer", session);
 
-    bridge.testHandleEvent("reviewer", "message_delivered", JSON.stringify({
-      event: "message_delivered",
-      message_id: "msg-1",
-      sender: "coder",
-      recipient: "reviewer",
-      type: "event",
-      path: "/inbox/msg-1",
-    }));
+    bridge.testHandleEvent(
+      "reviewer",
+      "message_delivered",
+      JSON.stringify({
+        event: "message_delivered",
+        message_id: "msg-1",
+        sender: "coder",
+        recipient: "reviewer",
+        type: "event",
+        path: "/inbox/msg-1",
+      }),
+    );
 
     await new Promise((r) => setTimeout(r, 50));
 
@@ -374,8 +404,7 @@ describe("NexusWsBridge", () => {
   });
 
   test("send() returns false on non-ok response", async () => {
-    globalThis.fetch = (async () =>
-      new Response("", { status: 500 })) as unknown as typeof fetch;
+    globalThis.fetch = (async () => new Response("", { status: 500 })) as unknown as typeof fetch;
 
     const bridge = new NexusWsBridge(makeBridgeOpts());
     const ok = await bridge.send("coder", "reviewer", { summary: "test" });

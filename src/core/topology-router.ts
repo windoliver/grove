@@ -1,4 +1,4 @@
-import type { EventBus, GroveEvent, PublishResult } from "./event-bus.js";
+import type { EventBus, GroveEvent } from "./event-bus.js";
 import type { AgentRole, AgentTopology, RoleEdge } from "./topology.js";
 
 /** Result of routing an event to a target role. */
@@ -77,7 +77,10 @@ export class TopologyRouter {
    *
    * All IPC sends run in parallel (Promise.all) so N targets pay 1x latency.
    */
-  async route(sourceRole: string, payload: Record<string, unknown>): Promise<readonly RouteResult[]> {
+  async route(
+    sourceRole: string,
+    payload: Record<string, unknown>,
+  ): Promise<readonly RouteResult[]> {
     const role = this.roleMap.get(sourceRole);
     const mode = role?.mode ?? "explicit";
 

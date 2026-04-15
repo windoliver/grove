@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { HandoffStatus, canTransition } from "./handoff.js";
+import { canTransition, HandoffStatus } from "./handoff.js";
 
 const { PendingPickup, Delivered, Processed, Replied, Expired, DeadLettered } = HandoffStatus;
 

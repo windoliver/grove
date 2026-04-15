@@ -29,11 +29,7 @@ export class NexusEventBus implements EventBus {
 
     // Send via Nexus IPC when available
     if (this.ipcClient !== undefined) {
-      result = await this.ipcClient.send(
-        event.sourceRole,
-        event.targetRole,
-        event.payload,
-      );
+      result = await this.ipcClient.send(event.sourceRole, event.targetRole, event.payload);
     }
 
     // Also notify local handlers (for in-process subscribers)
