@@ -23,12 +23,12 @@
  */
 
 import type { Gate, MetricDefinition } from "./contract.js";
-import type { SessionRuntimeConfig } from "./session-config.js";
 import { PolicyViolationError } from "./errors.js";
 import type { Contribution } from "./models.js";
 import { ContributionMode } from "./models.js";
 import type { OutcomeRecord, OutcomeStore } from "./outcome.js";
 import { OutcomeStatus } from "./outcome.js";
+import type { SessionRuntimeConfig } from "./session-config.js";
 import { evaluateStopConditions } from "./stop-conditions.js";
 import type { ContributionStore } from "./store.js";
 

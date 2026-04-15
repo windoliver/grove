@@ -15,7 +15,6 @@
  */
 
 import type { ContentStore } from "./cas.js";
-import type { SessionRuntimeConfig } from "./session-config.js";
 import {
   ArtifactLimitError,
   ConcurrencyLimitError,
@@ -23,6 +22,7 @@ import {
   RateLimitError,
 } from "./errors.js";
 import type { Claim, Contribution, ContributionKind, Relation, RelationType } from "./models.js";
+import type { SessionRuntimeConfig } from "./session-config.js";
 import type {
   ActiveClaimFilter,
   ClaimQuery,

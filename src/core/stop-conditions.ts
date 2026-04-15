@@ -10,8 +10,8 @@
  */
 
 import type { MetricDefinition } from "./contract.js";
-import type { SessionRuntimeConfig } from "./session-config.js";
 import type { Contribution, ContributionMode, JsonValue } from "./models.js";
+import type { SessionRuntimeConfig } from "./session-config.js";
 import type { ContributionStore } from "./store.js";
 
 // ---------------------------------------------------------------------------
