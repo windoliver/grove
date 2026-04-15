@@ -254,7 +254,24 @@ export async function claimBountyOperation(
       leaseExpiresAt: new Date(now.getTime() + leaseDurationMs).toISOString(),
     });
 
-    const claimed = await deps.bountyStore.claimBounty(input.bountyId, agent, claim.claimId);
+    let claimed: Bounty;
+    try {
+      claimed = await deps.bountyStore.claimBounty(input.bountyId, agent, claim.claimId);
+    } catch (bountyErr) {
+      // If the bounty transition failed (pre-commit or CAS conflict), the
+      // claim lease is orphaned. Re-read the bounty: if it's still open,
+      // the transition didn't commit and we can safely release the claim.
+      // If it's already claimed (post-commit failure), keep the claim.
+      try {
+        const current = await deps.bountyStore.getBounty(input.bountyId);
+        if (current && current.status === BS.Open) {
+          await deps.claimStore.release(claim.claimId);
+        }
+      } catch {
+        // Best-effort release — claim will expire via lease timeout
+      }
+      throw bountyErr;
+    }
 
     return ok({
       bountyId: claimed.bountyId,
