@@ -998,6 +998,12 @@ export async function contributeOperation(
           }
           if (timeoutMap.size > 0) replyTimeouts = timeoutMap;
         }
+        if (process.env.GROVE_DEBUG === "1") {
+          const timeoutInfo = replyTimeouts ? [...replyTimeouts.entries()].map(([r, t]) => `${r}=${t}s`).join(", ") : "none";
+          process.stderr.write(
+            `[grove:handoff] ROUTE role=${contribution.agent.role} targets=[${routedTo?.join(",")}] deadlines={${timeoutInfo}}\n`,
+          );
+        }
       }
     }
 
@@ -1044,6 +1050,12 @@ export async function contributeOperation(
       idempotencyOnCommit,
       replyTimeouts,
     );
+
+    if (process.env.GROVE_DEBUG === "1" && handoffIds.length > 0) {
+      process.stderr.write(
+        `[grove:handoff] CREATED cid=${contribution.cid.slice(0, 20)}.. handoffIds=[${handoffIds.map((h) => h.slice(0, 8)).join(",")}] targets=[${handoffsRoutedTo?.join(",") ?? ""}]\n`,
+      );
+    }
 
     // ┌──────────────────────────────────────────────────────────────────┐
     // │ DURABLE COMMIT BOUNDARY                                          │
@@ -1128,6 +1140,11 @@ export async function contributeOperation(
           try {
             const h = await deps.handoffStore?.get(hid);
             if (h?.replyDueAt !== undefined) {
+              if (process.env.GROVE_DEBUG === "1") {
+                process.stderr.write(
+                  `[grove:handoff] WATCH handoff=${hid.slice(0, 8)} toRole=${h.toRole} replyDueAt=${h.replyDueAt}\n`,
+                );
+              }
               deps.deadlineWatcher?.watch(h);
             }
           } catch {
@@ -1158,6 +1175,11 @@ export async function contributeOperation(
                 status: [HandoffStatus.PendingPickup, HandoffStatus.Delivered],
               });
               for (const h of unresolved ?? []) {
+                if (process.env.GROVE_DEBUG === "1") {
+                  process.stderr.write(
+                    `[grove:handoff] REPLY handoff=${h.handoffId.slice(0, 8)} resolvedBy=${contribution.cid.slice(0, 20)}.. relation=${rel.relationType}\n`,
+                  );
+                }
                 await deps.handoffStore?.markReplied(h.handoffId, contribution.cid);
                 // Cancel deadline timer for resolved handoff
                 deps.deadlineWatcher?.cancel(h.handoffId);

@@ -18,6 +18,12 @@ import type { EventBus } from "./event-bus.js";
 import type { Handoff, HandoffStore } from "./handoff.js";
 import { HandoffStatus } from "./handoff.js";
 
+const DEBUG = process.env.GROVE_DEBUG === "1";
+function log(msg: string): void {
+  if (!DEBUG) return;
+  process.stderr.write(`[grove:deadline-watcher] ${msg}\n`);
+}
+
 export interface DeadlineWatcherOpts {
   /** HandoffStore to query on timer fire (verify still unresolved). */
   readonly handoffStore: HandoffStore;
@@ -59,7 +65,10 @@ export class DeadlineWatcher {
     const deadlineMs = new Date(handoff.replyDueAt).getTime();
     const delayMs = Math.max(0, deadlineMs - Date.now());
 
+    log(`WATCH handoff=${handoff.handoffId.slice(0, 8)} toRole=${handoff.toRole} delayMs=${delayMs} replyDueAt=${handoff.replyDueAt}`);
+
     const timer = setTimeout(() => {
+      log(`TIMER FIRED handoff=${handoff.handoffId.slice(0, 8)} — checking if still unresolved`);
       this.timers.delete(handoff.handoffId);
       void this.onDeadlineFired(handoff.handoffId, handoff.fromRole, handoff.toRole);
     }, delayMs);
@@ -76,6 +85,7 @@ export class DeadlineWatcher {
   cancel(handoffId: string): void {
     const timer = this.timers.get(handoffId);
     if (timer !== undefined) {
+      log(`CANCEL handoff=${handoffId.slice(0, 8)} — resolved before deadline`);
       clearTimeout(timer);
       this.timers.delete(handoffId);
     }
@@ -104,6 +114,7 @@ export class DeadlineWatcher {
       }
     }
 
+    log(`REBUILD registered=${registered} from ${unresolved.length} unresolved handoffs`);
     return registered;
   }
 
@@ -139,6 +150,7 @@ export class DeadlineWatcher {
         handoff.status === HandoffStatus.PendingPickup ||
         handoff.status === HandoffStatus.Delivered
       ) {
+        log(`OVERDUE handoff=${handoffId.slice(0, 8)} status=${handoff.status} toRole=${toRole} — emitting handoff.overdue event`);
         this.eventBus.publish({
           type: "handoff.overdue",
           sourceRole: fromRole,
@@ -151,8 +163,11 @@ export class DeadlineWatcher {
           },
           timestamp: new Date().toISOString(),
         });
+      } else {
+        log(`TIMER FIRED handoff=${handoffId.slice(0, 8)} status=${handoff.status} — already resolved, skipping`);
       }
-    } catch {
+    } catch (err) {
+      log(`TIMER ERROR handoff=${handoffId.slice(0, 8)} err=${err instanceof Error ? err.message : String(err)}`);
       // Best-effort — timer callback failures are non-fatal
     }
   }

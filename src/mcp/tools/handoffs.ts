@@ -155,6 +155,12 @@ export function registerHandoffTools(server: McpServer, deps: McpDeps): void {
         await store.markAcked(args.handoffId);
       }
 
+      if (process.env.GROVE_DEBUG === "1") {
+        process.stderr.write(
+          `[grove:handoff] ACK handoff=${args.handoffId.slice(0, 8)} level=${args.level} toRole=${handoff.toRole}\n`,
+        );
+      }
+
       const updated = await store.get(args.handoffId);
       return {
         content: [{ type: "text" as const, text: JSON.stringify(updated) }],

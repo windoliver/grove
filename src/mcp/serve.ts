@@ -288,8 +288,13 @@ try {
   if (activeHandoffStore !== undefined && eventBus !== undefined) {
     const { DeadlineWatcher } = await import("../core/deadline-watcher.js");
     deadlineWatcher = new DeadlineWatcher({ handoffStore: activeHandoffStore, eventBus });
+    process.stderr.write(`grove-mcp: DeadlineWatcher created (handoffStore + eventBus wired)\n`);
     // Rebuild timers for any unresolved handoffs from previous sessions (best-effort)
-    void deadlineWatcher.rebuildFromStore().catch(() => {
+    void deadlineWatcher.rebuildFromStore().then((count) => {
+      if (count > 0) {
+        process.stderr.write(`grove-mcp: DeadlineWatcher rebuilt ${count} timer(s) from store\n`);
+      }
+    }).catch(() => {
       /* non-fatal — timers will be registered for new handoffs going forward */
     });
   }
