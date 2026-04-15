@@ -105,9 +105,15 @@ export class InMemoryHandoffStore implements HandoffStore {
     const cutoff = now ?? new Date().toISOString();
     const expired: Handoff[] = [];
 
+    const expirableStatuses: ReadonlySet<HandoffStatus> = new Set([
+      HandoffStatus.PendingPickup,
+      HandoffStatus.Delivered,
+      HandoffStatus.Processed,
+    ]);
+
     for (const [handoffId, handoff] of this.handoffs) {
       if (
-        handoff.status === HandoffStatus.PendingPickup &&
+        expirableStatuses.has(handoff.status) &&
         handoff.replyDueAt !== undefined &&
         handoff.replyDueAt < cutoff
       ) {

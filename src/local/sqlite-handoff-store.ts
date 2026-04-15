@@ -193,9 +193,15 @@ export class SqliteHandoffStore implements HandoffStore {
       .prepare(
         `UPDATE handoffs
          SET status = ?
-         WHERE status = ? AND reply_due_at IS NOT NULL AND reply_due_at < ?`,
+         WHERE status IN (?, ?, ?) AND reply_due_at IS NOT NULL AND reply_due_at < ?`,
       )
-      .run(HandoffStatus.Expired, HandoffStatus.PendingPickup, cutoff);
+      .run(
+        HandoffStatus.Expired,
+        HandoffStatus.PendingPickup,
+        HandoffStatus.Delivered,
+        HandoffStatus.Processed,
+        cutoff,
+      );
 
     const rows = this.db
       .prepare(

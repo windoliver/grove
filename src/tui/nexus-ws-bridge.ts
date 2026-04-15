@@ -211,7 +211,7 @@ export class NexusWsBridge {
       // The message_delivered SSE confirms Nexus inbox delivery.
       // Find the handoff by IPC message ID and transition its status.
       if (this.opts.handoffStore && event.message_id) {
-        void this.updateHandoffDeliveryStatus(event.message_id, role);
+        void this.updateHandoffDeliveryStatus(event.message_id, role, event.sender);
       }
 
       const session = this.sessions.get(role);
@@ -242,7 +242,7 @@ export class NexusWsBridge {
    *
    * Best-effort — handoff store errors don't block delivery.
    */
-  private async updateHandoffDeliveryStatus(ipcMessageId: string, targetRole: string): Promise<void> {
+  private async updateHandoffDeliveryStatus(ipcMessageId: string, targetRole: string, sender?: string): Promise<void> {
     try {
       const store = this.opts.handoffStore;
       if (!store) return;
@@ -252,11 +252,17 @@ export class NexusWsBridge {
       // Primary: match by IPC message ID (exact correlation)
       let matching = handoffs.find((h) => h.ipcMessageId === ipcMessageId);
 
-      // Fallback: match most recent pending handoff for this role.
-      // Handles the race where SSE arrives before ipcMessageId is written.
-      if (!matching) {
+      // Fallback: match most recent pending handoff for this role FROM the
+      // same sender. Constrains by sender to avoid cross-matching handoffs
+      // from different source roles. The SSE event carries the sender field.
+      if (!matching && sender) {
         matching = handoffs
-          .filter((h) => h.status === "pending_pickup" || h.status === "delivered")
+          .filter(
+            (h) =>
+              h.fromRole === sender &&
+              (h.status === "pending_pickup" || h.status === "delivered") &&
+              !h.ipcMessageId, // only match handoffs that haven't been IPC-linked yet
+          )
           .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
       }
 

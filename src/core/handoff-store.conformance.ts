@@ -239,18 +239,23 @@ export function runHandoffStoreConformanceTests(
           replyDueAt: new Date(Date.now() - 60_000).toISOString(),
         });
 
-        // Only handoffs with pending_pickup status get expired.
-        // Some implementations default to Delivered — if so, we need to check
-        // that expiry doesn't affect non-pending handoffs.
+        // Handoffs in expirable states (pending_pickup, delivered, processed)
+        // with an overdue replyDueAt should be expired.
         const expired = await store.expireStale();
         const updated = await store.get(h.handoffId);
 
-        if (h.status === HandoffStatus.PendingPickup) {
+        const expirableStatuses: ReadonlySet<HandoffStatus> = new Set([
+          HandoffStatus.PendingPickup,
+          HandoffStatus.Delivered,
+          HandoffStatus.Processed,
+        ]);
+
+        if (expirableStatuses.has(h.status)) {
           // Should have been expired
           expect(expired.map((e) => e.handoffId)).toContain(h.handoffId);
           expect(updated?.status).toBe(HandoffStatus.Expired);
         } else {
-          // Not pending_pickup, so not eligible for expiry
+          // Terminal state — not eligible for expiry
           expect(expired.map((e) => e.handoffId)).not.toContain(h.handoffId);
         }
       } finally {

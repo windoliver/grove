@@ -263,11 +263,20 @@ export class NexusHandoffStore implements HandoffStore {
     const cutoff = now ?? new Date().toISOString();
     const expired: Handoff[] = [];
 
+    // Expire handoffs in any non-terminal state that have a replyDueAt past
+    // the cutoff. The state machine allows pending_pickup→expired,
+    // delivered→expired, and processed→expired.
+    const expirableStatuses: ReadonlySet<HandoffStatus> = new Set([
+      HandoffStatus.PendingPickup,
+      HandoffStatus.Delivered,
+      HandoffStatus.Processed,
+    ]);
+
     // Only scan the current session file for expiry (on-demand sweep)
     await this.readModifyWrite(this.filePath(), (handoffs) =>
       handoffs.map((h) => {
         if (
-          h.status === HandoffStatus.PendingPickup &&
+          expirableStatuses.has(h.status) &&
           h.replyDueAt !== undefined &&
           h.replyDueAt < cutoff
         ) {
@@ -312,23 +321,41 @@ export class NexusHandoffStore implements HandoffStore {
    * Rejects the write (no-op) if the current status doesn't allow the transition,
    * which guards against concurrent writers clobbering each other with stale state.
    */
+  /**
+   * Transition a handoff's status with state machine validation.
+   *
+   * Reads the current file, checks canTransition, and only writes back
+   * if the transition is valid. Skips the write entirely on no-op to
+   * avoid clobbering concurrent changes with a stale snapshot.
+   */
   private async transitionHandoff(
     handoffId: string,
     targetStatus: HandoffStatus,
     extraFields?: Partial<Handoff>,
   ): Promise<void> {
-    await this.readModifyWrite(this.filePath(), (handoffs) =>
-      handoffs.map((h) => {
-        if (h.handoffId !== handoffId) return h;
-        if (!canTransition(h.status, targetStatus)) {
-          debugLog(
-            "NexusHandoffStore.transitionHandoff",
-            `REJECTED ${h.handoffId} ${h.status}→${targetStatus} (invalid transition)`,
-          );
-          return h; // no-op: current state doesn't allow this transition
-        }
-        return { ...h, ...extraFields, status: targetStatus };
-      }),
+    await this.ensureDir();
+    const path = this.filePath();
+    const { handoffs } = await this.readFile(path);
+
+    const idx = handoffs.findIndex((h) => h.handoffId === handoffId);
+    if (idx === -1) return; // handoff not in this file
+
+    const current = handoffs[idx]!;
+    if (!canTransition(current.status, targetStatus)) {
+      debugLog(
+        "NexusHandoffStore.transitionHandoff",
+        `REJECTED ${handoffId} ${current.status}→${targetStatus} (invalid transition, skipping write)`,
+      );
+      return; // skip write entirely — don't clobber concurrent changes
+    }
+
+    // Valid transition — do the write
+    handoffs[idx] = { ...current, ...extraFields, status: targetStatus };
+    await this.client.write(path, new TextEncoder().encode(JSON.stringify({ handoffs })));
+    this.invalidateCache();
+    debugLog(
+      "NexusHandoffStore.transitionHandoff",
+      `OK ${handoffId} ${current.status}→${targetStatus}`,
     );
   }
 

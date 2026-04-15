@@ -91,21 +91,24 @@ export class NexusIpcClient {
       if (!resp.ok) {
         const error = `IPC send failed: HTTP ${resp.status}`;
         debugLog("nexus-ipc", `SEND FAIL sender=${sender} recipient=${recipient} status=${resp.status}`);
-        // 404/405 = endpoint doesn't exist on this Nexus version → permanent
+        // 404/405 = endpoint doesn't exist on this Nexus version → permanent disable
         const isPermanent = resp.status === 404 || resp.status === 405;
-        // 502/503 = transient infrastructure issue → backoff and retry later
-        const isTransient = resp.status === 502 || resp.status === 503;
+        // 429/5xx/auth = retryable/infrastructure, NOT a delivery rejection.
+        // Only a 2xx success followed by a delivery-level rejection from the
+        // IPC service (future: explicit rejected status) should dead-letter.
+        // All non-2xx failures are infrastructure by definition — the message
+        // was never accepted for delivery.
+        const isInfraOrRetryable = !isPermanent;
         if (isPermanent) {
           this.endpointAvailable = false;
-        } else if (isTransient) {
+        } else if (resp.status >= 500 || resp.status === 429) {
           this.transientFailureAt = Date.now();
-        } else {
-          this.endpointAvailable = true;
         }
-        return { ok: false, error, infrastructureError: isPermanent || isTransient };
+        return { ok: false, error, infrastructureError: isPermanent || isInfraOrRetryable };
       }
 
       this.endpointAvailable = true;
+      this.transientFailureAt = undefined; // clear backoff on success
 
       // Try to extract message_id from response
       let messageId: string | undefined;
