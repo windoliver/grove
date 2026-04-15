@@ -89,8 +89,8 @@ const DEFAULT_INTERVAL_MS = 60_000;
 export class SweepReconciler {
   private readonly strategies: SweepStrategy[] = [];
   private readonly intervalMs: number;
-  private readonly onCycle?: (results: readonly SweepResult[]) => void;
-  private readonly onError?: (error: unknown) => void;
+  private readonly onCycle: ((results: readonly SweepResult[]) => void) | undefined;
+  private readonly onError: ((error: unknown) => void) | undefined;
   private timer: ReturnType<typeof setInterval> | undefined;
   private running = false;
   private cycleInFlight = false;
