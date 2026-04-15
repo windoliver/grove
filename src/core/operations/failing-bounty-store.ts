@@ -128,6 +128,10 @@ export class FailingBountyStore implements BountyStore {
     return this.delegate.repairIndex?.(bountyId);
   }
 
+  async listIndexStatuses(bountyId: string): Promise<readonly string[]> {
+    return this.delegate.listIndexStatuses?.(bountyId) ?? [];
+  }
+
   close(): void {
     this.delegate.close();
   }

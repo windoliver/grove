@@ -1,13 +1,14 @@
 /**
  * BountyIndexSweep — reconciler strategy for NexusBountyStore dual-write consistency.
  *
- * Detection-based: for each bounty, checks whether it appears in its
- * status-filtered query result. Only calls repairIndex() when an actual
- * inconsistency is found (missing current-status entry or stale old-status
- * marker). Does NOT rewrite healthy indexes, avoiding unnecessary VFS
- * pressure under Nexus rate limits.
+ * Detection-based: for each bounty, compares the authoritative document status
+ * against actual index entries using listIndexStatuses(). Calls repairIndex()
+ * only when an inconsistency is found:
+ * 1. Missing current-status index entry (new index write failed)
+ * 2. Stale old-status index entry (old index delete failed)
  *
- * For stores without a separate index (e.g., SQLite), this sweep is a no-op.
+ * For stores without listIndexStatuses (e.g., SQLite), falls back to checking
+ * whether the bounty appears in its status-filtered query result.
  */
 
 import type { BountyStore } from "./bounty-store.js";
@@ -26,40 +27,40 @@ export class BountyIndexSweep implements SweepStrategy {
     let repaired = 0;
     const errors: Error[] = [];
 
-    // Skip entirely if the store has no index to repair
     if (!this.bountyStore.repairIndex) {
       return { strategy: this.name, found: 0, repaired: 0, errors: [] };
     }
 
     try {
-      // Unfiltered list gives us the authoritative document state.
       const allBounties = await this.bountyStore.listBounties();
 
-      // Build a set of bountyIds per status from status-filtered queries
-      // to detect both missing entries and stale entries.
-      const statusSets = new Map<string, Set<string>>();
       for (const bounty of allBounties) {
-        if (!statusSets.has(bounty.status)) {
-          const byStatus = await this.bountyStore.listBounties({ status: bounty.status });
-          statusSets.set(bounty.status, new Set(byStatus.map((b) => b.bountyId)));
-        }
-      }
+        try {
+          let needsRepair = false;
 
-      for (const bounty of allBounties) {
-        const inCorrectIndex = statusSets.get(bounty.status)?.has(bounty.bountyId) ?? false;
-        if (!inCorrectIndex) {
-          // Missing from the correct status index — needs repair
-          found++;
-          try {
+          if (this.bountyStore.listIndexStatuses) {
+            // Precise detection: check raw index entries directly
+            const indexStatuses = await this.bountyStore.listIndexStatuses(bounty.bountyId);
+            const hasCorrect = indexStatuses.includes(bounty.status);
+            const hasStale = indexStatuses.some((s) => s !== bounty.status);
+            needsRepair = !hasCorrect || hasStale;
+          } else {
+            // Fallback: check if bounty appears in its status-filtered query
+            const byStatus = await this.bountyStore.listBounties({ status: bounty.status });
+            needsRepair = !byStatus.some((b) => b.bountyId === bounty.bountyId);
+          }
+
+          if (needsRepair) {
+            found++;
             await this.bountyStore.repairIndex!(bounty.bountyId);
             repaired++;
-          } catch (err) {
-            errors.push(
-              err instanceof Error
-                ? err
-                : new Error(`Index repair failed for bounty ${bounty.bountyId}: ${String(err)}`),
-            );
           }
+        } catch (err) {
+          errors.push(
+            err instanceof Error
+              ? err
+              : new Error(`Index check failed for bounty ${bounty.bountyId}: ${String(err)}`),
+          );
         }
       }
     } catch (err) {

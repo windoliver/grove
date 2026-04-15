@@ -230,25 +230,16 @@ export class NexusBountyStore implements BountyStore {
   }
 
   async repairIndex(bountyId: string): Promise<void> {
-    // Read with ETag so we can detect if a concurrent transition changed
-    // the bounty between our read and the cleanup deletes.
     const result = await this.readBountyWithEtag(bountyId);
     if (!result) return;
-    const { bounty, etag } = result;
+    const { bounty } = result;
 
     // Ensure the correct status index entry exists
     await this.writeStatusIndex(bounty);
 
-    // Before deleting stale markers, re-verify the bounty hasn't changed.
-    // A concurrent transitionBounty could have moved the status between our
-    // initial read and now — deleting the new status's marker would be wrong.
-    const recheck = await this.readBountyWithEtag(bountyId);
-    if (!recheck || recheck.etag !== etag) {
-      // Bounty was modified concurrently — skip cleanup, next sweep will retry
-      return;
-    }
-
-    // Safe to clean: the document hasn't changed since our read
+    // Check which stale index entries actually exist before deleting.
+    // Only delete entries that exist AND don't match the current status.
+    // Re-read the bounty before each delete to catch concurrent transitions.
     const allStatuses: BountyStatus[] = [
       "draft",
       "open",
@@ -259,16 +250,52 @@ export class NexusBountyStore implements BountyStore {
       "expired",
       "cancelled",
     ] as BountyStatus[];
+
     for (const status of allStatuses) {
       if (status === bounty.status) continue;
+      const markerPath = bountyStatusIndexPath(this.zoneId, status, bountyId);
+      const markerExists = await withSemaphore(this.semaphore, () =>
+        this.client.exists(markerPath),
+      );
+      if (!markerExists) continue;
+
+      // Re-read the authoritative document right before deleting to ensure
+      // a concurrent transition hasn't moved the bounty TO this status.
+      const fresh = await this.getBounty(bountyId);
+      if (!fresh || fresh.status === status) continue;
+
       await safeCleanup(
-        withSemaphore(this.semaphore, () =>
-          this.client.delete(bountyStatusIndexPath(this.zoneId, status, bountyId)),
-        ),
+        withSemaphore(this.semaphore, () => this.client.delete(markerPath)),
         "repairIndex: delete stale status index",
         { silent: true },
       );
     }
+  }
+
+  /**
+   * Check which status index entries exist for a bounty.
+   * Returns the set of statuses that have an index marker.
+   * Used by BountyIndexSweep to detect stale entries.
+   */
+  async listIndexStatuses(bountyId: string): Promise<readonly string[]> {
+    const allStatuses: BountyStatus[] = [
+      "draft",
+      "open",
+      "claimed",
+      "pending_settlement",
+      "completed",
+      "settled",
+      "expired",
+      "cancelled",
+    ] as BountyStatus[];
+    const found: string[] = [];
+    for (const status of allStatuses) {
+      const exists = await withSemaphore(this.semaphore, () =>
+        this.client.exists(bountyStatusIndexPath(this.zoneId, status, bountyId)),
+      );
+      if (exists) found.push(status);
+    }
+    return found;
   }
 
   async recordReward(_reward: RewardRecord): Promise<void> {

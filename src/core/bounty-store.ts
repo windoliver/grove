@@ -175,6 +175,15 @@ export interface BountyStore {
    */
   repairIndex?(bountyId: string): Promise<void>;
 
+  /**
+   * List which status index entries exist for a bounty.
+   * Used by BountyIndexSweep to detect stale markers without relying on
+   * the filtered listBounties which hides them.
+   *
+   * Optional: only implemented by stores with a separate status index.
+   */
+  listIndexStatuses?(bountyId: string): Promise<readonly string[]>;
+
   // -----------------------------------------------------------------------
   // Reward records
   // -----------------------------------------------------------------------
