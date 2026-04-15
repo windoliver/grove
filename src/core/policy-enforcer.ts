@@ -131,11 +131,11 @@ export class PolicyEnforcer {
    *   no re-entrant evaluation — outcome derivation and stop checks run
    *   exactly once per enforce() call, never recursively.
    *
-   * - **Contract hot-reload**: Deferred. The contract is parsed once at
+   * - **Config hot-reload**: Deferred. The config is resolved once at
    *   startup (or session init) and passed to the PolicyEnforcer
-   *   constructor. Runtime contract reloading is not supported — callers
+   *   constructor. Runtime config reloading is not supported — callers
    *   must construct a new PolicyEnforcer instance with the updated
-   *   contract.
+   *   config.
    *
    * @param contribution - The contribution to enforce (already created but not yet stored).
    * @param strict - If true, violations throw instead of being returned as flags.

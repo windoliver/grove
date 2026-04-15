@@ -1,7 +1,7 @@
 /**
  * Enforcement wrappers for ContributionStore and ClaimStore.
  *
- * These decorators compose a raw store with a GroveContract to enforce:
+ * These decorators compose a raw store with a SessionRuntimeConfig to enforce:
  * - Concurrency limits (global, per-agent, per-target)
  * - Rate limits (per-agent, per-grove contributions per hour)
  * - Artifact limits (size, count)
