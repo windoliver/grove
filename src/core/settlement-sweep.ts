@@ -71,8 +71,14 @@ export class SettlementSweep implements SweepStrategy {
    * Handles both pending_settlement (pre-capture) and completed (post-capture).
    */
   private async resumeSettlement(bounty: Bounty): Promise<void> {
-    // Hard-fail if the bounty has an escrow but we can't capture it —
-    // settling without capture would mark the bounty paid with no funds moved.
+    // "completed" bounties have already captured — only need to advance to settled.
+    // "pending_settlement" bounties still need capture before advancing.
+    if (bounty.status === "completed") {
+      await this.bountyStore.settleBounty(bounty.bountyId);
+      return;
+    }
+
+    // For pending_settlement: hard-fail if escrowed but no creditsService
     if (bounty.reservationId && !this.creditsService) {
       throw new Error(
         `Cannot resume settlement for bounty ${bounty.bountyId}: ` +
@@ -91,10 +97,8 @@ export class SettlementSweep implements SweepStrategy {
       }
     }
 
-    // Advance through remaining states (skip steps already done)
-    if (bounty.status !== "completed") {
-      await this.bountyStore.completeBounty(bounty.bountyId, bounty.fulfilledByCid ?? "");
-    }
+    // Advance through completed → settled
+    await this.bountyStore.completeBounty(bounty.bountyId, bounty.fulfilledByCid ?? "");
     await this.bountyStore.settleBounty(bounty.bountyId);
   }
 }
