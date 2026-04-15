@@ -231,16 +231,45 @@ export async function claimBountyOperation(
       return notFound("Bounty", input.bountyId);
     }
 
+    const agent = resolveAgent(input.agent);
+    const now = new Date();
+    const leaseDurationMs = input.leaseDurationMs ?? 1_800_000;
+
+    // Renewal path: same agent can extend the lease on an already-claimed bounty.
+    // This prevents long-running bounties from getting stranded when the claim
+    // lease expires while the worker is still active.
+    if (
+      bounty.status === BS.Claimed &&
+      bounty.claimedBy?.agentId === agent.agentId &&
+      bounty.claimId
+    ) {
+      const renewed = await deps.claimStore.claimOrRenew({
+        claimId: bounty.claimId,
+        targetRef: `bounty:${input.bountyId}`,
+        agent,
+        status: "active",
+        intentSummary: `Renewing claim on bounty: ${bounty.title}`,
+        createdAt: now.toISOString(),
+        heartbeatAt: now.toISOString(),
+        leaseExpiresAt: new Date(now.getTime() + leaseDurationMs).toISOString(),
+      });
+      return ok({
+        bountyId: bounty.bountyId,
+        title: bounty.title,
+        status: bounty.status,
+        claimId: renewed.claimId,
+        claimedBy: bounty.claimedBy.agentId,
+      });
+    }
+
+    // New claim: bounty must be open
     if (bounty.status !== BS.Open) {
       return validationErr(
         `Bounty '${input.bountyId}' is not open for claims (current status: ${bounty.status})`,
       );
     }
 
-    const agent = resolveAgent(input.agent);
-    const now = new Date();
     const claimId = crypto.randomUUID();
-    const leaseDurationMs = input.leaseDurationMs ?? 1_800_000;
 
     // Create claim via existing claim system
     const claim = await deps.claimStore.claimOrRenew({

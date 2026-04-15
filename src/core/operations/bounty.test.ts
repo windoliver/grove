@@ -527,6 +527,76 @@ describe("claimBountyOperation status checks", () => {
       expect(secondClaim.error.message).toContain("not open");
     }
   });
+
+  test("same agent can renew claim on already-claimed bounty", async () => {
+    (deps.creditsService as InMemoryCreditsService).seed("creator", 1000);
+
+    const bounty = await createBountyOperation(
+      {
+        title: "Renewable claim",
+        amount: 100,
+        criteria: { description: "work" },
+        agent: { agentId: "creator" },
+      },
+      deps,
+    );
+    expect(bounty.ok).toBe(true);
+    if (!bounty.ok) return;
+
+    // First claim
+    const firstClaim = await claimBountyOperation(
+      { bountyId: bounty.value.bountyId, agent: { agentId: "worker" } },
+      deps,
+    );
+    expect(firstClaim.ok).toBe(true);
+    if (!firstClaim.ok) return;
+
+    // Same agent renews — should succeed
+    const renewal = await claimBountyOperation(
+      {
+        bountyId: bounty.value.bountyId,
+        agent: { agentId: "worker" },
+        leaseDurationMs: 3_600_000,
+      },
+      deps,
+    );
+    expect(renewal.ok).toBe(true);
+    if (!renewal.ok) return;
+    expect(renewal.value.status).toBe("claimed");
+    expect(renewal.value.claimedBy).toBe("worker");
+    expect(renewal.value.claimId).toBe(firstClaim.value.claimId);
+  });
+
+  test("different agent cannot renew another agent's claim", async () => {
+    (deps.creditsService as InMemoryCreditsService).seed("creator", 1000);
+
+    const bounty = await createBountyOperation(
+      {
+        title: "No steal",
+        amount: 100,
+        criteria: { description: "work" },
+        agent: { agentId: "creator" },
+      },
+      deps,
+    );
+    expect(bounty.ok).toBe(true);
+    if (!bounty.ok) return;
+
+    await claimBountyOperation(
+      { bountyId: bounty.value.bountyId, agent: { agentId: "agent-a" } },
+      deps,
+    );
+
+    // Different agent tries to claim — rejected
+    const steal = await claimBountyOperation(
+      { bountyId: bounty.value.bountyId, agent: { agentId: "agent-b" } },
+      deps,
+    );
+    expect(steal.ok).toBe(false);
+    if (!steal.ok) {
+      expect(steal.error.code).toBe("VALIDATION_ERROR");
+    }
+  });
 });
 
 describe("settleBountyOperation status checks", () => {

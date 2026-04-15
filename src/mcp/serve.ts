@@ -349,6 +349,32 @@ try {
   process.exit(1);
 }
 
+// --- Background sweep reconciler ------------------------------------------
+
+import { BountyIndexSweep } from "../core/bounty-index-sweep.js";
+import { SettlementSweep } from "../core/settlement-sweep.js";
+import { SweepReconciler } from "../core/sweep-reconciler.js";
+
+let mcpSweepReconciler: SweepReconciler | undefined;
+if (deps.bountyStore) {
+  mcpSweepReconciler = new SweepReconciler({
+    intervalMs: 60_000,
+    onCycle(results) {
+      for (const r of results) {
+        if (r.found > 0 || r.errors.length > 0) {
+          process.stderr.write(
+            `[sweep] ${r.strategy}: found=${r.found} repaired=${r.repaired} errors=${r.errors.length}\n`,
+          );
+        }
+      }
+    },
+  });
+  mcpSweepReconciler.register(new BountyIndexSweep(deps.bountyStore));
+  mcpSweepReconciler.register(new SettlementSweep(deps.bountyStore));
+  mcpSweepReconciler.start();
+  process.stderr.write("grove-mcp: sweep-reconciler started\n");
+}
+
 // --- Server setup ---------------------------------------------------------
 
 const server = await createMcpServer(deps, preset);
@@ -358,6 +384,7 @@ await server.connect(transport);
 
 // Graceful shutdown
 const shutdown = async (): Promise<void> => {
+  mcpSweepReconciler?.stop();
   await server.close();
   close();
   process.exit(0);
