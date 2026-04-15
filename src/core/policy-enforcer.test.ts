@@ -17,8 +17,9 @@ import { describe, expect, test } from "bun:test";
 import type { GroveContract } from "./contract.js";
 import { PolicyViolationError } from "./errors.js";
 import type { Contribution, Score } from "./models.js";
-import { type ContributionInput, ContributionKind, RelationType } from "./models.js";
+import { type ContributionInput, ContributionKind, ContributionMode, RelationType } from "./models.js";
 import { PolicyEnforcer } from "./policy-enforcer.js";
+import type { SessionRuntimeConfig } from "./session-config.js";
 import type { ContributionStore } from "./store.js";
 import { makeContribution as makeContributionFromHelper } from "./test-helpers.js";
 import { InMemoryContributionStore } from "./testing.js";
@@ -1215,5 +1216,49 @@ describe("PolicyEnforcer: deliberation_limit stop condition", () => {
     const result = await enforcer.enforce(contribution, false);
     expect(result.stopResult).toBeDefined();
     expect(result.stopResult!.stopped).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session config override tests
+// ---------------------------------------------------------------------------
+
+describe("session config override", () => {
+  test("session config with different agentConstraints overrides contract", async () => {
+    // Session config allows only "review" kind
+    const sessionConfig: SessionRuntimeConfig = {
+      mode: ContributionMode.Evaluation,
+      agentConstraints: { allowedKinds: ["review"] },
+    };
+
+    const store = makeStore();
+    const enforcer = new PolicyEnforcer(sessionConfig, store);
+
+    // "work" kind should be rejected by session config
+    const workContribution = makeContribution({ kind: "work", mode: "evaluation" });
+    const result = await enforcer.enforce(workContribution, false);
+    expect(result.passed).toBe(false);
+    expect(result.violations).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "role_kind" })]),
+    );
+
+    // "review" kind should pass the role_kind check
+    const reviewContribution = makeContribution({ kind: "review", mode: "evaluation" });
+    const reviewResult = await enforcer.enforce(reviewContribution, false);
+    expect(reviewResult.violations.filter((v) => v.type === "role_kind")).toHaveLength(0);
+  });
+
+  test("session config with different stopConditions is used", async () => {
+    // Session config with a very low budget
+    const sessionConfig: SessionRuntimeConfig = {
+      stopConditions: { budget: { maxContributions: 1 } },
+    };
+
+    // Store already has 1 contribution → budget should be exhausted
+    const store = makeStore([makeContribution({ kind: "work" })]);
+    const enforcer = new PolicyEnforcer(sessionConfig, store);
+    const contribution = makeContribution({ kind: "work" });
+    const result = await enforcer.enforce(contribution, false);
+    expect(result.stopResult?.stopped).toBe(true);
   });
 });
