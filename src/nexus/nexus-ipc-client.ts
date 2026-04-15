@@ -29,11 +29,21 @@ export interface NexusIpcClientOptions {
   readonly apiKey: string;
 }
 
+/** How long to cache a transient IPC failure before retrying (ms). */
+const TRANSIENT_BACKOFF_MS = 30_000;
+
 export class NexusIpcClient {
   private readonly nexusUrl: string;
   private readonly apiKey: string;
-  /** Tracks whether the IPC endpoint is reachable. Starts undefined (unknown). */
+  /**
+   * Endpoint availability state:
+   * - undefined: unknown (first call)
+   * - true: confirmed reachable
+   * - false: permanently unavailable (404/405 — endpoint doesn't exist)
+   */
   private endpointAvailable: boolean | undefined;
+  /** Timestamp of last transient failure. Used for backoff, not permanent caching. */
+  private transientFailureAt: number | undefined;
 
   constructor(opts: NexusIpcClientOptions) {
     this.nexusUrl = opts.nexusUrl;
@@ -55,10 +65,17 @@ export class NexusIpcClient {
     recipient: string,
     payload: Record<string, unknown>,
   ): Promise<IpcSendResult> {
-    // Skip if we've already determined the endpoint is unavailable.
-    // Avoids repeated failed fetches that slow down every contribution.
+    // Skip if we've determined the endpoint permanently doesn't exist (404/405).
     if (this.endpointAvailable === false) {
-      return { ok: false, error: "IPC endpoint unavailable (cached)", infrastructureError: true };
+      return { ok: false, error: "IPC endpoint unavailable (permanent 404/405)", infrastructureError: true };
+    }
+
+    // Backoff on transient failures (502/503/network) — retry after TRANSIENT_BACKOFF_MS.
+    if (
+      this.transientFailureAt !== undefined &&
+      Date.now() - this.transientFailureAt < TRANSIENT_BACKOFF_MS
+    ) {
+      return { ok: false, error: "IPC endpoint transient backoff", infrastructureError: true };
     }
 
     try {
@@ -74,14 +91,18 @@ export class NexusIpcClient {
       if (!resp.ok) {
         const error = `IPC send failed: HTTP ${resp.status}`;
         debugLog("nexus-ipc", `SEND FAIL sender=${sender} recipient=${recipient} status=${resp.status}`);
-        // 404/405 = endpoint doesn't exist on this Nexus version → infrastructure error
-        const isInfra = resp.status === 404 || resp.status === 405 || resp.status === 502 || resp.status === 503;
-        if (isInfra) {
+        // 404/405 = endpoint doesn't exist on this Nexus version → permanent
+        const isPermanent = resp.status === 404 || resp.status === 405;
+        // 502/503 = transient infrastructure issue → backoff and retry later
+        const isTransient = resp.status === 502 || resp.status === 503;
+        if (isPermanent) {
           this.endpointAvailable = false;
+        } else if (isTransient) {
+          this.transientFailureAt = Date.now();
         } else {
           this.endpointAvailable = true;
         }
-        return { ok: false, error, infrastructureError: isInfra };
+        return { ok: false, error, infrastructureError: isPermanent || isTransient };
       }
 
       this.endpointAvailable = true;
@@ -103,8 +124,8 @@ export class NexusIpcClient {
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       debugLog("nexus-ipc", `SEND ERROR sender=${sender} recipient=${recipient} err=${error}`);
-      // Network errors (connection refused, DNS failure) = infrastructure
-      this.endpointAvailable = false;
+      // Network errors (connection refused, DNS failure) = transient infrastructure
+      this.transientFailureAt = Date.now();
       return { ok: false, error, infrastructureError: true };
     }
   }

@@ -18,6 +18,7 @@ import {
   type HandoffQuery,
   HandoffStatus,
   type HandoffStore,
+  canTransition,
 } from "../core/handoff.js";
 import { debugLog } from "../tui/debug-log.js";
 import type { NexusClient } from "./client.js";
@@ -239,23 +240,19 @@ export class NexusHandoffStore implements HandoffStore {
   }
 
   async markDelivered(handoffId: string): Promise<void> {
-    await this.updateHandoff(handoffId, (h) => ({ ...h, status: HandoffStatus.Delivered }));
+    await this.transitionHandoff(handoffId, HandoffStatus.Delivered);
   }
 
   async markProcessed(handoffId: string): Promise<void> {
-    await this.updateHandoff(handoffId, (h) => ({ ...h, status: HandoffStatus.Processed }));
+    await this.transitionHandoff(handoffId, HandoffStatus.Processed);
   }
 
   async markReplied(handoffId: string, resolvedByCid: string): Promise<void> {
-    await this.updateHandoff(handoffId, (h) => ({
-      ...h,
-      status: HandoffStatus.Replied,
-      resolvedByCid,
-    }));
+    await this.transitionHandoff(handoffId, HandoffStatus.Replied, { resolvedByCid });
   }
 
   async markDeadLettered(handoffId: string): Promise<void> {
-    await this.updateHandoff(handoffId, (h) => ({ ...h, status: HandoffStatus.DeadLettered }));
+    await this.transitionHandoff(handoffId, HandoffStatus.DeadLettered);
   }
 
   async setIpcMessageId(handoffId: string, ipcMessageId: string): Promise<void> {
@@ -307,6 +304,31 @@ export class NexusHandoffStore implements HandoffStore {
   private async updateHandoff(handoffId: string, fn: (h: Handoff) => Handoff): Promise<void> {
     await this.readModifyWrite(this.filePath(), (handoffs) =>
       handoffs.map((h) => (h.handoffId === handoffId ? fn(h) : h)),
+    );
+  }
+
+  /**
+   * Transition a handoff's status with state machine validation.
+   * Rejects the write (no-op) if the current status doesn't allow the transition,
+   * which guards against concurrent writers clobbering each other with stale state.
+   */
+  private async transitionHandoff(
+    handoffId: string,
+    targetStatus: HandoffStatus,
+    extraFields?: Partial<Handoff>,
+  ): Promise<void> {
+    await this.readModifyWrite(this.filePath(), (handoffs) =>
+      handoffs.map((h) => {
+        if (h.handoffId !== handoffId) return h;
+        if (!canTransition(h.status, targetStatus)) {
+          debugLog(
+            "NexusHandoffStore.transitionHandoff",
+            `REJECTED ${h.handoffId} ${h.status}→${targetStatus} (invalid transition)`,
+          );
+          return h; // no-op: current state doesn't allow this transition
+        }
+        return { ...h, ...extraFields, status: targetStatus };
+      }),
     );
   }
 

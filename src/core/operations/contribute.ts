@@ -1180,8 +1180,14 @@ export async function contributeOperation(
               // is unavailable (404, connection refused). The handoff stays
               // in its current status — it was never attempted, not rejected.
               // Delivery falls back to the session orchestrator's polling path.
-            } catch {
-              // Best-effort — handoff record is the primary artifact
+            } catch (bookkeepingErr) {
+              // Best-effort — handoff record is the primary artifact.
+              // Log so operators can diagnose missing ipcMessageId or
+              // un-dead-lettered handoffs.
+              console.warn(
+                `[grove] handoff IPC bookkeeping failed for ${matching.handoffId} → ${result.targetRole}:`,
+                bookkeepingErr instanceof Error ? bookkeepingErr.message : String(bookkeepingErr),
+              );
             }
           }
         }

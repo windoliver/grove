@@ -235,17 +235,30 @@ export class NexusWsBridge {
   /**
    * Update handoff delivery status when an IPC message_delivered SSE event arrives.
    *
-   * Searches for a handoff with the matching ipcMessageId and transitions it
-   * to Delivered. Best-effort — handoff store errors don't block delivery.
+   * Correlates by ipcMessageId first, then falls back to matching by
+   * (toRole, status=pending_pickup) for the most recent undelivered handoff.
+   * The fallback handles the race where message_delivered arrives before
+   * the fire-and-forget setIpcMessageId() in contribute.ts completes.
+   *
+   * Best-effort — handoff store errors don't block delivery.
    */
   private async updateHandoffDeliveryStatus(ipcMessageId: string, targetRole: string): Promise<void> {
     try {
       const store = this.opts.handoffStore;
       if (!store) return;
 
-      // Find handoffs for this target role that have the matching IPC message ID
       const handoffs = await store.list({ toRole: targetRole });
-      const matching = handoffs.find((h) => h.ipcMessageId === ipcMessageId);
+
+      // Primary: match by IPC message ID (exact correlation)
+      let matching = handoffs.find((h) => h.ipcMessageId === ipcMessageId);
+
+      // Fallback: match most recent pending handoff for this role.
+      // Handles the race where SSE arrives before ipcMessageId is written.
+      if (!matching) {
+        matching = handoffs
+          .filter((h) => h.status === "pending_pickup" || h.status === "delivered")
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+      }
 
       if (matching) {
         await store.markDelivered(matching.handoffId);
