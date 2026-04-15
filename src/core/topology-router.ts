@@ -4,8 +4,12 @@ import type { AgentRole, AgentTopology, RoleEdge } from "./topology.js";
 /** Result of routing an event to a target role. */
 export interface RouteResult {
   readonly targetRole: string;
+  /** Whether the publish succeeded (IPC delivery or local handler). */
+  readonly ok: boolean;
   /** IPC message ID — present when the event was relayed via Nexus IPC. */
   readonly messageId?: string | undefined;
+  /** Error message — present when publish failed. */
+  readonly error?: string | undefined;
 }
 
 /**
@@ -109,7 +113,12 @@ export class TopologyRouter {
         timestamp,
       };
       const result = await this.eventBus.publish(event);
-      return { targetRole, messageId: result.messageId };
+      return {
+        targetRole,
+        ok: result.ok,
+        messageId: result.messageId,
+        error: result.error,
+      };
     });
 
     return Promise.all(publishPromises);

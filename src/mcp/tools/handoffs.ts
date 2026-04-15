@@ -8,7 +8,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { HandoffStatus } from "../../core/handoff.js";
+import { HandoffStatus, canTransition } from "../../core/handoff.js";
 import type { McpDeps } from "../deps.js";
 import { toolError } from "../error-handler.js";
 
@@ -162,6 +162,56 @@ export function registerHandoffTools(server: McpServer, deps: McpDeps): void {
             text: JSON.stringify({
               count: handoffs.length,
               handoffs,
+            }),
+          },
+        ],
+      };
+    },
+  );
+
+  // --- grove_ack_handoff -----------------------------------------------------
+  const ackHandoffInputSchema = z.object({
+    handoffId: z.string().min(1).describe("ID of the handoff to acknowledge."),
+  });
+
+  server.registerTool(
+    "grove_ack_handoff",
+    {
+      description:
+        "Acknowledge receipt of a handoff, transitioning it from delivered to processed. " +
+        "Call this when your agent has received a routed handoff and is beginning to act on it. " +
+        "This signals to the orchestrator that the handoff was successfully received and is being worked on.",
+      inputSchema: ackHandoffInputSchema,
+    },
+    async (args) => {
+      const { handoffStore } = deps;
+      if (handoffStore === undefined) {
+        return toolError("NOT_CONFIGURED", "Handoff store is not available.");
+      }
+
+      const handoff = await handoffStore.get(args.handoffId);
+      if (handoff === undefined) {
+        return toolError("NOT_FOUND", `Handoff '${args.handoffId}' not found.`);
+      }
+
+      if (!canTransition(handoff.status, HandoffStatus.Processed)) {
+        return toolError(
+          "INVALID_STATE",
+          `Cannot acknowledge handoff in status '${handoff.status}'. ` +
+            `Only 'delivered' handoffs can be acknowledged.`,
+        );
+      }
+
+      await handoffStore.markProcessed(args.handoffId);
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              handoffId: args.handoffId,
+              previousStatus: handoff.status,
+              status: HandoffStatus.Processed,
             }),
           },
         ],

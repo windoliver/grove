@@ -15,7 +15,9 @@
 
 import type { AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { EventBus, GroveEvent } from "../core/event-bus.js";
+import type { HandoffStore } from "../core/handoff.js";
 import type { AgentTopology } from "../core/topology.js";
+import type { NexusIpcClient } from "../nexus/nexus-ipc-client.js";
 import { debugLog } from "./debug-log.js";
 
 export interface NexusWsBridgeOptions {
@@ -27,6 +29,10 @@ export interface NexusWsBridgeOptions {
   eventBus?: EventBus | undefined;
   /** Called before delivering IPC to an agent — use for workspace rsync. */
   onBeforeDeliver?: ((sender: string, recipient: string) => void) | undefined;
+  /** HandoffStore for updating delivery status on SSE events. */
+  handoffStore?: HandoffStore | undefined;
+  /** Shared IPC client — replaces inline fetch when provided. */
+  ipcClient?: NexusIpcClient | undefined;
 }
 
 interface SseEvent {
@@ -80,6 +86,12 @@ export class NexusWsBridge {
     recipient: string,
     payload: Record<string, unknown>,
   ): Promise<boolean> {
+    // Use shared NexusIpcClient when available (5A: DRY)
+    if (this.opts.ipcClient) {
+      const result = await this.opts.ipcClient.send(sender, recipient, payload);
+      return result.ok;
+    }
+    // Fallback: direct fetch (backward compat when ipcClient not injected)
     try {
       const resp = await fetch(`${this.opts.nexusUrl}/api/v2/ipc/send`, {
         method: "POST",
@@ -195,6 +207,13 @@ export class NexusWsBridge {
         void this.opts.eventBus.publish(groveEvent);
       }
 
+      // --- IPC lifecycle: mark matching handoff as delivered ---
+      // The message_delivered SSE confirms Nexus inbox delivery.
+      // Find the handoff by IPC message ID and transition its status.
+      if (this.opts.handoffStore && event.message_id) {
+        void this.updateHandoffDeliveryStatus(event.message_id, role);
+      }
+
       const session = this.sessions.get(role);
       if (!session) {
         debugLog("wsBridge.handleEvent", `NO SESSION for role=${role} — cannot deliver`);
@@ -210,6 +229,45 @@ export class NexusWsBridge {
       void this.readAndPush(event.path, role, session, event.sender);
     } catch {
       // Skip malformed events
+    }
+  }
+
+  /**
+   * Update handoff delivery status when an IPC message_delivered SSE event arrives.
+   *
+   * Searches for a handoff with the matching ipcMessageId and transitions it
+   * to Delivered. Best-effort — handoff store errors don't block delivery.
+   */
+  private async updateHandoffDeliveryStatus(ipcMessageId: string, targetRole: string): Promise<void> {
+    try {
+      const store = this.opts.handoffStore;
+      if (!store) return;
+
+      // Find handoffs for this target role that have the matching IPC message ID
+      const handoffs = await store.list({ toRole: targetRole });
+      const matching = handoffs.find((h) => h.ipcMessageId === ipcMessageId);
+
+      if (matching) {
+        await store.markDelivered(matching.handoffId);
+        debugLog(
+          "wsBridge.updateHandoffDeliveryStatus",
+          `DELIVERED handoffId=${matching.handoffId} ipcMessageId=${ipcMessageId} role=${targetRole}`,
+        );
+
+        // Invalidate cache if the store supports it (NexusHandoffStore)
+        const cacheable = store as { invalidateCache?: () => void };
+        cacheable.invalidateCache?.();
+      } else {
+        debugLog(
+          "wsBridge.updateHandoffDeliveryStatus",
+          `NO MATCH ipcMessageId=${ipcMessageId} role=${targetRole} handoffCount=${handoffs.length}`,
+        );
+      }
+    } catch (err) {
+      debugLog(
+        "wsBridge.updateHandoffDeliveryStatus",
+        `FAIL ipcMessageId=${ipcMessageId} err=${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 

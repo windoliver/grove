@@ -1154,22 +1154,29 @@ export async function contributeOperation(
           agentId: contribution.agent.agentId,
         });
 
-        // Link IPC message IDs back to handoff records (best-effort).
-        // Handoffs were created in writeContributionWithHandoffs; now we
-        // know the IPC message IDs from the route results.
+        // Link IPC message IDs back to handoff records and dead-letter
+        // handoffs whose IPC delivery failed (best-effort).
         if (routeResults && deps.handoffStore && handoffIds.length > 0) {
           const handoffs = await deps.handoffStore.list({
             sourceCid: contribution.cid,
           });
           for (const result of routeResults) {
-            if (!result.messageId) continue;
             const matching = handoffs.find((h) => h.toRole === result.targetRole);
-            if (matching) {
-              try {
+            if (!matching) continue;
+            try {
+              if (result.ok && result.messageId) {
+                // IPC succeeded — store the message ID for SSE delivery tracking
                 await deps.handoffStore.setIpcMessageId?.(matching.handoffId, result.messageId);
-              } catch {
-                // Best-effort — handoff record is the primary artifact
+              } else if (!result.ok) {
+                // IPC delivery failed — dead-letter the handoff so operators
+                // can see the gap and the target agent isn't left waiting.
+                await deps.handoffStore.markDeadLettered(matching.handoffId);
+                process.stderr.write(
+                  `[grove] handoff ${matching.handoffId} dead-lettered: IPC to ${result.targetRole} failed: ${result.error ?? "unknown"}\n`,
+                );
               }
+            } catch {
+              // Best-effort — handoff record is the primary artifact
             }
           }
         }
