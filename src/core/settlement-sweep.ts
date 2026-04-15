@@ -30,12 +30,21 @@ export class SettlementSweep implements SweepStrategy {
     const errors: Error[] = [];
 
     try {
+      // Scan both pending_settlement AND completed bounties that have a
+      // fulfilledByCid — the latter covers the case where capture succeeded
+      // and completeBounty committed but settleBounty failed.
       const pending = await this.bountyStore.listBounties({
         status: "pending_settlement" as BountyStatus,
       });
-      found = pending.length;
+      const completed = await this.bountyStore.listBounties({
+        status: "completed" as BountyStatus,
+      });
+      // Only resume completed bounties that have a fulfillment CID
+      // (indicating they were mid-settlement, not just manually completed).
+      const stalled = [...pending, ...completed.filter((b) => b.fulfilledByCid)];
+      found = stalled.length;
 
-      for (const bounty of pending) {
+      for (const bounty of stalled) {
         try {
           await this.resumeSettlement(bounty);
           repaired++;
@@ -59,12 +68,10 @@ export class SettlementSweep implements SweepStrategy {
   /**
    * Resume a stalled settlement. Idempotent — safe to call multiple times.
    *
-   * Steps:
-   * 1. Capture credits (idempotent — already-captured is a no-op)
-   * 2. Advance: pending_settlement → completed → settled
+   * Handles both pending_settlement (pre-capture) and completed (post-capture).
    */
   private async resumeSettlement(bounty: Bounty): Promise<void> {
-    // Capture credits if escrow is active
+    // Capture credits if escrow is active (idempotent — already-captured is a no-op)
     if (this.creditsService && bounty.reservationId) {
       if (bounty.claimedBy) {
         await this.creditsService.capture(bounty.reservationId, {
@@ -75,11 +82,10 @@ export class SettlementSweep implements SweepStrategy {
       }
     }
 
-    // Advance through completed → settled
-    const completed = await this.bountyStore.completeBounty(
-      bounty.bountyId,
-      bounty.fulfilledByCid ?? "",
-    );
-    await this.bountyStore.settleBounty(completed.bountyId);
+    // Advance through remaining states (skip steps already done)
+    if (bounty.status !== "completed") {
+      await this.bountyStore.completeBounty(bounty.bountyId, bounty.fulfilledByCid ?? "");
+    }
+    await this.bountyStore.settleBounty(bounty.bountyId);
   }
 }

@@ -293,17 +293,21 @@ export async function settleBountyOperation(
       return notFound("Bounty", input.bountyId);
     }
 
-    // Allow both "claimed" (fresh settle) and "pending_settlement" (retry/resume)
-    if (bounty.status !== BS.Claimed && bounty.status !== BS.PendingSettlement) {
+    // Allow "claimed" (fresh), "pending_settlement" (post-pivot), "completed" (post-capture)
+    const resumable =
+      bounty.status === BS.Claimed ||
+      bounty.status === BS.PendingSettlement ||
+      bounty.status === BS.Completed;
+    if (!resumable) {
       return validationErr(
         `Bounty '${input.bountyId}' cannot be settled (current status: ${bounty.status})`,
       );
     }
 
-    // On resume from pending_settlement, the fulfillment CID is frozen —
-    // reject attempts to change it (prevents non-deterministic settlements).
+    // On resume from pending_settlement or completed, the fulfillment CID
+    // is frozen — reject attempts to change it.
     let fulfilledByCid = input.contributionCid;
-    if (bounty.status === BS.PendingSettlement) {
+    if (bounty.status !== BS.Claimed) {
       if (bounty.fulfilledByCid && input.contributionCid !== bounty.fulfilledByCid) {
         return validationErr(
           `Bounty '${input.bountyId}' is already pending settlement with contribution ` +
@@ -343,9 +347,11 @@ export async function settleBountyOperation(
       await deps.creditsService.capture(bounty.reservationId);
     }
 
-    // Step 3: Advance through completed → settled (retryable after pivot)
-    const completed = await deps.bountyStore.completeBounty(input.bountyId, fulfilledByCid);
-    const settled = await deps.bountyStore.settleBounty(completed.bountyId);
+    // Step 3: Advance through completed → settled (skip steps already done)
+    if (bounty.status !== BS.Completed) {
+      await deps.bountyStore.completeBounty(input.bountyId, fulfilledByCid);
+    }
+    const settled = await deps.bountyStore.settleBounty(input.bountyId);
 
     return ok({
       bountyId: settled.bountyId,

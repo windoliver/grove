@@ -10,17 +10,17 @@
  */
 
 import type { Bounty, BountyStatus, RewardRecord } from "../core/bounty.js";
+import { validateBountyTransition } from "../core/bounty-logic.js";
 import type { BountyQuery, BountyStore, RewardQuery } from "../core/bounty-store.js";
 import { NotFoundError, StateConflictError } from "../core/errors.js";
 import type { AgentIdentity } from "../core/models.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import { batchParallel } from "./batch.js";
-import type { ListEntry, NexusClient, WriteResult } from "./client.js";
+import type { ListEntry, NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
 import { NexusConflictError } from "./errors.js";
 import { listAllPages } from "./list-pages.js";
-import { LruCache } from "./lru-cache.js";
 import { withRetry, withSemaphore } from "./retry.js";
 import { Semaphore } from "./semaphore.js";
 import {
@@ -61,7 +61,6 @@ export class NexusBountyStore implements BountyStore {
   private readonly config: ResolvedNexusConfig;
   private readonly semaphore: Semaphore;
   private readonly zoneId: string;
-  private readonly cache: LruCache<BountyWithEtag>;
 
   constructor(config: NexusConfig) {
     this.config = resolveConfig(config);
@@ -69,7 +68,6 @@ export class NexusBountyStore implements BountyStore {
     this.zoneId = this.config.zoneId;
     this.storeIdentity = `nexus:${this.zoneId}:bounties`;
     this.semaphore = new Semaphore(this.config.maxConcurrency);
-    this.cache = new LruCache(this.config.cacheMaxEntries);
   }
 
   async createBounty(bounty: Bounty): Promise<Bounty> {
@@ -80,9 +78,8 @@ export class NexusBountyStore implements BountyStore {
       updatedAt: now,
     };
 
-    let writeResult: WriteResult;
     try {
-      writeResult = await withRetry(
+      await withRetry(
         () =>
           withSemaphore(this.semaphore, () =>
             this.client.write(bountyPath(this.zoneId, bounty.bountyId), encodeBounty(created), {
@@ -103,19 +100,19 @@ export class NexusBountyStore implements BountyStore {
       throw err;
     }
 
-    this.cache.set(bounty.bountyId, { bounty: created, etag: writeResult.etag });
     await this.writeStatusIndex(created);
     return created;
   }
 
   async getBounty(bountyId: string): Promise<Bounty | undefined> {
-    const cached = this.cache.get(bountyId);
-    if (cached) return cached.bounty;
-
-    const result = await this.readBountyWithEtag(bountyId);
-    if (!result) return undefined;
-    this.cache.set(bountyId, result);
-    return result.bounty;
+    const data = await withRetry(
+      () =>
+        withSemaphore(this.semaphore, () => this.client.read(bountyPath(this.zoneId, bountyId))),
+      "getBounty",
+      this.config,
+    );
+    if (data === undefined) return undefined;
+    return decodeBounty(data);
   }
 
   async listBounties(query?: BountyQuery): Promise<readonly Bounty[]> {
@@ -275,7 +272,7 @@ export class NexusBountyStore implements BountyStore {
   }
 
   close(): void {
-    this.cache.clear();
+    // No-op — no local state to release
   }
 
   // -----------------------------------------------------------------------
@@ -287,10 +284,6 @@ export class NexusBountyStore implements BountyStore {
     newStatus: BountyStatus,
     transform?: (b: Bounty) => Bounty,
   ): Promise<Bounty> {
-    // Always read fresh from VFS for mutations — do NOT use the cache here.
-    // The cache is safe for read-only getBounty() (pre-flight checks) but
-    // mutations must use a fresh ETag to avoid CAS failures against concurrent
-    // writers in other processes.
     const result = await this.readBountyWithEtag(bountyId);
     if (!result)
       throw new NotFoundError({
@@ -301,6 +294,11 @@ export class NexusBountyStore implements BountyStore {
 
     const { bounty: existing, etag } = result;
     const oldStatus = existing.status;
+
+    // Validate the transition before writing — catches stale state from
+    // concurrent writers before the CAS round-trip.
+    validateBountyTransition(bountyId, oldStatus, newStatus, `transition to ${newStatus}`);
+
     let updated: Bounty = {
       ...existing,
       status: newStatus,
@@ -308,10 +306,7 @@ export class NexusBountyStore implements BountyStore {
     };
     if (transform) updated = transform(updated);
 
-    const newEtag = await this.writeBountyCas(updated, etag);
-
-    // Update cache after successful write so subsequent reads are fresh.
-    this.cache.set(bountyId, { bounty: updated, etag: newEtag });
+    await this.writeBountyCas(updated, etag);
 
     // Clean up old status index
     if (oldStatus !== newStatus) {
@@ -342,9 +337,9 @@ export class NexusBountyStore implements BountyStore {
     return { bounty: decodeBounty(result.content), etag: result.etag };
   }
 
-  /** Write bounty with ifMatch for CAS safety on mutations. Returns the new ETag. */
-  private async writeBountyCas(bounty: Bounty, expectedEtag: string): Promise<string> {
-    const result = await withRetry(
+  /** Write bounty with ifMatch for CAS safety on mutations. */
+  private async writeBountyCas(bounty: Bounty, expectedEtag: string): Promise<void> {
+    await withRetry(
       () =>
         withSemaphore(this.semaphore, () =>
           this.client.write(bountyPath(this.zoneId, bounty.bountyId), encodeBounty(bounty), {
@@ -354,7 +349,6 @@ export class NexusBountyStore implements BountyStore {
       "writeBountyCas",
       this.config,
     );
-    return result.etag;
   }
 
   private async writeStatusIndex(bounty: Bounty): Promise<void> {
