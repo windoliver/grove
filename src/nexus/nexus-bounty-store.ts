@@ -287,10 +287,11 @@ export class NexusBountyStore implements BountyStore {
     newStatus: BountyStatus,
     transform?: (b: Bounty) => Bounty,
   ): Promise<Bounty> {
-    // Check cache for a fresh bounty+etag to avoid a redundant VFS read.
-    // Falls back to readBountyWithEtag on cache miss.
-    const cached = this.cache.get(bountyId);
-    const result = cached ?? (await this.readBountyWithEtag(bountyId));
+    // Always read fresh from VFS for mutations — do NOT use the cache here.
+    // The cache is safe for read-only getBounty() (pre-flight checks) but
+    // mutations must use a fresh ETag to avoid CAS failures against concurrent
+    // writers in other processes.
+    const result = await this.readBountyWithEtag(bountyId);
     if (!result)
       throw new NotFoundError({
         resource: "Bounty",
@@ -309,9 +310,7 @@ export class NexusBountyStore implements BountyStore {
 
     const newEtag = await this.writeBountyCas(updated, etag);
 
-    // Update cache with the freshly written bounty + new ETag so that
-    // a subsequent transition in the same call chain (e.g. complete → settle)
-    // can skip the VFS read entirely.
+    // Update cache after successful write so subsequent reads are fresh.
     this.cache.set(bountyId, { bounty: updated, etag: newEtag });
 
     // Clean up old status index

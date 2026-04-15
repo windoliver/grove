@@ -300,13 +300,26 @@ export async function settleBountyOperation(
       );
     }
 
+    // On resume from pending_settlement, the fulfillment CID is frozen —
+    // reject attempts to change it (prevents non-deterministic settlements).
+    let fulfilledByCid = input.contributionCid;
+    if (bounty.status === BS.PendingSettlement) {
+      if (bounty.fulfilledByCid && input.contributionCid !== bounty.fulfilledByCid) {
+        return validationErr(
+          `Bounty '${input.bountyId}' is already pending settlement with contribution ` +
+            `'${bounty.fulfilledByCid}' — cannot change to '${input.contributionCid}'`,
+        );
+      }
+      fulfilledByCid = bounty.fulfilledByCid ?? input.contributionCid;
+    }
+
     // Validate contribution exists and meets criteria
-    const contribution = await deps.contributionStore.get(input.contributionCid);
+    const contribution = await deps.contributionStore.get(fulfilledByCid);
     if (!contribution) {
-      return notFound("Contribution", input.contributionCid);
+      return notFound("Contribution", fulfilledByCid);
     }
     if (!evaluateBountyCriteria(bounty.criteria, contribution)) {
-      return validationErr(`Contribution '${input.contributionCid}' does not meet bounty criteria`);
+      return validationErr(`Contribution '${fulfilledByCid}' does not meet bounty criteria`);
     }
 
     // Require credits service when escrow is active
@@ -318,7 +331,7 @@ export async function settleBountyOperation(
 
     // Step 1: Pivot — transition to pending_settlement (skip if resuming)
     if (bounty.status === BS.Claimed) {
-      await deps.bountyStore.beginSettlement(input.bountyId, input.contributionCid);
+      await deps.bountyStore.beginSettlement(input.bountyId, fulfilledByCid);
     }
 
     // Step 2: Capture payment (idempotent — safe to retry)
@@ -331,7 +344,7 @@ export async function settleBountyOperation(
     }
 
     // Step 3: Advance through completed → settled (retryable after pivot)
-    const completed = await deps.bountyStore.completeBounty(input.bountyId, input.contributionCid);
+    const completed = await deps.bountyStore.completeBounty(input.bountyId, fulfilledByCid);
     const settled = await deps.bountyStore.settleBounty(completed.bountyId);
 
     return ok({
