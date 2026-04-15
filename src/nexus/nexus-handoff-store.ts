@@ -5,14 +5,15 @@
  *   handoffs/{sessionId}.json  →  { handoffs: Handoff[] }
  *
  * This avoids many small files while keeping cross-agent visibility.
- * Concurrent updates use etag-based CAS with retry — conflicts are rare
- * since handoffs within a session are mostly sequential.
+ * Concurrent updates use read-modify-write with retry. Writes are
+ * unconditional (last-writer-wins) since Nexus VFS CAS is unreliable.
  *
  * When no sessionId is available (e.g. handoff created outside a session),
  * falls back to a shared "handoffs/_global.json" file.
  */
 
 import {
+  canTransition,
   type Handoff,
   type HandoffInput,
   type HandoffQuery,
@@ -22,7 +23,7 @@ import {
 import { debugLog } from "../tui/debug-log.js";
 import type { NexusClient } from "./client.js";
 
-const MAX_CAS_RETRIES = 8;
+const MAX_RETRIES = 8;
 
 function handoffsDir(zoneId: string): string {
   return `/zones/${zoneId}/handoffs`;
@@ -38,11 +39,17 @@ function encode(obj: unknown): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(obj));
 }
 
+/** TTL for the readAllHandoffs cache in ms. SSE invalidation resets this. */
+const CACHE_TTL_MS = 5_000;
+
 export class NexusHandoffStore implements HandoffStore {
   private readonly client: NexusClient;
   private readonly sessionId: string | undefined;
   private readonly zoneId: string;
   private dirEnsured = false;
+
+  /** Cached result of readAllHandoffs(). Invalidated on writes and SSE events. */
+  private allHandoffsCache: { data: Handoff[]; fetchedAt: number } | undefined;
 
   constructor(
     client: NexusClient,
@@ -92,33 +99,40 @@ export class NexusHandoffStore implements HandoffStore {
   }
 
   /**
-   * Read-modify-write with CAS retry.
+   * Read-modify-write with retry on conflict or rate limit.
+   *
+   * NOT true CAS — Nexus sys_write silently drops conditional writes
+   * (if_match / if_none_match return success but don't persist), so writes
+   * are unconditional. Concurrent writers are last-writer-wins. The retry
+   * loop handles rate limits and transient errors, not CAS conflicts.
+   *
    * fn receives current handoffs, returns modified handoffs.
    * Returns the final handoff list after successful write.
    */
-  private async casUpdate(
+  private async readModifyWrite(
     path: string,
     fn: (handoffs: Handoff[]) => Handoff[],
   ): Promise<Handoff[]> {
     await this.ensureDir();
-    for (let attempt = 0; attempt < MAX_CAS_RETRIES; attempt++) {
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       const { handoffs, etag } = await this.readFile(path);
       const updated = fn(handoffs);
       try {
         // Unconditional write — Nexus sys_write silently drops writes when
         // if_match or if_none_match are set (returns success but doesn't persist).
-        // Without CAS, concurrent writes may lose data, but handoffs are append-only
+        // Unconditional write — concurrent writes are last-writer-wins. Handoffs are append-only
         // per session so conflicts are rare and the retry loop handles it.
         const writeResult = await this.client.write(path, encode({ handoffs: updated }));
         debugLog(
-          "NexusHandoffStore.casUpdate",
+          "NexusHandoffStore.readModifyWrite",
           `WRITE OK path=${path} etag=${etag || "(empty)"} bytesWritten=${writeResult.bytesWritten} newEtag=${writeResult.etag} count=${updated.length} attempt=${attempt}`,
         );
+        this.invalidateCache();
         return updated;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         debugLog(
-          "NexusHandoffStore.casUpdate",
+          "NexusHandoffStore.readModifyWrite",
           `WRITE FAIL path=${path} attempt=${attempt} err=${msg}`,
         );
         // Conflict = another writer updated between our read and write — retry
@@ -139,7 +153,7 @@ export class NexusHandoffStore implements HandoffStore {
         throw err;
       }
     }
-    throw new Error(`Handoff CAS update failed after ${MAX_CAS_RETRIES} retries on ${path}`);
+    throw new Error(`Handoff read-modify-write failed after ${MAX_RETRIES} retries on ${path}`);
   }
 
   // ---------------------------------------------------------------------------
@@ -156,7 +170,7 @@ export class NexusHandoffStore implements HandoffStore {
 
   /**
    * Batch creation: collapses N handoff inserts into a single VFS file
-   * write (one casUpdate, one HTTP round-trip). Avoids the N+1 pattern
+   * write (one readModifyWrite, one HTTP round-trip). Avoids the N+1 pattern
    * the contributeOperation serial path used to have when fanning out
    * to multiple downstream roles.
    */
@@ -171,7 +185,7 @@ export class NexusHandoffStore implements HandoffStore {
       // Default to Delivered — the MCP creates handoffs at contribution-write time
       // AND the TopologyRouter routes them immediately. The TUI's routeContribution
       // delivers via agentRuntime.send(). Updating status cross-client (PendingPickup
-      // → Delivered) fails due to Nexus VFS casUpdate limitations.
+      // → Delivered) fails due to Nexus VFS write-visibility limitations.
       status: HandoffStatus.Delivered,
       requiresReply: input.requiresReply ?? false,
       ...(input.replyDueAt !== undefined ? { replyDueAt: input.replyDueAt } : {}),
@@ -179,7 +193,7 @@ export class NexusHandoffStore implements HandoffStore {
     }));
 
     const path = this.filePath();
-    await this.casUpdate(path, (existing) => {
+    await this.readModifyWrite(path, (existing) => {
       // Idempotent merge: skip handoffs whose id is already present.
       const existingIds = new Set(existing.map((h) => h.handoffId));
       const fresh = handoffs.filter((h) => !existingIds.has(h.handoffId));
@@ -226,26 +240,43 @@ export class NexusHandoffStore implements HandoffStore {
   }
 
   async markDelivered(handoffId: string): Promise<void> {
-    await this.updateHandoff(handoffId, (h) => ({ ...h, status: HandoffStatus.Delivered }));
+    await this.transitionHandoff(handoffId, HandoffStatus.Delivered);
+  }
+
+  async markProcessed(handoffId: string): Promise<void> {
+    await this.transitionHandoff(handoffId, HandoffStatus.Processed);
   }
 
   async markReplied(handoffId: string, resolvedByCid: string): Promise<void> {
-    await this.updateHandoff(handoffId, (h) => ({
-      ...h,
-      status: HandoffStatus.Replied,
-      resolvedByCid,
-    }));
+    await this.transitionHandoff(handoffId, HandoffStatus.Replied, { resolvedByCid });
+  }
+
+  async markDeadLettered(handoffId: string): Promise<void> {
+    await this.transitionHandoff(handoffId, HandoffStatus.DeadLettered);
+  }
+
+  async setIpcMessageId(handoffId: string, ipcMessageId: string): Promise<void> {
+    await this.updateHandoff(handoffId, (h) => ({ ...h, ipcMessageId }));
   }
 
   async expireStale(now?: string): Promise<readonly Handoff[]> {
     const cutoff = now ?? new Date().toISOString();
     const expired: Handoff[] = [];
 
+    // Expire handoffs in any non-terminal state that have a replyDueAt past
+    // the cutoff. The state machine allows pending_pickup→expired,
+    // delivered→expired, and processed→expired.
+    const expirableStatuses: ReadonlySet<HandoffStatus> = new Set([
+      HandoffStatus.PendingPickup,
+      HandoffStatus.Delivered,
+      HandoffStatus.Processed,
+    ]);
+
     // Only scan the current session file for expiry (on-demand sweep)
-    await this.casUpdate(this.filePath(), (handoffs) =>
+    await this.readModifyWrite(this.filePath(), (handoffs) =>
       handoffs.map((h) => {
         if (
-          h.status === HandoffStatus.PendingPickup &&
+          expirableStatuses.has(h.status) &&
           h.replyDueAt !== undefined &&
           h.replyDueAt < cutoff
         ) {
@@ -265,7 +296,13 @@ export class NexusHandoffStore implements HandoffStore {
     return pending.length;
   }
 
+  /** Invalidate the all-handoffs cache. Call on SSE events or external writes. */
+  invalidateCache(): void {
+    this.allHandoffsCache = undefined;
+  }
+
   close(): void {
+    this.allHandoffsCache = undefined;
     // NexusClient is shared — caller owns its lifecycle
   }
 
@@ -274,8 +311,52 @@ export class NexusHandoffStore implements HandoffStore {
   // ---------------------------------------------------------------------------
 
   private async updateHandoff(handoffId: string, fn: (h: Handoff) => Handoff): Promise<void> {
-    await this.casUpdate(this.filePath(), (handoffs) =>
+    await this.readModifyWrite(this.filePath(), (handoffs) =>
       handoffs.map((h) => (h.handoffId === handoffId ? fn(h) : h)),
+    );
+  }
+
+  /**
+   * Transition a handoff's status with state machine validation.
+   * Rejects the write (no-op) if the current status doesn't allow the transition,
+   * which guards against concurrent writers clobbering each other with stale state.
+   */
+  /**
+   * Transition a handoff's status with state machine validation.
+   *
+   * Reads the current file, checks canTransition, and only writes back
+   * if the transition is valid. Skips the write entirely on no-op to
+   * avoid clobbering concurrent changes with a stale snapshot.
+   */
+  private async transitionHandoff(
+    handoffId: string,
+    targetStatus: HandoffStatus,
+    extraFields?: Partial<Handoff>,
+  ): Promise<void> {
+    await this.ensureDir();
+    const path = this.filePath();
+    const { handoffs } = await this.readFile(path);
+
+    const idx = handoffs.findIndex((h) => h.handoffId === handoffId);
+    if (idx === -1) return; // handoff not in this file
+
+    const current = handoffs[idx];
+    if (!current) return;
+    if (!canTransition(current.status, targetStatus)) {
+      debugLog(
+        "NexusHandoffStore.transitionHandoff",
+        `REJECTED ${handoffId} ${current.status}→${targetStatus} (invalid transition, skipping write)`,
+      );
+      return; // skip write entirely — don't clobber concurrent changes
+    }
+
+    // Valid transition — do the write
+    handoffs[idx] = { ...current, ...extraFields, status: targetStatus };
+    await this.client.write(path, new TextEncoder().encode(JSON.stringify({ handoffs })));
+    this.invalidateCache();
+    debugLog(
+      "NexusHandoffStore.transitionHandoff",
+      `OK ${handoffId} ${current.status}→${targetStatus}`,
     );
   }
 
@@ -285,6 +366,14 @@ export class NexusHandoffStore implements HandoffStore {
   }
 
   private async readAllHandoffs(): Promise<Handoff[]> {
+    // Return cached data if fresh (within TTL)
+    if (
+      this.allHandoffsCache !== undefined &&
+      Date.now() - this.allHandoffsCache.fetchedAt < CACHE_TTL_MS
+    ) {
+      return this.allHandoffsCache.data;
+    }
+
     try {
       const listing = await this.client.list(handoffsDir(this.zoneId));
       // Nexus list may return entries without the .json extension even though
@@ -312,7 +401,9 @@ export class NexusHandoffStore implements HandoffStore {
           }
         }),
       );
-      return results.flat();
+      const allHandoffs = results.flat();
+      this.allHandoffsCache = { data: allHandoffs, fetchedAt: Date.now() };
+      return allHandoffs;
     } catch (listErr) {
       debugLog(
         "NexusHandoffStore.readAllHandoffs",

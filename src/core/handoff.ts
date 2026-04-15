@@ -1,11 +1,56 @@
 export const HandoffStatus = {
   PendingPickup: "pending_pickup",
   Delivered: "delivered",
+  /** Agent acknowledged receipt and is processing the handoff. */
+  Processed: "processed",
   Replied: "replied",
   Expired: "expired",
+  /** IPC delivery failed after retries — requires operator attention. */
+  DeadLettered: "dead_lettered",
 } as const;
 
 export type HandoffStatus = (typeof HandoffStatus)[keyof typeof HandoffStatus];
+
+/**
+ * Handoff delivery state machine.
+ *
+ * Happy path:  pending_pickup → delivered → processed → replied
+ * IPC failure: pending_pickup → dead_lettered
+ * TTL expiry:  pending_pickup → expired
+ *
+ * Terminal states: replied, expired, dead_lettered.
+ */
+const VALID_TRANSITIONS: ReadonlyMap<HandoffStatus, ReadonlySet<HandoffStatus>> = new Map([
+  [
+    HandoffStatus.PendingPickup,
+    new Set([HandoffStatus.Delivered, HandoffStatus.Expired, HandoffStatus.DeadLettered]),
+  ],
+  [
+    HandoffStatus.Delivered,
+    new Set([
+      HandoffStatus.Processed,
+      HandoffStatus.Replied,
+      HandoffStatus.Expired,
+      HandoffStatus.DeadLettered,
+    ]),
+  ],
+  [HandoffStatus.Processed, new Set([HandoffStatus.Replied, HandoffStatus.Expired])],
+  // Terminal states — no outgoing transitions
+  [HandoffStatus.Replied, new Set()],
+  [HandoffStatus.Expired, new Set()],
+  [HandoffStatus.DeadLettered, new Set()],
+]);
+
+/**
+ * Check whether a status transition is valid.
+ *
+ * Returns true if `from → to` is a legal transition in the handoff
+ * state machine. Returns false for invalid transitions and self-loops.
+ */
+export function canTransition(from: HandoffStatus, to: HandoffStatus): boolean {
+  if (from === to) return false;
+  return VALID_TRANSITIONS.get(from)?.has(to) ?? false;
+}
 
 export interface Handoff {
   readonly handoffId: string;
@@ -17,6 +62,8 @@ export interface Handoff {
   readonly replyDueAt?: string | undefined;
   readonly resolvedByCid?: string | undefined;
   readonly createdAt: string;
+  /** Nexus IPC message ID — set when the handoff is relayed via IPC. */
+  readonly ipcMessageId?: string | undefined;
 }
 
 export interface HandoffInput {
@@ -55,7 +102,13 @@ export interface HandoffStore {
   get(id: string): Promise<Handoff | undefined>;
   list(query?: HandoffQuery): Promise<readonly Handoff[]>;
   markDelivered(id: string): Promise<void>;
+  /** Mark a handoff as processed (agent acknowledged and is acting on it). */
+  markProcessed(id: string): Promise<void>;
   markReplied(id: string, resolvedByCid: string): Promise<void>;
+  /** Mark a handoff as dead-lettered (IPC delivery failed after retries). */
+  markDeadLettered(id: string): Promise<void>;
+  /** Set the IPC message ID on a handoff (called after IPC relay succeeds). */
+  setIpcMessageId?(id: string, ipcMessageId: string): Promise<void>;
   expireStale(now?: string): Promise<readonly Handoff[]>;
   countPending(toRole: string): Promise<number>;
   close(): void;

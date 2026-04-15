@@ -1,6 +1,19 @@
 import type { EventBus, GroveEvent } from "./event-bus.js";
 import type { AgentRole, AgentTopology, RoleEdge } from "./topology.js";
 
+/** Result of routing an event to a target role. */
+export interface RouteResult {
+  readonly targetRole: string;
+  /** Whether the publish succeeded (IPC delivery or local handler). */
+  readonly ok: boolean;
+  /** IPC message ID — present when the event was relayed via Nexus IPC. */
+  readonly messageId?: string | undefined;
+  /** Error message — present when publish failed. */
+  readonly error?: string | undefined;
+  /** True when failure is infrastructure, not delivery rejection. */
+  readonly infrastructureError?: boolean | undefined;
+}
+
 /**
  * Routes contribution events through topology edges.
  *
@@ -59,10 +72,15 @@ export class TopologyRouter {
   /**
    * Route an event from a source role to all downstream targets.
    * Publishes one event per unique target role (deduplicates by target when
-   * multiple edge types point to the same target). Returns the list of unique
-   * target roles that received the event.
+   * multiple edge types point to the same target). Returns route results
+   * including IPC message IDs when available.
+   *
+   * All IPC sends run in parallel (Promise.all) so N targets pay 1x latency.
    */
-  route(sourceRole: string, payload: Record<string, unknown>): readonly string[] {
+  async route(
+    sourceRole: string,
+    payload: Record<string, unknown>,
+  ): Promise<readonly RouteResult[]> {
     const role = this.roleMap.get(sourceRole);
     const mode = role?.mode ?? "explicit";
 
@@ -90,8 +108,8 @@ export class TopologyRouter {
 
     if (targets.size === 0) return [];
 
-    const routedTo: string[] = [];
-    for (const targetRole of targets) {
+    // Parallel publish: all targets in one go (14A)
+    const publishPromises = [...targets].map(async (targetRole): Promise<RouteResult> => {
       const event: GroveEvent = {
         type: "contribution",
         sourceRole,
@@ -99,28 +117,36 @@ export class TopologyRouter {
         payload,
         timestamp,
       };
-      this.eventBus.publish(event);
-      routedTo.push(targetRole);
-    }
+      const result = await this.eventBus.publish(event);
+      return {
+        targetRole,
+        ok: result.ok,
+        messageId: result.messageId,
+        error: result.error,
+        infrastructureError: result.infrastructureError,
+      };
+    });
 
-    return routedTo;
+    return Promise.all(publishPromises);
   }
 
   /**
    * Broadcast a stop event to all roles.
    */
-  broadcastStop(reason: string): void {
+  async broadcastStop(reason: string): Promise<void> {
     const timestamp = new Date().toISOString();
     const allRoles = this.topology.roles.map((r) => r.name);
-    for (const role of allRoles) {
-      this.eventBus.publish({
-        type: "stop",
-        sourceRole: "system",
-        targetRole: role,
-        payload: { reason },
-        timestamp,
-      });
-    }
+    await Promise.all(
+      allRoles.map((role) =>
+        this.eventBus.publish({
+          type: "stop",
+          sourceRole: "system",
+          targetRole: role,
+          payload: { reason },
+          timestamp,
+        }),
+      ),
+    );
   }
 
   /**

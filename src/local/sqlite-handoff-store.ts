@@ -160,10 +160,28 @@ export class SqliteHandoffStore implements HandoffStore {
     }
   }
 
+  async markProcessed(id: string): Promise<void> {
+    const result = this.db
+      .prepare("UPDATE handoffs SET status = ? WHERE handoff_id = ?")
+      .run(HandoffStatus.Processed, id);
+    if (result.changes === 0) {
+      throw new NotFoundError({ resource: "Handoff", identifier: id });
+    }
+  }
+
   async markReplied(id: string, resolvedByCid: string): Promise<void> {
     const result = this.db
       .prepare("UPDATE handoffs SET status = ?, resolved_by_cid = ? WHERE handoff_id = ?")
       .run(HandoffStatus.Replied, resolvedByCid, id);
+    if (result.changes === 0) {
+      throw new NotFoundError({ resource: "Handoff", identifier: id });
+    }
+  }
+
+  async markDeadLettered(id: string): Promise<void> {
+    const result = this.db
+      .prepare("UPDATE handoffs SET status = ? WHERE handoff_id = ?")
+      .run(HandoffStatus.DeadLettered, id);
     if (result.changes === 0) {
       throw new NotFoundError({ resource: "Handoff", identifier: id });
     }
@@ -175,9 +193,15 @@ export class SqliteHandoffStore implements HandoffStore {
       .prepare(
         `UPDATE handoffs
          SET status = ?
-         WHERE status = ? AND reply_due_at IS NOT NULL AND reply_due_at < ?`,
+         WHERE status IN (?, ?, ?) AND reply_due_at IS NOT NULL AND reply_due_at < ?`,
       )
-      .run(HandoffStatus.Expired, HandoffStatus.PendingPickup, cutoff);
+      .run(
+        HandoffStatus.Expired,
+        HandoffStatus.PendingPickup,
+        HandoffStatus.Delivered,
+        HandoffStatus.Processed,
+        cutoff,
+      );
 
     const rows = this.db
       .prepare(

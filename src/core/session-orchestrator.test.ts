@@ -157,7 +157,7 @@ describe("SessionOrchestrator", () => {
     }
 
     // Without contributionStore, EventBus forwarding is the only path
-    bus.publish({
+    void bus.publish({
       type: "contribution",
       sourceRole: "coder",
       targetRole: "reviewer",
@@ -181,7 +181,7 @@ describe("SessionOrchestrator", () => {
     }
 
     // Publish a stop event to a role — should NOT be forwarded
-    bus.publish({
+    void bus.publish({
       type: "stop",
       sourceRole: "system",
       targetRole: "coder",

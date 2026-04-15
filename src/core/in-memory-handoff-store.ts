@@ -65,6 +65,14 @@ export class InMemoryHandoffStore implements HandoffStore {
     this.handoffs.set(id, { ...handoff, status: HandoffStatus.Delivered });
   }
 
+  async markProcessed(id: string): Promise<void> {
+    const handoff = this.handoffs.get(id);
+    if (handoff === undefined) {
+      throw new NotFoundError({ resource: "Handoff", identifier: id });
+    }
+    this.handoffs.set(id, { ...handoff, status: HandoffStatus.Processed });
+  }
+
   async markReplied(id: string, resolvedByCid: string): Promise<void> {
     const handoff = this.handoffs.get(id);
     if (handoff === undefined) {
@@ -77,13 +85,35 @@ export class InMemoryHandoffStore implements HandoffStore {
     });
   }
 
+  async markDeadLettered(id: string): Promise<void> {
+    const handoff = this.handoffs.get(id);
+    if (handoff === undefined) {
+      throw new NotFoundError({ resource: "Handoff", identifier: id });
+    }
+    this.handoffs.set(id, { ...handoff, status: HandoffStatus.DeadLettered });
+  }
+
+  async setIpcMessageId(id: string, ipcMessageId: string): Promise<void> {
+    const handoff = this.handoffs.get(id);
+    if (handoff === undefined) {
+      throw new NotFoundError({ resource: "Handoff", identifier: id });
+    }
+    this.handoffs.set(id, { ...handoff, ipcMessageId });
+  }
+
   async expireStale(now?: string): Promise<readonly Handoff[]> {
     const cutoff = now ?? new Date().toISOString();
     const expired: Handoff[] = [];
 
+    const expirableStatuses: ReadonlySet<HandoffStatus> = new Set([
+      HandoffStatus.PendingPickup,
+      HandoffStatus.Delivered,
+      HandoffStatus.Processed,
+    ]);
+
     for (const [handoffId, handoff] of this.handoffs) {
       if (
-        handoff.status === HandoffStatus.PendingPickup &&
+        expirableStatuses.has(handoff.status) &&
         handoff.replyDueAt !== undefined &&
         handoff.replyDueAt < cutoff
       ) {

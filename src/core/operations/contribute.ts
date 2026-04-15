@@ -1146,14 +1146,52 @@ export async function contributeOperation(
       deps.topologyRouter !== undefined &&
       agentRole !== undefined
     ) {
-      fireAndForget("topology routing", () =>
-        deps.topologyRouter?.route(agentRole, {
+      fireAndForget("topology routing", async () => {
+        const routeResults = await deps.topologyRouter?.route(agentRole, {
           cid: contribution.cid,
           kind: contribution.kind,
           summary: contribution.summary,
           agentId: contribution.agent.agentId,
-        }),
-      );
+        });
+
+        // Link IPC message IDs back to handoff records and dead-letter
+        // handoffs whose IPC delivery failed (best-effort).
+        if (routeResults && deps.handoffStore && handoffIds.length > 0) {
+          const handoffs = await deps.handoffStore.list({
+            sourceCid: contribution.cid,
+          });
+          for (const result of routeResults) {
+            const matching = handoffs.find((h) => h.toRole === result.targetRole);
+            if (!matching) continue;
+            try {
+              if (result.ok && result.messageId) {
+                // IPC succeeded — store the message ID for SSE delivery tracking
+                await deps.handoffStore.setIpcMessageId?.(matching.handoffId, result.messageId);
+              } else if (!result.ok && !result.infrastructureError) {
+                // IPC delivery was rejected by the service (not an infra issue
+                // like 404/connection refused). Dead-letter the handoff so
+                // operators can see the gap.
+                await deps.handoffStore.markDeadLettered(matching.handoffId);
+                process.stderr.write(
+                  `[grove] handoff ${matching.handoffId} dead-lettered: IPC to ${result.targetRole} failed: ${result.error ?? "unknown"}\n`,
+                );
+              }
+              // When !result.ok && result.infrastructureError: IPC endpoint
+              // is unavailable (404, connection refused). The handoff stays
+              // in its current status — it was never attempted, not rejected.
+              // Delivery falls back to the session orchestrator's polling path.
+            } catch (bookkeepingErr) {
+              // Best-effort — handoff record is the primary artifact.
+              // Log so operators can diagnose missing ipcMessageId or
+              // un-dead-lettered handoffs.
+              console.warn(
+                `[grove] handoff IPC bookkeeping failed for ${matching.handoffId} → ${result.targetRole}:`,
+                bookkeepingErr instanceof Error ? bookkeepingErr.message : String(bookkeepingErr),
+              );
+            }
+          }
+        }
+      });
     }
 
     // --- Post-write: re-check stop conditions (outside mutex, best-effort) ---
