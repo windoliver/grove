@@ -568,6 +568,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         detected: Map<string, boolean>,
         roleMappingFromPreview: Map<string, string>,
         rolePrompts: Map<string, string>,
+        edgeTimeouts: Map<string, number>,
       ) => {
         // Guard: prevent duplicate spawn when user presses Escape → Enter twice.
         // hasSpawnedRef is set to true here and only reset in handleNewSession.
@@ -576,7 +577,28 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           return;
         }
         hasSpawnedRef.current = true;
-        debugLog("handleLaunchConfirm", `spawning with ${roleMappingFromPreview.size} roles`);
+        debugLog("handleLaunchConfirm", `spawning with ${roleMappingFromPreview.size} roles, ${edgeTimeouts.size} edge timeouts`);
+
+        // Apply edge timeouts from TUI into the topology so they're
+        // persisted in the session record and used by the MCP server.
+        if (edgeTimeouts.size > 0 && topology) {
+          for (const role of topology.roles) {
+            if (role.edges) {
+              for (const edge of role.edges) {
+                const key = `${role.name}:${edge.target}`;
+                const timeout = edgeTimeouts.get(key);
+                if (timeout !== undefined) {
+                  // Mutate in place — topology is owned by this session
+                  (edge as { replyTimeoutSeconds?: number }).replyTimeoutSeconds = timeout;
+                } else {
+                  // User removed timeout
+                  delete (edge as { replyTimeoutSeconds?: number }).replyTimeoutSeconds;
+                }
+              }
+            }
+          }
+        }
+
         rolePromptsRef.current = rolePrompts;
         setState((s) => ({
           ...s,
@@ -585,7 +607,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         }));
         spawnAgents(state.goal ?? "", roleMappingFromPreview);
       },
-      [state.goal, spawnAgents],
+      [state.goal, spawnAgents, topology],
     );
 
     // Screen 3.5 -> Screen 4: all spawns resolved
