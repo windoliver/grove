@@ -81,7 +81,16 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
   const casPath = join(groveDir, "cas");
   const groveRoot = resolve(groveDir, "..");
 
-  const stores = createSqliteStores(dbPath);
+  // Pass GROVE_SESSION_ID to the handoff store so it scopes all
+  // reads/writes to the active session. This enables proactive deadline
+  // timers and ack receipts safely — session A's watcher cannot flip
+  // session B's rows, and a role-bound ack cannot cross session boundaries.
+  // When GROVE_SESSION_ID is unset (CLI/tests), the store falls back to
+  // unscoped mode for backwards compatibility.
+  const envSessionId = process.env.GROVE_SESSION_ID;
+  const stores = createSqliteStores(dbPath, {
+    ...(envSessionId ? { sessionId: envSessionId } : {}),
+  });
   const cas = new FsCas(casPath);
 
   const baseFrontier = new DefaultFrontierCalculator(stores.contributionStore);

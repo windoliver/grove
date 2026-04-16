@@ -518,8 +518,15 @@ export class SqliteIdempotencyStore {
 /**
  * Convenience factory that creates a shared Database and returns both stores.
  * The returned close() disposes the database connection.
+ *
+ * Pass `sessionId` to get a session-scoped handoff store. When set, all
+ * handoff reads/writes/mutations filter by session_id, enabling proactive
+ * deadline timers and ack receipts without cross-session corruption.
  */
-export function createSqliteStores(dbPath: string): {
+export function createSqliteStores(
+  dbPath: string,
+  opts?: { readonly sessionId?: string | undefined },
+): {
   db: Database;
   contributionStore: SqliteContributionStore;
   claimStore: SqliteClaimStore;
@@ -538,7 +545,7 @@ export function createSqliteStores(dbPath: string): {
     bountyStore: new SqliteBountyStore(db),
     outcomeStore: new SqliteOutcomeStore(db),
     goalSessionStore: new SqliteGoalSessionStore(db),
-    handoffStore: new SqliteHandoffStore(db),
+    handoffStore: new SqliteHandoffStore(db, opts?.sessionId),
     idempotencyStore: new SqliteIdempotencyStore(db),
     close: () => {
       db.run("PRAGMA optimize");

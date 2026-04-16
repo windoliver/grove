@@ -235,10 +235,12 @@ describe("handoff deadline E2E", () => {
     watcher.close();
   });
 
-  test("rebuildFromStore restores timers after restart", async () => {
-    const { deps, handoffStore, bus } = await setup();
+  test("rebuildFromStore skips unscoped SQLite stores (no session scoping)", async () => {
+    const { handoffStore, bus } = await setup();
 
-    // Create handoff with future deadline
+    // Unscoped setup() uses new SqliteHandoffStore(db) without a sessionId.
+    // Without session scoping, rebuild must refuse to arm timers since
+    // list() would return handoffs from every session in the DB.
     await handoffStore.create({
       sourceCid: "blake3:test-rebuild",
       fromRole: "coder",
@@ -247,18 +249,41 @@ describe("handoff deadline E2E", () => {
       replyDueAt: new Date(Date.now() + 60_000).toISOString(),
     });
 
-    // Simulate process restart: new watcher, rebuild from store
     const watcher2 = new DeadlineWatcher({ handoffStore, eventBus: bus });
     const count = await watcher2.rebuildFromStore();
 
-    // SQLite disables rebuild (no session_id column — returns empty from
-    // listForCurrentSession) to avoid cross-session timer leakage. New
-    // handoffs still get timers via watch() on creation; only restart
-    // rebuild is skipped for SQLite. Deadline enforcement remains
-    // correct because markReplied rejects late replies at the store level.
     expect(count).toBe(0);
     expect(watcher2.activeCount).toBe(0);
 
     watcher2.close();
+  });
+
+  test("rebuildFromStore restores timers on scoped SQLite stores", async () => {
+    const tempDir2 = await mkdtemp(join(tmpdir(), "grove-scoped-rebuild-"));
+    const db = initSqliteDb(join(tempDir2, "test.db"));
+    const scoped = new SqliteHandoffStore(db, "session-X");
+    const bus = new LocalEventBus();
+
+    try {
+      await scoped.create({
+        sourceCid: "blake3:test-rebuild",
+        fromRole: "coder",
+        toRole: "reviewer",
+        requiresReply: true,
+        replyDueAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+
+      const watcher2 = new DeadlineWatcher({ handoffStore: scoped, eventBus: bus });
+      const count = await watcher2.rebuildFromStore();
+
+      expect(count).toBe(1);
+      expect(watcher2.activeCount).toBe(1);
+
+      watcher2.close();
+    } finally {
+      bus.close();
+      db.close();
+      await rm(tempDir2, { recursive: true, force: true });
+    }
   });
 });

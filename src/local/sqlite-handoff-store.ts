@@ -21,6 +21,7 @@ export const HANDOFF_DDL = `
     resolved_by_cid TEXT,
     seen_at TEXT,
     acked_at TEXT,
+    session_id TEXT,
     created_at TEXT NOT NULL
   );
 
@@ -29,6 +30,7 @@ export const HANDOFF_DDL = `
   CREATE INDEX IF NOT EXISTS idx_handoffs_from_role ON handoffs(from_role);
   CREATE INDEX IF NOT EXISTS idx_handoffs_reply_due_pending
     ON handoffs(reply_due_at) WHERE status = 'pending_pickup';
+  CREATE INDEX IF NOT EXISTS idx_handoffs_session_id ON handoffs(session_id);
 `;
 
 interface HandoffRow {
@@ -42,6 +44,7 @@ interface HandoffRow {
   readonly resolved_by_cid: string | null;
   readonly seen_at: string | null;
   readonly acked_at: string | null;
+  readonly session_id: string | null;
   readonly created_at: string;
 }
 
@@ -62,27 +65,54 @@ function rowToHandoff(row: HandoffRow): Handoff {
 }
 
 const SELECT_COLS = `handoff_id, source_cid, from_role, to_role, status,
-                requires_reply, reply_due_at, resolved_by_cid, seen_at, acked_at, created_at`;
+                requires_reply, reply_due_at, resolved_by_cid, seen_at, acked_at,
+                session_id, created_at`;
 
+/**
+ * SQLite-backed handoff store with optional session scoping.
+ *
+ * When constructed with a `sessionId`, every write stamps the row with that
+ * id and every read/mutation filters by it — providing the same session
+ * isolation as NexusHandoffStore. This makes it safe to run proactive
+ * deadline timers and ack/seen receipts on the local path without cross-
+ * session state corruption.
+ *
+ * When constructed without a `sessionId` (legacy / unscoped callers), the
+ * store behaves like before: writes leave session_id NULL, reads don't
+ * filter by session. This preserves compatibility with CLI tools and
+ * tests that want to see every handoff in the DB.
+ *
+ * The `listForCurrentSession` / `isInCurrentSession` capability methods
+ * are only exposed in scoped mode — their presence is the signal to
+ * callers (DeadlineWatcher, grove_ack_handoff) that this backend can
+ * safely answer "does this handoff belong to me?"
+ */
 export class SqliteHandoffStore implements HandoffStore {
   private readonly db: Database;
+  private readonly sessionId: string | undefined;
 
-  constructor(db: Database) {
+  constructor(db: Database, sessionId?: string) {
     this.db = db;
-    // Column-safe migration: add seen_at/acked_at if missing (pre-#164 databases).
-    //
-    // This runs outside the serialized initSqliteDb transaction, so two
-    // concurrent processes upgrading the same DB can both see the missing
-    // column and race on ALTER TABLE. Catch "duplicate column" errors and
-    // treat them as success — the column exists either way after the race.
+    this.sessionId = sessionId;
+    // Column-safe migration for pre-#164 databases. Runs outside the
+    // serialized initSqliteDb transaction, so two concurrent processes
+    // upgrading the same DB can both observe the missing column and race
+    // on ALTER TABLE — catch "duplicate column" and treat as success.
     const columns = (
       this.db.prepare("PRAGMA table_info(handoffs)").all() as readonly { name: string }[]
     ).map((c) => c.name);
-    if (!columns.includes("seen_at")) {
-      this.safeAddColumn("seen_at");
-    }
-    if (!columns.includes("acked_at")) {
-      this.safeAddColumn("acked_at");
+    if (!columns.includes("seen_at")) this.safeAddColumn("seen_at");
+    if (!columns.includes("acked_at")) this.safeAddColumn("acked_at");
+    if (!columns.includes("session_id")) this.safeAddColumn("session_id");
+
+    // Conditionally expose session-scoped capability methods only when
+    // operating in scoped mode. Unscoped stores leave them undefined so
+    // callers correctly interpret that as "no session scoping available".
+    if (sessionId === undefined) {
+      // Remove the methods so the presence check (method !== undefined)
+      // returns false on unscoped stores.
+      (this as { listForCurrentSession?: unknown }).listForCurrentSession = undefined;
+      (this as { isInCurrentSession?: unknown }).isInCurrentSession = undefined;
     }
   }
 
@@ -91,11 +121,17 @@ export class SqliteHandoffStore implements HandoffStore {
       this.db.run(`ALTER TABLE handoffs ADD COLUMN ${column} TEXT`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // "duplicate column name" — another process added it between our
-      // PRAGMA check and this ALTER. That's expected during concurrent
-      // upgrades; the column exists now either way.
       if (!/duplicate column/i.test(msg)) throw err;
     }
+  }
+
+  /**
+   * Return a WHERE fragment + params that restrict queries to the current
+   * session. Returns empty when the store is unscoped (legacy mode).
+   */
+  private scopeClause(): { sql: string; params: readonly string[] } {
+    if (this.sessionId === undefined) return { sql: "", params: [] };
+    return { sql: "session_id = ?", params: [this.sessionId] };
   }
 
   async create(input: HandoffInput): Promise<Handoff> {
@@ -109,11 +145,7 @@ export class SqliteHandoffStore implements HandoffStore {
 
   /**
    * Insert a handoff record synchronously inside an active SQLite transaction.
-   *
-   * Capability extension: `contributeOperation` duck-types for this method when
-   * selecting the atomic write path (`writeAtomic`). It is called as the cowrite
-   * callback inside `putWithCowrite`, so it must be synchronous. Stores that do
-   * NOT implement this method fall back to `writeSerial` (best-effort handoffs).
+   * Stamps the row with the current sessionId when the store is scoped.
    */
   insertSync(input: HandoffInput): string {
     const handoffId = input.handoffId ?? crypto.randomUUID();
@@ -121,8 +153,9 @@ export class SqliteHandoffStore implements HandoffStore {
       .prepare(
         `INSERT INTO handoffs (
           handoff_id, source_cid, from_role, to_role, status,
-          requires_reply, reply_due_at, resolved_by_cid, seen_at, acked_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          requires_reply, reply_due_at, resolved_by_cid, seen_at, acked_at,
+          session_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         handoffId,
@@ -135,15 +168,20 @@ export class SqliteHandoffStore implements HandoffStore {
         null,
         null,
         null,
+        this.sessionId ?? null,
         new Date().toISOString(),
       );
     return handoffId;
   }
 
   async get(id: string): Promise<Handoff | undefined> {
+    // Scoped: a handoff from a different session must not leak through
+    // get() or it could be mutated via mark* methods by the wrong process.
+    const { sql: scopeSql, params: scopeParams } = this.scopeClause();
+    const where = scopeSql ? `handoff_id = ? AND ${scopeSql}` : "handoff_id = ?";
     const row = this.db
-      .prepare(`SELECT ${SELECT_COLS} FROM handoffs WHERE handoff_id = ?`)
-      .get(id) as HandoffRow | null;
+      .prepare(`SELECT ${SELECT_COLS} FROM handoffs WHERE ${where}`)
+      .get(id, ...scopeParams) as HandoffRow | null;
     return row === null ? undefined : rowToHandoff(row);
   }
 
@@ -169,10 +207,16 @@ export class SqliteHandoffStore implements HandoffStore {
       params.push(...statuses);
     }
 
-    let sql = `SELECT ${SELECT_COLS} FROM handoffs`;
-    if (clauses.length > 0) {
-      sql += ` WHERE ${clauses.join(" AND ")}`;
+    // Scope by session when set — prevents list() from returning handoffs
+    // from other sessions that share the same .grove/grove.db file.
+    const { sql: scopeSql, params: scopeParams } = this.scopeClause();
+    if (scopeSql) {
+      clauses.push(scopeSql);
+      params.push(...scopeParams);
     }
+
+    let sql = `SELECT ${SELECT_COLS} FROM handoffs`;
+    if (clauses.length > 0) sql += ` WHERE ${clauses.join(" AND ")}`;
     sql += " ORDER BY created_at ASC";
     if (query?.limit !== undefined) {
       sql += " LIMIT ?";
@@ -184,22 +228,20 @@ export class SqliteHandoffStore implements HandoffStore {
   }
 
   // All transitions below are implemented as single conditional UPDATEs
-  // with status guards in the WHERE clause. This closes the read-then-write
-  // TOCTOU window against concurrent expireStale / markReplied / etc: if
-  // the state changed between our check and write, result.changes === 0
-  // and we surface the right error (not-found vs invalid-transition).
+  // with status + session_id guards in the WHERE clause. Closes TOCTOU
+  // against concurrent expireStale / markReplied AND prevents a process
+  // scoped to session A from mutating session B's rows.
 
   async markDelivered(id: string): Promise<void> {
-    // Valid transition: pending_pickup → delivered
+    const { sql: scopeSql, params: scopeParams } = this.scopeClause();
+    const scopeExtra = scopeSql ? ` AND ${scopeSql}` : "";
     const result = this.db
       .prepare(
         `UPDATE handoffs SET status = ?
-         WHERE handoff_id = ? AND status = ?`,
+         WHERE handoff_id = ? AND status = ?${scopeExtra}`,
       )
-      .run(HandoffStatus.Delivered, id, HandoffStatus.PendingPickup);
+      .run(HandoffStatus.Delivered, id, HandoffStatus.PendingPickup, ...scopeParams);
     if (result.changes === 0) {
-      // Either the handoff doesn't exist or it's in a status from which
-      // delivered is invalid (replied/expired). Disambiguate via a get().
       const current = await this.get(id);
       if (current === undefined) {
         throw new NotFoundError({ resource: "Handoff", identifier: id });
@@ -207,22 +249,19 @@ export class SqliteHandoffStore implements HandoffStore {
       if (current.status !== HandoffStatus.Delivered) {
         validateTransition(id, current.status, HandoffStatus.Delivered);
       }
-      // Already delivered — treat as idempotent no-op
+      // Already delivered — idempotent no-op
     }
   }
 
   async markReplied(id: string, resolvedByCid: string): Promise<void> {
     const now = new Date().toISOString();
-    // Valid transitions: pending_pickup → replied, delivered → replied.
-    // Reject late replies in-database: the WHERE clause rejects rows whose
-    // reply_due_at is in the past, closing the SLA loophole even when a
-    // background DeadlineWatcher has not yet flipped status to expired.
-    // This makes correctness independent of the watcher being present.
+    const { sql: scopeSql, params: scopeParams } = this.scopeClause();
+    const scopeExtra = scopeSql ? ` AND ${scopeSql}` : "";
     const result = this.db
       .prepare(
         `UPDATE handoffs SET status = ?, resolved_by_cid = ?
          WHERE handoff_id = ? AND status IN (?, ?)
-           AND (reply_due_at IS NULL OR reply_due_at >= ?)`,
+           AND (reply_due_at IS NULL OR reply_due_at >= ?)${scopeExtra}`,
       )
       .run(
         HandoffStatus.Replied,
@@ -231,31 +270,30 @@ export class SqliteHandoffStore implements HandoffStore {
         HandoffStatus.PendingPickup,
         HandoffStatus.Delivered,
         now,
+        ...scopeParams,
       );
     if (result.changes === 0) {
       const current = await this.get(id);
       if (current === undefined) {
         throw new NotFoundError({ resource: "Handoff", identifier: id });
       }
-      // Distinguish "already replied/expired" (invalid transition) from
-      // "deadline passed" (SLA breach). Both deny the update, but the
-      // caller may want to log them differently.
       if (
         (current.status === HandoffStatus.PendingPickup ||
           current.status === HandoffStatus.Delivered) &&
         current.replyDueAt !== undefined &&
         current.replyDueAt < now
       ) {
-        // Flip to expired so a subsequent expireStale() sees consistent state
         this.db
           .prepare(
-            `UPDATE handoffs SET status = ? WHERE handoff_id = ? AND status IN (?, ?)`,
+            `UPDATE handoffs SET status = ?
+             WHERE handoff_id = ? AND status IN (?, ?)${scopeExtra}`,
           )
           .run(
             HandoffStatus.Expired,
             id,
             HandoffStatus.PendingPickup,
             HandoffStatus.Delivered,
+            ...scopeParams,
           );
         throw new StateConflictError({
           resource: "Handoff",
@@ -267,63 +305,79 @@ export class SqliteHandoffStore implements HandoffStore {
   }
 
   async markSeen(id: string): Promise<void> {
-    // Only stamp seenAt if not already set. Conditional WHERE prevents
-    // concurrent callers from each writing a different timestamp.
+    const { sql: scopeSql, params: scopeParams } = this.scopeClause();
+    const scopeExtra = scopeSql ? ` AND ${scopeSql}` : "";
     const result = this.db
       .prepare(
         `UPDATE handoffs SET seen_at = ?
-         WHERE handoff_id = ? AND seen_at IS NULL`,
+         WHERE handoff_id = ? AND seen_at IS NULL${scopeExtra}`,
       )
-      .run(new Date().toISOString(), id);
+      .run(new Date().toISOString(), id, ...scopeParams);
     if (result.changes === 0) {
-      // Either the handoff doesn't exist, or seenAt was already set (idempotent)
       const current = await this.get(id);
       if (current === undefined) {
         throw new NotFoundError({ resource: "Handoff", identifier: id });
       }
-      // Already seen — no-op
+      // Already seen — idempotent no-op
     }
   }
 
   async markAcked(id: string): Promise<void> {
-    // Single conditional UPDATE that atomically stamps ackedAt (and seenAt
-    // if unset) only when ackedAt is currently NULL. Uses COALESCE so
-    // seenAt preserves its existing value, or fills with now() if null.
     const now = new Date().toISOString();
+    const { sql: scopeSql, params: scopeParams } = this.scopeClause();
+    const scopeExtra = scopeSql ? ` AND ${scopeSql}` : "";
     const result = this.db
       .prepare(
         `UPDATE handoffs
          SET acked_at = ?, seen_at = COALESCE(seen_at, ?)
-         WHERE handoff_id = ? AND acked_at IS NULL`,
+         WHERE handoff_id = ? AND acked_at IS NULL${scopeExtra}`,
       )
-      .run(now, now, id);
+      .run(now, now, id, ...scopeParams);
     if (result.changes === 0) {
       const current = await this.get(id);
       if (current === undefined) {
         throw new NotFoundError({ resource: "Handoff", identifier: id });
       }
-      // Already acked — no-op
+      // Already acked — idempotent no-op
     }
   }
 
-  // Deliberately NOT implementing listForCurrentSession() / isInCurrentSession()
-  // on SQLite. The handoffs table has no session_id column, so any attempt
-  // to answer "is this in my session?" would have to return a conservative
-  // false — which callers (grove_ack_handoff, DeadlineWatcher.rebuildFromStore)
-  // already handle as "this backend doesn't support session scoping, skip the
-  // feature". Leaving these methods undefined is the explicit opt-out signal.
-  //
-  // When session scoping is added to the SQLite schema, implement both here.
+  /**
+   * Session-scoped enumeration. Only defined in scoped mode — unscoped
+   * stores have this property set to undefined in the constructor so
+   * callers correctly detect the capability is unavailable.
+   */
+  async listForCurrentSession(query?: HandoffQuery): Promise<readonly Handoff[]> {
+    // In scoped mode, list() is already scoped by session — just delegate.
+    return this.list(query);
+  }
+
+  /**
+   * O(1) session ownership check. Only defined in scoped mode. Returns
+   * true iff the row exists AND belongs to the caller's session.
+   */
+  async isInCurrentSession(handoffId: string): Promise<boolean> {
+    if (this.sessionId === undefined) return false;
+    const row = this.db
+      .prepare("SELECT 1 FROM handoffs WHERE handoff_id = ? AND session_id = ?")
+      .get(handoffId, this.sessionId);
+    return row !== null;
+  }
 
   async expireStale(now?: string): Promise<readonly Handoff[]> {
     const cutoff = now ?? new Date().toISOString();
-    // Expire both pending_pickup AND delivered unresolved handoffs with past
-    // deadlines. RETURNING ensures idempotency (only newly-transitioned rows).
+    // Expire both pending_pickup AND delivered unresolved handoffs with
+    // past deadlines. Scoped by session so session A's watcher cannot
+    // flip session B's rows. RETURNING ensures idempotency (only newly-
+    // transitioned rows).
+    const { sql: scopeSql, params: scopeParams } = this.scopeClause();
+    const scopeExtra = scopeSql ? ` AND ${scopeSql}` : "";
     const rows = this.db
       .prepare(
         `UPDATE handoffs
          SET status = ?
-         WHERE status IN (?, ?) AND reply_due_at IS NOT NULL AND reply_due_at < ?
+         WHERE status IN (?, ?)
+           AND reply_due_at IS NOT NULL AND reply_due_at < ?${scopeExtra}
          RETURNING ${SELECT_COLS}`,
       )
       .all(
@@ -331,14 +385,20 @@ export class SqliteHandoffStore implements HandoffStore {
         HandoffStatus.PendingPickup,
         HandoffStatus.Delivered,
         cutoff,
+        ...scopeParams,
       ) as readonly HandoffRow[];
     return rows.map(rowToHandoff);
   }
 
   async countPending(toRole: string): Promise<number> {
+    const { sql: scopeSql, params: scopeParams } = this.scopeClause();
+    const scopeExtra = scopeSql ? ` AND ${scopeSql}` : "";
     const row = this.db
-      .prepare("SELECT COUNT(*) as count FROM handoffs WHERE to_role = ? AND status = ?")
-      .get(toRole, HandoffStatus.PendingPickup) as { count: number } | null;
+      .prepare(
+        `SELECT COUNT(*) as count FROM handoffs
+         WHERE to_role = ? AND status = ?${scopeExtra}`,
+      )
+      .get(toRole, HandoffStatus.PendingPickup, ...scopeParams) as { count: number } | null;
     return row?.count ?? 0;
   }
 

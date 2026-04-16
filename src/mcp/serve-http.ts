@@ -316,14 +316,15 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     topologyRouter = new TopologyRouter(loadedContract.topology, eventBus);
   }
 
-  // Wire DeadlineWatcher only for session-scoped stores (Nexus). See
-  // serve.ts for the rationale: SQLite handoffs aren't session-scoped so
-  // cross-session timer bleeding is possible; gate it off here too.
+  // Wire DeadlineWatcher when any handoff store + event bus are available.
+  // Both Nexus and session-scoped SQLite (GROVE_SESSION_ID set) safely
+  // support it; unscoped SQLite stores leave listForCurrentSession undefined
+  // so rebuildFromStore skips automatically. See serve.ts for more context.
   let deadlineWatcher: import("../core/deadline-watcher.js").DeadlineWatcher | undefined;
   const activeHandoffStore = nexusHandoffStore ?? runtime.handoffStore;
-  if (nexusHandoffStore !== undefined && eventBus !== undefined) {
+  if (activeHandoffStore !== undefined && eventBus !== undefined) {
     const { DeadlineWatcher } = await import("../core/deadline-watcher.js");
-    deadlineWatcher = new DeadlineWatcher({ handoffStore: nexusHandoffStore, eventBus });
+    deadlineWatcher = new DeadlineWatcher({ handoffStore: activeHandoffStore, eventBus });
     void deadlineWatcher.rebuildFromStore().catch(() => {
       /* non-fatal */
     });

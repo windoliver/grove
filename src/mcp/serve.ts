@@ -281,20 +281,19 @@ try {
         }
       : undefined;
 
-  // Wire DeadlineWatcher for proactive overdue detection ONLY when the
-  // handoff store is session-scoped. The local SQLite handoff table is
-  // shared across all sessions in .grove/grove.db (no session_id column),
-  // so expireStale() and watch() there would let session A's timers flip
-  // session B's handoffs. Until the SQLite schema carries session_id, we
-  // gate proactive deadlines off on SQLite. Late replies are still
-  // rejected by markReplied at the store level, so SLA correctness is
-  // preserved — only the push/escalation path is disabled.
+  // Wire DeadlineWatcher for proactive overdue detection. Both Nexus and
+  // SQLite (session-scoped via GROVE_SESSION_ID) safely support it: every
+  // query filters by session, so session A's timers cannot touch session B.
+  // Stores that don't implement listForCurrentSession (e.g. unscoped SQLite
+  // when GROVE_SESSION_ID is unset) are detected by rebuildFromStore and
+  // skip the startup rebuild automatically.
   let deadlineWatcher: import("../core/deadline-watcher.js").DeadlineWatcher | undefined;
   const activeHandoffStore = nexusHandoffStore ?? runtime.handoffStore;
-  if (nexusHandoffStore !== undefined && eventBus !== undefined) {
+  if (activeHandoffStore !== undefined && eventBus !== undefined) {
     const { DeadlineWatcher } = await import("../core/deadline-watcher.js");
-    deadlineWatcher = new DeadlineWatcher({ handoffStore: nexusHandoffStore, eventBus });
-    process.stderr.write(`grove-mcp: DeadlineWatcher created (Nexus session-scoped store)\n`);
+    deadlineWatcher = new DeadlineWatcher({ handoffStore: activeHandoffStore, eventBus });
+    const backend = nexusHandoffStore !== undefined ? "Nexus" : "SQLite";
+    process.stderr.write(`grove-mcp: DeadlineWatcher created (${backend} backend)\n`);
     void deadlineWatcher.rebuildFromStore().then((count) => {
       if (count > 0) {
         process.stderr.write(`grove-mcp: DeadlineWatcher rebuilt ${count} timer(s) from store\n`);
@@ -302,10 +301,6 @@ try {
     }).catch(() => {
       /* non-fatal — timers will be registered for new handoffs going forward */
     });
-  } else if (activeHandoffStore !== undefined) {
-    process.stderr.write(
-      `grove-mcp: DeadlineWatcher NOT created (SQLite is not session-scoped; proactive overdue disabled).\n`,
-    );
   }
 
   deps = {
