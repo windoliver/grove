@@ -21,6 +21,58 @@ import type { AgentTopology } from "../core/topology.js";
 import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
 import type { GoalData } from "../tui/provider.js";
 
+/**
+ * Shape-validate a parsed session config from storage.
+ *
+ * Returns null when the object has the expected top-level GroveContract
+ * shape, or a reason string when a field has the wrong type.
+ *
+ * This catches row corruption (manual DB edits) where top-level fields
+ * end up as the wrong type, before downstream enforcement code silently
+ * bypasses checks via optional chaining.
+ *
+ * Note: this is a shallow shape check, not a full schema validation.
+ * contract.ts hosts snake_case YAML schemas; session storage is the
+ * post-parse camelCase form, so we can't reuse those schemas here
+ * without building a parallel camelCase schema. The shape check is the
+ * minimum defense-in-depth at this boundary.
+ */
+function validateStoredContractShape(obj: unknown): string | null {
+  if (obj === null || typeof obj !== "object" || Array.isArray(obj)) {
+    return "config_json is not a plain object";
+  }
+  const c = obj as Record<string, unknown>;
+  if (typeof c.contractVersion !== "number") {
+    return "config_json missing numeric contractVersion";
+  }
+  const objectFields = [
+    "metrics",
+    "stopConditions",
+    "agentConstraints",
+    "claimPolicy",
+    "concurrency",
+    "execution",
+    "rateLimits",
+    "retry",
+    "gossip",
+    "outcomePolicy",
+    "evaluation",
+    "hooks",
+    "topology",
+  ] as const;
+  for (const field of objectFields) {
+    const v = c[field];
+    if (v !== undefined && (v === null || typeof v !== "object" || Array.isArray(v))) {
+      return `config_json field '${field}' is not an object`;
+    }
+  }
+  const gates = c.gates;
+  if (gates !== undefined && !Array.isArray(gates)) {
+    return "config_json field 'gates' is not an array";
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Schema DDL
 // ---------------------------------------------------------------------------
@@ -442,24 +494,16 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     } catch (err) {
       return { kind: "malformed", reason: err instanceof Error ? err.message : String(err) };
     }
-    // JSON.parse accepts null, primitives, arrays, and shape-invalid objects.
-    // parseGroveContractObject is YAML-shape (snake_case); session storage is
-    // the normalized camelCase GroveContract from prior parseGroveContract calls.
-    // Validate the minimum invariant that downstream consumers rely on: the
-    // value is a plain object with a numeric contractVersion. Anything else is
-    // treated as malformed (fail closed) rather than trusted as "ok" and
-    // crashing later on missing fields.
-    if (
-      parsed === null ||
-      typeof parsed !== "object" ||
-      Array.isArray(parsed) ||
-      typeof (parsed as { contractVersion?: unknown }).contractVersion !== "number"
-    ) {
-      return {
-        kind: "malformed",
-        reason:
-          "config_json is not a valid GroveContract (expected object with numeric contractVersion)",
-      };
+    // Storage is the normalized camelCase GroveContract produced by
+    // parseGroveContract → JSON.stringify. The shape-validation schemas
+    // in contract.ts are YAML-shape (snake_case), so we can't round-trip
+    // them here cheaply. Instead, check the top-level field shape so that
+    // corrupt rows (e.g. `rateLimits: "off"` or `gates: {}` after manual
+    // DB edits) are rejected before downstream enforcement code silently
+    // bypasses checks via optional chaining or throws late.
+    const reason = validateStoredContractShape(parsed);
+    if (reason !== null) {
+      return { kind: "malformed", reason };
     }
     return { kind: "ok", config: parsed as GroveContract };
   };
