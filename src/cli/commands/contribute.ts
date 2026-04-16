@@ -10,7 +10,7 @@
  * contract loading, and output formatting.
  */
 
-import { access, readFile } from "node:fs/promises";
+import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
@@ -329,7 +329,6 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
     await import("../../local/sqlite-store.js");
   const { FsCas } = await import("../../local/fs-cas.js");
   const { DefaultFrontierCalculator } = await import("../../core/frontier.js");
-  const { parseGroveContract } = await import("../../core/contract.js");
   const { EnforcingContributionStore } = await import("../../core/enforcing-store.js");
 
   const dbPath = join(grovePath, "grove.db");
@@ -342,34 +341,15 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
   const frontier = new DefaultFrontierCalculator(rawStore);
 
   // 3. Load contract for enforcement, default mode, and metric directions.
-  //    Session-scoped: when GROVE_SESSION_ID is set, load the frozen contract
-  //    from the session record to guarantee all agents see the same config.
-  let contract: Awaited<ReturnType<typeof parseGroveContract>> | undefined;
-  const envSessionId = process.env.GROVE_SESSION_ID;
-  if (envSessionId) {
-    const { SqliteGoalSessionStore } = await import("../../local/sqlite-goal-session-store.js");
-    const sessionConfig = new SqliteGoalSessionStore(db).getSessionConfigSync(envSessionId);
-    if (!sessionConfig) {
-      throw new Error(
-        `Session ${envSessionId} has no stored config. ` +
-          `Cannot enforce contract for GROVE_SESSION_ID=${envSessionId}.`,
-      );
-    }
-    contract = sessionConfig;
-  } else {
-    const grovemdPath = join(options.cwd, "GROVE.md");
-    let grovemdContent: string | undefined;
-    try {
-      grovemdContent = await readFile(grovemdPath, "utf-8");
-    } catch {
-      // GROVE.md does not exist — proceed without enforcement
-    }
-    if (grovemdContent !== undefined) {
-      // File exists — parse errors must propagate so malformed contracts
-      // are not silently ignored (which would bypass enforcement).
-      contract = parseGroveContract(grovemdContent);
-    }
-  }
+  //    Shared bootstrap: session.config > GROVE.md > no enforcement.
+  //    See src/cli/utils/resolve-contract.ts for the full precedence chain.
+  const { SqliteGoalSessionStore } = await import("../../local/sqlite-goal-session-store.js");
+  const { resolveContract } = await import("../utils/resolve-contract.js");
+  const contract = await resolveContract({
+    goalSessionStore: new SqliteGoalSessionStore(db),
+    groveRoot: options.cwd,
+    envSessionId: process.env.GROVE_SESSION_ID,
+  });
 
   // Wrap store with enforcement if contract is available
   const store = contract ? new EnforcingContributionStore(rawStore, contract, { cas }) : rawStore;

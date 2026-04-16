@@ -9,7 +9,6 @@
  *   grove discuss "Topic" --json
  */
 
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
@@ -100,27 +99,20 @@ export async function executeDiscuss(options: DiscussOptions): Promise<{ cid: st
   const { createSqliteStores } = await import("../../local/sqlite-store.js");
   const { FsCas } = await import("../../local/fs-cas.js");
   const { DefaultFrontierCalculator } = await import("../../core/frontier.js");
-  const { parseGroveContract } = await import("../../core/contract.js");
   const { EnforcingContributionStore } = await import("../../core/enforcing-store.js");
+  const { resolveContract } = await import("../utils/resolve-contract.js");
 
   const stores = createSqliteStores(dbPath);
   const cas = new FsCas(join(groveDir, "cas"));
   const frontier = new DefaultFrontierCalculator(stores.contributionStore);
 
-  // Load GROVE.md contract for enforcement and mode resolution
-  // GROVE.md lives in the parent of .grove/
-  const groveRoot = join(groveDir, "..");
-  const grovemdPath = join(groveRoot, "GROVE.md");
-  let contract: Awaited<ReturnType<typeof parseGroveContract>> | undefined;
-  let grovemdContent: string | undefined;
-  try {
-    grovemdContent = await readFile(grovemdPath, "utf-8");
-  } catch {
-    // GROVE.md does not exist — proceed without enforcement
-  }
-  if (grovemdContent !== undefined) {
-    contract = parseGroveContract(grovemdContent);
-  }
+  // Shared bootstrap: session.config > GROVE.md > no enforcement.
+  // See src/cli/utils/resolve-contract.ts for the full precedence chain.
+  const contract = await resolveContract({
+    goalSessionStore: stores.goalSessionStore,
+    groveRoot: join(groveDir, ".."),
+    envSessionId: process.env.GROVE_SESSION_ID,
+  });
 
   // Wrap store with enforcement if contract is available
   const store = contract

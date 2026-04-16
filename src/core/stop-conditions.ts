@@ -9,8 +9,9 @@
  * See spec/LIFECYCLE.md for the full specification.
  */
 
-import type { GroveContract, MetricDefinition } from "./contract.js";
+import type { MetricDefinition } from "./contract.js";
 import type { Contribution, ContributionMode, JsonValue } from "./models.js";
+import type { SessionRuntimeConfig } from "./session-config.js";
 import type { ContributionStore } from "./store.js";
 
 // ---------------------------------------------------------------------------
@@ -57,11 +58,11 @@ export interface DeliberationResult {
  * deliberationLimit if both are configured.
  */
 export async function evaluateStopConditions(
-  contract: GroveContract,
+  config: SessionRuntimeConfig,
   store: ContributionStore,
 ): Promise<StopEvaluationResult> {
   const conditions: Record<string, StopConditionResult> = {};
-  const stopConditions = contract.stopConditions;
+  const stopConditions = config.stopConditions;
 
   if (stopConditions === undefined) {
     return { stopped: false, conditions: {}, evaluatedAt: new Date().toISOString() };
@@ -78,7 +79,7 @@ export async function evaluateStopConditions(
   if (stopConditions.maxRoundsWithoutImprovement !== undefined) {
     conditions.max_rounds_without_improvement = await evaluateMaxRoundsWithoutImprovement(
       stopConditions.maxRoundsWithoutImprovement,
-      contract.metrics ?? {},
+      config.metrics ?? {},
       store,
     );
   }
@@ -87,7 +88,7 @@ export async function evaluateStopConditions(
     conditions.target_metric = await evaluateTargetMetric(
       stopConditions.targetMetric.metric,
       stopConditions.targetMetric.value,
-      contract.metrics ?? {},
+      config.metrics ?? {},
       store,
     );
   }

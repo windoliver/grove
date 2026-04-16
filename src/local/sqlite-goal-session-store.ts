@@ -21,6 +21,231 @@ import type { AgentTopology } from "../core/topology.js";
 import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
 import type { GoalData } from "../tui/provider.js";
 
+/**
+ * Supported contractVersion values for stored session configs.
+ * Kept in sync with `parseRawObject` in src/core/contract.ts — adding a new
+ * version there requires extending this list (and the validator below).
+ */
+const SUPPORTED_CONTRACT_VERSIONS = [1, 2, 3] as const;
+
+/**
+ * Shape-validate a parsed session config from storage.
+ *
+ * Returns null on success, or a reason string when validation fails.
+ *
+ * This is a camelCase-aware shape check, not a full schema validation.
+ * The snake_case zod schemas in contract.ts cannot be reused here:
+ *   - V1 stored form includes auto-migrated `execution`/`concurrency`
+ *     fields that the strict V1 wire schema rejects.
+ *   - V3 stored form uses `topology`; the V3 wire schema uses
+ *     `agent_topology` (lossy key-rename).
+ *
+ * So a stored-form-aware check is the right layer. The check covers the
+ * specific nested-field crashes and silent-bypass paths that enforcement
+ * code can hit when the stored snapshot is corrupted or produced by a
+ * version of grove the current binary doesn't understand.
+ */
+function validateStoredContractShape(obj: unknown): string | null {
+  if (obj === null || typeof obj !== "object" || Array.isArray(obj)) {
+    return "config_json is not a plain object";
+  }
+  const c = obj as Record<string, unknown>;
+  if (typeof c.contractVersion !== "number") {
+    return "config_json missing numeric contractVersion";
+  }
+  if (!(SUPPORTED_CONTRACT_VERSIONS as readonly number[]).includes(c.contractVersion)) {
+    return `config_json has unsupported contractVersion ${c.contractVersion} (supported: ${SUPPORTED_CONTRACT_VERSIONS.join(", ")})`;
+  }
+
+  const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+    v !== null && typeof v === "object" && !Array.isArray(v);
+
+  // Top-level object fields must be objects (not null, array, or primitive).
+  const objectFields = [
+    "metrics",
+    "stopConditions",
+    "agentConstraints",
+    "claimPolicy",
+    "concurrency",
+    "execution",
+    "rateLimits",
+    "retry",
+    "gossip",
+    "outcomePolicy",
+    "evaluation",
+    "hooks",
+    "topology",
+  ] as const;
+  for (const field of objectFields) {
+    const v = c[field];
+    if (v !== undefined && !isPlainObject(v)) {
+      return `config_json field '${field}' is not an object`;
+    }
+  }
+
+  // stopConditions nested fields. Each sub-object must be a plain object
+  // (not null) if present — evaluateStopConditions() reads properties
+  // directly and crashes on null / wrong-type. targetMetric must also
+  // carry the fields the enforcement logic reads: `metric` (string),
+  // `value` (number).
+  const sc = c.stopConditions;
+  if (isPlainObject(sc)) {
+    for (const sub of ["targetMetric", "budget", "quorumReviewScore", "deliberationLimit"]) {
+      const v = sc[sub];
+      if (v !== undefined && !isPlainObject(v)) {
+        return `config_json stopConditions.${sub} is not an object`;
+      }
+    }
+    const tm = sc.targetMetric;
+    if (isPlainObject(tm)) {
+      if (typeof tm.metric !== "string") {
+        return "config_json stopConditions.targetMetric.metric is not a string";
+      }
+      if (typeof tm.value !== "number") {
+        return "config_json stopConditions.targetMetric.value is not a number";
+      }
+    }
+    const qrs = sc.quorumReviewScore;
+    if (isPlainObject(qrs)) {
+      if (typeof qrs.minReviews !== "number") {
+        return "config_json stopConditions.quorumReviewScore.minReviews is not a number";
+      }
+      if (typeof qrs.minScore !== "number") {
+        return "config_json stopConditions.quorumReviewScore.minScore is not a number";
+      }
+    }
+    if (
+      sc.maxRoundsWithoutImprovement !== undefined &&
+      typeof sc.maxRoundsWithoutImprovement !== "number"
+    ) {
+      return "config_json stopConditions.maxRoundsWithoutImprovement is not a number";
+    }
+  }
+
+  // gates is an array of gate objects. Each item must be an object with
+  // a recognized string `type`, plus the fields that `type` demands.
+  // Missing-field gates would otherwise become silent no-ops in
+  // PolicyEnforcer.evaluateGate() (e.g. min_score without metric/threshold
+  // short-circuits before checking anything).
+  if (c.gates !== undefined) {
+    if (!Array.isArray(c.gates)) return "config_json field 'gates' is not an array";
+    const knownGateTypes = new Set([
+      "metric_improves",
+      "has_artifact",
+      "has_relation",
+      "min_reviews",
+      "min_score",
+    ]);
+    for (let i = 0; i < c.gates.length; i++) {
+      const g = c.gates[i];
+      if (!isPlainObject(g)) {
+        return `config_json gates[${i}] is not an object`;
+      }
+      if (typeof g.type !== "string") {
+        return `config_json gates[${i}] missing string 'type'`;
+      }
+      if (!knownGateTypes.has(g.type)) {
+        return `config_json gates[${i}] has unknown type '${g.type}'`;
+      }
+      // Type-specific required fields. Mirrors GateSchema.superRefine in
+      // src/core/contract.ts:53-77 (camelCase here: relationType vs
+      // relation_type).
+      if (g.type === "metric_improves" && typeof g.metric !== "string") {
+        return `config_json gates[${i}] metric_improves requires string 'metric'`;
+      }
+      if (g.type === "has_artifact" && typeof g.name !== "string") {
+        return `config_json gates[${i}] has_artifact requires string 'name'`;
+      }
+      if (g.type === "has_relation" && typeof g.relationType !== "string") {
+        return `config_json gates[${i}] has_relation requires string 'relationType'`;
+      }
+      if (g.type === "min_reviews" && typeof g.count !== "number") {
+        return `config_json gates[${i}] min_reviews requires number 'count'`;
+      }
+      if (g.type === "min_score") {
+        if (typeof g.metric !== "string") {
+          return `config_json gates[${i}] min_score requires string 'metric'`;
+        }
+        if (typeof g.threshold !== "number") {
+          return `config_json gates[${i}] min_score requires number 'threshold'`;
+        }
+      }
+    }
+  }
+
+  // agentConstraints.allowedKinds must be array of strings if present.
+  // requiredRelations/requiredArtifacts map kind -> array of strings;
+  // PolicyEnforcer iterates `for (const x of requiredForKind)` so a
+  // non-array value would throw a non-iterable TypeError at enforce time.
+  const ac = c.agentConstraints;
+  if (isPlainObject(ac)) {
+    if (ac.allowedKinds !== undefined) {
+      if (!Array.isArray(ac.allowedKinds)) {
+        return "config_json agentConstraints.allowedKinds is not an array";
+      }
+      for (let i = 0; i < ac.allowedKinds.length; i++) {
+        if (typeof ac.allowedKinds[i] !== "string") {
+          return `config_json agentConstraints.allowedKinds[${i}] is not a string`;
+        }
+      }
+    }
+    for (const sub of ["requiredRelations", "requiredArtifacts"] as const) {
+      const v = ac[sub];
+      if (v === undefined) continue;
+      if (!isPlainObject(v)) {
+        return `config_json agentConstraints.${sub} is not an object`;
+      }
+      for (const [kind, list] of Object.entries(v)) {
+        if (!Array.isArray(list)) {
+          return `config_json agentConstraints.${sub}.${kind} is not an array`;
+        }
+        for (let i = 0; i < list.length; i++) {
+          if (typeof list[i] !== "string") {
+            return `config_json agentConstraints.${sub}.${kind}[${i}] is not a string`;
+          }
+        }
+      }
+    }
+  }
+
+  // metrics maps name -> MetricDefinition. evaluateTargetMetric reads
+  // `metricDef.direction` directly; null/primitive values crash it.
+  const metrics = c.metrics;
+  if (isPlainObject(metrics)) {
+    for (const [name, def] of Object.entries(metrics)) {
+      if (!isPlainObject(def)) {
+        return `config_json metrics.${name} is not an object`;
+      }
+      if (def.direction !== "minimize" && def.direction !== "maximize") {
+        return `config_json metrics.${name}.direction must be "minimize" or "maximize"`;
+      }
+    }
+  }
+
+  // Numeric sub-fields in rateLimits / concurrency / execution.
+  const numericFields: Record<string, readonly string[]> = {
+    rateLimits: [
+      "maxContributionsPerAgentPerHour",
+      "maxContributionsPerGrovePerHour",
+      "maxArtifactSizeBytes",
+      "maxArtifactsPerContribution",
+    ],
+    concurrency: ["maxActiveClaims", "maxClaimsPerAgent", "maxClaimsPerTarget"],
+    execution: ["defaultLeaseSeconds", "maxLeaseSeconds", "heartbeatIntervalSeconds"],
+  };
+  for (const [section, keys] of Object.entries(numericFields)) {
+    const v = c[section];
+    if (!isPlainObject(v)) continue;
+    for (const key of keys) {
+      if (v[key] !== undefined && typeof v[key] !== "number") {
+        return `config_json ${section}.${key} is not a number`;
+      }
+    }
+  }
+
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Schema DDL
 // ---------------------------------------------------------------------------
@@ -408,15 +633,50 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
 
   /** Synchronous variant — used by runtime bootstrap where async is unavailable. */
   getSessionConfigSync = (sessionId: string): GroveContract | undefined => {
+    const result = this.resolveSessionConfigSync(sessionId);
+    return result.kind === "ok" ? result.config : undefined;
+  };
+
+  /**
+   * Detailed session-config lookup for callers that must distinguish
+   * missing session / malformed snapshot / legacy configless session.
+   *
+   * - `not-found`: no session row exists for this id (bogus/stale env var).
+   *   Callers should fail closed.
+   * - `malformed`: config_json exists but does not parse. Callers should
+   *   fail closed — parsing errors indicate corruption, not legacy state.
+   * - `configless`: row exists with empty config (session created without
+   *   a contract, or predates #198). Callers may fall back to live GROVE.md.
+   * - `ok`: row exists with a valid parsed contract. Use it.
+   */
+  resolveSessionConfigSync = (
+    sessionId: string,
+  ):
+    | { kind: "ok"; config: GroveContract }
+    | { kind: "configless" }
+    | { kind: "malformed"; reason: string }
+    | { kind: "not-found" } => {
     const row = this.db
       .prepare("SELECT config_json FROM sessions WHERE session_id = ?")
       .get(sessionId) as { config_json: string | null } | null;
-    if (!row?.config_json || row.config_json === "{}") return undefined;
+    if (row === null) return { kind: "not-found" };
+    if (!row.config_json || row.config_json === "{}") return { kind: "configless" };
+    let parsed: unknown;
     try {
-      return JSON.parse(row.config_json) as GroveContract;
-    } catch {
-      return undefined;
+      parsed = JSON.parse(row.config_json);
+    } catch (err) {
+      return { kind: "malformed", reason: err instanceof Error ? err.message : String(err) };
     }
+    // Shape-validate stored form against the nested fields enforcement
+    // reads. Catches corruption (manual DB edits, partial writes) at the
+    // storage boundary instead of silently bypassing checks or crashing
+    // late. Not a full schema validator — see validateStoredContractShape
+    // doc for why the snake_case schemas in contract.ts cannot be reused.
+    const reason = validateStoredContractShape(parsed);
+    if (reason !== null) {
+      return { kind: "malformed", reason };
+    }
+    return { kind: "ok", config: parsed as GroveContract };
   };
 
   /**

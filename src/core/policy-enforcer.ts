@@ -22,12 +22,13 @@
  *   linear, never recursive.
  */
 
-import type { Gate, GroveContract, MetricDefinition } from "./contract.js";
+import type { Gate, MetricDefinition } from "./contract.js";
 import { PolicyViolationError } from "./errors.js";
 import type { Contribution } from "./models.js";
 import { ContributionMode } from "./models.js";
 import type { OutcomeRecord, OutcomeStore } from "./outcome.js";
 import { OutcomeStatus } from "./outcome.js";
+import type { SessionRuntimeConfig } from "./session-config.js";
 import { evaluateStopConditions } from "./stop-conditions.js";
 import type { ContributionStore } from "./store.js";
 
@@ -86,7 +87,7 @@ export interface StopCheckResult {
  * Callers are responsible for running this inside a write mutex.
  */
 export class PolicyEnforcer {
-  private readonly contract: GroveContract;
+  private readonly config: SessionRuntimeConfig;
   private readonly contributionStore: ContributionStore;
   private readonly outcomeStore: OutcomeStore | undefined;
 
@@ -101,11 +102,11 @@ export class PolicyEnforcer {
     | undefined;
 
   constructor(
-    contract: GroveContract,
+    config: SessionRuntimeConfig,
     contributionStore: ContributionStore,
     outcomeStore?: OutcomeStore | undefined,
   ) {
-    this.contract = contract;
+    this.config = config;
     this.contributionStore = contributionStore;
     this.outcomeStore = outcomeStore;
   }
@@ -130,11 +131,11 @@ export class PolicyEnforcer {
    *   no re-entrant evaluation — outcome derivation and stop checks run
    *   exactly once per enforce() call, never recursively.
    *
-   * - **Contract hot-reload**: Deferred. The contract is parsed once at
+   * - **Config hot-reload**: Deferred. The config is resolved once at
    *   startup (or session init) and passed to the PolicyEnforcer
-   *   constructor. Runtime contract reloading is not supported — callers
+   *   constructor. Runtime config reloading is not supported — callers
    *   must construct a new PolicyEnforcer instance with the updated
-   *   contract.
+   *   config.
    *
    * @param contribution - The contribution to enforce (already created but not yet stored).
    * @param strict - If true, violations throw instead of being returned as flags.
@@ -226,7 +227,7 @@ export class PolicyEnforcer {
     }
 
     // 6. Gate checks (evaluation mode only)
-    if (contribution.mode === ContributionMode.Evaluation && this.contract.gates !== undefined) {
+    if (contribution.mode === ContributionMode.Evaluation && this.config.gates !== undefined) {
       const gateViolations = await this.enforceGates(contribution);
       for (const v of gateViolations) {
         if (strict) {
@@ -244,7 +245,7 @@ export class PolicyEnforcer {
     let derivedOutcome: DerivedOutcome | undefined;
     if (
       contribution.mode === ContributionMode.Evaluation &&
-      this.contract.outcomePolicy !== undefined
+      this.config.outcomePolicy !== undefined
     ) {
       derivedOutcome = await this.deriveOutcome(contribution);
     }
@@ -265,9 +266,9 @@ export class PolicyEnforcer {
     //    run inside the write mutex when configured. Thread walks are
     //    parallelized and depth-capped to bound latency (see stop-conditions.ts).
     let stopResult: StopCheckResult | undefined;
-    if (this.contract.stopConditions !== undefined && options?.skipStopConditions !== true) {
+    if (this.config.stopConditions !== undefined && options?.skipStopConditions !== true) {
       try {
-        const evalResult = await evaluateStopConditions(this.contract, this.contributionStore);
+        const evalResult = await evaluateStopConditions(this.config, this.contributionStore);
         stopResult = {
           stopped: evalResult.stopped,
           reason: evalResult.stopped
@@ -312,7 +313,7 @@ export class PolicyEnforcer {
 
   /** Check role-kind constraints from agentConstraints. */
   private enforceRoleKind(contribution: Contribution): PolicyViolation | undefined {
-    const constraints = this.contract.agentConstraints;
+    const constraints = this.config.agentConstraints;
     if (constraints?.allowedKinds === undefined) return undefined;
 
     const allowed = constraints.allowedKinds;
@@ -341,7 +342,7 @@ export class PolicyEnforcer {
    * on every contribution — metrics are optional unless gated.
    */
   private enforceScoreRequirements(contribution: Contribution): PolicyViolation[] {
-    const gates = this.contract.gates;
+    const gates = this.config.gates;
     if (gates === undefined || gates.length === 0) return [];
 
     // Only enforce score requirements for work contributions in evaluation mode
@@ -379,7 +380,7 @@ export class PolicyEnforcer {
 
   /** Check relation requirements per kind from agentConstraints. */
   private enforceRelationRequirements(contribution: Contribution): PolicyViolation[] {
-    const constraints = this.contract.agentConstraints;
+    const constraints = this.config.agentConstraints;
     if (constraints?.requiredRelations === undefined) return [];
 
     const requiredForKind = constraints.requiredRelations[contribution.kind];
@@ -407,7 +408,7 @@ export class PolicyEnforcer {
 
   /** Check artifact requirements per kind from agentConstraints. */
   private enforceArtifactRequirements(contribution: Contribution): PolicyViolation[] {
-    const constraints = this.contract.agentConstraints;
+    const constraints = this.config.agentConstraints;
     if (constraints?.requiredArtifacts === undefined) return [];
 
     const requiredForKind = constraints.requiredArtifacts[contribution.kind];
@@ -435,7 +436,7 @@ export class PolicyEnforcer {
 
   /** Enforce structured evaluation requirements from contract.evaluation. */
   private enforceEvaluation(contribution: Contribution): PolicyViolation[] {
-    const evalConfig = this.contract.evaluation;
+    const evalConfig = this.config.evaluation;
     if (evalConfig === undefined) return [];
 
     const violations: PolicyViolation[] = [];
@@ -498,7 +499,7 @@ export class PolicyEnforcer {
 
   /** Evaluate gate checks against the current store state. */
   private async enforceGates(contribution: Contribution): Promise<PolicyViolation[]> {
-    const gates = this.contract.gates;
+    const gates = this.config.gates;
     if (gates === undefined) return [];
 
     const violations: PolicyViolation[] = [];
@@ -549,7 +550,7 @@ export class PolicyEnforcer {
       return undefined;
     }
 
-    const metricDef = this.contract.metrics?.[metricName];
+    const metricDef = this.config.metrics?.[metricName];
     if (metricDef === undefined) return undefined;
 
     const currentBest = await this.findBestScore(metricName, metricDef);
@@ -662,7 +663,7 @@ export class PolicyEnforcer {
 
   /** Derive an outcome from the contribution's scores and the contract's outcome policy. */
   private async deriveOutcome(contribution: Contribution): Promise<DerivedOutcome | undefined> {
-    const policy = this.contract.outcomePolicy;
+    const policy = this.config.outcomePolicy;
     if (policy === undefined) return undefined;
 
     // Only derive outcomes for work contributions
@@ -673,7 +674,7 @@ export class PolicyEnforcer {
       const metricName = policy.autoAccept.metricImproves;
       const score = contribution.scores?.[metricName];
       if (score !== undefined) {
-        const metricDef = this.contract.metrics?.[metricName];
+        const metricDef = this.config.metrics?.[metricName];
         if (metricDef !== undefined) {
           const currentBest = await this.findBestScore(metricName, metricDef);
           if (currentBest === undefined) {
@@ -705,7 +706,7 @@ export class PolicyEnforcer {
     }
 
     // Check auto-accept: all_gates_pass
-    if (policy.autoAccept?.allGatesPass === true && this.contract.gates !== undefined) {
+    if (policy.autoAccept?.allGatesPass === true && this.config.gates !== undefined) {
       const gateViolations = await this.enforceGates(contribution);
       if (gateViolations.length === 0) {
         return {
@@ -720,7 +721,7 @@ export class PolicyEnforcer {
       const metricName = policy.autoReject.metricRegresses;
       const score = contribution.scores?.[metricName];
       if (score !== undefined) {
-        const metricDef = this.contract.metrics?.[metricName];
+        const metricDef = this.config.metrics?.[metricName];
         if (metricDef !== undefined) {
           const currentBest = await this.findBestScore(metricName, metricDef);
           if (currentBest !== undefined) {
@@ -788,7 +789,7 @@ export class PolicyEnforcer {
   private updateCacheFromContribution(c: Contribution): void {
     if (!c.scores) return;
     for (const [name, score] of Object.entries(c.scores)) {
-      const metricDef = this.contract.metrics?.[name];
+      const metricDef = this.config.metrics?.[name];
       if (!metricDef) continue;
       const existing = this.bestScoreCache?.get(name);
       const isMinimize = metricDef.direction === "minimize";
