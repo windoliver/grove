@@ -725,6 +725,31 @@ describe("reviewOperation", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("NOT_FOUND");
   });
+
+  test("fails when target is not a work contribution", async () => {
+    // Create a discussion, then try to review it.
+    const discussion = await discussOperation(
+      { summary: "a topic", agent: { agentId: "a1" } },
+      deps,
+    );
+    expect(discussion.ok).toBe(true);
+    if (!discussion.ok) return;
+
+    const result = await reviewOperation(
+      {
+        targetCid: discussion.value.cid,
+        summary: "Trying to review a discussion",
+        agent: { agentId: "reviewer" },
+      },
+      deps,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION_ERROR");
+      expect(result.error.message).toContain("discussion");
+    }
+  });
 });
 
 describe("reproduceOperation", () => {
@@ -797,6 +822,42 @@ describe("reproduceOperation", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("NOT_FOUND");
+  });
+
+  test("fails when target is not a work contribution", async () => {
+    // Create a review, then try to reproduce it.
+    const workTarget = await contributeOperation(
+      { kind: "work", summary: "target", agent: { agentId: "a1" } },
+      deps,
+    );
+    expect(workTarget.ok).toBe(true);
+    if (!workTarget.ok) return;
+
+    const review = await reviewOperation(
+      {
+        targetCid: workTarget.value.cid,
+        summary: "looks good",
+        agent: { agentId: "reviewer" },
+      },
+      deps,
+    );
+    expect(review.ok).toBe(true);
+    if (!review.ok) return;
+
+    const result = await reproduceOperation(
+      {
+        targetCid: review.value.cid,
+        summary: "Trying to reproduce a review",
+        agent: { agentId: "reproducer" },
+      },
+      deps,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION_ERROR");
+      expect(result.error.message).toContain("review");
+    }
   });
 
   test("validates artifact hashes", async () => {

@@ -1447,11 +1447,32 @@ export async function contributeOperation(
 /**
  * Submit a review of an existing contribution.
  * Sugar over contributeOperation: sets kind=review, adds reviews relation.
+ *
+ * Verifies the target resolves AND is a 'work' contribution before creating
+ * the review. Doing the kind check here (instead of relying on
+ * validateRelations alone) gives a clear 'wrong kind' error and prevents
+ * constructing a review that points at a plan / discussion / response. See
+ * #236 — mirrors the pattern from updatePlanOperation (#228 Issue 6A).
  */
 export async function reviewOperation(
   input: ReviewInput,
   deps: OperationDeps,
 ): Promise<OperationResult<ReviewResult>> {
+  const store = deps.contributionStore;
+  if (!store) {
+    return validationErr("contributionStore is required");
+  }
+
+  const target = await store.get(input.targetCid);
+  if (!target) {
+    return notFound("Review target", input.targetCid);
+  }
+  if (target.kind !== CK.Work) {
+    return validationErr(
+      `Cannot review a '${target.kind}' contribution (target: ${input.targetCid})`,
+    );
+  }
+
   const relations: Relation[] = [
     {
       targetCid: input.targetCid,
@@ -1487,11 +1508,29 @@ export async function reviewOperation(
 /**
  * Submit a reproduction attempt of an existing contribution.
  * Sugar over contributeOperation: sets kind=reproduction, adds reproduces relation.
+ *
+ * Verifies the target resolves AND is a 'work' contribution before creating
+ * the reproduction. See #236 — mirrors reviewOperation / updatePlanOperation.
  */
 export async function reproduceOperation(
   input: ReproduceInput,
   deps: OperationDeps,
 ): Promise<OperationResult<ReproduceResult>> {
+  const store = deps.contributionStore;
+  if (!store) {
+    return validationErr("contributionStore is required");
+  }
+
+  const target = await store.get(input.targetCid);
+  if (!target) {
+    return notFound("Reproduction target", input.targetCid);
+  }
+  if (target.kind !== CK.Work) {
+    return validationErr(
+      `Cannot reproduce a '${target.kind}' contribution (target: ${input.targetCid})`,
+    );
+  }
+
   const reproResult = input.result ?? "confirmed";
 
   const relations: Relation[] = [
