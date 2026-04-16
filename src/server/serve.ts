@@ -219,11 +219,26 @@ function startServer() {
 
 const server = startServer();
 
-// Warn when bound to a non-localhost address (no auth is enforced).
+// Refuse to bind a non-localhost address without an explicit operator
+// opt-in. The HTTP surface has no authentication (role-sensitive mutations
+// are gated to MCP stdio, but read routes and `?sessionId=` scoping are
+// caller-asserted), so the deployment trust boundary is the localhost
+// binding. Operators who want remote access MUST set
+// `GROVE_ALLOW_UNAUTHENTICATED_REMOTE=true` to acknowledge the risk;
+// typical production usage places the server behind an authenticated
+// reverse proxy.
 const LOCALHOST_ADDRESSES = new Set(["localhost", "127.0.0.1", "::1"]);
 if (HOST && !LOCALHOST_ADDRESSES.has(HOST)) {
+  if (process.env.GROVE_ALLOW_UNAUTHENTICATED_REMOTE !== "true") {
+    console.error(
+      "\u26a0 Refusing to bind non-localhost address without authentication.\n" +
+        "  Set GROVE_ALLOW_UNAUTHENTICATED_REMOTE=true to opt in explicitly,\n" +
+        "  or front this process with an authenticated reverse proxy and bind to localhost.",
+    );
+    process.exit(1);
+  }
   console.warn(
-    "\u26a0 Server bound to non-localhost address without authentication. See security docs for securing.",
+    "\u26a0 Server bound to non-localhost address without authentication (GROVE_ALLOW_UNAUTHENTICATED_REMOTE=true).",
   );
 }
 

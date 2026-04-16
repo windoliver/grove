@@ -339,7 +339,12 @@ export interface TuiGossipProvider {
 /** Handoff queries — available when capabilities.handoffs is true. */
 export interface TuiHandoffProvider {
   getHandoffs(query?: HandoffQuery): Promise<readonly Handoff[]>;
-  markHandoffDelivered(handoffId: string): Promise<void>;
+  /**
+   * Mark a handoff delivered. Optional `sessionId` pins the POST scope
+   * so a session switch between the preceding getHandoffs() and this
+   * call can't strand the handoff in pending_pickup.
+   */
+  markHandoffDelivered(handoffId: string, sessionId?: string): Promise<void>;
 }
 
 /** Type guard: does the provider support handoff queries? */

@@ -675,9 +675,15 @@ export class RemoteDataProvider
     };
   }
 
-  async markHandoffDelivered(handoffId: string): Promise<void> {
+  async markHandoffDelivered(handoffId: string, sessionId?: string): Promise<void> {
+    // Callers may pass an explicit `sessionId` to pin the scope to whatever
+    // was active when they read the handoff — guards against activeSessionId
+    // flipping between the preceding getHandoffs() and this POST (rare, but
+    // would otherwise strand the handoff in pending_pickup when the POST
+    // lands in the new session's scoped store that doesn't know this id).
     const params = new URLSearchParams();
-    if (this.activeSessionId) params.set("sessionId", this.activeSessionId);
+    const effective = sessionId ?? this.activeSessionId;
+    if (effective) params.set("sessionId", effective);
     const qs = params.toString();
     await fetch(
       `${this.baseUrl}/api/handoffs/${encodeURIComponent(handoffId)}/delivered${qs ? `?${qs}` : ""}`,

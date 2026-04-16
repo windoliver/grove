@@ -531,39 +531,58 @@ export class NexusHandoffStore implements HandoffStore {
     if (!found && this.sessionId !== undefined) {
       // Migration shim with claim-on-move: pre-#164 rows in _global.json
       // are visible and mutable to every scoped session, so the first
-      // session to mutate them must ALSO move the row out of _global and
-      // into its session file — otherwise peer sessions keep seeing them
-      // in list()/listForCurrentSession() forever, re-acking or
-      // re-processing a row that the first session already resolved.
+      // session to mutate them must claim ownership — otherwise peer
+      // sessions keep seeing them in list/listForCurrentSession forever
+      // and could re-ack or re-process a row already resolved.
       //
-      // This mirrors the SQLite backend's claim-on-write pattern (SET
-      // session_id = COALESCE(session_id, ?) in every scoped UPDATE):
-      // after the first mutation, scopeClause / readScopedHandoffs stop
-      // matching the row from every other session.
-      let claimed: Handoff | undefined;
+      // Mirrors SQLite's claim-on-write pattern (SET session_id =
+      // COALESCE(session_id, ?)). Sequence:
+      //   1. Mutate in _global via readModifyWrite (CAS-protected —
+      //      state-machine guard inside fn prevents double resolution).
+      //   2. Best-effort copy to session file (idempotent — dedupe by id).
+      //   3. Best-effort delete from _global.
+      //
+      // We mutate FIRST instead of deleting first so a failure between
+      // steps never produces data loss — the mutated row always survives
+      // in at least _global. `mutatedRow` is reset on every readModifyWrite
+      // attempt so a retry after losing a CAS race doesn't carry a stale
+      // snapshot from attempt 1 into the session file.
+      let mutatedRow: Handoff | undefined;
       await this.readModifyWrite(globalFile(this.zoneId), (handoffs) => {
+        mutatedRow = undefined; // reset per retry — avoids stale snapshot on race
         const idx = handoffs.findIndex((h) => h.handoffId === handoffId);
         if (idx === -1) return handoffs;
         const current = handoffs[idx];
         if (current === undefined) return handoffs;
-        claimed = fn(current);
-        // Remove from _global — the row has been claimed by this session.
-        // A concurrent writer that raced us for the CAS will retry against
-        // the updated _global (without this row) and bail out.
-        return handoffs.filter((h) => h.handoffId !== handoffId);
+        const applied = fn(current);
+        mutatedRow = applied;
+        const copy = [...handoffs];
+        copy[idx] = applied;
+        return copy;
       });
-      if (claimed !== undefined) {
-        const snapshot = claimed;
+      if (mutatedRow !== undefined) {
         found = true;
-        // Insert into the session's own file so future reads resolve it
-        // locally. If this write fails after _global delete committed,
-        // the row survives only in the in-memory snapshot — but the
-        // readModifyWrite retry loop gives us 8 attempts with backoff
-        // before that becomes a real data-loss event.
-        await this.readModifyWrite(this.filePath(), (handoffs) => {
-          const deduped = handoffs.filter((h) => h.handoffId !== handoffId);
-          return [...deduped, snapshot];
-        });
+        const snapshot = mutatedRow;
+        // Best-effort move: copy to session file, then delete from
+        // _global. A failure here leaves the row in _global with the
+        // mutation already applied — peer sessions will still see it
+        // until the next retry, but state-machine guards prevent double
+        // resolution. expireStale / a subsequent claim attempt will
+        // eventually complete the move.
+        try {
+          await this.readModifyWrite(this.filePath(), (handoffs) => {
+            const deduped = handoffs.filter((h) => h.handoffId !== handoffId);
+            return [...deduped, snapshot];
+          });
+          await this.readModifyWrite(globalFile(this.zoneId), (handoffs) =>
+            handoffs.filter((h) => h.handoffId !== handoffId),
+          );
+        } catch (moveErr) {
+          debugLog(
+            "NexusHandoffStore.updateHandoff",
+            `claim-move follow-up failed for ${handoffId} (mutation in _global already committed) err=${moveErr instanceof Error ? moveErr.message : String(moveErr)}`,
+          );
+        }
       }
     }
 
