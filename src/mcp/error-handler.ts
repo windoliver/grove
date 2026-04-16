@@ -18,6 +18,7 @@ import {
   RetryExhaustedError,
   StateConflictError,
 } from "../core/errors.js";
+import { InvalidTransitionError } from "../core/handoff.js";
 
 /** Error codes returned to MCP clients for programmatic handling. */
 export const McpErrorCode = {
@@ -29,6 +30,7 @@ export const McpErrorCode = {
   LeaseViolation: "LEASE_VIOLATION",
   NotFound: "NOT_FOUND",
   StateConflict: "STATE_CONFLICT",
+  InvalidState: "INVALID_STATE",
   PolicyViolation: "POLICY_VIOLATION",
   ValidationError: "VALIDATION_ERROR",
   InternalError: "INTERNAL_ERROR",
@@ -97,6 +99,10 @@ export function handleToolError(error: unknown): CallToolResult {
 
   if (error instanceof StateConflictError) {
     return toolError(McpErrorCode.StateConflict, error.message);
+  }
+
+  if (error instanceof InvalidTransitionError) {
+    return toolError(McpErrorCode.InvalidState, error.message);
   }
 
   if (error instanceof GroveError) {

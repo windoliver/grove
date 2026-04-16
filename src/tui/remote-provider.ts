@@ -126,8 +126,20 @@ export class RemoteDataProvider
 
     const frontierSummary = buildFrontierSummary(frontier);
 
+    // `/api/grove` aggregates contributionCount/activeClaimCount across every
+    // session. When the dashboard is scoped (activeSessionId set), those
+    // global counts are inconsistent with the rest of the view (recent
+    // contributions, claims, frontier all session-scoped). Zero them out so
+    // the header doesn't mislead the operator about the current session's
+    // activity — the scoped recentContributions / frontier already tell the
+    // true story.
+    const scopedMetadata =
+      this.activeSessionId !== undefined
+        ? { ...metadata, contributionCount: 0, activeClaimCount: 0 }
+        : metadata;
+
     return {
-      metadata,
+      metadata: scopedMetadata,
       activeClaims,
       recentContributions,
       frontierSummary,

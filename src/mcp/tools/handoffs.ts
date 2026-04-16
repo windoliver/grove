@@ -11,37 +11,13 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { NotFoundError, StateConflictError } from "../../core/errors.js";
 import {
   canTransition,
   HandoffStatus,
-  InvalidTransitionError,
   type HandoffStore,
 } from "../../core/handoff.js";
 import type { McpDeps } from "../deps.js";
-import { toolError } from "../error-handler.js";
-
-/**
- * Translate a store-layer throw into a structured MCP tool error.
- * Concurrent sweeps (DeadlineWatcher expireStale) and peer mutations
- * (auto-reply, parallel ack from another client) can race between the
- * tool's preflight (get / canTransition) and the actual mark* call.
- * Without this helper those races surface as unstructured exceptions;
- * here we normalize them to NOT_FOUND / INVALID_STATE / CONFLICT so
- * the caller can retry or give up deterministically.
- */
-function markToToolError(handoffId: string, err: unknown): CallToolResult {
-  if (err instanceof NotFoundError) {
-    return toolError("NOT_FOUND", `Handoff '${handoffId}' not found.`);
-  }
-  if (err instanceof InvalidTransitionError) {
-    return toolError("INVALID_STATE", err.message);
-  }
-  if (err instanceof StateConflictError) {
-    return toolError("CONFLICT", err.message);
-  }
-  throw err;
-}
+import { handleToolError, toolError } from "../error-handler.js";
 
 /**
  * Guard: require handoffStore to be configured.
@@ -159,20 +135,24 @@ export function registerHandoffTools(
       if (!guard.ok) return guard.error;
       const { store } = guard;
 
-      // Expire stale handoffs before listing so callers always see fresh status.
-      await store.expireStale();
+      try {
+        // Expire stale handoffs before listing so callers always see fresh status.
+        await store.expireStale();
 
-      const handoffs = await store.list({
-        toRole: args.toRole,
-        fromRole: args.fromRole,
-        status: args.status,
-        sourceCid: args.sourceCid,
-        limit: args.limit ?? 50,
-      });
+        const handoffs = await store.list({
+          toRole: args.toRole,
+          fromRole: args.fromRole,
+          status: args.status,
+          sourceCid: args.sourceCid,
+          limit: args.limit ?? 50,
+        });
 
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify({ handoffs }) }],
-      };
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ handoffs }) }],
+        };
+      } catch (err) {
+        return handleToolError(err);
+      }
     },
   );
 
@@ -187,14 +167,18 @@ export function registerHandoffTools(
       if (!guard.ok) return guard.error;
       const { store } = guard;
 
-      const handoff = await store.get(args.handoffId);
-      if (handoff === undefined) {
-        return toolError("NOT_FOUND", `Handoff '${args.handoffId}' not found.`);
-      }
+      try {
+        const handoff = await store.get(args.handoffId);
+        if (handoff === undefined) {
+          return toolError("NOT_FOUND", `Handoff '${args.handoffId}' not found.`);
+        }
 
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(handoff) }],
-      };
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(handoff) }],
+        };
+      } catch (err) {
+        return handleToolError(err);
+      }
     },
   );
 
@@ -213,21 +197,25 @@ export function registerHandoffTools(
       if (!guard.ok) return guard.error;
       const { store } = guard;
 
-      const handoffs = await store.list({
-        toRole: args.toRole,
-        fromRole: args.fromRole,
-        status: HandoffStatus.DeadLettered,
-        limit: args.limit ?? 50,
-      });
+      try {
+        const handoffs = await store.list({
+          toRole: args.toRole,
+          fromRole: args.fromRole,
+          status: HandoffStatus.DeadLettered,
+          limit: args.limit ?? 50,
+        });
 
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({ count: handoffs.length, handoffs }),
-          },
-        ],
-      };
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ count: handoffs.length, handoffs }),
+            },
+          ],
+        };
+      } catch (err) {
+        return handleToolError(err);
+      }
     },
   );
 
@@ -254,61 +242,61 @@ export function registerHandoffTools(
       if (!guard.ok) return guard.error;
       const { store } = guard;
 
-      const handoff = await store.get(args.handoffId);
-      if (handoff === undefined) {
-        return toolError("NOT_FOUND", `Handoff '${args.handoffId}' not found.`);
-      }
-
-      // Authorization: only the target role can mark processed. Handoff IDs
-      // are discoverable via read tools, so without this check any agent in
-      // the session could forge "processed" signals for peer handoffs.
-      const callerRole = process.env.GROVE_AGENT_ROLE;
-      if (callerRole === undefined || callerRole !== handoff.toRole) {
-        return toolError(
-          "PERMISSION_DENIED",
-          `Only the target role '${handoff.toRole}' can mark this handoff processed (caller role: '${callerRole ?? "unset"}').`,
-        );
-      }
-      if (store.isInCurrentSession === undefined) {
-        return toolError(
-          "NOT_SUPPORTED",
-          "Handoff store does not support session-scoped access.",
-        );
-      }
-      const inSession = await store.isInCurrentSession(args.handoffId);
-      if (!inSession) {
-        return toolError(
-          "PERMISSION_DENIED",
-          `Handoff '${args.handoffId}' does not belong to the current session.`,
-        );
-      }
-
-      if (!canTransition(handoff.status, HandoffStatus.Processed)) {
-        return toolError(
-          "INVALID_STATE",
-          `Cannot process handoff in status '${handoff.status}'. ` +
-            `Only 'delivered' handoffs can be processed.`,
-        );
-      }
-
       try {
-        await store.markProcessed(args.handoffId);
-      } catch (err) {
-        return markToToolError(args.handoffId, err);
-      }
+        const handoff = await store.get(args.handoffId);
+        if (handoff === undefined) {
+          return toolError("NOT_FOUND", `Handoff '${args.handoffId}' not found.`);
+        }
 
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({
-              handoffId: args.handoffId,
-              previousStatus: handoff.status,
-              status: HandoffStatus.Processed,
-            }),
-          },
-        ],
-      };
+        // Authorization: only the target role can mark processed. Handoff IDs
+        // are discoverable via read tools, so without this check any agent in
+        // the session could forge "processed" signals for peer handoffs.
+        const callerRole = process.env.GROVE_AGENT_ROLE;
+        if (callerRole === undefined || callerRole !== handoff.toRole) {
+          return toolError(
+            "PERMISSION_DENIED",
+            `Only the target role '${handoff.toRole}' can mark this handoff processed (caller role: '${callerRole ?? "unset"}').`,
+          );
+        }
+        if (store.isInCurrentSession === undefined) {
+          return toolError(
+            "NOT_SUPPORTED",
+            "Handoff store does not support session-scoped access.",
+          );
+        }
+        const inSession = await store.isInCurrentSession(args.handoffId);
+        if (!inSession) {
+          return toolError(
+            "PERMISSION_DENIED",
+            `Handoff '${args.handoffId}' does not belong to the current session.`,
+          );
+        }
+
+        if (!canTransition(handoff.status, HandoffStatus.Processed)) {
+          return toolError(
+            "INVALID_STATE",
+            `Cannot process handoff in status '${handoff.status}'. ` +
+              `Only 'delivered' handoffs can be processed.`,
+          );
+        }
+
+        await store.markProcessed(args.handoffId);
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                handoffId: args.handoffId,
+                previousStatus: handoff.status,
+                status: HandoffStatus.Processed,
+              }),
+            },
+          ],
+        };
+      } catch (err) {
+        return handleToolError(err);
+      }
     },
   );
 
@@ -324,57 +312,57 @@ export function registerHandoffTools(
       if (!guard.ok) return guard.error;
       const { store } = guard;
 
-      const handoff = await store.get(args.handoffId);
-      if (handoff === undefined) {
-        return toolError("NOT_FOUND", `Handoff '${args.handoffId}' not found.`);
-      }
-
-      // Authorization: the caller role must match the handoff's toRole,
-      // AND the handoff must belong to the caller's current session.
-      // Without the session check on a non-scoped store (e.g. SQLite where
-      // the handoff table is shared across sessions), a reviewer in session
-      // A could enumerate and ack a reviewer handoff in session B.
-      const callerRole = process.env.GROVE_AGENT_ROLE;
-      if (callerRole === undefined || callerRole !== handoff.toRole) {
-        return toolError(
-          "PERMISSION_DENIED",
-          `Only the target role '${handoff.toRole}' can acknowledge this handoff (caller role: '${callerRole ?? "unset"}').`,
-        );
-      }
-      if (store.isInCurrentSession === undefined) {
-        return toolError(
-          "NOT_SUPPORTED",
-          "Handoff store does not support session-scoped access.",
-        );
-      }
-      const inSession = await store.isInCurrentSession(args.handoffId);
-      if (!inSession) {
-        return toolError(
-          "PERMISSION_DENIED",
-          `Handoff '${args.handoffId}' does not belong to the current session.`,
-        );
-      }
-
       try {
+        const handoff = await store.get(args.handoffId);
+        if (handoff === undefined) {
+          return toolError("NOT_FOUND", `Handoff '${args.handoffId}' not found.`);
+        }
+
+        // Authorization: the caller role must match the handoff's toRole,
+        // AND the handoff must belong to the caller's current session.
+        // Without the session check on a non-scoped store (e.g. SQLite where
+        // the handoff table is shared across sessions), a reviewer in session
+        // A could enumerate and ack a reviewer handoff in session B.
+        const callerRole = process.env.GROVE_AGENT_ROLE;
+        if (callerRole === undefined || callerRole !== handoff.toRole) {
+          return toolError(
+            "PERMISSION_DENIED",
+            `Only the target role '${handoff.toRole}' can acknowledge this handoff (caller role: '${callerRole ?? "unset"}').`,
+          );
+        }
+        if (store.isInCurrentSession === undefined) {
+          return toolError(
+            "NOT_SUPPORTED",
+            "Handoff store does not support session-scoped access.",
+          );
+        }
+        const inSession = await store.isInCurrentSession(args.handoffId);
+        if (!inSession) {
+          return toolError(
+            "PERMISSION_DENIED",
+            `Handoff '${args.handoffId}' does not belong to the current session.`,
+          );
+        }
+
         if (args.level === "seen") {
           await store.markSeen(args.handoffId);
         } else {
           await store.markAcked(args.handoffId);
         }
+
+        if (process.env.GROVE_DEBUG === "1") {
+          process.stderr.write(
+            `[grove:handoff] ACK handoff=${args.handoffId.slice(0, 8)} level=${args.level} toRole=${handoff.toRole}\n`,
+          );
+        }
+
+        const updated = await store.get(args.handoffId);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(updated) }],
+        };
       } catch (err) {
-        return markToToolError(args.handoffId, err);
+        return handleToolError(err);
       }
-
-      if (process.env.GROVE_DEBUG === "1") {
-        process.stderr.write(
-          `[grove:handoff] ACK handoff=${args.handoffId.slice(0, 8)} level=${args.level} toRole=${handoff.toRole}\n`,
-        );
-      }
-
-      const updated = await store.get(args.handoffId);
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(updated) }],
-      };
     },
   );
 }

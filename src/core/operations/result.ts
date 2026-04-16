@@ -33,6 +33,7 @@ export const OperationErrorCode = {
   LeaseViolation: "LEASE_VIOLATION",
   NotFound: "NOT_FOUND",
   StateConflict: "STATE_CONFLICT",
+  InvalidState: "INVALID_STATE",
   PolicyViolation: "POLICY_VIOLATION",
   ValidationError: "VALIDATION_ERROR",
   InternalError: "INTERNAL_ERROR",

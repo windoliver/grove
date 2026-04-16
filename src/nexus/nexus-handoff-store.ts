@@ -480,23 +480,37 @@ export class NexusHandoffStore implements HandoffStore {
       const name = path.split("/").pop() ?? "";
       return name.replace(/\.json$/, "");
     };
-    const want = new Set([sessionId, "_global"]);
     try {
       const listing = await this.client.list(handoffsDir(this.zoneId));
-      const pickable = listing.files.filter(
-        (f) => !f.isDirectory && want.has(basenameNoExt(f.path)),
+      // Split pickable files into session-owned vs _global so a
+      // half-completed claim-move (session file has the mutated row,
+      // _global still has a stale copy) doesn't surface both. The
+      // session file wins.
+      const sessionFiles = listing.files.filter(
+        (f) => !f.isDirectory && basenameNoExt(f.path) === sessionId,
       );
-      const perFile = await Promise.all(
-        pickable.map(async (f) => {
-          try {
-            const { handoffs } = await this.readFile(f.path);
-            return handoffs;
-          } catch {
-            return [] as Handoff[];
-          }
-        }),
+      const globalFiles = listing.files.filter(
+        (f) => !f.isDirectory && basenameNoExt(f.path) === "_global",
       );
-      return perFile.flat();
+      const readHandoffs = async (
+        f: import("./client.js").ListEntry,
+      ): Promise<readonly Handoff[]> => {
+        try {
+          const { handoffs } = await this.readFile(f.path);
+          return handoffs;
+        } catch {
+          return [];
+        }
+      };
+      const [sessionPerFile, globalPerFile] = await Promise.all([
+        Promise.all(sessionFiles.map(readHandoffs)),
+        Promise.all(globalFiles.map(readHandoffs)),
+      ]);
+      const sessionHandoffs = sessionPerFile.flat();
+      const sessionIds = new Set(sessionHandoffs.map((h) => h.handoffId));
+      // Legacy rows only appear if the session file hasn't claimed them yet.
+      const legacyOnly = globalPerFile.flat().filter((h) => !sessionIds.has(h.handoffId));
+      return [...sessionHandoffs, ...legacyOnly];
     } catch {
       return [];
     }
