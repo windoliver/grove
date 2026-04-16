@@ -16,61 +16,54 @@
 
 import type { Database, Statement } from "bun:sqlite";
 import type { GroveContract } from "../core/contract.js";
+import { parseGroveContractObject } from "../core/contract.js";
 import type { CreateSessionInput, Session, SessionQuery } from "../core/session.js";
 import type { AgentTopology } from "../core/topology.js";
 import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
 import type { GoalData } from "../tui/provider.js";
 
 /**
- * Shape-validate a parsed session config from storage.
+ * Convert camelCase property names to snake_case recursively.
  *
- * Returns null when the object has the expected top-level GroveContract
- * shape, or a reason string when a field has the wrong type.
- *
- * This catches row corruption (manual DB edits) where top-level fields
- * end up as the wrong type, before downstream enforcement code silently
- * bypasses checks via optional chaining.
- *
- * Note: this is a shallow shape check, not a full schema validation.
- * contract.ts hosts snake_case YAML schemas; session storage is the
- * post-parse camelCase form, so we can't reuse those schemas here
- * without building a parallel camelCase schema. The shape check is the
- * minimum defense-in-depth at this boundary.
+ * Session config is stored as the normalized camelCase GroveContract form,
+ * but parseGroveContractObject expects the snake_case YAML wire form. This
+ * converter lets us round-trip stored snapshots back through the canonical
+ * parser for full schema validation at the storage boundary.
  */
-function validateStoredContractShape(obj: unknown): string | null {
+function camelToSnakeKeys(value: unknown): unknown {
+  if (value === null || value === undefined || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(camelToSnakeKeys);
+  const out: Record<string, unknown> = {};
+  for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+    const snakeKey = key.replace(/([A-Z])/g, (m) => `_${m.toLowerCase()}`);
+    out[snakeKey] = camelToSnakeKeys(v);
+  }
+  return out;
+}
+
+/**
+ * Validate a parsed session config against the full GroveContract schema.
+ *
+ * Returns the validated contract on success, or a reason string when
+ * validation fails. Catches row corruption (manual DB edits, partial
+ * writes) before downstream enforcement code silently bypasses checks
+ * or crashes late on bad nested fields.
+ *
+ * Implementation: stored form is normalized camelCase; parseGroveContractObject
+ * accepts the snake_case YAML wire form. Round-trip via a key converter so
+ * all validation (zod schema + cross-field checks) runs on stored data.
+ */
+function validateStoredContract(obj: unknown): { config: GroveContract } | { reason: string } {
   if (obj === null || typeof obj !== "object" || Array.isArray(obj)) {
-    return "config_json is not a plain object";
+    return { reason: "config_json is not a plain object" };
   }
-  const c = obj as Record<string, unknown>;
-  if (typeof c.contractVersion !== "number") {
-    return "config_json missing numeric contractVersion";
+  try {
+    const wire = camelToSnakeKeys(obj);
+    const config = parseGroveContractObject(wire);
+    return { config };
+  } catch (err) {
+    return { reason: err instanceof Error ? err.message : String(err) };
   }
-  const objectFields = [
-    "metrics",
-    "stopConditions",
-    "agentConstraints",
-    "claimPolicy",
-    "concurrency",
-    "execution",
-    "rateLimits",
-    "retry",
-    "gossip",
-    "outcomePolicy",
-    "evaluation",
-    "hooks",
-    "topology",
-  ] as const;
-  for (const field of objectFields) {
-    const v = c[field];
-    if (v !== undefined && (v === null || typeof v !== "object" || Array.isArray(v))) {
-      return `config_json field '${field}' is not an object`;
-    }
-  }
-  const gates = c.gates;
-  if (gates !== undefined && !Array.isArray(gates)) {
-    return "config_json field 'gates' is not an array";
-  }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -494,18 +487,15 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     } catch (err) {
       return { kind: "malformed", reason: err instanceof Error ? err.message : String(err) };
     }
-    // Storage is the normalized camelCase GroveContract produced by
-    // parseGroveContract → JSON.stringify. The shape-validation schemas
-    // in contract.ts are YAML-shape (snake_case), so we can't round-trip
-    // them here cheaply. Instead, check the top-level field shape so that
-    // corrupt rows (e.g. `rateLimits: "off"` or `gates: {}` after manual
-    // DB edits) are rejected before downstream enforcement code silently
-    // bypasses checks via optional chaining or throws late.
-    const reason = validateStoredContractShape(parsed);
-    if (reason !== null) {
-      return { kind: "malformed", reason };
+    // Run full schema validation: round-trip camelCase → snake_case and
+    // reuse parseGroveContractObject so nested bad shapes (e.g. invalid
+    // gate entries, non-array allowedKinds) are rejected at the storage
+    // boundary rather than silently bypassed or crashing enforcement late.
+    const validated = validateStoredContract(parsed);
+    if ("reason" in validated) {
+      return { kind: "malformed", reason: validated.reason };
     }
-    return { kind: "ok", config: parsed as GroveContract };
+    return { kind: "ok", config: validated.config };
   };
 
   /**
