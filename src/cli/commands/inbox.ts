@@ -89,14 +89,13 @@ async function handleSend(args: readonly string[], groveOverride?: string): Prom
   const envSessionId = process.env.GROVE_SESSION_ID;
   if (envSessionId) {
     const sessionConfig = stores.goalSessionStore.getSessionConfigSync(envSessionId);
-    if (!sessionConfig) {
-      throw new Error(
-        `Session ${envSessionId} has no stored config. ` +
-          `Cannot enforce contract for GROVE_SESSION_ID=${envSessionId}.`,
-      );
+    if (sessionConfig) {
+      contract = sessionConfig;
     }
-    contract = sessionConfig;
-  } else {
+    // Session without a stored config is a valid state (CreateSessionInput.config
+    // is optional). Fall through to GROVE.md instead of hard-failing.
+  }
+  if (contract === undefined) {
     // Load GROVE.md from the grove root (parent of .grove/).
     //
     // Separate the readFile catch from the parse call so a MALFORMED contract

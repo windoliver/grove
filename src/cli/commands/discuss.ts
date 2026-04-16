@@ -114,21 +114,28 @@ export async function executeDiscuss(options: DiscussOptions): Promise<{ cid: st
   const envSessionId = process.env.GROVE_SESSION_ID;
   if (envSessionId) {
     const sessionConfig = stores.goalSessionStore.getSessionConfigSync(envSessionId);
-    if (!sessionConfig) {
-      throw new Error(
-        `Session ${envSessionId} has no stored config. ` +
-          `Cannot enforce contract for GROVE_SESSION_ID=${envSessionId}.`,
-      );
+    if (sessionConfig) {
+      contract = sessionConfig;
     }
-    contract = sessionConfig;
-  } else {
-    // GROVE.md lives in the parent of .grove/
+    // Session without a stored config is a valid state (CreateSessionInput.config
+    // is optional). Fall through to GROVE.md instead of hard-failing.
+  }
+  if (contract === undefined) {
+    // Load GROVE.md from the grove root (parent of .grove/).
+    //
+    // ENOENT is the only acceptable fallthrough. Everything else (parse
+    // errors, permission denied, schema validation) propagates to the
+    // outer error handler so the operator sees the failure.
     const groveRoot = join(groveDir, "..");
     const grovemdPath = join(groveRoot, "GROVE.md");
     let grovemdContent: string | undefined;
     try {
       grovemdContent = await readFile(grovemdPath, "utf-8");
-    } catch {
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== "ENOENT") {
+        throw err;
+      }
       // GROVE.md does not exist — proceed without enforcement
     }
     if (grovemdContent !== undefined) {
