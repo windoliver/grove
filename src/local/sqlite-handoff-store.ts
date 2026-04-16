@@ -436,12 +436,20 @@ export class SqliteHandoffStore implements HandoffStore {
 
   /**
    * O(1) session ownership check. Only defined in scoped mode. Returns
-   * true iff the row exists AND belongs to the caller's session.
+   * true iff the row exists AND (belongs to the caller's session OR is
+   * a legacy NULL-session row from a pre-#164 upgrade).
+   *
+   * Mirrors the migration shim in scopeClause(): without this, a legacy
+   * row would show up in list() but then be rejected by the receipt
+   * tools' session ownership check, stranding the handoff.
    */
   async isInCurrentSession(handoffId: string): Promise<boolean> {
     if (this.sessionId === undefined) return false;
     const row = this.db
-      .prepare("SELECT 1 FROM handoffs WHERE handoff_id = ? AND session_id = ?")
+      .prepare(
+        `SELECT 1 FROM handoffs
+         WHERE handoff_id = ? AND (session_id = ? OR session_id IS NULL)`,
+      )
       .get(handoffId, this.sessionId);
     return row !== null;
   }

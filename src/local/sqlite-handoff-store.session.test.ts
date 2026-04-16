@@ -212,6 +212,24 @@ describe("SqliteHandoffStore session scoping", () => {
     db.close();
   });
 
+  test("isInCurrentSession honors the NULL-session migration shim", async () => {
+    const db = initSqliteDb(dbPath);
+    // Legacy row with session_id=NULL (pre-#164)
+    const legacy = new SqliteHandoffStore(db);
+    const hLegacy = await legacy.create({
+      sourceCid: "blake3:legacy",
+      fromRole: "coder",
+      toRole: "reviewer",
+    });
+
+    const scoped = new SqliteHandoffStore(db, "active-session");
+    // Without the shim, receipt tools would find the legacy row via get()
+    // but reject it in isInCurrentSession, stranding it post-upgrade.
+    expect(await scoped.isInCurrentSession?.(hLegacy.handoffId)).toBe(true);
+
+    db.close();
+  });
+
   test("legacy NULL-session rows do NOT leak between scoped sessions (only the first resolver wins)", async () => {
     const db = initSqliteDb(dbPath);
     // Pre-#164 row with session_id=NULL

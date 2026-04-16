@@ -37,6 +37,17 @@ export interface ServerDeps {
   readonly contract?: GroveContract | undefined;
   /** Optional handoff store. Routes return 501 when not configured. */
   readonly handoffStore?: HandoffStore | undefined;
+  /**
+   * Factory for session-scoped handoff stores. Optional: when provided,
+   * HTTP routes that need session isolation (e.g. GET/list under a
+   * ?sessionId= query) can construct a scoped store per request. When
+   * omitted, routes fall back to the global `handoffStore` (unscoped).
+   *
+   * This is primarily needed for the grove-server HTTP surface in local
+   * mode, where the process-global store spans all sessions and remote
+   * TUI reads would leak cross-session handoffs otherwise.
+   */
+  readonly handoffStoreForSession?: (sessionId: string) => HandoffStore | undefined;
   /** Optional idempotency store for cross-process deduplication. */
   readonly idempotencyStore?: IdempotencyStore | undefined;
 }

@@ -78,6 +78,16 @@ const serverFrontier: import("../core/frontier.js").FrontierCalculator = runtime
 // Nexus VFS hits rate limits with N reads per list() call.
 // Nexus is used for IPC only (via NexusWsBridge SSE), not for data storage.
 
+// Per-request session-scoped handoff store factory. The HTTP handoff
+// routes accept ?sessionId= and use this factory to build a scoped
+// SqliteHandoffStore on demand, preventing cross-session reads/mutations
+// from remote TUIs that share the same process-global runtime.
+const { SqliteHandoffStore: _SqliteHandoffStore } = await import(
+  "../local/sqlite-handoff-store.js"
+);
+const handoffStoreForSession = (sessionId: string) =>
+  new _SqliteHandoffStore(runtime.db, sessionId) as import("../core/handoff.js").HandoffStore;
+
 const deps: ServerDeps = {
   contributionStore: serverContributionStore,
   claimStore: serverClaimStore,
@@ -85,6 +95,7 @@ const deps: ServerDeps = {
   bountyStore: serverBountyStore,
   goalSessionStore: runtime.goalSessionStore,
   handoffStore: runtime.handoffStore,
+  handoffStoreForSession,
   cas: serverCas,
   frontier: serverFrontier,
   gossip: gossipService,

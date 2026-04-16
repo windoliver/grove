@@ -1186,13 +1186,25 @@ export async function contributeOperation(
           }
         } else {
           fireAndForget("handoff reply transition", async () => {
+            // Use session-scoped enumeration when the store supports it.
+            // Contribution CIDs are global DAG IDs, so the same sourceCid
+            // can appear in multiple sessions' handoff files. list() on
+            // Nexus scans zone-wide; resolving a peer session's handoff
+            // from here would cross-session-mutate and fail with NotFound,
+            // aborting the loop before the current session's own handoff
+            // is resolved. listForCurrentSession scopes to the active
+            // session; fall back to list() on backends that don't support
+            // scoping (rare).
+            const listFn =
+              deps.handoffStore?.listForCurrentSession?.bind(deps.handoffStore) ??
+              deps.handoffStore?.list.bind(deps.handoffStore);
             for (const rel of replyRelations) {
+              let unresolved: readonly import("../handoff.js").Handoff[] = [];
               try {
                 // Include Processed too: agents following the IPC workflow
                 // (grove_process_handoff before grove_submit_*) leave the
-                // handoff in Processed state. Without this, their valid
-                // replies would never auto-resolve the handoff.
-                const unresolved = await deps.handoffStore?.list({
+                // handoff in Processed state.
+                unresolved = (await listFn?.({
                   sourceCid: rel.targetCid,
                   status: [
                     HandoffStatus.PendingPickup,
@@ -1200,17 +1212,20 @@ export async function contributeOperation(
                     HandoffStatus.Processed,
                   ],
                   toRole: replyingRole,
-                });
-                for (const h of unresolved ?? []) {
+                })) ?? [];
+              } catch {
+                // List failure is best-effort; move on to next relation.
+                continue;
+              }
+              // Per-handoff error isolation: one foreign or stale row
+              // must not abort resolution of the remaining handoffs.
+              for (const h of unresolved) {
+                try {
                   if (process.env.GROVE_DEBUG === "1") {
                     process.stderr.write(
                       `[grove:handoff] REPLY handoff=${h.handoffId.slice(0, 8)} resolvedBy=${contribution.cid.slice(0, 20)}.. relation=${rel.relationType} role=${replyingRole}\n`,
                     );
                   }
-                  // The state machine requires pending_pickup → delivered
-                  // before → replied. If the handoff is still pending_pickup
-                  // (reply arrived before an explicit delivery mark), mark
-                  // delivered first. Best-effort on concurrent advancement.
                   if (h.status === HandoffStatus.PendingPickup) {
                     try {
                       await deps.handoffStore?.markDelivered(h.handoffId);
@@ -1219,11 +1234,10 @@ export async function contributeOperation(
                     }
                   }
                   await deps.handoffStore?.markReplied(h.handoffId, contribution.cid);
-                  // Cancel deadline timer for resolved handoff
                   deps.deadlineWatcher?.cancel(h.handoffId);
+                } catch {
+                  /* skip this handoff, continue with peers */
                 }
-              } catch {
-                // Best-effort — don't fail contribution over handoff transition
               }
             }
           });

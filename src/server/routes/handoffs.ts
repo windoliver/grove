@@ -10,9 +10,9 @@
  * unauthenticated. See comments below for rationale.
  */
 
-import type { Hono as HonoType } from "hono";
+import type { Context, Hono as HonoType } from "hono";
 import { Hono } from "hono";
-import type { HandoffStatus } from "../../core/handoff.js";
+import type { HandoffStatus, HandoffStore } from "../../core/handoff.js";
 import type { ServerEnv } from "../deps.js";
 
 const handoffs: HonoType<ServerEnv> = new Hono<ServerEnv>();
@@ -32,14 +32,30 @@ handoffs.use("/*", async (c, next) => {
   await next();
 });
 
+/**
+ * Resolve the right handoff store for this request. When `?sessionId=X` is
+ * present and the deps expose a session-scoped factory, build a scoped
+ * store. Otherwise fall back to the process-global store.
+ *
+ * Callers that care about session isolation (remote TUI reads) should
+ * always pass ?sessionId=.
+ */
+function resolveStore(c: Context<ServerEnv>): HandoffStore | undefined {
+  const { handoffStore, handoffStoreForSession } = c.get("deps");
+  const sessionId = c.req.query("sessionId");
+  if (sessionId && handoffStoreForSession) {
+    return handoffStoreForSession(sessionId) ?? handoffStore;
+  }
+  return handoffStore;
+}
+
 /** GET /api/handoffs — List handoffs with optional filters. */
 handoffs.get("/", async (c) => {
-  const { handoffStore } = c.get("deps");
-  // handoffStore is guaranteed by middleware, but TypeScript needs the check
-  if (handoffStore === undefined) return c.json({ error: "unreachable" }, 500);
+  const store = resolveStore(c);
+  if (store === undefined) return c.json({ error: "unreachable" }, 500);
 
   // Expire stale handoffs before listing so callers always see fresh status.
-  await handoffStore.expireStale();
+  await store.expireStale();
 
   const toRole = c.req.query("toRole");
   const fromRole = c.req.query("fromRole");
@@ -48,7 +64,7 @@ handoffs.get("/", async (c) => {
   const limitRaw = c.req.query("limit");
   const limit = limitRaw !== undefined ? Math.min(parseInt(limitRaw, 10) || 50, 200) : 50;
 
-  const results = await handoffStore.list({
+  const results = await store.list({
     ...(toRole !== undefined ? { toRole } : {}),
     ...(fromRole !== undefined ? { fromRole } : {}),
     ...(status !== undefined ? { status } : {}),
@@ -61,10 +77,14 @@ handoffs.get("/", async (c) => {
 
 /** GET /api/handoffs/:id — Get a single handoff. */
 handoffs.get("/:id", async (c) => {
-  const { handoffStore } = c.get("deps");
-  if (handoffStore === undefined) return c.json({ error: "unreachable" }, 500);
+  const store = resolveStore(c);
+  if (store === undefined) return c.json({ error: "unreachable" }, 500);
 
-  const handoff = await handoffStore.get(c.req.param("id"));
+  const id = c.req.param("id");
+  if (id === undefined) {
+    return c.json({ error: { code: "BAD_REQUEST", message: "Missing handoff id" } }, 400);
+  }
+  const handoff = await store.get(id);
   if (handoff === undefined) {
     return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
   }
@@ -93,8 +113,8 @@ handoffs.get("/:id", async (c) => {
  * session-scoped store guards.
  */
 handoffs.post("/:id/delivered", async (c) => {
-  const { handoffStore } = c.get("deps");
-  if (handoffStore === undefined) return c.json({ error: "unreachable" }, 500);
+  const store = resolveStore(c);
+  if (store === undefined) return c.json({ error: "unreachable" }, 500);
 
   const id = c.req.param("id");
   if (id === undefined) {
@@ -102,8 +122,8 @@ handoffs.post("/:id/delivered", async (c) => {
   }
 
   try {
-    await handoffStore.markDelivered(id);
-    const updated = await handoffStore.get(id);
+    await store.markDelivered(id);
+    const updated = await store.get(id);
     if (updated === undefined) {
       return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
     }
