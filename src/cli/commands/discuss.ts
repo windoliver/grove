@@ -113,14 +113,20 @@ export async function executeDiscuss(options: DiscussOptions): Promise<{ cid: st
   let contract: Awaited<ReturnType<typeof parseGroveContract>> | undefined;
   const envSessionId = process.env.GROVE_SESSION_ID;
   if (envSessionId) {
+    // Fail closed: if GROVE_SESSION_ID is set, the session's frozen config
+    // is authoritative. Missing config means either the session doesn't
+    // exist, is corrupt, or predates #198. Falling back to live GROVE.md
+    // would cause silent policy drift and is inconsistent with the other
+    // session-scoped paths (grove contribute, local/runtime, server route).
     const sessionConfig = stores.goalSessionStore.getSessionConfigSync(envSessionId);
-    if (sessionConfig) {
-      contract = sessionConfig;
+    if (!sessionConfig) {
+      throw new Error(
+        `Session ${envSessionId} has no stored config. ` +
+          `Cannot enforce contract for GROVE_SESSION_ID=${envSessionId}.`,
+      );
     }
-    // Session without a stored config is a valid state (CreateSessionInput.config
-    // is optional). Fall through to GROVE.md instead of hard-failing.
-  }
-  if (contract === undefined) {
+    contract = sessionConfig;
+  } else {
     // Load GROVE.md from the grove root (parent of .grove/).
     //
     // ENOENT is the only acceptable fallthrough. Everything else (parse
