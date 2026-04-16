@@ -17,7 +17,12 @@ import { describe, expect, test } from "bun:test";
 import type { GroveContract } from "./contract.js";
 import { PolicyViolationError } from "./errors.js";
 import type { Contribution, Score } from "./models.js";
-import { type ContributionInput, ContributionKind, ContributionMode, RelationType } from "./models.js";
+import {
+  type ContributionInput,
+  ContributionKind,
+  ContributionMode,
+  RelationType,
+} from "./models.js";
 import { PolicyEnforcer } from "./policy-enforcer.js";
 import type { SessionRuntimeConfig } from "./session-config.js";
 import type { ContributionStore } from "./store.js";
