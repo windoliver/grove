@@ -281,15 +281,20 @@ try {
         }
       : undefined;
 
-  // Wire DeadlineWatcher for proactive overdue detection when both
-  // a handoff store and event bus are available.
+  // Wire DeadlineWatcher for proactive overdue detection ONLY when the
+  // handoff store is session-scoped. The local SQLite handoff table is
+  // shared across all sessions in .grove/grove.db (no session_id column),
+  // so expireStale() and watch() there would let session A's timers flip
+  // session B's handoffs. Until the SQLite schema carries session_id, we
+  // gate proactive deadlines off on SQLite. Late replies are still
+  // rejected by markReplied at the store level, so SLA correctness is
+  // preserved — only the push/escalation path is disabled.
   let deadlineWatcher: import("../core/deadline-watcher.js").DeadlineWatcher | undefined;
   const activeHandoffStore = nexusHandoffStore ?? runtime.handoffStore;
-  if (activeHandoffStore !== undefined && eventBus !== undefined) {
+  if (nexusHandoffStore !== undefined && eventBus !== undefined) {
     const { DeadlineWatcher } = await import("../core/deadline-watcher.js");
-    deadlineWatcher = new DeadlineWatcher({ handoffStore: activeHandoffStore, eventBus });
-    process.stderr.write(`grove-mcp: DeadlineWatcher created (handoffStore + eventBus wired)\n`);
-    // Rebuild timers for any unresolved handoffs from previous sessions (best-effort)
+    deadlineWatcher = new DeadlineWatcher({ handoffStore: nexusHandoffStore, eventBus });
+    process.stderr.write(`grove-mcp: DeadlineWatcher created (Nexus session-scoped store)\n`);
     void deadlineWatcher.rebuildFromStore().then((count) => {
       if (count > 0) {
         process.stderr.write(`grove-mcp: DeadlineWatcher rebuilt ${count} timer(s) from store\n`);
@@ -297,6 +302,10 @@ try {
     }).catch(() => {
       /* non-fatal — timers will be registered for new handoffs going forward */
     });
+  } else if (activeHandoffStore !== undefined) {
+    process.stderr.write(
+      `grove-mcp: DeadlineWatcher NOT created (SQLite is not session-scoped; proactive overdue disabled).\n`,
+    );
   }
 
   deps = {

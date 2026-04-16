@@ -70,14 +70,31 @@ export class SqliteHandoffStore implements HandoffStore {
   constructor(db: Database) {
     this.db = db;
     // Column-safe migration: add seen_at/acked_at if missing (pre-#164 databases).
+    //
+    // This runs outside the serialized initSqliteDb transaction, so two
+    // concurrent processes upgrading the same DB can both see the missing
+    // column and race on ALTER TABLE. Catch "duplicate column" errors and
+    // treat them as success — the column exists either way after the race.
     const columns = (
       this.db.prepare("PRAGMA table_info(handoffs)").all() as readonly { name: string }[]
     ).map((c) => c.name);
     if (!columns.includes("seen_at")) {
-      this.db.run("ALTER TABLE handoffs ADD COLUMN seen_at TEXT");
+      this.safeAddColumn("seen_at");
     }
     if (!columns.includes("acked_at")) {
-      this.db.run("ALTER TABLE handoffs ADD COLUMN acked_at TEXT");
+      this.safeAddColumn("acked_at");
+    }
+  }
+
+  private safeAddColumn(column: string): void {
+    try {
+      this.db.run(`ALTER TABLE handoffs ADD COLUMN ${column} TEXT`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // "duplicate column name" — another process added it between our
+      // PRAGMA check and this ALTER. That's expected during concurrent
+      // upgrades; the column exists now either way.
+      if (!/duplicate column/i.test(msg)) throw err;
     }
   }
 

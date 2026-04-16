@@ -162,14 +162,33 @@ export function registerHandoffTools(
         return toolError("NOT_FOUND", `Handoff '${args.handoffId}' not found.`);
       }
 
-      // Authorization: only the target role can mark seen/acked. Without
-      // this check any connected agent could forge receipts for handoffs
-      // addressed to other roles, making SLA/deadline signals untrustworthy.
+      // Authorization: the caller role must match the handoff's toRole,
+      // AND the handoff must belong to the caller's current session.
+      // Without the session check on a non-scoped store (e.g. SQLite where
+      // the handoff table is shared across sessions), a reviewer in session
+      // A could enumerate and ack a reviewer handoff in session B.
       const callerRole = process.env.GROVE_AGENT_ROLE;
       if (callerRole === undefined || callerRole !== handoff.toRole) {
         return toolError(
           "PERMISSION_DENIED",
           `Only the target role '${handoff.toRole}' can acknowledge this handoff (caller role: '${callerRole ?? "unset"}').`,
+        );
+      }
+      // Session ownership check: only valid on stores that implement
+      // listForCurrentSession. If the store cannot enumerate by session
+      // (SQLite with no session_id column), refuse the mutation.
+      if (store.listForCurrentSession === undefined) {
+        return toolError(
+          "NOT_SUPPORTED",
+          "Handoff store does not support session-scoped access; grove_ack_handoff requires a session-scoped backend (e.g. Nexus).",
+        );
+      }
+      const sessionHandoffs = await store.listForCurrentSession({ limit: 1000 });
+      const inSession = sessionHandoffs.some((h) => h.handoffId === args.handoffId);
+      if (!inSession) {
+        return toolError(
+          "PERMISSION_DENIED",
+          `Handoff '${args.handoffId}' does not belong to the current session.`,
         );
       }
 

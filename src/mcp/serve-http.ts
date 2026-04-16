@@ -316,13 +316,14 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     topologyRouter = new TopologyRouter(loadedContract.topology, eventBus);
   }
 
-  // Wire DeadlineWatcher for proactive overdue detection when both
-  // a handoff store and event bus are available.
+  // Wire DeadlineWatcher only for session-scoped stores (Nexus). See
+  // serve.ts for the rationale: SQLite handoffs aren't session-scoped so
+  // cross-session timer bleeding is possible; gate it off here too.
   let deadlineWatcher: import("../core/deadline-watcher.js").DeadlineWatcher | undefined;
   const activeHandoffStore = nexusHandoffStore ?? runtime.handoffStore;
-  if (activeHandoffStore !== undefined && eventBus !== undefined) {
+  if (nexusHandoffStore !== undefined && eventBus !== undefined) {
     const { DeadlineWatcher } = await import("../core/deadline-watcher.js");
-    deadlineWatcher = new DeadlineWatcher({ handoffStore: activeHandoffStore, eventBus });
+    deadlineWatcher = new DeadlineWatcher({ handoffStore: nexusHandoffStore, eventBus });
     void deadlineWatcher.rebuildFromStore().catch(() => {
       /* non-fatal */
     });
