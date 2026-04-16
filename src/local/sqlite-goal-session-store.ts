@@ -174,6 +174,9 @@ function validateStoredContractShape(obj: unknown): string | null {
   }
 
   // agentConstraints.allowedKinds must be array of strings if present.
+  // requiredRelations/requiredArtifacts map kind -> array of strings;
+  // PolicyEnforcer iterates `for (const x of requiredForKind)` so a
+  // non-array value would throw a non-iterable TypeError at enforce time.
   const ac = c.agentConstraints;
   if (isPlainObject(ac)) {
     if (ac.allowedKinds !== undefined) {
@@ -188,8 +191,33 @@ function validateStoredContractShape(obj: unknown): string | null {
     }
     for (const sub of ["requiredRelations", "requiredArtifacts"] as const) {
       const v = ac[sub];
-      if (v !== undefined && !isPlainObject(v)) {
+      if (v === undefined) continue;
+      if (!isPlainObject(v)) {
         return `config_json agentConstraints.${sub} is not an object`;
+      }
+      for (const [kind, list] of Object.entries(v)) {
+        if (!Array.isArray(list)) {
+          return `config_json agentConstraints.${sub}.${kind} is not an array`;
+        }
+        for (let i = 0; i < list.length; i++) {
+          if (typeof list[i] !== "string") {
+            return `config_json agentConstraints.${sub}.${kind}[${i}] is not a string`;
+          }
+        }
+      }
+    }
+  }
+
+  // metrics maps name -> MetricDefinition. evaluateTargetMetric reads
+  // `metricDef.direction` directly; null/primitive values crash it.
+  const metrics = c.metrics;
+  if (isPlainObject(metrics)) {
+    for (const [name, def] of Object.entries(metrics)) {
+      if (!isPlainObject(def)) {
+        return `config_json metrics.${name} is not an object`;
+      }
+      if (def.direction !== "minimize" && def.direction !== "maximize") {
+        return `config_json metrics.${name}.direction must be "minimize" or "maximize"`;
       }
     }
   }
