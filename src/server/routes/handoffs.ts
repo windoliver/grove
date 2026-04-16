@@ -39,6 +39,15 @@ handoffs.use("/*", async (c, next) => {
  *
  * Callers that care about session isolation (remote TUI reads) should
  * always pass ?sessionId=.
+ *
+ * NOTE: `sessionId` is caller-asserted scope, not caller-authenticated
+ * identity. The HTTP surface is documented as unauthenticated and the
+ * deployment trust boundary is localhost-binding (see serve.ts warning
+ * for non-localhost binds). Role-sensitive mutations are NOT exposed on
+ * this surface — they flow through MCP stdio with GROVE_AGENT_ROLE +
+ * session-scoped store guards. The scoping here is a correctness filter
+ * that keeps a well-behaved remote TUI from seeing peer sessions'
+ * handoffs; it is NOT a security boundary against a hostile client.
  */
 function resolveStore(c: Context<ServerEnv>): HandoffStore | undefined {
   const { handoffStore, handoffStoreForSession } = c.get("deps");

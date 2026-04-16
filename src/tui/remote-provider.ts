@@ -676,9 +676,13 @@ export class RemoteDataProvider
   }
 
   async markHandoffDelivered(handoffId: string): Promise<void> {
-    await fetch(`${this.baseUrl}/api/handoffs/${encodeURIComponent(handoffId)}/delivered`, {
-      method: "POST",
-    });
+    const params = new URLSearchParams();
+    if (this.activeSessionId) params.set("sessionId", this.activeSessionId);
+    const qs = params.toString();
+    await fetch(
+      `${this.baseUrl}/api/handoffs/${encodeURIComponent(handoffId)}/delivered${qs ? `?${qs}` : ""}`,
+      { method: "POST" },
+    );
   }
 
   async getHandoffs(
@@ -691,6 +695,7 @@ export class RemoteDataProvider
     if (query?.status)
       params.set("status", Array.isArray(query.status) ? (query.status[0] ?? "") : query.status);
     if (query?.limit) params.set("limit", String(query.limit));
+    if (this.activeSessionId) params.set("sessionId", this.activeSessionId);
     const qs = params.toString();
     const resp = await fetch(`${this.baseUrl}/api/handoffs${qs ? `?${qs}` : ""}`);
     if (!resp.ok) return [];

@@ -216,20 +216,41 @@ export class NexusHandoffStore implements HandoffStore {
   }
 
   async get(handoffId: string): Promise<Handoff | undefined> {
-    // Check session file first, then scan all files
+    // When scoped to a session, only return handoffs from this session's
+    // file (plus the _global file for pre-#164 migration). Scanning every
+    // session file would leak peer sessions' handoffs to scoped callers.
     const { handoffs } = await this.readFile(this.filePath());
     const found = handoffs.find((h) => h.handoffId === handoffId);
     if (found) return found;
 
-    // Fall back: scan all session files (for cross-session lookups)
+    if (this.sessionId !== undefined) {
+      // Migration shim: pre-#164 handoffs were written to _global.json before
+      // per-session file scoping existed. A scoped caller may still need to
+      // resolve those in-flight handoffs after upgrade.
+      const { handoffs: globalHandoffs } = await this.readFile(globalFile(this.zoneId));
+      return globalHandoffs.find((h) => h.handoffId === handoffId);
+    }
+
+    // Unscoped store (CLI/admin) — fall back to scanning every file.
     return this.scanAll((h) => h.handoffId === handoffId);
   }
 
   async list(query?: HandoffQuery): Promise<readonly Handoff[]> {
-    // Always scan all handoff files — readFile fails cross-client (Nexus VFS
-    // doesn't guarantee read-after-write visibility across NexusHttpClient instances).
-    // readAllHandoffs uses directory listing which has broader visibility.
-    const allHandoffs = await this.readAllHandoffs();
+    // When scoped to a session, read only the session's own file plus the
+    // _global migration file. An unscoped store walks the full directory
+    // (CLI / admin path) via readAllHandoffs.
+    let allHandoffs: Handoff[];
+    if (this.sessionId !== undefined) {
+      const [sessionFile, migrationFile] = await Promise.all([
+        this.readFile(this.filePath()),
+        this.readFile(globalFile(this.zoneId)),
+      ]);
+      allHandoffs = [...sessionFile.handoffs, ...migrationFile.handoffs];
+    } else {
+      // Unscoped: directory listing gives cross-client visibility that
+      // readFile doesn't guarantee.
+      allHandoffs = await this.readAllHandoffs();
+    }
     debugLog(
       "nexus-handoff",
       `LIST sessionId=${this.sessionId ?? "none"} path=${this.filePath()} total=${allHandoffs.length}`,
