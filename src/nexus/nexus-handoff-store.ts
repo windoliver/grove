@@ -284,11 +284,14 @@ export class NexusHandoffStore implements HandoffStore {
     const cutoff = now ?? new Date().toISOString();
     const expired: Handoff[] = [];
 
-    // Only scan the current session file for expiry (on-demand sweep)
+    // Expire both pending_pickup AND delivered — Nexus creates handoffs as
+    // delivered by default (see createMany), so restricting to pending_pickup
+    // would leave every deadline-backed Nexus handoff unresolvable forever.
     await this.casUpdate(this.filePath(), (handoffs) =>
       handoffs.map((h) => {
         if (
-          h.status === HandoffStatus.PendingPickup &&
+          (h.status === HandoffStatus.PendingPickup ||
+            h.status === HandoffStatus.Delivered) &&
           h.replyDueAt !== undefined &&
           h.replyDueAt < cutoff
         ) {

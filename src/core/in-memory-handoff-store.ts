@@ -112,7 +112,8 @@ export class InMemoryHandoffStore implements HandoffStore {
 
     for (const [handoffId, handoff] of this.handoffs) {
       if (
-        handoff.status === HandoffStatus.PendingPickup &&
+        (handoff.status === HandoffStatus.PendingPickup ||
+          handoff.status === HandoffStatus.Delivered) &&
         handoff.replyDueAt !== undefined &&
         handoff.replyDueAt < cutoff
       ) {

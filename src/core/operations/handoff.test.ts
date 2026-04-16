@@ -163,6 +163,77 @@ describe("handoff integration", () => {
     expect(updated?.status).toBe(HandoffStatus.Expired);
   });
 
+  test("fan-out: one role's reply does not close peer handoffs for other roles", async () => {
+    const { deps, cleanup } = await createTestOperationDeps();
+    const bus = new LocalEventBus();
+    // coder fans out to reviewer + tester via broadcast mode
+    const fanOutTopology = {
+      structure: "graph" as const,
+      roles: [
+        {
+          name: "coder",
+          mode: "broadcast" as const,
+          edges: [
+            { target: "reviewer", edgeType: "delegates" as const },
+            { target: "tester", edgeType: "delegates" as const },
+          ],
+        },
+        { name: "reviewer", edges: [] },
+        { name: "tester", edges: [] },
+      ],
+    };
+    const depsWithRouter = {
+      ...deps,
+      topologyRouter: new TopologyRouter(fanOutTopology, bus),
+    };
+
+    try {
+      // Coder submits work → fans out to reviewer + tester
+      const workResult = await contributeOperation(
+        {
+          kind: "work",
+          summary: "Implement feature",
+          agent: { agentId: "coder-1", role: "coder" },
+        },
+        depsWithRouter,
+      );
+      expect(workResult.ok).toBe(true);
+      if (!workResult.ok) return;
+
+      const allHandoffs = await deps.handoffStore.list();
+      expect(allHandoffs).toHaveLength(2);
+      const reviewerHandoff = allHandoffs.find((h) => h.toRole === "reviewer");
+      const testerHandoff = allHandoffs.find((h) => h.toRole === "tester");
+      expect(reviewerHandoff).toBeDefined();
+      expect(testerHandoff).toBeDefined();
+
+      // Reviewer replies (tester has NOT acted yet)
+      const reviewResult = await contributeOperation(
+        {
+          kind: "review",
+          summary: "LGTM",
+          scores: { quality: { value: 0.9, direction: "maximize" } },
+          relations: [{ targetCid: workResult.value.cid, relationType: "reviews" }],
+          agent: { agentId: "reviewer-1", role: "reviewer" },
+        },
+        depsWithRouter,
+      );
+      expect(reviewResult.ok).toBe(true);
+
+      // Wait for fire-and-forget reply transition
+      await new Promise((r) => setTimeout(r, 100));
+
+      // reviewer's handoff should be replied; tester's MUST remain unresolved
+      const reviewerAfter = await deps.handoffStore.get(reviewerHandoff!.handoffId);
+      const testerAfter = await deps.handoffStore.get(testerHandoff!.handoffId);
+      expect(reviewerAfter?.status).toBe(HandoffStatus.Replied);
+      expect(testerAfter?.status).not.toBe(HandoffStatus.Replied);
+    } finally {
+      bus.close();
+      await cleanup();
+    }
+  });
+
   test("reply contribution resolves upstream handoff via resolvedByCid (E2E)", async () => {
     const { deps, cleanup } = await createTestOperationDeps();
     const bus = new LocalEventBus();

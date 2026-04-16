@@ -149,6 +149,17 @@ export function registerHandoffTools(server: McpServer, deps: McpDeps): void {
         return toolError("NOT_FOUND", `Handoff '${args.handoffId}' not found.`);
       }
 
+      // Authorization: only the target role can mark seen/acked. Without
+      // this check any connected agent could forge receipts for handoffs
+      // addressed to other roles, making SLA/deadline signals untrustworthy.
+      const callerRole = process.env.GROVE_AGENT_ROLE;
+      if (callerRole === undefined || callerRole !== handoff.toRole) {
+        return toolError(
+          "PERMISSION_DENIED",
+          `Only the target role '${handoff.toRole}' can acknowledge this handoff (caller role: '${callerRole ?? "unset"}').`,
+        );
+      }
+
       if (args.level === "seen") {
         await store.markSeen(args.handoffId);
       } else {

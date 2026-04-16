@@ -299,6 +299,21 @@ export function runHandoffStoreTests(factory: HandoffStoreFactory): void {
       expect(second).toHaveLength(0);
     });
 
+    test("expireStale expires delivered handoffs with past deadline", async () => {
+      const pastDeadline = new Date(Date.now() - 60_000).toISOString();
+      const h = await store.create(
+        makeHandoffInput({ replyDueAt: pastDeadline }),
+      );
+      // Transition to delivered (not pending_pickup)
+      await store.markDelivered(h.handoffId);
+
+      const expired = await store.expireStale();
+      const updated = await store.get(h.handoffId);
+
+      expect(expired.map((e) => e.handoffId)).toContain(h.handoffId);
+      expect(updated?.status).toBe(HandoffStatus.Expired);
+    });
+
     test("expireStale does not expire already-replied handoffs with past deadline", async () => {
       const pastDeadline = new Date(Date.now() - 60_000).toISOString();
       const h = await store.create(

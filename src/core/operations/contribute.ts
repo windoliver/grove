@@ -1167,28 +1167,38 @@ export async function contributeOperation(
           r.relationType === "adopts",
       );
       if (replyRelations.length > 0) {
-        fireAndForget("handoff reply transition", async () => {
-          for (const rel of replyRelations) {
-            try {
-              const unresolved = await deps.handoffStore?.list({
-                sourceCid: rel.targetCid,
-                status: [HandoffStatus.PendingPickup, HandoffStatus.Delivered],
-              });
-              for (const h of unresolved ?? []) {
-                if (process.env.GROVE_DEBUG === "1") {
-                  process.stderr.write(
-                    `[grove:handoff] REPLY handoff=${h.handoffId.slice(0, 8)} resolvedBy=${contribution.cid.slice(0, 20)}.. relation=${rel.relationType}\n`,
-                  );
+        // Only resolve handoffs addressed to the replying role. In fan-out
+        // topologies (coder → [reviewer, tester, auditor]), one downstream
+        // role responding must NOT close peer handoffs for others who haven't
+        // acted yet. Without this scope, Nexus handoffs (created as
+        // `delivered` by default) would all get marked replied by the first
+        // response, silently wiping out outstanding work for other roles.
+        const replyingRole = contribution.agent.role;
+        if (replyingRole !== undefined) {
+          fireAndForget("handoff reply transition", async () => {
+            for (const rel of replyRelations) {
+              try {
+                const unresolved = await deps.handoffStore?.list({
+                  sourceCid: rel.targetCid,
+                  status: [HandoffStatus.PendingPickup, HandoffStatus.Delivered],
+                  toRole: replyingRole,
+                });
+                for (const h of unresolved ?? []) {
+                  if (process.env.GROVE_DEBUG === "1") {
+                    process.stderr.write(
+                      `[grove:handoff] REPLY handoff=${h.handoffId.slice(0, 8)} resolvedBy=${contribution.cid.slice(0, 20)}.. relation=${rel.relationType} role=${replyingRole}\n`,
+                    );
+                  }
+                  await deps.handoffStore?.markReplied(h.handoffId, contribution.cid);
+                  // Cancel deadline timer for resolved handoff
+                  deps.deadlineWatcher?.cancel(h.handoffId);
                 }
-                await deps.handoffStore?.markReplied(h.handoffId, contribution.cid);
-                // Cancel deadline timer for resolved handoff
-                deps.deadlineWatcher?.cancel(h.handoffId);
+              } catch {
+                // Best-effort — don't fail contribution over handoff transition
               }
-            } catch {
-              // Best-effort — don't fail contribution over handoff transition
             }
-          }
-        });
+          });
+        }
       }
     }
 

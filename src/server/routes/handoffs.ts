@@ -9,9 +9,9 @@
  * POST /api/handoffs/:id/acked     — Mark a handoff as acknowledged
  */
 
-import type { Hono as HonoType } from "hono";
+import type { Context, Hono as HonoType } from "hono";
 import { Hono } from "hono";
-import type { HandoffStatus } from "../../core/handoff.js";
+import type { Handoff, HandoffStatus, HandoffStore } from "../../core/handoff.js";
 import type { ServerEnv } from "../deps.js";
 
 const handoffs: HonoType<ServerEnv> = new Hono<ServerEnv>();
@@ -113,10 +113,65 @@ handoffs.post("/:id/replied", async (c) => {
   }
 });
 
+/**
+ * Verify the caller role matches the handoff's toRole before mutating
+ * receipt state. Reads the role from the X-Grove-Role header or a JSON
+ * body field. Returns an error Response if unauthorized; otherwise returns
+ * the handoff for the route handler to use.
+ */
+async function authorizeReceiptMutation(
+  c: Context<ServerEnv>,
+  handoffStore: HandoffStore,
+): Promise<{ ok: true; handoff: Handoff } | { ok: false; response: Response }> {
+  const id = c.req.param("id");
+  if (id === undefined) {
+    return {
+      ok: false,
+      response: c.json({ error: { code: "BAD_REQUEST", message: "Missing handoff id" } }, 400),
+    };
+  }
+  const handoff = await handoffStore.get(id);
+  if (handoff === undefined) {
+    return {
+      ok: false,
+      response: c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404),
+    };
+  }
+  const headerRole = c.req.header("x-grove-role");
+  let bodyRole: string | undefined;
+  try {
+    const body = (await c.req.json<{ role?: string }>().catch(() => undefined)) as
+      | { role?: string }
+      | undefined;
+    bodyRole = body?.role;
+  } catch {
+    // ignore
+  }
+  const callerRole = headerRole ?? bodyRole;
+  if (callerRole === undefined || callerRole !== handoff.toRole) {
+    return {
+      ok: false,
+      response: c.json(
+        {
+          error: {
+            code: "PERMISSION_DENIED",
+            message: `Only the target role '${handoff.toRole}' can acknowledge this handoff (caller role: '${callerRole ?? "unset"}'). Set X-Grove-Role header or include {"role": "..."} in the body.`,
+          },
+        },
+        403,
+      ),
+    };
+  }
+  return { ok: true, handoff };
+}
+
 /** POST /api/handoffs/:id/seen — Record that the target agent has seen this handoff. */
 handoffs.post("/:id/seen", async (c) => {
   const { handoffStore } = c.get("deps");
   if (handoffStore === undefined) return c.json({ error: "unreachable" }, 500);
+
+  const authz = await authorizeReceiptMutation(c, handoffStore);
+  if (!authz.ok) return authz.response;
 
   try {
     await handoffStore.markSeen(c.req.param("id"));
@@ -131,6 +186,9 @@ handoffs.post("/:id/seen", async (c) => {
 handoffs.post("/:id/acked", async (c) => {
   const { handoffStore } = c.get("deps");
   if (handoffStore === undefined) return c.json({ error: "unreachable" }, 500);
+
+  const authz = await authorizeReceiptMutation(c, handoffStore);
+  if (!authz.ok) return authz.response;
 
   try {
     await handoffStore.markAcked(c.req.param("id"));

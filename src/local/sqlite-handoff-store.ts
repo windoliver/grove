@@ -222,16 +222,21 @@ export class SqliteHandoffStore implements HandoffStore {
 
   async expireStale(now?: string): Promise<readonly Handoff[]> {
     const cutoff = now ?? new Date().toISOString();
-    // Use RETURNING to get only the rows that were actually transitioned
-    // (not rows that were already expired from a previous call).
+    // Expire both pending_pickup AND delivered unresolved handoffs with past
+    // deadlines. RETURNING ensures idempotency (only newly-transitioned rows).
     const rows = this.db
       .prepare(
         `UPDATE handoffs
          SET status = ?
-         WHERE status = ? AND reply_due_at IS NOT NULL AND reply_due_at < ?
+         WHERE status IN (?, ?) AND reply_due_at IS NOT NULL AND reply_due_at < ?
          RETURNING ${SELECT_COLS}`,
       )
-      .all(HandoffStatus.Expired, HandoffStatus.PendingPickup, cutoff) as readonly HandoffRow[];
+      .all(
+        HandoffStatus.Expired,
+        HandoffStatus.PendingPickup,
+        HandoffStatus.Delivered,
+        cutoff,
+      ) as readonly HandoffRow[];
     return rows.map(rowToHandoff);
   }
 
