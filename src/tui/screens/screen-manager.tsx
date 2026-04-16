@@ -579,8 +579,9 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         hasSpawnedRef.current = true;
         debugLog("handleLaunchConfirm", `spawning with ${roleMappingFromPreview.size} roles, ${edgeTimeouts.size} edge timeouts`);
 
-        // Apply edge timeouts from TUI into the topology so they're
-        // persisted in the session record and used by the MCP server.
+        // Apply edge timeouts from TUI into the topology. The HTTP server
+        // uses this topology (from the request body) to override config.topology
+        // when creating the session record, so MCP servers pick up the edit.
         if (edgeTimeouts.size > 0 && topology) {
           for (const role of topology.roles) {
             if (role.edges) {
@@ -588,10 +589,8 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
                 const key = `${role.name}:${edge.target}`;
                 const timeout = edgeTimeouts.get(key);
                 if (timeout !== undefined) {
-                  // Mutate in place — topology is owned by this session
                   (edge as { replyTimeoutSeconds?: number }).replyTimeoutSeconds = timeout;
                 } else {
-                  // User removed timeout
                   delete (edge as { replyTimeoutSeconds?: number }).replyTimeoutSeconds;
                 }
               }
@@ -607,7 +606,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         }));
         spawnAgents(state.goal ?? "", roleMappingFromPreview);
       },
-      [state.goal, spawnAgents, topology],
+      [state.goal, spawnAgents, topology, contract],
     );
 
     // Screen 3.5 -> Screen 4: all spawns resolved

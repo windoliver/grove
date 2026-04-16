@@ -138,11 +138,19 @@ sessions.post("/", async (c) => {
     resolvedTopology = resolution.topology;
   }
 
+  // Build config: start from the server's GROVE.md contract, but override
+  // topology with the resolved topology from the request (which may include
+  // TUI-edited edge config like replyTimeoutSeconds). Without this override,
+  // the server's config.topology would silently discard per-session edits.
+  const sessionConfig = resolvedTopology
+    ? { ...contract, topology: resolvedTopology }
+    : contract;
+
   const session = await goalSessionStore.createSession({
     goal: parsed.data.goal,
     presetName,
     topology: resolvedTopology,
-    config: contract,
+    config: sessionConfig,
   });
   return c.json(toSessionResponse(session), 201);
 });
