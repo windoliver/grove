@@ -41,14 +41,14 @@ const STATUS_LABELS: Record<string, string> = {
  * Follows opencode's colored-dot status pattern.
  */
 function receiptLabel(h: Handoff): string {
-  if (h.ackedAt !== undefined) return "\u25CF acked";   // ● solid dot
-  if (h.seenAt !== undefined) return "\u25D0 seen";     // ◐ half dot
-  return "\u25CB unseen";                                // ○ empty dot
+  if (h.ackedAt !== undefined) return "\u25CF acked"; // ● solid dot
+  if (h.seenAt !== undefined) return "\u25D0 seen"; // ◐ half dot
+  return "\u25CB unseen"; // ○ empty dot
 }
 
 /** Deadline state — shows remaining time or overdue indicator. */
 function deadlineLabel(h: Handoff): string {
-  if (h.replyDueAt === undefined) return "\u2014";       // — no deadline
+  if (h.replyDueAt === undefined) return "\u2014"; // — no deadline
   const now = Date.now();
   const deadline = new Date(h.replyDueAt).getTime();
   const diff = deadline - now;
@@ -171,9 +171,7 @@ export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React
               ? `  ${handoffs.length} total, ${pending} pending`
               : "  (no handoffs yet)"}
           </text>
-          {overdueCount > 0 && (
-            <text color={theme.error}>{`  ${overdueCount} overdue`}</text>
-          )}
+          {overdueCount > 0 && <text color={theme.error}>{`  ${overdueCount} overdue`}</text>}
         </box>
         {handoffs.length === 0 ? (
           <text opacity={0.4}>

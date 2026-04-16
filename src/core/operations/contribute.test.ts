@@ -904,8 +904,12 @@ describe("writeSerial: best-effort handoff failure paths", () => {
 
   test("contribution is committed even when handoffStore.createMany throws", async () => {
     const faultyHandoffStore = createMockHandoffStore({
-      create: async () => { throw new Error("should not be called"); },
-      createMany: async () => { throw new Error("simulated handoff store failure"); },
+      create: async () => {
+        throw new Error("should not be called");
+      },
+      createMany: async () => {
+        throw new Error("simulated handoff store failure");
+      },
     });
 
     const deps = makeSerialDeps(faultyHandoffStore);
@@ -933,8 +937,12 @@ describe("writeSerial: best-effort handoff failure paths", () => {
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 
     const faultyHandoffStore = createMockHandoffStore({
-      create: async () => { throw new Error("should not be called"); },
-      createMany: async () => { throw new Error("handoff store down"); },
+      create: async () => {
+        throw new Error("should not be called");
+      },
+      createMany: async () => {
+        throw new Error("handoff store down");
+      },
     });
 
     const deps = makeSerialDeps(faultyHandoffStore);

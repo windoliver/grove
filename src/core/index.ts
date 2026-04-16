@@ -101,6 +101,8 @@ export type {
   Reservation,
   TransferResult,
 } from "./credits.js";
+export type { DeadlineWatcherOpts } from "./deadline-watcher.js";
+export { DeadlineWatcher } from "./deadline-watcher.js";
 export { EnforcingClaimStore, EnforcingContributionStore } from "./enforcing-store.js";
 export {
   ArtifactLimitError,
@@ -111,9 +113,14 @@ export {
   RateLimitError,
   RetryExhaustedError,
 } from "./errors.js";
-export type { DeadlineWatcherOpts } from "./deadline-watcher.js";
-export { DeadlineWatcher } from "./deadline-watcher.js";
 export type { EventBus, EventHandler, GroveEvent, PublishResult } from "./event-bus.js";
+export type {
+  Frontier,
+  FrontierCalculator,
+  FrontierEntry,
+  FrontierQuery,
+} from "./frontier.js";
+export { DefaultFrontierCalculator, getScore } from "./frontier.js";
 export type { Handoff, HandoffInput, HandoffQuery, HandoffStore } from "./handoff.js";
 export {
   canTransition,
@@ -122,13 +129,6 @@ export {
   VALID_TRANSITIONS,
   validateTransition as validateHandoffTransition,
 } from "./handoff.js";
-export type {
-  Frontier,
-  FrontierCalculator,
-  FrontierEntry,
-  FrontierQuery,
-} from "./frontier.js";
-export { DefaultFrontierCalculator, getScore } from "./frontier.js";
 export {
   type HookEntry,
   HookEntrySchema,

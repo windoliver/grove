@@ -354,13 +354,7 @@ export class SqliteHandoffStore implements HandoffStore {
         `UPDATE handoffs SET status = ?${claimSet}
          WHERE handoff_id = ? AND status = ?${scopeExtra}`,
       )
-      .run(
-        HandoffStatus.Processed,
-        ...claimParams,
-        id,
-        HandoffStatus.Delivered,
-        ...scopeParams,
-      );
+      .run(HandoffStatus.Processed, ...claimParams, id, HandoffStatus.Delivered, ...scopeParams);
     if (result.changes === 0) {
       const current = await this.get(id);
       if (current === undefined) {
@@ -491,7 +485,6 @@ export class SqliteHandoffStore implements HandoffStore {
       .get(handoffId, this.sessionId);
     return row !== null;
   }
-
 
   async expireStale(now?: string): Promise<readonly Handoff[]> {
     const cutoff = now ?? new Date().toISOString();

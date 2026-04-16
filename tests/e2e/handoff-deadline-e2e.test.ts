@@ -16,17 +16,16 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
+import { parseGroveContract } from "../../src/core/contract.js";
 import { DeadlineWatcher } from "../../src/core/deadline-watcher.js";
 import type { GroveEvent } from "../../src/core/event-bus.js";
 import { HandoffStatus } from "../../src/core/handoff.js";
 import { LocalEventBus } from "../../src/core/local-event-bus.js";
 import { contributeOperation } from "../../src/core/operations/contribute.js";
 import type { OperationDeps } from "../../src/core/operations/deps.js";
-import { parseGroveContract } from "../../src/core/contract.js";
 import { TopologyRouter } from "../../src/core/topology-router.js";
-import { initSqliteDb, SqliteContributionStore } from "../../src/local/sqlite-store.js";
 import { SqliteHandoffStore } from "../../src/local/sqlite-handoff-store.js";
+import { initSqliteDb, SqliteContributionStore } from "../../src/local/sqlite-store.js";
 
 const CONTRACT_YAML = `---
 contract_version: 3
@@ -181,9 +180,7 @@ describe("handoff deadline E2E", () => {
         kind: "review",
         summary: "LGTM",
         scores: { quality: { value: 0.9, direction: "maximize" } },
-        relations: [
-          { targetCid: workResult.value.cid, relationType: "reviews" },
-        ],
+        relations: [{ targetCid: workResult.value.cid, relationType: "reviews" }],
         agent: { agentId: "reviewer-1", role: "reviewer" },
       },
       deps,
@@ -204,7 +201,7 @@ describe("handoff deadline E2E", () => {
   });
 
   test("overdue handoff emits handoff.overdue event", async () => {
-    const { deps, handoffStore, bus } = await setup();
+    const { handoffStore, bus } = await setup();
 
     // Collect events
     const events: GroveEvent[] = [];

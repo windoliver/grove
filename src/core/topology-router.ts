@@ -65,7 +65,9 @@ export class TopologyRouter {
               target: edge.target,
               edgeType: edge.edgeType,
               ...(edge.workspace !== undefined ? { workspace: edge.workspace } : {}),
-              ...(edge.replyTimeoutSeconds !== undefined ? { replyTimeoutSeconds: edge.replyTimeoutSeconds } : {}),
+              ...(edge.replyTimeoutSeconds !== undefined
+                ? { replyTimeoutSeconds: edge.replyTimeoutSeconds }
+                : {}),
             });
           }
         }

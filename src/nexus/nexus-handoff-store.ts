@@ -14,7 +14,6 @@
 
 import { StateConflictError } from "../core/errors.js";
 import {
-  canTransition,
   type Handoff,
   type HandoffInput,
   type HandoffQuery,
@@ -129,11 +128,7 @@ export class NexusHandoffStore implements HandoffStore {
         //     unconditional-write branch and the later write would overwrite
         //     the earlier one, silently dropping a peer's handoffs.
         const writeOpts = etag ? { ifMatch: etag } : { ifNoneMatch: "*" };
-        const writeResult = await this.client.write(
-          path,
-          encode({ handoffs: updated }),
-          writeOpts,
-        );
+        const writeResult = await this.client.write(path, encode({ handoffs: updated }), writeOpts);
         debugLog(
           "NexusHandoffStore.readModifyWrite",
           `WRITE OK path=${path} etag=${etag || "(empty)"} bytesWritten=${writeResult.bytesWritten} newEtag=${writeResult.etag} count=${updated.length} attempt=${attempt}`,
@@ -223,9 +218,7 @@ export class NexusHandoffStore implements HandoffStore {
     // (see readAllHandoffs), so a handoff written by another client into
     // the same session file could otherwise vanish from get().
     const scopedHandoffs =
-      this.sessionId !== undefined
-        ? await this.readScopedHandoffs()
-        : await this.readAllHandoffs();
+      this.sessionId !== undefined ? await this.readScopedHandoffs() : await this.readAllHandoffs();
     const found = scopedHandoffs.find((h) => h.handoffId === handoffId);
     if (found) return found;
     if (this.sessionId !== undefined) return undefined;
@@ -237,9 +230,7 @@ export class NexusHandoffStore implements HandoffStore {
     // Use the directory-listing path for both scoped and unscoped reads —
     // see get() for why plain readFile() isn't cross-client-visible.
     const allHandoffs =
-      this.sessionId !== undefined
-        ? await this.readScopedHandoffs()
-        : await this.readAllHandoffs();
+      this.sessionId !== undefined ? await this.readScopedHandoffs() : await this.readAllHandoffs();
     debugLog(
       "nexus-handoff",
       `LIST sessionId=${this.sessionId ?? "none"} path=${this.filePath()} total=${allHandoffs.length}`,
@@ -287,8 +278,7 @@ export class NexusHandoffStore implements HandoffStore {
     let deadlineBreached = false;
     await this.updateHandoff(handoffId, (h) => {
       if (
-        (h.status === HandoffStatus.Delivered ||
-          h.status === HandoffStatus.Processed) &&
+        (h.status === HandoffStatus.Delivered || h.status === HandoffStatus.Processed) &&
         h.replyDueAt !== undefined &&
         h.replyDueAt < now
       ) {
@@ -438,9 +428,7 @@ export class NexusHandoffStore implements HandoffStore {
   async listForCurrentSession(query?: HandoffQuery): Promise<readonly Handoff[]> {
     if (this.sessionId === undefined) return [];
     try {
-      let results = (await this.readScopedHandoffs()).filter(
-        (h) => h.handoffId && h.createdAt,
-      );
+      let results = (await this.readScopedHandoffs()).filter((h) => h.handoffId && h.createdAt);
       if (query?.toRole !== undefined) results = results.filter((h) => h.toRole === query.toRole);
       if (query?.fromRole !== undefined)
         results = results.filter((h) => h.fromRole === query.fromRole);
@@ -608,55 +596,6 @@ export class NexusHandoffStore implements HandoffStore {
     }
   }
 
-  /**
-   * Transition a handoff's status with state machine validation.
-   * Rejects the write (no-op) if the current status doesn't allow the transition,
-   * which guards against concurrent writers clobbering each other with stale state.
-   */
-  /**
-   * Transition a handoff's status with state machine validation.
-   *
-   * Reads the current file, checks canTransition, and only writes back
-   * if the transition is valid. Skips the write entirely on no-op to
-   * avoid clobbering concurrent changes with a stale snapshot.
-   */
-  private async transitionHandoff(
-    handoffId: string,
-    targetStatus: HandoffStatus,
-    extraFields?: Partial<Handoff>,
-  ): Promise<void> {
-    await this.ensureDir();
-    const path = this.filePath();
-    const { handoffs } = await this.readFile(path);
-
-    const idx = handoffs.findIndex((h) => h.handoffId === handoffId);
-    if (idx === -1) return; // handoff not in this file
-
-    const current = handoffs[idx];
-    if (!current) return;
-    if (!canTransition(current.status, targetStatus)) {
-      debugLog(
-        "NexusHandoffStore.transitionHandoff",
-        `REJECTED ${handoffId} ${current.status}→${targetStatus} (invalid transition, skipping write)`,
-      );
-      return; // skip write entirely — don't clobber concurrent changes
-    }
-
-    // Valid transition — do the write
-    handoffs[idx] = { ...current, ...extraFields, status: targetStatus };
-    await this.client.write(path, new TextEncoder().encode(JSON.stringify({ handoffs })));
-    this.invalidateCache();
-    debugLog(
-      "NexusHandoffStore.transitionHandoff",
-      `OK ${handoffId} ${current.status}→${targetStatus}`,
-    );
-  }
-
-  private async scanAll(predicate: (h: Handoff) => boolean): Promise<Handoff | undefined> {
-    const all = await this.readAllHandoffs();
-    return all.find(predicate);
-  }
-
   private async readAllHandoffs(): Promise<Handoff[]> {
     // Short TTL cache — invalidated on own-process writes and when callers
     // know external mutation happened (SSE events, cross-client reply).
@@ -667,7 +606,6 @@ export class NexusHandoffStore implements HandoffStore {
     ) {
       return this.allHandoffsCache.data;
     }
-
 
     try {
       const listing = await this.client.list(handoffsDir(this.zoneId));

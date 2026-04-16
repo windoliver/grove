@@ -97,8 +97,7 @@ export class InMemoryHandoffStore implements HandoffStore {
     // can transition to replied per the state machine.
     const now = new Date().toISOString();
     if (
-      (handoff.status === HandoffStatus.Delivered ||
-        handoff.status === HandoffStatus.Processed) &&
+      (handoff.status === HandoffStatus.Delivered || handoff.status === HandoffStatus.Processed) &&
       handoff.replyDueAt !== undefined &&
       handoff.replyDueAt < now
     ) {

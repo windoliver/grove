@@ -415,9 +415,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           try {
             const sessionTopology = sessionTopologyRef.current ?? topology;
             const sessionConfig =
-              contract && sessionTopology
-                ? { ...contract, topology: sessionTopology }
-                : contract;
+              contract && sessionTopology ? { ...contract, topology: sessionTopology } : contract;
             const session = await provider.createSession({
               goal,
               presetName: state.selectedPreset,
@@ -597,7 +595,10 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           return;
         }
         hasSpawnedRef.current = true;
-        debugLog("handleLaunchConfirm", `spawning with ${roleMappingFromPreview.size} roles, ${edgeTimeouts.size} edge timeouts`);
+        debugLog(
+          "handleLaunchConfirm",
+          `spawning with ${roleMappingFromPreview.size} roles, ${edgeTimeouts.size} edge timeouts`,
+        );
 
         // Apply edge timeouts from TUI to a DEEP CLONE of the topology so
         // session-specific edits don't mutate the shared preset object (which
@@ -635,7 +636,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         }));
         spawnAgents(state.goal ?? "", roleMappingFromPreview);
       },
-      [state.goal, spawnAgents, topology, contract],
+      [state.goal, spawnAgents, topology],
     );
 
     // Screen 3.5 -> Screen 4: all spawns resolved

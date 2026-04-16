@@ -55,9 +55,7 @@ export class InvalidTransitionError extends Error {
   readonly toStatus: HandoffStatus;
 
   constructor(handoffId: string, fromStatus: HandoffStatus, toStatus: HandoffStatus) {
-    super(
-      `Invalid handoff transition: '${fromStatus}' → '${toStatus}' for handoff '${handoffId}'`,
-    );
+    super(`Invalid handoff transition: '${fromStatus}' → '${toStatus}' for handoff '${handoffId}'`);
     this.name = "InvalidTransitionError";
     this.handoffId = handoffId;
     this.fromStatus = fromStatus;

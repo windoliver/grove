@@ -377,7 +377,9 @@ export function wireToTopology(wire: z.infer<typeof AgentTopologySchema>): Agent
               target: edge.target,
               edgeType: edge.edge_type,
               ...(edge.workspace !== undefined && { workspace: edge.workspace }),
-              ...(edge.reply_timeout_seconds !== undefined && { replyTimeoutSeconds: edge.reply_timeout_seconds }),
+              ...(edge.reply_timeout_seconds !== undefined && {
+                replyTimeoutSeconds: edge.reply_timeout_seconds,
+              }),
             }),
           ),
         }),

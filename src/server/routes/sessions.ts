@@ -142,9 +142,7 @@ sessions.post("/", async (c) => {
   // topology with the resolved topology from the request (which may include
   // TUI-edited edge config like replyTimeoutSeconds). Without this override,
   // the server's config.topology would silently discard per-session edits.
-  const sessionConfig = resolvedTopology
-    ? { ...contract, topology: resolvedTopology }
-    : contract;
+  const sessionConfig = resolvedTopology ? { ...contract, topology: resolvedTopology } : contract;
 
   const session = await goalSessionStore.createSession({
     goal: parsed.data.goal,

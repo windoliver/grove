@@ -176,7 +176,7 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
                 const parsed = parseInt(timeoutBuffer, 10);
                 for (const edge of edges) {
                   const edgeKey = `${roleName}:${edge.target}`;
-                  if (!isNaN(parsed) && parsed >= 10) {
+                  if (!Number.isNaN(parsed) && parsed >= 10) {
                     setEdgeTimeouts((prev) => {
                       const next = new Map(prev);
                       next.set(edgeKey, parsed);
@@ -264,7 +264,7 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
           // t: edit reply timeout for edges from the selected role
           if (key.name === "t") {
             const role = roles[cursor];
-            if (role && role.edges && role.edges.length > 0) {
+            if (role?.edges && role.edges.length > 0) {
               const firstEdgeKey = `${role.name}:${role.edges[0]?.target}`;
               const current = edgeTimeouts.get(firstEdgeKey);
               setTimeoutBuffer(current !== undefined ? String(current) : "");

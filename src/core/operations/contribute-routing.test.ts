@@ -486,7 +486,15 @@ describe("contributeOperation: plan and ephemeral routing rules", () => {
     const handoffStore = createMockHandoffStore({
       create: async (input: unknown) => {
         handoffCreates.push(input);
-        return { handoffId: "fake-handoff", sourceCid: "", fromRole: "", toRole: "", status: "pending_pickup" as const, requiresReply: false, createdAt: "" };
+        return {
+          handoffId: "fake-handoff",
+          sourceCid: "",
+          fromRole: "",
+          toRole: "",
+          status: "pending_pickup" as const,
+          requiresReply: false,
+          createdAt: "",
+        };
       },
     });
 
@@ -537,7 +545,15 @@ describe("contributeOperation: plan and ephemeral routing rules", () => {
     const handoffStore = createMockHandoffStore({
       create: async (input: unknown) => {
         handoffCreates.push(input);
-        return { handoffId: "fake-handoff", sourceCid: "", fromRole: "", toRole: "", status: "pending_pickup" as const, requiresReply: false, createdAt: "" };
+        return {
+          handoffId: "fake-handoff",
+          sourceCid: "",
+          fromRole: "",
+          toRole: "",
+          status: "pending_pickup" as const,
+          requiresReply: false,
+          createdAt: "",
+        };
       },
     });
 
@@ -583,7 +599,15 @@ describe("contributeOperation: plan and ephemeral routing rules", () => {
     const handoffStore = createMockHandoffStore({
       create: async (input: unknown) => {
         handoffCreates.push(input);
-        return { handoffId: "fake-handoff", sourceCid: "", fromRole: "", toRole: "", status: "pending_pickup" as const, requiresReply: false, createdAt: "" };
+        return {
+          handoffId: "fake-handoff",
+          sourceCid: "",
+          fromRole: "",
+          toRole: "",
+          status: "pending_pickup" as const,
+          requiresReply: false,
+          createdAt: "",
+        };
       },
     });
 
@@ -720,7 +744,15 @@ describe("contributeOperation: plan and ephemeral routing rules", () => {
     const handoffStore = createMockHandoffStore({
       create: async (input: unknown) => {
         handoffCreates.push(input);
-        return { handoffId: "fake-handoff", sourceCid: "", fromRole: "", toRole: "", status: "pending_pickup" as const, requiresReply: false, createdAt: "" };
+        return {
+          handoffId: "fake-handoff",
+          sourceCid: "",
+          fromRole: "",
+          toRole: "",
+          status: "pending_pickup" as const,
+          requiresReply: false,
+          createdAt: "",
+        };
       },
     });
 
@@ -783,7 +815,15 @@ describe("contributeOperation: plan and ephemeral routing rules", () => {
     const handoffStore = createMockHandoffStore({
       create: async (input: unknown) => {
         handoffCreates.push(input);
-        return { handoffId: "fake-handoff", sourceCid: "", fromRole: "", toRole: "", status: "pending_pickup" as const, requiresReply: false, createdAt: "" };
+        return {
+          handoffId: "fake-handoff",
+          sourceCid: "",
+          fromRole: "",
+          toRole: "",
+          status: "pending_pickup" as const,
+          requiresReply: false,
+          createdAt: "",
+        };
       },
     });
 

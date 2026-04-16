@@ -9,7 +9,7 @@
 
 import { fireAndForget } from "../../shared/fire-and-forget.js";
 import { pickDefined } from "../../shared/pick-defined.js";
-import { HandoffStatus, type HandoffInput, type HandoffStore } from "../handoff.js";
+import { type HandoffInput, HandoffStatus, type HandoffStore } from "../handoff.js";
 import { createContribution } from "../manifest.js";
 import {
   ContributionKind as CK,
@@ -708,7 +708,15 @@ async function writeContributionWithHandoffs(
     );
   }
 
-  return writeSerial(contribution, routedTo, agentRole, store, handoffStore, onCommit, replyTimeouts);
+  return writeSerial(
+    contribution,
+    routedTo,
+    agentRole,
+    store,
+    handoffStore,
+    onCommit,
+    replyTimeouts,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -999,7 +1007,9 @@ export async function contributeOperation(
           if (timeoutMap.size > 0) replyTimeouts = timeoutMap;
         }
         if (process.env.GROVE_DEBUG === "1") {
-          const timeoutInfo = replyTimeouts ? [...replyTimeouts.entries()].map(([r, t]) => `${r}=${t}s`).join(", ") : "none";
+          const timeoutInfo = replyTimeouts
+            ? [...replyTimeouts.entries()].map(([r, t]) => `${r}=${t}s`).join(", ")
+            : "none";
           process.stderr.write(
             `[grove:handoff] ROUTE role=${contribution.agent.role} targets=[${routedTo?.join(",")}] deadlines={${timeoutInfo}}\n`,
           );
@@ -1033,11 +1043,11 @@ export async function contributeOperation(
               relationCount: contribution.relations.length,
               createdAt: contribution.createdAt,
             };
-            deps.idempotencyStore?.store(
-              idempotencyCacheLookupKey!,
-              idempotencyFingerprint!,
-              JSON.stringify(earlyResult),
-            );
+            // Guarded above by idempotencyCacheLookupKey/idempotencyFingerprint
+            // both being defined — non-null assertions here are safe.
+            const key = idempotencyCacheLookupKey as string;
+            const fingerprint = idempotencyFingerprint as string;
+            deps.idempotencyStore?.store(key, fingerprint, JSON.stringify(earlyResult));
           }
         : undefined;
 
@@ -1134,7 +1144,11 @@ export async function contributeOperation(
     }
 
     // --- Post-write: register deadline timers for new handoffs ---
-    if (deps.deadlineWatcher !== undefined && handoffIds.length > 0 && deps.handoffStore !== undefined) {
+    if (
+      deps.deadlineWatcher !== undefined &&
+      handoffIds.length > 0 &&
+      deps.handoffStore !== undefined
+    ) {
       fireAndForget("deadline watcher registration", async () => {
         for (const hid of handoffIds) {
           try {
@@ -1204,15 +1218,16 @@ export async function contributeOperation(
                 // Include Processed too: agents following the IPC workflow
                 // (grove_process_handoff before grove_submit_*) leave the
                 // handoff in Processed state.
-                unresolved = (await listFn?.({
-                  sourceCid: rel.targetCid,
-                  status: [
-                    HandoffStatus.PendingPickup,
-                    HandoffStatus.Delivered,
-                    HandoffStatus.Processed,
-                  ],
-                  toRole: replyingRole,
-                })) ?? [];
+                unresolved =
+                  (await listFn?.({
+                    sourceCid: rel.targetCid,
+                    status: [
+                      HandoffStatus.PendingPickup,
+                      HandoffStatus.Delivered,
+                      HandoffStatus.Processed,
+                    ],
+                    toRole: replyingRole,
+                  })) ?? [];
               } catch {
                 // List failure is best-effort; move on to next relation.
                 continue;

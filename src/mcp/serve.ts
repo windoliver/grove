@@ -297,13 +297,16 @@ try {
     deadlineWatcher = new DeadlineWatcher({ handoffStore: activeHandoffStore, eventBus });
     const backend = nexusHandoffStore !== undefined ? "Nexus" : "SQLite";
     process.stderr.write(`grove-mcp: DeadlineWatcher created (${backend} backend)\n`);
-    void deadlineWatcher.rebuildFromStore().then((count) => {
-      if (count > 0) {
-        process.stderr.write(`grove-mcp: DeadlineWatcher rebuilt ${count} timer(s) from store\n`);
-      }
-    }).catch(() => {
-      /* non-fatal — timers will be registered for new handoffs going forward */
-    });
+    void deadlineWatcher
+      .rebuildFromStore()
+      .then((count) => {
+        if (count > 0) {
+          process.stderr.write(`grove-mcp: DeadlineWatcher rebuilt ${count} timer(s) from store\n`);
+        }
+      })
+      .catch(() => {
+        /* non-fatal — timers will be registered for new handoffs going forward */
+      });
   }
 
   deps = {

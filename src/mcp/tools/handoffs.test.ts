@@ -5,8 +5,8 @@
  * Cross-role ack attempts must be rejected with PERMISSION_DENIED.
  */
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { InMemoryHandoffStore } from "../../core/in-memory-handoff-store.js";
 import type { McpDeps } from "../deps.js";
@@ -122,11 +122,10 @@ describe("grove_ack_handoff authorization", () => {
       { capabilities: { tools: {} } },
     );
     registerHandoffTools(httpServer, deps, { includeAckTool: false });
-    const registeredTools = (
-      httpServer as unknown as { _registeredTools: Record<string, unknown> }
-    )._registeredTools;
-    expect(registeredTools["grove_list_handoffs"]).toBeDefined();
-    expect(registeredTools["grove_get_handoff"]).toBeDefined();
-    expect(registeredTools["grove_ack_handoff"]).toBeUndefined();
+    const registeredTools = (httpServer as unknown as { _registeredTools: Record<string, unknown> })
+      ._registeredTools;
+    expect(registeredTools.grove_list_handoffs).toBeDefined();
+    expect(registeredTools.grove_get_handoff).toBeDefined();
+    expect(registeredTools.grove_ack_handoff).toBeUndefined();
   });
 });

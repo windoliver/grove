@@ -336,7 +336,9 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
               sessionStartedAt ?? new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
             setHandoffs(all.filter((h) => h.createdAt >= cutoff));
           })
-          .catch(() => {});
+          .catch(() => {
+            /* handoff refresh errors are non-fatal — the next bus event will retry */
+          });
       };
       for (const role of roles) {
         eventBus.subscribe(role, handler);

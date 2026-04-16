@@ -52,7 +52,7 @@ export class BountyIndexSweep implements SweepStrategy {
 
           if (needsRepair) {
             found++;
-            await this.bountyStore.repairIndex!(bounty.bountyId);
+            await this.bountyStore.repairIndex?.(bounty.bountyId);
             repaired++;
           }
         } catch (err) {

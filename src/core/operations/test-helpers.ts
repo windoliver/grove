@@ -170,11 +170,17 @@ export async function createTestOperationDeps(): Promise<TestOperationDeps> {
  * interface changes (e.g., adding markSeen/markAcked), update this one
  * factory instead of N inline mocks across test files.
  */
-export function createMockHandoffStore(
-  overrides?: Partial<HandoffStore>,
-): HandoffStore {
+export function createMockHandoffStore(overrides?: Partial<HandoffStore>): HandoffStore {
   return {
-    create: async () => ({ handoffId: "mock", sourceCid: "", fromRole: "", toRole: "", status: "pending_pickup" as const, requiresReply: false, createdAt: "" }),
+    create: async () => ({
+      handoffId: "mock",
+      sourceCid: "",
+      fromRole: "",
+      toRole: "",
+      status: "pending_pickup" as const,
+      requiresReply: false,
+      createdAt: "",
+    }),
     get: async () => undefined,
     list: async () => [],
     markDelivered: async () => undefined,

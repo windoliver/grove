@@ -65,7 +65,9 @@ export class DeadlineWatcher {
     const deadlineMs = new Date(handoff.replyDueAt).getTime();
     const delayMs = Math.max(0, deadlineMs - Date.now());
 
-    log(`WATCH handoff=${handoff.handoffId.slice(0, 8)} toRole=${handoff.toRole} delayMs=${delayMs} replyDueAt=${handoff.replyDueAt}`);
+    log(
+      `WATCH handoff=${handoff.handoffId.slice(0, 8)} toRole=${handoff.toRole} delayMs=${delayMs} replyDueAt=${handoff.replyDueAt}`,
+    );
 
     const timer = setTimeout(() => {
       log(`TIMER FIRED handoff=${handoff.handoffId.slice(0, 8)} — checking if still unresolved`);
@@ -116,19 +118,12 @@ export class DeadlineWatcher {
 
     const cutoffDate = new Date(Date.now() - this.maxRebuildAgeMs).toISOString();
     const unresolved = await this.handoffStore.listForCurrentSession({
-      status: [
-        HandoffStatus.PendingPickup,
-        HandoffStatus.Delivered,
-        HandoffStatus.Processed,
-      ],
+      status: [HandoffStatus.PendingPickup, HandoffStatus.Delivered, HandoffStatus.Processed],
     });
 
     let registered = 0;
     for (const h of unresolved) {
-      if (
-        h.replyDueAt !== undefined &&
-        h.createdAt >= cutoffDate
-      ) {
+      if (h.replyDueAt !== undefined && h.createdAt >= cutoffDate) {
         this.watch(h);
         registered++;
       }
@@ -173,7 +168,9 @@ export class DeadlineWatcher {
         handoff.status !== HandoffStatus.Delivered &&
         handoff.status !== HandoffStatus.Processed
       ) {
-        log(`TIMER FIRED handoff=${handoffId.slice(0, 8)} status=${handoff.status} — already resolved, skipping`);
+        log(
+          `TIMER FIRED handoff=${handoffId.slice(0, 8)} status=${handoff.status} — already resolved, skipping`,
+        );
         return;
       }
 
@@ -197,7 +194,9 @@ export class DeadlineWatcher {
       // Emit overdue events for every handoff that just transitioned. Each
       // event targets the handoff's own toRole, not the firing timer's toRole.
       for (const h of expired) {
-        log(`OVERDUE handoff=${h.handoffId.slice(0, 8)} toRole=${h.toRole} — emitting handoff.overdue event`);
+        log(
+          `OVERDUE handoff=${h.handoffId.slice(0, 8)} toRole=${h.toRole} — emitting handoff.overdue event`,
+        );
         this.eventBus.publish({
           type: "handoff.overdue",
           sourceRole: h.fromRole,
@@ -219,10 +218,14 @@ export class DeadlineWatcher {
       // fallback event — that would produce duplicate overdue notifications
       // in multi-watcher/multi-process setups.
       if (expired.length === 0) {
-        log(`TIMER FIRED handoff=${handoffId.slice(0, 8)} — already transitioned by another actor, skipping emit (from/to=${fromRole}/${toRole})`);
+        log(
+          `TIMER FIRED handoff=${handoffId.slice(0, 8)} — already transitioned by another actor, skipping emit (from/to=${fromRole}/${toRole})`,
+        );
       }
     } catch (err) {
-      log(`TIMER ERROR handoff=${handoffId.slice(0, 8)} err=${err instanceof Error ? err.message : String(err)}`);
+      log(
+        `TIMER ERROR handoff=${handoffId.slice(0, 8)} err=${err instanceof Error ? err.message : String(err)}`,
+      );
       // Best-effort — timer callback failures are non-fatal
     }
   }

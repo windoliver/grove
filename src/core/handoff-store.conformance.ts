@@ -254,9 +254,7 @@ export function runHandoffStoreTests(factory: HandoffStoreFactory): void {
 
     test("expireStale marks overdue pending_pickup handoffs as expired", async () => {
       const pastDeadline = new Date(Date.now() - 60_000).toISOString();
-      const h = await store.create(
-        makeHandoffInput({ replyDueAt: pastDeadline }),
-      );
+      const h = await store.create(makeHandoffInput({ replyDueAt: pastDeadline }));
 
       const expired = await store.expireStale();
       const updated = await store.get(h.handoffId);
@@ -277,9 +275,7 @@ export function runHandoffStoreTests(factory: HandoffStoreFactory): void {
 
     test("expireStale does not expire handoffs with future deadline", async () => {
       const futureDeadline = new Date(Date.now() + 600_000).toISOString();
-      const h = await store.create(
-        makeHandoffInput({ replyDueAt: futureDeadline }),
-      );
+      const h = await store.create(makeHandoffInput({ replyDueAt: futureDeadline }));
 
       await store.expireStale();
       const updated = await store.get(h.handoffId);
@@ -301,9 +297,7 @@ export function runHandoffStoreTests(factory: HandoffStoreFactory): void {
 
     test("expireStale expires delivered handoffs with past deadline", async () => {
       const pastDeadline = new Date(Date.now() - 60_000).toISOString();
-      const h = await store.create(
-        makeHandoffInput({ replyDueAt: pastDeadline }),
-      );
+      const h = await store.create(makeHandoffInput({ replyDueAt: pastDeadline }));
       // Transition to delivered (not pending_pickup)
       await store.markDelivered(h.handoffId);
 
@@ -320,9 +314,7 @@ export function runHandoffStoreTests(factory: HandoffStoreFactory): void {
       // deadline passes. (Stores reject late replies via deadline check, so
       // this test exercises the replied-before-deadline path.)
       const futureDeadline = new Date(Date.now() + 60_000).toISOString();
-      const h = await store.create(
-        makeHandoffInput({ replyDueAt: futureDeadline }),
-      );
+      const h = await store.create(makeHandoffInput({ replyDueAt: futureDeadline }));
       await store.markDelivered(h.handoffId);
       await store.markReplied(h.handoffId, "blake3:reply-cid");
 
@@ -335,9 +327,7 @@ export function runHandoffStoreTests(factory: HandoffStoreFactory): void {
 
     test("markReplied rejects late replies (deadline passed)", async () => {
       const pastDeadline = new Date(Date.now() - 60_000).toISOString();
-      const h = await store.create(
-        makeHandoffInput({ replyDueAt: pastDeadline }),
-      );
+      const h = await store.create(makeHandoffInput({ replyDueAt: pastDeadline }));
       // State machine requires delivered before replied — mark delivered
       // first so we exercise the deadline-check path, not the transition check.
       await store.markDelivered(h.handoffId);
@@ -498,9 +488,9 @@ export function runHandoffStoreTests(factory: HandoffStoreFactory): void {
       const h = await store.create(makeHandoffInput({ replyDueAt: pastDeadline }));
       await store.expireStale();
 
-      await expect(
-        store.markReplied(h.handoffId, "blake3:reply"),
-      ).rejects.toThrow(InvalidTransitionError);
+      await expect(store.markReplied(h.handoffId, "blake3:reply")).rejects.toThrow(
+        InvalidTransitionError,
+      );
     });
 
     test("markAcked is atomic under concurrent retries — same timestamp returned", async () => {
@@ -515,10 +505,11 @@ export function runHandoffStoreTests(factory: HandoffStoreFactory): void {
 
       // Subsequent calls must not overwrite
       const originalAckedAt = updated?.ackedAt;
+      expect(originalAckedAt).toBeDefined();
       await new Promise((r) => setTimeout(r, 20));
       await store.markAcked(h.handoffId);
       const after = await store.get(h.handoffId);
-      expect(after?.ackedAt).toBe(originalAckedAt!);
+      expect(after?.ackedAt).toBe(originalAckedAt as string);
     });
 
     test("markReplied on already-replied handoff throws InvalidTransitionError", async () => {
@@ -526,9 +517,9 @@ export function runHandoffStoreTests(factory: HandoffStoreFactory): void {
       await store.markDelivered(h.handoffId);
       await store.markReplied(h.handoffId, "blake3:reply-1");
 
-      await expect(
-        store.markReplied(h.handoffId, "blake3:reply-2"),
-      ).rejects.toThrow(InvalidTransitionError);
+      await expect(store.markReplied(h.handoffId, "blake3:reply-2")).rejects.toThrow(
+        InvalidTransitionError,
+      );
     });
   });
 }
