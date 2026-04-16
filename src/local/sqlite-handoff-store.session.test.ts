@@ -189,7 +189,7 @@ describe("SqliteHandoffStore session scoping", () => {
     db.close();
   });
 
-  test("pre-#164 NULL-session rows are invisible to scoped sessions", async () => {
+  test("pre-#164 NULL-session rows are visible to scoped sessions (migration shim)", async () => {
     const db = initSqliteDb(dbPath);
     // Simulate a legacy row by inserting with session_id=NULL via unscoped store
     const legacy = new SqliteHandoffStore(db);
@@ -199,15 +199,42 @@ describe("SqliteHandoffStore session scoping", () => {
       toRole: "reviewer",
     });
 
-    // A scoped session should NOT see the legacy row — it doesn't belong
-    // to any active session, so attributing it to one would be wrong.
+    // Scoped sessions MUST still see NULL-session rows after upgrade so
+    // in-flight pre-#164 handoffs don't strand the coder→reviewer loop.
     const scoped = new SqliteHandoffStore(db, "new-session");
     const list = await scoped.list();
-    expect(list.find((h) => h.handoffId === hLegacy.handoffId)).toBeUndefined();
+    expect(list.find((h) => h.handoffId === hLegacy.handoffId)).toBeDefined();
 
-    // But the unscoped legacy store can still see it (for CLI/admin paths)
+    // Unscoped stores still see legacy rows (for CLI/admin paths)
     const legacyList = await legacy.list();
     expect(legacyList.find((h) => h.handoffId === hLegacy.handoffId)).toBeDefined();
+
+    db.close();
+  });
+
+  test("legacy NULL-session rows do NOT leak between scoped sessions (only the first resolver wins)", async () => {
+    const db = initSqliteDb(dbPath);
+    // Pre-#164 row with session_id=NULL
+    const legacy = new SqliteHandoffStore(db);
+    const hLegacy = await legacy.create({
+      sourceCid: "blake3:legacy",
+      fromRole: "coder",
+      toRole: "reviewer",
+    });
+
+    // Two scoped sessions both see the legacy row (migration shim)
+    const storeA = new SqliteHandoffStore(db, "session-A");
+    const storeB = new SqliteHandoffStore(db, "session-B");
+
+    const listA = await storeA.list();
+    const listB = await storeB.list();
+    expect(listA.find((h) => h.handoffId === hLegacy.handoffId)).toBeDefined();
+    expect(listB.find((h) => h.handoffId === hLegacy.handoffId)).toBeDefined();
+
+    // Scoped mark* operations work on legacy rows (pending_pickup → delivered)
+    await storeA.markDelivered(hLegacy.handoffId);
+    const afterA = await storeA.get(hLegacy.handoffId);
+    expect(afterA?.status).toBe(HandoffStatus.Delivered);
 
     db.close();
   });

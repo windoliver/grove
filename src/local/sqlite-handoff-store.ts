@@ -132,10 +132,17 @@ export class SqliteHandoffStore implements HandoffStore {
   /**
    * Return a WHERE fragment + params that restrict queries to the current
    * session. Returns empty when the store is unscoped (legacy mode).
+   *
+   * Scoped queries match BOTH `session_id = ?` AND `session_id IS NULL`:
+   * the null branch is a migration shim for rows created before the
+   * session_id column existed. Without it, in-flight handoffs from a
+   * pre-#164 process would become invisible after upgrade and strand
+   * the coder→reviewer loop. Rows written by a scoped store always
+   * have a non-null session_id, so this only affects legacy data.
    */
   private scopeClause(): { sql: string; params: readonly string[] } {
     if (this.sessionId === undefined) return { sql: "", params: [] };
-    return { sql: "session_id = ?", params: [this.sessionId] };
+    return { sql: "(session_id = ? OR session_id IS NULL)", params: [this.sessionId] };
   }
 
   async create(input: HandoffInput): Promise<Handoff> {

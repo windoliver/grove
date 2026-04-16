@@ -357,12 +357,30 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     topologyRouter = new TopologyRouter(loadedContract.topology, eventBus);
   }
 
+  // Build a session-scoped handoff store per request. In Nexus mode, use the
+  // already-scoped nexusHandoffStore. In local mode, construct a fresh
+  // SqliteHandoffStore bound to THIS request's session ID (not the process-
+  // global runtime.handoffStore, which was created at startup before any
+  // session existed and would reuse unscoped mode). Without this, local
+  // HTTP callers would silently bypass session isolation, grove_ack_handoff
+  // would be omitted (isInCurrentSession undefined), and deadline rebuild
+  // would skip.
+  let activeHandoffStore: import("../core/handoff.js").HandoffStore | undefined;
+  if (nexusHandoffStore !== undefined) {
+    activeHandoffStore = nexusHandoffStore;
+  } else if (sessionId !== undefined) {
+    const { SqliteHandoffStore } = await import("../local/sqlite-handoff-store.js");
+    activeHandoffStore = new SqliteHandoffStore(runtime.db, sessionId);
+  } else {
+    // Bootstrap/pre-session: no session to scope to — fall back to unscoped
+    activeHandoffStore = runtime.handoffStore;
+  }
+
   // Wire DeadlineWatcher when any handoff store + event bus are available.
   // Both Nexus and session-scoped SQLite (GROVE_SESSION_ID set) safely
   // support it; unscoped SQLite stores leave listForCurrentSession undefined
   // so rebuildFromStore skips automatically. See serve.ts for more context.
   let deadlineWatcher: import("../core/deadline-watcher.js").DeadlineWatcher | undefined;
-  const activeHandoffStore = nexusHandoffStore ?? runtime.handoffStore;
   if (activeHandoffStore !== undefined && eventBus !== undefined) {
     const { DeadlineWatcher } = await import("../core/deadline-watcher.js");
     deadlineWatcher = new DeadlineWatcher({ handoffStore: activeHandoffStore, eventBus });

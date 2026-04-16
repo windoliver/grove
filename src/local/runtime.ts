@@ -43,6 +43,13 @@ export interface LocalRuntimeOptions {
 
 /** All local stores, services, and resources. */
 export interface LocalRuntime {
+  /**
+   * Raw SQLite database handle. Exposed for callers that need to construct
+   * additional session-scoped store instances after startup (e.g.
+   * serve-http.ts building a per-request SqliteHandoffStore once it has
+   * resolved the current session ID).
+   */
+  readonly db: import("bun:sqlite").Database;
   readonly contributionStore: SqliteContributionStore;
   readonly claimStore: SqliteClaimStore;
   readonly bountyStore: SqliteBountyStore;
@@ -144,6 +151,7 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
   }
 
   return {
+    db: stores.db,
     contributionStore: stores.contributionStore,
     claimStore: stores.claimStore,
     bountyStore: stores.bountyStore,
