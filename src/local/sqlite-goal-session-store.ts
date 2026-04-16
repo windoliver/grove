@@ -436,11 +436,32 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
       .get(sessionId) as { config_json: string | null } | null;
     if (row === null) return { kind: "not-found" };
     if (!row.config_json || row.config_json === "{}") return { kind: "configless" };
+    let parsed: unknown;
     try {
-      return { kind: "ok", config: JSON.parse(row.config_json) as GroveContract };
+      parsed = JSON.parse(row.config_json);
     } catch (err) {
       return { kind: "malformed", reason: err instanceof Error ? err.message : String(err) };
     }
+    // JSON.parse accepts null, primitives, arrays, and shape-invalid objects.
+    // parseGroveContractObject is YAML-shape (snake_case); session storage is
+    // the normalized camelCase GroveContract from prior parseGroveContract calls.
+    // Validate the minimum invariant that downstream consumers rely on: the
+    // value is a plain object with a numeric contractVersion. Anything else is
+    // treated as malformed (fail closed) rather than trusted as "ok" and
+    // crashing later on missing fields.
+    if (
+      parsed === null ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed) ||
+      typeof (parsed as { contractVersion?: unknown }).contractVersion !== "number"
+    ) {
+      return {
+        kind: "malformed",
+        reason:
+          "config_json is not a valid GroveContract (expected object with numeric contractVersion)",
+      };
+    }
+    return { kind: "ok", config: parsed as GroveContract };
   };
 
   /**
