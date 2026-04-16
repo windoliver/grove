@@ -369,8 +369,7 @@ export class NexusHandoffStore implements HandoffStore {
       HandoffStatus.Processed,
     ]);
 
-    // Only scan the current session file for expiry (on-demand sweep)
-    await this.readModifyWrite(this.filePath(), (handoffs) =>
+    const expireIn = (handoffs: Handoff[]): Handoff[] =>
       handoffs.map((h) => {
         if (
           expirableStatuses.has(h.status) &&
@@ -382,8 +381,17 @@ export class NexusHandoffStore implements HandoffStore {
           return updated;
         }
         return h;
-      }),
-    );
+      });
+
+    // Sweep the session's own file
+    await this.readModifyWrite(this.filePath(), expireIn);
+
+    // Migration shim: also sweep _global for pre-#164 legacy rows when
+    // scoped. The readModifyWrite on _global claims the row atomically —
+    // if a peer session races us, only the winner mutates.
+    if (this.sessionId !== undefined) {
+      await this.readModifyWrite(globalFile(this.zoneId), expireIn);
+    }
 
     return expired;
   }
@@ -398,12 +406,19 @@ export class NexusHandoffStore implements HandoffStore {
    * read of the session file) vs. listForCurrentSession's bounded-scan
    * pattern. Returns false when there is no active sessionId (global
    * fallback) since global handoffs can't be attributed to a session.
+   *
+   * Also accepts pre-#164 legacy rows stored in _global.json so the
+   * receipt tools (grove_ack_handoff, grove_process_handoff) can resolve
+   * in-flight handoffs after upgrade — list()/get() already honor the
+   * same migration shim.
    */
   async isInCurrentSession(handoffId: string): Promise<boolean> {
     if (this.sessionId === undefined) return false;
     try {
       const { handoffs } = await this.readFile(this.filePath());
-      return handoffs.some((h) => h.handoffId === handoffId);
+      if (handoffs.some((h) => h.handoffId === handoffId)) return true;
+      const { handoffs: legacy } = await this.readFile(globalFile(this.zoneId));
+      return legacy.some((h) => h.handoffId === handoffId);
     } catch {
       return false;
     }
@@ -426,14 +441,26 @@ export class NexusHandoffStore implements HandoffStore {
   async listForCurrentSession(query?: HandoffQuery): Promise<readonly Handoff[]> {
     if (this.sessionId === undefined) return [];
     const sessionPath = this.filePath();
-    // Scan all handoff files (same visibility path as list()) and filter to
-    // the current session's file.
     try {
       const listing = await this.client.list(handoffsDir(this.zoneId));
-      const file = listing.files.find((f) => !f.isDirectory && f.path === sessionPath);
-      if (!file) return [];
-      const { handoffs } = await this.readFile(file.path);
-      let results = handoffs.filter((h) => h.handoffId && h.createdAt);
+      // Include the session's own file plus the _global migration file so
+      // DeadlineWatcher.rebuildFromStore re-arms timers for pre-#164 rows
+      // and auto-reply resolution in contribute.ts can resolve them.
+      const globalPath = globalFile(this.zoneId);
+      const pickable = listing.files.filter(
+        (f) => !f.isDirectory && (f.path === sessionPath || f.path === globalPath),
+      );
+      const perFile = await Promise.all(
+        pickable.map(async (f) => {
+          try {
+            const { handoffs } = await this.readFile(f.path);
+            return handoffs;
+          } catch {
+            return [] as Handoff[];
+          }
+        }),
+      );
+      let results = perFile.flat().filter((h) => h.handoffId && h.createdAt);
       if (query?.toRole !== undefined) results = results.filter((h) => h.toRole === query.toRole);
       if (query?.fromRole !== undefined)
         results = results.filter((h) => h.fromRole === query.fromRole);
@@ -476,6 +503,23 @@ export class NexusHandoffStore implements HandoffStore {
         return h;
       }),
     );
+
+    if (!found && this.sessionId !== undefined) {
+      // Migration shim: scoped stores can also mutate pre-#164 rows that
+      // live in _global.json. Without this, grove_ack_handoff /
+      // grove_process_handoff / markReplied would reject legacy handoffs
+      // that isInCurrentSession / list() surface via the same shim.
+      await this.readModifyWrite(globalFile(this.zoneId), (handoffs) =>
+        handoffs.map((h) => {
+          if (h.handoffId === handoffId) {
+            found = true;
+            return fn(h);
+          }
+          return h;
+        }),
+      );
+    }
+
     if (!found) {
       // Matches the InMemory/SQLite contract — mark* on a missing handoff is
       // a NotFoundError, not a silent no-op.

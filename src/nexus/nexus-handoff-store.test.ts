@@ -147,6 +147,62 @@ describe("NexusHandoffStore: Nexus-specific behavior", () => {
     }
   });
 
+  test("scoped isInCurrentSession accepts pre-#164 _global rows", async () => {
+    const client = new MockNexusClient();
+    const legacy = new NexusHandoffStore(client, undefined, "default");
+    const scoped = new NexusHandoffStore(client, "new-session", "default");
+    try {
+      const hLegacy = await legacy.create({
+        sourceCid: "blake3:legacy",
+        fromRole: "coder",
+        toRole: "reviewer",
+      });
+      expect(await scoped.isInCurrentSession(hLegacy.handoffId)).toBe(true);
+    } finally {
+      legacy.close();
+      scoped.close();
+    }
+  });
+
+  test("scoped listForCurrentSession includes pre-#164 _global rows (watcher rebuild)", async () => {
+    const client = new MockNexusClient();
+    const legacy = new NexusHandoffStore(client, undefined, "default");
+    const scoped = new NexusHandoffStore(client, "new-session", "default");
+    try {
+      await legacy.create({
+        sourceCid: "blake3:legacy",
+        fromRole: "coder",
+        toRole: "reviewer",
+        requiresReply: true,
+        replyDueAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+      const listed = await scoped.listForCurrentSession();
+      expect(listed.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      legacy.close();
+      scoped.close();
+    }
+  });
+
+  test("scoped markAcked can mutate pre-#164 _global rows", async () => {
+    const client = new MockNexusClient();
+    const legacy = new NexusHandoffStore(client, undefined, "default");
+    const scoped = new NexusHandoffStore(client, "new-session", "default");
+    try {
+      const hLegacy = await legacy.create({
+        sourceCid: "blake3:legacy",
+        fromRole: "coder",
+        toRole: "reviewer",
+      });
+      await scoped.markAcked(hLegacy.handoffId);
+      const after = await scoped.get(hLegacy.handoffId);
+      expect(after?.ackedAt).toBeDefined();
+    } finally {
+      legacy.close();
+      scoped.close();
+    }
+  });
+
   test("store without sessionId uses _global.json", async () => {
     const client = new MockNexusClient();
     const store = new NexusHandoffStore(client, undefined, "default");

@@ -145,6 +145,22 @@ export class SqliteHandoffStore implements HandoffStore {
     return { sql: "(session_id = ? OR session_id IS NULL)", params: [this.sessionId] };
   }
 
+  /**
+   * Claim-on-write SET fragment — backfills `session_id` on the first
+   * successful mutation of a legacy NULL-session row so peer sessions
+   * lose visibility via scopeClause. No-op for unscoped stores.
+   *
+   * Callers splice `fragment` into SET immediately after their first
+   * SET expression and `params` before the WHERE params.
+   */
+  private claimFragment(): { fragment: string; params: readonly string[] } {
+    if (this.sessionId === undefined) return { fragment: "", params: [] };
+    return {
+      fragment: ", session_id = COALESCE(session_id, ?)",
+      params: [this.sessionId],
+    };
+  }
+
   async create(input: HandoffInput): Promise<Handoff> {
     const handoffId = this.insertSync(input);
     const handoff = await this.get(handoffId);
@@ -247,12 +263,19 @@ export class SqliteHandoffStore implements HandoffStore {
   async markDelivered(id: string): Promise<void> {
     const { sql: scopeSql, params: scopeParams } = this.scopeClause();
     const scopeExtra = scopeSql ? ` AND ${scopeSql}` : "";
+    const { fragment: claimSet, params: claimParams } = this.claimFragment();
     const result = this.db
       .prepare(
-        `UPDATE handoffs SET status = ?
+        `UPDATE handoffs SET status = ?${claimSet}
          WHERE handoff_id = ? AND status = ?${scopeExtra}`,
       )
-      .run(HandoffStatus.Delivered, id, HandoffStatus.PendingPickup, ...scopeParams);
+      .run(
+        HandoffStatus.Delivered,
+        ...claimParams,
+        id,
+        HandoffStatus.PendingPickup,
+        ...scopeParams,
+      );
     if (result.changes === 0) {
       const current = await this.get(id);
       if (current === undefined) {
@@ -269,18 +292,20 @@ export class SqliteHandoffStore implements HandoffStore {
     const now = new Date().toISOString();
     const { sql: scopeSql, params: scopeParams } = this.scopeClause();
     const scopeExtra = scopeSql ? ` AND ${scopeSql}` : "";
+    const { fragment: claimSet, params: claimParams } = this.claimFragment();
     // Valid transitions: delivered → replied, processed → replied.
     // pending_pickup → replied is NOT allowed — callers must markDelivered
     // first. The state machine enforces the IPC ack invariant.
     const result = this.db
       .prepare(
-        `UPDATE handoffs SET status = ?, resolved_by_cid = ?
+        `UPDATE handoffs SET status = ?, resolved_by_cid = ?${claimSet}
          WHERE handoff_id = ? AND status IN (?, ?)
            AND (reply_due_at IS NULL OR reply_due_at >= ?)${scopeExtra}`,
       )
       .run(
         HandoffStatus.Replied,
         resolvedByCid,
+        ...claimParams,
         id,
         HandoffStatus.Delivered,
         HandoffStatus.Processed,
@@ -300,11 +325,12 @@ export class SqliteHandoffStore implements HandoffStore {
       ) {
         this.db
           .prepare(
-            `UPDATE handoffs SET status = ?
+            `UPDATE handoffs SET status = ?${claimSet}
              WHERE handoff_id = ? AND status IN (?, ?)${scopeExtra}`,
           )
           .run(
             HandoffStatus.Expired,
+            ...claimParams,
             id,
             HandoffStatus.Delivered,
             HandoffStatus.Processed,
@@ -322,12 +348,19 @@ export class SqliteHandoffStore implements HandoffStore {
   async markProcessed(id: string): Promise<void> {
     const { sql: scopeSql, params: scopeParams } = this.scopeClause();
     const scopeExtra = scopeSql ? ` AND ${scopeSql}` : "";
+    const { fragment: claimSet, params: claimParams } = this.claimFragment();
     const result = this.db
       .prepare(
-        `UPDATE handoffs SET status = ?
+        `UPDATE handoffs SET status = ?${claimSet}
          WHERE handoff_id = ? AND status = ?${scopeExtra}`,
       )
-      .run(HandoffStatus.Processed, id, HandoffStatus.Delivered, ...scopeParams);
+      .run(
+        HandoffStatus.Processed,
+        ...claimParams,
+        id,
+        HandoffStatus.Delivered,
+        ...scopeParams,
+      );
     if (result.changes === 0) {
       const current = await this.get(id);
       if (current === undefined) {
@@ -343,13 +376,15 @@ export class SqliteHandoffStore implements HandoffStore {
   async markDeadLettered(id: string): Promise<void> {
     const { sql: scopeSql, params: scopeParams } = this.scopeClause();
     const scopeExtra = scopeSql ? ` AND ${scopeSql}` : "";
+    const { fragment: claimSet, params: claimParams } = this.claimFragment();
     const result = this.db
       .prepare(
-        `UPDATE handoffs SET status = ?
+        `UPDATE handoffs SET status = ?${claimSet}
          WHERE handoff_id = ? AND status IN (?, ?)${scopeExtra}`,
       )
       .run(
         HandoffStatus.DeadLettered,
+        ...claimParams,
         id,
         HandoffStatus.PendingPickup,
         HandoffStatus.Delivered,
@@ -372,12 +407,13 @@ export class SqliteHandoffStore implements HandoffStore {
     // scoped store only mutates its own session's rows.
     const { sql: scopeSql, params: scopeParams } = this.scopeClause();
     const scopeExtra = scopeSql ? ` AND ${scopeSql}` : "";
+    const { fragment: claimSet, params: claimParams } = this.claimFragment();
     const result = this.db
       .prepare(
-        `UPDATE handoffs SET ipc_message_id = ?
+        `UPDATE handoffs SET ipc_message_id = ?${claimSet}
          WHERE handoff_id = ?${scopeExtra}`,
       )
-      .run(ipcMessageId, id, ...scopeParams);
+      .run(ipcMessageId, ...claimParams, id, ...scopeParams);
     if (result.changes === 0) {
       const current = await this.get(id);
       if (current === undefined) {
@@ -389,12 +425,13 @@ export class SqliteHandoffStore implements HandoffStore {
   async markSeen(id: string): Promise<void> {
     const { sql: scopeSql, params: scopeParams } = this.scopeClause();
     const scopeExtra = scopeSql ? ` AND ${scopeSql}` : "";
+    const { fragment: claimSet, params: claimParams } = this.claimFragment();
     const result = this.db
       .prepare(
-        `UPDATE handoffs SET seen_at = ?
+        `UPDATE handoffs SET seen_at = ?${claimSet}
          WHERE handoff_id = ? AND seen_at IS NULL${scopeExtra}`,
       )
-      .run(new Date().toISOString(), id, ...scopeParams);
+      .run(new Date().toISOString(), ...claimParams, id, ...scopeParams);
     if (result.changes === 0) {
       const current = await this.get(id);
       if (current === undefined) {
@@ -408,13 +445,14 @@ export class SqliteHandoffStore implements HandoffStore {
     const now = new Date().toISOString();
     const { sql: scopeSql, params: scopeParams } = this.scopeClause();
     const scopeExtra = scopeSql ? ` AND ${scopeSql}` : "";
+    const { fragment: claimSet, params: claimParams } = this.claimFragment();
     const result = this.db
       .prepare(
         `UPDATE handoffs
-         SET acked_at = ?, seen_at = COALESCE(seen_at, ?)
+         SET acked_at = ?, seen_at = COALESCE(seen_at, ?)${claimSet}
          WHERE handoff_id = ? AND acked_at IS NULL${scopeExtra}`,
       )
-      .run(now, now, id, ...scopeParams);
+      .run(now, now, ...claimParams, id, ...scopeParams);
     if (result.changes === 0) {
       const current = await this.get(id);
       if (current === undefined) {
@@ -463,16 +501,18 @@ export class SqliteHandoffStore implements HandoffStore {
     // transitioned rows).
     const { sql: scopeSql, params: scopeParams } = this.scopeClause();
     const scopeExtra = scopeSql ? ` AND ${scopeSql}` : "";
+    const { fragment: claimSet, params: claimParams } = this.claimFragment();
     const rows = this.db
       .prepare(
         `UPDATE handoffs
-         SET status = ?
+         SET status = ?${claimSet}
          WHERE status IN (?, ?, ?)
            AND reply_due_at IS NOT NULL AND reply_due_at < ?${scopeExtra}
          RETURNING ${SELECT_COLS}`,
       )
       .all(
         HandoffStatus.Expired,
+        ...claimParams,
         HandoffStatus.PendingPickup,
         HandoffStatus.Delivered,
         HandoffStatus.Processed,

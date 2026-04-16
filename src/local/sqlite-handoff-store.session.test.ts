@@ -256,4 +256,62 @@ describe("SqliteHandoffStore session scoping", () => {
 
     db.close();
   });
+
+  test("first scoped mutation claims a legacy row — peer session cannot mutate after", async () => {
+    const db = initSqliteDb(dbPath);
+    const legacy = new SqliteHandoffStore(db);
+    const hLegacy = await legacy.create({
+      sourceCid: "blake3:legacy",
+      fromRole: "coder",
+      toRole: "reviewer",
+    });
+
+    const storeA = new SqliteHandoffStore(db, "session-A");
+    const storeB = new SqliteHandoffStore(db, "session-B");
+
+    // Session A claims via markDelivered — backfills session_id = session-A
+    await storeA.markDelivered(hLegacy.handoffId);
+
+    // Session B's scope clause no longer matches: the row now owns session-A,
+    // so list / get / isInCurrentSession all stop resolving it from B.
+    const listB = await storeB.list();
+    expect(listB.find((h) => h.handoffId === hLegacy.handoffId)).toBeUndefined();
+    expect(await storeB.get(hLegacy.handoffId)).toBeUndefined();
+    expect(await storeB.isInCurrentSession?.(hLegacy.handoffId)).toBe(false);
+
+    // Session B's mutations throw NotFoundError — the row is owned by A
+    await expect(storeB.markProcessed(hLegacy.handoffId)).rejects.toThrow();
+    await expect(storeB.markReplied(hLegacy.handoffId, "blake3:r")).rejects.toThrow();
+
+    // Session A can still complete the lifecycle
+    await storeA.markProcessed(hLegacy.handoffId);
+    const afterA = await storeA.get(hLegacy.handoffId);
+    expect(afterA?.status).toBe(HandoffStatus.Processed);
+
+    db.close();
+  });
+
+  test("expireStale claims legacy row on first fire — peer session cannot re-expire", async () => {
+    const db = initSqliteDb(dbPath);
+    const legacy = new SqliteHandoffStore(db);
+    const pastDeadline = new Date(Date.now() - 60_000).toISOString();
+    const hLegacy = await legacy.create({
+      sourceCid: "blake3:legacy",
+      fromRole: "coder",
+      toRole: "reviewer",
+      replyDueAt: pastDeadline,
+    });
+
+    const storeA = new SqliteHandoffStore(db, "session-A");
+    const storeB = new SqliteHandoffStore(db, "session-B");
+
+    const expiredByA = await storeA.expireStale();
+    expect(expiredByA.map((h) => h.handoffId)).toEqual([hLegacy.handoffId]);
+
+    // Row now owns session-A; session B's scoped expireStale is a no-op.
+    const expiredByB = await storeB.expireStale();
+    expect(expiredByB).toHaveLength(0);
+
+    db.close();
+  });
 });
