@@ -108,25 +108,26 @@ export async function executeDiscuss(options: DiscussOptions): Promise<{ cid: st
   const frontier = new DefaultFrontierCalculator(stores.contributionStore);
 
   // Load contract for enforcement and mode resolution.
-  // Session-scoped: when GROVE_SESSION_ID is set, load the frozen contract
-  // from the session record to guarantee all agents see the same config.
+  //
+  // Config resolution precedence:
+  //   1. session.config (frozen snapshot from #198) when GROVE_SESSION_ID is set
+  //      and the session has a stored config — use it, skip GROVE.md entirely.
+  //   2. Live GROVE.md — used when no session, or when session exists but
+  //      has no stored config (configless sessions are valid: orchestrator
+  //      calls createSession with config=undefined when GROVE.md is absent;
+  //      legacy pre-#198 sessions also lack config).
+  //   3. No enforcement — neither session config nor GROVE.md available.
+  //
+  // Falling back to GROVE.md on missing session config preserves pre-PR
+  // behavior for configless sessions. This is a compat case, not silent
+  // drift — the only path where drift matters (session with config) takes
+  // precedence and never falls through.
   let contract: Awaited<ReturnType<typeof parseGroveContract>> | undefined;
   const envSessionId = process.env.GROVE_SESSION_ID;
   if (envSessionId) {
-    // Fail closed: if GROVE_SESSION_ID is set, the session's frozen config
-    // is authoritative. Missing config means either the session doesn't
-    // exist, is corrupt, or predates #198. Falling back to live GROVE.md
-    // would cause silent policy drift and is inconsistent with the other
-    // session-scoped paths (grove contribute, local/runtime, server route).
-    const sessionConfig = stores.goalSessionStore.getSessionConfigSync(envSessionId);
-    if (!sessionConfig) {
-      throw new Error(
-        `Session ${envSessionId} has no stored config. ` +
-          `Cannot enforce contract for GROVE_SESSION_ID=${envSessionId}.`,
-      );
-    }
-    contract = sessionConfig;
-  } else {
+    contract = stores.goalSessionStore.getSessionConfigSync(envSessionId);
+  }
+  if (contract === undefined) {
     // Load GROVE.md from the grove root (parent of .grove/).
     //
     // ENOENT is the only acceptable fallthrough. Everything else (parse
