@@ -1188,9 +1188,17 @@ export async function contributeOperation(
           fireAndForget("handoff reply transition", async () => {
             for (const rel of replyRelations) {
               try {
+                // Include Processed too: agents following the IPC workflow
+                // (grove_process_handoff before grove_submit_*) leave the
+                // handoff in Processed state. Without this, their valid
+                // replies would never auto-resolve the handoff.
                 const unresolved = await deps.handoffStore?.list({
                   sourceCid: rel.targetCid,
-                  status: [HandoffStatus.PendingPickup, HandoffStatus.Delivered],
+                  status: [
+                    HandoffStatus.PendingPickup,
+                    HandoffStatus.Delivered,
+                    HandoffStatus.Processed,
+                  ],
                   toRole: replyingRole,
                 });
                 for (const h of unresolved ?? []) {

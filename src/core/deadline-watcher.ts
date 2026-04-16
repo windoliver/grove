@@ -94,8 +94,9 @@ export class DeadlineWatcher {
   /**
    * Rebuild timers from the store on process startup.
    *
-   * Scans for unresolved handoffs (pending_pickup or delivered) with
-   * future deadlines created within the max rebuild age window.
+   * Scans for unresolved handoffs (pending_pickup, delivered, processed)
+   * with future deadlines created within the max rebuild age window.
+   * Processed handoffs are still deadline-backed until they reply.
    */
   async rebuildFromStore(): Promise<number> {
     // Rebuild requires session-scoped enumeration. Stores that don't
@@ -115,7 +116,11 @@ export class DeadlineWatcher {
 
     const cutoffDate = new Date(Date.now() - this.maxRebuildAgeMs).toISOString();
     const unresolved = await this.handoffStore.listForCurrentSession({
-      status: [HandoffStatus.PendingPickup, HandoffStatus.Delivered],
+      status: [
+        HandoffStatus.PendingPickup,
+        HandoffStatus.Delivered,
+        HandoffStatus.Processed,
+      ],
     });
 
     let registered = 0;
@@ -160,10 +165,13 @@ export class DeadlineWatcher {
       const handoff = await this.handoffStore.get(handoffId);
       if (handoff === undefined) return;
 
-      // Only transition and emit overdue if still unresolved
+      // Only transition and emit overdue if still unresolved. Processed
+      // handoffs are still SLA-deadline-backed (agent started work but
+      // hasn't replied yet), so they must fire overdue events too.
       if (
         handoff.status !== HandoffStatus.PendingPickup &&
-        handoff.status !== HandoffStatus.Delivered
+        handoff.status !== HandoffStatus.Delivered &&
+        handoff.status !== HandoffStatus.Processed
       ) {
         log(`TIMER FIRED handoff=${handoffId.slice(0, 8)} status=${handoff.status} — already resolved, skipping`);
         return;

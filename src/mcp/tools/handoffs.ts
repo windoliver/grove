@@ -207,6 +207,15 @@ export function registerHandoffTools(
     },
   );
 
+  // grove_process_handoff and grove_ack_handoff both mutate per-session
+  // receipt state, so they share the same safety gates:
+  //   - includeAckTool=false disables them on the shared HTTP transport
+  //     (one process role is shared across clients there).
+  //   - A session-scoped backend (isInCurrentSession present) is required
+  //     so cross-session IDs can be rejected.
+  if (!includeAck) return;
+  if (deps.handoffStore?.isInCurrentSession === undefined) return;
+
   server.registerTool(
     "grove_process_handoff",
     {
@@ -224,6 +233,30 @@ export function registerHandoffTools(
       const handoff = await store.get(args.handoffId);
       if (handoff === undefined) {
         return toolError("NOT_FOUND", `Handoff '${args.handoffId}' not found.`);
+      }
+
+      // Authorization: only the target role can mark processed. Handoff IDs
+      // are discoverable via read tools, so without this check any agent in
+      // the session could forge "processed" signals for peer handoffs.
+      const callerRole = process.env.GROVE_AGENT_ROLE;
+      if (callerRole === undefined || callerRole !== handoff.toRole) {
+        return toolError(
+          "PERMISSION_DENIED",
+          `Only the target role '${handoff.toRole}' can mark this handoff processed (caller role: '${callerRole ?? "unset"}').`,
+        );
+      }
+      if (store.isInCurrentSession === undefined) {
+        return toolError(
+          "NOT_SUPPORTED",
+          "Handoff store does not support session-scoped access.",
+        );
+      }
+      const inSession = await store.isInCurrentSession(args.handoffId);
+      if (!inSession) {
+        return toolError(
+          "PERMISSION_DENIED",
+          `Handoff '${args.handoffId}' does not belong to the current session.`,
+        );
       }
 
       if (!canTransition(handoff.status, HandoffStatus.Processed)) {
@@ -250,12 +283,6 @@ export function registerHandoffTools(
       };
     },
   );
-
-  // grove_ack_handoff (receipt tracking): gated on session-scoped transports
-  // AND session-scoped store backends. See opts.includeAckTool and
-  // isInCurrentSession rationale above.
-  if (!includeAck) return;
-  if (deps.handoffStore?.isInCurrentSession === undefined) return;
 
   server.registerTool(
     "grove_ack_handoff",
