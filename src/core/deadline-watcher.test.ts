@@ -159,6 +159,27 @@ describe("DeadlineWatcher", () => {
     expect(events[0]?.type).toBe("handoff.overdue");
   });
 
+  test("late reply is rejected after timer fires (expiry flush)", async () => {
+    const h = await store.create({
+      sourceCid: "blake3:test",
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+      replyDueAt: new Date(Date.now() + 50).toISOString(),
+    });
+
+    watcher.watch(h);
+
+    // Wait for timer to fire and expire the handoff
+    await new Promise((r) => setTimeout(r, 200));
+
+    const afterExpiry = await store.get(h.handoffId);
+    expect(afterExpiry?.status).toBe(HandoffStatus.Expired);
+
+    // Late reply attempt must be rejected because the handoff is now expired
+    await expect(store.markReplied(h.handoffId, "blake3:reply-cid")).rejects.toThrow();
+  });
+
   // ------------------------------------------------------------------
   // rebuildFromStore
   // ------------------------------------------------------------------

@@ -140,6 +140,13 @@ try {
 interface ScopedDeps {
   readonly deps: McpDeps;
   readonly sessionId: string | undefined;
+  /**
+   * Cleanup for scoped per-session resources (DeadlineWatcher timers,
+   * scoped EventBus, etc.). Must be invoked on cache eviction and session
+   * invalidation/reap so timers cannot outlive their session and emit
+   * cross-session overdue events.
+   */
+  readonly close: () => void;
 }
 
 /**
@@ -340,7 +347,12 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     idempotencyStore: runtime.idempotencyStore,
     ...(deadlineWatcher ? { deadlineWatcher } : {}),
   };
-  return { deps, sessionId };
+  const close = () => {
+    deadlineWatcher?.close();
+    // eventBus is shared with the TUI/other surfaces for Nexus-backed IPC,
+    // so don't close it here — only per-scope resources.
+  };
+  return { deps, sessionId, close };
 }
 
 async function resolveDeps(): Promise<ScopedDeps> {
@@ -385,6 +397,15 @@ async function resolveDeps(): Promise<ScopedDeps> {
   const cached = depsCache.get(key);
   if (cached) return cached;
   // A new session id invalidates the entire cache so we never mix scopes.
+  // Close each evicted entry's scoped resources (timers, watchers) so
+  // they cannot outlive the session they were bound to.
+  for (const prev of depsCache.values()) {
+    try {
+      prev.close();
+    } catch {
+      // best-effort
+    }
+  }
   depsCache.clear();
   const scoped = await buildScopedDeps(sessionId);
   depsCache.set(key, scoped);

@@ -160,11 +160,23 @@ export class DeadlineWatcher {
       const handoff = await this.handoffStore.get(handoffId);
       if (handoff === undefined) return;
 
-      // Only emit overdue if still in an unresolved state
+      // Only transition and emit overdue if still unresolved
       if (
         handoff.status === HandoffStatus.PendingPickup ||
         handoff.status === HandoffStatus.Delivered
       ) {
+        // Flush expiry first: without this, a late reply arriving after the
+        // timer fires but before expireStale() runs would still succeed via
+        // markReplied() (since the stored status is still delivered/pending),
+        // retroactively "satisfying" a missed SLA. Calling expireStale() now
+        // atomically flips eligible handoffs to expired, so markReplied will
+        // throw InvalidTransitionError against an expired handoff.
+        try {
+          await this.handoffStore.expireStale();
+        } catch {
+          // best-effort — fall through to emit even if expiry failed
+        }
+
         log(`OVERDUE handoff=${handoffId.slice(0, 8)} status=${handoff.status} toRole=${toRole} — emitting handoff.overdue event`);
         this.eventBus.publish({
           type: "handoff.overdue",
