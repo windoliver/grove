@@ -125,6 +125,44 @@ try {
   process.exit(1);
 }
 
+// --- Background sweep reconciler ------------------------------------------
+// Runs at process level using the zone-level bounty store (Nexus when
+// available, local SQLite otherwise). Not session-scoped — index repair
+// and settlement recovery are zone-wide concerns.
+
+import { BountyIndexSweep } from "../core/bounty-index-sweep.js";
+import { SettlementSweep } from "../core/settlement-sweep.js";
+import { SweepReconciler } from "../core/sweep-reconciler.js";
+
+let httpSweepReconciler: SweepReconciler | undefined;
+{
+  // Build a zone-level bounty store for the reconciler. In Nexus mode this
+  // is a NexusBountyStore scoped to the zone (not session). In local mode
+  // it's the local SQLite bounty store from the runtime.
+  let reconcilerBountyStore: import("../core/bounty-store.js").BountyStore = runtime.bountyStore;
+  if (nexusClient) {
+    const { NexusBountyStore } = await import("../nexus/nexus-bounty-store.js");
+    reconcilerBountyStore = new NexusBountyStore({ client: nexusClient, zoneId });
+  }
+
+  httpSweepReconciler = new SweepReconciler({
+    intervalMs: 60_000,
+    onCycle(results) {
+      for (const r of results) {
+        if (r.found > 0 || r.errors.length > 0) {
+          process.stderr.write(
+            `[sweep] ${r.strategy}: found=${r.found} repaired=${r.repaired} errors=${r.errors.length}\n`,
+          );
+        }
+      }
+    },
+  });
+  httpSweepReconciler.register(new BountyIndexSweep(reconcilerBountyStore));
+  httpSweepReconciler.register(new SettlementSweep(reconcilerBountyStore));
+  httpSweepReconciler.start();
+  process.stderr.write("grove-mcp-http: sweep-reconciler started\n");
+}
+
 // --- Dynamic session-scoped deps --------------------------------------------
 //
 // The HTTP MCP server is spawned before any interactive session exists, so we
@@ -308,7 +346,10 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
   if (loadedContract?.topology) {
     if (nexusClient) {
       const { NexusEventBus } = await import("../nexus/nexus-event-bus.js");
-      eventBus = new NexusEventBus(nexusClient, zoneId);
+      const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
+      const apiKey = process.env.NEXUS_API_KEY;
+      const ipcClient = nexusUrl && apiKey ? new NexusIpcClient({ nexusUrl, apiKey }) : undefined;
+      eventBus = new NexusEventBus(ipcClient);
     } else {
       const { LocalEventBus } = await import("../core/local-event-bus.js");
       eventBus = new LocalEventBus();
@@ -703,6 +744,7 @@ httpServer.listen(port, () => {
 
 // Graceful shutdown
 const shutdown = async (): Promise<void> => {
+  httpSweepReconciler?.stop();
   clearInterval(reapTimer);
   // Close all active sessions
   for (const [, session] of sessions) {

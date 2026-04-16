@@ -1,8 +1,12 @@
 export const HandoffStatus = {
   PendingPickup: "pending_pickup",
   Delivered: "delivered",
+  /** Agent acknowledged receipt and is processing the handoff. */
+  Processed: "processed",
   Replied: "replied",
   Expired: "expired",
+  /** IPC delivery failed after retries — requires operator attention. */
+  DeadLettered: "dead_lettered",
 } as const;
 
 export type HandoffStatus = (typeof HandoffStatus)[keyof typeof HandoffStatus];
@@ -10,18 +14,36 @@ export type HandoffStatus = (typeof HandoffStatus)[keyof typeof HandoffStatus];
 /**
  * Valid status transitions for handoffs.
  *
- * pending_pickup → delivered → replied
- * pending_pickup → replied (direct reply without explicit delivery marking)
- * pending_pickup → expired
- * delivered → expired
+ * Happy path:  pending_pickup → delivered → processed → replied
+ *              pending_pickup → delivered → replied (skip processed)
+ * IPC failure: pending_pickup → dead_lettered
+ *              delivered → dead_lettered
+ * TTL expiry:  pending_pickup → expired
+ *              delivered → expired
+ *              processed → expired
  *
- * Terminal states (replied, expired) cannot transition further.
+ * pending_pickup → replied is NOT allowed: a reply must acknowledge delivery
+ * first. Callers that want to atomically deliver-and-reply should call
+ * markDelivered() then markReplied().
+ *
+ * Terminal states (replied, expired, dead_lettered) cannot transition further.
  */
 export const VALID_TRANSITIONS: Readonly<Record<HandoffStatus, readonly HandoffStatus[]>> = {
-  [HandoffStatus.PendingPickup]: [HandoffStatus.Delivered, HandoffStatus.Replied, HandoffStatus.Expired],
-  [HandoffStatus.Delivered]: [HandoffStatus.Replied, HandoffStatus.Expired],
+  [HandoffStatus.PendingPickup]: [
+    HandoffStatus.Delivered,
+    HandoffStatus.Expired,
+    HandoffStatus.DeadLettered,
+  ],
+  [HandoffStatus.Delivered]: [
+    HandoffStatus.Processed,
+    HandoffStatus.Replied,
+    HandoffStatus.Expired,
+    HandoffStatus.DeadLettered,
+  ],
+  [HandoffStatus.Processed]: [HandoffStatus.Replied, HandoffStatus.Expired],
   [HandoffStatus.Replied]: [],
   [HandoffStatus.Expired]: [],
+  [HandoffStatus.DeadLettered]: [],
 };
 
 /**
@@ -57,6 +79,18 @@ export function validateTransition(
   }
 }
 
+/**
+ * Check whether a status transition is valid (boolean form).
+ *
+ * Returns true if `from → to` is a legal transition. Returns false for
+ * invalid transitions and self-loops. Used by callers that want a
+ * predicate without the throw-on-error semantics of validateTransition.
+ */
+export function canTransition(from: HandoffStatus, to: HandoffStatus): boolean {
+  if (from === to) return false;
+  return VALID_TRANSITIONS[from]?.includes(to) ?? false;
+}
+
 export interface Handoff {
   readonly handoffId: string;
   readonly sourceCid: string;
@@ -71,6 +105,8 @@ export interface Handoff {
   /** ISO 8601 timestamp when the target agent acknowledged intent to act. */
   readonly ackedAt?: string | undefined;
   readonly createdAt: string;
+  /** Nexus IPC message ID — set when the handoff is relayed via IPC. */
+  readonly ipcMessageId?: string | undefined;
 }
 
 export interface HandoffInput {
@@ -109,7 +145,13 @@ export interface HandoffStore {
   get(id: string): Promise<Handoff | undefined>;
   list(query?: HandoffQuery): Promise<readonly Handoff[]>;
   markDelivered(id: string): Promise<void>;
+  /** Mark a handoff as processed (agent acknowledged and is acting on it). */
+  markProcessed(id: string): Promise<void>;
   markReplied(id: string, resolvedByCid: string): Promise<void>;
+  /** Mark a handoff as dead-lettered (IPC delivery failed after retries). */
+  markDeadLettered(id: string): Promise<void>;
+  /** Set the IPC message ID on a handoff (called after IPC relay succeeds). */
+  setIpcMessageId?(id: string, ipcMessageId: string): Promise<void>;
   /**
    * Record that the target agent has seen this handoff.
    * Sets seenAt if not already set. No-op if already seen.
@@ -131,7 +173,7 @@ export interface HandoffStore {
    * server for session A could re-arm timers for session B's handoffs
    * and emit cross-session overdue events.
    *
-   * Returning an empty array signals "session scoping is not supported on
+   * Absence of the method signals "session scoping is not supported on
    * this backend" — callers (DeadlineWatcher rebuild, grove_ack_handoff
    * authorization) use that as a signal to disable features that require
    * it.
@@ -144,9 +186,8 @@ export interface HandoffStore {
    * (which is bounded in memory and unusable for sessions with many
    * handoffs).
    *
-   * Must return false when the backend cannot answer the question (e.g.
-   * SQLite today has no session_id column). Absence of the method means
-   * the backend does not support session-scoped receipt mutations at all.
+   * Absence of the method means the backend does not support session-
+   * scoped receipt mutations at all.
    */
   isInCurrentSession?(handoffId: string): Promise<boolean>;
   close(): void;

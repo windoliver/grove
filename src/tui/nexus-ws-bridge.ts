@@ -15,7 +15,10 @@
 
 import type { AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { EventBus, GroveEvent } from "../core/event-bus.js";
+import type { HandoffStore } from "../core/handoff.js";
 import type { AgentTopology } from "../core/topology.js";
+import type { NexusIpcClient } from "../nexus/nexus-ipc-client.js";
+import { debugLog } from "./debug-log.js";
 
 export interface NexusWsBridgeOptions {
   topology: AgentTopology;
@@ -26,6 +29,10 @@ export interface NexusWsBridgeOptions {
   eventBus?: EventBus | undefined;
   /** Called before delivering IPC to an agent — use for workspace rsync. */
   onBeforeDeliver?: ((sender: string, recipient: string) => void) | undefined;
+  /** HandoffStore for updating delivery status on SSE events. */
+  handoffStore?: HandoffStore | undefined;
+  /** Shared IPC client — replaces inline fetch when provided. */
+  ipcClient?: NexusIpcClient | undefined;
 }
 
 interface SseEvent {
@@ -79,6 +86,12 @@ export class NexusWsBridge {
     recipient: string,
     payload: Record<string, unknown>,
   ): Promise<boolean> {
+    // Use shared NexusIpcClient when available (5A: DRY)
+    if (this.opts.ipcClient) {
+      const result = await this.opts.ipcClient.send(sender, recipient, payload);
+      return result.ok;
+    }
+    // Fallback: direct fetch (backward compat when ipcClient not injected)
     try {
       const resp = await fetch(`${this.opts.nexusUrl}/api/v2/ipc/send`, {
         method: "POST",
@@ -177,15 +190,10 @@ export class NexusWsBridge {
       if (eventType !== "message_delivered") return;
 
       const event = JSON.parse(raw) as SseEvent;
-      try {
-        const { appendFileSync } = require("node:fs") as typeof import("node:fs");
-        appendFileSync(
-          "/tmp/grove-debug.log",
-          `[${new Date().toISOString()}] [wsBridge.handleEvent] role=${role} sender=${event.sender} path=${event.path} registeredSessions=[${[...this.sessions.keys()].join(",")}]\n`,
-        );
-      } catch {
-        /* */
-      }
+      debugLog(
+        "wsBridge.handleEvent",
+        `role=${role} sender=${event.sender} path=${event.path} registeredSessions=[${[...this.sessions.keys()].join(",")}]`,
+      );
 
       // Notify the TUI EventBus — triggers contribution feed refresh (no polling needed)
       if (this.opts.eventBus) {
@@ -196,20 +204,19 @@ export class NexusWsBridge {
           payload: { message_id: event.message_id },
           timestamp: new Date().toISOString(),
         };
-        this.opts.eventBus.publish(groveEvent);
+        void this.opts.eventBus.publish(groveEvent);
+      }
+
+      // --- IPC lifecycle: mark matching handoff as delivered ---
+      // The message_delivered SSE confirms Nexus inbox delivery.
+      // Find the handoff by IPC message ID and transition its status.
+      if (this.opts.handoffStore && event.message_id) {
+        void this.updateHandoffDeliveryStatus(event.message_id, role, event.sender);
       }
 
       const session = this.sessions.get(role);
       if (!session) {
-        try {
-          const { appendFileSync } = require("node:fs") as typeof import("node:fs");
-          appendFileSync(
-            "/tmp/grove-debug.log",
-            `[${new Date().toISOString()}] [wsBridge.handleEvent] NO SESSION for role=${role} — cannot deliver\n`,
-          );
-        } catch {
-          /* */
-        }
+        debugLog("wsBridge.handleEvent", `NO SESSION for role=${role} — cannot deliver`);
         return;
       }
 
@@ -222,6 +229,68 @@ export class NexusWsBridge {
       void this.readAndPush(event.path, role, session, event.sender);
     } catch {
       // Skip malformed events
+    }
+  }
+
+  /**
+   * Update handoff delivery status when an IPC message_delivered SSE event arrives.
+   *
+   * Correlates by ipcMessageId first, then falls back to matching by
+   * (toRole, status=pending_pickup) for the most recent undelivered handoff.
+   * The fallback handles the race where message_delivered arrives before
+   * the fire-and-forget setIpcMessageId() in contribute.ts completes.
+   *
+   * Best-effort — handoff store errors don't block delivery.
+   */
+  private async updateHandoffDeliveryStatus(
+    ipcMessageId: string,
+    targetRole: string,
+    sender?: string,
+  ): Promise<void> {
+    try {
+      const store = this.opts.handoffStore;
+      if (!store) return;
+
+      const handoffs = await store.list({ toRole: targetRole });
+
+      // Primary: match by IPC message ID (exact correlation)
+      let matching = handoffs.find((h) => h.ipcMessageId === ipcMessageId);
+
+      // Fallback: match most recent pending handoff for this role FROM the
+      // same sender. Constrains by sender to avoid cross-matching handoffs
+      // from different source roles. The SSE event carries the sender field.
+      if (!matching && sender) {
+        matching = handoffs
+          .filter(
+            (h) =>
+              h.fromRole === sender &&
+              (h.status === "pending_pickup" || h.status === "delivered") &&
+              !h.ipcMessageId, // only match handoffs that haven't been IPC-linked yet
+          )
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+      }
+
+      if (matching) {
+        await store.markDelivered(matching.handoffId);
+        debugLog(
+          "wsBridge.updateHandoffDeliveryStatus",
+          `DELIVERED handoffId=${matching.handoffId} ipcMessageId=${ipcMessageId} role=${targetRole}`,
+        );
+
+        // Invalidate cache if the store supports it (NexusHandoffStore)
+        const cacheable = store as { invalidateCache?: () => void };
+        cacheable.invalidateCache?.();
+      } else {
+        debugLog(
+          "wsBridge.updateHandoffDeliveryStatus",
+          `NO MATCH ipcMessageId=${ipcMessageId} role=${targetRole} handoffCount=${handoffs.length}`,
+        );
+      }
+    } catch (err) {
+      debugLog(
+        "wsBridge.updateHandoffDeliveryStatus",
+        `FAIL ipcMessageId=${ipcMessageId} err=${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -253,29 +322,16 @@ export class NexusWsBridge {
         await new Promise((r) => setTimeout(r, 2000 * 2 ** attempt));
       }
       if (!resp || !resp.ok) {
-        try {
-          const { appendFileSync } = require("node:fs") as typeof import("node:fs");
-          appendFileSync(
-            "/tmp/grove-debug.log",
-            `[${new Date().toISOString()}] [wsBridge.readAndPush] FAIL resp.status=${resp?.status ?? "none"} path=${path}\n`,
-          );
-        } catch {
-          /* */
-        }
+        debugLog("wsBridge.readAndPush", `FAIL resp.status=${resp?.status ?? "none"} path=${path}`);
         return;
       }
 
       const result = (await resp.json()) as { result?: { data?: string }; error?: unknown };
       if (!result.result?.data) {
-        try {
-          const { appendFileSync } = require("node:fs") as typeof import("node:fs");
-          appendFileSync(
-            "/tmp/grove-debug.log",
-            `[${new Date().toISOString()}] [wsBridge.readAndPush] NO DATA path=${path} error=${JSON.stringify(result.error ?? "none").slice(0, 100)}\n`,
-          );
-        } catch {
-          /* */
-        }
+        debugLog(
+          "wsBridge.readAndPush",
+          `NO DATA path=${path} error=${JSON.stringify(result.error ?? "none").slice(0, 100)}`,
+        );
         return;
       }
 
@@ -292,15 +348,10 @@ export class NexusWsBridge {
         (msg.payload?.body as string) ??
         JSON.stringify(msg.payload ?? {}).slice(0, 100);
       const notification = `[IPC from ${msgSender}] ${summary}`;
-      try {
-        const { appendFileSync } = require("node:fs") as typeof import("node:fs");
-        appendFileSync(
-          "/tmp/grove-debug.log",
-          `[${new Date().toISOString()}] [wsBridge.readAndPush] delivering to session=${session.id} role=${_targetRole} notification=${notification.slice(0, 80)}\n`,
-        );
-      } catch {
-        /* */
-      }
+      debugLog(
+        "wsBridge.readAndPush",
+        `delivering to session=${session.id} role=${_targetRole} notification=${notification.slice(0, 80)}`,
+      );
 
       void this.opts.runtime.send(session, notification).catch(() => {
         /* non-fatal */

@@ -1,8 +1,9 @@
 /**
  * Event bus abstraction for agent communication.
  *
- * Two implementations:
- * - LocalEventBus: Node.js EventEmitter for single-machine setups
+ * Three implementations:
+ * - LocalEventBus: Node.js EventEmitter for single-machine setups (tests/local)
+ * - NexusEventBus: Relays events via Nexus IPC API, returns message IDs
  * - Future: RedisEventBus, NatsEventBus for federated setups
  */
 
@@ -25,13 +26,23 @@ export interface GroveEvent {
   readonly timestamp: string;
 }
 
+/** Result of publishing an event. */
+export interface PublishResult {
+  readonly ok: boolean;
+  /** IPC message ID — present when the event was relayed via Nexus IPC. */
+  readonly messageId?: string | undefined;
+  readonly error?: string | undefined;
+  /** True when failure is infrastructure (404, connection refused), not delivery rejection. */
+  readonly infrastructureError?: boolean | undefined;
+}
+
 /** Callback for event subscriptions. */
 export type EventHandler = (event: GroveEvent) => void;
 
 /** Event bus for ephemeral agent notifications. */
 export interface EventBus {
-  /** Publish an event. */
-  publish(event: GroveEvent): void;
+  /** Publish an event. Returns delivery result with optional IPC message ID. */
+  publish(event: GroveEvent): Promise<PublishResult>;
   /** Subscribe to events for a specific role. */
   subscribe(role: string, handler: EventHandler): void;
   /** Unsubscribe a handler. */

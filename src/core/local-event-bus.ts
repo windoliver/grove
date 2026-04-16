@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { EventBus, EventHandler, GroveEvent } from "./event-bus.js";
+import type { EventBus, EventHandler, GroveEvent, PublishResult } from "./event-bus.js";
 
 /**
  * Local event bus using Node.js EventEmitter.
@@ -14,7 +14,7 @@ export class LocalEventBus implements EventBus {
     this.emitter.setMaxListeners(100);
   }
 
-  publish(event: GroveEvent): void {
+  async publish(event: GroveEvent): Promise<PublishResult> {
     // Wrap each listener in try/catch so one crashed subscriber doesn't break others
     const channel = `role:${event.targetRole}`;
     for (const listener of this.emitter.listeners(channel)) {
@@ -26,6 +26,7 @@ export class LocalEventBus implements EventBus {
         );
       }
     }
+    return { ok: true };
   }
 
   subscribe(role: string, handler: EventHandler): void {

@@ -113,9 +113,10 @@ export {
 } from "./errors.js";
 export type { DeadlineWatcherOpts } from "./deadline-watcher.js";
 export { DeadlineWatcher } from "./deadline-watcher.js";
-export type { EventBus, EventHandler, GroveEvent } from "./event-bus.js";
+export type { EventBus, EventHandler, GroveEvent, PublishResult } from "./event-bus.js";
 export type { Handoff, HandoffInput, HandoffQuery, HandoffStore } from "./handoff.js";
 export {
+  canTransition,
   HandoffStatus,
   InvalidTransitionError,
   VALID_TRANSITIONS,
@@ -231,6 +232,7 @@ export { SubprocessRuntime } from "./subprocess-runtime.js";
 export { toUtcIso } from "./time.js";
 export { TmuxRuntime } from "./tmux-runtime.js";
 export { resolveTopology } from "./topology-resolver.js";
+export type { RouteResult } from "./topology-router.js";
 export { TopologyRouter } from "./topology-router.js";
 export type {
   CheckoutOptions,

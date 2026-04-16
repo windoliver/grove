@@ -1,15 +1,21 @@
 /**
  * MCP tools for querying and interacting with handoff coordination records.
  *
- * grove_list_handoffs — List handoffs, optionally filtered by role or status.
- * grove_get_handoff   — Get a single handoff by ID.
- * grove_ack_handoff   — Signal that the target agent has seen or acknowledged a handoff.
+ * grove_list_handoffs     — List handoffs, optionally filtered by role or status.
+ * grove_get_handoff       — Get a single handoff by ID.
+ * grove_list_dead_letters — List handoffs that failed IPC delivery (DLQ).
+ * grove_process_handoff   — Mark a delivered handoff as processed (agent ack'd receipt).
+ * grove_ack_handoff       — Record a seen/acked receipt timestamp on a handoff.
  */
 
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { HandoffStatus, type HandoffStore } from "../../core/handoff.js";
+import {
+  canTransition,
+  HandoffStatus,
+  type HandoffStore,
+} from "../../core/handoff.js";
 import type { McpDeps } from "../deps.js";
 import { toolError } from "../error-handler.js";
 
@@ -45,8 +51,10 @@ const listHandoffsInputSchema = z.object({
     .enum([
       HandoffStatus.PendingPickup,
       HandoffStatus.Delivered,
+      HandoffStatus.Processed,
       HandoffStatus.Replied,
       HandoffStatus.Expired,
+      HandoffStatus.DeadLettered,
     ])
     .optional()
     .describe(
@@ -80,6 +88,28 @@ const ackHandoffInputSchema = z.object({
     ),
 });
 
+const processHandoffInputSchema = z.object({
+  handoffId: z.string().min(1).describe("ID of the handoff to mark as processed."),
+});
+
+const listDeadLettersInputSchema = z.object({
+  toRole: z
+    .string()
+    .optional()
+    .describe("Filter dead-lettered handoffs by target role. Omit to list all."),
+  fromRole: z
+    .string()
+    .optional()
+    .describe("Filter dead-lettered handoffs by originating role. Omit to list all."),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .max(200)
+    .optional()
+    .describe("Maximum number of dead-lettered handoffs to return. Defaults to 50."),
+});
+
 /**
  * Register handoff tools. `includeAckTool` gates the receipt mutation tool
  * (grove_ack_handoff), which is unsafe on shared transports because it
@@ -92,11 +122,12 @@ export function registerHandoffTools(
   opts?: { readonly includeAckTool?: boolean },
 ): void {
   const includeAck = opts?.includeAckTool !== false;
+
   server.registerTool(
     "grove_list_handoffs",
     {
       description:
-        "List topology routing handoffs. Use this to discover work that has been routed to your role (status=pending_pickup), or to check what you have routed to downstream roles. Call expireStale implicitly (fresh status is always returned).",
+        "List topology routing handoffs with IPC delivery state. Use this to discover work routed to your role (status=pending_pickup), check what you have routed downstream, or monitor delivery status (delivered, processed, dead_lettered). Stale handoffs are expired automatically before listing.",
       inputSchema: listHandoffsInputSchema,
     },
     async (args) => {
@@ -143,14 +174,87 @@ export function registerHandoffTools(
     },
   );
 
-  if (!includeAck) return;
+  server.registerTool(
+    "grove_list_dead_letters",
+    {
+      description:
+        "List handoffs that failed IPC delivery after retries (dead letter queue). " +
+        "These represent routing failures that may require operator attention — " +
+        "the source contribution was committed but the target agent was never notified. " +
+        "Use this to diagnose delivery gaps in topology-driven routing.",
+      inputSchema: listDeadLettersInputSchema,
+    },
+    async (args) => {
+      const guard = requireHandoffStore(deps);
+      if (!guard.ok) return guard.error;
+      const { store } = guard;
 
-  // grove_ack_handoff requires a session-scoped backend. Without the
-  // isInCurrentSession capability, we cannot reliably tell whether a
-  // caller owns the handoff they're acking (SQLite today shares the
-  // handoffs table across sessions — a reviewer in session A could ack
-  // session B's handoffs). Register the tool only when the active store
-  // can answer the ownership question.
+      const handoffs = await store.list({
+        toRole: args.toRole,
+        fromRole: args.fromRole,
+        status: HandoffStatus.DeadLettered,
+        limit: args.limit ?? 50,
+      });
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ count: handoffs.length, handoffs }),
+          },
+        ],
+      };
+    },
+  );
+
+  server.registerTool(
+    "grove_process_handoff",
+    {
+      description:
+        "Mark a handoff as processed. Transitions a delivered handoff to processed, signaling " +
+        "to the orchestrator that your agent received it and is actively working on it. Use this " +
+        "when you begin work on a handoff; use grove_submit_* tools when you finish.",
+      inputSchema: processHandoffInputSchema,
+    },
+    async (args) => {
+      const guard = requireHandoffStore(deps);
+      if (!guard.ok) return guard.error;
+      const { store } = guard;
+
+      const handoff = await store.get(args.handoffId);
+      if (handoff === undefined) {
+        return toolError("NOT_FOUND", `Handoff '${args.handoffId}' not found.`);
+      }
+
+      if (!canTransition(handoff.status, HandoffStatus.Processed)) {
+        return toolError(
+          "INVALID_STATE",
+          `Cannot process handoff in status '${handoff.status}'. ` +
+            `Only 'delivered' handoffs can be processed.`,
+        );
+      }
+
+      await store.markProcessed(args.handoffId);
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              handoffId: args.handoffId,
+              previousStatus: handoff.status,
+              status: HandoffStatus.Processed,
+            }),
+          },
+        ],
+      };
+    },
+  );
+
+  // grove_ack_handoff (receipt tracking): gated on session-scoped transports
+  // AND session-scoped store backends. See opts.includeAckTool and
+  // isInCurrentSession rationale above.
+  if (!includeAck) return;
   if (deps.handoffStore?.isInCurrentSession === undefined) return;
 
   server.registerTool(
@@ -182,9 +286,6 @@ export function registerHandoffTools(
           `Only the target role '${handoff.toRole}' can acknowledge this handoff (caller role: '${callerRole ?? "unset"}').`,
         );
       }
-      // Session ownership check via direct O(1) API. Registration guards
-      // above guarantee isInCurrentSession is defined, so a missing method
-      // is a programming error not a runtime fallback path.
       if (store.isInCurrentSession === undefined) {
         return toolError(
           "NOT_SUPPORTED",

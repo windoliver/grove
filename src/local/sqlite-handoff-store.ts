@@ -22,6 +22,7 @@ export const HANDOFF_DDL = `
     seen_at TEXT,
     acked_at TEXT,
     session_id TEXT,
+    ipc_message_id TEXT,
     created_at TEXT NOT NULL
   );
 
@@ -45,6 +46,7 @@ interface HandoffRow {
   readonly seen_at: string | null;
   readonly acked_at: string | null;
   readonly session_id: string | null;
+  readonly ipc_message_id: string | null;
   readonly created_at: string;
 }
 
@@ -60,13 +62,14 @@ function rowToHandoff(row: HandoffRow): Handoff {
     ...(row.resolved_by_cid !== null ? { resolvedByCid: row.resolved_by_cid } : {}),
     ...(row.seen_at !== null ? { seenAt: row.seen_at } : {}),
     ...(row.acked_at !== null ? { ackedAt: row.acked_at } : {}),
+    ...(row.ipc_message_id !== null ? { ipcMessageId: row.ipc_message_id } : {}),
     createdAt: row.created_at,
   };
 }
 
 const SELECT_COLS = `handoff_id, source_cid, from_role, to_role, status,
                 requires_reply, reply_due_at, resolved_by_cid, seen_at, acked_at,
-                session_id, created_at`;
+                session_id, ipc_message_id, created_at`;
 
 /**
  * SQLite-backed handoff store with optional session scoping.
@@ -104,6 +107,7 @@ export class SqliteHandoffStore implements HandoffStore {
     if (!columns.includes("seen_at")) this.safeAddColumn("seen_at");
     if (!columns.includes("acked_at")) this.safeAddColumn("acked_at");
     if (!columns.includes("session_id")) this.safeAddColumn("session_id");
+    if (!columns.includes("ipc_message_id")) this.safeAddColumn("ipc_message_id");
 
     // Conditionally expose session-scoped capability methods only when
     // operating in scoped mode. Unscoped stores leave them undefined so
@@ -154,8 +158,8 @@ export class SqliteHandoffStore implements HandoffStore {
         `INSERT INTO handoffs (
           handoff_id, source_cid, from_role, to_role, status,
           requires_reply, reply_due_at, resolved_by_cid, seen_at, acked_at,
-          session_id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          session_id, ipc_message_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         handoffId,
@@ -169,6 +173,7 @@ export class SqliteHandoffStore implements HandoffStore {
         null,
         null,
         this.sessionId ?? null,
+        null,
         new Date().toISOString(),
       );
     return handoffId;
@@ -257,6 +262,9 @@ export class SqliteHandoffStore implements HandoffStore {
     const now = new Date().toISOString();
     const { sql: scopeSql, params: scopeParams } = this.scopeClause();
     const scopeExtra = scopeSql ? ` AND ${scopeSql}` : "";
+    // Valid transitions: delivered → replied, processed → replied.
+    // pending_pickup → replied is NOT allowed — callers must markDelivered
+    // first. The state machine enforces the IPC ack invariant.
     const result = this.db
       .prepare(
         `UPDATE handoffs SET status = ?, resolved_by_cid = ?
@@ -267,8 +275,8 @@ export class SqliteHandoffStore implements HandoffStore {
         HandoffStatus.Replied,
         resolvedByCid,
         id,
-        HandoffStatus.PendingPickup,
         HandoffStatus.Delivered,
+        HandoffStatus.Processed,
         now,
         ...scopeParams,
       );
@@ -278,8 +286,8 @@ export class SqliteHandoffStore implements HandoffStore {
         throw new NotFoundError({ resource: "Handoff", identifier: id });
       }
       if (
-        (current.status === HandoffStatus.PendingPickup ||
-          current.status === HandoffStatus.Delivered) &&
+        (current.status === HandoffStatus.Delivered ||
+          current.status === HandoffStatus.Processed) &&
         current.replyDueAt !== undefined &&
         current.replyDueAt < now
       ) {
@@ -291,8 +299,8 @@ export class SqliteHandoffStore implements HandoffStore {
           .run(
             HandoffStatus.Expired,
             id,
-            HandoffStatus.PendingPickup,
             HandoffStatus.Delivered,
+            HandoffStatus.Processed,
             ...scopeParams,
           );
         throw new StateConflictError({
@@ -301,6 +309,73 @@ export class SqliteHandoffStore implements HandoffStore {
         });
       }
       validateTransition(id, current.status, HandoffStatus.Replied);
+    }
+  }
+
+  async markProcessed(id: string): Promise<void> {
+    const { sql: scopeSql, params: scopeParams } = this.scopeClause();
+    const scopeExtra = scopeSql ? ` AND ${scopeSql}` : "";
+    const result = this.db
+      .prepare(
+        `UPDATE handoffs SET status = ?
+         WHERE handoff_id = ? AND status = ?${scopeExtra}`,
+      )
+      .run(HandoffStatus.Processed, id, HandoffStatus.Delivered, ...scopeParams);
+    if (result.changes === 0) {
+      const current = await this.get(id);
+      if (current === undefined) {
+        throw new NotFoundError({ resource: "Handoff", identifier: id });
+      }
+      if (current.status !== HandoffStatus.Processed) {
+        validateTransition(id, current.status, HandoffStatus.Processed);
+      }
+      // Already processed — idempotent no-op
+    }
+  }
+
+  async markDeadLettered(id: string): Promise<void> {
+    const { sql: scopeSql, params: scopeParams } = this.scopeClause();
+    const scopeExtra = scopeSql ? ` AND ${scopeSql}` : "";
+    const result = this.db
+      .prepare(
+        `UPDATE handoffs SET status = ?
+         WHERE handoff_id = ? AND status IN (?, ?)${scopeExtra}`,
+      )
+      .run(
+        HandoffStatus.DeadLettered,
+        id,
+        HandoffStatus.PendingPickup,
+        HandoffStatus.Delivered,
+        ...scopeParams,
+      );
+    if (result.changes === 0) {
+      const current = await this.get(id);
+      if (current === undefined) {
+        throw new NotFoundError({ resource: "Handoff", identifier: id });
+      }
+      if (current.status !== HandoffStatus.DeadLettered) {
+        validateTransition(id, current.status, HandoffStatus.DeadLettered);
+      }
+      // Already dead-lettered — idempotent no-op
+    }
+  }
+
+  async setIpcMessageId(id: string, ipcMessageId: string): Promise<void> {
+    // IPC message IDs are set at-most-once after successful IPC relay; a
+    // scoped store only mutates its own session's rows.
+    const { sql: scopeSql, params: scopeParams } = this.scopeClause();
+    const scopeExtra = scopeSql ? ` AND ${scopeSql}` : "";
+    const result = this.db
+      .prepare(
+        `UPDATE handoffs SET ipc_message_id = ?
+         WHERE handoff_id = ?${scopeExtra}`,
+      )
+      .run(ipcMessageId, id, ...scopeParams);
+    if (result.changes === 0) {
+      const current = await this.get(id);
+      if (current === undefined) {
+        throw new NotFoundError({ resource: "Handoff", identifier: id });
+      }
     }
   }
 
@@ -364,6 +439,7 @@ export class SqliteHandoffStore implements HandoffStore {
     return row !== null;
   }
 
+
   async expireStale(now?: string): Promise<readonly Handoff[]> {
     const cutoff = now ?? new Date().toISOString();
     // Expire both pending_pickup AND delivered unresolved handoffs with
@@ -376,7 +452,7 @@ export class SqliteHandoffStore implements HandoffStore {
       .prepare(
         `UPDATE handoffs
          SET status = ?
-         WHERE status IN (?, ?)
+         WHERE status IN (?, ?, ?)
            AND reply_due_at IS NOT NULL AND reply_due_at < ?${scopeExtra}
          RETURNING ${SELECT_COLS}`,
       )
@@ -384,6 +460,7 @@ export class SqliteHandoffStore implements HandoffStore {
         HandoffStatus.Expired,
         HandoffStatus.PendingPickup,
         HandoffStatus.Delivered,
+        HandoffStatus.Processed,
         cutoff,
         ...scopeParams,
       ) as readonly HandoffRow[];

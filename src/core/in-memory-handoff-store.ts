@@ -79,17 +79,26 @@ export class InMemoryHandoffStore implements HandoffStore {
     this.handoffs.set(id, { ...handoff, status: HandoffStatus.Delivered });
   }
 
+  async markProcessed(id: string): Promise<void> {
+    const handoff = this.handoffs.get(id);
+    if (handoff === undefined) {
+      throw new NotFoundError({ resource: "Handoff", identifier: id });
+    }
+    validateTransition(id, handoff.status, HandoffStatus.Processed);
+    this.handoffs.set(id, { ...handoff, status: HandoffStatus.Processed });
+  }
+
   async markReplied(id: string, resolvedByCid: string): Promise<void> {
     const handoff = this.handoffs.get(id);
     if (handoff === undefined) {
       throw new NotFoundError({ resource: "Handoff", identifier: id });
     }
-    // Reject late replies in the store itself, so correctness does not
-    // depend on the DeadlineWatcher having already flipped status.
+    // Reject late replies in the store itself. Only delivered/processed
+    // can transition to replied per the state machine.
     const now = new Date().toISOString();
     if (
-      (handoff.status === HandoffStatus.PendingPickup ||
-        handoff.status === HandoffStatus.Delivered) &&
+      (handoff.status === HandoffStatus.Delivered ||
+        handoff.status === HandoffStatus.Processed) &&
       handoff.replyDueAt !== undefined &&
       handoff.replyDueAt < now
     ) {
@@ -105,6 +114,23 @@ export class InMemoryHandoffStore implements HandoffStore {
       status: HandoffStatus.Replied,
       resolvedByCid,
     });
+  }
+
+  async markDeadLettered(id: string): Promise<void> {
+    const handoff = this.handoffs.get(id);
+    if (handoff === undefined) {
+      throw new NotFoundError({ resource: "Handoff", identifier: id });
+    }
+    validateTransition(id, handoff.status, HandoffStatus.DeadLettered);
+    this.handoffs.set(id, { ...handoff, status: HandoffStatus.DeadLettered });
+  }
+
+  async setIpcMessageId(id: string, ipcMessageId: string): Promise<void> {
+    const handoff = this.handoffs.get(id);
+    if (handoff === undefined) {
+      throw new NotFoundError({ resource: "Handoff", identifier: id });
+    }
+    this.handoffs.set(id, { ...handoff, ipcMessageId });
   }
 
   async markSeen(id: string): Promise<void> {
@@ -137,10 +163,17 @@ export class InMemoryHandoffStore implements HandoffStore {
     const cutoff = now ?? new Date().toISOString();
     const expired: Handoff[] = [];
 
+    // Expire all unresolved statuses with past deadlines: pending_pickup,
+    // delivered, processed. Dead-lettered and terminal states are left alone.
+    const expirableStatuses: ReadonlySet<HandoffStatus> = new Set([
+      HandoffStatus.PendingPickup,
+      HandoffStatus.Delivered,
+      HandoffStatus.Processed,
+    ]);
+
     for (const [handoffId, handoff] of this.handoffs) {
       if (
-        (handoff.status === HandoffStatus.PendingPickup ||
-          handoff.status === HandoffStatus.Delivered) &&
+        expirableStatuses.has(handoff.status) &&
         handoff.replyDueAt !== undefined &&
         handoff.replyDueAt < cutoff
       ) {

@@ -260,7 +260,10 @@ try {
   if (loadedContract?.topology) {
     if (nexusClient) {
       const { NexusEventBus } = await import("../nexus/nexus-event-bus.js");
-      eventBus = new NexusEventBus(nexusClient, zoneId);
+      const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
+      const apiKey = process.env.NEXUS_API_KEY;
+      const ipcClient = nexusUrl && apiKey ? new NexusIpcClient({ nexusUrl, apiKey }) : undefined;
+      eventBus = new NexusEventBus(ipcClient);
       process.stderr.write(`grove-mcp: IPC via Nexus EventBus at ${nexusUrl}\n`);
     } else {
       const { LocalEventBus } = await import("../core/local-event-bus.js");
@@ -375,6 +378,10 @@ try {
 }
 
 // --- Server setup ---------------------------------------------------------
+// NOTE: No sweep reconciler here. The stdio MCP server (grove-mcp) is spawned
+// per-agent — running zone-wide sweeps from every agent process would cause
+// N×load and CAS conflicts. Sweeps run in the long-lived singleton processes
+// only: src/server/serve.ts (HTTP server) and src/mcp/serve-http.ts (HTTP MCP).
 
 const server = await createMcpServer(deps, preset);
 const transport = new StdioServerTransport();

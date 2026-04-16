@@ -68,7 +68,16 @@ const createBountySchema = z.object({
 
 const listBountiesSchema = z.object({
   status: z
-    .enum(["draft", "open", "claimed", "completed", "settled", "expired", "cancelled"])
+    .enum([
+      "draft",
+      "open",
+      "claimed",
+      "pending_settlement",
+      "completed",
+      "settled",
+      "expired",
+      "cancelled",
+    ])
     .optional()
     .describe("Filter by bounty status"),
   creatorAgentId: z.string().optional().describe("Filter by creator agent ID"),

@@ -96,6 +96,38 @@ const deps: ServerDeps = {
 const app = createApp(deps);
 
 // ---------------------------------------------------------------------------
+// Background sweep reconciler
+// ---------------------------------------------------------------------------
+
+import { BountyIndexSweep } from "../core/bounty-index-sweep.js";
+import { SettlementSweep } from "../core/settlement-sweep.js";
+import { SweepReconciler } from "../core/sweep-reconciler.js";
+
+let sweepReconciler: SweepReconciler | undefined;
+if (serverBountyStore) {
+  sweepReconciler = new SweepReconciler({
+    intervalMs: 60_000,
+    onCycle(results) {
+      for (const r of results) {
+        if (r.found > 0 || r.errors.length > 0) {
+          console.log(
+            `[sweep] ${r.strategy}: found=${r.found} repaired=${r.repaired} errors=${r.errors.length}`,
+          );
+        }
+      }
+    },
+  });
+  sweepReconciler.register(new BountyIndexSweep(serverBountyStore));
+  // SettlementSweep runs without creditsService — it can recover non-escrowed
+  // bounties. Escrowed bounties (those with reservationId) will log an error
+  // and wait for a CreditsService to be available. When a production
+  // CreditsService is wired in, pass it: new SettlementSweep(store, credits).
+  sweepReconciler.register(new SettlementSweep(serverBountyStore));
+  sweepReconciler.start();
+  console.log("sweep-reconciler started (BountyIndexSweep, SettlementSweep)");
+}
+
+// ---------------------------------------------------------------------------
 // Optional SessionService + WebSocket push
 // ---------------------------------------------------------------------------
 
@@ -195,6 +227,9 @@ console.log(`grove-server listening on http://${HOST ?? "localhost"}:${server.po
 // Graceful shutdown
 async function shutdown(): Promise<void> {
   console.log("Shutting down...");
+  if (sweepReconciler) {
+    sweepReconciler.stop();
+  }
   if (sessionService) {
     sessionService.destroy();
   }

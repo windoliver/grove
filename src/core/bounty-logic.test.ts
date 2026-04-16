@@ -34,9 +34,31 @@ describe("validateBountyTransition", () => {
     ).not.toThrow();
   });
 
-  test("allows claimed → completed", () => {
+  test("allows claimed → pending_settlement", () => {
+    expect(() =>
+      validateBountyTransition(
+        "b-1",
+        BountyStatus.Claimed,
+        BountyStatus.PendingSettlement,
+        "beginSettlement",
+      ),
+    ).not.toThrow();
+  });
+
+  test("rejects claimed → completed (must go through pending_settlement)", () => {
     expect(() =>
       validateBountyTransition("b-1", BountyStatus.Claimed, BountyStatus.Completed, "complete"),
+    ).toThrow();
+  });
+
+  test("allows pending_settlement → completed", () => {
+    expect(() =>
+      validateBountyTransition(
+        "b-1",
+        BountyStatus.PendingSettlement,
+        BountyStatus.Completed,
+        "complete",
+      ),
     ).not.toThrow();
   });
 

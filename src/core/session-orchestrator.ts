@@ -234,7 +234,7 @@ export class SessionOrchestrator {
     }
 
     // Notify all agents
-    this.router.broadcastStop(reason);
+    await this.router.broadcastStop(reason);
 
     // Close all agent sessions
     for (const agent of this.agents) {
@@ -316,13 +316,13 @@ export class SessionOrchestrator {
           action;
 
         // Use topology router to find targets, then send directly
-        const targets = this.router.route(sourceRole, {
+        const routeResults = await this.router.route(sourceRole, {
           cid: c.cid,
           kind: c.kind,
           summary: c.summary,
         });
 
-        for (const targetRole of targets) {
+        for (const { targetRole } of routeResults) {
           const targetAgent = this.agents.find((a) => a.role === targetRole);
           if (targetAgent) {
             await this.config.runtime.send(targetAgent.session, message);

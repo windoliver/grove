@@ -185,7 +185,7 @@ describe("SessionService", () => {
     await service.startSession("Test");
 
     // Simulate a contribution event from the coder to the reviewer
-    bus.publish({
+    void bus.publish({
       type: "contribution",
       sourceRole: "coder",
       targetRole: "reviewer",
@@ -221,14 +221,14 @@ describe("SessionService", () => {
     await service.startSession("Test");
 
     // Simulate stop events from both roles
-    bus.publish({
+    void bus.publish({
       type: "stop",
       sourceRole: "coder",
       targetRole: "coder",
       payload: { reason: "done" },
       timestamp: new Date().toISOString(),
     });
-    bus.publish({
+    void bus.publish({
       type: "stop",
       sourceRole: "reviewer",
       targetRole: "reviewer",
@@ -308,7 +308,7 @@ describe("SessionService", () => {
     service.destroy();
 
     // Publishing after destroy should not cause errors
-    bus.publish({
+    void bus.publish({
       type: "contribution",
       sourceRole: "coder",
       targetRole: "reviewer",

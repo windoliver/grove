@@ -99,6 +99,7 @@ const BountySchema: z.ZodType<Bounty> = z.object({
     "draft",
     "open",
     "claimed",
+    "pending_settlement",
     "completed",
     "settled",
     "expired",
