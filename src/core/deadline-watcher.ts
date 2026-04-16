@@ -99,7 +99,14 @@ export class DeadlineWatcher {
    */
   async rebuildFromStore(): Promise<number> {
     const cutoffDate = new Date(Date.now() - this.maxRebuildAgeMs).toISOString();
-    const unresolved = await this.handoffStore.list({
+    // Use session-scoped enumeration when the store supports it. Without this
+    // scoping, a Nexus-backed store would return handoffs from ALL sessions
+    // in the zone and we'd arm timers for unrelated sessions, emitting
+    // cross-session handoff.overdue events.
+    const enumerate =
+      this.handoffStore.listForCurrentSession?.bind(this.handoffStore) ??
+      this.handoffStore.list.bind(this.handoffStore);
+    const unresolved = await enumerate({
       status: [HandoffStatus.PendingPickup, HandoffStatus.Delivered],
     });
 

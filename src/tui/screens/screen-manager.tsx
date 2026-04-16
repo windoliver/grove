@@ -579,10 +579,13 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         hasSpawnedRef.current = true;
         debugLog("handleLaunchConfirm", `spawning with ${roleMappingFromPreview.size} roles, ${edgeTimeouts.size} edge timeouts`);
 
-        // Apply edge timeouts from TUI into the topology. The HTTP server
-        // uses this topology (from the request body) to override config.topology
-        // when creating the session record, so MCP servers pick up the edit.
-        if (edgeTimeouts.size > 0 && topology) {
+        // Apply edge timeouts from TUI into the topology. Always walk every
+        // edge so that clearing a previously-set deadline (removing it from
+        // edgeTimeouts) also removes it from the topology — otherwise the
+        // preset/GROVE.md default would leak through as a "removed" deadline
+        // that still fires. The HTTP server uses this topology to override
+        // config.topology when creating the session record.
+        if (topology) {
           for (const role of topology.roles) {
             if (role.edges) {
               for (const edge of role.edges) {

@@ -122,5 +122,18 @@ export interface HandoffStore {
   markAcked(id: string): Promise<void>;
   expireStale(now?: string): Promise<readonly Handoff[]>;
   countPending(toRole: string): Promise<number>;
+  /**
+   * Session-scoped enumeration for deadline rebuild on MCP server startup.
+   *
+   * Unlike list() which may return handoffs across all sessions (Nexus
+   * scans the zone-wide directory), this must ONLY return handoffs created
+   * within the active session. Without this scoping, a restarting MCP
+   * server for session A could re-arm timers for session B's handoffs
+   * and emit cross-session overdue events.
+   *
+   * Default: delegates to list() for stores that are inherently session-
+   * scoped (SQLite, InMemory — one DB per session).
+   */
+  listForCurrentSession?(query?: HandoffQuery): Promise<readonly Handoff[]>;
   close(): void;
 }

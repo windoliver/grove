@@ -311,6 +311,28 @@ export class NexusHandoffStore implements HandoffStore {
     return pending.length;
   }
 
+  /**
+   * Session-scoped list — reads ONLY the current session's handoff file,
+   * not the zone-wide directory. Used by DeadlineWatcher.rebuildFromStore()
+   * to avoid re-arming timers for handoffs from other sessions.
+   */
+  async listForCurrentSession(query?: HandoffQuery): Promise<readonly Handoff[]> {
+    const { handoffs } = await this.readFile(this.filePath());
+    let results = handoffs.filter((h) => h.handoffId && h.createdAt);
+    if (query?.toRole !== undefined) results = results.filter((h) => h.toRole === query.toRole);
+    if (query?.fromRole !== undefined)
+      results = results.filter((h) => h.fromRole === query.fromRole);
+    if (query?.sourceCid !== undefined)
+      results = results.filter((h) => h.sourceCid === query.sourceCid);
+    if (query?.status !== undefined) {
+      const statuses = Array.isArray(query.status) ? query.status : [query.status];
+      results = results.filter((h) => (statuses as string[]).includes(h.status));
+    }
+    results.sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
+    if (query?.limit !== undefined) results = results.slice(0, query.limit);
+    return results;
+  }
+
   close(): void {
     // NexusClient is shared — caller owns its lifecycle
   }
