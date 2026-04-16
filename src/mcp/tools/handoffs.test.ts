@@ -114,4 +114,19 @@ describe("grove_ack_handoff authorization", () => {
     expect(after?.seenAt).toBeDefined();
     expect(after?.ackedAt).toBeUndefined();
   });
+
+  test("grove_ack_handoff is NOT registered when includeAckTool is false (HTTP)", () => {
+    // Simulate HTTP transport registration — ack tool must be omitted.
+    const httpServer = new McpServer(
+      { name: "test-http", version: "0.0.1" },
+      { capabilities: { tools: {} } },
+    );
+    registerHandoffTools(httpServer, deps, { includeAckTool: false });
+    const registeredTools = (
+      httpServer as unknown as { _registeredTools: Record<string, unknown> }
+    )._registeredTools;
+    expect(registeredTools["grove_list_handoffs"]).toBeDefined();
+    expect(registeredTools["grove_get_handoff"]).toBeDefined();
+    expect(registeredTools["grove_ack_handoff"]).toBeUndefined();
+  });
 });

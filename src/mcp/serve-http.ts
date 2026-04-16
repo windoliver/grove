@@ -582,7 +582,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     // opted in via GROVE_MCP_EVAL_ENABLED=true. Unauthenticated HTTP exposure
     // of shell execution is a remote-code-execution risk.
     const evalEnabled = AUTH_TOKEN !== undefined && process.env.GROVE_MCP_EVAL_ENABLED === "true";
-    const server = await createMcpServer(scopedDeps, { eval: evalEnabled });
+    const server = await createMcpServer(scopedDeps, {
+      eval: evalEnabled,
+      transport: "http",
+    });
 
     transport.onclose = () => {
       const sid = transport.sessionId;

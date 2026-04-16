@@ -25,9 +25,6 @@ import type { NexusClient } from "./client.js";
 
 const MAX_CAS_RETRIES = 8;
 
-/** TTL for the readAllHandoffs cache (milliseconds). */
-const LIST_CACHE_TTL_MS = 15_000;
-
 function handoffsDir(zoneId: string): string {
   return `/zones/${zoneId}/handoffs`;
 }
@@ -47,9 +44,6 @@ export class NexusHandoffStore implements HandoffStore {
   private readonly sessionId: string | undefined;
   private readonly zoneId: string;
   private dirEnsured = false;
-
-  /** Cached result of readAllHandoffs() with TTL. */
-  private listCache: { handoffs: Handoff[]; expiry: number } | undefined;
 
   constructor(
     client: NexusClient,
@@ -81,11 +75,6 @@ export class NexusHandoffStore implements HandoffStore {
       // Best-effort — write may auto-create parent dirs on some Nexus versions
     }
     this.dirEnsured = true;
-  }
-
-  /** Invalidate the list cache (called after writes). */
-  private invalidateCache(): void {
-    this.listCache = undefined;
   }
 
   private async readFile(path: string): Promise<{ handoffs: Handoff[]; etag: string }> {
@@ -126,8 +115,6 @@ export class NexusHandoffStore implements HandoffStore {
           "NexusHandoffStore.casUpdate",
           `WRITE OK path=${path} etag=${etag || "(empty)"} bytesWritten=${writeResult.bytesWritten} newEtag=${writeResult.etag} count=${updated.length} attempt=${attempt}`,
         );
-        // Invalidate cache after successful write
-        this.invalidateCache();
         return updated;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -373,11 +360,10 @@ export class NexusHandoffStore implements HandoffStore {
   }
 
   private async readAllHandoffs(): Promise<Handoff[]> {
-    // Return cached result if fresh
-    if (this.listCache !== undefined && Date.now() < this.listCache.expiry) {
-      return this.listCache.handoffs;
-    }
-
+    // No TTL cache: handoff coordination state is written by multiple
+    // processes (different agents) and stale reads cause missed overdue
+    // events and false ack suppression. Freshness matters more than the
+    // extra round-trip.
     try {
       const listing = await this.client.list(handoffsDir(this.zoneId));
       // Nexus list may return entries without the .json extension even though
@@ -405,12 +391,7 @@ export class NexusHandoffStore implements HandoffStore {
           }
         }),
       );
-      const handoffs = results.flat();
-
-      // Cache the result
-      this.listCache = { handoffs, expiry: Date.now() + LIST_CACHE_TTL_MS };
-
-      return handoffs;
+      return results.flat();
     } catch (listErr) {
       debugLog(
         "NexusHandoffStore.readAllHandoffs",

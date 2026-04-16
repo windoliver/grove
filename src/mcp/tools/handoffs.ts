@@ -80,7 +80,18 @@ const ackHandoffInputSchema = z.object({
     ),
 });
 
-export function registerHandoffTools(server: McpServer, deps: McpDeps): void {
+/**
+ * Register handoff tools. `includeAckTool` gates the receipt mutation tool
+ * (grove_ack_handoff), which is unsafe on shared transports because it
+ * authorizes on a process-global role. Defaults to true for backwards
+ * compatibility with stdio callers.
+ */
+export function registerHandoffTools(
+  server: McpServer,
+  deps: McpDeps,
+  opts?: { readonly includeAckTool?: boolean },
+): void {
+  const includeAck = opts?.includeAckTool !== false;
   server.registerTool(
     "grove_list_handoffs",
     {
@@ -131,6 +142,8 @@ export function registerHandoffTools(server: McpServer, deps: McpDeps): void {
       };
     },
   );
+
+  if (!includeAck) return;
 
   server.registerTool(
     "grove_ack_handoff",
