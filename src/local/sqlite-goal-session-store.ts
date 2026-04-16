@@ -22,6 +22,13 @@ import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
 import type { GoalData } from "../tui/provider.js";
 
 /**
+ * Supported contractVersion values for stored session configs.
+ * Kept in sync with `parseRawObject` in src/core/contract.ts — adding a new
+ * version there requires extending this list (and the validator below).
+ */
+const SUPPORTED_CONTRACT_VERSIONS = [1, 2, 3] as const;
+
+/**
  * Shape-validate a parsed session config from storage.
  *
  * Returns null on success, or a reason string when validation fails.
@@ -34,11 +41,9 @@ import type { GoalData } from "../tui/provider.js";
  *     `agent_topology` (lossy key-rename).
  *
  * So a stored-form-aware check is the right layer. The check covers the
- * specific nested-field crashes that enforcement code can hit:
- *   - gates[] items missing `type` (switch falls through)
- *   - agentConstraints.allowedKinds not an array (`.includes` crashes)
- *   - rateLimits/concurrency/execution fields with non-numeric values
- *     (silent bypass via optional chaining, or arithmetic errors)
+ * specific nested-field crashes and silent-bypass paths that enforcement
+ * code can hit when the stored snapshot is corrupted or produced by a
+ * version of grove the current binary doesn't understand.
  */
 function validateStoredContractShape(obj: unknown): string | null {
   if (obj === null || typeof obj !== "object" || Array.isArray(obj)) {
@@ -47,6 +52,9 @@ function validateStoredContractShape(obj: unknown): string | null {
   const c = obj as Record<string, unknown>;
   if (typeof c.contractVersion !== "number") {
     return "config_json missing numeric contractVersion";
+  }
+  if (!(SUPPORTED_CONTRACT_VERSIONS as readonly number[]).includes(c.contractVersion)) {
+    return `config_json has unsupported contractVersion ${c.contractVersion} (supported: ${SUPPORTED_CONTRACT_VERSIONS.join(", ")})`;
   }
 
   const isPlainObject = (v: unknown): v is Record<string, unknown> =>
@@ -75,9 +83,59 @@ function validateStoredContractShape(obj: unknown): string | null {
     }
   }
 
-  // gates is an array of gate objects, each with a string `type`.
+  // stopConditions nested fields. Each sub-object must be a plain object
+  // (not null) if present — evaluateStopConditions() reads properties
+  // directly and crashes on null / wrong-type. targetMetric must also
+  // carry the fields the enforcement logic reads: `metric` (string),
+  // `value` (number).
+  const sc = c.stopConditions;
+  if (isPlainObject(sc)) {
+    for (const sub of ["targetMetric", "budget", "quorumReviewScore", "deliberationLimit"]) {
+      const v = sc[sub];
+      if (v !== undefined && !isPlainObject(v)) {
+        return `config_json stopConditions.${sub} is not an object`;
+      }
+    }
+    const tm = sc.targetMetric;
+    if (isPlainObject(tm)) {
+      if (typeof tm.metric !== "string") {
+        return "config_json stopConditions.targetMetric.metric is not a string";
+      }
+      if (typeof tm.value !== "number") {
+        return "config_json stopConditions.targetMetric.value is not a number";
+      }
+    }
+    const qrs = sc.quorumReviewScore;
+    if (isPlainObject(qrs)) {
+      if (typeof qrs.minReviews !== "number") {
+        return "config_json stopConditions.quorumReviewScore.minReviews is not a number";
+      }
+      if (typeof qrs.minScore !== "number") {
+        return "config_json stopConditions.quorumReviewScore.minScore is not a number";
+      }
+    }
+    if (
+      sc.maxRoundsWithoutImprovement !== undefined &&
+      typeof sc.maxRoundsWithoutImprovement !== "number"
+    ) {
+      return "config_json stopConditions.maxRoundsWithoutImprovement is not a number";
+    }
+  }
+
+  // gates is an array of gate objects. Each item must be an object with
+  // a recognized string `type`, plus the fields that `type` demands.
+  // Missing-field gates would otherwise become silent no-ops in
+  // PolicyEnforcer.evaluateGate() (e.g. min_score without metric/threshold
+  // short-circuits before checking anything).
   if (c.gates !== undefined) {
     if (!Array.isArray(c.gates)) return "config_json field 'gates' is not an array";
+    const knownGateTypes = new Set([
+      "metric_improves",
+      "has_artifact",
+      "has_relation",
+      "min_reviews",
+      "min_score",
+    ]);
     for (let i = 0; i < c.gates.length; i++) {
       const g = c.gates[i];
       if (!isPlainObject(g)) {
@@ -85,6 +143,32 @@ function validateStoredContractShape(obj: unknown): string | null {
       }
       if (typeof g.type !== "string") {
         return `config_json gates[${i}] missing string 'type'`;
+      }
+      if (!knownGateTypes.has(g.type)) {
+        return `config_json gates[${i}] has unknown type '${g.type}'`;
+      }
+      // Type-specific required fields. Mirrors GateSchema.superRefine in
+      // src/core/contract.ts:53-77 (camelCase here: relationType vs
+      // relation_type).
+      if (g.type === "metric_improves" && typeof g.metric !== "string") {
+        return `config_json gates[${i}] metric_improves requires string 'metric'`;
+      }
+      if (g.type === "has_artifact" && typeof g.name !== "string") {
+        return `config_json gates[${i}] has_artifact requires string 'name'`;
+      }
+      if (g.type === "has_relation" && typeof g.relationType !== "string") {
+        return `config_json gates[${i}] has_relation requires string 'relationType'`;
+      }
+      if (g.type === "min_reviews" && typeof g.count !== "number") {
+        return `config_json gates[${i}] min_reviews requires number 'count'`;
+      }
+      if (g.type === "min_score") {
+        if (typeof g.metric !== "string") {
+          return `config_json gates[${i}] min_score requires string 'metric'`;
+        }
+        if (typeof g.threshold !== "number") {
+          return `config_json gates[${i}] min_score requires number 'threshold'`;
+        }
       }
     }
   }
