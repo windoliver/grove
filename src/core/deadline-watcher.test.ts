@@ -11,6 +11,25 @@ import { HandoffStatus } from "./handoff.js";
 import { InMemoryHandoffStore } from "./in-memory-handoff-store.js";
 import { LocalEventBus } from "./local-event-bus.js";
 
+/**
+ * Poll `check` up to `timeoutMs` (default 2s) with `intervalMs` waits
+ * between attempts. Returns once `check` returns truthy or throws if
+ * the timeout is hit. Used instead of fixed sleeps in timer tests so
+ * slow CI runners don't produce false negatives when the event loop
+ * schedules our setTimeout slightly later than the optimistic wait.
+ */
+async function waitFor(
+  check: () => Promise<boolean> | boolean,
+  { timeoutMs = 2000, intervalMs = 25 } = {},
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error(`waitFor: condition not met within ${timeoutMs}ms`);
+}
+
 function makeHandoff(overrides?: Partial<Handoff>): Handoff {
   return {
     handoffId: crypto.randomUUID(),
@@ -152,8 +171,7 @@ describe("DeadlineWatcher", () => {
 
     watcher.watch(h);
 
-    // setTimeout(0) fires on next tick
-    await new Promise((r) => setTimeout(r, 50));
+    await waitFor(() => events.length > 0);
 
     expect(events).toHaveLength(1);
     expect(events[0]?.type).toBe("handoff.overdue");
@@ -177,8 +195,12 @@ describe("DeadlineWatcher", () => {
     watcher.watch(h);
     watcher2.watch(h);
 
-    // Wait for both to fire
-    await new Promise((r) => setTimeout(r, 300));
+    // Poll up to 2s for expiry — avoids CI timing flakes where a loaded
+    // runner can miss the fixed-duration window between setTimeout fire
+    // and expireStale commit.
+    await waitFor(
+      async () => (await store.get(h.handoffId))?.status === HandoffStatus.Expired,
+    );
 
     // Only ONE overdue event should be emitted — the watcher whose
     // expireStale() CAS flipped the row wins; the other sees empty and
@@ -201,8 +223,11 @@ describe("DeadlineWatcher", () => {
 
     watcher.watch(h);
 
-    // Wait for timer to fire and expire the handoff
-    await new Promise((r) => setTimeout(r, 200));
+    // Poll for expiry instead of sleeping a fixed duration — under CI
+    // load the 50ms deadline + expireStale can take longer than 200ms.
+    await waitFor(
+      async () => (await store.get(h.handoffId))?.status === HandoffStatus.Expired,
+    );
 
     const afterExpiry = await store.get(h.handoffId);
     expect(afterExpiry?.status).toBe(HandoffStatus.Expired);
