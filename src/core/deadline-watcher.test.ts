@@ -198,9 +198,7 @@ describe("DeadlineWatcher", () => {
     // Poll up to 2s for expiry — avoids CI timing flakes where a loaded
     // runner can miss the fixed-duration window between setTimeout fire
     // and expireStale commit.
-    await waitFor(
-      async () => (await store.get(h.handoffId))?.status === HandoffStatus.Expired,
-    );
+    await waitFor(async () => (await store.get(h.handoffId))?.status === HandoffStatus.Expired);
 
     // Only ONE overdue event should be emitted — the watcher whose
     // expireStale() CAS flipped the row wins; the other sees empty and
@@ -225,9 +223,7 @@ describe("DeadlineWatcher", () => {
 
     // Poll for expiry instead of sleeping a fixed duration — under CI
     // load the 50ms deadline + expireStale can take longer than 200ms.
-    await waitFor(
-      async () => (await store.get(h.handoffId))?.status === HandoffStatus.Expired,
-    );
+    await waitFor(async () => (await store.get(h.handoffId))?.status === HandoffStatus.Expired);
 
     const afterExpiry = await store.get(h.handoffId);
     expect(afterExpiry?.status).toBe(HandoffStatus.Expired);
