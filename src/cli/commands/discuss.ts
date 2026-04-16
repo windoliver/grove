@@ -109,23 +109,33 @@ export async function executeDiscuss(options: DiscussOptions): Promise<{ cid: st
 
   // Load contract for enforcement and mode resolution.
   //
-  // Config resolution precedence:
-  //   1. session.config (frozen snapshot from #198) when GROVE_SESSION_ID is set
-  //      and the session has a stored config — use it, skip GROVE.md entirely.
-  //   2. Live GROVE.md — used when no session, or when session exists but
-  //      has no stored config (configless sessions are valid: orchestrator
-  //      calls createSession with config=undefined when GROVE.md is absent;
-  //      legacy pre-#198 sessions also lack config).
-  //   3. No enforcement — neither session config nor GROVE.md available.
+  // Config resolution precedence when GROVE_SESSION_ID is set:
+  //   - ok:          use the frozen session config, skip GROVE.md entirely
+  //   - configless:  session exists without config (orchestrator created
+  //                  session when GROVE.md was absent, or pre-#198 session);
+  //                  fall through to GROVE.md as compat
+  //   - not-found:   bogus/stale session id — fail closed
+  //   - malformed:   corrupted config_json — fail closed
   //
-  // Falling back to GROVE.md on missing session config preserves pre-PR
-  // behavior for configless sessions. This is a compat case, not silent
-  // drift — the only path where drift matters (session with config) takes
-  // precedence and never falls through.
+  // When GROVE_SESSION_ID is absent, fall through to live GROVE.md.
   let contract: Awaited<ReturnType<typeof parseGroveContract>> | undefined;
   const envSessionId = process.env.GROVE_SESSION_ID;
   if (envSessionId) {
-    contract = stores.goalSessionStore.getSessionConfigSync(envSessionId);
+    const result = stores.goalSessionStore.resolveSessionConfigSync(envSessionId);
+    if (result.kind === "ok") {
+      contract = result.config;
+    } else if (result.kind === "not-found") {
+      throw new Error(
+        `Session ${envSessionId} not found. GROVE_SESSION_ID points at a ` +
+          `session that does not exist in this grove's session store.`,
+      );
+    } else if (result.kind === "malformed") {
+      throw new Error(
+        `Session ${envSessionId} has malformed config_json: ${result.reason}. ` +
+          `Refusing to proceed with unknown enforcement state.`,
+      );
+    }
+    // kind === "configless" — fall through to GROVE.md
   }
   if (contract === undefined) {
     // Load GROVE.md from the grove root (parent of .grove/).

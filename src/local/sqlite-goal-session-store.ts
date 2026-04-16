@@ -408,14 +408,38 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
 
   /** Synchronous variant — used by runtime bootstrap where async is unavailable. */
   getSessionConfigSync = (sessionId: string): GroveContract | undefined => {
+    const result = this.resolveSessionConfigSync(sessionId);
+    return result.kind === "ok" ? result.config : undefined;
+  };
+
+  /**
+   * Detailed session-config lookup for callers that must distinguish
+   * missing session / malformed snapshot / legacy configless session.
+   *
+   * - `not-found`: no session row exists for this id (bogus/stale env var).
+   *   Callers should fail closed.
+   * - `malformed`: config_json exists but does not parse. Callers should
+   *   fail closed — parsing errors indicate corruption, not legacy state.
+   * - `configless`: row exists with empty config (session created without
+   *   a contract, or predates #198). Callers may fall back to live GROVE.md.
+   * - `ok`: row exists with a valid parsed contract. Use it.
+   */
+  resolveSessionConfigSync = (
+    sessionId: string,
+  ):
+    | { kind: "ok"; config: GroveContract }
+    | { kind: "configless" }
+    | { kind: "malformed"; reason: string }
+    | { kind: "not-found" } => {
     const row = this.db
       .prepare("SELECT config_json FROM sessions WHERE session_id = ?")
       .get(sessionId) as { config_json: string | null } | null;
-    if (!row?.config_json || row.config_json === "{}") return undefined;
+    if (row === null) return { kind: "not-found" };
+    if (!row.config_json || row.config_json === "{}") return { kind: "configless" };
     try {
-      return JSON.parse(row.config_json) as GroveContract;
-    } catch {
-      return undefined;
+      return { kind: "ok", config: JSON.parse(row.config_json) as GroveContract };
+    } catch (err) {
+      return { kind: "malformed", reason: err instanceof Error ? err.message : String(err) };
     }
   };
 
