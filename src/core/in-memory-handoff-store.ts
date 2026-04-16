@@ -66,6 +66,10 @@ export class InMemoryHandoffStore implements HandoffStore {
     return this.list(query);
   }
 
+  async isInCurrentSession(handoffId: string): Promise<boolean> {
+    return this.handoffs.has(handoffId);
+  }
+
   async markDelivered(id: string): Promise<void> {
     const handoff = this.handoffs.get(id);
     if (handoff === undefined) {

@@ -306,21 +306,14 @@ export class SqliteHandoffStore implements HandoffStore {
     }
   }
 
-  /**
-   * Session-scoped enumeration for deadline rebuild.
-   *
-   * SQLite has no `session_id` column on the handoffs table, so we cannot
-   * attribute rows to a session. Returning list() here would re-arm timers
-   * for unrelated sessions on restart — exactly the leak this method was
-   * introduced to prevent. Return an empty array to disable rebuild on
-   * SQLite until proper session scoping is added to the schema.
-   *
-   * New handoffs still get timers via DeadlineWatcher.watch() on creation.
-   * The only impact: mid-process restarts won't re-arm existing deadlines.
-   */
-  async listForCurrentSession(_query?: HandoffQuery): Promise<readonly Handoff[]> {
-    return [];
-  }
+  // Deliberately NOT implementing listForCurrentSession() / isInCurrentSession()
+  // on SQLite. The handoffs table has no session_id column, so any attempt
+  // to answer "is this in my session?" would have to return a conservative
+  // false — which callers (grove_ack_handoff, DeadlineWatcher.rebuildFromStore)
+  // already handle as "this backend doesn't support session scoping, skip the
+  // feature". Leaving these methods undefined is the explicit opt-out signal.
+  //
+  // When session scoping is added to the SQLite schema, implement both here.
 
   async expireStale(now?: string): Promise<readonly Handoff[]> {
     const cutoff = now ?? new Date().toISOString();

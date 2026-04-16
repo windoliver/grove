@@ -145,6 +145,14 @@ export function registerHandoffTools(
 
   if (!includeAck) return;
 
+  // grove_ack_handoff requires a session-scoped backend. Without the
+  // isInCurrentSession capability, we cannot reliably tell whether a
+  // caller owns the handoff they're acking (SQLite today shares the
+  // handoffs table across sessions — a reviewer in session A could ack
+  // session B's handoffs). Register the tool only when the active store
+  // can answer the ownership question.
+  if (deps.handoffStore?.isInCurrentSession === undefined) return;
+
   server.registerTool(
     "grove_ack_handoff",
     {
@@ -174,17 +182,16 @@ export function registerHandoffTools(
           `Only the target role '${handoff.toRole}' can acknowledge this handoff (caller role: '${callerRole ?? "unset"}').`,
         );
       }
-      // Session ownership check: only valid on stores that implement
-      // listForCurrentSession. If the store cannot enumerate by session
-      // (SQLite with no session_id column), refuse the mutation.
-      if (store.listForCurrentSession === undefined) {
+      // Session ownership check via direct O(1) API. Registration guards
+      // above guarantee isInCurrentSession is defined, so a missing method
+      // is a programming error not a runtime fallback path.
+      if (store.isInCurrentSession === undefined) {
         return toolError(
           "NOT_SUPPORTED",
-          "Handoff store does not support session-scoped access; grove_ack_handoff requires a session-scoped backend (e.g. Nexus).",
+          "Handoff store does not support session-scoped access.",
         );
       }
-      const sessionHandoffs = await store.listForCurrentSession({ limit: 1000 });
-      const inSession = sessionHandoffs.some((h) => h.handoffId === args.handoffId);
+      const inSession = await store.isInCurrentSession(args.handoffId);
       if (!inSession) {
         return toolError(
           "PERMISSION_DENIED",

@@ -131,9 +131,23 @@ export interface HandoffStore {
    * server for session A could re-arm timers for session B's handoffs
    * and emit cross-session overdue events.
    *
-   * Default: delegates to list() for stores that are inherently session-
-   * scoped (SQLite, InMemory — one DB per session).
+   * Returning an empty array signals "session scoping is not supported on
+   * this backend" — callers (DeadlineWatcher rebuild, grove_ack_handoff
+   * authorization) use that as a signal to disable features that require
+   * it.
    */
   listForCurrentSession?(query?: HandoffQuery): Promise<readonly Handoff[]>;
+  /**
+   * O(1) session ownership check. Returns true iff the handoff exists AND
+   * belongs to the caller's current session. Used by grove_ack_handoff to
+   * reject cross-session receipt mutations without a full enumeration scan
+   * (which is bounded in memory and unusable for sessions with many
+   * handoffs).
+   *
+   * Must return false when the backend cannot answer the question (e.g.
+   * SQLite today has no session_id column). Absence of the method means
+   * the backend does not support session-scoped receipt mutations at all.
+   */
+  isInCurrentSession?(handoffId: string): Promise<boolean>;
   close(): void;
 }

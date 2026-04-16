@@ -107,16 +107,15 @@ export class NexusHandoffStore implements HandoffStore {
       const { handoffs, etag } = await this.readFile(path);
       const updated = fn(handoffs);
       try {
-        // Attempt an etag-conditional write for CAS. Nexus server versions
-        // vary in how they handle if_match: older versions silently dropped
-        // these writes; current versions return 412 on mismatch. We pass the
-        // observed etag when present (non-empty) to get concurrency safety
-        // where supported, and fall back to the retry loop when not.
-        //
-        // For new files (empty etag), write unconditionally — if_none_match
-        // would prevent overwriting, but we've just read empty so this is
-        // the first writer by definition.
-        const writeOpts = etag ? { ifMatch: etag } : undefined;
+        // CAS via Nexus conditional write:
+        //   - Non-empty etag → ifMatch (detect overwrites-between-read-and-write)
+        //   - Empty etag (file not yet created) → ifNoneMatch: "*" so only the
+        //     FIRST writer succeeds; peers racing initial creation get a 412
+        //     and retry, re-reading the now-populated file and merging.
+        //     Without ifNoneMatch, both concurrent creators would take the
+        //     unconditional-write branch and the later write would overwrite
+        //     the earlier one, silently dropping a peer's handoffs.
+        const writeOpts = etag ? { ifMatch: etag } : { ifNoneMatch: "*" };
         const writeResult = await this.client.write(
           path,
           encode({ handoffs: updated }),
@@ -326,6 +325,22 @@ export class NexusHandoffStore implements HandoffStore {
   async countPending(toRole: string): Promise<number> {
     const pending = await this.list({ toRole, status: HandoffStatus.PendingPickup });
     return pending.length;
+  }
+
+  /**
+   * Direct session-scoped ownership check. O(1) per-session cost (single
+   * read of the session file) vs. listForCurrentSession's bounded-scan
+   * pattern. Returns false when there is no active sessionId (global
+   * fallback) since global handoffs can't be attributed to a session.
+   */
+  async isInCurrentSession(handoffId: string): Promise<boolean> {
+    if (this.sessionId === undefined) return false;
+    try {
+      const { handoffs } = await this.readFile(this.filePath());
+      return handoffs.some((h) => h.handoffId === handoffId);
+    } catch {
+      return false;
+    }
   }
 
   /**
