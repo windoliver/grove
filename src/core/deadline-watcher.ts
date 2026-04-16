@@ -98,15 +98,23 @@ export class DeadlineWatcher {
    * future deadlines created within the max rebuild age window.
    */
   async rebuildFromStore(): Promise<number> {
+    // Rebuild requires session-scoped enumeration. Stores that don't
+    // implement listForCurrentSession share data across sessions (e.g.
+    // SQLite without a session_id column on handoffs, or Nexus in certain
+    // configurations), so falling back to list() would arm timers for
+    // handoffs in other sessions and emit cross-session overdue events.
+    //
+    // When unavailable, skip rebuild entirely — timers will still be
+    // registered for newly-created handoffs via watch(). The only impact
+    // is that mid-process restarts won't re-arm existing deadlines, which
+    // is safer than the alternative.
+    if (this.handoffStore.listForCurrentSession === undefined) {
+      log(`REBUILD skipped — store does not support session-scoped enumeration`);
+      return 0;
+    }
+
     const cutoffDate = new Date(Date.now() - this.maxRebuildAgeMs).toISOString();
-    // Use session-scoped enumeration when the store supports it. Without this
-    // scoping, a Nexus-backed store would return handoffs from ALL sessions
-    // in the zone and we'd arm timers for unrelated sessions, emitting
-    // cross-session handoff.overdue events.
-    const enumerate =
-      this.handoffStore.listForCurrentSession?.bind(this.handoffStore) ??
-      this.handoffStore.list.bind(this.handoffStore);
-    const unresolved = await enumerate({
+    const unresolved = await this.handoffStore.listForCurrentSession({
       status: [HandoffStatus.PendingPickup, HandoffStatus.Delivered],
     });
 

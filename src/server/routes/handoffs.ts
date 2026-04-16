@@ -5,13 +5,14 @@
  * GET  /api/handoffs/:id         — Get a single handoff by ID
  * POST /api/handoffs/:id/delivered — Mark a handoff as delivered
  * POST /api/handoffs/:id/replied   — Mark a handoff as replied
- * POST /api/handoffs/:id/seen      — Mark a handoff as seen
- * POST /api/handoffs/:id/acked     — Mark a handoff as acknowledged
+ *
+ * Note: receipt mutations (seen/acked) are deliberately not exposed here.
+ * See the comment below `handoffs.post("/:id/replied")` for rationale.
  */
 
-import type { Context, Hono as HonoType } from "hono";
+import type { Hono as HonoType } from "hono";
 import { Hono } from "hono";
-import type { Handoff, HandoffStatus, HandoffStore } from "../../core/handoff.js";
+import type { HandoffStatus } from "../../core/handoff.js";
 import type { ServerEnv } from "../deps.js";
 
 const handoffs: HonoType<ServerEnv> = new Hono<ServerEnv>();
@@ -113,90 +114,11 @@ handoffs.post("/:id/replied", async (c) => {
   }
 });
 
-/**
- * Verify the caller role matches the handoff's toRole before mutating
- * receipt state. Reads the role from the X-Grove-Role header or a JSON
- * body field. Returns an error Response if unauthorized; otherwise returns
- * the handoff for the route handler to use.
- */
-async function authorizeReceiptMutation(
-  c: Context<ServerEnv>,
-  handoffStore: HandoffStore,
-): Promise<{ ok: true; handoff: Handoff } | { ok: false; response: Response }> {
-  const id = c.req.param("id");
-  if (id === undefined) {
-    return {
-      ok: false,
-      response: c.json({ error: { code: "BAD_REQUEST", message: "Missing handoff id" } }, 400),
-    };
-  }
-  const handoff = await handoffStore.get(id);
-  if (handoff === undefined) {
-    return {
-      ok: false,
-      response: c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404),
-    };
-  }
-  const headerRole = c.req.header("x-grove-role");
-  let bodyRole: string | undefined;
-  try {
-    const body = (await c.req.json<{ role?: string }>().catch(() => undefined)) as
-      | { role?: string }
-      | undefined;
-    bodyRole = body?.role;
-  } catch {
-    // ignore
-  }
-  const callerRole = headerRole ?? bodyRole;
-  if (callerRole === undefined || callerRole !== handoff.toRole) {
-    return {
-      ok: false,
-      response: c.json(
-        {
-          error: {
-            code: "PERMISSION_DENIED",
-            message: `Only the target role '${handoff.toRole}' can acknowledge this handoff (caller role: '${callerRole ?? "unset"}'). Set X-Grove-Role header or include {"role": "..."} in the body.`,
-          },
-        },
-        403,
-      ),
-    };
-  }
-  return { ok: true, handoff };
-}
-
-/** POST /api/handoffs/:id/seen — Record that the target agent has seen this handoff. */
-handoffs.post("/:id/seen", async (c) => {
-  const { handoffStore } = c.get("deps");
-  if (handoffStore === undefined) return c.json({ error: "unreachable" }, 500);
-
-  const authz = await authorizeReceiptMutation(c, handoffStore);
-  if (!authz.ok) return authz.response;
-
-  try {
-    await handoffStore.markSeen(c.req.param("id"));
-    const updated = await handoffStore.get(c.req.param("id"));
-    return c.json(updated);
-  } catch {
-    return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
-  }
-});
-
-/** POST /api/handoffs/:id/acked — Record that the target agent acknowledges this handoff. */
-handoffs.post("/:id/acked", async (c) => {
-  const { handoffStore } = c.get("deps");
-  if (handoffStore === undefined) return c.json({ error: "unreachable" }, 500);
-
-  const authz = await authorizeReceiptMutation(c, handoffStore);
-  if (!authz.ok) return authz.response;
-
-  try {
-    await handoffStore.markAcked(c.req.param("id"));
-    const updated = await handoffStore.get(c.req.param("id"));
-    return c.json(updated);
-  } catch {
-    return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
-  }
-});
+// Intentionally no HTTP routes for seen/acked mutations. The grove-server
+// HTTP surface is not authenticated — any client that can reach it can
+// claim any role. Because receipt mutations must be bound to the actual
+// target role to be trustworthy, they are exposed ONLY through the MCP
+// tool grove_ack_handoff, where GROVE_AGENT_ROLE is set by the spawning
+// process (TUI/runtime) and not controllable by the tool caller.
 
 export { handoffs };

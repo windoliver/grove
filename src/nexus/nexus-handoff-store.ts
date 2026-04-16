@@ -312,25 +312,45 @@ export class NexusHandoffStore implements HandoffStore {
   }
 
   /**
-   * Session-scoped list — reads ONLY the current session's handoff file,
-   * not the zone-wide directory. Used by DeadlineWatcher.rebuildFromStore()
-   * to avoid re-arming timers for handoffs from other sessions.
+   * Session-scoped list — returns handoffs from the current session only,
+   * used by DeadlineWatcher.rebuildFromStore() to avoid re-arming timers
+   * for handoffs in other sessions.
+   *
+   * Uses the same directory-listing path as list() (not a direct readFile)
+   * because Nexus does not guarantee cross-client read-after-write
+   * visibility via readFile — a restarting MCP server could miss handoffs
+   * written by another client. The directory listing path is documented as
+   * the cross-client-visible source of truth.
+   *
+   * When sessionId is unset (global fallback), returns an empty array —
+   * global handoffs can't be attributed to a specific session for rebuild.
    */
   async listForCurrentSession(query?: HandoffQuery): Promise<readonly Handoff[]> {
-    const { handoffs } = await this.readFile(this.filePath());
-    let results = handoffs.filter((h) => h.handoffId && h.createdAt);
-    if (query?.toRole !== undefined) results = results.filter((h) => h.toRole === query.toRole);
-    if (query?.fromRole !== undefined)
-      results = results.filter((h) => h.fromRole === query.fromRole);
-    if (query?.sourceCid !== undefined)
-      results = results.filter((h) => h.sourceCid === query.sourceCid);
-    if (query?.status !== undefined) {
-      const statuses = Array.isArray(query.status) ? query.status : [query.status];
-      results = results.filter((h) => (statuses as string[]).includes(h.status));
+    if (this.sessionId === undefined) return [];
+    const sessionPath = this.filePath();
+    // Scan all handoff files (same visibility path as list()) and filter to
+    // the current session's file.
+    try {
+      const listing = await this.client.list(handoffsDir(this.zoneId));
+      const file = listing.files.find((f) => !f.isDirectory && f.path === sessionPath);
+      if (!file) return [];
+      const { handoffs } = await this.readFile(file.path);
+      let results = handoffs.filter((h) => h.handoffId && h.createdAt);
+      if (query?.toRole !== undefined) results = results.filter((h) => h.toRole === query.toRole);
+      if (query?.fromRole !== undefined)
+        results = results.filter((h) => h.fromRole === query.fromRole);
+      if (query?.sourceCid !== undefined)
+        results = results.filter((h) => h.sourceCid === query.sourceCid);
+      if (query?.status !== undefined) {
+        const statuses = Array.isArray(query.status) ? query.status : [query.status];
+        results = results.filter((h) => (statuses as string[]).includes(h.status));
+      }
+      results.sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
+      if (query?.limit !== undefined) results = results.slice(0, query.limit);
+      return results;
+    } catch {
+      return [];
     }
-    results.sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
-    if (query?.limit !== undefined) results = results.slice(0, query.limit);
-    return results;
   }
 
   close(): void {

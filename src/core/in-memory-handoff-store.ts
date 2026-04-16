@@ -58,6 +58,14 @@ export class InMemoryHandoffStore implements HandoffStore {
     return handoffs;
   }
 
+  /**
+   * InMemory is inherently session-scoped: one store instance per session,
+   * so every handoff in the map belongs to the current session.
+   */
+  async listForCurrentSession(query?: HandoffQuery): Promise<readonly Handoff[]> {
+    return this.list(query);
+  }
+
   async markDelivered(id: string): Promise<void> {
     const handoff = this.handoffs.get(id);
     if (handoff === undefined) {

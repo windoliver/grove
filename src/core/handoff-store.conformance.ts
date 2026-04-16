@@ -478,6 +478,24 @@ export function runHandoffStoreTests(factory: HandoffStoreFactory): void {
       ).rejects.toThrow(InvalidTransitionError);
     });
 
+    test("markAcked is atomic under concurrent retries — same timestamp returned", async () => {
+      const h = await store.create(makeHandoffInput());
+
+      // Fire 5 concurrent markAcked calls — they should all succeed and
+      // converge on a single ackedAt timestamp (not stamp different times).
+      await Promise.all(Array.from({ length: 5 }, () => store.markAcked(h.handoffId)));
+
+      const updated = await store.get(h.handoffId);
+      expect(updated?.ackedAt).toBeDefined();
+
+      // Subsequent calls must not overwrite
+      const originalAckedAt = updated?.ackedAt;
+      await new Promise((r) => setTimeout(r, 20));
+      await store.markAcked(h.handoffId);
+      const after = await store.get(h.handoffId);
+      expect(after?.ackedAt).toBe(originalAckedAt!);
+    });
+
     test("markReplied on already-replied handoff throws InvalidTransitionError", async () => {
       const h = await store.create(makeHandoffInput());
       await store.markDelivered(h.handoffId);

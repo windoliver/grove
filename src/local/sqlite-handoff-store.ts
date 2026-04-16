@@ -166,58 +166,108 @@ export class SqliteHandoffStore implements HandoffStore {
     return rows.map(rowToHandoff);
   }
 
+  // All transitions below are implemented as single conditional UPDATEs
+  // with status guards in the WHERE clause. This closes the read-then-write
+  // TOCTOU window against concurrent expireStale / markReplied / etc: if
+  // the state changed between our check and write, result.changes === 0
+  // and we surface the right error (not-found vs invalid-transition).
+
   async markDelivered(id: string): Promise<void> {
-    const handoff = await this.get(id);
-    if (handoff === undefined) {
-      throw new NotFoundError({ resource: "Handoff", identifier: id });
+    // Valid transition: pending_pickup → delivered
+    const result = this.db
+      .prepare(
+        `UPDATE handoffs SET status = ?
+         WHERE handoff_id = ? AND status = ?`,
+      )
+      .run(HandoffStatus.Delivered, id, HandoffStatus.PendingPickup);
+    if (result.changes === 0) {
+      // Either the handoff doesn't exist or it's in a status from which
+      // delivered is invalid (replied/expired). Disambiguate via a get().
+      const current = await this.get(id);
+      if (current === undefined) {
+        throw new NotFoundError({ resource: "Handoff", identifier: id });
+      }
+      if (current.status !== HandoffStatus.Delivered) {
+        validateTransition(id, current.status, HandoffStatus.Delivered);
+      }
+      // Already delivered — treat as idempotent no-op
     }
-    validateTransition(id, handoff.status, HandoffStatus.Delivered);
-    this.db
-      .prepare("UPDATE handoffs SET status = ? WHERE handoff_id = ?")
-      .run(HandoffStatus.Delivered, id);
   }
 
   async markReplied(id: string, resolvedByCid: string): Promise<void> {
-    const handoff = await this.get(id);
-    if (handoff === undefined) {
-      throw new NotFoundError({ resource: "Handoff", identifier: id });
+    // Valid transitions: pending_pickup → replied, delivered → replied
+    const result = this.db
+      .prepare(
+        `UPDATE handoffs SET status = ?, resolved_by_cid = ?
+         WHERE handoff_id = ? AND status IN (?, ?)`,
+      )
+      .run(
+        HandoffStatus.Replied,
+        resolvedByCid,
+        id,
+        HandoffStatus.PendingPickup,
+        HandoffStatus.Delivered,
+      );
+    if (result.changes === 0) {
+      const current = await this.get(id);
+      if (current === undefined) {
+        throw new NotFoundError({ resource: "Handoff", identifier: id });
+      }
+      validateTransition(id, current.status, HandoffStatus.Replied);
     }
-    validateTransition(id, handoff.status, HandoffStatus.Replied);
-    this.db
-      .prepare("UPDATE handoffs SET status = ?, resolved_by_cid = ? WHERE handoff_id = ?")
-      .run(HandoffStatus.Replied, resolvedByCid, id);
   }
 
   async markSeen(id: string): Promise<void> {
-    const handoff = await this.get(id);
-    if (handoff === undefined) {
-      throw new NotFoundError({ resource: "Handoff", identifier: id });
-    }
-    // No-op if already seen
-    if (handoff.seenAt !== undefined) return;
-    this.db
-      .prepare("UPDATE handoffs SET seen_at = ? WHERE handoff_id = ?")
+    // Only stamp seenAt if not already set. Conditional WHERE prevents
+    // concurrent callers from each writing a different timestamp.
+    const result = this.db
+      .prepare(
+        `UPDATE handoffs SET seen_at = ?
+         WHERE handoff_id = ? AND seen_at IS NULL`,
+      )
       .run(new Date().toISOString(), id);
+    if (result.changes === 0) {
+      // Either the handoff doesn't exist, or seenAt was already set (idempotent)
+      const current = await this.get(id);
+      if (current === undefined) {
+        throw new NotFoundError({ resource: "Handoff", identifier: id });
+      }
+      // Already seen — no-op
+    }
   }
 
   async markAcked(id: string): Promise<void> {
-    const handoff = await this.get(id);
-    if (handoff === undefined) {
-      throw new NotFoundError({ resource: "Handoff", identifier: id });
-    }
-    // No-op if already acked
-    if (handoff.ackedAt !== undefined) return;
+    // Single conditional UPDATE that atomically stamps ackedAt (and seenAt
+    // if unset) only when ackedAt is currently NULL. Uses COALESCE so
+    // seenAt preserves its existing value, or fills with now() if null.
     const now = new Date().toISOString();
-    // Auto-fill seenAt if not already set
-    if (handoff.seenAt === undefined) {
-      this.db
-        .prepare("UPDATE handoffs SET seen_at = ?, acked_at = ? WHERE handoff_id = ?")
-        .run(now, now, id);
-    } else {
-      this.db
-        .prepare("UPDATE handoffs SET acked_at = ? WHERE handoff_id = ?")
-        .run(now, id);
+    const result = this.db
+      .prepare(
+        `UPDATE handoffs
+         SET acked_at = ?, seen_at = COALESCE(seen_at, ?)
+         WHERE handoff_id = ? AND acked_at IS NULL`,
+      )
+      .run(now, now, id);
+    if (result.changes === 0) {
+      const current = await this.get(id);
+      if (current === undefined) {
+        throw new NotFoundError({ resource: "Handoff", identifier: id });
+      }
+      // Already acked — no-op
     }
+  }
+
+  /**
+   * Session-scoped enumeration for deadline rebuild.
+   *
+   * SQLite stores have no session_id column today — this contract relies
+   * on the caller opening ONE SqliteHandoffStore per session database.
+   * That is how grove currently runs (one .grove/grove.db per worktree,
+   * one active session at a time). If multi-session-per-DB is added later,
+   * a session_id column must be introduced and this method updated.
+   */
+  async listForCurrentSession(query?: HandoffQuery): Promise<readonly Handoff[]> {
+    return this.list(query);
   }
 
   async expireStale(now?: string): Promise<readonly Handoff[]> {
