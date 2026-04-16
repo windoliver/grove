@@ -16,54 +16,122 @@
 
 import type { Database, Statement } from "bun:sqlite";
 import type { GroveContract } from "../core/contract.js";
-import { parseGroveContractObject } from "../core/contract.js";
 import type { CreateSessionInput, Session, SessionQuery } from "../core/session.js";
 import type { AgentTopology } from "../core/topology.js";
 import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
 import type { GoalData } from "../tui/provider.js";
 
 /**
- * Convert camelCase property names to snake_case recursively.
+ * Shape-validate a parsed session config from storage.
  *
- * Session config is stored as the normalized camelCase GroveContract form,
- * but parseGroveContractObject expects the snake_case YAML wire form. This
- * converter lets us round-trip stored snapshots back through the canonical
- * parser for full schema validation at the storage boundary.
+ * Returns null on success, or a reason string when validation fails.
+ *
+ * This is a camelCase-aware shape check, not a full schema validation.
+ * The snake_case zod schemas in contract.ts cannot be reused here:
+ *   - V1 stored form includes auto-migrated `execution`/`concurrency`
+ *     fields that the strict V1 wire schema rejects.
+ *   - V3 stored form uses `topology`; the V3 wire schema uses
+ *     `agent_topology` (lossy key-rename).
+ *
+ * So a stored-form-aware check is the right layer. The check covers the
+ * specific nested-field crashes that enforcement code can hit:
+ *   - gates[] items missing `type` (switch falls through)
+ *   - agentConstraints.allowedKinds not an array (`.includes` crashes)
+ *   - rateLimits/concurrency/execution fields with non-numeric values
+ *     (silent bypass via optional chaining, or arithmetic errors)
  */
-function camelToSnakeKeys(value: unknown): unknown {
-  if (value === null || value === undefined || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map(camelToSnakeKeys);
-  const out: Record<string, unknown> = {};
-  for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
-    const snakeKey = key.replace(/([A-Z])/g, (m) => `_${m.toLowerCase()}`);
-    out[snakeKey] = camelToSnakeKeys(v);
-  }
-  return out;
-}
-
-/**
- * Validate a parsed session config against the full GroveContract schema.
- *
- * Returns the validated contract on success, or a reason string when
- * validation fails. Catches row corruption (manual DB edits, partial
- * writes) before downstream enforcement code silently bypasses checks
- * or crashes late on bad nested fields.
- *
- * Implementation: stored form is normalized camelCase; parseGroveContractObject
- * accepts the snake_case YAML wire form. Round-trip via a key converter so
- * all validation (zod schema + cross-field checks) runs on stored data.
- */
-function validateStoredContract(obj: unknown): { config: GroveContract } | { reason: string } {
+function validateStoredContractShape(obj: unknown): string | null {
   if (obj === null || typeof obj !== "object" || Array.isArray(obj)) {
-    return { reason: "config_json is not a plain object" };
+    return "config_json is not a plain object";
   }
-  try {
-    const wire = camelToSnakeKeys(obj);
-    const config = parseGroveContractObject(wire);
-    return { config };
-  } catch (err) {
-    return { reason: err instanceof Error ? err.message : String(err) };
+  const c = obj as Record<string, unknown>;
+  if (typeof c.contractVersion !== "number") {
+    return "config_json missing numeric contractVersion";
   }
+
+  const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+    v !== null && typeof v === "object" && !Array.isArray(v);
+
+  // Top-level object fields must be objects (not null, array, or primitive).
+  const objectFields = [
+    "metrics",
+    "stopConditions",
+    "agentConstraints",
+    "claimPolicy",
+    "concurrency",
+    "execution",
+    "rateLimits",
+    "retry",
+    "gossip",
+    "outcomePolicy",
+    "evaluation",
+    "hooks",
+    "topology",
+  ] as const;
+  for (const field of objectFields) {
+    const v = c[field];
+    if (v !== undefined && !isPlainObject(v)) {
+      return `config_json field '${field}' is not an object`;
+    }
+  }
+
+  // gates is an array of gate objects, each with a string `type`.
+  if (c.gates !== undefined) {
+    if (!Array.isArray(c.gates)) return "config_json field 'gates' is not an array";
+    for (let i = 0; i < c.gates.length; i++) {
+      const g = c.gates[i];
+      if (!isPlainObject(g)) {
+        return `config_json gates[${i}] is not an object`;
+      }
+      if (typeof g.type !== "string") {
+        return `config_json gates[${i}] missing string 'type'`;
+      }
+    }
+  }
+
+  // agentConstraints.allowedKinds must be array of strings if present.
+  const ac = c.agentConstraints;
+  if (isPlainObject(ac)) {
+    if (ac.allowedKinds !== undefined) {
+      if (!Array.isArray(ac.allowedKinds)) {
+        return "config_json agentConstraints.allowedKinds is not an array";
+      }
+      for (let i = 0; i < ac.allowedKinds.length; i++) {
+        if (typeof ac.allowedKinds[i] !== "string") {
+          return `config_json agentConstraints.allowedKinds[${i}] is not a string`;
+        }
+      }
+    }
+    for (const sub of ["requiredRelations", "requiredArtifacts"] as const) {
+      const v = ac[sub];
+      if (v !== undefined && !isPlainObject(v)) {
+        return `config_json agentConstraints.${sub} is not an object`;
+      }
+    }
+  }
+
+  // Numeric sub-fields in rateLimits / concurrency / execution.
+  const numericFields: Record<string, readonly string[]> = {
+    rateLimits: [
+      "maxContributionsPerAgentPerHour",
+      "maxContributionsPerGrovePerHour",
+      "maxArtifactSizeBytes",
+      "maxArtifactsPerContribution",
+    ],
+    concurrency: ["maxActiveClaims", "maxClaimsPerAgent", "maxClaimsPerTarget"],
+    execution: ["defaultLeaseSeconds", "maxLeaseSeconds", "heartbeatIntervalSeconds"],
+  };
+  for (const [section, keys] of Object.entries(numericFields)) {
+    const v = c[section];
+    if (!isPlainObject(v)) continue;
+    for (const key of keys) {
+      if (v[key] !== undefined && typeof v[key] !== "number") {
+        return `config_json ${section}.${key} is not a number`;
+      }
+    }
+  }
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -487,15 +555,16 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     } catch (err) {
       return { kind: "malformed", reason: err instanceof Error ? err.message : String(err) };
     }
-    // Run full schema validation: round-trip camelCase → snake_case and
-    // reuse parseGroveContractObject so nested bad shapes (e.g. invalid
-    // gate entries, non-array allowedKinds) are rejected at the storage
-    // boundary rather than silently bypassed or crashing enforcement late.
-    const validated = validateStoredContract(parsed);
-    if ("reason" in validated) {
-      return { kind: "malformed", reason: validated.reason };
+    // Shape-validate stored form against the nested fields enforcement
+    // reads. Catches corruption (manual DB edits, partial writes) at the
+    // storage boundary instead of silently bypassing checks or crashing
+    // late. Not a full schema validator — see validateStoredContractShape
+    // doc for why the snake_case schemas in contract.ts cannot be reused.
+    const reason = validateStoredContractShape(parsed);
+    if (reason !== null) {
+      return { kind: "malformed", reason };
     }
-    return { kind: "ok", config: validated.config };
+    return { kind: "ok", config: parsed as GroveContract };
   };
 
   /**
