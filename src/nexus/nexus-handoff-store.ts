@@ -469,12 +469,22 @@ export class NexusHandoffStore implements HandoffStore {
    * readAllHandoffs directly.
    */
   private async readScopedHandoffs(): Promise<Handoff[]> {
-    const sessionPath = this.filePath();
-    const globalPath = globalFile(this.zoneId);
+    const sessionId = this.sessionId;
+    if (sessionId === undefined) return [];
+    // Some Nexus versions return listing entries without the .json suffix
+    // even though files are written with it; readAllHandoffs accounts for
+    // this by accepting every non-directory entry. Here we match by
+    // basename with the extension stripped so the session file and
+    // _global file are picked up in both listing styles.
+    const basenameNoExt = (path: string): string => {
+      const name = path.split("/").pop() ?? "";
+      return name.replace(/\.json$/, "");
+    };
+    const want = new Set([sessionId, "_global"]);
     try {
       const listing = await this.client.list(handoffsDir(this.zoneId));
       const pickable = listing.files.filter(
-        (f) => !f.isDirectory && (f.path === sessionPath || f.path === globalPath),
+        (f) => !f.isDirectory && want.has(basenameNoExt(f.path)),
       );
       const perFile = await Promise.all(
         pickable.map(async (f) => {
@@ -519,27 +529,42 @@ export class NexusHandoffStore implements HandoffStore {
     );
 
     if (!found && this.sessionId !== undefined) {
-      // Migration shim: scoped stores can also mutate pre-#164 rows that
-      // live in _global.json. Without this, grove_ack_handoff /
-      // grove_process_handoff / markReplied would reject legacy handoffs
-      // that isInCurrentSession / list() surface via the same shim.
+      // Migration shim with claim-on-move: pre-#164 rows in _global.json
+      // are visible and mutable to every scoped session, so the first
+      // session to mutate them must ALSO move the row out of _global and
+      // into its session file — otherwise peer sessions keep seeing them
+      // in list()/listForCurrentSession() forever, re-acking or
+      // re-processing a row that the first session already resolved.
       //
-      // Pre-#164 rows have no session ownership by definition (they were
-      // created before session scoping existed), so "any session can
-      // resolve them" is the intended migration semantics. Concurrent
-      // resolutions are still first-wins via validateTransition inside
-      // `fn`: the second mutation sees the already-resolved status and
-      // the state-machine guard throws InvalidTransitionError, which the
-      // MCP tool surface translates to a structured INVALID_STATE error.
-      await this.readModifyWrite(globalFile(this.zoneId), (handoffs) =>
-        handoffs.map((h) => {
-          if (h.handoffId === handoffId) {
-            found = true;
-            return fn(h);
-          }
-          return h;
-        }),
-      );
+      // This mirrors the SQLite backend's claim-on-write pattern (SET
+      // session_id = COALESCE(session_id, ?) in every scoped UPDATE):
+      // after the first mutation, scopeClause / readScopedHandoffs stop
+      // matching the row from every other session.
+      let claimed: Handoff | undefined;
+      await this.readModifyWrite(globalFile(this.zoneId), (handoffs) => {
+        const idx = handoffs.findIndex((h) => h.handoffId === handoffId);
+        if (idx === -1) return handoffs;
+        const current = handoffs[idx];
+        if (current === undefined) return handoffs;
+        claimed = fn(current);
+        // Remove from _global — the row has been claimed by this session.
+        // A concurrent writer that raced us for the CAS will retry against
+        // the updated _global (without this row) and bail out.
+        return handoffs.filter((h) => h.handoffId !== handoffId);
+      });
+      if (claimed !== undefined) {
+        const snapshot = claimed;
+        found = true;
+        // Insert into the session's own file so future reads resolve it
+        // locally. If this write fails after _global delete committed,
+        // the row survives only in the in-memory snapshot — but the
+        // readModifyWrite retry loop gives us 8 attempts with backoff
+        // before that becomes a real data-loss event.
+        await this.readModifyWrite(this.filePath(), (handoffs) => {
+          const deduped = handoffs.filter((h) => h.handoffId !== handoffId);
+          return [...deduped, snapshot];
+        });
+      }
     }
 
     if (!found) {

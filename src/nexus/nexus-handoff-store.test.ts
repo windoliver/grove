@@ -203,6 +203,42 @@ describe("NexusHandoffStore: Nexus-specific behavior", () => {
     }
   });
 
+  test("first scoped mutation claims a _global row — peer session stops seeing it", async () => {
+    const client = new MockNexusClient();
+    const legacy = new NexusHandoffStore(client, undefined, "default");
+    const storeA = new NexusHandoffStore(client, "sess-A", "default");
+    const storeB = new NexusHandoffStore(client, "sess-B", "default");
+    try {
+      const hLegacy = await legacy.create({
+        sourceCid: "blake3:legacy",
+        fromRole: "coder",
+        toRole: "reviewer",
+      });
+
+      // Both sessions see the legacy row pre-claim
+      expect(await storeA.isInCurrentSession(hLegacy.handoffId)).toBe(true);
+      expect(await storeB.isInCurrentSession(hLegacy.handoffId)).toBe(true);
+
+      // A claims via markAcked (mutation moves row from _global → sess-A file)
+      await storeA.markAcked(hLegacy.handoffId);
+
+      // B can no longer see / resolve it — claim-on-move completed
+      expect(await storeB.isInCurrentSession(hLegacy.handoffId)).toBe(false);
+      expect(await storeB.get(hLegacy.handoffId)).toBeUndefined();
+      const listB = await storeB.list();
+      expect(listB.find((h) => h.handoffId === hLegacy.handoffId)).toBeUndefined();
+
+      // A still owns it
+      const got = await storeA.get(hLegacy.handoffId);
+      expect(got?.handoffId).toBe(hLegacy.handoffId);
+      expect(got?.ackedAt).toBeDefined();
+    } finally {
+      legacy.close();
+      storeA.close();
+      storeB.close();
+    }
+  });
+
   test("store without sessionId uses _global.json", async () => {
     const client = new MockNexusClient();
     const store = new NexusHandoffStore(client, undefined, "default");
