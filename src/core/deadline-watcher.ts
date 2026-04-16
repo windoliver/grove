@@ -169,11 +169,14 @@ export class DeadlineWatcher {
         return;
       }
 
-      // Flush expiry for ALL overdue handoffs at this point. If the event
-      // loop was stalled across multiple deadlines, expireStale returns
-      // every newly-expired handoff. We must emit one overdue event per
-      // handoff — without this, stalled-loop scenarios silently drop
-      // overdue events for peers the current timer callback did not own.
+      // Flush expiry for ALL overdue handoffs at this point. Only handoffs
+      // returned by expireStale() are ones THIS process atomically transitioned
+      // from unresolved → expired; other processes with their own watchers
+      // would have their own expireStale() return different subsets. Emitting
+      // only on transition ownership deduplicates overdue events across
+      // processes — if another watcher already expired our handoff, expireStale
+      // here returns empty, and we emit nothing. This is intentional: the
+      // other watcher already emitted (single-owner semantics via store CAS).
       let expired: readonly Handoff[] = [];
       try {
         expired = await this.handoffStore.expireStale();
@@ -182,10 +185,9 @@ export class DeadlineWatcher {
       }
 
       const timestamp = new Date().toISOString();
-      const emitted = new Set<string>();
 
-      // Emit overdue events for every handoff that just expired. Each event
-      // targets the handoff's own toRole, not the firing timer's toRole.
+      // Emit overdue events for every handoff that just transitioned. Each
+      // event targets the handoff's own toRole, not the firing timer's toRole.
       for (const h of expired) {
         log(`OVERDUE handoff=${h.handoffId.slice(0, 8)} toRole=${h.toRole} — emitting handoff.overdue event`);
         this.eventBus.publish({
@@ -200,28 +202,16 @@ export class DeadlineWatcher {
           },
           timestamp,
         });
-        emitted.add(h.handoffId);
         // Cancel any peer timer so it doesn't fire and emit a duplicate
         this.cancel(h.handoffId);
       }
 
-      // If expireStale didn't return our handoff (e.g. the store flipped it
-      // between our read and the sweep, or expireStale failed), fall back
-      // to emitting based on the snapshot we already have.
-      if (!emitted.has(handoffId)) {
-        log(`OVERDUE handoff=${handoffId.slice(0, 8)} (fallback from snapshot) toRole=${toRole}`);
-        this.eventBus.publish({
-          type: "handoff.overdue",
-          sourceRole: fromRole,
-          targetRole: toRole,
-          payload: {
-            handoffId,
-            sourceCid: handoff.sourceCid,
-            replyDueAt: handoff.replyDueAt,
-            status: handoff.status,
-          },
-          timestamp,
-        });
+      // If expireStale didn't return our handoff, another watcher (or a
+      // reply that raced the timer) already transitioned it. Do NOT emit a
+      // fallback event — that would produce duplicate overdue notifications
+      // in multi-watcher/multi-process setups.
+      if (expired.length === 0) {
+        log(`TIMER FIRED handoff=${handoffId.slice(0, 8)} — already transitioned by another actor, skipping emit (from/to=${fromRole}/${toRole})`);
       }
     } catch (err) {
       log(`TIMER ERROR handoff=${handoffId.slice(0, 8)} err=${err instanceof Error ? err.message : String(err)}`);

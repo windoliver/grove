@@ -159,6 +159,37 @@ describe("DeadlineWatcher", () => {
     expect(events[0]?.type).toBe("handoff.overdue");
   });
 
+  test("two watchers on same handoff emit overdue at most once (single-owner)", async () => {
+    const h = await store.create({
+      sourceCid: "blake3:test",
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+      replyDueAt: new Date(Date.now() + 50).toISOString(),
+    });
+
+    const events: GroveEvent[] = [];
+    bus.subscribe("reviewer", (e) => events.push(e));
+
+    // Two watchers observe the same store — simulates two MCP processes
+    const watcher2 = new DeadlineWatcher({ handoffStore: store, eventBus: bus });
+
+    watcher.watch(h);
+    watcher2.watch(h);
+
+    // Wait for both to fire
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Only ONE overdue event should be emitted — the watcher whose
+    // expireStale() CAS flipped the row wins; the other sees empty and
+    // skips emission.
+    const overdueEvents = events.filter((e) => e.type === "handoff.overdue");
+    expect(overdueEvents).toHaveLength(1);
+    expect(overdueEvents[0]?.payload.handoffId).toBe(h.handoffId);
+
+    watcher2.close();
+  });
+
   test("late reply is rejected after timer fires (expiry flush)", async () => {
     const h = await store.create({
       sourceCid: "blake3:test",
