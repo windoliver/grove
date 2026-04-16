@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { NotFoundError } from "../core/errors.js";
+import { NotFoundError, StateConflictError } from "../core/errors.js";
 import {
   type Handoff,
   type HandoffInput,
@@ -195,11 +195,17 @@ export class SqliteHandoffStore implements HandoffStore {
   }
 
   async markReplied(id: string, resolvedByCid: string): Promise<void> {
-    // Valid transitions: pending_pickup → replied, delivered → replied
+    const now = new Date().toISOString();
+    // Valid transitions: pending_pickup → replied, delivered → replied.
+    // Reject late replies in-database: the WHERE clause rejects rows whose
+    // reply_due_at is in the past, closing the SLA loophole even when a
+    // background DeadlineWatcher has not yet flipped status to expired.
+    // This makes correctness independent of the watcher being present.
     const result = this.db
       .prepare(
         `UPDATE handoffs SET status = ?, resolved_by_cid = ?
-         WHERE handoff_id = ? AND status IN (?, ?)`,
+         WHERE handoff_id = ? AND status IN (?, ?)
+           AND (reply_due_at IS NULL OR reply_due_at >= ?)`,
       )
       .run(
         HandoffStatus.Replied,
@@ -207,11 +213,37 @@ export class SqliteHandoffStore implements HandoffStore {
         id,
         HandoffStatus.PendingPickup,
         HandoffStatus.Delivered,
+        now,
       );
     if (result.changes === 0) {
       const current = await this.get(id);
       if (current === undefined) {
         throw new NotFoundError({ resource: "Handoff", identifier: id });
+      }
+      // Distinguish "already replied/expired" (invalid transition) from
+      // "deadline passed" (SLA breach). Both deny the update, but the
+      // caller may want to log them differently.
+      if (
+        (current.status === HandoffStatus.PendingPickup ||
+          current.status === HandoffStatus.Delivered) &&
+        current.replyDueAt !== undefined &&
+        current.replyDueAt < now
+      ) {
+        // Flip to expired so a subsequent expireStale() sees consistent state
+        this.db
+          .prepare(
+            `UPDATE handoffs SET status = ? WHERE handoff_id = ? AND status IN (?, ?)`,
+          )
+          .run(
+            HandoffStatus.Expired,
+            id,
+            HandoffStatus.PendingPickup,
+            HandoffStatus.Delivered,
+          );
+        throw new StateConflictError({
+          resource: "Handoff",
+          reason: `Reply deadline passed at ${current.replyDueAt} (now ${now})`,
+        });
       }
       validateTransition(id, current.status, HandoffStatus.Replied);
     }

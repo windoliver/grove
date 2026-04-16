@@ -162,22 +162,54 @@ export class DeadlineWatcher {
 
       // Only transition and emit overdue if still unresolved
       if (
-        handoff.status === HandoffStatus.PendingPickup ||
-        handoff.status === HandoffStatus.Delivered
+        handoff.status !== HandoffStatus.PendingPickup &&
+        handoff.status !== HandoffStatus.Delivered
       ) {
-        // Flush expiry first: without this, a late reply arriving after the
-        // timer fires but before expireStale() runs would still succeed via
-        // markReplied() (since the stored status is still delivered/pending),
-        // retroactively "satisfying" a missed SLA. Calling expireStale() now
-        // atomically flips eligible handoffs to expired, so markReplied will
-        // throw InvalidTransitionError against an expired handoff.
-        try {
-          await this.handoffStore.expireStale();
-        } catch {
-          // best-effort — fall through to emit even if expiry failed
-        }
+        log(`TIMER FIRED handoff=${handoffId.slice(0, 8)} status=${handoff.status} — already resolved, skipping`);
+        return;
+      }
 
-        log(`OVERDUE handoff=${handoffId.slice(0, 8)} status=${handoff.status} toRole=${toRole} — emitting handoff.overdue event`);
+      // Flush expiry for ALL overdue handoffs at this point. If the event
+      // loop was stalled across multiple deadlines, expireStale returns
+      // every newly-expired handoff. We must emit one overdue event per
+      // handoff — without this, stalled-loop scenarios silently drop
+      // overdue events for peers the current timer callback did not own.
+      let expired: readonly Handoff[] = [];
+      try {
+        expired = await this.handoffStore.expireStale();
+      } catch {
+        // best-effort
+      }
+
+      const timestamp = new Date().toISOString();
+      const emitted = new Set<string>();
+
+      // Emit overdue events for every handoff that just expired. Each event
+      // targets the handoff's own toRole, not the firing timer's toRole.
+      for (const h of expired) {
+        log(`OVERDUE handoff=${h.handoffId.slice(0, 8)} toRole=${h.toRole} — emitting handoff.overdue event`);
+        this.eventBus.publish({
+          type: "handoff.overdue",
+          sourceRole: h.fromRole,
+          targetRole: h.toRole,
+          payload: {
+            handoffId: h.handoffId,
+            sourceCid: h.sourceCid,
+            replyDueAt: h.replyDueAt,
+            status: HandoffStatus.Expired,
+          },
+          timestamp,
+        });
+        emitted.add(h.handoffId);
+        // Cancel any peer timer so it doesn't fire and emit a duplicate
+        this.cancel(h.handoffId);
+      }
+
+      // If expireStale didn't return our handoff (e.g. the store flipped it
+      // between our read and the sweep, or expireStale failed), fall back
+      // to emitting based on the snapshot we already have.
+      if (!emitted.has(handoffId)) {
+        log(`OVERDUE handoff=${handoffId.slice(0, 8)} (fallback from snapshot) toRole=${toRole}`);
         this.eventBus.publish({
           type: "handoff.overdue",
           sourceRole: fromRole,
@@ -188,10 +220,8 @@ export class DeadlineWatcher {
             replyDueAt: handoff.replyDueAt,
             status: handoff.status,
           },
-          timestamp: new Date().toISOString(),
+          timestamp,
         });
-      } else {
-        log(`TIMER FIRED handoff=${handoffId.slice(0, 8)} status=${handoff.status} — already resolved, skipping`);
       }
     } catch (err) {
       log(`TIMER ERROR handoff=${handoffId.slice(0, 8)} err=${err instanceof Error ? err.message : String(err)}`);

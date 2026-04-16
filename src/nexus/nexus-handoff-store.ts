@@ -12,6 +12,7 @@
  * falls back to a shared "handoffs/_global.json" file.
  */
 
+import { StateConflictError } from "../core/errors.js";
 import {
   type Handoff,
   type HandoffInput,
@@ -235,7 +236,20 @@ export class NexusHandoffStore implements HandoffStore {
   }
 
   async markReplied(handoffId: string, resolvedByCid: string): Promise<void> {
+    // Reject late replies at the store level so correctness does not
+    // depend on the DeadlineWatcher flipping status first.
+    const now = new Date().toISOString();
+    let deadlineBreached = false;
     await this.updateHandoff(handoffId, (h) => {
+      if (
+        (h.status === HandoffStatus.PendingPickup ||
+          h.status === HandoffStatus.Delivered) &&
+        h.replyDueAt !== undefined &&
+        h.replyDueAt < now
+      ) {
+        deadlineBreached = true;
+        return { ...h, status: HandoffStatus.Expired };
+      }
       validateTransition(handoffId, h.status, HandoffStatus.Replied);
       return {
         ...h,
@@ -243,6 +257,12 @@ export class NexusHandoffStore implements HandoffStore {
         resolvedByCid,
       };
     });
+    if (deadlineBreached) {
+      throw new StateConflictError({
+        resource: "Handoff",
+        reason: `Reply deadline passed (now ${now})`,
+      });
+    }
   }
 
   async markSeen(handoffId: string): Promise<void> {

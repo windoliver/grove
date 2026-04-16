@@ -314,12 +314,15 @@ export function runHandoffStoreTests(factory: HandoffStoreFactory): void {
       expect(updated?.status).toBe(HandoffStatus.Expired);
     });
 
-    test("expireStale does not expire already-replied handoffs with past deadline", async () => {
-      const pastDeadline = new Date(Date.now() - 60_000).toISOString();
+    test("expireStale does not expire already-replied handoffs", async () => {
+      // Use a future deadline so the reply is accepted, then verify
+      // expireStale doesn't touch already-replied handoffs even after the
+      // deadline passes. (Stores reject late replies via deadline check, so
+      // this test exercises the replied-before-deadline path.)
+      const futureDeadline = new Date(Date.now() + 60_000).toISOString();
       const h = await store.create(
-        makeHandoffInput({ replyDueAt: pastDeadline }),
+        makeHandoffInput({ replyDueAt: futureDeadline }),
       );
-      // Transition to delivered then replied before expiry runs
       await store.markDelivered(h.handoffId);
       await store.markReplied(h.handoffId, "blake3:reply-cid");
 
@@ -328,6 +331,17 @@ export function runHandoffStoreTests(factory: HandoffStoreFactory): void {
 
       expect(expired.map((e) => e.handoffId)).not.toContain(h.handoffId);
       expect(updated?.status).toBe(HandoffStatus.Replied);
+    });
+
+    test("markReplied rejects late replies (deadline passed)", async () => {
+      const pastDeadline = new Date(Date.now() - 60_000).toISOString();
+      const h = await store.create(
+        makeHandoffInput({ replyDueAt: pastDeadline }),
+      );
+      await expect(store.markReplied(h.handoffId, "blake3:late-reply")).rejects.toThrow();
+      // The handoff should be flipped to expired by the rejection path
+      const after = await store.get(h.handoffId);
+      expect(after?.status).toBe(HandoffStatus.Expired);
     });
 
     // ------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import { NotFoundError } from "./errors.js";
+import { NotFoundError, StateConflictError } from "./errors.js";
 import {
   type Handoff,
   type HandoffInput,
@@ -79,6 +79,21 @@ export class InMemoryHandoffStore implements HandoffStore {
     const handoff = this.handoffs.get(id);
     if (handoff === undefined) {
       throw new NotFoundError({ resource: "Handoff", identifier: id });
+    }
+    // Reject late replies in the store itself, so correctness does not
+    // depend on the DeadlineWatcher having already flipped status.
+    const now = new Date().toISOString();
+    if (
+      (handoff.status === HandoffStatus.PendingPickup ||
+        handoff.status === HandoffStatus.Delivered) &&
+      handoff.replyDueAt !== undefined &&
+      handoff.replyDueAt < now
+    ) {
+      this.handoffs.set(id, { ...handoff, status: HandoffStatus.Expired });
+      throw new StateConflictError({
+        resource: "Handoff",
+        reason: `Reply deadline passed at ${handoff.replyDueAt} (now ${now})`,
+      });
     }
     validateTransition(id, handoff.status, HandoffStatus.Replied);
     this.handoffs.set(id, {
