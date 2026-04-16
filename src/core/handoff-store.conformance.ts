@@ -1,381 +1,550 @@
 /**
  * Conformance test suite for HandoffStore implementations.
  *
- * Runs the same behavioral tests against any HandoffStore implementation
- * to verify interface contract compliance. Follows the established pattern
- * from store.conformance.ts, cas.conformance.ts, bounty-store.conformance.ts.
- *
- * Usage:
- *   import { runHandoffStoreConformanceTests } from "./handoff-store.conformance.js";
- *   runHandoffStoreConformanceTests("InMemoryHandoffStore", () => new InMemoryHandoffStore());
+ * Any backend that implements HandoffStore can validate its behavior
+ * by calling `runHandoffStoreTests()` with a factory that creates
+ * fresh store instances.
  */
 
-import { describe, expect, test } from "bun:test";
-import { HandoffStatus, type HandoffStore } from "./handoff.js";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-export function runHandoffStoreConformanceTests(
-  name: string,
-  factory: () => HandoffStore | Promise<HandoffStore>,
-  cleanup?: () => void | Promise<void>,
-): void {
-  describe(`HandoffStore conformance: ${name}`, () => {
-    async function make(): Promise<HandoffStore> {
-      const result = factory();
-      return result instanceof Promise ? await result : result;
-    }
+import { HandoffStatus, type HandoffStore, InvalidTransitionError } from "./handoff.js";
+import { makeHandoffInput } from "./test-helpers.js";
 
-    // --- create + get ---
+/** Factory that creates a fresh HandoffStore and returns a cleanup function. */
+export type HandoffStoreFactory = () => Promise<{
+  store: HandoffStore;
+  cleanup: () => Promise<void>;
+}>;
 
-    test("create returns a handoff with all required fields", async () => {
-      const store = await make();
-      try {
-        const h = await store.create({
-          sourceCid: "blake3:abc123",
-          fromRole: "coder",
-          toRole: "reviewer",
-        });
-        expect(h.handoffId).toBeTruthy();
-        expect(h.sourceCid).toBe("blake3:abc123");
-        expect(h.fromRole).toBe("coder");
-        expect(h.toRole).toBe("reviewer");
-        expect(h.requiresReply).toBe(false);
-        expect(h.createdAt).toBeTruthy();
-        // Status must be one of the valid values
-        expect(Object.values(HandoffStatus)).toContain(h.status);
-      } finally {
-        store.close();
-        await cleanup?.();
-      }
+/**
+ * Run the full HandoffStore conformance test suite.
+ *
+ * Call this from your backend-specific test file with a factory
+ * that creates and tears down store instances.
+ */
+export function runHandoffStoreTests(factory: HandoffStoreFactory): void {
+  describe("HandoffStore conformance", () => {
+    let store: HandoffStore;
+    let cleanup: () => Promise<void>;
+
+    beforeEach(async () => {
+      const result = await factory();
+      store = result.store;
+      cleanup = result.cleanup;
     });
 
-    test("create with explicit handoffId preserves it", async () => {
-      const store = await make();
-      try {
-        const h = await store.create({
-          handoffId: "custom-id-1",
-          sourceCid: "blake3:abc",
-          fromRole: "coder",
-          toRole: "reviewer",
-        });
-        expect(h.handoffId).toBe("custom-id-1");
-      } finally {
-        store.close();
-        await cleanup?.();
-      }
+    afterEach(async () => {
+      store.close();
+      await cleanup();
     });
 
-    test("create with requiresReply=true preserves it", async () => {
-      const store = await make();
-      try {
-        const h = await store.create({
-          sourceCid: "blake3:abc",
-          fromRole: "coder",
-          toRole: "reviewer",
-          requiresReply: true,
-          replyDueAt: "2099-01-01T00:00:00.000Z",
-        });
-        expect(h.requiresReply).toBe(true);
-        expect(h.replyDueAt).toBe("2099-01-01T00:00:00.000Z");
-      } finally {
-        store.close();
-        await cleanup?.();
-      }
+    // ------------------------------------------------------------------
+    // create / get
+    // ------------------------------------------------------------------
+
+    test("create stores and returns a handoff", async () => {
+      const input = makeHandoffInput();
+      const handoff = await store.create(input);
+      expect(handoff.sourceCid).toBe(input.sourceCid);
+      expect(handoff.fromRole).toBe(input.fromRole);
+      expect(handoff.toRole).toBe(input.toRole);
+      expect(typeof handoff.handoffId).toBe("string");
+      expect(handoff.handoffId.length).toBeGreaterThan(0);
+      expect(handoff.createdAt).toBeDefined();
     });
 
-    test("get returns the created handoff by ID", async () => {
-      const store = await make();
-      try {
-        const created = await store.create({
-          sourceCid: "blake3:abc",
-          fromRole: "coder",
-          toRole: "reviewer",
-        });
-        const fetched = await store.get(created.handoffId);
-        expect(fetched).toBeDefined();
-        expect(fetched?.handoffId).toBe(created.handoffId);
-        expect(fetched?.sourceCid).toBe(created.sourceCid);
-      } finally {
-        store.close();
-        await cleanup?.();
-      }
+    test("create assigns a UUID when handoffId is omitted", async () => {
+      const input = makeHandoffInput({ handoffId: undefined });
+      const handoff = await store.create(input);
+      expect(handoff.handoffId).toBeDefined();
+      expect(handoff.handoffId.length).toBeGreaterThan(0);
     });
 
-    test("get returns undefined for nonexistent ID", async () => {
-      const store = await make();
-      try {
-        const fetched = await store.get("nonexistent-id");
-        expect(fetched).toBeUndefined();
-      } finally {
-        store.close();
-        await cleanup?.();
-      }
+    test("create uses provided handoffId when given", async () => {
+      const input = makeHandoffInput({ handoffId: "custom-id-123" });
+      const handoff = await store.create(input);
+      expect(handoff.handoffId).toBe("custom-id-123");
     });
 
-    // --- list ---
+    test("create defaults requiresReply to false", async () => {
+      const input = makeHandoffInput({ requiresReply: undefined });
+      const handoff = await store.create(input);
+      expect(handoff.requiresReply).toBe(false);
+    });
 
-    test("list returns all handoffs when no query provided", async () => {
-      const store = await make();
-      try {
-        await store.create({ sourceCid: "blake3:a", fromRole: "coder", toRole: "reviewer" });
-        await store.create({ sourceCid: "blake3:b", fromRole: "reviewer", toRole: "coder" });
+    test("create respects requiresReply=true", async () => {
+      const input = makeHandoffInput({ requiresReply: true });
+      const handoff = await store.create(input);
+      expect(handoff.requiresReply).toBe(true);
+    });
 
-        const all = await store.list();
-        expect(all.length).toBeGreaterThanOrEqual(2);
-      } finally {
-        store.close();
-        await cleanup?.();
-      }
+    test("create stores replyDueAt when provided", async () => {
+      const deadline = new Date(Date.now() + 60_000).toISOString();
+      const input = makeHandoffInput({ replyDueAt: deadline });
+      const handoff = await store.create(input);
+      expect(handoff.replyDueAt).toBe(deadline);
+    });
+
+    test("create omits replyDueAt when not provided", async () => {
+      const input = makeHandoffInput({ replyDueAt: undefined });
+      const handoff = await store.create(input);
+      expect(handoff.replyDueAt).toBeUndefined();
+    });
+
+    test("get returns stored handoff", async () => {
+      const handoff = await store.create(makeHandoffInput());
+      const retrieved = await store.get(handoff.handoffId);
+      expect(retrieved).toBeDefined();
+      expect(retrieved?.handoffId).toBe(handoff.handoffId);
+      expect(retrieved?.sourceCid).toBe(handoff.sourceCid);
+      expect(retrieved?.fromRole).toBe(handoff.fromRole);
+      expect(retrieved?.toRole).toBe(handoff.toRole);
+    });
+
+    test("get returns undefined for non-existent handoff", async () => {
+      const result = await store.get("nonexistent");
+      expect(result).toBeUndefined();
+    });
+
+    // ------------------------------------------------------------------
+    // createMany
+    // ------------------------------------------------------------------
+
+    test("createMany stores multiple handoffs", async () => {
+      if (store.createMany === undefined) return; // optional method
+
+      const inputs = [
+        makeHandoffInput({ toRole: "reviewer" }),
+        makeHandoffInput({ toRole: "tester" }),
+        makeHandoffInput({ toRole: "auditor" }),
+      ];
+
+      const handoffs = await store.createMany(inputs);
+      expect(handoffs).toHaveLength(3);
+
+      const roles = handoffs.map((h) => h.toRole);
+      expect(roles).toContain("reviewer");
+      expect(roles).toContain("tester");
+      expect(roles).toContain("auditor");
+    });
+
+    test("createMany returns empty array for empty input", async () => {
+      if (store.createMany === undefined) return;
+
+      const handoffs = await store.createMany([]);
+      expect(handoffs).toHaveLength(0);
+    });
+
+    test("createMany preserves input order", async () => {
+      if (store.createMany === undefined) return;
+
+      const inputs = [
+        makeHandoffInput({ toRole: "alpha" }),
+        makeHandoffInput({ toRole: "beta" }),
+        makeHandoffInput({ toRole: "gamma" }),
+      ];
+
+      const handoffs = await store.createMany(inputs);
+      expect(handoffs[0]?.toRole).toBe("alpha");
+      expect(handoffs[1]?.toRole).toBe("beta");
+      expect(handoffs[2]?.toRole).toBe("gamma");
+    });
+
+    // ------------------------------------------------------------------
+    // list
+    // ------------------------------------------------------------------
+
+    test("list returns all handoffs when no query", async () => {
+      await store.create(makeHandoffInput({ toRole: "a" }));
+      await store.create(makeHandoffInput({ toRole: "b" }));
+
+      const all = await store.list();
+      expect(all.length).toBeGreaterThanOrEqual(2);
     });
 
     test("list filters by toRole", async () => {
-      const store = await make();
-      try {
-        await store.create({ sourceCid: "blake3:a", fromRole: "coder", toRole: "reviewer" });
-        await store.create({ sourceCid: "blake3:b", fromRole: "reviewer", toRole: "coder" });
+      await store.create(makeHandoffInput({ toRole: "reviewer" }));
+      await store.create(makeHandoffInput({ toRole: "tester" }));
 
-        const forReviewer = await store.list({ toRole: "reviewer" });
-        for (const h of forReviewer) {
-          expect(h.toRole).toBe("reviewer");
-        }
-      } finally {
-        store.close();
-        await cleanup?.();
+      const results = await store.list({ toRole: "reviewer" });
+      expect(results.length).toBeGreaterThanOrEqual(1);
+      for (const h of results) {
+        expect(h.toRole).toBe("reviewer");
       }
     });
 
     test("list filters by fromRole", async () => {
-      const store = await make();
-      try {
-        await store.create({ sourceCid: "blake3:a", fromRole: "coder", toRole: "reviewer" });
-        await store.create({ sourceCid: "blake3:b", fromRole: "reviewer", toRole: "coder" });
+      await store.create(makeHandoffInput({ fromRole: "coder" }));
+      await store.create(makeHandoffInput({ fromRole: "planner" }));
 
-        const fromCoder = await store.list({ fromRole: "coder" });
-        for (const h of fromCoder) {
-          expect(h.fromRole).toBe("coder");
-        }
-      } finally {
-        store.close();
-        await cleanup?.();
+      const results = await store.list({ fromRole: "coder" });
+      expect(results.length).toBeGreaterThanOrEqual(1);
+      for (const h of results) {
+        expect(h.fromRole).toBe("coder");
       }
     });
 
     test("list filters by sourceCid", async () => {
-      const store = await make();
-      try {
-        await store.create({ sourceCid: "blake3:a", fromRole: "coder", toRole: "reviewer" });
-        await store.create({ sourceCid: "blake3:b", fromRole: "coder", toRole: "reviewer" });
+      await store.create(makeHandoffInput({ sourceCid: "blake3:aaa" }));
+      await store.create(makeHandoffInput({ sourceCid: "blake3:bbb" }));
 
-        const forA = await store.list({ sourceCid: "blake3:a" });
-        expect(forA).toHaveLength(1);
-        expect(forA[0]?.sourceCid).toBe("blake3:a");
-      } finally {
-        store.close();
-        await cleanup?.();
+      const results = await store.list({ sourceCid: "blake3:aaa" });
+      expect(results.length).toBeGreaterThanOrEqual(1);
+      for (const h of results) {
+        expect(h.sourceCid).toBe("blake3:aaa");
+      }
+    });
+
+    test("list filters by status", async () => {
+      const h = await store.create(makeHandoffInput());
+      await store.markDelivered(h.handoffId);
+      await store.create(makeHandoffInput()); // stays at initial status
+
+      const delivered = await store.list({ status: HandoffStatus.Delivered });
+      expect(delivered.length).toBeGreaterThanOrEqual(1);
+      for (const d of delivered) {
+        expect(d.status).toBe(HandoffStatus.Delivered);
       }
     });
 
     test("list respects limit", async () => {
-      const store = await make();
-      try {
-        for (let i = 0; i < 5; i++) {
-          await store.create({ sourceCid: `blake3:${i}`, fromRole: "coder", toRole: "reviewer" });
-        }
+      await store.create(makeHandoffInput({ toRole: "a" }));
+      await store.create(makeHandoffInput({ toRole: "b" }));
+      await store.create(makeHandoffInput({ toRole: "c" }));
 
-        const limited = await store.list({ limit: 2 });
-        expect(limited).toHaveLength(2);
-      } finally {
-        store.close();
-        await cleanup?.();
-      }
+      const results = await store.list({ limit: 2 });
+      expect(results).toHaveLength(2);
     });
 
-    // --- status transitions ---
+    test("list returns empty array when no matches", async () => {
+      const results = await store.list({ toRole: "nonexistent-role" });
+      expect(results).toHaveLength(0);
+    });
+
+    // ------------------------------------------------------------------
+    // markDelivered
+    // ------------------------------------------------------------------
 
     test("markDelivered transitions status to delivered", async () => {
-      const store = await make();
-      try {
-        const h = await store.create({
-          sourceCid: "blake3:abc",
-          fromRole: "coder",
-          toRole: "reviewer",
-        });
-        await store.markDelivered(h.handoffId);
-        const updated = await store.get(h.handoffId);
-        expect(updated?.status).toBe(HandoffStatus.Delivered);
-      } finally {
-        store.close();
-        await cleanup?.();
-      }
+      const h = await store.create(makeHandoffInput());
+      await store.markDelivered(h.handoffId);
+
+      const updated = await store.get(h.handoffId);
+      expect(updated?.status).toBe(HandoffStatus.Delivered);
     });
 
-    test("markReplied transitions status to replied with resolvedByCid", async () => {
-      const store = await make();
-      try {
-        const h = await store.create({
-          sourceCid: "blake3:abc",
-          fromRole: "coder",
-          toRole: "reviewer",
-        });
-        await store.markDelivered(h.handoffId);
-        await store.markReplied(h.handoffId, "blake3:reply-cid");
-        const updated = await store.get(h.handoffId);
-        expect(updated?.status).toBe(HandoffStatus.Replied);
-        expect(updated?.resolvedByCid).toBe("blake3:reply-cid");
-      } finally {
-        store.close();
-        await cleanup?.();
-      }
+    // ------------------------------------------------------------------
+    // markReplied
+    // ------------------------------------------------------------------
+
+    test("markReplied transitions status to replied and sets resolvedByCid", async () => {
+      const h = await store.create(makeHandoffInput());
+      await store.markDelivered(h.handoffId);
+      await store.markReplied(h.handoffId, "blake3:reply-cid");
+
+      const updated = await store.get(h.handoffId);
+      expect(updated?.status).toBe(HandoffStatus.Replied);
+      expect(updated?.resolvedByCid).toBe("blake3:reply-cid");
     });
 
-    // --- expireStale ---
+    // ------------------------------------------------------------------
+    // expireStale
+    // ------------------------------------------------------------------
 
     test("expireStale marks overdue pending_pickup handoffs as expired", async () => {
-      const store = await make();
-      try {
-        const h = await store.create({
-          sourceCid: "blake3:abc",
-          fromRole: "coder",
-          toRole: "reviewer",
-          replyDueAt: new Date(Date.now() - 60_000).toISOString(),
-        });
+      const pastDeadline = new Date(Date.now() - 60_000).toISOString();
+      const h = await store.create(makeHandoffInput({ replyDueAt: pastDeadline }));
 
-        // Handoffs in expirable states (pending_pickup, delivered, processed)
-        // with an overdue replyDueAt should be expired.
-        const expired = await store.expireStale();
-        const updated = await store.get(h.handoffId);
+      const expired = await store.expireStale();
+      const updated = await store.get(h.handoffId);
 
-        const expirableStatuses: ReadonlySet<HandoffStatus> = new Set([
-          HandoffStatus.PendingPickup,
-          HandoffStatus.Delivered,
-          HandoffStatus.Processed,
-        ]);
-
-        if (expirableStatuses.has(h.status)) {
-          // Should have been expired
-          expect(expired.map((e) => e.handoffId)).toContain(h.handoffId);
-          expect(updated?.status).toBe(HandoffStatus.Expired);
-        } else {
-          // Terminal state — not eligible for expiry
-          expect(expired.map((e) => e.handoffId)).not.toContain(h.handoffId);
-        }
-      } finally {
-        store.close();
-        await cleanup?.();
-      }
+      expect(expired.map((e) => e.handoffId)).toContain(h.handoffId);
+      expect(updated?.status).toBe(HandoffStatus.Expired);
     });
 
     test("expireStale does not expire handoffs without replyDueAt", async () => {
-      const store = await make();
-      try {
-        const h = await store.create({
-          sourceCid: "blake3:abc",
-          fromRole: "coder",
-          toRole: "reviewer",
-          // No replyDueAt
-        });
+      const h = await store.create(makeHandoffInput({ replyDueAt: undefined }));
 
-        const expired = await store.expireStale();
-        expect(expired.map((e) => e.handoffId)).not.toContain(h.handoffId);
-      } finally {
-        store.close();
-        await cleanup?.();
-      }
+      await store.expireStale();
+      const updated = await store.get(h.handoffId);
+
+      // Should still be at initial status, not expired
+      expect(updated?.status).not.toBe(HandoffStatus.Expired);
     });
 
-    test("expireStale does not expire future-due handoffs", async () => {
-      const store = await make();
-      try {
-        const h = await store.create({
-          sourceCid: "blake3:abc",
-          fromRole: "coder",
-          toRole: "reviewer",
-          replyDueAt: new Date(Date.now() + 60_000).toISOString(),
-        });
+    test("expireStale does not expire handoffs with future deadline", async () => {
+      const futureDeadline = new Date(Date.now() + 600_000).toISOString();
+      const h = await store.create(makeHandoffInput({ replyDueAt: futureDeadline }));
 
-        const expired = await store.expireStale();
-        expect(expired.map((e) => e.handoffId)).not.toContain(h.handoffId);
-      } finally {
-        store.close();
-        await cleanup?.();
-      }
+      await store.expireStale();
+      const updated = await store.get(h.handoffId);
+
+      expect(updated?.status).not.toBe(HandoffStatus.Expired);
     });
 
-    // --- countPending ---
+    test("expireStale is idempotent — second call returns empty for already expired", async () => {
+      const pastDeadline = new Date(Date.now() - 60_000).toISOString();
+      await store.create(makeHandoffInput({ replyDueAt: pastDeadline }));
 
-    test("countPending counts only pending_pickup handoffs for a role", async () => {
-      const store = await make();
-      try {
-        const h1 = await store.create({
-          sourceCid: "blake3:a",
-          fromRole: "coder",
-          toRole: "reviewer",
-        });
-        await store.create({ sourceCid: "blake3:b", fromRole: "coder", toRole: "reviewer" });
-        await store.create({ sourceCid: "blake3:c", fromRole: "coder", toRole: "tester" });
+      const first = await store.expireStale();
+      expect(first.length).toBeGreaterThanOrEqual(1);
 
-        // Mark one as delivered (not pending)
-        await store.markDelivered(h1.handoffId);
-
-        const pending = await store.countPending("reviewer");
-        // Implementation-dependent: InMemory defaults to PendingPickup,
-        // Nexus defaults to Delivered. Count only PendingPickup.
-        expect(typeof pending).toBe("number");
-        expect(pending).toBeGreaterThanOrEqual(0);
-      } finally {
-        store.close();
-        await cleanup?.();
-      }
+      const second = await store.expireStale();
+      // Already expired — nothing new to expire
+      expect(second).toHaveLength(0);
     });
 
-    // --- createMany (optional) ---
+    test("expireStale expires delivered handoffs with past deadline", async () => {
+      const pastDeadline = new Date(Date.now() - 60_000).toISOString();
+      const h = await store.create(makeHandoffInput({ replyDueAt: pastDeadline }));
+      // Transition to delivered (not pending_pickup)
+      await store.markDelivered(h.handoffId);
 
-    test("createMany creates multiple handoffs in one call (when supported)", async () => {
-      const store = await make();
-      try {
-        if (store.createMany === undefined) return; // optional method
+      const expired = await store.expireStale();
+      const updated = await store.get(h.handoffId);
 
-        const handoffs = await store.createMany([
-          { sourceCid: "blake3:a", fromRole: "coder", toRole: "reviewer" },
-          { sourceCid: "blake3:b", fromRole: "coder", toRole: "tester" },
-          { sourceCid: "blake3:c", fromRole: "coder", toRole: "auditor" },
-        ]);
+      expect(expired.map((e) => e.handoffId)).toContain(h.handoffId);
+      expect(updated?.status).toBe(HandoffStatus.Expired);
+    });
 
-        expect(handoffs).toHaveLength(3);
-        expect(handoffs[0]?.toRole).toBe("reviewer");
-        expect(handoffs[1]?.toRole).toBe("tester");
-        expect(handoffs[2]?.toRole).toBe("auditor");
+    test("expireStale does not expire already-replied handoffs", async () => {
+      // Use a future deadline so the reply is accepted, then verify
+      // expireStale doesn't touch already-replied handoffs even after the
+      // deadline passes. (Stores reject late replies via deadline check, so
+      // this test exercises the replied-before-deadline path.)
+      const futureDeadline = new Date(Date.now() + 60_000).toISOString();
+      const h = await store.create(makeHandoffInput({ replyDueAt: futureDeadline }));
+      await store.markDelivered(h.handoffId);
+      await store.markReplied(h.handoffId, "blake3:reply-cid");
 
-        // All should be retrievable
-        for (const h of handoffs) {
-          const fetched = await store.get(h.handoffId);
-          expect(fetched).toBeDefined();
+      const expired = await store.expireStale();
+      const updated = await store.get(h.handoffId);
+
+      expect(expired.map((e) => e.handoffId)).not.toContain(h.handoffId);
+      expect(updated?.status).toBe(HandoffStatus.Replied);
+    });
+
+    test("markReplied rejects late replies (deadline passed)", async () => {
+      const pastDeadline = new Date(Date.now() - 60_000).toISOString();
+      const h = await store.create(makeHandoffInput({ replyDueAt: pastDeadline }));
+      // State machine requires delivered before replied — mark delivered
+      // first so we exercise the deadline-check path, not the transition check.
+      await store.markDelivered(h.handoffId);
+      await expect(store.markReplied(h.handoffId, "blake3:late-reply")).rejects.toThrow();
+      // The handoff should be flipped to expired by the rejection path
+      const after = await store.get(h.handoffId);
+      expect(after?.status).toBe(HandoffStatus.Expired);
+    });
+
+    // ------------------------------------------------------------------
+    // countPending
+    // ------------------------------------------------------------------
+
+    test("countPending returns count of pending_pickup handoffs for role", async () => {
+      const h1 = await store.create(makeHandoffInput({ toRole: "reviewer" }));
+      // countPending only counts status=pending_pickup. Some backends
+      // (NexusHandoffStore) create handoffs as Delivered by default, so
+      // skip the test when create() doesn't produce pending_pickup.
+      if (h1.status !== HandoffStatus.PendingPickup) return;
+
+      await store.create(makeHandoffInput({ toRole: "reviewer" }));
+      await store.create(makeHandoffInput({ toRole: "tester" }));
+
+      const count = await store.countPending("reviewer");
+      expect(count).toBeGreaterThanOrEqual(2);
+    });
+
+    test("countPending returns 0 when no pending handoffs for role", async () => {
+      const count = await store.countPending("nonexistent-role");
+      expect(count).toBe(0);
+    });
+
+    test("countPending excludes delivered handoffs", async () => {
+      const h = await store.create(makeHandoffInput({ toRole: "reviewer" }));
+      // Backends that default to Delivered already satisfy the precondition.
+      if (h.status === HandoffStatus.PendingPickup) {
+        await store.markDelivered(h.handoffId);
+      }
+
+      const count = await store.countPending("reviewer");
+      expect(count).toBe(0);
+    });
+
+    // ------------------------------------------------------------------
+    // markSeen
+    // ------------------------------------------------------------------
+
+    test("markSeen sets seenAt timestamp", async () => {
+      const h = await store.create(makeHandoffInput());
+      expect(h.seenAt).toBeUndefined();
+
+      await store.markSeen(h.handoffId);
+
+      const updated = await store.get(h.handoffId);
+      expect(updated?.seenAt).toBeDefined();
+      expect(typeof updated?.seenAt).toBe("string");
+    });
+
+    test("markSeen is idempotent — second call preserves original timestamp", async () => {
+      const h = await store.create(makeHandoffInput());
+      await store.markSeen(h.handoffId);
+
+      const first = await store.get(h.handoffId);
+      const originalSeenAt = first?.seenAt;
+
+      // Brief delay to ensure different timestamp if re-set
+      await new Promise((r) => setTimeout(r, 10));
+      await store.markSeen(h.handoffId);
+
+      const second = await store.get(h.handoffId);
+      expect(second?.seenAt).toBe(originalSeenAt);
+    });
+
+    test("markSeen throws for non-existent handoff", async () => {
+      await expect(store.markSeen("nonexistent")).rejects.toThrow();
+    });
+
+    // ------------------------------------------------------------------
+    // markAcked
+    // ------------------------------------------------------------------
+
+    test("markAcked sets ackedAt timestamp", async () => {
+      const h = await store.create(makeHandoffInput());
+      expect(h.ackedAt).toBeUndefined();
+
+      await store.markAcked(h.handoffId);
+
+      const updated = await store.get(h.handoffId);
+      expect(updated?.ackedAt).toBeDefined();
+      expect(typeof updated?.ackedAt).toBe("string");
+    });
+
+    test("markAcked auto-fills seenAt if not already set", async () => {
+      const h = await store.create(makeHandoffInput());
+      expect(h.seenAt).toBeUndefined();
+
+      await store.markAcked(h.handoffId);
+
+      const updated = await store.get(h.handoffId);
+      expect(updated?.seenAt).toBeDefined();
+      expect(updated?.ackedAt).toBeDefined();
+    });
+
+    test("markAcked preserves existing seenAt", async () => {
+      const h = await store.create(makeHandoffInput());
+      await store.markSeen(h.handoffId);
+      const seen = await store.get(h.handoffId);
+      const originalSeenAt = seen?.seenAt;
+
+      await new Promise((r) => setTimeout(r, 10));
+      await store.markAcked(h.handoffId);
+
+      const updated = await store.get(h.handoffId);
+      expect(updated?.seenAt).toBe(originalSeenAt);
+      expect(updated?.ackedAt).toBeDefined();
+    });
+
+    test("markAcked is idempotent — second call preserves original timestamp", async () => {
+      const h = await store.create(makeHandoffInput());
+      await store.markAcked(h.handoffId);
+
+      const first = await store.get(h.handoffId);
+      const originalAckedAt = first?.ackedAt;
+
+      await new Promise((r) => setTimeout(r, 10));
+      await store.markAcked(h.handoffId);
+
+      const second = await store.get(h.handoffId);
+      expect(second?.ackedAt).toBe(originalAckedAt);
+    });
+
+    test("markAcked throws for non-existent handoff", async () => {
+      await expect(store.markAcked("nonexistent")).rejects.toThrow();
+    });
+
+    // ------------------------------------------------------------------
+    // Invalid state transitions
+    // ------------------------------------------------------------------
+
+    test("markDelivered on expired handoff throws InvalidTransitionError", async () => {
+      const pastDeadline = new Date(Date.now() - 60_000).toISOString();
+      const h = await store.create(makeHandoffInput({ replyDueAt: pastDeadline }));
+      await store.expireStale();
+
+      await expect(store.markDelivered(h.handoffId)).rejects.toThrow(InvalidTransitionError);
+    });
+
+    test("markDelivered on replied handoff throws InvalidTransitionError", async () => {
+      const h = await store.create(makeHandoffInput());
+      await store.markDelivered(h.handoffId);
+      await store.markReplied(h.handoffId, "blake3:reply");
+
+      await expect(store.markDelivered(h.handoffId)).rejects.toThrow(InvalidTransitionError);
+    });
+
+    test("markReplied on expired handoff throws InvalidTransitionError", async () => {
+      const pastDeadline = new Date(Date.now() - 60_000).toISOString();
+      const h = await store.create(makeHandoffInput({ replyDueAt: pastDeadline }));
+      await store.expireStale();
+
+      await expect(store.markReplied(h.handoffId, "blake3:reply")).rejects.toThrow(
+        InvalidTransitionError,
+      );
+    });
+
+    test("markAcked is atomic under concurrent retries — same timestamp returned", async () => {
+      const h = await store.create(makeHandoffInput());
+
+      // Fire 5 concurrent markAcked calls — they should all succeed and
+      // converge on a single ackedAt timestamp (not stamp different times).
+      await Promise.all(Array.from({ length: 5 }, () => store.markAcked(h.handoffId)));
+
+      const updated = await store.get(h.handoffId);
+      expect(updated?.ackedAt).toBeDefined();
+
+      // Subsequent calls must not overwrite
+      const originalAckedAt = updated?.ackedAt;
+      expect(originalAckedAt).toBeDefined();
+      await new Promise((r) => setTimeout(r, 20));
+      await store.markAcked(h.handoffId);
+      const after = await store.get(h.handoffId);
+      expect(after?.ackedAt).toBe(originalAckedAt as string);
+    });
+
+    test("markReplied on already-replied handoff throws InvalidTransitionError", async () => {
+      const h = await store.create(makeHandoffInput());
+      await store.markDelivered(h.handoffId);
+      await store.markReplied(h.handoffId, "blake3:reply-1");
+
+      await expect(store.markReplied(h.handoffId, "blake3:reply-2")).rejects.toThrow(
+        InvalidTransitionError,
+      );
+    });
+  });
+}
+
+/**
+ * Wrapper for main-style callers that pass a named factory + optional cleanup.
+ * Delegates to runHandoffStoreTests. Lets nexus-handoff-store.test.ts and
+ * friends keep their existing call shape.
+ */
+export function runHandoffStoreConformanceTests(
+  _name: string,
+  factory: () => HandoffStore | Promise<HandoffStore>,
+  cleanup?: () => void | Promise<void>,
+): void {
+  runHandoffStoreTests(async () => {
+    const result = factory();
+    const store = result instanceof Promise ? await result : result;
+    return {
+      store,
+      cleanup: async () => {
+        if (cleanup) {
+          const r = cleanup();
+          if (r instanceof Promise) await r;
         }
-      } finally {
-        store.close();
-        await cleanup?.();
-      }
-    });
-
-    test("createMany with empty array returns empty array", async () => {
-      const store = await make();
-      try {
-        if (store.createMany === undefined) return;
-
-        const handoffs = await store.createMany([]);
-        expect(handoffs).toHaveLength(0);
-      } finally {
-        store.close();
-        await cleanup?.();
-      }
-    });
-
-    // --- close ---
-
-    test("close is idempotent", async () => {
-      const store = await make();
-      store.close();
-      store.close(); // should not throw
-      await cleanup?.();
-    });
+      },
+    };
   });
 }

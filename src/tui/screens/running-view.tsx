@@ -314,6 +314,42 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       return () => clearInterval(id);
     }, [provider, sessionStartedAt, intervalMs]);
 
+    // Subscribe to handoff lifecycle events (handoff.overdue, handoff.seen,
+    // handoff.acked) for real-time panel updates. When any handoff event
+    // arrives, trigger an immediate re-fetch so the panel reflects the change
+    // without waiting for the next polling interval.
+    useEffect(() => {
+      if (!eventBus) return;
+      const roles = topology?.roles.map((r) => r.name) ?? [];
+      if (roles.length === 0) return;
+      const hasMethod = "getHandoffs" in provider;
+      if (!hasMethod) return;
+      const p = provider as {
+        getHandoffs: (q?: unknown) => Promise<readonly import("../../core/handoff.js").Handoff[]>;
+      };
+      const handler = () => {
+        debugLog("eventBus", "handoff event — refreshing handoffs");
+        void p
+          .getHandoffs({ limit: 200 })
+          .then((all) => {
+            const cutoff =
+              sessionStartedAt ?? new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+            setHandoffs(all.filter((h) => h.createdAt >= cutoff));
+          })
+          .catch(() => {
+            /* handoff refresh errors are non-fatal — the next bus event will retry */
+          });
+      };
+      for (const role of roles) {
+        eventBus.subscribe(role, handler);
+      }
+      return () => {
+        for (const role of roles) {
+          eventBus.unsubscribe(role, handler);
+        }
+      };
+    }, [eventBus, topology, provider, sessionStartedAt]);
+
     // Session scoping is handled server-side (provider.setSessionScope).
     // The feed already contains only this session's contributions.
     const feed = contributions ?? [];

@@ -1043,12 +1043,16 @@ export class SpawnManager {
             // Mark handoffs as delivered
             if ((provider as { getHandoffs?: unknown }).getHandoffs) {
               const hp = provider as unknown as import("./provider.js").TuiHandoffProvider;
+              // Snapshot the session scope before the async read so the
+              // follow-up markHandoffDelivered POST can't drift to a
+              // different session if the user switches mid-loop.
+              const pinnedSessionId = this.sessionId;
               void hp
                 .getHandoffs({ sourceCid: c.cid, status: "pending_pickup" })
                 .then((hs) => {
                   for (const h of hs) {
                     // biome-ignore lint/suspicious/noEmptyBlockStatements: delivery errors silently swallowed per fire-and-forget pattern
-                    void hp.markHandoffDelivered(h.handoffId).catch(() => {});
+                    void hp.markHandoffDelivered(h.handoffId, pinnedSessionId).catch(() => {});
                   }
                 })
                 // biome-ignore lint/suspicious/noEmptyBlockStatements: getHandoffs errors silently swallowed
@@ -1081,11 +1085,14 @@ export class SpawnManager {
               // Mark upstream handoffs as delivered — the contribution reached the routing layer
               if ((provider as { getHandoffs?: unknown }).getHandoffs) {
                 const hp = provider as unknown as import("./provider.js").TuiHandoffProvider;
+                // Pin sessionId before the async read so the follow-up POST
+                // targets the session that the read was scoped to.
+                const pinnedSessionId = this.sessionId;
                 void hp
                   .getHandoffs({ sourceCid: c.cid, status: "pending_pickup" })
                   .then((hs) => {
                     for (const h of hs) {
-                      void hp.markHandoffDelivered(h.handoffId).catch(() => {
+                      void hp.markHandoffDelivered(h.handoffId, pinnedSessionId).catch(() => {
                         /* best-effort */
                       });
                     }

@@ -9,7 +9,7 @@
 
 import { fireAndForget } from "../../shared/fire-and-forget.js";
 import { pickDefined } from "../../shared/pick-defined.js";
-import type { HandoffInput, HandoffStore } from "../handoff.js";
+import { type HandoffInput, HandoffStatus, type HandoffStore } from "../handoff.js";
 import { createContribution } from "../manifest.js";
 import {
   ContributionKind as CK,
@@ -536,15 +536,20 @@ async function writeAtomic(
   putWithCowrite: (c: Contribution, fn: () => void) => void | Promise<void>,
   insertSync: (input: HandoffInput) => string,
   onCommit?: () => void,
+  replyTimeouts?: ReadonlyMap<string, number> | undefined,
 ): Promise<readonly string[]> {
   const handoffIds: string[] = [];
   const maybePromise = putWithCowrite(contribution, () => {
     for (const targetRole of routedTo) {
+      const timeoutSec = replyTimeouts?.get(targetRole);
       const hid = insertSync({
         sourceCid: contribution.cid,
         fromRole: agentRole,
         toRole: targetRole,
-        requiresReply: false,
+        requiresReply: timeoutSec !== undefined,
+        ...(timeoutSec !== undefined
+          ? { replyDueAt: new Date(Date.now() + timeoutSec * 1000).toISOString() }
+          : {}),
       });
       if (hid !== undefined) handoffIds.push(hid);
     }
@@ -583,6 +588,7 @@ async function writeSerial(
   store: ContributionStore,
   handoffStore: HandoffStore | undefined,
   onCommit?: () => void,
+  replyTimeouts?: ReadonlyMap<string, number> | undefined,
 ): Promise<readonly string[]> {
   await store.put(contribution);
   // For non-atomic stores (Nexus, in-memory), write the idempotency row
@@ -596,12 +602,18 @@ async function writeSerial(
     return handoffIds;
   }
 
-  const inputs: HandoffInput[] = routedTo.map((targetRole) => ({
-    sourceCid: contribution.cid,
-    fromRole: agentRole,
-    toRole: targetRole,
-    requiresReply: false,
-  }));
+  const inputs: HandoffInput[] = routedTo.map((targetRole) => {
+    const timeoutSec = replyTimeouts?.get(targetRole);
+    return {
+      sourceCid: contribution.cid,
+      fromRole: agentRole,
+      toRole: targetRole,
+      requiresReply: timeoutSec !== undefined,
+      ...(timeoutSec !== undefined
+        ? { replyDueAt: new Date(Date.now() + timeoutSec * 1000).toISOString() }
+        : {}),
+    };
+  });
 
   if (handoffStore.createMany !== undefined) {
     try {
@@ -653,6 +665,7 @@ async function writeContributionWithHandoffs(
   store: ContributionStore,
   handoffStore: HandoffStore | undefined,
   onCommit?: () => void,
+  replyTimeouts?: ReadonlyMap<string, number> | undefined,
 ): Promise<readonly string[]> {
   const needsHandoffs =
     handoffStore !== undefined &&
@@ -676,6 +689,7 @@ async function writeContributionWithHandoffs(
         cowriteStore.putWithCowrite.bind(cowriteStore),
         sqliteHandoffStore.insertSync.bind(sqliteHandoffStore),
         onCommit,
+        replyTimeouts,
       );
     }
   }
@@ -694,7 +708,15 @@ async function writeContributionWithHandoffs(
     );
   }
 
-  return writeSerial(contribution, routedTo, agentRole, store, handoffStore, onCommit);
+  return writeSerial(
+    contribution,
+    routedTo,
+    agentRole,
+    store,
+    handoffStore,
+    onCommit,
+    replyTimeouts,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -955,6 +977,9 @@ export async function contributeOperation(
 
     // --- Pre-write: determine routing targets synchronously (no I/O) ---
     let routedTo: readonly string[] | undefined;
+    // Map target role → reply timeout seconds (from edge config). When multiple
+    // edges point to the same target, the shortest timeout wins.
+    let replyTimeouts: ReadonlyMap<string, number> | undefined;
     if (deps.topologyRouter !== undefined) {
       if (contribution.agent.role === undefined) {
         // Issue 4A: warn when topology is active but contributing agent has no role
@@ -967,7 +992,28 @@ export async function contributeOperation(
         // delegates + feeds) pointing at the same downstream role. Creating
         // one handoff per (source, target) pair is correct; creating one per
         // edge type would produce duplicate pending handoffs for the same work.
-        if (edges.length > 0) routedTo = [...new Set(edges.map((e) => e.target))];
+        if (edges.length > 0) {
+          routedTo = [...new Set(edges.map((e) => e.target))];
+          // Collect reply timeouts from edges — shortest timeout per target wins
+          const timeoutMap = new Map<string, number>();
+          for (const edge of edges) {
+            if (edge.replyTimeoutSeconds !== undefined) {
+              const existing = timeoutMap.get(edge.target);
+              if (existing === undefined || edge.replyTimeoutSeconds < existing) {
+                timeoutMap.set(edge.target, edge.replyTimeoutSeconds);
+              }
+            }
+          }
+          if (timeoutMap.size > 0) replyTimeouts = timeoutMap;
+        }
+        if (process.env.GROVE_DEBUG === "1") {
+          const timeoutInfo = replyTimeouts
+            ? [...replyTimeouts.entries()].map(([r, t]) => `${r}=${t}s`).join(", ")
+            : "none";
+          process.stderr.write(
+            `[grove:handoff] ROUTE role=${contribution.agent.role} targets=[${routedTo?.join(",")}] deadlines={${timeoutInfo}}\n`,
+          );
+        }
       }
     }
 
@@ -997,11 +1043,11 @@ export async function contributeOperation(
               relationCount: contribution.relations.length,
               createdAt: contribution.createdAt,
             };
-            deps.idempotencyStore?.store(
-              idempotencyCacheLookupKey!,
-              idempotencyFingerprint!,
-              JSON.stringify(earlyResult),
-            );
+            // Guarded above by idempotencyCacheLookupKey/idempotencyFingerprint
+            // both being defined — non-null assertions here are safe.
+            const key = idempotencyCacheLookupKey as string;
+            const fingerprint = idempotencyFingerprint as string;
+            deps.idempotencyStore?.store(key, fingerprint, JSON.stringify(earlyResult));
           }
         : undefined;
 
@@ -1012,7 +1058,14 @@ export async function contributeOperation(
       deps.contributionStore,
       deps.handoffStore,
       idempotencyOnCommit,
+      replyTimeouts,
     );
+
+    if (process.env.GROVE_DEBUG === "1" && handoffIds.length > 0) {
+      process.stderr.write(
+        `[grove:handoff] CREATED cid=${contribution.cid.slice(0, 20)}.. handoffIds=[${handoffIds.map((h) => h.slice(0, 8)).join(",")}] targets=[${handoffsRoutedTo?.join(",") ?? ""}]\n`,
+      );
+    }
 
     // ┌──────────────────────────────────────────────────────────────────┐
     // │ DURABLE COMMIT BOUNDARY                                          │
@@ -1090,9 +1143,36 @@ export async function contributeOperation(
       );
     }
 
+    // --- Post-write: register deadline timers for new handoffs ---
+    if (
+      deps.deadlineWatcher !== undefined &&
+      handoffIds.length > 0 &&
+      deps.handoffStore !== undefined
+    ) {
+      fireAndForget("deadline watcher registration", async () => {
+        for (const hid of handoffIds) {
+          try {
+            const h = await deps.handoffStore?.get(hid);
+            if (h?.replyDueAt !== undefined) {
+              if (process.env.GROVE_DEBUG === "1") {
+                process.stderr.write(
+                  `[grove:handoff] WATCH handoff=${hid.slice(0, 8)} toRole=${h.toRole} replyDueAt=${h.replyDueAt}\n`,
+                );
+              }
+              deps.deadlineWatcher?.watch(h);
+            }
+          } catch {
+            // Best-effort — timer registration failure is non-fatal
+          }
+        }
+      });
+    }
+
     // --- Post-write: mark upstream handoffs as replied (fire-and-forget) ---
     // When this contribution targets another CID (reviews/responds_to), find
-    // any pending handoffs with sourceCid = targetCid and mark them replied.
+    // any unresolved handoffs with sourceCid = targetCid and mark them replied.
+    // Query both pending_pickup and delivered — Nexus creates handoffs as
+    // delivered (skipping pending_pickup) due to cross-client CAS limitations.
     if (deps.handoffStore !== undefined && contribution.relations.length > 0) {
       const replyRelations = contribution.relations.filter(
         (r) =>
@@ -1101,21 +1181,82 @@ export async function contributeOperation(
           r.relationType === "adopts",
       );
       if (replyRelations.length > 0) {
-        fireAndForget("handoff reply transition", async () => {
-          for (const rel of replyRelations) {
-            try {
-              const pending = await deps.handoffStore?.list({
-                sourceCid: rel.targetCid,
-                status: "pending_pickup",
-              });
-              for (const h of pending ?? []) {
-                await deps.handoffStore?.markReplied(h.handoffId, contribution.cid);
-              }
-            } catch {
-              // Best-effort — don't fail contribution over handoff transition
-            }
+        // Scope reply resolution to the replying role. In fan-out topologies
+        // (coder → [reviewer, tester, auditor]) one downstream response must
+        // NOT close peer handoffs for others who haven't acted yet.
+        //
+        // REQUIRED: agent.role must be set. Role-less contributions (e.g.
+        // from the unauthenticated HTTP contribution surface) CANNOT auto-
+        // resolve handoffs — without a verified role, any HTTP client could
+        // mark a reviewer/tester/auditor handoff replied and satisfy an SLA
+        // they don't own. Such submissions leave the handoff unresolved; an
+        // operator or role-bound caller must resolve it explicitly.
+        const replyingRole = contribution.agent.role;
+        if (replyingRole === undefined) {
+          if (process.env.GROVE_DEBUG === "1") {
+            process.stderr.write(
+              `[grove:handoff] REPLY SKIPPED cid=${contribution.cid.slice(0, 20)}.. — role-less reply not allowed to resolve handoffs\n`,
+            );
           }
-        });
+        } else {
+          fireAndForget("handoff reply transition", async () => {
+            // Use session-scoped enumeration when the store supports it.
+            // Contribution CIDs are global DAG IDs, so the same sourceCid
+            // can appear in multiple sessions' handoff files. list() on
+            // Nexus scans zone-wide; resolving a peer session's handoff
+            // from here would cross-session-mutate and fail with NotFound,
+            // aborting the loop before the current session's own handoff
+            // is resolved. listForCurrentSession scopes to the active
+            // session; fall back to list() on backends that don't support
+            // scoping (rare).
+            const listFn =
+              deps.handoffStore?.listForCurrentSession?.bind(deps.handoffStore) ??
+              deps.handoffStore?.list.bind(deps.handoffStore);
+            for (const rel of replyRelations) {
+              let unresolved: readonly import("../handoff.js").Handoff[] = [];
+              try {
+                // Include Processed too: agents following the IPC workflow
+                // (grove_process_handoff before grove_submit_*) leave the
+                // handoff in Processed state.
+                unresolved =
+                  (await listFn?.({
+                    sourceCid: rel.targetCid,
+                    status: [
+                      HandoffStatus.PendingPickup,
+                      HandoffStatus.Delivered,
+                      HandoffStatus.Processed,
+                    ],
+                    toRole: replyingRole,
+                  })) ?? [];
+              } catch {
+                // List failure is best-effort; move on to next relation.
+                continue;
+              }
+              // Per-handoff error isolation: one foreign or stale row
+              // must not abort resolution of the remaining handoffs.
+              for (const h of unresolved) {
+                try {
+                  if (process.env.GROVE_DEBUG === "1") {
+                    process.stderr.write(
+                      `[grove:handoff] REPLY handoff=${h.handoffId.slice(0, 8)} resolvedBy=${contribution.cid.slice(0, 20)}.. relation=${rel.relationType} role=${replyingRole}\n`,
+                    );
+                  }
+                  if (h.status === HandoffStatus.PendingPickup) {
+                    try {
+                      await deps.handoffStore?.markDelivered(h.handoffId);
+                    } catch {
+                      /* status may have advanced concurrently */
+                    }
+                  }
+                  await deps.handoffStore?.markReplied(h.handoffId, contribution.cid);
+                  deps.deadlineWatcher?.cancel(h.handoffId);
+                } catch {
+                  /* skip this handoff, continue with peers */
+                }
+              }
+            }
+          });
+        }
       }
     }
 

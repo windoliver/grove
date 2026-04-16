@@ -31,6 +31,8 @@ const RoleEdgeSchema = z
     target: z.string().min(1).max(64),
     edge_type: EdgeTypeEnum,
     workspace: WorkspaceStrategyEnum.optional(),
+    /** Seconds the target role has to reply before the handoff is overdue. */
+    reply_timeout_seconds: z.number().int().min(10).max(86400).optional(),
   })
   .strict();
 
@@ -90,6 +92,7 @@ interface WireAgentTopology {
             | "requests"
             | "escalates";
           readonly workspace?: "branch_from_source" | "independent" | undefined;
+          readonly reply_timeout_seconds?: number | undefined;
         }[]
       | undefined;
     readonly command?: string | undefined;
@@ -309,6 +312,8 @@ export interface RoleEdge {
   readonly edgeType: EdgeType;
   /** Workspace strategy — default: independent (HEAD). */
   readonly workspace?: WorkspaceStrategy | undefined;
+  /** Seconds the target role has to reply before the handoff is marked overdue. */
+  readonly replyTimeoutSeconds?: number | undefined;
 }
 
 /** Supported agent platform identifiers (boardroom). */
@@ -372,6 +377,9 @@ export function wireToTopology(wire: z.infer<typeof AgentTopologySchema>): Agent
               target: edge.target,
               edgeType: edge.edge_type,
               ...(edge.workspace !== undefined && { workspace: edge.workspace }),
+              ...(edge.reply_timeout_seconds !== undefined && {
+                replyTimeoutSeconds: edge.reply_timeout_seconds,
+              }),
             }),
           ),
         }),

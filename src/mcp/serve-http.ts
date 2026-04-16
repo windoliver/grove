@@ -178,6 +178,13 @@ let httpSweepReconciler: SweepReconciler | undefined;
 interface ScopedDeps {
   readonly deps: McpDeps;
   readonly sessionId: string | undefined;
+  /**
+   * Cleanup for scoped per-session resources (DeadlineWatcher timers,
+   * scoped EventBus, etc.). Must be invoked on cache eviction and session
+   * invalidation/reap so timers cannot outlive their session and emit
+   * cross-session overdue events.
+   */
+  readonly close: () => void;
 }
 
 /**
@@ -350,6 +357,38 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     topologyRouter = new TopologyRouter(loadedContract.topology, eventBus);
   }
 
+  // Build a session-scoped handoff store per request. In Nexus mode, use the
+  // already-scoped nexusHandoffStore. In local mode, construct a fresh
+  // SqliteHandoffStore bound to THIS request's session ID (not the process-
+  // global runtime.handoffStore, which was created at startup before any
+  // session existed and would reuse unscoped mode). Without this, local
+  // HTTP callers would silently bypass session isolation, grove_ack_handoff
+  // would be omitted (isInCurrentSession undefined), and deadline rebuild
+  // would skip.
+  let activeHandoffStore: import("../core/handoff.js").HandoffStore | undefined;
+  if (nexusHandoffStore !== undefined) {
+    activeHandoffStore = nexusHandoffStore;
+  } else if (sessionId !== undefined) {
+    const { SqliteHandoffStore } = await import("../local/sqlite-handoff-store.js");
+    activeHandoffStore = new SqliteHandoffStore(runtime.db, sessionId);
+  } else {
+    // Bootstrap/pre-session: no session to scope to — fall back to unscoped
+    activeHandoffStore = runtime.handoffStore;
+  }
+
+  // Wire DeadlineWatcher when any handoff store + event bus are available.
+  // Both Nexus and session-scoped SQLite (GROVE_SESSION_ID set) safely
+  // support it; unscoped SQLite stores leave listForCurrentSession undefined
+  // so rebuildFromStore skips automatically. See serve.ts for more context.
+  let deadlineWatcher: import("../core/deadline-watcher.js").DeadlineWatcher | undefined;
+  if (activeHandoffStore !== undefined && eventBus !== undefined) {
+    const { DeadlineWatcher } = await import("../core/deadline-watcher.js");
+    deadlineWatcher = new DeadlineWatcher({ handoffStore: activeHandoffStore, eventBus });
+    void deadlineWatcher.rebuildFromStore().catch(() => {
+      /* non-fatal */
+    });
+  }
+
   const deps: McpDeps = {
     contributionStore,
     claimStore,
@@ -365,10 +404,16 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     ...(eventBus ? { eventBus } : {}),
     ...(topologyRouter ? { topologyRouter } : {}),
     // Nexus handoff store when available, falls back to local SQLite
-    handoffStore: nexusHandoffStore ?? runtime.handoffStore,
+    handoffStore: activeHandoffStore,
     idempotencyStore: runtime.idempotencyStore,
+    ...(deadlineWatcher ? { deadlineWatcher } : {}),
   };
-  return { deps, sessionId };
+  const close = () => {
+    deadlineWatcher?.close();
+    // eventBus is shared with the TUI/other surfaces for Nexus-backed IPC,
+    // so don't close it here — only per-scope resources.
+  };
+  return { deps, sessionId, close };
 }
 
 async function resolveDeps(): Promise<ScopedDeps> {
@@ -413,6 +458,15 @@ async function resolveDeps(): Promise<ScopedDeps> {
   const cached = depsCache.get(key);
   if (cached) return cached;
   // A new session id invalidates the entire cache so we never mix scopes.
+  // Close each evicted entry's scoped resources (timers, watchers) so
+  // they cannot outlive the session they were bound to.
+  for (const prev of depsCache.values()) {
+    try {
+      prev.close();
+    } catch {
+      // best-effort
+    }
+  }
   depsCache.clear();
   const scoped = await buildScopedDeps(sessionId);
   depsCache.set(key, scoped);
@@ -610,7 +664,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     // opted in via GROVE_MCP_EVAL_ENABLED=true. Unauthenticated HTTP exposure
     // of shell execution is a remote-code-execution risk.
     const evalEnabled = AUTH_TOKEN !== undefined && process.env.GROVE_MCP_EVAL_ENABLED === "true";
-    const server = await createMcpServer(scopedDeps, { eval: evalEnabled });
+    const server = await createMcpServer(scopedDeps, {
+      eval: evalEnabled,
+      transport: "http",
+    });
 
     transport.onclose = () => {
       const sid = transport.sessionId;

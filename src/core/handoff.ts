@@ -12,44 +12,81 @@ export const HandoffStatus = {
 export type HandoffStatus = (typeof HandoffStatus)[keyof typeof HandoffStatus];
 
 /**
- * Handoff delivery state machine.
+ * Valid status transitions for handoffs.
  *
  * Happy path:  pending_pickup → delivered → processed → replied
+ *              pending_pickup → delivered → replied (skip processed)
  * IPC failure: pending_pickup → dead_lettered
+ *              delivered → dead_lettered
  * TTL expiry:  pending_pickup → expired
+ *              delivered → expired
+ *              processed → expired
  *
- * Terminal states: replied, expired, dead_lettered.
+ * pending_pickup → replied is NOT allowed: a reply must acknowledge delivery
+ * first. Callers that want to atomically deliver-and-reply should call
+ * markDelivered() then markReplied().
+ *
+ * Terminal states (replied, expired, dead_lettered) cannot transition further.
  */
-const VALID_TRANSITIONS: ReadonlyMap<HandoffStatus, ReadonlySet<HandoffStatus>> = new Map([
-  [
-    HandoffStatus.PendingPickup,
-    new Set([HandoffStatus.Delivered, HandoffStatus.Expired, HandoffStatus.DeadLettered]),
-  ],
-  [
+export const VALID_TRANSITIONS: Readonly<Record<HandoffStatus, readonly HandoffStatus[]>> = {
+  [HandoffStatus.PendingPickup]: [
     HandoffStatus.Delivered,
-    new Set([
-      HandoffStatus.Processed,
-      HandoffStatus.Replied,
-      HandoffStatus.Expired,
-      HandoffStatus.DeadLettered,
-    ]),
+    HandoffStatus.Expired,
+    HandoffStatus.DeadLettered,
   ],
-  [HandoffStatus.Processed, new Set([HandoffStatus.Replied, HandoffStatus.Expired])],
-  // Terminal states — no outgoing transitions
-  [HandoffStatus.Replied, new Set()],
-  [HandoffStatus.Expired, new Set()],
-  [HandoffStatus.DeadLettered, new Set()],
-]);
+  [HandoffStatus.Delivered]: [
+    HandoffStatus.Processed,
+    HandoffStatus.Replied,
+    HandoffStatus.Expired,
+    HandoffStatus.DeadLettered,
+  ],
+  [HandoffStatus.Processed]: [HandoffStatus.Replied, HandoffStatus.Expired],
+  [HandoffStatus.Replied]: [],
+  [HandoffStatus.Expired]: [],
+  [HandoffStatus.DeadLettered]: [],
+};
 
 /**
- * Check whether a status transition is valid.
+ * Thrown when a handoff status transition is invalid (e.g., expired → delivered).
+ */
+export class InvalidTransitionError extends Error {
+  readonly handoffId: string;
+  readonly fromStatus: HandoffStatus;
+  readonly toStatus: HandoffStatus;
+
+  constructor(handoffId: string, fromStatus: HandoffStatus, toStatus: HandoffStatus) {
+    super(`Invalid handoff transition: '${fromStatus}' → '${toStatus}' for handoff '${handoffId}'`);
+    this.name = "InvalidTransitionError";
+    this.handoffId = handoffId;
+    this.fromStatus = fromStatus;
+    this.toStatus = toStatus;
+  }
+}
+
+/**
+ * Validate a handoff status transition. Throws InvalidTransitionError if invalid.
+ */
+export function validateTransition(
+  handoffId: string,
+  currentStatus: HandoffStatus,
+  targetStatus: HandoffStatus,
+): void {
+  const allowed = VALID_TRANSITIONS[currentStatus];
+  if (!allowed.includes(targetStatus)) {
+    throw new InvalidTransitionError(handoffId, currentStatus, targetStatus);
+  }
+}
+
+/**
+ * Check whether a status transition is valid (boolean form).
  *
- * Returns true if `from → to` is a legal transition in the handoff
- * state machine. Returns false for invalid transitions and self-loops.
+ * Returns true if `from → to` is a legal transition. Returns false for
+ * invalid transitions and self-loops. Used by callers that want a
+ * predicate without the throw-on-error semantics of validateTransition.
  */
 export function canTransition(from: HandoffStatus, to: HandoffStatus): boolean {
   if (from === to) return false;
-  return VALID_TRANSITIONS.get(from)?.has(to) ?? false;
+  return VALID_TRANSITIONS[from]?.includes(to) ?? false;
 }
 
 export interface Handoff {
@@ -61,6 +98,10 @@ export interface Handoff {
   readonly requiresReply: boolean;
   readonly replyDueAt?: string | undefined;
   readonly resolvedByCid?: string | undefined;
+  /** ISO 8601 timestamp when the target agent first observed this handoff. */
+  readonly seenAt?: string | undefined;
+  /** ISO 8601 timestamp when the target agent acknowledged intent to act. */
+  readonly ackedAt?: string | undefined;
   readonly createdAt: string;
   /** Nexus IPC message ID — set when the handoff is relayed via IPC. */
   readonly ipcMessageId?: string | undefined;
@@ -109,7 +150,43 @@ export interface HandoffStore {
   markDeadLettered(id: string): Promise<void>;
   /** Set the IPC message ID on a handoff (called after IPC relay succeeds). */
   setIpcMessageId?(id: string, ipcMessageId: string): Promise<void>;
+  /**
+   * Record that the target agent has seen this handoff.
+   * Sets seenAt if not already set. No-op if already seen.
+   */
+  markSeen(id: string): Promise<void>;
+  /**
+   * Record that the target agent acknowledges this handoff and intends to act.
+   * Sets ackedAt (and seenAt if not already set). No-op if already acked.
+   */
+  markAcked(id: string): Promise<void>;
   expireStale(now?: string): Promise<readonly Handoff[]>;
   countPending(toRole: string): Promise<number>;
+  /**
+   * Session-scoped enumeration for deadline rebuild on MCP server startup.
+   *
+   * Unlike list() which may return handoffs across all sessions (Nexus
+   * scans the zone-wide directory), this must ONLY return handoffs created
+   * within the active session. Without this scoping, a restarting MCP
+   * server for session A could re-arm timers for session B's handoffs
+   * and emit cross-session overdue events.
+   *
+   * Absence of the method signals "session scoping is not supported on
+   * this backend" — callers (DeadlineWatcher rebuild, grove_ack_handoff
+   * authorization) use that as a signal to disable features that require
+   * it.
+   */
+  listForCurrentSession?(query?: HandoffQuery): Promise<readonly Handoff[]>;
+  /**
+   * O(1) session ownership check. Returns true iff the handoff exists AND
+   * belongs to the caller's current session. Used by grove_ack_handoff to
+   * reject cross-session receipt mutations without a full enumeration scan
+   * (which is bounded in memory and unusable for sessions with many
+   * handoffs).
+   *
+   * Absence of the method means the backend does not support session-
+   * scoped receipt mutations at all.
+   */
+  isInCurrentSession?(handoffId: string): Promise<boolean>;
   close(): void;
 }

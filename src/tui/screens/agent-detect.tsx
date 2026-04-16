@@ -36,6 +36,7 @@ export interface AgentDetectProps {
     detected: Map<string, boolean>,
     roleMapping: Map<string, string>,
     rolePrompts: Map<string, string>,
+    edgeTimeouts: Map<string, number>,
   ) => void;
   readonly onBack: () => void;
 }
@@ -71,6 +72,34 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
     });
 
     const roles = topology?.roles ?? [];
+
+    // Edge reply timeouts — initialized from topology, editable by user via [t] key
+    const [edgeTimeouts, setEdgeTimeouts] = useState<Map<string, number>>(() => {
+      const map = new Map<string, number>();
+      if (topology) {
+        for (const role of topology.roles) {
+          for (const edge of role.edges ?? []) {
+            if (edge.replyTimeoutSeconds !== undefined) {
+              map.set(`${role.name}:${edge.target}`, edge.replyTimeoutSeconds);
+            }
+          }
+        }
+      }
+      return map;
+    });
+    const [editingTimeout, setEditingTimeout] = useState(false);
+    const [timeoutBuffer, setTimeoutBuffer] = useState("");
+
+    // Collect all edges for display
+    const allEdges = useMemo(() => {
+      const edges: { source: string; target: string; edgeType: string }[] = [];
+      for (const role of roles) {
+        for (const edge of role.edges ?? []) {
+          edges.push({ source: role.name, target: edge.target, edgeType: edge.edgeType });
+        }
+      }
+      return edges;
+    }, [roles]);
 
     // Auto-detect CLIs on mount
     useEffect(() => {
@@ -138,6 +167,46 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
     useKeyboard(
       useCallback(
         (key) => {
+          if (editingTimeout) {
+            if (key.name === "escape" || key.name === "return" || key.name === "enter") {
+              // Save timeout on exit
+              const roleName = roles[cursor]?.name;
+              if (roleName) {
+                const edges = roles[cursor]?.edges ?? [];
+                const parsed = parseInt(timeoutBuffer, 10);
+                for (const edge of edges) {
+                  const edgeKey = `${roleName}:${edge.target}`;
+                  if (!Number.isNaN(parsed) && parsed >= 10) {
+                    setEdgeTimeouts((prev) => {
+                      const next = new Map(prev);
+                      next.set(edgeKey, parsed);
+                      return next;
+                    });
+                  } else if (timeoutBuffer.trim() === "" || timeoutBuffer.trim() === "0") {
+                    // Remove timeout (no deadline)
+                    setEdgeTimeouts((prev) => {
+                      const next = new Map(prev);
+                      next.delete(edgeKey);
+                      return next;
+                    });
+                  }
+                }
+              }
+              setEditingTimeout(false);
+              return;
+            }
+            // Allow digits and backspace
+            if (key.name === "backspace") {
+              setTimeoutBuffer((b) => b.slice(0, -1));
+              return;
+            }
+            if (/^[0-9]$/.test(key.sequence ?? "")) {
+              setTimeoutBuffer((b) => b + (key.sequence ?? ""));
+              return;
+            }
+            return;
+          }
+
           if (editing) {
             if (key.name === "escape") {
               // Save on exit
@@ -192,10 +261,21 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
             }
             return;
           }
+          // t: edit reply timeout for edges from the selected role
+          if (key.name === "t") {
+            const role = roles[cursor];
+            if (role?.edges && role.edges.length > 0) {
+              const firstEdgeKey = `${role.name}:${role.edges[0]?.target}`;
+              const current = edgeTimeouts.get(firstEdgeKey);
+              setTimeoutBuffer(current !== undefined ? String(current) : "");
+              setEditingTimeout(true);
+            }
+            return;
+          }
           // Enter: launch agents (only Enter, not Tab/Space/Right which caused accidental spawns)
           if (key.name === "return" || key.name === "enter") {
             if (!scanning) {
-              onContinue(detected, roleMapping, rolePrompts);
+              onContinue(detected, roleMapping, rolePrompts, edgeTimeouts);
             }
             return;
           }
@@ -209,10 +289,13 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
           detected,
           roleMapping,
           rolePrompts,
+          edgeTimeouts,
           onContinue,
           onBack,
           editing,
           editBuffer,
+          editingTimeout,
+          timeoutBuffer,
           cursor,
           roles,
           availableClis,
@@ -309,6 +392,39 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
           </box>
         ) : null}
 
+        {/* Edge Deadlines — editable via [t] key */}
+        {allEdges.length > 0 ? (
+          <box flexDirection="column" marginX={2} marginTop={1} paddingX={1}>
+            <text color={theme.text} bold>
+              Reply Deadlines (t:set timeout on selected role's edges)
+            </text>
+            {allEdges.map((edge) => {
+              const edgeKey = `${edge.source}:${edge.target}`;
+              const timeout = edgeTimeouts.get(edgeKey);
+              const isSelectedRole = roles[cursor]?.name === edge.source;
+              const isEditingThis = editingTimeout && isSelectedRole;
+              return (
+                <box key={edgeKey} flexDirection="row">
+                  <text color={isSelectedRole ? theme.focus : theme.secondary}>
+                    {isSelectedRole ? " > " : "   "}
+                  </text>
+                  <text color={theme.text}>{edge.source}</text>
+                  <text color={theme.secondary}> {"\u2192"} </text>
+                  <text color={theme.text}>{edge.target}</text>
+                  <text color={theme.secondary}> ({edge.edgeType}) </text>
+                  {isEditingThis ? (
+                    <text color={theme.focus}>[{timeoutBuffer || "0"}_]s</text>
+                  ) : timeout !== undefined ? (
+                    <text color={theme.warning}>{timeout}s</text>
+                  ) : (
+                    <text color={theme.disabled}>{"\u2014"}</text>
+                  )}
+                </box>
+              );
+            })}
+          </box>
+        ) : null}
+
         {/* Role prompts — editable */}
         {roles.length > 0 ? (
           <box
@@ -375,11 +491,13 @@ export const AgentDetect: React.NamedExoticComponent<AgentDetectProps> = React.m
         {/* Hints */}
         <box paddingX={2} marginTop={1}>
           <text color={theme.secondary}>
-            {editing
-              ? "Edit prompt (vim keys)  Esc:save & close"
-              : scanning
-                ? "Scanning..."
-                : "c:change CLI  e:edit prompt  j/k:navigate  Enter:launch  Esc:back"}
+            {editingTimeout
+              ? "Type timeout in seconds (min 10, 0 or empty = no deadline)  Enter/Esc:save"
+              : editing
+                ? "Edit prompt (vim keys)  Esc:save & close"
+                : scanning
+                  ? "Scanning..."
+                  : "c:change CLI  e:edit prompt  t:set deadline  j/k:navigate  Enter:launch  Esc:back"}
           </text>
         </box>
       </box>

@@ -20,6 +20,7 @@ import { LocalWorkspaceManager } from "../../local/workspace.js";
 import type { ContentStore } from "../cas.js";
 import type { GroveContract } from "../contract.js";
 import { DefaultFrontierCalculator } from "../frontier.js";
+import type { HandoffStore } from "../handoff.js";
 import { InMemoryCreditsService } from "../in-memory-credits.js";
 import { InMemoryHandoffStore } from "../in-memory-handoff-store.js";
 import type { Contribution } from "../models.js";
@@ -148,6 +149,7 @@ export async function createTestOperationDeps(): Promise<TestOperationDeps> {
     topologyRouter: undefined as unknown as NonNullable<OperationDeps["topologyRouter"]>,
     hookRunner: undefined as unknown as NonNullable<OperationDeps["hookRunner"]>,
     hookCwd: undefined as unknown as string,
+    deadlineWatcher: undefined as unknown as NonNullable<OperationDeps["deadlineWatcher"]>,
   };
 
   return {
@@ -159,6 +161,37 @@ export async function createTestOperationDeps(): Promise<TestOperationDeps> {
       await rm(tempDir, { recursive: true, force: true });
     },
   };
+}
+
+/**
+ * Create a mock HandoffStore with sensible no-op defaults.
+ *
+ * Override specific methods for test assertions. When the HandoffStore
+ * interface changes (e.g., adding markSeen/markAcked), update this one
+ * factory instead of N inline mocks across test files.
+ */
+export function createMockHandoffStore(overrides?: Partial<HandoffStore>): HandoffStore {
+  return {
+    create: async () => ({
+      handoffId: "mock",
+      sourceCid: "",
+      fromRole: "",
+      toRole: "",
+      status: "pending_pickup" as const,
+      requiresReply: false,
+      createdAt: "",
+    }),
+    get: async () => undefined,
+    list: async () => [],
+    markDelivered: async () => undefined,
+    markReplied: async () => undefined,
+    markSeen: async () => undefined,
+    markAcked: async () => undefined,
+    expireStale: async () => [],
+    countPending: async () => 0,
+    close: () => undefined,
+    ...overrides,
+  } as HandoffStore;
 }
 
 /**

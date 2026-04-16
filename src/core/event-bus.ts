@@ -7,9 +7,19 @@
  * - Future: RedisEventBus, NatsEventBus for federated setups
  */
 
-/** An event published through the bus. */
+/**
+ * An event published through the bus.
+ *
+ * Convention for type names: "namespace.action"
+ *   - contribution  — a contribution was created
+ *   - stop          — session termination signal
+ *   - idle          — agent entered idle state
+ *   - handoff.overdue — a handoff reply deadline has passed
+ *   - handoff.seen  — a handoff was observed by the target agent
+ *   - handoff.acked — a handoff was acknowledged by the target agent
+ */
 export interface GroveEvent {
-  readonly type: "contribution" | "stop" | "idle";
+  readonly type: string;
   readonly sourceRole: string;
   readonly targetRole: string;
   readonly payload: Record<string, unknown>;

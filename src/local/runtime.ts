@@ -43,6 +43,13 @@ export interface LocalRuntimeOptions {
 
 /** All local stores, services, and resources. */
 export interface LocalRuntime {
+  /**
+   * Raw SQLite database handle. Exposed for callers that need to construct
+   * additional session-scoped store instances after startup (e.g.
+   * serve-http.ts building a per-request SqliteHandoffStore once it has
+   * resolved the current session ID).
+   */
+  readonly db: import("bun:sqlite").Database;
   readonly contributionStore: SqliteContributionStore;
   readonly claimStore: SqliteClaimStore;
   readonly bountyStore: SqliteBountyStore;
@@ -81,7 +88,16 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
   const casPath = join(groveDir, "cas");
   const groveRoot = resolve(groveDir, "..");
 
-  const stores = createSqliteStores(dbPath);
+  // Pass GROVE_SESSION_ID to the handoff store so it scopes all
+  // reads/writes to the active session. This enables proactive deadline
+  // timers and ack receipts safely — session A's watcher cannot flip
+  // session B's rows, and a role-bound ack cannot cross session boundaries.
+  // When GROVE_SESSION_ID is unset (CLI/tests), the store falls back to
+  // unscoped mode for backwards compatibility.
+  const envSessionId = process.env.GROVE_SESSION_ID;
+  const stores = createSqliteStores(dbPath, {
+    ...(envSessionId ? { sessionId: envSessionId } : {}),
+  });
   const cas = new FsCas(casPath);
 
   const baseFrontier = new DefaultFrontierCalculator(stores.contributionStore);
@@ -135,6 +151,7 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
   }
 
   return {
+    db: stores.db,
     contributionStore: stores.contributionStore,
     claimStore: stores.claimStore,
     bountyStore: stores.bountyStore,

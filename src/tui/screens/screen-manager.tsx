@@ -13,6 +13,7 @@
 import { useKeyboard, useRenderer } from "@opentui/react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { lookupPresetTopology } from "../../core/presets.js";
+import type { AgentTopology } from "../../core/topology.js";
 import { topologicalSortRoles } from "../../core/topology.js";
 import type { AppProps } from "../app.js";
 import { App } from "../app.js";
@@ -360,6 +361,14 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
 
     // Screen 2 -> Screen 3: goal entered → go to launch preview (auto-detect)
     const rolePromptsRef = useRef<Map<string, string>>(new Map());
+    /**
+     * Per-launch topology override set by handleLaunchConfirm after applying
+     * TUI edge timeout edits. spawnAgents reads this (via ref) to bypass the
+     * stale closure on `topology` state, and to ensure the cloned topology
+     * is what reaches createSession — without it, session-specific edits
+     * would either not apply (stale closure) or mutate the shared preset.
+     */
+    const sessionTopologyRef = useRef<AgentTopology | undefined>(undefined);
     const handleGoalToPreview = useCallback((goal: string) => {
       setState((s) => ({
         ...s,
@@ -396,13 +405,22 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
 
         // Create session BEFORE spawning agents so MCP gets GROVE_SESSION_ID
         // for session-scoped contribution paths (avoids N+1 VFS reads on 47+ old contributions).
+        //
+        // Use sessionTopologyRef (set by handleLaunchConfirm after applying
+        // TUI edge edits) when available. React state updates are async so
+        // the closed-over `topology` variable would still reference the
+        // pre-edit object here — using the ref ensures we send the cloned,
+        // edited topology to createSession.
         if (isSessionProvider(provider)) {
           try {
+            const sessionTopology = sessionTopologyRef.current ?? topology;
+            const sessionConfig =
+              contract && sessionTopology ? { ...contract, topology: sessionTopology } : contract;
             const session = await provider.createSession({
               goal,
               presetName: state.selectedPreset,
-              topology,
-              config: contract,
+              topology: sessionTopology,
+              config: sessionConfig,
             });
             spawnManager.setSessionId(session.id);
             if ("setSessionScope" in provider) {
@@ -568,6 +586,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         detected: Map<string, boolean>,
         roleMappingFromPreview: Map<string, string>,
         rolePrompts: Map<string, string>,
+        edgeTimeouts: Map<string, number>,
       ) => {
         // Guard: prevent duplicate spawn when user presses Escape → Enter twice.
         // hasSpawnedRef is set to true here and only reset in handleNewSession.
@@ -576,7 +595,39 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           return;
         }
         hasSpawnedRef.current = true;
-        debugLog("handleLaunchConfirm", `spawning with ${roleMappingFromPreview.size} roles`);
+        debugLog(
+          "handleLaunchConfirm",
+          `spawning with ${roleMappingFromPreview.size} roles, ${edgeTimeouts.size} edge timeouts`,
+        );
+
+        // Apply edge timeouts from TUI to a DEEP CLONE of the topology so
+        // session-specific edits don't mutate the shared preset object (which
+        // is memoized by lookupPresetTopology and reused across launches) or
+        // the GROVE.md topology. Without cloning, editing deadlines in one
+        // session silently leaks into later sessions in the same TUI process.
+        //
+        // We store the cloned topology in a ref (sessionTopologyRef) so
+        // spawnAgents picks it up bypassing React's async state update. Also
+        // call setTopology so the UI reflects the current session's config.
+        if (topology) {
+          const sessionTopology = structuredClone(topology);
+          for (const role of sessionTopology.roles) {
+            if (role.edges) {
+              for (const edge of role.edges) {
+                const key = `${role.name}:${edge.target}`;
+                const timeout = edgeTimeouts.get(key);
+                if (timeout !== undefined) {
+                  (edge as { replyTimeoutSeconds?: number }).replyTimeoutSeconds = timeout;
+                } else {
+                  delete (edge as { replyTimeoutSeconds?: number }).replyTimeoutSeconds;
+                }
+              }
+            }
+          }
+          sessionTopologyRef.current = sessionTopology;
+          setTopology(sessionTopology);
+        }
+
         rolePromptsRef.current = rolePrompts;
         setState((s) => ({
           ...s,
@@ -585,7 +636,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         }));
         spawnAgents(state.goal ?? "", roleMappingFromPreview);
       },
-      [state.goal, spawnAgents],
+      [state.goal, spawnAgents, topology],
     );
 
     // Screen 3.5 -> Screen 4: all spawns resolved

@@ -64,25 +64,42 @@ describe("NexusHandoffStore: Nexus-specific behavior", () => {
     }
   });
 
-  test("list scans all session files when no sessionId filter", async () => {
+  test("scoped list does NOT leak peer sessions' handoffs", async () => {
     const client = new MockNexusClient();
     // Create handoffs in two different sessions
     const store1 = new NexusHandoffStore(client, "sess-1", "default");
     const store2 = new NexusHandoffStore(client, "sess-2", "default");
     try {
-      await store1.create({ sourceCid: "blake3:a", fromRole: "coder", toRole: "reviewer" });
-      await store2.create({ sourceCid: "blake3:b", fromRole: "reviewer", toRole: "coder" });
+      const h1 = await store1.create({
+        sourceCid: "blake3:a",
+        fromRole: "coder",
+        toRole: "reviewer",
+      });
+      const h2 = await store2.create({
+        sourceCid: "blake3:b",
+        fromRole: "reviewer",
+        toRole: "coder",
+      });
 
-      // A store should see handoffs from all sessions via readAllHandoffs
-      const all = await store1.list();
+      // store1 must only see its own handoff
+      const listed1 = await store1.list();
+      expect(listed1.map((h) => h.handoffId)).toEqual([h1.handoffId]);
+      // store2 must only see its own handoff
+      const listed2 = await store2.list();
+      expect(listed2.map((h) => h.handoffId)).toEqual([h2.handoffId]);
+
+      // Unscoped store (CLI/admin) walks the whole dir and sees both
+      const admin = new NexusHandoffStore(client, undefined, "default");
+      const all = await admin.list();
       expect(all.length).toBeGreaterThanOrEqual(2);
+      admin.close();
     } finally {
       store1.close();
       store2.close();
     }
   });
 
-  test("get falls back to scanning all files for cross-session lookups", async () => {
+  test("scoped get does NOT leak peer sessions' handoffs", async () => {
     const client = new MockNexusClient();
     const store1 = new NexusHandoffStore(client, "sess-1", "default");
     const store2 = new NexusHandoffStore(client, "sess-2", "default");
@@ -94,13 +111,131 @@ describe("NexusHandoffStore: Nexus-specific behavior", () => {
         toRole: "reviewer",
       });
 
-      // store1 is scoped to sess-1 but should find sess-2's handoff via scanAll
+      // store1 must NOT find store2's handoff — cross-session reads are rejected
       const found = await store1.get("cross-session-id");
-      expect(found).toBeDefined();
-      expect(found!.handoffId).toBe("cross-session-id");
+      expect(found).toBeUndefined();
+
+      // Unscoped admin store still resolves across sessions
+      const admin = new NexusHandoffStore(client, undefined, "default");
+      const adminFound = await admin.get("cross-session-id");
+      expect(adminFound).toBeDefined();
+      admin.close();
     } finally {
       store1.close();
       store2.close();
+    }
+  });
+
+  test("scoped list includes pre-#164 _global migration rows", async () => {
+    const client = new MockNexusClient();
+    const legacy = new NexusHandoffStore(client, undefined, "default");
+    const scoped = new NexusHandoffStore(client, "new-session", "default");
+    try {
+      const hLegacy = await legacy.create({
+        sourceCid: "blake3:legacy",
+        fromRole: "coder",
+        toRole: "reviewer",
+      });
+
+      const listed = await scoped.list();
+      expect(listed.find((h) => h.handoffId === hLegacy.handoffId)).toBeDefined();
+      const got = await scoped.get(hLegacy.handoffId);
+      expect(got?.handoffId).toBe(hLegacy.handoffId);
+    } finally {
+      legacy.close();
+      scoped.close();
+    }
+  });
+
+  test("scoped isInCurrentSession accepts pre-#164 _global rows", async () => {
+    const client = new MockNexusClient();
+    const legacy = new NexusHandoffStore(client, undefined, "default");
+    const scoped = new NexusHandoffStore(client, "new-session", "default");
+    try {
+      const hLegacy = await legacy.create({
+        sourceCid: "blake3:legacy",
+        fromRole: "coder",
+        toRole: "reviewer",
+      });
+      expect(await scoped.isInCurrentSession(hLegacy.handoffId)).toBe(true);
+    } finally {
+      legacy.close();
+      scoped.close();
+    }
+  });
+
+  test("scoped listForCurrentSession includes pre-#164 _global rows (watcher rebuild)", async () => {
+    const client = new MockNexusClient();
+    const legacy = new NexusHandoffStore(client, undefined, "default");
+    const scoped = new NexusHandoffStore(client, "new-session", "default");
+    try {
+      await legacy.create({
+        sourceCid: "blake3:legacy",
+        fromRole: "coder",
+        toRole: "reviewer",
+        requiresReply: true,
+        replyDueAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+      const listed = await scoped.listForCurrentSession();
+      expect(listed.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      legacy.close();
+      scoped.close();
+    }
+  });
+
+  test("scoped markAcked can mutate pre-#164 _global rows", async () => {
+    const client = new MockNexusClient();
+    const legacy = new NexusHandoffStore(client, undefined, "default");
+    const scoped = new NexusHandoffStore(client, "new-session", "default");
+    try {
+      const hLegacy = await legacy.create({
+        sourceCid: "blake3:legacy",
+        fromRole: "coder",
+        toRole: "reviewer",
+      });
+      await scoped.markAcked(hLegacy.handoffId);
+      const after = await scoped.get(hLegacy.handoffId);
+      expect(after?.ackedAt).toBeDefined();
+    } finally {
+      legacy.close();
+      scoped.close();
+    }
+  });
+
+  test("first scoped mutation claims a _global row — peer session stops seeing it", async () => {
+    const client = new MockNexusClient();
+    const legacy = new NexusHandoffStore(client, undefined, "default");
+    const storeA = new NexusHandoffStore(client, "sess-A", "default");
+    const storeB = new NexusHandoffStore(client, "sess-B", "default");
+    try {
+      const hLegacy = await legacy.create({
+        sourceCid: "blake3:legacy",
+        fromRole: "coder",
+        toRole: "reviewer",
+      });
+
+      // Both sessions see the legacy row pre-claim
+      expect(await storeA.isInCurrentSession(hLegacy.handoffId)).toBe(true);
+      expect(await storeB.isInCurrentSession(hLegacy.handoffId)).toBe(true);
+
+      // A claims via markAcked (mutation moves row from _global → sess-A file)
+      await storeA.markAcked(hLegacy.handoffId);
+
+      // B can no longer see / resolve it — claim-on-move completed
+      expect(await storeB.isInCurrentSession(hLegacy.handoffId)).toBe(false);
+      expect(await storeB.get(hLegacy.handoffId)).toBeUndefined();
+      const listB = await storeB.list();
+      expect(listB.find((h) => h.handoffId === hLegacy.handoffId)).toBeUndefined();
+
+      // A still owns it
+      const got = await storeA.get(hLegacy.handoffId);
+      expect(got?.handoffId).toBe(hLegacy.handoffId);
+      expect(got?.ackedAt).toBeDefined();
+    } finally {
+      legacy.close();
+      storeA.close();
+      storeB.close();
     }
   });
 

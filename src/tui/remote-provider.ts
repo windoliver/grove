@@ -126,8 +126,20 @@ export class RemoteDataProvider
 
     const frontierSummary = buildFrontierSummary(frontier);
 
+    // `/api/grove` aggregates contributionCount/activeClaimCount across every
+    // session. When the dashboard is scoped (activeSessionId set), those
+    // global counts are inconsistent with the rest of the view (recent
+    // contributions, claims, frontier all session-scoped). Zero them out so
+    // the header doesn't mislead the operator about the current session's
+    // activity — the scoped recentContributions / frontier already tell the
+    // true story.
+    const scopedMetadata =
+      this.activeSessionId !== undefined
+        ? { ...metadata, contributionCount: 0, activeClaimCount: 0 }
+        : metadata;
+
     return {
-      metadata,
+      metadata: scopedMetadata,
       activeClaims,
       recentContributions,
       frontierSummary,
@@ -675,10 +687,20 @@ export class RemoteDataProvider
     };
   }
 
-  async markHandoffDelivered(handoffId: string): Promise<void> {
-    await fetch(`${this.baseUrl}/api/handoffs/${encodeURIComponent(handoffId)}/delivered`, {
-      method: "POST",
-    });
+  async markHandoffDelivered(handoffId: string, sessionId?: string): Promise<void> {
+    // Callers may pass an explicit `sessionId` to pin the scope to whatever
+    // was active when they read the handoff — guards against activeSessionId
+    // flipping between the preceding getHandoffs() and this POST (rare, but
+    // would otherwise strand the handoff in pending_pickup when the POST
+    // lands in the new session's scoped store that doesn't know this id).
+    const params = new URLSearchParams();
+    const effective = sessionId ?? this.activeSessionId;
+    if (effective) params.set("sessionId", effective);
+    const qs = params.toString();
+    await fetch(
+      `${this.baseUrl}/api/handoffs/${encodeURIComponent(handoffId)}/delivered${qs ? `?${qs}` : ""}`,
+      { method: "POST" },
+    );
   }
 
   async getHandoffs(
@@ -691,6 +713,7 @@ export class RemoteDataProvider
     if (query?.status)
       params.set("status", Array.isArray(query.status) ? (query.status[0] ?? "") : query.status);
     if (query?.limit) params.set("limit", String(query.limit));
+    if (this.activeSessionId) params.set("sessionId", this.activeSessionId);
     const qs = params.toString();
     const resp = await fetch(`${this.baseUrl}/api/handoffs${qs ? `?${qs}` : ""}`);
     if (!resp.ok) return [];

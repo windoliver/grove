@@ -1,10 +1,11 @@
-import { NotFoundError } from "./errors.js";
+import { NotFoundError, StateConflictError } from "./errors.js";
 import {
   type Handoff,
   type HandoffInput,
   type HandoffQuery,
   HandoffStatus,
   type HandoffStore,
+  validateTransition,
 } from "./handoff.js";
 
 function toHandoff(input: HandoffInput): Handoff {
@@ -57,11 +58,24 @@ export class InMemoryHandoffStore implements HandoffStore {
     return handoffs;
   }
 
+  /**
+   * InMemory is inherently session-scoped: one store instance per session,
+   * so every handoff in the map belongs to the current session.
+   */
+  async listForCurrentSession(query?: HandoffQuery): Promise<readonly Handoff[]> {
+    return this.list(query);
+  }
+
+  async isInCurrentSession(handoffId: string): Promise<boolean> {
+    return this.handoffs.has(handoffId);
+  }
+
   async markDelivered(id: string): Promise<void> {
     const handoff = this.handoffs.get(id);
     if (handoff === undefined) {
       throw new NotFoundError({ resource: "Handoff", identifier: id });
     }
+    validateTransition(id, handoff.status, HandoffStatus.Delivered);
     this.handoffs.set(id, { ...handoff, status: HandoffStatus.Delivered });
   }
 
@@ -70,6 +84,7 @@ export class InMemoryHandoffStore implements HandoffStore {
     if (handoff === undefined) {
       throw new NotFoundError({ resource: "Handoff", identifier: id });
     }
+    validateTransition(id, handoff.status, HandoffStatus.Processed);
     this.handoffs.set(id, { ...handoff, status: HandoffStatus.Processed });
   }
 
@@ -78,6 +93,21 @@ export class InMemoryHandoffStore implements HandoffStore {
     if (handoff === undefined) {
       throw new NotFoundError({ resource: "Handoff", identifier: id });
     }
+    // Reject late replies in the store itself. Only delivered/processed
+    // can transition to replied per the state machine.
+    const now = new Date().toISOString();
+    if (
+      (handoff.status === HandoffStatus.Delivered || handoff.status === HandoffStatus.Processed) &&
+      handoff.replyDueAt !== undefined &&
+      handoff.replyDueAt < now
+    ) {
+      this.handoffs.set(id, { ...handoff, status: HandoffStatus.Expired });
+      throw new StateConflictError({
+        resource: "Handoff",
+        reason: `Reply deadline passed at ${handoff.replyDueAt} (now ${now})`,
+      });
+    }
+    validateTransition(id, handoff.status, HandoffStatus.Replied);
     this.handoffs.set(id, {
       ...handoff,
       status: HandoffStatus.Replied,
@@ -90,6 +120,7 @@ export class InMemoryHandoffStore implements HandoffStore {
     if (handoff === undefined) {
       throw new NotFoundError({ resource: "Handoff", identifier: id });
     }
+    validateTransition(id, handoff.status, HandoffStatus.DeadLettered);
     this.handoffs.set(id, { ...handoff, status: HandoffStatus.DeadLettered });
   }
 
@@ -101,10 +132,38 @@ export class InMemoryHandoffStore implements HandoffStore {
     this.handoffs.set(id, { ...handoff, ipcMessageId });
   }
 
+  async markSeen(id: string): Promise<void> {
+    const handoff = this.handoffs.get(id);
+    if (handoff === undefined) {
+      throw new NotFoundError({ resource: "Handoff", identifier: id });
+    }
+    // No-op if already seen
+    if (handoff.seenAt !== undefined) return;
+    this.handoffs.set(id, { ...handoff, seenAt: new Date().toISOString() });
+  }
+
+  async markAcked(id: string): Promise<void> {
+    const handoff = this.handoffs.get(id);
+    if (handoff === undefined) {
+      throw new NotFoundError({ resource: "Handoff", identifier: id });
+    }
+    // No-op if already acked
+    if (handoff.ackedAt !== undefined) return;
+    const now = new Date().toISOString();
+    this.handoffs.set(id, {
+      ...handoff,
+      // Auto-fill seenAt if not already set
+      ...(handoff.seenAt === undefined ? { seenAt: now } : {}),
+      ackedAt: now,
+    });
+  }
+
   async expireStale(now?: string): Promise<readonly Handoff[]> {
     const cutoff = now ?? new Date().toISOString();
     const expired: Handoff[] = [];
 
+    // Expire all unresolved statuses with past deadlines: pending_pickup,
+    // delivered, processed. Dead-lettered and terminal states are left alone.
     const expirableStatuses: ReadonlySet<HandoffStatus> = new Set([
       HandoffStatus.PendingPickup,
       HandoffStatus.Delivered,

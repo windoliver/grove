@@ -57,6 +57,14 @@ export interface McpPresetConfig {
   readonly goals?: boolean;
   /** Register eval harness tool (grove_eval). Default: false (opt-in via GROVE_MCP_EVAL_ENABLED). */
   readonly eval?: boolean;
+  /**
+   * Transport the server is being attached to. Some tools are unsafe on
+   * shared transports where one process role is shared across all clients
+   * (HTTP MCP): receipt mutations (grove_ack_handoff) require a per-agent
+   * role binding that only the stdio transport provides.
+   * Default: "stdio" (backwards-compatible for existing callers).
+   */
+  readonly transport?: "stdio" | "http";
 }
 
 // ---------------------------------------------------------------------------
@@ -86,8 +94,13 @@ export async function createMcpServer(deps: McpDeps, preset?: McpPresetConfig): 
   // Contribution + done tools are always registered (core functionality).
   registerContributionTools(server, deps);
   registerDoneTools(server, deps);
-  // Handoff tools are always registered when topology is active (agents need to query pending work).
-  if (deps.handoffStore !== undefined) registerHandoffTools(server, deps);
+  // Handoff tools are always registered when topology is active (agents need
+  // to query pending work). grove_ack_handoff (receipt mutation) is gated on
+  // transport: only stdio has per-process role binding via GROVE_AGENT_ROLE.
+  // On HTTP the tool is omitted because all clients would share one role.
+  if (deps.handoffStore !== undefined) {
+    registerHandoffTools(server, deps, { includeAckTool: preset?.transport !== "http" });
+  }
 
   if (preset?.claims !== false) registerClaimTools(server, deps);
   if (preset?.queries !== false) registerQueryTools(server, deps);

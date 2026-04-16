@@ -78,6 +78,16 @@ const serverFrontier: import("../core/frontier.js").FrontierCalculator = runtime
 // Nexus VFS hits rate limits with N reads per list() call.
 // Nexus is used for IPC only (via NexusWsBridge SSE), not for data storage.
 
+// Per-request session-scoped handoff store factory. The HTTP handoff
+// routes accept ?sessionId= and use this factory to build a scoped
+// SqliteHandoffStore on demand, preventing cross-session reads/mutations
+// from remote TUIs that share the same process-global runtime.
+const { SqliteHandoffStore: _SqliteHandoffStore } = await import(
+  "../local/sqlite-handoff-store.js"
+);
+const handoffStoreForSession = (sessionId: string) =>
+  new _SqliteHandoffStore(runtime.db, sessionId) as import("../core/handoff.js").HandoffStore;
+
 const deps: ServerDeps = {
   contributionStore: serverContributionStore,
   claimStore: serverClaimStore,
@@ -85,6 +95,7 @@ const deps: ServerDeps = {
   bountyStore: serverBountyStore,
   goalSessionStore: runtime.goalSessionStore,
   handoffStore: runtime.handoffStore,
+  handoffStoreForSession,
   cas: serverCas,
   frontier: serverFrontier,
   gossip: gossipService,
@@ -165,6 +176,32 @@ if (runtime.contract?.topology !== undefined) {
 // Start server (with optional WebSocket upgrade)
 // ---------------------------------------------------------------------------
 
+// Refuse to bind a non-localhost address without an explicit operator
+// opt-in. The HTTP surface has no authentication (role-sensitive mutations
+// are gated to MCP stdio, but read routes and `?sessionId=` scoping are
+// caller-asserted), so the deployment trust boundary is the localhost
+// binding. Operators who want remote access MUST set
+// `GROVE_ALLOW_UNAUTHENTICATED_REMOTE=true` to acknowledge the risk;
+// typical production usage places the server behind an authenticated
+// reverse proxy.
+//
+// MUST run BEFORE Bun.serve() — otherwise the socket would already be
+// bound and listening before we decided to exit.
+const LOCALHOST_ADDRESSES = new Set(["localhost", "127.0.0.1", "::1"]);
+if (HOST && !LOCALHOST_ADDRESSES.has(HOST)) {
+  if (process.env.GROVE_ALLOW_UNAUTHENTICATED_REMOTE !== "true") {
+    console.error(
+      "\u26a0 Refusing to bind non-localhost address without authentication.\n" +
+        "  Set GROVE_ALLOW_UNAUTHENTICATED_REMOTE=true to opt in explicitly,\n" +
+        "  or front this process with an authenticated reverse proxy and bind to localhost.",
+    );
+    process.exit(1);
+  }
+  console.warn(
+    "\u26a0 Server bound to non-localhost address without authentication (GROVE_ALLOW_UNAUTHENTICATED_REMOTE=true).",
+  );
+}
+
 function startServer() {
   const hostnameOpts = HOST ? { hostname: HOST } : {};
 
@@ -207,14 +244,6 @@ function startServer() {
 }
 
 const server = startServer();
-
-// Warn when bound to a non-localhost address (no auth is enforced).
-const LOCALHOST_ADDRESSES = new Set(["localhost", "127.0.0.1", "::1"]);
-if (HOST && !LOCALHOST_ADDRESSES.has(HOST)) {
-  console.warn(
-    "\u26a0 Server bound to non-localhost address without authentication. See security docs for securing.",
-  );
-}
 
 // Start gossip after server is listening
 if (gossipService) {

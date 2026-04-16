@@ -2,7 +2,8 @@
  * Handoffs panel — shows topology routing coordination records.
  *
  * Displays pending, delivered, replied, and expired handoffs so operators
- * and agents can see what work is in-flight between roles.
+ * and agents can see what work is in-flight between roles, with receipt
+ * tracking (seen/acked) and deadline/overdue indicators.
  *
  * Accessible via key "5" in the running view.
  */
@@ -15,21 +16,59 @@ import { Table } from "../components/table.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
 import { isHandoffProvider } from "../provider.js";
+import { theme } from "../theme.js";
 
 const COLUMNS = [
-  { header: "FROM", key: "from", width: 12 },
-  { header: "TO", key: "to", width: 12 },
+  { header: "FROM", key: "from", width: 10 },
+  { header: "TO", key: "to", width: 10 },
   { header: "STATUS", key: "status", width: 16 },
-  { header: "SOURCE CID", key: "cid", width: 22 },
-  { header: "CREATED", key: "created", width: 12 },
+  { header: "RECEIPT", key: "receipt", width: 10 },
+  { header: "DEADLINE", key: "deadline", width: 12 },
+  { header: "SOURCE CID", key: "cid", width: 18 },
+  { header: "CREATED", key: "created", width: 7 },
 ] as const;
 
+/** Status labels with emoji indicators. */
 const STATUS_LABELS: Record<string, string> = {
-  [HandoffStatus.PendingPickup]: "⏳ pending",
-  [HandoffStatus.Delivered]: "📬 delivered",
-  [HandoffStatus.Replied]: "✅ replied",
-  [HandoffStatus.Expired]: "⌛ expired",
+  [HandoffStatus.PendingPickup]: "\u23F3 pending",
+  [HandoffStatus.Delivered]: "\uD83D\uDCEC delivered",
+  [HandoffStatus.Replied]: "\u2705 replied",
+  [HandoffStatus.Expired]: "\u231B expired",
 };
+
+/**
+ * Receipt state — derived from seenAt/ackedAt timestamps.
+ * Follows opencode's colored-dot status pattern.
+ */
+function receiptLabel(h: Handoff): string {
+  if (h.ackedAt !== undefined) return "\u25CF acked"; // ● solid dot
+  if (h.seenAt !== undefined) return "\u25D0 seen"; // ◐ half dot
+  return "\u25CB unseen"; // ○ empty dot
+}
+
+/** Deadline state — shows remaining time or overdue indicator. */
+function deadlineLabel(h: Handoff): string {
+  if (h.replyDueAt === undefined) return "\u2014"; // — no deadline
+  const now = Date.now();
+  const deadline = new Date(h.replyDueAt).getTime();
+  const diff = deadline - now;
+
+  // Already resolved — show checkmark
+  if (h.status === HandoffStatus.Replied) return "\u2713 met";
+  if (h.status === HandoffStatus.Expired) return "\u2717 expired";
+
+  // Overdue
+  if (diff < 0) {
+    const overdueMins = Math.floor(-diff / 60_000);
+    if (overdueMins < 60) return `\uD83D\uDD34 ${overdueMins}m over`;
+    return `\uD83D\uDD34 ${Math.floor(overdueMins / 60)}h over`;
+  }
+
+  // Remaining
+  const remainMins = Math.floor(diff / 60_000);
+  if (remainMins < 60) return `${remainMins}m left`;
+  return `${Math.floor(remainMins / 60)}h left`;
+}
 
 function formatTime(iso: string): string {
   try {
@@ -38,6 +77,13 @@ function formatTime(iso: string): string {
   } catch {
     return "--:--";
   }
+}
+
+/** Check if a handoff is overdue (has deadline, unresolved, past due). */
+function isOverdue(h: Handoff): boolean {
+  if (h.replyDueAt === undefined) return false;
+  if (h.status === HandoffStatus.Replied || h.status === HandoffStatus.Expired) return false;
+  return new Date(h.replyDueAt).getTime() < Date.now();
 }
 
 export interface HandoffsViewProps {
@@ -104,11 +150,14 @@ export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React
 
     const handoffs = data ?? [];
     const pending = handoffs.filter((h) => h.status === HandoffStatus.PendingPickup).length;
+    const overdueCount = handoffs.filter(isOverdue).length;
 
     const rows = handoffs.map((h) => ({
       from: h.fromRole,
       to: h.toRole,
       status: STATUS_LABELS[h.status] ?? h.status,
+      receipt: receiptLabel(h),
+      deadline: deadlineLabel(h),
       cid: truncateCid(h.sourceCid),
       created: formatTime(h.createdAt),
     }));
@@ -122,6 +171,7 @@ export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React
               ? `  ${handoffs.length} total, ${pending} pending`
               : "  (no handoffs yet)"}
           </text>
+          {overdueCount > 0 && <text color={theme.error}>{`  ${overdueCount} overdue`}</text>}
         </box>
         {handoffs.length === 0 ? (
           <text opacity={0.4}>

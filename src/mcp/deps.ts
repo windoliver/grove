@@ -11,6 +11,7 @@
 import type { BountyStore } from "../core/bounty-store.js";
 import type { GroveContract } from "../core/contract.js";
 import type { CreditsService } from "../core/credits.js";
+import type { DeadlineWatcher } from "../core/deadline-watcher.js";
 import type { EventBus } from "../core/event-bus.js";
 import type { HandoffStore } from "../core/handoff.js";
 import type { TopologyRouter } from "../core/topology-router.js";
@@ -40,4 +41,6 @@ export interface McpDeps extends ServerDeps {
    * Typically the project root containing the .grove/ directory.
    */
   readonly workspaceBoundary: string;
+  /** Optional deadline watcher for proactive overdue detection. */
+  readonly deadlineWatcher?: DeadlineWatcher | undefined;
 }
