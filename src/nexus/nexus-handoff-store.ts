@@ -216,41 +216,30 @@ export class NexusHandoffStore implements HandoffStore {
   }
 
   async get(handoffId: string): Promise<Handoff | undefined> {
-    // When scoped to a session, only return handoffs from this session's
-    // file (plus the _global file for pre-#164 migration). Scanning every
-    // session file would leak peer sessions' handoffs to scoped callers.
-    const { handoffs } = await this.readFile(this.filePath());
-    const found = handoffs.find((h) => h.handoffId === handoffId);
+    // When scoped to a session, only look in this session's file plus the
+    // _global file (pre-#164 migration shim). An unscoped store walks the
+    // full directory. Use the directory-listing path even in the scoped
+    // branch — plain readFile() is documented as not cross-client-visible
+    // (see readAllHandoffs), so a handoff written by another client into
+    // the same session file could otherwise vanish from get().
+    const scopedHandoffs =
+      this.sessionId !== undefined
+        ? await this.readScopedHandoffs()
+        : await this.readAllHandoffs();
+    const found = scopedHandoffs.find((h) => h.handoffId === handoffId);
     if (found) return found;
-
-    if (this.sessionId !== undefined) {
-      // Migration shim: pre-#164 handoffs were written to _global.json before
-      // per-session file scoping existed. A scoped caller may still need to
-      // resolve those in-flight handoffs after upgrade.
-      const { handoffs: globalHandoffs } = await this.readFile(globalFile(this.zoneId));
-      return globalHandoffs.find((h) => h.handoffId === handoffId);
-    }
-
-    // Unscoped store (CLI/admin) — fall back to scanning every file.
-    return this.scanAll((h) => h.handoffId === handoffId);
+    if (this.sessionId !== undefined) return undefined;
+    // Unscoped store (CLI/admin) — already searched all files above.
+    return undefined;
   }
 
   async list(query?: HandoffQuery): Promise<readonly Handoff[]> {
-    // When scoped to a session, read only the session's own file plus the
-    // _global migration file. An unscoped store walks the full directory
-    // (CLI / admin path) via readAllHandoffs.
-    let allHandoffs: Handoff[];
-    if (this.sessionId !== undefined) {
-      const [sessionFile, migrationFile] = await Promise.all([
-        this.readFile(this.filePath()),
-        this.readFile(globalFile(this.zoneId)),
-      ]);
-      allHandoffs = [...sessionFile.handoffs, ...migrationFile.handoffs];
-    } else {
-      // Unscoped: directory listing gives cross-client visibility that
-      // readFile doesn't guarantee.
-      allHandoffs = await this.readAllHandoffs();
-    }
+    // Use the directory-listing path for both scoped and unscoped reads —
+    // see get() for why plain readFile() isn't cross-client-visible.
+    const allHandoffs =
+      this.sessionId !== undefined
+        ? await this.readScopedHandoffs()
+        : await this.readAllHandoffs();
     debugLog(
       "nexus-handoff",
       `LIST sessionId=${this.sessionId ?? "none"} path=${this.filePath()} total=${allHandoffs.length}`,
@@ -383,14 +372,24 @@ export class NexusHandoffStore implements HandoffStore {
         return h;
       });
 
-    // Sweep the session's own file
+    // Sweep the session's own file first — any rows expired here MUST be
+    // reported even if the follow-up _global sweep fails, otherwise the
+    // DeadlineWatcher would swallow the error and drop overdue events for
+    // rows that have already been flipped.
     await this.readModifyWrite(this.filePath(), expireIn);
 
     // Migration shim: also sweep _global for pre-#164 legacy rows when
-    // scoped. The readModifyWrite on _global claims the row atomically —
-    // if a peer session races us, only the winner mutates.
+    // scoped. Errors here are recoverable (next tick retries) and must
+    // not mask the session-file sweep's already-expired rows.
     if (this.sessionId !== undefined) {
-      await this.readModifyWrite(globalFile(this.zoneId), expireIn);
+      try {
+        await this.readModifyWrite(globalFile(this.zoneId), expireIn);
+      } catch (err) {
+        debugLog(
+          "NexusHandoffStore.expireStale",
+          `_global sweep failed (session sweep already committed) err=${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
 
     return expired;
@@ -415,10 +414,8 @@ export class NexusHandoffStore implements HandoffStore {
   async isInCurrentSession(handoffId: string): Promise<boolean> {
     if (this.sessionId === undefined) return false;
     try {
-      const { handoffs } = await this.readFile(this.filePath());
-      if (handoffs.some((h) => h.handoffId === handoffId)) return true;
-      const { handoffs: legacy } = await this.readFile(globalFile(this.zoneId));
-      return legacy.some((h) => h.handoffId === handoffId);
+      const handoffs = await this.readScopedHandoffs();
+      return handoffs.some((h) => h.handoffId === handoffId);
     } catch {
       return false;
     }
@@ -440,13 +437,42 @@ export class NexusHandoffStore implements HandoffStore {
    */
   async listForCurrentSession(query?: HandoffQuery): Promise<readonly Handoff[]> {
     if (this.sessionId === undefined) return [];
+    try {
+      let results = (await this.readScopedHandoffs()).filter(
+        (h) => h.handoffId && h.createdAt,
+      );
+      if (query?.toRole !== undefined) results = results.filter((h) => h.toRole === query.toRole);
+      if (query?.fromRole !== undefined)
+        results = results.filter((h) => h.fromRole === query.fromRole);
+      if (query?.sourceCid !== undefined)
+        results = results.filter((h) => h.sourceCid === query.sourceCid);
+      if (query?.status !== undefined) {
+        const statuses = Array.isArray(query.status) ? query.status : [query.status];
+        results = results.filter((h) => (statuses as string[]).includes(h.status));
+      }
+      results.sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
+      if (query?.limit !== undefined) results = results.slice(0, query.limit);
+      return results;
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Read handoffs from the current session's file plus the _global
+   * migration file, but via the directory-listing path so cross-client
+   * writes are visible. This mirrors readAllHandoffs's pattern (which
+   * the original comment documents as the cross-client-visible source
+   * of truth) but restricts the file set to the scoped caller.
+   *
+   * Requires sessionId to be set — unscoped callers should use
+   * readAllHandoffs directly.
+   */
+  private async readScopedHandoffs(): Promise<Handoff[]> {
     const sessionPath = this.filePath();
+    const globalPath = globalFile(this.zoneId);
     try {
       const listing = await this.client.list(handoffsDir(this.zoneId));
-      // Include the session's own file plus the _global migration file so
-      // DeadlineWatcher.rebuildFromStore re-arms timers for pre-#164 rows
-      // and auto-reply resolution in contribute.ts can resolve them.
-      const globalPath = globalFile(this.zoneId);
       const pickable = listing.files.filter(
         (f) => !f.isDirectory && (f.path === sessionPath || f.path === globalPath),
       );
@@ -460,19 +486,7 @@ export class NexusHandoffStore implements HandoffStore {
           }
         }),
       );
-      let results = perFile.flat().filter((h) => h.handoffId && h.createdAt);
-      if (query?.toRole !== undefined) results = results.filter((h) => h.toRole === query.toRole);
-      if (query?.fromRole !== undefined)
-        results = results.filter((h) => h.fromRole === query.fromRole);
-      if (query?.sourceCid !== undefined)
-        results = results.filter((h) => h.sourceCid === query.sourceCid);
-      if (query?.status !== undefined) {
-        const statuses = Array.isArray(query.status) ? query.status : [query.status];
-        results = results.filter((h) => (statuses as string[]).includes(h.status));
-      }
-      results.sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
-      if (query?.limit !== undefined) results = results.slice(0, query.limit);
-      return results;
+      return perFile.flat();
     } catch {
       return [];
     }
@@ -509,6 +523,14 @@ export class NexusHandoffStore implements HandoffStore {
       // live in _global.json. Without this, grove_ack_handoff /
       // grove_process_handoff / markReplied would reject legacy handoffs
       // that isInCurrentSession / list() surface via the same shim.
+      //
+      // Pre-#164 rows have no session ownership by definition (they were
+      // created before session scoping existed), so "any session can
+      // resolve them" is the intended migration semantics. Concurrent
+      // resolutions are still first-wins via validateTransition inside
+      // `fn`: the second mutation sees the already-resolved status and
+      // the state-machine guard throws InvalidTransitionError, which the
+      // MCP tool surface translates to a structured INVALID_STATE error.
       await this.readModifyWrite(globalFile(this.zoneId), (handoffs) =>
         handoffs.map((h) => {
           if (h.handoffId === handoffId) {

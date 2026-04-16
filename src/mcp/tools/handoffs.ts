@@ -11,13 +11,37 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { NotFoundError, StateConflictError } from "../../core/errors.js";
 import {
   canTransition,
   HandoffStatus,
+  InvalidTransitionError,
   type HandoffStore,
 } from "../../core/handoff.js";
 import type { McpDeps } from "../deps.js";
 import { toolError } from "../error-handler.js";
+
+/**
+ * Translate a store-layer throw into a structured MCP tool error.
+ * Concurrent sweeps (DeadlineWatcher expireStale) and peer mutations
+ * (auto-reply, parallel ack from another client) can race between the
+ * tool's preflight (get / canTransition) and the actual mark* call.
+ * Without this helper those races surface as unstructured exceptions;
+ * here we normalize them to NOT_FOUND / INVALID_STATE / CONFLICT so
+ * the caller can retry or give up deterministically.
+ */
+function markToToolError(handoffId: string, err: unknown): CallToolResult {
+  if (err instanceof NotFoundError) {
+    return toolError("NOT_FOUND", `Handoff '${handoffId}' not found.`);
+  }
+  if (err instanceof InvalidTransitionError) {
+    return toolError("INVALID_STATE", err.message);
+  }
+  if (err instanceof StateConflictError) {
+    return toolError("CONFLICT", err.message);
+  }
+  throw err;
+}
 
 /**
  * Guard: require handoffStore to be configured.
@@ -267,7 +291,11 @@ export function registerHandoffTools(
         );
       }
 
-      await store.markProcessed(args.handoffId);
+      try {
+        await store.markProcessed(args.handoffId);
+      } catch (err) {
+        return markToToolError(args.handoffId, err);
+      }
 
       return {
         content: [
@@ -327,10 +355,14 @@ export function registerHandoffTools(
         );
       }
 
-      if (args.level === "seen") {
-        await store.markSeen(args.handoffId);
-      } else {
-        await store.markAcked(args.handoffId);
+      try {
+        if (args.level === "seen") {
+          await store.markSeen(args.handoffId);
+        } else {
+          await store.markAcked(args.handoffId);
+        }
+      } catch (err) {
+        return markToToolError(args.handoffId, err);
       }
 
       if (process.env.GROVE_DEBUG === "1") {
