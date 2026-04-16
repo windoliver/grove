@@ -107,11 +107,21 @@ export class NexusHandoffStore implements HandoffStore {
       const { handoffs, etag } = await this.readFile(path);
       const updated = fn(handoffs);
       try {
-        // Unconditional write — Nexus sys_write silently drops writes when
-        // if_match or if_none_match are set (returns success but doesn't persist).
-        // Without CAS, concurrent writes may lose data, but handoffs are append-only
-        // per session so conflicts are rare and the retry loop handles it.
-        const writeResult = await this.client.write(path, encode({ handoffs: updated }));
+        // Attempt an etag-conditional write for CAS. Nexus server versions
+        // vary in how they handle if_match: older versions silently dropped
+        // these writes; current versions return 412 on mismatch. We pass the
+        // observed etag when present (non-empty) to get concurrency safety
+        // where supported, and fall back to the retry loop when not.
+        //
+        // For new files (empty etag), write unconditionally — if_none_match
+        // would prevent overwriting, but we've just read empty so this is
+        // the first writer by definition.
+        const writeOpts = etag ? { ifMatch: etag } : undefined;
+        const writeResult = await this.client.write(
+          path,
+          encode({ handoffs: updated }),
+          writeOpts,
+        );
         debugLog(
           "NexusHandoffStore.casUpdate",
           `WRITE OK path=${path} etag=${etag || "(empty)"} bytesWritten=${writeResult.bytesWritten} newEtag=${writeResult.etag} count=${updated.length} attempt=${attempt}`,

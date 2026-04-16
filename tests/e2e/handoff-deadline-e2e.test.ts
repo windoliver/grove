@@ -251,8 +251,13 @@ describe("handoff deadline E2E", () => {
     const watcher2 = new DeadlineWatcher({ handoffStore, eventBus: bus });
     const count = await watcher2.rebuildFromStore();
 
-    expect(count).toBeGreaterThanOrEqual(1);
-    expect(watcher2.activeCount).toBeGreaterThanOrEqual(1);
+    // SQLite disables rebuild (no session_id column — returns empty from
+    // listForCurrentSession) to avoid cross-session timer leakage. New
+    // handoffs still get timers via watch() on creation; only restart
+    // rebuild is skipped for SQLite. Deadline enforcement remains
+    // correct because markReplied rejects late replies at the store level.
+    expect(count).toBe(0);
+    expect(watcher2.activeCount).toBe(0);
 
     watcher2.close();
   });

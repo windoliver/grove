@@ -1171,45 +1171,44 @@ export async function contributeOperation(
         // (coder → [reviewer, tester, auditor]) one downstream response must
         // NOT close peer handoffs for others who haven't acted yet.
         //
-        // Fallback for role-less contributions (e.g. HTTP contribution
-        // submissions where agent.role is optional): if exactly one handoff
-        // is unresolved for the sourceCid, resolve that one. If multiple
-        // peers are unresolved we abstain — resolving them all would strand
-        // peer work, resolving none would leak the handoff. A single-match
-        // fallback covers the common case without the fan-out hazard.
+        // REQUIRED: agent.role must be set. Role-less contributions (e.g.
+        // from the unauthenticated HTTP contribution surface) CANNOT auto-
+        // resolve handoffs — without a verified role, any HTTP client could
+        // mark a reviewer/tester/auditor handoff replied and satisfy an SLA
+        // they don't own. Such submissions leave the handoff unresolved; an
+        // operator or role-bound caller must resolve it explicitly.
         const replyingRole = contribution.agent.role;
-        fireAndForget("handoff reply transition", async () => {
-          for (const rel of replyRelations) {
-            try {
-              let unresolved = await deps.handoffStore?.list({
-                sourceCid: rel.targetCid,
-                status: [HandoffStatus.PendingPickup, HandoffStatus.Delivered],
-                ...(replyingRole !== undefined ? { toRole: replyingRole } : {}),
-              });
-              // Role-less fallback: only act when exactly one unresolved peer exists
-              if (replyingRole === undefined && (unresolved?.length ?? 0) > 1) {
-                if (process.env.GROVE_DEBUG === "1") {
-                  process.stderr.write(
-                    `[grove:handoff] REPLY SKIPPED cid=${contribution.cid.slice(0, 20)}.. — role-less reply with ${unresolved?.length} unresolved peers (ambiguous)\n`,
-                  );
-                }
-                unresolved = [];
-              }
-              for (const h of unresolved ?? []) {
-                if (process.env.GROVE_DEBUG === "1") {
-                  process.stderr.write(
-                    `[grove:handoff] REPLY handoff=${h.handoffId.slice(0, 8)} resolvedBy=${contribution.cid.slice(0, 20)}.. relation=${rel.relationType} role=${replyingRole ?? "role-less-fallback"}\n`,
-                  );
-                }
-                await deps.handoffStore?.markReplied(h.handoffId, contribution.cid);
-                // Cancel deadline timer for resolved handoff
-                deps.deadlineWatcher?.cancel(h.handoffId);
-              }
-            } catch {
-              // Best-effort — don't fail contribution over handoff transition
-            }
+        if (replyingRole === undefined) {
+          if (process.env.GROVE_DEBUG === "1") {
+            process.stderr.write(
+              `[grove:handoff] REPLY SKIPPED cid=${contribution.cid.slice(0, 20)}.. — role-less reply not allowed to resolve handoffs\n`,
+            );
           }
-        });
+        } else {
+          fireAndForget("handoff reply transition", async () => {
+            for (const rel of replyRelations) {
+              try {
+                const unresolved = await deps.handoffStore?.list({
+                  sourceCid: rel.targetCid,
+                  status: [HandoffStatus.PendingPickup, HandoffStatus.Delivered],
+                  toRole: replyingRole,
+                });
+                for (const h of unresolved ?? []) {
+                  if (process.env.GROVE_DEBUG === "1") {
+                    process.stderr.write(
+                      `[grove:handoff] REPLY handoff=${h.handoffId.slice(0, 8)} resolvedBy=${contribution.cid.slice(0, 20)}.. relation=${rel.relationType} role=${replyingRole}\n`,
+                    );
+                  }
+                  await deps.handoffStore?.markReplied(h.handoffId, contribution.cid);
+                  // Cancel deadline timer for resolved handoff
+                  deps.deadlineWatcher?.cancel(h.handoffId);
+                }
+              } catch {
+                // Best-effort — don't fail contribution over handoff transition
+              }
+            }
+          });
+        }
       }
     }
 

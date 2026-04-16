@@ -292,14 +292,17 @@ export class SqliteHandoffStore implements HandoffStore {
   /**
    * Session-scoped enumeration for deadline rebuild.
    *
-   * SQLite stores have no session_id column today — this contract relies
-   * on the caller opening ONE SqliteHandoffStore per session database.
-   * That is how grove currently runs (one .grove/grove.db per worktree,
-   * one active session at a time). If multi-session-per-DB is added later,
-   * a session_id column must be introduced and this method updated.
+   * SQLite has no `session_id` column on the handoffs table, so we cannot
+   * attribute rows to a session. Returning list() here would re-arm timers
+   * for unrelated sessions on restart — exactly the leak this method was
+   * introduced to prevent. Return an empty array to disable rebuild on
+   * SQLite until proper session scoping is added to the schema.
+   *
+   * New handoffs still get timers via DeadlineWatcher.watch() on creation.
+   * The only impact: mid-process restarts won't re-arm existing deadlines.
    */
-  async listForCurrentSession(query?: HandoffQuery): Promise<readonly Handoff[]> {
-    return this.list(query);
+  async listForCurrentSession(_query?: HandoffQuery): Promise<readonly Handoff[]> {
+    return [];
   }
 
   async expireStale(now?: string): Promise<readonly Handoff[]> {
