@@ -254,24 +254,21 @@ export function parseAcpLine(line: string, turnId: string, sessionId?: string): 
               };
             }
             const toolCall: ToolCallEvent = { id: u.toolCallId };
-            // Canonical identity first: `_meta.claudeCode.toolName` is stable
-            // across updates on Claude's ACP bridge (e.g. "Read", "Bash").
+            // Canonical identity ONLY: `_meta.claudeCode.toolName` is a
+            // provider-authenticated field that is stable across updates
+            // (e.g. "Read", "Bash"). Do NOT fall back to `title` — title is
+            // mutable display text ("Read /etc/hostname", shell command) and
+            // under version skew or a non-Claude provider could fragment
+            // permission/audit decisions by routing what is really one tool
+            // (e.g. Bash) across many synthetic "names". If no canonical
+            // metadata is present, leave `name` undefined — the compactor
+            // routes the call into incompleteToolCalls instead of fabricating
+            // a canonical identity from untrusted display text.
             const canonicalName = readCanonicalToolName(u);
             if (canonicalName !== undefined) {
               toolCall.name = canonicalName;
-            } else if (
-              sessionUpdate === "tool_call" &&
-              typeof u.title === "string" &&
-              u.title.length > 0
-            ) {
-              // Only the initial tool_call frame may use title as a name fallback.
-              // tool_call_update frames carry display-mutable titles ("rm -rf /tmp")
-              // that must NOT overwrite the canonical name established initially —
-              // otherwise permission/audit keys silently shift mid-turn.
-              toolCall.name = u.title;
             }
-            // Always preserve title separately — it mutates for display ("Read
-            // /etc/hostname", shell command text) and consumers may want it.
+            // Always preserve title separately — display-only, may mutate.
             if (typeof u.title === "string" && u.title.length > 0) {
               toolCall.title = u.title;
             }

@@ -153,6 +153,72 @@ test("compactTurn collects permission_request messages into permissionRequests",
   expect(snap.permissionRequests[1]?.tool).toBe("Edit");
 });
 
+test("compactTurn preserves parser anomaly frames (_sessionMismatch, _parseError) in rawAnomalyFrames", () => {
+  // Isolation alarms and parse errors must not disappear from the snapshot —
+  // otherwise a contaminated or corrupted turn compacts into a clean record.
+  const msgs: Message[] = [
+    {
+      kind: "raw",
+      turnId: "t1",
+      acpMethod: "_sessionMismatch",
+      params: { sessionId: "foreign" },
+    },
+    { kind: "raw", turnId: "t1", acpMethod: "_parseError", params: "not json" },
+  ];
+  const snap = compactTurn({
+    turnId: "t1",
+    messages: msgs,
+    result: { turnId: "t1", stopReason: "end_turn" },
+  });
+  expect(snap.rawAnomalyFrames).toHaveLength(2);
+  expect(snap.rawAnomalyFrames[0]?.acpMethod).toBe("_sessionMismatch");
+  expect(snap.rawAnomalyFrames[1]?.acpMethod).toBe("_parseError");
+});
+
+test("compactTurn terminal status is strict-monotonic — completed cannot be flipped to failed", () => {
+  // completed and failed share rank 2; an out-of-order or duplicate terminal
+  // update must NOT silently rewrite the final outcome. First terminal wins.
+  const msgs: Message[] = [
+    {
+      kind: "tool_call",
+      turnId: "t1",
+      toolCall: { id: "tc1", name: "Bash", status: "completed", input: { cmd: "ls" } },
+    },
+    {
+      kind: "tool_call",
+      turnId: "t1",
+      toolCall: { id: "tc1", status: "failed", error: "late duplicate" },
+    },
+  ];
+  const snap = compactTurn({
+    turnId: "t1",
+    messages: msgs,
+    result: { turnId: "t1", stopReason: "end_turn" },
+  });
+  expect(snap.toolCalls[0]?.status).toBe("completed");
+});
+
+test("compactTurn terminal status is strict-monotonic — failed cannot be flipped to completed", () => {
+  const msgs: Message[] = [
+    {
+      kind: "tool_call",
+      turnId: "t1",
+      toolCall: { id: "tc1", name: "Bash", status: "failed", input: { cmd: "ls" } },
+    },
+    {
+      kind: "tool_call",
+      turnId: "t1",
+      toolCall: { id: "tc1", status: "completed", output: "reordered" },
+    },
+  ];
+  const snap = compactTurn({
+    turnId: "t1",
+    messages: msgs,
+    result: { turnId: "t1", stopReason: "end_turn" },
+  });
+  expect(snap.toolCalls[0]?.status).toBe("failed");
+});
+
 test("compactTurn routes a truncated tool_call (initial placeholder, no update) into incompleteToolCalls", () => {
   // Simulates the real Claude wire path where an initial tool_call carries no
   // canonical input (parser filters rawInput:{} placeholder) and no

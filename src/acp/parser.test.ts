@@ -103,7 +103,7 @@ test("parseAcpLine: thinking chunk → Message{kind:thinking}", () => {
   expect(parsed.message.chunk).toBe(true);
 });
 
-test("parseAcpLine: tool_call → Message{kind:tool_call, status:pending}", () => {
+test("parseAcpLine: tool_call with canonical _meta sets name; title is separate", () => {
   const line = JSON.stringify({
     jsonrpc: "2.0",
     method: "session/update",
@@ -113,9 +113,10 @@ test("parseAcpLine: tool_call → Message{kind:tool_call, status:pending}", () =
         sessionUpdate: "tool_call",
         toolCallId: "tc-1",
         status: "pending",
-        title: "Read File",
-        rawInput: {},
+        title: "Read /etc/hostname",
+        rawInput: { path: "/etc/hostname" },
         content: [],
+        _meta: { claudeCode: { toolName: "Read" } },
       },
     },
   });
@@ -126,7 +127,8 @@ test("parseAcpLine: tool_call → Message{kind:tool_call, status:pending}", () =
   if (parsed.message.kind !== "tool_call") throw new Error("unreachable");
   expect(parsed.message.toolCall.id).toBe("tc-1");
   expect(parsed.message.toolCall.status).toBe("pending");
-  expect(parsed.message.toolCall.name).toBe("Read File");
+  expect(parsed.message.toolCall.name).toBe("Read");
+  expect(parsed.message.toolCall.title).toBe("Read /etc/hostname");
 });
 
 test("parseAcpLine: usage_update → Message{kind:token_usage}", () => {
@@ -304,7 +306,11 @@ test("parseAcpLine: prefers canonical _meta.claudeCode.toolName over mutable tit
   expect(parsed.message.toolCall.title).toBe("Read /etc/hostname");
 });
 
-test("parseAcpLine: falls back to title when no canonical identity is present", () => {
+test("parseAcpLine: does NOT fall back to title when no canonical identity is present", () => {
+  // Title is mutable display text — promoting it to the canonical `name`
+  // field fragments permission/audit decisions. The parser leaves name
+  // undefined so the compactor routes metadata-less calls to
+  // incompleteToolCalls. Regression coverage for review-round-8 finding.
   const line = JSON.stringify({
     jsonrpc: "2.0",
     method: "session/update",
@@ -322,7 +328,7 @@ test("parseAcpLine: falls back to title when no canonical identity is present", 
   if (parsed.kind !== "message" || parsed.message.kind !== "tool_call") {
     throw new Error("unreachable");
   }
-  expect(parsed.message.toolCall.name).toBe("Read File");
+  expect(parsed.message.toolCall.name).toBeUndefined();
   expect(parsed.message.toolCall.title).toBe("Read File");
 });
 
@@ -753,6 +759,35 @@ test("parseAcpLine: tool_call_update with rawInput={} still records it", () => {
     throw new Error("unreachable");
   }
   expect(parsed.message.toolCall.input).toEqual({});
+});
+
+test("parseAcpLine: tool_call without canonical _meta leaves name undefined (no title fallback)", () => {
+  // A non-Claude provider (or Claude under version skew) may emit a tool_call
+  // without _meta.claudeCode.toolName. Historically the parser fell back to
+  // `title` for `name`, but `title` is display-only and can contain
+  // per-invocation detail ("rm -rf /tmp/x") — promoting it to canonical
+  // identity fragments permission/audit decisions. Name must stay undefined
+  // so the compactor routes the call to incompleteToolCalls.
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "s1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tc-1",
+        title: "rm -rf /tmp/x",
+        status: "pending",
+        rawInput: { command: "rm -rf /tmp/x" },
+      },
+    },
+  });
+  const parsed = parseAcpLine(line, "t1");
+  if (parsed.kind !== "message" || parsed.message.kind !== "tool_call") {
+    throw new Error("unreachable");
+  }
+  expect(parsed.message.toolCall.name).toBeUndefined();
+  expect(parsed.message.toolCall.title).toBe("rm -rf /tmp/x");
 });
 
 test("parseAcpLine: tool_call with non-empty rawInput is recorded", () => {

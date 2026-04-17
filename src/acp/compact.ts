@@ -58,6 +58,17 @@ export interface TurnSnapshot {
    */
   rawPermissionFrames: Array<{ acpMethod: string; params: unknown }>;
   /**
+   * Parser-internal anomaly frames (underscore-prefixed acpMethods such as
+   * `_sessionMismatch`, `_parseError`, `_result`, `_unknown`) preserved from
+   * the message stream. These are the parser's visible-evidence trail that
+   * something went wrong mid-turn: a foreign-session frame was rejected,
+   * NDJSON failed to parse, etc. Dropping them would let a contaminated or
+   * corrupted turn compact into a clean-looking audit record with no trace
+   * of the isolation/integrity alarm. `_overflow` is excluded because it
+   * has its own `overflowed` boolean flag.
+   */
+  rawAnomalyFrames: Array<{ acpMethod: string; params: unknown }>;
+  /**
    * True when the message stream included a bounded-buffer `_overflow`
    * marker. Any consumer or snapshot-reader MUST treat a snapshot with
    * `overflowed:true` as a partial log — assistantText, toolCalls, and
@@ -112,8 +123,13 @@ function mergeToolCallEvent(existing: ToolCallEvent, incoming: ToolCallEvent): T
   if (incoming.status !== undefined) {
     const existingRank = merged.status ? STATUS_RANK[merged.status] : -1;
     const incomingRank = STATUS_RANK[incoming.status];
-    // Monotonic: don't regress from a terminal state back to pending/in_progress.
-    if (incomingRank >= existingRank) {
+    // STRICT monotonic — first terminal outcome wins. `completed` and `failed`
+    // share rank 2; with a non-strict `>=` check, a late or reordered terminal
+    // update could flip a tool from `completed` → `failed` (or back) purely
+    // by arrival order, making the final audit outcome transport-dependent.
+    // `>` keeps status progressions (pending → in_progress → terminal) but
+    // rejects terminal-over-terminal and pending-over-pending no-ops.
+    if (incomingRank > existingRank) {
       merged.status = incoming.status;
     }
   }
@@ -135,6 +151,7 @@ export function compactTurn(input: {
   const toolCallOrder: string[] = [];
   const rawToolFrames: Array<{ acpMethod: string; params: unknown }> = [];
   const rawPermissionFrames: Array<{ acpMethod: string; params: unknown }> = [];
+  const rawAnomalyFrames: Array<{ acpMethod: string; params: unknown }> = [];
   const permissionRequests: PermissionRequest[] = [];
   let advisoryUsage: TokenUsage | undefined;
   let overflowed = false;
@@ -164,15 +181,22 @@ export function compactTurn(input: {
         advisoryUsage = m.usage;
         break;
       case "raw":
-        // Parser demotes malformed frames to raw. Surface the ones that
-        // represent real semantic activity (tool calls, permission prompts)
-        // so audit/telemetry doesn't silently lose them from the snapshot.
+        // Parser demotes malformed or anomalous frames to raw. Surface every
+        // signal the snapshot consumer cares about — tool/permission
+        // semantic activity, plus the parser's own anomaly trail (isolation
+        // alarms like `_sessionMismatch`, parse errors, unknown methods).
+        // Dropping anomaly frames would let a contaminated turn look clean.
         if (m.acpMethod === "tool_call" || m.acpMethod === "tool_call_update") {
           rawToolFrames.push({ acpMethod: m.acpMethod, params: m.params });
         } else if (m.acpMethod === "permission_request") {
           rawPermissionFrames.push({ acpMethod: m.acpMethod, params: m.params });
         } else if (m.acpMethod === "_overflow") {
           overflowed = true;
+        } else if (m.acpMethod.startsWith("_")) {
+          // Parser-internal anomaly bucket: _sessionMismatch, _parseError,
+          // _result, _unknown, future additions. Kept out of rawToolFrames
+          // so consumers can tell semantic-activity raws apart from alarms.
+          rawAnomalyFrames.push({ acpMethod: m.acpMethod, params: m.params });
         }
         break;
     }
@@ -202,6 +226,7 @@ export function compactTurn(input: {
     rawToolFrames,
     permissionRequests,
     rawPermissionFrames,
+    rawAnomalyFrames,
     overflowed,
     // Canonical usage only — do NOT fall back to advisory usage_update values.
     // See the TurnSnapshot.usage JSDoc for the rationale.
