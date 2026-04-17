@@ -107,31 +107,42 @@ describe("DeadlineWatcher", () => {
   // overdue event emission
   // ------------------------------------------------------------------
 
+  // Per-test timeout bumped to 15s so the 10s waitFor can expire cleanly
+  // instead of racing bun's default 5s test cutoff under extreme CI load.
   test("emits handoff.overdue when deadline passes and handoff still unresolved", async () => {
-    // Create a real handoff whose deadline is already past — delayMs=0 path
-    // fires on next tick, keeping the test deterministic under CI load where
-    // a future-dated setTimeout can drift past waitFor's 5s window.
+    // Future-dated deadline — exercises the real positive-delay setTimeout
+    // path used in production. The `already past` test below covers the
+    // delayMs=0 shortcut separately. We deliberately use a 50ms deadline
+    // with a long waitFor window (10s) so genuine timer drift under heavy
+    // CI load doesn't turn this into a flake, while still asserting the
+    // full schedule-and-fire behavior.
     const h = await store.create({
       sourceCid: "blake3:test",
       fromRole: "coder",
       toRole: "reviewer",
-      replyDueAt: new Date(Date.now() - 10).toISOString(),
+      replyDueAt: new Date(Date.now() + 50).toISOString(),
       requiresReply: true,
     });
 
     const events: GroveEvent[] = [];
     bus.subscribe("reviewer", (e) => events.push(e));
 
+    // Guard: timer must be armed before fire. This catches regressions where
+    // watch() synchronously short-circuits a future deadline (e.g. treats it
+    // as already-past) — the delayMs=0 shortcut test can't distinguish that.
     watcher.watch(h);
+    expect(watcher.activeCount).toBe(1);
 
-    await waitFor(() => events.length > 0);
+    await waitFor(() => events.length > 0, { timeoutMs: 10_000 });
 
     expect(events).toHaveLength(1);
     expect(events[0]?.type).toBe("handoff.overdue");
     expect(events[0]?.sourceRole).toBe("coder");
     expect(events[0]?.targetRole).toBe("reviewer");
     expect(events[0]?.payload.handoffId).toBe(h.handoffId);
-  });
+    // After fire, the timer should have been cleared from the active set.
+    expect(watcher.activeCount).toBe(0);
+  }, 15_000);
 
   test("does not emit overdue when handoff is already replied", async () => {
     const h = await store.create({

@@ -1463,7 +1463,12 @@ export async function reviewOperation(
     return validationErr("contributionStore is required");
   }
 
-  const target = await store.get(input.targetCid);
+  let target: Awaited<ReturnType<typeof store.get>>;
+  try {
+    target = await store.get(input.targetCid);
+  } catch (error) {
+    return fromGroveError(error);
+  }
   if (!target) {
     return notFound("Review target", input.targetCid);
   }
@@ -1521,7 +1526,12 @@ export async function reproduceOperation(
     return validationErr("contributionStore is required");
   }
 
-  const target = await store.get(input.targetCid);
+  let target: Awaited<ReturnType<typeof store.get>>;
+  try {
+    target = await store.get(input.targetCid);
+  } catch (error) {
+    return fromGroveError(error);
+  }
   if (!target) {
     return notFound("Reproduction target", input.targetCid);
   }

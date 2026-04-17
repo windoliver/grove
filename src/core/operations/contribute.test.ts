@@ -750,6 +750,33 @@ describe("reviewOperation", () => {
       expect(result.error.message).toContain("discussion");
     }
   });
+
+  test("returns structured error when contributionStore.get throws", async () => {
+    // Wrap the store so get() always throws — simulates a closed DB or
+    // transient Nexus fault. The preflight kind lookup must convert that
+    // into an OperationResult error, not let it escape as an exception.
+    const throwingDeps: FullOperationDeps = {
+      ...deps,
+      contributionStore: {
+        ...deps.contributionStore,
+        get: async () => {
+          throw new Error("simulated store failure");
+        },
+      },
+    };
+
+    const result = await reviewOperation(
+      {
+        targetCid: "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+        summary: "should not throw",
+        agent: { agentId: "reviewer" },
+      },
+      throwingDeps,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("INTERNAL_ERROR");
+  });
 });
 
 describe("reproduceOperation", () => {
@@ -858,6 +885,30 @@ describe("reproduceOperation", () => {
       expect(result.error.code).toBe("VALIDATION_ERROR");
       expect(result.error.message).toContain("review");
     }
+  });
+
+  test("returns structured error when contributionStore.get throws", async () => {
+    const throwingDeps: FullOperationDeps = {
+      ...deps,
+      contributionStore: {
+        ...deps.contributionStore,
+        get: async () => {
+          throw new Error("simulated store failure");
+        },
+      },
+    };
+
+    const result = await reproduceOperation(
+      {
+        targetCid: "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+        summary: "should not throw",
+        agent: { agentId: "reproducer" },
+      },
+      throwingDeps,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("INTERNAL_ERROR");
   });
 
   test("validates artifact hashes", async () => {
