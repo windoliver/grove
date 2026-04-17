@@ -6,6 +6,7 @@
  */
 
 import { join } from "node:path";
+import type { AcpxTurn } from "../acp/types.js";
 import type { AgentProfile } from "./agent-profile.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 import type { GroveContract } from "./contract.js";
@@ -122,6 +123,38 @@ export class SessionOrchestrator {
     this.router = new TopologyRouter(config.topology, config.eventBus);
   }
 
+  /**
+   * Observe a fire-and-forget turn's outcome and surface error stop reasons.
+   *
+   * With the typed-stream runtime, post-spawn failures (malformed frames,
+   * provider rejections, cancelled turns) show up as `stopReason: "error"`
+   * on the turn's final `Result` rather than as a thrown send() error. If
+   * we just `await runtime.send(...)`, those failures are invisible to the
+   * orchestrator and the agent silently drops the prompt while its process
+   * status transitions back to idle — making a failed delivery look like
+   * a successful one. We drain each turn in the background and log the
+   * error so it's observable; we intentionally do not throw, since
+   * control-plane prompts are already fire-and-forget.
+   */
+  private watchTurn(role: string, turn: AcpxTurn): void {
+    void turn.result
+      .then((r) => {
+        if (r.stopReason === "error") {
+          const msg = r.error?.message ?? "unknown error";
+          const code = r.error?.code ? ` (code=${r.error.code})` : "";
+          process.stderr.write(
+            `[SessionOrchestrator] agent '${role}' turn ${turn.turnId} ended with error${code}: ${msg}\n`,
+          );
+        }
+      })
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(
+          `[SessionOrchestrator] agent '${role}' turn ${turn.turnId} rejected: ${msg}\n`,
+        );
+      });
+  }
+
   /** Start the session: spawn all agents and send goals. */
   async start(): Promise<SessionStatus> {
     const topology = this.config.topology;
@@ -191,7 +224,8 @@ export class SessionOrchestrator {
     // `startTurn` internal helper.
     if (!("startTurn" in this.config.runtime)) {
       for (const agent of this.agents) {
-        await this.config.runtime.send(agent.session, agent.goal);
+        const turn = await this.config.runtime.send(agent.session, agent.goal);
+        this.watchTurn(agent.role, turn);
       }
     }
 
@@ -326,7 +360,8 @@ export class SessionOrchestrator {
         for (const { targetRole } of routeResults) {
           const targetAgent = this.agents.find((a) => a.role === targetRole);
           if (targetAgent) {
-            await this.config.runtime.send(targetAgent.session, message);
+            const turn = await this.config.runtime.send(targetAgent.session, message);
+            this.watchTurn(targetAgent.role, turn);
           }
         }
 
@@ -503,7 +538,8 @@ export class SessionOrchestrator {
     const p = event.payload;
     const summary = typeof p.summary === "string" ? p.summary : JSON.stringify(p);
     const message = `[grove] ${event.type} from ${event.sourceRole}: ${summary}`;
-    await this.config.runtime.send(agent.session, message);
+    const turn = await this.config.runtime.send(agent.session, message);
+    this.watchTurn(agent.role, turn);
   }
 
   private handleAgentIdle(_agent: AgentSessionInfo): void {

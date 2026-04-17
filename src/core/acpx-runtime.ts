@@ -56,6 +56,15 @@ interface AcpxSessionEntry {
   idleTimer: ReturnType<typeof setInterval> | null;
   /** Active child process for the current prompt (null when idle). */
   activeProc: ReturnType<typeof nodeSpawn> | null;
+  /**
+   * Resolves when `activeProc` has exited (not just when the turn's result
+   * frame arrived). `send()` awaits this before starting a new turn so a
+   * single session never has two overlapping acpx children — otherwise a
+   * caller who does `await turn.result` and immediately calls send() again
+   * could race the previous child's stdout against the new one, and
+   * `close()`/`cancel()` would only target the newest child.
+   */
+  inflightTurn: Promise<void> | null;
   /** Log write stream (opened at session creation, closed on session close). */
   logStream: import("node:fs").WriteStream | null;
   /** Log file path for agent output (debug/streaming). */
@@ -237,6 +246,7 @@ export class AcpxRuntime implements AgentRuntime {
       idleCallbacks: [],
       idleTimer: null,
       activeProc: null,
+      inflightTurn: null,
       logStream,
       logFile,
     };
@@ -319,6 +329,10 @@ ${message}`;
     );
 
     entry.activeProc = child;
+    let markExited: () => void = () => undefined;
+    entry.inflightTurn = new Promise<void>((resolve) => {
+      markExited = resolve;
+    });
     child.on("spawn", () => {
       appendLog(
         `[acpx.startTurn] child spawned OK pid=${child.pid} for sessionName=${entry.sessionName}`,
@@ -345,6 +359,8 @@ ${message}`;
     child.on("close", (code) => {
       appendLog(`[acpx.startTurn] child closed exit=${code} sessionName=${entry.sessionName}`);
       entry.activeProc = null;
+      entry.inflightTurn = null;
+      markExited();
       const ts = new Date().toISOString();
       if (code === 0) {
         entry.session = { ...entry.session, status: "idle" };
@@ -368,6 +384,8 @@ ${message}`;
 
     child.on("error", (err) => {
       entry.activeProc = null;
+      entry.inflightTurn = null;
+      markExited();
       entry.session = { ...entry.session, status: "crashed" };
       if (entry.logStream) {
         entry.logStream.write(`\n[ERROR] ${err.message}\n`);
@@ -417,6 +435,7 @@ ${message}`;
         idleCallbacks: [],
         idleTimer: null,
         activeProc: null,
+        inflightTurn: null,
         logStream: null,
         logFile: this.logDir ? join(this.logDir, `${session.role}-reattach.log`) : null,
       };
@@ -428,6 +447,16 @@ ${message}`;
       appendLog(
         `[acpx.send] sessionId=${session.id} FOUND in sessions map, logFile=${entry.logFile}, sessionName=${entry.sessionName}`,
       );
+    }
+    // Single-flight: wait for any previous turn's child to exit before
+    // starting a new one. Two overlapping children on the same acpx session
+    // would interleave stdout NDJSON and leave close()/cancel() targeting
+    // only the newest, so the older one can be orphaned.
+    if (entry.inflightTurn) {
+      appendLog(
+        `[acpx.send] sessionId=${session.id} awaiting prior turn's child exit before starting new turn`,
+      );
+      await entry.inflightTurn;
     }
     appendLog(
       `[acpx.send] calling startTurn for sessionId=${session.id} sessionName=${entry.sessionName}`,
