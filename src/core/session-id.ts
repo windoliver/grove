@@ -23,7 +23,12 @@ export const SESSION_ID_PREFIX = "grove-";
 export interface ParsedSessionId {
   readonly role: string;
   readonly counter: number;
-  readonly suffix: string;
+  /**
+   * Base36 timestamp suffix from {@link buildSessionId}. `null` when parsing
+   * a legacy ID (`grove-<role>-<counter>`) emitted by the older tmux contract,
+   * preserved here so post-upgrade rediscovery doesn't drop live sessions.
+   */
+  readonly suffix: string | null;
 }
 
 export function buildSessionId(role: string, counter: number): string {
@@ -31,21 +36,33 @@ export function buildSessionId(role: string, counter: number): string {
 }
 
 /**
- * Parse a grove session ID emitted by {@link buildSessionId}.
+ * Parse a grove session ID.
  *
- * Returns `null` for any name that doesn't follow the canonical shape, which
- * lets callers safely filter foreign tmux/acpx sessions out of discovery.
+ * Accepts both the canonical shape (`grove-<role>-<counter>-<base36>`) emitted
+ * by {@link buildSessionId} and the legacy pre-#210 shape
+ * (`grove-<role>-<counter>`). Returns `null` for anything else so callers can
+ * safely filter foreign tmux/acpx sessions out of discovery.
  */
 export function parseSessionId(name: string): ParsedSessionId | null {
   if (!name.startsWith(SESSION_ID_PREFIX)) return null;
   const body = name.slice(SESSION_ID_PREFIX.length);
-  // Anchor on the last two `-`-separated segments: counter + suffix.
-  // Everything before is the role (which may itself contain hyphens).
-  const match = body.match(/^(.+)-(\d+)-([a-z0-9]+)$/);
-  if (!match) return null;
-  const [, role, counterStr, suffix] = match;
-  if (!role || !counterStr || !suffix) return null;
-  const counter = Number.parseInt(counterStr, 10);
-  if (!Number.isFinite(counter)) return null;
-  return { role, counter, suffix };
+  // Try canonical first: <role>-<counter>-<base36-suffix>
+  const canonical = body.match(/^(.+)-(\d+)-([a-z0-9]+)$/);
+  if (canonical) {
+    const [, role, counterStr, suffix] = canonical;
+    if (role && counterStr && suffix) {
+      const counter = Number.parseInt(counterStr, 10);
+      if (Number.isFinite(counter)) return { role, counter, suffix };
+    }
+  }
+  // Legacy fallback: <role>-<counter> (no suffix).
+  const legacy = body.match(/^(.+)-(\d+)$/);
+  if (legacy) {
+    const [, role, counterStr] = legacy;
+    if (role && counterStr) {
+      const counter = Number.parseInt(counterStr, 10);
+      if (Number.isFinite(counter)) return { role, counter, suffix: null };
+    }
+  }
+  return null;
 }

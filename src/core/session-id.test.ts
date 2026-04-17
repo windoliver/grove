@@ -40,6 +40,23 @@ describe("session-id", () => {
     expect(parseSessionId("grove-")).toBeNull();
     expect(parseSessionId("grove-onlyrole")).toBeNull();
     expect(parseSessionId("grove-role-notanumber-suffix")).toBeNull();
-    expect(parseSessionId("grove-role-1")).toBeNull(); // missing suffix
+  });
+
+  test("parseSessionId accepts legacy grove-<role>-<counter> shape", () => {
+    // Pre-#210 tmux IDs lacked the base36 suffix. Rediscovery after upgrade
+    // must still find these sessions or live agents get marked dead.
+    const parsed = parseSessionId("grove-coder-3");
+    expect(parsed).not.toBeNull();
+    expect(parsed!.role).toBe("coder");
+    expect(parsed!.counter).toBe(3);
+    expect(parsed!.suffix).toBeNull();
+  });
+
+  test("parseSessionId legacy shape supports hyphenated roles", () => {
+    const parsed = parseSessionId("grove-code-reviewer-12");
+    expect(parsed).not.toBeNull();
+    expect(parsed!.role).toBe("code-reviewer");
+    expect(parsed!.counter).toBe(12);
+    expect(parsed!.suffix).toBeNull();
   });
 });

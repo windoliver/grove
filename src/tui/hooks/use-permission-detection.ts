@@ -6,6 +6,7 @@
 
 import { useKeyboard } from "@opentui/react";
 import { useCallback, useEffect, useState } from "react";
+import { parseSessionId } from "../../core/session-id.js";
 import type { TmuxManager } from "../agents/tmux-manager.js";
 
 /** A detected permission prompt from a tmux agent session. */
@@ -59,7 +60,8 @@ export function usePermissionDetection(
                 cmd = t;
               }
             }
-            const role = sess.replace("grove-", "").replace(/-[a-z0-9]+$/i, "");
+            const parsed = parseSessionId(sess);
+            const role = parsed?.role ?? sess.replace("grove-", "").replace(/-[a-z0-9]+$/i, "");
             prompts.push({ sessionName: sess, agentRole: role, command: cmd.slice(0, 80) });
           }
         }
