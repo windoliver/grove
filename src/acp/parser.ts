@@ -310,28 +310,94 @@ export function parseAcpLine(line: string, turnId: string): ParsedLine {
 }
 
 // ---------------------------------------------------------------------------
-// AcpParser — streams Messages from a Readable, resolves a Result
+// AcpParser — broadcast Messages from a Readable, resolves a Result
 // ---------------------------------------------------------------------------
 //
-// Reading is eager: the parser begins consuming the stream immediately on
+// Reading: eager. The parser begins consuming the stream immediately on
 // construction and resolves `result` as soon as a terminal frame arrives,
-// regardless of whether any consumer is iterating `messages`. Messages
-// buffer until a consumer shows up, then drain in order. Exactly one
-// consumer is supported (`messages` is a single-use AsyncIterable — iterating
-// twice drains once).
+// regardless of whether any consumer iterates `messages`. This keeps turn
+// lifecycle independent of consumer liveness (see docs/superpowers/specs/...
+// § "Slow consumer / backpressure").
+//
+// Fan-out: the `messages` AsyncIterable is a broadcast stream. Every call to
+// `[Symbol.asyncIterator]()` creates a fresh subscriber with its own queue;
+// each Message parsed from the stream is delivered to every active subscriber.
+// Late joiners (subscribing mid-stream) see messages from their join point
+// onwards and end-of-stream if the turn has already settled.
+//
+// Backpressure: each subscriber has an independent bounded queue. When a
+// subscriber falls more than MAX_SUBSCRIBER_BUFFER messages behind, newly
+// parsed messages are dropped for THAT subscriber (a warning is logged to
+// stderr). The background reader still advances for other subscribers and the
+// result resolver — one slow consumer cannot stall the turn.
 
 const EOF_RESULT: Omit<Result, "turnId"> = {
   stopReason: "error",
   error: { code: "acpx_exit", message: "stream closed before result" },
 };
 
+/** Per-subscriber cap before we start dropping messages. */
+const MAX_SUBSCRIBER_BUFFER = 8192;
+
+class AcpSubscriber implements AsyncIterator<Message> {
+  private readonly queue: Message[] = [];
+  private waiters: Array<(r: IteratorResult<Message>) => void> = [];
+  private dropped = 0;
+  private finished = false;
+
+  push(message: Message): void {
+    const waiter = this.waiters.shift();
+    if (waiter !== undefined) {
+      waiter({ value: message, done: false });
+      return;
+    }
+    if (this.queue.length >= MAX_SUBSCRIBER_BUFFER) {
+      this.dropped += 1;
+      if (this.dropped === 1 || this.dropped % 1000 === 0) {
+        process.stderr.write(
+          `[acp-parser] subscriber buffer full (${MAX_SUBSCRIBER_BUFFER}); dropped ${this.dropped} messages so far\n`,
+        );
+      }
+      return;
+    }
+    this.queue.push(message);
+  }
+
+  finish(): void {
+    if (this.finished) return;
+    this.finished = true;
+    const waiters = this.waiters;
+    this.waiters = [];
+    for (const w of waiters) {
+      w({ value: undefined, done: true });
+    }
+  }
+
+  next(): Promise<IteratorResult<Message>> {
+    const value = this.queue.shift();
+    if (value !== undefined) {
+      return Promise.resolve({ value, done: false });
+    }
+    if (this.finished) {
+      return Promise.resolve({ value: undefined, done: true });
+    }
+    return new Promise((resolve) => {
+      this.waiters.push(resolve);
+    });
+  }
+
+  return(): Promise<IteratorResult<Message>> {
+    this.finish();
+    return Promise.resolve({ value: undefined, done: true });
+  }
+}
+
 export class AcpParser {
   readonly messages: AsyncIterable<Message>;
   readonly result: Promise<Result>;
 
-  private readonly queue: Message[] = [];
-  private pendingResolvers: Array<(r: IteratorResult<Message>) => void> = [];
-  private done = false;
+  private readonly subscribers: AcpSubscriber[] = [];
+  private streamFinished = false;
   private resolveResult!: (r: Result) => void;
 
   constructor({
@@ -350,48 +416,31 @@ export class AcpParser {
     // Start eager background read — completion is independent of `messages` consumption.
     void this._readStream(stream, turnId);
 
-    const self = this;
     this.messages = {
-      [Symbol.asyncIterator](): AsyncIterator<Message> {
-        return {
-          next(): Promise<IteratorResult<Message>> {
-            const value = self.queue.shift();
-            if (value !== undefined) {
-              return Promise.resolve({ value, done: false });
-            }
-            if (self.done) {
-              return Promise.resolve({ value: undefined, done: true });
-            }
-            return new Promise((resolve) => {
-              self.pendingResolvers.push(resolve);
-            });
-          },
-          return(): Promise<IteratorResult<Message>> {
-            // Iteration aborted early — let the background read finish on its own.
-            return Promise.resolve({ value: undefined, done: true });
-          },
-        };
+      [Symbol.asyncIterator]: (): AsyncIterator<Message> => {
+        const sub = new AcpSubscriber();
+        if (this.streamFinished) {
+          sub.finish();
+        } else {
+          this.subscribers.push(sub);
+        }
+        return sub;
       },
     };
   }
 
-  private enqueue(message: Message): void {
-    const waiter = this.pendingResolvers.shift();
-    if (waiter !== undefined) {
-      waiter({ value: message, done: false });
-    } else {
-      this.queue.push(message);
+  private broadcast(message: Message): void {
+    for (const sub of this.subscribers) {
+      sub.push(message);
     }
   }
 
   private finish(result: Result): void {
     this.resolveResult(result);
-    this.done = true;
-    // Signal end-of-stream to any consumers still waiting.
-    const waiters = this.pendingResolvers;
-    this.pendingResolvers = [];
-    for (const w of waiters) {
-      w({ value: undefined, done: true });
+    this.streamFinished = true;
+    const subs = this.subscribers.splice(0);
+    for (const sub of subs) {
+      sub.finish();
     }
   }
 
@@ -418,7 +467,7 @@ export class AcpParser {
             this.finish({ ...parsed.result, turnId });
             return;
           }
-          this.enqueue(parsed.message);
+          this.broadcast(parsed.message);
         }
       }
 
@@ -430,7 +479,7 @@ export class AcpParser {
           this.finish({ ...parsed.result, turnId });
           return;
         }
-        this.enqueue(parsed.message);
+        this.broadcast(parsed.message);
       }
     } catch (err) {
       // Stream error — surface as a terminal error result.

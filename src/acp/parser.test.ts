@@ -401,7 +401,7 @@ test("AcpParser: result resolves without the consumer iterating messages (eager 
   expect(result.stopReason).toBe("end_turn");
 });
 
-test("AcpParser: messages buffered before iteration are delivered in order", async () => {
+test("AcpParser: subscriber attached before stream finishes buffers messages until drained", async () => {
   const lines = [
     JSON.stringify({
       jsonrpc: "2.0",
@@ -426,13 +426,96 @@ test("AcpParser: messages buffered before iteration are delivered in order", asy
     turnId: "t-buffered",
     stream: readableFromString(`${lines.join("\n")}\n`),
   });
-  // Await result first so the background reader has finished and buffered.
+  // Subscribe synchronously, BEFORE the background reader has finished.
+  const iter = parser.messages[Symbol.asyncIterator]();
+  // Now allow the reader to run and finish.
   await parser.result;
   const collected: string[] = [];
-  for await (const m of parser.messages) {
-    if (m.kind === "text") collected.push(m.text);
+  while (true) {
+    const { value, done } = await iter.next();
+    if (done) break;
+    if (value.kind === "text") collected.push(value.text);
   }
   expect(collected).toEqual(["a", "b"]);
+});
+
+test("AcpParser: a subscriber that never drains gets bounded (drops past cap); turn still resolves", async () => {
+  // Pump more than MAX_SUBSCRIBER_BUFFER messages so the unbounded subscriber
+  // would otherwise OOM. The drops go to the slow subscriber; the key invariant
+  // is that the parser does not retain unbounded state and the turn still
+  // completes.
+  const lines: string[] = [];
+  const OVER = 9000; // comfortably > MAX_SUBSCRIBER_BUFFER (8192)
+  for (let i = 0; i < OVER; i += 1) {
+    lines.push(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s",
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "x" } },
+        },
+      }),
+    );
+  }
+  lines.push(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }));
+  const parser = new AcpParser({
+    sessionId: "s",
+    turnId: "t-bounded",
+    stream: readableFromString(`${lines.join("\n")}\n`),
+  });
+  // Attach a subscriber that never drains.
+  const slow = parser.messages[Symbol.asyncIterator]();
+  // Turn must still resolve even though slow never drains.
+  const result = await parser.result;
+  expect(result.stopReason).toBe("end_turn");
+  // Slow subscriber's queue was bounded: drain it and count.
+  let slowCount = 0;
+  while (true) {
+    const { value, done } = await slow.next();
+    if (done) break;
+    if (value.kind === "text") slowCount += 1;
+  }
+  // At most the cap (plus one waiter-fulfillment slot) — proves bounded buffer.
+  expect(slowCount).toBeLessThan(OVER);
+  expect(slowCount).toBeGreaterThan(0);
+});
+
+test("AcpParser: broadcast — two simultaneous subscribers each receive every message", async () => {
+  const lines = [
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "s",
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "x" } },
+      },
+    }),
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "s",
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "y" } },
+      },
+    }),
+    JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }),
+  ];
+  const parser = new AcpParser({
+    sessionId: "s",
+    turnId: "t-fanout",
+    stream: readableFromString(`${lines.join("\n")}\n`),
+  });
+  const collect = async (): Promise<string[]> => {
+    const out: string[] = [];
+    for await (const m of parser.messages) {
+      if (m.kind === "text") out.push(m.text);
+    }
+    return out;
+  };
+  const [a, b] = await Promise.all([collect(), collect()]);
+  expect(a).toEqual(["x", "y"]);
+  expect(b).toEqual(["x", "y"]);
 });
 
 test("AcpParser: all message turnIds match constructor turnId", async () => {

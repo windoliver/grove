@@ -54,9 +54,11 @@ test("cancel() calls cancelFn", async () => {
   expect(r.stopReason).toBe("cancelled");
 });
 
-test("cancel() is idempotent across successful calls — only fires cancelFn once", async () => {
+test("cancel() remains callable after a successful write — provider may not honor it", async () => {
+  // A successful cancelFn write only means "cancel requested", not confirmed.
+  // Callers can re-invoke cancel() to re-send until the turn's result settles.
   let calls = 0;
-  const stdout = new PassThrough(); // stays open so resultSettled=false when cancel is called
+  const stdout = new PassThrough();
   const turn = new AcpxTurnImpl({
     sessionId: "s1",
     turnId: "t1",
@@ -65,15 +67,16 @@ test("cancel() is idempotent across successful calls — only fires cancelFn onc
       calls += 1;
     },
   });
-  // Drain in the background so the parser generator runs; keeps result pending until stdout ends.
   const drain = (async () => {
     for await (const _ of turn.messages) {
       /* noop */
     }
   })();
   await turn.cancel();
-  await turn.cancel();
   expect(calls).toBe(1);
+  // Turn hasn't settled → next cancel re-sends.
+  await turn.cancel();
+  expect(calls).toBe(2);
   stdout.end();
   await drain;
   await turn.result;
@@ -102,9 +105,9 @@ test("cancel() is retryable: failed cancelFn leaves the turn cancellable", async
   // The first attempt threw — a retry must still invoke cancelFn.
   await turn.cancel();
   expect(attempts).toBe(2);
-  // After a successful cancel, further calls become no-ops.
+  // Another explicit re-send escalation while the turn is still in flight.
   await turn.cancel();
-  expect(attempts).toBe(2);
+  expect(attempts).toBe(3);
   stdout.end();
   await drain;
   await turn.result;

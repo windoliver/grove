@@ -116,6 +116,29 @@ test("compactTurn prefers result.usage (canonical) over usage_update (advisory)"
   expect(snap.usage?.totalTokens).toBe(21914);
 });
 
+test("compactTurn routes orphan tool_call_update (no name/input) into incompleteToolCalls, not toolCalls", () => {
+  const msgs: Message[] = [
+    // No initial tool_call frame — only an update. Parser would have emitted this
+    // when the initial frame was demoted to raw (missing id / unknown status).
+    {
+      kind: "tool_call",
+      turnId: "t1",
+      toolCall: { id: "tc-orphan", status: "completed", output: "ok" },
+    },
+  ];
+  const snap = compactTurn({
+    turnId: "t1",
+    messages: msgs,
+    result: { turnId: "t1", stopReason: "end_turn" },
+  });
+  // Must NOT appear as a finalized tool call with blank name/input.
+  expect(snap.toolCalls).toHaveLength(0);
+  // Must appear in incompleteToolCalls so schema drift is visible.
+  expect(snap.incompleteToolCalls).toHaveLength(1);
+  expect(snap.incompleteToolCalls[0]?.id).toBe("tc-orphan");
+  expect(snap.incompleteToolCalls[0]?.status).toBe("completed");
+});
+
 test("compactTurn keeps canonical usage undefined when result has no usage (advisoryUsage is separate)", () => {
   const msgs: Message[] = [
     { kind: "token_usage", turnId: "t1", usage: { inputTokens: 100, outputTokens: 50 } },

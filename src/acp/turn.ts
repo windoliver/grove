@@ -13,7 +13,6 @@ export class AcpxTurnImpl implements AcpxTurn {
   readonly messages: AsyncIterable<Message>;
   readonly result: Promise<Result>;
   private readonly cancelFn: () => Promise<void>;
-  private cancelSucceeded = false;
   private resultSettled = false;
   private pendingCancel: Promise<void> | null = null;
 
@@ -48,24 +47,23 @@ export class AcpxTurnImpl implements AcpxTurn {
    * Cancel the in-flight turn.
    *
    * Single-flight: concurrent callers share the same in-flight cancellation
-   * attempt so we never double-send cancel to the underlying transport.
+   * attempt so we never double-send cancel to the underlying transport during
+   * a single call "wave".
    *
-   * Retryable: if `cancelFn` rejects (transient IPC failure, stdin race), the
-   * rejection is re-thrown and `cancelSucceeded` stays false — subsequent
-   * callers get a fresh attempt.
-   *
-   * Idempotent after success: once `cancelFn` has resolved, further calls are
-   * no-ops. Also short-circuits if the turn's result has already settled.
+   * Retryable until the turn settles: a successful `cancelFn()` resolution is
+   * only a "cancel requested", not a guaranteed "cancel confirmed" — the
+   * provider may ignore it. Callers can re-invoke `cancel()` to re-send until
+   * the turn's result arrives (at which point this becomes a no-op). If
+   * `cancelFn` rejects, the rejection propagates and the next caller still
+   * gets a fresh attempt.
    */
   async cancel(): Promise<void> {
-    if (this.cancelSucceeded) return;
     if (this.resultSettled) return;
     if (this.pendingCancel !== null) return this.pendingCancel;
 
     const attempt = (async () => {
       try {
         await this.cancelFn();
-        this.cancelSucceeded = true;
       } finally {
         this.pendingCancel = null;
       }

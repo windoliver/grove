@@ -24,7 +24,20 @@ export interface TurnSnapshot {
   turnId: string;
   assistantText: string;
   thinkingText: string;
+  /**
+   * Fully-identified tool calls (both name and input were observed for this id
+   * across the event log). Safe to key audit/permission/UI off of `name`.
+   */
   toolCalls: ToolCall[];
+  /**
+   * Tool-call ids that appeared in the stream but never accumulated enough
+   * data to finalize (e.g. only `tool_call_update` frames were seen, with no
+   * initial `tool_call` providing the canonical name or input). Surfaced as
+   * raw partial events rather than folded into `toolCalls` with blank names
+   * so schema drift and parser demotions (missing id, unknown status) stay
+   * visible instead of being silently coerced into valid-looking records.
+   */
+  incompleteToolCalls: ToolCallEvent[];
   /**
    * Canonical per-turn token accounting, populated only from `result.usage`.
    * Stays undefined when the provider didn't emit canonical counts on the
@@ -123,17 +136,27 @@ export function compactTurn(input: {
     }
   }
 
-  const toolCalls = toolCallOrder.map((id) => {
+  const toolCalls: ToolCall[] = [];
+  const incompleteToolCalls: ToolCallEvent[] = [];
+  for (const id of toolCallOrder) {
     const partial = toolCallMap.get(id);
     if (!partial) throw new Error(`tool call ${id} missing from map`);
-    return finalizeToolCall(partial);
-  });
+    // A tool call is only "complete" when we observed its canonical identity
+    // (name) AND input. Orphan tool_call_update frames without a preceding
+    // tool_call never reach that bar — don't fabricate blank defaults.
+    if (partial.name !== undefined && partial.input !== undefined) {
+      toolCalls.push(finalizeToolCall(partial));
+    } else {
+      incompleteToolCalls.push(partial);
+    }
+  }
 
   return {
     turnId: input.turnId,
     assistantText,
     thinkingText,
     toolCalls,
+    incompleteToolCalls,
     // Canonical usage only — do NOT fall back to advisory usage_update values.
     // See the TurnSnapshot.usage JSDoc for the rationale.
     usage: input.result.usage,
