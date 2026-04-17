@@ -59,13 +59,20 @@ interface AcpxSessionEntry {
   activeProc: ReturnType<typeof nodeSpawn> | null;
   /**
    * Resolves when `activeProc` has exited (not just when the turn's result
-   * frame arrived). `send()` awaits this before starting a new turn so a
-   * single session never has two overlapping acpx children — otherwise a
-   * caller who does `await turn.result` and immediately calls send() again
-   * could race the previous child's stdout against the new one, and
-   * `close()`/`cancel()` would only target the newest child.
+   * frame arrived). Set inside startTurn and resolved by the child's
+   * close/error handler. Read-only outside startTurn; send() uses
+   * `sendChainTail` for serialization instead of awaiting this directly.
    */
   inflightTurn: Promise<void> | null;
+  /**
+   * Tail of the per-session send chain. Each incoming send() call appends
+   * a new promise to this chain and awaits the predecessor, so N concurrent
+   * send() callers are serialized into N sequential turns. Using a single
+   * `await inflightTurn` gate would let every concurrent caller pass the
+   * gate simultaneously when the predecessor resolved, and they would all
+   * call startTurn at once — reintroducing overlapping acpx children.
+   */
+  sendChainTail: Promise<void> | null;
   /** Log write stream (opened at session creation, closed on session close). */
   logStream: import("node:fs").WriteStream | null;
   /** Log file path for agent output (debug/streaming). */
@@ -248,6 +255,7 @@ export class AcpxRuntime implements AgentRuntime {
       idleTimer: null,
       activeProc: null,
       inflightTurn: null,
+      sendChainTail: null,
       logStream,
       logFile,
     };
@@ -447,6 +455,7 @@ ${message}`;
         idleTimer: null,
         activeProc: null,
         inflightTurn: null,
+        sendChainTail: null,
         logStream: null,
         logFile: this.logDir ? join(this.logDir, `${session.role}-reattach.log`) : null,
       };
@@ -459,26 +468,38 @@ ${message}`;
         `[acpx.send] sessionId=${session.id} FOUND in sessions map, logFile=${entry.logFile}, sessionName=${entry.sessionName}`,
       );
     }
-    // Single-flight: wait for any previous turn's child to exit before
-    // starting a new one. Two overlapping children on the same acpx session
-    // would interleave stdout NDJSON and leave close()/cancel() targeting
-    // only the newest, so the older one can be orphaned.
-    if (entry.inflightTurn) {
-      appendLog(
-        `[acpx.send] sessionId=${session.id} awaiting prior turn's child exit before starting new turn`,
-      );
-      await entry.inflightTurn;
+    // Serialize concurrent send() callers into a sequential chain so only
+    // one acpx child exists per session at any time. We CANNOT use a bare
+    // `await entry.inflightTurn` here: N concurrent callers all awaiting
+    // the same promise would all pass the gate simultaneously once the
+    // predecessor resolved, and each would start its own acpx child —
+    // overlapping NDJSON streams, cancel()/close() targeting only the
+    // newest. Instead, each call installs its own "my turn is done" promise
+    // as the chain tail before awaiting the predecessor, so later arrivals
+    // wait on us, not on the same promise we waited on.
+    const predecessor = entry.sendChainTail ?? Promise.resolve();
+    let releaseChain: () => void = () => undefined;
+    const myCompletion = new Promise<void>((resolve) => {
+      releaseChain = resolve;
+    });
+    entry.sendChainTail = myCompletion;
+
+    try {
+      await predecessor;
+    } catch {
+      // Predecessor rejected — treat as released so we don't deadlock.
     }
-    // After the await, close() may have run concurrently: killed the
-    // prior child, closed the acpx session, and deleted the map entry.
-    // Re-check before launching a new child, otherwise a queued send
-    // would spawn acpx against a session the caller has already stopped
-    // and leave the orphaned process behind.
+
+    // After the wait, close() may have run concurrently: killed the prior
+    // child, closed the acpx session, and deleted the map entry. Re-check
+    // before launching a new child, otherwise a queued send would spawn
+    // acpx against a session the caller has already stopped.
     const current = this.sessions.get(session.id);
     if (!current || current !== entry || current.session.status === "stopped") {
       appendLog(
-        `[acpx.send] sessionId=${session.id} session was stopped/replaced during inflight wait — refusing to start new turn`,
+        `[acpx.send] sessionId=${session.id} session was stopped/replaced during chain wait — refusing to start new turn`,
       );
+      releaseChain();
       return {
         sessionId: session.id,
         turnId: `${session.id}-closed`,
@@ -497,10 +518,18 @@ ${message}`;
         close: async () => undefined,
       };
     }
+
     appendLog(
       `[acpx.send] calling startTurn for sessionId=${session.id} sessionName=${entry.sessionName}`,
     );
-    return this.startTurn(entry, message);
+    const turn = this.startTurn(entry, message);
+    // Release the next queued send when this turn's child exits. Use
+    // inflightTurn (set by startTurn and resolved by the child close/error
+    // handler) so successors wait on the actual process lifecycle, not
+    // just on message-iterator consumption.
+    const inflight = entry.inflightTurn ?? Promise.resolve();
+    void inflight.finally(() => releaseChain());
+    return turn;
   }
 
   async close(session: AgentSession): Promise<void> {
