@@ -173,8 +173,23 @@ export interface AdoptResult extends BaseContributionResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Validate that all relation targets exist in the store (batch).
- * Returns a validation error if any target is missing, or undefined if all valid.
+ * Per-relation kind constraints. When a relation type is listed here, the
+ * target contribution's kind must appear in the allowed set or validation
+ * fails. Per #236 — mirrors the explicit kind check in updatePlanOperation
+ * so review/reproduce can't silently point at the wrong-kind contribution.
+ */
+const RELATION_EXPECTED_KINDS: Readonly<
+  Partial<Record<RelationType, readonly ContributionKind[]>>
+> = {
+  [RelationType.Reviews]: [CK.Work],
+  [RelationType.Reproduces]: [CK.Work],
+};
+
+/**
+ * Validate that all relation targets exist in the store (batch) and that
+ * their contribution kinds match the relation type's expectations.
+ * Returns a validation error if any target is missing or has the wrong
+ * kind, or undefined if all valid.
  */
 async function validateRelations(
   store: ContributionStore,
@@ -183,9 +198,16 @@ async function validateRelations(
   if (relations.length === 0) return undefined;
   const cids = relations.map((r) => r.targetCid);
   const found = await store.getMany(cids);
-  for (const cid of cids) {
-    if (!found.has(cid)) {
-      return notFound("Contribution", cid);
+  for (const rel of relations) {
+    const target = found.get(rel.targetCid);
+    if (!target) {
+      return notFound("Contribution", rel.targetCid);
+    }
+    const expected = RELATION_EXPECTED_KINDS[rel.relationType];
+    if (expected !== undefined && !expected.includes(target.kind)) {
+      return validationErr(
+        `Cannot create '${rel.relationType}' relation to a '${target.kind}' contribution (target: ${rel.targetCid})`,
+      );
     }
   }
   return undefined;
@@ -737,6 +759,11 @@ export async function contributeOperation(
       }
     | undefined;
   let idempotencyCacheLookupKey: string | undefined;
+  // Track whether THIS call actually acquired the durable reservation.
+  // Without this, a pre-commit throw here would rollback whatever pending
+  // row is in the store, including one another process reserved in the
+  // meantime — erasing its single-flight protection and enabling dup writes.
+  let ownsDurableReservation = false;
 
   try {
     if (deps.contributionStore === undefined) {
@@ -747,131 +774,147 @@ export async function contributeOperation(
     const relations = input.relations ?? [];
     const tags = input.tags ?? [];
 
-    // Validate relations
-    if (relations.length > 0) {
-      const relErr = await validateRelations(deps.contributionStore, relations);
-      if (relErr !== undefined) return relErr as OperationResult<ContributeResult>;
-    }
-
-    // Validate artifacts whenever provided (regardless of commitHash)
-    if (Object.keys(artifacts).length > 0) {
-      const artErr = await validateArtifacts(deps, artifacts);
-      if (artErr !== undefined) return artErr as OperationResult<ContributeResult>;
-    }
-
     const agent = resolveAgent(input.agent);
     const mode = resolveMode(input.mode, deps);
     // Normalize to UTC Z-format so lexicographic ORDER BY works without datetime().
     const createdAt = toUtcIso(input.createdAt ?? new Date().toISOString());
 
-    // --- Idempotency: single-flight with request fingerprinting ---
+    // --- Idempotency: synchronous check-then-reserve + durable lookup ---
     //
-    // Explicit client-supplied key, namespaced per agent. HTTP
-    // Idempotency-Key semantics (Stripe / AWS / RFC draft):
-    //
-    //   - same key + same fingerprint → return cached result (retry)
-    //   - same key + different fingerprint → STATE_CONFLICT (bug)
-    //   - same key + in-flight → await the pending Promise (single-flight)
-    //
-    // Replaces the previous heuristic that did a 60s same-summary lookup;
-    // that approach false-positived on legitimate retries (e.g., updatePlan
-    // called twice with the same title) and missed real retries under
-    // concurrency because the window query was unbounded across all agents.
-    //
-    // Critically: the check-then-reserve is synchronous (no await between
-    // lookup miss and slot insertion). JavaScript is single-threaded, so
-    // two concurrent callers cannot both observe a miss and race past the
-    // insert — the second caller sees the first caller's pending entry.
+    // Sequence matters:
+    //   1. Synchronously (no await): in-memory cache lookup + slot reserve.
+    //      This single-threaded pair guarantees two concurrent in-process
+    //      callers cannot both observe a miss and both proceed — the
+    //      second caller will see the first's pending Promise. Must
+    //      happen BEFORE any awaited validateRelations to preserve
+    //      single-flight (#258 round 3).
+    //   2. Await durable store lookup — a hit means another process
+    //      already wrote this key; short-circuit (and resolve our
+    //      just-reserved slot with the cached result so concurrent
+    //      in-process callers see it too).
+    //   3. validateRelations / validateArtifacts — on failure, resolve
+    //      the slot with the error so it's freed for retries.
+    //   4. Durable reserve for cross-process single-flight — only on
+    //      cache miss.
     const idempotencyAgentScope = agent.role ?? agent.agentId;
     idempotencyCacheLookupKey =
       input.idempotencyKey !== undefined
         ? idempotencyCacheKey(idempotencyAgentScope, input.idempotencyKey)
         : undefined;
-    // Hoisted so it's available at the durable-commit boundary for
-    // persistent store writes.
     let idempotencyFingerprint: string | undefined;
     if (idempotencyCacheLookupKey !== undefined) {
       idempotencyFingerprint = computeIdempotencyFingerprint(input, agent);
+      // Sync check-then-reserve — no await between.
       const cached = lookupIdempotency(
         idempotencyCacheLookupKey,
         idempotencyFingerprint,
         Date.now(),
       );
       if (cached !== undefined) {
-        if (cached.type === "pending") {
-          // Concurrent caller: await their write and return the same result.
-          return cached.promise;
-        }
-        if (cached.type === "value") {
-          return ok(cached.result);
-        }
-        // type === "conflict" — key reused with different input.
+        if (cached.type === "pending") return cached.promise;
+        if (cached.type === "value") return ok(cached.result);
         return err({
           code: OperationErrorCode.StateConflict,
           message: cached.message,
           details: { idempotencyKey: input.idempotencyKey },
         });
       }
-
-      // In-memory miss: check persistent store for cross-process hits.
-      if (deps.idempotencyStore !== undefined) {
-        const persisted = deps.idempotencyStore.lookup(
-          idempotencyCacheLookupKey,
-          IDEMPOTENCY_TTL_MS,
-        );
-        if (persisted !== undefined) {
-          if (persisted.fingerprint !== idempotencyFingerprint) {
-            return err({
-              code: OperationErrorCode.StateConflict,
-              message:
-                "Idempotency key was previously used with a different request body. " +
-                "Reusing the same key with different input is rejected to prevent silent " +
-                "write divergence. Use a new key for the new intent.",
-              details: { idempotencyKey: input.idempotencyKey },
-            });
-          }
-          if (persisted.status === "committed") {
-            // Same key + same fingerprint, already completed: return cached.
-            const result = JSON.parse(persisted.resultJson) as ContributeResult;
-            return ok(result);
-          }
-          // status === "pending": another process is mid-write. Return a
-          // retryable error rather than proceeding with a duplicate write
-          // or returning the placeholder result.
-          return err({
-            code: OperationErrorCode.StateConflict,
-            message:
-              "Idempotency key is currently being processed by another request. " +
-              "Retry after a short delay.",
-            details: { idempotencyKey: input.idempotencyKey, retryable: true },
-          });
-        }
-
-        // No existing row: durably reserve before writing.
-        const reserved = deps.idempotencyStore.reserve(
-          idempotencyCacheLookupKey,
-          idempotencyFingerprint,
-        );
-        if (!reserved) {
-          // Lost the race to another process that reserved between our
-          // lookup and this INSERT OR IGNORE. Return retryable error.
-          return err({
-            code: OperationErrorCode.StateConflict,
-            message:
-              "Idempotency key is currently being processed by another request. " +
-              "Retry after a short delay.",
-            details: { idempotencyKey: input.idempotencyKey, retryable: true },
-          });
-        }
-      }
-
-      // Reserve the in-memory slot for single-flight within this process.
-      // Subsequent concurrent callers observe the pending Promise and await it.
       idempotencySlot = reserveIdempotencySlot(
         idempotencyCacheLookupKey,
         idempotencyFingerprint,
         Date.now(),
       );
+    }
+
+    // Cross-process durable lookup — only on in-memory miss. If another
+    // process already committed this key, resolve our slot with the
+    // cached result so concurrent in-process callers see it too.
+    if (
+      idempotencyCacheLookupKey !== undefined &&
+      idempotencyFingerprint !== undefined &&
+      deps.idempotencyStore !== undefined
+    ) {
+      const persisted = deps.idempotencyStore.lookup(idempotencyCacheLookupKey, IDEMPOTENCY_TTL_MS);
+      if (persisted !== undefined) {
+        if (persisted.fingerprint !== idempotencyFingerprint) {
+          const conflictErr = err({
+            code: OperationErrorCode.StateConflict,
+            message:
+              "Idempotency key was previously used with a different request body. " +
+              "Reusing the same key with different input is rejected to prevent silent " +
+              "write divergence. Use a new key for the new intent.",
+            details: { idempotencyKey: input.idempotencyKey },
+          });
+          idempotencySlot?.resolve(conflictErr);
+          idempotencySlot = undefined;
+          return conflictErr;
+        }
+        if (persisted.status === "committed") {
+          const cachedResult = JSON.parse(persisted.resultJson) as ContributeResult;
+          const okResult = ok(cachedResult);
+          idempotencySlot?.resolve(okResult);
+          idempotencySlot = undefined;
+          return okResult;
+        }
+        const pendingErr = err({
+          code: OperationErrorCode.StateConflict,
+          message:
+            "Idempotency key is currently being processed by another request. " +
+            "Retry after a short delay.",
+          details: { idempotencyKey: input.idempotencyKey, retryable: true },
+        });
+        idempotencySlot?.resolve(pendingErr);
+        idempotencySlot = undefined;
+        return pendingErr;
+      }
+    }
+
+    // Validate relations (now includes per-relation kind checks via
+    // RELATION_EXPECTED_KINDS). Failures release the slot so retries
+    // with corrected input can proceed.
+    if (relations.length > 0) {
+      const relErr = await validateRelations(deps.contributionStore, relations);
+      if (relErr !== undefined) {
+        idempotencySlot?.resolve(relErr as OperationResult<ContributeResult>);
+        idempotencySlot = undefined;
+        return relErr as OperationResult<ContributeResult>;
+      }
+    }
+
+    // Validate artifacts whenever provided (regardless of commitHash)
+    if (Object.keys(artifacts).length > 0) {
+      const artErr = await validateArtifacts(deps, artifacts);
+      if (artErr !== undefined) {
+        idempotencySlot?.resolve(artErr as OperationResult<ContributeResult>);
+        idempotencySlot = undefined;
+        return artErr as OperationResult<ContributeResult>;
+      }
+    }
+
+    // Cross-process durable reserve — losing the race means another
+    // process already started the write; return retryable conflict.
+    if (
+      idempotencyCacheLookupKey !== undefined &&
+      idempotencyFingerprint !== undefined &&
+      deps.idempotencyStore !== undefined
+    ) {
+      const reserved = deps.idempotencyStore.reserve(
+        idempotencyCacheLookupKey,
+        idempotencyFingerprint,
+      );
+      if (!reserved) {
+        const raceErr = err({
+          code: OperationErrorCode.StateConflict,
+          message:
+            "Idempotency key is currently being processed by another request. " +
+            "Retry after a short delay.",
+          details: { idempotencyKey: input.idempotencyKey, retryable: true },
+        });
+        idempotencySlot?.resolve(raceErr);
+        idempotencySlot = undefined;
+        return raceErr;
+      }
+      ownsDurableReservation = true;
     }
 
     const contributionInput: ContributionInput = {
@@ -1423,35 +1466,57 @@ export async function contributeOperation(
 
     return ok(result);
   } catch (error) {
-    // Release the idempotency slot ONLY if it's still reserved here. The
-    // slot is cleared (set to undefined) immediately after the durable
-    // commit boundary above — so this release path can only fire for
-    // errors that happened BEFORE the contribution was durably written
-    // (validation, policy enforcement inside the mutex, store write
-    // failure). Post-commit failures flow through the committed result
-    // path and never reach this catch.
-    idempotencySlot?.release();
-    // Roll back the durable reservation so the key doesn't stay stuck
-    // in 'pending' for the full TTL after a pre-commit failure.
-    if (idempotencyCacheLookupKey !== undefined && deps.idempotencyStore !== undefined) {
+    // Resolve the idempotency slot with the failure result — NOT just
+    // release(). A release only deletes the cache entry; any concurrent
+    // same-key caller that already grabbed the pending promise would
+    // hang forever because the resolver was never called. resolve()
+    // both fires the waiter's promise with this error AND clears the
+    // slot (see reserveIdempotencySlot.resolve — error results delete
+    // the entry so retries can proceed).
+    //
+    // This catch only runs for pre-commit throws (validation, policy,
+    // store write). Post-commit failures flow through the committed
+    // result path and never reach here.
+    const errResult = fromGroveError(error);
+    idempotencySlot?.resolve(errResult);
+    // Roll back the durable reservation — but only if THIS call placed
+    // the pending row. Otherwise a pre-commit throw here would delete a
+    // row another process (or a concurrent same-process retry) just
+    // reserved, defeating cross-process single-flight.
+    if (
+      ownsDurableReservation &&
+      idempotencyCacheLookupKey !== undefined &&
+      deps.idempotencyStore !== undefined
+    ) {
       try {
         deps.idempotencyStore.rollback(idempotencyCacheLookupKey);
       } catch {
         // Best-effort — don't mask the original error.
       }
     }
-    return fromGroveError(error);
+    return errResult;
   }
 }
 
 /**
  * Submit a review of an existing contribution.
  * Sugar over contributeOperation: sets kind=review, adds reviews relation.
+ *
+ * Verifies the target resolves AND is a 'work' contribution before creating
+ * the review. Doing the kind check here (instead of relying on
+ * validateRelations alone) gives a clear 'wrong kind' error and prevents
+ * constructing a review that points at a plan / discussion / response. See
+ * #236 — mirrors the pattern from updatePlanOperation (#228 Issue 6A).
  */
 export async function reviewOperation(
   input: ReviewInput,
   deps: OperationDeps,
 ): Promise<OperationResult<ReviewResult>> {
+  // Kind check happens inside contributeOperation via validateRelations —
+  // see RELATION_EXPECTED_KINDS[Reviews]. Keeping it in-band preserves the
+  // no-throw contract AND keeps the wrapper out of the idempotency path so
+  // retries with the same idempotencyKey still hit the cache when the first
+  // write succeeded (closes #236 + round-2 review).
   const relations: Relation[] = [
     {
       targetCid: input.targetCid,
@@ -1487,11 +1552,17 @@ export async function reviewOperation(
 /**
  * Submit a reproduction attempt of an existing contribution.
  * Sugar over contributeOperation: sets kind=reproduction, adds reproduces relation.
+ *
+ * Verifies the target resolves AND is a 'work' contribution before creating
+ * the reproduction. See #236 — mirrors reviewOperation / updatePlanOperation.
  */
 export async function reproduceOperation(
   input: ReproduceInput,
   deps: OperationDeps,
 ): Promise<OperationResult<ReproduceResult>> {
+  // Kind check happens inside contributeOperation via validateRelations —
+  // see RELATION_EXPECTED_KINDS[Reproduces]. See reviewOperation for the
+  // idempotency-retry rationale.
   const reproResult = input.result ?? "confirmed";
 
   const relations: Relation[] = [

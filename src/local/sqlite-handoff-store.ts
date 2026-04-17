@@ -34,6 +34,18 @@ export const HANDOFF_DDL = `
   CREATE INDEX IF NOT EXISTS idx_handoffs_session_id ON handoffs(session_id);
 `;
 
+/**
+ * Sentinel session_id stamped onto legacy pre-#164 rows at upgrade time.
+ * Kept intentionally non-matchable: no real session uses this id, so
+ * scoped queries will not surface quarantined rows. Unscoped stores (CLI,
+ * admin tools) still see them because they skip the scope clause entirely.
+ *
+ * Without this quarantine, any scoped session would see every NULL-session
+ * row via the legacy `OR session_id IS NULL` fallback — meaning session B
+ * could observe and mutate handoffs that belonged to a different process.
+ */
+const LEGACY_QUARANTINE_SESSION_ID = "__legacy_unowned__";
+
 interface HandoffRow {
   readonly handoff_id: string;
   readonly source_cid: string;
@@ -95,6 +107,18 @@ export class SqliteHandoffStore implements HandoffStore {
   private readonly sessionId: string | undefined;
 
   constructor(db: Database, sessionId?: string) {
+    // Reject callers attempting to bind a scope to the legacy quarantine
+    // sentinel. Without this guard, a caller could forge
+    // `new SqliteHandoffStore(db, LEGACY_QUARANTINE_SESSION_ID)` and
+    // surface or mutate every quarantined pre-#164 row — exactly the
+    // cross-session leak the quarantine is meant to prevent.
+    if (sessionId === LEGACY_QUARANTINE_SESSION_ID) {
+      throw new Error(
+        `Invalid sessionId: "${LEGACY_QUARANTINE_SESSION_ID}" is a reserved ` +
+          `sentinel used to quarantine legacy pre-#164 handoffs. Choose a ` +
+          `different session id.`,
+      );
+    }
     this.db = db;
     this.sessionId = sessionId;
     // Column-safe migration for pre-#164 databases. Runs outside the
@@ -108,6 +132,16 @@ export class SqliteHandoffStore implements HandoffStore {
     if (!columns.includes("acked_at")) this.safeAddColumn("acked_at");
     if (!columns.includes("session_id")) this.safeAddColumn("session_id");
     if (!columns.includes("ipc_message_id")) this.safeAddColumn("ipc_message_id");
+
+    // Quarantine legacy NULL-session rows. Non-destructive (status is not
+    // touched — see PR #258 Codex round 3) but stamps an unreachable
+    // session_id so scoped queries never surface them. Idempotent under
+    // concurrent init because the WHERE clause excludes rows already
+    // stamped. Runs on every construction regardless of scoped-ness so
+    // the data becomes safe even before the first scoped store appears.
+    this.db
+      .prepare(`UPDATE handoffs SET session_id = ? WHERE session_id IS NULL`)
+      .run(LEGACY_QUARANTINE_SESSION_ID);
 
     // Conditionally expose session-scoped capability methods only when
     // operating in scoped mode. Unscoped stores leave them undefined so
@@ -133,22 +167,24 @@ export class SqliteHandoffStore implements HandoffStore {
    * Return a WHERE fragment + params that restrict queries to the current
    * session. Returns empty when the store is unscoped (legacy mode).
    *
-   * Scoped queries match BOTH `session_id = ?` AND `session_id IS NULL`:
-   * the null branch is a migration shim for rows created before the
-   * session_id column existed. Without it, in-flight handoffs from a
-   * pre-#164 process would become invisible after upgrade and strand
-   * the coder→reviewer loop. Rows written by a scoped store always
-   * have a non-null session_id, so this only affects legacy data.
+   * Strict equality — NO `OR session_id IS NULL` fallback. Legacy pre-#164
+   * rows are stamped with LEGACY_QUARANTINE_SESSION_ID at construction
+   * time (see constructor), so they cannot match any real scoped query
+   * and cannot leak into session A from a session B process sharing the
+   * same DB file.
    */
   private scopeClause(): { sql: string; params: readonly string[] } {
     if (this.sessionId === undefined) return { sql: "", params: [] };
-    return { sql: "(session_id = ? OR session_id IS NULL)", params: [this.sessionId] };
+    return { sql: "session_id = ?", params: [this.sessionId] };
   }
 
   /**
-   * Claim-on-write SET fragment — backfills `session_id` on the first
-   * successful mutation of a legacy NULL-session row so peer sessions
-   * lose visibility via scopeClause. No-op for unscoped stores.
+   * Claim-on-write SET fragment — defense-in-depth. After the legacy
+   * NULL-session quarantine (see constructor) every row in the scoped
+   * query path already has a non-null session_id that matches the
+   * scopeClause, so COALESCE is normally a no-op. Kept as a safety net
+   * for any raw INSERT path that bypasses the quarantine. No-op for
+   * unscoped stores.
    *
    * Callers splice `fragment` into SET immediately after their first
    * SET expression and `params` before the WHERE params.
@@ -468,19 +504,16 @@ export class SqliteHandoffStore implements HandoffStore {
 
   /**
    * O(1) session ownership check. Only defined in scoped mode. Returns
-   * true iff the row exists AND (belongs to the caller's session OR is
-   * a legacy NULL-session row from a pre-#164 upgrade).
-   *
-   * Mirrors the migration shim in scopeClause(): without this, a legacy
-   * row would show up in list() but then be rejected by the receipt
-   * tools' session ownership check, stranding the handoff.
+   * true iff the row exists AND strictly belongs to the caller's
+   * session. Quarantined legacy rows deliberately return false — see
+   * scopeClause() for rationale.
    */
   async isInCurrentSession(handoffId: string): Promise<boolean> {
     if (this.sessionId === undefined) return false;
     const row = this.db
       .prepare(
         `SELECT 1 FROM handoffs
-         WHERE handoff_id = ? AND (session_id = ? OR session_id IS NULL)`,
+         WHERE handoff_id = ? AND session_id = ?`,
       )
       .get(handoffId, this.sessionId);
     return row !== null;

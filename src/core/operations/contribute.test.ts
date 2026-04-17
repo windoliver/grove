@@ -725,6 +725,283 @@ describe("reviewOperation", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("NOT_FOUND");
   });
+
+  test("fails when target is not a work contribution", async () => {
+    // Create a discussion, then try to review it.
+    const discussion = await discussOperation(
+      { summary: "a topic", agent: { agentId: "a1" } },
+      deps,
+    );
+    expect(discussion.ok).toBe(true);
+    if (!discussion.ok) return;
+
+    const result = await reviewOperation(
+      {
+        targetCid: discussion.value.cid,
+        summary: "Trying to review a discussion",
+        agent: { agentId: "reviewer" },
+      },
+      deps,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION_ERROR");
+      expect(result.error.message).toContain("discussion");
+    }
+  });
+
+  test("returns structured error when contributionStore.get throws", async () => {
+    // Wrap the store so get() always throws — simulates a closed DB or
+    // transient Nexus fault. The preflight kind lookup must convert that
+    // into an OperationResult error, not let it escape as an exception.
+    const throwingDeps: FullOperationDeps = {
+      ...deps,
+      contributionStore: {
+        ...deps.contributionStore,
+        get: async () => {
+          throw new Error("simulated store failure");
+        },
+        getMany: async () => {
+          throw new Error("simulated store failure");
+        },
+      },
+    };
+
+    const result = await reviewOperation(
+      {
+        targetCid: "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+        summary: "should not throw",
+        agent: { agentId: "reviewer" },
+      },
+      throwingDeps,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("INTERNAL_ERROR");
+  });
+
+  test("two staggered same-key concurrent calls produce exactly one review", async () => {
+    // Round 3 concern: without sync check-then-reserve, two same-key
+    // callers could both miss the cache, both spend time in
+    // validateRelations, and both proceed to write — duplicating the
+    // review. Simulate that by delaying getMany; the second caller MUST
+    // observe the first caller's pending slot synchronously.
+    const target = await contributeOperation(
+      { kind: "work", summary: "target", agent: { agentId: "a1" } },
+      deps,
+    );
+    expect(target.ok).toBe(true);
+    if (!target.ok) return;
+
+    const slowDeps: FullOperationDeps = {
+      ...deps,
+      contributionStore: {
+        ...deps.contributionStore,
+        getMany: async (cids) => {
+          await new Promise((r) => setTimeout(r, 50));
+          return deps.contributionStore.getMany(cids);
+        },
+      },
+    };
+
+    const key = `review-concurrent-${crypto.randomUUID()}`;
+    const makeCall = () =>
+      reviewOperation(
+        {
+          targetCid: target.value.cid,
+          summary: "concurrent",
+          idempotencyKey: key,
+          agent: { agentId: "reviewer" },
+        },
+        slowDeps,
+      );
+
+    const first = makeCall();
+    // Stagger by 10ms so the second call enters after the first is past
+    // its sync check-then-reserve but still awaiting getMany.
+    await new Promise((r) => setTimeout(r, 10));
+    const second = makeCall();
+
+    const [r1, r2] = await Promise.all([first, second]);
+    expect(r1.ok).toBe(true);
+    expect(r2.ok).toBe(true);
+    if (r1.ok && r2.ok) expect(r1.value.cid).toBe(r2.value.cid);
+  });
+
+  test("idempotent retry returns cached result even when store read fails", async () => {
+    // First call: success. Cache stores the committed result.
+    const target = await contributeOperation(
+      { kind: "work", summary: "target", agent: { agentId: "a1" } },
+      deps,
+    );
+    expect(target.ok).toBe(true);
+    if (!target.ok) return;
+
+    const key = `review-retry-${crypto.randomUUID()}`;
+    const first = await reviewOperation(
+      {
+        targetCid: target.value.cid,
+        summary: "looks good",
+        idempotencyKey: key,
+        agent: { agentId: "reviewer" },
+      },
+      deps,
+    );
+    expect(first.ok).toBe(true);
+
+    // Second call: same key, but store reads now fail transiently. The
+    // idempotency cache short-circuit must return the first result
+    // without hitting validateRelations. Without the read-before-validate
+    // ordering fix, this would return INTERNAL_ERROR.
+    const flakyDeps: FullOperationDeps = {
+      ...deps,
+      contributionStore: {
+        ...deps.contributionStore,
+        getMany: async () => {
+          throw new Error("transient read failure");
+        },
+      },
+    };
+    const second = await reviewOperation(
+      {
+        targetCid: target.value.cid,
+        summary: "looks good",
+        idempotencyKey: key,
+        agent: { agentId: "reviewer" },
+      },
+      flakyDeps,
+    );
+    expect(second.ok).toBe(true);
+    if (first.ok && second.ok) expect(second.value.cid).toBe(first.value.cid);
+  });
+
+  test("staggered same-key caller does not hang when first caller throws pre-commit", async () => {
+    // Round 5 regression: in-memory cache reserves the pending slot
+    // BEFORE the durable lookup / validate / reserve. If those throw,
+    // the catch path used to call release() — which deletes the cache
+    // entry but never resolves the promise already handed to a second
+    // waiter. The waiter would hang forever. Fix: resolve(errResult)
+    // so concurrent callers observe the error and can retry.
+    const target = await contributeOperation(
+      { kind: "work", summary: "target", agent: { agentId: "a1" } },
+      deps,
+    );
+    expect(target.ok).toBe(true);
+    if (!target.ok) return;
+
+    // First-caller deps: validateRelations throws mid-flight. The
+    // second caller's in-memory cache lookup must still resolve.
+    let getManyCalls = 0;
+    const slowThrowingDeps: FullOperationDeps = {
+      ...deps,
+      contributionStore: {
+        ...deps.contributionStore,
+        getMany: async (cids) => {
+          getManyCalls++;
+          if (getManyCalls === 1) {
+            // Stall so the second caller has time to attach to the
+            // pending slot before we throw.
+            await new Promise((r) => setTimeout(r, 40));
+            throw new Error("simulated transient store fault");
+          }
+          return deps.contributionStore.getMany(cids);
+        },
+      },
+    };
+
+    const key = `hang-repro-${crypto.randomUUID()}`;
+    const makeCall = (d: FullOperationDeps) =>
+      reviewOperation(
+        {
+          targetCid: target.value.cid,
+          summary: "r",
+          idempotencyKey: key,
+          agent: { agentId: "reviewer" },
+        },
+        d,
+      );
+
+    const first = makeCall(slowThrowingDeps);
+    // Give first caller a chance to reserve the in-memory slot.
+    await new Promise((r) => setTimeout(r, 10));
+    const second = makeCall(slowThrowingDeps);
+
+    // Must resolve within 500ms. Without the resolve-on-throw fix, the
+    // second caller hangs forever because its pending promise is
+    // orphaned when the first caller's catch path only called release().
+    const timeout = new Promise<"timeout">((r) => setTimeout(() => r("timeout"), 500));
+    const settled = await Promise.race([Promise.all([first, second]), timeout]);
+    expect(settled).not.toBe("timeout");
+    if (settled === "timeout") return;
+
+    const [r1, r2] = settled;
+    expect(r1.ok).toBe(false);
+    expect(r2.ok).toBe(false);
+  });
+
+  test("pre-reserve throw does not roll back another caller's pending reservation", async () => {
+    // Round 4 regression: the catch block used to unconditionally call
+    // idempotencyStore.rollback(cacheKey), which would delete whatever
+    // pending row existed for that key — even one placed by another
+    // process. That defeated cross-process single-flight.
+    //
+    // Scenario: our call throws during validateRelations (before durable
+    // reserve). ownsDurableReservation must still be false, so the
+    // catch path must NOT call rollback.
+    let rollbackCalls = 0;
+    const peerReservationAlive = { value: true };
+    const stubIdempotencyStore: FullOperationDeps["idempotencyStore"] = {
+      lookup: () => undefined, // miss — our call will proceed into validate
+      reserve: () => {
+        throw new Error("should not be reached — we throw before reserve");
+      },
+      rollback: () => {
+        rollbackCalls++;
+        peerReservationAlive.value = false; // simulates deleting peer's row
+      },
+      store: () => {
+        /* unused in this scenario */
+      },
+      clear: () => {
+        /* unused in this scenario */
+      },
+    };
+
+    const target = await contributeOperation(
+      { kind: "work", summary: "target", agent: { agentId: "a1" } },
+      deps,
+    );
+    expect(target.ok).toBe(true);
+    if (!target.ok) return;
+
+    const throwingDeps: FullOperationDeps = {
+      ...deps,
+      idempotencyStore: stubIdempotencyStore,
+      contributionStore: {
+        ...deps.contributionStore,
+        // validateRelations calls getMany — make it throw mid-validation.
+        getMany: async () => {
+          throw new Error("simulated mid-validate fault");
+        },
+      },
+    };
+
+    const result = await reviewOperation(
+      {
+        targetCid: target.value.cid,
+        summary: "r",
+        idempotencyKey: `pre-reserve-throw-${crypto.randomUUID()}`,
+        agent: { agentId: "reviewer" },
+      },
+      throwingDeps,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("INTERNAL_ERROR");
+    expect(rollbackCalls).toBe(0);
+    expect(peerReservationAlive.value).toBe(true);
+  });
 });
 
 describe("reproduceOperation", () => {
@@ -797,6 +1074,69 @@ describe("reproduceOperation", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("NOT_FOUND");
+  });
+
+  test("fails when target is not a work contribution", async () => {
+    // Create a review, then try to reproduce it.
+    const workTarget = await contributeOperation(
+      { kind: "work", summary: "target", agent: { agentId: "a1" } },
+      deps,
+    );
+    expect(workTarget.ok).toBe(true);
+    if (!workTarget.ok) return;
+
+    const review = await reviewOperation(
+      {
+        targetCid: workTarget.value.cid,
+        summary: "looks good",
+        agent: { agentId: "reviewer" },
+      },
+      deps,
+    );
+    expect(review.ok).toBe(true);
+    if (!review.ok) return;
+
+    const result = await reproduceOperation(
+      {
+        targetCid: review.value.cid,
+        summary: "Trying to reproduce a review",
+        agent: { agentId: "reproducer" },
+      },
+      deps,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION_ERROR");
+      expect(result.error.message).toContain("review");
+    }
+  });
+
+  test("returns structured error when contributionStore.get throws", async () => {
+    const throwingDeps: FullOperationDeps = {
+      ...deps,
+      contributionStore: {
+        ...deps.contributionStore,
+        get: async () => {
+          throw new Error("simulated store failure");
+        },
+        getMany: async () => {
+          throw new Error("simulated store failure");
+        },
+      },
+    };
+
+    const result = await reproduceOperation(
+      {
+        targetCid: "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+        summary: "should not throw",
+        agent: { agentId: "reproducer" },
+      },
+      throwingDeps,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("INTERNAL_ERROR");
   });
 
   test("validates artifact hashes", async () => {
