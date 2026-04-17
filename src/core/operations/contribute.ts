@@ -1466,14 +1466,19 @@ export async function contributeOperation(
 
     return ok(result);
   } catch (error) {
-    // Release the idempotency slot ONLY if it's still reserved here. The
-    // slot is cleared (set to undefined) immediately after the durable
-    // commit boundary above — so this release path can only fire for
-    // errors that happened BEFORE the contribution was durably written
-    // (validation, policy enforcement inside the mutex, store write
-    // failure). Post-commit failures flow through the committed result
-    // path and never reach this catch.
-    idempotencySlot?.release();
+    // Resolve the idempotency slot with the failure result — NOT just
+    // release(). A release only deletes the cache entry; any concurrent
+    // same-key caller that already grabbed the pending promise would
+    // hang forever because the resolver was never called. resolve()
+    // both fires the waiter's promise with this error AND clears the
+    // slot (see reserveIdempotencySlot.resolve — error results delete
+    // the entry so retries can proceed).
+    //
+    // This catch only runs for pre-commit throws (validation, policy,
+    // store write). Post-commit failures flow through the committed
+    // result path and never reach here.
+    const errResult = fromGroveError(error);
+    idempotencySlot?.resolve(errResult);
     // Roll back the durable reservation — but only if THIS call placed
     // the pending row. Otherwise a pre-commit throw here would delete a
     // row another process (or a concurrent same-process retry) just
@@ -1489,7 +1494,7 @@ export async function contributeOperation(
         // Best-effort — don't mask the original error.
       }
     }
-    return fromGroveError(error);
+    return errResult;
   }
 }
 

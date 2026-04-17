@@ -876,6 +876,70 @@ describe("reviewOperation", () => {
     if (first.ok && second.ok) expect(second.value.cid).toBe(first.value.cid);
   });
 
+  test("staggered same-key caller does not hang when first caller throws pre-commit", async () => {
+    // Round 5 regression: in-memory cache reserves the pending slot
+    // BEFORE the durable lookup / validate / reserve. If those throw,
+    // the catch path used to call release() — which deletes the cache
+    // entry but never resolves the promise already handed to a second
+    // waiter. The waiter would hang forever. Fix: resolve(errResult)
+    // so concurrent callers observe the error and can retry.
+    const target = await contributeOperation(
+      { kind: "work", summary: "target", agent: { agentId: "a1" } },
+      deps,
+    );
+    expect(target.ok).toBe(true);
+    if (!target.ok) return;
+
+    // First-caller deps: validateRelations throws mid-flight. The
+    // second caller's in-memory cache lookup must still resolve.
+    let getManyCalls = 0;
+    const slowThrowingDeps: FullOperationDeps = {
+      ...deps,
+      contributionStore: {
+        ...deps.contributionStore,
+        getMany: async (cids) => {
+          getManyCalls++;
+          if (getManyCalls === 1) {
+            // Stall so the second caller has time to attach to the
+            // pending slot before we throw.
+            await new Promise((r) => setTimeout(r, 40));
+            throw new Error("simulated transient store fault");
+          }
+          return deps.contributionStore.getMany(cids);
+        },
+      },
+    };
+
+    const key = `hang-repro-${crypto.randomUUID()}`;
+    const makeCall = (d: FullOperationDeps) =>
+      reviewOperation(
+        {
+          targetCid: target.value.cid,
+          summary: "r",
+          idempotencyKey: key,
+          agent: { agentId: "reviewer" },
+        },
+        d,
+      );
+
+    const first = makeCall(slowThrowingDeps);
+    // Give first caller a chance to reserve the in-memory slot.
+    await new Promise((r) => setTimeout(r, 10));
+    const second = makeCall(slowThrowingDeps);
+
+    // Must resolve within 500ms. Without the resolve-on-throw fix, the
+    // second caller hangs forever because its pending promise is
+    // orphaned when the first caller's catch path only called release().
+    const timeout = new Promise<"timeout">((r) => setTimeout(() => r("timeout"), 500));
+    const settled = await Promise.race([Promise.all([first, second]), timeout]);
+    expect(settled).not.toBe("timeout");
+    if (settled === "timeout") return;
+
+    const [r1, r2] = settled;
+    expect(r1.ok).toBe(false);
+    expect(r2.ok).toBe(false);
+  });
+
   test("pre-reserve throw does not roll back another caller's pending reservation", async () => {
     // Round 4 regression: the catch block used to unconditionally call
     // idempotencyStore.rollback(cacheKey), which would delete whatever

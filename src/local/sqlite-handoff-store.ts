@@ -107,6 +107,18 @@ export class SqliteHandoffStore implements HandoffStore {
   private readonly sessionId: string | undefined;
 
   constructor(db: Database, sessionId?: string) {
+    // Reject callers attempting to bind a scope to the legacy quarantine
+    // sentinel. Without this guard, a caller could forge
+    // `new SqliteHandoffStore(db, LEGACY_QUARANTINE_SESSION_ID)` and
+    // surface or mutate every quarantined pre-#164 row — exactly the
+    // cross-session leak the quarantine is meant to prevent.
+    if (sessionId === LEGACY_QUARANTINE_SESSION_ID) {
+      throw new Error(
+        `Invalid sessionId: "${LEGACY_QUARANTINE_SESSION_ID}" is a reserved ` +
+          `sentinel used to quarantine legacy pre-#164 handoffs. Choose a ` +
+          `different session id.`,
+      );
+    }
     this.db = db;
     this.sessionId = sessionId;
     // Column-safe migration for pre-#164 databases. Runs outside the

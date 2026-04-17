@@ -304,6 +304,33 @@ describe("SqliteHandoffStore session scoping", () => {
     db.close();
   });
 
+  test("constructing a store with the quarantine sentinel sessionId is rejected", async () => {
+    // Round 5 regression: without this guard, a caller could forge
+    // `new SqliteHandoffStore(db, "__legacy_unowned__")` and read /
+    // mutate every quarantined legacy row — defeating the quarantine.
+    const db = initSqliteDb(dbPath);
+
+    // Seed a legacy NULL-session row, then trigger quarantine via a
+    // normal scoped store.
+    const legacy = new SqliteHandoffStore(db);
+    const hLegacy = await legacy.create({
+      sourceCid: "blake3:legacy",
+      fromRole: "coder",
+      toRole: "reviewer",
+    });
+    new SqliteHandoffStore(db, "real-session"); // runs the NULL→sentinel UPDATE
+
+    // Attempted forgery must throw at construction.
+    expect(() => new SqliteHandoffStore(db, "__legacy_unowned__")).toThrow(/reserved sentinel/);
+
+    // The quarantined row is still present but only accessible via an
+    // unscoped store.
+    const legacyList = await legacy.list();
+    expect(legacyList.find((h) => h.handoffId === hLegacy.handoffId)).toBeDefined();
+
+    db.close();
+  });
+
   test("quarantine is idempotent under concurrent scoped store construction", async () => {
     const db = initSqliteDb(dbPath);
     const legacy = new SqliteHandoffStore(db);
