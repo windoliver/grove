@@ -245,6 +245,66 @@ test("AcpParser: empty stream → acpx_exit error Result", async () => {
   expect(messages.length).toBe(0);
 });
 
+test("parseAcpLine: unknown stopReason is preserved as terminal result (forward-compat)", () => {
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 2,
+    result: { stopReason: "new_future_reason" },
+  });
+  const parsed = parseAcpLine(line, "t");
+  expect(parsed.kind).toBe("result");
+  if (parsed.kind !== "result") throw new Error("unreachable");
+  // Must be treated as terminal, not dropped to raw or synthesized as error.
+  expect(parsed.result.stopReason).toBe("new_future_reason");
+  expect(parsed.result.error).toBeUndefined();
+});
+
+test("parseAcpLine: result.usage (canonical) is parsed onto the Result", () => {
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 2,
+    result: {
+      stopReason: "end_turn",
+      usage: {
+        inputTokens: 3,
+        outputTokens: 4,
+        cachedReadTokens: 0,
+        cachedWriteTokens: 21907,
+        totalTokens: 21914,
+      },
+    },
+  });
+  const parsed = parseAcpLine(line, "t");
+  expect(parsed.kind).toBe("result");
+  if (parsed.kind !== "result") throw new Error("unreachable");
+  expect(parsed.result.usage?.inputTokens).toBe(3);
+  expect(parsed.result.usage?.outputTokens).toBe(4);
+  expect(parsed.result.usage?.cachedReadTokens).toBe(0);
+  expect(parsed.result.usage?.cachedWriteTokens).toBe(21907);
+  expect(parsed.result.usage?.totalTokens).toBe(21914);
+});
+
+test("parseAcpLine: tool_call_update without title/rawInput emits partial event (no placeholder name)", () => {
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "s",
+      update: { sessionUpdate: "tool_call_update", toolCallId: "tc-1", status: "completed" },
+    },
+  });
+  const parsed = parseAcpLine(line, "t");
+  expect(parsed.kind).toBe("message");
+  if (parsed.kind !== "message") throw new Error("unreachable");
+  expect(parsed.message.kind).toBe("tool_call");
+  if (parsed.message.kind !== "tool_call") throw new Error("unreachable");
+  // No placeholder name — must be omitted so the compactor can preserve the
+  // real name from the initial tool_call frame.
+  expect(parsed.message.toolCall.name).toBeUndefined();
+  expect(parsed.message.toolCall.input).toBeUndefined();
+  expect(parsed.message.toolCall.status).toBe("completed");
+});
+
 test("AcpParser: all message turnIds match constructor turnId", async () => {
   const fixture = await loadFixture("codex-simple.ndjson");
   const parser = new AcpParser({

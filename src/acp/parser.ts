@@ -7,7 +7,14 @@
  */
 
 import type { Readable } from "node:stream";
-import type { Message, Result, TokenUsage, ToolCall } from "./types.js";
+import type {
+  Message,
+  Result,
+  StopReason,
+  TokenUsage,
+  ToolCallEvent,
+  ToolCallStatus,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Public output types
@@ -19,39 +26,63 @@ export type ParsedLine = { kind: "message"; message: Message } | { kind: "result
 // Helper: normalize tool_call status
 // ---------------------------------------------------------------------------
 
-const VALID_STATUSES = new Set<ToolCall["status"]>([
-  "pending",
-  "in_progress",
-  "completed",
-  "failed",
-]);
+const VALID_STATUSES = new Set<ToolCallStatus>(["pending", "in_progress", "completed", "failed"]);
 
-function normalizeStatus(raw: unknown): ToolCall["status"] {
-  if (typeof raw === "string" && VALID_STATUSES.has(raw as ToolCall["status"])) {
-    return raw as ToolCall["status"];
+/** Returns the status if it's a known ToolCallStatus, else undefined (signals "not in this frame"). */
+function normalizeStatus(raw: unknown): ToolCallStatus | undefined {
+  if (typeof raw === "string" && VALID_STATUSES.has(raw as ToolCallStatus)) {
+    return raw as ToolCallStatus;
   }
-  return "pending";
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
-// Helper: map usage_update → TokenUsage
+// Helpers: map ACP usage shapes → TokenUsage
 // ---------------------------------------------------------------------------
 
-function parseTokenUsage(update: Record<string, unknown>): TokenUsage {
-  // Codex uses: used, size
-  // Claude adds: cost
-  // Neither shape maps directly to TokenUsage fields — best-effort mapping:
-  //   used  → outputTokens (tokens consumed in this turn)
-  //   size  → inputTokens  (context window used / capacity)
-  //   Claude's result.usage.inputTokens / outputTokens / cachedReadTokens / cachedWriteTokens
-  //   are on the final result frame, not the usage_update frame.
+function num(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
 
-  const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
-
-  return {
+/**
+ * Advisory progress snapshot from a `usage_update` frame. These fields are
+ * context-meter style (used/size of the rolling window, cost so far) and are
+ * NOT canonical per-turn token counts. Compaction prefers `result.usage` when
+ * both are present.
+ */
+function parseAdvisoryUsage(update: Record<string, unknown>): TokenUsage {
+  const out: TokenUsage = {
     inputTokens: num(update.size),
     outputTokens: num(update.used),
   };
+  if (update.cost && typeof update.cost === "object") {
+    const c = update.cost as Record<string, unknown>;
+    if (typeof c.amount === "number" && typeof c.currency === "string") {
+      out.cost = { amount: c.amount, currency: c.currency };
+    }
+  }
+  return out;
+}
+
+/**
+ * Canonical per-turn token accounting from a JSON-RPC `result.usage` object.
+ * Maps the fields observed on Claude's ACP bridge; extra fields are ignored.
+ */
+function parseResultUsage(usage: Record<string, unknown>): TokenUsage {
+  const out: TokenUsage = {
+    inputTokens: num(usage.inputTokens),
+    outputTokens: num(usage.outputTokens),
+  };
+  if (usage.cachedReadTokens !== undefined) {
+    out.cachedReadTokens = num(usage.cachedReadTokens);
+  }
+  if (usage.cachedWriteTokens !== undefined) {
+    out.cachedWriteTokens = num(usage.cachedWriteTokens);
+  }
+  if (usage.totalTokens !== undefined) {
+    out.totalTokens = num(usage.totalTokens);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,20 +120,15 @@ export function parseAcpLine(line: string, turnId: string): ParsedLine {
     const res = f.result;
     if (typeof res === "object" && res !== null) {
       const r = res as Record<string, unknown>;
-      const stopReason = r.stopReason;
-      if (
-        stopReason === "end_turn" ||
-        stopReason === "max_tokens" ||
-        stopReason === "cancelled" ||
-        stopReason === "error"
-      ) {
-        return {
-          kind: "result",
-          result: { turnId, stopReason },
-        };
+      if (typeof r.stopReason === "string" && r.stopReason.length > 0) {
+        const result: Result = { turnId, stopReason: r.stopReason as StopReason };
+        if (r.usage && typeof r.usage === "object") {
+          result.usage = parseResultUsage(r.usage as Record<string, unknown>);
+        }
+        return { kind: "result", result };
       }
     }
-    // result frame with unexpected shape — treat as raw message
+    // result frame without a usable stopReason — treat as raw message
     return {
       kind: "message",
       message: { kind: "raw", turnId, acpMethod: "_result", params: f.result },
@@ -179,15 +205,20 @@ export function parseAcpLine(line: string, turnId: string): ParsedLine {
           case "tool_call":
           case "tool_call_update": {
             const id = typeof u.toolCallId === "string" ? u.toolCallId : "";
-            const name = typeof u.title === "string" ? u.title : sessionUpdate;
+            const toolCall: ToolCallEvent = { id };
+            if (typeof u.title === "string" && u.title.length > 0) {
+              toolCall.name = u.title;
+            }
             const status = normalizeStatus(u.status);
-            const input: unknown = u.rawInput ?? {};
-            const toolCall: ToolCall = { id, name, status, input };
-
+            if (status !== undefined) {
+              toolCall.status = status;
+            }
+            if (u.rawInput !== undefined) {
+              toolCall.input = u.rawInput;
+            }
             if ("rawOutput" in u && u.rawOutput !== undefined) {
               toolCall.output = u.rawOutput;
             }
-
             return {
               kind: "message",
               message: { kind: "tool_call", turnId, toolCall },
@@ -200,7 +231,7 @@ export function parseAcpLine(line: string, turnId: string): ParsedLine {
               message: {
                 kind: "token_usage",
                 turnId,
-                usage: parseTokenUsage(u),
+                usage: parseAdvisoryUsage(u),
               },
             };
           }
