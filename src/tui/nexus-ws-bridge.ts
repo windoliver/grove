@@ -354,15 +354,26 @@ export class NexusWsBridge {
         `delivering to session=${session.id} role=${_targetRole} notification=${notification.slice(0, 80)}`,
       );
 
+      // NOTE: the handoff has already been marked `delivered` upstream when
+      // the Nexus inbox SSE fired (see handleEvent → updateHandoffDeliveryStatus).
+      // If the local runtime.send below fails to hand the prompt to the
+      // agent, the handoff state will still read "delivered" — recovery
+      // would require a richer state machine ("inbox_delivered" vs
+      // "agent_received"), which is out of scope for this PR. In the
+      // meantime, escalate the log target from the debug channel to stderr
+      // so operators at least see the divergence instead of discovering it
+      // through a stalled agent.
       void this.opts.runtime
         .send(session, notification)
         .then((turn) => {
           watchTurnError(turn, `NexusWsBridge.readAndPush(role=${_targetRole})`, (m) =>
-            debugLog("wsBridge.readAndPush", m),
+            process.stderr.write(`${m}\n`),
           );
         })
-        .catch(() => {
-          /* non-fatal */
+        .catch((err) => {
+          process.stderr.write(
+            `[NexusWsBridge] runtime.send rejected for role=${_targetRole}: ${err instanceof Error ? err.message : String(err)}\n`,
+          );
         });
     } catch {
       // Non-fatal

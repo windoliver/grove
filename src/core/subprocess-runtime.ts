@@ -48,6 +48,7 @@ interface SessionEntry {
   proc: import("bun").Subprocess<"pipe", "pipe", "pipe">;
   session: AgentSession;
   idleCallbacks: (() => void)[];
+  exited: boolean;
 }
 
 export class SubprocessRuntime implements AgentRuntime {
@@ -85,14 +86,14 @@ export class SubprocessRuntime implements AgentRuntime {
       platform: config.platform,
       model: config.model,
     };
-    this.sessions.set(id, { proc, session, idleCallbacks: [] });
+    const entry: SessionEntry = { proc, session, idleCallbacks: [], exited: false };
+    this.sessions.set(id, entry);
 
-    // Monitor for exit
+    // Monitor for exit — flip the exited flag so send() can refuse to
+    // synthesize end_turn against a dead child.
     proc.exited.then(() => {
-      const entry = this.sessions.get(id);
-      if (entry) {
-        entry.session = { ...entry.session, status: "stopped" };
-      }
+      entry.exited = true;
+      entry.session = { ...entry.session, status: "stopped" };
     });
 
     // Send initial prompt if provided
@@ -108,6 +109,14 @@ export class SubprocessRuntime implements AgentRuntime {
     if (!entry) {
       return errorTurn(session.id, "no_session", `unknown session id: ${session.id}`);
     }
+    // Reject sends to a child that has already exited. A write to the now-
+    // closed pipe can either throw OR silently succeed (the OS buffers the
+    // bytes into a pipe whose reader is gone); in the silent case we would
+    // otherwise report end_turn to callers who watch turn.result and treat
+    // that as delivery confirmation.
+    if (entry.exited || entry.session.status === "stopped") {
+      return errorTurn(session.id, "child_exited", "subprocess has already exited");
+    }
     if (!entry.proc.stdin) {
       return errorTurn(session.id, "no_stdin", "subprocess has no writable stdin");
     }
@@ -122,6 +131,12 @@ export class SubprocessRuntime implements AgentRuntime {
         "stdin_write_failed",
         err instanceof Error ? err.message : String(err),
       );
+    }
+    // Re-check after the flush: the write may have succeeded locally but
+    // the child could have exited while we awaited. If so, treat the turn
+    // as errored rather than end_turn.
+    if (entry.exited) {
+      return errorTurn(session.id, "child_exited", "subprocess exited during send");
     }
     return emptyTurn(session.id);
   }

@@ -607,9 +607,12 @@ export class SessionOrchestrator {
         );
     const newSession = await this.spawnAgent(roleSpec, undefined, ws);
 
-    // Send a reconciliation message
+    // Send a reconciliation message. Observe the turn's terminal result
+    // so a failed catch-up prompt is logged instead of silently restarting
+    // the agent without its reconciliation context.
     const message = `[grove] You are resuming role '${role}'. Query the DAG via grove_log or grove_frontier to catch up on what happened while you were offline.`;
-    await this.config.runtime.send(newSession.session, message);
+    const turn = await this.config.runtime.send(newSession.session, message);
+    this.watchTurn(role, turn);
 
     // Replace the old agent entry
     const idx = this.agents.findIndex((a) => a.role === role);
