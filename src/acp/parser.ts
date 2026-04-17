@@ -103,7 +103,7 @@ function parseResultUsage(usage: Record<string, unknown>): TokenUsage {
 // parseAcpLine — pure, synchronous, never throws
 // ---------------------------------------------------------------------------
 
-export function parseAcpLine(line: string, turnId: string): ParsedLine {
+export function parseAcpLine(line: string, turnId: string, sessionId?: string): ParsedLine {
   // --- Parse JSON ---
   let frame: unknown;
   try {
@@ -174,6 +174,17 @@ export function parseAcpLine(line: string, turnId: string): ParsedLine {
     const params = f.params;
     if (typeof params === "object" && params !== null) {
       const p = params as Record<string, unknown>;
+      // Session guard: if we know which session this parser is bound to,
+      // reject frames carrying a different sessionId. A multiplexed stdio
+      // stream or stale provider output could otherwise bleed another
+      // session's frames into this turn's snapshot. Demote to raw rather
+      // than dropping silently so auditors see the drift.
+      if (sessionId !== undefined && typeof p.sessionId === "string" && p.sessionId !== sessionId) {
+        return {
+          kind: "message",
+          message: { kind: "raw", turnId, acpMethod: "_sessionMismatch", params: f.params },
+        };
+      }
       const update = p.update;
       if (typeof update === "object" && update !== null) {
         const u = update as Record<string, unknown>;
@@ -241,11 +252,18 @@ export function parseAcpLine(line: string, turnId: string): ParsedLine {
             const toolCall: ToolCallEvent = { id: u.toolCallId };
             // Canonical identity first: `_meta.claudeCode.toolName` is stable
             // across updates on Claude's ACP bridge (e.g. "Read", "Bash").
-            // Fall back to `title` when no canonical field exists.
             const canonicalName = readCanonicalToolName(u);
             if (canonicalName !== undefined) {
               toolCall.name = canonicalName;
-            } else if (typeof u.title === "string" && u.title.length > 0) {
+            } else if (
+              sessionUpdate === "tool_call" &&
+              typeof u.title === "string" &&
+              u.title.length > 0
+            ) {
+              // Only the initial tool_call frame may use title as a name fallback.
+              // tool_call_update frames carry display-mutable titles ("rm -rf /tmp")
+              // that must NOT overwrite the canonical name established initially —
+              // otherwise permission/audit keys silently shift mid-turn.
               toolCall.name = u.title;
             }
             // Always preserve title separately — it mutates for display ("Read
@@ -448,9 +466,10 @@ export class AcpParser {
   private streamFinished = false;
   private resolveResult!: (r: Result) => void;
   private readonly turnId: string;
+  private readonly sessionId: string;
 
   constructor({
-    sessionId: _sessionId,
+    sessionId,
     turnId,
     stream,
   }: {
@@ -459,6 +478,7 @@ export class AcpParser {
     stream: Readable;
   }) {
     this.turnId = turnId;
+    this.sessionId = sessionId;
     this.result = new Promise<Result>((resolve) => {
       this.resolveResult = resolve;
     });
@@ -517,7 +537,7 @@ export class AcpParser {
           const line = raw.trim();
           if (!line) continue;
 
-          const parsed = parseAcpLine(line, turnId);
+          const parsed = parseAcpLine(line, turnId, this.sessionId);
           if (parsed.kind === "result") {
             settled = true;
             this.finish({ ...parsed.result, turnId });
@@ -529,7 +549,7 @@ export class AcpParser {
 
       // Flush any trailing content without a newline
       if (buffer.trim().length > 0) {
-        const parsed = parseAcpLine(buffer.trim(), turnId);
+        const parsed = parseAcpLine(buffer.trim(), turnId, this.sessionId);
         if (parsed.kind === "result") {
           settled = true;
           this.finish({ ...parsed.result, turnId });

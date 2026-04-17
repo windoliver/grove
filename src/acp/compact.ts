@@ -50,6 +50,14 @@ export interface TurnSnapshot {
   /** Permission prompts the provider asked for during this turn. */
   permissionRequests: PermissionRequest[];
   /**
+   * Raw permission_request frames the parser demoted before they could be
+   * structured (missing id or tool). Preserved here so audit/telemetry still
+   * sees that a permission prompt was asked — dropping them would let a
+   * malformed prompt vanish from the snapshot entirely, which is exactly
+   * the category of drift the permission pipeline must NOT hide.
+   */
+  rawPermissionFrames: Array<{ acpMethod: string; params: unknown }>;
+  /**
    * True when the message stream included a bounded-buffer `_overflow`
    * marker. Any consumer or snapshot-reader MUST treat a snapshot with
    * `overflowed:true` as a partial log — assistantText, toolCalls, and
@@ -126,6 +134,7 @@ export function compactTurn(input: {
   const toolCallMap = new Map<string, ToolCallEvent>();
   const toolCallOrder: string[] = [];
   const rawToolFrames: Array<{ acpMethod: string; params: unknown }> = [];
+  const rawPermissionFrames: Array<{ acpMethod: string; params: unknown }> = [];
   const permissionRequests: PermissionRequest[] = [];
   let advisoryUsage: TokenUsage | undefined;
   let overflowed = false;
@@ -155,10 +164,13 @@ export function compactTurn(input: {
         advisoryUsage = m.usage;
         break;
       case "raw":
-        // Parser demotes malformed tool frames (missing id, unknown status, etc) to raw.
-        // Surface them so tool activity isn't silently lost from the snapshot.
+        // Parser demotes malformed frames to raw. Surface the ones that
+        // represent real semantic activity (tool calls, permission prompts)
+        // so audit/telemetry doesn't silently lose them from the snapshot.
         if (m.acpMethod === "tool_call" || m.acpMethod === "tool_call_update") {
           rawToolFrames.push({ acpMethod: m.acpMethod, params: m.params });
+        } else if (m.acpMethod === "permission_request") {
+          rawPermissionFrames.push({ acpMethod: m.acpMethod, params: m.params });
         } else if (m.acpMethod === "_overflow") {
           overflowed = true;
         }
@@ -189,6 +201,7 @@ export function compactTurn(input: {
     incompleteToolCalls,
     rawToolFrames,
     permissionRequests,
+    rawPermissionFrames,
     overflowed,
     // Canonical usage only — do NOT fall back to advisory usage_update values.
     // See the TurnSnapshot.usage JSDoc for the rationale.

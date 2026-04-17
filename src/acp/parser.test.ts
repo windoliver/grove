@@ -171,7 +171,7 @@ test("parseAcpLine: error frame → Result{stopReason:error}", () => {
 test("AcpParser: codex-simple.ndjson — end_turn result + at least one text message", async () => {
   const fixture = await loadFixture("codex-simple.ndjson");
   const parser = new AcpParser({
-    sessionId: "test",
+    sessionId: "019d9a3c-3dc0-7152-a434-bfd19dd56320",
     turnId: "turn-codex",
     stream: readableFromString(fixture),
   });
@@ -197,7 +197,7 @@ test("AcpParser: codex-simple.ndjson — end_turn result + at least one text mes
 test("AcpParser: claude-tool-call.ndjson — includes tool_call, thinking, end_turn", async () => {
   const fixture = await loadFixture("claude-tool-call.ndjson");
   const parser = new AcpParser({
-    sessionId: "test",
+    sessionId: "5476a074-f21d-40dd-b0ef-edcbe7429193",
     turnId: "turn-claude",
     stream: readableFromString(fixture),
   });
@@ -663,7 +663,7 @@ test("AcpParser: broadcast — two simultaneous subscribers each receive every m
 test("AcpParser: all message turnIds match constructor turnId", async () => {
   const fixture = await loadFixture("codex-simple.ndjson");
   const parser = new AcpParser({
-    sessionId: "test",
+    sessionId: "019d9a3c-3dc0-7152-a434-bfd19dd56320",
     turnId: "my-turn-id",
     stream: readableFromString(fixture),
   });
@@ -671,4 +671,149 @@ test("AcpParser: all message turnIds match constructor turnId", async () => {
   for await (const msg of parser.messages) {
     expect(msg.turnId).toBe("my-turn-id");
   }
+});
+
+// ---------------------------------------------------------------------------
+// Regression: title on tool_call_update must NOT overwrite canonical name
+// ---------------------------------------------------------------------------
+
+test("parseAcpLine: tool_call_update without canonical _meta leaves name undefined", () => {
+  // Simulates a later frame that carries only a display title ("rm -rf /tmp/x")
+  // but no canonical tool identity. The parser must NOT promote that title
+  // into `name` — downstream merge would otherwise rewrite the initial
+  // canonical name (e.g. "Bash" → "rm -rf /tmp/x") mid-turn.
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "s1",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tc-1",
+        title: "rm -rf /tmp/x",
+        status: "in_progress",
+      },
+    },
+  });
+  const parsed = parseAcpLine(line, "t1");
+  expect(parsed.kind).toBe("message");
+  if (parsed.kind !== "message") throw new Error("unreachable");
+  expect(parsed.message.kind).toBe("tool_call");
+  if (parsed.message.kind !== "tool_call") throw new Error("unreachable");
+  const tc = parsed.message.toolCall;
+  expect(tc.name).toBeUndefined();
+  expect(tc.title).toBe("rm -rf /tmp/x");
+  expect(tc.status).toBe("in_progress");
+});
+
+test("parseAcpLine: tool_call_update with canonical _meta still sets name", () => {
+  // Canonical identity is stable across updates — `_meta.claudeCode.toolName`
+  // remains authoritative even on update frames.
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "s1",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tc-1",
+        title: "some mutable display",
+        status: "completed",
+        _meta: { claudeCode: { toolName: "Bash" } },
+      },
+    },
+  });
+  const parsed = parseAcpLine(line, "t1");
+  if (parsed.kind !== "message" || parsed.message.kind !== "tool_call") {
+    throw new Error("unreachable");
+  }
+  expect(parsed.message.toolCall.name).toBe("Bash");
+});
+
+// ---------------------------------------------------------------------------
+// Regression: session mismatch is demoted to raw, not leaked into the turn
+// ---------------------------------------------------------------------------
+
+test("parseAcpLine: session/update with mismatched sessionId → raw _sessionMismatch", () => {
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "foreign-session",
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "leak" } },
+    },
+  });
+  const parsed = parseAcpLine(line, "t1", "expected-session");
+  if (parsed.kind !== "message" || parsed.message.kind !== "raw") {
+    throw new Error("unreachable");
+  }
+  expect(parsed.message.acpMethod).toBe("_sessionMismatch");
+});
+
+test("parseAcpLine: matching sessionId passes through normally", () => {
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "s1",
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } },
+    },
+  });
+  const parsed = parseAcpLine(line, "t1", "s1");
+  if (parsed.kind !== "message" || parsed.message.kind !== "text") {
+    throw new Error("unreachable");
+  }
+  expect(parsed.message.text).toBe("ok");
+});
+
+test("parseAcpLine: absent expected sessionId skips validation (backwards-compat)", () => {
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "whatever",
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } },
+    },
+  });
+  const parsed = parseAcpLine(line, "t1");
+  if (parsed.kind !== "message" || parsed.message.kind !== "text") {
+    throw new Error("unreachable");
+  }
+  expect(parsed.message.text).toBe("ok");
+});
+
+test("AcpParser: foreign-session frames are demoted, not leaked into the iterator", async () => {
+  const lines = [
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "other-session",
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "NOPE" } },
+      },
+    }),
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "mine",
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "mine" } },
+      },
+    }),
+    JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }),
+  ];
+  const parser = new AcpParser({
+    sessionId: "mine",
+    turnId: "t1",
+    stream: readableFromString(`${lines.join("\n")}\n`),
+  });
+  const got: Message[] = [];
+  for await (const m of parser.messages) got.push(m);
+
+  const textMsgs = got.filter((m): m is Extract<Message, { kind: "text" }> => m.kind === "text");
+  expect(textMsgs).toHaveLength(1);
+  expect(textMsgs[0]?.text).toBe("mine");
+
+  const rawMismatch = got.find((m) => m.kind === "raw" && m.acpMethod === "_sessionMismatch");
+  expect(rawMismatch).toBeDefined();
 });

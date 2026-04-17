@@ -153,6 +153,29 @@ test("compactTurn collects permission_request messages into permissionRequests",
   expect(snap.permissionRequests[1]?.tool).toBe("Edit");
 });
 
+test("compactTurn carries parser-demoted permission frames into rawPermissionFrames", () => {
+  // When the parser demotes a permission_request frame (missing id/tool) to raw,
+  // the compactor must preserve the signal — otherwise a malformed permission
+  // prompt vanishes from the snapshot entirely, defeating the purpose of the
+  // permission audit trail.
+  const msgs: Message[] = [
+    {
+      kind: "raw",
+      turnId: "t1",
+      acpMethod: "permission_request",
+      params: { sessionUpdate: "permission_request", tool: "Write" /* no id */ },
+    },
+  ];
+  const snap = compactTurn({
+    turnId: "t1",
+    messages: msgs,
+    result: { turnId: "t1", stopReason: "end_turn" },
+  });
+  expect(snap.permissionRequests).toHaveLength(0);
+  expect(snap.rawPermissionFrames).toHaveLength(1);
+  expect(snap.rawPermissionFrames[0]?.acpMethod).toBe("permission_request");
+});
+
 test("compactTurn carries parser-demoted tool frames (raw) into rawToolFrames", () => {
   // When the parser demotes a tool_call frame (missing id / unknown status)
   // to raw, the compactor must preserve that signal — otherwise tool activity
@@ -223,7 +246,7 @@ test("compactTurn keeps canonical usage undefined when result has no usage (advi
 test("claude-tool-call fixture compacts to real tool names, not placeholders", async () => {
   const fixture = await Bun.file("tests/fixtures/acp/claude-tool-call.ndjson").text();
   const parser = new AcpParser({
-    sessionId: "s1",
+    sessionId: "5476a074-f21d-40dd-b0ef-edcbe7429193",
     turnId: "t-fixture",
     stream: Readable.from([fixture]),
   });
@@ -245,7 +268,7 @@ test("claude-tool-call fixture compacts to real tool names, not placeholders", a
 test("claude-simple fixture canonical usage comes from result.usage, not usage_update", async () => {
   const fixture = await Bun.file("tests/fixtures/acp/claude-simple.ndjson").text();
   const parser = new AcpParser({
-    sessionId: "s1",
+    sessionId: "6bca1174-e38a-40f5-b82e-96425bef3853",
     turnId: "t-fixture",
     stream: Readable.from([fixture]),
   });
