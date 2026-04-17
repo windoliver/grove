@@ -489,6 +489,22 @@ export class AcpParser {
   private readonly sessionId: string;
 
   /**
+   * Start-of-turn replay buffer. The parser reads eagerly on construction,
+   * so a short turn can fully complete before any caller subscribes to
+   * `messages`. Without a backlog, those pre-subscription events would be
+   * lost and the audit log for a fast turn would look empty. This buffer
+   * holds all broadcast messages until the FIRST subscriber attaches, then
+   * drains into that subscriber so it sees the turn from the start.
+   *
+   * Only the first subscriber gets the replay — subsequent subscribers
+   * still observe live-only, consistent with the broadcast semantics
+   * documented in the class header. Bounded by MAX_SUBSCRIBER_BUFFER so a
+   * runaway provider with no attached consumer cannot OOM the host.
+   */
+  private readonly preSubscriptionBuffer: Message[] = [];
+  private firstSubscriberAttached = false;
+
+  /**
    * True as soon as a terminal result has been produced. Flipped synchronously
    * inside `finish()` — do NOT rely on `.then()` handlers on `result` for this
    * signal, because a caller running in the same tick as the resolution
@@ -518,16 +534,26 @@ export class AcpParser {
 
     this.messages = {
       [Symbol.asyncIterator]: (): AsyncIterator<Message> => {
-        if (this.streamFinished) {
-          const finished = new AcpSubscriber();
-          finished.finish();
-          return finished;
-        }
         const sub: AcpSubscriber = new AcpSubscriber({
           onDetach: () => {
             this.subscribers.delete(sub);
           },
         });
+        // First subscriber gets the full start-of-turn replay, regardless of
+        // whether the stream has already finished. Without this, any turn
+        // that completes before a consumer attaches would compact to an
+        // empty log — scheduling-dependent audit history.
+        if (!this.firstSubscriberAttached) {
+          this.firstSubscriberAttached = true;
+          for (const m of this.preSubscriptionBuffer) {
+            sub.push(m, this.turnId);
+          }
+          this.preSubscriptionBuffer.length = 0;
+        }
+        if (this.streamFinished) {
+          sub.finish();
+          return sub;
+        }
         this.subscribers.add(sub);
         return sub;
       },
@@ -535,6 +561,23 @@ export class AcpParser {
   }
 
   private broadcast(message: Message): void {
+    if (!this.firstSubscriberAttached) {
+      // Buffer until first subscriber attaches (start-of-turn replay).
+      // Bounded to prevent OOM if no consumer ever attaches.
+      if (this.preSubscriptionBuffer.length < MAX_SUBSCRIBER_BUFFER) {
+        this.preSubscriptionBuffer.push(message);
+      } else if (this.preSubscriptionBuffer.length === MAX_SUBSCRIBER_BUFFER) {
+        // Replace tail with overflow marker so the replay carries a signal
+        // that events were dropped (same pattern as per-subscriber overflow).
+        this.preSubscriptionBuffer[this.preSubscriptionBuffer.length - 1] = {
+          kind: "raw",
+          turnId: this.turnId,
+          acpMethod: "_overflow",
+          params: { droppedAtLeast: 1, pre: true },
+        };
+      }
+      return;
+    }
     for (const sub of this.subscribers) {
       sub.push(message, this.turnId);
     }

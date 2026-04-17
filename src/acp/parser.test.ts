@@ -923,6 +923,64 @@ test("parseAcpLine: absent expected sessionId skips validation (backwards-compat
   expect(parsed.message.text).toBe("ok");
 });
 
+test("AcpParser: first subscriber receives full start-of-turn replay even after stream settles", async () => {
+  // Eager read means a short turn can fully complete before any consumer
+  // subscribes. Without a replay buffer those pre-subscription messages
+  // are lost and the audit log looks empty for a fast turn. Regression
+  // coverage for review-round-9 finding.
+  const lines = [
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "s1",
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hi" } },
+      },
+    }),
+    JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }),
+  ];
+  const parser = new AcpParser({
+    sessionId: "s1",
+    turnId: "t1",
+    stream: readableFromString(`${lines.join("\n")}\n`),
+  });
+  // Wait for the turn to fully settle BEFORE subscribing.
+  await parser.result;
+  const got: Message[] = [];
+  for await (const m of parser.messages) got.push(m);
+  expect(got).toHaveLength(1);
+  expect(got[0]?.kind).toBe("text");
+});
+
+test("AcpParser: only the first subscriber gets replay; later joiners see live-only", async () => {
+  const lines = [
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "s1",
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hi" } },
+      },
+    }),
+    JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }),
+  ];
+  const parser = new AcpParser({
+    sessionId: "s1",
+    turnId: "t1",
+    stream: readableFromString(`${lines.join("\n")}\n`),
+  });
+  await parser.result;
+
+  const first: Message[] = [];
+  for await (const m of parser.messages) first.push(m);
+  expect(first).toHaveLength(1);
+
+  // Second subscriber after replay was already drained by the first.
+  const second: Message[] = [];
+  for await (const m of parser.messages) second.push(m);
+  expect(second).toHaveLength(0);
+});
+
 test("AcpParser: foreign-session frames are demoted, not leaked into the iterator", async () => {
   const lines = [
     JSON.stringify({

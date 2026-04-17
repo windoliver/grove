@@ -69,6 +69,16 @@ export interface TurnSnapshot {
    */
   rawAnomalyFrames: Array<{ acpMethod: string; params: unknown }>;
   /**
+   * Catch-all bucket for forward-compat raw frames that don't match any of
+   * the other categories — e.g. future ACP `sessionUpdate` kinds the parser
+   * doesn't understand yet, or unknown JSON-RPC methods. Preserved so a
+   * schema-drifted turn doesn't silently lose frames when the live event
+   * log is later pruned. Underscore-prefixed parser-internal methods
+   * (anomalies) go to `rawAnomalyFrames`; tool/permission semantic raws
+   * have their own dedicated buckets.
+   */
+  otherRawFrames: Array<{ acpMethod: string; params: unknown }>;
+  /**
    * True when the message stream included a bounded-buffer `_overflow`
    * marker. Any consumer or snapshot-reader MUST treat a snapshot with
    * `overflowed:true` as a partial log — assistantText, toolCalls, and
@@ -120,23 +130,37 @@ function mergeToolCallEvent(existing: ToolCallEvent, incoming: ToolCallEvent): T
   const merged: ToolCallEvent = { ...existing };
   if (incoming.name !== undefined) merged.name = incoming.name;
   if (incoming.title !== undefined) merged.title = incoming.title;
+
+  // Gate `status` and its payload (input/output/diff/error) together. When an
+  // incoming frame presents a status that would regress or tie the existing
+  // terminal (e.g. completed→failed duplicate, or failed→completed reorder),
+  // we reject BOTH the status AND any terminal payload it carries —
+  // otherwise a rejected terminal update could still contaminate the
+  // outcome record (e.g. preserve status=completed but overwrite output
+  // from the failed duplicate). Frames without a status (pure mid-call
+  // updates) merge their payload normally.
+  let statusAccepted = true;
   if (incoming.status !== undefined) {
     const existingRank = merged.status ? STATUS_RANK[merged.status] : -1;
     const incomingRank = STATUS_RANK[incoming.status];
     // STRICT monotonic — first terminal outcome wins. `completed` and `failed`
-    // share rank 2; with a non-strict `>=` check, a late or reordered terminal
-    // update could flip a tool from `completed` → `failed` (or back) purely
-    // by arrival order, making the final audit outcome transport-dependent.
-    // `>` keeps status progressions (pending → in_progress → terminal) but
-    // rejects terminal-over-terminal and pending-over-pending no-ops.
+    // share rank 2; a non-strict `>=` check would let a late or reordered
+    // terminal update flip a tool from `completed` → `failed` (or back)
+    // purely by arrival order, making the final audit outcome
+    // transport-dependent. `>` keeps progressions (pending → in_progress →
+    // terminal) but rejects terminal-over-terminal and equal-rank no-ops.
     if (incomingRank > existingRank) {
       merged.status = incoming.status;
+    } else {
+      statusAccepted = false;
     }
   }
-  if (incoming.input !== undefined) merged.input = incoming.input;
-  if (incoming.output !== undefined) merged.output = incoming.output;
-  if (incoming.diff !== undefined) merged.diff = incoming.diff;
-  if (incoming.error !== undefined) merged.error = incoming.error;
+  if (statusAccepted) {
+    if (incoming.input !== undefined) merged.input = incoming.input;
+    if (incoming.output !== undefined) merged.output = incoming.output;
+    if (incoming.diff !== undefined) merged.diff = incoming.diff;
+    if (incoming.error !== undefined) merged.error = incoming.error;
+  }
   return merged;
 }
 
@@ -152,6 +176,7 @@ export function compactTurn(input: {
   const rawToolFrames: Array<{ acpMethod: string; params: unknown }> = [];
   const rawPermissionFrames: Array<{ acpMethod: string; params: unknown }> = [];
   const rawAnomalyFrames: Array<{ acpMethod: string; params: unknown }> = [];
+  const otherRawFrames: Array<{ acpMethod: string; params: unknown }> = [];
   const permissionRequests: PermissionRequest[] = [];
   let advisoryUsage: TokenUsage | undefined;
   let overflowed = false;
@@ -197,6 +222,12 @@ export function compactTurn(input: {
           // _result, _unknown, future additions. Kept out of rawToolFrames
           // so consumers can tell semantic-activity raws apart from alarms.
           rawAnomalyFrames.push({ acpMethod: m.acpMethod, params: m.params });
+        } else {
+          // Forward-compat catch-all: unknown sessionUpdate kinds, future
+          // ACP additions, or JSON-RPC methods the parser doesn't recognize.
+          // Keeping these around means schema drift survives compaction
+          // instead of silently disappearing from the snapshot.
+          otherRawFrames.push({ acpMethod: m.acpMethod, params: m.params });
         }
         break;
     }
@@ -227,6 +258,7 @@ export function compactTurn(input: {
     permissionRequests,
     rawPermissionFrames,
     rawAnomalyFrames,
+    otherRawFrames,
     overflowed,
     // Canonical usage only — do NOT fall back to advisory usage_update values.
     // See the TurnSnapshot.usage JSDoc for the rationale.

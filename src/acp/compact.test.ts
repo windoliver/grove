@@ -219,6 +219,63 @@ test("compactTurn terminal status is strict-monotonic — failed cannot be flipp
   expect(snap.toolCalls[0]?.status).toBe("failed");
 });
 
+test("compactTurn rejected-terminal frames cannot contaminate output/diff/error", () => {
+  // A late duplicate terminal update with a conflicting status must not
+  // leak its payload into the accepted outcome — otherwise we get audit
+  // records like {status:"completed", error:"late duplicate failure"}.
+  const msgs: Message[] = [
+    {
+      kind: "tool_call",
+      turnId: "t1",
+      toolCall: {
+        id: "tc1",
+        name: "Bash",
+        status: "completed",
+        input: { cmd: "ls" },
+        output: "ok",
+      },
+    },
+    {
+      kind: "tool_call",
+      turnId: "t1",
+      toolCall: { id: "tc1", status: "failed", output: "reordered", error: "late duplicate" },
+    },
+  ];
+  const snap = compactTurn({
+    turnId: "t1",
+    messages: msgs,
+    result: { turnId: "t1", stopReason: "end_turn" },
+  });
+  expect(snap.toolCalls[0]?.status).toBe("completed");
+  expect(snap.toolCalls[0]?.output).toBe("ok");
+  expect(snap.toolCalls[0]?.error).toBeUndefined();
+});
+
+test("compactTurn preserves unknown forward-compat raw frames in otherRawFrames", () => {
+  // Parser keeps unknown sessionUpdate kinds as raw for forward-compat.
+  // The compactor must retain them so a schema-drifted turn doesn't
+  // silently lose frames once the live event log is pruned.
+  const msgs: Message[] = [
+    {
+      kind: "raw",
+      turnId: "t1",
+      acpMethod: "some_future_event",
+      params: { foo: "bar" },
+    },
+  ];
+  const snap = compactTurn({
+    turnId: "t1",
+    messages: msgs,
+    result: { turnId: "t1", stopReason: "end_turn" },
+  });
+  expect(snap.otherRawFrames).toHaveLength(1);
+  expect(snap.otherRawFrames[0]?.acpMethod).toBe("some_future_event");
+  // And anomaly/tool/permission buckets stay clean.
+  expect(snap.rawAnomalyFrames).toHaveLength(0);
+  expect(snap.rawToolFrames).toHaveLength(0);
+  expect(snap.rawPermissionFrames).toHaveLength(0);
+});
+
 test("compactTurn routes a truncated tool_call (initial placeholder, no update) into incompleteToolCalls", () => {
   // Simulates the real Claude wire path where an initial tool_call carries no
   // canonical input (parser filters rawInput:{} placeholder) and no
