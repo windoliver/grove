@@ -706,6 +706,77 @@ test("parseAcpLine: tool_call_update without canonical _meta leaves name undefin
   expect(tc.status).toBe("in_progress");
 });
 
+test("parseAcpLine: tool_call with rawInput={} placeholder leaves input unset", () => {
+  // Claude's initial tool_call frame carries rawInput:{} as a placeholder;
+  // canonical args arrive on a later tool_call_update. If the parser
+  // records the placeholder as an observed input, a truncated turn
+  // finalizes a tool call with empty audit data — dangerous for Bash/Read/Write.
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "s1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tc-1",
+        title: "Bash",
+        status: "pending",
+        rawInput: {},
+      },
+    },
+  });
+  const parsed = parseAcpLine(line, "t1");
+  if (parsed.kind !== "message" || parsed.message.kind !== "tool_call") {
+    throw new Error("unreachable");
+  }
+  // input must NOT be set — the placeholder {} is not canonical.
+  expect(parsed.message.toolCall.input).toBeUndefined();
+});
+
+test("parseAcpLine: tool_call_update with rawInput={} still records it", () => {
+  // Updates legitimately might set input to {} (rare, but possible for a
+  // no-argument tool). Only the initial-frame placeholder is filtered.
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "s1",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tc-1",
+        rawInput: {},
+      },
+    },
+  });
+  const parsed = parseAcpLine(line, "t1");
+  if (parsed.kind !== "message" || parsed.message.kind !== "tool_call") {
+    throw new Error("unreachable");
+  }
+  expect(parsed.message.toolCall.input).toEqual({});
+});
+
+test("parseAcpLine: tool_call with non-empty rawInput is recorded", () => {
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "s1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tc-1",
+        title: "Bash",
+        status: "pending",
+        rawInput: { command: "ls" },
+      },
+    },
+  });
+  const parsed = parseAcpLine(line, "t1");
+  if (parsed.kind !== "message" || parsed.message.kind !== "tool_call") {
+    throw new Error("unreachable");
+  }
+  expect(parsed.message.toolCall.input).toEqual({ command: "ls" });
+});
+
 test("parseAcpLine: tool_call_update with canonical _meta still sets name", () => {
   // Canonical identity is stable across updates — `_meta.claudeCode.toolName`
   // remains authoritative even on update frames.
@@ -764,6 +835,41 @@ test("parseAcpLine: matching sessionId passes through normally", () => {
     throw new Error("unreachable");
   }
   expect(parsed.message.text).toBe("ok");
+});
+
+test("parseAcpLine: absent sessionId on frame is demoted when parser is bound", () => {
+  // Schema drift or stale output might omit sessionId entirely. When this
+  // parser is session-bound, an absent sessionId must NOT pass through as a
+  // valid frame for the current turn — demote to raw so audits see it.
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      // no sessionId
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "leak" } },
+    },
+  });
+  const parsed = parseAcpLine(line, "t1", "expected-session");
+  if (parsed.kind !== "message" || parsed.message.kind !== "raw") {
+    throw new Error("unreachable");
+  }
+  expect(parsed.message.acpMethod).toBe("_sessionMismatch");
+});
+
+test("parseAcpLine: non-string sessionId (schema drift) is demoted when parser is bound", () => {
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: 12345, // wrong type
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "leak" } },
+    },
+  });
+  const parsed = parseAcpLine(line, "t1", "expected-session");
+  if (parsed.kind !== "message" || parsed.message.kind !== "raw") {
+    throw new Error("unreachable");
+  }
+  expect(parsed.message.acpMethod).toBe("_sessionMismatch");
 });
 
 test("parseAcpLine: absent expected sessionId skips validation (backwards-compat)", () => {

@@ -161,6 +161,31 @@ test("cancel() short-circuits once the turn's result has settled", async () => {
   expect(calls).toBe(0);
 });
 
+test("cancel() same-tick after result resolution is a no-op (no microtask race)", async () => {
+  // If settlement is tracked only via a .then() latch on `this.result`, a
+  // caller that invokes cancel() in the same tick as the result resolution
+  // will still see the latch as false and spuriously fire cancelFn. This
+  // test forces that race by awaiting result and immediately cancelling —
+  // without any setImmediate/setTimeout flush in between.
+  let calls = 0;
+  const lines = [JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } })];
+  const turn = new AcpxTurnImpl({
+    sessionId: "s1",
+    turnId: "t1",
+    stdout: Readable.from([`${lines.join("\n")}\n`]),
+    cancelFn: async () => {
+      calls += 1;
+    },
+  });
+  for await (const _ of turn.messages) {
+    /* drain */
+  }
+  await turn.result;
+  // NO microtask flush here — cancel() must observe settlement synchronously.
+  await turn.cancel();
+  expect(calls).toBe(0);
+});
+
 test("EOF without result yields acpx_exit error Result", async () => {
   const turn = new AcpxTurnImpl({
     sessionId: "s1",

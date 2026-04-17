@@ -13,7 +13,7 @@ export class AcpxTurnImpl implements AcpxTurn {
   readonly messages: AsyncIterable<Message>;
   readonly result: Promise<Result>;
   private readonly cancelFn: () => Promise<void>;
-  private resultSettled = false;
+  private readonly parser: AcpParser;
   private pendingCancel: Promise<void> | null = null;
 
   constructor(opts: {
@@ -25,22 +25,13 @@ export class AcpxTurnImpl implements AcpxTurn {
     this.sessionId = opts.sessionId;
     this.turnId = opts.turnId;
     this.cancelFn = opts.cancelFn;
-    const parser = new AcpParser({
+    this.parser = new AcpParser({
       sessionId: opts.sessionId,
       turnId: opts.turnId,
       stream: opts.stdout,
     });
-    this.messages = parser.messages;
-    this.result = parser.result;
-    // Track whether the turn has finished naturally so cancel() can short-circuit.
-    this.result.then(
-      () => {
-        this.resultSettled = true;
-      },
-      () => {
-        this.resultSettled = true;
-      },
-    );
+    this.messages = this.parser.messages;
+    this.result = this.parser.result;
   }
 
   /**
@@ -58,7 +49,13 @@ export class AcpxTurnImpl implements AcpxTurn {
    * gets a fresh attempt.
    */
   async cancel(): Promise<void> {
-    if (this.resultSettled) return;
+    // Gate synchronously on the parser's own settled flag (flipped inside
+    // finish()) rather than a .then() latch on `this.result`. A microtask
+    // latch would still read `false` when a caller invokes cancel() in the
+    // same tick as resolution — and ACP sessions are persistent, so a
+    // stray cancel sent after the turn ended could hit the NEXT prompt or
+    // produce spurious cancelled telemetry for an already-finished turn.
+    if (this.parser.settled) return;
     if (this.pendingCancel !== null) return this.pendingCancel;
 
     const attempt = (async () => {

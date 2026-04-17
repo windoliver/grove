@@ -153,6 +153,30 @@ test("compactTurn collects permission_request messages into permissionRequests",
   expect(snap.permissionRequests[1]?.tool).toBe("Edit");
 });
 
+test("compactTurn routes a truncated tool_call (initial placeholder, no update) into incompleteToolCalls", () => {
+  // Simulates the real Claude wire path where an initial tool_call carries no
+  // canonical input (parser filters rawInput:{} placeholder) and no
+  // tool_call_update ever arrives (overflow/EOF/lost frame). The compactor
+  // must NOT finalize this as a valid tool call — otherwise the audit log
+  // gets a Bash/Read/Write entry with no command/path.
+  const msgs: Message[] = [
+    {
+      kind: "tool_call",
+      turnId: "t1",
+      toolCall: { id: "tc1", name: "Bash", status: "pending" /* no input */ },
+    },
+  ];
+  const snap = compactTurn({
+    turnId: "t1",
+    messages: msgs,
+    result: { turnId: "t1", stopReason: "end_turn" },
+  });
+  expect(snap.toolCalls).toHaveLength(0);
+  expect(snap.incompleteToolCalls).toHaveLength(1);
+  expect(snap.incompleteToolCalls[0]?.id).toBe("tc1");
+  expect(snap.incompleteToolCalls[0]?.name).toBe("Bash");
+});
+
 test("compactTurn carries parser-demoted permission frames into rawPermissionFrames", () => {
   // When the parser demotes a permission_request frame (missing id/tool) to raw,
   // the compactor must preserve the signal — otherwise a malformed permission

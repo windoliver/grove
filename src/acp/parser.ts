@@ -175,11 +175,15 @@ export function parseAcpLine(line: string, turnId: string, sessionId?: string): 
     if (typeof params === "object" && params !== null) {
       const p = params as Record<string, unknown>;
       // Session guard: if we know which session this parser is bound to,
-      // reject frames carrying a different sessionId. A multiplexed stdio
-      // stream or stale provider output could otherwise bleed another
-      // session's frames into this turn's snapshot. Demote to raw rather
-      // than dropping silently so auditors see the drift.
-      if (sessionId !== undefined && typeof p.sessionId === "string" && p.sessionId !== sessionId) {
+      // REQUIRE params.sessionId to be a matching string. A multiplexed
+      // stdio stream, stale provider output, or schema-drifted frame could
+      // otherwise bleed foreign data into this turn's snapshot. Demote any
+      // frame that doesn't present a valid matching sessionId (including
+      // absent/non-string cases) to raw so auditors see the drift.
+      if (
+        sessionId !== undefined &&
+        (typeof p.sessionId !== "string" || p.sessionId !== sessionId)
+      ) {
         return {
           kind: "message",
           message: { kind: "raw", turnId, acpMethod: "_sessionMismatch", params: f.params },
@@ -276,7 +280,26 @@ export function parseAcpLine(line: string, turnId: string, sessionId?: string): 
               toolCall.status = status;
             }
             if (u.rawInput !== undefined) {
-              toolCall.input = u.rawInput;
+              // Claude's initial `tool_call` frame carries `rawInput: {}` as a
+              // placeholder; the canonical args arrive on a later
+              // `tool_call_update`. If we accept the placeholder here, a
+              // truncated turn (overflow, EOF, lost update) leaves us with a
+              // tool call whose finalized `input` is `{}` — indistinguishable
+              // from canonical data in an audit log. Treat empty-object
+              // placeholders on the INITIAL frame as "not yet observed" so the
+              // compactor routes the call into incompleteToolCalls until a
+              // non-placeholder input arrives. Updates may still legitimately
+              // set an empty object (rare but possible) — only the initial
+              // placeholder is filtered.
+              const isEmptyObjectPlaceholder =
+                sessionUpdate === "tool_call" &&
+                typeof u.rawInput === "object" &&
+                u.rawInput !== null &&
+                !Array.isArray(u.rawInput) &&
+                Object.keys(u.rawInput as Record<string, unknown>).length === 0;
+              if (!isEmptyObjectPlaceholder) {
+                toolCall.input = u.rawInput;
+              }
             }
             if ("rawOutput" in u && u.rawOutput !== undefined) {
               toolCall.output = u.rawOutput;
@@ -467,6 +490,16 @@ export class AcpParser {
   private resolveResult!: (r: Result) => void;
   private readonly turnId: string;
   private readonly sessionId: string;
+
+  /**
+   * True as soon as a terminal result has been produced. Flipped synchronously
+   * inside `finish()` — do NOT rely on `.then()` handlers on `result` for this
+   * signal, because a caller running in the same tick as the resolution
+   * would still observe `false` there. Used by AcpxTurnImpl to gate cancel().
+   */
+  get settled(): boolean {
+    return this.streamFinished;
+  }
 
   constructor({
     sessionId,
