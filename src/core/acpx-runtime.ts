@@ -11,6 +11,8 @@
 import { execSync, spawn as nodeSpawn } from "node:child_process";
 import { createWriteStream, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { AcpxTurnImpl } from "../acp/turn.js";
+import type { AcpxTurn } from "../acp/types.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 import { shellEscape } from "./shell-utils.js";
 import type { AgentPlatformType } from "./topology.js";
@@ -51,7 +53,6 @@ interface AcpxSessionEntry {
   cwd: string;
   env: Record<string, string | undefined>;
   idleCallbacks: (() => void)[];
-  outputCallbacks: ((chunk: string) => void)[];
   idleTimer: ReturnType<typeof setInterval> | null;
   /** Active child process for the current prompt (null when idle). */
   activeProc: ReturnType<typeof nodeSpawn> | null;
@@ -234,7 +235,6 @@ export class AcpxRuntime implements AgentRuntime {
       cwd: config.cwd,
       env: mergedEnv,
       idleCallbacks: [],
-      outputCallbacks: [],
       idleTimer: null,
       activeProc: null,
       logStream,
@@ -246,7 +246,8 @@ export class AcpxRuntime implements AgentRuntime {
     if (!config.waitForPush) {
       const initialMessage = config.goal ?? config.prompt;
       if (initialMessage) {
-        this.sendAsync(entry, initialMessage);
+        // Fire initial turn; drop the AcpxTurn — callers get future turns via send().
+        void this.startTurn(entry, initialMessage);
       }
     }
 
@@ -254,13 +255,15 @@ export class AcpxRuntime implements AgentRuntime {
   }
 
   /**
-   * Fire-and-forget send: spawns acpx in the background.
-   * Streams stdout to output callbacks + log file.
-   * When the prompt completes, fires idle callbacks.
+   * Fire a prompt and return a streaming AcpxTurn. Spawns acpx with
+   * `--format json --json-strict` so stdout is NDJSON typed frames; the
+   * returned turn wraps the child's stdout in AcpxTurnImpl. The log file
+   * still mirrors stdout for forensics.
    */
-  private sendAsync(entry: AcpxSessionEntry, message: string): void {
+  private startTurn(entry: AcpxSessionEntry, message: string): AcpxTurn {
+    const turnId = `${entry.sessionName}-${Date.now().toString(36)}-${this.nextId++}`;
     appendLog(
-      `[acpx.sendAsync] sessionName=${entry.sessionName} role=${entry.session.role} logFile=${entry.logFile} agent=${entry.agent} cwd=${entry.cwd}`,
+      `[acpx.startTurn] sessionName=${entry.sessionName} role=${entry.session.role} logFile=${entry.logFile} agent=${entry.agent} cwd=${entry.cwd} turnId=${turnId}`,
     );
     entry.session = { ...entry.session, status: "running" };
 
@@ -294,11 +297,20 @@ ${message}`;
     }
 
     appendLog(
-      `[acpx.sendAsync] spawning: acpx --approve-all ${entry.agent} -s ${entry.sessionName} <message len=${wrappedMessage.length}>`,
+      `[acpx.startTurn] spawning: acpx --format json --json-strict --approve-all ${entry.agent} -s ${entry.sessionName} <message len=${wrappedMessage.length}>`,
     );
     const child = nodeSpawn(
       "acpx",
-      ["--approve-all", entry.agent, "-s", entry.sessionName, wrappedMessage],
+      [
+        "--format",
+        "json",
+        "--json-strict",
+        "--approve-all",
+        entry.agent,
+        "-s",
+        entry.sessionName,
+        wrappedMessage,
+      ],
       {
         cwd: entry.cwd,
         env: entry.env as NodeJS.ProcessEnv,
@@ -309,39 +321,29 @@ ${message}`;
     entry.activeProc = child;
     child.on("spawn", () => {
       appendLog(
-        `[acpx.sendAsync] child spawned OK pid=${child.pid} for sessionName=${entry.sessionName}`,
+        `[acpx.startTurn] child spawned OK pid=${child.pid} for sessionName=${entry.sessionName}`,
       );
     });
     child.on("error", (spawnErr) => {
       appendLog(
-        `[acpx.sendAsync] child error: ${spawnErr.message} for sessionName=${entry.sessionName}`,
+        `[acpx.startTurn] child error: ${spawnErr.message} for sessionName=${entry.sessionName}`,
       );
     });
 
-    // Stream stdout to output callbacks + log stream
-    child.stdout?.on("data", (chunk: Buffer) => {
-      const text = chunk.toString();
-      if (entry.logStream) {
-        entry.logStream.write(text);
-      }
-      for (const cb of entry.outputCallbacks) {
-        try {
-          cb(text);
-        } catch {
-          /* ignore */
-        }
-      }
-    });
-
-    // Capture stderr to log stream
-    child.stderr?.on("data", (chunk: Buffer) => {
-      if (entry.logStream) {
-        entry.logStream.write(`[stderr] ${chunk.toString()}`);
-      }
-    });
+    // Mirror stdout to log file for forensics. AcpxTurnImpl installs its own
+    // 'data' listener via AcpParser; Readable fans out to all listeners so
+    // both observers see every chunk.
+    if (entry.logStream && child.stdout) {
+      child.stdout.on("data", (chunk: Buffer) => entry.logStream?.write(chunk));
+    }
+    if (entry.logStream && child.stderr) {
+      child.stderr.on("data", (chunk: Buffer) =>
+        entry.logStream?.write(`[stderr] ${chunk.toString()}`),
+      );
+    }
 
     child.on("close", (code) => {
-      appendLog(`[acpx.sendAsync] child closed exit=${code} sessionName=${entry.sessionName}`);
+      appendLog(`[acpx.startTurn] child closed exit=${code} sessionName=${entry.sessionName}`);
       entry.activeProc = null;
       const ts = new Date().toISOString();
       if (code === 0) {
@@ -371,9 +373,29 @@ ${message}`;
         entry.logStream.write(`\n[ERROR] ${err.message}\n`);
       }
     });
+
+    if (!child.stdout) {
+      throw new Error("acpx child spawned without stdout pipe");
+    }
+
+    return new AcpxTurnImpl({
+      sessionId: entry.sessionName,
+      turnId,
+      stdout: child.stdout,
+      cancelFn: async () => {
+        // ACP session/cancel is not wired through acpx CLI args; SIGINT the
+        // child so the provider sees a cancelled turn. Safe re-entry: cancel()
+        // is single-flight inside AcpxTurnImpl.
+        try {
+          child.kill("SIGINT");
+        } catch {
+          /* ignore */
+        }
+      },
+    });
   }
 
-  async send(session: AgentSession, message: string): Promise<void> {
+  async send(session: AgentSession, message: string): Promise<AcpxTurn> {
     appendLog(
       `[acpx.send] called for sessionId=${session.id} role=${session.role} status=${session.status} sessionsMapSize=${this.sessions.size} sessionIds=[${[...this.sessions.keys()].join(",")}]`,
     );
@@ -393,7 +415,6 @@ ${message}`;
         cwd: process.cwd(),
         env: { ...process.env },
         idleCallbacks: [],
-        outputCallbacks: [],
         idleTimer: null,
         activeProc: null,
         logStream: null,
@@ -409,9 +430,9 @@ ${message}`;
       );
     }
     appendLog(
-      `[acpx.send] calling sendAsync for sessionId=${session.id} sessionName=${entry.sessionName}`,
+      `[acpx.send] calling startTurn for sessionId=${session.id} sessionName=${entry.sessionName}`,
     );
-    this.sendAsync(entry, message);
+    return this.startTurn(entry, message);
   }
 
   async close(session: AgentSession): Promise<void> {
@@ -458,12 +479,6 @@ ${message}`;
         this.checkIdle(session.id);
       }, this.idlePollMs);
     }
-  }
-
-  onOutput(session: AgentSession, callback: (chunk: string) => void): void {
-    const entry = this.sessions.get(session.id);
-    if (!entry) return;
-    entry.outputCallbacks.push(callback);
   }
 
   /**

@@ -4,6 +4,7 @@
  * Decouples grove from any specific agent CLI (acpx, tmux, subprocess).
  */
 
+import type { AcpxTurn } from "../acp/types.js";
 import type { AgentPlatformType } from "./topology.js";
 
 /** Configuration for spawning an agent. */
@@ -40,14 +41,12 @@ export interface AgentSession {
 export interface AgentRuntime {
   /** Spawn a new agent session. */
   spawn(role: string, config: AgentConfig): Promise<AgentSession>;
-  /** Send a message/prompt to a running agent. */
-  send(session: AgentSession, message: string): Promise<void>;
+  /** Send a prompt and return the typed turn stream. */
+  send(session: AgentSession, message: string): Promise<AcpxTurn>;
   /** Gracefully close an agent session. */
   close(session: AgentSession): Promise<void>;
   /** Register a callback for when an agent becomes idle. */
   onIdle(session: AgentSession, callback: () => void): void;
-  /** Register a callback for agent stdout output (streaming). */
-  onOutput?(session: AgentSession, callback: (chunk: string) => void): void;
   /** List all active sessions. */
   listSessions(): Promise<readonly AgentSession[]>;
   /** Check if the runtime's dependencies are available. */
