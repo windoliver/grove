@@ -781,6 +781,54 @@ describe("reviewOperation", () => {
     if (!result.ok) expect(result.error.code).toBe("INTERNAL_ERROR");
   });
 
+  test("two staggered same-key concurrent calls produce exactly one review", async () => {
+    // Round 3 concern: without sync check-then-reserve, two same-key
+    // callers could both miss the cache, both spend time in
+    // validateRelations, and both proceed to write — duplicating the
+    // review. Simulate that by delaying getMany; the second caller MUST
+    // observe the first caller's pending slot synchronously.
+    const target = await contributeOperation(
+      { kind: "work", summary: "target", agent: { agentId: "a1" } },
+      deps,
+    );
+    expect(target.ok).toBe(true);
+    if (!target.ok) return;
+
+    const slowDeps: FullOperationDeps = {
+      ...deps,
+      contributionStore: {
+        ...deps.contributionStore,
+        getMany: async (cids) => {
+          await new Promise((r) => setTimeout(r, 50));
+          return deps.contributionStore.getMany(cids);
+        },
+      },
+    };
+
+    const key = `review-concurrent-${crypto.randomUUID()}`;
+    const makeCall = () =>
+      reviewOperation(
+        {
+          targetCid: target.value.cid,
+          summary: "concurrent",
+          idempotencyKey: key,
+          agent: { agentId: "reviewer" },
+        },
+        slowDeps,
+      );
+
+    const first = makeCall();
+    // Stagger by 10ms so the second call enters after the first is past
+    // its sync check-then-reserve but still awaiting getMany.
+    await new Promise((r) => setTimeout(r, 10));
+    const second = makeCall();
+
+    const [r1, r2] = await Promise.all([first, second]);
+    expect(r1.ok).toBe(true);
+    expect(r2.ok).toBe(true);
+    if (r1.ok && r2.ok) expect(r1.value.cid).toBe(r2.value.cid);
+  });
+
   test("idempotent retry returns cached result even when store read fails", async () => {
     // First call: success. Cache stores the committed result.
     const target = await contributeOperation(

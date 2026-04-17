@@ -228,32 +228,21 @@ export function initSqliteDb(dbPath: string): Database {
     // existing schema alone. Add the missing columns here so the index
     // statement in HANDOFF_DDL succeeds. Fresh DBs are no-ops — the table
     // doesn't exist yet, so the PRAGMA returns empty and nothing runs.
+    //
+    // Legacy NULL-session rows are left intact: SqliteHandoffStore's
+    // claim-on-write shim (scopeClause + COALESCE session_id) upgrades
+    // them safely when a scoped session first mutates them. Destroying
+    // unresolved rows here would drop live pre-#164 reviewer/tester work.
     {
       const handoffCols = db.prepare("PRAGMA table_info(handoffs)").all() as readonly {
         name: string;
       }[];
       if (handoffCols.length > 0) {
         const names = new Set(handoffCols.map((c) => c.name));
-        const addedSessionId = !names.has("session_id");
         for (const col of ["seen_at", "acked_at", "session_id", "ipc_message_id"]) {
           if (!names.has(col)) {
             db.run(`ALTER TABLE handoffs ADD COLUMN ${col} TEXT`);
           }
-        }
-        // Terminate any unresolved legacy handoffs. SqliteHandoffStore treats
-        // session_id IS NULL as visible-to-every-session (claim-on-write), so
-        // leaving pre-#164 pending/delivered/processed rows unclaimed lets
-        // DeadlineWatcher.rebuildFromStore re-arm them for any session and
-        // cross-session receipt mutations race through. These rows are
-        // orphaned from the pre-session-scoping era — no live agent is
-        // waiting on them — so marking them dead_lettered is safe and
-        // strictly better than the leak.
-        if (addedSessionId) {
-          db.run(
-            `UPDATE handoffs SET status = 'dead_lettered'
-             WHERE session_id IS NULL
-               AND status IN ('pending_pickup', 'delivered', 'processed')`,
-          );
         }
       }
     }
