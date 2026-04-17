@@ -12,6 +12,14 @@ import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js
  * Use `errorTurn()` on delivery failure — a synthetic `end_turn` on a
  * failed write would silently hide non-delivery from callers who watch
  * `turn.result`.
+ *
+ * IMPORTANT — semantics of this success turn:
+ *   `end_turn` here means "bytes written to the child's stdin pipe", NOT
+ *   "the child process read or acted on them". Callers that need
+ *   agent-level acknowledgement must use the acpx-backed runtime; with
+ *   SubprocessRuntime the typed-turn contract degrades to write-ACK.
+ *   This is unavoidable — a plain subprocess has no agent-level ACK
+ *   channel — and is called out explicitly rather than papered over.
  */
 function emptyTurn(sessionId: string): AcpxTurn {
   return {

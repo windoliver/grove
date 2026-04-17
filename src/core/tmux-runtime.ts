@@ -17,6 +17,17 @@ import { shellEscape } from "./shell-utils.js";
  * Use `errorTurn()` on delivery failure — a synthetic `end_turn` on a
  * failed send-keys would silently hide non-delivery from callers who
  * watch `turn.result`.
+ *
+ * IMPORTANT — semantics of this success turn:
+ *   `end_turn` here means "tmux accepted the keystrokes", NOT "the agent
+ *   process consumed the prompt". The pane may have fallen back to a
+ *   shell, the agent may have died, or the keystrokes may have been sent
+ *   to a non-agent foreground process. Callers that need agent-level
+ *   delivery acknowledgement must use the acpx-backed runtime; with
+ *   tmux, this is best-effort. This is unavoidable — tmux does not
+ *   expose an agent-level ACK channel — so the typed-turn contract
+ *   degrades to write-ACK in this fallback mode. Documented rather than
+ *   papered over with a synthetic ACK.
  */
 function emptyTurn(sessionId: string): AcpxTurn {
   return {

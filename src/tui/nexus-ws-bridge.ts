@@ -307,24 +307,29 @@ export class NexusWsBridge {
   private async markHandoffDeadLettered(
     ipcMessageId: string | undefined,
     targetRole: string,
-    sender: string | undefined,
+    _sender: string | undefined,
     reason: string,
   ): Promise<void> {
     try {
       const store = this.opts.handoffStore;
       if (!store || !ipcMessageId) return;
 
+      // Require exact `ipcMessageId` correlation. Dead-letter is a terminal
+      // state, so the sender-based fallback that updateHandoffDeliveryStatus
+      // uses for marking delivered is too loose here: if ipcMessageId is not
+      // yet linked to any handoff, the "most recent from sender" heuristic
+      // could terminally dead-letter a neighbouring handoff while the real
+      // failure quietly stays `delivered`. Prefer deferring — another pass
+      // after setIpcMessageId() lands can still dead-letter correctly.
       const handoffs = await store.list({ toRole: targetRole });
-      let matching = handoffs.find((h) => h.ipcMessageId === ipcMessageId);
-      if (!matching && sender) {
-        matching = handoffs
-          .filter(
-            (h) =>
-              h.fromRole === sender && (h.status === "pending_pickup" || h.status === "delivered"),
-          )
-          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+      const matching = handoffs.find((h) => h.ipcMessageId === ipcMessageId);
+      if (!matching) {
+        debugLog(
+          "wsBridge.markHandoffDeadLettered",
+          `NO EXACT MATCH ipcMessageId=${ipcMessageId} role=${targetRole} — deferring`,
+        );
+        return;
       }
-      if (!matching) return;
 
       await store.markDeadLettered(matching.handoffId);
       process.stderr.write(
