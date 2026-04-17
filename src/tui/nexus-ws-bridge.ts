@@ -13,7 +13,6 @@
  * to avoid corrupting the alternate screen.
  */
 
-import { watchTurnError } from "../acp/watch-turn.js";
 import type { AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { EventBus, GroveEvent } from "../core/event-bus.js";
 import type { HandoffStore } from "../core/handoff.js";
@@ -227,7 +226,7 @@ export class NexusWsBridge {
       } catch {
         /* non-fatal */
       }
-      void this.readAndPush(event.path, role, session, event.sender);
+      void this.readAndPush(event.path, role, session, event.sender, event.message_id);
     } catch {
       // Skip malformed events
     }
@@ -295,11 +294,59 @@ export class NexusWsBridge {
     }
   }
 
+  /**
+   * Dead-letter a handoff when local agent push fails after the Nexus
+   * inbox already acknowledged delivery. Keeps the data-integrity story
+   * from leaving a permanent false-positive "delivered" state when the
+   * target agent never actually received the prompt.
+   *
+   * Full remediation (splitting the `delivered` state into
+   * `inbox_delivered` vs `agent_received`) is out of scope for the
+   * turn-typing migration and tracked as a follow-up.
+   */
+  private async markHandoffDeadLettered(
+    ipcMessageId: string | undefined,
+    targetRole: string,
+    sender: string | undefined,
+    reason: string,
+  ): Promise<void> {
+    try {
+      const store = this.opts.handoffStore;
+      if (!store || !ipcMessageId) return;
+
+      const handoffs = await store.list({ toRole: targetRole });
+      let matching = handoffs.find((h) => h.ipcMessageId === ipcMessageId);
+      if (!matching && sender) {
+        matching = handoffs
+          .filter(
+            (h) =>
+              h.fromRole === sender && (h.status === "pending_pickup" || h.status === "delivered"),
+          )
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+      }
+      if (!matching) return;
+
+      await store.markDeadLettered(matching.handoffId);
+      process.stderr.write(
+        `[NexusWsBridge] dead-lettered handoffId=${matching.handoffId} role=${targetRole}: ${reason}\n`,
+      );
+
+      const cacheable = store as { invalidateCache?: () => void };
+      cacheable.invalidateCache?.();
+    } catch (err) {
+      debugLog(
+        "wsBridge.markHandoffDeadLettered",
+        `FAIL ipcMessageId=${ipcMessageId} err=${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   private async readAndPush(
     path: string,
     _targetRole: string,
     session: AgentSession,
     sender: string,
+    ipcMessageId?: string,
   ): Promise<void> {
     try {
       // Retry on 429 (rate limit) — the inbox read is critical for IPC delivery.
@@ -354,25 +401,48 @@ export class NexusWsBridge {
         `delivering to session=${session.id} role=${_targetRole} notification=${notification.slice(0, 80)}`,
       );
 
-      // NOTE: the handoff has already been marked `delivered` upstream when
-      // the Nexus inbox SSE fired (see handleEvent → updateHandoffDeliveryStatus).
-      // If the local runtime.send below fails to hand the prompt to the
-      // agent, the handoff state will still read "delivered" — recovery
-      // would require a richer state machine ("inbox_delivered" vs
-      // "agent_received"), which is out of scope for this PR. In the
-      // meantime, escalate the log target from the debug channel to stderr
-      // so operators at least see the divergence instead of discovering it
-      // through a stalled agent.
+      // The handoff has already been marked `delivered` upstream on the
+      // Nexus inbox SSE. Full separation of "inbox delivered" vs "agent
+      // received" is out of scope for the turn-typing migration — but when
+      // the local push below actually fails, we at least move the handoff
+      // to the dead-letter state so recovery tooling can see it instead
+      // of treating the stale "delivered" record as the final truth.
       void this.opts.runtime
         .send(session, notification)
-        .then((turn) => {
-          watchTurnError(turn, `NexusWsBridge.readAndPush(role=${_targetRole})`, (m) =>
-            process.stderr.write(`${m}\n`),
-          );
+        .then(async (turn) => {
+          const result = await turn.result.catch((err) => ({
+            turnId: turn.turnId,
+            stopReason: "error" as const,
+            error: {
+              code: "turn_rejected",
+              message: err instanceof Error ? err.message : String(err),
+            },
+          }));
+          if (result.stopReason === "error") {
+            const detail = result.error
+              ? `${result.error.code}: ${result.error.message}`
+              : "unknown error";
+            process.stderr.write(
+              `[NexusWsBridge] local push failed for role=${_targetRole} turn=${turn.turnId}: ${detail}\n`,
+            );
+            await this.markHandoffDeadLettered(
+              ipcMessageId,
+              _targetRole,
+              sender,
+              `local push error: ${detail}`,
+            );
+          }
         })
-        .catch((err) => {
+        .catch(async (err) => {
+          const detail = err instanceof Error ? err.message : String(err);
           process.stderr.write(
-            `[NexusWsBridge] runtime.send rejected for role=${_targetRole}: ${err instanceof Error ? err.message : String(err)}\n`,
+            `[NexusWsBridge] runtime.send rejected for role=${_targetRole}: ${detail}\n`,
+          );
+          await this.markHandoffDeadLettered(
+            ipcMessageId,
+            _targetRole,
+            sender,
+            `runtime.send rejected: ${detail}`,
           );
         });
     } catch {

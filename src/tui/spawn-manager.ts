@@ -794,9 +794,14 @@ export class SpawnManager {
               // visible to operators instead of silently marked delivered.
               const turn = await this.agentRuntime.send(session, message);
               debugLog("route", `agentRuntime.send succeeded`);
-              watchTurnError(turn, `route ${sourceRole}→${targetRole}`, (m) =>
-                debugLog("route", m),
-              );
+              // Surface post-spawn delivery failures through stderr too —
+              // debugLog is gated behind GROVE_DEBUG=1, so in normal
+              // operation a silent turn.result error would make failed
+              // routing invisible to the operator.
+              watchTurnError(turn, `route ${sourceRole}→${targetRole}`, (m) => {
+                debugLog("route", m);
+                process.stderr.write(`${m}\n`);
+              });
             } catch (sendErr) {
               debugLog(
                 "route",
@@ -809,9 +814,14 @@ export class SpawnManager {
             try {
               const turn = await this.agentRuntime.send(session, message);
               debugLog("route", `agentRuntime.send completed for sessionId=${session.id}`);
-              watchTurnError(turn, `route ${sourceRole}→${targetRole}`, (m) =>
-                debugLog("route", m),
-              );
+              // Surface post-spawn delivery failures through stderr too —
+              // debugLog is gated behind GROVE_DEBUG=1, so in normal
+              // operation a silent turn.result error would make failed
+              // routing invisible to the operator.
+              watchTurnError(turn, `route ${sourceRole}→${targetRole}`, (m) => {
+                debugLog("route", m);
+                process.stderr.write(`${m}\n`);
+              });
             } catch (sendErr) {
               debugLog(
                 "route",
@@ -841,7 +851,10 @@ export class SpawnManager {
     for (const [spawnId, session] of this.agentSessions) {
       if (spawnId.startsWith(role)) {
         const turn = await this.agentRuntime.send(session, message);
-        watchTurnError(turn, `sendToAgent(${role})`, (m) => debugLog("route", m));
+        watchTurnError(turn, `sendToAgent(${role})`, (m) => {
+          debugLog("route", m);
+          process.stderr.write(`${m}\n`);
+        });
         return true;
       }
     }

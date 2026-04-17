@@ -469,6 +469,34 @@ ${message}`;
       );
       await entry.inflightTurn;
     }
+    // After the await, close() may have run concurrently: killed the
+    // prior child, closed the acpx session, and deleted the map entry.
+    // Re-check before launching a new child, otherwise a queued send
+    // would spawn acpx against a session the caller has already stopped
+    // and leave the orphaned process behind.
+    const current = this.sessions.get(session.id);
+    if (!current || current !== entry || current.session.status === "stopped") {
+      appendLog(
+        `[acpx.send] sessionId=${session.id} session was stopped/replaced during inflight wait — refusing to start new turn`,
+      );
+      return {
+        sessionId: session.id,
+        turnId: `${session.id}-closed`,
+        messages: (async function* () {
+          /* no messages */
+        })(),
+        result: Promise.resolve({
+          turnId: `${session.id}-closed`,
+          stopReason: "error" as const,
+          error: {
+            code: "session_closed",
+            message: "session was closed before send could start a new turn",
+          },
+        }),
+        cancel: async () => undefined,
+        close: async () => undefined,
+      };
+    }
     appendLog(
       `[acpx.send] calling startTurn for sessionId=${session.id} sessionName=${entry.sessionName}`,
     );
