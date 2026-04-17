@@ -220,6 +220,28 @@ export function initSqliteDb(dbPath: string): Database {
   const initSchema = db.transaction(() => {
     db.exec(SCHEMA_DDL);
     db.exec(FTS_DDL);
+
+    // Pre-HANDOFF_DDL column-safe migration: legacy handoffs tables (pre-#164)
+    // lack session_id/seen_at/acked_at/ipc_message_id. HANDOFF_DDL now includes
+    // `CREATE INDEX idx_handoffs_session_id ON handoffs(session_id)`, which
+    // fails on those older tables because CREATE TABLE IF NOT EXISTS leaves the
+    // existing schema alone. Add the missing columns here so the index
+    // statement in HANDOFF_DDL succeeds. Fresh DBs are no-ops — the table
+    // doesn't exist yet, so the PRAGMA returns empty and nothing runs.
+    {
+      const handoffCols = db.prepare("PRAGMA table_info(handoffs)").all() as readonly {
+        name: string;
+      }[];
+      if (handoffCols.length > 0) {
+        const names = new Set(handoffCols.map((c) => c.name));
+        for (const col of ["seen_at", "acked_at", "session_id", "ipc_message_id"]) {
+          if (!names.has(col)) {
+            db.run(`ALTER TABLE handoffs ADD COLUMN ${col} TEXT`);
+          }
+        }
+      }
+    }
+
     db.exec(HANDOFF_DDL);
 
     // Check current schema version for migrations
