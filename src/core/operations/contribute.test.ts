@@ -875,6 +875,69 @@ describe("reviewOperation", () => {
     expect(second.ok).toBe(true);
     if (first.ok && second.ok) expect(second.value.cid).toBe(first.value.cid);
   });
+
+  test("pre-reserve throw does not roll back another caller's pending reservation", async () => {
+    // Round 4 regression: the catch block used to unconditionally call
+    // idempotencyStore.rollback(cacheKey), which would delete whatever
+    // pending row existed for that key — even one placed by another
+    // process. That defeated cross-process single-flight.
+    //
+    // Scenario: our call throws during validateRelations (before durable
+    // reserve). ownsDurableReservation must still be false, so the
+    // catch path must NOT call rollback.
+    let rollbackCalls = 0;
+    const peerReservationAlive = { value: true };
+    const stubIdempotencyStore: FullOperationDeps["idempotencyStore"] = {
+      lookup: () => undefined, // miss — our call will proceed into validate
+      reserve: () => {
+        throw new Error("should not be reached — we throw before reserve");
+      },
+      rollback: () => {
+        rollbackCalls++;
+        peerReservationAlive.value = false; // simulates deleting peer's row
+      },
+      store: () => {
+        /* unused in this scenario */
+      },
+      clear: () => {
+        /* unused in this scenario */
+      },
+    };
+
+    const target = await contributeOperation(
+      { kind: "work", summary: "target", agent: { agentId: "a1" } },
+      deps,
+    );
+    expect(target.ok).toBe(true);
+    if (!target.ok) return;
+
+    const throwingDeps: FullOperationDeps = {
+      ...deps,
+      idempotencyStore: stubIdempotencyStore,
+      contributionStore: {
+        ...deps.contributionStore,
+        // validateRelations calls getMany — make it throw mid-validation.
+        getMany: async () => {
+          throw new Error("simulated mid-validate fault");
+        },
+      },
+    };
+
+    const result = await reviewOperation(
+      {
+        targetCid: target.value.cid,
+        summary: "r",
+        idempotencyKey: `pre-reserve-throw-${crypto.randomUUID()}`,
+        agent: { agentId: "reviewer" },
+      },
+      throwingDeps,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("INTERNAL_ERROR");
+    expect(rollbackCalls).toBe(0);
+    expect(peerReservationAlive.value).toBe(true);
+  });
 });
 
 describe("reproduceOperation", () => {

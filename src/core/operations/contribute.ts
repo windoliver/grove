@@ -178,11 +178,12 @@ export interface AdoptResult extends BaseContributionResult {
  * fails. Per #236 — mirrors the explicit kind check in updatePlanOperation
  * so review/reproduce can't silently point at the wrong-kind contribution.
  */
-const RELATION_EXPECTED_KINDS: Readonly<Partial<Record<RelationType, readonly ContributionKind[]>>> =
-  {
-    [RelationType.Reviews]: [CK.Work],
-    [RelationType.Reproduces]: [CK.Work],
-  };
+const RELATION_EXPECTED_KINDS: Readonly<
+  Partial<Record<RelationType, readonly ContributionKind[]>>
+> = {
+  [RelationType.Reviews]: [CK.Work],
+  [RelationType.Reproduces]: [CK.Work],
+};
 
 /**
  * Validate that all relation targets exist in the store (batch) and that
@@ -758,6 +759,11 @@ export async function contributeOperation(
       }
     | undefined;
   let idempotencyCacheLookupKey: string | undefined;
+  // Track whether THIS call actually acquired the durable reservation.
+  // Without this, a pre-commit throw here would rollback whatever pending
+  // row is in the store, including one another process reserved in the
+  // meantime — erasing its single-flight protection and enabling dup writes.
+  let ownsDurableReservation = false;
 
   try {
     if (deps.contributionStore === undefined) {
@@ -828,10 +834,7 @@ export async function contributeOperation(
       idempotencyFingerprint !== undefined &&
       deps.idempotencyStore !== undefined
     ) {
-      const persisted = deps.idempotencyStore.lookup(
-        idempotencyCacheLookupKey,
-        IDEMPOTENCY_TTL_MS,
-      );
+      const persisted = deps.idempotencyStore.lookup(idempotencyCacheLookupKey, IDEMPOTENCY_TTL_MS);
       if (persisted !== undefined) {
         if (persisted.fingerprint !== idempotencyFingerprint) {
           const conflictErr = err({
@@ -911,6 +914,7 @@ export async function contributeOperation(
         idempotencySlot = undefined;
         return raceErr;
       }
+      ownsDurableReservation = true;
     }
 
     const contributionInput: ContributionInput = {
@@ -1470,9 +1474,15 @@ export async function contributeOperation(
     // failure). Post-commit failures flow through the committed result
     // path and never reach this catch.
     idempotencySlot?.release();
-    // Roll back the durable reservation so the key doesn't stay stuck
-    // in 'pending' for the full TTL after a pre-commit failure.
-    if (idempotencyCacheLookupKey !== undefined && deps.idempotencyStore !== undefined) {
+    // Roll back the durable reservation — but only if THIS call placed
+    // the pending row. Otherwise a pre-commit throw here would delete a
+    // row another process (or a concurrent same-process retry) just
+    // reserved, defeating cross-process single-flight.
+    if (
+      ownsDurableReservation &&
+      idempotencyCacheLookupKey !== undefined &&
+      deps.idempotencyStore !== undefined
+    ) {
       try {
         deps.idempotencyStore.rollback(idempotencyCacheLookupKey);
       } catch {

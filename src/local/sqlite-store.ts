@@ -229,10 +229,12 @@ export function initSqliteDb(dbPath: string): Database {
     // statement in HANDOFF_DDL succeeds. Fresh DBs are no-ops — the table
     // doesn't exist yet, so the PRAGMA returns empty and nothing runs.
     //
-    // Legacy NULL-session rows are left intact: SqliteHandoffStore's
-    // claim-on-write shim (scopeClause + COALESCE session_id) upgrades
-    // them safely when a scoped session first mutates them. Destroying
-    // unresolved rows here would drop live pre-#164 reviewer/tester work.
+    // Legacy NULL-session rows are left intact here. Downstream,
+    // SqliteHandoffStore's constructor quarantines them by stamping a
+    // sentinel session_id so no real scoped session can mutate them
+    // across sessions — while keeping the rows themselves around so
+    // unscoped admin/CLI paths and round-3's no-destroy invariant are
+    // preserved.
     {
       const handoffCols = db.prepare("PRAGMA table_info(handoffs)").all() as readonly {
         name: string;

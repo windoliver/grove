@@ -188,9 +188,22 @@ describe("SqliteHandoffStore session scoping", () => {
     db.close();
   });
 
-  test("pre-#164 NULL-session rows are visible to scoped sessions (migration shim)", async () => {
+  // ------------------------------------------------------------------
+  // Legacy pre-#164 quarantine (Codex PR #258 round 4 finding)
+  //
+  // Pre-#164 rows have session_id=NULL. Before quarantine, the
+  // scopeClause used `(session_id = ? OR session_id IS NULL)` — meaning
+  // every scoped session could see, list, mutate, and expire those
+  // rows, so a session B process could clobber session A's in-flight
+  // legacy handoff. The fix: on SqliteHandoffStore construction, stamp
+  // all NULL-session rows with a sentinel session_id so they no longer
+  // match any real scoped query. Rows stay in the DB (non-destructive
+  // — see round 3 feedback), just become invisible via scoped APIs.
+  // ------------------------------------------------------------------
+
+  test("pre-#164 NULL-session rows are quarantined on scoped store construction", async () => {
     const db = initSqliteDb(dbPath);
-    // Simulate a legacy row by inserting with session_id=NULL via unscoped store
+    // Simulate a pre-#164 row: unscoped store inserts session_id=NULL.
     const legacy = new SqliteHandoffStore(db);
     const hLegacy = await legacy.create({
       sourceCid: "blake3:legacy",
@@ -198,22 +211,25 @@ describe("SqliteHandoffStore session scoping", () => {
       toRole: "reviewer",
     });
 
-    // Scoped sessions MUST still see NULL-session rows after upgrade so
-    // in-flight pre-#164 handoffs don't strand the coder→reviewer loop.
+    // Constructing a scoped store triggers the quarantine migration,
+    // stamping the NULL row with the sentinel session_id.
     const scoped = new SqliteHandoffStore(db, "new-session");
-    const list = await scoped.list();
-    expect(list.find((h) => h.handoffId === hLegacy.handoffId)).toBeDefined();
 
-    // Unscoped stores still see legacy rows (for CLI/admin paths)
+    // Scoped list/get MUST NOT surface quarantined rows — that would
+    // re-introduce the cross-session leak.
+    const list = await scoped.list();
+    expect(list.find((h) => h.handoffId === hLegacy.handoffId)).toBeUndefined();
+    expect(await scoped.get(hLegacy.handoffId)).toBeUndefined();
+
+    // Unscoped stores still see the row (CLI / admin paths need it).
     const legacyList = await legacy.list();
     expect(legacyList.find((h) => h.handoffId === hLegacy.handoffId)).toBeDefined();
 
     db.close();
   });
 
-  test("isInCurrentSession honors the NULL-session migration shim", async () => {
+  test("isInCurrentSession returns false for quarantined legacy rows", async () => {
     const db = initSqliteDb(dbPath);
-    // Legacy row with session_id=NULL (pre-#164)
     const legacy = new SqliteHandoffStore(db);
     const hLegacy = await legacy.create({
       sourceCid: "blake3:legacy",
@@ -222,16 +238,15 @@ describe("SqliteHandoffStore session scoping", () => {
     });
 
     const scoped = new SqliteHandoffStore(db, "active-session");
-    // Without the shim, receipt tools would find the legacy row via get()
-    // but reject it in isInCurrentSession, stranding it post-upgrade.
-    expect(await scoped.isInCurrentSession?.(hLegacy.handoffId)).toBe(true);
+    // Quarantined rows deliberately fail ownership — a scoped session
+    // must not be able to claim them via receipt tools.
+    expect(await scoped.isInCurrentSession?.(hLegacy.handoffId)).toBe(false);
 
     db.close();
   });
 
-  test("legacy NULL-session rows do NOT leak between scoped sessions (only the first resolver wins)", async () => {
+  test("legacy NULL-session rows are invisible to every scoped session", async () => {
     const db = initSqliteDb(dbPath);
-    // Pre-#164 row with session_id=NULL
     const legacy = new SqliteHandoffStore(db);
     const hLegacy = await legacy.create({
       sourceCid: "blake3:legacy",
@@ -239,58 +254,29 @@ describe("SqliteHandoffStore session scoping", () => {
       toRole: "reviewer",
     });
 
-    // Two scoped sessions both see the legacy row (migration shim)
+    // Both scoped sessions trigger quarantine on construction; neither
+    // should see the legacy row.
     const storeA = new SqliteHandoffStore(db, "session-A");
     const storeB = new SqliteHandoffStore(db, "session-B");
 
     const listA = await storeA.list();
     const listB = await storeB.list();
-    expect(listA.find((h) => h.handoffId === hLegacy.handoffId)).toBeDefined();
-    expect(listB.find((h) => h.handoffId === hLegacy.handoffId)).toBeDefined();
-
-    // Scoped mark* operations work on legacy rows (pending_pickup → delivered)
-    await storeA.markDelivered(hLegacy.handoffId);
-    const afterA = await storeA.get(hLegacy.handoffId);
-    expect(afterA?.status).toBe(HandoffStatus.Delivered);
-
-    db.close();
-  });
-
-  test("first scoped mutation claims a legacy row — peer session cannot mutate after", async () => {
-    const db = initSqliteDb(dbPath);
-    const legacy = new SqliteHandoffStore(db);
-    const hLegacy = await legacy.create({
-      sourceCid: "blake3:legacy",
-      fromRole: "coder",
-      toRole: "reviewer",
-    });
-
-    const storeA = new SqliteHandoffStore(db, "session-A");
-    const storeB = new SqliteHandoffStore(db, "session-B");
-
-    // Session A claims via markDelivered — backfills session_id = session-A
-    await storeA.markDelivered(hLegacy.handoffId);
-
-    // Session B's scope clause no longer matches: the row now owns session-A,
-    // so list / get / isInCurrentSession all stop resolving it from B.
-    const listB = await storeB.list();
+    expect(listA.find((h) => h.handoffId === hLegacy.handoffId)).toBeUndefined();
     expect(listB.find((h) => h.handoffId === hLegacy.handoffId)).toBeUndefined();
-    expect(await storeB.get(hLegacy.handoffId)).toBeUndefined();
-    expect(await storeB.isInCurrentSession?.(hLegacy.handoffId)).toBe(false);
 
-    // Session B's mutations throw NotFoundError — the row is owned by A
-    await expect(storeB.markProcessed(hLegacy.handoffId)).rejects.toThrow();
-    await expect(storeB.markReplied(hLegacy.handoffId, "blake3:r")).rejects.toThrow();
+    // Scoped mutations also reject — the row is outside both scopes.
+    await expect(storeA.markDelivered(hLegacy.handoffId)).rejects.toThrow();
+    await expect(storeB.markDelivered(hLegacy.handoffId)).rejects.toThrow();
 
-    // Session A can still complete the lifecycle
-    await storeA.markProcessed(hLegacy.handoffId);
-    const afterA = await storeA.get(hLegacy.handoffId);
-    expect(afterA?.status).toBe(HandoffStatus.Processed);
+    // Row is preserved (non-destructive quarantine) and still visible
+    // via an unscoped store.
+    const legacyList = await legacy.list();
+    expect(legacyList.find((h) => h.handoffId === hLegacy.handoffId)).toBeDefined();
 
     db.close();
   });
 
-  test("expireStale claims legacy row on first fire — peer session cannot re-expire", async () => {
+  test("expireStale does not flip quarantined legacy rows from scoped sessions", async () => {
     const db = initSqliteDb(dbPath);
     const legacy = new SqliteHandoffStore(db);
     const pastDeadline = new Date(Date.now() - 60_000).toISOString();
@@ -301,15 +287,39 @@ describe("SqliteHandoffStore session scoping", () => {
       replyDueAt: pastDeadline,
     });
 
+    // Construction of any scoped store quarantines the NULL row.
     const storeA = new SqliteHandoffStore(db, "session-A");
     const storeB = new SqliteHandoffStore(db, "session-B");
 
+    // Neither scoped expireStale touches the quarantined row.
     const expiredByA = await storeA.expireStale();
-    expect(expiredByA.map((h) => h.handoffId)).toEqual([hLegacy.handoffId]);
-
-    // Row now owns session-A; session B's scoped expireStale is a no-op.
     const expiredByB = await storeB.expireStale();
+    expect(expiredByA).toHaveLength(0);
     expect(expiredByB).toHaveLength(0);
+
+    // Status preserved — round 3 feedback required non-destructive migration.
+    const row = await legacy.get(hLegacy.handoffId);
+    expect(row?.status).toBe(HandoffStatus.PendingPickup);
+
+    db.close();
+  });
+
+  test("quarantine is idempotent under concurrent scoped store construction", async () => {
+    const db = initSqliteDb(dbPath);
+    const legacy = new SqliteHandoffStore(db);
+    await legacy.create({
+      sourceCid: "blake3:a",
+      fromRole: "coder",
+      toRole: "reviewer",
+    });
+
+    // Simulate two processes opening the DB back-to-back. Each runs the
+    // NULL→sentinel UPDATE. Second run's WHERE clause finds 0 NULL rows
+    // and is a no-op — must not throw.
+    const s1 = new SqliteHandoffStore(db, "S1");
+    const s2 = new SqliteHandoffStore(db, "S2");
+    expect((await s1.list()).length).toBe(0);
+    expect((await s2.list()).length).toBe(0);
 
     db.close();
   });
