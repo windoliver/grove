@@ -114,8 +114,10 @@ describe("roleFromSessionName", () => {
   });
 
   test("parses canonical session-id contract (role-counter-base36)", () => {
-    expect(roleFromSessionName("grove-coder-0-l8x9pq2")).toBe("coder");
-    expect(roleFromSessionName("grove-code-reviewer-12-abc1z")).toBe("code-reviewer");
+    // Suffixes here are 8 chars to match the real `Date.now().toString(36)`
+    // length and clear the parser's length gate.
+    expect(roleFromSessionName("grove-coder-0-mo3i3zh6")).toBe("coder");
+    expect(roleFromSessionName("grove-code-reviewer-12-mo3i3zz6")).toBe("code-reviewer");
   });
 });
 

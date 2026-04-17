@@ -59,4 +59,25 @@ describe("session-id", () => {
     expect(parsed!.counter).toBe(12);
     expect(parsed!.suffix).toBeNull();
   });
+
+  test("legacy ID with role ending in digit segment is not misparsed as canonical", () => {
+    // Regression: `grove-worker-1-0` was being parsed as canonical
+    // (role=worker, counter=1, suffix=0) because the canonical regex matched
+    // greedily. The suffix-length gate forces this down the legacy branch.
+    const parsed = parseSessionId("grove-worker-1-0");
+    expect(parsed).not.toBeNull();
+    expect(parsed!.role).toBe("worker-1");
+    expect(parsed!.counter).toBe(0);
+    expect(parsed!.suffix).toBeNull();
+  });
+
+  test("canonical IDs with short or numeric-looking suffixes still parse legacy-style", () => {
+    // A 6-char numeric suffix could be legacy counter; only ≥7 chars qualify
+    // as canonical timestamp. This protects upgrade paths.
+    const parsed = parseSessionId("grove-coder-3-123456");
+    expect(parsed).not.toBeNull();
+    expect(parsed!.role).toBe("coder-3");
+    expect(parsed!.counter).toBe(123456);
+    expect(parsed!.suffix).toBeNull();
+  });
 });

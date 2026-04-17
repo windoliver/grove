@@ -46,8 +46,13 @@ export function buildSessionId(role: string, counter: number): string {
 export function parseSessionId(name: string): ParsedSessionId | null {
   if (!name.startsWith(SESSION_ID_PREFIX)) return null;
   const body = name.slice(SESSION_ID_PREFIX.length);
-  // Try canonical first: <role>-<counter>-<base36-suffix>
-  const canonical = body.match(/^(.+)-(\d+)-([a-z0-9]+)$/);
+  // Canonical: <role>-<counter>-<base36-suffix>.
+  // Suffix length is gated at 7 to disambiguate from legacy IDs whose role
+  // ends in a digit segment (e.g. `worker-1`). `Date.now().toString(36)` is
+  // 8 chars today and won't drop below 7 until well after year 5000, so
+  // every real builder output passes this gate while legacy counter tails
+  // (typically 1–4 digits) are forced down the legacy branch below.
+  const canonical = body.match(/^(.+)-(\d+)-([a-z0-9]{7,})$/);
   if (canonical) {
     const [, role, counterStr, suffix] = canonical;
     if (role && counterStr && suffix) {
