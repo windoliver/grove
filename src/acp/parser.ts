@@ -280,6 +280,26 @@ export function parseAcpLine(line: string, turnId: string): ParsedLine {
             };
           }
 
+          case "permission_request": {
+            const id = typeof u.id === "string" ? u.id : "";
+            const tool = typeof u.tool === "string" ? u.tool : "";
+            if (id.length === 0 || tool.length === 0) {
+              // Missing identity — route to raw so auditors can inspect.
+              return {
+                kind: "message",
+                message: { kind: "raw", turnId, acpMethod: sessionUpdate, params: update },
+              };
+            }
+            return {
+              kind: "message",
+              message: {
+                kind: "permission_request",
+                turnId,
+                request: { id, tool, input: u.input },
+              },
+            };
+          }
+
           default: {
             // Forward-compat: unknown sessionUpdate kinds → raw
             return {
@@ -412,6 +432,9 @@ class AcpSubscriber implements AsyncIterator<Message> {
     // Detach before finishing so any race with a concurrent broadcast() call
     // finds the subscriber gone.
     this.onDetach?.();
+    // Discard backlog — the consumer has explicitly unsubscribed and must not
+    // receive more events, even from what was already in-flight.
+    this.queue.length = 0;
     this.finish();
     return Promise.resolve({ value: undefined, done: true });
   }

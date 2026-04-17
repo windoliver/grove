@@ -326,6 +326,42 @@ test("parseAcpLine: falls back to title when no canonical identity is present", 
   expect(parsed.message.toolCall.title).toBe("Read File");
 });
 
+test("parseAcpLine: permission_request → typed Message{kind:permission_request}", () => {
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "s",
+      update: {
+        sessionUpdate: "permission_request",
+        id: "perm-1",
+        tool: "Write",
+        input: { path: "/tmp/x" },
+      },
+    },
+  });
+  const parsed = parseAcpLine(line, "t");
+  expect(parsed.kind).toBe("message");
+  if (parsed.kind !== "message") throw new Error("unreachable");
+  expect(parsed.message.kind).toBe("permission_request");
+  if (parsed.message.kind !== "permission_request") throw new Error("unreachable");
+  expect(parsed.message.request.id).toBe("perm-1");
+  expect(parsed.message.request.tool).toBe("Write");
+  expect(parsed.message.request.input).toEqual({ path: "/tmp/x" });
+});
+
+test("parseAcpLine: permission_request without id/tool → raw (for audit visibility)", () => {
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: { sessionId: "s", update: { sessionUpdate: "permission_request", input: {} } },
+  });
+  const parsed = parseAcpLine(line, "t");
+  expect(parsed.kind).toBe("message");
+  if (parsed.kind !== "message") throw new Error("unreachable");
+  expect(parsed.message.kind).toBe("raw");
+});
+
 test("parseAcpLine: unknown stopReason is preserved as terminal result (forward-compat)", () => {
   const line = JSON.stringify({
     jsonrpc: "2.0",
@@ -479,6 +515,45 @@ test("AcpParser: a subscriber that never drains gets bounded (drops past cap); t
   // At most the cap (plus one waiter-fulfillment slot) — proves bounded buffer.
   expect(slowCount).toBeLessThan(OVER);
   expect(slowCount).toBeGreaterThan(0);
+});
+
+test("AcpParser: return() discards already-buffered messages (no replay after unsubscribe)", async () => {
+  // Queue several messages, then unsubscribe WITHOUT having drained them.
+  // next() after return() must report done — even though the queue had backlog.
+  const lines = [
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "s",
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "a" } },
+      },
+    }),
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "s",
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "b" } },
+      },
+    }),
+    JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }),
+  ];
+  const parser = new AcpParser({
+    sessionId: "s",
+    turnId: "t-return-backlog",
+    stream: readableFromString(`${lines.join("\n")}\n`),
+  });
+  const iter = parser.messages[Symbol.asyncIterator]();
+  // Let the background read queue messages into this subscriber.
+  await parser.result;
+  // Now unsubscribe before draining.
+  const returned = await (iter.return?.() ?? Promise.resolve({ value: undefined, done: true }));
+  expect(returned.done).toBe(true);
+  // Backlog MUST be discarded.
+  const after = await iter.next();
+  expect(after.done).toBe(true);
+  expect(after.value).toBeUndefined();
 });
 
 test("AcpParser: subscriber that calls return() stops receiving messages (no zombie push)", async () => {

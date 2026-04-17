@@ -116,6 +116,43 @@ test("compactTurn prefers result.usage (canonical) over usage_update (advisory)"
   expect(snap.usage?.totalTokens).toBe(21914);
 });
 
+test("compactTurn flags overflowed:true when the stream contained an _overflow marker", () => {
+  const msgs: Message[] = [
+    { kind: "text", turnId: "t1", text: "partial", chunk: true },
+    { kind: "raw", turnId: "t1", acpMethod: "_overflow", params: { droppedAtLeast: 1 } },
+  ];
+  const snap = compactTurn({
+    turnId: "t1",
+    messages: msgs,
+    result: { turnId: "t1", stopReason: "end_turn" },
+  });
+  // Snapshot consumers MUST treat this as a partial log.
+  expect(snap.overflowed).toBe(true);
+});
+
+test("compactTurn collects permission_request messages into permissionRequests", () => {
+  const msgs: Message[] = [
+    {
+      kind: "permission_request",
+      turnId: "t1",
+      request: { id: "p1", tool: "Write", input: {} },
+    },
+    {
+      kind: "permission_request",
+      turnId: "t1",
+      request: { id: "p2", tool: "Edit", input: {} },
+    },
+  ];
+  const snap = compactTurn({
+    turnId: "t1",
+    messages: msgs,
+    result: { turnId: "t1", stopReason: "end_turn" },
+  });
+  expect(snap.permissionRequests).toHaveLength(2);
+  expect(snap.permissionRequests[0]?.id).toBe("p1");
+  expect(snap.permissionRequests[1]?.tool).toBe("Edit");
+});
+
 test("compactTurn carries parser-demoted tool frames (raw) into rawToolFrames", () => {
   // When the parser demotes a tool_call frame (missing id / unknown status)
   // to raw, the compactor must preserve that signal — otherwise tool activity

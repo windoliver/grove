@@ -12,6 +12,7 @@
 
 import type {
   Message,
+  PermissionRequest,
   Result,
   StopReason,
   TokenUsage,
@@ -46,6 +47,15 @@ export interface TurnSnapshot {
    * disappear entirely from the compacted snapshot.
    */
   rawToolFrames: Array<{ acpMethod: string; params: unknown }>;
+  /** Permission prompts the provider asked for during this turn. */
+  permissionRequests: PermissionRequest[];
+  /**
+   * True when the message stream included a bounded-buffer `_overflow`
+   * marker. Any consumer or snapshot-reader MUST treat a snapshot with
+   * `overflowed:true` as a partial log — assistantText, toolCalls, and
+   * incompleteToolCalls are not guaranteed complete.
+   */
+  overflowed: boolean;
   /**
    * Canonical per-turn token accounting, populated only from `result.usage`.
    * Stays undefined when the provider didn't emit canonical counts on the
@@ -116,7 +126,9 @@ export function compactTurn(input: {
   const toolCallMap = new Map<string, ToolCallEvent>();
   const toolCallOrder: string[] = [];
   const rawToolFrames: Array<{ acpMethod: string; params: unknown }> = [];
+  const permissionRequests: PermissionRequest[] = [];
   let advisoryUsage: TokenUsage | undefined;
+  let overflowed = false;
 
   for (const m of input.messages) {
     switch (m.kind) {
@@ -136,6 +148,9 @@ export function compactTurn(input: {
         }
         break;
       }
+      case "permission_request":
+        permissionRequests.push(m.request);
+        break;
       case "token_usage":
         advisoryUsage = m.usage;
         break;
@@ -144,10 +159,9 @@ export function compactTurn(input: {
         // Surface them so tool activity isn't silently lost from the snapshot.
         if (m.acpMethod === "tool_call" || m.acpMethod === "tool_call_update") {
           rawToolFrames.push({ acpMethod: m.acpMethod, params: m.params });
+        } else if (m.acpMethod === "_overflow") {
+          overflowed = true;
         }
-        break;
-      default:
-        // permission_request — not included in snapshot summary
         break;
     }
   }
@@ -174,6 +188,8 @@ export function compactTurn(input: {
     toolCalls,
     incompleteToolCalls,
     rawToolFrames,
+    permissionRequests,
+    overflowed,
     // Canonical usage only — do NOT fall back to advisory usage_update values.
     // See the TurnSnapshot.usage JSDoc for the rationale.
     usage: input.result.usage,
