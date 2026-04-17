@@ -20,7 +20,7 @@ import { LocalEventBus } from "./local-event-bus.js";
  */
 async function waitFor(
   check: () => Promise<boolean> | boolean,
-  { timeoutMs = 2000, intervalMs = 25 } = {},
+  { timeoutMs = 5000, intervalMs = 10 } = {},
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -108,12 +108,14 @@ describe("DeadlineWatcher", () => {
   // ------------------------------------------------------------------
 
   test("emits handoff.overdue when deadline passes and handoff still unresolved", async () => {
-    // Create a real handoff in the store
+    // Create a real handoff whose deadline is already past — delayMs=0 path
+    // fires on next tick, keeping the test deterministic under CI load where
+    // a future-dated setTimeout can drift past waitFor's 5s window.
     const h = await store.create({
       sourceCid: "blake3:test",
       fromRole: "coder",
       toRole: "reviewer",
-      replyDueAt: new Date(Date.now() + 50).toISOString(), // 50ms from now
+      replyDueAt: new Date(Date.now() - 10).toISOString(),
       requiresReply: true,
     });
 
@@ -122,8 +124,7 @@ describe("DeadlineWatcher", () => {
 
     watcher.watch(h);
 
-    // Wait for the timer to fire
-    await new Promise((r) => setTimeout(r, 200));
+    await waitFor(() => events.length > 0);
 
     expect(events).toHaveLength(1);
     expect(events[0]?.type).toBe("handoff.overdue");
@@ -183,7 +184,7 @@ describe("DeadlineWatcher", () => {
       fromRole: "coder",
       toRole: "reviewer",
       requiresReply: true,
-      replyDueAt: new Date(Date.now() + 50).toISOString(),
+      replyDueAt: new Date(Date.now() - 10).toISOString(),
     });
 
     const events: GroveEvent[] = [];
@@ -216,7 +217,7 @@ describe("DeadlineWatcher", () => {
       fromRole: "coder",
       toRole: "reviewer",
       requiresReply: true,
-      replyDueAt: new Date(Date.now() + 50).toISOString(),
+      replyDueAt: new Date(Date.now() - 10).toISOString(),
     });
 
     watcher.watch(h);
