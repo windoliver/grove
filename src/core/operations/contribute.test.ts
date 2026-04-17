@@ -762,6 +762,9 @@ describe("reviewOperation", () => {
         get: async () => {
           throw new Error("simulated store failure");
         },
+        getMany: async () => {
+          throw new Error("simulated store failure");
+        },
       },
     };
 
@@ -776,6 +779,53 @@ describe("reviewOperation", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("INTERNAL_ERROR");
+  });
+
+  test("idempotent retry returns cached result even when store read fails", async () => {
+    // First call: success. Cache stores the committed result.
+    const target = await contributeOperation(
+      { kind: "work", summary: "target", agent: { agentId: "a1" } },
+      deps,
+    );
+    expect(target.ok).toBe(true);
+    if (!target.ok) return;
+
+    const key = `review-retry-${crypto.randomUUID()}`;
+    const first = await reviewOperation(
+      {
+        targetCid: target.value.cid,
+        summary: "looks good",
+        idempotencyKey: key,
+        agent: { agentId: "reviewer" },
+      },
+      deps,
+    );
+    expect(first.ok).toBe(true);
+
+    // Second call: same key, but store reads now fail transiently. The
+    // idempotency cache short-circuit must return the first result
+    // without hitting validateRelations. Without the read-before-validate
+    // ordering fix, this would return INTERNAL_ERROR.
+    const flakyDeps: FullOperationDeps = {
+      ...deps,
+      contributionStore: {
+        ...deps.contributionStore,
+        getMany: async () => {
+          throw new Error("transient read failure");
+        },
+      },
+    };
+    const second = await reviewOperation(
+      {
+        targetCid: target.value.cid,
+        summary: "looks good",
+        idempotencyKey: key,
+        agent: { agentId: "reviewer" },
+      },
+      flakyDeps,
+    );
+    expect(second.ok).toBe(true);
+    if (first.ok && second.ok) expect(second.value.cid).toBe(first.value.cid);
   });
 });
 
@@ -893,6 +943,9 @@ describe("reproduceOperation", () => {
       contributionStore: {
         ...deps.contributionStore,
         get: async () => {
+          throw new Error("simulated store failure");
+        },
+        getMany: async () => {
           throw new Error("simulated store failure");
         },
       },
