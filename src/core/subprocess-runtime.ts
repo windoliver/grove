@@ -3,7 +3,25 @@
  * No PTY, no session persistence. Suitable for CI and testing.
  */
 
+import type { AcpxTurn } from "../acp/types.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
+
+/**
+ * SubprocessRuntime does not produce ACP output. Return an already-settled
+ * AcpxTurn so the interface is satisfied without misleading the consumer.
+ */
+function emptyTurn(sessionId: string): AcpxTurn {
+  return {
+    sessionId,
+    turnId: `${sessionId}-noacp`,
+    messages: (async function* () {
+      /* no messages */
+    })(),
+    result: Promise.resolve({ turnId: `${sessionId}-noacp`, stopReason: "end_turn" as const }),
+    cancel: async () => undefined,
+    close: async () => undefined,
+  };
+}
 
 interface SessionEntry {
   proc: import("bun").Subprocess<"pipe", "pipe", "pipe">;
@@ -64,13 +82,15 @@ export class SubprocessRuntime implements AgentRuntime {
     return session;
   }
 
-  async send(session: AgentSession, message: string): Promise<void> {
+  async send(session: AgentSession, message: string): Promise<AcpxTurn> {
     const entry = this.sessions.get(session.id);
-    if (!entry?.proc.stdin) return;
-    const result = entry.proc.stdin.write(`${message}\n`);
-    if (result instanceof Promise) await result;
-    const flush = entry.proc.stdin.flush();
-    if (flush instanceof Promise) await flush;
+    if (entry?.proc.stdin) {
+      const result = entry.proc.stdin.write(`${message}\n`);
+      if (result instanceof Promise) await result;
+      const flush = entry.proc.stdin.flush();
+      if (flush instanceof Promise) await flush;
+    }
+    return emptyTurn(session.id);
   }
 
   async close(session: AgentSession): Promise<void> {

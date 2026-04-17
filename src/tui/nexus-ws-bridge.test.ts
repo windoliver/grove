@@ -6,10 +6,24 @@
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import type { AcpxTurn } from "../acp/types.js";
 import type { AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { GroveEvent } from "../core/event-bus.js";
 import { LocalEventBus } from "../core/local-event-bus.js";
 import { NexusWsBridge, type NexusWsBridgeOptions } from "./nexus-ws-bridge.js";
+
+function makeNoAcpTurn(sessionId: string): AcpxTurn {
+  return {
+    sessionId,
+    turnId: `${sessionId}-noacp`,
+    messages: (async function* () {
+      /* no messages */
+    })(),
+    result: Promise.resolve({ turnId: `${sessionId}-noacp`, stopReason: "end_turn" as const }),
+    cancel: async () => undefined,
+    close: async () => undefined,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Mock factories
@@ -26,7 +40,7 @@ function makeSession(role: string): AgentSession {
 function makeMockRuntime(): AgentRuntime {
   return {
     spawn: mock(() => Promise.resolve(makeSession("mock"))),
-    send: mock(() => Promise.resolve()),
+    send: mock((session: AgentSession) => Promise.resolve(makeNoAcpTurn(session.id))),
     close: mock(() => Promise.resolve()),
     // biome-ignore lint/suspicious/noEmptyBlockStatements: mock no-op
     onIdle: mock(() => {}),

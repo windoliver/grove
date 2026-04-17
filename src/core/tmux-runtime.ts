@@ -7,8 +7,26 @@
  */
 
 import { execSync } from "node:child_process";
+import type { AcpxTurn } from "../acp/types.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 import { shellEscape } from "./shell-utils.js";
+
+/**
+ * TmuxRuntime does not produce ACP output. Return an already-settled
+ * AcpxTurn so the interface is satisfied without misleading the consumer.
+ */
+function emptyTurn(sessionId: string): AcpxTurn {
+  return {
+    sessionId,
+    turnId: `${sessionId}-noacp`,
+    messages: (async function* () {
+      /* no messages */
+    })(),
+    result: Promise.resolve({ turnId: `${sessionId}-noacp`, stopReason: "end_turn" as const }),
+    cancel: async () => undefined,
+    close: async () => undefined,
+  };
+}
 
 /** Prefix for all grove tmux session names. */
 const SESSION_PREFIX = "grove-";
@@ -91,19 +109,20 @@ export class TmuxRuntime implements AgentRuntime {
     return session;
   }
 
-  async send(session: AgentSession, message: string): Promise<void> {
+  async send(session: AgentSession, message: string): Promise<AcpxTurn> {
     const entry = this.sessions.get(session.id);
-    if (!entry) return;
-
-    try {
-      execSync(
-        `tmux -L grove send-keys -t ${shellEscape(session.id)} ${shellEscape(message)} Enter`,
-        { encoding: "utf-8", stdio: "pipe" },
-      );
-    } catch {
-      // Session may have been killed externally — mark as crashed
-      entry.session = { ...entry.session, status: "crashed" };
+    if (entry) {
+      try {
+        execSync(
+          `tmux -L grove send-keys -t ${shellEscape(session.id)} ${shellEscape(message)} Enter`,
+          { encoding: "utf-8", stdio: "pipe" },
+        );
+      } catch {
+        // Session may have been killed externally — mark as crashed
+        entry.session = { ...entry.session, status: "crashed" };
+      }
     }
+    return emptyTurn(session.id);
   }
 
   async close(session: AgentSession): Promise<void> {
