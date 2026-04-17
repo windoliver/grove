@@ -187,8 +187,9 @@ export class SessionOrchestrator {
     // AcpxRuntime sends the initial goal during spawn(). MockRuntime does not.
     // Send goals only to agents whose runtime status is still "running" but
     // haven't received a prompt yet (i.e., non-acpx runtimes).
-    // We detect this by checking if the runtime is MockRuntime (no sendAsync).
-    if (!("sendAsync" in this.config.runtime)) {
+    // We detect this by checking if the runtime exposes AcpxRuntime's
+    // `startTurn` internal helper.
+    if (!("startTurn" in this.config.runtime)) {
       for (const agent of this.agents) {
         await this.config.runtime.send(agent.session, agent.goal);
       }

@@ -32,7 +32,9 @@ test("MockRuntime queues are drained per turn (not reused)", async () => {
   rt.enqueueResult(s.id, { turnId: "t1", stopReason: "end_turn" });
 
   const first = await rt.send(s, "msg1");
-  for await (const _ of first.messages) { /* drain */ }
+  for await (const _ of first.messages) {
+    /* drain */
+  }
   await first.result;
 
   // Second send without re-enqueueing: empty messages, default result.
