@@ -271,6 +271,10 @@ export class AcpxRuntime implements AgentRuntime {
         // provider rejection, cancelled turn) would be silently swallowed
         // and the session would look successfully primed.
         const initialTurn = this.startTurn(entry, initialMessage);
+        // Seed the send chain with the bootstrap turn's child-exit promise
+        // so the first external send() waits for the initial goal to finish
+        // instead of spawning a second overlapping acpx child.
+        entry.sendChainTail = entry.inflightTurn;
         watchTurnError(initialTurn, `acpx spawn(role=${role})`, (msg) => {
           process.stderr.write(`${msg}\n`);
           if (entry.logStream) {
@@ -522,7 +526,34 @@ ${message}`;
     appendLog(
       `[acpx.send] calling startTurn for sessionId=${session.id} sessionName=${entry.sessionName}`,
     );
-    const turn = this.startTurn(entry, message);
+    // Exception safety: if startTurn throws synchronously (malformed args,
+    // spawn path errors, null-byte content, etc.), we must still release
+    // the chain — otherwise every subsequent send() for this session would
+    // wait forever on an orphan predecessor promise that nobody resolves.
+    let turn: AcpxTurn;
+    try {
+      turn = this.startTurn(entry, message);
+    } catch (err) {
+      releaseChain();
+      const errTurnId = `${entry.sessionName}-start-failed`;
+      return {
+        sessionId: entry.sessionName,
+        turnId: errTurnId,
+        messages: (async function* () {
+          /* no messages */
+        })(),
+        result: Promise.resolve({
+          turnId: errTurnId,
+          stopReason: "error" as const,
+          error: {
+            code: "startTurn_threw",
+            message: err instanceof Error ? err.message : String(err),
+          },
+        }),
+        cancel: async () => undefined,
+        close: async () => undefined,
+      };
+    }
     // Release the next queued send when this turn's child exits. Use
     // inflightTurn (set by startTurn and resolved by the child close/error
     // handler) so successors wait on the actual process lifecycle, not
