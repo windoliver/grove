@@ -9,6 +9,9 @@ import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js
 /**
  * SubprocessRuntime does not produce ACP output. Return an already-settled
  * AcpxTurn so the interface is satisfied without misleading the consumer.
+ * Use `errorTurn()` on delivery failure — a synthetic `end_turn` on a
+ * failed write would silently hide non-delivery from callers who watch
+ * `turn.result`.
  */
 function emptyTurn(sessionId: string): AcpxTurn {
   return {
@@ -18,6 +21,24 @@ function emptyTurn(sessionId: string): AcpxTurn {
       /* no messages */
     })(),
     result: Promise.resolve({ turnId: `${sessionId}-noacp`, stopReason: "end_turn" as const }),
+    cancel: async () => undefined,
+    close: async () => undefined,
+  };
+}
+
+function errorTurn(sessionId: string, code: string, message: string): AcpxTurn {
+  const turnId = `${sessionId}-noacp-err`;
+  return {
+    sessionId,
+    turnId,
+    messages: (async function* () {
+      /* no messages */
+    })(),
+    result: Promise.resolve({
+      turnId,
+      stopReason: "error" as const,
+      error: { code, message },
+    }),
     cancel: async () => undefined,
     close: async () => undefined,
   };
@@ -84,11 +105,23 @@ export class SubprocessRuntime implements AgentRuntime {
 
   async send(session: AgentSession, message: string): Promise<AcpxTurn> {
     const entry = this.sessions.get(session.id);
-    if (entry?.proc.stdin) {
+    if (!entry) {
+      return errorTurn(session.id, "no_session", `unknown session id: ${session.id}`);
+    }
+    if (!entry.proc.stdin) {
+      return errorTurn(session.id, "no_stdin", "subprocess has no writable stdin");
+    }
+    try {
       const result = entry.proc.stdin.write(`${message}\n`);
       if (result instanceof Promise) await result;
       const flush = entry.proc.stdin.flush();
       if (flush instanceof Promise) await flush;
+    } catch (err) {
+      return errorTurn(
+        session.id,
+        "stdin_write_failed",
+        err instanceof Error ? err.message : String(err),
+      );
     }
     return emptyTurn(session.id);
   }

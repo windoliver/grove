@@ -7,6 +7,7 @@
 
 import { join } from "node:path";
 import type { AcpxTurn } from "../acp/types.js";
+import { watchTurnError } from "../acp/watch-turn.js";
 import type { AgentProfile } from "./agent-profile.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 import type { GroveContract } from "./contract.js";
@@ -125,34 +126,15 @@ export class SessionOrchestrator {
 
   /**
    * Observe a fire-and-forget turn's outcome and surface error stop reasons.
-   *
    * With the typed-stream runtime, post-spawn failures (malformed frames,
    * provider rejections, cancelled turns) show up as `stopReason: "error"`
-   * on the turn's final `Result` rather than as a thrown send() error. If
-   * we just `await runtime.send(...)`, those failures are invisible to the
-   * orchestrator and the agent silently drops the prompt while its process
-   * status transitions back to idle — making a failed delivery look like
-   * a successful one. We drain each turn in the background and log the
-   * error so it's observable; we intentionally do not throw, since
-   * control-plane prompts are already fire-and-forget.
+   * on the terminal `Result` instead of as a thrown send() error, so we
+   * drain each turn in the background to make silent delivery failures
+   * observable. We intentionally do not throw — control-plane prompts are
+   * already fire-and-forget and have no retry channel.
    */
   private watchTurn(role: string, turn: AcpxTurn): void {
-    void turn.result
-      .then((r) => {
-        if (r.stopReason === "error") {
-          const msg = r.error?.message ?? "unknown error";
-          const code = r.error?.code ? ` (code=${r.error.code})` : "";
-          process.stderr.write(
-            `[SessionOrchestrator] agent '${role}' turn ${turn.turnId} ended with error${code}: ${msg}\n`,
-          );
-        }
-      })
-      .catch((err) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(
-          `[SessionOrchestrator] agent '${role}' turn ${turn.turnId} rejected: ${msg}\n`,
-        );
-      });
+    watchTurnError(turn, `SessionOrchestrator agent='${role}'`);
   }
 
   /** Start the session: spawn all agents and send goals. */

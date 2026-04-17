@@ -14,6 +14,9 @@ import { shellEscape } from "./shell-utils.js";
 /**
  * TmuxRuntime does not produce ACP output. Return an already-settled
  * AcpxTurn so the interface is satisfied without misleading the consumer.
+ * Use `errorTurn()` on delivery failure — a synthetic `end_turn` on a
+ * failed send-keys would silently hide non-delivery from callers who
+ * watch `turn.result`.
  */
 function emptyTurn(sessionId: string): AcpxTurn {
   return {
@@ -23,6 +26,24 @@ function emptyTurn(sessionId: string): AcpxTurn {
       /* no messages */
     })(),
     result: Promise.resolve({ turnId: `${sessionId}-noacp`, stopReason: "end_turn" as const }),
+    cancel: async () => undefined,
+    close: async () => undefined,
+  };
+}
+
+function errorTurn(sessionId: string, code: string, message: string): AcpxTurn {
+  const turnId = `${sessionId}-noacp-err`;
+  return {
+    sessionId,
+    turnId,
+    messages: (async function* () {
+      /* no messages */
+    })(),
+    result: Promise.resolve({
+      turnId,
+      stopReason: "error" as const,
+      error: { code, message },
+    }),
     cancel: async () => undefined,
     close: async () => undefined,
   };
@@ -111,16 +132,24 @@ export class TmuxRuntime implements AgentRuntime {
 
   async send(session: AgentSession, message: string): Promise<AcpxTurn> {
     const entry = this.sessions.get(session.id);
-    if (entry) {
-      try {
-        execSync(
-          `tmux -L grove send-keys -t ${shellEscape(session.id)} ${shellEscape(message)} Enter`,
-          { encoding: "utf-8", stdio: "pipe" },
-        );
-      } catch {
-        // Session may have been killed externally — mark as crashed
-        entry.session = { ...entry.session, status: "crashed" };
-      }
+    if (!entry) {
+      return errorTurn(session.id, "no_session", `unknown tmux session: ${session.id}`);
+    }
+    try {
+      execSync(
+        `tmux -L grove send-keys -t ${shellEscape(session.id)} ${shellEscape(message)} Enter`,
+        { encoding: "utf-8", stdio: "pipe" },
+      );
+    } catch (err) {
+      // Session may have been killed externally — mark as crashed and
+      // report the delivery failure so callers that watch turn.result
+      // see a non-success outcome instead of a synthetic end_turn.
+      entry.session = { ...entry.session, status: "crashed" };
+      return errorTurn(
+        session.id,
+        "send_keys_failed",
+        err instanceof Error ? err.message : String(err),
+      );
     }
     return emptyTurn(session.id);
   }

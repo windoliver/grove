@@ -13,6 +13,7 @@
  * to avoid corrupting the alternate screen.
  */
 
+import { watchTurnError } from "../acp/watch-turn.js";
 import type { AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { EventBus, GroveEvent } from "../core/event-bus.js";
 import type { HandoffStore } from "../core/handoff.js";
@@ -353,9 +354,16 @@ export class NexusWsBridge {
         `delivering to session=${session.id} role=${_targetRole} notification=${notification.slice(0, 80)}`,
       );
 
-      void this.opts.runtime.send(session, notification).catch(() => {
-        /* non-fatal */
-      });
+      void this.opts.runtime
+        .send(session, notification)
+        .then((turn) => {
+          watchTurnError(turn, `NexusWsBridge.readAndPush(role=${_targetRole})`, (m) =>
+            debugLog("wsBridge.readAndPush", m),
+          );
+        })
+        .catch(() => {
+          /* non-fatal */
+        });
     } catch {
       // Non-fatal
     }

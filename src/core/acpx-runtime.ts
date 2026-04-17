@@ -13,6 +13,7 @@ import { createWriteStream, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { AcpxTurnImpl } from "../acp/turn.js";
 import type { AcpxTurn } from "../acp/types.js";
+import { watchTurnError } from "../acp/watch-turn.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 import { shellEscape } from "./shell-utils.js";
 import type { AgentPlatformType } from "./topology.js";
@@ -256,8 +257,18 @@ export class AcpxRuntime implements AgentRuntime {
     if (!config.waitForPush) {
       const initialMessage = config.goal ?? config.prompt;
       if (initialMessage) {
-        // Fire initial turn; drop the AcpxTurn — callers get future turns via send().
-        void this.startTurn(entry, initialMessage);
+        // Fire initial turn. Callers don't see this AcpxTurn (future turns
+        // reach them via send()), so watch its result ourselves and log any
+        // terminal error — otherwise bootstrap failures (malformed frames,
+        // provider rejection, cancelled turn) would be silently swallowed
+        // and the session would look successfully primed.
+        const initialTurn = this.startTurn(entry, initialMessage);
+        watchTurnError(initialTurn, `acpx spawn(role=${role})`, (msg) => {
+          process.stderr.write(`${msg}\n`);
+          if (entry.logStream) {
+            entry.logStream.write(`${msg}\n`);
+          }
+        });
       }
     }
 
