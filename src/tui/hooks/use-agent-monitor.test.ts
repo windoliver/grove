@@ -112,6 +112,11 @@ describe("roleFromSessionName", () => {
   test("handles uppercase in trailing ID", () => {
     expect(roleFromSessionName("grove-coder-AbC123")).toBe("coder");
   });
+
+  test("parses canonical session-id contract (role-counter-base36)", () => {
+    expect(roleFromSessionName("grove-coder-0-l8x9pq2")).toBe("coder");
+    expect(roleFromSessionName("grove-code-reviewer-12-abc1z")).toBe("code-reviewer");
+  });
 });
 
 // ===========================================================================
