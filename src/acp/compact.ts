@@ -39,6 +39,14 @@ export interface TurnSnapshot {
    */
   incompleteToolCalls: ToolCallEvent[];
   /**
+   * Raw tool-call frames the parser demoted before they could be structured
+   * (missing `toolCallId`, unknown status string, etc). Preserved here so
+   * downstream audit/telemetry can see that tool activity occurred even
+   * though the schema didn't match — without these, demoted frames would
+   * disappear entirely from the compacted snapshot.
+   */
+  rawToolFrames: Array<{ acpMethod: string; params: unknown }>;
+  /**
    * Canonical per-turn token accounting, populated only from `result.usage`.
    * Stays undefined when the provider didn't emit canonical counts on the
    * final frame — do NOT fall back to advisory `usage_update` values here;
@@ -107,6 +115,7 @@ export function compactTurn(input: {
   let thinkingText = "";
   const toolCallMap = new Map<string, ToolCallEvent>();
   const toolCallOrder: string[] = [];
+  const rawToolFrames: Array<{ acpMethod: string; params: unknown }> = [];
   let advisoryUsage: TokenUsage | undefined;
 
   for (const m of input.messages) {
@@ -130,8 +139,15 @@ export function compactTurn(input: {
       case "token_usage":
         advisoryUsage = m.usage;
         break;
+      case "raw":
+        // Parser demotes malformed tool frames (missing id, unknown status, etc) to raw.
+        // Surface them so tool activity isn't silently lost from the snapshot.
+        if (m.acpMethod === "tool_call" || m.acpMethod === "tool_call_update") {
+          rawToolFrames.push({ acpMethod: m.acpMethod, params: m.params });
+        }
+        break;
       default:
-        // raw, permission_request — not included in snapshot summary
+        // permission_request — not included in snapshot summary
         break;
     }
   }
@@ -157,6 +173,7 @@ export function compactTurn(input: {
     thinkingText,
     toolCalls,
     incompleteToolCalls,
+    rawToolFrames,
     // Canonical usage only — do NOT fall back to advisory usage_update values.
     // See the TurnSnapshot.usage JSDoc for the rationale.
     usage: input.result.usage,

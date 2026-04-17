@@ -481,6 +481,73 @@ test("AcpParser: a subscriber that never drains gets bounded (drops past cap); t
   expect(slowCount).toBeGreaterThan(0);
 });
 
+test("AcpParser: subscriber that calls return() stops receiving messages (no zombie push)", async () => {
+  const parser = new AcpParser({
+    sessionId: "s",
+    turnId: "t-return",
+    stream: readableFromString(
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "early" },
+          },
+        },
+      })}\n`,
+    ),
+  });
+  const iter = parser.messages[Symbol.asyncIterator]();
+  const first = await iter.next();
+  expect(first.done).toBe(false);
+  if (first.done) throw new Error("unreachable");
+  // Consumer aborts.
+  const returned = await (iter.return?.() ?? Promise.resolve({ value: undefined, done: true }));
+  expect(returned.done).toBe(true);
+  // Now the parser gets more data and would broadcast. The closed subscriber
+  // must NOT receive or queue any of it.
+  // (Can't feed the existing stream; but its queue at this point is empty, and
+  // all subsequent next() calls must stay done.)
+  const again = await iter.next();
+  expect(again.done).toBe(true);
+  const again2 = await iter.next();
+  expect(again2.done).toBe(true);
+});
+
+test("AcpParser: overflow emits an in-band _overflow raw marker so consumers see the drop", async () => {
+  const lines: string[] = [];
+  const OVER = 9000;
+  for (let i = 0; i < OVER; i += 1) {
+    lines.push(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s",
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "x" } },
+        },
+      }),
+    );
+  }
+  lines.push(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }));
+  const parser = new AcpParser({
+    sessionId: "s",
+    turnId: "t-overflow",
+    stream: readableFromString(`${lines.join("\n")}\n`),
+  });
+  const iter = parser.messages[Symbol.asyncIterator]();
+  await parser.result;
+  let sawOverflow = false;
+  while (true) {
+    const { value, done } = await iter.next();
+    if (done) break;
+    if (value.kind === "raw" && value.acpMethod === "_overflow") sawOverflow = true;
+  }
+  expect(sawOverflow).toBe(true);
+});
+
 test("AcpParser: broadcast — two simultaneous subscribers each receive every message", async () => {
   const lines = [
     JSON.stringify({

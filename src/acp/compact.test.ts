@@ -116,6 +116,36 @@ test("compactTurn prefers result.usage (canonical) over usage_update (advisory)"
   expect(snap.usage?.totalTokens).toBe(21914);
 });
 
+test("compactTurn carries parser-demoted tool frames (raw) into rawToolFrames", () => {
+  // When the parser demotes a tool_call frame (missing id / unknown status)
+  // to raw, the compactor must preserve that signal — otherwise tool activity
+  // disappears entirely from the snapshot.
+  const msgs: Message[] = [
+    {
+      kind: "raw",
+      turnId: "t1",
+      acpMethod: "tool_call",
+      params: { sessionUpdate: "tool_call", status: "pending", title: "no-id frame" },
+    },
+    {
+      kind: "raw",
+      turnId: "t1",
+      acpMethod: "tool_call_update",
+      params: { toolCallId: "tc-x", status: "unknown_future_status" },
+    },
+  ];
+  const snap = compactTurn({
+    turnId: "t1",
+    messages: msgs,
+    result: { turnId: "t1", stopReason: "end_turn" },
+  });
+  expect(snap.toolCalls).toHaveLength(0);
+  expect(snap.incompleteToolCalls).toHaveLength(0);
+  expect(snap.rawToolFrames).toHaveLength(2);
+  expect(snap.rawToolFrames[0]?.acpMethod).toBe("tool_call");
+  expect(snap.rawToolFrames[1]?.acpMethod).toBe("tool_call_update");
+});
+
 test("compactTurn routes orphan tool_call_update (no name/input) into incompleteToolCalls, not toolCalls", () => {
   const msgs: Message[] = [
     // No initial tool_call frame — only an update. Parser would have emitted this

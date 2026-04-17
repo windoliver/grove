@@ -343,9 +343,18 @@ class AcpSubscriber implements AsyncIterator<Message> {
   private readonly queue: Message[] = [];
   private waiters: Array<(r: IteratorResult<Message>) => void> = [];
   private dropped = 0;
+  private overflowEmitted = false;
   private finished = false;
+  private readonly onDetach: (() => void) | undefined;
 
-  push(message: Message): void {
+  constructor(opts?: { onDetach?: () => void }) {
+    this.onDetach = opts?.onDetach;
+  }
+
+  push(message: Message, turnId: string): void {
+    // Hard no-op once finished — prevents zombie subscribers from receiving
+    // messages after the consumer has called return()/break'd out of for-await.
+    if (this.finished) return;
     const waiter = this.waiters.shift();
     if (waiter !== undefined) {
       waiter({ value: message, done: false });
@@ -357,6 +366,19 @@ class AcpSubscriber implements AsyncIterator<Message> {
         process.stderr.write(
           `[acp-parser] subscriber buffer full (${MAX_SUBSCRIBER_BUFFER}); dropped ${this.dropped} messages so far\n`,
         );
+      }
+      // Emit one in-band overflow marker so the consumer sees the drop.
+      // Later drops update the counter but don't re-emit (avoid spamming).
+      if (!this.overflowEmitted) {
+        this.overflowEmitted = true;
+        const marker: Message = {
+          kind: "raw",
+          turnId,
+          acpMethod: "_overflow",
+          params: { droppedAtLeast: 1 },
+        };
+        // Replace the tail so the marker is visible when the consumer eventually drains.
+        this.queue[this.queue.length - 1] = marker;
       }
       return;
     }
@@ -387,6 +409,9 @@ class AcpSubscriber implements AsyncIterator<Message> {
   }
 
   return(): Promise<IteratorResult<Message>> {
+    // Detach before finishing so any race with a concurrent broadcast() call
+    // finds the subscriber gone.
+    this.onDetach?.();
     this.finish();
     return Promise.resolve({ value: undefined, done: true });
   }
@@ -396,9 +421,10 @@ export class AcpParser {
   readonly messages: AsyncIterable<Message>;
   readonly result: Promise<Result>;
 
-  private readonly subscribers: AcpSubscriber[] = [];
+  private readonly subscribers: Set<AcpSubscriber> = new Set();
   private streamFinished = false;
   private resolveResult!: (r: Result) => void;
+  private readonly turnId: string;
 
   constructor({
     sessionId: _sessionId,
@@ -409,6 +435,7 @@ export class AcpParser {
     turnId: string;
     stream: Readable;
   }) {
+    this.turnId = turnId;
     this.result = new Promise<Result>((resolve) => {
       this.resolveResult = resolve;
     });
@@ -418,12 +445,17 @@ export class AcpParser {
 
     this.messages = {
       [Symbol.asyncIterator]: (): AsyncIterator<Message> => {
-        const sub = new AcpSubscriber();
         if (this.streamFinished) {
-          sub.finish();
-        } else {
-          this.subscribers.push(sub);
+          const finished = new AcpSubscriber();
+          finished.finish();
+          return finished;
         }
+        const sub: AcpSubscriber = new AcpSubscriber({
+          onDetach: () => {
+            this.subscribers.delete(sub);
+          },
+        });
+        this.subscribers.add(sub);
         return sub;
       },
     };
@@ -431,14 +463,15 @@ export class AcpParser {
 
   private broadcast(message: Message): void {
     for (const sub of this.subscribers) {
-      sub.push(message);
+      sub.push(message, this.turnId);
     }
   }
 
   private finish(result: Result): void {
     this.resolveResult(result);
     this.streamFinished = true;
-    const subs = this.subscribers.splice(0);
+    const subs = Array.from(this.subscribers);
+    this.subscribers.clear();
     for (const sub of subs) {
       sub.finish();
     }
