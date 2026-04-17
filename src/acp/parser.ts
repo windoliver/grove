@@ -45,6 +45,20 @@ function num(v: unknown): number {
 }
 
 /**
+ * Extract a stable canonical tool identity from provider metadata if present.
+ * Claude's ACP bridge puts the underlying tool name at
+ * `_meta.claudeCode.toolName`; other providers may add similar hooks.
+ */
+function readCanonicalToolName(update: Record<string, unknown>): string | undefined {
+  const meta = update._meta;
+  if (typeof meta !== "object" || meta === null) return undefined;
+  const claudeCode = (meta as Record<string, unknown>).claudeCode;
+  if (typeof claudeCode !== "object" || claudeCode === null) return undefined;
+  const toolName = (claudeCode as Record<string, unknown>).toolName;
+  return typeof toolName === "string" && toolName.length > 0 ? toolName : undefined;
+}
+
+/**
  * Advisory progress snapshot from a `usage_update` frame. These fields are
  * context-meter style (used/size of the rolling window, cost so far) and are
  * NOT canonical per-turn token counts. Compaction prefers `result.usage` when
@@ -204,10 +218,40 @@ export function parseAcpLine(line: string, turnId: string): ParsedLine {
 
           case "tool_call":
           case "tool_call_update": {
-            const id = typeof u.toolCallId === "string" ? u.toolCallId : "";
-            const toolCall: ToolCallEvent = { id };
-            if (typeof u.title === "string" && u.title.length > 0) {
+            // Tool-call frames require a usable id to key the event. Without
+            // it we cannot merge updates — surface as raw instead of fabricating
+            // a synthetic "" id that would collapse unrelated frames together.
+            if (typeof u.toolCallId !== "string" || u.toolCallId.length === 0) {
+              return {
+                kind: "message",
+                message: { kind: "raw", turnId, acpMethod: sessionUpdate, params: update },
+              };
+            }
+            // Unknown status string → raw (don't silently drop schema-drift info
+            // by coercing to "pending" or to "missing"). Absent status is fine.
+            if (
+              u.status !== undefined &&
+              (typeof u.status !== "string" || !VALID_STATUSES.has(u.status as ToolCallStatus))
+            ) {
+              return {
+                kind: "message",
+                message: { kind: "raw", turnId, acpMethod: sessionUpdate, params: update },
+              };
+            }
+            const toolCall: ToolCallEvent = { id: u.toolCallId };
+            // Canonical identity first: `_meta.claudeCode.toolName` is stable
+            // across updates on Claude's ACP bridge (e.g. "Read", "Bash").
+            // Fall back to `title` when no canonical field exists.
+            const canonicalName = readCanonicalToolName(u);
+            if (canonicalName !== undefined) {
+              toolCall.name = canonicalName;
+            } else if (typeof u.title === "string" && u.title.length > 0) {
               toolCall.name = u.title;
+            }
+            // Always preserve title separately — it mutates for display ("Read
+            // /etc/hostname", shell command text) and consumers may want it.
+            if (typeof u.title === "string" && u.title.length > 0) {
+              toolCall.title = u.title;
             }
             const status = normalizeStatus(u.status);
             if (status !== undefined) {
@@ -268,9 +312,15 @@ export function parseAcpLine(line: string, turnId: string): ParsedLine {
 // ---------------------------------------------------------------------------
 // AcpParser — streams Messages from a Readable, resolves a Result
 // ---------------------------------------------------------------------------
+//
+// Reading is eager: the parser begins consuming the stream immediately on
+// construction and resolves `result` as soon as a terminal frame arrives,
+// regardless of whether any consumer is iterating `messages`. Messages
+// buffer until a consumer shows up, then drain in order. Exactly one
+// consumer is supported (`messages` is a single-use AsyncIterable — iterating
+// twice drains once).
 
-const EOF_RESULT: Result = {
-  turnId: "",
+const EOF_RESULT: Omit<Result, "turnId"> = {
   stopReason: "error",
   error: { code: "acpx_exit", message: "stream closed before result" },
 };
@@ -278,6 +328,11 @@ const EOF_RESULT: Result = {
 export class AcpParser {
   readonly messages: AsyncIterable<Message>;
   readonly result: Promise<Result>;
+
+  private readonly queue: Message[] = [];
+  private pendingResolvers: Array<(r: IteratorResult<Message>) => void> = [];
+  private done = false;
+  private resolveResult!: (r: Result) => void;
 
   constructor({
     sessionId: _sessionId,
@@ -288,23 +343,61 @@ export class AcpParser {
     turnId: string;
     stream: Readable;
   }) {
-    // Shared state between the two async consumers
-    let resolveResult!: (r: Result) => void;
     this.result = new Promise<Result>((resolve) => {
-      resolveResult = resolve;
+      this.resolveResult = resolve;
     });
 
-    // Build the messages async generator + wire up the result resolver
-    this.messages = AcpParser._makeMessages(stream, turnId, resolveResult);
+    // Start eager background read — completion is independent of `messages` consumption.
+    void this._readStream(stream, turnId);
+
+    const self = this;
+    this.messages = {
+      [Symbol.asyncIterator](): AsyncIterator<Message> {
+        return {
+          next(): Promise<IteratorResult<Message>> {
+            const value = self.queue.shift();
+            if (value !== undefined) {
+              return Promise.resolve({ value, done: false });
+            }
+            if (self.done) {
+              return Promise.resolve({ value: undefined, done: true });
+            }
+            return new Promise((resolve) => {
+              self.pendingResolvers.push(resolve);
+            });
+          },
+          return(): Promise<IteratorResult<Message>> {
+            // Iteration aborted early — let the background read finish on its own.
+            return Promise.resolve({ value: undefined, done: true });
+          },
+        };
+      },
+    };
   }
 
-  private static async *_makeMessages(
-    stream: Readable,
-    turnId: string,
-    resolveResult: (r: Result) => void,
-  ): AsyncGenerator<Message> {
+  private enqueue(message: Message): void {
+    const waiter = this.pendingResolvers.shift();
+    if (waiter !== undefined) {
+      waiter({ value: message, done: false });
+    } else {
+      this.queue.push(message);
+    }
+  }
+
+  private finish(result: Result): void {
+    this.resolveResult(result);
+    this.done = true;
+    // Signal end-of-stream to any consumers still waiting.
+    const waiters = this.pendingResolvers;
+    this.pendingResolvers = [];
+    for (const w of waiters) {
+      w({ value: undefined, done: true });
+    }
+  }
+
+  private async _readStream(stream: Readable, turnId: string): Promise<void> {
     let buffer = "";
-    let resultSeen = false;
+    let settled = false;
 
     try {
       for await (const chunk of stream) {
@@ -321,28 +414,39 @@ export class AcpParser {
 
           const parsed = parseAcpLine(line, turnId);
           if (parsed.kind === "result") {
-            // Attach turnId (it was set inside parseAcpLine but may need override for EOF)
-            const result = { ...parsed.result, turnId };
-            resultSeen = true;
-            resolveResult(result);
-            return; // done
+            settled = true;
+            this.finish({ ...parsed.result, turnId });
+            return;
           }
-          yield parsed.message;
+          this.enqueue(parsed.message);
         }
       }
 
-      // Flush any trailing content without newline
-      if (buffer.trim()) {
+      // Flush any trailing content without a newline
+      if (buffer.trim().length > 0) {
         const parsed = parseAcpLine(buffer.trim(), turnId);
         if (parsed.kind === "result") {
-          resolveResult({ ...parsed.result, turnId });
+          settled = true;
+          this.finish({ ...parsed.result, turnId });
           return;
         }
-        yield parsed.message;
+        this.enqueue(parsed.message);
       }
+    } catch (err) {
+      // Stream error — surface as a terminal error result.
+      settled = true;
+      this.finish({
+        turnId,
+        stopReason: "error",
+        error: {
+          code: "stream_error",
+          message: err instanceof Error ? err.message : String(err),
+        },
+      });
+      return;
     } finally {
-      if (!resultSeen) {
-        resolveResult({ ...EOF_RESULT, turnId });
+      if (!settled) {
+        this.finish({ ...EOF_RESULT, turnId });
       }
     }
   }

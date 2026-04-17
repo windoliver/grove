@@ -110,6 +110,32 @@ test("cancel() is retryable: failed cancelFn leaves the turn cancellable", async
   await turn.result;
 });
 
+test("cancel() is single-flight under concurrent callers", async () => {
+  let calls = 0;
+  const stdout = new PassThrough();
+  const turn = new AcpxTurnImpl({
+    sessionId: "s1",
+    turnId: "t1",
+    stdout,
+    cancelFn: async () => {
+      calls += 1;
+      // Simulate slow transport so concurrent callers race into the same attempt.
+      await new Promise((r) => setTimeout(r, 20));
+    },
+  });
+  const drain = (async () => {
+    for await (const _ of turn.messages) {
+      /* noop */
+    }
+  })();
+  // Fire 3 callers simultaneously; only one underlying cancelFn invocation is allowed.
+  await Promise.all([turn.cancel(), turn.cancel(), turn.cancel()]);
+  expect(calls).toBe(1);
+  stdout.end();
+  await drain;
+  await turn.result;
+});
+
 test("cancel() short-circuits once the turn's result has settled", async () => {
   let calls = 0;
   const lines = [JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } })];

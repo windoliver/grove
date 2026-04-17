@@ -16,10 +16,16 @@ export type ToolCallStatus = "pending" | "in_progress" | "completed" | "failed";
 /**
  * Fully-populated tool call record. Produced by the compactor after folding
  * a sequence of `ToolCallEvent`s keyed by `id`.
+ *
+ * `name` is the canonical tool identity (e.g. "Read", "Bash") — stable across
+ * updates, suitable for analytics/permissions. `title` is the mutable display
+ * text provider emits for UI ("Read /etc/hostname", full shell command) and
+ * may change between updates.
  */
 export type ToolCall = {
   id: string;
   name: string;
+  title?: string;
   status: ToolCallStatus;
   input: unknown;
   output?: unknown;
@@ -35,6 +41,7 @@ export type ToolCall = {
 export type ToolCallEvent = {
   id: string;
   name?: string;
+  title?: string;
   status?: ToolCallStatus;
   input?: unknown;
   output?: unknown;

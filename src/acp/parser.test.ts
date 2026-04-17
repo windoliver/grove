@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { AcpParser, parseAcpLine } from "./parser.js";
-import type { Message } from "./types.js";
+import type { Message, Result } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -245,6 +245,87 @@ test("AcpParser: empty stream → acpx_exit error Result", async () => {
   expect(messages.length).toBe(0);
 });
 
+test("parseAcpLine: tool_call without toolCallId → raw (never synthesize empty id)", () => {
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "s",
+      update: { sessionUpdate: "tool_call", status: "pending", title: "no-id frame" },
+    },
+  });
+  const parsed = parseAcpLine(line, "t");
+  expect(parsed.kind).toBe("message");
+  if (parsed.kind !== "message") throw new Error("unreachable");
+  expect(parsed.message.kind).toBe("raw");
+  if (parsed.message.kind !== "raw") throw new Error("unreachable");
+  expect(parsed.message.acpMethod).toBe("tool_call");
+});
+
+test("parseAcpLine: tool_call with unknown status string → raw (don't coerce to pending)", () => {
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "s",
+      update: { sessionUpdate: "tool_call", toolCallId: "tc-1", status: "cancelled", title: "x" },
+    },
+  });
+  const parsed = parseAcpLine(line, "t");
+  expect(parsed.kind).toBe("message");
+  if (parsed.kind !== "message") throw new Error("unreachable");
+  // Unknown status must not silently become "pending" tool_call — emit raw so
+  // schema drift is visible to downstream consumers.
+  expect(parsed.message.kind).toBe("raw");
+});
+
+test("parseAcpLine: prefers canonical _meta.claudeCode.toolName over mutable title", () => {
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "s",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tc-1",
+        status: "pending",
+        title: "Read /etc/hostname",
+        _meta: { claudeCode: { toolName: "Read" } },
+      },
+    },
+  });
+  const parsed = parseAcpLine(line, "t");
+  expect(parsed.kind).toBe("message");
+  if (parsed.kind !== "message") throw new Error("unreachable");
+  expect(parsed.message.kind).toBe("tool_call");
+  if (parsed.message.kind !== "tool_call") throw new Error("unreachable");
+  // Canonical identity comes from metadata; mutable display text stays on title.
+  expect(parsed.message.toolCall.name).toBe("Read");
+  expect(parsed.message.toolCall.title).toBe("Read /etc/hostname");
+});
+
+test("parseAcpLine: falls back to title when no canonical identity is present", () => {
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "s",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tc-2",
+        status: "pending",
+        title: "Read File",
+      },
+    },
+  });
+  const parsed = parseAcpLine(line, "t");
+  if (parsed.kind !== "message" || parsed.message.kind !== "tool_call") {
+    throw new Error("unreachable");
+  }
+  expect(parsed.message.toolCall.name).toBe("Read File");
+  expect(parsed.message.toolCall.title).toBe("Read File");
+});
+
 test("parseAcpLine: unknown stopReason is preserved as terminal result (forward-compat)", () => {
   const line = JSON.stringify({
     jsonrpc: "2.0",
@@ -303,6 +384,55 @@ test("parseAcpLine: tool_call_update without title/rawInput emits partial event 
   expect(parsed.message.toolCall.name).toBeUndefined();
   expect(parsed.message.toolCall.input).toBeUndefined();
   expect(parsed.message.toolCall.status).toBe("completed");
+});
+
+test("AcpParser: result resolves without the consumer iterating messages (eager read)", async () => {
+  const line = JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } });
+  const parser = new AcpParser({
+    sessionId: "s",
+    turnId: "t-eager",
+    stream: readableFromString(`${line}\n`),
+  });
+  // Do NOT iterate parser.messages. Result must still resolve.
+  const timeout = new Promise<Result>((_resolve, reject) =>
+    setTimeout(() => reject(new Error("result did not resolve in 1s")), 1000),
+  );
+  const result = await Promise.race([parser.result, timeout]);
+  expect(result.stopReason).toBe("end_turn");
+});
+
+test("AcpParser: messages buffered before iteration are delivered in order", async () => {
+  const lines = [
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "s",
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "a" } },
+      },
+    }),
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "s",
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "b" } },
+      },
+    }),
+    JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }),
+  ];
+  const parser = new AcpParser({
+    sessionId: "s",
+    turnId: "t-buffered",
+    stream: readableFromString(`${lines.join("\n")}\n`),
+  });
+  // Await result first so the background reader has finished and buffered.
+  await parser.result;
+  const collected: string[] = [];
+  for await (const m of parser.messages) {
+    if (m.kind === "text") collected.push(m.text);
+  }
+  expect(collected).toEqual(["a", "b"]);
 });
 
 test("AcpParser: all message turnIds match constructor turnId", async () => {

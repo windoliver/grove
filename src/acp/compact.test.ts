@@ -116,14 +116,18 @@ test("compactTurn prefers result.usage (canonical) over usage_update (advisory)"
   expect(snap.usage?.totalTokens).toBe(21914);
 });
 
-test("compactTurn falls back to usage_update when result has no usage", () => {
+test("compactTurn keeps canonical usage undefined when result has no usage (advisoryUsage is separate)", () => {
   const msgs: Message[] = [
     { kind: "token_usage", turnId: "t1", usage: { inputTokens: 100, outputTokens: 50 } },
   ];
   const result: Result = { turnId: "t1", stopReason: "end_turn" };
   const snap = compactTurn({ turnId: "t1", messages: msgs, result });
-  expect(snap.usage?.inputTokens).toBe(100);
-  expect(snap.usage?.outputTokens).toBe(50);
+  // Canonical usage must stay undefined — advisory values are rolling-window
+  // meters and must not be promoted to per-turn canonical counts.
+  expect(snap.usage).toBeUndefined();
+  // But the advisory meter itself is preserved under a separate field.
+  expect(snap.advisoryUsage?.inputTokens).toBe(100);
+  expect(snap.advisoryUsage?.outputTokens).toBe(50);
 });
 
 test("claude-tool-call fixture compacts to real tool names, not placeholders", async () => {

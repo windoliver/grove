@@ -25,7 +25,20 @@ export interface TurnSnapshot {
   assistantText: string;
   thinkingText: string;
   toolCalls: ToolCall[];
+  /**
+   * Canonical per-turn token accounting, populated only from `result.usage`.
+   * Stays undefined when the provider didn't emit canonical counts on the
+   * final frame — do NOT fall back to advisory `usage_update` values here;
+   * they are rolling-window meters, not per-turn totals, and confusing the
+   * two silently corrupts billing/quota telemetry.
+   */
   usage: TokenUsage | undefined;
+  /**
+   * Last advisory `usage_update` snapshot observed during the turn. These are
+   * progress/meter values (context window usage, rolling cost) with different
+   * provenance than canonical usage — consumers must treat them accordingly.
+   */
+  advisoryUsage: TokenUsage | undefined;
   stopReason: StopReason;
   error: Result["error"] | undefined;
 }
@@ -45,6 +58,7 @@ function finalizeToolCall(partial: ToolCallEvent): ToolCall {
     status: partial.status ?? "pending",
     input: partial.input ?? {},
   };
+  if (partial.title !== undefined) finalized.title = partial.title;
   if (partial.output !== undefined) finalized.output = partial.output;
   if (partial.diff !== undefined) finalized.diff = partial.diff;
   if (partial.error !== undefined) finalized.error = partial.error;
@@ -55,6 +69,7 @@ function finalizeToolCall(partial: ToolCallEvent): ToolCall {
 function mergeToolCallEvent(existing: ToolCallEvent, incoming: ToolCallEvent): ToolCallEvent {
   const merged: ToolCallEvent = { ...existing };
   if (incoming.name !== undefined) merged.name = incoming.name;
+  if (incoming.title !== undefined) merged.title = incoming.title;
   if (incoming.status !== undefined) {
     const existingRank = merged.status ? STATUS_RANK[merged.status] : -1;
     const incomingRank = STATUS_RANK[incoming.status];
@@ -119,8 +134,10 @@ export function compactTurn(input: {
     assistantText,
     thinkingText,
     toolCalls,
-    // Canonical usage wins; fall back to the last advisory snapshot.
-    usage: input.result.usage ?? advisoryUsage,
+    // Canonical usage only — do NOT fall back to advisory usage_update values.
+    // See the TurnSnapshot.usage JSDoc for the rationale.
+    usage: input.result.usage,
+    advisoryUsage,
     stopReason: input.result.stopReason,
     error: input.result.error,
   };
