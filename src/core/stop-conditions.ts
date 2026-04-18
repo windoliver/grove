@@ -45,6 +45,21 @@ export interface DeliberationResult {
 // Canonical evaluator
 // ---------------------------------------------------------------------------
 
+/** Options for {@link evaluateStopConditions}. */
+export interface EvaluateStopConditionsOptions {
+  /**
+   * Skip the "expensive" evaluators — `quorumReviewScore` and
+   * `deliberationLimit` — which require a full `store.list()` scan and
+   * per-root `store.thread()` traversals. Callers on the pre-write hot
+   * path (PolicyEnforcer.enforce inside the write mutex) pass this to
+   * avoid blocking concurrent writers on large groves (#232). The
+   * post-write recheck in contributeOperation runs with this option
+   * disabled so threshold-crossing stops are still detected outside the
+   * mutex.
+   */
+  readonly skipExpensive?: boolean;
+}
+
 /**
  * Evaluate all stop conditions defined in a grove contract.
  *
@@ -56,10 +71,15 @@ export interface DeliberationResult {
  * contributions into memory up front. The full contribution list is
  * loaded at most once — shared between quorumReviewScore and
  * deliberationLimit if both are configured.
+ *
+ * When `options.skipExpensive` is true, the quorumReviewScore and
+ * deliberationLimit evaluators are omitted entirely and the full
+ * contribution list is not loaded.
  */
 export async function evaluateStopConditions(
   config: SessionRuntimeConfig,
   store: ContributionStore,
+  options?: EvaluateStopConditionsOptions,
 ): Promise<StopEvaluationResult> {
   const conditions: Record<string, StopConditionResult> = {};
   const stopConditions = config.stopConditions;
@@ -68,12 +88,16 @@ export async function evaluateStopConditions(
     return { stopped: false, conditions: {}, evaluatedAt: new Date().toISOString() };
   }
 
+  const evaluateQuorum =
+    stopConditions.quorumReviewScore !== undefined && options?.skipExpensive !== true;
+  const evaluateDeliberation =
+    stopConditions.deliberationLimit !== undefined && options?.skipExpensive !== true;
+
   // Load the full contribution list at most once, shared by evaluators that need it.
   // The targeted evaluators (maxRoundsWithoutImprovement, targetMetric, budget) do
-  // their own focused queries and do not use this list.
-  const needsFullList =
-    stopConditions.quorumReviewScore !== undefined ||
-    stopConditions.deliberationLimit !== undefined;
+  // their own focused queries and do not use this list. When skipExpensive=true
+  // the list is never loaded since neither expensive evaluator will run.
+  const needsFullList = evaluateQuorum || evaluateDeliberation;
   const allContributions: readonly Contribution[] = needsFullList ? await store.list() : [];
 
   if (stopConditions.maxRoundsWithoutImprovement !== undefined) {
@@ -97,7 +121,7 @@ export async function evaluateStopConditions(
     conditions.budget = await evaluateBudget(stopConditions.budget, store);
   }
 
-  if (stopConditions.quorumReviewScore !== undefined) {
+  if (evaluateQuorum && stopConditions.quorumReviewScore !== undefined) {
     conditions.quorum_review_score = evaluateQuorumReviewScore(
       stopConditions.quorumReviewScore.minReviews,
       stopConditions.quorumReviewScore.minScore,
@@ -105,7 +129,7 @@ export async function evaluateStopConditions(
     );
   }
 
-  if (stopConditions.deliberationLimit !== undefined) {
+  if (evaluateDeliberation && stopConditions.deliberationLimit !== undefined) {
     conditions.deliberation_limit = await evaluateDeliberationLimit(
       stopConditions.deliberationLimit,
       allContributions,

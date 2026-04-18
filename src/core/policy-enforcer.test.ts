@@ -1138,6 +1138,36 @@ describe("PolicyEnforcer: quorum_review_score stop condition", () => {
     expect(result.stopResult!.reason).toContain("quorum_review_score");
   });
 
+  test("skipExpensiveStopChecks=true omits quorum even when met", async () => {
+    const target = makeFullContribution({ summary: "Work" });
+    const r1 = makeFullContribution({
+      kind: ContributionKind.Review,
+      summary: "Review 1",
+      relations: [
+        { targetCid: target.cid, relationType: RelationType.Reviews, metadata: { score: 0.9 } },
+      ],
+    });
+    const r2 = makeFullContribution({
+      kind: ContributionKind.Review,
+      summary: "Review 2",
+      relations: [
+        { targetCid: target.cid, relationType: RelationType.Reviews, metadata: { score: 0.95 } },
+      ],
+    });
+    const contract: GroveContract = {
+      contractVersion: 2,
+      name: "test",
+      stopConditions: { quorumReviewScore: { minReviews: 2, minScore: 0.8 } },
+    };
+    const store = new InMemoryContributionStore([target, r1, r2]);
+    const enforcer = new PolicyEnforcer(contract, store);
+    const contribution = makeContribution();
+
+    const result = await enforcer.enforce(contribution, false, { skipExpensiveStopChecks: true });
+    expect(result.stopResult).toBeDefined();
+    expect(result.stopResult!.stopped).toBe(false);
+  });
+
   test("not stopped when quorum is not met", async () => {
     const target = makeFullContribution({ summary: "Work" });
     const review1 = makeFullContribution({
@@ -1199,6 +1229,34 @@ describe("PolicyEnforcer: deliberation_limit stop condition", () => {
     expect(result.stopResult).toBeDefined();
     expect(result.stopResult!.stopped).toBe(true);
     expect(result.stopResult!.reason).toContain("deliberation_limit");
+  });
+
+  test("skipExpensiveStopChecks=true omits deliberation even when exceeded", async () => {
+    const root = makeFullContribution({ summary: "Topic root" });
+    const r1 = makeFullContribution({
+      kind: ContributionKind.Discussion,
+      relations: [{ targetCid: root.cid, relationType: RelationType.RespondsTo }],
+    });
+    const r2 = makeFullContribution({
+      kind: ContributionKind.Discussion,
+      relations: [{ targetCid: r1.cid, relationType: RelationType.RespondsTo }],
+    });
+    const r3 = makeFullContribution({
+      kind: ContributionKind.Discussion,
+      relations: [{ targetCid: r2.cid, relationType: RelationType.RespondsTo }],
+    });
+    const contract: GroveContract = {
+      contractVersion: 2,
+      name: "test",
+      stopConditions: { deliberationLimit: { maxRounds: 3 } },
+    };
+    const store = new InMemoryContributionStore([root, r1, r2, r3]);
+    const enforcer = new PolicyEnforcer(contract, store);
+    const contribution = makeContribution();
+
+    const result = await enforcer.enforce(contribution, false, { skipExpensiveStopChecks: true });
+    expect(result.stopResult).toBeDefined();
+    expect(result.stopResult!.stopped).toBe(false);
   });
 
   test("not stopped when thread is below limit", async () => {

@@ -1010,10 +1010,21 @@ export async function contributeOperation(
       };
       if (store.setPreWriteHook) {
         store.setPreWriteHook(contribution.cid, async (c: Contribution) => {
-          policyResult = await enforcer?.enforce(c, true, { skipStopConditions });
+          // skipExpensiveStopChecks: true — scanning stop evaluators (quorum,
+          // deliberation) run in the post-write recheck below, outside the
+          // mutex, so they don't block concurrent writers (#232). This opt-in
+          // is ONLY for the mutex-hook path — the fallback branch below uses
+          // the default full evaluation since it isn't holding the mutex.
+          policyResult = await enforcer?.enforce(c, true, {
+            skipStopConditions,
+            skipExpensiveStopChecks: true,
+          });
         });
       } else {
-        // Fallback: enforce outside mutex (non-EnforcingContributionStore)
+        // Fallback: enforce outside mutex (non-EnforcingContributionStore).
+        // Not the write-mutex hot path that motivated skipExpensiveStopChecks,
+        // so keep full evaluation — the post-write recheck is best-effort and
+        // should not be the sole detector here.
         policyResult = await enforcer.enforce(contribution, true, { skipStopConditions });
       }
     }
@@ -1399,27 +1410,64 @@ export async function contributeOperation(
       deps.contract?.stopConditions !== undefined &&
       deps.contributionStore !== undefined
     ) {
-      try {
-        const { evaluateStopConditions } = await import("../stop-conditions.js");
-        const postWriteResult = await evaluateStopConditions(deps.contract, deps.contributionStore);
-        if (postWriteResult.stopped) {
-          policyResult = {
-            ...policyResult,
-            stopResult: {
-              stopped: true,
-              reason: Object.entries(postWriteResult.conditions)
-                .filter(([, c]) => c.met)
-                .map(([name, c]) => `${name}: ${c.reason}`)
-                .join("; "),
-            },
-          };
+      // Bounded retry with exponential backoff — addresses Codex review r3:
+      // the scanning stop evaluators are the ONLY detector for
+      // quorum/deliberation on the mutex-hook path, so a transient
+      // store read failure must not silently drop a stop signal.
+      // 3 attempts × (100ms, 400ms) backoff caps at ~500ms added latency
+      // in the worst case; success on attempt 1 adds zero latency.
+      const { evaluateStopConditions } = await import("../stop-conditions.js");
+      const POST_WRITE_RECHECK_ATTEMPTS = 3;
+      let attempt = 0;
+      let lastError: unknown;
+      while (attempt < POST_WRITE_RECHECK_ATTEMPTS) {
+        try {
+          const postWriteResult = await evaluateStopConditions(
+            deps.contract,
+            deps.contributionStore,
+          );
+          if (postWriteResult.stopped) {
+            policyResult = {
+              ...policyResult,
+              stopResult: {
+                stopped: true,
+                reason: Object.entries(postWriteResult.conditions)
+                  .filter(([, c]) => c.met)
+                  .map(([name, c]) => `${name}: ${c.reason}`)
+                  .join("; "),
+              },
+            };
+          }
+          lastError = undefined;
+          break;
+        } catch (err) {
+          lastError = err;
+          attempt += 1;
+          if (attempt < POST_WRITE_RECHECK_ATTEMPTS) {
+            await new Promise((resolve) => setTimeout(resolve, 100 * 4 ** (attempt - 1)));
+          }
         }
-      } catch (err) {
-        // Best-effort: the contribution is already committed. A stop-condition
-        // recheck failure does not invalidate the write, but log it so operators
-        // can detect cases where a threshold-crossing stop signal was lost.
+      }
+      if (lastError !== undefined) {
+        // All attempts exhausted. The contribution is already committed, so we
+        // cannot undo the write. Surface the degradation explicitly via
+        // `stopResult.degraded = true` so callers can distinguish "confirmed
+        // not stopped" from "unknown — evaluation failed". The boolean
+        // `stopped` field stays the cheap-evaluator result (the only source
+        // we successfully computed). The `degraded` flag + warning are the
+        // signal operators must monitor. This addresses Codex review r4/r5
+        // findings on fail-open behavior under sustained store read failures.
+        const degradedReason = `stop_recheck_unavailable: post-write recheck failed after ${POST_WRITE_RECHECK_ATTEMPTS} attempts — quorum/deliberation stop detection temporarily degraded; treat stopped=false as unverified until next successful recheck`;
+        policyResult = {
+          ...policyResult,
+          stopResult: {
+            stopped: policyResult.stopResult?.stopped === true,
+            reason: policyResult.stopResult?.reason ?? degradedReason,
+            degraded: true,
+          },
+        };
         process.stderr.write(
-          `[grove] Warning: post-write stop-condition recheck failed: ${err instanceof Error ? err.message : String(err)}\n`,
+          `[grove] Warning: post-write stop-condition recheck failed after ${POST_WRITE_RECHECK_ATTEMPTS} attempts: ${lastError instanceof Error ? lastError.message : String(lastError)}\n`,
         );
       }
     }
@@ -1448,9 +1496,7 @@ export async function contributeOperation(
 
     // Build the final result returned to the DIRECT caller. This includes
     // any post-write updates to policyResult (e.g., stop-condition recheck
-    // detecting a threshold crossing). Cached retries get the narrower
-    // `committedResult` built above — that's intentional, see the
-    // DURABLE COMMIT BOUNDARY comment.
+    // detecting a threshold crossing).
     const result: ContributeResult = {
       cid: contribution.cid,
       kind: contribution.kind,
@@ -1463,6 +1509,60 @@ export async function contributeOperation(
       ...(handoffIds.length > 0 ? { handoffIds } : {}),
       ...(policyResult !== undefined ? { policy: policyResult } : {}),
     };
+
+    // Refresh BOTH the in-memory idempotency cache AND the durable row with
+    // the final result so same-process retries and cross-process lookups
+    // return the same payload as the direct caller. Without this, the
+    // committedResult snapshot (pre-recheck) would persist in the in-memory
+    // cache for up to IDEMPOTENCY_TTL_MS, and same-process retries would see
+    // stopped=false while the direct caller saw stopped=true. See Codex
+    // findings on #312 rounds 2–3.
+    //
+    // In-flight concurrent retries that already awaited the in-memory slot's
+    // pending promise still receive committedResult — that's a pre-existing
+    // narrow window documented at the DURABLE COMMIT BOUNDARY. New retries
+    // (key lookup after the slot resolves) get the final result.
+    if (idempotencyCacheLookupKey !== undefined && idempotencyFingerprint !== undefined) {
+      const existing = idempotencyCache.get(idempotencyCacheLookupKey);
+      if (existing !== undefined && existing.fingerprint === idempotencyFingerprint) {
+        idempotencyCache.set(idempotencyCacheLookupKey, {
+          fingerprint: idempotencyFingerprint,
+          storedAt: existing.storedAt,
+          value: result,
+        });
+      }
+      if (deps.idempotencyStore !== undefined) {
+        // Bounded retry with warning on final durable refresh failure.
+        // Addresses Codex review r4 finding: a silent drop here leaves
+        // cross-process retries reading the stale committedResult for the
+        // full TTL. Same 3-attempt pattern used for post-write recheck.
+        const IDEMPOTENCY_REFRESH_ATTEMPTS = 3;
+        let refreshAttempt = 0;
+        let refreshError: unknown;
+        while (refreshAttempt < IDEMPOTENCY_REFRESH_ATTEMPTS) {
+          try {
+            deps.idempotencyStore.store(
+              idempotencyCacheLookupKey,
+              idempotencyFingerprint,
+              JSON.stringify(result),
+            );
+            refreshError = undefined;
+            break;
+          } catch (err) {
+            refreshError = err;
+            refreshAttempt += 1;
+            if (refreshAttempt < IDEMPOTENCY_REFRESH_ATTEMPTS) {
+              await new Promise((resolve) => setTimeout(resolve, 100 * 4 ** (refreshAttempt - 1)));
+            }
+          }
+        }
+        if (refreshError !== undefined) {
+          process.stderr.write(
+            `[grove] Warning: idempotency durable-refresh failed after ${IDEMPOTENCY_REFRESH_ATTEMPTS} attempts (cross-process retries may observe stale policy for key=${idempotencyCacheLookupKey}): ${refreshError instanceof Error ? refreshError.message : String(refreshError)}\n`,
+          );
+        }
+      }
+    }
 
     return ok(result);
   } catch (error) {
