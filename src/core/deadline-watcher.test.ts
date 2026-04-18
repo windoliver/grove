@@ -51,7 +51,7 @@ describe("DeadlineWatcher", () => {
   beforeEach(() => {
     store = new InMemoryHandoffStore();
     bus = new LocalEventBus();
-    watcher = new DeadlineWatcher({ handoffStore: store, eventBus: bus });
+    watcher = new DeadlineWatcher({ handoffStore: store, eventBus: bus, unrefTimers: false });
   });
 
   afterEach(() => {
@@ -107,14 +107,16 @@ describe("DeadlineWatcher", () => {
   // overdue event emission
   // ------------------------------------------------------------------
 
-  // Per-test timeout bumped to 15s so the 10s waitFor can expire cleanly
-  // instead of racing bun's default 5s test cutoff under extreme CI load.
+  // Per-test timeout and waitFor window are both generous (60s/55s) because
+  // shared CI runners can stall the event loop for 10s+ under load, which
+  // previously turned this into an intermittent red CI job. The test is
+  // still fast in the happy path — the big budget only applies on expiry.
   test("emits handoff.overdue when deadline passes and handoff still unresolved", async () => {
     // Future-dated deadline — exercises the real positive-delay setTimeout
     // path used in production. The `already past` test below covers the
     // delayMs=0 shortcut separately. We deliberately use a 50ms deadline
-    // with a long waitFor window (10s) so genuine timer drift under heavy
-    // CI load doesn't turn this into a flake, while still asserting the
+    // with a long waitFor window so genuine timer drift under heavy CI
+    // load doesn't turn this into a flake, while still asserting the
     // full schedule-and-fire behavior.
     const h = await store.create({
       sourceCid: "blake3:test",
@@ -133,7 +135,7 @@ describe("DeadlineWatcher", () => {
     watcher.watch(h);
     expect(watcher.activeCount).toBe(1);
 
-    await waitFor(() => events.length > 0, { timeoutMs: 10_000 });
+    await waitFor(() => events.length > 0, { timeoutMs: 55_000 });
 
     expect(events).toHaveLength(1);
     expect(events[0]?.type).toBe("handoff.overdue");
@@ -142,7 +144,7 @@ describe("DeadlineWatcher", () => {
     expect(events[0]?.payload.handoffId).toBe(h.handoffId);
     // After fire, the timer should have been cleared from the active set.
     expect(watcher.activeCount).toBe(0);
-  }, 15_000);
+  }, 60_000);
 
   test("does not emit overdue when handoff is already replied", async () => {
     const h = await store.create({
@@ -202,7 +204,11 @@ describe("DeadlineWatcher", () => {
     bus.subscribe("reviewer", (e) => events.push(e));
 
     // Two watchers observe the same store — simulates two MCP processes
-    const watcher2 = new DeadlineWatcher({ handoffStore: store, eventBus: bus });
+    const watcher2 = new DeadlineWatcher({
+      handoffStore: store,
+      eventBus: bus,
+      unrefTimers: false,
+    });
 
     watcher.watch(h);
     watcher2.watch(h);

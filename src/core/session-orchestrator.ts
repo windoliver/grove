@@ -6,6 +6,8 @@
  */
 
 import { join } from "node:path";
+import type { AcpxTurn } from "../acp/types.js";
+import { watchTurnError } from "../acp/watch-turn.js";
 import type { AgentProfile } from "./agent-profile.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 import type { GroveContract } from "./contract.js";
@@ -122,6 +124,19 @@ export class SessionOrchestrator {
     this.router = new TopologyRouter(config.topology, config.eventBus);
   }
 
+  /**
+   * Observe a fire-and-forget turn's outcome and surface error stop reasons.
+   * With the typed-stream runtime, post-spawn failures (malformed frames,
+   * provider rejections, cancelled turns) show up as `stopReason: "error"`
+   * on the terminal `Result` instead of as a thrown send() error, so we
+   * drain each turn in the background to make silent delivery failures
+   * observable. We intentionally do not throw — control-plane prompts are
+   * already fire-and-forget and have no retry channel.
+   */
+  private watchTurn(role: string, turn: AcpxTurn): void {
+    watchTurnError(turn, `SessionOrchestrator agent='${role}'`);
+  }
+
   /** Start the session: spawn all agents and send goals. */
   async start(): Promise<SessionStatus> {
     const topology = this.config.topology;
@@ -187,10 +202,12 @@ export class SessionOrchestrator {
     // AcpxRuntime sends the initial goal during spawn(). MockRuntime does not.
     // Send goals only to agents whose runtime status is still "running" but
     // haven't received a prompt yet (i.e., non-acpx runtimes).
-    // We detect this by checking if the runtime is MockRuntime (no sendAsync).
-    if (!("sendAsync" in this.config.runtime)) {
+    // We detect this by checking if the runtime exposes AcpxRuntime's
+    // `startTurn` internal helper.
+    if (!("startTurn" in this.config.runtime)) {
       for (const agent of this.agents) {
-        await this.config.runtime.send(agent.session, agent.goal);
+        const turn = await this.config.runtime.send(agent.session, agent.goal);
+        this.watchTurn(agent.role, turn);
       }
     }
 
@@ -325,7 +342,8 @@ export class SessionOrchestrator {
         for (const { targetRole } of routeResults) {
           const targetAgent = this.agents.find((a) => a.role === targetRole);
           if (targetAgent) {
-            await this.config.runtime.send(targetAgent.session, message);
+            const turn = await this.config.runtime.send(targetAgent.session, message);
+            this.watchTurn(targetAgent.role, turn);
           }
         }
 
@@ -502,7 +520,8 @@ export class SessionOrchestrator {
     const p = event.payload;
     const summary = typeof p.summary === "string" ? p.summary : JSON.stringify(p);
     const message = `[grove] ${event.type} from ${event.sourceRole}: ${summary}`;
-    await this.config.runtime.send(agent.session, message);
+    const turn = await this.config.runtime.send(agent.session, message);
+    this.watchTurn(agent.role, turn);
   }
 
   private handleAgentIdle(_agent: AgentSessionInfo): void {
@@ -588,9 +607,12 @@ export class SessionOrchestrator {
         );
     const newSession = await this.spawnAgent(roleSpec, undefined, ws);
 
-    // Send a reconciliation message
+    // Send a reconciliation message. Observe the turn's terminal result
+    // so a failed catch-up prompt is logged instead of silently restarting
+    // the agent without its reconciliation context.
     const message = `[grove] You are resuming role '${role}'. Query the DAG via grove_log or grove_frontier to catch up on what happened while you were offline.`;
-    await this.config.runtime.send(newSession.session, message);
+    const turn = await this.config.runtime.send(newSession.session, message);
+    this.watchTurn(role, turn);
 
     // Replace the old agent entry
     const idx = this.agents.findIndex((a) => a.role === role);

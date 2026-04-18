@@ -3,12 +3,60 @@
  * No PTY, no session persistence. Suitable for CI and testing.
  */
 
+import type { AcpxTurn } from "../acp/types.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
+
+/**
+ * SubprocessRuntime does not produce ACP output. Return an already-settled
+ * AcpxTurn so the interface is satisfied without misleading the consumer.
+ * Use `errorTurn()` on delivery failure — a synthetic `end_turn` on a
+ * failed write would silently hide non-delivery from callers who watch
+ * `turn.result`.
+ *
+ * IMPORTANT — semantics of this success turn:
+ *   `end_turn` here means "bytes written to the child's stdin pipe", NOT
+ *   "the child process read or acted on them". Callers that need
+ *   agent-level acknowledgement must use the acpx-backed runtime; with
+ *   SubprocessRuntime the typed-turn contract degrades to write-ACK.
+ *   This is unavoidable — a plain subprocess has no agent-level ACK
+ *   channel — and is called out explicitly rather than papered over.
+ */
+function emptyTurn(sessionId: string): AcpxTurn {
+  return {
+    sessionId,
+    turnId: `${sessionId}-noacp`,
+    messages: (async function* () {
+      /* no messages */
+    })(),
+    result: Promise.resolve({ turnId: `${sessionId}-noacp`, stopReason: "end_turn" as const }),
+    cancel: async () => undefined,
+    close: async () => undefined,
+  };
+}
+
+function errorTurn(sessionId: string, code: string, message: string): AcpxTurn {
+  const turnId = `${sessionId}-noacp-err`;
+  return {
+    sessionId,
+    turnId,
+    messages: (async function* () {
+      /* no messages */
+    })(),
+    result: Promise.resolve({
+      turnId,
+      stopReason: "error" as const,
+      error: { code, message },
+    }),
+    cancel: async () => undefined,
+    close: async () => undefined,
+  };
+}
 
 interface SessionEntry {
   proc: import("bun").Subprocess<"pipe", "pipe", "pipe">;
   session: AgentSession;
   idleCallbacks: (() => void)[];
+  exited: boolean;
 }
 
 export class SubprocessRuntime implements AgentRuntime {
@@ -46,14 +94,14 @@ export class SubprocessRuntime implements AgentRuntime {
       platform: config.platform,
       model: config.model,
     };
-    this.sessions.set(id, { proc, session, idleCallbacks: [] });
+    const entry: SessionEntry = { proc, session, idleCallbacks: [], exited: false };
+    this.sessions.set(id, entry);
 
-    // Monitor for exit
+    // Monitor for exit — flip the exited flag so send() can refuse to
+    // synthesize end_turn against a dead child.
     proc.exited.then(() => {
-      const entry = this.sessions.get(id);
-      if (entry) {
-        entry.session = { ...entry.session, status: "stopped" };
-      }
+      entry.exited = true;
+      entry.session = { ...entry.session, status: "stopped" };
     });
 
     // Send initial prompt if provided
@@ -64,13 +112,41 @@ export class SubprocessRuntime implements AgentRuntime {
     return session;
   }
 
-  async send(session: AgentSession, message: string): Promise<void> {
+  async send(session: AgentSession, message: string): Promise<AcpxTurn> {
     const entry = this.sessions.get(session.id);
-    if (!entry?.proc.stdin) return;
-    const result = entry.proc.stdin.write(`${message}\n`);
-    if (result instanceof Promise) await result;
-    const flush = entry.proc.stdin.flush();
-    if (flush instanceof Promise) await flush;
+    if (!entry) {
+      return errorTurn(session.id, "no_session", `unknown session id: ${session.id}`);
+    }
+    // Reject sends to a child that has already exited. The `exited` flag
+    // is only flipped by a `proc.exited.then(...)` microtask, so there is
+    // a window where the child has died but the flag has not yet flipped.
+    // Consult `proc.exitCode` directly (null while running, a number on
+    // exit) so we catch that window as well.
+    if (entry.exited || entry.proc.exitCode !== null) {
+      return errorTurn(session.id, "child_exited", "subprocess has already exited");
+    }
+    if (!entry.proc.stdin) {
+      return errorTurn(session.id, "no_stdin", "subprocess has no writable stdin");
+    }
+    try {
+      const result = entry.proc.stdin.write(`${message}\n`);
+      if (result instanceof Promise) await result;
+      const flush = entry.proc.stdin.flush();
+      if (flush instanceof Promise) await flush;
+    } catch (err) {
+      return errorTurn(
+        session.id,
+        "stdin_write_failed",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    // Re-check after the flush: the write may have succeeded locally but
+    // the child could have exited while we awaited. Check both the flag
+    // and the direct exitCode to close the microtask race.
+    if (entry.exited || entry.proc.exitCode !== null) {
+      return errorTurn(session.id, "child_exited", "subprocess exited during send");
+    }
+    return emptyTurn(session.id);
   }
 
   async close(session: AgentSession): Promise<void> {

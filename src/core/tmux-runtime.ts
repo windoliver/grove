@@ -7,9 +7,59 @@
  */
 
 import { execSync } from "node:child_process";
+import type { AcpxTurn } from "../acp/types.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 import { buildSessionId, parseSessionId, SESSION_ID_PREFIX } from "./session-id.js";
 import { shellEscape } from "./shell-utils.js";
+
+/**
+ * TmuxRuntime does not produce ACP output. Return an already-settled
+ * AcpxTurn so the interface is satisfied without misleading the consumer.
+ * Use `errorTurn()` on delivery failure — a synthetic `end_turn` on a
+ * failed send-keys would silently hide non-delivery from callers who
+ * watch `turn.result`.
+ *
+ * IMPORTANT — semantics of this success turn:
+ *   `end_turn` here means "tmux accepted the keystrokes", NOT "the agent
+ *   process consumed the prompt". The pane may have fallen back to a
+ *   shell, the agent may have died, or the keystrokes may have been sent
+ *   to a non-agent foreground process. Callers that need agent-level
+ *   delivery acknowledgement must use the acpx-backed runtime; with
+ *   tmux, this is best-effort. This is unavoidable — tmux does not
+ *   expose an agent-level ACK channel — so the typed-turn contract
+ *   degrades to write-ACK in this fallback mode. Documented rather than
+ *   papered over with a synthetic ACK.
+ */
+function emptyTurn(sessionId: string): AcpxTurn {
+  return {
+    sessionId,
+    turnId: `${sessionId}-noacp`,
+    messages: (async function* () {
+      /* no messages */
+    })(),
+    result: Promise.resolve({ turnId: `${sessionId}-noacp`, stopReason: "end_turn" as const }),
+    cancel: async () => undefined,
+    close: async () => undefined,
+  };
+}
+
+function errorTurn(sessionId: string, code: string, message: string): AcpxTurn {
+  const turnId = `${sessionId}-noacp-err`;
+  return {
+    sessionId,
+    turnId,
+    messages: (async function* () {
+      /* no messages */
+    })(),
+    result: Promise.resolve({
+      turnId,
+      stopReason: "error" as const,
+      error: { code, message },
+    }),
+    cancel: async () => undefined,
+    close: async () => undefined,
+  };
+}
 
 interface TmuxSessionEntry {
   session: AgentSession;
@@ -89,19 +139,28 @@ export class TmuxRuntime implements AgentRuntime {
     return session;
   }
 
-  async send(session: AgentSession, message: string): Promise<void> {
+  async send(session: AgentSession, message: string): Promise<AcpxTurn> {
     const entry = this.sessions.get(session.id);
-    if (!entry) return;
-
+    if (!entry) {
+      return errorTurn(session.id, "no_session", `unknown tmux session: ${session.id}`);
+    }
     try {
       execSync(
         `tmux -L grove send-keys -t ${shellEscape(session.id)} ${shellEscape(message)} Enter`,
         { encoding: "utf-8", stdio: "pipe" },
       );
-    } catch {
-      // Session may have been killed externally — mark as crashed
+    } catch (err) {
+      // Session may have been killed externally — mark as crashed and
+      // report the delivery failure so callers that watch turn.result
+      // see a non-success outcome instead of a synthetic end_turn.
       entry.session = { ...entry.session, status: "crashed" };
+      return errorTurn(
+        session.id,
+        "send_keys_failed",
+        err instanceof Error ? err.message : String(err),
+      );
     }
+    return emptyTurn(session.id);
   }
 
   async close(session: AgentSession): Promise<void> {

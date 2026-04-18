@@ -305,12 +305,25 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
       void import("./nexus-ws-bridge.js")
         .then(({ NexusWsBridge }) => {
           debugLog("wsBridge", `creating NexusWsBridge at ${nexusUrl}`);
+          // Extract handoffStore from the provider so the bridge can mark
+          // handoffs delivered / dead-lettered on IPC lifecycle events.
+          // Without this thread, the bridge's handoff bookkeeping is dead
+          // code in production (opts.handoffStore would be undefined and
+          // every store-touching path short-circuits).
+          const maybeProvider = appProps.provider as {
+            getHandoffStore?: () => import("../core/handoff.js").HandoffStore | undefined;
+          };
+          const handoffStore =
+            typeof maybeProvider.getHandoffStore === "function"
+              ? maybeProvider.getHandoffStore()
+              : undefined;
           const bridge = new NexusWsBridge({
             topology: topo,
             runtime: agentRuntime,
             nexusUrl,
             apiKey,
             eventBus: appProps.eventBus,
+            handoffStore,
             onBeforeDeliver: (sender, recipient) => {
               // Rsync workspace files from sender to recipient before IPC delivery
               manager.syncWorkspaces(sender, recipient);

@@ -11,6 +11,9 @@
 import { execSync, spawn as nodeSpawn } from "node:child_process";
 import { createWriteStream, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { AcpxTurnImpl } from "../acp/turn.js";
+import type { AcpxTurn } from "../acp/types.js";
+import { watchTurnError } from "../acp/watch-turn.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 import { buildSessionId, parseAcpxSessionId, SESSION_ID_PREFIX } from "./session-id.js";
 import { shellEscape } from "./shell-utils.js";
@@ -52,10 +55,25 @@ interface AcpxSessionEntry {
   cwd: string;
   env: Record<string, string | undefined>;
   idleCallbacks: (() => void)[];
-  outputCallbacks: ((chunk: string) => void)[];
   idleTimer: ReturnType<typeof setInterval> | null;
   /** Active child process for the current prompt (null when idle). */
   activeProc: ReturnType<typeof nodeSpawn> | null;
+  /**
+   * Resolves when `activeProc` has exited (not just when the turn's result
+   * frame arrived). Set inside startTurn and resolved by the child's
+   * close/error handler. Read-only outside startTurn; send() uses
+   * `sendChainTail` for serialization instead of awaiting this directly.
+   */
+  inflightTurn: Promise<void> | null;
+  /**
+   * Tail of the per-session send chain. Each incoming send() call appends
+   * a new promise to this chain and awaits the predecessor, so N concurrent
+   * send() callers are serialized into N sequential turns. Using a single
+   * `await inflightTurn` gate would let every concurrent caller pass the
+   * gate simultaneously when the predecessor resolved, and they would all
+   * call startTurn at once — reintroducing overlapping acpx children.
+   */
+  sendChainTail: Promise<void> | null;
   /** Log write stream (opened at session creation, closed on session close). */
   logStream: import("node:fs").WriteStream | null;
   /** Log file path for agent output (debug/streaming). */
@@ -235,9 +253,10 @@ export class AcpxRuntime implements AgentRuntime {
       cwd: config.cwd,
       env: mergedEnv,
       idleCallbacks: [],
-      outputCallbacks: [],
       idleTimer: null,
       activeProc: null,
+      inflightTurn: null,
+      sendChainTail: null,
       logStream,
       logFile,
     };
@@ -247,7 +266,22 @@ export class AcpxRuntime implements AgentRuntime {
     if (!config.waitForPush) {
       const initialMessage = config.goal ?? config.prompt;
       if (initialMessage) {
-        this.sendAsync(entry, initialMessage);
+        // Fire initial turn. Callers don't see this AcpxTurn (future turns
+        // reach them via send()), so watch its result ourselves and log any
+        // terminal error — otherwise bootstrap failures (malformed frames,
+        // provider rejection, cancelled turn) would be silently swallowed
+        // and the session would look successfully primed.
+        const initialTurn = this.startTurn(entry, initialMessage);
+        // Seed the send chain with the bootstrap turn's child-exit promise
+        // so the first external send() waits for the initial goal to finish
+        // instead of spawning a second overlapping acpx child.
+        entry.sendChainTail = entry.inflightTurn;
+        watchTurnError(initialTurn, `acpx spawn(role=${role})`, (msg) => {
+          process.stderr.write(`${msg}\n`);
+          if (entry.logStream) {
+            entry.logStream.write(`${msg}\n`);
+          }
+        });
       }
     }
 
@@ -255,13 +289,15 @@ export class AcpxRuntime implements AgentRuntime {
   }
 
   /**
-   * Fire-and-forget send: spawns acpx in the background.
-   * Streams stdout to output callbacks + log file.
-   * When the prompt completes, fires idle callbacks.
+   * Fire a prompt and return a streaming AcpxTurn. Spawns acpx with
+   * `--format json --json-strict` so stdout is NDJSON typed frames; the
+   * returned turn wraps the child's stdout in AcpxTurnImpl. The log file
+   * still mirrors stdout for forensics.
    */
-  private sendAsync(entry: AcpxSessionEntry, message: string): void {
+  private startTurn(entry: AcpxSessionEntry, message: string): AcpxTurn {
+    const turnId = `${entry.sessionName}-${Date.now().toString(36)}-${this.nextId++}`;
     appendLog(
-      `[acpx.sendAsync] sessionName=${entry.sessionName} role=${entry.session.role} logFile=${entry.logFile} agent=${entry.agent} cwd=${entry.cwd}`,
+      `[acpx.startTurn] sessionName=${entry.sessionName} role=${entry.session.role} logFile=${entry.logFile} agent=${entry.agent} cwd=${entry.cwd} turnId=${turnId}`,
     );
     entry.session = { ...entry.session, status: "running" };
 
@@ -295,11 +331,20 @@ ${message}`;
     }
 
     appendLog(
-      `[acpx.sendAsync] spawning: acpx --approve-all ${entry.agent} -s ${entry.sessionName} <message len=${wrappedMessage.length}>`,
+      `[acpx.startTurn] spawning: acpx --format json --json-strict --approve-all ${entry.agent} -s ${entry.sessionName} <message len=${wrappedMessage.length}>`,
     );
     const child = nodeSpawn(
       "acpx",
-      ["--approve-all", entry.agent, "-s", entry.sessionName, wrappedMessage],
+      [
+        "--format",
+        "json",
+        "--json-strict",
+        "--approve-all",
+        entry.agent,
+        "-s",
+        entry.sessionName,
+        wrappedMessage,
+      ],
       {
         cwd: entry.cwd,
         env: entry.env as NodeJS.ProcessEnv,
@@ -308,42 +353,38 @@ ${message}`;
     );
 
     entry.activeProc = child;
+    let markExited: () => void = () => undefined;
+    entry.inflightTurn = new Promise<void>((resolve) => {
+      markExited = resolve;
+    });
     child.on("spawn", () => {
       appendLog(
-        `[acpx.sendAsync] child spawned OK pid=${child.pid} for sessionName=${entry.sessionName}`,
+        `[acpx.startTurn] child spawned OK pid=${child.pid} for sessionName=${entry.sessionName}`,
       );
     });
     child.on("error", (spawnErr) => {
       appendLog(
-        `[acpx.sendAsync] child error: ${spawnErr.message} for sessionName=${entry.sessionName}`,
+        `[acpx.startTurn] child error: ${spawnErr.message} for sessionName=${entry.sessionName}`,
       );
     });
 
-    // Stream stdout to output callbacks + log stream
-    child.stdout?.on("data", (chunk: Buffer) => {
-      const text = chunk.toString();
-      if (entry.logStream) {
-        entry.logStream.write(text);
-      }
-      for (const cb of entry.outputCallbacks) {
-        try {
-          cb(text);
-        } catch {
-          /* ignore */
-        }
-      }
-    });
-
-    // Capture stderr to log stream
-    child.stderr?.on("data", (chunk: Buffer) => {
-      if (entry.logStream) {
-        entry.logStream.write(`[stderr] ${chunk.toString()}`);
-      }
-    });
+    // Mirror stdout to log file for forensics. AcpxTurnImpl installs its own
+    // 'data' listener via AcpParser; Readable fans out to all listeners so
+    // both observers see every chunk.
+    if (entry.logStream && child.stdout) {
+      child.stdout.on("data", (chunk: Buffer) => entry.logStream?.write(chunk));
+    }
+    if (entry.logStream && child.stderr) {
+      child.stderr.on("data", (chunk: Buffer) =>
+        entry.logStream?.write(`[stderr] ${chunk.toString()}`),
+      );
+    }
 
     child.on("close", (code) => {
-      appendLog(`[acpx.sendAsync] child closed exit=${code} sessionName=${entry.sessionName}`);
+      appendLog(`[acpx.startTurn] child closed exit=${code} sessionName=${entry.sessionName}`);
       entry.activeProc = null;
+      entry.inflightTurn = null;
+      markExited();
       const ts = new Date().toISOString();
       if (code === 0) {
         entry.session = { ...entry.session, status: "idle" };
@@ -367,14 +408,36 @@ ${message}`;
 
     child.on("error", (err) => {
       entry.activeProc = null;
+      entry.inflightTurn = null;
+      markExited();
       entry.session = { ...entry.session, status: "crashed" };
       if (entry.logStream) {
         entry.logStream.write(`\n[ERROR] ${err.message}\n`);
       }
     });
+
+    if (!child.stdout) {
+      throw new Error("acpx child spawned without stdout pipe");
+    }
+
+    return new AcpxTurnImpl({
+      sessionId: entry.sessionName,
+      turnId,
+      stdout: child.stdout,
+      cancelFn: async () => {
+        // ACP session/cancel is not wired through acpx CLI args; SIGINT the
+        // child so the provider sees a cancelled turn. Safe re-entry: cancel()
+        // is single-flight inside AcpxTurnImpl.
+        try {
+          child.kill("SIGINT");
+        } catch {
+          /* ignore */
+        }
+      },
+    });
   }
 
-  async send(session: AgentSession, message: string): Promise<void> {
+  async send(session: AgentSession, message: string): Promise<AcpxTurn> {
     appendLog(
       `[acpx.send] called for sessionId=${session.id} role=${session.role} status=${session.status} sessionsMapSize=${this.sessions.size} sessionIds=[${[...this.sessions.keys()].join(",")}]`,
     );
@@ -394,9 +457,10 @@ ${message}`;
         cwd: process.cwd(),
         env: { ...process.env },
         idleCallbacks: [],
-        outputCallbacks: [],
         idleTimer: null,
         activeProc: null,
+        inflightTurn: null,
+        sendChainTail: null,
         logStream: null,
         logFile: this.logDir ? join(this.logDir, `${session.role}-reattach.log`) : null,
       };
@@ -409,10 +473,95 @@ ${message}`;
         `[acpx.send] sessionId=${session.id} FOUND in sessions map, logFile=${entry.logFile}, sessionName=${entry.sessionName}`,
       );
     }
+    // Serialize concurrent send() callers into a sequential chain so only
+    // one acpx child exists per session at any time. We CANNOT use a bare
+    // `await entry.inflightTurn` here: N concurrent callers all awaiting
+    // the same promise would all pass the gate simultaneously once the
+    // predecessor resolved, and each would start its own acpx child —
+    // overlapping NDJSON streams, cancel()/close() targeting only the
+    // newest. Instead, each call installs its own "my turn is done" promise
+    // as the chain tail before awaiting the predecessor, so later arrivals
+    // wait on us, not on the same promise we waited on.
+    const predecessor = entry.sendChainTail ?? Promise.resolve();
+    let releaseChain: () => void = () => undefined;
+    const myCompletion = new Promise<void>((resolve) => {
+      releaseChain = resolve;
+    });
+    entry.sendChainTail = myCompletion;
+
+    try {
+      await predecessor;
+    } catch {
+      // Predecessor rejected — treat as released so we don't deadlock.
+    }
+
+    // After the wait, close() may have run concurrently: killed the prior
+    // child, closed the acpx session, and deleted the map entry. Re-check
+    // before launching a new child, otherwise a queued send would spawn
+    // acpx against a session the caller has already stopped.
+    const current = this.sessions.get(session.id);
+    if (!current || current !== entry || current.session.status === "stopped") {
+      appendLog(
+        `[acpx.send] sessionId=${session.id} session was stopped/replaced during chain wait — refusing to start new turn`,
+      );
+      releaseChain();
+      return {
+        sessionId: session.id,
+        turnId: `${session.id}-closed`,
+        messages: (async function* () {
+          /* no messages */
+        })(),
+        result: Promise.resolve({
+          turnId: `${session.id}-closed`,
+          stopReason: "error" as const,
+          error: {
+            code: "session_closed",
+            message: "session was closed before send could start a new turn",
+          },
+        }),
+        cancel: async () => undefined,
+        close: async () => undefined,
+      };
+    }
+
     appendLog(
-      `[acpx.send] calling sendAsync for sessionId=${session.id} sessionName=${entry.sessionName}`,
+      `[acpx.send] calling startTurn for sessionId=${session.id} sessionName=${entry.sessionName}`,
     );
-    this.sendAsync(entry, message);
+    // Exception safety: if startTurn throws synchronously (malformed args,
+    // spawn path errors, null-byte content, etc.), we must still release
+    // the chain — otherwise every subsequent send() for this session would
+    // wait forever on an orphan predecessor promise that nobody resolves.
+    let turn: AcpxTurn;
+    try {
+      turn = this.startTurn(entry, message);
+    } catch (err) {
+      releaseChain();
+      const errTurnId = `${entry.sessionName}-start-failed`;
+      return {
+        sessionId: entry.sessionName,
+        turnId: errTurnId,
+        messages: (async function* () {
+          /* no messages */
+        })(),
+        result: Promise.resolve({
+          turnId: errTurnId,
+          stopReason: "error" as const,
+          error: {
+            code: "startTurn_threw",
+            message: err instanceof Error ? err.message : String(err),
+          },
+        }),
+        cancel: async () => undefined,
+        close: async () => undefined,
+      };
+    }
+    // Release the next queued send when this turn's child exits. Use
+    // inflightTurn (set by startTurn and resolved by the child close/error
+    // handler) so successors wait on the actual process lifecycle, not
+    // just on message-iterator consumption.
+    const inflight = entry.inflightTurn ?? Promise.resolve();
+    void inflight.finally(() => releaseChain());
+    return turn;
   }
 
   async close(session: AgentSession): Promise<void> {
@@ -459,12 +608,6 @@ ${message}`;
         this.checkIdle(session.id);
       }, this.idlePollMs);
     }
-  }
-
-  onOutput(session: AgentSession, callback: (chunk: string) => void): void {
-    const entry = this.sessions.get(session.id);
-    if (!entry) return;
-    entry.outputCallbacks.push(callback);
   }
 
   /**

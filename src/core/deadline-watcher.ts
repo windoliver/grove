@@ -31,6 +31,14 @@ export interface DeadlineWatcherOpts {
   readonly eventBus: EventBus;
   /** Maximum age (ms) of handoffs to consider on cold-start rebuild. Default: 7 days. */
   readonly maxRebuildAgeMs?: number;
+  /**
+   * When true (default), timers are unref'd so a dormant watcher does not keep
+   * the process alive. Tests should set this to false: under Bun's full-suite
+   * runner we've seen unref'd setTimeouts delayed well past their wall-clock
+   * deadline (60s+), turning timer-based tests into false-negative flakes even
+   * with a loaded but alive event loop.
+   */
+  readonly unrefTimers?: boolean;
 }
 
 const DEFAULT_MAX_REBUILD_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -39,6 +47,7 @@ export class DeadlineWatcher {
   private readonly handoffStore: HandoffStore;
   private readonly eventBus: EventBus;
   private readonly maxRebuildAgeMs: number;
+  private readonly unrefTimers: boolean;
 
   /** Active timers keyed by handoffId. */
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -47,6 +56,7 @@ export class DeadlineWatcher {
     this.handoffStore = opts.handoffStore;
     this.eventBus = opts.eventBus;
     this.maxRebuildAgeMs = opts.maxRebuildAgeMs ?? DEFAULT_MAX_REBUILD_AGE_MS;
+    this.unrefTimers = opts.unrefTimers ?? true;
   }
 
   /**
@@ -75,8 +85,11 @@ export class DeadlineWatcher {
       void this.onDeadlineFired(handoff.handoffId, handoff.fromRole, handoff.toRole);
     }, delayMs);
 
-    // Prevent timer from keeping the process alive
-    if (timer.unref) timer.unref();
+    // Prevent timer from keeping the process alive (production default).
+    // Tests opt out via unrefTimers=false because Bun's full-suite runner
+    // has been observed to delay unref'd setTimeouts well past their
+    // deadline — ref'd timers fire reliably.
+    if (this.unrefTimers && timer.unref) timer.unref();
 
     this.timers.set(handoff.handoffId, timer);
   }

@@ -12,6 +12,7 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
+import { watchTurnError } from "../acp/watch-turn.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { AgentIdentity } from "../core/models.js";
 import { resolveMcpServePath } from "../core/resolve-mcp-serve-path.js";
@@ -799,8 +800,20 @@ export class SpawnManager {
             // guaranteed way to push text into the agent's tmux session.
             debugLog("route", `direct: agentRuntime.send(sessionId=${session.id})`);
             try {
-              await this.agentRuntime.send(session, message);
+              // send() resolution only means the child process was started;
+              // post-spawn failures land on turn.result as stopReason:"error".
+              // Drain in the background so a failed handoff is at least
+              // visible to operators instead of silently marked delivered.
+              const turn = await this.agentRuntime.send(session, message);
               debugLog("route", `agentRuntime.send succeeded`);
+              // Surface post-spawn delivery failures through stderr too —
+              // debugLog is gated behind GROVE_DEBUG=1, so in normal
+              // operation a silent turn.result error would make failed
+              // routing invisible to the operator.
+              watchTurnError(turn, `route ${sourceRole}→${targetRole}`, (m) => {
+                debugLog("route", m);
+                process.stderr.write(`${m}\n`);
+              });
             } catch (sendErr) {
               debugLog(
                 "route",
@@ -811,8 +824,16 @@ export class SpawnManager {
             // Local path (no Nexus): direct runtime.send() is the only delivery mechanism.
             debugLog("route", `local path: calling agentRuntime.send(sessionId=${session.id})`);
             try {
-              await this.agentRuntime.send(session, message);
+              const turn = await this.agentRuntime.send(session, message);
               debugLog("route", `agentRuntime.send completed for sessionId=${session.id}`);
+              // Surface post-spawn delivery failures through stderr too —
+              // debugLog is gated behind GROVE_DEBUG=1, so in normal
+              // operation a silent turn.result error would make failed
+              // routing invisible to the operator.
+              watchTurnError(turn, `route ${sourceRole}→${targetRole}`, (m) => {
+                debugLog("route", m);
+                process.stderr.write(`${m}\n`);
+              });
             } catch (sendErr) {
               debugLog(
                 "route",
@@ -841,7 +862,11 @@ export class SpawnManager {
 
     for (const [spawnId, session] of this.agentSessions) {
       if (spawnId.startsWith(role)) {
-        await this.agentRuntime.send(session, message);
+        const turn = await this.agentRuntime.send(session, message);
+        watchTurnError(turn, `sendToAgent(${role})`, (m) => {
+          debugLog("route", m);
+          process.stderr.write(`${m}\n`);
+        });
         return true;
       }
     }

@@ -1,8 +1,13 @@
 /**
  * Mock agent runtime for testing.
  * Records all calls and allows programmatic control of sessions.
+ *
+ * Since migrating AgentRuntime.send to return AcpxTurn, tests drive the
+ * mock by enqueueing canned Messages and Results per session; each send()
+ * drains the queues and returns a one-shot AcpxTurn.
  */
 
+import type { AcpxTurn, Message, Result } from "../acp/types.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 
 export class MockRuntime implements AgentRuntime {
@@ -12,6 +17,8 @@ export class MockRuntime implements AgentRuntime {
 
   private sessions = new Map<string, AgentSession>();
   private idleCallbacks = new Map<string, (() => void)[]>();
+  private msgQueues = new Map<string, Message[]>();
+  private resultQueues = new Map<string, Result[]>();
   private nextId = 0;
   private _isAvailable = true;
 
@@ -34,8 +41,30 @@ export class MockRuntime implements AgentRuntime {
     return session;
   }
 
-  async send(session: AgentSession, message: string): Promise<void> {
+  async send(session: AgentSession, message: string): Promise<AcpxTurn> {
     this.sendCalls.push({ sessionId: session.id, message });
+    // Drain the queues so the next send() sees an empty turn unless the
+    // test enqueues more. Matches the real acpx contract: one turn per call.
+    const queued = this.msgQueues.get(session.id) ?? [];
+    this.msgQueues.set(session.id, []);
+    const resultQ = this.resultQueues.get(session.id) ?? [];
+    const canned = resultQ.shift();
+    this.resultQueues.set(session.id, resultQ);
+    const turnId = canned?.turnId ?? `mock-${this.nextId++}`;
+
+    const messages = (async function* () {
+      for (const m of queued) yield m;
+    })();
+    const result: Result = canned ?? { turnId, stopReason: "end_turn" };
+
+    return {
+      sessionId: session.id,
+      turnId,
+      messages,
+      result: Promise.resolve(result),
+      cancel: async () => undefined,
+      close: async () => undefined,
+    };
   }
 
   async close(session: AgentSession): Promise<void> {
@@ -82,6 +111,20 @@ export class MockRuntime implements AgentRuntime {
     return { platform: s.platform, model: s.model, agent: s.agent };
   }
 
+  /** Queue messages to be yielded by the next send() for this session. */
+  enqueueMessages(sessionId: string, msgs: readonly Message[]): void {
+    const q = this.msgQueues.get(sessionId) ?? [];
+    q.push(...msgs);
+    this.msgQueues.set(sessionId, q);
+  }
+
+  /** Queue a terminal Result for the next send() for this session. */
+  enqueueResult(sessionId: string, r: Result): void {
+    const q = this.resultQueues.get(sessionId) ?? [];
+    q.push(r);
+    this.resultQueues.set(sessionId, q);
+  }
+
   /** Reset all recorded calls. */
   reset(): void {
     this.spawnCalls.length = 0;
@@ -89,6 +132,8 @@ export class MockRuntime implements AgentRuntime {
     this.closeCalls.length = 0;
     this.sessions.clear();
     this.idleCallbacks.clear();
+    this.msgQueues.clear();
+    this.resultQueues.clear();
     this.nextId = 0;
   }
 }
