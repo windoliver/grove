@@ -200,6 +200,10 @@ describe("handoff deadline E2E", () => {
     expect(watcher.activeCount).toBe(0);
   });
 
+  // Generous 55s waitFor window + 60s test budget: shared CI runners can
+  // stall the event loop for 10s+ under load, which previously turned this
+  // into an intermittent red CI job. Happy path still completes in <1s —
+  // the big budget only applies when the runner is saturated.
   test("overdue handoff emits handoff.overdue event", async () => {
     const { handoffStore, bus } = await setup();
 
@@ -220,8 +224,14 @@ describe("handoff deadline E2E", () => {
     const watcher = new DeadlineWatcher({ handoffStore, eventBus: bus });
     watcher.watch(h);
 
-    // Wait for deadline to pass + timer to fire
-    await new Promise((r) => setTimeout(r, 300));
+    // Poll for the overdue event instead of sleeping a fixed duration —
+    // CI runners occasionally stall past 300ms and turn a fixed sleep
+    // into a flake. Poll every 10ms up to 55s.
+    const deadline = Date.now() + 55_000;
+    while (Date.now() < deadline) {
+      if (events.some((e) => e.type === "handoff.overdue")) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
 
     // Should have emitted handoff.overdue
     const overdueEvents = events.filter((e) => e.type === "handoff.overdue");
@@ -230,7 +240,7 @@ describe("handoff deadline E2E", () => {
     expect(overdueEvents[0]?.targetRole).toBe("reviewer");
 
     watcher.close();
-  });
+  }, 60_000);
 
   test("rebuildFromStore skips unscoped SQLite stores (no session scoping)", async () => {
     const { handoffStore, bus } = await setup();
