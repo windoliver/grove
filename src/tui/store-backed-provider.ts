@@ -131,6 +131,18 @@ export abstract class StoreBackedProvider
   protected readonly goalSession: GoalSessionStore | undefined;
   protected readonly handoffs: HandoffStore | undefined;
 
+  /**
+   * Public accessor for the handoff store. NexusWsBridge needs direct
+   * access to mark handoffs delivered / dead-lettered in response to IPC
+   * lifecycle events; without this, the bridge's bookkeeping would be
+   * dead code in production because the store is only passed through the
+   * provider's constructor. Returns undefined for backends without
+   * handoff support.
+   */
+  getHandoffStore(): HandoffStore | undefined {
+    return this.handoffs;
+  }
+
   /** Set by {@link setSessionScope} — scopes all contribution queries to this session. */
   protected activeSessionId: string | undefined;
 
