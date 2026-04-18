@@ -423,10 +423,14 @@ export class NexusWsBridge {
               message: err instanceof Error ? err.message : String(err),
             },
           }));
-          if (result.stopReason === "error") {
+          // For control-plane delivery, `end_turn` is the only success
+          // signal. Treat cancelled / max_tokens / error / unknown stop
+          // reasons all as delivery failures so the handoff is dead-
+          // lettered — matches watchTurnError's abnormal-terminal policy.
+          if (result.stopReason !== "end_turn") {
             const detail = result.error
               ? `${result.error.code}: ${result.error.message}`
-              : "unknown error";
+              : `stopReason=${result.stopReason}`;
             process.stderr.write(
               `[NexusWsBridge] local push failed for role=${_targetRole} turn=${turn.turnId}: ${detail}\n`,
             );
@@ -434,7 +438,7 @@ export class NexusWsBridge {
               ipcMessageId,
               _targetRole,
               sender,
-              `local push error: ${detail}`,
+              `local push abnormal: ${detail}`,
             );
           }
         })
