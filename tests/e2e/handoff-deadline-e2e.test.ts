@@ -200,10 +200,13 @@ describe("handoff deadline E2E", () => {
     expect(watcher.activeCount).toBe(0);
   });
 
-  // Generous 55s waitFor window + 60s test budget: shared CI runners can
-  // stall the event loop for 10s+ under load, which previously turned this
-  // into an intermittent red CI job. Happy path still completes in <1s —
-  // the big budget only applies when the runner is saturated.
+  // Past-dates the handoff deliberately so watch() takes the delayMs=0
+  // setTimeout path. A 0ms timer fires on the very next tick, which sidesteps
+  // the Bun full-suite flake where a future-dated setTimeout(100ms) could
+  // sit unfired for >55s under load (observed on CI with both ref'd and
+  // unref'd timers). The "already past" branch is the one a restarted
+  // process would hit when rebuilding timers on startup for overdue rows,
+  // so it's a realistic path to cover.
   test("overdue handoff emits handoff.overdue event", async () => {
     const { handoffStore, bus } = await setup();
 
@@ -211,36 +214,32 @@ describe("handoff deadline E2E", () => {
     const events: GroveEvent[] = [];
     bus.subscribe("reviewer", (e) => events.push(e));
 
-    // Create a handoff with a very short deadline (we'll manually create one)
     const h = await handoffStore.create({
       sourceCid: "blake3:test-overdue",
       fromRole: "coder",
       toRole: "reviewer",
       requiresReply: true,
-      replyDueAt: new Date(Date.now() + 100).toISOString(), // 100ms
+      replyDueAt: new Date(Date.now() - 10).toISOString(),
     });
 
-    // Register with deadline watcher
+    // Register with deadline watcher — delayMs clamps to 0 since the
+    // deadline is already past.
     const watcher = new DeadlineWatcher({ handoffStore, eventBus: bus, unrefTimers: false });
     watcher.watch(h);
 
-    // Poll for the overdue event instead of sleeping a fixed duration —
-    // CI runners occasionally stall past 300ms and turn a fixed sleep
-    // into a flake. Poll every 10ms up to 55s.
-    const deadline = Date.now() + 55_000;
-    while (Date.now() < deadline) {
-      if (events.some((e) => e.type === "handoff.overdue")) break;
-      await new Promise((r) => setTimeout(r, 10));
+    // Wait for the 0ms timer + async onDeadlineFired to complete.
+    // A handful of short macrotask ticks is enough; cap at 2s for CI safety.
+    for (let i = 0; i < 40 && events.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 50));
     }
 
-    // Should have emitted handoff.overdue
     const overdueEvents = events.filter((e) => e.type === "handoff.overdue");
     expect(overdueEvents).toHaveLength(1);
     expect(overdueEvents[0]?.payload.handoffId).toBe(h.handoffId);
     expect(overdueEvents[0]?.targetRole).toBe("reviewer");
 
     watcher.close();
-  }, 60_000);
+  });
 
   test("rebuildFromStore skips unscoped SQLite stores (no session scoping)", async () => {
     const { handoffStore, bus } = await setup();
