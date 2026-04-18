@@ -1098,10 +1098,7 @@ function makeFullContribution(overrides?: Partial<ContributionInput>): Contribut
 }
 
 describe("PolicyEnforcer: quorum_review_score stop condition", () => {
-  // Pre-write enforcement skips the scanning quorum evaluator (#232) to keep
-  // the write mutex cheap. Threshold-crossing writes are detected by the
-  // post-write recheck in contributeOperation, not by enforce() directly.
-  test("skipped on pre-write path even when quorum is met", async () => {
+  test("stopped when quorum is met", async () => {
     const target = makeFullContribution({ summary: "Work to review" });
     const review1 = makeFullContribution({
       kind: ContributionKind.Review,
@@ -1137,8 +1134,38 @@ describe("PolicyEnforcer: quorum_review_score stop condition", () => {
 
     const result = await enforcer.enforce(contribution, false);
     expect(result.stopResult).toBeDefined();
+    expect(result.stopResult!.stopped).toBe(true);
+    expect(result.stopResult!.reason).toContain("quorum_review_score");
+  });
+
+  test("skipExpensiveStopChecks=true omits quorum even when met", async () => {
+    const target = makeFullContribution({ summary: "Work" });
+    const r1 = makeFullContribution({
+      kind: ContributionKind.Review,
+      summary: "Review 1",
+      relations: [
+        { targetCid: target.cid, relationType: RelationType.Reviews, metadata: { score: 0.9 } },
+      ],
+    });
+    const r2 = makeFullContribution({
+      kind: ContributionKind.Review,
+      summary: "Review 2",
+      relations: [
+        { targetCid: target.cid, relationType: RelationType.Reviews, metadata: { score: 0.95 } },
+      ],
+    });
+    const contract: GroveContract = {
+      contractVersion: 2,
+      name: "test",
+      stopConditions: { quorumReviewScore: { minReviews: 2, minScore: 0.8 } },
+    };
+    const store = new InMemoryContributionStore([target, r1, r2]);
+    const enforcer = new PolicyEnforcer(contract, store);
+    const contribution = makeContribution();
+
+    const result = await enforcer.enforce(contribution, false, { skipExpensiveStopChecks: true });
+    expect(result.stopResult).toBeDefined();
     expect(result.stopResult!.stopped).toBe(false);
-    expect(result.stopResult!.reason).toBeUndefined();
   });
 
   test("not stopped when quorum is not met", async () => {
@@ -1171,10 +1198,7 @@ describe("PolicyEnforcer: quorum_review_score stop condition", () => {
 });
 
 describe("PolicyEnforcer: deliberation_limit stop condition", () => {
-  // Pre-write enforcement skips the scanning deliberation evaluator (#232)
-  // to keep the write mutex cheap. Post-write recheck in contributeOperation
-  // catches threshold crossings.
-  test("skipped on pre-write path even when thread depth exceeds limit", async () => {
+  test("stopped when thread depth exceeds limit", async () => {
     const root = makeFullContribution({ summary: "Topic root" });
     const reply1 = makeFullContribution({
       kind: ContributionKind.Discussion,
@@ -1203,8 +1227,36 @@ describe("PolicyEnforcer: deliberation_limit stop condition", () => {
 
     const result = await enforcer.enforce(contribution, false);
     expect(result.stopResult).toBeDefined();
+    expect(result.stopResult!.stopped).toBe(true);
+    expect(result.stopResult!.reason).toContain("deliberation_limit");
+  });
+
+  test("skipExpensiveStopChecks=true omits deliberation even when exceeded", async () => {
+    const root = makeFullContribution({ summary: "Topic root" });
+    const r1 = makeFullContribution({
+      kind: ContributionKind.Discussion,
+      relations: [{ targetCid: root.cid, relationType: RelationType.RespondsTo }],
+    });
+    const r2 = makeFullContribution({
+      kind: ContributionKind.Discussion,
+      relations: [{ targetCid: r1.cid, relationType: RelationType.RespondsTo }],
+    });
+    const r3 = makeFullContribution({
+      kind: ContributionKind.Discussion,
+      relations: [{ targetCid: r2.cid, relationType: RelationType.RespondsTo }],
+    });
+    const contract: GroveContract = {
+      contractVersion: 2,
+      name: "test",
+      stopConditions: { deliberationLimit: { maxRounds: 3 } },
+    };
+    const store = new InMemoryContributionStore([root, r1, r2, r3]);
+    const enforcer = new PolicyEnforcer(contract, store);
+    const contribution = makeContribution();
+
+    const result = await enforcer.enforce(contribution, false, { skipExpensiveStopChecks: true });
+    expect(result.stopResult).toBeDefined();
     expect(result.stopResult!.stopped).toBe(false);
-    expect(result.stopResult!.reason).toBeUndefined();
   });
 
   test("not stopped when thread is below limit", async () => {

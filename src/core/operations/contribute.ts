@@ -1010,11 +1010,21 @@ export async function contributeOperation(
       };
       if (store.setPreWriteHook) {
         store.setPreWriteHook(contribution.cid, async (c: Contribution) => {
-          policyResult = await enforcer?.enforce(c, true, { skipStopConditions });
+          // skipExpensiveStopChecks: true — scanning stop evaluators (quorum,
+          // deliberation) run in the post-write recheck below, outside the
+          // mutex, so they don't block concurrent writers (#232).
+          policyResult = await enforcer?.enforce(c, true, {
+            skipStopConditions,
+            skipExpensiveStopChecks: true,
+          });
         });
       } else {
-        // Fallback: enforce outside mutex (non-EnforcingContributionStore)
-        policyResult = await enforcer.enforce(contribution, true, { skipStopConditions });
+        // Fallback: enforce outside mutex (non-EnforcingContributionStore).
+        // Same skipExpensiveStopChecks opt-in — post-write recheck still runs.
+        policyResult = await enforcer.enforce(contribution, true, {
+          skipStopConditions,
+          skipExpensiveStopChecks: true,
+        });
       }
     }
 

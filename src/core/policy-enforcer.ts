@@ -144,11 +144,21 @@ export class PolicyEnforcer {
    *   (plans, ephemeral messages) through the enforcement pipeline for the
    *   role-kind check but don't want their coordination traffic to count
    *   toward progress-driven stop conditions or pay the O(n) scan cost.
+   * @param options.skipExpensiveStopChecks - When true, omit the scanning
+   *   stop evaluators (`quorumReviewScore`, `deliberationLimit`) that require
+   *   a full `store.list()` scan. Intended for the write-mutex hot path in
+   *   `contributeOperation`, where the post-write recheck (outside the mutex)
+   *   evaluates these conditions without blocking concurrent writers (#232).
+   *   Default is `false` so direct `enforce()` callers keep full parity with
+   *   `evaluateStopConditions` on quorum/deliberation.
    */
   async enforce(
     contribution: Contribution,
     strict = false,
-    options?: { readonly skipStopConditions?: boolean },
+    options?: {
+      readonly skipStopConditions?: boolean;
+      readonly skipExpensiveStopChecks?: boolean;
+    },
   ): Promise<PolicyEnforcementResult> {
     // Reset best-score cache so each enforce() call gets a fresh view of the store.
     // The cache is repopulated lazily on the first findBestScore() call within
@@ -260,18 +270,18 @@ export class PolicyEnforcer {
     //    the post-write recheck in contributeOperation will detect it. This is
     //    the existing accept-then-flag design.
     //
-    //    Cost note (#232): the scanning evaluators (quorum_review_score via
-    //    full store.list(), deliberation_limit via per-root store.thread())
-    //    are skipped here via `skipExpensive: true` so they cannot block
-    //    concurrent writers on the write mutex. The post-write recheck in
-    //    contributeOperation runs these evaluators outside the mutex, so
-    //    threshold-crossing stop signals are still detected — they simply
-    //    arrive on the post-write path instead of the pre-write path.
+    //    Cost note (#232): callers on the write-mutex hot path can pass
+    //    `skipExpensiveStopChecks: true` to omit the scanning evaluators
+    //    (quorum_review_score via full store.list(), deliberation_limit via
+    //    per-root store.thread()) and avoid blocking concurrent writers. The
+    //    default is `false` so direct callers keep full parity with
+    //    `evaluateStopConditions` — only contributeOperation opts in, and its
+    //    post-write recheck runs the full evaluator outside the mutex.
     let stopResult: StopCheckResult | undefined;
     if (this.config.stopConditions !== undefined && options?.skipStopConditions !== true) {
       try {
         const evalResult = await evaluateStopConditions(this.config, this.contributionStore, {
-          skipExpensive: true,
+          skipExpensive: options?.skipExpensiveStopChecks === true,
         });
         stopResult = {
           stopped: evalResult.stopped,

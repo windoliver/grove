@@ -1049,7 +1049,7 @@ describe("cross-path agreement: evaluateStopConditions vs PolicyEnforcer.enforce
     expect(enforceResult.stopResult?.stopped).toBe(true);
   });
 
-  test("quorum divergence: enforcer skips quorum on pre-write path (#232)", async () => {
+  test("quorum agreement: default enforce() evaluates quorum in parity with canonical", async () => {
     const target = makeUniqueContribution({ summary: "Quorum target" });
     const review1 = makeUniqueContribution({
       kind: ContributionKind.Review,
@@ -1083,19 +1083,26 @@ describe("cross-path agreement: evaluateStopConditions vs PolicyEnforcer.enforce
     };
     const store = new InMemoryContributionStore([target, review1, review2]);
 
-    // Canonical path (full) still detects quorum
+    // Canonical path detects quorum
     const canonical = await evaluateStopConditions(contract, store);
     expect(canonical.stopped).toBe(true);
 
-    // PolicyEnforcer path — pre-write skips scanning evaluators (quorum/
-    // deliberation) for mutex-cost reasons (#232). Post-write recheck in
-    // contributeOperation catches these; enforcer alone reports not stopped.
+    // PolicyEnforcer (default) also detects quorum — full parity. Only callers
+    // on the write-mutex hot path (contributeOperation) opt into
+    // skipExpensiveStopChecks: true; direct enforce() usage stays full.
     const enforcer = new PolicyEnforcer(contract, store);
     const enforceResult = await enforcer.enforce(makeEnforceContribution());
-    expect(enforceResult.stopResult?.stopped).toBe(false);
+    expect(enforceResult.stopResult?.stopped).toBe(true);
+
+    // With skipExpensiveStopChecks=true the enforcer diverges intentionally
+    // (post-write recheck in contributeOperation closes the gap).
+    const cheapResult = await enforcer.enforce(makeEnforceContribution(), false, {
+      skipExpensiveStopChecks: true,
+    });
+    expect(cheapResult.stopResult?.stopped).toBe(false);
   });
 
-  test("deliberation divergence: enforcer skips deliberation on pre-write path (#232)", async () => {
+  test("deliberation agreement: default enforce() evaluates deliberation in parity with canonical", async () => {
     // root → reply1 → reply2 → reply3 (depth=3), maxRounds=3
     const root = makeUniqueContribution({ summary: "Deliberation root" });
     const reply1 = makeUniqueContribution({
@@ -1127,12 +1134,16 @@ describe("cross-path agreement: evaluateStopConditions vs PolicyEnforcer.enforce
     const canonical = await evaluateStopConditions(contract, store);
     expect(canonical.stopped).toBe(true);
 
-    // PolicyEnforcer path — pre-write skips scanning evaluators (quorum/
-    // deliberation) for mutex-cost reasons (#232). Post-write recheck in
-    // contributeOperation catches these; enforcer alone reports not stopped.
+    // PolicyEnforcer (default) also detects deliberation — full parity.
     const enforcer = new PolicyEnforcer(contract, store);
     const enforceResult = await enforcer.enforce(makeEnforceContribution());
-    expect(enforceResult.stopResult?.stopped).toBe(false);
+    expect(enforceResult.stopResult?.stopped).toBe(true);
+
+    // With skipExpensiveStopChecks=true the enforcer diverges intentionally.
+    const cheapResult = await enforcer.enforce(makeEnforceContribution(), false, {
+      skipExpensiveStopChecks: true,
+    });
+    expect(cheapResult.stopResult?.stopped).toBe(false);
   });
 });
 
