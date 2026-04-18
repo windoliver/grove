@@ -39,7 +39,7 @@ describe("TmuxRuntime", () => {
     if (skip) return;
 
     const session = await rt.spawn("test", config);
-    expect(session.id).toMatch(/^grove-test-\d+$/);
+    expect(session.id).toMatch(/^grove-test-\d+--[a-z0-9]+$/);
     expect(session.role).toBe("test");
     expect(session.status).toBe("running");
 

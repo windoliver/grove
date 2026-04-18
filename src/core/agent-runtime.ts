@@ -22,7 +22,16 @@ export interface AgentConfig {
   readonly model?: string | undefined;
 }
 
-/** A running agent session. */
+/**
+ * A running agent session.
+ *
+ * `id` follows the canonical contract documented in `./session-id.ts`:
+ * `grove-<role>-<counter>-<base36-timestamp>`. Implementations MUST construct
+ * IDs via `buildSessionId()` and consumers MUST parse them via
+ * `parseSessionId()` rather than open-coding regexes — this is what keeps
+ * `listSessions()` rediscovery and reattach/resume paths consistent across
+ * runtimes.
+ */
 export interface AgentSession {
   readonly id: string;
   readonly role: string;
@@ -38,7 +47,13 @@ export interface AgentSession {
 
 /** Runtime for managing agent lifecycle. */
 export interface AgentRuntime {
-  /** Spawn a new agent session. */
+  /**
+   * Spawn a new agent session.
+   *
+   * The returned `session.id` MUST be produced via `buildSessionId(role, n)`
+   * (see `./session-id.ts`). `listSessions()` MUST be able to rediscover any
+   * id this method returned for the lifetime of the underlying session.
+   */
   spawn(role: string, config: AgentConfig): Promise<AgentSession>;
   /** Send a message/prompt to a running agent. */
   send(session: AgentSession, message: string): Promise<void>;

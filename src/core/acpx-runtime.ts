@@ -12,6 +12,7 @@ import { execSync, spawn as nodeSpawn } from "node:child_process";
 import { createWriteStream, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
+import { buildSessionId, parseAcpxSessionId, SESSION_ID_PREFIX } from "./session-id.js";
 import { shellEscape } from "./shell-utils.js";
 import type { AgentPlatformType } from "./topology.js";
 
@@ -155,7 +156,7 @@ export class AcpxRuntime implements AgentRuntime {
     }
 
     const counter = this.nextId++;
-    const sessionName = `grove-${role}-${counter}-${Date.now().toString(36)}`;
+    const sessionName = buildSessionId(role, counter);
     const id = sessionName;
 
     // Strip Claude Code harness env vars before spawning the subagent.
@@ -514,9 +515,14 @@ ${message}`;
           const fields = line.split("\t");
           const name = (fields[1] ?? line).trim();
           const isClosed = line.includes("[closed]");
-          if (name.startsWith("grove-") && !seenIds.has(name) && !isClosed) {
-            const role = name.replace(/^grove-/, "").replace(/-\d+-.*$/, "");
-            result.push({ id: name, role, status: "idle", agent: agentName });
+          if (name.startsWith(SESSION_ID_PREFIX) && !seenIds.has(name) && !isClosed) {
+            // parseAcpxSessionId accepts the prior single-dash acpx contract
+            // so an upgrade still rediscovers agents created on the previous
+            // grove version. Source-narrow: safe here because acpx never
+            // returns TUI-shaped names.
+            const parsed = parseAcpxSessionId(name);
+            if (!parsed) continue;
+            result.push({ id: name, role: parsed.role, status: "idle", agent: agentName });
             seenIds.add(name);
           }
         }

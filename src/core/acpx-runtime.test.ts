@@ -120,9 +120,9 @@ describe("AcpxRuntime", () => {
 
     const rt = new AcpxRuntime();
     // Session names now carry a per-spawn counter and a base36 timestamp:
-    // grove-<role>-<counter>-<timestamp>
+    // grove-<role>-<counter>--<timestamp> (double dash separator).
     const session = await rt.spawn("test", config);
-    expect(session.id).toMatch(/^grove-test-\d+-[a-z0-9]+$/);
+    expect(session.id).toMatch(/^grove-test-\d+--[a-z0-9]+$/);
     expect(session.role).toBe("test");
     expect(session.status).toBe("running");
 
