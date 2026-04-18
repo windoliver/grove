@@ -1552,9 +1552,7 @@ export async function contributeOperation(
             refreshError = err;
             refreshAttempt += 1;
             if (refreshAttempt < IDEMPOTENCY_REFRESH_ATTEMPTS) {
-              await new Promise((resolve) =>
-                setTimeout(resolve, 100 * 4 ** (refreshAttempt - 1)),
-              );
+              await new Promise((resolve) => setTimeout(resolve, 100 * 4 ** (refreshAttempt - 1)));
             }
           }
         }
