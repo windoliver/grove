@@ -51,7 +51,7 @@ describe("DeadlineWatcher", () => {
   beforeEach(() => {
     store = new InMemoryHandoffStore();
     bus = new LocalEventBus();
-    watcher = new DeadlineWatcher({ handoffStore: store, eventBus: bus });
+    watcher = new DeadlineWatcher({ handoffStore: store, eventBus: bus, unrefTimers: false });
   });
 
   afterEach(() => {
@@ -204,7 +204,11 @@ describe("DeadlineWatcher", () => {
     bus.subscribe("reviewer", (e) => events.push(e));
 
     // Two watchers observe the same store — simulates two MCP processes
-    const watcher2 = new DeadlineWatcher({ handoffStore: store, eventBus: bus });
+    const watcher2 = new DeadlineWatcher({
+      handoffStore: store,
+      eventBus: bus,
+      unrefTimers: false,
+    });
 
     watcher.watch(h);
     watcher2.watch(h);

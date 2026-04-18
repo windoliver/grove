@@ -71,7 +71,7 @@ describe("handoff deadline E2E", () => {
     expect(delegatesEdge?.replyTimeoutSeconds).toBe(30);
 
     const router = new TopologyRouter(topology, bus);
-    const watcher = new DeadlineWatcher({ handoffStore, eventBus: bus });
+    const watcher = new DeadlineWatcher({ handoffStore, eventBus: bus, unrefTimers: false });
 
     const deps: OperationDeps = {
       contributionStore,
@@ -221,7 +221,7 @@ describe("handoff deadline E2E", () => {
     });
 
     // Register with deadline watcher
-    const watcher = new DeadlineWatcher({ handoffStore, eventBus: bus });
+    const watcher = new DeadlineWatcher({ handoffStore, eventBus: bus, unrefTimers: false });
     watcher.watch(h);
 
     // Poll for the overdue event instead of sleeping a fixed duration —
@@ -256,7 +256,7 @@ describe("handoff deadline E2E", () => {
       replyDueAt: new Date(Date.now() + 60_000).toISOString(),
     });
 
-    const watcher2 = new DeadlineWatcher({ handoffStore, eventBus: bus });
+    const watcher2 = new DeadlineWatcher({ handoffStore, eventBus: bus, unrefTimers: false });
     const count = await watcher2.rebuildFromStore();
 
     expect(count).toBe(0);
@@ -280,7 +280,11 @@ describe("handoff deadline E2E", () => {
         replyDueAt: new Date(Date.now() + 60_000).toISOString(),
       });
 
-      const watcher2 = new DeadlineWatcher({ handoffStore: scoped, eventBus: bus });
+      const watcher2 = new DeadlineWatcher({
+        handoffStore: scoped,
+        eventBus: bus,
+        unrefTimers: false,
+      });
       const count = await watcher2.rebuildFromStore();
 
       expect(count).toBe(1);
