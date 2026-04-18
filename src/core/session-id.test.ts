@@ -2,9 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { buildSessionId, parseSessionId, SESSION_ID_PREFIX } from "./session-id.js";
 
 describe("session-id", () => {
-  test("buildSessionId emits grove-<role>-<counter>-<base36>", () => {
+  test("buildSessionId emits grove-<role>-<counter>--<base36>", () => {
     const id = buildSessionId("coder", 0);
-    expect(id).toMatch(/^grove-coder-0-[a-z0-9]+$/);
+    expect(id).toMatch(/^grove-coder-0--[a-z0-9]+$/);
     expect(id.startsWith(SESSION_ID_PREFIX)).toBe(true);
   });
 
@@ -61,9 +61,9 @@ describe("session-id", () => {
   });
 
   test("legacy ID with role ending in digit segment is not misparsed as canonical", () => {
-    // Regression: `grove-worker-1-0` was being parsed as canonical
-    // (role=worker, counter=1, suffix=0) because the canonical regex matched
-    // greedily. The suffix-length gate forces this down the legacy branch.
+    // Regression: legacy `grove-worker-1-0` (role=worker-1, counter=0) was
+    // matching the old single-dash canonical regex as role=worker. Canonical
+    // now uses `--`, so single-dash names always go to the legacy branch.
     const parsed = parseSessionId("grove-worker-1-0");
     expect(parsed).not.toBeNull();
     expect(parsed!.role).toBe("worker-1");
@@ -71,13 +71,11 @@ describe("session-id", () => {
     expect(parsed!.suffix).toBeNull();
   });
 
-  test("canonical IDs with short or numeric-looking suffixes still parse legacy-style", () => {
-    // A 6-char numeric suffix could be legacy counter; only ≥7 chars qualify
-    // as canonical timestamp. This protects upgrade paths.
-    const parsed = parseSessionId("grove-coder-3-123456");
-    expect(parsed).not.toBeNull();
-    expect(parsed!.role).toBe("coder-3");
-    expect(parsed!.counter).toBe(123456);
-    expect(parsed!.suffix).toBeNull();
+  test("TUI-style names (single dash, no counter) return null", () => {
+    // The TUI's tmuxSessionName(agentId) shape `grove-<roleId>-<base36>` is
+    // not a runtime session — parser must NOT claim it. Keeps the runtime
+    // contract surface clean for use-permission-detection.
+    expect(parseSessionId("grove-worker-1-mo3i3zh6")).toBeNull();
+    expect(parseSessionId("grove-coder-mo3i3zh6")).toBeNull();
   });
 });

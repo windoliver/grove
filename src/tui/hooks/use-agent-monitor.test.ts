@@ -113,11 +113,18 @@ describe("roleFromSessionName", () => {
     expect(roleFromSessionName("grove-coder-AbC123")).toBe("coder");
   });
 
-  test("parses canonical session-id contract (role-counter-base36)", () => {
-    // Suffixes here are 8 chars to match the real `Date.now().toString(36)`
-    // length and clear the parser's length gate.
-    expect(roleFromSessionName("grove-coder-0-mo3i3zh6")).toBe("coder");
-    expect(roleFromSessionName("grove-code-reviewer-12-mo3i3zz6")).toBe("code-reviewer");
+  test("parses canonical session-id contract (role-counter--base36)", () => {
+    // Canonical IDs use `--` between counter and base36 timestamp so they
+    // never collide with the TUI's `grove-${agentId}` single-dash convention.
+    expect(roleFromSessionName("grove-coder-0--mo3i3zh6")).toBe("coder");
+    expect(roleFromSessionName("grove-code-reviewer-12--mo3i3zz6")).toBe("code-reviewer");
+  });
+
+  test("TUI single-dash names with role ending in digit fall through to legacy strip", () => {
+    // `grove-worker-1-mo3i3zh6` is a TUI agent, not a runtime session.
+    // parseSessionId rejects it; the legacy fallback strip recovers
+    // `worker-1` (the actual TUI agentId), preserving correct attribution.
+    expect(roleFromSessionName("grove-worker-1-mo3i3zh6")).toBe("worker-1");
   });
 });
 

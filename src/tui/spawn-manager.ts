@@ -15,6 +15,7 @@ import { join, resolve } from "node:path";
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { AgentIdentity } from "../core/models.js";
 import { resolveMcpServePath } from "../core/resolve-mcp-serve-path.js";
+import { parseSessionId } from "../core/session-id.js";
 import type { AgentTopology } from "../core/topology.js";
 import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
 import type { WorkspaceIsolationPolicy, WorkspaceMode } from "../core/workspace-provisioner.js";
@@ -620,7 +621,13 @@ export class SpawnManager {
           if (!cwd.startsWith(workspacesPrefix) && !cwd.startsWith(`/private${workspacesPrefix}`))
             continue;
 
-          const role = name.replace(/^grove-/, "").replace(/-\d+-.*$/, "");
+          // acpx session names follow the canonical runtime contract
+          // (`grove-<role>-<counter>--<base36>`); parseSessionId is the
+          // single source of truth so role attribution stays consistent
+          // with rediscovery in TmuxRuntime/AcpxRuntime/use-agent-monitor.
+          const parsed = parseSessionId(name);
+          if (!parsed) continue;
+          const role = parsed.role;
           if (role && !this.agentSessions.has(role)) {
             const session = liveSessionMap.get(name);
             if (session) {

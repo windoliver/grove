@@ -5,7 +5,7 @@
  * {@link buildSessionId} and parse them via {@link parseSessionId}. This is
  * the single source of truth for the on-disk / on-tmux / on-acpx name shape:
  *
- *     grove-<role>-<counter>-<base36-timestamp>
+ *     grove-<role>-<counter>--<base36-timestamp>
  *
  * - `role` is the orchestration role passed to `spawn()` (may contain hyphens).
  * - `counter` is a monotonically increasing per-runtime integer used to
@@ -14,11 +14,18 @@
  *   cross-process / cross-restart uniqueness so that `listSessions()` can
  *   safely rediscover sessions that outlive the runtime instance.
  *
+ * The `--` (double dash) between counter and timestamp is intentional: it
+ * disambiguates canonical IDs from the TUI's `grove-${agentId}` tmux session
+ * names (single dashes) and from legacy pre-#210 IDs (`grove-<role>-<counter>`,
+ * also single dashes), so a name like `grove-worker-1-mo3i3zh6` (TUI agent
+ * with role `worker-1`) is never misparsed as canonical role `worker`.
+ *
  * Consumers should treat the full ID as opaque and use {@link parseSessionId}
  * to recover `role`/`counter` rather than open-coding their own regex.
  */
 
 export const SESSION_ID_PREFIX = "grove-";
+const CANONICAL_SEPARATOR = "--";
 
 export interface ParsedSessionId {
   readonly role: string;
@@ -32,27 +39,24 @@ export interface ParsedSessionId {
 }
 
 export function buildSessionId(role: string, counter: number): string {
-  return `${SESSION_ID_PREFIX}${role}-${counter}-${Date.now().toString(36)}`;
+  return `${SESSION_ID_PREFIX}${role}-${counter}${CANONICAL_SEPARATOR}${Date.now().toString(36)}`;
 }
 
 /**
  * Parse a grove session ID.
  *
- * Accepts both the canonical shape (`grove-<role>-<counter>-<base36>`) emitted
- * by {@link buildSessionId} and the legacy pre-#210 shape
- * (`grove-<role>-<counter>`). Returns `null` for anything else so callers can
- * safely filter foreign tmux/acpx sessions out of discovery.
+ * Accepts both the canonical shape (`grove-<role>-<counter>--<base36>`)
+ * emitted by {@link buildSessionId} and the legacy pre-#210 shape
+ * (`grove-<role>-<counter>`). Returns `null` for anything else (notably the
+ * TUI's `grove-${agentId}` tmux convention) so callers can safely filter
+ * non-runtime sessions out of discovery.
  */
 export function parseSessionId(name: string): ParsedSessionId | null {
   if (!name.startsWith(SESSION_ID_PREFIX)) return null;
   const body = name.slice(SESSION_ID_PREFIX.length);
-  // Canonical: <role>-<counter>-<base36-suffix>.
-  // Suffix length is gated at 7 to disambiguate from legacy IDs whose role
-  // ends in a digit segment (e.g. `worker-1`). `Date.now().toString(36)` is
-  // 8 chars today and won't drop below 7 until well after year 5000, so
-  // every real builder output passes this gate while legacy counter tails
-  // (typically 1–4 digits) are forced down the legacy branch below.
-  const canonical = body.match(/^(.+)-(\d+)-([a-z0-9]{7,})$/);
+  // Canonical: <role>-<counter>--<base36-suffix>. The double-dash separator
+  // is what makes parsing unambiguous against single-dash conventions.
+  const canonical = body.match(/^(.+)-(\d+)--([a-z0-9]+)$/);
   if (canonical) {
     const [, role, counterStr, suffix] = canonical;
     if (role && counterStr && suffix) {
@@ -60,7 +64,9 @@ export function parseSessionId(name: string): ParsedSessionId | null {
       if (Number.isFinite(counter)) return { role, counter, suffix };
     }
   }
-  // Legacy fallback: <role>-<counter> (no suffix).
+  // Legacy fallback: <role>-<counter> (no suffix). Only matches when there
+  // is no `--` in the body so we don't falsely accept canonical-shaped names.
+  if (body.includes(CANONICAL_SEPARATOR)) return null;
   const legacy = body.match(/^(.+)-(\d+)$/);
   if (legacy) {
     const [, role, counterStr] = legacy;
