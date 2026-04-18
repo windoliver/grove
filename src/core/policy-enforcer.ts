@@ -74,6 +74,15 @@ export interface DerivedOutcome {
 export interface StopCheckResult {
   readonly stopped: boolean;
   readonly reason?: string | undefined;
+  /**
+   * When `true`, stop evaluation did not complete with confidence — the
+   * scanning evaluators (`quorum_review_score`, `deliberation_limit`) could
+   * not be run (e.g., sustained store read failures on the post-write
+   * recheck path). Callers must NOT treat `stopped=false` as authoritative
+   * in this state; they should gate on `degraded === true` and surface
+   * alerts or conservative behavior to operators. See Codex review r5.
+   */
+  readonly degraded?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------

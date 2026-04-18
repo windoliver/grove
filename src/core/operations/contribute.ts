@@ -1450,20 +1450,20 @@ export async function contributeOperation(
       }
       if (lastError !== undefined) {
         // All attempts exhausted. The contribution is already committed, so we
-        // cannot undo the write. Instead, surface the degradation explicitly
-        // in policyResult.stopResult so callers can detect "stop status
-        // unknown" rather than conflating it with confirmed stopped=false.
-        // This addresses Codex review r4 finding on fail-open behavior under
-        // sustained store read failures. The next write's recheck provides
-        // another chance to detect quorum/deliberation; in the meantime,
-        // operators see the warning and callers can gate on the explicit
-        // reason string.
-        const degradedReason = `stop_recheck_unavailable: post-write recheck failed after ${POST_WRITE_RECHECK_ATTEMPTS} attempts — quorum/deliberation stop detection temporarily degraded`;
+        // cannot undo the write. Surface the degradation explicitly via
+        // `stopResult.degraded = true` so callers can distinguish "confirmed
+        // not stopped" from "unknown — evaluation failed". The boolean
+        // `stopped` field stays the cheap-evaluator result (the only source
+        // we successfully computed). The `degraded` flag + warning are the
+        // signal operators must monitor. This addresses Codex review r4/r5
+        // findings on fail-open behavior under sustained store read failures.
+        const degradedReason = `stop_recheck_unavailable: post-write recheck failed after ${POST_WRITE_RECHECK_ATTEMPTS} attempts — quorum/deliberation stop detection temporarily degraded; treat stopped=false as unverified until next successful recheck`;
         policyResult = {
           ...policyResult,
           stopResult: {
             stopped: policyResult.stopResult?.stopped === true,
             reason: policyResult.stopResult?.reason ?? degradedReason,
+            degraded: true,
           },
         };
         process.stderr.write(
