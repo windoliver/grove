@@ -394,6 +394,7 @@ test("parseAcpLine: result.usage (canonical) is parsed onto the Result", () => {
         cachedReadTokens: 0,
         cachedWriteTokens: 21907,
         totalTokens: 21914,
+        cost: { amount: 0.123, currency: "USD" },
       },
     },
   });
@@ -405,6 +406,25 @@ test("parseAcpLine: result.usage (canonical) is parsed onto the Result", () => {
   expect(parsed.result.usage?.cachedReadTokens).toBe(0);
   expect(parsed.result.usage?.cachedWriteTokens).toBe(21907);
   expect(parsed.result.usage?.totalTokens).toBe(21914);
+  expect(parsed.result.usage?.cost).toEqual({ amount: 0.123, currency: "USD" });
+});
+
+test("parseAcpLine: malformed result.usage is ignored (no fabricated zero counts)", () => {
+  const line = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 2,
+    result: {
+      stopReason: "end_turn",
+      usage: {
+        // Missing canonical input/output counts: parser should not synthesize 0s.
+        cachedReadTokens: 42,
+      },
+    },
+  });
+  const parsed = parseAcpLine(line, "t");
+  expect(parsed.kind).toBe("result");
+  if (parsed.kind !== "result") throw new Error("unreachable");
+  expect(parsed.result.usage).toBeUndefined();
 });
 
 test("parseAcpLine: tool_call_update without title/rawInput emits partial event (no placeholder name)", () => {

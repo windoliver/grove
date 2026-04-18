@@ -44,6 +44,10 @@ function num(v: unknown): number {
   return typeof v === "number" && Number.isFinite(v) ? v : 0;
 }
 
+function finiteNumber(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
 /**
  * Extract a stable canonical tool identity from provider metadata if present.
  * Claude's ACP bridge puts the underlying tool name at
@@ -80,21 +84,38 @@ function parseAdvisoryUsage(update: Record<string, unknown>): TokenUsage {
 
 /**
  * Canonical per-turn token accounting from a JSON-RPC `result.usage` object.
- * Maps the fields observed on Claude's ACP bridge; extra fields are ignored.
+ * Returns undefined when required canonical fields are missing/invalid so
+ * callers don't silently fabricate zero-token usage under schema drift.
  */
-function parseResultUsage(usage: Record<string, unknown>): TokenUsage {
+function parseResultUsage(usage: Record<string, unknown>): TokenUsage | undefined {
+  const inputTokens = finiteNumber(usage.inputTokens);
+  const outputTokens = finiteNumber(usage.outputTokens);
+  if (inputTokens === undefined || outputTokens === undefined) {
+    return undefined;
+  }
   const out: TokenUsage = {
-    inputTokens: num(usage.inputTokens),
-    outputTokens: num(usage.outputTokens),
+    inputTokens,
+    outputTokens,
   };
-  if (usage.cachedReadTokens !== undefined) {
-    out.cachedReadTokens = num(usage.cachedReadTokens);
+  const cachedReadTokens = finiteNumber(usage.cachedReadTokens);
+  if (cachedReadTokens !== undefined) {
+    out.cachedReadTokens = cachedReadTokens;
   }
-  if (usage.cachedWriteTokens !== undefined) {
-    out.cachedWriteTokens = num(usage.cachedWriteTokens);
+  const cachedWriteTokens = finiteNumber(usage.cachedWriteTokens);
+  if (cachedWriteTokens !== undefined) {
+    out.cachedWriteTokens = cachedWriteTokens;
   }
-  if (usage.totalTokens !== undefined) {
-    out.totalTokens = num(usage.totalTokens);
+  const totalTokens = finiteNumber(usage.totalTokens);
+  if (totalTokens !== undefined) {
+    out.totalTokens = totalTokens;
+  }
+  if (usage.cost && typeof usage.cost === "object") {
+    const c = usage.cost as Record<string, unknown>;
+    const amount = finiteNumber(c.amount);
+    const currency = typeof c.currency === "string" && c.currency.length > 0 ? c.currency : undefined;
+    if (amount !== undefined && currency !== undefined) {
+      out.cost = { amount, currency };
+    }
   }
   return out;
 }
@@ -137,7 +158,10 @@ export function parseAcpLine(line: string, turnId: string, sessionId?: string): 
       if (typeof r.stopReason === "string" && r.stopReason.length > 0) {
         const result: Result = { turnId, stopReason: r.stopReason as StopReason };
         if (r.usage && typeof r.usage === "object") {
-          result.usage = parseResultUsage(r.usage as Record<string, unknown>);
+          const usage = parseResultUsage(r.usage as Record<string, unknown>);
+          if (usage !== undefined) {
+            result.usage = usage;
+          }
         }
         return { kind: "result", result };
       }

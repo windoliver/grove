@@ -219,6 +219,31 @@ test("compactTurn terminal status is strict-monotonic — failed cannot be flipp
   expect(snap.toolCalls[0]?.status).toBe("failed");
 });
 
+test("compactTurn allows equal-status duplicate updates to enrich terminal payload", () => {
+  // Providers can emit a terminal status before the final payload lands.
+  // A repeated terminal frame with the SAME status should be able to fill
+  // output/diff/error without changing the terminal outcome.
+  const msgs: Message[] = [
+    {
+      kind: "tool_call",
+      turnId: "t1",
+      toolCall: { id: "tc1", name: "Bash", status: "completed", input: { cmd: "ls" } },
+    },
+    {
+      kind: "tool_call",
+      turnId: "t1",
+      toolCall: { id: "tc1", status: "completed", output: "ok" },
+    },
+  ];
+  const snap = compactTurn({
+    turnId: "t1",
+    messages: msgs,
+    result: { turnId: "t1", stopReason: "end_turn" },
+  });
+  expect(snap.toolCalls[0]?.status).toBe("completed");
+  expect(snap.toolCalls[0]?.output).toBe("ok");
+});
+
 test("compactTurn rejected-terminal frames cannot contaminate output/diff/error", () => {
   // A late duplicate terminal update with a conflicting status must not
   // leak its payload into the accepted outcome — otherwise we get audit
