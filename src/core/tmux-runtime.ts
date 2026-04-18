@@ -9,6 +9,7 @@
 import { execSync } from "node:child_process";
 import type { AcpxTurn } from "../acp/types.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
+import { buildSessionId, parseSessionId, SESSION_ID_PREFIX } from "./session-id.js";
 import { shellEscape } from "./shell-utils.js";
 
 /**
@@ -60,9 +61,6 @@ function errorTurn(sessionId: string, code: string, message: string): AcpxTurn {
   };
 }
 
-/** Prefix for all grove tmux session names. */
-const SESSION_PREFIX = "grove-";
-
 interface TmuxSessionEntry {
   session: AgentSession;
   idleCallbacks: (() => void)[];
@@ -92,7 +90,7 @@ export class TmuxRuntime implements AgentRuntime {
 
   async spawn(role: string, config: AgentConfig): Promise<AgentSession> {
     const counter = this.nextId++;
-    const sessionName = `${SESSION_PREFIX}${role}-${counter}`;
+    const sessionName = buildSessionId(role, counter);
     const id = sessionName;
 
     // Pass platform/model as env vars so the agent process can read them
@@ -211,7 +209,7 @@ export class TmuxRuntime implements AgentRuntime {
       const names = output
         .trim()
         .split("\n")
-        .filter((n) => n.startsWith(SESSION_PREFIX));
+        .filter((n) => n.startsWith(SESSION_ID_PREFIX));
 
       // Reconcile tracked sessions with tmux reality
       const result: AgentSession[] = [];
@@ -221,8 +219,9 @@ export class TmuxRuntime implements AgentRuntime {
           result.push(tracked.session);
         } else {
           // External grove session — report it as running
-          const role = name.slice(SESSION_PREFIX.length).replace(/-\d+$/, "");
-          result.push({ id: name, role, status: "running" });
+          const parsed = parseSessionId(name);
+          if (!parsed) continue;
+          result.push({ id: name, role: parsed.role, status: "running" });
         }
       }
       return result;

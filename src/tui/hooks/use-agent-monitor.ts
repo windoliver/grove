@@ -7,6 +7,7 @@
 
 import { useEffect, useState } from "react";
 import type { EventBus, GroveEvent } from "../../core/event-bus.js";
+import { parseSessionId } from "../../core/session-id.js";
 import type { AgentTopology } from "../../core/topology.js";
 import { stripAnsi } from "../../shared/format.js";
 import { BRAILLE_SPINNER } from "../theme.js";
@@ -89,8 +90,16 @@ export function roleFromLogFilename(filename: string): string {
   return filename.replace(/\.log$/, "").replace(/-\d+$/, "");
 }
 
-/** Extract role name from a tmux session name (e.g. "grove-coder-abc123" → "coder"). */
+/**
+ * Extract role name from a grove session name.
+ *
+ * Prefers the canonical {@link parseSessionId} contract
+ * (`grove-<role>-<counter>-<base36>`). Falls back to a legacy single-suffix
+ * strip for sessions named via the older TUI `tmuxSessionName(agentId)` path.
+ */
 export function roleFromSessionName(sessionName: string): string {
+  const parsed = parseSessionId(sessionName);
+  if (parsed) return parsed.role;
   return sessionName.replace("grove-", "").replace(/-[a-z0-9]+$/i, "");
 }
 

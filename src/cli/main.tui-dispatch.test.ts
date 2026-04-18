@@ -16,8 +16,13 @@ describe("bare grove → TUI dispatch", () => {
     // render. The key assertion: it should NOT exit with code 2
     // ("unknown command"). We give it 5s then kill it — if it hasn't
     // exited with code 2 by then, it successfully reached the TUI path.
+    //
+    // stdout is "ignore" because the TUI emits a continuous stream of
+    // ANSI escape codes; if we piped it without draining, the child's
+    // stdout buffer would fill in <1s, the TUI would block on write,
+    // and SIGTERM cleanup would hang past the outer test timeout.
     const proc = Bun.spawn(["bun", "run", CLI_PATH], {
-      stdout: "pipe",
+      stdout: "ignore",
       stderr: "pipe",
       env: { ...process.env, TERM: "dumb" },
     });
@@ -37,9 +42,12 @@ describe("bare grove → TUI dispatch", () => {
     if (result.kind === "timeout") {
       // Process is still running (TUI is blocking) — this means it
       // successfully dispatched to handleTuiDirect and didn't exit with
-      // "unknown command"
+      // "unknown command". SIGTERM first; SIGKILL after a grace period
+      // in case the TUI traps the signal and stalls in cleanup.
       proc.kill();
+      const killTimer = setTimeout(() => proc.kill("SIGKILL"), 2000);
       await proc.exited;
+      clearTimeout(killTimer);
     } else {
       // Process exited — verify it wasn't a usage error
       const stderr = await new Response(proc.stderr).text();

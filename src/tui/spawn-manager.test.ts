@@ -757,4 +757,42 @@ describe("SpawnManager — reconciliation", () => {
     expect(result.reattached).toBe(0);
     expect(result.released).toBe(0);
   });
+
+  test("setWsBridge late-registers hyphenated roles by full role name", async () => {
+    // Regression: setWsBridge used to derive role via spawnId.split("-")[0],
+    // which truncates `code-reviewer-mo3i3zh6` to `code` and drops inbound
+    // IPC because NexusWsBridge does an exact role lookup downstream.
+    const provider = makeMockProvider();
+    const tmux = makeMockTmux();
+    const errors: string[] = [];
+    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg));
+
+    const seedSession = {
+      id: "grove-code-reviewer-0--mo3i3zh6",
+      role: "code-reviewer",
+      status: "running" as const,
+    };
+    // Seed agentSessions directly — we're testing setWsBridge in isolation,
+    // not the full spawn pipeline.
+    (manager as unknown as { agentSessions: Map<string, typeof seedSession> }).agentSessions.set(
+      "code-reviewer-mo3i3zh6",
+      seedSession,
+    );
+
+    const registered: { role: string; sessionId: string }[] = [];
+    const stubBridge = {
+      registerSession(role: string, session: { id: string }) {
+        registered.push({ role, sessionId: session.id });
+      },
+      close() {
+        /* destroy() calls this on teardown */
+      },
+    } as unknown as Parameters<typeof manager.setWsBridge>[0];
+
+    manager.setWsBridge(stubBridge);
+
+    expect(registered).toHaveLength(1);
+    expect(registered[0]!.role).toBe("code-reviewer");
+    expect(registered[0]!.sessionId).toBe("grove-code-reviewer-0--mo3i3zh6");
+  });
 });
