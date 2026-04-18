@@ -1049,7 +1049,7 @@ describe("cross-path agreement: evaluateStopConditions vs PolicyEnforcer.enforce
     expect(enforceResult.stopResult?.stopped).toBe(true);
   });
 
-  test("quorum agreement: enforcer now evaluates quorum (was missing before)", async () => {
+  test("quorum divergence: enforcer skips quorum on pre-write path (#232)", async () => {
     const target = makeUniqueContribution({ summary: "Quorum target" });
     const review1 = makeUniqueContribution({
       kind: ContributionKind.Review,
@@ -1083,17 +1083,19 @@ describe("cross-path agreement: evaluateStopConditions vs PolicyEnforcer.enforce
     };
     const store = new InMemoryContributionStore([target, review1, review2]);
 
-    // Canonical path
+    // Canonical path (full) still detects quorum
     const canonical = await evaluateStopConditions(contract, store);
     expect(canonical.stopped).toBe(true);
 
-    // PolicyEnforcer path — should ALSO say stopped now
+    // PolicyEnforcer path — pre-write skips scanning evaluators (quorum/
+    // deliberation) for mutex-cost reasons (#232). Post-write recheck in
+    // contributeOperation catches these; enforcer alone reports not stopped.
     const enforcer = new PolicyEnforcer(contract, store);
     const enforceResult = await enforcer.enforce(makeEnforceContribution());
-    expect(enforceResult.stopResult?.stopped).toBe(true);
+    expect(enforceResult.stopResult?.stopped).toBe(false);
   });
 
-  test("deliberation agreement: enforcer now evaluates deliberation limits", async () => {
+  test("deliberation divergence: enforcer skips deliberation on pre-write path (#232)", async () => {
     // root → reply1 → reply2 → reply3 (depth=3), maxRounds=3
     const root = makeUniqueContribution({ summary: "Deliberation root" });
     const reply1 = makeUniqueContribution({
@@ -1125,9 +1127,118 @@ describe("cross-path agreement: evaluateStopConditions vs PolicyEnforcer.enforce
     const canonical = await evaluateStopConditions(contract, store);
     expect(canonical.stopped).toBe(true);
 
-    // PolicyEnforcer path — should ALSO say stopped now
+    // PolicyEnforcer path — pre-write skips scanning evaluators (quorum/
+    // deliberation) for mutex-cost reasons (#232). Post-write recheck in
+    // contributeOperation catches these; enforcer alone reports not stopped.
     const enforcer = new PolicyEnforcer(contract, store);
     const enforceResult = await enforcer.enforce(makeEnforceContribution());
-    expect(enforceResult.stopResult?.stopped).toBe(true);
+    expect(enforceResult.stopResult?.stopped).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Section 11: Issue #232 — skipExpensive option for pre-write pipeline
+// ---------------------------------------------------------------------------
+
+describe("skipExpensive option", () => {
+  test("omits quorum_review_score when skipExpensive=true", async () => {
+    const target = makeUniqueContribution({ summary: "target" });
+    const review1 = makeUniqueContribution({
+      kind: ContributionKind.Review,
+      relations: [
+        { targetCid: target.cid, relationType: RelationType.Reviews, metadata: { score: 0.9 } },
+      ],
+    });
+    const review2 = makeUniqueContribution({
+      kind: ContributionKind.Review,
+      relations: [
+        { targetCid: target.cid, relationType: RelationType.Reviews, metadata: { score: 0.95 } },
+      ],
+    });
+    const contract: GroveContract = {
+      contractVersion: 1,
+      name: "test-grove",
+      stopConditions: { quorumReviewScore: { minReviews: 2, minScore: 0.8 } },
+    };
+    const store = new InMemoryContributionStore([target, review1, review2]);
+
+    const full = await evaluateStopConditions(contract, store);
+    expect(full.stopped).toBe(true);
+    expect(full.conditions.quorum_review_score).toBeDefined();
+
+    const cheap = await evaluateStopConditions(contract, store, { skipExpensive: true });
+    expect(cheap.stopped).toBe(false);
+    expect(cheap.conditions.quorum_review_score).toBeUndefined();
+  });
+
+  test("omits deliberation_limit when skipExpensive=true", async () => {
+    const root = makeUniqueContribution({ summary: "root" });
+    const r1 = makeUniqueContribution({
+      kind: ContributionKind.Discussion,
+      relations: [{ targetCid: root.cid, relationType: RelationType.RespondsTo }],
+    });
+    const r2 = makeUniqueContribution({
+      kind: ContributionKind.Discussion,
+      relations: [{ targetCid: r1.cid, relationType: RelationType.RespondsTo }],
+    });
+    const r3 = makeUniqueContribution({
+      kind: ContributionKind.Discussion,
+      relations: [{ targetCid: r2.cid, relationType: RelationType.RespondsTo }],
+    });
+    const contract: GroveContract = {
+      contractVersion: 1,
+      name: "test-grove",
+      stopConditions: { deliberationLimit: { maxRounds: 3 } },
+    };
+    const store = new InMemoryContributionStore([root, r1, r2, r3]);
+
+    const full = await evaluateStopConditions(contract, store);
+    expect(full.stopped).toBe(true);
+    expect(full.conditions.deliberation_limit).toBeDefined();
+
+    const cheap = await evaluateStopConditions(contract, store, { skipExpensive: true });
+    expect(cheap.stopped).toBe(false);
+    expect(cheap.conditions.deliberation_limit).toBeUndefined();
+  });
+
+  test("skipExpensive still evaluates cheap conditions", async () => {
+    const contributions = Array.from({ length: 10 }, () => makeUniqueContribution());
+    const contract: GroveContract = {
+      contractVersion: 1,
+      name: "test-grove",
+      stopConditions: {
+        budget: { maxContributions: 10 },
+        quorumReviewScore: { minReviews: 2, minScore: 0.8 },
+      },
+    };
+    const store = new InMemoryContributionStore(contributions);
+
+    const cheap = await evaluateStopConditions(contract, store, { skipExpensive: true });
+    expect(cheap.stopped).toBe(true);
+    expect(cheap.conditions.budget?.met).toBe(true);
+    expect(cheap.conditions.quorum_review_score).toBeUndefined();
+  });
+
+  test("skipExpensive avoids store.list() when only expensive conditions configured", async () => {
+    const contract: GroveContract = {
+      contractVersion: 1,
+      name: "test-grove",
+      stopConditions: { quorumReviewScore: { minReviews: 2, minScore: 0.8 } },
+    };
+    let listCalls = 0;
+    const base = new InMemoryContributionStore([]);
+    const tracking: typeof base = {
+      ...base,
+      list: async (...args: Parameters<typeof base.list>) => {
+        listCalls += 1;
+        return base.list(...args);
+      },
+      thread: base.thread.bind(base),
+      count: base.count.bind(base),
+    } as unknown as typeof base;
+
+    const result = await evaluateStopConditions(contract, tracking, { skipExpensive: true });
+    expect(result.stopped).toBe(false);
+    expect(listCalls).toBe(0);
   });
 });

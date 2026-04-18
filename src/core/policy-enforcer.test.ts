@@ -1098,7 +1098,10 @@ function makeFullContribution(overrides?: Partial<ContributionInput>): Contribut
 }
 
 describe("PolicyEnforcer: quorum_review_score stop condition", () => {
-  test("stopped when quorum is met", async () => {
+  // Pre-write enforcement skips the scanning quorum evaluator (#232) to keep
+  // the write mutex cheap. Threshold-crossing writes are detected by the
+  // post-write recheck in contributeOperation, not by enforce() directly.
+  test("skipped on pre-write path even when quorum is met", async () => {
     const target = makeFullContribution({ summary: "Work to review" });
     const review1 = makeFullContribution({
       kind: ContributionKind.Review,
@@ -1134,8 +1137,8 @@ describe("PolicyEnforcer: quorum_review_score stop condition", () => {
 
     const result = await enforcer.enforce(contribution, false);
     expect(result.stopResult).toBeDefined();
-    expect(result.stopResult!.stopped).toBe(true);
-    expect(result.stopResult!.reason).toContain("quorum_review_score");
+    expect(result.stopResult!.stopped).toBe(false);
+    expect(result.stopResult!.reason).toBeUndefined();
   });
 
   test("not stopped when quorum is not met", async () => {
@@ -1168,7 +1171,10 @@ describe("PolicyEnforcer: quorum_review_score stop condition", () => {
 });
 
 describe("PolicyEnforcer: deliberation_limit stop condition", () => {
-  test("stopped when thread depth exceeds limit", async () => {
+  // Pre-write enforcement skips the scanning deliberation evaluator (#232)
+  // to keep the write mutex cheap. Post-write recheck in contributeOperation
+  // catches threshold crossings.
+  test("skipped on pre-write path even when thread depth exceeds limit", async () => {
     const root = makeFullContribution({ summary: "Topic root" });
     const reply1 = makeFullContribution({
       kind: ContributionKind.Discussion,
@@ -1197,8 +1203,8 @@ describe("PolicyEnforcer: deliberation_limit stop condition", () => {
 
     const result = await enforcer.enforce(contribution, false);
     expect(result.stopResult).toBeDefined();
-    expect(result.stopResult!.stopped).toBe(true);
-    expect(result.stopResult!.reason).toContain("deliberation_limit");
+    expect(result.stopResult!.stopped).toBe(false);
+    expect(result.stopResult!.reason).toBeUndefined();
   });
 
   test("not stopped when thread is below limit", async () => {

@@ -251,24 +251,28 @@ export class PolicyEnforcer {
     }
 
     // 8. Stop condition check — delegates to the canonical evaluator in
-    //    stop-conditions.ts so all five conditions use the same algorithm as
+    //    stop-conditions.ts so the cheap conditions use the same algorithm as
     //    grove_check_stop (lifecycle path).
     //
     //    Timing note: this runs pre-write, so the contribution being enforced
     //    is NOT yet in the store. A contribution that crosses a threshold
     //    (e.g., the Nth review satisfying quorum) reports stopped=false here;
-    //    the next check will detect it. This is the existing accept-then-flag
-    //    design — the same pre-write timing applied to the old budget/target/
-    //    maxRounds checks and is unchanged by this refactor.
+    //    the post-write recheck in contributeOperation will detect it. This is
+    //    the existing accept-then-flag design.
     //
-    //    Cost note: quorum_review_score requires a full store.list() and
-    //    deliberation_limit requires per-root store.thread() calls. These
-    //    run inside the write mutex when configured. Thread walks are
-    //    parallelized and depth-capped to bound latency (see stop-conditions.ts).
+    //    Cost note (#232): the scanning evaluators (quorum_review_score via
+    //    full store.list(), deliberation_limit via per-root store.thread())
+    //    are skipped here via `skipExpensive: true` so they cannot block
+    //    concurrent writers on the write mutex. The post-write recheck in
+    //    contributeOperation runs these evaluators outside the mutex, so
+    //    threshold-crossing stop signals are still detected — they simply
+    //    arrive on the post-write path instead of the pre-write path.
     let stopResult: StopCheckResult | undefined;
     if (this.config.stopConditions !== undefined && options?.skipStopConditions !== true) {
       try {
-        const evalResult = await evaluateStopConditions(this.config, this.contributionStore);
+        const evalResult = await evaluateStopConditions(this.config, this.contributionStore, {
+          skipExpensive: true,
+        });
         stopResult = {
           stopped: evalResult.stopped,
           reason: evalResult.stopped
