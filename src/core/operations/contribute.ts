@@ -1012,7 +1012,9 @@ export async function contributeOperation(
         store.setPreWriteHook(contribution.cid, async (c: Contribution) => {
           // skipExpensiveStopChecks: true — scanning stop evaluators (quorum,
           // deliberation) run in the post-write recheck below, outside the
-          // mutex, so they don't block concurrent writers (#232).
+          // mutex, so they don't block concurrent writers (#232). This opt-in
+          // is ONLY for the mutex-hook path — the fallback branch below uses
+          // the default full evaluation since it isn't holding the mutex.
           policyResult = await enforcer?.enforce(c, true, {
             skipStopConditions,
             skipExpensiveStopChecks: true,
@@ -1020,11 +1022,10 @@ export async function contributeOperation(
         });
       } else {
         // Fallback: enforce outside mutex (non-EnforcingContributionStore).
-        // Same skipExpensiveStopChecks opt-in — post-write recheck still runs.
-        policyResult = await enforcer.enforce(contribution, true, {
-          skipStopConditions,
-          skipExpensiveStopChecks: true,
-        });
+        // Not the write-mutex hot path that motivated skipExpensiveStopChecks,
+        // so keep full evaluation — the post-write recheck is best-effort and
+        // should not be the sole detector here.
+        policyResult = await enforcer.enforce(contribution, true, { skipStopConditions });
       }
     }
 
@@ -1458,9 +1459,7 @@ export async function contributeOperation(
 
     // Build the final result returned to the DIRECT caller. This includes
     // any post-write updates to policyResult (e.g., stop-condition recheck
-    // detecting a threshold crossing). Cached retries get the narrower
-    // `committedResult` built above — that's intentional, see the
-    // DURABLE COMMIT BOUNDARY comment.
+    // detecting a threshold crossing).
     const result: ContributeResult = {
       cid: contribution.cid,
       kind: contribution.kind,
@@ -1473,6 +1472,33 @@ export async function contributeOperation(
       ...(handoffIds.length > 0 ? { handoffIds } : {}),
       ...(policyResult !== undefined ? { policy: policyResult } : {}),
     };
+
+    // Refresh the durable idempotency row with the final result. The earlier
+    // write at the DURABLE COMMIT BOUNDARY stored `committedResult`, which
+    // reflects only the pre-write policyResult. Without this refresh, a retry
+    // (or a concurrent same-key caller reading the durable row after a
+    // process restart) would observe stopped=false for quorum/deliberation
+    // threshold-crossing writes, while the direct caller saw stopped=true.
+    // See Codex finding on #312 round 2.
+    //
+    // In-flight concurrent retries that already awaited the in-memory
+    // idempotency slot still receive committedResult — that's a pre-existing
+    // narrow window documented at the DURABLE COMMIT BOUNDARY.
+    if (
+      deps.idempotencyStore !== undefined &&
+      idempotencyCacheLookupKey !== undefined &&
+      idempotencyFingerprint !== undefined
+    ) {
+      try {
+        deps.idempotencyStore.store(
+          idempotencyCacheLookupKey,
+          idempotencyFingerprint,
+          JSON.stringify(result),
+        );
+      } catch {
+        // Best-effort — the committed row still exists with committedResult.
+      }
+    }
 
     return ok(result);
   } catch (error) {
