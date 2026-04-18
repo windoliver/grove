@@ -112,7 +112,8 @@ function parseResultUsage(usage: Record<string, unknown>): TokenUsage | undefine
   if (usage.cost && typeof usage.cost === "object") {
     const c = usage.cost as Record<string, unknown>;
     const amount = finiteNumber(c.amount);
-    const currency = typeof c.currency === "string" && c.currency.length > 0 ? c.currency : undefined;
+    const currency =
+      typeof c.currency === "string" && c.currency.length > 0 ? c.currency : undefined;
     if (amount !== undefined && currency !== undefined) {
       out.cost = { amount, currency };
     }
