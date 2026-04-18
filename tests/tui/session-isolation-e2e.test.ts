@@ -54,10 +54,23 @@ function sleep(ms: number): Promise<void> {
 }
 
 function launchHarness(session: string, groveDir: string, label: string, count = 55): void {
-  tmux(
+  const command =
     `new-session -d -s ${session} -x 120 -y 40 -c "${PROJECT_ROOT}" ` +
-      `"bun run tests/tui/session-isolation-harness.ts --grove-dir ${groveDir} --label ${label} --count ${count} 2>/dev/null"`,
-  );
+    `"bun run tests/tui/session-isolation-harness.ts --grove-dir ${groveDir} --label ${label} --count ${count} 2>/dev/null"`;
+
+  try {
+    tmux(command);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // CI can occasionally hit a tmux server startup race. One clean retry is enough.
+    if (!message.includes("server exited unexpectedly")) throw error;
+    try {
+      execSync(`tmux -L ${TMUX_SOCKET} kill-server 2>/dev/null`, { stdio: "ignore" });
+    } catch {
+      // Best-effort cleanup before retry.
+    }
+    tmux(command);
+  }
 }
 
 function killSession(session: string): void {

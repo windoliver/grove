@@ -131,31 +131,30 @@ function mergeToolCallEvent(existing: ToolCallEvent, incoming: ToolCallEvent): T
   if (incoming.name !== undefined) merged.name = incoming.name;
   if (incoming.title !== undefined) merged.title = incoming.title;
 
-  // Gate `status` and its payload (input/output/diff/error) together. When an
-  // incoming frame presents a status that would regress or tie the existing
-  // terminal (e.g. completed→failed duplicate, or failed→completed reorder),
-  // we reject BOTH the status AND any terminal payload it carries —
-  // otherwise a rejected terminal update could still contaminate the
-  // outcome record (e.g. preserve status=completed but overwrite output
-  // from the failed duplicate). Frames without a status (pure mid-call
-  // updates) merge their payload normally.
-  let statusAccepted = true;
+  // Gate `status` and its payload (input/output/diff/error) together. Reordered
+  // or regressive statuses (e.g. completed→failed duplicate, failed→completed
+  // reorder, in_progress→pending) are rejected as a unit so they cannot
+  // contaminate the accepted outcome. Same-status duplicates are allowed to
+  // enrich payload fields, because providers may emit final output/error on a
+  // later frame that repeats the already-seen terminal status.
+  let payloadAccepted = true;
   if (incoming.status !== undefined) {
-    const existingRank = merged.status ? STATUS_RANK[merged.status] : -1;
-    const incomingRank = STATUS_RANK[incoming.status];
-    // STRICT monotonic — first terminal outcome wins. `completed` and `failed`
-    // share rank 2; a non-strict `>=` check would let a late or reordered
-    // terminal update flip a tool from `completed` → `failed` (or back)
-    // purely by arrival order, making the final audit outcome
-    // transport-dependent. `>` keeps progressions (pending → in_progress →
-    // terminal) but rejects terminal-over-terminal and equal-rank no-ops.
-    if (incomingRank > existingRank) {
+    if (merged.status === undefined) {
       merged.status = incoming.status;
     } else {
-      statusAccepted = false;
+      const existingStatus = merged.status;
+      const existingRank = STATUS_RANK[existingStatus];
+      const incomingRank = STATUS_RANK[incoming.status];
+      if (incomingRank > existingRank) {
+        merged.status = incoming.status;
+      } else if (incomingRank === existingRank && incoming.status === existingStatus) {
+        // Duplicate same-status frame: keep status and accept payload.
+      } else {
+        payloadAccepted = false;
+      }
     }
   }
-  if (statusAccepted) {
+  if (payloadAccepted) {
     if (incoming.input !== undefined) merged.input = incoming.input;
     if (incoming.output !== undefined) merged.output = incoming.output;
     if (incoming.diff !== undefined) merged.diff = incoming.diff;
