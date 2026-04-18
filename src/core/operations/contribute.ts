@@ -1449,10 +1449,23 @@ export async function contributeOperation(
         }
       }
       if (lastError !== undefined) {
-        // All attempts exhausted: log and continue. The contribution is already
-        // committed; the next write's recheck provides another chance to detect
-        // the stop signal. Still best-effort on total Nexus outage — but no
-        // longer single-attempt.
+        // All attempts exhausted. The contribution is already committed, so we
+        // cannot undo the write. Instead, surface the degradation explicitly
+        // in policyResult.stopResult so callers can detect "stop status
+        // unknown" rather than conflating it with confirmed stopped=false.
+        // This addresses Codex review r4 finding on fail-open behavior under
+        // sustained store read failures. The next write's recheck provides
+        // another chance to detect quorum/deliberation; in the meantime,
+        // operators see the warning and callers can gate on the explicit
+        // reason string.
+        const degradedReason = `stop_recheck_unavailable: post-write recheck failed after ${POST_WRITE_RECHECK_ATTEMPTS} attempts — quorum/deliberation stop detection temporarily degraded`;
+        policyResult = {
+          ...policyResult,
+          stopResult: {
+            stopped: policyResult.stopResult?.stopped === true,
+            reason: policyResult.stopResult?.reason ?? degradedReason,
+          },
+        };
         process.stderr.write(
           `[grove] Warning: post-write stop-condition recheck failed after ${POST_WRITE_RECHECK_ATTEMPTS} attempts: ${lastError instanceof Error ? lastError.message : String(lastError)}\n`,
         );
@@ -1519,14 +1532,36 @@ export async function contributeOperation(
         });
       }
       if (deps.idempotencyStore !== undefined) {
-        try {
-          deps.idempotencyStore.store(
-            idempotencyCacheLookupKey,
-            idempotencyFingerprint,
-            JSON.stringify(result),
+        // Bounded retry with warning on final durable refresh failure.
+        // Addresses Codex review r4 finding: a silent drop here leaves
+        // cross-process retries reading the stale committedResult for the
+        // full TTL. Same 3-attempt pattern used for post-write recheck.
+        const IDEMPOTENCY_REFRESH_ATTEMPTS = 3;
+        let refreshAttempt = 0;
+        let refreshError: unknown;
+        while (refreshAttempt < IDEMPOTENCY_REFRESH_ATTEMPTS) {
+          try {
+            deps.idempotencyStore.store(
+              idempotencyCacheLookupKey,
+              idempotencyFingerprint,
+              JSON.stringify(result),
+            );
+            refreshError = undefined;
+            break;
+          } catch (err) {
+            refreshError = err;
+            refreshAttempt += 1;
+            if (refreshAttempt < IDEMPOTENCY_REFRESH_ATTEMPTS) {
+              await new Promise((resolve) =>
+                setTimeout(resolve, 100 * 4 ** (refreshAttempt - 1)),
+              );
+            }
+          }
+        }
+        if (refreshError !== undefined) {
+          process.stderr.write(
+            `[grove] Warning: idempotency durable-refresh failed after ${IDEMPOTENCY_REFRESH_ATTEMPTS} attempts (cross-process retries may observe stale policy for key=${idempotencyCacheLookupKey}): ${refreshError instanceof Error ? refreshError.message : String(refreshError)}\n`,
           );
-        } catch {
-          // Best-effort — the committed row still exists with committedResult.
         }
       }
     }
