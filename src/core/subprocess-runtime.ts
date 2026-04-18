@@ -117,12 +117,12 @@ export class SubprocessRuntime implements AgentRuntime {
     if (!entry) {
       return errorTurn(session.id, "no_session", `unknown session id: ${session.id}`);
     }
-    // Reject sends to a child that has already exited. A write to the now-
-    // closed pipe can either throw OR silently succeed (the OS buffers the
-    // bytes into a pipe whose reader is gone); in the silent case we would
-    // otherwise report end_turn to callers who watch turn.result and treat
-    // that as delivery confirmation.
-    if (entry.exited || entry.session.status === "stopped") {
+    // Reject sends to a child that has already exited. The `exited` flag
+    // is only flipped by a `proc.exited.then(...)` microtask, so there is
+    // a window where the child has died but the flag has not yet flipped.
+    // Consult `proc.exitCode` directly (null while running, a number on
+    // exit) so we catch that window as well.
+    if (entry.exited || entry.proc.exitCode !== null) {
       return errorTurn(session.id, "child_exited", "subprocess has already exited");
     }
     if (!entry.proc.stdin) {
@@ -141,9 +141,9 @@ export class SubprocessRuntime implements AgentRuntime {
       );
     }
     // Re-check after the flush: the write may have succeeded locally but
-    // the child could have exited while we awaited. If so, treat the turn
-    // as errored rather than end_turn.
-    if (entry.exited) {
+    // the child could have exited while we awaited. Check both the flag
+    // and the direct exitCode to close the microtask race.
+    if (entry.exited || entry.proc.exitCode !== null) {
       return errorTurn(session.id, "child_exited", "subprocess exited during send");
     }
     return emptyTurn(session.id);
