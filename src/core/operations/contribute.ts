@@ -1410,27 +1410,51 @@ export async function contributeOperation(
       deps.contract?.stopConditions !== undefined &&
       deps.contributionStore !== undefined
     ) {
-      try {
-        const { evaluateStopConditions } = await import("../stop-conditions.js");
-        const postWriteResult = await evaluateStopConditions(deps.contract, deps.contributionStore);
-        if (postWriteResult.stopped) {
-          policyResult = {
-            ...policyResult,
-            stopResult: {
-              stopped: true,
-              reason: Object.entries(postWriteResult.conditions)
-                .filter(([, c]) => c.met)
-                .map(([name, c]) => `${name}: ${c.reason}`)
-                .join("; "),
-            },
-          };
+      // Bounded retry with exponential backoff — addresses Codex review r3:
+      // the scanning stop evaluators are the ONLY detector for
+      // quorum/deliberation on the mutex-hook path, so a transient
+      // store read failure must not silently drop a stop signal.
+      // 3 attempts × (100ms, 400ms) backoff caps at ~500ms added latency
+      // in the worst case; success on attempt 1 adds zero latency.
+      const { evaluateStopConditions } = await import("../stop-conditions.js");
+      const POST_WRITE_RECHECK_ATTEMPTS = 3;
+      let attempt = 0;
+      let lastError: unknown;
+      while (attempt < POST_WRITE_RECHECK_ATTEMPTS) {
+        try {
+          const postWriteResult = await evaluateStopConditions(
+            deps.contract,
+            deps.contributionStore,
+          );
+          if (postWriteResult.stopped) {
+            policyResult = {
+              ...policyResult,
+              stopResult: {
+                stopped: true,
+                reason: Object.entries(postWriteResult.conditions)
+                  .filter(([, c]) => c.met)
+                  .map(([name, c]) => `${name}: ${c.reason}`)
+                  .join("; "),
+              },
+            };
+          }
+          lastError = undefined;
+          break;
+        } catch (err) {
+          lastError = err;
+          attempt += 1;
+          if (attempt < POST_WRITE_RECHECK_ATTEMPTS) {
+            await new Promise((resolve) => setTimeout(resolve, 100 * 4 ** (attempt - 1)));
+          }
         }
-      } catch (err) {
-        // Best-effort: the contribution is already committed. A stop-condition
-        // recheck failure does not invalidate the write, but log it so operators
-        // can detect cases where a threshold-crossing stop signal was lost.
+      }
+      if (lastError !== undefined) {
+        // All attempts exhausted: log and continue. The contribution is already
+        // committed; the next write's recheck provides another chance to detect
+        // the stop signal. Still best-effort on total Nexus outage — but no
+        // longer single-attempt.
         process.stderr.write(
-          `[grove] Warning: post-write stop-condition recheck failed: ${err instanceof Error ? err.message : String(err)}\n`,
+          `[grove] Warning: post-write stop-condition recheck failed after ${POST_WRITE_RECHECK_ATTEMPTS} attempts: ${lastError instanceof Error ? lastError.message : String(lastError)}\n`,
         );
       }
     }
@@ -1473,30 +1497,37 @@ export async function contributeOperation(
       ...(policyResult !== undefined ? { policy: policyResult } : {}),
     };
 
-    // Refresh the durable idempotency row with the final result. The earlier
-    // write at the DURABLE COMMIT BOUNDARY stored `committedResult`, which
-    // reflects only the pre-write policyResult. Without this refresh, a retry
-    // (or a concurrent same-key caller reading the durable row after a
-    // process restart) would observe stopped=false for quorum/deliberation
-    // threshold-crossing writes, while the direct caller saw stopped=true.
-    // See Codex finding on #312 round 2.
+    // Refresh BOTH the in-memory idempotency cache AND the durable row with
+    // the final result so same-process retries and cross-process lookups
+    // return the same payload as the direct caller. Without this, the
+    // committedResult snapshot (pre-recheck) would persist in the in-memory
+    // cache for up to IDEMPOTENCY_TTL_MS, and same-process retries would see
+    // stopped=false while the direct caller saw stopped=true. See Codex
+    // findings on #312 rounds 2–3.
     //
-    // In-flight concurrent retries that already awaited the in-memory
-    // idempotency slot still receive committedResult — that's a pre-existing
-    // narrow window documented at the DURABLE COMMIT BOUNDARY.
-    if (
-      deps.idempotencyStore !== undefined &&
-      idempotencyCacheLookupKey !== undefined &&
-      idempotencyFingerprint !== undefined
-    ) {
-      try {
-        deps.idempotencyStore.store(
-          idempotencyCacheLookupKey,
-          idempotencyFingerprint,
-          JSON.stringify(result),
-        );
-      } catch {
-        // Best-effort — the committed row still exists with committedResult.
+    // In-flight concurrent retries that already awaited the in-memory slot's
+    // pending promise still receive committedResult — that's a pre-existing
+    // narrow window documented at the DURABLE COMMIT BOUNDARY. New retries
+    // (key lookup after the slot resolves) get the final result.
+    if (idempotencyCacheLookupKey !== undefined && idempotencyFingerprint !== undefined) {
+      const existing = idempotencyCache.get(idempotencyCacheLookupKey);
+      if (existing !== undefined && existing.fingerprint === idempotencyFingerprint) {
+        idempotencyCache.set(idempotencyCacheLookupKey, {
+          fingerprint: idempotencyFingerprint,
+          storedAt: existing.storedAt,
+          value: result,
+        });
+      }
+      if (deps.idempotencyStore !== undefined) {
+        try {
+          deps.idempotencyStore.store(
+            idempotencyCacheLookupKey,
+            idempotencyFingerprint,
+            JSON.stringify(result),
+          );
+        } catch {
+          // Best-effort — the committed row still exists with committedResult.
+        }
       }
     }
 
