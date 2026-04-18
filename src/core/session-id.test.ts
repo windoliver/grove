@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { buildSessionId, parseSessionId, SESSION_ID_PREFIX } from "./session-id.js";
+import {
+  buildSessionId,
+  parseAcpxSessionId,
+  parseSessionId,
+  SESSION_ID_PREFIX,
+} from "./session-id.js";
 
 describe("session-id", () => {
   test("buildSessionId emits grove-<role>-<counter>--<base36>", () => {
@@ -77,5 +82,37 @@ describe("session-id", () => {
     // contract surface clean for use-permission-detection.
     expect(parseSessionId("grove-worker-1-mo3i3zh6")).toBeNull();
     expect(parseSessionId("grove-coder-mo3i3zh6")).toBeNull();
+  });
+});
+
+describe("parseAcpxSessionId", () => {
+  test("accepts canonical IDs", () => {
+    const id = buildSessionId("coder", 0);
+    const parsed = parseAcpxSessionId(id);
+    expect(parsed?.role).toBe("coder");
+    expect(parsed?.counter).toBe(0);
+    expect(parsed?.suffix).toMatch(/^[a-z0-9]+$/);
+  });
+
+  test("accepts pre-double-dash acpx shape (upgrade compatibility)", () => {
+    // Live agents created on the previous grove version have IDs shaped
+    // `grove-<role>-<counter>-<base36>` (single dashes). Rediscovery must
+    // still find them post-upgrade or claims/spawnRecords get cleaned up.
+    const parsed = parseAcpxSessionId("grove-coder-0-mo3i3zh6");
+    expect(parsed).not.toBeNull();
+    expect(parsed!.role).toBe("coder");
+    expect(parsed!.counter).toBe(0);
+    expect(parsed!.suffix).toBe("mo3i3zh6");
+  });
+
+  test("accepts legacy <role>-<counter> shape", () => {
+    const parsed = parseAcpxSessionId("grove-worker-3");
+    expect(parsed?.role).toBe("worker");
+    expect(parsed?.counter).toBe(3);
+    expect(parsed?.suffix).toBeNull();
+  });
+
+  test("rejects non-grove names", () => {
+    expect(parseAcpxSessionId("foo-bar-0-abc")).toBeNull();
   });
 });

@@ -12,7 +12,7 @@ import { execSync, spawn as nodeSpawn } from "node:child_process";
 import { createWriteStream, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
-import { buildSessionId, parseSessionId, SESSION_ID_PREFIX } from "./session-id.js";
+import { buildSessionId, parseAcpxSessionId, SESSION_ID_PREFIX } from "./session-id.js";
 import { shellEscape } from "./shell-utils.js";
 import type { AgentPlatformType } from "./topology.js";
 
@@ -516,7 +516,11 @@ ${message}`;
           const name = (fields[1] ?? line).trim();
           const isClosed = line.includes("[closed]");
           if (name.startsWith(SESSION_ID_PREFIX) && !seenIds.has(name) && !isClosed) {
-            const parsed = parseSessionId(name);
+            // parseAcpxSessionId accepts the prior single-dash acpx contract
+            // so an upgrade still rediscovers agents created on the previous
+            // grove version. Source-narrow: safe here because acpx never
+            // returns TUI-shaped names.
+            const parsed = parseAcpxSessionId(name);
             if (!parsed) continue;
             result.push({ id: name, role: parsed.role, status: "idle", agent: agentName });
             seenIds.add(name);

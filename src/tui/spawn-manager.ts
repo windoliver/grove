@@ -15,7 +15,7 @@ import { join, resolve } from "node:path";
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { AgentIdentity } from "../core/models.js";
 import { resolveMcpServePath } from "../core/resolve-mcp-serve-path.js";
-import { parseSessionId } from "../core/session-id.js";
+import { parseAcpxSessionId } from "../core/session-id.js";
 import type { AgentTopology } from "../core/topology.js";
 import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
 import type { WorkspaceIsolationPolicy, WorkspaceMode } from "../core/workspace-provisioner.js";
@@ -125,8 +125,14 @@ export class SpawnManager {
     this.wsBridge = bridge;
     // Register any sessions that were spawned before the bridge was ready.
     // The bridge is created async (dynamic import) so agents may already be running.
+    //
+    // Use `session.role` (the orchestration role from spawn config) rather
+    // than splitting the map key on `-`: the split would truncate hyphenated
+    // roles like `code-reviewer` to `code` and drop inbound IPC. NexusWsBridge
+    // does an exact role lookup downstream, so the registration key must match
+    // the topology role exactly.
     for (const [spawnId, session] of this.agentSessions) {
-      const role = spawnId.split("-")[0]; // "coder-abc123" → "coder"
+      const role = session.role;
       if (role) {
         bridge.registerSession(role, session);
         debugLog("wsBridge", `late-registered ${role} (spawnId=${spawnId})`);
@@ -621,11 +627,10 @@ export class SpawnManager {
           if (!cwd.startsWith(workspacesPrefix) && !cwd.startsWith(`/private${workspacesPrefix}`))
             continue;
 
-          // acpx session names follow the canonical runtime contract
-          // (`grove-<role>-<counter>--<base36>`); parseSessionId is the
-          // single source of truth so role attribution stays consistent
-          // with rediscovery in TmuxRuntime/AcpxRuntime/use-agent-monitor.
-          const parsed = parseSessionId(name);
+          // Acpx names follow the canonical runtime contract; the acpx-aware
+          // parser also accepts the prior single-dash shape so rediscovery
+          // still works for live agents created on the previous grove version.
+          const parsed = parseAcpxSessionId(name);
           if (!parsed) continue;
           const role = parsed.role;
           if (role && !this.agentSessions.has(role)) {

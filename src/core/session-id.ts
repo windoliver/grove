@@ -77,3 +77,32 @@ export function parseSessionId(name: string): ParsedSessionId | null {
   }
   return null;
 }
+
+/**
+ * Parse a session ID known to originate from acpx (e.g. the output of
+ * `acpx sessions list` or `AcpxRuntime.discoverSessions()`).
+ *
+ * Extends {@link parseSessionId} with a transitional branch for the
+ * pre-double-dash acpx shape `grove-<role>-<counter>-<base36>` so an
+ * upgrade doesn't strand already-running agents that were created on the
+ * older contract. Do NOT use this on tmux pane lookups — single-dash names
+ * there can also be TUI sessions (`grove-${agentId}`) whose `agentId`
+ * happens to look like `<role>-<counter>-<suffix>`, leading to misparse.
+ */
+export function parseAcpxSessionId(name: string): ParsedSessionId | null {
+  const standard = parseSessionId(name);
+  if (standard) return standard;
+  if (!name.startsWith(SESSION_ID_PREFIX)) return null;
+  const body = name.slice(SESSION_ID_PREFIX.length);
+  if (body.includes(CANONICAL_SEPARATOR)) return null;
+  // Prior-PR acpx shape: <role>-<counter>-<base36-suffix>, all single dashes.
+  const priorAcpx = body.match(/^(.+)-(\d+)-([a-z0-9]+)$/);
+  if (priorAcpx) {
+    const [, role, counterStr, suffix] = priorAcpx;
+    if (role && counterStr && suffix) {
+      const counter = Number.parseInt(counterStr, 10);
+      if (Number.isFinite(counter)) return { role, counter, suffix };
+    }
+  }
+  return null;
+}
