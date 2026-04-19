@@ -8,26 +8,39 @@
 
 import type { Message, Result } from "../../acp/types.js";
 import type { GroveEvent } from "../../core/event-bus.js";
+import { debugLog } from "../debug-log.js";
 import type { AcpSessionStore } from "./acp-session-store.js";
 
 export interface AcpMessageSink {
   handleGroveEvent(event: GroveEvent): void;
 }
 
+const VALID_MESSAGE_KINDS = new Set([
+  "text",
+  "thinking",
+  "tool_call",
+  "permission_request",
+  "token_usage",
+  "raw",
+]);
+
+const VALID_STOP_REASONS = new Set(["end_turn", "max_tokens", "cancelled", "error"]);
+
 export function createAcpMessageSink(store: AcpSessionStore): AcpMessageSink {
   return {
     handleGroveEvent(event: GroveEvent): void {
       if (event.type === "acp.message") {
-        const p = event.payload as {
-          sessionId?: unknown;
-          turnId?: unknown;
-          message?: unknown;
-        };
+        const p = event.payload as
+          | { sessionId?: unknown; turnId?: unknown; message?: unknown }
+          | null
+          | undefined;
         if (
+          !p ||
           typeof p.sessionId !== "string" ||
           typeof p.turnId !== "string" ||
           !isMessage(p.message)
         ) {
+          debugLog("acp_event_malformed", `acp.message payload rejected from ${event.sourceRole}`);
           return;
         }
         store.ingest({
@@ -40,16 +53,17 @@ export function createAcpMessageSink(store: AcpSessionStore): AcpMessageSink {
       }
 
       if (event.type === "acp.result") {
-        const p = event.payload as {
-          sessionId?: unknown;
-          turnId?: unknown;
-          result?: unknown;
-        };
+        const p = event.payload as
+          | { sessionId?: unknown; turnId?: unknown; result?: unknown }
+          | null
+          | undefined;
         if (
+          !p ||
           typeof p.sessionId !== "string" ||
           typeof p.turnId !== "string" ||
           !isResult(p.result)
         ) {
+          debugLog("acp_event_malformed", `acp.result payload rejected from ${event.sourceRole}`);
           return;
         }
         store.ingest({
@@ -64,19 +78,15 @@ export function createAcpMessageSink(store: AcpSessionStore): AcpMessageSink {
 }
 
 function isMessage(v: unknown): v is Message {
-  return (
-    typeof v === "object" &&
-    v !== null &&
-    typeof (v as { kind?: unknown }).kind === "string" &&
-    typeof (v as { turnId?: unknown }).turnId === "string"
-  );
+  if (typeof v !== "object" || v === null) return false;
+  const kind = (v as { kind?: unknown }).kind;
+  if (typeof kind !== "string" || !VALID_MESSAGE_KINDS.has(kind)) return false;
+  return typeof (v as { turnId?: unknown }).turnId === "string";
 }
 
 function isResult(v: unknown): v is Result {
-  return (
-    typeof v === "object" &&
-    v !== null &&
-    typeof (v as { turnId?: unknown }).turnId === "string" &&
-    typeof (v as { stopReason?: unknown }).stopReason === "string"
-  );
+  if (typeof v !== "object" || v === null) return false;
+  if (typeof (v as { turnId?: unknown }).turnId !== "string") return false;
+  const stopReason = (v as { stopReason?: unknown }).stopReason;
+  return typeof stopReason === "string" && VALID_STOP_REASONS.has(stopReason);
 }

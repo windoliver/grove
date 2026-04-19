@@ -83,3 +83,57 @@ test("drops malformed acp.result payloads (missing result field)", () => {
   });
   expect(store.getTurn("s1", "t1")).toBeUndefined();
 });
+
+test("rejects acp.message whose message.kind is not a known Message kind", () => {
+  const store = new AcpSessionStore();
+  store.register("s1");
+  const sink = createAcpMessageSink(store);
+  sink.handleGroveEvent({
+    type: "acp.message",
+    sourceRole: "coder",
+    targetRole: "tui",
+    // A Result-shaped object leaking into an acp.message envelope must NOT
+    // reach the store — downstream projectors switch on message.kind.
+    payload: {
+      sessionId: "s1",
+      turnId: "t1",
+      message: { kind: "result", turnId: "t1", stopReason: "end_turn" },
+    },
+    timestamp: new Date().toISOString(),
+  });
+  expect(store.getTurn("s1", "t1")).toBeUndefined();
+});
+
+test("rejects acp.result whose stopReason is unknown", () => {
+  const store = new AcpSessionStore();
+  store.register("s1");
+  const sink = createAcpMessageSink(store);
+  sink.handleGroveEvent({
+    type: "acp.result",
+    sourceRole: "coder",
+    targetRole: "tui",
+    payload: {
+      sessionId: "s1",
+      turnId: "t1",
+      result: { turnId: "t1", stopReason: "not_a_real_reason" },
+    },
+    timestamp: new Date().toISOString(),
+  });
+  expect(store.getTurn("s1", "t1")).toBeUndefined();
+});
+
+test("drops acp.message with null payload without throwing", () => {
+  const store = new AcpSessionStore();
+  store.register("s1");
+  const sink = createAcpMessageSink(store);
+  expect(() =>
+    sink.handleGroveEvent({
+      type: "acp.message",
+      sourceRole: "coder",
+      targetRole: "tui",
+      payload: null as unknown as Record<string, unknown>,
+      timestamp: new Date().toISOString(),
+    }),
+  ).not.toThrow();
+  expect(store.getSession("s1")?.turns.size).toBe(0);
+});
