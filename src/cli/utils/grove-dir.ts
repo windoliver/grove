@@ -19,6 +19,29 @@ export interface GroveLocation {
 }
 
 /**
+ * Walk up from `startDir` looking for the nearest ancestor (or startDir itself)
+ * containing a `.grove/` subdirectory. Returns the absolute path to the
+ * `.grove/` directory, or undefined if none is found before the FS root.
+ *
+ * Fence semantics: this function ONLY checks `.grove/` directory existence.
+ * Callers that require additional artifacts (grove.json, grove.db, etc.)
+ * MUST validate them after resolution and treat "found .grove/ but missing
+ * artifact" as "not initialized at this level" — they MUST NOT silently walk
+ * past an incomplete grove to find a more-complete parent. That behavior
+ * causes git worktrees to inherit stale parent state (#315).
+ */
+export function findGroveDir(startDir: string): string | undefined {
+  let current = resolve(startDir);
+  while (true) {
+    const candidate = join(current, GROVE_DIR_NAME);
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
+/**
  * Resolve the grove directory path.
  *
  * Priority: overridePath > GROVE_DIR env > walk-up from cwd().
@@ -31,18 +54,8 @@ export function resolveGroveDir(overridePath?: string): GroveLocation {
     return { groveDir: resolved, dbPath: join(resolved, DB_FILENAME) };
   }
 
-  let current = resolve(process.cwd());
-
-  while (true) {
-    const candidate = join(current, GROVE_DIR_NAME);
-    if (existsSync(candidate)) {
-      return { groveDir: candidate, dbPath: join(candidate, DB_FILENAME) };
-    }
-
-    const parent = dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
+  const found = findGroveDir(process.cwd());
+  if (found) return { groveDir: found, dbPath: join(found, DB_FILENAME) };
 
   throw new Error("No grove found. Run 'grove init' to create one, or set GROVE_DIR.");
 }
