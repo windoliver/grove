@@ -6,16 +6,16 @@
  * CLI commands.
  */
 
-import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { resolve } from "node:path";
 import type { FrontierCalculator } from "../core/frontier.js";
 import type { OutcomeStore } from "../core/outcome.js";
 import type { ClaimStore, ContributionStore } from "../core/store.js";
 import type { WorkspaceManager } from "../core/workspace.js";
 import type { FsCas } from "../local/fs-cas.js";
 import { createLocalRuntime } from "../local/runtime.js";
+import { findGroveDir } from "./utils/grove-dir.js";
 
-const GROVE_DIR = ".grove";
+export { findGroveDir };
 
 /** All dependencies a CLI command needs. */
 export interface CliDeps {
@@ -31,33 +31,6 @@ export interface CliDeps {
 
 /** Writer function for testable output. */
 export type Writer = (text: string) => void;
-
-/**
- * Walk up from `startDir` to find the nearest directory containing `.grove/`.
- * Returns the absolute path to the `.grove` directory, or undefined.
- */
-export function findGroveDir(startDir: string): string | undefined {
-  let dir = resolve(startDir);
-  const root = dirname(dir) === dir ? dir : undefined;
-
-  while (true) {
-    const candidate = join(dir, GROVE_DIR);
-    if (existsSync(candidate)) {
-      return candidate;
-    }
-    const parent = dirname(dir);
-    if (parent === dir) break; // filesystem root
-    dir = parent;
-  }
-
-  // Check filesystem root
-  if (root !== undefined) {
-    const candidate = join(root, GROVE_DIR);
-    if (existsSync(candidate)) return candidate;
-  }
-
-  return undefined;
-}
 
 /**
  * Discover the grove and initialize all stores.
