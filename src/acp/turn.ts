@@ -41,8 +41,15 @@ function coalesceMessage(existing: Message, incoming: Message): Message {
   return existing;
 }
 
-function invalidatesCoalesceKeyFor(m: Message): string | null {
+const TEXT_THINKING_KEYS: readonly string[] = ["text", "thinking"];
+
+function invalidatesCoalesceKeyFor(m: Message): string | readonly string[] | null {
   if ((m.kind === "text" || m.kind === "thinking") && !m.chunk) return m.kind;
+  // tool_call / permission_request are chronological boundaries between
+  // text/thinking runs. Without invalidation, a later text chunk would
+  // coalesce into the pre-tool_call slot and visibly reorder the stream
+  // (text-after-tool would surface as text-before-tool to the consumer).
+  if (m.kind === "tool_call" || m.kind === "permission_request") return TEXT_THINKING_KEYS;
   return null;
 }
 
@@ -93,9 +100,7 @@ export class AcpxTurnImpl implements AcpxTurn {
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(
-          `[acpx-turn] pump error for session=${sid} turn=${tid}: ${msg}\n`,
-        );
+        process.stderr.write(`[acpx-turn] pump error for session=${sid} turn=${tid}: ${msg}\n`);
       } finally {
         channel.close();
       }

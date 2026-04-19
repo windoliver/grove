@@ -272,9 +272,7 @@ test("AcpxTurnImpl: channelCapacity Infinity bypasses eviction", async () => {
 });
 
 test("classifyMessage covers all Message kinds with expected policies", () => {
-  expect(
-    classifyMessage({ kind: "tool_call", turnId: "t", toolCall: { id: "x" } }),
-  ).toBe("never");
+  expect(classifyMessage({ kind: "tool_call", turnId: "t", toolCall: { id: "x" } })).toBe("never");
   expect(
     classifyMessage({
       kind: "permission_request",
@@ -285,21 +283,79 @@ test("classifyMessage covers all Message kinds with expected policies", () => {
   expect(classifyMessage({ kind: "text", turnId: "t", text: "x", chunk: true })).toBe(
     "coalesce_text_deltas",
   );
-  expect(classifyMessage({ kind: "text", turnId: "t", text: "x", chunk: false })).toBe(
-    "never",
-  );
+  expect(classifyMessage({ kind: "text", turnId: "t", text: "x", chunk: false })).toBe("never");
   expect(classifyMessage({ kind: "thinking", turnId: "t", text: "x", chunk: true })).toBe(
     "coalesce_text_deltas",
   );
-  expect(classifyMessage({ kind: "thinking", turnId: "t", text: "x", chunk: false })).toBe(
-    "never",
-  );
+  expect(classifyMessage({ kind: "thinking", turnId: "t", text: "x", chunk: false })).toBe("never");
   expect(
-    classifyMessage({ kind: "token_usage", turnId: "t", usage: { inputTokens: 0, outputTokens: 0 } }),
+    classifyMessage({
+      kind: "token_usage",
+      turnId: "t",
+      usage: { inputTokens: 0, outputTokens: 0 },
+    }),
   ).toBe("drop_oldest_on_full");
   expect(classifyMessage({ kind: "raw", turnId: "t", acpMethod: "any", params: {} })).toBe(
     "drop_oldest_on_full",
   );
+});
+
+test("REGRESSION: tool_call invalidates text/thinking coalesce tail (#274 round 4)", async () => {
+  // Stream: text chunk A → tool_call → text chunk B. Without the boundary
+  // invalidation, B coalesces into A's slot which lives BEFORE tool_call in
+  // the ring, reordering the visible stream to [text(AB), tool_call] instead
+  // of the correct [text(A), tool_call, text(B)]. A slow consumer keeps the
+  // events buffered long enough for B to merge into A.
+  const lines = [
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "s1",
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "A" } },
+      },
+    }),
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "s1",
+        update: { sessionUpdate: "tool_call", toolCallId: "tc-1", title: "do work" },
+      },
+    }),
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "s1",
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "B" } },
+      },
+    }),
+    JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }),
+  ];
+  const turn = new AcpxTurnImpl({
+    sessionId: "s1",
+    turnId: "t1",
+    stdout: Readable.from([`${lines.join("\n")}\n`]),
+    cancelFn: async () => undefined,
+  });
+  const got: Message[] = [];
+  for await (const m of turn.messages) {
+    got.push(m);
+    // Slow consumer: hold every event for one tick so the pump pushes all
+    // three before the consumer has drained even one — the only condition
+    // under which the reorder bug surfaces.
+    await new Promise((r) => setImmediate(r));
+  }
+  await turn.result;
+  const kinds = got.map((m) => m.kind);
+  // Order must reflect chronology: text, tool_call, text — never [text, text, tool_call]
+  // and never [text("AB"), tool_call] (which would mean B merged into A).
+  expect(kinds).toEqual(["text", "tool_call", "text"]);
+  const texts = got
+    .filter((m): m is Extract<Message, { kind: "text" }> => m.kind === "text")
+    .map((m) => m.text);
+  expect(texts).toEqual(["A", "B"]);
 });
 
 test("AcpxTurnImpl: chunked text deltas coalesce under default capacity", async () => {

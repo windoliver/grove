@@ -5,7 +5,7 @@ export interface ChannelOptions<T> {
   classify: (event: T) => Policy;
   coalesceKey?: (event: T) => string | null;
   coalesce?: (existing: T, incoming: T) => T;
-  invalidatesCoalesceKey?: (event: T) => string | null;
+  invalidatesCoalesceKey?: (event: T) => string | readonly string[] | null;
   onDrop?: (event: T, reason: "evicted" | "coalesced" | "no_capacity" | "closed") => void;
 }
 
@@ -95,7 +95,7 @@ export class BoundedEventChannel<T> {
     }
 
     if (policy === "never") {
-      const invKey = this.opts.invalidatesCoalesceKey?.(event) ?? null;
+      const invRaw = this.opts.invalidatesCoalesceKey?.(event) ?? null;
 
       if (!this.unbounded && this.size === this.buffer.length) {
         const victimIdx = this._findOldestDropEligibleIdx();
@@ -117,8 +117,17 @@ export class BoundedEventChannel<T> {
       }
       this._appendTail(event, policy);
       // Event was either buffered or fast-path delivered — consumer will see
-      // the terminal, so any prior coalesce tail is now semantically stale.
-      if (invKey !== null) this.coalesceTails.delete(invKey);
+      // it, so any prior coalesce tail is now semantically stale. A semantic
+      // boundary event (e.g. tool_call) MUST invalidate text/thinking tails
+      // even when it does not share a key with them: otherwise a later text
+      // chunk would coalesce into a slot that lives BEFORE this event in
+      // the ring, reordering chronology (text after tool_call appears as
+      // text before tool_call). Callers signal this by returning all keys
+      // whose chronological order this event terminates.
+      if (invRaw !== null) {
+        if (typeof invRaw === "string") this.coalesceTails.delete(invRaw);
+        else for (const k of invRaw) this.coalesceTails.delete(k);
+      }
       return;
     }
 
