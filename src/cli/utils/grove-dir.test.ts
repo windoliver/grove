@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { resolveAgentId, resolveGroveDir } from "./grove-dir.js";
+import { findGroveDir, resolveAgentId, resolveGroveDir } from "./grove-dir.js";
 
 describe("resolveGroveDir", () => {
   let tempDir: string;
@@ -69,6 +69,61 @@ describe("resolveGroveDir", () => {
     } finally {
       process.chdir(originalCwd);
     }
+  });
+});
+
+describe("findGroveDir", () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await realpath(await mkdtemp(join(tmpdir(), "grove-find-test-")));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  test("returns undefined when no .grove anywhere up to FS root", () => {
+    expect(findGroveDir(tempDir)).toBeUndefined();
+  });
+
+  test("returns startDir's .grove when it exists directly", async () => {
+    const groveDir = join(tempDir, ".grove");
+    await mkdir(groveDir);
+    expect(findGroveDir(tempDir)).toBe(groveDir);
+  });
+
+  test("walks up to find ancestor .grove", async () => {
+    const groveDir = join(tempDir, ".grove");
+    await mkdir(groveDir);
+    const subDir = join(tempDir, "a", "b", "c");
+    await mkdir(subDir, { recursive: true });
+    expect(findGroveDir(subDir)).toBe(groveDir);
+  });
+
+  test("fence semantics: child .grove wins over ancestor .grove", async () => {
+    // parent .grove at tempDir
+    await mkdir(join(tempDir, ".grove"));
+    // child .grove at tempDir/wt
+    const wt = join(tempDir, "wt");
+    await mkdir(wt);
+    const wtGrove = join(wt, ".grove");
+    await mkdir(wtGrove);
+    expect(findGroveDir(wt)).toBe(wtGrove);
+  });
+
+  test("fence semantics: child .grove wins even when incomplete (no grove.json)", async () => {
+    // Parent has full grove
+    const parentGrove = join(tempDir, ".grove");
+    await mkdir(parentGrove);
+    await Bun.write(join(parentGrove, "grove.json"), "{}");
+    // Child has bare .grove (no grove.json)
+    const wt = join(tempDir, "wt");
+    await mkdir(wt);
+    const wtGrove = join(wt, ".grove");
+    await mkdir(wtGrove);
+    // findGroveDir is artifact-agnostic — child wins regardless of grove.json
+    expect(findGroveDir(wt)).toBe(wtGrove);
   });
 });
 
