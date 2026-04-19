@@ -27,11 +27,13 @@ function isMessageBody(kind: string, v: Record<string, unknown>): boolean {
     case "thinking":
       return typeof v.text === "string" && typeof v.chunk === "boolean";
     case "tool_call":
+      // `ToolCallEvent.name` is OPTIONAL — ACP emits one full `tool_call`
+      // frame per id plus N `tool_call_update` frames that legitimately
+      // omit `name` and other unchanged fields. Only `id` is required.
       return (
         typeof v.toolCall === "object" &&
         v.toolCall !== null &&
-        typeof (v.toolCall as { id?: unknown }).id === "string" &&
-        typeof (v.toolCall as { name?: unknown }).name === "string"
+        typeof (v.toolCall as { id?: unknown }).id === "string"
       );
     case "permission_request":
       return (

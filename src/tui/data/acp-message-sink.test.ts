@@ -84,9 +84,10 @@ test("drops malformed acp.result payloads (missing result field)", () => {
   expect(store.getTurn("s1", "t1")).toBeUndefined();
 });
 
-test("rejects tool_call message missing toolCall body", () => {
-  // Projector dereferences message.toolCall.name — a malformed frame would
-  // throw in every subsequent flush and silently stall updates.
+test("rejects tool_call message missing toolCall body entirely", () => {
+  // No toolCall object at all — malformed. A frame with just
+  // `toolCall: { id }` and no name/status is LEGITIMATE (tool_call_update),
+  // see the next test.
   const store = new AcpSessionStore();
   store.register("s1");
   const sink = createAcpMessageSink(store);
@@ -102,6 +103,31 @@ test("rejects tool_call message missing toolCall body", () => {
     timestamp: new Date().toISOString(),
   });
   expect(store.getTurn("s1", "t1")).toBeUndefined();
+});
+
+test("accepts tool_call_update frame with only toolCall.id (no name/status)", () => {
+  // Per ACP: one `tool_call` (initial, full) then N `tool_call_update`
+  // frames that omit unchanged fields including `name`. Dropping these
+  // would silently lose every tool status/output transition.
+  const store = new AcpSessionStore();
+  store.register("s1");
+  const sink = createAcpMessageSink(store);
+  sink.handleGroveEvent({
+    type: "acp.message",
+    sourceRole: "coder",
+    targetRole: "tui",
+    payload: {
+      sessionId: "s1",
+      turnId: "t1",
+      message: {
+        kind: "tool_call",
+        turnId: "t1",
+        toolCall: { id: "tc-1", status: "in_progress" },
+      },
+    },
+    timestamp: new Date().toISOString(),
+  });
+  expect(store.getTurn("s1", "t1")?.messages).toHaveLength(1);
 });
 
 test("rejects permission_request message missing request body", () => {

@@ -17,12 +17,14 @@ export function messageToLogLine(message: Message): LogLine | undefined {
       return { ts: Date.now(), line: message.text, type: "output" };
     case "thinking":
       return { ts: Date.now(), line: `(thinking) ${message.text}`, type: "output" };
-    case "tool_call":
-      return {
-        ts: Date.now(),
-        line: `[tool] ${message.toolCall.name} (${message.toolCall.status})`,
-        type: "tool",
-      };
+    case "tool_call": {
+      // `tool_call_update` frames legitimately omit name/status. Keep the
+      // projection resilient so partial frames render as a concise update
+      // line instead of "undefined (undefined)".
+      const name = message.toolCall.name ?? message.toolCall.id;
+      const status = message.toolCall.status ?? "update";
+      return { ts: Date.now(), line: `[tool] ${name} (${status})`, type: "tool" };
+    }
     case "permission_request":
       return { ts: Date.now(), line: `[perm] ${message.request.tool}`, type: "tool" };
     case "token_usage":
@@ -56,15 +58,20 @@ export function projectSessionToBuffer(
     const sess = store.getSession(sessionId);
     if (!sess) return;
     for (const turn of sess.turns.values()) {
-      const next = cursors.get(turn.turnId) ?? 0;
-      for (let i = next; i < turn.messages.length; i++) {
+      // Cursors are kept in ABSOLUTE sequence-number space so eviction
+      // from the front of `turn.messages` does not misalign them. The
+      // store reports dropped counts via `turn.droppedMessageCount`;
+      // translate cursor → current-array index by subtracting it.
+      const absolute = cursors.get(turn.turnId) ?? 0;
+      const startIdx = Math.max(0, absolute - turn.droppedMessageCount);
+      for (let i = startIdx; i < turn.messages.length; i++) {
         const msg = turn.messages[i];
         if (msg) {
           const ll = messageToLogLine(msg);
           if (ll) buffer.push(ll);
         }
       }
-      cursors.set(turn.turnId, turn.messages.length);
+      cursors.set(turn.turnId, turn.droppedMessageCount + turn.messages.length);
       if (turn.closedAt !== undefined && !closed.has(turn.turnId)) {
         closed.add(turn.turnId);
         buffer.push(

@@ -15,6 +15,7 @@ test("deriveSessionPanelLines concatenates text chunks and emits one tool line p
     turnId: "t1",
     sessionId: "s1",
     startedAt: 1,
+    droppedMessageCount: 0,
     messages: [
       { kind: "text", turnId: "t1", text: "Hel", chunk: true },
       { kind: "text", turnId: "t1", text: "lo", chunk: true },
@@ -44,6 +45,12 @@ test("deriveSessionPanelLines concatenates text chunks and emits one tool line p
 });
 
 test("deriveSessionPanelLines returns [] when the turn is empty", () => {
-  const turn: TurnRecord = { turnId: "t1", sessionId: "s1", startedAt: 1, messages: [] };
+  const turn: TurnRecord = {
+    turnId: "t1",
+    sessionId: "s1",
+    startedAt: 1,
+    droppedMessageCount: 0,
+    messages: [],
+  };
   expect(deriveSessionPanelLines(turn)).toEqual([]);
 });

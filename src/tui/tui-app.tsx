@@ -299,6 +299,14 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
 
     const acpSessionStore = new AcpSessionStore();
     const acpSink = createAcpMessageSink(acpSessionStore);
+    // Stable per-TUI-process identity, threaded into the bridge so SSE
+    // self-loop dedupe is strict-matched against `payload.sourceInstance`
+    // (see NexusWsBridge.handleIpcEnvelope). Without this, two Grove
+    // instances sharing a Nexus and reusing role names would drop each
+    // other's typed ACP events. Publisher callers must embed the same
+    // value as `sourceInstance` — wiring that in is tracked in a
+    // follow-up once a production publisher call site lands.
+    const localInstanceId = crypto.randomUUID();
     if (appProps.eventBus && appProps.topology) {
       const bus = appProps.eventBus;
       for (const role of appProps.topology.roles) {
@@ -354,6 +362,7 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
             eventBus: appProps.eventBus,
             handoffStore,
             onAcpEvent: (ev) => acpSink.handleGroveEvent(ev),
+            localInstanceId,
             onBeforeDeliver: (sender, recipient) => {
               // Rsync workspace files from sender to recipient before IPC delivery
               manager.syncWorkspaces(sender, recipient);

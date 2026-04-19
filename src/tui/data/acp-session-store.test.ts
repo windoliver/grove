@@ -10,6 +10,7 @@ test("TurnRecord holds ordered messages and optional close metadata", () => {
     sessionId: "s1",
     messages: [msg],
     startedAt: 1,
+    droppedMessageCount: 0,
   };
   expect(rec.turnId).toBe("t1");
   expect(rec.closedAt).toBeUndefined();
@@ -214,4 +215,22 @@ test("dispose clears timer + maps so scheduled flushes cannot fire", async () =>
   expect(store.getSession("s1")).toBeUndefined();
   // Calling dispose twice must be idempotent.
   expect(() => store.dispose()).not.toThrow();
+});
+
+test("evicts oldest messages once a turn exceeds maxMessagesPerTurn (bounded retention)", () => {
+  const store = new AcpSessionStore({ maxMessagesPerTurn: 3 });
+  store.register("s1");
+  for (let i = 0; i < 5; i++) {
+    store.ingest({
+      kind: "message",
+      sessionId: "s1",
+      turnId: "t1",
+      message: { kind: "text", turnId: "t1", text: `m${i}`, chunk: true },
+    });
+  }
+  const turn = store.getTurn("s1", "t1");
+  expect(turn?.messages).toHaveLength(3);
+  expect(turn?.droppedMessageCount).toBe(2);
+  // FIFO: the surviving tail is the three most recent messages.
+  expect(turn?.messages.map((m) => (m.kind === "text" ? m.text : ""))).toEqual(["m2", "m3", "m4"]);
 });

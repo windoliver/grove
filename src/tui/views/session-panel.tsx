@@ -38,13 +38,13 @@ export function deriveSessionPanelLines(turn: TurnRecord): PanelLine[] {
       case "text":
         textBuf += message.text;
         break;
-      case "tool_call":
+      case "tool_call": {
         flushText();
-        out.push({
-          kind: "tool",
-          text: `[tool] ${message.toolCall.name} · ${message.toolCall.status}`,
-        });
+        const name = message.toolCall.name ?? message.toolCall.id;
+        const status = message.toolCall.status ?? "update";
+        out.push({ kind: "tool", text: `[tool] ${name} · ${status}` });
         break;
+      }
       case "permission_request":
         flushText();
         out.push({ kind: "perm", text: `⚑ permission requested: ${message.request.tool}` });
@@ -79,7 +79,10 @@ export function statusBadge(stopReason: Result["stopReason"] | undefined): strin
     case "error":
       return "✗ error";
     default:
-      return "● running";
+      // Defined-but-unknown stopReason (forward-compat per StopReason's
+      // `(string & {})` escape) is still terminal — render as generic
+      // closed state rather than "running".
+      return `✓ ${stopReason}`;
   }
 }
 

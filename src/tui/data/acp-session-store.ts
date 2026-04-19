@@ -15,6 +15,13 @@ export interface TurnRecord {
   closedAt?: number;
   stopReason?: Result["stopReason"];
   error?: Result["error"];
+  /**
+   * Count of messages evicted from the front of `messages` by the
+   * retention cap. Consumers with cursors (e.g. SessionLogProjector)
+   * read this to translate their absolute sequence number into a valid
+   * current-array index: `index = cursor - droppedMessageCount`.
+   */
+  droppedMessageCount: number;
 }
 
 export interface SessionRecord {
@@ -32,11 +39,30 @@ export type SessionListener = (sessionId: string) => void;
 
 export const FLUSH_INTERVAL_MS = 16;
 
+/**
+ * Per-turn retention cap. Long-running streaming turns (e.g. a multi-hour
+ * coding agent emitting thousands of text chunks) would otherwise grow the
+ * in-memory message array without bound and starve TUI rendering. When
+ * exceeded, the oldest messages are evicted FIFO so the tail of the
+ * conversation stays intact.
+ */
+export const MAX_MESSAGES_PER_TURN = 10_000;
+
+export interface AcpSessionStoreOptions {
+  /** Override for MAX_MESSAGES_PER_TURN — primarily for tests. */
+  readonly maxMessagesPerTurn?: number;
+}
+
 export class AcpSessionStore {
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly listeners = new Map<string, Set<SessionListener>>();
   private dirty = new Set<string>();
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly maxMessagesPerTurn: number;
+
+  constructor(opts: AcpSessionStoreOptions = {}) {
+    this.maxMessagesPerTurn = opts.maxMessagesPerTurn ?? MAX_MESSAGES_PER_TURN;
+  }
 
   register(sessionId: string): void {
     if (this.sessions.has(sessionId)) return;
@@ -80,6 +106,7 @@ export class AcpSessionStore {
         sessionId: event.sessionId,
         messages: [],
         startedAt: Date.now(),
+        droppedMessageCount: 0,
       };
       session.turns.set(event.turnId, turn);
     }
@@ -99,6 +126,18 @@ export class AcpSessionStore {
         return;
       }
       turn.messages.push(event.message);
+      // FIFO eviction once the turn exceeds the cap. Batched in halves so
+      // a hot stream amortizes the shift cost across many appends instead
+      // of paying O(n) every push past the limit.
+      if (turn.messages.length > this.maxMessagesPerTurn) {
+        const drop = turn.messages.length - this.maxMessagesPerTurn;
+        turn.messages.splice(0, drop);
+        turn.droppedMessageCount += drop;
+        debugLog(
+          "acp_turn_evicted",
+          `evicted ${drop} oldest messages for sessionId=${event.sessionId} turnId=${event.turnId} (cap=${this.maxMessagesPerTurn} total=${turn.droppedMessageCount})`,
+        );
+      }
     }
 
     session.latestTurnId = turn.turnId;
