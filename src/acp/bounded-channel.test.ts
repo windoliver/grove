@@ -215,3 +215,39 @@ test("consumer break: subsequent pushes drop silently and channel marks closed",
   ch.push({ kind: "keep", id: 4 });
   expect(dropped.map((e) => e.id)).toEqual([3, 4]);
 });
+
+test("stats accuracy under mixed push: pushed/coalesced/evicted/droppedByPolicy", async () => {
+  const cap = 3;
+  const reasons: Array<{ id: number; reason: string }> = [];
+  const ch = new BoundedEventChannel<TestEvent>({
+    capacity: cap,
+    classify,
+    coalesceKey,
+    coalesce,
+    invalidatesCoalesceKey,
+    onDrop: (e, reason) => reasons.push({ id: e.id, reason }),
+  });
+
+  ch.push({ kind: "delta_a", id: 1, text: "a" });
+  ch.push({ kind: "delta_a", id: 2, text: "b" });
+  ch.push({ kind: "delta_a", id: 3, text: "c" });
+  ch.push({ kind: "drop", id: 4 });
+  ch.push({ kind: "drop", id: 5 });
+  ch.push({ kind: "keep", id: 6 });
+  ch.push({ kind: "keep", id: 7 });
+  ch.push({ kind: "keep", id: 8 });
+
+  const s = ch.stats();
+  expect(s.pushed).toBe(8);
+  expect(s.coalesced).toBe(2);
+  expect(s.evicted).toBe(2);
+  expect(s.droppedByPolicy.get("never")).toBe(1);
+
+  expect(reasons).toEqual([
+    { id: 2, reason: "coalesced" },
+    { id: 3, reason: "coalesced" },
+    { id: 4, reason: "evicted" },
+    { id: 5, reason: "evicted" },
+    { id: 8, reason: "no_capacity" },
+  ]);
+});
