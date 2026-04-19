@@ -21,6 +21,8 @@ import { AcpxRuntime } from "../../src/core/acpx-runtime.js";
 import { publishTurnToNexus } from "../../src/nexus/nexus-agent-publisher.js";
 import { NexusEventBus } from "../../src/nexus/nexus-event-bus.js";
 import { NexusIpcClient } from "../../src/nexus/nexus-ipc-client.js";
+import { createAcpMessageSink } from "../../src/tui/data/acp-message-sink.js";
+import { AcpSessionStore } from "../../src/tui/data/acp-session-store.js";
 
 const NEXUS_URL = process.env.NEXUS_URL;
 const NEXUS_API_KEY = process.env.NEXUS_API_KEY;
@@ -93,6 +95,67 @@ describe.skipIf(!gated)("acp stream → Nexus E2E", () => {
       const after = await inboxCount(NEXUS_TEST_AGENT_ID);
       expect(after - before).toBeGreaterThanOrEqual(results.length);
     } finally {
+      await rt.close(session);
+      bus.close();
+    }
+  }, 180_000);
+
+  test("TUI AcpSessionStore ingests typed messages from a real agent turn through the in-process bus", async () => {
+    // This test validates the TUI consumer side (#314): subscribing an
+    // AcpMessageSink to the same NexusEventBus the publisher uses lets the
+    // store accumulate typed messages locally without relying on SSE.
+    // Nexus HTTP round-trip is still exercised because NexusEventBus.publish
+    // both sends via IPC and fires local handlers.
+    const rt = new AcpxRuntime();
+    if (!(await rt.isAvailable())) {
+      console.warn("[skip] acpx not installed");
+      return;
+    }
+
+    const ipc = new NexusIpcClient({
+      nexusUrl: NEXUS_URL as string,
+      apiKey: NEXUS_API_KEY as string,
+    });
+    const bus = new NexusEventBus(ipc);
+
+    const store = new AcpSessionStore();
+    const sink = createAcpMessageSink(store);
+    // Subscribe to the recipient role — matches what the TUI does in
+    // `main.ts` / `tui-app.tsx` for every topology role it owns.
+    bus.subscribe(NEXUS_TEST_AGENT_ID, (ev) => sink.handleGroveEvent(ev));
+
+    const session = await rt.spawn("smoke-consumer", {
+      role: "smoke-consumer",
+      command: "codex",
+      cwd: process.cwd(),
+      platform: "codex",
+      waitForPush: true,
+    });
+    store.register(session.id);
+
+    try {
+      const turn = await rt.send(session, "reply with: pong");
+      await publishTurnToNexus({
+        bus,
+        sourceRole: NEXUS_SENDER_AGENT_ID,
+        targetRole: NEXUS_TEST_AGENT_ID,
+        sessionId: session.id,
+        turnId: turn.turnId,
+        messages: turn.messages,
+        result: turn.result,
+      });
+
+      // Wait for the batched 16ms flush in AcpSessionStore to settle.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const stored = store.getTurn(session.id, turn.turnId);
+      expect(stored).toBeDefined();
+      expect(stored?.messages.length).toBeGreaterThan(0);
+      // Any terminal stopReason is acceptable — publisher may emit error if
+      // the provider itself fails; the store contract is that it closes.
+      expect(stored?.closedAt).toBeDefined();
+    } finally {
+      store.unregister(session.id);
       await rt.close(session);
       bus.close();
     }
