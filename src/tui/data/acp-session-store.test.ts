@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import type { Message, Result } from "../../acp/types.ts";
-import type { AcpSinkEvent, SessionRecord, TurnRecord } from "./acp-session-store.ts";
+import type { Message, Result } from "../../acp/types.js";
+import type { AcpSinkEvent, SessionRecord, TurnRecord } from "./acp-session-store.js";
 
 test("TurnRecord holds ordered messages and optional close metadata", () => {
   const msg: Message = { kind: "text", turnId: "t1", text: "hi", chunk: true };
