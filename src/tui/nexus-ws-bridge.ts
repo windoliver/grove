@@ -361,16 +361,30 @@ export class NexusWsBridge {
     const localRoles = new Set(this.opts.topology.roles.map((r) => r.name));
     const envelopeInstance = (rec as { sourceInstance?: unknown }).sourceInstance;
     if (localRoles.has(sourceRole)) {
-      // Dedupe the SSE self-loop. When both sides carry instance IDs we
-      // gate strictly on instance equality — cross-process events with
-      // the same role name (shared Nexus) still reach the sink. When
-      // either side is missing the marker we fall back to role-name
-      // dedupe to preserve single-process behavior.
-      const haveBothInstances =
-        typeof envelopeInstance === "string" && typeof this.opts.localInstanceId === "string";
-      if (!haveBothInstances || envelopeInstance === this.opts.localInstanceId) {
+      // Dedupe the SSE self-loop ONLY when instance IDs on both sides
+      // prove it's the same process. When either side is missing the
+      // marker we cannot distinguish "self-loop from legacy publisher"
+      // from "cross-process sender that happens to share a role name" —
+      // forwarding is strictly safer than silent drop (a visible dup
+      // is recoverable at the sink layer; a dropped terminal result
+      // strands the turn in a running state). Pure role-name dedupe
+      // only remains active when BOTH sides omit the instance marker.
+      const bridgeHasInstance = typeof this.opts.localInstanceId === "string";
+      const envelopeHasInstance = typeof envelopeInstance === "string";
+      if (bridgeHasInstance && envelopeHasInstance) {
+        if (envelopeInstance === this.opts.localInstanceId) {
+          return "acp";
+        }
+        // Different instance with same role name — forward to sink.
+      } else if (!bridgeHasInstance && !envelopeHasInstance) {
+        // Legacy single-process wiring without instance markers: preserve
+        // original role-only dedupe so in-process bus + SSE loopback do
+        // not double-deliver. Shared-Nexus safety requires both sides to
+        // adopt instance IDs.
         return "acp";
       }
+      // Exactly one side has an instance marker → forward (prefer dup
+      // over silent drop during rolling upgrades).
     }
     if (!this.opts.onAcpEvent) {
       // Fail-loud: a typed ACP envelope arrived but no consumer is wired.

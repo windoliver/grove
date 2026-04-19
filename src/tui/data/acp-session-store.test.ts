@@ -21,6 +21,7 @@ test("SessionRecord groups turns by turnId", () => {
     sessionId: "s1",
     registeredAt: 1,
     turns: new Map(),
+    droppedTurnCount: 0,
   };
   expect(sess.turns.size).toBe(0);
 });
@@ -233,4 +234,56 @@ test("evicts oldest messages once a turn exceeds maxMessagesPerTurn (bounded ret
   expect(turn?.droppedMessageCount).toBe(2);
   // FIFO: the surviving tail is the three most recent messages.
   expect(turn?.messages.map((m) => (m.kind === "text" ? m.text : ""))).toEqual(["m2", "m3", "m4"]);
+});
+
+test("evicts oldest CLOSED turns when session exceeds maxTurnsPerSession", () => {
+  const store = new AcpSessionStore({ maxTurnsPerSession: 3 });
+  store.register("s1");
+  // Close three turns so all are eligible for eviction; the fourth is
+  // also closed (so the third can evict cleanly). Eviction runs on the
+  // insert path so we need a 5th turn to trigger it.
+  for (let i = 0; i < 5; i++) {
+    const turnId = `t${i}`;
+    store.ingest({
+      kind: "message",
+      sessionId: "s1",
+      turnId,
+      message: { kind: "text", turnId, text: "x", chunk: true },
+    });
+    store.ingest({
+      kind: "result",
+      sessionId: "s1",
+      turnId,
+      result: { turnId, stopReason: "end_turn" },
+    });
+  }
+  const sess = store.getSession("s1");
+  expect(sess?.turns.size).toBeLessThanOrEqual(3);
+  expect(sess?.droppedTurnCount).toBeGreaterThanOrEqual(2);
+  // Oldest closed turns are the ones dropped — newest survive.
+  expect(sess?.turns.has("t4")).toBe(true);
+});
+
+test("session eviction never drops the active (still-open) turn", () => {
+  const store = new AcpSessionStore({ maxTurnsPerSession: 2 });
+  store.register("s1");
+  // Close three prior turns.
+  for (let i = 0; i < 3; i++) {
+    store.ingest({
+      kind: "result",
+      sessionId: "s1",
+      turnId: `closed-${i}`,
+      result: { turnId: `closed-${i}`, stopReason: "end_turn" },
+    });
+  }
+  // Add a 4th turn that is still RUNNING (no result). It must not be
+  // evicted even though it was just inserted and the cap is 2 — active
+  // turns are never candidates for the session-level drop.
+  store.ingest({
+    kind: "message",
+    sessionId: "s1",
+    turnId: "active",
+    message: { kind: "text", turnId: "active", text: "live", chunk: true },
+  });
+  expect(store.getTurn("s1", "active")).toBeDefined();
 });

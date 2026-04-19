@@ -29,6 +29,12 @@ export interface SessionRecord {
   readonly registeredAt: number;
   readonly turns: Map<string, TurnRecord>;
   latestTurnId?: string;
+  /**
+   * Count of CLOSED turns evicted from `turns` by the session-level cap.
+   * Exposed for observability and so consumers can keep cursors stable
+   * across long-lived sessions (e.g. days of agent work).
+   */
+  droppedTurnCount: number;
 }
 
 export type AcpSinkEvent =
@@ -48,9 +54,20 @@ export const FLUSH_INTERVAL_MS = 16;
  */
 export const MAX_MESSAGES_PER_TURN = 10_000;
 
+/**
+ * Session-level turn cap. Per-turn retention alone does not bound memory
+ * across a long-lived session — every new turn adds a fresh TurnRecord.
+ * When the live-turn count exceeds this cap, the oldest CLOSED turns are
+ * evicted (closed so projection is already complete; the active
+ * latestTurnId is never dropped).
+ */
+export const MAX_TURNS_PER_SESSION = 500;
+
 export interface AcpSessionStoreOptions {
   /** Override for MAX_MESSAGES_PER_TURN — primarily for tests. */
   readonly maxMessagesPerTurn?: number;
+  /** Override for MAX_TURNS_PER_SESSION — primarily for tests. */
+  readonly maxTurnsPerSession?: number;
 }
 
 export class AcpSessionStore {
@@ -59,9 +76,11 @@ export class AcpSessionStore {
   private dirty = new Set<string>();
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly maxMessagesPerTurn: number;
+  private readonly maxTurnsPerSession: number;
 
   constructor(opts: AcpSessionStoreOptions = {}) {
     this.maxMessagesPerTurn = opts.maxMessagesPerTurn ?? MAX_MESSAGES_PER_TURN;
+    this.maxTurnsPerSession = opts.maxTurnsPerSession ?? MAX_TURNS_PER_SESSION;
   }
 
   register(sessionId: string): void {
@@ -70,6 +89,7 @@ export class AcpSessionStore {
       sessionId,
       registeredAt: Date.now(),
       turns: new Map(),
+      droppedTurnCount: 0,
     });
   }
 
@@ -109,6 +129,27 @@ export class AcpSessionStore {
         droppedMessageCount: 0,
       };
       session.turns.set(event.turnId, turn);
+      // Enforce the session-level turn cap. Only closed turns are eligible
+      // — keep every running turn alive so live projection/rendering never
+      // loses an active stream under bursty traffic. Maps iterate in
+      // insertion order, so this naturally evicts oldest-first.
+      if (session.turns.size > this.maxTurnsPerSession) {
+        let evicted = 0;
+        for (const [id, t] of session.turns) {
+          if (session.turns.size <= this.maxTurnsPerSession) break;
+          if (t.closedAt === undefined) continue;
+          if (id === session.latestTurnId) continue;
+          session.turns.delete(id);
+          evicted += 1;
+        }
+        if (evicted > 0) {
+          session.droppedTurnCount += evicted;
+          debugLog(
+            "acp_session_turns_evicted",
+            `evicted ${evicted} closed turns for sessionId=${event.sessionId} (cap=${this.maxTurnsPerSession} total=${session.droppedTurnCount})`,
+          );
+        }
+      }
     }
 
     if (event.kind === "result") {

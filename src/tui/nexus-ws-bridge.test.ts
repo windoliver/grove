@@ -483,7 +483,10 @@ describe("NexusWsBridge", () => {
     expect(call.payload.sessionId).toBe("s1");
   });
 
-  test("handleIpcEnvelope drops acp.message when source is a local topology role", () => {
+  test("handleIpcEnvelope drops acp.message from local role when neither side has instance markers (legacy wiring)", () => {
+    // Neither bridge nor envelope carries a sourceInstance — preserve the
+    // original role-only dedupe so single-process in-proc bus + SSE
+    // loopback does not double-deliver.
     const onAcpEvent = mock(() => undefined);
     const bridge = new NexusWsBridge(makeBridgeOpts({ onAcpEvent }));
     const outcome = bridge.handleIpcEnvelope(
@@ -498,6 +501,27 @@ describe("NexusWsBridge", () => {
     );
     expect(outcome).toBe("acp");
     expect(onAcpEvent).not.toHaveBeenCalled();
+  });
+
+  test("handleIpcEnvelope forwards local-role ACP when bridge has instance but envelope does not (rolling upgrade)", () => {
+    // Bridge is on a new build that always sets localInstanceId; envelope
+    // is from an older publisher that still omits sourceInstance.
+    // Forwarding is safer than silent drop — a visible dup is recoverable
+    // at the sink; a dropped terminal result would strand the turn.
+    const onAcpEvent = mock(() => undefined);
+    const bridge = new NexusWsBridge(makeBridgeOpts({ onAcpEvent, localInstanceId: "A" }));
+    const outcome = bridge.handleIpcEnvelope(
+      {
+        type: "acp.message",
+        sessionId: "s1",
+        turnId: "t1",
+        message: { kind: "text", turnId: "t1", text: "legacy-publisher", chunk: true },
+      },
+      "coder",
+      "tui",
+    );
+    expect(outcome).toBe("acp");
+    expect(onAcpEvent).toHaveBeenCalledTimes(1);
   });
 
   test("handleIpcEnvelope returns 'ipc' for non-acp payloads (regression guard)", () => {
