@@ -382,6 +382,25 @@ test("REGRESSION: concurrent next() calls all resolve in FIFO order (no lost wak
   expect(r3.value.id).toBe(3);
 });
 
+test("REGRESSION: return() is an abort fence — discards backlog (no replay via next() or new iterator)", async () => {
+  const ch = makeChannel(8);
+  ch.push({ kind: "drop", id: 1 });
+  ch.push({ kind: "drop", id: 2 });
+  ch.push({ kind: "drop", id: 3 });
+  // Consume one event, then abort via return().
+  const it = ch[Symbol.asyncIterator]();
+  const first = await it.next();
+  expect(first.value.id).toBe(1);
+  await it.return?.();
+  // Same iterator: subsequent next() must NOT yield events 2 or 3.
+  const after = await it.next();
+  expect(after.done).toBe(true);
+  // Fresh iterator: must also see channel as drained + closed.
+  const it2 = ch[Symbol.asyncIterator]();
+  const fresh = await it2.next();
+  expect(fresh.done).toBe(true);
+});
+
 test("REGRESSION: close() resolves ALL pending next() callers as done", async () => {
   const ch = makeChannel(8);
   const it = ch[Symbol.asyncIterator]();

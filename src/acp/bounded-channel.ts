@@ -185,7 +185,21 @@ export class BoundedEventChannel<T> {
         });
       },
       async return(): Promise<IteratorResult<T>> {
+        // return() is an abort signal (e.g. for-await break). Unlike close(),
+        // which says "no more pushes, drain what's buffered", return() says
+        // "consumer is gone, discard everything." Without this, a subsequent
+        // next() (same iterator) or a fresh iterator on the same channel
+        // would still see stale buffered events because next() checks
+        // size > 0 before checking closed.
         self.closed = true;
+        for (let i = 0; i < self.buffer.length; i++) {
+          self.buffer[i] = undefined;
+          self.policyAt[i] = undefined;
+        }
+        self.head = 0;
+        self.tail = 0;
+        self.size = 0;
+        self.coalesceTails.clear();
         while (self.waitQueue.length > 0) {
           const r = self.waitQueue.shift() as (value: IteratorResult<T>) => void;
           r({ value: undefined as unknown as T, done: true });
