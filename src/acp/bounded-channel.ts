@@ -54,7 +54,7 @@ export class BoundedEventChannel<T> {
 
   close(): void {
     this.closed = true;
-    if (this.pendingResolver && this.size === 0) {
+    if (this.pendingResolver) {
       const r = this.pendingResolver;
       this.pendingResolver = null;
       r({ value: undefined as unknown as T, done: true });
@@ -92,6 +92,7 @@ export class BoundedEventChannel<T> {
       },
       async return(): Promise<IteratorResult<T>> {
         self.closed = true;
+        self.pendingResolver = null;
         return { value: undefined as unknown as T, done: true };
       },
     };
