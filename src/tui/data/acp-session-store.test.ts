@@ -166,3 +166,31 @@ test("subscribe returns an unsubscribe function", async () => {
   await new Promise((r) => setTimeout(r, 25));
   expect(notified).toBe(0);
 });
+
+test("unregister notifies subscribers once before dropping the session", () => {
+  const store = new AcpSessionStore();
+  store.register("s1");
+  const calls: string[] = [];
+  store.subscribe("s1", (sid) => calls.push(sid));
+  store.unregister("s1");
+  expect(calls).toEqual(["s1"]);
+});
+
+test("ingest preserves Result.error on the closed turn", () => {
+  const store = new AcpSessionStore();
+  store.register("s1");
+  store.ingest({
+    kind: "result",
+    sessionId: "s1",
+    turnId: "t1",
+    result: {
+      turnId: "t1",
+      stopReason: "error",
+      error: { code: "publish_failed", message: "nexus 500" },
+    },
+  });
+  const turn = store.getTurn("s1", "t1");
+  expect(turn?.stopReason).toBe("error");
+  expect(turn?.error).toEqual({ code: "publish_failed", message: "nexus 500" });
+  expect(store.getSession("s1")?.latestTurnId).toBe("t1");
+});

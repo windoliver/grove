@@ -29,7 +29,7 @@ export type AcpSinkEvent =
 
 export type SessionListener = (sessionId: string) => void;
 
-const FLUSH_INTERVAL_MS = 16;
+export const FLUSH_INTERVAL_MS = 16;
 
 export class AcpSessionStore {
   private readonly sessions = new Map<string, SessionRecord>();
@@ -47,6 +47,16 @@ export class AcpSessionStore {
   }
 
   unregister(sessionId: string): void {
+    const set = this.listeners.get(sessionId);
+    if (set) {
+      for (const listener of set) {
+        try {
+          listener(sessionId);
+        } catch {
+          // swallow — matches scheduleFlush
+        }
+      }
+    }
     this.sessions.delete(sessionId);
     this.listeners.delete(sessionId);
     this.dirty.delete(sessionId);
@@ -76,9 +86,9 @@ export class AcpSessionStore {
     } else {
       if (turn.closedAt !== undefined) return; // late after Result — drop
       turn.messages.push(event.message);
-      session.latestTurnId = turn.turnId;
     }
 
+    session.latestTurnId = turn.turnId;
     this.dirty.add(event.sessionId);
     this.scheduleFlush();
   }
