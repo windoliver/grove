@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { PassThrough, Readable } from "node:stream";
-import { AcpxTurnImpl } from "./turn.js";
+import { AcpxTurnImpl, classifyMessage } from "./turn.js";
 import type { Message } from "./types.js";
 
 function makeStream(lines: string[]): Readable {
@@ -269,6 +269,37 @@ test("AcpxTurnImpl: channelCapacity Infinity bypasses eviction", async () => {
   for await (const m of turn.messages) got.push(m);
   await turn.result;
   expect(got.length).toBe(N);
+});
+
+test("classifyMessage covers all Message kinds with expected policies", () => {
+  expect(
+    classifyMessage({ kind: "tool_call", turnId: "t", toolCall: { id: "x" } }),
+  ).toBe("never");
+  expect(
+    classifyMessage({
+      kind: "permission_request",
+      turnId: "t",
+      request: { id: "x", tool: "y", input: {} },
+    }),
+  ).toBe("never");
+  expect(classifyMessage({ kind: "text", turnId: "t", text: "x", chunk: true })).toBe(
+    "coalesce_text_deltas",
+  );
+  expect(classifyMessage({ kind: "text", turnId: "t", text: "x", chunk: false })).toBe(
+    "never",
+  );
+  expect(classifyMessage({ kind: "thinking", turnId: "t", text: "x", chunk: true })).toBe(
+    "coalesce_text_deltas",
+  );
+  expect(classifyMessage({ kind: "thinking", turnId: "t", text: "x", chunk: false })).toBe(
+    "never",
+  );
+  expect(
+    classifyMessage({ kind: "token_usage", turnId: "t", usage: { inputTokens: 0, outputTokens: 0 } }),
+  ).toBe("drop_oldest_on_full");
+  expect(classifyMessage({ kind: "raw", turnId: "t", acpMethod: "any", params: {} })).toBe(
+    "drop_oldest_on_full",
+  );
 });
 
 test("AcpxTurnImpl: chunked text deltas coalesce under default capacity", async () => {

@@ -6,7 +6,7 @@ export interface ChannelOptions<T> {
   coalesceKey?: (event: T) => string | null;
   coalesce?: (existing: T, incoming: T) => T;
   invalidatesCoalesceKey?: (event: T) => string | null;
-  onDrop?: (event: T, reason: "evicted" | "coalesced" | "no_capacity") => void;
+  onDrop?: (event: T, reason: "evicted" | "coalesced" | "no_capacity" | "closed") => void;
 }
 
 export interface ChannelStats {
@@ -44,7 +44,7 @@ export class BoundedEventChannel<T> {
 
   push(event: T): void {
     if (this.closed) {
-      this.opts.onDrop?.(event, "no_capacity");
+      this.opts.onDrop?.(event, "closed");
       return;
     }
     this._stats.pushed++;
@@ -142,7 +142,11 @@ export class BoundedEventChannel<T> {
       },
       async return(): Promise<IteratorResult<T>> {
         self.closed = true;
-        self.pendingResolver = null;
+        if (self.pendingResolver) {
+          const r = self.pendingResolver;
+          self.pendingResolver = null;
+          r({ value: undefined as unknown as T, done: true });
+        }
         return { value: undefined as unknown as T, done: true };
       },
     };

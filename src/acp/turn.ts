@@ -10,7 +10,7 @@ import type { AcpxTurn, Message, Result } from "./types.js";
 
 const DEFAULT_CHANNEL_CAPACITY = 256;
 
-function classifyMessage(m: Message): Policy {
+export function classifyMessage(m: Message): Policy {
   switch (m.kind) {
     case "tool_call":
     case "permission_request":
@@ -84,11 +84,18 @@ export class AcpxTurnImpl implements AcpxTurn {
 
     const parser = this.parser;
     const channel = this.channel;
+    const sid = this.sessionId;
+    const tid = this.turnId;
     void (async () => {
       try {
         for await (const m of parser.messages) {
           channel.push(m);
         }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(
+          `[acpx-turn] pump error for session=${sid} turn=${tid}: ${msg}\n`,
+        );
       } finally {
         channel.close();
       }

@@ -202,7 +202,7 @@ test("consumer break: subsequent pushes drop silently and channel marks closed",
     capacity: 4,
     classify,
     onDrop: (e, reason) => {
-      if (reason === "no_capacity") dropped.push(e);
+      if (reason === "closed") dropped.push(e);
     },
   });
   ch.push({ kind: "drop", id: 1 });
@@ -214,6 +214,16 @@ test("consumer break: subsequent pushes drop silently and channel marks closed",
   ch.push({ kind: "drop", id: 3 });
   ch.push({ kind: "keep", id: 4 });
   expect(dropped.map((e) => e.id)).toEqual([3, 4]);
+});
+
+test("iterator return() while next() pending resolves the pending promise", async () => {
+  const ch = makeChannel(4);
+  const it = ch[Symbol.asyncIterator]();
+  const nextP = it.next();
+  // Trigger return() while next() is pending.
+  await it.return?.();
+  const r = await nextP;
+  expect(r.done).toBe(true);
 });
 
 test("stats accuracy under mixed push: pushed/coalesced/evicted/droppedByPolicy", async () => {
