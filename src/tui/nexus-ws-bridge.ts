@@ -33,6 +33,14 @@ export interface NexusWsBridgeOptions {
   handoffStore?: HandoffStore | undefined;
   /** Shared IPC client — replaces inline fetch when provided. */
   ipcClient?: NexusIpcClient | undefined;
+  /**
+   * Forwards inner payloads whose `type` is "acp.message" or "acp.result"
+   * to a typed consumer (AcpMessageSink). Called only when the event's
+   * sourceRole is NOT one of this TUI's local topology roles — the
+   * in-process NexusEventBus subscription handles local roles, so SSE
+   * forwarding for the same event would double-count.
+   */
+  onAcpEvent?: ((event: GroveEvent) => void) | undefined;
 }
 
 interface SseEvent {
@@ -304,6 +312,30 @@ export class NexusWsBridge {
    * `inbox_delivered` vs `agent_received`) is out of scope for the
    * turn-typing migration and tracked as a follow-up.
    */
+  /**
+   * Dispatch a parsed inbox payload. Returns `"acp"` when the envelope was a
+   * typed acp.* event handled (or gated) here, and thus should NOT be
+   * forwarded to runtime.send; returns `"ipc"` when the envelope is a regular
+   * IPC notification the caller should continue delivering to the agent.
+   *
+   * Public so unit tests can drive the branch without crafting SSE fixtures.
+   */
+  handleIpcEnvelope(innerPayload: unknown): "acp" | "ipc" {
+    if (!innerPayload || typeof innerPayload !== "object") return "ipc";
+    const type = (innerPayload as { type?: unknown }).type;
+    if (type !== "acp.message" && type !== "acp.result") return "ipc";
+
+    const envelope = innerPayload as GroveEvent;
+    const localRoles = new Set(this.opts.topology.roles.map((r) => r.name));
+    if (localRoles.has(envelope.sourceRole)) {
+      // Local role — the in-process NexusEventBus subscription will ingest
+      // this event; skipping forward avoids double-counting.
+      return "acp";
+    }
+    this.opts.onAcpEvent?.(envelope);
+    return "acp";
+  }
+
   private async markHandoffDeadLettered(
     ipcMessageId: string | undefined,
     targetRole: string,
@@ -394,6 +426,13 @@ export class NexusWsBridge {
         sender?: string;
         payload?: Record<string, unknown>;
       };
+
+      // Pre-dispatch: typed acp.* envelopes go to the typed consumer and
+      // skip the runtime.send IPC-notification path.
+      const outcome = this.handleIpcEnvelope(msg.payload);
+      if (outcome === "acp") {
+        return;
+      }
 
       const msgSender = msg.from ?? msg.sender ?? sender;
       const summary =

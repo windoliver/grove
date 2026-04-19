@@ -453,4 +453,56 @@ describe("NexusWsBridge", () => {
     bridge.registerSession("tester", makeSession("tester"));
     // No error expected — just a no-op
   });
+
+  // --- handleIpcEnvelope ---
+
+  test("handleIpcEnvelope routes acp.message to onAcpEvent when source is remote", () => {
+    const onAcpEvent = mock(() => undefined);
+    const bridge = new NexusWsBridge(makeBridgeOpts({ onAcpEvent }));
+    const outcome = bridge.handleIpcEnvelope({
+      type: "acp.message",
+      sourceRole: "external-agent",
+      targetRole: "tui",
+      payload: {
+        sessionId: "s1",
+        turnId: "t1",
+        message: { kind: "text", turnId: "t1", text: "hi", chunk: true },
+      },
+      timestamp: new Date().toISOString(),
+    });
+    expect(outcome).toBe("acp");
+    expect(onAcpEvent).toHaveBeenCalledTimes(1);
+  });
+
+  test("handleIpcEnvelope drops acp.message when source is a local topology role", () => {
+    const onAcpEvent = mock(() => undefined);
+    const bridge = new NexusWsBridge(makeBridgeOpts({ onAcpEvent }));
+    const outcome = bridge.handleIpcEnvelope({
+      type: "acp.message",
+      sourceRole: "coder",
+      targetRole: "tui",
+      payload: {
+        sessionId: "s1",
+        turnId: "t1",
+        message: { kind: "text", turnId: "t1", text: "hi", chunk: true },
+      },
+      timestamp: new Date().toISOString(),
+    });
+    expect(outcome).toBe("acp");
+    expect(onAcpEvent).not.toHaveBeenCalled();
+  });
+
+  test("handleIpcEnvelope returns 'ipc' for non-acp payloads (regression guard)", () => {
+    const onAcpEvent = mock(() => undefined);
+    const bridge = new NexusWsBridge(makeBridgeOpts({ onAcpEvent }));
+    const outcome = bridge.handleIpcEnvelope({
+      type: "contribution",
+      sourceRole: "coder",
+      targetRole: "reviewer",
+      payload: { body: "done" },
+      timestamp: new Date().toISOString(),
+    });
+    expect(outcome).toBe("ipc");
+    expect(onAcpEvent).not.toHaveBeenCalled();
+  });
 });
