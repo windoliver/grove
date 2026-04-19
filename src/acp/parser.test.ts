@@ -1001,6 +1001,130 @@ test("AcpParser: only the first subscriber gets replay; later joiners see live-o
   expect(second).toHaveLength(0);
 });
 
+test("AcpParser: multi-byte UTF-8 split across chunks decodes without replacement chars", async () => {
+  // 🔥 is 4 bytes in UTF-8 (0xF0 0x9F 0x94 0xA5). If the parser calls
+  // Buffer.toString("utf8") independently on each chunk, a split at an
+  // interior byte produces U+FFFD (replacement char) silently — which
+  // corrupts assistant text and breaks JSON.parse on tool_call titles /
+  // inputs that contain non-ASCII. Upstream acpx stdout is a raw Buffer
+  // pipe with no setEncoding, so this is a real wire-shape concern.
+  const line = `${JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "s",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "🔥 fire 火" },
+      },
+    },
+  })}\n`;
+  const resultLine = `${JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    result: { stopReason: "end_turn" },
+  })}\n`;
+  const buf = Buffer.from(line + resultLine, "utf8");
+  // Split mid-🔥 and mid-火 — both would corrupt without StringDecoder.
+  const emojiStart = buf.indexOf(0xf0); // first byte of 🔥
+  const hanStart = buf.indexOf(0xe7); // first byte of 火 (0xE7 0x81 0xAB)
+  const chunks: Buffer[] = [
+    buf.subarray(0, emojiStart + 2), // cut mid-emoji (2/4 bytes)
+    buf.subarray(emojiStart + 2, hanStart + 1), // cut mid-han (1/3 bytes)
+    buf.subarray(hanStart + 1),
+  ];
+  const stream = Readable.from(chunks);
+  const parser = new AcpParser({ sessionId: "s", turnId: "t-utf8", stream });
+  const messages: Message[] = [];
+  for await (const m of parser.messages) messages.push(m);
+  const result = await parser.result;
+  expect(result.stopReason).toBe("end_turn");
+  const text = messages.find((m): m is Extract<Message, { kind: "text" }> => m.kind === "text");
+  expect(text?.text).toBe("🔥 fire 火");
+  // No replacement chars leaked through.
+  expect(text?.text).not.toContain("\uFFFD");
+  // And the line didn't get demoted to a parse error either.
+  const parseErrors = messages.filter((m) => m.kind === "raw" && m.acpMethod === "_parseError");
+  expect(parseErrors).toHaveLength(0);
+});
+
+test("AcpParser: overflow marker reports a drop count that grows with actual drops", async () => {
+  // Regression for review-finding C2/C3: the marker previously used a static
+  // `droppedAtLeast: 1` payload regardless of how many messages were actually
+  // dropped, and on the first overflow it replaced the last legitimately
+  // enqueued message (losing one NON-dropped message).
+  const lines: string[] = [];
+  const OVER = 9000; // comfortably > MAX_SUBSCRIBER_BUFFER (8192)
+  for (let i = 0; i < OVER; i += 1) {
+    lines.push(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s",
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "x" } },
+        },
+      }),
+    );
+  }
+  lines.push(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }));
+  const parser = new AcpParser({
+    sessionId: "s",
+    turnId: "t-overflow-count",
+    stream: readableFromString(`${lines.join("\n")}\n`),
+  });
+  const slow = parser.messages[Symbol.asyncIterator]();
+  await parser.result;
+  let overflowParams: { droppedAtLeast: number } | undefined;
+  while (true) {
+    const { value, done } = await slow.next();
+    if (done) break;
+    if (value.kind === "raw" && value.acpMethod === "_overflow") {
+      overflowParams = value.params as { droppedAtLeast: number };
+    }
+  }
+  expect(overflowParams).toBeDefined();
+  // Count must reflect actual drops, not stay stuck at 1.
+  expect(overflowParams?.droppedAtLeast).toBeGreaterThan(100);
+});
+
+test("AcpParser: delayed first subscriber replay preserves pre-subscription overflow count", async () => {
+  // No subscriber is attached until AFTER the stream settles, so overflow
+  // happens in the parser's pre-subscription buffer. Replay must preserve
+  // that drop count; it must not reset to 1 when copied into the subscriber.
+  const lines: string[] = [];
+  const OVER = 9000; // comfortably > MAX_SUBSCRIBER_BUFFER (8192)
+  for (let i = 0; i < OVER; i += 1) {
+    lines.push(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s",
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "x" } },
+        },
+      }),
+    );
+  }
+  lines.push(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }));
+  const parser = new AcpParser({
+    sessionId: "s",
+    turnId: "t-overflow-pre-replay",
+    stream: readableFromString(`${lines.join("\n")}\n`),
+  });
+  // Delay first subscription until replay path is required.
+  await parser.result;
+  let overflowParams: { droppedAtLeast: number; pre?: true } | undefined;
+  for await (const value of parser.messages) {
+    if (value.kind === "raw" && value.acpMethod === "_overflow") {
+      overflowParams = value.params as { droppedAtLeast: number; pre?: true };
+    }
+  }
+  expect(overflowParams).toBeDefined();
+  expect(overflowParams?.droppedAtLeast).toBeGreaterThan(100);
+  expect(overflowParams?.pre).toBe(true);
+});
+
 test("AcpParser: foreign-session frames are demoted, not leaked into the iterator", async () => {
   const lines = [
     JSON.stringify({
