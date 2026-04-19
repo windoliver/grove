@@ -195,3 +195,23 @@ test("close while iterator pending resolves it as done", async () => {
   const r = await nextP;
   expect(r.done).toBe(true);
 });
+
+test("consumer break: subsequent pushes drop silently and channel marks closed", async () => {
+  const dropped: TestEvent[] = [];
+  const ch = new BoundedEventChannel<TestEvent>({
+    capacity: 4,
+    classify,
+    onDrop: (e, reason) => {
+      if (reason === "no_capacity") dropped.push(e);
+    },
+  });
+  ch.push({ kind: "drop", id: 1 });
+  ch.push({ kind: "drop", id: 2 });
+  for await (const e of ch) {
+    expect(e.id).toBe(1);
+    break;
+  }
+  ch.push({ kind: "drop", id: 3 });
+  ch.push({ kind: "keep", id: 4 });
+  expect(dropped.map((e) => e.id)).toEqual([3, 4]);
+});
