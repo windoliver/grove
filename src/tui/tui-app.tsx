@@ -14,6 +14,8 @@
 import { useKeyboard, useRenderer } from "@opentui/react";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AppProps } from "./app.js";
+import { createAcpMessageSink } from "./data/acp-message-sink.js";
+import { AcpSessionStore } from "./data/acp-session-store.js";
 import { debugLog } from "./debug-log.js";
 import { ScreenManager } from "./screens/screen-manager.js";
 import { FileSessionStore } from "./session-store.js";
@@ -282,6 +284,14 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
         // Session persistence is best-effort
       }
     }
+    const acpSessionStore = new AcpSessionStore();
+    const acpSink = createAcpMessageSink(acpSessionStore);
+    if (appProps.eventBus && appProps.topology) {
+      for (const role of appProps.topology.roles) {
+        appProps.eventBus.subscribe(role.name, (ev) => acpSink.handleGroveEvent(ev));
+      }
+    }
+
     const manager = new SpawnManager(
       provider,
       tmux,
@@ -291,6 +301,7 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
       sessionStore,
       groveDir,
       agentRuntime,
+      acpSessionStore,
     );
 
     // Wire NexusWsBridge for push-based IPC
@@ -324,6 +335,7 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
             apiKey,
             eventBus: appProps.eventBus,
             handoffStore,
+            onAcpEvent: (ev) => acpSink.handleGroveEvent(ev),
             onBeforeDeliver: (sender, recipient) => {
               // Rsync workspace files from sender to recipient before IPC delivery
               manager.syncWorkspaces(sender, recipient);

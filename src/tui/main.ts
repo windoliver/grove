@@ -604,6 +604,15 @@ export async function handleTui(
           // best-effort
         }
       }
+      const { AcpSessionStore } = await import("./data/acp-session-store.js");
+      const { createAcpMessageSink } = await import("./data/acp-message-sink.js");
+      const acpSessionStore = new AcpSessionStore();
+      const acpSink = createAcpMessageSink(acpSessionStore);
+      if (result.appProps.eventBus && result.appProps.topology) {
+        for (const role of result.appProps.topology.roles) {
+          result.appProps.eventBus.subscribe(role.name, (ev) => acpSink.handleGroveEvent(ev));
+        }
+      }
       const spawnManager = new SpawnManager(
         result.appProps.provider,
         result.appProps.tmux,
@@ -611,6 +620,7 @@ export async function handleTui(
         sessionStore,
         result.appProps.groveDir,
         result.appProps.agentRuntime,
+        acpSessionStore,
       );
       root.render(
         React.createElement(
