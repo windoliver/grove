@@ -50,8 +50,8 @@ import type {
   AcpSinkEvent,
   SessionRecord,
   TurnRecord,
-} from "./acp-session-store.ts";
-import type { Message, Result } from "../../acp/types.ts";
+} from "./acp-session-store.js";
+import type { Message, Result } from "../../acp/types.js";
 
 test("TurnRecord holds ordered messages and optional close metadata", () => {
   const msg: Message = { kind: "text", turnId: "t1", text: "hi", chunk: true };
@@ -156,7 +156,7 @@ git commit -m "feat(tui): AcpSessionStore types"
 Append to `src/tui/data/acp-session-store.test.ts`:
 
 ```typescript
-import { AcpSessionStore } from "./acp-session-store.ts";
+import { AcpSessionStore } from "./acp-session-store.js";
 
 test("ingest drops events whose sessionId is not registered", () => {
   const store = new AcpSessionStore();
@@ -419,10 +419,10 @@ git commit -m "feat(tui): AcpSessionStore with close-on-Result dedupe"
 ```typescript
 // src/tui/data/acp-message-sink.test.ts
 import { expect, test } from "bun:test";
-import type { Message, Result } from "../../acp/types.ts";
-import type { GroveEvent } from "../../core/event-bus.ts";
-import { AcpSessionStore } from "./acp-session-store.ts";
-import { createAcpMessageSink } from "./acp-message-sink.ts";
+import type { Message, Result } from "../../acp/types.js";
+import type { GroveEvent } from "../../core/event-bus.js";
+import { AcpSessionStore } from "./acp-session-store.js";
+import { createAcpMessageSink } from "./acp-message-sink.js";
 
 function messageEvent(sessionId: string, turnId: string, message: Message): GroveEvent {
   return {
@@ -623,8 +623,8 @@ git commit -m "feat(tui): AcpMessageSink routes GroveEvents into the store"
 ```typescript
 // src/tui/data/session-log-projector.test.ts
 import { expect, test } from "bun:test";
-import type { Message, Result } from "../../acp/types.ts";
-import { messageToLogLine, resultToLogLine } from "./session-log-projector.ts";
+import type { Message, Result } from "../../acp/types.js";
+import { messageToLogLine, resultToLogLine } from "./session-log-projector.js";
 
 test("text message projects to an output LogLine", () => {
   const m: Message = { kind: "text", turnId: "t1", text: "hello", chunk: true };
@@ -780,9 +780,9 @@ export function projectSessionToBuffer(
 Append to `src/tui/data/session-log-projector.test.ts`:
 
 ```typescript
-import { AcpSessionStore } from "./acp-session-store.ts";
-import { AgentLogBuffer } from "./agent-log-buffer.ts";
-import { projectSessionToBuffer } from "./session-log-projector.ts";
+import { AcpSessionStore } from "./acp-session-store.js";
+import { AgentLogBuffer } from "./agent-log-buffer.js";
+import { projectSessionToBuffer } from "./session-log-projector.js";
 
 test("projectSessionToBuffer pushes messages as they arrive and emits a turn line on close", async () => {
   const store = new AcpSessionStore();
@@ -1087,8 +1087,8 @@ git commit -m "feat(tui): spawn-manager register/unregister sessions on AcpSessi
 ```typescript
 // src/tui/views/session-panel.test.ts
 import { expect, test } from "bun:test";
-import type { TurnRecord } from "../data/acp-session-store.ts";
-import { deriveSessionPanelLines, statusBadge } from "./session-panel.tsx";
+import type { TurnRecord } from "../data/acp-session-store.js";
+import { deriveSessionPanelLines, statusBadge } from "./session-panel.js";
 
 test("statusBadge returns the right label for each stopReason", () => {
   expect(statusBadge(undefined)).toBe("● running");
@@ -1448,12 +1448,12 @@ Example (new file form; adapt paths to match the real E2E harness):
 ```typescript
 // tests/e2e/tui-acp-consumer.e2e.test.ts
 import { expect, test } from "bun:test";
-import { AcpxRuntime } from "../../src/core/acpx-runtime.ts";
-import { NexusIpcClient } from "../../src/nexus/nexus-ipc-client.ts";
-import { NexusEventBus } from "../../src/nexus/nexus-event-bus.ts";
-import { publishTurnToNexus } from "../../src/nexus/nexus-agent-publisher.ts";
-import { AcpSessionStore } from "../../src/tui/data/acp-session-store.ts";
-import { createAcpMessageSink } from "../../src/tui/data/acp-message-sink.ts";
+import { AcpxRuntime } from "../../src/core/acpx-runtime.js";
+import { NexusIpcClient } from "../../src/nexus/nexus-ipc-client.js";
+import { NexusEventBus } from "../../src/nexus/nexus-event-bus.js";
+import { publishTurnToNexus } from "../../src/nexus/nexus-agent-publisher.js";
+import { AcpSessionStore } from "../../src/tui/data/acp-session-store.js";
+import { createAcpMessageSink } from "../../src/tui/data/acp-message-sink.js";
 
 test("TUI AcpSessionStore ingests typed messages from a real agent turn through Nexus", async () => {
   const rt = new AcpxRuntime();
