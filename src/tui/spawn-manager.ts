@@ -1253,6 +1253,7 @@ export class SpawnManager {
     }
     this.logBuffers.clear();
     this.spawnRecords.clear();
+    this.acpSessionStore?.dispose();
     this.agentSessions.clear();
     this.wsBridge?.close();
   }

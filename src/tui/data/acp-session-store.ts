@@ -5,6 +5,7 @@
  */
 
 import type { Message, Result } from "../../acp/types.js";
+import { debugLog } from "../debug-log.js";
 
 export interface TurnRecord {
   readonly turnId: string;
@@ -64,7 +65,13 @@ export class AcpSessionStore {
 
   ingest(event: AcpSinkEvent): void {
     const session = this.sessions.get(event.sessionId);
-    if (!session) return;
+    if (!session) {
+      debugLog(
+        "acp_event_unregistered",
+        `dropped ${event.kind} for sessionId=${event.sessionId} turnId=${event.turnId}`,
+      );
+      return;
+    }
 
     let turn = session.turns.get(event.turnId);
     if (!turn) {
@@ -84,13 +91,33 @@ export class AcpSessionStore {
         if (event.result.error) turn.error = event.result.error;
       }
     } else {
-      if (turn.closedAt !== undefined) return; // late after Result — drop
+      if (turn.closedAt !== undefined) {
+        debugLog(
+          "acp_late_after_result",
+          `dropped late message for sessionId=${event.sessionId} turnId=${event.turnId}`,
+        );
+        return;
+      }
       turn.messages.push(event.message);
     }
 
     session.latestTurnId = turn.turnId;
     this.dirty.add(event.sessionId);
     this.scheduleFlush();
+  }
+
+  /**
+   * Release timer + maps. Idempotent. Call from the owning SpawnManager's
+   * `destroy()` so a scheduled flush does not fire after the TUI tears down.
+   */
+  dispose(): void {
+    if (this.flushTimer !== null) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    this.sessions.clear();
+    this.listeners.clear();
+    this.dirty.clear();
   }
 
   getSession(sessionId: string): SessionRecord | undefined {

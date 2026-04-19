@@ -194,3 +194,24 @@ test("ingest preserves Result.error on the closed turn", () => {
   expect(turn?.error).toEqual({ code: "publish_failed", message: "nexus 500" });
   expect(store.getSession("s1")?.latestTurnId).toBe("t1");
 });
+
+test("dispose clears timer + maps so scheduled flushes cannot fire", async () => {
+  const store = new AcpSessionStore();
+  store.register("s1");
+  let notified = 0;
+  store.subscribe("s1", () => {
+    notified += 1;
+  });
+  store.ingest({
+    kind: "message",
+    sessionId: "s1",
+    turnId: "t1",
+    message: { kind: "text", turnId: "t1", text: "a", chunk: true },
+  });
+  store.dispose();
+  await new Promise((r) => setTimeout(r, 25));
+  expect(notified).toBe(0);
+  expect(store.getSession("s1")).toBeUndefined();
+  // Calling dispose twice must be idempotent.
+  expect(() => store.dispose()).not.toThrow();
+});
