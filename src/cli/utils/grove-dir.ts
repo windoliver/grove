@@ -6,7 +6,7 @@
  * or GROVE_DIR environment variable.
  */
 
-import { existsSync } from "node:fs";
+import { statSync } from "node:fs";
 import { hostname, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -18,10 +18,23 @@ export interface GroveLocation {
   readonly dbPath: string;
 }
 
+/** True iff `path` is an actual directory (resolves through symlinks). */
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Walk up from `startDir` looking for the nearest ancestor (or startDir itself)
  * containing a `.grove/` subdirectory. Returns the absolute path to the
  * `.grove/` directory, or undefined if none is found before the FS root.
+ *
+ * The fence requires `.grove` to be an actual directory (or a symlink that
+ * resolves to one). Stray regular files or broken symlinks named `.grove`
+ * are NOT fences — walk-up continues past them.
  *
  * Fence semantics: this function ONLY checks `.grove/` directory existence.
  * Callers that require additional artifacts (grove.json, grove.db, etc.)
@@ -34,7 +47,7 @@ export function findGroveDir(startDir: string): string | undefined {
   let current = resolve(startDir);
   while (true) {
     const candidate = join(current, GROVE_DIR_NAME);
-    if (existsSync(candidate)) return candidate;
+    if (isDirectory(candidate)) return candidate;
     const parent = dirname(current);
     if (parent === current) return undefined;
     current = parent;

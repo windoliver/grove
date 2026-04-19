@@ -125,6 +125,42 @@ describe("findGroveDir", () => {
     // findGroveDir is artifact-agnostic — child wins regardless of grove.json
     expect(findGroveDir(wt)).toBe(wtGrove);
   });
+
+  test("REGRESSION: walks past a regular FILE named .grove (not a fence)", async () => {
+    // Parent has real grove
+    const parentGrove = join(tempDir, ".grove");
+    await mkdir(parentGrove);
+    // Child has a regular file named .grove — should NOT fence
+    const wt = join(tempDir, "wt");
+    await mkdir(wt);
+    await Bun.write(join(wt, ".grove"), "not a directory");
+    // Walk-up must skip past the file and reach parent
+    expect(findGroveDir(wt)).toBe(parentGrove);
+  });
+
+  test("REGRESSION: walks past a broken symlink named .grove (not a fence)", async () => {
+    const parentGrove = join(tempDir, ".grove");
+    await mkdir(parentGrove);
+    const wt = join(tempDir, "wt");
+    await mkdir(wt);
+    // Create a broken symlink (target does not exist)
+    const { symlink } = await import("node:fs/promises");
+    await symlink(join(tempDir, "nonexistent-target"), join(wt, ".grove"));
+    expect(findGroveDir(wt)).toBe(parentGrove);
+  });
+
+  test("REGRESSION: follows a symlink that resolves to a directory (fence)", async () => {
+    // Real directory elsewhere
+    const realGrove = join(tempDir, "real-grove-dir");
+    await mkdir(realGrove);
+    const wt = join(tempDir, "wt");
+    await mkdir(wt);
+    // .grove in wt is a symlink to the real directory
+    const { symlink } = await import("node:fs/promises");
+    await symlink(realGrove, join(wt, ".grove"));
+    // Symlink resolves to a dir → fence applies, returns the symlink path
+    expect(findGroveDir(wt)).toBe(join(wt, ".grove"));
+  });
 });
 
 describe("resolveAgentId", () => {

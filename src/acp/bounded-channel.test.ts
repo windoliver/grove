@@ -261,3 +261,96 @@ test("stats accuracy under mixed push: pushed/coalesced/evicted/droppedByPolicy"
     { id: 8, reason: "no_capacity" },
   ]);
 });
+
+// --- Codex adversarial-review regressions (#274 round 1) ---
+
+test("REGRESSION: coalesce-new-key on full buffer must not overflow ring", async () => {
+  // Cap=2. Fill with two drop_oldest events. Push a coalesce-new-key delta.
+  // Without the bounded-full guard, _appendTail would write past tail and
+  // size would exceed capacity, leaving an undefined slot.
+  const cap = 2;
+  const ch = makeChannel(cap);
+  ch.push({ kind: "drop", id: 1 });
+  ch.push({ kind: "drop", id: 2 });
+  // New coalesce key with no existing tail. Must evict drop-eligible (id=1).
+  ch.push({ kind: "delta_a", id: 3, text: "x" });
+  ch.close();
+  const got: TestEvent[] = [];
+  for await (const e of ch) got.push(e);
+  // Ring must remain bounded: exactly cap=2 events delivered, no undefineds.
+  expect(got.length).toBe(2);
+  for (const e of got) expect(e).toBeDefined();
+  expect(got.map((e) => e.id)).toEqual([2, 3]);
+});
+
+test("REGRESSION: coalesce-new-key when no drop-eligible victim drops incoming", async () => {
+  // Cap=2. Fill with two never-policy events. Push a coalesce-new-key delta.
+  // No drop-eligible victim exists → incoming must be dropped, not buffered.
+  const cap = 2;
+  const dropped: TestEvent[] = [];
+  const ch = new BoundedEventChannel<TestEvent>({
+    capacity: cap,
+    classify,
+    coalesceKey,
+    coalesce,
+    invalidatesCoalesceKey,
+    onDrop: (e, reason) => {
+      if (reason === "no_capacity") dropped.push(e);
+    },
+  });
+  ch.push({ kind: "keep", id: 1 });
+  ch.push({ kind: "keep", id: 2 });
+  ch.push({ kind: "delta_a", id: 99, text: "x" });
+  ch.close();
+  const got: TestEvent[] = [];
+  for await (const e of ch) got.push(e);
+  expect(got.map((e) => e.id)).toEqual([1, 2]);
+  expect(dropped.map((e) => e.id)).toEqual([99]);
+  expect(ch.stats().droppedByPolicy.get("coalesce_text_deltas")).toBe(1);
+});
+
+test("REGRESSION: drop_oldest_on_full must not evict a never-policy event at head", async () => {
+  // Cap=2. keep (never) + drop (drop_oldest_on_full). Push another drop.
+  // Naive head-eviction would drop `keep`. Policy-aware logic must evict
+  // the drop-eligible slot (id=2) and preserve the never event (id=1).
+  const cap = 2;
+  const evicted: TestEvent[] = [];
+  const ch = new BoundedEventChannel<TestEvent>({
+    capacity: cap,
+    classify,
+    onDrop: (e, reason) => {
+      if (reason === "evicted") evicted.push(e);
+    },
+  });
+  ch.push({ kind: "keep", id: 1 });
+  ch.push({ kind: "drop", id: 2 });
+  ch.push({ kind: "drop", id: 3 });
+  ch.close();
+  const got: TestEvent[] = [];
+  for await (const e of ch) got.push(e);
+  expect(got.map((e) => e.id)).toEqual([1, 3]);
+  expect(evicted.map((e) => e.id)).toEqual([2]);
+});
+
+test("REGRESSION: drop_oldest_on_full with no drop-eligible victim drops incoming", async () => {
+  // Cap=2. Two never events. Incoming drop event has nothing eligible to
+  // evict — must drop incoming, never the never events.
+  const cap = 2;
+  const dropped: TestEvent[] = [];
+  const ch = new BoundedEventChannel<TestEvent>({
+    capacity: cap,
+    classify,
+    onDrop: (e, reason) => {
+      if (reason === "no_capacity") dropped.push(e);
+    },
+  });
+  ch.push({ kind: "keep", id: 1 });
+  ch.push({ kind: "keep", id: 2 });
+  ch.push({ kind: "drop", id: 99 });
+  ch.close();
+  const got: TestEvent[] = [];
+  for await (const e of ch) got.push(e);
+  expect(got.map((e) => e.id)).toEqual([1, 2]);
+  expect(dropped.map((e) => e.id)).toEqual([99]);
+  expect(ch.stats().droppedByPolicy.get("drop_oldest_on_full")).toBe(1);
+});

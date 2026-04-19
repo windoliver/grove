@@ -59,7 +59,25 @@ export class BoundedEventChannel<T> {
         this.opts.onDrop?.(event, "coalesced");
         return;
       }
-      // Fall through to append; record tail after.
+      // No existing tail for this key → buffer as a new entry. A new chunked
+      // delta is the *start* of a text run; losing it would drop the opening
+      // of a sentence. Treat like never-policy when full: evict oldest
+      // drop-eligible victim, or drop incoming if no victim exists. Without
+      // this guard, _appendTail would overflow the bounded ring (size grows
+      // past capacity, head/tail wrap mid-buffer, undefined emissions).
+      if (!this.unbounded && this.size === this.buffer.length) {
+        const victimIdx = this._findOldestDropEligibleIdx();
+        if (victimIdx === -1) {
+          const prev = this._stats.droppedByPolicy.get("coalesce_text_deltas") ?? 0;
+          this._stats.droppedByPolicy.set("coalesce_text_deltas", prev + 1);
+          this.opts.onDrop?.(event, "no_capacity");
+          return;
+        }
+        const victim = this.buffer[victimIdx] as T;
+        this._evictAt(victimIdx);
+        this._stats.evicted++;
+        this.opts.onDrop?.(victim, "evicted");
+      }
       const tailIdxBefore = this.tail;
       this._appendTail(event, policy);
       // Only record tail if event was actually buffered (not fast-pathed).
@@ -92,8 +110,21 @@ export class BoundedEventChannel<T> {
 
     if (policy === "drop_oldest_on_full") {
       if (!this.unbounded && this.size === this.buffer.length) {
-        const victim = this.buffer[this.head] as T;
-        this._evictAt(this.head);
+        // Policy-aware victim selection: head may be a `never` event (e.g.
+        // tool_call buffered earlier). Evicting it to make room for a low-
+        // priority `raw`/`token_usage` would lose a semantic event. Walk
+        // for an oldest drop-eligible slot instead. If none exists (every
+        // slot is `never` or `coalesce`), drop the incoming low-priority
+        // event to preserve bounded memory + semantic events.
+        const victimIdx = this._findOldestDropEligibleIdx();
+        if (victimIdx === -1) {
+          const prev = this._stats.droppedByPolicy.get("drop_oldest_on_full") ?? 0;
+          this._stats.droppedByPolicy.set("drop_oldest_on_full", prev + 1);
+          this.opts.onDrop?.(event, "no_capacity");
+          return;
+        }
+        const victim = this.buffer[victimIdx] as T;
+        this._evictAt(victimIdx);
         this._stats.evicted++;
         this.opts.onDrop?.(victim, "evicted");
       }
