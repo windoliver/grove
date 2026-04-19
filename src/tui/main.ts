@@ -8,8 +8,9 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { findGroveDir as findNearestGroveDir } from "../cli/utils/grove-dir.js";
 import type { RunningServices } from "../shared/service-lifecycle.js";
 import type { SessionRecord, TuiDataProvider } from "./provider.js";
 import {
@@ -105,45 +106,33 @@ async function createProviderForTui(
 // ---------------------------------------------------------------------------
 
 /**
- * Check whether a .grove/grove.json file exists in the current working tree.
+ * Resolve a fully-initialized grove (.grove/ + grove.json) for the TUI.
  *
- * Walks up from cwd (or the explicit groveOverride path) looking for the
- * directory. Returns the resolved groveDir path if found, undefined otherwise.
+ * Fence semantics (#315): walk-up stops at the first ancestor containing a
+ * `.grove/` directory. If that .grove/ lacks grove.json, returns undefined —
+ * we do NOT silently walk past to find a parent's grove.json. This prevents
+ * git worktrees from inheriting the parent repo's grove state when their
+ * own .grove/ is incomplete.
+ *
+ * Exported for regression testing.
  */
-function findGroveDir(groveOverride?: string): string | undefined {
-  // If an explicit override was provided, check it directly
+export function findGroveDir(groveOverride?: string): string | undefined {
   if (groveOverride) {
     const configPath = join(groveOverride, "grove.json");
     return existsSync(configPath) ? groveOverride : undefined;
   }
 
-  // Check GROVE_DIR env
   const envDir = process.env.GROVE_DIR;
   if (envDir) {
     const configPath = join(envDir, "grove.json");
     return existsSync(configPath) ? envDir : undefined;
   }
 
-  // Check CWD first — each project/worktree should use its OWN .grove/, not a parent's.
-  const cwd = resolve(process.cwd());
-  const cwdCandidate = join(cwd, ".grove");
-  if (existsSync(join(cwdCandidate, "grove.json"))) {
-    return cwdCandidate;
-  }
-
-  // Walk up only if CWD has no .grove/ — supports nested repos
-  let current = dirname(cwd);
-  while (true) {
-    const candidate = join(current, ".grove");
-    const configPath = join(candidate, "grove.json");
-    if (existsSync(configPath)) {
-      return candidate;
-    }
-    const parent = dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-
+  const nearest = findNearestGroveDir(process.cwd());
+  if (nearest === undefined) return undefined;
+  if (existsSync(join(nearest, "grove.json"))) return nearest;
+  // Found .grove/ but no grove.json — caller will route to setup screen.
+  // Do NOT walk past: that would silently use a parent's grove state.
   return undefined;
 }
 
