@@ -25,6 +25,10 @@ import { NexusIpcClient } from "../../src/nexus/nexus-ipc-client.js";
 const NEXUS_URL = process.env.NEXUS_URL;
 const NEXUS_API_KEY = process.env.NEXUS_API_KEY;
 const NEXUS_TEST_AGENT_ID = process.env.NEXUS_TEST_AGENT_ID ?? "grove-e2e";
+// Nexus rejects self-send (sender==recipient envelope check). Sender must
+// differ from NEXUS_TEST_AGENT_ID and must match the API key's agent scope
+// — default to "admin" since `nexus init` provisions that as the key owner.
+const NEXUS_SENDER_AGENT_ID = process.env.NEXUS_SENDER_AGENT_ID ?? "admin";
 
 const gated = Boolean(NEXUS_URL && NEXUS_API_KEY);
 
@@ -65,7 +69,7 @@ describe.skipIf(!gated)("acp stream → Nexus E2E", () => {
       const turn = await rt.send(session, "reply with: pong");
       const results = await publishTurnToNexus({
         bus,
-        sourceRole: NEXUS_TEST_AGENT_ID,
+        sourceRole: NEXUS_SENDER_AGENT_ID,
         targetRole: NEXUS_TEST_AGENT_ID,
         sessionId: session.id,
         turnId: turn.turnId,
