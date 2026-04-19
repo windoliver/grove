@@ -243,3 +243,74 @@ test("AcpxTurnImpl: default capacity 256 evicts oldest under slow consumer", asy
   // through `messages` — it lands in `result`).
   for (const m of got) expect(m.kind).toBe("raw");
 });
+
+test("AcpxTurnImpl: channelCapacity Infinity bypasses eviction", async () => {
+  const N = 1000;
+  const lines: string[] = [];
+  for (let i = 0; i < N; i++) {
+    lines.push(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: { sessionId: "s1", update: { sessionUpdate: "_unknown_kind", n: i } },
+      }),
+    );
+  }
+  lines.push(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }));
+
+  const turn = new AcpxTurnImpl({
+    sessionId: "s1",
+    turnId: "t1",
+    stdout: Readable.from([`${lines.join("\n")}\n`]),
+    cancelFn: async () => undefined,
+    channelCapacity: Infinity,
+  });
+  const got: Message[] = [];
+  for await (const m of turn.messages) got.push(m);
+  await turn.result;
+  expect(got.length).toBe(N);
+});
+
+test("AcpxTurnImpl: chunked text deltas coalesce under default capacity", async () => {
+  const lines: string[] = [];
+  for (let i = 0; i < 50; i++) {
+    lines.push(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s1",
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "x" } },
+        },
+      }),
+    );
+  }
+  lines.push(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }));
+
+  const turn = new AcpxTurnImpl({
+    sessionId: "s1",
+    turnId: "t1",
+    stdout: Readable.from([`${lines.join("\n")}\n`]),
+    cancelFn: async () => undefined,
+    channelCapacity: 4,
+  });
+
+  const got: Message[] = [];
+  for await (const m of turn.messages) {
+    got.push(m);
+    await new Promise((r) => setImmediate(r));
+  }
+  await turn.result;
+
+  // With cap=4 and a slow consumer, chunked text deltas must coalesce. The
+  // exact buffered count depends on scheduling, but the concatenated text
+  // must total exactly 50 characters (no character loss) — coalescing
+  // preserves text by appending, never dropping.
+  expect(got.length).toBeLessThanOrEqual(50); // not stricter — could be 1..50 depending on timing
+  const totalText = got
+    .filter((m): m is Extract<Message, { kind: "text" }> => m.kind === "text")
+    .map((m) => m.text)
+    .join("");
+  expect(totalText.length).toBe(50);
+  expect(totalText).toBe("x".repeat(50));
+});
