@@ -47,3 +47,22 @@ test("push 3 then drain returns 3 in FIFO order", async () => {
   for await (const e of ch) got.push(e);
   expect(got.map((e) => e.id)).toEqual([1, 2, 3]);
 });
+
+test("drop_oldest_on_full: cap+10 pushes, drain returns last `cap` in order", async () => {
+  const cap = 4;
+  const evicted: TestEvent[] = [];
+  const ch = new BoundedEventChannel<TestEvent>({
+    capacity: cap,
+    classify,
+    onDrop: (e, reason) => {
+      if (reason === "evicted") evicted.push(e);
+    },
+  });
+  for (let i = 1; i <= cap + 10; i++) ch.push({ kind: "drop", id: i });
+  ch.close();
+  const got: TestEvent[] = [];
+  for await (const e of ch) got.push(e);
+  expect(got.map((e) => e.id)).toEqual([11, 12, 13, 14]);
+  expect(evicted.map((e) => e.id)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  expect(ch.stats().evicted).toBe(10);
+});

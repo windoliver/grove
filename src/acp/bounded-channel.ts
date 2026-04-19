@@ -48,8 +48,21 @@ export class BoundedEventChannel<T> {
       return;
     }
     this._stats.pushed++;
-    // Minimal: append-only. Policy logic added in later tasks.
-    this._appendTail(event, this.opts.classify(event));
+    const policy = this.opts.classify(event);
+
+    if (policy === "drop_oldest_on_full") {
+      if (!this.unbounded && this.size === this.buffer.length) {
+        const victim = this.buffer[this.head] as T;
+        this._evictAt(this.head);
+        this._stats.evicted++;
+        this.opts.onDrop?.(victim, "evicted");
+      }
+      this._appendTail(event, policy);
+      return;
+    }
+
+    // never + coalesce policies handled in later tasks; for now, append.
+    this._appendTail(event, policy);
   }
 
   close(): void {
@@ -112,6 +125,35 @@ export class BoundedEventChannel<T> {
     this.policyAt[this.tail] = policy;
     this.tail = (this.tail + 1) % this.buffer.length;
     this.size++;
+  }
+
+  private _evictAt(idx: number): void {
+    this.buffer[idx] = undefined;
+    this.policyAt[idx] = undefined;
+    for (const [k, i] of this.coalesceTails) {
+      if (i === idx) this.coalesceTails.delete(k);
+    }
+    if (idx === this.head) {
+      this.head = (this.head + 1) % this.buffer.length;
+      this.size--;
+      return;
+    }
+    const cap = this.buffer.length;
+    let cur = idx;
+    while (true) {
+      const next = (cur + 1) % cap;
+      if (next === this.tail) break;
+      this.buffer[cur] = this.buffer[next];
+      this.policyAt[cur] = this.policyAt[next];
+      for (const [k, i] of this.coalesceTails) {
+        if (i === next) this.coalesceTails.set(k, cur);
+      }
+      cur = next;
+    }
+    this.tail = (this.tail - 1 + cap) % cap;
+    this.buffer[this.tail] = undefined;
+    this.policyAt[this.tail] = undefined;
+    this.size--;
   }
 
   private _grow(): void {
