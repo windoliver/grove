@@ -200,3 +200,46 @@ test("EOF without result yields acpx_exit error Result", async () => {
   expect(r.stopReason).toBe("error");
   expect(r.error?.code).toBe("acpx_exit");
 });
+
+test("AcpxTurnImpl: default capacity 256 evicts oldest under slow consumer", async () => {
+  // 300 raw events + terminal result. Slow consumer yields between reads so
+  // the pump can fill the channel buffer, exercising drop_oldest_on_full
+  // eviction (raw → drop_oldest_on_full policy).
+  const N = 300;
+  const lines: string[] = [];
+  for (let i = 0; i < N; i++) {
+    lines.push(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: { sessionId: "s1", update: { sessionUpdate: "_unknown_kind", n: i } },
+      }),
+    );
+  }
+  lines.push(JSON.stringify({ jsonrpc: "2.0", id: "req-1", result: { stopReason: "end_turn" } }));
+
+  const turn = new AcpxTurnImpl({
+    sessionId: "s1",
+    turnId: "t1",
+    stdout: Readable.from([`${lines.join("\n")}\n`]),
+    cancelFn: async () => undefined,
+  });
+
+  // Slow consumer: yield to the event loop between reads so the pump runs
+  // ahead and the buffer reaches its 256 cap, forcing eviction of the oldest
+  // raw events.
+  const got: Message[] = [];
+  for await (const m of turn.messages) {
+    got.push(m);
+    await new Promise((r) => setImmediate(r));
+  }
+  await turn.result;
+
+  // Cannot assert exact count (depends on scheduling), but the buffer cap is
+  // 256, so we MUST observe fewer than N=300 messages — eviction fired.
+  expect(got.length).toBeLessThan(N);
+  expect(got.length).toBeGreaterThan(0);
+  // All received messages should be `raw` kind (no terminal frame goes
+  // through `messages` — it lands in `result`).
+  for (const m of got) expect(m.kind).toBe("raw");
+});

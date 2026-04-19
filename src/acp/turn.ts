@@ -4,8 +4,47 @@
  */
 
 import type { Readable } from "node:stream";
+import { BoundedEventChannel, type Policy } from "./bounded-channel.js";
 import { AcpParser } from "./parser.js";
 import type { AcpxTurn, Message, Result } from "./types.js";
+
+const DEFAULT_CHANNEL_CAPACITY = 256;
+
+function classifyMessage(m: Message): Policy {
+  switch (m.kind) {
+    case "tool_call":
+    case "permission_request":
+      return "never";
+    case "text":
+    case "thinking":
+      return m.chunk ? "coalesce_text_deltas" : "never";
+    case "token_usage":
+    case "raw":
+      return "drop_oldest_on_full";
+    default:
+      return "drop_oldest_on_full";
+  }
+}
+
+function coalesceKeyFor(m: Message): string | null {
+  if ((m.kind === "text" || m.kind === "thinking") && m.chunk) return m.kind;
+  return null;
+}
+
+function coalesceMessage(existing: Message, incoming: Message): Message {
+  if (
+    (existing.kind === "text" && incoming.kind === "text") ||
+    (existing.kind === "thinking" && incoming.kind === "thinking")
+  ) {
+    return { ...existing, text: existing.text + incoming.text };
+  }
+  return existing;
+}
+
+function invalidatesCoalesceKeyFor(m: Message): string | null {
+  if ((m.kind === "text" || m.kind === "thinking") && !m.chunk) return m.kind;
+  return null;
+}
 
 export class AcpxTurnImpl implements AcpxTurn {
   readonly sessionId: string;
@@ -14,6 +53,7 @@ export class AcpxTurnImpl implements AcpxTurn {
   readonly result: Promise<Result>;
   private readonly cancelFn: () => Promise<void>;
   private readonly parser: AcpParser;
+  private readonly channel: BoundedEventChannel<Message>;
   private pendingCancel: Promise<void> | null = null;
 
   constructor(opts: {
@@ -21,6 +61,8 @@ export class AcpxTurnImpl implements AcpxTurn {
     turnId: string;
     stdout: Readable;
     cancelFn: () => Promise<void>;
+    /** Override the default 256-event channel capacity. Pass `Infinity` to bypass eviction. */
+    channelCapacity?: number;
   }) {
     this.sessionId = opts.sessionId;
     this.turnId = opts.turnId;
@@ -30,34 +72,32 @@ export class AcpxTurnImpl implements AcpxTurn {
       turnId: opts.turnId,
       stream: opts.stdout,
     });
-    this.messages = this.parser.messages;
+    this.channel = new BoundedEventChannel<Message>({
+      capacity: opts.channelCapacity ?? DEFAULT_CHANNEL_CAPACITY,
+      classify: classifyMessage,
+      coalesceKey: coalesceKeyFor,
+      coalesce: coalesceMessage,
+      invalidatesCoalesceKey: invalidatesCoalesceKeyFor,
+    });
     this.result = this.parser.result;
+    this.messages = this.channel;
+
+    const parser = this.parser;
+    const channel = this.channel;
+    void (async () => {
+      try {
+        for await (const m of parser.messages) {
+          channel.push(m);
+        }
+      } finally {
+        channel.close();
+      }
+    })();
   }
 
-  /**
-   * Cancel the in-flight turn.
-   *
-   * Single-flight: concurrent callers share the same in-flight cancellation
-   * attempt so we never double-send cancel to the underlying transport during
-   * a single call "wave".
-   *
-   * Retryable until the turn settles: a successful `cancelFn()` resolution is
-   * only a "cancel requested", not a guaranteed "cancel confirmed" — the
-   * provider may ignore it. Callers can re-invoke `cancel()` to re-send until
-   * the turn's result arrives (at which point this becomes a no-op). If
-   * `cancelFn` rejects, the rejection propagates and the next caller still
-   * gets a fresh attempt.
-   */
   async cancel(): Promise<void> {
-    // Gate synchronously on the parser's own settled flag (flipped inside
-    // finish()) rather than a .then() latch on `this.result`. A microtask
-    // latch would still read `false` when a caller invokes cancel() in the
-    // same tick as resolution — and ACP sessions are persistent, so a
-    // stray cancel sent after the turn ended could hit the NEXT prompt or
-    // produce spurious cancelled telemetry for an already-finished turn.
     if (this.parser.settled) return;
     if (this.pendingCancel !== null) return this.pendingCancel;
-
     const attempt = (async () => {
       try {
         await this.cancelFn();
