@@ -50,6 +50,33 @@ export class BoundedEventChannel<T> {
     this._stats.pushed++;
     const policy = this.opts.classify(event);
 
+    if (policy === "coalesce_text_deltas") {
+      const key = this.opts.coalesceKey?.(event) ?? null;
+      if (key !== null && this.coalesceTails.has(key) && this.opts.coalesce) {
+        const idx = this.coalesceTails.get(key) as number;
+        this.buffer[idx] = this.opts.coalesce(this.buffer[idx] as T, event);
+        this._stats.coalesced++;
+        this.opts.onDrop?.(event, "coalesced");
+        return;
+      }
+      // Fall through to append; record tail after.
+      const tailIdxBefore = this.tail;
+      this._appendTail(event, policy);
+      // Only record tail if event was actually buffered (not fast-pathed).
+      if (this.size > 0 && this.policyAt[tailIdxBefore] === policy && key !== null) {
+        this.coalesceTails.set(key, tailIdxBefore);
+      }
+      return;
+    }
+
+    if (policy === "never") {
+      const invKey = this.opts.invalidatesCoalesceKey?.(event) ?? null;
+      if (invKey !== null) this.coalesceTails.delete(invKey);
+      // Eviction-to-fit handled in Task 4. For now, just append.
+      this._appendTail(event, policy);
+      return;
+    }
+
     if (policy === "drop_oldest_on_full") {
       if (!this.unbounded && this.size === this.buffer.length) {
         const victim = this.buffer[this.head] as T;
@@ -60,9 +87,6 @@ export class BoundedEventChannel<T> {
       this._appendTail(event, policy);
       return;
     }
-
-    // never + coalesce policies handled in later tasks; for now, append.
-    this._appendTail(event, policy);
   }
 
   close(): void {

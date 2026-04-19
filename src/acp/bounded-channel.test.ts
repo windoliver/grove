@@ -66,3 +66,59 @@ test("drop_oldest_on_full: cap+10 pushes, drain returns last `cap` in order", as
   expect(evicted.map((e) => e.id)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   expect(ch.stats().evicted).toBe(10);
 });
+
+test("coalesce hot path: 100 deltas merge into one buffered event", async () => {
+  const ch = makeChannel(8);
+  for (let i = 0; i < 100; i++) ch.push({ kind: "delta_a", id: i, text: "x" });
+  ch.close();
+  const got: TestEvent[] = [];
+  for await (const e of ch) got.push(e);
+  expect(got).toHaveLength(1);
+  expect(got[0]?.text).toBe("x".repeat(100));
+  expect(ch.stats().coalesced).toBe(99);
+});
+
+test("coalesce key isolation: delta_a and delta_b coalesce independently", async () => {
+  const ch = makeChannel(8);
+  for (let i = 0; i < 5; i++) {
+    ch.push({ kind: "delta_a", id: i, text: "a" });
+    ch.push({ kind: "delta_b", id: i, text: "b" });
+  }
+  ch.close();
+  const got: TestEvent[] = [];
+  for await (const e of ch) got.push(e);
+  expect(got).toHaveLength(2);
+  const byKind = Object.fromEntries(got.map((e) => [e.kind, e.text]));
+  expect(byKind["delta_a"]).toBe("aaaaa");
+  expect(byKind["delta_b"]).toBe("bbbbb");
+});
+
+test("coalesce tail invalidated on consume: next delta starts new entry", async () => {
+  const ch = makeChannel(8);
+  ch.push({ kind: "delta_a", id: 1, text: "a" });
+  ch.push({ kind: "delta_a", id: 2, text: "b" });
+  const it = ch[Symbol.asyncIterator]();
+  const first = await it.next();
+  expect(first.value.text).toBe("ab");
+  ch.push({ kind: "delta_a", id: 3, text: "c" });
+  ch.close();
+  const second = await it.next();
+  expect(second.value.text).toBe("c");
+  const third = await it.next();
+  expect(third.done).toBe(true);
+});
+
+test("coalesce tail invalidated by terminal: next delta starts new entry", async () => {
+  const ch = makeChannel(8);
+  ch.push({ kind: "delta_a", id: 1, text: "a" });
+  ch.push({ kind: "delta_a", id: 2, text: "b" });
+  ch.push({ kind: "terminal_a", id: 3 });
+  ch.push({ kind: "delta_a", id: 4, text: "c" });
+  ch.close();
+  const got: TestEvent[] = [];
+  for await (const e of ch) got.push(e);
+  expect(got).toHaveLength(3);
+  expect(got[0]?.text).toBe("ab");
+  expect(got[1]?.kind).toBe("terminal_a");
+  expect(got[2]?.text).toBe("c");
+});
