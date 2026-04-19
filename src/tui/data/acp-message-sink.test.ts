@@ -84,6 +84,62 @@ test("drops malformed acp.result payloads (missing result field)", () => {
   expect(store.getTurn("s1", "t1")).toBeUndefined();
 });
 
+test("rejects tool_call message missing toolCall body", () => {
+  // Projector dereferences message.toolCall.name — a malformed frame would
+  // throw in every subsequent flush and silently stall updates.
+  const store = new AcpSessionStore();
+  store.register("s1");
+  const sink = createAcpMessageSink(store);
+  sink.handleGroveEvent({
+    type: "acp.message",
+    sourceRole: "coder",
+    targetRole: "tui",
+    payload: {
+      sessionId: "s1",
+      turnId: "t1",
+      message: { kind: "tool_call", turnId: "t1" },
+    },
+    timestamp: new Date().toISOString(),
+  });
+  expect(store.getTurn("s1", "t1")).toBeUndefined();
+});
+
+test("rejects permission_request message missing request body", () => {
+  const store = new AcpSessionStore();
+  store.register("s1");
+  const sink = createAcpMessageSink(store);
+  sink.handleGroveEvent({
+    type: "acp.message",
+    sourceRole: "coder",
+    targetRole: "tui",
+    payload: {
+      sessionId: "s1",
+      turnId: "t1",
+      message: { kind: "permission_request", turnId: "t1" },
+    },
+    timestamp: new Date().toISOString(),
+  });
+  expect(store.getTurn("s1", "t1")).toBeUndefined();
+});
+
+test("rejects text message missing text / chunk fields", () => {
+  const store = new AcpSessionStore();
+  store.register("s1");
+  const sink = createAcpMessageSink(store);
+  sink.handleGroveEvent({
+    type: "acp.message",
+    sourceRole: "coder",
+    targetRole: "tui",
+    payload: {
+      sessionId: "s1",
+      turnId: "t1",
+      message: { kind: "text", turnId: "t1" },
+    },
+    timestamp: new Date().toISOString(),
+  });
+  expect(store.getTurn("s1", "t1")).toBeUndefined();
+});
+
 test("rejects acp.message whose message.kind is not a known Message kind", () => {
   const store = new AcpSessionStore();
   store.register("s1");

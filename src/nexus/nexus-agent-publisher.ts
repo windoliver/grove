@@ -22,6 +22,14 @@ export interface PublishTurnOptions {
   readonly turnId: string;
   readonly messages: AsyncIterable<Message>;
   readonly result: Promise<Result>;
+  /**
+   * Stable per-process identifier. Embedded into payload.sourceInstance
+   * so consumers can dedupe SSE loopback without relying on role-name
+   * equality — two processes that share a Nexus and reuse the same role
+   * name (e.g. both spawning "coder") must see each other's events, and
+   * only drop the self-loop of their own emissions.
+   */
+  readonly sourceInstance?: string;
 }
 
 /**
@@ -31,6 +39,8 @@ export interface PublishTurnOptions {
  */
 export async function publishTurnToNexus(opts: PublishTurnOptions): Promise<PublishResult[]> {
   const results: PublishResult[] = [];
+
+  const maybeInstance = opts.sourceInstance ? { sourceInstance: opts.sourceInstance } : undefined;
 
   for await (const message of opts.messages) {
     const event: GroveEvent = {
@@ -42,6 +52,7 @@ export async function publishTurnToNexus(opts: PublishTurnOptions): Promise<Publ
       // sends only `event.payload` over IPC, dropping the outer `event.type`.
       payload: {
         type: "acp.message",
+        ...(maybeInstance ?? {}),
         sessionId: opts.sessionId,
         turnId: opts.turnId,
         message,
@@ -58,6 +69,7 @@ export async function publishTurnToNexus(opts: PublishTurnOptions): Promise<Publ
     targetRole: opts.targetRole,
     payload: {
       type: "acp.result",
+      ...(maybeInstance ?? {}),
       sessionId: opts.sessionId,
       turnId: opts.turnId,
       result,

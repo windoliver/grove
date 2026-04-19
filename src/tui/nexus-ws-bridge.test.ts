@@ -530,6 +530,65 @@ describe("NexusWsBridge", () => {
     expect(outcome).toBe("acp");
   });
 
+  test("handleIpcEnvelope accepts ACP-shaped payload without `type` field (rolling upgrade)", () => {
+    // Older publishers predate the `type` embedding. Bridge must fall back
+    // to shape detection so a mixed-version deployment does not route
+    // typed control-plane events into an agent's prose IPC inbox.
+    const onAcpEvent = mock(() => undefined);
+    const bridge = new NexusWsBridge(makeBridgeOpts({ onAcpEvent }));
+    const outcome = bridge.handleIpcEnvelope(
+      {
+        sessionId: "s1",
+        turnId: "t1",
+        message: { kind: "text", turnId: "t1", text: "legacy", chunk: true },
+      },
+      "external-agent",
+      "tui",
+    );
+    expect(outcome).toBe("acp");
+    expect(onAcpEvent).toHaveBeenCalledTimes(1);
+  });
+
+  test("handleIpcEnvelope forwards remote ACP with same role name when instance IDs differ", () => {
+    // Shared-Nexus scenario: another Grove process also uses role "coder".
+    // Current bridge is configured with localInstanceId "A"; SSE delivers
+    // an event from instance "B" whose role happens to collide. Must NOT
+    // be dropped as a local self-loop.
+    const onAcpEvent = mock(() => undefined);
+    const bridge = new NexusWsBridge(makeBridgeOpts({ onAcpEvent, localInstanceId: "A" }));
+    const outcome = bridge.handleIpcEnvelope(
+      {
+        type: "acp.message",
+        sourceInstance: "B",
+        sessionId: "s1",
+        turnId: "t1",
+        message: { kind: "text", turnId: "t1", text: "remote-coder", chunk: true },
+      },
+      "coder",
+      "tui",
+    );
+    expect(outcome).toBe("acp");
+    expect(onAcpEvent).toHaveBeenCalledTimes(1);
+  });
+
+  test("handleIpcEnvelope drops ACP self-loop when role and instance both match", () => {
+    const onAcpEvent = mock(() => undefined);
+    const bridge = new NexusWsBridge(makeBridgeOpts({ onAcpEvent, localInstanceId: "A" }));
+    const outcome = bridge.handleIpcEnvelope(
+      {
+        type: "acp.message",
+        sourceInstance: "A",
+        sessionId: "s1",
+        turnId: "t1",
+        message: { kind: "text", turnId: "t1", text: "self-loop", chunk: true },
+      },
+      "coder",
+      "tui",
+    );
+    expect(outcome).toBe("acp");
+    expect(onAcpEvent).not.toHaveBeenCalled();
+  });
+
   test("handleIpcEnvelope reconstructs GroveEvent from wire payload so sink accepts it", async () => {
     // End-to-end integration through the real sink: inner payload shape
     // matches what NexusEventBus sends over the wire (just `event.payload`,

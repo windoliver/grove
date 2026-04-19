@@ -41,6 +41,15 @@ export interface NexusWsBridgeOptions {
    * forwarding for the same event would double-count.
    */
   onAcpEvent?: ((event: GroveEvent) => void) | undefined;
+  /**
+   * Stable per-process identifier. When both publisher and bridge are
+   * configured with the same value, the SSE loopback dedupe is gated on
+   * instance identity rather than role-name equality — so shared-Nexus
+   * deployments with role-name collisions across processes still receive
+   * each other's typed events. When omitted, falls back to role-name
+   * dedupe (preserves single-process behavior for older wiring).
+   */
+  localInstanceId?: string | undefined;
 }
 
 interface SseEvent {
@@ -321,7 +330,22 @@ export class NexusWsBridge {
     wireRecipient?: string,
   ): "acp" | "ipc" {
     if (!innerPayload || typeof innerPayload !== "object") return "ipc";
-    const type = (innerPayload as { type?: unknown }).type;
+    const rec = innerPayload as Record<string, unknown>;
+    let type = rec.type;
+    // Backward-compat: an older publisher that predates the `type`
+    // embedding (Round 1 of #314) may send payloads without it. Fall back
+    // to shape detection — sessionId + turnId + (message|result) is the
+    // ACP envelope signature. This keeps rolling upgrades from routing
+    // typed control events into an agent's prose IPC inbox.
+    if (type !== "acp.message" && type !== "acp.result") {
+      if (typeof rec.sessionId === "string" && typeof rec.turnId === "string") {
+        if (rec.message !== undefined && typeof rec.message === "object") {
+          type = "acp.message";
+        } else if (rec.result !== undefined && typeof rec.result === "object") {
+          type = "acp.result";
+        }
+      }
+    }
     if (type !== "acp.message" && type !== "acp.result") return "ipc";
 
     const sourceRole = wireSender ?? "unknown";
@@ -335,10 +359,18 @@ export class NexusWsBridge {
     };
 
     const localRoles = new Set(this.opts.topology.roles.map((r) => r.name));
+    const envelopeInstance = (rec as { sourceInstance?: unknown }).sourceInstance;
     if (localRoles.has(sourceRole)) {
-      // Local role — the in-process NexusEventBus subscription will ingest
-      // this event; skipping forward avoids double-counting.
-      return "acp";
+      // Dedupe the SSE self-loop. When both sides carry instance IDs we
+      // gate strictly on instance equality — cross-process events with
+      // the same role name (shared Nexus) still reach the sink. When
+      // either side is missing the marker we fall back to role-name
+      // dedupe to preserve single-process behavior.
+      const haveBothInstances =
+        typeof envelopeInstance === "string" && typeof this.opts.localInstanceId === "string";
+      if (!haveBothInstances || envelopeInstance === this.opts.localInstanceId) {
+        return "acp";
+      }
     }
     if (!this.opts.onAcpEvent) {
       // Fail-loud: a typed ACP envelope arrived but no consumer is wired.

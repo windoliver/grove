@@ -15,14 +15,44 @@ export interface AcpMessageSink {
   handleGroveEvent(event: GroveEvent): void;
 }
 
-const VALID_MESSAGE_KINDS = new Set([
-  "text",
-  "thinking",
-  "tool_call",
-  "permission_request",
-  "token_usage",
-  "raw",
-]);
+// Per-kind payload shape guard: the sink is the only gate between the wire
+// and downstream projectors that dereference kind-specific fields without
+// null-checks (session-log-projector, session-panel). A `tool_call` frame
+// missing `.toolCall` or a `permission_request` missing `.request` must be
+// rejected at ingest time — otherwise it lands in the store and throws on
+// every subsequent projection/render cycle.
+function isMessageBody(kind: string, v: Record<string, unknown>): boolean {
+  switch (kind) {
+    case "text":
+    case "thinking":
+      return typeof v.text === "string" && typeof v.chunk === "boolean";
+    case "tool_call":
+      return (
+        typeof v.toolCall === "object" &&
+        v.toolCall !== null &&
+        typeof (v.toolCall as { id?: unknown }).id === "string" &&
+        typeof (v.toolCall as { name?: unknown }).name === "string"
+      );
+    case "permission_request":
+      return (
+        typeof v.request === "object" &&
+        v.request !== null &&
+        typeof (v.request as { id?: unknown }).id === "string" &&
+        typeof (v.request as { tool?: unknown }).tool === "string"
+      );
+    case "token_usage":
+      return (
+        typeof v.usage === "object" &&
+        v.usage !== null &&
+        typeof (v.usage as { inputTokens?: unknown }).inputTokens === "number" &&
+        typeof (v.usage as { outputTokens?: unknown }).outputTokens === "number"
+      );
+    case "raw":
+      return typeof v.acpMethod === "string";
+    default:
+      return false;
+  }
+}
 
 export function createAcpMessageSink(store: AcpSessionStore): AcpMessageSink {
   return {
@@ -93,9 +123,11 @@ export function createAcpMessageSink(store: AcpSessionStore): AcpMessageSink {
 
 function isMessage(v: unknown): v is Message {
   if (typeof v !== "object" || v === null) return false;
-  const kind = (v as { kind?: unknown }).kind;
-  if (typeof kind !== "string" || !VALID_MESSAGE_KINDS.has(kind)) return false;
-  return typeof (v as { turnId?: unknown }).turnId === "string";
+  const rec = v as Record<string, unknown>;
+  if (typeof rec.turnId !== "string") return false;
+  const kind = rec.kind;
+  if (typeof kind !== "string") return false;
+  return isMessageBody(kind, rec);
 }
 
 function isResult(v: unknown): v is Result {
