@@ -243,6 +243,10 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
   modeRef.current = mode;
   const initErrorRef = useRef(initError);
   initErrorRef.current = initError;
+  // Tracks ACP event-bus subscriptions so they can be unsubscribed when
+  // the SpawnManager is rebuilt or the component unmounts. Without this,
+  // handlers would leak and reprocess future events through stale sinks.
+  const acpBusUnsubscribesRef = useRef<Array<() => void>>([]);
 
   // Keyboard handler for error states (q to quit, Esc to go back to setup)
   useKeyboard(
@@ -284,11 +288,25 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
         // Session persistence is best-effort
       }
     }
+    // Tear down subscriptions from a previous manager incarnation before
+    // rebuilding — useMemo may run more than once per component lifetime
+    // when `appProps` changes, and unsubscribed handlers retain stale sink
+    // closures that would otherwise ingest events forever.
+    for (const unsubscribe of acpBusUnsubscribesRef.current) {
+      unsubscribe();
+    }
+    acpBusUnsubscribesRef.current = [];
+
     const acpSessionStore = new AcpSessionStore();
     const acpSink = createAcpMessageSink(acpSessionStore);
     if (appProps.eventBus && appProps.topology) {
+      const bus = appProps.eventBus;
       for (const role of appProps.topology.roles) {
-        appProps.eventBus.subscribe(role.name, (ev) => acpSink.handleGroveEvent(ev));
+        const handler = (ev: import("../core/event-bus.js").GroveEvent): void => {
+          acpSink.handleGroveEvent(ev);
+        };
+        bus.subscribe(role.name, handler);
+        acpBusUnsubscribesRef.current.push(() => bus.unsubscribe(role.name, handler));
       }
     }
 
@@ -356,6 +374,10 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
   // Cleanup SpawnManager on unmount or when appProps change
   useEffect(() => {
     return () => {
+      for (const unsubscribe of acpBusUnsubscribesRef.current) {
+        unsubscribe();
+      }
+      acpBusUnsubscribesRef.current = [];
       spawnManager?.destroy();
     };
   }, [spawnManager]);

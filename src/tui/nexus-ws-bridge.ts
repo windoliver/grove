@@ -322,7 +322,25 @@ export class NexusWsBridge {
       // this event; skipping forward avoids double-counting.
       return "acp";
     }
-    this.opts.onAcpEvent?.(envelope);
+    if (!this.opts.onAcpEvent) {
+      // Fail-loud: a typed ACP envelope arrived but no consumer is wired.
+      // Still return "acp" so readAndPush does not deliver control-plane
+      // events as prose IPC to an agent inbox — log so operators can see
+      // the silent drop happening instead of it being a true black hole.
+      debugLog(
+        "wsBridge.handleIpcEnvelope",
+        `ACP envelope dropped — no onAcpEvent wired (type=${String(type)} sourceRole=${envelope.sourceRole})`,
+      );
+      return "acp";
+    }
+    try {
+      this.opts.onAcpEvent(envelope);
+    } catch (err) {
+      debugLog(
+        "wsBridge.handleIpcEnvelope",
+        `onAcpEvent threw for sourceRole=${envelope.sourceRole}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     return "acp";
   }
 

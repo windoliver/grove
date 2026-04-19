@@ -43,6 +43,15 @@ export function createAcpMessageSink(store: AcpSessionStore): AcpMessageSink {
           debugLog("acp_event_malformed", `acp.message payload rejected from ${event.sourceRole}`);
           return;
         }
+        // Envelope and inner turnId MUST agree. Mismatch would let a
+        // malformed event close or mutate the wrong turn.
+        if (p.message.turnId !== p.turnId) {
+          debugLog(
+            "acp_event_malformed",
+            `acp.message turnId mismatch envelope=${p.turnId} inner=${p.message.turnId} from ${event.sourceRole}`,
+          );
+          return;
+        }
         store.ingest({
           kind: "message",
           sessionId: p.sessionId,
@@ -64,6 +73,13 @@ export function createAcpMessageSink(store: AcpSessionStore): AcpMessageSink {
           !isResult(p.result)
         ) {
           debugLog("acp_event_malformed", `acp.result payload rejected from ${event.sourceRole}`);
+          return;
+        }
+        if (p.result.turnId !== p.turnId) {
+          debugLog(
+            "acp_event_malformed",
+            `acp.result turnId mismatch envelope=${p.turnId} inner=${p.result.turnId} from ${event.sourceRole}`,
+          );
           return;
         }
         store.ingest({

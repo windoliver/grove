@@ -37,7 +37,11 @@ export async function publishTurnToNexus(opts: PublishTurnOptions): Promise<Publ
       type: "acp.message",
       sourceRole: opts.sourceRole,
       targetRole: opts.targetRole,
+      // `type` is repeated inside the payload so cross-process consumers
+      // (NexusWsBridge SSE path) can discriminate the envelope. NexusEventBus
+      // sends only `event.payload` over IPC, dropping the outer `event.type`.
       payload: {
+        type: "acp.message",
         sessionId: opts.sessionId,
         turnId: opts.turnId,
         message,
@@ -53,6 +57,7 @@ export async function publishTurnToNexus(opts: PublishTurnOptions): Promise<Publ
     sourceRole: opts.sourceRole,
     targetRole: opts.targetRole,
     payload: {
+      type: "acp.result",
       sessionId: opts.sessionId,
       turnId: opts.turnId,
       result,

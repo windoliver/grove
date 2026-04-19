@@ -137,3 +137,41 @@ test("drops acp.message with null payload without throwing", () => {
   ).not.toThrow();
   expect(store.getSession("s1")?.turns.size).toBe(0);
 });
+
+test("drops acp.message when envelope turnId disagrees with message.turnId", () => {
+  const store = new AcpSessionStore();
+  store.register("s1");
+  const sink = createAcpMessageSink(store);
+  sink.handleGroveEvent({
+    type: "acp.message",
+    sourceRole: "coder",
+    targetRole: "tui",
+    payload: {
+      sessionId: "s1",
+      turnId: "t1",
+      // Envelope turnId is "t1" but message.turnId is "t2" — a malformed
+      // event that could close/mutate the wrong turn if ingested.
+      message: { kind: "text", turnId: "t2", text: "drift", chunk: true },
+    },
+    timestamp: new Date().toISOString(),
+  });
+  expect(store.getSession("s1")?.turns.size).toBe(0);
+});
+
+test("drops acp.result when envelope turnId disagrees with result.turnId", () => {
+  const store = new AcpSessionStore();
+  store.register("s1");
+  const sink = createAcpMessageSink(store);
+  sink.handleGroveEvent({
+    type: "acp.result",
+    sourceRole: "coder",
+    targetRole: "tui",
+    payload: {
+      sessionId: "s1",
+      turnId: "t1",
+      result: { turnId: "t2", stopReason: "end_turn" },
+    },
+    timestamp: new Date().toISOString(),
+  });
+  expect(store.getTurn("s1", "t1")).toBeUndefined();
+});

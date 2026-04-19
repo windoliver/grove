@@ -71,6 +71,31 @@ describe("publishTurnToNexus", () => {
     bus.close();
   });
 
+  test("payload carries `type` so cross-process IPC consumers can discriminate", async () => {
+    // NexusEventBus.publish sends only `event.payload` over IPC — the outer
+    // `event.type` is dropped at the wire. Publisher must put `type` inside
+    // the payload so NexusWsBridge.handleIpcEnvelope can classify SSE-
+    // delivered envelopes.
+    const bus = new NexusEventBus(undefined);
+    const received: GroveEvent[] = [];
+    bus.subscribe("orchestrator", (e) => received.push(e));
+
+    await publishTurnToNexus({
+      bus,
+      sourceRole: "coder",
+      targetRole: "orchestrator",
+      sessionId: "s1",
+      turnId: "t1",
+      messages: asyncIter([{ kind: "text", turnId: "t1", text: "hi", chunk: true }]),
+      result: Promise.resolve({ turnId: "t1", stopReason: "end_turn" }),
+    });
+
+    expect(received).toHaveLength(2);
+    expect(received[0]!.payload.type).toBe("acp.message");
+    expect(received[1]!.payload.type).toBe("acp.result");
+    bus.close();
+  });
+
   test("acp.message payload round-trips the typed Message shape", async () => {
     const bus = new NexusEventBus(undefined);
     const received: GroveEvent[] = [];
