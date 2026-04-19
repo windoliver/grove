@@ -72,7 +72,20 @@ export class BoundedEventChannel<T> {
     if (policy === "never") {
       const invKey = this.opts.invalidatesCoalesceKey?.(event) ?? null;
       if (invKey !== null) this.coalesceTails.delete(invKey);
-      // Eviction-to-fit handled in Task 4. For now, just append.
+
+      if (!this.unbounded && this.size === this.buffer.length) {
+        const victimIdx = this._findOldestDropEligibleIdx();
+        if (victimIdx === -1) {
+          const prev = this._stats.droppedByPolicy.get("never") ?? 0;
+          this._stats.droppedByPolicy.set("never", prev + 1);
+          this.opts.onDrop?.(event, "no_capacity");
+          return;
+        }
+        const victim = this.buffer[victimIdx] as T;
+        this._evictAt(victimIdx);
+        this._stats.evicted++;
+        this.opts.onDrop?.(victim, "evicted");
+      }
       this._appendTail(event, policy);
       return;
     }
@@ -149,6 +162,15 @@ export class BoundedEventChannel<T> {
     this.policyAt[this.tail] = policy;
     this.tail = (this.tail + 1) % this.buffer.length;
     this.size++;
+  }
+
+  private _findOldestDropEligibleIdx(): number {
+    const cap = this.buffer.length;
+    for (let i = 0; i < this.size; i++) {
+      const idx = (this.head + i) % cap;
+      if (this.policyAt[idx] === "drop_oldest_on_full") return idx;
+    }
+    return -1;
   }
 
   private _evictAt(idx: number): void {

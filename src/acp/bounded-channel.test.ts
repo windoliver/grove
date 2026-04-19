@@ -122,3 +122,35 @@ test("coalesce tail invalidated by terminal: next delta starts new entry", async
   expect(got[1]?.kind).toBe("terminal_a");
   expect(got[2]?.text).toBe("c");
 });
+
+test("never policy evicts oldest drop-eligible to make room", async () => {
+  const cap = 4;
+  const ch = new BoundedEventChannel<TestEvent>({ capacity: cap, classify });
+  for (let i = 1; i <= cap; i++) ch.push({ kind: "drop", id: i });
+  ch.push({ kind: "keep", id: 99 });
+  ch.close();
+  const got: TestEvent[] = [];
+  for await (const e of ch) got.push(e);
+  expect(got.map((e) => e.id)).toEqual([2, 3, 4, 99]);
+  expect(ch.stats().evicted).toBe(1);
+});
+
+test("never policy with no drop-eligible: incoming dropped, counter increments", async () => {
+  const cap = 3;
+  const dropped: TestEvent[] = [];
+  const ch = new BoundedEventChannel<TestEvent>({
+    capacity: cap,
+    classify,
+    onDrop: (e, reason) => {
+      if (reason === "no_capacity") dropped.push(e);
+    },
+  });
+  for (let i = 1; i <= cap; i++) ch.push({ kind: "keep", id: i });
+  ch.push({ kind: "keep", id: 99 });
+  ch.close();
+  const got: TestEvent[] = [];
+  for await (const e of ch) got.push(e);
+  expect(got.map((e) => e.id)).toEqual([1, 2, 3]);
+  expect(dropped.map((e) => e.id)).toEqual([99]);
+  expect(ch.stats().droppedByPolicy.get("never")).toBe(1);
+});
