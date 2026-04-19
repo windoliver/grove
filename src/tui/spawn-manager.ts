@@ -45,6 +45,7 @@ function clearAllGlobalContribTimers(): void {
   _allGlobalContribTimers.length = 0;
 }
 
+import type { AcpSessionStore } from "./data/acp-session-store.js";
 import type { PersistedSpawnRecord, SessionStore } from "./session-store.js";
 
 /** PR context injected as env vars when spawning agents. */
@@ -85,6 +86,7 @@ export class SpawnManager {
   private readonly logBuffers = new Map<string, AgentLogBuffer>();
   private readonly onError: (message: string) => void;
   private readonly sessionStore: SessionStore | undefined;
+  private readonly acpSessionStore: AcpSessionStore | undefined;
   private wsBridge: NexusWsBridge | undefined;
   private prContext: PrContext | undefined;
   private sessionGoal: string | undefined;
@@ -112,6 +114,7 @@ export class SpawnManager {
     sessionStore?: SessionStore,
     groveDir?: string,
     agentRuntime?: AgentRuntime,
+    acpSessionStore?: AcpSessionStore,
   ) {
     this.provider = provider;
     this.tmux = tmux;
@@ -119,6 +122,7 @@ export class SpawnManager {
     this.onError = onError;
     this.sessionStore = sessionStore;
     this.groveDir = groveDir;
+    this.acpSessionStore = acpSessionStore;
   }
 
   /** Attach a NexusWsBridge for push-based IPC. Call after construction. */
@@ -136,6 +140,7 @@ export class SpawnManager {
       const role = session.role;
       if (role) {
         bridge.registerSession(role, session);
+        this.acpSessionStore?.register(session.id);
         debugLog("wsBridge", `late-registered ${role} (spawnId=${spawnId})`);
       }
     }
@@ -442,6 +447,9 @@ export class SpawnManager {
     if (agentSession && this.wsBridge) {
       this.wsBridge.registerSession(roleId, agentSession);
     }
+    if (agentSession) {
+      this.acpSessionStore?.register(agentSession.id);
+    }
 
     return {
       spawnId,
@@ -476,6 +484,11 @@ export class SpawnManager {
       this.spawnRecords.delete(killedAgentId);
       this.sessionStore?.remove(killedAgentId);
       this.wsBridge?.unregisterSession(killedAgentId);
+      // AcpSessionStore is keyed by the runtime's agentSession.id (e.g.
+      // `grove-coder-0-abc123`), which may differ from `killedAgentId`
+      // (the spawn-manager's agentId key). Prefer the captured
+      // agentSession.id; fall back to killedAgentId for legacy paths.
+      this.acpSessionStore?.unregister(agentSession?.id ?? killedAgentId);
 
       if (this.provider.cleanWorkspace) {
         await safeCleanup(
