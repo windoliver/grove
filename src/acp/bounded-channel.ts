@@ -24,7 +24,14 @@ export class BoundedEventChannel<T> {
   private tail = 0;
   private size = 0;
   private readonly coalesceTails = new Map<string, number>();
-  private pendingResolver: ((value: IteratorResult<T>) => void) | null = null;
+  /**
+   * FIFO queue of pending `next()` resolvers. Although the channel is
+   * documented as single-consumer, defensive consumers may issue concurrent
+   * `next()` calls (e.g. a wrapper that prefetches one ahead). A single
+   * resolver slot would silently overwrite earlier waiters and hang their
+   * promises. The queue resolves in arrival order on push fast-path / close.
+   */
+  private readonly waitQueue: Array<(value: IteratorResult<T>) => void> = [];
   private closed = false;
   private readonly _stats: ChannelStats = {
     pushed: 0,
@@ -89,11 +96,15 @@ export class BoundedEventChannel<T> {
 
     if (policy === "never") {
       const invKey = this.opts.invalidatesCoalesceKey?.(event) ?? null;
-      if (invKey !== null) this.coalesceTails.delete(invKey);
 
       if (!this.unbounded && this.size === this.buffer.length) {
         const victimIdx = this._findOldestDropEligibleIdx();
         if (victimIdx === -1) {
+          // Incoming dropped — do NOT invalidate the coalesce tail. The
+          // prior chunk is still in the buffer, and consumers will see it
+          // continue to coalesce with subsequent chunks. Invalidating here
+          // would orphan that tail and force every following chunk to seek
+          // a fresh slot, multiplying text loss under sustained pressure.
           const prev = this._stats.droppedByPolicy.get("never") ?? 0;
           this._stats.droppedByPolicy.set("never", prev + 1);
           this.opts.onDrop?.(event, "no_capacity");
@@ -105,6 +116,9 @@ export class BoundedEventChannel<T> {
         this.opts.onDrop?.(victim, "evicted");
       }
       this._appendTail(event, policy);
+      // Event was either buffered or fast-path delivered — consumer will see
+      // the terminal, so any prior coalesce tail is now semantically stale.
+      if (invKey !== null) this.coalesceTails.delete(invKey);
       return;
     }
 
@@ -135,9 +149,8 @@ export class BoundedEventChannel<T> {
 
   close(): void {
     this.closed = true;
-    if (this.pendingResolver) {
-      const r = this.pendingResolver;
-      this.pendingResolver = null;
+    while (this.waitQueue.length > 0) {
+      const r = this.waitQueue.shift() as (value: IteratorResult<T>) => void;
       r({ value: undefined as unknown as T, done: true });
     }
   }
@@ -168,14 +181,13 @@ export class BoundedEventChannel<T> {
         }
         if (self.closed) return { value: undefined as unknown as T, done: true };
         return new Promise<IteratorResult<T>>((resolve) => {
-          self.pendingResolver = resolve;
+          self.waitQueue.push(resolve);
         });
       },
       async return(): Promise<IteratorResult<T>> {
         self.closed = true;
-        if (self.pendingResolver) {
-          const r = self.pendingResolver;
-          self.pendingResolver = null;
+        while (self.waitQueue.length > 0) {
+          const r = self.waitQueue.shift() as (value: IteratorResult<T>) => void;
           r({ value: undefined as unknown as T, done: true });
         }
         return { value: undefined as unknown as T, done: true };
@@ -184,9 +196,8 @@ export class BoundedEventChannel<T> {
   }
 
   private _appendTail(event: T, policy: Policy): void {
-    if (this.pendingResolver) {
-      const r = this.pendingResolver;
-      this.pendingResolver = null;
+    if (this.waitQueue.length > 0) {
+      const r = this.waitQueue.shift() as (value: IteratorResult<T>) => void;
       r({ value: event, done: false });
       return;
     }

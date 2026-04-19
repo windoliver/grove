@@ -332,6 +332,68 @@ test("REGRESSION: drop_oldest_on_full must not evict a never-policy event at hea
   expect(evicted.map((e) => e.id)).toEqual([2]);
 });
 
+test("REGRESSION: dropped never-event must NOT invalidate coalesce tail", async () => {
+  // cap=2. delta_a + drop. Then push a terminal_a (never-policy) — buffer
+  // is full and drop-eligible victim exists, so terminal_a evicts the drop
+  // event and IS buffered. That's the happy path. Now contrast: cap=2,
+  // delta_a + keep (both never-policy + coalesce-buffered). Push terminal_a:
+  // no drop-eligible victim → terminal_a is dropped. The delta_a tail must
+  // remain valid so subsequent delta_a chunks coalesce into it.
+  const cap = 2;
+  const ch = new BoundedEventChannel<TestEvent>({
+    capacity: cap,
+    classify,
+    coalesceKey,
+    coalesce,
+    invalidatesCoalesceKey,
+  });
+  ch.push({ kind: "delta_a", id: 1, text: "a" });
+  ch.push({ kind: "keep", id: 2 });
+  // Buffer = [delta_a-tail, keep]. No drop-eligible. terminal_a is dropped.
+  ch.push({ kind: "terminal_a", id: 99 });
+  // Subsequent delta_a chunk MUST coalesce into the prior tail (id=1).
+  ch.push({ kind: "delta_a", id: 3, text: "b" });
+  ch.close();
+  const got: TestEvent[] = [];
+  for await (const e of ch) got.push(e);
+  // 2 events: the merged delta_a "ab" + the keep event.
+  expect(got.length).toBe(2);
+  const deltaEvent = got.find((e) => e.kind === "delta_a");
+  expect(deltaEvent?.text).toBe("ab");
+  expect(ch.stats().coalesced).toBe(1);
+  expect(ch.stats().droppedByPolicy.get("never")).toBe(1);
+});
+
+test("REGRESSION: concurrent next() calls all resolve in FIFO order (no lost wakeups)", async () => {
+  const ch = makeChannel(8);
+  const it = ch[Symbol.asyncIterator]();
+  // Issue 3 next() calls before any push — all must enqueue.
+  const p1 = it.next();
+  const p2 = it.next();
+  const p3 = it.next();
+  ch.push({ kind: "drop", id: 1 });
+  ch.push({ kind: "drop", id: 2 });
+  ch.push({ kind: "drop", id: 3 });
+  const r1 = await p1;
+  const r2 = await p2;
+  const r3 = await p3;
+  expect(r1.value.id).toBe(1);
+  expect(r2.value.id).toBe(2);
+  expect(r3.value.id).toBe(3);
+});
+
+test("REGRESSION: close() resolves ALL pending next() callers as done", async () => {
+  const ch = makeChannel(8);
+  const it = ch[Symbol.asyncIterator]();
+  const p1 = it.next();
+  const p2 = it.next();
+  ch.close();
+  const r1 = await p1;
+  const r2 = await p2;
+  expect(r1.done).toBe(true);
+  expect(r2.done).toBe(true);
+});
+
 test("REGRESSION: drop_oldest_on_full with no drop-eligible victim drops incoming", async () => {
   // Cap=2. Two never events. Incoming drop event has nothing eligible to
   // evict — must drop incoming, never the never events.
