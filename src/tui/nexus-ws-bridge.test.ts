@@ -505,4 +505,19 @@ describe("NexusWsBridge", () => {
     expect(outcome).toBe("ipc");
     expect(onAcpEvent).not.toHaveBeenCalled();
   });
+
+  test("handleIpcEnvelope returns 'acp' even when onAcpEvent is undefined (silent drop)", () => {
+    // No onAcpEvent wired. An acp.* envelope must still be classified as
+    // "acp" so readAndPush skips runtime.send — preventing typed control
+    // events from leaking into the agent's IPC inbox as prose.
+    const bridge = new NexusWsBridge(makeBridgeOpts({ onAcpEvent: undefined }));
+    const outcome = bridge.handleIpcEnvelope({
+      type: "acp.result",
+      sourceRole: "external-agent",
+      targetRole: "tui",
+      payload: { sessionId: "s1", turnId: "t1", result: { turnId: "t1", stopReason: "end_turn" } },
+      timestamp: new Date().toISOString(),
+    });
+    expect(outcome).toBe("acp");
+  });
 });

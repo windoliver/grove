@@ -303,16 +303,6 @@ export class NexusWsBridge {
   }
 
   /**
-   * Dead-letter a handoff when local agent push fails after the Nexus
-   * inbox already acknowledged delivery. Keeps the data-integrity story
-   * from leaving a permanent false-positive "delivered" state when the
-   * target agent never actually received the prompt.
-   *
-   * Full remediation (splitting the `delivered` state into
-   * `inbox_delivered` vs `agent_received`) is out of scope for the
-   * turn-typing migration and tracked as a follow-up.
-   */
-  /**
    * Dispatch a parsed inbox payload. Returns `"acp"` when the envelope was a
    * typed acp.* event handled (or gated) here, and thus should NOT be
    * forwarded to runtime.send; returns `"ipc"` when the envelope is a regular
@@ -336,6 +326,16 @@ export class NexusWsBridge {
     return "acp";
   }
 
+  /**
+   * Dead-letter a handoff when local agent push fails after the Nexus
+   * inbox already acknowledged delivery. Keeps the data-integrity story
+   * from leaving a permanent false-positive "delivered" state when the
+   * target agent never actually received the prompt.
+   *
+   * Full remediation (splitting the `delivered` state into
+   * `inbox_delivered` vs `agent_received`) is out of scope for the
+   * turn-typing migration and tracked as a follow-up.
+   */
   private async markHandoffDeadLettered(
     ipcMessageId: string | undefined,
     targetRole: string,
