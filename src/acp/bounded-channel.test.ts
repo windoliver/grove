@@ -154,3 +154,44 @@ test("never policy with no drop-eligible: incoming dropped, counter increments",
   expect(dropped.map((e) => e.id)).toEqual([99]);
   expect(ch.stats().droppedByPolicy.get("never")).toBe(1);
 });
+
+test("iterator awaiting empty: push resolves directly without buffering", async () => {
+  const ch = makeChannel(4);
+  const it = ch[Symbol.asyncIterator]();
+  const nextP = it.next();
+  ch.push({ kind: "drop", id: 1 });
+  const r = await nextP;
+  expect(r.value.id).toBe(1);
+  // Verify fast-path: cap=1 channel can sustain push-while-pending without eviction.
+  const ch2 = new BoundedEventChannel<TestEvent>({ capacity: 1, classify });
+  const it2 = ch2[Symbol.asyncIterator]();
+  const p1 = it2.next();
+  ch2.push({ kind: "drop", id: 1 });
+  expect((await p1).value.id).toBe(1);
+  const p2 = it2.next();
+  ch2.push({ kind: "drop", id: 2 });
+  expect((await p2).value.id).toBe(2);
+  expect(ch2.stats().evicted).toBe(0);
+});
+
+test("close drains buffered then signals done", async () => {
+  const ch = makeChannel(8);
+  ch.push({ kind: "drop", id: 1 });
+  ch.push({ kind: "drop", id: 2 });
+  ch.push({ kind: "drop", id: 3 });
+  ch.close();
+  const it = ch[Symbol.asyncIterator]();
+  expect((await it.next()).value.id).toBe(1);
+  expect((await it.next()).value.id).toBe(2);
+  expect((await it.next()).value.id).toBe(3);
+  expect((await it.next()).done).toBe(true);
+});
+
+test("close while iterator pending resolves it as done", async () => {
+  const ch = makeChannel(8);
+  const it = ch[Symbol.asyncIterator]();
+  const nextP = it.next();
+  ch.close();
+  const r = await nextP;
+  expect(r.done).toBe(true);
+});
