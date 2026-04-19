@@ -308,16 +308,34 @@ export class NexusWsBridge {
    * forwarded to runtime.send; returns `"ipc"` when the envelope is a regular
    * IPC notification the caller should continue delivering to the agent.
    *
+   * NexusEventBus.publish sends ONLY `event.payload` over the IPC wire — the
+   * outer GroveEvent fields (sourceRole, targetRole, timestamp) are dropped.
+   * We reconstruct a full GroveEvent here using the IPC-level sender/recipient
+   * so the sink contract (which expects the full envelope) still holds.
+   *
    * Public so unit tests can drive the branch without crafting SSE fixtures.
    */
-  handleIpcEnvelope(innerPayload: unknown): "acp" | "ipc" {
+  handleIpcEnvelope(
+    innerPayload: unknown,
+    wireSender?: string,
+    wireRecipient?: string,
+  ): "acp" | "ipc" {
     if (!innerPayload || typeof innerPayload !== "object") return "ipc";
     const type = (innerPayload as { type?: unknown }).type;
     if (type !== "acp.message" && type !== "acp.result") return "ipc";
 
-    const envelope = innerPayload as GroveEvent;
+    const sourceRole = wireSender ?? "unknown";
+    const targetRole = wireRecipient ?? "unknown";
+    const envelope: GroveEvent = {
+      type: type as "acp.message" | "acp.result",
+      sourceRole,
+      targetRole,
+      payload: innerPayload as Record<string, unknown>,
+      timestamp: new Date().toISOString(),
+    };
+
     const localRoles = new Set(this.opts.topology.roles.map((r) => r.name));
-    if (localRoles.has(envelope.sourceRole)) {
+    if (localRoles.has(sourceRole)) {
       // Local role — the in-process NexusEventBus subscription will ingest
       // this event; skipping forward avoids double-counting.
       return "acp";
@@ -329,7 +347,7 @@ export class NexusWsBridge {
       // the silent drop happening instead of it being a true black hole.
       debugLog(
         "wsBridge.handleIpcEnvelope",
-        `ACP envelope dropped — no onAcpEvent wired (type=${String(type)} sourceRole=${envelope.sourceRole})`,
+        `ACP envelope dropped — no onAcpEvent wired (type=${String(type)} sourceRole=${sourceRole})`,
       );
       return "acp";
     }
@@ -338,7 +356,7 @@ export class NexusWsBridge {
     } catch (err) {
       debugLog(
         "wsBridge.handleIpcEnvelope",
-        `onAcpEvent threw for sourceRole=${envelope.sourceRole}: ${err instanceof Error ? err.message : String(err)}`,
+        `onAcpEvent threw for sourceRole=${sourceRole}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
     return "acp";
@@ -445,14 +463,16 @@ export class NexusWsBridge {
         payload?: Record<string, unknown>;
       };
 
+      const msgSender = msg.from ?? msg.sender ?? sender;
+
       // Pre-dispatch: typed acp.* envelopes go to the typed consumer and
-      // skip the runtime.send IPC-notification path.
-      const outcome = this.handleIpcEnvelope(msg.payload);
+      // skip the runtime.send IPC-notification path. Pass wire-level
+      // sender/recipient so the bridge can reconstruct the outer GroveEvent
+      // shape (NexusEventBus sends only `event.payload` over the wire).
+      const outcome = this.handleIpcEnvelope(msg.payload, msgSender, _targetRole);
       if (outcome === "acp") {
         return;
       }
-
-      const msgSender = msg.from ?? msg.sender ?? sender;
       const summary =
         (msg.payload?.summary as string) ??
         (msg.payload?.body as string) ??

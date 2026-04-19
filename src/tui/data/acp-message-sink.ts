@@ -24,8 +24,6 @@ const VALID_MESSAGE_KINDS = new Set([
   "raw",
 ]);
 
-const VALID_STOP_REASONS = new Set(["end_turn", "max_tokens", "cancelled", "error"]);
-
 export function createAcpMessageSink(store: AcpSessionStore): AcpMessageSink {
   return {
     handleGroveEvent(event: GroveEvent): void {
@@ -103,6 +101,9 @@ function isMessage(v: unknown): v is Message {
 function isResult(v: unknown): v is Result {
   if (typeof v !== "object" || v === null) return false;
   if (typeof (v as { turnId?: unknown }).turnId !== "string") return false;
+  // StopReason admits unknown strings via `(string & {})` for forward-compat
+  // with future ACP revisions and provider-specific reasons. Accept any
+  // non-empty string; UI layer maps unknown values to a generic terminal state.
   const stopReason = (v as { stopReason?: unknown }).stopReason;
-  return typeof stopReason === "string" && VALID_STOP_REASONS.has(stopReason);
+  return typeof stopReason === "string" && stopReason.length > 0;
 }

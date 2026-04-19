@@ -455,39 +455,47 @@ describe("NexusWsBridge", () => {
   });
 
   // --- handleIpcEnvelope ---
+  //
+  // NexusEventBus.publish sends ONLY `event.payload` over the IPC wire (the
+  // outer GroveEvent fields are dropped). These tests exercise that real
+  // wire shape: innerPayload is the published payload object, wireSender /
+  // wireRecipient come from the IPC `from`/`recipient` fields.
 
   test("handleIpcEnvelope routes acp.message to onAcpEvent when source is remote", () => {
     const onAcpEvent = mock(() => undefined);
     const bridge = new NexusWsBridge(makeBridgeOpts({ onAcpEvent }));
-    const outcome = bridge.handleIpcEnvelope({
-      type: "acp.message",
-      sourceRole: "external-agent",
-      targetRole: "tui",
-      payload: {
+    const outcome = bridge.handleIpcEnvelope(
+      {
+        type: "acp.message",
         sessionId: "s1",
         turnId: "t1",
         message: { kind: "text", turnId: "t1", text: "hi", chunk: true },
       },
-      timestamp: new Date().toISOString(),
-    });
+      "external-agent",
+      "tui",
+    );
     expect(outcome).toBe("acp");
     expect(onAcpEvent).toHaveBeenCalledTimes(1);
+    const call = (onAcpEvent.mock.calls[0] as unknown as [GroveEvent])[0];
+    expect(call.type).toBe("acp.message");
+    expect(call.sourceRole).toBe("external-agent");
+    expect(call.targetRole).toBe("tui");
+    expect(call.payload.sessionId).toBe("s1");
   });
 
   test("handleIpcEnvelope drops acp.message when source is a local topology role", () => {
     const onAcpEvent = mock(() => undefined);
     const bridge = new NexusWsBridge(makeBridgeOpts({ onAcpEvent }));
-    const outcome = bridge.handleIpcEnvelope({
-      type: "acp.message",
-      sourceRole: "coder",
-      targetRole: "tui",
-      payload: {
+    const outcome = bridge.handleIpcEnvelope(
+      {
+        type: "acp.message",
         sessionId: "s1",
         turnId: "t1",
         message: { kind: "text", turnId: "t1", text: "hi", chunk: true },
       },
-      timestamp: new Date().toISOString(),
-    });
+      "coder",
+      "tui",
+    );
     expect(outcome).toBe("acp");
     expect(onAcpEvent).not.toHaveBeenCalled();
   });
@@ -495,13 +503,11 @@ describe("NexusWsBridge", () => {
   test("handleIpcEnvelope returns 'ipc' for non-acp payloads (regression guard)", () => {
     const onAcpEvent = mock(() => undefined);
     const bridge = new NexusWsBridge(makeBridgeOpts({ onAcpEvent }));
-    const outcome = bridge.handleIpcEnvelope({
-      type: "contribution",
-      sourceRole: "coder",
-      targetRole: "reviewer",
-      payload: { body: "done" },
-      timestamp: new Date().toISOString(),
-    });
+    const outcome = bridge.handleIpcEnvelope(
+      { type: "contribution", body: "done" },
+      "coder",
+      "reviewer",
+    );
     expect(outcome).toBe("ipc");
     expect(onAcpEvent).not.toHaveBeenCalled();
   });
@@ -511,13 +517,42 @@ describe("NexusWsBridge", () => {
     // "acp" so readAndPush skips runtime.send — preventing typed control
     // events from leaking into the agent's IPC inbox as prose.
     const bridge = new NexusWsBridge(makeBridgeOpts({ onAcpEvent: undefined }));
-    const outcome = bridge.handleIpcEnvelope({
-      type: "acp.result",
-      sourceRole: "external-agent",
-      targetRole: "tui",
-      payload: { sessionId: "s1", turnId: "t1", result: { turnId: "t1", stopReason: "end_turn" } },
-      timestamp: new Date().toISOString(),
-    });
+    const outcome = bridge.handleIpcEnvelope(
+      {
+        type: "acp.result",
+        sessionId: "s1",
+        turnId: "t1",
+        result: { turnId: "t1", stopReason: "end_turn" },
+      },
+      "external-agent",
+      "tui",
+    );
     expect(outcome).toBe("acp");
+  });
+
+  test("handleIpcEnvelope reconstructs GroveEvent from wire payload so sink accepts it", async () => {
+    // End-to-end integration through the real sink: inner payload shape
+    // matches what NexusEventBus sends over the wire (just `event.payload`,
+    // with `type` embedded inside it — see nexus-agent-publisher.ts).
+    const { AcpSessionStore } = await import("./data/acp-session-store.js");
+    const { createAcpMessageSink } = await import("./data/acp-message-sink.js");
+    const store = new AcpSessionStore();
+    store.register("s1");
+    const sink = createAcpMessageSink(store);
+
+    const bridge = new NexusWsBridge(
+      makeBridgeOpts({ onAcpEvent: (e) => sink.handleGroveEvent(e) }),
+    );
+    bridge.handleIpcEnvelope(
+      {
+        type: "acp.message",
+        sessionId: "s1",
+        turnId: "t1",
+        message: { kind: "text", turnId: "t1", text: "wire-shape", chunk: true },
+      },
+      "external-agent",
+      "tui",
+    );
+    expect(store.getTurn("s1", "t1")?.messages).toHaveLength(1);
   });
 });

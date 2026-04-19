@@ -104,7 +104,11 @@ test("rejects acp.message whose message.kind is not a known Message kind", () =>
   expect(store.getTurn("s1", "t1")).toBeUndefined();
 });
 
-test("rejects acp.result whose stopReason is unknown", () => {
+test("accepts acp.result with forward-compatible unknown stopReason", () => {
+  // StopReason is `"end_turn" | "max_tokens" | "cancelled" | "error" | (string & {})`
+  // — a future provider or ACP revision is allowed to send an unrecognized
+  // string. A terminal result must still close the turn; dropping it would
+  // leave the UI stuck "running" under version skew.
   const store = new AcpSessionStore();
   store.register("s1");
   const sink = createAcpMessageSink(store);
@@ -115,7 +119,25 @@ test("rejects acp.result whose stopReason is unknown", () => {
     payload: {
       sessionId: "s1",
       turnId: "t1",
-      result: { turnId: "t1", stopReason: "not_a_real_reason" },
+      result: { turnId: "t1", stopReason: "provider_specific_reason" },
+    },
+    timestamp: new Date().toISOString(),
+  });
+  expect(store.getTurn("s1", "t1")?.stopReason).toBe("provider_specific_reason");
+});
+
+test("rejects acp.result whose stopReason is empty string", () => {
+  const store = new AcpSessionStore();
+  store.register("s1");
+  const sink = createAcpMessageSink(store);
+  sink.handleGroveEvent({
+    type: "acp.result",
+    sourceRole: "coder",
+    targetRole: "tui",
+    payload: {
+      sessionId: "s1",
+      turnId: "t1",
+      result: { turnId: "t1", stopReason: "" },
     },
     timestamp: new Date().toISOString(),
   });
