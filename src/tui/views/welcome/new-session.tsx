@@ -23,11 +23,11 @@ export const NewSession: React.NamedExoticComponent<NewSessionProps> = React.mem
     const [detailOpen, setDetailOpen] = useState(false);
     void useRenderer();
 
-    // pendingCursorRef is synchronously updated by moveCursor so a burst of
-    // j+j+Enter queued before render still lets Enter pick the post-nav row.
+    // Pending* refs are synchronously updated by their wrappers so rapid
+    // j+j+Enter lands on the post-nav row and `?`+j is swallowed while the
+    // detail overlay is open — not the stale render-commit value.
     const pendingCursorRef = useRef(cursor);
-    const detailOpenRef = useRef(detailOpen);
-    detailOpenRef.current = detailOpen;
+    const pendingDetailOpenRef = useRef(detailOpen);
 
     useEffect(() => {
       const max = Math.max(0, presets.length - 1);
@@ -45,7 +45,7 @@ export const NewSession: React.NamedExoticComponent<NewSessionProps> = React.mem
             {
               cursor: pendingCursorRef.current,
               presetCount: presets.length,
-              detailOpen: detailOpenRef.current,
+              detailOpen: pendingDetailOpenRef.current,
             },
             {
               moveCursor: (delta) => {
@@ -54,7 +54,11 @@ export const NewSession: React.NamedExoticComponent<NewSessionProps> = React.mem
                 pendingCursorRef.current = next;
                 setCursor(next);
               },
-              toggleDetail: () => setDetailOpen((v) => !v),
+              toggleDetail: () => {
+                const next = !pendingDetailOpenRef.current;
+                pendingDetailOpenRef.current = next;
+                setDetailOpen(next);
+              },
               onPick: (i) => {
                 const name = presets[i]?.name;
                 if (name) onPick(name);

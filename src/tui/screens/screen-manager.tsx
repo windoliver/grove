@@ -264,6 +264,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
               30000,
               false,
             );
+            contribPollingStartedRef.current = state.sessionStartedAt ?? "";
             // Always bump — even if reattached=0, we need RunningView to pick up
             // the reconciled state (getActiveRoles may have changed).
             setReconcileVersion((v) => v + 1);
@@ -286,6 +287,25 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       appProps.groveDir,
       provider,
     ]);
+
+    // Restart contribution polling when sessionStartedAt hydrates
+    // asynchronously after reconcile (resume flow). Without this, the cutoff
+    // stays stuck at the initial value (often `undefined`) and the feed
+    // shows historical noise or misses recent contributions.
+    useEffect(() => {
+      if (state.screen !== "running") return;
+      if (!spawnManager) return;
+      if (!state.sessionStartedAt) return;
+      if (contribPollingStartedRef.current === state.sessionStartedAt) return;
+      contribPollingStartedRef.current = state.sessionStartedAt;
+      spawnManager.startContributionPolling(
+        provider,
+        topology,
+        state.sessionStartedAt,
+        30000,
+        serverRoutingActiveRef.current,
+      );
+    }, [state.screen, state.sessionStartedAt, spawnManager, provider, topology]);
 
     // Track session start time for duration calculation
     const sessionStartRef = useRef<number>(Date.now());

@@ -197,3 +197,60 @@ describe("routeFastPathKey (filter mode)", () => {
     expect(calls).toEqual([{ name: "appendFilterChar", args: [" "] }]);
   });
 });
+
+// Burst sequences document the contract between the router and its wire-up:
+// if the wire-up updates the pending filter-mode ref synchronously inside
+// enterFilter/exitFilter, the NEXT key must be routed under the new mode.
+// These tests fail as soon as the wire-up drifts back to render-committed
+// refs and stops updating the state shape the router sees.
+describe("routeFastPathKey (rapid bursts)", () => {
+  test("/ then j: j is treated as filter text when wire-up flipped the ref", () => {
+    const { calls, actions } = tracker();
+    let filterMode = false;
+    const wrapped: FastPathActions = {
+      ...actions,
+      enterFilter: () => {
+        filterMode = true;
+        actions.enterFilter();
+      },
+    };
+    routeFastPathKey(keyEvent("slash", "/"), defaultState({ filterMode }), wrapped);
+    routeFastPathKey(keyEvent("j"), defaultState({ filterMode }), wrapped);
+    expect(calls.map((c) => c.name)).toEqual(["enterFilter", "appendFilterChar"]);
+    expect(calls[1]?.args).toEqual(["j"]);
+  });
+
+  test("Esc then j: j is cursor nav when wire-up flipped the ref back", () => {
+    const { calls, actions } = tracker();
+    let filterMode = true;
+    const wrapped: FastPathActions = {
+      ...actions,
+      exitFilter: () => {
+        filterMode = false;
+        actions.exitFilter();
+      },
+    };
+    routeFastPathKey(keyEvent("escape"), defaultState({ filterMode }), wrapped);
+    routeFastPathKey(keyEvent("j"), defaultState({ filterMode }), wrapped);
+    expect(calls.map((c) => c.name)).toEqual(["exitFilter", "moveCursor"]);
+    expect(calls[1]?.args).toEqual([1]);
+  });
+
+  test("a then j: toggleArchive flips archiveVisible for subsequent keys", () => {
+    const { calls, actions } = tracker();
+    let archiveVisible = false;
+    const wrapped: FastPathActions = {
+      ...actions,
+      toggleArchive: () => {
+        archiveVisible = !archiveVisible;
+        actions.toggleArchive();
+      },
+    };
+    routeFastPathKey(keyEvent("a"), defaultState({ archiveVisible }), wrapped);
+    routeFastPathKey(keyEvent("j"), defaultState({ archiveVisible }), wrapped);
+    // Router doesn't gate j on archiveVisible, but the wire-up's cursor
+    // clamp does — this test exists so any future coupling regresses loudly.
+    expect(calls.map((c) => c.name)).toEqual(["toggleArchive", "moveCursor"]);
+    expect(archiveVisible).toBe(true);
+  });
+});

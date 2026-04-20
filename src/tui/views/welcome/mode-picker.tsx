@@ -32,19 +32,18 @@ export const ModePicker: React.NamedExoticComponent<ModePickerProps> = React.mem
     const [glossaryOpen, setGlossaryOpen] = useState(false);
     void useRenderer();
 
-    // pendingModeRef is synchronously updated inside the setMode wrapper so
-    // rapid h+Enter (or l+Enter) reads the post-nav mode when Enter fires,
-    // not the stale render-commit value.
+    // Pending* refs are synchronously updated inside the action wrappers so
+    // rapid h+Enter reads the post-nav mode and `?`+h is swallowed while the
+    // modal is open — not the stale render-commit value.
     const pendingModeRef = useRef(mode);
-    const glossaryOpenRef = useRef(glossaryOpen);
-    glossaryOpenRef.current = glossaryOpen;
+    const pendingGlossaryOpenRef = useRef(glossaryOpen);
 
     useKeyboard(
       useCallback(
         (key) => {
           routeModePickerKey(
             key,
-            { mode: pendingModeRef.current, glossaryOpen: glossaryOpenRef.current },
+            { mode: pendingModeRef.current, glossaryOpen: pendingGlossaryOpenRef.current },
             {
               setMode: (m) => {
                 pendingModeRef.current = m;
@@ -53,7 +52,11 @@ export const ModePicker: React.NamedExoticComponent<ModePickerProps> = React.mem
               startWithDefaults: () => onStartWithDefaults(pendingModeRef.current),
               goToCustomize: () => onCustomize(pendingModeRef.current),
               openConnect: onConnect,
-              toggleGlossary: () => setGlossaryOpen((v) => !v),
+              toggleGlossary: () => {
+                const next = !pendingGlossaryOpenRef.current;
+                pendingGlossaryOpenRef.current = next;
+                setGlossaryOpen(next);
+              },
               onQuit,
             },
           );

@@ -11,7 +11,6 @@ import React, { useCallback, useRef, useState } from "react";
 import { theme } from "../../theme.js";
 
 export interface ConnectProps {
-  readonly defaultUrl?: string;
   readonly error?: string | undefined;
   readonly onConnect: (url: string) => void;
   readonly onBack: () => void;
@@ -19,16 +18,16 @@ export interface ConnectProps {
 
 export const Connect: React.NamedExoticComponent<ConnectProps> = React.memo(
   function Connect({
-    defaultUrl,
     error,
     onConnect,
     onBack,
   }: ConnectProps): React.ReactNode {
-    const [url, setUrl] = useState(defaultUrl ?? "http://localhost:2026");
-    // urlRef mirrors the latest committed url so Enter never reads a stale
-    // closure after rapid typing.
-    const urlRef = useRef(url);
-    urlRef.current = url;
+    const [url, setUrl] = useState("http://localhost:2026");
+    // pendingUrlRef is the synchronously-updated source of truth; every char
+    // write updates it before scheduling setUrl so a burst like "abc"+Enter
+    // never reads a stale closure.
+    const pendingUrlRef = useRef(url);
+    const hasConnectedRef = useRef(false);
     void useRenderer();
 
     useKeyboard(
@@ -40,20 +39,29 @@ export const Connect: React.NamedExoticComponent<ConnectProps> = React.memo(
             return;
           }
           if (name === "return") {
-            const trimmed = urlRef.current.trim();
-            if (trimmed.length > 0) onConnect(trimmed);
+            if (hasConnectedRef.current) return;
+            const trimmed = pendingUrlRef.current.trim();
+            if (trimmed.length === 0) return;
+            hasConnectedRef.current = true;
+            onConnect(trimmed);
             return;
           }
           if (name === "backspace") {
-            setUrl((u) => u.slice(0, -1));
+            const next = pendingUrlRef.current.slice(0, -1);
+            pendingUrlRef.current = next;
+            setUrl(next);
             return;
           }
           if (name === "space") {
-            setUrl((u) => `${u} `);
+            const next = `${pendingUrlRef.current} `;
+            pendingUrlRef.current = next;
+            setUrl(next);
             return;
           }
           if (typeof name === "string" && name.length === 1 && !key.ctrl) {
-            setUrl((u) => u + name);
+            const next = pendingUrlRef.current + name;
+            pendingUrlRef.current = next;
+            setUrl(next);
             return;
           }
         },

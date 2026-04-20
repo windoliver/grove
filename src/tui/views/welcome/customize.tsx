@@ -53,39 +53,43 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
     const [name, setName] = useState(defaultName);
     const [keymap, setKeymap] = useState<KeymapChoice>("vim");
     const [presetDetailOpen, setPresetDetailOpen] = useState(false);
+    const [keymapError, setKeymapError] = useState<string | undefined>(undefined);
     void useRenderer();
 
     // Pending* refs are updated synchronously inside the action wrappers so
-    // rapid Tab+Tab actually cycles twice (not once) and rapid h+l+Enter in
-    // keymap field lands on the cursor-destination value. Render-committed
-    // mirrors (nameRef, nameIsEmptyRef, presetDetailOpenRef) are fine
-    // because their actions use functional setState (append/delete/toggle).
+    // rapid bursts (Tab+Tab, ?+k, typing+Enter) read the post-action value
+    // rather than a stale render commit. `hasLaunchedRef` guards against
+    // Enter being repeated before the component unmounts.
     const pendingFieldRef = useRef(field);
     const pendingPresetCursorRef = useRef(presetCursor);
     const pendingKeymapRef = useRef(keymap);
-    const nameRef = useRef(name);
-    const nameIsEmptyRef = useRef(name.length === 0);
-    const presetDetailOpenRef = useRef(presetDetailOpen);
-    nameRef.current = name;
-    nameIsEmptyRef.current = name.length === 0;
-    presetDetailOpenRef.current = presetDetailOpen;
+    const pendingNameRef = useRef(name);
+    const pendingNameIsEmptyRef = useRef(name.length === 0);
+    const pendingPresetDetailOpenRef = useRef(presetDetailOpen);
+    const hasLaunchedRef = useRef(false);
 
     const launch = useCallback(() => {
+      if (hasLaunchedRef.current) return;
       // Bail out defensively when presets failed to load — avoids passing
       // preset="" into the init flow which would crash executeInit.
       const idx = pendingPresetCursorRef.current;
       const preset = presets[idx]?.name ?? defaultPresetName;
       if (!preset) return;
-      const nameAtLaunch = nameRef.current;
+      const nameAtLaunch = pendingNameRef.current;
       const keymapAtLaunch = pendingKeymapRef.current;
+      hasLaunchedRef.current = true;
+      setKeymapError(undefined);
       void (async () => {
         if (keymapAtLaunch !== "none") {
           try {
             await applyKeymapPresetToFile(keymapAtLaunch, globalConfigPath());
           } catch (err) {
-            process.stderr.write(
-              `[grove] failed to apply keymap preset "${keymapAtLaunch}": ${err instanceof Error ? err.message : String(err)}\n`,
-            );
+            const msg = err instanceof Error ? err.message : String(err);
+            // Reset guard so the operator can switch to "none" and retry
+            // rather than being silently stuck on a failed launch.
+            hasLaunchedRef.current = false;
+            setKeymapError(msg);
+            return;
           }
         }
         onLaunch({ preset, name: nameAtLaunch, keymap: keymapAtLaunch });
@@ -101,9 +105,9 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
               field: pendingFieldRef.current,
               presetCursor: pendingPresetCursorRef.current,
               presetCount: presets.length,
-              nameIsEmpty: nameIsEmptyRef.current,
+              nameIsEmpty: pendingNameIsEmptyRef.current,
               keymap: pendingKeymapRef.current,
-              presetDetailOpen: presetDetailOpenRef.current,
+              presetDetailOpen: pendingPresetDetailOpenRef.current,
             },
             {
               setField: (f) => {
@@ -116,13 +120,27 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
                 pendingPresetCursorRef.current = next;
                 setPresetCursor(next);
               },
-              appendNameChar: (c) => setName((prev) => prev + c),
-              deleteNameChar: () => setName((prev) => prev.slice(0, -1)),
+              appendNameChar: (c) => {
+                const next = pendingNameRef.current + c;
+                pendingNameRef.current = next;
+                pendingNameIsEmptyRef.current = next.length === 0;
+                setName(next);
+              },
+              deleteNameChar: () => {
+                const next = pendingNameRef.current.slice(0, -1);
+                pendingNameRef.current = next;
+                pendingNameIsEmptyRef.current = next.length === 0;
+                setName(next);
+              },
               setKeymap: (c) => {
                 pendingKeymapRef.current = c;
                 setKeymap(c);
               },
-              togglePresetDetail: () => setPresetDetailOpen((v) => !v),
+              togglePresetDetail: () => {
+                const next = !pendingPresetDetailOpenRef.current;
+                pendingPresetDetailOpenRef.current = next;
+                setPresetDetailOpen(next);
+              },
               goBack: onBack,
               launch,
             },
@@ -247,6 +265,17 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
                 ))
               : null}
             <text color={theme.secondary}>Press ? or Esc to close</text>
+          </box>
+        ) : null}
+
+        {keymapError ? (
+          <box flexDirection="column" marginX={2} marginTop={1}>
+            <text color={theme.error}>
+              {`Keymap preset "${keymap}" failed: ${keymapError}`}
+            </text>
+            <text color={theme.secondary}>
+              Switch Keymap to "none" (press 3) and press Enter to continue, or Esc to go back.
+            </text>
           </box>
         ) : null}
 

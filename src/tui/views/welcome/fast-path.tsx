@@ -61,17 +61,15 @@ export const FastPath: React.NamedExoticComponent<FastPathProps> = React.memo(
       [visibleSessions],
     );
 
-    // `pendingCursorRef` is the synchronously-updated source of truth the
-    // keyboard handler reads from. React state (`cursor`) mirrors it so the
-    // UI still re-renders, but a burst of j+j+Enter queued before any render
-    // must still see the post-nav cursor on Enter — so moveCursor updates
-    // the ref immediately, before scheduling setState.
-    const filterModeRef = useRef(filterMode);
-    const archiveVisibleRef = useRef(archiveVisible);
-    const visibleIdsRef = useRef(visibleIds);
+    // Pending* refs are the synchronously-updated source of truth the
+    // keyboard handler reads from. React state mirrors them so the UI still
+    // re-renders, but a burst like `/`+`j` or `a`+`j` queued before render
+    // must see the post-action value — so wrappers update the ref
+    // immediately, before scheduling setState.
+    const pendingFilterModeRef = useRef(filterMode);
+    const pendingArchiveVisibleRef = useRef(archiveVisible);
     const pendingCursorRef = useRef(cursor);
-    filterModeRef.current = filterMode;
-    archiveVisibleRef.current = archiveVisible;
+    const visibleIdsRef = useRef(visibleIds);
     visibleIdsRef.current = visibleIds;
 
     // Reclamp cursor when the visible list shrinks (archive toggle or filter
@@ -94,8 +92,8 @@ export const FastPath: React.NamedExoticComponent<FastPathProps> = React.memo(
             {
               cursor: pendingCursorRef.current,
               visibleSessionIds: ids,
-              filterMode: filterModeRef.current,
-              archiveVisible: archiveVisibleRef.current,
+              filterMode: pendingFilterModeRef.current,
+              archiveVisible: pendingArchiveVisibleRef.current,
             },
             {
               moveCursor: (delta) => {
@@ -105,23 +103,30 @@ export const FastPath: React.NamedExoticComponent<FastPathProps> = React.memo(
                 setCursor(next);
               },
               enterFilter: () => {
+                pendingFilterModeRef.current = true;
                 setFilterMode(true);
                 setFilterText("");
               },
               exitFilter: () => {
+                pendingFilterModeRef.current = false;
+                pendingCursorRef.current = 0;
                 setFilterMode(false);
                 setFilterText("");
-                pendingCursorRef.current = 0;
                 setCursor(0);
               },
               commitFilter: () => {
-                setFilterMode(false);
+                pendingFilterModeRef.current = false;
                 pendingCursorRef.current = 0;
+                setFilterMode(false);
                 setCursor(0);
               },
               appendFilterChar: (c) => setFilterText((prev) => prev + c),
               deleteFilterChar: () => setFilterText((prev) => prev.slice(0, -1)),
-              toggleArchive: () => setArchiveVisible((v) => !v),
+              toggleArchive: () => {
+                const next = !pendingArchiveVisibleRef.current;
+                pendingArchiveVisibleRef.current = next;
+                setArchiveVisible(next);
+              },
               onResume,
               onNewSession,
               onConnect,

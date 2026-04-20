@@ -1,11 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SessionRecord } from "../../provider.js";
-import {
-  resolveDefaultPreset,
-  resolveInitialRoute,
-  type WelcomeMode,
-  type WelcomeRoute,
-} from "./router.js";
+import { resolveDefaultPreset, resolveInitialRoute } from "./router.js";
 
 function session(over: Partial<SessionRecord> = {}): SessionRecord {
   return {
