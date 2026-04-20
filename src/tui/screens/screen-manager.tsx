@@ -128,8 +128,8 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         } else if (resumeSessionIdFromProps) {
           // Explicit resume choice wasn't in the startup session list (e.g.
           // created after main.ts snapshotted it). Honor the user's choice
-          // anyway — scope to the requested id; sessionStartedAt will be
-          // learned when contributions start arriving.
+          // anyway and hydrate sessionStartedAt asynchronously from the
+          // provider so the elapsed timer and handoff cutoff recover.
           resumeSessionId = resumeSessionIdFromProps;
           resumeScopeIdRef.current = resumeSessionIdFromProps;
           process.stderr.write(
@@ -161,6 +161,24 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       if (id && "setSessionScope" in provider) {
         (provider as { setSessionScope: (id: string) => void }).setSessionScope(id);
         process.stderr.write(`[screen-manager] resume setSessionScope(${id})\n`);
+        // Hydrate sessionStartedAt when we scoped to a resume id that wasn't
+        // in the startup session list — without it, RunningView's elapsed
+        // timer starts at 0 and handoff fetches fall back to now-2h.
+        if (!state.sessionStartedAt && "getSession" in provider) {
+          void (async () => {
+            try {
+              const rec = await (
+                provider as { getSession: (id: string) => Promise<{ createdAt?: string } | undefined> }
+              ).getSession(id);
+              const createdAt = rec?.createdAt;
+              if (createdAt) {
+                setState((prev) => ({ ...prev, sessionStartedAt: createdAt }));
+              }
+            } catch {
+              /* best-effort hydration */
+            }
+          })();
+        }
         // Persist the resumed session id to current-session.json so the HTTP
         // MCP server (serve-http.ts) re-reads and scopes subsequent
         // requests to this session. Without this, resume would leave the

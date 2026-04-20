@@ -67,7 +67,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
             setRoute(
               route.returnTo === "fast-path"
                 ? { kind: "fast-path" }
-                : { kind: "first-run", step: "mode" },
+                : { kind: "first-run" },
             )
           }
         />

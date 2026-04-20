@@ -55,20 +55,19 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
     const [presetDetailOpen, setPresetDetailOpen] = useState(false);
     void useRenderer();
 
-    // Refs mirror scalar state; pendingCursorRef is synchronously updated by
-    // movePresetCursor so rapid j+j+Enter launches the cursor-destination
-    // preset (not the stale pre-nav one). nameRef tracks the latest typed
-    // grove name for the same reason at Enter time.
-    const fieldRef = useRef(field);
+    // Pending* refs are updated synchronously inside the action wrappers so
+    // rapid Tab+Tab actually cycles twice (not once) and rapid h+l+Enter in
+    // keymap field lands on the cursor-destination value. Render-committed
+    // mirrors (nameRef, nameIsEmptyRef, presetDetailOpenRef) are fine
+    // because their actions use functional setState (append/delete/toggle).
+    const pendingFieldRef = useRef(field);
     const pendingPresetCursorRef = useRef(presetCursor);
+    const pendingKeymapRef = useRef(keymap);
     const nameRef = useRef(name);
     const nameIsEmptyRef = useRef(name.length === 0);
-    const keymapRef = useRef(keymap);
     const presetDetailOpenRef = useRef(presetDetailOpen);
-    fieldRef.current = field;
     nameRef.current = name;
     nameIsEmptyRef.current = name.length === 0;
-    keymapRef.current = keymap;
     presetDetailOpenRef.current = presetDetailOpen;
 
     const launch = useCallback(() => {
@@ -78,7 +77,7 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
       const preset = presets[idx]?.name ?? defaultPresetName;
       if (!preset) return;
       const nameAtLaunch = nameRef.current;
-      const keymapAtLaunch = keymapRef.current;
+      const keymapAtLaunch = pendingKeymapRef.current;
       void (async () => {
         if (keymapAtLaunch !== "none") {
           try {
@@ -99,15 +98,18 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
           routeCustomizeKey(
             key,
             {
-              field: fieldRef.current,
+              field: pendingFieldRef.current,
               presetCursor: pendingPresetCursorRef.current,
               presetCount: presets.length,
               nameIsEmpty: nameIsEmptyRef.current,
-              keymap: keymapRef.current,
+              keymap: pendingKeymapRef.current,
               presetDetailOpen: presetDetailOpenRef.current,
             },
             {
-              setField,
+              setField: (f) => {
+                pendingFieldRef.current = f;
+                setField(f);
+              },
               movePresetCursor: (delta) => {
                 const max = Math.max(0, presets.length - 1);
                 const next = Math.max(0, Math.min(pendingPresetCursorRef.current + delta, max));
@@ -116,7 +118,10 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
               },
               appendNameChar: (c) => setName((prev) => prev + c),
               deleteNameChar: () => setName((prev) => prev.slice(0, -1)),
-              setKeymap,
+              setKeymap: (c) => {
+                pendingKeymapRef.current = c;
+                setKeymap(c);
+              },
               togglePresetDetail: () => setPresetDetailOpen((v) => !v),
               goBack: onBack,
               launch,
@@ -241,7 +246,7 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
                   </text>
                 ))
               : null}
-            <text color={theme.secondary}>Press ? to close</text>
+            <text color={theme.secondary}>Press ? or Esc to close</text>
           </box>
         ) : null}
 

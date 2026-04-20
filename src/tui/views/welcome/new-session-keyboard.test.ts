@@ -68,4 +68,24 @@ describe("routeNewSessionKey", () => {
     routeNewSessionKey(keyEvent("escape"), state(), actions);
     expect(calls).toEqual([{ name: "onBack", args: [] }]);
   });
+
+  test("detail overlay is modal: j/k/Enter are swallowed while open", () => {
+    const { calls, actions } = tracker();
+    for (const k of ["j", "k", "return"]) {
+      routeNewSessionKey(keyEvent(k), state({ detailOpen: true }), actions);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  test("? dismisses detail overlay (not toggle nav)", () => {
+    const { calls, actions } = tracker();
+    routeNewSessionKey(keyEvent("?", "?"), state({ detailOpen: true }), actions);
+    expect(calls).toEqual([{ name: "toggleDetail", args: [] }]);
+  });
+
+  test("Esc dismisses detail without going back", () => {
+    const { calls, actions } = tracker();
+    routeNewSessionKey(keyEvent("escape"), state({ detailOpen: true }), actions);
+    expect(calls).toEqual([{ name: "toggleDetail", args: [] }]);
+  });
 });

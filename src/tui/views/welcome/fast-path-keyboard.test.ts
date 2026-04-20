@@ -95,6 +95,16 @@ describe("routeFastPathKey (actions)", () => {
     expect(calls).toEqual([]);
   });
 
+  test("Enter with cursor past end is a no-op (defensive guard)", () => {
+    const { calls, actions } = tracker();
+    routeFastPathKey(
+      keyEvent("return"),
+      defaultState({ cursor: 10, visibleSessionIds: ["s1"] }),
+      actions,
+    );
+    expect(calls).toEqual([]);
+  });
+
   test("n triggers onNewSession (outside filter)", () => {
     const { calls, actions } = tracker();
     routeFastPathKey(keyEvent("n"), defaultState(), actions);

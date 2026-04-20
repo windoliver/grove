@@ -13,10 +13,16 @@ import type { SessionRecord } from "../../provider.js";
 /** First-run mode axis: backend selection. */
 export type WelcomeMode = "local" | "connected";
 
-/** Route the welcome UI should render. */
+/**
+ * Route the welcome UI should render.
+ *
+ * `first-run` does NOT carry a step — FirstRun manages its own internal
+ * mode→customize state. The router is concerned only with the top-level
+ * branch.
+ */
 export type WelcomeRoute =
   | { readonly kind: "fast-path" }
-  | { readonly kind: "first-run"; readonly step: "mode" | "customize" }
+  | { readonly kind: "first-run" }
   | { readonly kind: "new-session" }
   | { readonly kind: "connect"; readonly returnTo: "fast-path" | "first-run" };
 
@@ -49,11 +55,11 @@ export interface PresetLite {
  */
 export function resolveInitialRoute(input: RouterInput): WelcomeRoute {
   if (!input.groveExists) {
-    return { kind: "first-run", step: "mode" };
+    return { kind: "first-run" };
   }
   if (input.groveInfo === undefined) {
     // .grove/ exists but grove.json was unreadable — restart first-run.
-    return { kind: "first-run", step: "mode" };
+    return { kind: "first-run" };
   }
   return { kind: "fast-path" };
 }

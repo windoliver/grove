@@ -128,7 +128,7 @@ export function routeCustomizeKey(
     return true;
   }
   if (name === "return") {
-    if (!state.nameIsEmpty) actions.launch();
+    if (!state.nameIsEmpty && state.presetCount > 0) actions.launch();
     return true;
   }
   return false;

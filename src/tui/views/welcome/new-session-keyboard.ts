@@ -22,11 +22,23 @@ export function routeNewSessionKey(
   actions: NewSessionActions,
 ): boolean {
   const name = key.name;
-  if (name === "escape") {
-    if (state.detailOpen) {
+
+  // Detail overlay is modal — matches the customize preset-detail and
+  // mode-picker glossary patterns. Prevents the user accidentally
+  // navigating or picking a preset while reading details.
+  if (state.detailOpen) {
+    if (key.sequence === "?") {
       actions.toggleDetail();
       return true;
     }
+    if (name === "escape") {
+      actions.toggleDetail();
+      return true;
+    }
+    return true;
+  }
+
+  if (name === "escape") {
     actions.onBack();
     return true;
   }
