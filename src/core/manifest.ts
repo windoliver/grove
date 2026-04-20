@@ -357,6 +357,7 @@ export function createContribution(input: ContributionInput): Contribution {
     summary: input.summary,
     ...stripUndefined({ description: input.description }),
     artifacts: { ...input.artifacts },
+    ...stripUndefined({ commitHash: input.commitHash }),
     relations: input.relations.map((r) =>
       stripUndefined({
         targetCid: r.targetCid,

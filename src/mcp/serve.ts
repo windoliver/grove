@@ -97,10 +97,23 @@ try {
       });
 
       // Quick health check — don't block if Nexus is down
-      const health = await Promise.race([
-        fetch(`${nexusUrl}/health`, { signal: AbortSignal.timeout(3000) }).then((r) => r.ok),
-        new Promise<boolean>((r) => setTimeout(() => r(false), 3000)),
-      ]).catch(() => false);
+      // Retry health check — during TUI boot Nexus may briefly appear down
+      // (e.g. container restart between `grove up` phases). A single-shot
+      // check here killed the whole agent session, leaving the coder
+      // without grove_* tools and silently blocking the handoff chain.
+      let health = false;
+      for (let attempt = 1; attempt <= 5 && !health; attempt++) {
+        health = await Promise.race([
+          fetch(`${nexusUrl}/health`, { signal: AbortSignal.timeout(3000) }).then((r) => r.ok),
+          new Promise<boolean>((r) => setTimeout(() => r(false), 3000)),
+        ]).catch(() => false);
+        if (!health && attempt < 5) {
+          process.stderr.write(
+            `grove-mcp: Nexus health attempt ${attempt}/5 failed — retrying in ${attempt}s\n`,
+          );
+          await new Promise((r) => setTimeout(r, attempt * 1000));
+        }
+      }
 
       if (health) {
         contributionStore = new NexusContributionStore({
