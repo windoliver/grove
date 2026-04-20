@@ -38,6 +38,7 @@ function tracker() {
     setCursor: (n) => calls.push({ name: "setCursor", args: [n] }),
     enterFilter: () => calls.push({ name: "enterFilter", args: [] }),
     exitFilter: () => calls.push({ name: "exitFilter", args: [] }),
+    commitFilter: () => calls.push({ name: "commitFilter", args: [] }),
     appendFilterChar: (c) => calls.push({ name: "appendFilterChar", args: [c] }),
     deleteFilterChar: () => calls.push({ name: "deleteFilterChar", args: [] }),
     toggleArchive: () => calls.push({ name: "toggleArchive", args: [] }),
@@ -147,7 +148,7 @@ describe("routeFastPathKey (filter mode)", () => {
     expect(calls).toEqual([{ name: "deleteFilterChar", args: [] }]);
   });
 
-  test("Esc in filter mode exits without clearing text semantics", () => {
+  test("Esc in filter mode exits and clears text", () => {
     const { calls, actions } = tracker();
     routeFastPathKey(
       keyEvent("escape"),
@@ -155,6 +156,16 @@ describe("routeFastPathKey (filter mode)", () => {
       actions,
     );
     expect(calls).toEqual([{ name: "exitFilter", args: [] }]);
+  });
+
+  test("Enter in filter mode commits (keeps text, exits mode)", () => {
+    const { calls, actions } = tracker();
+    routeFastPathKey(
+      keyEvent("return"),
+      defaultState({ filterMode: true }),
+      actions,
+    );
+    expect(calls).toEqual([{ name: "commitFilter", args: [] }]);
   });
 
   test("n in filter mode is treated as filter text, not new-session", () => {

@@ -98,6 +98,10 @@ export const FastPath: React.NamedExoticComponent<FastPathProps> = React.memo(
                 setFilterText("");
                 setCursor(0);
               },
+              commitFilter: () => {
+                setFilterMode(false);
+                setCursor(0);
+              },
               appendFilterChar: (c) => setFilterText((prev) => prev + c),
               deleteFilterChar: () => setFilterText((prev) => prev.slice(0, -1)),
               toggleArchive: () => setArchiveVisible((v) => !v),

@@ -28,7 +28,10 @@ export interface FastPathState {
 export interface FastPathActions {
   readonly setCursor: (next: number) => void;
   readonly enterFilter: () => void;
+  /** Esc in filter mode — exits AND clears the typed filter text. */
   readonly exitFilter: () => void;
+  /** Enter in filter mode — exits filter mode keeping the current text. */
+  readonly commitFilter: () => void;
   readonly appendFilterChar: (c: string) => void;
   readonly deleteFilterChar: () => void;
   readonly toggleArchive: () => void;
@@ -52,7 +55,7 @@ export function routeFastPathKey(
       return true;
     }
     if (name === "return") {
-      actions.exitFilter();
+      actions.commitFilter();
       return true;
     }
     if (name === "backspace") {
