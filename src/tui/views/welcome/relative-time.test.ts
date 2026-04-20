@@ -34,9 +34,7 @@ describe("formatRelativeTime", () => {
 
   test("≥ 7 d → absolute short date", () => {
     // 10 days ago = 2026-04-09
-    expect(formatRelativeTime(iso(10 * 24 * 60 * 60_000), NOW)).toMatch(
-      /Apr\s+9/,
-    );
+    expect(formatRelativeTime(iso(10 * 24 * 60 * 60_000), NOW)).toMatch(/Apr\s+9/);
   });
 
   test("invalid input returns empty string", () => {

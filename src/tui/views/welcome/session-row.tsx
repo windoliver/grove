@@ -67,17 +67,12 @@ export const SessionRow: React.NamedExoticComponent<SessionRowProps> = React.mem
         ? theme.text
         : theme.secondary;
     return (
-      <box
-        flexDirection="column"
-        backgroundColor={focused ? theme.selectedBg : undefined}
-      >
+      <box flexDirection="column" backgroundColor={focused ? theme.selectedBg : undefined}>
         <text color={color} bold={focused}>
           {focused ? "> " : "  "}
           {fields.primary}
         </text>
-        {fields.secondary ? (
-          <text color={theme.secondary}>{`    ${fields.secondary}`}</text>
-        ) : null}
+        {fields.secondary ? <text color={theme.secondary}>{`    ${fields.secondary}`}</text> : null}
       </box>
     );
   },

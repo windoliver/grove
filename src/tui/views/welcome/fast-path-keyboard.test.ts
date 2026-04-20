@@ -77,21 +77,13 @@ describe("routeFastPathKey (navigation)", () => {
 describe("routeFastPathKey (actions)", () => {
   test("Enter calls onResume with focused id", () => {
     const { calls, actions } = tracker();
-    routeFastPathKey(
-      keyEvent("return"),
-      defaultState({ cursor: 1 }),
-      actions,
-    );
+    routeFastPathKey(keyEvent("return"), defaultState({ cursor: 1 }), actions);
     expect(calls).toEqual([{ name: "onResume", args: ["s2"] }]);
   });
 
   test("Enter on empty list is a no-op", () => {
     const { calls, actions } = tracker();
-    routeFastPathKey(
-      keyEvent("return"),
-      defaultState({ visibleSessionIds: [] }),
-      actions,
-    );
+    routeFastPathKey(keyEvent("return"), defaultState({ visibleSessionIds: [] }), actions);
     expect(calls).toEqual([]);
   });
 
@@ -139,61 +131,37 @@ describe("routeFastPathKey (filter mode)", () => {
 
   test("printable input in filter mode appends to filter text", () => {
     const { calls, actions } = tracker();
-    routeFastPathKey(
-      keyEvent("a"),
-      defaultState({ filterMode: true }),
-      actions,
-    );
+    routeFastPathKey(keyEvent("a"), defaultState({ filterMode: true }), actions);
     expect(calls).toEqual([{ name: "appendFilterChar", args: ["a"] }]);
   });
 
   test("backspace in filter mode pops one char", () => {
     const { calls, actions } = tracker();
-    routeFastPathKey(
-      keyEvent("backspace"),
-      defaultState({ filterMode: true }),
-      actions,
-    );
+    routeFastPathKey(keyEvent("backspace"), defaultState({ filterMode: true }), actions);
     expect(calls).toEqual([{ name: "deleteFilterChar", args: [] }]);
   });
 
   test("Esc in filter mode exits and clears text", () => {
     const { calls, actions } = tracker();
-    routeFastPathKey(
-      keyEvent("escape"),
-      defaultState({ filterMode: true }),
-      actions,
-    );
+    routeFastPathKey(keyEvent("escape"), defaultState({ filterMode: true }), actions);
     expect(calls).toEqual([{ name: "exitFilter", args: [] }]);
   });
 
   test("Enter in filter mode commits (keeps text, exits mode)", () => {
     const { calls, actions } = tracker();
-    routeFastPathKey(
-      keyEvent("return"),
-      defaultState({ filterMode: true }),
-      actions,
-    );
+    routeFastPathKey(keyEvent("return"), defaultState({ filterMode: true }), actions);
     expect(calls).toEqual([{ name: "commitFilter", args: [] }]);
   });
 
   test("n in filter mode is treated as filter text, not new-session", () => {
     const { calls, actions } = tracker();
-    routeFastPathKey(
-      keyEvent("n"),
-      defaultState({ filterMode: true }),
-      actions,
-    );
+    routeFastPathKey(keyEvent("n"), defaultState({ filterMode: true }), actions);
     expect(calls).toEqual([{ name: "appendFilterChar", args: ["n"] }]);
   });
 
   test("space in filter mode appends a space char", () => {
     const { calls, actions } = tracker();
-    routeFastPathKey(
-      keyEvent("space"),
-      defaultState({ filterMode: true }),
-      actions,
-    );
+    routeFastPathKey(keyEvent("space"), defaultState({ filterMode: true }), actions);
     expect(calls).toEqual([{ name: "appendFilterChar", args: [" "] }]);
   });
 });

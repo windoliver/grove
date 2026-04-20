@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { KeyEvent } from "@opentui/core";
-import type { WelcomeMode } from "./router.js";
 import {
   type ModePickerActions,
   type ModePickerState,
   routeModePickerKey,
 } from "./mode-picker-keyboard.js";
+import type { WelcomeMode } from "./router.js";
 
 function keyEvent(name: string, seq?: string, shift = false): KeyEvent {
   return {
@@ -113,11 +113,7 @@ describe("routeModePickerKey", () => {
 
   test("? still toggles glossary while open (dismiss)", () => {
     const { calls, actions } = tracker();
-    routeModePickerKey(
-      keyEvent("?", "?", true),
-      state({ glossaryOpen: true }),
-      actions,
-    );
+    routeModePickerKey(keyEvent("?", "?", true), state({ glossaryOpen: true }), actions);
     expect(calls).toEqual([{ name: "toggleGlossary", args: [] }]);
   });
 });

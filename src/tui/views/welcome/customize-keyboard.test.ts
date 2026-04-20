@@ -96,51 +96,31 @@ describe("routeCustomizeKey (preset field)", () => {
 describe("routeCustomizeKey (name field)", () => {
   test("printable appends to name", () => {
     const { calls, actions } = tracker();
-    routeCustomizeKey(
-      keyEvent("a"),
-      state({ field: "name", nameIsEmpty: false }),
-      actions,
-    );
+    routeCustomizeKey(keyEvent("a"), state({ field: "name", nameIsEmpty: false }), actions);
     expect(calls).toEqual([{ name: "appendNameChar", args: ["a"] }]);
   });
 
   test("space appends a space char", () => {
     const { calls, actions } = tracker();
-    routeCustomizeKey(
-      keyEvent("space"),
-      state({ field: "name", nameIsEmpty: false }),
-      actions,
-    );
+    routeCustomizeKey(keyEvent("space"), state({ field: "name", nameIsEmpty: false }), actions);
     expect(calls).toEqual([{ name: "appendNameChar", args: [" "] }]);
   });
 
   test("backspace pops one char", () => {
     const { calls, actions } = tracker();
-    routeCustomizeKey(
-      keyEvent("backspace"),
-      state({ field: "name", nameIsEmpty: false }),
-      actions,
-    );
+    routeCustomizeKey(keyEvent("backspace"), state({ field: "name", nameIsEmpty: false }), actions);
     expect(calls).toEqual([{ name: "deleteNameChar", args: [] }]);
   });
 
   test("Enter launches when name non-empty", () => {
     const { calls, actions } = tracker();
-    routeCustomizeKey(
-      keyEvent("return"),
-      state({ field: "name", nameIsEmpty: false }),
-      actions,
-    );
+    routeCustomizeKey(keyEvent("return"), state({ field: "name", nameIsEmpty: false }), actions);
     expect(calls).toEqual([{ name: "launch", args: [] }]);
   });
 
   test("Enter is ignored when name empty", () => {
     const { calls, actions } = tracker();
-    routeCustomizeKey(
-      keyEvent("return"),
-      state({ field: "name", nameIsEmpty: true }),
-      actions,
-    );
+    routeCustomizeKey(keyEvent("return"), state({ field: "name", nameIsEmpty: true }), actions);
     expect(calls).toEqual([]);
   });
 
@@ -156,11 +136,7 @@ describe("routeCustomizeKey (name field)", () => {
 
   test("? is a no-op when preset list is empty (no invisible modal)", () => {
     const { calls, actions } = tracker();
-    routeCustomizeKey(
-      keyEvent("?", "?"),
-      state({ field: "preset", presetCount: 0 }),
-      actions,
-    );
+    routeCustomizeKey(keyEvent("?", "?"), state({ field: "preset", presetCount: 0 }), actions);
     expect(calls).toEqual([]);
   });
 });
@@ -196,21 +172,9 @@ describe("routeCustomizeKey (preset detail overlay)", () => {
 describe("routeCustomizeKey (keymap field)", () => {
   test("h/l cycles choice", () => {
     const { calls, actions } = tracker();
-    routeCustomizeKey(
-      keyEvent("l"),
-      state({ field: "keymap", keymap: "vim" }),
-      actions,
-    );
-    routeCustomizeKey(
-      keyEvent("l"),
-      state({ field: "keymap", keymap: "emacs" }),
-      actions,
-    );
-    routeCustomizeKey(
-      keyEvent("h"),
-      state({ field: "keymap", keymap: "none" }),
-      actions,
-    );
+    routeCustomizeKey(keyEvent("l"), state({ field: "keymap", keymap: "vim" }), actions);
+    routeCustomizeKey(keyEvent("l"), state({ field: "keymap", keymap: "emacs" }), actions);
+    routeCustomizeKey(keyEvent("h"), state({ field: "keymap", keymap: "none" }), actions);
     expect(calls.map((c) => c.args[0])).toEqual(["emacs", "none", "emacs"]);
   });
 
@@ -242,16 +206,8 @@ describe("routeCustomizeKey (rapid bursts)", () => {
         actions.togglePresetDetail();
       },
     };
-    routeCustomizeKey(
-      keyEvent("?", "?"),
-      state({ presetDetailOpen, field: "preset" }),
-      wrapped,
-    );
-    routeCustomizeKey(
-      keyEvent("j"),
-      state({ presetDetailOpen, field: "preset" }),
-      wrapped,
-    );
+    routeCustomizeKey(keyEvent("?", "?"), state({ presetDetailOpen, field: "preset" }), wrapped);
+    routeCustomizeKey(keyEvent("j"), state({ presetDetailOpen, field: "preset" }), wrapped);
     expect(calls.map((c) => c.name)).toEqual(["togglePresetDetail"]);
   });
 
@@ -269,11 +225,7 @@ describe("routeCustomizeKey (rapid bursts)", () => {
     // Second Tab from name → keymap
     routeCustomizeKey(keyEvent("tab"), state({ field: fieldHolder.value, keymap: "vim" }), wrapped);
     routeCustomizeKey(keyEvent("l"), state({ field: fieldHolder.value, keymap: "vim" }), wrapped);
-    expect(calls.map((c) => c.name)).toEqual([
-      "setField",
-      "setField",
-      "setKeymap",
-    ]);
+    expect(calls.map((c) => c.name)).toEqual(["setField", "setField", "setKeymap"]);
     expect<"preset" | "name" | "keymap">(fieldHolder.value).toBe("keymap");
     expect(calls.at(-1)?.args).toEqual(["emacs"]);
   });
@@ -316,11 +268,7 @@ describe("routeCustomizeKey (rapid bursts)", () => {
     for (const ch of ["a", "b", "c"]) {
       routeCustomizeKey(keyEvent(ch), state({ field: "name", nameIsEmpty }), wrapped);
     }
-    routeCustomizeKey(
-      keyEvent("return"),
-      state({ field: "name", nameIsEmpty }),
-      wrapped,
-    );
+    routeCustomizeKey(keyEvent("return"), state({ field: "name", nameIsEmpty }), wrapped);
     expect(calls.map((c) => c.name)).toEqual([
       "appendNameChar",
       "appendNameChar",

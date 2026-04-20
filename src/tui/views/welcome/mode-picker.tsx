@@ -105,7 +105,8 @@ export const ModePicker: React.NamedExoticComponent<ModePickerProps> = React.mem
 
         <box paddingX={2} marginTop={1}>
           <text color={theme.secondary}>
-            [h/l] move  [Enter] start with defaults  [Tab] customize  [c] connect to existing Nexus URL  [?] glossary  [q] quit
+            [h/l] move [Enter] start with defaults [Tab] customize [c] connect to existing Nexus URL
+            [?] glossary [q] quit
           </text>
         </box>
 

@@ -168,7 +168,9 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           void (async () => {
             try {
               const rec = await (
-                provider as { getSession: (id: string) => Promise<{ createdAt?: string } | undefined> }
+                provider as {
+                  getSession: (id: string) => Promise<{ createdAt?: string } | undefined>;
+                }
               ).getSession(id);
               const createdAt = rec?.createdAt;
               if (createdAt) {
@@ -293,15 +295,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         lastReconciledScreenRef.current = "";
         contribPollingStartedRef.current = "";
       }
-    }, [
-      state.screen,
-      state.sessionId,
-      state.sessionStartedAt,
-      spawnManager,
-      topology,
-      appProps.groveDir,
-      provider,
-    ]);
+    }, [state.screen, state.sessionId, spawnManager, topology, appProps.groveDir, provider]);
 
     // Restart contribution polling when sessionStartedAt hydrates
     // asynchronously after reconcile (resume flow). Without this, the cutoff

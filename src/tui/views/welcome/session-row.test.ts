@@ -31,10 +31,10 @@ describe("computeSessionRowFields", () => {
   });
 
   test("unfocused completed session renders compact one-line", () => {
-    const r = computeSessionRowFields(
-      session({ status: "completed", contributionCount: 12 }),
-      { focused: false, now: NOW },
-    );
+    const r = computeSessionRowFields(session({ status: "completed", contributionCount: 12 }), {
+      focused: false,
+      now: NOW,
+    });
     expect(r.dot).toBe("○");
     expect(r.primary).toContain("12c");
     expect(r.secondary).toBeUndefined();
@@ -61,10 +61,10 @@ describe("computeSessionRowFields", () => {
   });
 
   test("archived session uses hollow dot like completed", () => {
-    const r = computeSessionRowFields(
-      session({ status: "archived" }),
-      { focused: false, now: NOW },
-    );
+    const r = computeSessionRowFields(session({ status: "archived" }), {
+      focused: false,
+      now: NOW,
+    });
     expect(r.dot).toBe("○");
   });
 });

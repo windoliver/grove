@@ -6,8 +6,8 @@
 
 import { useKeyboard, useRenderer } from "@opentui/react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import type { TuiPresetEntry } from "../../tui-app.js";
 import { theme } from "../../theme.js";
+import type { TuiPresetEntry } from "../../tui-app.js";
 import { routeNewSessionKey } from "./new-session-keyboard.js";
 
 export interface NewSessionProps {
@@ -149,9 +149,7 @@ export const NewSession: React.NamedExoticComponent<NewSessionProps> = React.mem
         ) : null}
 
         <box paddingX={2} marginTop={1}>
-          <text color={theme.secondary}>
-            [j/k] navigate  [Enter] pick  [?] details  [Esc] back
-          </text>
+          <text color={theme.secondary}>[j/k] navigate [Enter] pick [?] details [Esc] back</text>
         </box>
       </box>
     );

@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   applyKeymapPresetToFile,
-  loadKeymapPreset,
   type KeymapPresetName,
+  loadKeymapPreset,
 } from "./keymap-presets.js";
 
 describe("loadKeymapPreset", () => {

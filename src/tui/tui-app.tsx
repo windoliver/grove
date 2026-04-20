@@ -53,16 +53,11 @@ export interface TuiAppProps {
     | undefined;
   /** Called when resuming an existing grove. `sessionId` is provided when the user picked a specific session from the fast-path list. */
   readonly onStart?:
-    | ((
-        onProgress?: (step: string) => void,
-        sessionId?: string,
-      ) => Promise<AppProps>)
+    | ((onProgress?: (step: string) => void, sessionId?: string) => Promise<AppProps>)
     | undefined;
   readonly onConnect?: ((nexusUrl: string) => Promise<AppProps>) | undefined;
   /** Start a new session in an existing grove. */
-  readonly onNewSession?:
-    | ((presetName: string) => Promise<AppProps>)
-    | undefined;
+  readonly onNewSession?: ((presetName: string) => Promise<AppProps>) | undefined;
   readonly autoConnectNexus?: string | undefined;
 }
 
@@ -87,7 +82,16 @@ const INIT_STEPS = [
 export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(function TuiApp(
   props: TuiAppProps,
 ): React.ReactNode {
-  const { groveExists, groveInfo, presets, onInit, onStart, onConnect, onNewSession, autoConnectNexus } = props;
+  const {
+    groveExists,
+    groveInfo,
+    presets,
+    onInit,
+    onStart,
+    onConnect,
+    onNewSession,
+    autoConnectNexus,
+  } = props;
   const renderer = useRenderer();
 
   const [mode, setMode] = useState<TuiMode>(autoConnectNexus ? "starting" : "setup");
@@ -133,7 +137,12 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
 
   /** Handle "New grove" — preset + name selected, kicks off initialization. */
   const handleSelect = useCallback(
-    (args: { preset: string; name: string; mode: import("./views/welcome/router.js").WelcomeMode; keymap: import("./views/welcome/customize-keyboard.js").KeymapChoice }) => {
+    (args: {
+      preset: string;
+      name: string;
+      mode: import("./views/welcome/router.js").WelcomeMode;
+      keymap: import("./views/welcome/customize-keyboard.js").KeymapChoice;
+    }) => {
       if (!onInit) return;
       const { preset: presetName, name: groveName } = args;
       // mode + keymap are honored upstream (keymap via Customize, mode via main.ts resolveBackend).

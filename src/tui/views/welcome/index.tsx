@@ -15,11 +15,7 @@ import type { KeymapChoice } from "./customize-keyboard.js";
 import { FastPath } from "./fast-path.js";
 import { FirstRun } from "./first-run.js";
 import { NewSession } from "./new-session.js";
-import {
-  resolveInitialRoute,
-  type WelcomeMode,
-  type WelcomeRoute,
-} from "./router.js";
+import { resolveInitialRoute, type WelcomeMode, type WelcomeRoute } from "./router.js";
 
 export interface WelcomeProps {
   readonly presets: readonly TuiPresetEntry[];
@@ -72,11 +68,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
           initialUrl={initialNexusUrl}
           onConnect={(url) => onConnect(url)}
           onBack={() =>
-            setRoute(
-              route.returnTo === "fast-path"
-                ? { kind: "fast-path" }
-                : { kind: "first-run" },
-            )
+            setRoute(route.returnTo === "fast-path" ? { kind: "fast-path" } : { kind: "first-run" })
           }
         />
       );

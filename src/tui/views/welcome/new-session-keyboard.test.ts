@@ -128,11 +128,7 @@ describe("routeNewSessionKey (rapid bursts)", () => {
     routeNewSessionKey(keyEvent("j"), state({ cursor }), wrapped);
     routeNewSessionKey(keyEvent("j"), state({ cursor }), wrapped);
     routeNewSessionKey(keyEvent("return"), state({ cursor }), wrapped);
-    expect(calls.map((c) => c.name)).toEqual([
-      "moveCursor",
-      "moveCursor",
-      "onPick",
-    ]);
+    expect(calls.map((c) => c.name)).toEqual(["moveCursor", "moveCursor", "onPick"]);
     expect(calls.at(-1)?.args).toEqual([2]);
   });
 });

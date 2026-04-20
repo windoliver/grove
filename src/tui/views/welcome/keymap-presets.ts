@@ -11,9 +11,9 @@
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { type GroveUserConfig, mergeGroveConfig } from "../../config-loader.js";
 import emacsPresetRaw from "../../keymaps/emacs.json" with { type: "json" };
 import vimPresetRaw from "../../keymaps/vim.json" with { type: "json" };
-import { type GroveUserConfig, mergeGroveConfig } from "../../config-loader.js";
 
 /** Named keymap preset identifiers bundled with the TUI. */
 export type KeymapPresetName = "vim" | "emacs";
@@ -28,9 +28,7 @@ const PRESETS: Readonly<Record<KeymapPresetName, RawPreset>> = {
 };
 
 /** Load a bundled keymap preset into a `GroveUserConfig` shape. */
-export async function loadKeymapPreset(
-  name: KeymapPresetName,
-): Promise<GroveUserConfig> {
+export async function loadKeymapPreset(name: KeymapPresetName): Promise<GroveUserConfig> {
   const preset = PRESETS[name];
   return {
     theme: {},
