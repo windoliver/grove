@@ -298,6 +298,19 @@ describe("createContribution", () => {
     agent.agentName = "Mutated";
     expect(contribution.agent.agentName).toBe("Original");
   });
+
+  test("preserves commitHash and produces a verifiable CID", () => {
+    // Regression: commitHash was included in the canonical manifest for CID
+    // computation but dropped from the returned Contribution, making every
+    // downstream verifyCid() fail (agents could never submit commit-based work).
+    const input: ContributionInput = {
+      ...MINIMAL_INPUT,
+      commitHash: "955da4e077c08e281a01eed942efc0a2f0837a34",
+    };
+    const contribution = createContribution(input);
+    expect(contribution.commitHash).toBe(input.commitHash);
+    expect(verifyCid(contribution)).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

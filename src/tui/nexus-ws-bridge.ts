@@ -16,6 +16,7 @@
 import type { AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { EventBus, GroveEvent } from "../core/event-bus.js";
 import type { HandoffStore } from "../core/handoff.js";
+import { getProcessInstanceId } from "../core/process-instance.js";
 import type { AgentTopology } from "../core/topology.js";
 import type { NexusIpcClient } from "../nexus/nexus-ipc-client.js";
 import { debugLog } from "./debug-log.js";
@@ -33,6 +34,23 @@ export interface NexusWsBridgeOptions {
   handoffStore?: HandoffStore | undefined;
   /** Shared IPC client — replaces inline fetch when provided. */
   ipcClient?: NexusIpcClient | undefined;
+  /**
+   * Forwards inner payloads whose `type` is "acp.message" or "acp.result"
+   * to a typed consumer (AcpMessageSink). Called only when the event's
+   * sourceRole is NOT one of this TUI's local topology roles — the
+   * in-process NexusEventBus subscription handles local roles, so SSE
+   * forwarding for the same event would double-count.
+   */
+  onAcpEvent?: ((event: GroveEvent) => void) | undefined;
+  /**
+   * Stable per-process identifier. When both publisher and bridge are
+   * configured with the same value, the SSE loopback dedupe is gated on
+   * instance identity rather than role-name equality — so shared-Nexus
+   * deployments with role-name collisions across processes still receive
+   * each other's typed events. When omitted, falls back to role-name
+   * dedupe (preserves single-process behavior for older wiring).
+   */
+  localInstanceId?: string | undefined;
 }
 
 interface SseEvent {
@@ -46,12 +64,20 @@ interface SseEvent {
 
 export class NexusWsBridge {
   private readonly opts: NexusWsBridgeOptions;
+  private readonly localInstanceId: string;
   private readonly sessions = new Map<string, AgentSession>();
   private abortControllers: AbortController[] = [];
   private closed = false;
 
   constructor(opts: NexusWsBridgeOptions) {
     this.opts = opts;
+    // Default to the process-wide id so the bridge always carries a marker,
+    // matching the publisher's default. This closes the "legacy publisher
+    // without marker" blind spot in strict-dedupe mode — every in-process
+    // event carries the same id on both sides, cross-process events
+    // necessarily differ, and pure role-name fallback is only active in
+    // tests that explicitly opt out by constructing with no localInstanceId.
+    this.localInstanceId = opts.localInstanceId ?? getProcessInstanceId();
   }
 
   registerSession(role: string, session: AgentSession): void {
@@ -207,12 +233,11 @@ export class NexusWsBridge {
         void this.opts.eventBus.publish(groveEvent);
       }
 
-      // --- IPC lifecycle: mark matching handoff as delivered ---
-      // The message_delivered SSE confirms Nexus inbox delivery.
-      // Find the handoff by IPC message ID and transition its status.
-      if (this.opts.handoffStore && event.message_id) {
-        void this.updateHandoffDeliveryStatus(event.message_id, role, event.sender);
-      }
+      // Handoff delivery-status transitions are deferred until after
+      // ACP classification in readAndPush. ACP envelopes (high-volume,
+      // never backed by a handoff record) would otherwise trigger the
+      // sender-based fallback in updateHandoffDeliveryStatus and
+      // falsely mark an unrelated pending handoff as delivered.
 
       const session = this.sessions.get(role);
       if (!session) {
@@ -292,6 +317,97 @@ export class NexusWsBridge {
         `FAIL ipcMessageId=${ipcMessageId} err=${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
+
+  /**
+   * Dispatch a parsed inbox payload. Returns `"acp"` when the envelope was a
+   * typed acp.* event handled (or gated) here, and thus should NOT be
+   * forwarded to runtime.send; returns `"ipc"` when the envelope is a regular
+   * IPC notification the caller should continue delivering to the agent.
+   *
+   * NexusEventBus.publish sends ONLY `event.payload` over the IPC wire — the
+   * outer GroveEvent fields (sourceRole, targetRole, timestamp) are dropped.
+   * We reconstruct a full GroveEvent here using the IPC-level sender/recipient
+   * so the sink contract (which expects the full envelope) still holds.
+   *
+   * Public so unit tests can drive the branch without crafting SSE fixtures.
+   */
+  handleIpcEnvelope(
+    innerPayload: unknown,
+    wireSender?: string,
+    wireRecipient?: string,
+  ): "acp" | "ipc" {
+    if (!innerPayload || typeof innerPayload !== "object") return "ipc";
+    const rec = innerPayload as Record<string, unknown>;
+    let type = rec.type;
+    // Backward-compat: an older publisher that predates the `type`
+    // embedding (Round 1 of #314) may send payloads without it. Fall back
+    // to shape detection — sessionId + turnId + (message|result) is the
+    // ACP envelope signature. This keeps rolling upgrades from routing
+    // typed control events into an agent's prose IPC inbox.
+    if (type !== "acp.message" && type !== "acp.result") {
+      if (typeof rec.sessionId === "string" && typeof rec.turnId === "string") {
+        if (rec.message !== undefined && typeof rec.message === "object") {
+          type = "acp.message";
+        } else if (rec.result !== undefined && typeof rec.result === "object") {
+          type = "acp.result";
+        }
+      }
+    }
+    if (type !== "acp.message" && type !== "acp.result") return "ipc";
+
+    const sourceRole = wireSender ?? "unknown";
+    const targetRole = wireRecipient ?? "unknown";
+    const envelope: GroveEvent = {
+      type: type as "acp.message" | "acp.result",
+      sourceRole,
+      targetRole,
+      payload: innerPayload as Record<string, unknown>,
+      timestamp: new Date().toISOString(),
+    };
+
+    const localRoles = new Set(this.opts.topology.roles.map((r) => r.name));
+    const envelopeInstance = (rec as { sourceInstance?: unknown }).sourceInstance;
+    if (localRoles.has(sourceRole)) {
+      // Local role ⇒ the in-process EventBus subscription is already
+      // ingesting this event. The SSE loopback is redundant. Forwarding
+      // here would append the message frame a second time (the store has
+      // no idempotency key; every `acp.message` pushes to the array).
+      //
+      // Bridge always carries `localInstanceId` (defaulted to the
+      // process-wide id), and the publisher always stamps
+      // `sourceInstance` (same default). Both sides carry markers in
+      // every in-codebase publish, so strict inequality is the ONLY
+      // condition for forwarding a local-role envelope. Any
+      // legacy-publisher envelope without a marker is treated as a
+      // self-loop and dropped — that's the deliberate trade-off for
+      // "never duplicate in single-process".
+      if (typeof envelopeInstance === "string" && envelopeInstance !== this.localInstanceId) {
+        // Different instance with same role name — forward to sink.
+      } else {
+        return "acp";
+      }
+    }
+    if (!this.opts.onAcpEvent) {
+      // Fail-loud: a typed ACP envelope arrived but no consumer is wired.
+      // Still return "acp" so readAndPush does not deliver control-plane
+      // events as prose IPC to an agent inbox — log so operators can see
+      // the silent drop happening instead of it being a true black hole.
+      debugLog(
+        "wsBridge.handleIpcEnvelope",
+        `ACP envelope dropped — no onAcpEvent wired (type=${String(type)} sourceRole=${sourceRole})`,
+      );
+      return "acp";
+    }
+    try {
+      this.opts.onAcpEvent(envelope);
+    } catch (err) {
+      debugLog(
+        "wsBridge.handleIpcEnvelope",
+        `onAcpEvent threw for sourceRole=${sourceRole}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return "acp";
   }
 
   /**
@@ -396,6 +512,25 @@ export class NexusWsBridge {
       };
 
       const msgSender = msg.from ?? msg.sender ?? sender;
+
+      // Pre-dispatch: typed acp.* envelopes go to the typed consumer and
+      // skip the runtime.send IPC-notification path. Pass wire-level
+      // sender/recipient so the bridge can reconstruct the outer GroveEvent
+      // shape (NexusEventBus sends only `event.payload` over the wire).
+      const outcome = this.handleIpcEnvelope(msg.payload, msgSender, _targetRole);
+      if (outcome === "acp") {
+        return;
+      }
+
+      // Non-ACP prose IPC: this is a real handoff notification, so now
+      // advance the handoff's delivery state. Running this AFTER the ACP
+      // check prevents ACP envelopes (never backed by a handoff record)
+      // from triggering updateHandoffDeliveryStatus's sender-fallback
+      // and falsely marking an unrelated pending handoff as delivered.
+      if (this.opts.handoffStore && ipcMessageId) {
+        void this.updateHandoffDeliveryStatus(ipcMessageId, _targetRole, msgSender);
+      }
+
       const summary =
         (msg.payload?.summary as string) ??
         (msg.payload?.body as string) ??

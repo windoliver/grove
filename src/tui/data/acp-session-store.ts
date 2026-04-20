@@ -1,0 +1,290 @@
+/**
+ * AcpSessionStore — in-memory per-session turn log keyed by turnId.
+ *
+ * See docs/superpowers/specs/2026-04-19-tui-typed-acp-consumer-design.md.
+ */
+
+import type { Message, Result } from "../../acp/types.js";
+import { debugLog } from "../debug-log.js";
+
+export interface TurnRecord {
+  readonly turnId: string;
+  readonly sessionId: string;
+  readonly messages: Message[];
+  readonly startedAt: number;
+  closedAt?: number;
+  stopReason?: Result["stopReason"];
+  error?: Result["error"];
+  /**
+   * Count of messages evicted from the front of `messages` by the
+   * retention cap. Consumers with cursors (e.g. SessionLogProjector)
+   * read this to translate their absolute sequence number into a valid
+   * current-array index: `index = cursor - droppedMessageCount`.
+   */
+  droppedMessageCount: number;
+}
+
+export interface SessionRecord {
+  readonly sessionId: string;
+  readonly registeredAt: number;
+  readonly turns: Map<string, TurnRecord>;
+  latestTurnId?: string;
+  /**
+   * Count of CLOSED turns evicted from `turns` by the session-level cap.
+   * Exposed for observability and so consumers can keep cursors stable
+   * across long-lived sessions (e.g. days of agent work).
+   */
+  droppedTurnCount: number;
+}
+
+export type AcpSinkEvent =
+  | { kind: "message"; sessionId: string; turnId: string; message: Message }
+  | { kind: "result"; sessionId: string; turnId: string; result: Result };
+
+export type SessionListener = (sessionId: string) => void;
+
+export const FLUSH_INTERVAL_MS = 16;
+
+/**
+ * Per-turn retention cap. Long-running streaming turns (e.g. a multi-hour
+ * coding agent emitting thousands of text chunks) would otherwise grow the
+ * in-memory message array without bound and starve TUI rendering. When
+ * exceeded, the oldest messages are evicted FIFO so the tail of the
+ * conversation stays intact.
+ */
+export const MAX_MESSAGES_PER_TURN = 10_000;
+
+/**
+ * Session-level turn cap. Per-turn retention alone does not bound memory
+ * across a long-lived session — every new turn adds a fresh TurnRecord.
+ * When the live-turn count exceeds this cap, the oldest CLOSED turns are
+ * evicted (closed so projection is already complete; the active
+ * latestTurnId is never dropped).
+ */
+export const MAX_TURNS_PER_SESSION = 500;
+
+export interface AcpSessionStoreOptions {
+  /** Override for MAX_MESSAGES_PER_TURN — primarily for tests. */
+  readonly maxMessagesPerTurn?: number;
+  /** Override for MAX_TURNS_PER_SESSION — primarily for tests. */
+  readonly maxTurnsPerSession?: number;
+}
+
+export class AcpSessionStore {
+  private readonly sessions = new Map<string, SessionRecord>();
+  private readonly listeners = new Map<string, Set<SessionListener>>();
+  private dirty = new Set<string>();
+  private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly maxMessagesPerTurn: number;
+  private readonly maxTurnsPerSession: number;
+
+  constructor(opts: AcpSessionStoreOptions = {}) {
+    this.maxMessagesPerTurn = opts.maxMessagesPerTurn ?? MAX_MESSAGES_PER_TURN;
+    this.maxTurnsPerSession = opts.maxTurnsPerSession ?? MAX_TURNS_PER_SESSION;
+  }
+
+  register(sessionId: string): void {
+    if (this.sessions.has(sessionId)) return;
+    this.sessions.set(sessionId, {
+      sessionId,
+      registeredAt: Date.now(),
+      turns: new Map(),
+      droppedTurnCount: 0,
+    });
+  }
+
+  unregister(sessionId: string): void {
+    const set = this.listeners.get(sessionId);
+    if (set) {
+      for (const listener of set) {
+        try {
+          listener(sessionId);
+        } catch {
+          // swallow — matches scheduleFlush
+        }
+      }
+    }
+    this.sessions.delete(sessionId);
+    this.listeners.delete(sessionId);
+    this.dirty.delete(sessionId);
+  }
+
+  ingest(event: AcpSinkEvent): void {
+    const session = this.sessions.get(event.sessionId);
+    if (!session) {
+      debugLog(
+        "acp_event_unregistered",
+        `dropped ${event.kind} for sessionId=${event.sessionId} turnId=${event.turnId}`,
+      );
+      return;
+    }
+
+    let turn = session.turns.get(event.turnId);
+    const isNewTurn = turn === undefined;
+    if (!turn) {
+      // A result for an unseen turn when the session already has an
+      // active latest turn is, by construction, stale/out-of-order
+      // (evicted long ago, duplicate retransmit, or a misrouted frame).
+      // Creating a TurnRecord for it would consume cap budget, force
+      // eviction of a live turn, and keep the stale turn around. Drop.
+      if (event.kind === "result" && session.latestTurnId !== undefined) {
+        debugLog(
+          "acp_stale_result_dropped",
+          `dropped stale result for unseen turnId=${event.turnId} sessionId=${event.sessionId} (latest=${session.latestTurnId})`,
+        );
+        return;
+      }
+      turn = {
+        turnId: event.turnId,
+        sessionId: event.sessionId,
+        messages: [],
+        startedAt: Date.now(),
+        droppedMessageCount: 0,
+      };
+      session.turns.set(event.turnId, turn);
+      // Advance latestTurnId BEFORE enforcing the cap so eviction always
+      // protects the newly-created turn. We only reach this point with
+      // event.kind === "message" (stale result-first was rejected above)
+      // OR event.kind === "result" with no prior latest (brand-new
+      // session that observes only the terminal frame).
+      session.latestTurnId = event.turnId;
+      this.enforceSessionTurnCap(session);
+    }
+
+    if (event.kind === "result") {
+      if (turn.closedAt === undefined) {
+        turn.closedAt = Date.now();
+        turn.stopReason = event.result.stopReason;
+        if (event.result.error) turn.error = event.result.error;
+      }
+    } else {
+      if (turn.closedAt !== undefined) {
+        debugLog(
+          "acp_late_after_result",
+          `dropped late message for sessionId=${event.sessionId} turnId=${event.turnId}`,
+        );
+        return;
+      }
+      turn.messages.push(event.message);
+      // FIFO eviction once the turn exceeds the cap. Batched in halves so
+      // a hot stream amortizes the shift cost across many appends instead
+      // of paying O(n) every push past the limit.
+      if (turn.messages.length > this.maxMessagesPerTurn) {
+        const drop = turn.messages.length - this.maxMessagesPerTurn;
+        turn.messages.splice(0, drop);
+        turn.droppedMessageCount += drop;
+        debugLog(
+          "acp_turn_evicted",
+          `evicted ${drop} oldest messages for sessionId=${event.sessionId} turnId=${event.turnId} (cap=${this.maxMessagesPerTurn} total=${turn.droppedMessageCount})`,
+        );
+      }
+    }
+
+    // latestTurnId promotion for new turns already happened above (and
+    // is gated on event.kind === "message" to reject stale-result
+    // hijacking). For existing turns, only re-assert latestTurnId when
+    // the event already lands on the currently-latest turn — never let
+    // a late event for an older turn rewind the pointer.
+    if (!isNewTurn && session.latestTurnId === turn.turnId) {
+      session.latestTurnId = turn.turnId;
+    }
+    this.dirty.add(event.sessionId);
+    this.scheduleFlush();
+  }
+
+  /**
+   * Enforce the session-level turn cap. Prefers evicting CLOSED non-latest
+   * turns first (projection/UI state already complete); when that is not
+   * enough — which happens under missed/delayed result delivery where
+   * turns pile up in the open state — falls through to evicting the
+   * oldest OPEN non-latest turns as a last-resort hard cap. Without this
+   * final pass, a pathological stream where every turn loses its Result
+   * would grow the map unboundedly.
+   */
+  private enforceSessionTurnCap(session: SessionRecord): void {
+    if (session.turns.size <= this.maxTurnsPerSession) return;
+    let evictedClosed = 0;
+    let evictedOpen = 0;
+    // First pass: closed non-latest turns, oldest-first (Map insertion order).
+    for (const [id, t] of session.turns) {
+      if (session.turns.size <= this.maxTurnsPerSession) break;
+      if (t.closedAt === undefined) continue;
+      if (id === session.latestTurnId) continue;
+      session.turns.delete(id);
+      evictedClosed += 1;
+    }
+    // Second pass: oldest non-latest turns regardless of closed state.
+    // latestTurnId is preserved so the active stream keeps projecting.
+    if (session.turns.size > this.maxTurnsPerSession) {
+      for (const [id] of session.turns) {
+        if (session.turns.size <= this.maxTurnsPerSession) break;
+        if (id === session.latestTurnId) continue;
+        session.turns.delete(id);
+        evictedOpen += 1;
+      }
+    }
+    const totalEvicted = evictedClosed + evictedOpen;
+    if (totalEvicted > 0) {
+      session.droppedTurnCount += totalEvicted;
+      debugLog(
+        "acp_session_turns_evicted",
+        `evicted ${totalEvicted} turns (closed=${evictedClosed} open=${evictedOpen}) for sessionId=${session.sessionId} (cap=${this.maxTurnsPerSession} total=${session.droppedTurnCount})`,
+      );
+    }
+  }
+
+  /**
+   * Release timer + maps. Idempotent. Call from the owning SpawnManager's
+   * `destroy()` so a scheduled flush does not fire after the TUI tears down.
+   */
+  dispose(): void {
+    if (this.flushTimer !== null) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    this.sessions.clear();
+    this.listeners.clear();
+    this.dirty.clear();
+  }
+
+  getSession(sessionId: string): SessionRecord | undefined {
+    return this.sessions.get(sessionId);
+  }
+
+  getTurn(sessionId: string, turnId: string): TurnRecord | undefined {
+    return this.sessions.get(sessionId)?.turns.get(turnId);
+  }
+
+  subscribe(sessionId: string, listener: SessionListener): () => void {
+    let set = this.listeners.get(sessionId);
+    if (!set) {
+      set = new Set();
+      this.listeners.set(sessionId, set);
+    }
+    set.add(listener);
+    return () => {
+      set?.delete(listener);
+      if (set && set.size === 0) this.listeners.delete(sessionId);
+    };
+  }
+
+  private scheduleFlush(): void {
+    if (this.flushTimer !== null) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null;
+      const toNotify = [...this.dirty];
+      this.dirty.clear();
+      for (const sessionId of toNotify) {
+        const set = this.listeners.get(sessionId);
+        if (!set) continue;
+        for (const listener of set) {
+          try {
+            listener(sessionId);
+          } catch {
+            // listener errors never kill the store
+          }
+        }
+      }
+    }, FLUSH_INTERVAL_MS);
+  }
+}

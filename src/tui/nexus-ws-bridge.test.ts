@@ -453,4 +453,269 @@ describe("NexusWsBridge", () => {
     bridge.registerSession("tester", makeSession("tester"));
     // No error expected — just a no-op
   });
+
+  // --- handleIpcEnvelope ---
+  //
+  // NexusEventBus.publish sends ONLY `event.payload` over the IPC wire (the
+  // outer GroveEvent fields are dropped). These tests exercise that real
+  // wire shape: innerPayload is the published payload object, wireSender /
+  // wireRecipient come from the IPC `from`/`recipient` fields.
+
+  test("handleIpcEnvelope routes acp.message to onAcpEvent when source is remote", () => {
+    const onAcpEvent = mock(() => undefined);
+    const bridge = new NexusWsBridge(makeBridgeOpts({ onAcpEvent }));
+    const outcome = bridge.handleIpcEnvelope(
+      {
+        type: "acp.message",
+        sessionId: "s1",
+        turnId: "t1",
+        message: { kind: "text", turnId: "t1", text: "hi", chunk: true },
+      },
+      "external-agent",
+      "tui",
+    );
+    expect(outcome).toBe("acp");
+    expect(onAcpEvent).toHaveBeenCalledTimes(1);
+    const call = (onAcpEvent.mock.calls[0] as unknown as [GroveEvent])[0];
+    expect(call.type).toBe("acp.message");
+    expect(call.sourceRole).toBe("external-agent");
+    expect(call.targetRole).toBe("tui");
+    expect(call.payload.sessionId).toBe("s1");
+  });
+
+  test("handleIpcEnvelope drops acp.message from local role when neither side has instance markers (legacy wiring)", () => {
+    // Neither bridge nor envelope carries a sourceInstance — preserve the
+    // original role-only dedupe so single-process in-proc bus + SSE
+    // loopback does not double-deliver.
+    const onAcpEvent = mock(() => undefined);
+    const bridge = new NexusWsBridge(makeBridgeOpts({ onAcpEvent }));
+    const outcome = bridge.handleIpcEnvelope(
+      {
+        type: "acp.message",
+        sessionId: "s1",
+        turnId: "t1",
+        message: { kind: "text", turnId: "t1", text: "hi", chunk: true },
+      },
+      "coder",
+      "tui",
+    );
+    expect(outcome).toBe("acp");
+    expect(onAcpEvent).not.toHaveBeenCalled();
+  });
+
+  test("handleIpcEnvelope drops local-role ACP when only one side has an instance marker", () => {
+    // Bridge has localInstanceId but envelope lacks sourceInstance (e.g.
+    // a local legacy publisher). We can't distinguish "self-loop" from
+    // "cross-process sender that happens to share this role name" — but
+    // the in-process EventBus subscription already delivers local-role
+    // events, so forwarding would duplicate every message frame (the
+    // store has no idempotency key and appends on every acp.message).
+    // Drop is the correct default; cross-process safety requires both
+    // sides to stamp sourceInstance.
+    const onAcpEvent = mock(() => undefined);
+    const bridge = new NexusWsBridge(makeBridgeOpts({ onAcpEvent, localInstanceId: "A" }));
+    const outcome = bridge.handleIpcEnvelope(
+      {
+        type: "acp.message",
+        sessionId: "s1",
+        turnId: "t1",
+        message: { kind: "text", turnId: "t1", text: "legacy-publisher", chunk: true },
+      },
+      "coder",
+      "tui",
+    );
+    expect(outcome).toBe("acp");
+    expect(onAcpEvent).not.toHaveBeenCalled();
+  });
+
+  test("handleIpcEnvelope returns 'ipc' for non-acp payloads (regression guard)", () => {
+    const onAcpEvent = mock(() => undefined);
+    const bridge = new NexusWsBridge(makeBridgeOpts({ onAcpEvent }));
+    const outcome = bridge.handleIpcEnvelope(
+      { type: "contribution", body: "done" },
+      "coder",
+      "reviewer",
+    );
+    expect(outcome).toBe("ipc");
+    expect(onAcpEvent).not.toHaveBeenCalled();
+  });
+
+  test("handleIpcEnvelope returns 'acp' even when onAcpEvent is undefined (silent drop)", () => {
+    // No onAcpEvent wired. An acp.* envelope must still be classified as
+    // "acp" so readAndPush skips runtime.send — preventing typed control
+    // events from leaking into the agent's IPC inbox as prose.
+    const bridge = new NexusWsBridge(makeBridgeOpts({ onAcpEvent: undefined }));
+    const outcome = bridge.handleIpcEnvelope(
+      {
+        type: "acp.result",
+        sessionId: "s1",
+        turnId: "t1",
+        result: { turnId: "t1", stopReason: "end_turn" },
+      },
+      "external-agent",
+      "tui",
+    );
+    expect(outcome).toBe("acp");
+  });
+
+  test("handleIpcEnvelope accepts ACP-shaped payload without `type` field (rolling upgrade)", () => {
+    // Older publishers predate the `type` embedding. Bridge must fall back
+    // to shape detection so a mixed-version deployment does not route
+    // typed control-plane events into an agent's prose IPC inbox.
+    const onAcpEvent = mock(() => undefined);
+    const bridge = new NexusWsBridge(makeBridgeOpts({ onAcpEvent }));
+    const outcome = bridge.handleIpcEnvelope(
+      {
+        sessionId: "s1",
+        turnId: "t1",
+        message: { kind: "text", turnId: "t1", text: "legacy", chunk: true },
+      },
+      "external-agent",
+      "tui",
+    );
+    expect(outcome).toBe("acp");
+    expect(onAcpEvent).toHaveBeenCalledTimes(1);
+  });
+
+  test("handleIpcEnvelope forwards remote ACP with same role name when instance IDs differ", () => {
+    // Shared-Nexus scenario: another Grove process also uses role "coder".
+    // Current bridge is configured with localInstanceId "A"; SSE delivers
+    // an event from instance "B" whose role happens to collide. Must NOT
+    // be dropped as a local self-loop.
+    const onAcpEvent = mock(() => undefined);
+    const bridge = new NexusWsBridge(makeBridgeOpts({ onAcpEvent, localInstanceId: "A" }));
+    const outcome = bridge.handleIpcEnvelope(
+      {
+        type: "acp.message",
+        sourceInstance: "B",
+        sessionId: "s1",
+        turnId: "t1",
+        message: { kind: "text", turnId: "t1", text: "remote-coder", chunk: true },
+      },
+      "coder",
+      "tui",
+    );
+    expect(outcome).toBe("acp");
+    expect(onAcpEvent).toHaveBeenCalledTimes(1);
+  });
+
+  test("handleIpcEnvelope drops ACP self-loop when role and instance both match", () => {
+    const onAcpEvent = mock(() => undefined);
+    const bridge = new NexusWsBridge(makeBridgeOpts({ onAcpEvent, localInstanceId: "A" }));
+    const outcome = bridge.handleIpcEnvelope(
+      {
+        type: "acp.message",
+        sourceInstance: "A",
+        sessionId: "s1",
+        turnId: "t1",
+        message: { kind: "text", turnId: "t1", text: "self-loop", chunk: true },
+      },
+      "coder",
+      "tui",
+    );
+    expect(outcome).toBe("acp");
+    expect(onAcpEvent).not.toHaveBeenCalled();
+  });
+
+  test("handleIpcEnvelope reconstructs GroveEvent from wire payload so sink accepts it", async () => {
+    // End-to-end integration through the real sink: inner payload shape
+    // matches what NexusEventBus sends over the wire (just `event.payload`,
+    // with `type` embedded inside it — see nexus-agent-publisher.ts).
+    const { AcpSessionStore } = await import("./data/acp-session-store.js");
+    const { createAcpMessageSink } = await import("./data/acp-message-sink.js");
+    const store = new AcpSessionStore();
+    store.register("s1");
+    const sink = createAcpMessageSink(store);
+
+    const bridge = new NexusWsBridge(
+      makeBridgeOpts({ onAcpEvent: (e) => sink.handleGroveEvent(e) }),
+    );
+    bridge.handleIpcEnvelope(
+      {
+        type: "acp.message",
+        sessionId: "s1",
+        turnId: "t1",
+        message: { kind: "text", turnId: "t1", text: "wire-shape", chunk: true },
+      },
+      "external-agent",
+      "tui",
+    );
+    expect(store.getTurn("s1", "t1")?.messages).toHaveLength(1);
+  });
+
+  test("ACP envelope delivered by SSE must NOT trigger handoff markDelivered", async () => {
+    // Codex Round 9 Finding 1: ACP traffic is high-volume and has no
+    // backing handoff record. The sender-fallback inside
+    // updateHandoffDeliveryStatus matches the most-recent pending
+    // handoff from the same sender — so every ACP envelope would
+    // falsely advance an unrelated handoff to delivered. Fixed by
+    // running handoff-state transitions only AFTER ACP classification.
+    const runtime = makeMockRuntime();
+    const markDelivered = mock(() => Promise.resolve());
+    const handoffStore = {
+      list: mock(() =>
+        Promise.resolve([
+          // A pending handoff from the same sender — would falsely match
+          // the sender-fallback if markDelivered ran before ACP gate.
+          {
+            handoffId: "h1",
+            fromRole: "coder",
+            toRole: "reviewer",
+            status: "pending_pickup" as const,
+            ipcMessageId: undefined,
+            createdAt: new Date().toISOString(),
+          },
+        ]),
+      ),
+      markDelivered,
+      markDeadLettered: mock(() => Promise.resolve()),
+    };
+
+    const bridge = new TestableNexusWsBridge(
+      makeBridgeOpts({
+        runtime,
+        handoffStore: handoffStore as unknown as NexusWsBridgeOptions["handoffStore"],
+        onAcpEvent: () => undefined,
+      }),
+    );
+    bridge.registerSession("reviewer", makeSession("reviewer"));
+
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          result: {
+            data: Buffer.from(
+              JSON.stringify({
+                sender: "coder",
+                payload: {
+                  type: "acp.message",
+                  sessionId: "s1",
+                  turnId: "t1",
+                  message: { kind: "text", turnId: "t1", text: "hi", chunk: true },
+                },
+              }),
+            ).toString("base64"),
+          },
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+
+    bridge.testHandleEvent(
+      "reviewer",
+      "message_delivered",
+      JSON.stringify({
+        event: "message_delivered",
+        message_id: "acp-1",
+        sender: "coder",
+        recipient: "reviewer",
+        type: "event",
+        path: "/inbox/acp-1",
+      }),
+    );
+
+    // Wait for async readAndPush
+    await new Promise((r) => setTimeout(r, 20));
+    expect(markDelivered).not.toHaveBeenCalled();
+    bridge.close();
+  });
 });

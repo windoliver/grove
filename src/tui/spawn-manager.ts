@@ -45,6 +45,8 @@ function clearAllGlobalContribTimers(): void {
   _allGlobalContribTimers.length = 0;
 }
 
+import type { AcpSessionStore } from "./data/acp-session-store.js";
+import { projectSessionToBuffer } from "./data/session-log-projector.js";
 import type { PersistedSpawnRecord, SessionStore } from "./session-store.js";
 
 /** PR context injected as env vars when spawning agents. */
@@ -85,6 +87,9 @@ export class SpawnManager {
   private readonly logBuffers = new Map<string, AgentLogBuffer>();
   private readonly onError: (message: string) => void;
   private readonly sessionStore: SessionStore | undefined;
+  private readonly acpSessionStore: AcpSessionStore | undefined;
+  /** Per-session unsubscribe callbacks from projectSessionToBuffer. */
+  private readonly acpProjections = new Map<string, () => void>();
   private wsBridge: NexusWsBridge | undefined;
   private prContext: PrContext | undefined;
   private sessionGoal: string | undefined;
@@ -112,6 +117,7 @@ export class SpawnManager {
     sessionStore?: SessionStore,
     groveDir?: string,
     agentRuntime?: AgentRuntime,
+    acpSessionStore?: AcpSessionStore,
   ) {
     this.provider = provider;
     this.tmux = tmux;
@@ -119,6 +125,16 @@ export class SpawnManager {
     this.onError = onError;
     this.sessionStore = sessionStore;
     this.groveDir = groveDir;
+    this.acpSessionStore = acpSessionStore;
+  }
+
+  /**
+   * Return the AcpSessionStore this manager writes to, if one was provided
+   * at construction. Views (notably SessionPanel) need this to subscribe
+   * to typed message streams for a specific sessionId.
+   */
+  getAcpSessionStore(): AcpSessionStore | undefined {
+    return this.acpSessionStore;
   }
 
   /** Attach a NexusWsBridge for push-based IPC. Call after construction. */
@@ -136,9 +152,34 @@ export class SpawnManager {
       const role = session.role;
       if (role) {
         bridge.registerSession(role, session);
+        this.registerAcpSession(role, session.id);
         debugLog("wsBridge", `late-registered ${role} (spawnId=${spawnId})`);
       }
     }
+  }
+
+  /**
+   * Register a session with AcpSessionStore and bind a projection into the
+   * role's AgentLogBuffer so TracePane receives typed events without a
+   * parallel ingestion pipeline. Safe to call twice for the same sessionId
+   * — AcpSessionStore.register is a no-op on duplicates.
+   */
+  private registerAcpSession(role: string, sessionId: string): void {
+    if (!this.acpSessionStore) return;
+    this.acpSessionStore.register(sessionId);
+    if (this.acpProjections.has(sessionId)) return;
+    const buffer = this.ensureLogBuffer(role);
+    const unsubscribe = projectSessionToBuffer(this.acpSessionStore, sessionId, buffer);
+    this.acpProjections.set(sessionId, unsubscribe);
+  }
+
+  private unregisterAcpSession(sessionId: string): void {
+    const unsubscribe = this.acpProjections.get(sessionId);
+    if (unsubscribe) {
+      unsubscribe();
+      this.acpProjections.delete(sessionId);
+    }
+    this.acpSessionStore?.unregister(sessionId);
   }
 
   getWsBridge(): NexusWsBridge | undefined {
@@ -442,6 +483,9 @@ export class SpawnManager {
     if (agentSession && this.wsBridge) {
       this.wsBridge.registerSession(roleId, agentSession);
     }
+    if (agentSession) {
+      this.registerAcpSession(roleId, agentSession.id);
+    }
 
     return {
       spawnId,
@@ -476,6 +520,11 @@ export class SpawnManager {
       this.spawnRecords.delete(killedAgentId);
       this.sessionStore?.remove(killedAgentId);
       this.wsBridge?.unregisterSession(killedAgentId);
+      // AcpSessionStore is keyed by the runtime's agentSession.id (e.g.
+      // `grove-coder-0-abc123`), which may differ from `killedAgentId`
+      // (the spawn-manager's agentId key). Prefer the captured
+      // agentSession.id; fall back to killedAgentId for legacy paths.
+      this.unregisterAcpSession(agentSession?.id ?? killedAgentId);
 
       if (this.provider.cleanWorkspace) {
         await safeCleanup(
@@ -1240,6 +1289,11 @@ export class SpawnManager {
     }
     this.logBuffers.clear();
     this.spawnRecords.clear();
+    for (const unsubscribe of this.acpProjections.values()) {
+      unsubscribe();
+    }
+    this.acpProjections.clear();
+    this.acpSessionStore?.dispose();
     this.agentSessions.clear();
     this.wsBridge?.close();
   }

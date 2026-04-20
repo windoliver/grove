@@ -160,17 +160,17 @@ async function readNexusUrlFromConfig(
     try {
       const { parseGroveConfig } = await import("../core/config.js");
       const config = parseGroveConfig(raw);
-      if (config.nexusUrl) return { url: config.nexusUrl, fromExplicit: true };
 
-      // Managed Nexus: no nexusUrl in grove.json — discover from nexus.yaml.
-      // This handles standalone `grove tui` on a managed-Nexus grove where
-      // `grove up` already started Nexus but didn't set GROVE_NEXUS_URL.
+      // For managed Nexus, live nexus.yaml is authoritative — `nexus up` can
+      // change the port (e.g. after conflict resolution) while grove.json
+      // keeps the stale snapshot, silently routing agents at a dead port.
       if (config.nexusManaged && config.mode === "nexus") {
         const { readNexusUrl } = await import("../cli/nexus-lifecycle.js");
         const yamlUrl = readNexusUrl(join(groveDir, ".."));
         if (yamlUrl) return { url: yamlUrl, fromExplicit: false };
       }
 
+      if (config.nexusUrl) return { url: config.nexusUrl, fromExplicit: true };
       return none;
     } catch {
       // Fall back to untyped parse (e.g., when zod isn't available in test/CI)
@@ -179,9 +179,7 @@ async function readNexusUrlFromConfig(
         nexusManaged?: boolean;
         mode?: string;
       };
-      if (parsed.nexusUrl) return { url: parsed.nexusUrl, fromExplicit: true };
 
-      // Managed Nexus fallback: discover from nexus.yaml
       if (parsed.nexusManaged && parsed.mode === "nexus") {
         try {
           const { readNexusUrl } = await import("../cli/nexus-lifecycle.js");
@@ -191,6 +189,8 @@ async function readNexusUrlFromConfig(
           // nexus-lifecycle not available
         }
       }
+
+      if (parsed.nexusUrl) return { url: parsed.nexusUrl, fromExplicit: true };
       return none;
     }
   } catch {

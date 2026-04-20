@@ -593,6 +593,24 @@ export async function handleTui(
           // best-effort
         }
       }
+      const { AcpSessionStore } = await import("./data/acp-session-store.js");
+      const { createAcpMessageSink } = await import("./data/acp-message-sink.js");
+      const acpSessionStore = new AcpSessionStore();
+      const acpSink = createAcpMessageSink(acpSessionStore);
+      // Track subscriptions so we can unsubscribe before teardown — an
+      // orphaned handler would retain a stale sink closure and process
+      // events against a disposed store.
+      const acpBusUnsubscribes: Array<() => void> = [];
+      if (result.appProps.eventBus && result.appProps.topology) {
+        const bus = result.appProps.eventBus;
+        for (const role of result.appProps.topology.roles) {
+          const handler = (ev: import("../core/event-bus.js").GroveEvent): void => {
+            acpSink.handleGroveEvent(ev);
+          };
+          bus.subscribe(role.name, handler);
+          acpBusUnsubscribes.push(() => bus.unsubscribe(role.name, handler));
+        }
+      }
       const spawnManager = new SpawnManager(
         result.appProps.provider,
         result.appProps.tmux,
@@ -600,6 +618,7 @@ export async function handleTui(
         sessionStore,
         result.appProps.groveDir,
         result.appProps.agentRuntime,
+        acpSessionStore,
       );
       root.render(
         React.createElement(
@@ -615,6 +634,9 @@ export async function handleTui(
       );
       renderer.start();
       await renderer.idle();
+      for (const unsubscribe of acpBusUnsubscribes) {
+        unsubscribe();
+      }
       spawnManager.destroy();
       return;
     }
