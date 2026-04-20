@@ -39,6 +39,11 @@ export interface InitOptions {
  *
  * Usage: grove init [name] [--seed <path>...] [--mode <mode>] [--metric <name:direction>...]
  *        [--description <text>] [--force] [--preset <name>]
+ *
+ * Without `--preset`, init creates a bare `.grove/` and does NOT write
+ * `GROVE.md` — sessions configure themselves from a preset at start time.
+ * With `--preset`, init also generates `GROVE.md` as human-readable
+ * project-level defaults.
  */
 export function parseInitArgs(args: readonly string[]): InitOptions {
   const { values, positionals } = parseArgs({
