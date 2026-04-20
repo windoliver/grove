@@ -698,6 +698,7 @@ export async function handleTui(
     // onStart: handles "Resume" path — start services for existing grove
     const onStart = async (
       onProgress?: (step: string) => void,
+      sessionId?: string,
     ): Promise<import("./app.js").AppProps> => {
       const resolvedGrove = groveDir ?? join(process.cwd(), ".grove");
       const { startServices, persistNexusUrlToConfig } = await import(
@@ -720,7 +721,18 @@ export async function handleTui(
       // Post-startup: update agent skill SKILL.md (non-blocking)
       updateSkillAfterStartup();
 
-      return result.appProps;
+      return { ...result.appProps, resumeSessionId: sessionId };
+    };
+
+    // onNewSession: handles `n` on fast-path — reuse existing grove, start a new
+    // session with the user-picked preset. Delegates to `onInit` which already
+    // handles the `groveExists=true` branch (just startServices + buildAppProps).
+    const onNewSession = async (presetName: string): Promise<import("./app.js").AppProps> => {
+      if (!groveInfo?.name) {
+        throw new Error("onNewSession called without existing grove");
+      }
+      const baseProps = await onInit(presetName, groveInfo.name);
+      return { ...baseProps, newSessionPreset: presetName };
     };
 
     // onConnect: handles "Connect to remote Nexus" path — no local services
@@ -745,6 +757,7 @@ export async function handleTui(
           onInit,
           onStart,
           onConnect,
+          onNewSession,
           autoConnectNexus: opts.nexus,
         }),
         React.createElement(Toaster, { position: "bottom-right" }),

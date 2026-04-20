@@ -381,13 +381,18 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
     // Resumed groves start on RunningView (Screen 4); new groves start on
     // PresetSelect (Screen 1) — but for resumed groves that already went
     // through welcome, we skip directly to RunningView.
+    const initialState = appProps.newSessionPreset
+      ? { screen: "goal-input" as const, selectedPreset: appProps.newSessionPreset }
+      : undefined;
     return (
       <SpawnManagerContext value={spawnManager}>
         {React.createElement(ScreenManager, {
           appProps,
           presets,
           sessions: props.sessions,
-          startOnRunning: isResumedRef.current,
+          startOnRunning: isResumedRef.current && !appProps.newSessionPreset,
+          initialState,
+          resumeSessionId: appProps.resumeSessionId,
         })}
       </SpawnManagerContext>
     );

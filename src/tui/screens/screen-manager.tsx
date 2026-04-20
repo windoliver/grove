@@ -83,6 +83,8 @@ export interface ScreenManagerProps {
   readonly startOnRunning?: boolean | undefined;
   /** Override initial state (testing only). */
   readonly initialState?: ScreenState | undefined;
+  /** Scope the resumed session's feed/history to this session id. */
+  readonly resumeSessionId?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +99,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     sessions,
     startOnRunning,
     initialState,
+    resumeSessionId: resumeSessionIdFromProps,
   }: ScreenManagerProps): React.ReactNode {
     const renderer = useRenderer();
     const { provider, topology: initialTopology, contract } = appProps;
@@ -115,7 +118,9 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       let resumeSessionStartedAt: string | undefined;
       let resumeSessionId: string | undefined;
       if (startOnRunning && sessions && sessions.length > 0) {
-        const active = sessions.find((s) => s.status === "active");
+        const active = resumeSessionIdFromProps
+          ? sessions.find((s) => s.id === resumeSessionIdFromProps)
+          : sessions.find((s) => s.status === "active");
         if (active) {
           resumeSessionStartedAt = active.createdAt;
           resumeSessionId = active.id;
