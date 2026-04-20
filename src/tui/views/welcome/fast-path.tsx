@@ -40,15 +40,21 @@ export const FastPath: React.NamedExoticComponent<FastPathProps> = React.memo(
 
     // Apply archive toggle and filter — in that order.
     const visibleSessions = useMemo(() => {
-      const archived = sessions.filter((s) => s.status === "archived");
       const base = archiveVisible ? sessions : sessions.filter((s) => s.status !== "archived");
       if (!filterText) return base;
       const needle = filterText.toLowerCase();
       return base.filter((s) => (s.goal ?? "").toLowerCase().includes(needle));
     }, [sessions, filterText, archiveVisible]);
 
-    const archivedCount = sessions.filter((s) => s.status === "archived").length;
-    const activeCount = sessions.filter((s) => s.status === "active").length;
+    const { activeCount, archivedCount } = useMemo(() => {
+      let active = 0;
+      let archived = 0;
+      for (const s of sessions) {
+        if (s.status === "active") active++;
+        else if (s.status === "archived") archived++;
+      }
+      return { activeCount: active, archivedCount: archived };
+    }, [sessions]);
 
     const visibleIds = useMemo(
       () => visibleSessions.map((s) => s.id),
