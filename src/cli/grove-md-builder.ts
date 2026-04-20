@@ -355,14 +355,13 @@ export function defaultGroveMdConfig(options: {
  */
 export interface PresetMdInput {
   readonly name: string;
-  readonly description?: string | undefined;
   readonly mode: "evaluation" | "exploration";
   readonly metrics?: readonly MetricEntry[] | undefined;
   readonly gates?: readonly GateEntry[] | undefined;
   readonly stopConditions?: StopConditionsConfig | undefined;
   readonly concurrency?: ConcurrencyConfig | undefined;
   readonly execution?: ExecutionConfig | undefined;
-  readonly topology?: import("../core/topology.js").AgentTopology | undefined;
+  readonly topology?: AgentTopology | undefined;
   readonly presetDescription?: string | undefined;
 }
 
