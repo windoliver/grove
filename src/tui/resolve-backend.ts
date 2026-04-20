@@ -166,8 +166,7 @@ async function readNexusUrlFromConfig(
       // This handles standalone `grove tui` on a managed-Nexus grove where
       // `grove up` already started Nexus but didn't set GROVE_NEXUS_URL.
       if (config.nexusManaged && config.mode === "nexus") {
-        const { readNexusUrl } = await import("../cli/nexus-lifecycle.js");
-        const yamlUrl = readNexusUrl(join(groveDir, ".."));
+        const yamlUrl = readNexusUrlFromYaml(join(groveDir, ".."));
         if (yamlUrl) return { url: yamlUrl, fromExplicit: false };
       }
 
@@ -183,18 +182,29 @@ async function readNexusUrlFromConfig(
 
       // Managed Nexus fallback: discover from nexus.yaml
       if (parsed.nexusManaged && parsed.mode === "nexus") {
-        try {
-          const { readNexusUrl } = await import("../cli/nexus-lifecycle.js");
-          const yamlUrl = readNexusUrl(join(groveDir, ".."));
-          if (yamlUrl) return { url: yamlUrl, fromExplicit: false };
-        } catch {
-          // nexus-lifecycle not available
-        }
+        const yamlUrl = readNexusUrlFromYaml(join(groveDir, ".."));
+        if (yamlUrl) return { url: yamlUrl, fromExplicit: false };
       }
       return none;
     }
   } catch {
     return none;
+  }
+}
+
+/** Parse managed Nexus URL from project-local nexus.yaml (ports.http). */
+function readNexusUrlFromYaml(projectRoot: string): string | undefined {
+  const yamlPath = join(projectRoot, "nexus.yaml");
+  if (!existsSync(yamlPath)) return undefined;
+  try {
+    const raw = readFileSync(yamlPath, "utf-8");
+    const match = raw.match(/^\s*http:\s*(\d{1,5})\s*$/m);
+    if (!match?.[1]) return undefined;
+    const port = Number(match[1]);
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) return undefined;
+    return `http://localhost:${port}`;
+  } catch {
+    return undefined;
   }
 }
 

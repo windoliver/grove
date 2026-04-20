@@ -35,13 +35,28 @@ describe("resolveGroveDir", () => {
   });
 
   test("explicit override takes priority over GROVE_DIR", async () => {
-    const dir1 = join(tempDir, "one");
-    const dir2 = join(tempDir, "two");
-    await mkdir(dir1);
-    await mkdir(dir2);
+    const dir1 = join(tempDir, "one", ".grove");
+    const dir2 = join(tempDir, "two", ".grove");
+    await mkdir(dir1, { recursive: true });
+    await mkdir(dir2, { recursive: true });
     process.env.GROVE_DIR = dir2;
     const result = resolveGroveDir(dir1);
     expect(result.groveDir).toBe(dir1);
+  });
+
+  test("accepts override pointing at repo root and resolves nested .grove", async () => {
+    const repoRoot = join(tempDir, "repo");
+    const groveDir = join(repoRoot, ".grove");
+    await mkdir(groveDir, { recursive: true });
+    const result = resolveGroveDir(repoRoot);
+    expect(result.groveDir).toBe(groveDir);
+    expect(result.dbPath).toBe(join(groveDir, "grove.db"));
+  });
+
+  test("throws when override path does not resolve to a grove", async () => {
+    const invalid = join(tempDir, "invalid-dir");
+    await mkdir(invalid);
+    expect(() => resolveGroveDir(invalid)).toThrow(/No grove found at/);
   });
 
   test("throws when no .grove found", () => {

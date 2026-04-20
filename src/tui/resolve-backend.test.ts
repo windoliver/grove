@@ -149,7 +149,7 @@ describe("resolveBackend", () => {
     }
   });
 
-  test("grove.json not found when --grove points at repo root (not .grove)", async () => {
+  test("finds grove.json when --grove points at repo root (parent of .grove)", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "grove-resolve-test-"));
     const groveDir = join(tempDir, ".grove");
     mkdirSync(groveDir, { recursive: true });
@@ -159,13 +159,14 @@ describe("resolveBackend", () => {
     );
 
     try {
-      // --grove points at the repo root (parent of .grove) — config won't be found
-      // because resolveGroveDir treats the override as the final directory
       const result = await resolveBackend({ groveOverride: tempDir });
-      // Should fall through to local since grove.json is at tempDir/.grove/grove.json
-      // but resolveGroveDir(tempDir) returns groveDir=tempDir, so we look for
-      // tempDir/grove.json which doesn't exist
-      expect(result.mode).toBe("local");
+      expect(result.mode).toBe("nexus");
+      expect(result.source).toBe("grove.json");
+      if (result.mode === "nexus") {
+        expect(result.url).toBe("http://json-nexus:7070");
+        // Preserve the user-provided override path.
+        expect(result.groveOverride).toBe(tempDir);
+      }
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
