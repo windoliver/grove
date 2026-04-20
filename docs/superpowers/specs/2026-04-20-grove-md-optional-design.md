@@ -71,22 +71,28 @@ if (preset) {
 - `grove.json` is written unconditionally (unchanged). `preset: undefined` is persisted when no preset is given.
 - `inferNexusPreset({ preset: undefined, ... })` must continue to return a sane default — verify during implementation; patch if not.
 
-### 2. `src/core/presets.ts`
+### 2. `src/cli/presets/index.ts`
 
-Add `presetToSessionConfig(preset: PresetConfig): GroveContract`.
+Add `presetToSessionConfig(preset: PresetConfig, name: string): GroveContract`.
 
 ```typescript
-export function presetToSessionConfig(preset: PresetConfig): GroveContract {
+export function presetToSessionConfig(
+  preset: PresetConfig,
+  name: string,
+): GroveContract {
   // Maps preset fields (mode, metrics, gates, stopConditions,
   // agentConstraints, concurrency, execution, topology, outcomePolicy,
   // evaluation, rateLimits, hooks) into a GroveContract-shaped object.
   // Mirrors the round-trip that `buildGroveMd` -> `parseGroveContract`
   // would produce, but skips the markdown pass.
+  // Fields not carried by the preset (contractVersion, name, description)
+  // come from the caller or sensible defaults.
 }
 ```
 
-- Lives next to `lookupPresetTopology` in `src/core/presets.ts`. `PresetConfig` is imported from `src/cli/presets/index.ts`; `src/core/presets.test.ts` already does the same import, so the core → cli layering is an established pattern.
-- Every field mapped must already exist on `PresetConfig`; fields that presets don't carry (e.g. `name`, `description`) are filled from the preset's own `name`/`description` or sensible defaults.
+- Lives in `src/cli/presets/index.ts` — the only module that owns the full `PresetConfig` shape. Placing it in `src/core/presets.ts` would invert the existing cli → core dependency direction.
+- Server imports from `src/cli/presets/index.ts`. `src/tui/main.ts:186` already does this, so the pattern is established.
+- `name` is passed in because `GroveContract.name` is grove-level, not preset-level (the preset's own `name` field is the preset ID like `"review-loop"`).
 
 ### 3. `src/server/routes/sessions.ts`
 
@@ -164,17 +170,15 @@ No change. `createLocalRuntime` already uses `existsSync` before reading `GROVE.
 | File | Change |
 |------|--------|
 | `src/cli/commands/init.ts` | Guard GROVE.md write on preset; drop unconditional `defaultGroveMdConfig` path |
-| `src/core/presets.ts` | Add `presetToSessionConfig(preset)` helper |
+| `src/cli/presets/index.ts` | Add `presetToSessionConfig(preset, name)` helper |
 | `src/server/routes/sessions.ts` | Resolve `baseConfig` from contract or preset; 400 on neither; delete 501 branch |
 | `src/server/serve.ts` | Add bootstrap INFO log when `runtime.contract` is undefined |
-| `tests/cli/init.test.ts` (or equivalent) | New: bare-init creates no GROVE.md; preset-init still writes it |
-| `tests/server/routes/sessions.test.ts` | New: preset-only session creation succeeds without contract; 400 paths |
-| `tests/core/presets.test.ts` | New: `presetToSessionConfig` produces a valid `GroveContract` |
-| `tests/presets/preset-integration.test.ts` | Split line 183/828-830/875 assertions by path |
-| `tests/presets/preset-e2e-nexus.test.ts` | Split line 197 assertion by path |
+| `tests/cli/init-bare.test.ts` (new) | Bare-init creates no GROVE.md; `grove.db` and `grove.json` present |
+| `tests/server/routes/sessions-no-contract.test.ts` (new) | Preset-only session creation succeeds without contract; 400 paths |
+| `tests/cli/presets-to-session-config.test.ts` (new) | `presetToSessionConfig(preset, name)` produces a valid `GroveContract` |
+| `tests/presets/preset-integration.test.ts` | Line 183/875 stay (still `--preset` paths); add bare-init sibling test |
+| `tests/presets/preset-e2e-nexus.test.ts` | Line 197 stays (still `--preset` path) |
 | `README.md` | GROVE.md-is-optional callout; `grove init` two-path example |
-| `docs/GROVE_MD.md` | Flip framing to "optional project defaults" (verify file exists) |
-| `CHANGELOG.md` | Unreleased entry (verify file is maintained) |
 
 ## Testing
 
@@ -189,8 +193,9 @@ No change. `createLocalRuntime` already uses `existsSync` before reading `GROVE.
 - Same, body `{ goal, preset: "unknown-x" }` → 400 `VALIDATION_ERROR` "Unknown preset 'unknown-x'".
 - With contract loaded, body unchanged → behavior identical to today.
 
-**`tests/core/presets.test.ts`:**
-- `presetToSessionConfig(getPreset("review-loop"))` returns an object that structurally satisfies `GroveContract` and whose key fields (metrics, gates, mode) match the preset.
+**`tests/cli/presets-to-session-config.test.ts` (new):**
+- `presetToSessionConfig(getPreset("review-loop"), "my-grove")` returns an object that structurally satisfies `GroveContract` and whose key fields (`name`, `mode`, `topology`, `concurrency`, `execution`) match the preset.
+- `presetToSessionConfig(getPreset("review-loop"), "my-grove")` is equivalent (for fields both produce) to `parseGroveContract(buildGroveMd(presetToGroveMdConfig(getPreset("review-loop"), { name: "my-grove", ... })))` — key-field comparison, not byte-exact.
 
 **Modify existing:**
 - `tests/presets/preset-integration.test.ts:183,875` — assert GROVE.md exists under the `--preset` path only; add a bare-init sibling case asserting absence.
@@ -201,10 +206,9 @@ No change. `createLocalRuntime` already uses `existsSync` before reading `GROVE.
 
 ## Documentation
 
-- **`README.md`:** add a "GROVE.md is optional" callout under Getting Started. Show both `grove init foo` (bare) and `grove init foo --preset review-loop` (with defaults). Note that presets carry full config per-session; GROVE.md is project-level defaults.
-- **`docs/GROVE_MD.md`** (verify it exists; if not, skip): flip framing from "required contract" to "optional project defaults". Document resolution precedence: `session.config` → `GROVE.md` → preset (server-side when missing both) → unenforced.
-- **`CHANGELOG.md`** (verify it exists): unreleased entry — "feat: GROVE.md is optional — `grove init` without `--preset` creates a bare grove; server resolves session config from preset when no contract is loaded".
-- **CLI `--help` for `grove init`:** reword the one-line description from "Creates a new grove with GROVE.md contract" → "Creates a new grove. Pass `--preset <name>` to generate a `GROVE.md` with preset defaults."
+- **`README.md`:** add a "GROVE.md is optional" callout under Getting Started. Show both `grove init foo` (bare) and `grove init foo --preset review-loop` (with defaults). Note that presets carry full config per-session; GROVE.md is project-level defaults. Also update the line at `README.md:400` which currently says "`GROVE.md` is Grove's contract file, generated by `grove init`..." to reflect the preset-only generation.
+- **No `docs/GROVE_MD.md` or `CHANGELOG.md`:** neither file exists in the repo (confirmed during implementation planning). Skip.
+- **CLI `--help` for `grove init`:** reword the usage string in `src/cli/commands/init.ts:40-42` (JSDoc comment used by `--help` machinery) from "Creates a new grove with GROVE.md contract" → "Creates a new grove. Pass `--preset <name>` to also generate a `GROVE.md` with preset defaults."
 
 ## Out of Scope
 
