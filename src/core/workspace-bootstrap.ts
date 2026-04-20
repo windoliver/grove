@@ -6,6 +6,7 @@
 
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { injectSkills } from "./skill-injector.js";
 
 export interface BootstrapOptions {
   /** Path to the agent workspace directory. */
@@ -26,6 +27,12 @@ export interface BootstrapOptions {
   nexusUrl?: string | undefined;
   /** Nexus API key for MCP env. */
   nexusApiKey?: string | undefined;
+  /** Skill names to inject. If empty or omitted, no injection happens. */
+  skills?: readonly string[] | undefined;
+  /** Absolute path to the bundled catalog; required when `skills` is non-empty. */
+  bundledSkillsRoot?: string | undefined;
+  /** Optional absolute path to the workspace-specific override catalog. */
+  workspaceOverrideRoot?: string | undefined;
 }
 
 /**
@@ -125,6 +132,22 @@ Follow the Instructions section above exactly. You can edit files, commit, push,
   // Write .grove context dir
   const contextDir = join(workspacePath, ".grove");
   await mkdir(contextDir, { recursive: true });
+
+  // Inject skills (optional). injectSkills applies its own 0o444 pass, so
+  // the following chmod loop does not need to cover the injected tree.
+  if (opts.skills && opts.skills.length > 0) {
+    if (!opts.bundledSkillsRoot) {
+      throw new Error(
+        "bootstrapWorkspace: `skills` non-empty requires `bundledSkillsRoot` — refusing to inject with no catalog.",
+      );
+    }
+    await injectSkills({
+      workspacePath: workspacePath,
+      skills: opts.skills,
+      bundledSkillsRoot: opts.bundledSkillsRoot,
+      workspaceOverrideRoot: opts.workspaceOverrideRoot,
+    });
+  }
 
   // Protect config files from agent mutation
   for (const f of [".mcp.json", ".acpxrc.json", "CLAUDE.md", "CODEX.md"]) {
