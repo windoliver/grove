@@ -283,6 +283,17 @@ export function runHandoffStoreTests(factory: HandoffStoreFactory): void {
       expect(updated?.status).not.toBe(HandoffStatus.Expired);
     });
 
+    test("expireStale expires handoffs whose deadline equals cutoff", async () => {
+      const cutoff = new Date(Date.now() + 60_000).toISOString();
+      const h = await store.create(makeHandoffInput({ replyDueAt: cutoff }));
+
+      const expired = await store.expireStale(cutoff);
+      const updated = await store.get(h.handoffId);
+
+      expect(expired.map((e) => e.handoffId)).toContain(h.handoffId);
+      expect(updated?.status).toBe(HandoffStatus.Expired);
+    });
+
     test("expireStale is idempotent — second call returns empty for already expired", async () => {
       const pastDeadline = new Date(Date.now() - 60_000).toISOString();
       await store.create(makeHandoffInput({ replyDueAt: pastDeadline }));

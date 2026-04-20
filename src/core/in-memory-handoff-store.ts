@@ -99,7 +99,7 @@ export class InMemoryHandoffStore implements HandoffStore {
     if (
       (handoff.status === HandoffStatus.Delivered || handoff.status === HandoffStatus.Processed) &&
       handoff.replyDueAt !== undefined &&
-      handoff.replyDueAt < now
+      handoff.replyDueAt <= now
     ) {
       this.handoffs.set(id, { ...handoff, status: HandoffStatus.Expired });
       throw new StateConflictError({
@@ -162,7 +162,7 @@ export class InMemoryHandoffStore implements HandoffStore {
     const cutoff = now ?? new Date().toISOString();
     const expired: Handoff[] = [];
 
-    // Expire all unresolved statuses with past deadlines: pending_pickup,
+    // Expire all unresolved statuses with past-or-equal deadlines: pending_pickup,
     // delivered, processed. Dead-lettered and terminal states are left alone.
     const expirableStatuses: ReadonlySet<HandoffStatus> = new Set([
       HandoffStatus.PendingPickup,
@@ -174,7 +174,7 @@ export class InMemoryHandoffStore implements HandoffStore {
       if (
         expirableStatuses.has(handoff.status) &&
         handoff.replyDueAt !== undefined &&
-        handoff.replyDueAt < cutoff
+        handoff.replyDueAt <= cutoff
       ) {
         const next = { ...handoff, status: HandoffStatus.Expired };
         this.handoffs.set(handoffId, next);
