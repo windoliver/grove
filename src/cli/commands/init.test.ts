@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { access, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { InitOptions } from "./init.js";
@@ -132,76 +132,11 @@ describe("executeInit", () => {
     try {
       await executeInit(makeOptions({ name: "test-grove", cwd: dir }));
 
-      // Check directory structure
+      // Check directory structure (bare init does not create GROVE.md)
       await access(join(dir, ".grove"));
       await access(join(dir, ".grove", "grove.db"));
       await access(join(dir, ".grove", "cas"));
       await access(join(dir, ".grove", "workspaces"));
-      await access(join(dir, "GROVE.md"));
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("generates GROVE.md with contract_version 2", async () => {
-    const dir = await createTempDir();
-    try {
-      await executeInit(makeOptions({ name: "my-project", cwd: dir }));
-
-      const content = await readFile(join(dir, "GROVE.md"), "utf-8");
-      expect(content).toContain("contract_version: 2");
-      expect(content).toContain("name: my-project");
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("generates GROVE.md with mode", async () => {
-    const dir = await createTempDir();
-    try {
-      await executeInit(makeOptions({ name: "explore", mode: "exploration", cwd: dir }));
-
-      const content = await readFile(join(dir, "GROVE.md"), "utf-8");
-      expect(content).toContain("mode: exploration");
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("generates GROVE.md with metrics when specified", async () => {
-    const dir = await createTempDir();
-    try {
-      await executeInit(
-        makeOptions({
-          name: "metrics-test",
-          metric: ["val_bpb:minimize", "accuracy:maximize"],
-          cwd: dir,
-        }),
-      );
-
-      const content = await readFile(join(dir, "GROVE.md"), "utf-8");
-      expect(content).toContain("val_bpb:");
-      expect(content).toContain("direction: minimize");
-      expect(content).toContain("accuracy:");
-      expect(content).toContain("direction: maximize");
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("generates GROVE.md with custom description", async () => {
-    const dir = await createTempDir();
-    try {
-      await executeInit(
-        makeOptions({
-          name: "desc-test",
-          description: "My custom description",
-          cwd: dir,
-        }),
-      );
-
-      const content = await readFile(join(dir, "GROVE.md"), "utf-8");
-      expect(content).toContain("description: My custom description");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -231,8 +166,11 @@ describe("executeInit", () => {
       // Second init with --force
       await executeInit(makeOptions({ name: "second", cwd: dir, force: true }));
 
-      const content = await readFile(join(dir, "GROVE.md"), "utf-8");
-      expect(content).toContain("name: second");
+      // Bare init does not write GROVE.md — verify via grove.json instead
+      const { readFile: rf } = await import("node:fs/promises");
+      const configRaw = await rf(join(dir, ".grove", "grove.json"), "utf-8");
+      const config = JSON.parse(configRaw) as { name: string };
+      expect(config.name).toBe("second");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -299,7 +237,7 @@ describe("executeInit", () => {
 // ---------------------------------------------------------------------------
 
 describe("grove init E2E", () => {
-  test("grove init via CLI creates .grove/ and GROVE.md", async () => {
+  test("grove init via CLI creates .grove/", async () => {
     const dir = await createTempDir();
     try {
       const cliPath = join(import.meta.dir, "..", "..", "cli", "main.ts");
@@ -315,9 +253,8 @@ describe("grove init E2E", () => {
 
       expect(exitCode).toBe(0);
 
-      // Verify files exist
+      // Verify .grove/ exists (bare init does not create GROVE.md)
       await access(join(dir, ".grove"));
-      await access(join(dir, "GROVE.md"));
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

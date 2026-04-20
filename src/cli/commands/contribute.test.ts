@@ -886,11 +886,25 @@ describe("Codex review fixes", () => {
   test("inherits mode from GROVE.md contract when --mode is omitted", async () => {
     const dir = await createTempDir();
     try {
-      // Initialize grove with exploration mode
+      // Initialize grove (bare init — no GROVE.md written)
       await executeInit({
         ...makeInitOptions(dir),
         mode: "exploration",
       });
+
+      // Manually write GROVE.md with exploration mode so contribute can inherit it
+      await writeFile(
+        join(dir, "GROVE.md"),
+        [
+          "---",
+          "contract_version: 2",
+          "name: test-grove",
+          "mode: exploration",
+          "---",
+          "# test",
+        ].join("\n"),
+        "utf-8",
+      );
 
       // Contribute without explicit --mode (mode: undefined)
       const result = await executeContribute(
@@ -980,11 +994,28 @@ describe("Codex review fixes", () => {
   test("uses metric direction from GROVE.md contract instead of hardcoded maximize", async () => {
     const dir = await createTempDir();
     try {
-      // Initialize grove with a minimize metric
+      // Initialize grove (bare init — no GROVE.md written)
       await executeInit({
         ...makeInitOptions(dir),
         metric: ["val_bpb:minimize"],
       });
+
+      // Manually write GROVE.md with the minimize metric so contribute can read it
+      await writeFile(
+        join(dir, "GROVE.md"),
+        [
+          "---",
+          "contract_version: 2",
+          "name: test-grove",
+          "mode: evaluation",
+          "metrics:",
+          "  val_bpb:",
+          "    direction: minimize",
+          "---",
+          "# test",
+        ].join("\n"),
+        "utf-8",
+      );
 
       // Contribute with that metric
       const result = await executeContribute(
@@ -1094,6 +1125,15 @@ describe("grove contribute E2E", () => {
     const dir = await createTempDir();
     try {
       await runCli(["init", "e2e-test", "--mode", "exploration"], dir);
+
+      // Bare init does not write GROVE.md; manually write it so contribute can
+      // inherit the exploration mode (this is what a preset would do at session start)
+      await Bun.write(
+        join(dir, "GROVE.md"),
+        ["---", "contract_version: 2", "name: e2e-test", "mode: exploration", "---", "# test"].join(
+          "\n",
+        ),
+      );
 
       // No --mode flag: should inherit exploration from grove
       const { exitCode, stdout } = await runCli(
