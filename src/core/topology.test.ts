@@ -384,3 +384,38 @@ mode: evaluation
     expect(contract.topology).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// topology skills field
+// ---------------------------------------------------------------------------
+
+describe("topology skills field", () => {
+  test("parses skills list on a role", () => {
+    const parsed = AgentTopologySchema.parse({
+      structure: "flat",
+      roles: [
+        { name: "coder", skills: ["grove", "review"] },
+      ],
+    });
+    const topology = wireToTopology(parsed);
+    expect(topology.roles[0]?.skills).toEqual(["grove", "review"]);
+  });
+
+  test("omits skills when not provided", () => {
+    const parsed = AgentTopologySchema.parse({
+      structure: "flat",
+      roles: [{ name: "coder" }],
+    });
+    const topology = wireToTopology(parsed);
+    expect(topology.roles[0]?.skills).toBeUndefined();
+  });
+
+  test("rejects non-string entries in skills", () => {
+    expect(() =>
+      AgentTopologySchema.parse({
+        structure: "flat",
+        roles: [{ name: "coder", skills: [123] }],
+      }),
+    ).toThrow();
+  });
+});
