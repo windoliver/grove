@@ -59,4 +59,14 @@ describe("suggestCommand", () => {
   test("handles empty command list", () => {
     expect(suggestCommand("anything", [])).toBeUndefined();
   });
+
+  test("short-circuits huge input when maxDistance cannot be met by length", () => {
+    const huge = "x".repeat(1_000_000);
+    const started = performance.now();
+    const result = suggestCommand(huge, commands, 2);
+    const elapsed = performance.now() - started;
+
+    expect(result).toBeUndefined();
+    expect(elapsed).toBeLessThan(100);
+  });
 });

@@ -14,6 +14,8 @@ import { executeDiscuss, handleDiscuss, parseDiscussArgs } from "./discuss.js";
 import type { InitOptions } from "./init.js";
 import { executeInit } from "./init.js";
 
+const VALID_CID = `blake3:${"a".repeat(64)}`;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -51,8 +53,8 @@ describe("parseDiscussArgs", () => {
   });
 
   test("parses reply (CID + message)", () => {
-    const opts = parseDiscussArgs(["blake3:abc123", "I think push is better"]);
-    expect(opts.respondsTo).toBe("blake3:abc123");
+    const opts = parseDiscussArgs([VALID_CID, "I think push is better"]);
+    expect(opts.respondsTo).toBe(VALID_CID);
     expect(opts.message).toBe("I think push is better");
   });
 
@@ -101,13 +103,59 @@ describe("parseDiscussArgs", () => {
   });
 
   test("joins extra positionals into reply message", () => {
-    const opts = parseDiscussArgs(["blake3:abc123", "this", "needs", "work"]);
-    expect(opts.respondsTo).toBe("blake3:abc123");
+    const opts = parseDiscussArgs([VALID_CID, "this", "needs", "work"]);
+    expect(opts.respondsTo).toBe(VALID_CID);
     expect(opts.message).toBe("this needs work");
   });
 
   test("throws on CID with no message", () => {
-    expect(() => parseDiscussArgs(["blake3:abc123"])).toThrow("empty");
+    expect(() => parseDiscussArgs([VALID_CID])).toThrow("empty");
+  });
+
+  test("does not misclassify root messages that look like algo:hex", () => {
+    const opts = parseDiscussArgs(["fix:deadbeef", "works"]);
+    expect(opts.respondsTo).toBeUndefined();
+    expect(opts.message).toBe("fix:deadbeef works");
+  });
+
+  test("rejects truncated blake3 CID intent", () => {
+    expect(() => parseDiscussArgs(["blake3:abc123", "reply"])).toThrow("Invalid CID");
+  });
+
+  test("rejects mixed-hex blake3 CID intent", () => {
+    expect(() => parseDiscussArgs(["blake3:abc123g", "reply"])).toThrow("Invalid CID");
+  });
+
+  test("rejects bare blake3 prefix intent", () => {
+    expect(() => parseDiscussArgs(["blake3:", "reply"])).toThrow("Invalid CID");
+  });
+
+  test("rejects uppercase blake3 CID intent", () => {
+    const uppercase = `blake3:${"A".repeat(64)}`;
+    expect(() => parseDiscussArgs([uppercase, "reply"])).toThrow("Invalid CID");
+  });
+
+  test("rejects uppercase BLAKE3 prefix intent", () => {
+    const uppercasePrefix = `BLAKE3:${"a".repeat(64)}`;
+    expect(() => parseDiscussArgs([uppercasePrefix, "reply"])).toThrow("Invalid CID");
+  });
+
+  test("allows non-CID hash-prefixed root messages", () => {
+    const opts = parseDiscussArgs(["sha256:collision", "risk"]);
+    expect(opts.respondsTo).toBeUndefined();
+    expect(opts.message).toBe("sha256:collision risk");
+  });
+
+  test("allows non-hex blake3-prefixed root messages with --root", () => {
+    const opts = parseDiscussArgs(["--root", "blake3:algorithm", "notes"]);
+    expect(opts.respondsTo).toBeUndefined();
+    expect(opts.message).toBe("blake3:algorithm notes");
+  });
+
+  test("forces root parsing for canonical CID prefix when --root is set", () => {
+    const opts = parseDiscussArgs(["--root", VALID_CID, "literal"]);
+    expect(opts.respondsTo).toBeUndefined();
+    expect(opts.message).toBe(`${VALID_CID} literal`);
   });
 });
 

@@ -3,19 +3,22 @@
  *
  * Usage:
  *   grove discuss "Should we use polling or push?"           # root discussion
- *   grove discuss blake3:abc123 "I think push is better"    # reply to thread
- *   grove discuss blake3:abc123 "Push wins" --tag arch      # reply with tags
+ *   grove discuss blake3:<64-hex> "I think push is better"  # reply to thread
+ *   grove discuss blake3:<64-hex> "Push wins" --tag arch    # reply with tags
  *   grove discuss "New topic" --tag design --mode exploration
+ *   grove discuss --root blake3:algorithm "notes"           # literal root message
  *   grove discuss "Topic" --json
  */
 
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
+import { CID_PATTERN } from "../../core/manifest.js";
 import type { ContributionMode } from "../../core/models.js";
 import { RelationType } from "../../core/models.js";
 import type { OperationDeps } from "../../core/operations/index.js";
 import { contributeOperation } from "../../core/operations/index.js";
+import { resolveAgent } from "../agent.js";
 import { outputJson } from "../format.js";
 import { resolveGroveDir } from "../utils/grove-dir.js";
 
@@ -35,7 +38,7 @@ export interface DiscussOptions {
  * Positional args: [cid] <message>
  *   - If one positional: it's the message (root discussion)
  *   - If two positionals: first is CID, second is message (reply)
- * Flags: --tag, --mode, --description, --json
+ * Flags: --tag, --mode, --description, --json, --root
  */
 export function parseDiscussArgs(args: readonly string[]): DiscussOptions {
   const { values, positionals } = parseArgs({
@@ -45,6 +48,7 @@ export function parseDiscussArgs(args: readonly string[]): DiscussOptions {
       mode: { type: "string" },
       description: { type: "string" },
       json: { type: "boolean", default: false },
+      root: { type: "boolean", default: false },
     },
     strict: true,
     allowPositionals: true,
@@ -54,17 +58,28 @@ export function parseDiscussArgs(args: readonly string[]): DiscussOptions {
     throw new Error(
       "Usage: grove discuss [<cid>] <message>\n" +
         '  grove discuss "Topic question"                  # root discussion\n' +
-        '  grove discuss blake3:abc.. "Reply message"      # reply to thread',
+        '  grove discuss blake3:<64-hex> "Reply message"   # reply to thread\n' +
+        '  grove discuss --root blake3:topic "Message"     # literal root message',
     );
   }
 
   let respondsTo: string | undefined;
   let message: string;
 
-  if (positionals[0]?.startsWith("blake3:")) {
-    // First positional is a CID — reply mode. Rest is the message.
-    respondsTo = positionals[0];
+  // Reply mode is entered for canonical CIDs only. `--root` always forces
+  // literal root parsing. Non-canonical `blake3:` prefixes fail closed by
+  // default so malformed reply intent is not silently downgraded to root mode.
+  const first = positionals[0];
+  if (values.root ?? false) {
+    message = positionals.join(" ");
+  } else if (first !== undefined && CID_PATTERN.test(first)) {
+    respondsTo = first;
     message = positionals.slice(1).join(" ");
+  } else if (first !== undefined && first.toLowerCase().startsWith("blake3:")) {
+    throw new Error(
+      `Invalid CID '${first}'. Expected format: blake3:<64 lowercase hex characters> ` +
+        "(or pass --root to treat it as literal message text).",
+    );
   } else {
     // Root discussion — all positionals form the message.
     message = positionals.join(" ");
@@ -134,6 +149,11 @@ export async function executeDiscuss(options: DiscussOptions): Promise<{ cid: st
         ? [{ targetCid: options.respondsTo, relationType: RelationType.RespondsTo }]
         : [];
 
+    // Explicitly pass the resolved agent identity so discussions are
+    // attributed consistently with contribute/review/reproduce/inbox (all of
+    // which pass `agent` rather than relying on operation-layer fallback).
+    const agent = resolveAgent();
+
     const result = await contributeOperation(
       {
         kind: "discussion",
@@ -142,6 +162,10 @@ export async function executeDiscuss(options: DiscussOptions): Promise<{ cid: st
         description: options.description,
         relations,
         tags: [...options.tags],
+        agent: {
+          agentId: agent.agentId,
+          ...(agent.agentName ? { agentName: agent.agentName } : {}),
+        },
       },
       opDeps,
     );

@@ -322,6 +322,14 @@ async function runGet(args: OutcomeGetArgs, deps: OutcomeDeps): Promise<void> {
 }
 
 async function runList(args: OutcomeListArgs, deps: OutcomeDeps): Promise<void> {
+  if (args.status !== undefined && !OUTCOME_STATUSES.has(args.status)) {
+    deps.stderr(
+      `Error: invalid status '${args.status}'. Must be one of: ${[...OUTCOME_STATUSES].join(", ")}`,
+    );
+    process.exitCode = 2;
+    return;
+  }
+
   const result = await listOutcomesOperation(
     {
       ...(args.status !== undefined ? { status: args.status as OutcomeRecord["status"] } : {}),
@@ -331,8 +339,7 @@ async function runList(args: OutcomeListArgs, deps: OutcomeDeps): Promise<void> 
   );
 
   if (!result.ok) {
-    deps.stderr(`Error: ${result.error.message}`);
-    process.exitCode = 1;
+    handleOperationError(result.error, args.json);
     return;
   }
 
@@ -350,8 +357,7 @@ async function runStats(args: OutcomeStatsArgs, deps: OutcomeDeps): Promise<void
   const result = await outcomeStatsOperation(toOpDeps(deps));
 
   if (!result.ok) {
-    deps.stderr(`Error: ${result.error.message}`);
-    process.exitCode = 1;
+    handleOperationError(result.error, args.json);
     return;
   }
 

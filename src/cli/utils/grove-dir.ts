@@ -8,7 +8,7 @@
 
 import { statSync } from "node:fs";
 import { hostname, userInfo } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 const GROVE_DIR_NAME = ".grove";
 const DB_FILENAME = "grove.db";
@@ -64,7 +64,16 @@ export function resolveGroveDir(overridePath?: string): GroveLocation {
   const target = overridePath ?? process.env.GROVE_DIR;
   if (target) {
     const resolved = resolve(target);
-    return { groveDir: resolved, dbPath: join(resolved, DB_FILENAME) };
+    if (isDirectory(resolved) && basename(resolved) === GROVE_DIR_NAME) {
+      return { groveDir: resolved, dbPath: join(resolved, DB_FILENAME) };
+    }
+    const nested = join(resolved, GROVE_DIR_NAME);
+    if (isDirectory(nested)) {
+      return { groveDir: nested, dbPath: join(nested, DB_FILENAME) };
+    }
+    throw new Error(
+      `No grove found at '${resolved}'. Pass a .grove directory or a parent containing .grove.`,
+    );
   }
 
   const found = findGroveDir(process.cwd());

@@ -136,9 +136,10 @@ export async function handleUp(args: readonly string[], groveOverride?: string):
           `[cleanup] expired ${result.expiredClaims} stale claim(s), cleaned ${result.cleanedClaims} old claim(s)\n`,
         );
       }
-    } catch {
-      // Cleanup errors are non-fatal — log and continue
-      process.stderr.write("[cleanup] claim cleanup failed\n");
+    } catch (err) {
+      // Cleanup errors are non-fatal — log the cause so operators can debug
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[cleanup] claim cleanup failed: ${msg}\n`);
     }
   }, CLAIM_CLEANUP_INTERVAL_MS);
 
@@ -153,25 +154,40 @@ export async function handleUp(args: readonly string[], groveOverride?: string):
           `[cleanup] garbage-collected ${result.deletedBlobs} unreferenced blob(s)\n`,
         );
       }
-    } catch {
-      // GC errors are non-fatal — log and continue
-      process.stderr.write("[cleanup] artifact GC failed\n");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[cleanup] artifact GC failed: ${msg}\n`);
     }
   }, ARTIFACT_GC_INTERVAL_MS);
 
-  const shutdown = async () => {
-    process.stderr.write("\nShutting down...\n");
-    clearInterval(claimCleanupTimer);
-    clearInterval(artifactGcTimer);
-    runtime.close();
-    await stopServices(services);
+  // shutdown() is idempotent: concurrent signal and child-exit paths race for
+  // teardown, and both should converge on a single clean stop. Without the
+  // guard, stopServices runs twice (once per caller) and can double-kill.
+  let shutdownPromise: Promise<void> | undefined;
+  const shutdown = (): Promise<void> => {
+    if (shutdownPromise) return shutdownPromise;
+    shutdownPromise = (async () => {
+      process.stderr.write("\nShutting down...\n");
+      clearInterval(claimCleanupTimer);
+      clearInterval(artifactGcTimer);
+      runtime.close();
+      await stopServices(services);
+    })();
+    return shutdownPromise;
   };
-  process.on("SIGINT", () => {
-    shutdown().then(() => process.exit(0));
-  });
-  process.on("SIGTERM", () => {
-    shutdown().then(() => process.exit(0));
-  });
+
+  const runShutdownAndExit = (code: number): void => {
+    shutdown().then(
+      () => process.exit(code),
+      (err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[shutdown] failed: ${msg}\n`);
+        process.exit(1);
+      },
+    );
+  };
+  process.on("SIGINT", () => runShutdownAndExit(0));
+  process.on("SIGTERM", () => runShutdownAndExit(0));
 
   try {
     if (services.children.length > 0) {

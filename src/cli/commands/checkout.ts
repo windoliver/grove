@@ -11,8 +11,7 @@
  */
 
 import { mkdir, rename, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { frontierOperation } from "../../core/operations/index.js";
 import {
@@ -130,14 +129,18 @@ export async function runCheckout(
     throw new Error(errMsg);
   }
 
-  // Stage artifacts into a temp directory, then atomically swap into --to.
-  // This prevents two failure modes:
+  // Stage artifacts into a sibling directory of the final destination, then
+  // atomically swap into --to. Staging next to destDir keeps the rename within
+  // a single filesystem so `rename` cannot fail with EXDEV after we've already
+  // torn down the destination. This prevents two failure modes:
   //   1. Stale files left behind when re-checking out into the same directory
   //   2. Partial snapshots when a later artifact is missing from CAS
   const destDir = resolve(options.to);
+  const destParent = dirname(destDir);
+  await mkdir(destParent, { recursive: true });
   const stagingDir = join(
-    tmpdir(),
-    `grove-checkout-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    destParent,
+    `.grove-checkout-${Date.now()}-${Math.random().toString(36).slice(2)}`,
   );
   await mkdir(stagingDir, { recursive: true });
 
@@ -157,7 +160,6 @@ export async function runCheckout(
     // All artifacts staged successfully — swap into destination.
     // Remove existing destination first to prevent stale files.
     await rm(destDir, { recursive: true, force: true });
-    await mkdir(join(destDir, ".."), { recursive: true });
     await rename(stagingDir, destDir);
   } catch (err) {
     // Clean up staging dir on failure — destination is untouched

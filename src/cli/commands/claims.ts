@@ -39,35 +39,28 @@ export async function runClaims(args: readonly string[], deps: ClaimsDeps): Prom
   const json = values.json ?? false;
 
   if (values.expired) {
-    // Terminal claims: use listClaimsOperation with status filter
-    const opDeps: OperationDeps = {
-      claimStore: deps.claimStore,
-    };
+    const terminalStatuses = [ClaimStatus.Expired, ClaimStatus.Released, ClaimStatus.Completed];
 
-    const result = await listClaimsOperation(
-      {
-        status: [ClaimStatus.Expired, ClaimStatus.Released, ClaimStatus.Completed],
-        agentId: values.agent,
-      },
-      opDeps,
-    );
+    if (json) {
+      // JSON path goes through the operation layer for structured envelopes
+      const opDeps: OperationDeps = { claimStore: deps.claimStore };
+      const result = await listClaimsOperation(
+        { status: terminalStatuses, agentId: values.agent },
+        opDeps,
+      );
 
-    if (!result.ok) {
-      if (json) {
+      if (!result.ok) {
         outputJsonError(result.error);
         return;
       }
-      throw new Error(result.error.message);
-    }
 
-    if (json) {
       outputJson(result.value);
       return;
     }
 
-    // Fetch full Claim objects for table formatting (operation returns summaries)
+    // Human path fetches full Claim objects directly — operation returns summaries
     const claims = await deps.claimStore.listClaims({
-      status: [ClaimStatus.Expired, ClaimStatus.Released, ClaimStatus.Completed],
+      status: terminalStatuses,
       agentId: values.agent,
     });
     deps.stdout(formatClaimsTable(claims));
