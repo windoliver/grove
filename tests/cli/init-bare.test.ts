@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { executeInit } from "../../src/cli/commands/init.js";
@@ -51,7 +51,6 @@ describe("grove init (bare, no --preset)", () => {
 
   test("does not overwrite a user-authored GROVE.md when no preset is given", async () => {
     const dir = await createTempDir("preserve-user-md");
-    const { writeFile } = await import("node:fs/promises");
     const userContent = "# my custom contract\n";
     await writeFile(join(dir, "GROVE.md"), userContent, "utf-8");
 
@@ -65,7 +64,6 @@ describe("grove init (bare, no --preset)", () => {
       cwd: dir,
     });
 
-    const { readFile } = await import("node:fs/promises");
     const after = await readFile(join(dir, "GROVE.md"), "utf-8");
     expect(after).toBe(userContent);
   });

@@ -138,7 +138,7 @@ export interface InitDeps {
  * 2. Validate seed paths exist
  * 3. Create .grove/ directory structure
  * 4. Initialize SQLite store
- * 5. Generate GROVE.md (from preset or defaults)
+ * 5. Generate GROVE.md (only when a preset is provided)
  * 6. Write grove.json
  * 7. Seed demo contributions if preset defines them
  * 8. Optionally ingest seed artifacts
