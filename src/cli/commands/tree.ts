@@ -65,7 +65,7 @@ async function collectSubgraph(
 
   while (frontier.length > 0) {
     // Batch-fetch all nodes in the current frontier that we haven't seen yet.
-    const current = frontier.filter((f) => !visited.has(f.cid) && f.depth <= maxDepth);
+    const current = dedupeByCid(frontier).filter((f) => !visited.has(f.cid) && f.depth <= maxDepth);
     const toFetch = current.map((f) => f.cid);
     const fetched =
       toFetch.length > 0 ? await deps.store.getMany(toFetch) : new Map<string, Contribution>();
@@ -80,7 +80,14 @@ async function collectSubgraph(
       }
     }
 
-    const nextFrontier: { cid: string; depth: number }[] = [];
+    const nextFrontier = new Map<string, number>();
+    const enqueue = (cid: string, depth: number): void => {
+      if (visited.has(cid)) return;
+      const prev = nextFrontier.get(cid);
+      if (prev === undefined || depth < prev) {
+        nextFrontier.set(cid, depth);
+      }
+    };
 
     // Outgoing edges live on the contribution — no DB call needed.
     for (const { depth, contribution } of expandable) {
@@ -89,7 +96,7 @@ async function collectSubgraph(
           (rel.relationType === "derives_from" || rel.relationType === "adopts") &&
           !visited.has(rel.targetCid)
         ) {
-          nextFrontier.push({ cid: rel.targetCid, depth: depth + 1 });
+          enqueue(rel.targetCid, depth + 1);
         }
       }
     }
@@ -110,15 +117,29 @@ async function collectSubgraph(
               rel.relationType === RelationType.Adopts),
         );
         if (hasEdge) {
-          nextFrontier.push({ cid: child.cid, depth: node.depth + 1 });
+          enqueue(child.cid, node.depth + 1);
         }
       }
     }
 
-    frontier = nextFrontier;
+    frontier = [...nextFrontier.entries()].map(([cid, depth]) => ({ cid, depth }));
   }
 
   return [...visited.values()];
+}
+
+function dedupeByCid(nodes: readonly { cid: string; depth: number }[]): readonly {
+  cid: string;
+  depth: number;
+}[] {
+  const byCid = new Map<string, number>();
+  for (const node of nodes) {
+    const prev = byCid.get(node.cid);
+    if (prev === undefined || node.depth < prev) {
+      byCid.set(node.cid, node.depth);
+    }
+  }
+  return [...byCid.entries()].map(([cid, depth]) => ({ cid, depth }));
 }
 
 export async function runTree(
