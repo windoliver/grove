@@ -129,27 +129,7 @@ export class AcpSessionStore {
         droppedMessageCount: 0,
       };
       session.turns.set(event.turnId, turn);
-      // Enforce the session-level turn cap. Only closed turns are eligible
-      // — keep every running turn alive so live projection/rendering never
-      // loses an active stream under bursty traffic. Maps iterate in
-      // insertion order, so this naturally evicts oldest-first.
-      if (session.turns.size > this.maxTurnsPerSession) {
-        let evicted = 0;
-        for (const [id, t] of session.turns) {
-          if (session.turns.size <= this.maxTurnsPerSession) break;
-          if (t.closedAt === undefined) continue;
-          if (id === session.latestTurnId) continue;
-          session.turns.delete(id);
-          evicted += 1;
-        }
-        if (evicted > 0) {
-          session.droppedTurnCount += evicted;
-          debugLog(
-            "acp_session_turns_evicted",
-            `evicted ${evicted} closed turns for sessionId=${event.sessionId} (cap=${this.maxTurnsPerSession} total=${session.droppedTurnCount})`,
-          );
-        }
-      }
+      this.enforceSessionTurnCap(session);
     }
 
     if (event.kind === "result") {
@@ -184,6 +164,47 @@ export class AcpSessionStore {
     session.latestTurnId = turn.turnId;
     this.dirty.add(event.sessionId);
     this.scheduleFlush();
+  }
+
+  /**
+   * Enforce the session-level turn cap. Prefers evicting CLOSED non-latest
+   * turns first (projection/UI state already complete); when that is not
+   * enough — which happens under missed/delayed result delivery where
+   * turns pile up in the open state — falls through to evicting the
+   * oldest OPEN non-latest turns as a last-resort hard cap. Without this
+   * final pass, a pathological stream where every turn loses its Result
+   * would grow the map unboundedly.
+   */
+  private enforceSessionTurnCap(session: SessionRecord): void {
+    if (session.turns.size <= this.maxTurnsPerSession) return;
+    let evictedClosed = 0;
+    let evictedOpen = 0;
+    // First pass: closed non-latest turns, oldest-first (Map insertion order).
+    for (const [id, t] of session.turns) {
+      if (session.turns.size <= this.maxTurnsPerSession) break;
+      if (t.closedAt === undefined) continue;
+      if (id === session.latestTurnId) continue;
+      session.turns.delete(id);
+      evictedClosed += 1;
+    }
+    // Second pass: oldest non-latest turns regardless of closed state.
+    // latestTurnId is preserved so the active stream keeps projecting.
+    if (session.turns.size > this.maxTurnsPerSession) {
+      for (const [id] of session.turns) {
+        if (session.turns.size <= this.maxTurnsPerSession) break;
+        if (id === session.latestTurnId) continue;
+        session.turns.delete(id);
+        evictedOpen += 1;
+      }
+    }
+    const totalEvicted = evictedClosed + evictedOpen;
+    if (totalEvicted > 0) {
+      session.droppedTurnCount += totalEvicted;
+      debugLog(
+        "acp_session_turns_evicted",
+        `evicted ${totalEvicted} turns (closed=${evictedClosed} open=${evictedOpen}) for sessionId=${session.sessionId} (cap=${this.maxTurnsPerSession} total=${session.droppedTurnCount})`,
+      );
+    }
   }
 
   /**

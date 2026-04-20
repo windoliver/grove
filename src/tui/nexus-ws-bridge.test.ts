@@ -503,11 +503,15 @@ describe("NexusWsBridge", () => {
     expect(onAcpEvent).not.toHaveBeenCalled();
   });
 
-  test("handleIpcEnvelope forwards local-role ACP when bridge has instance but envelope does not (rolling upgrade)", () => {
-    // Bridge is on a new build that always sets localInstanceId; envelope
-    // is from an older publisher that still omits sourceInstance.
-    // Forwarding is safer than silent drop — a visible dup is recoverable
-    // at the sink; a dropped terminal result would strand the turn.
+  test("handleIpcEnvelope drops local-role ACP when only one side has an instance marker", () => {
+    // Bridge has localInstanceId but envelope lacks sourceInstance (e.g.
+    // a local legacy publisher). We can't distinguish "self-loop" from
+    // "cross-process sender that happens to share this role name" — but
+    // the in-process EventBus subscription already delivers local-role
+    // events, so forwarding would duplicate every message frame (the
+    // store has no idempotency key and appends on every acp.message).
+    // Drop is the correct default; cross-process safety requires both
+    // sides to stamp sourceInstance.
     const onAcpEvent = mock(() => undefined);
     const bridge = new NexusWsBridge(makeBridgeOpts({ onAcpEvent, localInstanceId: "A" }));
     const outcome = bridge.handleIpcEnvelope(
@@ -521,7 +525,7 @@ describe("NexusWsBridge", () => {
       "tui",
     );
     expect(outcome).toBe("acp");
-    expect(onAcpEvent).toHaveBeenCalledTimes(1);
+    expect(onAcpEvent).not.toHaveBeenCalled();
   });
 
   test("handleIpcEnvelope returns 'ipc' for non-acp payloads (regression guard)", () => {

@@ -287,3 +287,24 @@ test("session eviction never drops the active (still-open) turn", () => {
   });
   expect(store.getTurn("s1", "active")).toBeDefined();
 });
+
+test("session cap is a HARD cap: evicts oldest OPEN turns when all are running", () => {
+  // Under missed result delivery every turn stays open. The cap must
+  // still hold — otherwise session.turns.size grows unboundedly.
+  const store = new AcpSessionStore({ maxTurnsPerSession: 2 });
+  store.register("s1");
+  for (let i = 0; i < 5; i++) {
+    store.ingest({
+      kind: "message",
+      sessionId: "s1",
+      turnId: `open-${i}`,
+      message: { kind: "text", turnId: `open-${i}`, text: "x", chunk: true },
+    });
+  }
+  const sess = store.getSession("s1");
+  expect(sess?.turns.size).toBeLessThanOrEqual(2);
+  expect(sess?.droppedTurnCount).toBeGreaterThanOrEqual(3);
+  // The latest open turn is always preserved even when the cap forces
+  // eviction of other open turns.
+  expect(sess?.turns.has("open-4")).toBe(true);
+});

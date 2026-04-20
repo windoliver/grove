@@ -361,30 +361,30 @@ export class NexusWsBridge {
     const localRoles = new Set(this.opts.topology.roles.map((r) => r.name));
     const envelopeInstance = (rec as { sourceInstance?: unknown }).sourceInstance;
     if (localRoles.has(sourceRole)) {
-      // Dedupe the SSE self-loop ONLY when instance IDs on both sides
-      // prove it's the same process. When either side is missing the
-      // marker we cannot distinguish "self-loop from legacy publisher"
-      // from "cross-process sender that happens to share a role name" —
-      // forwarding is strictly safer than silent drop (a visible dup
-      // is recoverable at the sink layer; a dropped terminal result
-      // strands the turn in a running state). Pure role-name dedupe
-      // only remains active when BOTH sides omit the instance marker.
+      // Local role ⇒ the in-process EventBus subscription is already
+      // ingesting this event. The SSE loopback is redundant. Forwarding
+      // here would append the message frame a second time (the store has
+      // no idempotency key; every `acp.message` pushes to the array).
+      //
+      // Only forward when we can PROVE the envelope came from a different
+      // process: both sides must carry `sourceInstance` and the values
+      // must differ. Any other combination — missing on either side,
+      // matching instance — is treated as a self-loop and dropped.
+      //
+      // Cross-process same-role senders without markers are a known
+      // blind spot; stamping `sourceInstance` on the publisher is the
+      // supported remediation (see PublishTurnOptions.sourceInstance).
       const bridgeHasInstance = typeof this.opts.localInstanceId === "string";
       const envelopeHasInstance = typeof envelopeInstance === "string";
-      if (bridgeHasInstance && envelopeHasInstance) {
-        if (envelopeInstance === this.opts.localInstanceId) {
-          return "acp";
-        }
+      if (
+        bridgeHasInstance &&
+        envelopeHasInstance &&
+        envelopeInstance !== this.opts.localInstanceId
+      ) {
         // Different instance with same role name — forward to sink.
-      } else if (!bridgeHasInstance && !envelopeHasInstance) {
-        // Legacy single-process wiring without instance markers: preserve
-        // original role-only dedupe so in-process bus + SSE loopback do
-        // not double-deliver. Shared-Nexus safety requires both sides to
-        // adopt instance IDs.
+      } else {
         return "acp";
       }
-      // Exactly one side has an instance marker → forward (prefer dup
-      // over silent drop during rolling upgrades).
     }
     if (!this.opts.onAcpEvent) {
       // Fail-loud: a typed ACP envelope arrived but no consumer is wired.
