@@ -6,7 +6,7 @@
  * or GROVE_DIR environment variable.
  */
 
-import { existsSync } from "node:fs";
+import { statSync } from "node:fs";
 import { hostname, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -16,6 +16,42 @@ const DB_FILENAME = "grove.db";
 export interface GroveLocation {
   readonly groveDir: string;
   readonly dbPath: string;
+}
+
+/** True iff `path` is an actual directory (resolves through symlinks). */
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Walk up from `startDir` looking for the nearest ancestor (or startDir itself)
+ * containing a `.grove/` subdirectory. Returns the absolute path to the
+ * `.grove/` directory, or undefined if none is found before the FS root.
+ *
+ * The fence requires `.grove` to be an actual directory (or a symlink that
+ * resolves to one). Stray regular files or broken symlinks named `.grove`
+ * are NOT fences — walk-up continues past them.
+ *
+ * Fence semantics: this function ONLY checks `.grove/` directory existence.
+ * Callers that require additional artifacts (grove.json, grove.db, etc.)
+ * MUST validate them after resolution and treat "found .grove/ but missing
+ * artifact" as "not initialized at this level" — they MUST NOT silently walk
+ * past an incomplete grove to find a more-complete parent. That behavior
+ * causes git worktrees to inherit stale parent state (#315).
+ */
+export function findGroveDir(startDir: string): string | undefined {
+  let current = resolve(startDir);
+  while (true) {
+    const candidate = join(current, GROVE_DIR_NAME);
+    if (isDirectory(candidate)) return candidate;
+    const parent = dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
 }
 
 /**
@@ -31,18 +67,8 @@ export function resolveGroveDir(overridePath?: string): GroveLocation {
     return { groveDir: resolved, dbPath: join(resolved, DB_FILENAME) };
   }
 
-  let current = resolve(process.cwd());
-
-  while (true) {
-    const candidate = join(current, GROVE_DIR_NAME);
-    if (existsSync(candidate)) {
-      return { groveDir: candidate, dbPath: join(candidate, DB_FILENAME) };
-    }
-
-    const parent = dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
+  const found = findGroveDir(process.cwd());
+  if (found) return { groveDir: found, dbPath: join(found, DB_FILENAME) };
 
   throw new Error("No grove found. Run 'grove init' to create one, or set GROVE_DIR.");
 }
