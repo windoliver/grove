@@ -36,6 +36,10 @@ const runtime = createLocalRuntime({
   parseContract: true,
 });
 
+if (!runtime.contract) {
+  console.log("no GROVE.md found — sessions must provide a preset or a loaded contract");
+}
+
 // ---------------------------------------------------------------------------
 // Optional gossip federation
 // ---------------------------------------------------------------------------
