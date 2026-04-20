@@ -10,7 +10,7 @@
 import { execSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { watchTurnError } from "../acp/watch-turn.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
@@ -308,7 +308,7 @@ export class SpawnManager {
             await injectSkills({
               workspacePath,
               skills: roleSkills,
-              bundledSkillsRoot: resolveBundledSkillsRoot(this.groveDir),
+              bundledSkillsRoot: resolveBundledSkillsRoot(dirname(this.groveDir)),
               workspaceOverrideRoot: join(this.groveDir, "skills"),
             });
           }
