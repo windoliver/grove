@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteGoalSessionStore } from "../../../src/local/sqlite-goal-session-store.js";
@@ -7,7 +8,12 @@ import { initSqliteDb } from "../../../src/local/sqlite-store.js";
 import { createApp } from "../../../src/server/app.js";
 import type { ServerDeps } from "../../../src/server/deps.js";
 
-function makeDepsWithoutContract(): ServerDeps {
+interface NoContractFixture {
+  readonly deps: ServerDeps;
+  readonly cleanup: () => Promise<void>;
+}
+
+function makeDepsWithoutContract(): NoContractFixture {
   const dir = join(
     tmpdir(),
     `grove-sessions-no-contract-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -17,10 +23,10 @@ function makeDepsWithoutContract(): ServerDeps {
   const db = initSqliteDb(dbPath);
   const goalSessionStore = new SqliteGoalSessionStore(db);
 
-  return {
+  const deps = {
     contributionStore: {} as never,
     claimStore: {} as never,
-    bountyStore: undefined as never,
+    bountyStore: undefined,
     outcomeStore: undefined,
     goalSessionStore,
     handoffStore: {} as never,
@@ -29,18 +35,30 @@ function makeDepsWithoutContract(): ServerDeps {
     frontier: {} as never,
     gossip: undefined,
     topology: undefined,
-    contract: undefined, // <-- no GROVE.md loaded
+    contract: undefined,
     idempotencyStore: {} as never,
   } as ServerDeps;
+
+  return {
+    deps,
+    cleanup: async () => {
+      db.close();
+      await rm(dir, { recursive: true, force: true });
+    },
+  };
 }
 
 describe("POST /api/sessions without loaded contract", () => {
-  let deps: ServerDeps;
+  let fixture: NoContractFixture;
   let app: ReturnType<typeof createApp>;
 
   beforeEach(() => {
-    deps = makeDepsWithoutContract();
-    app = createApp(deps);
+    fixture = makeDepsWithoutContract();
+    app = createApp(fixture.deps);
+  });
+
+  afterEach(async () => {
+    await fixture.cleanup();
   });
 
   test("with preset only → 201 with snapshotted session config", async () => {

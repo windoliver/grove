@@ -117,6 +117,11 @@ sessions.post("/", async (c) => {
     );
   }
 
+  // Invariant: the block above either assigns baseConfig or returns.
+  if (!baseConfig) {
+    throw new Error("unreachable: baseConfig must be assigned or the request must have returned");
+  }
+
   // Parse inline topology — try snake_case wire format first, then validate as camelCase
   let inlineTopology: AgentTopology | undefined;
   if (parsed.data.topology) {
