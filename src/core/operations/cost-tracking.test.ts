@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import type { ContributionInput } from "../models.js";
+import type { Contribution, ContributionInput } from "../models.js";
 import { ContributionKind } from "../models.js";
 import { InMemoryContributionStore } from "../testing.js";
 import { getSessionCosts, reportUsage } from "./cost-tracking.js";
@@ -148,5 +148,44 @@ describe("getSessionCosts", () => {
     expect(summary.totalOutputTokens).toBe(0);
     expect(summary.totalCostUsd).toBe(0);
     expect(summary.byAgent).toHaveLength(0);
+  });
+
+  test("ignores malformed usage_report payloads when aggregating", async () => {
+    const store = new InMemoryContributionStore();
+
+    await reportUsage(
+      store,
+      AGENT_ALICE,
+      { inputTokens: 1000, outputTokens: 500, costUsd: 0.01 },
+      mockComputeCid,
+    );
+
+    const malformed: Contribution = {
+      cid: "blake3:9999999999999999999999999999999999999999999999999999999999999999",
+      manifestVersion: 1,
+      kind: ContributionKind.Discussion,
+      mode: "exploration",
+      summary: "Malformed usage report",
+      artifacts: {},
+      relations: [],
+      tags: ["usage-report"],
+      context: {
+        ephemeral: true,
+        usage_report: {
+          input_tokens: "not-a-number",
+          output_tokens: 123,
+        } as unknown as Record<string, unknown>,
+      },
+      agent: AGENT_BOB,
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    await store.put(malformed);
+
+    const summary = await getSessionCosts(store);
+    expect(summary.totalInputTokens).toBe(1000);
+    expect(summary.totalOutputTokens).toBe(500);
+    expect(summary.totalCostUsd).toBeCloseTo(0.01);
+    expect(summary.byAgent).toHaveLength(1);
+    expect(summary.byAgent[0]?.agentId).toBe("alice");
   });
 });

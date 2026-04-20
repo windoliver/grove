@@ -346,7 +346,7 @@ function canonicalizeForFingerprint(value: unknown): unknown {
  * could produce a different stored contribution is reflected in the
  * hash:
  *
- *   - kind, mode, summary, description
+ *   - kind, mode, summary, description, commitHash
  *   - `context` (deep-canonicalized so key order doesn't matter) —
  *     plans store their task list here, messages store recipients +
  *     body, grove_done stores the ephemeral flag + reason
@@ -379,6 +379,7 @@ function computeIdempotencyFingerprint(
     mode: input.mode ?? null,
     summary: input.summary,
     description: input.description ?? null,
+    commitHash: input.commitHash ?? null,
     // Sort artifacts by name and keep name→hash pairs so a rename
     // (same hash, different filename) produces a different fingerprint.
     artifacts: input.artifacts

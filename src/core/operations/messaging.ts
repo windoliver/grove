@@ -150,6 +150,7 @@ export async function readInbox(
 
   const contributions = await store.list({
     kind: ContributionKind.Discussion,
+    tags: ["message"],
     ...(storeLimit !== undefined ? { limit: storeLimit } : {}),
     ...(query?.sessionId !== undefined ? { sessionId: query.sessionId } : {}),
   });
@@ -173,7 +174,10 @@ export async function readInbox(
   // Filter by multiple recipients (matches if any handle appears in the message)
   if (query?.recipients !== undefined && query.recipients.length > 0) {
     const handles = new Set(query.recipients);
-    messages = messages.filter(({ context }) => context.recipients.some((r) => handles.has(r)));
+    messages = messages.filter(
+      ({ context }) =>
+        context.recipients.includes("@all") || context.recipients.some((r) => handles.has(r)),
+    );
   }
 
   // Filter by sender

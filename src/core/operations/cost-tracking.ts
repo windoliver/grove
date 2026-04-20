@@ -145,22 +145,23 @@ export async function getSessionCosts(
 ): Promise<SessionCostSummary> {
   const contributions = await store.list({
     kind: ContributionKind.Discussion,
+    tags: ["usage-report"],
     ...(options?.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
   });
 
-  const usageContributions = contributions.filter(
-    (c) => c.context?.ephemeral === true && c.context?.usage_report !== undefined,
-  );
-
   const agentMap = new Map<string, AgentCostSummary>();
 
-  for (const c of usageContributions) {
-    const report = c.context?.usage_report as Record<string, unknown>;
-    const inputTokens = (report.input_tokens as number) ?? 0;
-    const outputTokens = (report.output_tokens as number) ?? 0;
-    const costUsd = (report.cost_usd as number) ?? 0;
-    const contextPercent = report.context_window_percent as number | undefined;
-    const model = report.model as string | undefined;
+  for (const c of contributions) {
+    if (c.context?.ephemeral !== true || c.context?.usage_report === undefined) continue;
+    const parsed = UsageReportSchema.safeParse(c.context.usage_report);
+    if (!parsed.success) continue;
+
+    const report = parsed.data;
+    const inputTokens = report.input_tokens;
+    const outputTokens = report.output_tokens;
+    const costUsd = report.cost_usd ?? 0;
+    const contextPercent = report.context_window_percent;
+    const model = report.model;
 
     const existing = agentMap.get(c.agent.agentId);
     if (existing) {
