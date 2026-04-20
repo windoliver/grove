@@ -15,16 +15,22 @@ export interface FastPathState {
   readonly cursor: number;
   readonly visibleSessionIds: readonly string[];
   readonly filterMode: boolean;
-  readonly filterText: string;
   readonly archiveVisible: boolean;
 }
 
-/** Side-effecting hooks wired by the fast-path component. */
+/**
+ * Side-effecting hooks wired by the fast-path component.
+ *
+ * Filter edits are expressed as deltas (append/delete) rather than
+ * whole-string replacements so the wire-up can use functional setState and
+ * avoid dropping rapid keystrokes to stale-closure races.
+ */
 export interface FastPathActions {
   readonly setCursor: (next: number) => void;
   readonly enterFilter: () => void;
   readonly exitFilter: () => void;
-  readonly setFilterText: (next: string) => void;
+  readonly appendFilterChar: (c: string) => void;
+  readonly deleteFilterChar: () => void;
   readonly toggleArchive: () => void;
   readonly onResume: (sessionId: string) => void;
   readonly onNewSession: () => void;
@@ -50,15 +56,15 @@ export function routeFastPathKey(
       return true;
     }
     if (name === "backspace") {
-      actions.setFilterText(state.filterText.slice(0, -1));
+      actions.deleteFilterChar();
       return true;
     }
     if (name === "space") {
-      actions.setFilterText(`${state.filterText} `);
+      actions.appendFilterChar(" ");
       return true;
     }
     if (typeof name === "string" && name.length === 1 && !key.ctrl) {
-      actions.setFilterText(state.filterText + name);
+      actions.appendFilterChar(name);
       return true;
     }
     return false;

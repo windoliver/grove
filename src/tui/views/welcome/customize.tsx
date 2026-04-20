@@ -9,7 +9,7 @@
 import { useKeyboard, useRenderer } from "@opentui/react";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import { theme } from "../../theme.js";
 import {
   type CustomizeField,
@@ -71,23 +71,39 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
       })();
     }, [presets, presetCursor, defaultPresetName, keymap, name, onLaunch]);
 
+    // Refs mirror current field/cursor/keymap so the handler can see their
+    // rendered values even when registered on an earlier render. The `name`
+    // edit path uses functional setState (via appendNameChar / deleteNameChar)
+    // because rapid typing can fire multiple handlers before React re-renders.
+    const fieldRef = useRef(field);
+    const presetCursorRef = useRef(presetCursor);
+    const nameIsEmptyRef = useRef(name.length === 0);
+    const keymapRef = useRef(keymap);
+    const presetDetailOpenRef = useRef(presetDetailOpen);
+    fieldRef.current = field;
+    presetCursorRef.current = presetCursor;
+    nameIsEmptyRef.current = name.length === 0;
+    keymapRef.current = keymap;
+    presetDetailOpenRef.current = presetDetailOpen;
+
     useKeyboard(
       useCallback(
         (key) => {
           routeCustomizeKey(
             key,
             {
-              field,
-              presetCursor,
+              field: fieldRef.current,
+              presetCursor: presetCursorRef.current,
               presetCount: presets.length,
-              name,
-              keymap,
-              presetDetailOpen,
+              nameIsEmpty: nameIsEmptyRef.current,
+              keymap: keymapRef.current,
+              presetDetailOpen: presetDetailOpenRef.current,
             },
             {
               setField,
               setPresetCursor,
-              setName,
+              appendNameChar: (c) => setName((prev) => prev + c),
+              deleteNameChar: () => setName((prev) => prev.slice(0, -1)),
               setKeymap,
               togglePresetDetail: () => setPresetDetailOpen((v) => !v),
               goBack: onBack,
@@ -95,7 +111,7 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
             },
           );
         },
-        [field, presetCursor, presets.length, name, keymap, presetDetailOpen, onBack, launch],
+        [presets.length, onBack, launch],
       ),
     );
 
@@ -113,7 +129,7 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
           <text color={theme.focus} bold>
             Customize
           </text>
-          <text color={theme.secondary}>{`Mode: ${mode === "local" ? "Local" : "Connected"}`}</text>
+          <text color={theme.secondary}>Mode: {mode === "local" ? "Local" : "Connected"}</text>
           <text color={theme.secondary}>{""}</text>
         </box>
 

@@ -5,7 +5,7 @@
  */
 
 import { useKeyboard, useRenderer } from "@opentui/react";
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import type { TuiPresetEntry } from "../../tui-app.js";
 import { theme } from "../../theme.js";
 import { routeNewSessionKey } from "./new-session-keyboard.js";
@@ -23,12 +23,18 @@ export const NewSession: React.NamedExoticComponent<NewSessionProps> = React.mem
     const [detailOpen, setDetailOpen] = useState(false);
     void useRenderer();
 
+    // Refs mirror scalar state so rapid j/k doesn't stall on a stale cursor.
+    const cursorRef = useRef(cursor);
+    const detailOpenRef = useRef(detailOpen);
+    cursorRef.current = cursor;
+    detailOpenRef.current = detailOpen;
+
     useKeyboard(
       useCallback(
         (key) => {
           routeNewSessionKey(
             key,
-            { cursor, presetCount: presets.length, detailOpen },
+            { cursor: cursorRef.current, presetCount: presets.length, detailOpen: detailOpenRef.current },
             {
               setCursor,
               toggleDetail: () => setDetailOpen((v) => !v),
@@ -40,7 +46,7 @@ export const NewSession: React.NamedExoticComponent<NewSessionProps> = React.mem
             },
           );
         },
-        [cursor, presets, detailOpen, onPick, onBack],
+        [presets, onPick, onBack],
       ),
     );
 

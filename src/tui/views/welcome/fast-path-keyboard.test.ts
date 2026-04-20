@@ -27,7 +27,6 @@ function defaultState(over: Partial<FastPathState> = {}): FastPathState {
     cursor: 0,
     visibleSessionIds: ["s1", "s2", "s3"],
     filterMode: false,
-    filterText: "",
     archiveVisible: false,
     ...over,
   };
@@ -39,7 +38,8 @@ function tracker() {
     setCursor: (n) => calls.push({ name: "setCursor", args: [n] }),
     enterFilter: () => calls.push({ name: "enterFilter", args: [] }),
     exitFilter: () => calls.push({ name: "exitFilter", args: [] }),
-    setFilterText: (s) => calls.push({ name: "setFilterText", args: [s] }),
+    appendFilterChar: (c) => calls.push({ name: "appendFilterChar", args: [c] }),
+    deleteFilterChar: () => calls.push({ name: "deleteFilterChar", args: [] }),
     toggleArchive: () => calls.push({ name: "toggleArchive", args: [] }),
     onResume: (id) => calls.push({ name: "onResume", args: [id] }),
     onNewSession: () => calls.push({ name: "onNewSession", args: [] }),
@@ -131,27 +131,27 @@ describe("routeFastPathKey (filter mode)", () => {
     const { calls, actions } = tracker();
     routeFastPathKey(
       keyEvent("a"),
-      defaultState({ filterMode: true, filterText: "fo" }),
+      defaultState({ filterMode: true }),
       actions,
     );
-    expect(calls).toEqual([{ name: "setFilterText", args: ["foa"] }]);
+    expect(calls).toEqual([{ name: "appendFilterChar", args: ["a"] }]);
   });
 
   test("backspace in filter mode pops one char", () => {
     const { calls, actions } = tracker();
     routeFastPathKey(
       keyEvent("backspace"),
-      defaultState({ filterMode: true, filterText: "foo" }),
+      defaultState({ filterMode: true }),
       actions,
     );
-    expect(calls).toEqual([{ name: "setFilterText", args: ["fo"] }]);
+    expect(calls).toEqual([{ name: "deleteFilterChar", args: [] }]);
   });
 
   test("Esc in filter mode exits without clearing text semantics", () => {
     const { calls, actions } = tracker();
     routeFastPathKey(
       keyEvent("escape"),
-      defaultState({ filterMode: true, filterText: "foo" }),
+      defaultState({ filterMode: true }),
       actions,
     );
     expect(calls).toEqual([{ name: "exitFilter", args: [] }]);
@@ -161,9 +161,19 @@ describe("routeFastPathKey (filter mode)", () => {
     const { calls, actions } = tracker();
     routeFastPathKey(
       keyEvent("n"),
-      defaultState({ filterMode: true, filterText: "" }),
+      defaultState({ filterMode: true }),
       actions,
     );
-    expect(calls).toEqual([{ name: "setFilterText", args: ["n"] }]);
+    expect(calls).toEqual([{ name: "appendFilterChar", args: ["n"] }]);
+  });
+
+  test("space in filter mode appends a space char", () => {
+    const { calls, actions } = tracker();
+    routeFastPathKey(
+      keyEvent("space"),
+      defaultState({ filterMode: true }),
+      actions,
+    );
+    expect(calls).toEqual([{ name: "appendFilterChar", args: [" "] }]);
   });
 });

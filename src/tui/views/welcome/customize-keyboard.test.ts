@@ -28,7 +28,8 @@ function tracker() {
   const actions: CustomizeActions = {
     setField: (f) => calls.push({ name: "setField", args: [f] }),
     setPresetCursor: (n) => calls.push({ name: "setPresetCursor", args: [n] }),
-    setName: (s) => calls.push({ name: "setName", args: [s] }),
+    appendNameChar: (c) => calls.push({ name: "appendNameChar", args: [c] }),
+    deleteNameChar: () => calls.push({ name: "deleteNameChar", args: [] }),
     setKeymap: (c) => calls.push({ name: "setKeymap", args: [c] }),
     togglePresetDetail: () => calls.push({ name: "togglePresetDetail", args: [] }),
     goBack: () => calls.push({ name: "goBack", args: [] }),
@@ -42,7 +43,7 @@ function state(over: Partial<CustomizeState> = {}): CustomizeState {
     field: "preset",
     presetCursor: 0,
     presetCount: 3,
-    name: "my-grove",
+    nameIsEmpty: false,
     keymap: "vim" as KeymapChoice,
     presetDetailOpen: false,
     ...over,
@@ -94,27 +95,37 @@ describe("routeCustomizeKey (name field)", () => {
     const { calls, actions } = tracker();
     routeCustomizeKey(
       keyEvent("a"),
-      state({ field: "name", name: "foo" }),
+      state({ field: "name", nameIsEmpty: false }),
       actions,
     );
-    expect(calls).toEqual([{ name: "setName", args: ["fooa"] }]);
+    expect(calls).toEqual([{ name: "appendNameChar", args: ["a"] }]);
+  });
+
+  test("space appends a space char", () => {
+    const { calls, actions } = tracker();
+    routeCustomizeKey(
+      keyEvent("space"),
+      state({ field: "name", nameIsEmpty: false }),
+      actions,
+    );
+    expect(calls).toEqual([{ name: "appendNameChar", args: [" "] }]);
   });
 
   test("backspace pops one char", () => {
     const { calls, actions } = tracker();
     routeCustomizeKey(
       keyEvent("backspace"),
-      state({ field: "name", name: "foo" }),
+      state({ field: "name", nameIsEmpty: false }),
       actions,
     );
-    expect(calls).toEqual([{ name: "setName", args: ["fo"] }]);
+    expect(calls).toEqual([{ name: "deleteNameChar", args: [] }]);
   });
 
   test("Enter launches when name non-empty", () => {
     const { calls, actions } = tracker();
     routeCustomizeKey(
       keyEvent("return"),
-      state({ field: "name", name: "foo" }),
+      state({ field: "name", nameIsEmpty: false }),
       actions,
     );
     expect(calls).toEqual([{ name: "launch", args: [] }]);
@@ -124,7 +135,7 @@ describe("routeCustomizeKey (name field)", () => {
     const { calls, actions } = tracker();
     routeCustomizeKey(
       keyEvent("return"),
-      state({ field: "name", name: "" }),
+      state({ field: "name", nameIsEmpty: true }),
       actions,
     );
     expect(calls).toEqual([]);

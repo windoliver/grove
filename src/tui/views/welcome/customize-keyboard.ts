@@ -9,7 +9,8 @@ export interface CustomizeState {
   readonly field: CustomizeField;
   readonly presetCursor: number;
   readonly presetCount: number;
-  readonly name: string;
+  /** Non-empty if a name has been typed; the router only checks emptiness. */
+  readonly nameIsEmpty: boolean;
   readonly keymap: KeymapChoice;
   readonly presetDetailOpen: boolean;
 }
@@ -17,7 +18,8 @@ export interface CustomizeState {
 export interface CustomizeActions {
   readonly setField: (f: CustomizeField) => void;
   readonly setPresetCursor: (n: number) => void;
-  readonly setName: (s: string) => void;
+  readonly appendNameChar: (c: string) => void;
+  readonly deleteNameChar: () => void;
   readonly setKeymap: (c: KeymapChoice) => void;
   readonly togglePresetDetail: () => void;
   readonly goBack: () => void;
@@ -59,7 +61,7 @@ export function routeCustomizeKey(
       return true;
     }
     if (name === "return") {
-      if (state.name.length > 0) actions.launch();
+      if (!state.nameIsEmpty) actions.launch();
       return true;
     }
     return false;
@@ -67,19 +69,19 @@ export function routeCustomizeKey(
 
   if (state.field === "name") {
     if (name === "backspace") {
-      actions.setName(state.name.slice(0, -1));
+      actions.deleteNameChar();
       return true;
     }
     if (name === "space") {
-      actions.setName(`${state.name} `);
+      actions.appendNameChar(" ");
       return true;
     }
     if (name === "return") {
-      if (state.name.length > 0) actions.launch();
+      if (!state.nameIsEmpty) actions.launch();
       return true;
     }
     if (typeof name === "string" && name.length === 1 && !key.ctrl) {
-      actions.setName(state.name + name);
+      actions.appendNameChar(name);
       return true;
     }
     return false;
@@ -111,7 +113,7 @@ export function routeCustomizeKey(
     return true;
   }
   if (name === "return") {
-    if (state.name.length > 0) actions.launch();
+    if (!state.nameIsEmpty) actions.launch();
     return true;
   }
   return false;

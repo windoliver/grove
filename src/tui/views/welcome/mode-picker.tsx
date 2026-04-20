@@ -6,7 +6,7 @@
  */
 
 import { useKeyboard, useRenderer } from "@opentui/react";
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import { theme } from "../../theme.js";
 import { GLOSSARY } from "./glossary.js";
 import { routeModePickerKey } from "./mode-picker-keyboard.js";
@@ -32,23 +32,30 @@ export const ModePicker: React.NamedExoticComponent<ModePickerProps> = React.mem
     const [glossaryOpen, setGlossaryOpen] = useState(false);
     void useRenderer();
 
+    // Refs mirror state so the keyboard handler sees current values even when
+    // the callback itself was registered with older ones.
+    const modeRef = useRef(mode);
+    const glossaryOpenRef = useRef(glossaryOpen);
+    modeRef.current = mode;
+    glossaryOpenRef.current = glossaryOpen;
+
     useKeyboard(
       useCallback(
         (key) => {
           routeModePickerKey(
             key,
-            { mode, glossaryOpen },
+            { mode: modeRef.current, glossaryOpen: glossaryOpenRef.current },
             {
               setMode,
-              startWithDefaults: () => onStartWithDefaults(mode),
-              goToCustomize: () => onCustomize(mode),
+              startWithDefaults: () => onStartWithDefaults(modeRef.current),
+              goToCustomize: () => onCustomize(modeRef.current),
               openConnect: onConnect,
               toggleGlossary: () => setGlossaryOpen((v) => !v),
               onQuit,
             },
           );
         },
-        [mode, glossaryOpen, onStartWithDefaults, onCustomize, onConnect, onQuit],
+        [onStartWithDefaults, onCustomize, onConnect, onQuit],
       ),
     );
 

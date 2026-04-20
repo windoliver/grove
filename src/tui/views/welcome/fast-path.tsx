@@ -6,7 +6,7 @@
  */
 
 import { useKeyboard, useRenderer } from "@opentui/react";
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import type { SessionRecord } from "../../provider.js";
 import { theme } from "../../theme.js";
 import { routeFastPathKey } from "./fast-path-keyboard.js";
@@ -61,14 +61,34 @@ export const FastPath: React.NamedExoticComponent<FastPathProps> = React.memo(
       [visibleSessions],
     );
 
+    // Refs mirror current cursor/filterMode/archiveVisible so the handler
+    // reads values that are still consistent with rendered state even if the
+    // handler was registered on an earlier render. For `filterText`, rapid
+    // typing can queue several key events before React re-renders, so we
+    // rely on functional setState inside the actions instead of a ref read.
+    const cursorRef = useRef(cursor);
+    const filterModeRef = useRef(filterMode);
+    const archiveVisibleRef = useRef(archiveVisible);
+    const visibleIdsRef = useRef(visibleIds);
+    cursorRef.current = cursor;
+    filterModeRef.current = filterMode;
+    archiveVisibleRef.current = archiveVisible;
+    visibleIdsRef.current = visibleIds;
+
     useKeyboard(
       useCallback(
         (key) => {
+          const ids = visibleIdsRef.current;
           routeFastPathKey(
             key,
-            { cursor, visibleSessionIds: visibleIds, filterMode, filterText, archiveVisible },
             {
-              setCursor: (n) => setCursor(Math.min(n, Math.max(0, visibleIds.length - 1))),
+              cursor: cursorRef.current,
+              visibleSessionIds: ids,
+              filterMode: filterModeRef.current,
+              archiveVisible: archiveVisibleRef.current,
+            },
+            {
+              setCursor: (n) => setCursor(Math.min(n, Math.max(0, ids.length - 1))),
               enterFilter: () => {
                 setFilterMode(true);
                 setFilterText("");
@@ -78,7 +98,8 @@ export const FastPath: React.NamedExoticComponent<FastPathProps> = React.memo(
                 setFilterText("");
                 setCursor(0);
               },
-              setFilterText,
+              appendFilterChar: (c) => setFilterText((prev) => prev + c),
+              deleteFilterChar: () => setFilterText((prev) => prev.slice(0, -1)),
               toggleArchive: () => setArchiveVisible((v) => !v),
               onResume,
               onNewSession,
@@ -87,7 +108,7 @@ export const FastPath: React.NamedExoticComponent<FastPathProps> = React.memo(
             },
           );
         },
-        [cursor, visibleIds, filterMode, filterText, archiveVisible, onResume, onNewSession, onConnect, onQuit],
+        [onResume, onNewSession, onConnect, onQuit],
       ),
     );
 
