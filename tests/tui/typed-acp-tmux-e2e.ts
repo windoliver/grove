@@ -18,7 +18,7 @@
  */
 
 import { execSync, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -148,7 +148,21 @@ async function main() {
   // Pass the launch command to tmux as separate args so quoting survives.
   spawnSync(
     "tmux",
-    ["-L", SOCKET, "new-session", "-d", "-s", SESSION, "-x", "160", "-y", "48", "sh", "-c", launchCmd],
+    [
+      "-L",
+      SOCKET,
+      "new-session",
+      "-d",
+      "-s",
+      SESSION,
+      "-x",
+      "160",
+      "-y",
+      "48",
+      "sh",
+      "-c",
+      launchCmd,
+    ],
     { stdio: "inherit" },
   );
   console.log(`[tmux] session started. Attach: tmux -L ${SOCKET} attach -t ${SESSION}`);
@@ -205,7 +219,9 @@ async function main() {
     await sleep(15000);
     lastCapture = capturePane();
     const headline = lastCapture.split("\n").slice(0, 5).join(" | ");
-    console.log(`[observe t+${Math.round((Date.now() - (observeEnd - 180_000)) / 1000)}s] ${headline.slice(0, 120)}`);
+    console.log(
+      `[observe t+${Math.round((Date.now() - (observeEnd - 180_000)) / 1000)}s] ${headline.slice(0, 120)}`,
+    );
     // Look for contribution signal (coder called grove_submit_work → handoff created).
     if (/handoff|contribution|review/i.test(lastCapture)) {
       console.log("[phase 5] handoff/contribution signal detected");
