@@ -76,26 +76,40 @@ export async function runLog(
       throw new Error("Outcome store is not available. Cannot filter by outcome.");
     }
 
-    // Fetch all matching contributions, filter by outcome, then sort and slice
+    // Fetch matching contributions, then evaluate outcomes in date-sorted
+    // chunks so we can stop once we have `limit` matches. This avoids loading
+    // and materializing outcomes for the entire history on every call.
     const contributions = await deps.store.list({
       kind: options.kind as ContributionKind | undefined,
       mode: options.mode as ContributionMode | undefined,
     });
 
-    const cids = contributions.map((c) => c.cid);
-    const outcomes = await deps.outcomeStore.getBatch(cids);
     const targetStatus = options.outcome as OutcomeStatus;
-    const filtered = contributions.filter((c) => {
-      const record = outcomes.get(c.cid);
-      return record !== undefined && record.status === targetStatus;
-    });
+    const sortedByRecency = [...contributions].sort(
+      (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt),
+    );
 
-    const sorted = [...filtered]
-      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-      .slice(0, options.limit);
+    const CHUNK_SIZE = 200;
+    const filtered: import("../../core/models.js").Contribution[] = [];
+    for (
+      let i = 0;
+      i < sortedByRecency.length && filtered.length < options.limit;
+      i += CHUNK_SIZE
+    ) {
+      const chunk = sortedByRecency.slice(i, i + CHUNK_SIZE);
+      const outcomes = await deps.outcomeStore.getBatch(chunk.map((c) => c.cid));
+      for (const contribution of chunk) {
+        const record = outcomes.get(contribution.cid);
+        if (record !== undefined && record.status === targetStatus) {
+          filtered.push(contribution);
+          if (filtered.length >= options.limit) break;
+        }
+      }
+    }
+    const limited = filtered.slice(0, options.limit);
 
     if (options.json) {
-      const summaries: ContributionSummary[] = sorted.map((c) => ({
+      const summaries: ContributionSummary[] = limited.map((c) => ({
         cid: c.cid,
         summary: c.summary,
         kind: c.kind,
@@ -108,7 +122,7 @@ export async function runLog(
       outputJson({ results: summaries, count: summaries.length });
       return;
     }
-    writer(formatContributions(sorted, { wide: options.wide }));
+    writer(formatContributions(limited, { wide: options.wide }));
     return;
   }
 

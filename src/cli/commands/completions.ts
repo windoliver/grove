@@ -48,6 +48,23 @@ export function generateCompletions(shell: Shell, commands?: readonly CommandMet
   }
 }
 
+/**
+ * Escape a string for inclusion in a single-quoted shell literal.
+ * Also flattens newlines so the quoted value stays on one line.
+ */
+function escapeSingleQuoted(s: string): string {
+  return s.replace(/\n/g, " ").replace(/'/g, "'\\''");
+}
+
+/**
+ * Escape a description for the zsh `name:description` completion tuple.
+ * Zsh treats unescaped `:` as a separator and `'` closes the literal, so
+ * both must be neutralized; also strip newlines that would break the list.
+ */
+function escapeZshDescription(s: string): string {
+  return s.replace(/\n/g, " ").replace(/:/g, "\\:").replace(/'/g, "'\\''");
+}
+
 // ---------------------------------------------------------------------------
 // Bash
 // ---------------------------------------------------------------------------
@@ -125,7 +142,7 @@ complete -F _grove_completions grove
 
 function generateZsh(commands: readonly CommandMeta[]): string {
   const cmdDescriptions = commands
-    .map((cmd) => `    '${cmd.name}:${cmd.description}'`)
+    .map((cmd) => `    '${cmd.name}:${escapeZshDescription(cmd.description)}'`)
     .join(" \\\n");
 
   // Generate per-command helper functions for commands with subcommands
@@ -137,7 +154,7 @@ function generateZsh(commands: readonly CommandMeta[]): string {
       if (subcmds.length > 0) {
         // Commands with subcommands get a dedicated helper function
         const subDescriptions = subcmds
-          .map((s) => `      '${s.name}:${s.description}'`)
+          .map((s) => `      '${s.name}:${escapeZshDescription(s.description)}'`)
           .join(" \\\n");
 
         const subCaseArms = subcmds
@@ -221,7 +238,7 @@ function generateFish(commands: readonly CommandMeta[]): string {
 
   for (const cmd of commands) {
     lines.push(
-      `complete -c grove -n '__fish_use_subcommand' -a '${cmd.name}' -d '${cmd.description}'`,
+      `complete -c grove -n '__fish_use_subcommand' -a '${cmd.name}' -d '${escapeSingleQuoted(cmd.description)}'`,
     );
   }
 
@@ -236,7 +253,7 @@ function generateFish(commands: readonly CommandMeta[]): string {
     if (cmd.subcommands) {
       for (const sub of cmd.subcommands) {
         lines.push(
-          `complete -c grove -n '__fish_seen_subcommand_from ${cmd.name}' -a '${sub.name}' -d '${sub.description}'`,
+          `complete -c grove -n '__fish_seen_subcommand_from ${cmd.name}' -a '${sub.name}' -d '${escapeSingleQuoted(sub.description)}'`,
         );
         // Subcommand-specific flags — scope by both parent AND sub to avoid
         // name collisions (e.g. bounty list vs outcome list)

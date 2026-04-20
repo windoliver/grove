@@ -80,7 +80,8 @@ export function parseExportDagArgs(argv: string[]): ExportDagOptions {
 
 /**
  * Collect contributions reachable from a starting CID within a depth limit.
- * BFS over derives_from and adopts relations in both directions.
+ * Level-wise BFS over derives_from and adopts edges in both directions,
+ * batching `store.getMany` and merging per-node `relatedTo` calls.
  */
 async function collectSubgraph(
   deps: CliDeps,
@@ -88,36 +89,56 @@ async function collectSubgraph(
   maxDepth: number,
 ): Promise<readonly Contribution[]> {
   const visited = new Map<string, Contribution>();
-  const queue: { cid: string; depth: number }[] = [{ cid: fromCid, depth: 0 }];
+  let frontier: readonly { cid: string; depth: number }[] = [{ cid: fromCid, depth: 0 }];
 
-  while (queue.length > 0) {
-    const item = queue.shift();
-    if (item === undefined) break;
-    if (visited.has(item.cid) || item.depth > maxDepth) continue;
+  while (frontier.length > 0) {
+    const current = frontier.filter((f) => !visited.has(f.cid) && f.depth <= maxDepth);
+    const toFetch = current.map((f) => f.cid);
+    const fetched =
+      toFetch.length > 0 ? await deps.store.getMany(toFetch) : new Map<string, Contribution>();
 
-    const contribution = await deps.store.get(item.cid);
-    if (contribution === undefined) continue;
-
-    visited.set(item.cid, contribution);
-
-    // Follow outgoing derives_from and adopts edges (ancestors)
-    for (const rel of contribution.relations) {
-      if (
-        (rel.relationType === "derives_from" || rel.relationType === "adopts") &&
-        !visited.has(rel.targetCid)
-      ) {
-        queue.push({ cid: rel.targetCid, depth: item.depth + 1 });
+    const expandable: Array<{ cid: string; depth: number; contribution: Contribution }> = [];
+    for (const { cid, depth } of current) {
+      const contribution = fetched.get(cid);
+      if (contribution === undefined) continue;
+      visited.set(cid, contribution);
+      if (depth < maxDepth) {
+        expandable.push({ cid, depth, contribution });
       }
     }
 
-    // Follow incoming derives_from and adopts edges (children)
-    const derivesChildren = await deps.store.relatedTo(item.cid, RelationType.DerivesFrom);
-    const adoptsChildren = await deps.store.relatedTo(item.cid, RelationType.Adopts);
-    for (const child of [...derivesChildren, ...adoptsChildren]) {
-      if (!visited.has(child.cid)) {
-        queue.push({ cid: child.cid, depth: item.depth + 1 });
+    const nextFrontier: { cid: string; depth: number }[] = [];
+    for (const { depth, contribution } of expandable) {
+      for (const rel of contribution.relations) {
+        if (
+          (rel.relationType === "derives_from" || rel.relationType === "adopts") &&
+          !visited.has(rel.targetCid)
+        ) {
+          nextFrontier.push({ cid: rel.targetCid, depth: depth + 1 });
+        }
       }
     }
+
+    const incomingLists = await Promise.all(expandable.map((n) => deps.store.relatedTo(n.cid)));
+    for (let i = 0; i < expandable.length; i++) {
+      const node = expandable[i];
+      if (node === undefined) continue;
+      const incoming = incomingLists[i] ?? [];
+      for (const child of incoming) {
+        if (visited.has(child.cid)) continue;
+        const hasEdge = child.relations.some(
+          (rel) =>
+            rel.targetCid === node.cid &&
+            (rel.relationType === RelationType.DerivesFrom ||
+              rel.relationType === RelationType.Adopts),
+        );
+        if (hasEdge) {
+          nextFrontier.push({ cid: child.cid, depth: node.depth + 1 });
+        }
+      }
+    }
+
+    frontier = nextFrontier;
   }
 
   return [...visited.values()];

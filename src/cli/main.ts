@@ -36,6 +36,7 @@ import { parseSearchArgs, runSearch } from "./commands/search.js";
 import { parseThreadArgs, runThread } from "./commands/thread.js";
 import { parseThreadsArgs, runThreads } from "./commands/threads.js";
 import { parseTreeArgs, runTree } from "./commands/tree.js";
+import { handleVersion } from "./commands/version.js";
 import { initCliDeps } from "./context.js";
 import { UsageError } from "./errors.js";
 import { resolveGroveDir } from "./utils/grove-dir.js";
@@ -283,6 +284,17 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       },
     },
     {
+      name: "export-dag",
+      description: "Export contribution DAG as JSON",
+      needsStore: false,
+      handler: async (args) => {
+        const { parseExportDagArgs, runExportDag } = await import("./commands/export-dag.js");
+        await withCliDeps(async (a, deps) => {
+          await runExportDag(parseExportDagArgs([...a]), deps);
+        }, args);
+      },
+    },
+    {
       name: "gossip",
       description: "Gossip protocol commands",
       needsStore: false,
@@ -420,11 +432,22 @@ async function main(): Promise<void> {
   let groveOverride: string | undefined;
   const args: string[] = [];
   for (let i = 0; i < rawArgs.length; i++) {
-    if (rawArgs[i] === "--grove" && i + 1 < rawArgs.length) {
-      groveOverride = rawArgs[i + 1];
-      i++; // skip value
+    const token = rawArgs[i] ?? "";
+    if (token === "--grove") {
+      const value = rawArgs[i + 1];
+      if (!value) {
+        throw new UsageError("--grove requires a path value");
+      }
+      groveOverride = value;
+      i++; // skip consumed value
+    } else if (token.startsWith("--grove=")) {
+      const value = token.slice("--grove=".length);
+      if (!value) {
+        throw new UsageError("--grove requires a non-empty path value");
+      }
+      groveOverride = value;
     } else {
-      args.push(rawArgs[i] ?? "");
+      args.push(token);
     }
   }
 
@@ -444,7 +467,7 @@ async function main(): Promise<void> {
   }
 
   if (first === "--version" || first === "-v") {
-    console.log("grove 0.1.0");
+    handleVersion();
     return;
   }
 
@@ -509,6 +532,7 @@ Navigation:
   grove log [-n <count>]               Recent contributions
   grove frontier [--metric <name>]     Show current frontier
   grove tree [--from <cid>]            DAG visualization
+  grove export-dag [options]           Export contribution DAG as JSON
   grove search [--query <text>]        Search contributions
   grove checkout <cid> --to <dir>      Materialize contribution artifacts
   grove thread <cid>                   View a discussion thread

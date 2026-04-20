@@ -498,46 +498,86 @@ async function handleDaemon(
     initialFrontier: persistedFrontier,
   });
 
-  // Register event listener for console output and state persistence
+  // Debounce state persistence: gossip events fire on every shuffle/exchange
+  // (often multiple per second). fsyncing the full peer/frontier state on each
+  // one burns I/O and can starve the gossip loop. We coalesce into a single
+  // write per PERSIST_INTERVAL_MS window, plus one final write on shutdown.
+  const PERSIST_INTERVAL_MS = 5_000;
+  let pendingPersist: ReturnType<typeof setTimeout> | undefined;
+  const flushPersistence = (): void => {
+    try {
+      gossipStore.savePeers(gossipService.peers());
+      gossipStore.saveFrontier(gossipService.mergedFrontier());
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      writer(`[gossip] state persistence failed: ${msg}`);
+    }
+  };
+  const schedulePersist = (): void => {
+    if (pendingPersist !== undefined) return;
+    pendingPersist = setTimeout(() => {
+      pendingPersist = undefined;
+      flushPersistence();
+    }, PERSIST_INTERVAL_MS);
+  };
+
   gossipService.on((event: GossipEvent) => {
     writer(`[gossip] ${event.type}: peer=${event.peerId} at ${event.timestamp}`);
-
-    // Persist state after each event
-    gossipStore.savePeers(gossipService.peers());
-    gossipStore.saveFrontier(gossipService.mergedFrontier());
+    schedulePersist();
   });
 
   // Start HTTP server for incoming gossip requests
   const server = Bun.serve({
     port,
     async fetch(req) {
-      const url = new URL(req.url);
-      const path = url.pathname;
+      // Malformed or buggy peers must not crash the daemon. Wrap the whole
+      // dispatch in try/catch, bounce JSON parse errors back as 400 with a
+      // minimal body, and log unexpected failures to stderr for the operator.
+      try {
+        const url = new URL(req.url);
+        const path = url.pathname;
 
-      if (req.method === "POST" && path === "/api/gossip/exchange") {
-        const body = (await req.json()) as GossipMessage;
-        const response = await gossipService.handleExchange(body);
-        return Response.json(response);
+        if (req.method === "POST" && path === "/api/gossip/exchange") {
+          let body: GossipMessage;
+          try {
+            body = (await req.json()) as GossipMessage;
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return Response.json({ error: `invalid JSON: ${msg}` }, { status: 400 });
+          }
+          const response = await gossipService.handleExchange(body);
+          return Response.json(response);
+        }
+
+        if (req.method === "POST" && path === "/api/gossip/shuffle") {
+          let body: ShuffleRequest;
+          try {
+            body = (await req.json()) as ShuffleRequest;
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return Response.json({ error: `invalid JSON: ${msg}` }, { status: 400 });
+          }
+          const response = gossipService.handleShuffle(body);
+          return Response.json(response);
+        }
+
+        if (req.method === "GET" && path === "/api/gossip/peers") {
+          return Response.json({
+            peers: gossipService.peers(),
+            liveness: gossipService.liveness(),
+          });
+        }
+
+        if (req.method === "GET" && path === "/api/gossip/frontier") {
+          return Response.json({ entries: gossipService.mergedFrontier() });
+        }
+
+        return new Response("Not found", { status: 404 });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[gossip] request handler failed: ${msg}\n`);
+        return Response.json({ error: "internal error" }, { status: 500 });
       }
-
-      if (req.method === "POST" && path === "/api/gossip/shuffle") {
-        const body = (await req.json()) as ShuffleRequest;
-        const response = gossipService.handleShuffle(body);
-        return Response.json(response);
-      }
-
-      if (req.method === "GET" && path === "/api/gossip/peers") {
-        return Response.json({
-          peers: gossipService.peers(),
-          liveness: gossipService.liveness(),
-        });
-      }
-
-      if (req.method === "GET" && path === "/api/gossip/frontier") {
-        return Response.json({ entries: gossipService.mergedFrontier() });
-      }
-
-      return new Response("Not found", { status: 404 });
     },
   });
 
@@ -555,17 +595,34 @@ async function handleDaemon(
   // Start the gossip loop
   gossipService.start();
 
-  // Wait for SIGINT/SIGTERM
+  // Wait for SIGINT/SIGTERM. Shutdown is idempotent because signal handlers
+  // can fire twice (e.g. Ctrl-C in a pipeline) and each would otherwise race
+  // on `server.stop` / `gossipStore.close`.
   await new Promise<void>((resolve) => {
+    let shuttingDown = false;
     const shutdown = async () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
       writer("\nShutting down gossip daemon...");
-      await gossipService.stop();
+      try {
+        await gossipService.stop();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        writer(`[gossip] stop() failed: ${msg}`);
+      }
       server.stop(true);
 
-      // Persist final state
-      gossipStore.savePeers(gossipService.peers());
-      gossipStore.saveFrontier(gossipService.mergedFrontier());
-      gossipStore.close();
+      // Cancel any pending debounced write and persist final state once.
+      if (pendingPersist !== undefined) {
+        clearTimeout(pendingPersist);
+        pendingPersist = undefined;
+      }
+      flushPersistence();
+      try {
+        gossipStore.close();
+      } catch {
+        /* already closed */
+      }
 
       writer("State persisted. Goodbye.");
       resolve();
@@ -602,7 +659,7 @@ async function handleWatch(args: readonly string[], writer: Writer): Promise<voi
 
   // Track previous state to detect changes
   let previousPeers = new Map<string, string>(); // peerId -> status
-  let previousFrontierSize = 0;
+  let previousFrontierCids = new Set<string>();
   let running = true;
 
   const shutdown = () => {
@@ -656,12 +713,22 @@ async function handleWatch(args: readonly string[], writer: Writer): Promise<voi
         }
       }
 
-      // Frontier changes
-      if (frontierData.entries.length !== previousFrontierSize) {
+      // Frontier changes — compare the CID set, not just cardinality,
+      // because equal-size churn (one CID replaced by another) must register.
+      const currentFrontierCids = new Set<string>(frontierData.entries.map((e) => e.cid));
+      const added: string[] = [];
+      const removed: string[] = [];
+      for (const cid of currentFrontierCids) {
+        if (!previousFrontierCids.has(cid)) added.push(cid);
+      }
+      for (const cid of previousFrontierCids) {
+        if (!currentFrontierCids.has(cid)) removed.push(cid);
+      }
+      if (added.length > 0 || removed.length > 0) {
         events.push({
           type: "frontier_updated",
           peerId: "local",
-          detail: `${previousFrontierSize} -> ${frontierData.entries.length} entries`,
+          detail: `+${added.length}/-${removed.length} cid(s), total=${currentFrontierCids.size}`,
         });
       }
 
@@ -677,7 +744,7 @@ async function handleWatch(args: readonly string[], writer: Writer): Promise<voi
       }
 
       previousPeers = currentPeers;
-      previousFrontierSize = frontierData.entries.length;
+      previousFrontierCids = currentFrontierCids;
     } catch (err) {
       writer(`[error] ${err instanceof Error ? err.message : String(err)}`);
     }

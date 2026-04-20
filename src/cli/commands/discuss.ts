@@ -16,6 +16,7 @@ import type { ContributionMode } from "../../core/models.js";
 import { RelationType } from "../../core/models.js";
 import type { OperationDeps } from "../../core/operations/index.js";
 import { contributeOperation } from "../../core/operations/index.js";
+import { resolveAgent } from "../agent.js";
 import { outputJson } from "../format.js";
 import { resolveGroveDir } from "../utils/grove-dir.js";
 
@@ -61,9 +62,15 @@ export function parseDiscussArgs(args: readonly string[]): DiscussOptions {
   let respondsTo: string | undefined;
   let message: string;
 
-  if (positionals[0]?.startsWith("blake3:")) {
-    // First positional is a CID — reply mode. Rest is the message.
-    respondsTo = positionals[0];
+  // First positional is a CID when it looks like "<algo>:<hex>" — a single
+  // token with a hash prefix and only hex chars after the colon. Previously
+  // this was `startsWith("blake3:")` which mis-parsed sentences that happened
+  // to begin with the literal prefix and couldn't tolerate other hash algos.
+  // We stay permissive on the digest length so CLI shorthand still works.
+  const first = positionals[0];
+  if (first !== undefined && /^[a-z][a-z0-9]*:[0-9a-f]+$/i.test(first)) {
+    // Reply mode: first positional is the CID, rest is the message.
+    respondsTo = first;
     message = positionals.slice(1).join(" ");
   } else {
     // Root discussion — all positionals form the message.
@@ -134,6 +141,11 @@ export async function executeDiscuss(options: DiscussOptions): Promise<{ cid: st
         ? [{ targetCid: options.respondsTo, relationType: RelationType.RespondsTo }]
         : [];
 
+    // Explicitly pass the resolved agent identity so discussions are
+    // attributed consistently with contribute/review/reproduce/inbox (all of
+    // which pass `agent` rather than relying on operation-layer fallback).
+    const agent = resolveAgent();
+
     const result = await contributeOperation(
       {
         kind: "discussion",
@@ -142,6 +154,10 @@ export async function executeDiscuss(options: DiscussOptions): Promise<{ cid: st
         description: options.description,
         relations,
         tags: [...options.tags],
+        agent: {
+          agentId: agent.agentId,
+          ...(agent.agentName ? { agentName: agent.agentName } : {}),
+        },
       },
       opDeps,
     );
