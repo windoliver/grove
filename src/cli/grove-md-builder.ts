@@ -345,6 +345,53 @@ export function defaultGroveMdConfig(options: {
 }
 
 // ---------------------------------------------------------------------------
+// Preset → GroveMdConfig conversion
+// ---------------------------------------------------------------------------
+
+/**
+ * Map a preset configuration (as produced by a `*Preset` object) into the
+ * `GroveMdConfig` shape consumed by `buildGroveMd`. `context` supplies the
+ * grove-level identity that the preset itself does not carry.
+ */
+export interface PresetMdInput {
+  readonly name: string;
+  readonly description?: string | undefined;
+  readonly mode: "evaluation" | "exploration";
+  readonly metrics?: readonly MetricEntry[] | undefined;
+  readonly gates?: readonly GateEntry[] | undefined;
+  readonly stopConditions?: StopConditionsConfig | undefined;
+  readonly concurrency?: ConcurrencyConfig | undefined;
+  readonly execution?: ExecutionConfig | undefined;
+  readonly topology?: import("../core/topology.js").AgentTopology | undefined;
+  readonly presetDescription?: string | undefined;
+}
+
+export function presetToGroveMdConfig(
+  preset: PresetMdInput,
+  context: { readonly name: string; readonly description?: string | undefined },
+): GroveMdConfig {
+  const description = context.description ?? preset.presetDescription;
+  return {
+    contractVersion: preset.topology ? 3 : 2,
+    name: context.name,
+    description,
+    mode: preset.mode,
+    metrics: preset.metrics,
+    topology: preset.topology,
+    gates: preset.gates,
+    stopConditions: preset.stopConditions,
+    concurrency: preset.concurrency,
+    execution: preset.execution,
+    body:
+      `# ${context.name}\n\n${description}\n\n` +
+      `> The topology above is the **default** for this grove. ` +
+      `Override it per-session:\n` +
+      `> \`grove session start --preset <name> --goal "..."\`\n` +
+      `> or via the API: \`POST /api/sessions { "preset": "<name>" }\``,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

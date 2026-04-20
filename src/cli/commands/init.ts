@@ -12,8 +12,12 @@ import { parseArgs } from "node:util";
 
 import type { AgentOverrides } from "../agent.js";
 import { resolveAgent } from "../agent.js";
-import { buildGroveMd, defaultGroveMdConfig, type GroveMdConfig } from "../grove-md-builder.js";
-import { getPreset, listPresetNames, type PresetConfig } from "../presets/index.js";
+import {
+  buildGroveMd,
+  defaultGroveMdConfig,
+  presetToGroveMdConfig,
+} from "../grove-md-builder.js";
+import { getPreset, listPresetNames } from "../presets/index.js";
 
 // ---------------------------------------------------------------------------
 // Argument parsing
@@ -191,7 +195,10 @@ export async function executeInit(
     progress(3, "Generating GROVE.md contract");
     const grovemdPath = join(options.cwd, "GROVE.md");
     const mdConfig = preset
-      ? presetToGroveMdConfig(preset, options)
+      ? presetToGroveMdConfig(
+          { ...preset, presetDescription: preset.description },
+          { name: options.name, description: options.description },
+        )
       : defaultGroveMdConfig(options);
     const grovemdContent = buildGroveMd(mdConfig);
     await writeFile(grovemdPath, grovemdContent, "utf-8");
@@ -363,32 +370,6 @@ export async function executeInit(
     console.log("\nNext: run 'grove up' to start, or 'grove contribute' to publish work.");
   }
   return { grovePath };
-}
-
-// ---------------------------------------------------------------------------
-// Preset → GroveMdConfig conversion
-// ---------------------------------------------------------------------------
-
-function presetToGroveMdConfig(preset: PresetConfig, options: InitOptions): GroveMdConfig {
-  const description = options.description ?? preset.description;
-  return {
-    contractVersion: preset.topology ? 3 : 2,
-    name: options.name,
-    description,
-    mode: preset.mode,
-    metrics: preset.metrics,
-    topology: preset.topology,
-    gates: preset.gates,
-    stopConditions: preset.stopConditions,
-    concurrency: preset.concurrency,
-    execution: preset.execution,
-    body:
-      `# ${options.name}\n\n${description}\n\n` +
-      `> The topology above is the **default** for this grove. ` +
-      `Override it per-session:\n` +
-      `> \`grove session start --preset <name> --goal "..."\`\n` +
-      `> or via the API: \`POST /api/sessions { "preset": "<name>" }\``,
-  };
 }
 
 // ---------------------------------------------------------------------------
