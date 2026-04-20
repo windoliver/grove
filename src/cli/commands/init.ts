@@ -12,11 +12,7 @@ import { parseArgs } from "node:util";
 
 import type { AgentOverrides } from "../agent.js";
 import { resolveAgent } from "../agent.js";
-import {
-  buildGroveMd,
-  defaultGroveMdConfig,
-  presetToGroveMdConfig,
-} from "../grove-md-builder.js";
+import { buildGroveMd, presetToGroveMdConfig } from "../grove-md-builder.js";
 import { getPreset, listPresetNames } from "../presets/index.js";
 
 // ---------------------------------------------------------------------------
@@ -191,17 +187,18 @@ export async function executeInit(
   // Everything below runs under try/finally so db.close() always fires — a
   // failure writing GROVE.md, grove.json, or seeding must not leak the DB.
   try {
-    // 5. Generate GROVE.md
-    progress(3, "Generating GROVE.md contract");
-    const grovemdPath = join(options.cwd, "GROVE.md");
-    const mdConfig = preset
-      ? presetToGroveMdConfig(
-          { ...preset, presetDescription: preset.description },
-          { name: options.name, description: options.description },
-        )
-      : defaultGroveMdConfig(options);
-    const grovemdContent = buildGroveMd(mdConfig);
-    await writeFile(grovemdPath, grovemdContent, "utf-8");
+    // 5. Generate GROVE.md (only when a preset is provided — bare init leaves
+    //    GROVE.md absent so PolicyEnforcer reads from session config #199).
+    if (preset) {
+      progress(3, "Generating GROVE.md contract");
+      const grovemdPath = join(options.cwd, "GROVE.md");
+      const mdConfig = presetToGroveMdConfig(
+        { ...preset, presetDescription: preset.description },
+        { name: options.name, description: options.description },
+      );
+      const grovemdContent = buildGroveMd(mdConfig);
+      await writeFile(grovemdPath, grovemdContent, "utf-8");
+    }
 
     // 6. Write grove.json
     progress(4, "Writing configuration");
