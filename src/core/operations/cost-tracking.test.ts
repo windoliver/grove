@@ -174,7 +174,7 @@ describe("getSessionCosts", () => {
         usage_report: {
           input_tokens: "not-a-number",
           output_tokens: 123,
-        } as unknown as Record<string, unknown>,
+        },
       },
       agent: AGENT_BOB,
       createdAt: "2026-01-01T00:00:00Z",
