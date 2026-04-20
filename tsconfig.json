@@ -23,6 +23,7 @@
     "erasableSyntaxOnly": true,
     "moduleDetection": "force",
     "skipLibCheck": true,
+    "resolveJsonModule": true,
     "resolvePackageJsonExports": true,
     "resolvePackageJsonImports": true,
     "esModuleInterop": false,
