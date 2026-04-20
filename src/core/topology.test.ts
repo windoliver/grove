@@ -393,9 +393,7 @@ describe("topology skills field", () => {
   test("parses skills list on a role", () => {
     const parsed = AgentTopologySchema.parse({
       structure: "flat",
-      roles: [
-        { name: "coder", skills: ["grove", "review"] },
-      ],
+      roles: [{ name: "coder", skills: ["grove", "review"] }],
     });
     const topology = wireToTopology(parsed);
     expect(topology.roles[0]?.skills).toEqual(["grove", "review"]);
