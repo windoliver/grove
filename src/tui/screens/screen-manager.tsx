@@ -535,6 +535,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
               context.rolePrompt = editedPrompt ?? role.prompt ?? "";
               if (role.description) context.roleDescription = role.description;
               if (role.goal) context.roleGoal = role.goal;
+              if (role.skills && role.skills.length > 0) context.skills = role.skills;
               // If the user explicitly changed the CLI in launch preview, don't pass
               // the topology's platform — it would override the user's choice in
               // resolveAgent(). Let resolveAgent fall back to command parsing instead.

@@ -15,8 +15,9 @@ import { join, resolve } from "node:path";
 import { watchTurnError } from "../acp/watch-turn.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { AgentIdentity } from "../core/models.js";
-import { resolveMcpServePath } from "../core/resolve-mcp-serve-path.js";
+import { resolveBundledSkillsRoot, resolveMcpServePath } from "../core/resolve-mcp-serve-path.js";
 import { parseAcpxSessionId } from "../core/session-id.js";
+import { injectSkills } from "../core/skill-injector.js";
 import type { AgentTopology } from "../core/topology.js";
 import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
 import type { WorkspaceIsolationPolicy, WorkspaceMode } from "../core/workspace-provisioner.js";
@@ -296,6 +297,20 @@ export class SpawnManager {
           await this.writeAgentInstructions(workspacePath, roleId, context);
           if (context?.rolePrompt || context?.roleDescription) {
             await this.writeAgentContext(workspacePath, roleId, context);
+          }
+          // Inject skills declared by the role. SpawnManager does not use the shared
+          // bootstrapWorkspace; the parallel path performs the same injection to land
+          // `.claude/skills/{name}/` and `.codex/skills/{name}/` in the workspace.
+          const roleSkills = Array.isArray(context?.skills)
+            ? (context.skills as readonly string[])
+            : [];
+          if (roleSkills.length > 0 && this.groveDir) {
+            await injectSkills({
+              workspacePath,
+              skills: roleSkills,
+              bundledSkillsRoot: resolveBundledSkillsRoot(this.groveDir),
+              workspaceOverrideRoot: join(this.groveDir, "skills"),
+            });
           }
           // Protect config files from agent mutation (#7 Workspace Mutation Constraints)
           const { chmod } = await import("node:fs/promises");
