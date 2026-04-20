@@ -111,7 +111,7 @@ if (contract) {
       400,
     );
   }
-  baseConfig = presetToSessionConfig(preset);
+  baseConfig = presetToSessionConfig(preset, presetName);
 } else {
   return c.json(
     {
