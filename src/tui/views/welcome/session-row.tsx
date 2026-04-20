@@ -42,8 +42,7 @@ export function computeSessionRowFields(
 
   if (opts.focused) {
     const primary = `${dot} "${goal}"  ${count} · ${when}`;
-    const topology = session.presetName ?? session.topology ?? "";
-    const secondary = topology ? topology : undefined;
+    const secondary = session.presetName ? session.presetName : undefined;
     return { dot, rich: true, primary, secondary };
   }
 
