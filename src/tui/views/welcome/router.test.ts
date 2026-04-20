@@ -19,13 +19,15 @@ function session(over: Partial<SessionRecord> = {}): SessionRecord {
 }
 
 describe("resolveInitialRoute", () => {
+  const info = { name: "demo", preset: "review-loop" };
+
   test("no grove → first-run mode step", () => {
     const r = resolveInitialRoute({ groveExists: false, sessions: [] });
     expect(r).toEqual({ kind: "first-run", step: "mode" });
   });
 
   test("grove exists, zero sessions → fast-path", () => {
-    const r = resolveInitialRoute({ groveExists: true, sessions: [] });
+    const r = resolveInitialRoute({ groveExists: true, sessions: [], groveInfo: info });
     expect(r).toEqual({ kind: "fast-path" });
   });
 
@@ -33,6 +35,7 @@ describe("resolveInitialRoute", () => {
     const r = resolveInitialRoute({
       groveExists: true,
       sessions: [session(), session({ id: "s2", status: "completed" })],
+      groveInfo: info,
     });
     expect(r).toEqual({ kind: "fast-path" });
   });
@@ -41,8 +44,14 @@ describe("resolveInitialRoute", () => {
     const r = resolveInitialRoute({
       groveExists: true,
       sessions: [session({ status: "archived" })],
+      groveInfo: info,
     });
     expect(r).toEqual({ kind: "fast-path" });
+  });
+
+  test("grove exists but grove.json missing → first-run (defensive)", () => {
+    const r = resolveInitialRoute({ groveExists: true, sessions: [] });
+    expect(r).toEqual({ kind: "first-run", step: "mode" });
   });
 });
 

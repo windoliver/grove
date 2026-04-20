@@ -21,9 +21,6 @@ import {
   type WelcomeRoute,
 } from "./router.js";
 
-/** Re-export for TuiApp convenience. */
-export type { PresetLite as WelcomePresetLite } from "./router.js";
-
 export interface WelcomeProps {
   readonly presets: readonly TuiPresetEntry[];
   readonly groveExists: boolean;
@@ -56,7 +53,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
     onQuit,
   }: WelcomeProps): React.ReactNode {
     const [route, setRoute] = useState<WelcomeRoute>(() =>
-      resolveInitialRoute({ groveExists, sessions: sessions ?? [] }),
+      resolveInitialRoute({ groveExists, sessions: sessions ?? [], groveInfo }),
     );
 
     const groveName = groveInfo?.name ?? "grove";

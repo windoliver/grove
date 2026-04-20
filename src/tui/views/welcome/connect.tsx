@@ -7,7 +7,7 @@
  */
 
 import { useKeyboard, useRenderer } from "@opentui/react";
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import { theme } from "../../theme.js";
 
 export interface ConnectProps {
@@ -25,6 +25,10 @@ export const Connect: React.NamedExoticComponent<ConnectProps> = React.memo(
     onBack,
   }: ConnectProps): React.ReactNode {
     const [url, setUrl] = useState(defaultUrl ?? "http://localhost:2026");
+    // urlRef mirrors the latest committed url so Enter never reads a stale
+    // closure after rapid typing.
+    const urlRef = useRef(url);
+    urlRef.current = url;
     void useRenderer();
 
     useKeyboard(
@@ -36,7 +40,7 @@ export const Connect: React.NamedExoticComponent<ConnectProps> = React.memo(
             return;
           }
           if (name === "return") {
-            const trimmed = url.trim();
+            const trimmed = urlRef.current.trim();
             if (trimmed.length > 0) onConnect(trimmed);
             return;
           }
@@ -53,7 +57,7 @@ export const Connect: React.NamedExoticComponent<ConnectProps> = React.memo(
             return;
           }
         },
-        [url, onConnect, onBack],
+        [onConnect, onBack],
       ),
     );
 

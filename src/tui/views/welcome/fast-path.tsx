@@ -6,7 +6,7 @@
  */
 
 import { useKeyboard, useRenderer } from "@opentui/react";
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionRecord } from "../../provider.js";
 import { theme } from "../../theme.js";
 import { routeFastPathKey } from "./fast-path-keyboard.js";
@@ -61,19 +61,29 @@ export const FastPath: React.NamedExoticComponent<FastPathProps> = React.memo(
       [visibleSessions],
     );
 
-    // Refs mirror current cursor/filterMode/archiveVisible so the handler
-    // reads values that are still consistent with rendered state even if the
-    // handler was registered on an earlier render. For `filterText`, rapid
-    // typing can queue several key events before React re-renders, so we
-    // rely on functional setState inside the actions instead of a ref read.
-    const cursorRef = useRef(cursor);
+    // `pendingCursorRef` is the synchronously-updated source of truth the
+    // keyboard handler reads from. React state (`cursor`) mirrors it so the
+    // UI still re-renders, but a burst of j+j+Enter queued before any render
+    // must still see the post-nav cursor on Enter — so moveCursor updates
+    // the ref immediately, before scheduling setState.
     const filterModeRef = useRef(filterMode);
     const archiveVisibleRef = useRef(archiveVisible);
     const visibleIdsRef = useRef(visibleIds);
-    cursorRef.current = cursor;
+    const pendingCursorRef = useRef(cursor);
     filterModeRef.current = filterMode;
     archiveVisibleRef.current = archiveVisible;
     visibleIdsRef.current = visibleIds;
+
+    // Reclamp cursor when the visible list shrinks (archive toggle or filter
+    // narrow). Without this the cursor can point past the end of the list
+    // until the user hits k to scroll back.
+    useEffect(() => {
+      const max = Math.max(0, visibleIds.length - 1);
+      if (pendingCursorRef.current > max) {
+        pendingCursorRef.current = max;
+        setCursor(max);
+      }
+    }, [visibleIds.length]);
 
     useKeyboard(
       useCallback(
@@ -82,17 +92,18 @@ export const FastPath: React.NamedExoticComponent<FastPathProps> = React.memo(
           routeFastPathKey(
             key,
             {
-              cursor: cursorRef.current,
+              cursor: pendingCursorRef.current,
               visibleSessionIds: ids,
               filterMode: filterModeRef.current,
               archiveVisible: archiveVisibleRef.current,
             },
             {
-              moveCursor: (delta) =>
-                setCursor((prev) => {
-                  const max = Math.max(0, visibleIdsRef.current.length - 1);
-                  return Math.max(0, Math.min(prev + delta, max));
-                }),
+              moveCursor: (delta) => {
+                const max = Math.max(0, visibleIdsRef.current.length - 1);
+                const next = Math.max(0, Math.min(pendingCursorRef.current + delta, max));
+                pendingCursorRef.current = next;
+                setCursor(next);
+              },
               enterFilter: () => {
                 setFilterMode(true);
                 setFilterText("");
@@ -100,10 +111,12 @@ export const FastPath: React.NamedExoticComponent<FastPathProps> = React.memo(
               exitFilter: () => {
                 setFilterMode(false);
                 setFilterText("");
+                pendingCursorRef.current = 0;
                 setCursor(0);
               },
               commitFilter: () => {
                 setFilterMode(false);
+                pendingCursorRef.current = 0;
                 setCursor(0);
               },
               appendFilterChar: (c) => setFilterText((prev) => prev + c),

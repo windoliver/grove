@@ -24,6 +24,13 @@ export type WelcomeRoute =
 export interface RouterInput {
   readonly groveExists: boolean;
   readonly sessions: readonly SessionRecord[];
+  /**
+   * Grove metadata loaded from `grove.json`. When `groveExists` is true but
+   * this is absent (unreadable/corrupted config), the router defensively
+   * routes to first-run — landing in fast-path with a `grove` placeholder
+   * name would be more confusing than restarting the wizard.
+   */
+  readonly groveInfo?: { readonly name: string; readonly preset: string } | undefined;
 }
 
 /** Preset shape consumed by default-preset resolution. */
@@ -42,6 +49,10 @@ export interface PresetLite {
  */
 export function resolveInitialRoute(input: RouterInput): WelcomeRoute {
   if (!input.groveExists) {
+    return { kind: "first-run", step: "mode" };
+  }
+  if (input.groveInfo === undefined) {
+    // .grove/ exists but grove.json was unreadable — restart first-run.
     return { kind: "first-run", step: "mode" };
   }
   return { kind: "fast-path" };

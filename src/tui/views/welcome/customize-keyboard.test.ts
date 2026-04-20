@@ -142,6 +142,38 @@ describe("routeCustomizeKey (name field)", () => {
     );
     expect(calls).toEqual([]);
   });
+
+  test("Enter is ignored when presets list is empty", () => {
+    const { calls, actions } = tracker();
+    routeCustomizeKey(
+      keyEvent("return"),
+      state({ field: "preset", presetCount: 0, nameIsEmpty: false }),
+      actions,
+    );
+    expect(calls).toEqual([]);
+  });
+});
+
+describe("routeCustomizeKey (preset detail overlay)", () => {
+  test("detail overlay is modal: j/k/Tab/chars are swallowed", () => {
+    const { calls, actions } = tracker();
+    for (const k of ["j", "k", "tab", "a"]) {
+      routeCustomizeKey(keyEvent(k), state({ presetDetailOpen: true }), actions);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  test("? dismisses the detail overlay", () => {
+    const { calls, actions } = tracker();
+    routeCustomizeKey(keyEvent("?", "?"), state({ presetDetailOpen: true }), actions);
+    expect(calls).toEqual([{ name: "togglePresetDetail", args: [] }]);
+  });
+
+  test("Esc dismisses the detail overlay without going back", () => {
+    const { calls, actions } = tracker();
+    routeCustomizeKey(keyEvent("escape"), state({ presetDetailOpen: true }), actions);
+    expect(calls).toEqual([{ name: "togglePresetDetail", args: [] }]);
+  });
 });
 
 describe("routeCustomizeKey (keymap field)", () => {

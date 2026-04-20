@@ -125,6 +125,16 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           resumeSessionStartedAt = active.createdAt;
           resumeSessionId = active.id;
           resumeScopeIdRef.current = active.id; // captured for mount effect
+        } else if (resumeSessionIdFromProps) {
+          // Explicit resume choice wasn't in the startup session list (e.g.
+          // created after main.ts snapshotted it). Honor the user's choice
+          // anyway — scope to the requested id; sessionStartedAt will be
+          // learned when contributions start arriving.
+          resumeSessionId = resumeSessionIdFromProps;
+          resumeScopeIdRef.current = resumeSessionIdFromProps;
+          process.stderr.write(
+            `[screen-manager] resume: session ${resumeSessionIdFromProps} not in startup list; scoping anyway\n`,
+          );
         }
       }
       return {

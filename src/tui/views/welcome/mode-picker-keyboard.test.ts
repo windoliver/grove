@@ -97,12 +97,18 @@ describe("routeModePickerKey", () => {
     expect(calls).toEqual([{ name: "onQuit", args: [] }]);
   });
 
-  test("glossary is modal: h/l/Enter/Tab/c/q are swallowed while open", () => {
+  test("glossary is modal: h/l/Enter/Tab/c are swallowed while open", () => {
     const { calls, actions } = tracker();
-    for (const k of ["h", "l", "return", "tab", "c", "q"]) {
+    for (const k of ["h", "l", "return", "tab", "c"]) {
       routeModePickerKey(keyEvent(k), state({ glossaryOpen: true }), actions);
     }
     expect(calls).toEqual([]);
+  });
+
+  test("q still quits while glossary is open (escape hatch)", () => {
+    const { calls, actions } = tracker();
+    routeModePickerKey(keyEvent("q"), state({ glossaryOpen: true }), actions);
+    expect(calls).toEqual([{ name: "onQuit", args: [] }]);
   });
 
   test("? still toggles glossary while open (dismiss)", () => {

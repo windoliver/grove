@@ -50,6 +50,13 @@ export const FirstRun: React.NamedExoticComponent<FirstRunProps> = React.memo(
         <ModePicker
           defaultPresetByMode={defaultPresetByMode}
           onStartWithDefaults={(mode) => {
+            // Connected-mode defaults require a Nexus URL which we don't
+            // have without user input — route through connect.tsx so the
+            // user supplies it, rather than silently launching Local-style.
+            if (mode === "connected") {
+              onConnect();
+              return;
+            }
             const preset = defaultPresetByMode[mode];
             if (!preset) return;
             onSelect({ preset, name: defaultName, mode, keymap: "none" });

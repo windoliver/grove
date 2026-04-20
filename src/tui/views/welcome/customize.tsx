@@ -55,36 +55,43 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
     const [presetDetailOpen, setPresetDetailOpen] = useState(false);
     void useRenderer();
 
-    const launch = useCallback(() => {
-      const preset = presets[presetCursor]?.name ?? defaultPresetName;
-      void (async () => {
-        if (keymap !== "none") {
-          try {
-            await applyKeymapPresetToFile(keymap, globalConfigPath());
-          } catch (err) {
-            process.stderr.write(
-              `[grove] failed to apply keymap preset "${keymap}": ${err instanceof Error ? err.message : String(err)}\n`,
-            );
-          }
-        }
-        onLaunch({ preset, name, keymap });
-      })();
-    }, [presets, presetCursor, defaultPresetName, keymap, name, onLaunch]);
-
-    // Refs mirror current field/cursor/keymap so the handler can see their
-    // rendered values even when registered on an earlier render. The `name`
-    // edit path uses functional setState (via appendNameChar / deleteNameChar)
-    // because rapid typing can fire multiple handlers before React re-renders.
+    // Refs mirror scalar state; pendingCursorRef is synchronously updated by
+    // movePresetCursor so rapid j+j+Enter launches the cursor-destination
+    // preset (not the stale pre-nav one). nameRef tracks the latest typed
+    // grove name for the same reason at Enter time.
     const fieldRef = useRef(field);
-    const presetCursorRef = useRef(presetCursor);
+    const pendingPresetCursorRef = useRef(presetCursor);
+    const nameRef = useRef(name);
     const nameIsEmptyRef = useRef(name.length === 0);
     const keymapRef = useRef(keymap);
     const presetDetailOpenRef = useRef(presetDetailOpen);
     fieldRef.current = field;
-    presetCursorRef.current = presetCursor;
+    nameRef.current = name;
     nameIsEmptyRef.current = name.length === 0;
     keymapRef.current = keymap;
     presetDetailOpenRef.current = presetDetailOpen;
+
+    const launch = useCallback(() => {
+      // Bail out defensively when presets failed to load — avoids passing
+      // preset="" into the init flow which would crash executeInit.
+      const idx = pendingPresetCursorRef.current;
+      const preset = presets[idx]?.name ?? defaultPresetName;
+      if (!preset) return;
+      const nameAtLaunch = nameRef.current;
+      const keymapAtLaunch = keymapRef.current;
+      void (async () => {
+        if (keymapAtLaunch !== "none") {
+          try {
+            await applyKeymapPresetToFile(keymapAtLaunch, globalConfigPath());
+          } catch (err) {
+            process.stderr.write(
+              `[grove] failed to apply keymap preset "${keymapAtLaunch}": ${err instanceof Error ? err.message : String(err)}\n`,
+            );
+          }
+        }
+        onLaunch({ preset, name: nameAtLaunch, keymap: keymapAtLaunch });
+      })();
+    }, [presets, defaultPresetName, onLaunch]);
 
     useKeyboard(
       useCallback(
@@ -93,7 +100,7 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
             key,
             {
               field: fieldRef.current,
-              presetCursor: presetCursorRef.current,
+              presetCursor: pendingPresetCursorRef.current,
               presetCount: presets.length,
               nameIsEmpty: nameIsEmptyRef.current,
               keymap: keymapRef.current,
@@ -101,10 +108,12 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
             },
             {
               setField,
-              movePresetCursor: (delta) =>
-                setPresetCursor((prev) =>
-                  Math.max(0, Math.min(prev + delta, Math.max(0, presets.length - 1))),
-                ),
+              movePresetCursor: (delta) => {
+                const max = Math.max(0, presets.length - 1);
+                const next = Math.max(0, Math.min(pendingPresetCursorRef.current + delta, max));
+                pendingPresetCursorRef.current = next;
+                setPresetCursor(next);
+              },
               appendNameChar: (c) => setName((prev) => prev + c),
               deleteNameChar: () => setName((prev) => prev.slice(0, -1)),
               setKeymap,

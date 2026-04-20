@@ -5,7 +5,7 @@
  */
 
 import { useKeyboard, useRenderer } from "@opentui/react";
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { TuiPresetEntry } from "../../tui-app.js";
 import { theme } from "../../theme.js";
 import { routeNewSessionKey } from "./new-session-keyboard.js";
@@ -23,23 +23,37 @@ export const NewSession: React.NamedExoticComponent<NewSessionProps> = React.mem
     const [detailOpen, setDetailOpen] = useState(false);
     void useRenderer();
 
-    // Refs mirror scalar state so rapid j/k doesn't stall on a stale cursor.
-    const cursorRef = useRef(cursor);
+    // pendingCursorRef is synchronously updated by moveCursor so a burst of
+    // j+j+Enter queued before render still lets Enter pick the post-nav row.
+    const pendingCursorRef = useRef(cursor);
     const detailOpenRef = useRef(detailOpen);
-    cursorRef.current = cursor;
     detailOpenRef.current = detailOpen;
+
+    useEffect(() => {
+      const max = Math.max(0, presets.length - 1);
+      if (pendingCursorRef.current > max) {
+        pendingCursorRef.current = max;
+        setCursor(max);
+      }
+    }, [presets.length]);
 
     useKeyboard(
       useCallback(
         (key) => {
           routeNewSessionKey(
             key,
-            { cursor: cursorRef.current, presetCount: presets.length, detailOpen: detailOpenRef.current },
             {
-              moveCursor: (delta) =>
-                setCursor((prev) =>
-                  Math.max(0, Math.min(prev + delta, Math.max(0, presets.length - 1))),
-                ),
+              cursor: pendingCursorRef.current,
+              presetCount: presets.length,
+              detailOpen: detailOpenRef.current,
+            },
+            {
+              moveCursor: (delta) => {
+                const max = Math.max(0, presets.length - 1);
+                const next = Math.max(0, Math.min(pendingCursorRef.current + delta, max));
+                pendingCursorRef.current = next;
+                setCursor(next);
+              },
               toggleDetail: () => setDetailOpen((v) => !v),
               onPick: (i) => {
                 const name = presets[i]?.name;

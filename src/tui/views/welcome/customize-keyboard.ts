@@ -37,6 +37,20 @@ export function routeCustomizeKey(
 ): boolean {
   const name = key.name;
 
+  // Preset detail overlay is modal: only `?` and Esc dismiss it so the
+  // operator isn't silently editing name/keymap behind the modal.
+  if (state.presetDetailOpen) {
+    if (key.sequence === "?") {
+      actions.togglePresetDetail();
+      return true;
+    }
+    if (name === "escape") {
+      actions.togglePresetDetail();
+      return true;
+    }
+    return true;
+  }
+
   if (name === "escape") {
     actions.goBack();
     return true;
@@ -62,7 +76,7 @@ export function routeCustomizeKey(
       return true;
     }
     if (name === "return") {
-      if (!state.nameIsEmpty) actions.launch();
+      if (!state.nameIsEmpty && state.presetCount > 0) actions.launch();
       return true;
     }
     return false;
@@ -78,7 +92,7 @@ export function routeCustomizeKey(
       return true;
     }
     if (name === "return") {
-      if (!state.nameIsEmpty) actions.launch();
+      if (!state.nameIsEmpty && state.presetCount > 0) actions.launch();
       return true;
     }
     if (typeof name === "string" && name.length === 1 && !key.ctrl) {

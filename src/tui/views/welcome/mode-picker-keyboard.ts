@@ -26,16 +26,20 @@ export function routeModePickerKey(
 ): boolean {
   const name = key.name;
 
-  // Glossary overlay is modal: only `?` and Esc close it; everything else
-  // is swallowed so h/l/Enter/Tab/c don't leak to the underlying picker
-  // while the user is reading.
+  // Glossary overlay is modal: only `?`, Esc (dismiss) and `q` (quit)
+  // escape it. Everything else is swallowed so h/l/Enter/Tab/c don't leak
+  // to the underlying picker while the user is reading.
   if (state.glossaryOpen) {
-    if (key.sequence === "?" || (key.shift && name === "?")) {
+    if (key.sequence === "?") {
       actions.toggleGlossary();
       return true;
     }
     if (name === "escape") {
       actions.toggleGlossary();
+      return true;
+    }
+    if (name === "q") {
+      actions.onQuit();
       return true;
     }
     return true;
@@ -61,7 +65,7 @@ export function routeModePickerKey(
     actions.openConnect();
     return true;
   }
-  if (key.sequence === "?" || (key.shift && name === "?")) {
+  if (key.sequence === "?") {
     actions.toggleGlossary();
     return true;
   }
