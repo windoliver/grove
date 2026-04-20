@@ -175,4 +175,23 @@ describe("bootstrapWorkspace", () => {
       }),
     ).rejects.toThrow(/bundledSkillsRoot/);
   });
+
+  test("bundled grove catalog resolves via default root in repo", async () => {
+    // Resolve the repo-root skills/ dir via import.meta.url, same trick as production.
+    const here = new URL(import.meta.url).pathname;
+    const repoSkills = join(here, "..", "..", "..", "skills");
+
+    await bootstrapWorkspace({
+      workspacePath: workspaceDir,
+      roleId: "coder",
+      goal: "Build",
+      skills: ["grove"],
+      bundledSkillsRoot: repoSkills,
+    });
+
+    const claudePath = join(workspaceDir, ".claude/skills/grove/SKILL.md");
+    const content = readFileSync(claudePath, "utf-8");
+    expect(content).toContain("name: grove");
+    expect(content).toContain("grove_submit_work");
+  });
 });
