@@ -257,6 +257,10 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
 
           setAppProps(result);
           setMode("boardroom");
+          // Drop the stored URL once we've successfully transitioned —
+          // no future boardroom→setup path should pre-fill Connect with
+          // the previously-successful URL.
+          setLastNexusUrl(undefined);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           setInitError(message);

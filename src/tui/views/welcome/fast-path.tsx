@@ -89,6 +89,11 @@ export const FastPath: React.NamedExoticComponent<FastPathProps> = React.memo(
     const pendingCursorRef = useRef(cursor);
     const sessionsRef = useRef(sessions);
     const visibleIdsRef = useRef(visibleIds);
+    // Opentui's renderer is single-pass and synchronous, so writing these
+    // mirrors in render body is safe today — the values committed here are
+    // the ones the next keyboard event will see. If opentui ever adopts
+    // concurrent rendering, move these assignments into a useLayoutEffect
+    // (matching pending*Ref updates which already happen inside callbacks).
     sessionsRef.current = sessions;
     visibleIdsRef.current = visibleIds;
 
@@ -159,12 +164,16 @@ export const FastPath: React.NamedExoticComponent<FastPathProps> = React.memo(
               appendFilterChar: (c) => {
                 pendingFilterTextRef.current = pendingFilterTextRef.current + c;
                 setFilterText((prev) => prev + c);
-                recomputeVisibleIds();
+                const ids = recomputeVisibleIds();
+                // Filter narrowing can push cursor past the new end;
+                // sync React cursor so the focused-row highlight matches.
+                setCursor((cur) => Math.min(cur, Math.max(0, ids.length - 1)));
               },
               deleteFilterChar: () => {
                 pendingFilterTextRef.current = pendingFilterTextRef.current.slice(0, -1);
                 setFilterText((prev) => prev.slice(0, -1));
-                recomputeVisibleIds();
+                const ids = recomputeVisibleIds();
+                setCursor((cur) => Math.min(cur, Math.max(0, ids.length - 1)));
               },
               toggleArchive: () => {
                 const next = !pendingArchiveVisibleRef.current;

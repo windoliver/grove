@@ -220,7 +220,9 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     const serverRoutingActiveRef = useRef<boolean>(false);
     // Render-committed mirror of sessionStartedAt so reconcile.then()
     // reads the latest hydrated value (avoids a stale `undefined`
-    // closure on resume flows).
+    // closure on resume flows). Safe under opentui's synchronous
+    // single-pass renderer; would need to move to useLayoutEffect if
+    // opentui ever adopts concurrent rendering.
     const sessionStartedAtRef = useRef<string | undefined>(state.sessionStartedAt);
     sessionStartedAtRef.current = state.sessionStartedAt;
     // Spawn guard: prevents duplicate spawn when user presses Escape → Enter twice on agent-detect screen.

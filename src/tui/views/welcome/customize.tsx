@@ -55,7 +55,11 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
     const [name, setName] = useState(defaultName);
     const [keymap, setKeymap] = useState<KeymapChoice>("vim");
     const [presetDetailOpen, setPresetDetailOpen] = useState(false);
-    const [keymapError, setKeymapError] = useState<string | undefined>(undefined);
+    // Pin the failed keymap alongside the error string so the panel text
+    // doesn't drift if the operator switches keymap after the failure.
+    const [keymapError, setKeymapError] = useState<
+      { readonly keymap: KeymapChoice; readonly message: string } | undefined
+    >(undefined);
     void useRenderer();
 
     // Pending* refs are updated synchronously inside the action wrappers so
@@ -89,7 +93,6 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
       const nameAtLaunch = pendingNameRef.current;
       const keymapAtLaunch = pendingKeymapRef.current;
       hasLaunchedRef.current = true;
-      setKeymapError(undefined);
       void (async () => {
         if (keymapAtLaunch !== "none") {
           try {
@@ -100,7 +103,7 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
             // Reset guard so the operator can switch to "none" and retry
             // rather than being silently stuck on a failed launch.
             hasLaunchedRef.current = false;
-            setKeymapError(msg);
+            setKeymapError({ keymap: keymapAtLaunch, message: msg });
             return;
           }
         }
@@ -150,6 +153,9 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
               setKeymap: (c) => {
                 pendingKeymapRef.current = c;
                 setKeymap(c);
+                // Clear a stale error so the user isn't staring at a
+                // failure attributed to a keymap they just moved off of.
+                setKeymapError(undefined);
               },
               togglePresetDetail: () => {
                 const next = !pendingPresetDetailOpenRef.current;
@@ -287,7 +293,7 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
         {keymapError ? (
           <box flexDirection="column" marginX={2} marginTop={1}>
             <text color={theme.error}>
-              {`Keymap preset "${keymap}" failed: ${keymapError}`}
+              {`Keymap preset "${keymapError.keymap}" failed: ${keymapError.message}`}
             </text>
             <text color={theme.secondary}>
               Switch Keymap to "none" (press 3) and press Enter to continue, or Esc to go back.
