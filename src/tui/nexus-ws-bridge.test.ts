@@ -642,4 +642,80 @@ describe("NexusWsBridge", () => {
     );
     expect(store.getTurn("s1", "t1")?.messages).toHaveLength(1);
   });
+
+  test("ACP envelope delivered by SSE must NOT trigger handoff markDelivered", async () => {
+    // Codex Round 9 Finding 1: ACP traffic is high-volume and has no
+    // backing handoff record. The sender-fallback inside
+    // updateHandoffDeliveryStatus matches the most-recent pending
+    // handoff from the same sender — so every ACP envelope would
+    // falsely advance an unrelated handoff to delivered. Fixed by
+    // running handoff-state transitions only AFTER ACP classification.
+    const runtime = makeMockRuntime();
+    const markDelivered = mock(() => Promise.resolve());
+    const handoffStore = {
+      list: mock(() =>
+        Promise.resolve([
+          // A pending handoff from the same sender — would falsely match
+          // the sender-fallback if markDelivered ran before ACP gate.
+          {
+            handoffId: "h1",
+            fromRole: "coder",
+            toRole: "reviewer",
+            status: "pending_pickup" as const,
+            ipcMessageId: undefined,
+            createdAt: new Date().toISOString(),
+          },
+        ]),
+      ),
+      markDelivered,
+      markDeadLettered: mock(() => Promise.resolve()),
+    };
+
+    const bridge = new TestableNexusWsBridge(
+      makeBridgeOpts({
+        runtime,
+        handoffStore: handoffStore as unknown as NexusWsBridgeOptions["handoffStore"],
+        onAcpEvent: () => undefined,
+      }),
+    );
+    bridge.registerSession("reviewer", makeSession("reviewer"));
+
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          result: {
+            data: Buffer.from(
+              JSON.stringify({
+                sender: "coder",
+                payload: {
+                  type: "acp.message",
+                  sessionId: "s1",
+                  turnId: "t1",
+                  message: { kind: "text", turnId: "t1", text: "hi", chunk: true },
+                },
+              }),
+            ).toString("base64"),
+          },
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+
+    bridge.testHandleEvent(
+      "reviewer",
+      "message_delivered",
+      JSON.stringify({
+        event: "message_delivered",
+        message_id: "acp-1",
+        sender: "coder",
+        recipient: "reviewer",
+        type: "event",
+        path: "/inbox/acp-1",
+      }),
+    );
+
+    // Wait for async readAndPush
+    await new Promise((r) => setTimeout(r, 20));
+    expect(markDelivered).not.toHaveBeenCalled();
+    bridge.close();
+  });
 });

@@ -122,6 +122,18 @@ export class AcpSessionStore {
     let turn = session.turns.get(event.turnId);
     const isNewTurn = turn === undefined;
     if (!turn) {
+      // A result for an unseen turn when the session already has an
+      // active latest turn is, by construction, stale/out-of-order
+      // (evicted long ago, duplicate retransmit, or a misrouted frame).
+      // Creating a TurnRecord for it would consume cap budget, force
+      // eviction of a live turn, and keep the stale turn around. Drop.
+      if (event.kind === "result" && session.latestTurnId !== undefined) {
+        debugLog(
+          "acp_stale_result_dropped",
+          `dropped stale result for unseen turnId=${event.turnId} sessionId=${event.sessionId} (latest=${session.latestTurnId})`,
+        );
+        return;
+      }
       turn = {
         turnId: event.turnId,
         sessionId: event.sessionId,
@@ -131,15 +143,11 @@ export class AcpSessionStore {
       };
       session.turns.set(event.turnId, turn);
       // Advance latestTurnId BEFORE enforcing the cap so eviction always
-      // protects the newly-created turn — but only when the incoming
-      // event is a MESSAGE, or when the session doesn't yet have a
-      // latest. A stale/out-of-order RESULT for an unknown turn (e.g.
-      // evicted ages ago, or a duplicate retransmit) must NOT hijack
-      // the pointer away from the currently-active turn.
-      const shouldPromote = event.kind === "message" || session.latestTurnId === undefined;
-      if (shouldPromote) {
-        session.latestTurnId = event.turnId;
-      }
+      // protects the newly-created turn. We only reach this point with
+      // event.kind === "message" (stale result-first was rejected above)
+      // OR event.kind === "result" with no prior latest (brand-new
+      // session that observes only the terminal frame).
+      session.latestTurnId = event.turnId;
       this.enforceSessionTurnCap(session);
     }
 

@@ -407,3 +407,34 @@ test("stale result for an UNKNOWN turn does not hijack latestTurnId when a lates
   });
   expect(store.getSession("s1")?.latestTurnId).toBe("t3");
 });
+
+test("stale result for an unseen turn cannot evict live turns under cap pressure", () => {
+  // Codex Round 9 Finding 2: with cap=2 and two live turns, a stale
+  // result for a never-seen turn must not be allowed to create a
+  // TurnRecord and trigger cap eviction of a live turn.
+  const store = new AcpSessionStore({ maxTurnsPerSession: 2 });
+  store.register("s1");
+  store.ingest({
+    kind: "message",
+    sessionId: "s1",
+    turnId: "live-1",
+    message: { kind: "text", turnId: "live-1", text: "a", chunk: true },
+  });
+  store.ingest({
+    kind: "message",
+    sessionId: "s1",
+    turnId: "live-2",
+    message: { kind: "text", turnId: "live-2", text: "b", chunk: true },
+  });
+  store.ingest({
+    kind: "result",
+    sessionId: "s1",
+    turnId: "stale-x",
+    result: { turnId: "stale-x", stopReason: "end_turn" },
+  });
+  const sess = store.getSession("s1");
+  expect(sess?.turns.has("live-1")).toBe(true);
+  expect(sess?.turns.has("live-2")).toBe(true);
+  expect(sess?.turns.has("stale-x")).toBe(false);
+  expect(sess?.latestTurnId).toBe("live-2");
+});

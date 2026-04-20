@@ -233,12 +233,11 @@ export class NexusWsBridge {
         void this.opts.eventBus.publish(groveEvent);
       }
 
-      // --- IPC lifecycle: mark matching handoff as delivered ---
-      // The message_delivered SSE confirms Nexus inbox delivery.
-      // Find the handoff by IPC message ID and transition its status.
-      if (this.opts.handoffStore && event.message_id) {
-        void this.updateHandoffDeliveryStatus(event.message_id, role, event.sender);
-      }
+      // Handoff delivery-status transitions are deferred until after
+      // ACP classification in readAndPush. ACP envelopes (high-volume,
+      // never backed by a handoff record) would otherwise trigger the
+      // sender-based fallback in updateHandoffDeliveryStatus and
+      // falsely mark an unrelated pending handoff as delivered.
 
       const session = this.sessions.get(role);
       if (!session) {
@@ -522,6 +521,16 @@ export class NexusWsBridge {
       if (outcome === "acp") {
         return;
       }
+
+      // Non-ACP prose IPC: this is a real handoff notification, so now
+      // advance the handoff's delivery state. Running this AFTER the ACP
+      // check prevents ACP envelopes (never backed by a handoff record)
+      // from triggering updateHandoffDeliveryStatus's sender-fallback
+      // and falsely marking an unrelated pending handoff as delivered.
+      if (this.opts.handoffStore && ipcMessageId) {
+        void this.updateHandoffDeliveryStatus(ipcMessageId, _targetRole, msgSender);
+      }
+
       const summary =
         (msg.payload?.summary as string) ??
         (msg.payload?.body as string) ??
