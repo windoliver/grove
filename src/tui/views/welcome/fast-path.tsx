@@ -88,7 +88,11 @@ export const FastPath: React.NamedExoticComponent<FastPathProps> = React.memo(
               archiveVisible: archiveVisibleRef.current,
             },
             {
-              setCursor: (n) => setCursor(Math.min(n, Math.max(0, ids.length - 1))),
+              moveCursor: (delta) =>
+                setCursor((prev) => {
+                  const max = Math.max(0, visibleIdsRef.current.length - 1);
+                  return Math.max(0, Math.min(prev + delta, max));
+                }),
               enterFilter: () => {
                 setFilterMode(true);
                 setFilterText("");

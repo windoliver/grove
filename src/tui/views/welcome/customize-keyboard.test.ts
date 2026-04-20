@@ -27,7 +27,7 @@ function tracker() {
   const calls: Array<{ name: string; args: unknown[] }> = [];
   const actions: CustomizeActions = {
     setField: (f) => calls.push({ name: "setField", args: [f] }),
-    setPresetCursor: (n) => calls.push({ name: "setPresetCursor", args: [n] }),
+    movePresetCursor: (d) => calls.push({ name: "movePresetCursor", args: [d] }),
     appendNameChar: (c) => calls.push({ name: "appendNameChar", args: [c] }),
     deleteNameChar: () => calls.push({ name: "deleteNameChar", args: [] }),
     setKeymap: (c) => calls.push({ name: "setKeymap", args: [c] }),
@@ -69,12 +69,14 @@ describe("routeCustomizeKey (focus cycle)", () => {
 });
 
 describe("routeCustomizeKey (preset field)", () => {
-  test("j / k move preset cursor with clamp", () => {
+  test("j emits movePresetCursor(+1); k emits (-1)", () => {
     const { calls, actions } = tracker();
     routeCustomizeKey(keyEvent("j"), state({ presetCursor: 0 }), actions);
-    routeCustomizeKey(keyEvent("j"), state({ presetCursor: 2 }), actions); // clamp
-    routeCustomizeKey(keyEvent("k"), state({ presetCursor: 0 }), actions); // clamp
-    expect(calls.map((c) => c.args[0])).toEqual([1, 2, 0]);
+    routeCustomizeKey(keyEvent("k"), state({ presetCursor: 0 }), actions);
+    expect(calls.map((c) => [c.name, c.args[0]])).toEqual([
+      ["movePresetCursor", 1],
+      ["movePresetCursor", -1],
+    ]);
   });
 
   test("? toggles detail overlay", () => {

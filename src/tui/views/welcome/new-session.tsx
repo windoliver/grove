@@ -36,7 +36,10 @@ export const NewSession: React.NamedExoticComponent<NewSessionProps> = React.mem
             key,
             { cursor: cursorRef.current, presetCount: presets.length, detailOpen: detailOpenRef.current },
             {
-              setCursor,
+              moveCursor: (delta) =>
+                setCursor((prev) =>
+                  Math.max(0, Math.min(prev + delta, Math.max(0, presets.length - 1))),
+                ),
               toggleDetail: () => setDetailOpen((v) => !v),
               onPick: (i) => {
                 const name = presets[i]?.name;

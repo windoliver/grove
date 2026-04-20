@@ -35,7 +35,7 @@ function defaultState(over: Partial<FastPathState> = {}): FastPathState {
 function tracker() {
   const calls: Array<{ name: string; args: unknown[] }> = [];
   const actions: FastPathActions = {
-    setCursor: (n) => calls.push({ name: "setCursor", args: [n] }),
+    moveCursor: (d) => calls.push({ name: "moveCursor", args: [d] }),
     enterFilter: () => calls.push({ name: "enterFilter", args: [] }),
     exitFilter: () => calls.push({ name: "exitFilter", args: [] }),
     commitFilter: () => calls.push({ name: "commitFilter", args: [] }),
@@ -51,27 +51,26 @@ function tracker() {
 }
 
 describe("routeFastPathKey (navigation)", () => {
-  test("j moves cursor down, clamped", () => {
+  test("j emits moveCursor(+1); clamp is handled by wire-up", () => {
     const { calls, actions } = tracker();
     routeFastPathKey(keyEvent("j"), defaultState({ cursor: 0 }), actions);
-    expect(calls).toEqual([{ name: "setCursor", args: [1] }]);
-
-    routeFastPathKey(keyEvent("j"), defaultState({ cursor: 2 }), actions);
-    // clamped at last index
-    expect(calls[1]).toEqual({ name: "setCursor", args: [2] });
+    expect(calls).toEqual([{ name: "moveCursor", args: [1] }]);
   });
 
-  test("k moves cursor up, clamped at 0", () => {
+  test("k emits moveCursor(-1)", () => {
     const { calls, actions } = tracker();
     routeFastPathKey(keyEvent("k"), defaultState({ cursor: 0 }), actions);
-    expect(calls[0]).toEqual({ name: "setCursor", args: [0] });
+    expect(calls).toEqual([{ name: "moveCursor", args: [-1] }]);
   });
 
   test("down/up arrow mirror j/k", () => {
     const { calls, actions } = tracker();
     routeFastPathKey(keyEvent("down"), defaultState({ cursor: 0 }), actions);
     routeFastPathKey(keyEvent("up"), defaultState({ cursor: 1 }), actions);
-    expect(calls.map((c) => c.name)).toEqual(["setCursor", "setCursor"]);
+    expect(calls.map((c) => [c.name, c.args[0]])).toEqual([
+      ["moveCursor", 1],
+      ["moveCursor", -1],
+    ]);
   });
 });
 

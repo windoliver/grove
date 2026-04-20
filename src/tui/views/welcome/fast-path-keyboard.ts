@@ -26,7 +26,11 @@ export interface FastPathState {
  * avoid dropping rapid keystrokes to stale-closure races.
  */
 export interface FastPathActions {
-  readonly setCursor: (next: number) => void;
+  /**
+   * Move the cursor by a signed delta; wire-up is expected to use
+   * functional setState so rapid j/k doesn't stall on stale state.
+   */
+  readonly moveCursor: (delta: number) => void;
   readonly enterFilter: () => void;
   /** Esc in filter mode — exits AND clears the typed filter text. */
   readonly exitFilter: () => void;
@@ -75,12 +79,11 @@ export function routeFastPathKey(
 
   // Normal mode
   if (name === "j" || name === "down") {
-    const max = Math.max(0, state.visibleSessionIds.length - 1);
-    actions.setCursor(Math.min(state.cursor + 1, max));
+    actions.moveCursor(1);
     return true;
   }
   if (name === "k" || name === "up") {
-    actions.setCursor(Math.max(state.cursor - 1, 0));
+    actions.moveCursor(-1);
     return true;
   }
   if (name === "return") {

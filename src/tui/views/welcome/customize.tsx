@@ -101,7 +101,10 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
             },
             {
               setField,
-              setPresetCursor,
+              movePresetCursor: (delta) =>
+                setPresetCursor((prev) =>
+                  Math.max(0, Math.min(prev + delta, Math.max(0, presets.length - 1))),
+                ),
               appendNameChar: (c) => setName((prev) => prev + c),
               deleteNameChar: () => setName((prev) => prev.slice(0, -1)),
               setKeymap,

@@ -17,7 +17,8 @@ export interface CustomizeState {
 
 export interface CustomizeActions {
   readonly setField: (f: CustomizeField) => void;
-  readonly setPresetCursor: (n: number) => void;
+  /** Move preset cursor by signed delta; wire-up clamps via functional setState. */
+  readonly movePresetCursor: (delta: number) => void;
   readonly appendNameChar: (c: string) => void;
   readonly deleteNameChar: () => void;
   readonly setKeymap: (c: KeymapChoice) => void;
@@ -49,11 +50,11 @@ export function routeCustomizeKey(
 
   if (state.field === "preset") {
     if (name === "j" || name === "down") {
-      actions.setPresetCursor(Math.min(state.presetCursor + 1, Math.max(0, state.presetCount - 1)));
+      actions.movePresetCursor(1);
       return true;
     }
     if (name === "k" || name === "up") {
-      actions.setPresetCursor(Math.max(state.presetCursor - 1, 0));
+      actions.movePresetCursor(-1);
       return true;
     }
     if (key.sequence === "?") {

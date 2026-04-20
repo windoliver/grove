@@ -9,7 +9,8 @@ export interface NewSessionState {
 }
 
 export interface NewSessionActions {
-  readonly setCursor: (n: number) => void;
+  /** Move cursor by signed delta; wire-up uses functional setState. */
+  readonly moveCursor: (delta: number) => void;
   readonly toggleDetail: () => void;
   readonly onPick: (index: number) => void;
   readonly onBack: () => void;
@@ -30,11 +31,11 @@ export function routeNewSessionKey(
     return true;
   }
   if (name === "j" || name === "down") {
-    actions.setCursor(Math.min(state.cursor + 1, Math.max(0, state.presetCount - 1)));
+    actions.moveCursor(1);
     return true;
   }
   if (name === "k" || name === "up") {
-    actions.setCursor(Math.max(state.cursor - 1, 0));
+    actions.moveCursor(-1);
     return true;
   }
   if (name === "return") {

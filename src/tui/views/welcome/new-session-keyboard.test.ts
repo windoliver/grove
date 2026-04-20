@@ -25,7 +25,7 @@ function keyEvent(name: string, seq?: string): KeyEvent {
 function tracker() {
   const calls: Array<{ name: string; args: unknown[] }> = [];
   const actions: NewSessionActions = {
-    setCursor: (n) => calls.push({ name: "setCursor", args: [n] }),
+    moveCursor: (d) => calls.push({ name: "moveCursor", args: [d] }),
     toggleDetail: () => calls.push({ name: "toggleDetail", args: [] }),
     onPick: (i) => calls.push({ name: "onPick", args: [i] }),
     onBack: () => calls.push({ name: "onBack", args: [] }),
@@ -41,12 +41,14 @@ const state = (over: Partial<NewSessionState> = {}): NewSessionState => ({
 });
 
 describe("routeNewSessionKey", () => {
-  test("j/k move cursor with clamp", () => {
+  test("j emits moveCursor(+1); k emits moveCursor(-1)", () => {
     const { calls, actions } = tracker();
     routeNewSessionKey(keyEvent("j"), state({ cursor: 0 }), actions);
-    routeNewSessionKey(keyEvent("j"), state({ cursor: 2 }), actions);
     routeNewSessionKey(keyEvent("k"), state({ cursor: 0 }), actions);
-    expect(calls.map((c) => c.args[0])).toEqual([1, 2, 0]);
+    expect(calls.map((c) => [c.name, c.args[0]])).toEqual([
+      ["moveCursor", 1],
+      ["moveCursor", -1],
+    ]);
   });
 
   test("Enter picks focused preset index", () => {
