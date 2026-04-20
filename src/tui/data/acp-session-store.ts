@@ -131,11 +131,15 @@ export class AcpSessionStore {
       };
       session.turns.set(event.turnId, turn);
       // Advance latestTurnId BEFORE enforcing the cap so eviction always
-      // protects the newly-created turn — otherwise a late/duplicate
-      // result for an older turn (which leaves latestTurnId pointing at
-      // that older turn) could let the cap evict the turn we just
-      // inserted.
-      session.latestTurnId = event.turnId;
+      // protects the newly-created turn — but only when the incoming
+      // event is a MESSAGE, or when the session doesn't yet have a
+      // latest. A stale/out-of-order RESULT for an unknown turn (e.g.
+      // evicted ages ago, or a duplicate retransmit) must NOT hijack
+      // the pointer away from the currently-active turn.
+      const shouldPromote = event.kind === "message" || session.latestTurnId === undefined;
+      if (shouldPromote) {
+        session.latestTurnId = event.turnId;
+      }
       this.enforceSessionTurnCap(session);
     }
 
@@ -168,12 +172,12 @@ export class AcpSessionStore {
       }
     }
 
-    // Only advance latestTurnId for NEWLY CREATED turns (handled above)
-    // or when a message/result lands on the currently-latest turn.
-    // A late/duplicate event for an older turn must NOT rewind the
-    // pointer — that would make turn-cap eviction protect the wrong
-    // turn and drop legitimate in-flight state.
-    if (isNewTurn || session.latestTurnId === turn.turnId) {
+    // latestTurnId promotion for new turns already happened above (and
+    // is gated on event.kind === "message" to reject stale-result
+    // hijacking). For existing turns, only re-assert latestTurnId when
+    // the event already lands on the currently-latest turn — never let
+    // a late event for an older turn rewind the pointer.
+    if (!isNewTurn && session.latestTurnId === turn.turnId) {
       session.latestTurnId = turn.turnId;
     }
     this.dirty.add(event.sessionId);

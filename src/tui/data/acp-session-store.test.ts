@@ -376,3 +376,34 @@ test("cap does not evict a fresh turn due to late-result latestTurnId rewind", (
   expect(sess?.turns.has("t3")).toBe(true);
   expect(sess?.latestTurnId).toBe("t3");
 });
+
+test("stale result for an UNKNOWN turn does not hijack latestTurnId when a latest already exists", () => {
+  // Codex Round 8 Finding 1: a stale or out-of-order result for a
+  // never-seen (or long-evicted) turn must not steal latestTurnId from
+  // the currently-active turn. Only brand-new sessions promote on a
+  // result-first event.
+  const store = new AcpSessionStore();
+  store.register("s1");
+  // Establish two message-driven turns.
+  store.ingest({
+    kind: "message",
+    sessionId: "s1",
+    turnId: "t2",
+    message: { kind: "text", turnId: "t2", text: "b", chunk: true },
+  });
+  store.ingest({
+    kind: "message",
+    sessionId: "s1",
+    turnId: "t3",
+    message: { kind: "text", turnId: "t3", text: "c", chunk: true },
+  });
+  expect(store.getSession("s1")?.latestTurnId).toBe("t3");
+  // A stale result for a turn the store has NEVER seen.
+  store.ingest({
+    kind: "result",
+    sessionId: "s1",
+    turnId: "t0",
+    result: { turnId: "t0", stopReason: "end_turn" },
+  });
+  expect(store.getSession("s1")?.latestTurnId).toBe("t3");
+});
