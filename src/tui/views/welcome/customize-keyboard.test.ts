@@ -34,6 +34,7 @@ function tracker() {
     togglePresetDetail: () => calls.push({ name: "togglePresetDetail", args: [] }),
     goBack: () => calls.push({ name: "goBack", args: [] }),
     launch: () => calls.push({ name: "launch", args: [] }),
+    onQuit: () => calls.push({ name: "onQuit", args: [] }),
   };
   return { calls, actions };
 }
@@ -152,6 +153,16 @@ describe("routeCustomizeKey (name field)", () => {
     );
     expect(calls).toEqual([]);
   });
+
+  test("? is a no-op when preset list is empty (no invisible modal)", () => {
+    const { calls, actions } = tracker();
+    routeCustomizeKey(
+      keyEvent("?", "?"),
+      state({ field: "preset", presetCount: 0 }),
+      actions,
+    );
+    expect(calls).toEqual([]);
+  });
 });
 
 describe("routeCustomizeKey (preset detail overlay)", () => {
@@ -173,6 +184,12 @@ describe("routeCustomizeKey (preset detail overlay)", () => {
     const { calls, actions } = tracker();
     routeCustomizeKey(keyEvent("escape"), state({ presetDetailOpen: true }), actions);
     expect(calls).toEqual([{ name: "togglePresetDetail", args: [] }]);
+  });
+
+  test("q still quits while the detail overlay is open (escape hatch)", () => {
+    const { calls, actions } = tracker();
+    routeCustomizeKey(keyEvent("q"), state({ presetDetailOpen: true }), actions);
+    expect(calls).toEqual([{ name: "onQuit", args: [] }]);
   });
 });
 
@@ -209,5 +226,106 @@ describe("routeCustomizeKey (keymap field)", () => {
     const { calls, actions } = tracker();
     routeCustomizeKey(keyEvent("return"), state({ field: "keymap" }), actions);
     expect(calls).toEqual([{ name: "launch", args: [] }]);
+  });
+});
+
+// Burst sequences document the pending*Ref contract — the wire-up must
+// update the ref synchronously so the NEXT router call sees the new state.
+describe("routeCustomizeKey (rapid bursts)", () => {
+  test("? then j: j is swallowed once the detail modal is open", () => {
+    const { calls, actions } = tracker();
+    let presetDetailOpen = false;
+    const wrapped: CustomizeActions = {
+      ...actions,
+      togglePresetDetail: () => {
+        presetDetailOpen = !presetDetailOpen;
+        actions.togglePresetDetail();
+      },
+    };
+    routeCustomizeKey(
+      keyEvent("?", "?"),
+      state({ presetDetailOpen, field: "preset" }),
+      wrapped,
+    );
+    routeCustomizeKey(
+      keyEvent("j"),
+      state({ presetDetailOpen, field: "preset" }),
+      wrapped,
+    );
+    expect(calls.map((c) => c.name)).toEqual(["togglePresetDetail"]);
+  });
+
+  test("Tab then l: l moves keymap cursor after field swap", () => {
+    const { calls, actions } = tracker();
+    const fieldHolder: { value: "preset" | "name" | "keymap" } = { value: "preset" };
+    const wrapped: CustomizeActions = {
+      ...actions,
+      setField: (f) => {
+        fieldHolder.value = f;
+        actions.setField(f);
+      },
+    };
+    routeCustomizeKey(keyEvent("tab"), state({ field: fieldHolder.value, keymap: "vim" }), wrapped);
+    // Second Tab from name → keymap
+    routeCustomizeKey(keyEvent("tab"), state({ field: fieldHolder.value, keymap: "vim" }), wrapped);
+    routeCustomizeKey(keyEvent("l"), state({ field: fieldHolder.value, keymap: "vim" }), wrapped);
+    expect(calls.map((c) => c.name)).toEqual([
+      "setField",
+      "setField",
+      "setKeymap",
+    ]);
+    expect<"preset" | "name" | "keymap">(fieldHolder.value).toBe("keymap");
+    expect(calls.at(-1)?.args).toEqual(["emacs"]);
+  });
+
+  test("h then Enter in keymap: Enter reads the flipped keymap ref", () => {
+    const { calls, actions } = tracker();
+    const keymapHolder: { value: KeymapChoice } = { value: "vim" };
+    const wrapped: CustomizeActions = {
+      ...actions,
+      setKeymap: (c) => {
+        keymapHolder.value = c;
+        actions.setKeymap(c);
+      },
+    };
+    routeCustomizeKey(
+      keyEvent("h"),
+      state({ field: "keymap", keymap: keymapHolder.value }),
+      wrapped,
+    );
+    routeCustomizeKey(
+      keyEvent("return"),
+      state({ field: "keymap", keymap: keymapHolder.value }),
+      wrapped,
+    );
+    expect(calls.map((c) => c.name)).toEqual(["setKeymap", "launch"]);
+    // vim → none (h wraps left).
+    expect<KeymapChoice>(keymapHolder.value).toBe("none");
+  });
+
+  test("typing 'abc' then Enter in name field: Enter fires once name non-empty", () => {
+    const { calls, actions } = tracker();
+    let nameIsEmpty = true;
+    const wrapped: CustomizeActions = {
+      ...actions,
+      appendNameChar: (c) => {
+        nameIsEmpty = false;
+        actions.appendNameChar(c);
+      },
+    };
+    for (const ch of ["a", "b", "c"]) {
+      routeCustomizeKey(keyEvent(ch), state({ field: "name", nameIsEmpty }), wrapped);
+    }
+    routeCustomizeKey(
+      keyEvent("return"),
+      state({ field: "name", nameIsEmpty }),
+      wrapped,
+    );
+    expect(calls.map((c) => c.name)).toEqual([
+      "appendNameChar",
+      "appendNameChar",
+      "appendNameChar",
+      "launch",
+    ]);
   });
 });

@@ -23,6 +23,23 @@ export interface FastPathProps {
 
 const VISIBLE_WINDOW = 20;
 
+/**
+ * Pure visibility filter: apply archive-toggle, then text filter. Exported
+ * so wire-up can recompute synchronously inside toggleArchive/filter
+ * mutations — keeping the keyboard handler's `visibleIdsRef` from going
+ * stale under rapid bursts like `a` then Enter.
+ */
+export function computeVisibleSessions(
+  sessions: readonly SessionRecord[],
+  archiveVisible: boolean,
+  filterText: string,
+): readonly SessionRecord[] {
+  const base = archiveVisible ? sessions : sessions.filter((s) => s.status !== "archived");
+  if (!filterText) return base;
+  const needle = filterText.toLowerCase();
+  return base.filter((s) => (s.goal ?? "").toLowerCase().includes(needle));
+}
+
 export const FastPath: React.NamedExoticComponent<FastPathProps> = React.memo(
   function FastPath({
     groveName,
@@ -39,12 +56,10 @@ export const FastPath: React.NamedExoticComponent<FastPathProps> = React.memo(
     void useRenderer();
 
     // Apply archive toggle and filter — in that order.
-    const visibleSessions = useMemo(() => {
-      const base = archiveVisible ? sessions : sessions.filter((s) => s.status !== "archived");
-      if (!filterText) return base;
-      const needle = filterText.toLowerCase();
-      return base.filter((s) => (s.goal ?? "").toLowerCase().includes(needle));
-    }, [sessions, filterText, archiveVisible]);
+    const visibleSessions = useMemo(
+      () => computeVisibleSessions(sessions, archiveVisible, filterText),
+      [sessions, filterText, archiveVisible],
+    );
 
     const { activeCount, archivedCount } = useMemo(() => {
       let active = 0;
@@ -63,14 +78,31 @@ export const FastPath: React.NamedExoticComponent<FastPathProps> = React.memo(
 
     // Pending* refs are the synchronously-updated source of truth the
     // keyboard handler reads from. React state mirrors them so the UI still
-    // re-renders, but a burst like `/`+`j` or `a`+`j` queued before render
-    // must see the post-action value — so wrappers update the ref
-    // immediately, before scheduling setState.
+    // re-renders, but a burst like `/`+`j` or `a`+Enter queued before
+    // render must see the post-action value — so wrappers update the ref
+    // immediately, before scheduling setState. `visibleIdsRef` is also
+    // recomputed synchronously inside any action that mutates archive or
+    // filter state, so Enter never reads a stale session list.
     const pendingFilterModeRef = useRef(filterMode);
+    const pendingFilterTextRef = useRef(filterText);
     const pendingArchiveVisibleRef = useRef(archiveVisible);
     const pendingCursorRef = useRef(cursor);
+    const sessionsRef = useRef(sessions);
     const visibleIdsRef = useRef(visibleIds);
+    sessionsRef.current = sessions;
     visibleIdsRef.current = visibleIds;
+
+    const recomputeVisibleIds = useCallback((): readonly string[] => {
+      const ids = computeVisibleSessions(
+        sessionsRef.current,
+        pendingArchiveVisibleRef.current,
+        pendingFilterTextRef.current,
+      ).map((s) => s.id);
+      visibleIdsRef.current = ids;
+      const max = Math.max(0, ids.length - 1);
+      if (pendingCursorRef.current > max) pendingCursorRef.current = max;
+      return ids;
+    }, []);
 
     // Reclamp cursor when the visible list shrinks (archive toggle or filter
     // narrow). Without this the cursor can point past the end of the list
@@ -104,15 +136,19 @@ export const FastPath: React.NamedExoticComponent<FastPathProps> = React.memo(
               },
               enterFilter: () => {
                 pendingFilterModeRef.current = true;
+                pendingFilterTextRef.current = "";
                 setFilterMode(true);
                 setFilterText("");
+                recomputeVisibleIds();
               },
               exitFilter: () => {
                 pendingFilterModeRef.current = false;
+                pendingFilterTextRef.current = "";
                 pendingCursorRef.current = 0;
                 setFilterMode(false);
                 setFilterText("");
                 setCursor(0);
+                recomputeVisibleIds();
               },
               commitFilter: () => {
                 pendingFilterModeRef.current = false;
@@ -120,12 +156,23 @@ export const FastPath: React.NamedExoticComponent<FastPathProps> = React.memo(
                 setFilterMode(false);
                 setCursor(0);
               },
-              appendFilterChar: (c) => setFilterText((prev) => prev + c),
-              deleteFilterChar: () => setFilterText((prev) => prev.slice(0, -1)),
+              appendFilterChar: (c) => {
+                pendingFilterTextRef.current = pendingFilterTextRef.current + c;
+                setFilterText((prev) => prev + c);
+                recomputeVisibleIds();
+              },
+              deleteFilterChar: () => {
+                pendingFilterTextRef.current = pendingFilterTextRef.current.slice(0, -1);
+                setFilterText((prev) => prev.slice(0, -1));
+                recomputeVisibleIds();
+              },
               toggleArchive: () => {
                 const next = !pendingArchiveVisibleRef.current;
                 pendingArchiveVisibleRef.current = next;
                 setArchiveVisible(next);
+                const ids = recomputeVisibleIds();
+                // Keep UI cursor consistent with the ref clamp.
+                setCursor((c) => Math.min(c, Math.max(0, ids.length - 1)));
               },
               onResume,
               onNewSession,
@@ -134,7 +181,7 @@ export const FastPath: React.NamedExoticComponent<FastPathProps> = React.memo(
             },
           );
         },
-        [onResume, onNewSession, onConnect, onQuit],
+        [onResume, onNewSession, onConnect, onQuit, recomputeVisibleIds],
       ),
     );
 

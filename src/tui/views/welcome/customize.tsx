@@ -9,7 +9,7 @@
 import { useKeyboard, useRenderer } from "@opentui/react";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { theme } from "../../theme.js";
 import {
   type CustomizeField,
@@ -32,6 +32,7 @@ export interface CustomizeProps {
   readonly defaultName: string;
   readonly onLaunch: (args: { preset: string; name: string; keymap: KeymapChoice }) => void;
   readonly onBack: () => void;
+  readonly onQuit: () => void;
 }
 
 function globalConfigPath(): string {
@@ -46,6 +47,7 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
     defaultName,
     onLaunch,
     onBack,
+    onQuit,
   }: CustomizeProps): React.ReactNode {
     const [field, setField] = useState<CustomizeField>("preset");
     const initialCursor = Math.max(0, presets.findIndex((p) => p.name === defaultPresetName));
@@ -67,6 +69,15 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
     const pendingNameIsEmptyRef = useRef(name.length === 0);
     const pendingPresetDetailOpenRef = useRef(presetDetailOpen);
     const hasLaunchedRef = useRef(false);
+    // Track whether this component is still mounted so a slow keymap-apply
+    // doesn't call onLaunch after the operator hit Esc and unmounted us.
+    const mountedRef = useRef(true);
+    useEffect(() => {
+      mountedRef.current = true;
+      return () => {
+        mountedRef.current = false;
+      };
+    }, []);
 
     const launch = useCallback(() => {
       if (hasLaunchedRef.current) return;
@@ -84,6 +95,7 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
           try {
             await applyKeymapPresetToFile(keymapAtLaunch, globalConfigPath());
           } catch (err) {
+            if (!mountedRef.current) return;
             const msg = err instanceof Error ? err.message : String(err);
             // Reset guard so the operator can switch to "none" and retry
             // rather than being silently stuck on a failed launch.
@@ -92,6 +104,9 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
             return;
           }
         }
+        // Operator may have Esc'd during the keymap-apply await — don't
+        // kick the launch flow on an already-unmounted component.
+        if (!mountedRef.current) return;
         onLaunch({ preset, name: nameAtLaunch, keymap: keymapAtLaunch });
       })();
     }, [presets, defaultPresetName, onLaunch]);
@@ -143,10 +158,11 @@ export const Customize: React.NamedExoticComponent<CustomizeProps> = React.memo(
               },
               goBack: onBack,
               launch,
+              onQuit,
             },
           );
         },
-        [presets.length, onBack, launch],
+        [presets.length, onBack, launch, onQuit],
       ),
     );
 

@@ -29,6 +29,7 @@ function tracker() {
     toggleDetail: () => calls.push({ name: "toggleDetail", args: [] }),
     onPick: (i) => calls.push({ name: "onPick", args: [i] }),
     onBack: () => calls.push({ name: "onBack", args: [] }),
+    onQuit: () => calls.push({ name: "onQuit", args: [] }),
   };
   return { calls, actions };
 }
@@ -87,5 +88,51 @@ describe("routeNewSessionKey", () => {
     const { calls, actions } = tracker();
     routeNewSessionKey(keyEvent("escape"), state({ detailOpen: true }), actions);
     expect(calls).toEqual([{ name: "toggleDetail", args: [] }]);
+  });
+
+  test("q still quits while detail is open (escape hatch)", () => {
+    const { calls, actions } = tracker();
+    routeNewSessionKey(keyEvent("q"), state({ detailOpen: true }), actions);
+    expect(calls).toEqual([{ name: "onQuit", args: [] }]);
+  });
+});
+
+// Burst sequences — if the wire-up updates the ref synchronously, the
+// subsequent key must be routed under the new (modal-open) state.
+describe("routeNewSessionKey (rapid bursts)", () => {
+  test("? then j: j is swallowed once the detail modal is open", () => {
+    const { calls, actions } = tracker();
+    let detailOpen = false;
+    const wrapped: NewSessionActions = {
+      ...actions,
+      toggleDetail: () => {
+        detailOpen = !detailOpen;
+        actions.toggleDetail();
+      },
+    };
+    routeNewSessionKey(keyEvent("?", "?"), state({ detailOpen }), wrapped);
+    routeNewSessionKey(keyEvent("j"), state({ detailOpen }), wrapped);
+    expect(calls.map((c) => c.name)).toEqual(["toggleDetail"]);
+  });
+
+  test("j then Enter: Enter picks the post-nav cursor", () => {
+    const { calls, actions } = tracker();
+    let cursor = 0;
+    const wrapped: NewSessionActions = {
+      ...actions,
+      moveCursor: (d) => {
+        cursor = Math.max(0, Math.min(cursor + d, 2));
+        actions.moveCursor(d);
+      },
+    };
+    routeNewSessionKey(keyEvent("j"), state({ cursor }), wrapped);
+    routeNewSessionKey(keyEvent("j"), state({ cursor }), wrapped);
+    routeNewSessionKey(keyEvent("return"), state({ cursor }), wrapped);
+    expect(calls.map((c) => c.name)).toEqual([
+      "moveCursor",
+      "moveCursor",
+      "onPick",
+    ]);
+    expect(calls.at(-1)?.args).toEqual([2]);
   });
 });

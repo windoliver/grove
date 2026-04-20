@@ -231,11 +231,17 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
     [onNewSession],
   );
 
+  // Preserve the last-attempted Nexus URL across WelcomeScreen unmounts so
+  // an operator who hits a connect error doesn't lose their typed URL when
+  // they Esc back to setup and re-enter Connect.
+  const [lastNexusUrl, setLastNexusUrl] = useState<string | undefined>(undefined);
+
   /** Handle "Connect to remote Nexus" — connect without starting local services. */
   const handleConnect = useCallback(
     (nexusUrl: string) => {
       if (!onConnect) return;
 
+      setLastNexusUrl(nexusUrl);
       setMode("starting");
       setInitError(undefined);
       setStartingDone(false);
@@ -431,6 +437,7 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
       groveInfo,
       sessions: props.sessions,
       connectError: initError,
+      initialNexusUrl: lastNexusUrl,
       onSelect: handleSelect,
       onResume: handleResume,
       onNewSession: handleNewSession,

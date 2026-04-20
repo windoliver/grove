@@ -27,6 +27,12 @@ export interface WelcomeProps {
   readonly groveInfo?: { name: string; preset: string } | undefined;
   readonly sessions?: readonly SessionRecord[] | undefined;
   readonly connectError?: string | undefined;
+  /**
+   * Seed URL for the Connect sub-view — set to the last-attempted value when
+   * a prior connect failed and the operator bounced back to setup via Esc,
+   * so their typed URL isn't lost across the unmount.
+   */
+  readonly initialNexusUrl?: string | undefined;
   readonly onSelect: (args: {
     preset: string;
     name: string;
@@ -46,6 +52,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
     groveInfo,
     sessions,
     connectError,
+    initialNexusUrl,
     onSelect,
     onResume,
     onNewSession,
@@ -62,6 +69,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
       return (
         <Connect
           error={connectError}
+          initialUrl={initialNexusUrl}
           onConnect={(url) => onConnect(url)}
           onBack={() =>
             setRoute(
@@ -81,6 +89,7 @@ export const WelcomeScreen: React.NamedExoticComponent<WelcomeProps> = React.mem
           presets={presets}
           onPick={(name) => onNewSession(name)}
           onBack={() => setRoute({ kind: "fast-path" })}
+          onQuit={onQuit}
         />
       );
     }

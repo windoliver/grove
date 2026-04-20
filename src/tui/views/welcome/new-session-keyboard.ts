@@ -14,6 +14,8 @@ export interface NewSessionActions {
   readonly toggleDetail: () => void;
   readonly onPick: (index: number) => void;
   readonly onBack: () => void;
+  /** Global quit — honored even while the detail modal is open. */
+  readonly onQuit: () => void;
 }
 
 export function routeNewSessionKey(
@@ -25,7 +27,8 @@ export function routeNewSessionKey(
 
   // Detail overlay is modal — matches the customize preset-detail and
   // mode-picker glossary patterns. Prevents the user accidentally
-  // navigating or picking a preset while reading details.
+  // navigating or picking a preset while reading details. `q` still
+  // quits so the operator is never trapped.
   if (state.detailOpen) {
     if (key.sequence === "?") {
       actions.toggleDetail();
@@ -33,6 +36,10 @@ export function routeNewSessionKey(
     }
     if (name === "escape") {
       actions.toggleDetail();
+      return true;
+    }
+    if (name === "q") {
+      actions.onQuit();
       return true;
     }
     return true;

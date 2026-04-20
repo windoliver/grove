@@ -84,6 +84,7 @@ export const FirstRun: React.NamedExoticComponent<FirstRunProps> = React.memo(
         defaultName={defaultName}
         onLaunch={({ preset, name, keymap }) => onSelect({ preset, name, mode: step.mode, keymap })}
         onBack={() => setStep({ kind: "mode" })}
+        onQuit={onQuit}
       />
     );
   },

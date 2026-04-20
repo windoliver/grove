@@ -25,6 +25,8 @@ export interface CustomizeActions {
   readonly togglePresetDetail: () => void;
   readonly goBack: () => void;
   readonly launch: () => void;
+  /** Global quit — honored even while the preset-detail modal is open. */
+  readonly onQuit: () => void;
 }
 
 const FIELD_ORDER: readonly CustomizeField[] = ["preset", "name", "keymap"];
@@ -37,8 +39,9 @@ export function routeCustomizeKey(
 ): boolean {
   const name = key.name;
 
-  // Preset detail overlay is modal: only `?` and Esc dismiss it so the
-  // operator isn't silently editing name/keymap behind the modal.
+  // Preset detail overlay is modal: only `?`, Esc (dismiss) and `q` (quit)
+  // escape it so the operator isn't silently editing name/keymap behind
+  // the modal — but they never get trapped.
   if (state.presetDetailOpen) {
     if (key.sequence === "?") {
       actions.togglePresetDetail();
@@ -46,6 +49,10 @@ export function routeCustomizeKey(
     }
     if (name === "escape") {
       actions.togglePresetDetail();
+      return true;
+    }
+    if (name === "q") {
+      actions.onQuit();
       return true;
     }
     return true;
@@ -72,7 +79,10 @@ export function routeCustomizeKey(
       return true;
     }
     if (key.sequence === "?") {
-      actions.togglePresetDetail();
+      // Guard against opening an invisible detail modal when there's no
+      // focused preset — the overlay in customize.tsx only renders when a
+      // preset exists, but the modal branch above still swallows keys.
+      if (state.presetCount > 0) actions.togglePresetDetail();
       return true;
     }
     if (name === "return") {

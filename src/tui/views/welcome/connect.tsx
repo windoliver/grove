@@ -11,6 +11,8 @@ import React, { useCallback, useRef, useState } from "react";
 import { theme } from "../../theme.js";
 
 export interface ConnectProps {
+  /** Seed URL. Falls back to `http://localhost:2026` when absent. */
+  readonly initialUrl?: string | undefined;
   readonly error?: string | undefined;
   readonly onConnect: (url: string) => void;
   readonly onBack: () => void;
@@ -18,11 +20,14 @@ export interface ConnectProps {
 
 export const Connect: React.NamedExoticComponent<ConnectProps> = React.memo(
   function Connect({
+    initialUrl,
     error,
     onConnect,
     onBack,
   }: ConnectProps): React.ReactNode {
-    const [url, setUrl] = useState("http://localhost:2026");
+    const [url, setUrl] = useState(
+      initialUrl && initialUrl.length > 0 ? initialUrl : "http://localhost:2026",
+    );
     // pendingUrlRef is the synchronously-updated source of truth; every char
     // write updates it before scheduling setUrl so a burst like "abc"+Enter
     // never reads a stale closure.

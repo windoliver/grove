@@ -253,4 +253,40 @@ describe("routeFastPathKey (rapid bursts)", () => {
     expect(calls.map((c) => c.name)).toEqual(["toggleArchive", "moveCursor"]);
     expect(archiveVisible).toBe(true);
   });
+
+  test("a then Enter on cursor pointing past new visible list: router reads shrunk list", () => {
+    // Reproduces the r4-1 bug shape: wire-up starts with archiveVisible=true,
+    // 2 active + 2 archived, cursor=3. User presses `a` (hide archived),
+    // then Enter before React re-renders. The wrapped toggleArchive must
+    // both flip the flag AND shrink the visibleSessionIds + clamp cursor
+    // for the next router call — otherwise Enter resumes an archived id.
+    const { calls, actions } = tracker();
+    const active = ["s-active-1", "s-active-2"];
+    const archived = ["s-arch-1", "s-arch-2"];
+    let archiveVisible = true;
+    let visibleSessionIds: readonly string[] = [...active, ...archived];
+    let cursor = 3; // pointing at s-arch-2
+    const wrapped: FastPathActions = {
+      ...actions,
+      toggleArchive: () => {
+        archiveVisible = !archiveVisible;
+        visibleSessionIds = archiveVisible ? [...active, ...archived] : active;
+        cursor = Math.min(cursor, Math.max(0, visibleSessionIds.length - 1));
+        actions.toggleArchive();
+      },
+    };
+    routeFastPathKey(
+      keyEvent("a"),
+      { ...defaultState({ archiveVisible, visibleSessionIds, cursor }) },
+      wrapped,
+    );
+    routeFastPathKey(
+      keyEvent("return"),
+      { ...defaultState({ archiveVisible, visibleSessionIds, cursor }) },
+      wrapped,
+    );
+    expect(calls.map((c) => c.name)).toEqual(["toggleArchive", "onResume"]);
+    // Must resume the CLAMPED active tail, not a stale archived id.
+    expect(calls[1]?.args).toEqual([active.at(-1)]);
+  });
 });

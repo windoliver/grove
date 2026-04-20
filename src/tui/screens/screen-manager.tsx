@@ -211,12 +211,18 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // with updated activeRoles from SpawnManager.
     const [reconcileVersion, setReconcileVersion] = useState(0);
     const lastReconciledScreenRef = useRef<string>("");
-    // Tracks the sessionId for which contribution polling was already started.
-    // Prevents duplicate startContributionPolling when spawnManager is recreated
-    // (useMemo in tui-app.tsx recreates SpawnManager when appProps change).
+    // Tracks the sessionStartedAt for which contribution polling was already
+    // started. Both the reconcile.then() and the async-hydration effect
+    // below write here, so whichever fires first wins and the second is
+    // a no-op. Reset to "" on screen-leave.
     const contribPollingStartedRef = useRef<string>("");
     // Whether the HTTP server's SessionOrchestrator is routing IPC (detected async, stored for sync access).
     const serverRoutingActiveRef = useRef<boolean>(false);
+    // Render-committed mirror of sessionStartedAt so reconcile.then()
+    // reads the latest hydrated value (avoids a stale `undefined`
+    // closure on resume flows).
+    const sessionStartedAtRef = useRef<string | undefined>(state.sessionStartedAt);
+    sessionStartedAtRef.current = state.sessionStartedAt;
     // Spawn guard: prevents duplicate spawn when user presses Escape → Enter twice on agent-detect screen.
     // Reset when user navigates back past goal-input (handleGoalBack) or starts a new session.
     const hasSpawnedRef = useRef<boolean>(false);
@@ -257,14 +263,21 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             }
             // Start polling agent log files for live output
             spawnManager.startLogPolling();
-            spawnManager.startContributionPolling(
-              provider,
-              topology,
-              state.sessionStartedAt,
-              30000,
-              false,
-            );
-            contribPollingStartedRef.current = state.sessionStartedAt ?? "";
+            // Read sessionStartedAt from the ref, not the stale closure —
+            // on resume it may have hydrated asynchronously while
+            // reconcile was in flight. Dedupe against the shared ref so
+            // the restart-on-hydration effect below doesn't fire again.
+            const latestCutoff = sessionStartedAtRef.current ?? "";
+            if (contribPollingStartedRef.current !== latestCutoff) {
+              contribPollingStartedRef.current = latestCutoff;
+              spawnManager.startContributionPolling(
+                provider,
+                topology,
+                sessionStartedAtRef.current,
+                30000,
+                serverRoutingActiveRef.current,
+              );
+            }
             // Always bump — even if reattached=0, we need RunningView to pick up
             // the reconciled state (getActiveRoles may have changed).
             setReconcileVersion((v) => v + 1);

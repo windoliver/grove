@@ -15,10 +15,17 @@ export interface NewSessionProps {
   readonly presets: readonly TuiPresetEntry[];
   readonly onPick: (presetName: string) => void;
   readonly onBack: () => void;
+  readonly onQuit: () => void;
 }
 
 export const NewSession: React.NamedExoticComponent<NewSessionProps> = React.memo(
-  function NewSession({ groveName, presets, onPick, onBack }: NewSessionProps): React.ReactNode {
+  function NewSession({
+    groveName,
+    presets,
+    onPick,
+    onBack,
+    onQuit,
+  }: NewSessionProps): React.ReactNode {
     const [cursor, setCursor] = useState(0);
     const [detailOpen, setDetailOpen] = useState(false);
     void useRenderer();
@@ -64,10 +71,11 @@ export const NewSession: React.NamedExoticComponent<NewSessionProps> = React.mem
                 if (name) onPick(name);
               },
               onBack,
+              onQuit,
             },
           );
         },
-        [presets, onPick, onBack],
+        [presets, onPick, onBack, onQuit],
       ),
     );
 

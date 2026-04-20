@@ -121,3 +121,40 @@ describe("routeModePickerKey", () => {
     expect(calls).toEqual([{ name: "toggleGlossary", args: [] }]);
   });
 });
+
+// Burst sequences document the pending*Ref contract — if the wire-up flips
+// pendingGlossaryOpenRef synchronously inside toggleGlossary, the NEXT key
+// must be routed under the new (open) modal state.
+describe("routeModePickerKey (rapid bursts)", () => {
+  test("? then h: h is swallowed after modal opened synchronously", () => {
+    const { calls, actions } = tracker();
+    let glossaryOpen = false;
+    const wrapped: ModePickerActions = {
+      ...actions,
+      toggleGlossary: () => {
+        glossaryOpen = !glossaryOpen;
+        actions.toggleGlossary();
+      },
+    };
+    routeModePickerKey(keyEvent("?", "?", true), state({ glossaryOpen }), wrapped);
+    routeModePickerKey(keyEvent("h"), state({ glossaryOpen }), wrapped);
+    // Only toggleGlossary fires — h is swallowed by the modal branch.
+    expect(calls.map((c) => c.name)).toEqual(["toggleGlossary"]);
+  });
+
+  test("h then Enter: Enter starts with the post-nav mode", () => {
+    const { calls, actions } = tracker();
+    const modeHolder: { value: WelcomeMode } = { value: "connected" };
+    const wrapped: ModePickerActions = {
+      ...actions,
+      setMode: (m) => {
+        modeHolder.value = m;
+        actions.setMode(m);
+      },
+    };
+    routeModePickerKey(keyEvent("h"), state({ mode: modeHolder.value }), wrapped);
+    routeModePickerKey(keyEvent("return"), state({ mode: modeHolder.value }), wrapped);
+    expect(calls.map((c) => c.name)).toEqual(["setMode", "startWithDefaults"]);
+    expect(modeHolder.value).toBe<WelcomeMode>("local");
+  });
+});
