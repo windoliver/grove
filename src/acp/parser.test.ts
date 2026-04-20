@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
-import { Readable } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 import { AcpParser, parseAcpLine } from "./parser.js";
 import type { Message, Result } from "./types.js";
 
@@ -1086,6 +1086,54 @@ test("AcpParser: overflow marker reports a drop count that grows with actual dro
   expect(overflowParams).toBeDefined();
   // Count must reflect actual drops, not stay stuck at 1.
   expect(overflowParams?.droppedAtLeast).toBeGreaterThan(100);
+});
+
+test("AcpParser: emitted overflow marker params stay immutable after later drops", async () => {
+  const stream = new PassThrough();
+  const parser = new AcpParser({
+    sessionId: "s",
+    turnId: "t-overflow-immutable",
+    stream,
+  });
+  const iter = parser.messages[Symbol.asyncIterator]();
+  const msgLine = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "s",
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "x" } },
+    },
+  });
+
+  // First burst: force at least one overflow marker, then read until that
+  // marker is observed by the consumer.
+  const firstBurst = Array.from({ length: 9000 }, () => msgLine).join("\n");
+  stream.write(`${firstBurst}\n`);
+  let observedParams: { droppedAtLeast: number } | undefined;
+  while (observedParams === undefined) {
+    const { value, done } = await iter.next();
+    if (done) throw new Error("unexpected end before overflow marker");
+    if (value.kind === "raw" && value.acpMethod === "_overflow") {
+      observedParams = value.params as { droppedAtLeast: number };
+    }
+  }
+  const firstObserved = observedParams.droppedAtLeast;
+  expect(firstObserved).toBeGreaterThan(0);
+
+  // Stop consuming, then force another overflow wave. Old behavior mutated the
+  // already-emitted marker params object in place, so `observedParams` changed
+  // retroactively as more drops occurred.
+  const secondBurst = Array.from({ length: 9000 }, () => msgLine).join("\n");
+  stream.write(`${secondBurst}\n`);
+  stream.end(`${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } })}\n`);
+
+  while (true) {
+    const { done } = await iter.next();
+    if (done) break;
+  }
+  const result = await parser.result;
+  expect(result.stopReason).toBe("end_turn");
+  expect(observedParams.droppedAtLeast).toBe(firstObserved);
 });
 
 test("AcpParser: delayed first subscriber replay preserves pre-subscription overflow count", async () => {

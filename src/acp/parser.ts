@@ -427,13 +427,6 @@ class AcpSubscriber implements AsyncIterator<Message> {
   private head = 0;
   private waiters: Array<(r: IteratorResult<Message>) => void> = [];
   private dropped = 0;
-  /**
-   * Live reference to the `_overflow` marker's params object. When the
-   * subscriber overflows a second time we MUTATE this object to keep
-   * `droppedAtLeast` current, rather than re-emitting a new marker (which
-   * would itself require dropping another message). Null until first overflow.
-   */
-  private overflowParams: { droppedAtLeast: number } | null = null;
   private finished = false;
   private readonly onDetach: (() => void) | undefined;
 
@@ -444,19 +437,12 @@ class AcpSubscriber implements AsyncIterator<Message> {
   /**
    * Seed replay/backlog messages into a brand-new subscriber before it is
    * exposed to callers. This is used for the parser's first-subscriber
-   * start-of-turn replay path; replayed `_overflow` metadata (if present)
-   * is carried over so post-subscription drops continue incrementing the same
-   * counter instead of resetting to 1.
+   * start-of-turn replay path.
    */
-  seedReplay(
-    messages: readonly Message[],
-    overflowParams: { droppedAtLeast: number } | null,
-    dropped: number,
-  ): void {
+  seedReplay(messages: readonly Message[], dropped: number): void {
     if (messages.length === 0) return;
     this.queue = messages.slice();
     this.head = 0;
-    this.overflowParams = overflowParams;
     this.dropped = dropped;
   }
 
@@ -480,20 +466,22 @@ class AcpSubscriber implements AsyncIterator<Message> {
           `[acp-parser] subscriber buffer full (${MAX_SUBSCRIBER_BUFFER}); dropped ${this.dropped} messages so far\n`,
         );
       }
-      if (this.overflowParams === null) {
-        // First overflow: append an in-band marker (queue temporarily holds
-        // MAX+1 items). Unlike the original "replace tail" strategy, no
-        // legitimate message is evicted and the marker's params object is
-        // retained so subsequent drops can keep the count live.
-        this.overflowParams = { droppedAtLeast: this.dropped };
-        this.queue.push({
-          kind: "raw",
-          turnId,
-          acpMethod: "_overflow",
-          params: this.overflowParams,
-        });
-      } else {
-        this.overflowParams.droppedAtLeast = this.dropped;
+      const marker: Message = {
+        kind: "raw",
+        turnId,
+        acpMethod: "_overflow",
+        params: { droppedAtLeast: this.dropped },
+      };
+      const tail = this.queue[this.queue.length - 1];
+      // Keep emitted messages immutable: never mutate an already-enqueued
+      // marker object in place. If an overflow marker is already the tail,
+      // replace it with a fresh frame carrying the latest drop count.
+      if (tail && tail.kind === "raw" && tail.acpMethod === "_overflow") {
+        this.queue[this.queue.length - 1] = marker;
+      } else if (this.size === MAX_SUBSCRIBER_BUFFER) {
+        // First overflow while at exact capacity: append marker so a
+        // subscriber can observe truncation in-band.
+        this.queue.push(marker);
       }
       return;
     }
@@ -546,7 +534,6 @@ class AcpSubscriber implements AsyncIterator<Message> {
     // receive more events, even from what was already in-flight.
     this.queue = [];
     this.head = 0;
-    this.overflowParams = null;
     this.finish();
     return Promise.resolve({ value: undefined, done: true });
   }
@@ -577,8 +564,6 @@ export class AcpParser {
    */
   private readonly preSubscriptionBuffer: Message[] = [];
   private firstSubscriberAttached = false;
-  /** Live-reference marker params for the pre-subscription overflow, mirroring AcpSubscriber.overflowParams. */
-  private preOverflowParams: { droppedAtLeast: number; pre: true } | null = null;
   private preDropped = 0;
 
   /**
@@ -623,9 +608,8 @@ export class AcpParser {
         if (!this.firstSubscriberAttached) {
           this.firstSubscriberAttached = true;
           if (this.preSubscriptionBuffer.length > 0) {
-            sub.seedReplay(this.preSubscriptionBuffer, this.preOverflowParams, this.preDropped);
+            sub.seedReplay(this.preSubscriptionBuffer, this.preDropped);
             this.preSubscriptionBuffer.length = 0;
-            this.preOverflowParams = null;
             this.preDropped = 0;
           }
         }
@@ -643,28 +627,38 @@ export class AcpParser {
     if (!this.firstSubscriberAttached) {
       // Buffer until first subscriber attaches (start-of-turn replay).
       // Bounded to prevent OOM if no consumer ever attaches.
-      if (this.preOverflowParams === null) {
+      if (this.preDropped === 0) {
         if (this.preSubscriptionBuffer.length < MAX_SUBSCRIBER_BUFFER) {
           this.preSubscriptionBuffer.push(message);
           return;
         }
         // First overflow: append an in-band marker (buffer temporarily holds
-        // MAX+1 items) and retain a live reference to its params so later
-        // drops can mutate `droppedAtLeast` in place — the previous "replace
-        // tail" strategy (a) evicted a real message and (b) left the count
-        // stuck at 1 forever.
+        // MAX+1 items) so delayed first subscribers still receive a clear
+        // truncation signal.
         this.preDropped = 1;
-        this.preOverflowParams = { droppedAtLeast: 1, pre: true };
         this.preSubscriptionBuffer.push({
           kind: "raw",
           turnId: this.turnId,
           acpMethod: "_overflow",
-          params: this.preOverflowParams,
+          params: { droppedAtLeast: this.preDropped, pre: true },
         });
         return;
       }
       this.preDropped += 1;
-      this.preOverflowParams.droppedAtLeast = this.preDropped;
+      const marker: Message = {
+        kind: "raw",
+        turnId: this.turnId,
+        acpMethod: "_overflow",
+        params: { droppedAtLeast: this.preDropped, pre: true },
+      };
+      const tail = this.preSubscriptionBuffer[this.preSubscriptionBuffer.length - 1];
+      // Keep messages immutable: replace the queued marker object rather than
+      // mutating an already-emitted/queued object in place.
+      if (tail && tail.kind === "raw" && tail.acpMethod === "_overflow") {
+        this.preSubscriptionBuffer[this.preSubscriptionBuffer.length - 1] = marker;
+      } else if (this.preSubscriptionBuffer.length === MAX_SUBSCRIBER_BUFFER) {
+        this.preSubscriptionBuffer.push(marker);
+      }
       return;
     }
     for (const sub of this.subscribers) {

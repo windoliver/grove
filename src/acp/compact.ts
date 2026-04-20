@@ -11,6 +11,7 @@
  *   into canonical per-turn accounting.
  */
 
+import { isDeepStrictEqual } from "node:util";
 import type {
   Message,
   PermissionRequest,
@@ -156,6 +157,7 @@ function mergeToolCallEvent(existing: ToolCallEvent, incoming: ToolCallEvent): v
   // enrich payload fields, because providers may emit final output/error on a
   // later frame that repeats the already-seen terminal status.
   let payloadAccepted = true;
+  let terminalStatusless = false;
   if (incoming.status !== undefined) {
     if (existing.status === undefined) {
       existing.status = incoming.status;
@@ -171,19 +173,50 @@ function mergeToolCallEvent(existing: ToolCallEvent, incoming: ToolCallEvent): v
       }
     }
   } else if (existing.status !== undefined && STATUS_RANK[existing.status] === 2) {
+    terminalStatusless = true;
     // Existing call is terminal and the incoming frame carries no lifecycle
-    // information of its own — a status-less late update. Without this gate,
-    // a stale/duplicate tool_call_update can still mutate `output`, `error`,
-    // or `diff` against an accepted terminal outcome, yielding audit records
-    // like `{status:"completed", output:"ok", error:"stale duplicate"}`.
-    // Reject the payload to preserve the first terminal's finalized state.
-    payloadAccepted = false;
+    // information of its own. Permit safe enrichment (fill missing fields)
+    // and ignore per-field conflicts, preserving first-terminal values while
+    // still accepting new diagnostics on other fields from the same frame.
   }
   if (payloadAccepted) {
-    if (incoming.input !== undefined) existing.input = incoming.input;
-    if (incoming.output !== undefined) existing.output = incoming.output;
-    if (incoming.diff !== undefined) existing.diff = incoming.diff;
-    if (incoming.error !== undefined) existing.error = incoming.error;
+    if (terminalStatusless) {
+      // Terminal + no status: atomic enrichment-only path.
+      // Accept the whole payload only when every provided field is compatible
+      // with the existing terminal record (missing-or-equal). If any field
+      // conflicts, reject the entire frame to avoid mixed terminal snapshots
+      // such as {status:"completed", output:"ok", error:"stale"} from stale
+      // duplicates.
+      const compatible =
+        (incoming.input === undefined ||
+          existing.input === undefined ||
+          isDeepStrictEqual(existing.input, incoming.input)) &&
+        (incoming.output === undefined ||
+          existing.output === undefined ||
+          isDeepStrictEqual(existing.output, incoming.output)) &&
+        (incoming.diff === undefined ||
+          existing.diff === undefined ||
+          isDeepStrictEqual(existing.diff, incoming.diff)) &&
+        (incoming.error === undefined ||
+          existing.error === undefined ||
+          isDeepStrictEqual(existing.error, incoming.error));
+
+      if (compatible) {
+        if (incoming.input !== undefined && existing.input === undefined)
+          existing.input = incoming.input;
+        if (incoming.output !== undefined && existing.output === undefined)
+          existing.output = incoming.output;
+        if (incoming.diff !== undefined && existing.diff === undefined)
+          existing.diff = incoming.diff;
+        if (incoming.error !== undefined && existing.error === undefined)
+          existing.error = incoming.error;
+      }
+    } else {
+      if (incoming.input !== undefined) existing.input = incoming.input;
+      if (incoming.output !== undefined) existing.output = incoming.output;
+      if (incoming.diff !== undefined) existing.diff = incoming.diff;
+      if (incoming.error !== undefined) existing.error = incoming.error;
+    }
   }
 }
 

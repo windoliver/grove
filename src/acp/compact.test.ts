@@ -279,6 +279,64 @@ test("compactTurn status-less update cannot mutate a terminal tool call's payloa
   expect(snap.toolCalls[0]?.error).toBeUndefined();
 });
 
+test("compactTurn status-less update can safely enrich terminal payload when fields are missing", () => {
+  // Terminal-first frame can arrive before payload-rich status-less updates.
+  // Enrichment is allowed only for fields that were still missing.
+  const msgs: Message[] = [
+    {
+      kind: "tool_call",
+      turnId: "t1",
+      toolCall: { id: "tc1", name: "Bash", status: "completed", input: { cmd: "ls" } },
+    },
+    {
+      kind: "tool_call",
+      turnId: "t1",
+      toolCall: { id: "tc1", output: "ok", diff: "stdout", error: "none" },
+    },
+  ];
+  const snap = compactTurn({
+    turnId: "t1",
+    messages: msgs,
+    result: { turnId: "t1", stopReason: "end_turn" },
+  });
+  expect(snap.toolCalls[0]?.status).toBe("completed");
+  expect(snap.toolCalls[0]?.output).toBe("ok");
+  expect(snap.toolCalls[0]?.diff).toBe("stdout");
+  expect(snap.toolCalls[0]?.error).toBe("none");
+});
+
+test("compactTurn terminal status-less mixed conflicting frame is rejected atomically", () => {
+  // Mixed frame: one field conflicts with existing terminal value while a
+  // different field is new. To avoid mixed terminal snapshots from stale
+  // duplicates, the entire frame is rejected.
+  const msgs: Message[] = [
+    {
+      kind: "tool_call",
+      turnId: "t1",
+      toolCall: {
+        id: "tc1",
+        name: "Bash",
+        status: "completed",
+        input: { cmd: "ls" },
+        output: "ok",
+      },
+    },
+    {
+      kind: "tool_call",
+      turnId: "t1",
+      toolCall: { id: "tc1", output: "CONFLICT", error: "late-diagnostic" },
+    },
+  ];
+  const snap = compactTurn({
+    turnId: "t1",
+    messages: msgs,
+    result: { turnId: "t1", stopReason: "end_turn" },
+  });
+  expect(snap.toolCalls[0]?.status).toBe("completed");
+  expect(snap.toolCalls[0]?.output).toBe("ok");
+  expect(snap.toolCalls[0]?.error).toBeUndefined();
+});
+
 test("compactTurn status-less update still enriches a non-terminal tool call", () => {
   // The C5 gate is limited to terminal calls. Pending/in_progress calls
   // still legitimately accept status-less payload enrichment (a later frame
