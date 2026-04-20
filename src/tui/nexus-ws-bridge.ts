@@ -16,6 +16,7 @@
 import type { AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { EventBus, GroveEvent } from "../core/event-bus.js";
 import type { HandoffStore } from "../core/handoff.js";
+import { getProcessInstanceId } from "../core/process-instance.js";
 import type { AgentTopology } from "../core/topology.js";
 import type { NexusIpcClient } from "../nexus/nexus-ipc-client.js";
 import { debugLog } from "./debug-log.js";
@@ -63,12 +64,20 @@ interface SseEvent {
 
 export class NexusWsBridge {
   private readonly opts: NexusWsBridgeOptions;
+  private readonly localInstanceId: string;
   private readonly sessions = new Map<string, AgentSession>();
   private abortControllers: AbortController[] = [];
   private closed = false;
 
   constructor(opts: NexusWsBridgeOptions) {
     this.opts = opts;
+    // Default to the process-wide id so the bridge always carries a marker,
+    // matching the publisher's default. This closes the "legacy publisher
+    // without marker" blind spot in strict-dedupe mode — every in-process
+    // event carries the same id on both sides, cross-process events
+    // necessarily differ, and pure role-name fallback is only active in
+    // tests that explicitly opt out by constructing with no localInstanceId.
+    this.localInstanceId = opts.localInstanceId ?? getProcessInstanceId();
   }
 
   registerSession(role: string, session: AgentSession): void {
@@ -366,21 +375,15 @@ export class NexusWsBridge {
       // here would append the message frame a second time (the store has
       // no idempotency key; every `acp.message` pushes to the array).
       //
-      // Only forward when we can PROVE the envelope came from a different
-      // process: both sides must carry `sourceInstance` and the values
-      // must differ. Any other combination — missing on either side,
-      // matching instance — is treated as a self-loop and dropped.
-      //
-      // Cross-process same-role senders without markers are a known
-      // blind spot; stamping `sourceInstance` on the publisher is the
-      // supported remediation (see PublishTurnOptions.sourceInstance).
-      const bridgeHasInstance = typeof this.opts.localInstanceId === "string";
-      const envelopeHasInstance = typeof envelopeInstance === "string";
-      if (
-        bridgeHasInstance &&
-        envelopeHasInstance &&
-        envelopeInstance !== this.opts.localInstanceId
-      ) {
+      // Bridge always carries `localInstanceId` (defaulted to the
+      // process-wide id), and the publisher always stamps
+      // `sourceInstance` (same default). Both sides carry markers in
+      // every in-codebase publish, so strict inequality is the ONLY
+      // condition for forwarding a local-role envelope. Any
+      // legacy-publisher envelope without a marker is treated as a
+      // self-loop and dropped — that's the deliberate trade-off for
+      // "never duplicate in single-process".
+      if (typeof envelopeInstance === "string" && envelopeInstance !== this.localInstanceId) {
         // Different instance with same role name — forward to sink.
       } else {
         return "acp";

@@ -308,3 +308,71 @@ test("session cap is a HARD cap: evicts oldest OPEN turns when all are running",
   // eviction of other open turns.
   expect(sess?.turns.has("open-4")).toBe(true);
 });
+
+test("late result for an older turn does NOT rewind latestTurnId", () => {
+  // Scenario from Codex Round 7 Finding 1: a stale/duplicate result
+  // landing on an older turn must not advance latestTurnId backward,
+  // because turn-cap eviction protects latestTurnId — rewinding would
+  // let the cap drop the newer in-flight turn.
+  const store = new AcpSessionStore();
+  store.register("s1");
+  store.ingest({
+    kind: "message",
+    sessionId: "s1",
+    turnId: "t1",
+    message: { kind: "text", turnId: "t1", text: "a", chunk: true },
+  });
+  store.ingest({
+    kind: "message",
+    sessionId: "s1",
+    turnId: "t2",
+    message: { kind: "text", turnId: "t2", text: "b", chunk: true },
+  });
+  expect(store.getSession("s1")?.latestTurnId).toBe("t2");
+  // Late stale result for t1 — must not rewind.
+  store.ingest({
+    kind: "result",
+    sessionId: "s1",
+    turnId: "t1",
+    result: { turnId: "t1", stopReason: "end_turn" },
+  });
+  expect(store.getSession("s1")?.latestTurnId).toBe("t2");
+});
+
+test("cap does not evict a fresh turn due to late-result latestTurnId rewind", () => {
+  // Codex Round 7 Finding 1 direct repro: cap=2, close t1, start t2,
+  // late stale t1 result, then create t3. Expected: t2 survives; t1 is
+  // evicted (oldest closed). Previously the rewind let t2 be evicted.
+  const store = new AcpSessionStore({ maxTurnsPerSession: 2 });
+  store.register("s1");
+  store.ingest({
+    kind: "result",
+    sessionId: "s1",
+    turnId: "t1",
+    result: { turnId: "t1", stopReason: "end_turn" },
+  });
+  store.ingest({
+    kind: "message",
+    sessionId: "s1",
+    turnId: "t2",
+    message: { kind: "text", turnId: "t2", text: "live", chunk: true },
+  });
+  // Late duplicate result for t1 — must not change latestTurnId.
+  store.ingest({
+    kind: "result",
+    sessionId: "s1",
+    turnId: "t1",
+    result: { turnId: "t1", stopReason: "end_turn" },
+  });
+  // New turn t3 triggers eviction. t2 (the active) must survive.
+  store.ingest({
+    kind: "message",
+    sessionId: "s1",
+    turnId: "t3",
+    message: { kind: "text", turnId: "t3", text: "new", chunk: true },
+  });
+  const sess = store.getSession("s1");
+  expect(sess?.turns.has("t2")).toBe(true);
+  expect(sess?.turns.has("t3")).toBe(true);
+  expect(sess?.latestTurnId).toBe("t3");
+});

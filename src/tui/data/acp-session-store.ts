@@ -120,6 +120,7 @@ export class AcpSessionStore {
     }
 
     let turn = session.turns.get(event.turnId);
+    const isNewTurn = turn === undefined;
     if (!turn) {
       turn = {
         turnId: event.turnId,
@@ -129,6 +130,12 @@ export class AcpSessionStore {
         droppedMessageCount: 0,
       };
       session.turns.set(event.turnId, turn);
+      // Advance latestTurnId BEFORE enforcing the cap so eviction always
+      // protects the newly-created turn — otherwise a late/duplicate
+      // result for an older turn (which leaves latestTurnId pointing at
+      // that older turn) could let the cap evict the turn we just
+      // inserted.
+      session.latestTurnId = event.turnId;
       this.enforceSessionTurnCap(session);
     }
 
@@ -161,7 +168,14 @@ export class AcpSessionStore {
       }
     }
 
-    session.latestTurnId = turn.turnId;
+    // Only advance latestTurnId for NEWLY CREATED turns (handled above)
+    // or when a message/result lands on the currently-latest turn.
+    // A late/duplicate event for an older turn must NOT rewind the
+    // pointer — that would make turn-cap eviction protect the wrong
+    // turn and drop legitimate in-flight state.
+    if (isNewTurn || session.latestTurnId === turn.turnId) {
+      session.latestTurnId = turn.turnId;
+    }
     this.dirty.add(event.sessionId);
     this.scheduleFlush();
   }
