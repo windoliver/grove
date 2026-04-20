@@ -7,6 +7,7 @@
  */
 
 import type { Readable } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
 import type {
   Message,
   Result,
@@ -27,14 +28,6 @@ export type ParsedLine = { kind: "message"; message: Message } | { kind: "result
 // ---------------------------------------------------------------------------
 
 const VALID_STATUSES = new Set<ToolCallStatus>(["pending", "in_progress", "completed", "failed"]);
-
-/** Returns the status if it's a known ToolCallStatus, else undefined (signals "not in this frame"). */
-function normalizeStatus(raw: unknown): ToolCallStatus | undefined {
-  if (typeof raw === "string" && VALID_STATUSES.has(raw as ToolCallStatus)) {
-    return raw as ToolCallStatus;
-  }
-  return undefined;
-}
 
 // ---------------------------------------------------------------------------
 // Helpers: map ACP usage shapes → TokenUsage
@@ -269,14 +262,15 @@ export function parseAcpLine(line: string, turnId: string, sessionId?: string): 
             }
             // Unknown status string → raw (don't silently drop schema-drift info
             // by coercing to "pending" or to "missing"). Absent status is fine.
-            if (
-              u.status !== undefined &&
-              (typeof u.status !== "string" || !VALID_STATUSES.has(u.status as ToolCallStatus))
-            ) {
-              return {
-                kind: "message",
-                message: { kind: "raw", turnId, acpMethod: sessionUpdate, params: update },
-              };
+            let validatedStatus: ToolCallStatus | undefined;
+            if (u.status !== undefined) {
+              if (typeof u.status !== "string" || !VALID_STATUSES.has(u.status as ToolCallStatus)) {
+                return {
+                  kind: "message",
+                  message: { kind: "raw", turnId, acpMethod: sessionUpdate, params: update },
+                };
+              }
+              validatedStatus = u.status as ToolCallStatus;
             }
             const toolCall: ToolCallEvent = { id: u.toolCallId };
             // Canonical identity ONLY: `_meta.claudeCode.toolName` is a
@@ -297,9 +291,8 @@ export function parseAcpLine(line: string, turnId: string, sessionId?: string): 
             if (typeof u.title === "string" && u.title.length > 0) {
               toolCall.title = u.title;
             }
-            const status = normalizeStatus(u.status);
-            if (status !== undefined) {
-              toolCall.status = status;
+            if (validatedStatus !== undefined) {
+              toolCall.status = validatedStatus;
             }
             if (u.rawInput !== undefined) {
               // Claude's initial `tool_call` frame carries `rawInput: {}` as a
@@ -422,16 +415,39 @@ const EOF_RESULT: Omit<Result, "turnId"> = {
 /** Per-subscriber cap before we start dropping messages. */
 const MAX_SUBSCRIBER_BUFFER = 8192;
 
+/**
+ * Head-indexed FIFO. Using `Array.shift()` on a backlog of up to
+ * MAX_SUBSCRIBER_BUFFER messages is O(N) per drain and O(N²) across a full
+ * drain — large enough (8192² ≈ 67M) to show up as latency when an overflow-
+ * class burst is finally read. `head` advances instead of reshifting; the
+ * array periodically compacts when head drifts far from index 0.
+ */
 class AcpSubscriber implements AsyncIterator<Message> {
-  private readonly queue: Message[] = [];
+  private queue: Message[] = [];
+  private head = 0;
   private waiters: Array<(r: IteratorResult<Message>) => void> = [];
   private dropped = 0;
-  private overflowEmitted = false;
   private finished = false;
   private readonly onDetach: (() => void) | undefined;
 
   constructor(opts?: { onDetach?: () => void }) {
     this.onDetach = opts?.onDetach;
+  }
+
+  /**
+   * Seed replay/backlog messages into a brand-new subscriber before it is
+   * exposed to callers. This is used for the parser's first-subscriber
+   * start-of-turn replay path.
+   */
+  seedReplay(messages: readonly Message[], dropped: number): void {
+    if (messages.length === 0) return;
+    this.queue = messages.slice();
+    this.head = 0;
+    this.dropped = dropped;
+  }
+
+  private get size(): number {
+    return this.queue.length - this.head;
   }
 
   push(message: Message, turnId: string): void {
@@ -443,25 +459,29 @@ class AcpSubscriber implements AsyncIterator<Message> {
       waiter({ value: message, done: false });
       return;
     }
-    if (this.queue.length >= MAX_SUBSCRIBER_BUFFER) {
+    if (this.size >= MAX_SUBSCRIBER_BUFFER) {
       this.dropped += 1;
       if (this.dropped === 1 || this.dropped % 1000 === 0) {
         process.stderr.write(
           `[acp-parser] subscriber buffer full (${MAX_SUBSCRIBER_BUFFER}); dropped ${this.dropped} messages so far\n`,
         );
       }
-      // Emit one in-band overflow marker so the consumer sees the drop.
-      // Later drops update the counter but don't re-emit (avoid spamming).
-      if (!this.overflowEmitted) {
-        this.overflowEmitted = true;
-        const marker: Message = {
-          kind: "raw",
-          turnId,
-          acpMethod: "_overflow",
-          params: { droppedAtLeast: 1 },
-        };
-        // Replace the tail so the marker is visible when the consumer eventually drains.
+      const marker: Message = {
+        kind: "raw",
+        turnId,
+        acpMethod: "_overflow",
+        params: { droppedAtLeast: this.dropped },
+      };
+      const tail = this.queue[this.queue.length - 1];
+      // Keep emitted messages immutable: never mutate an already-enqueued
+      // marker object in place. If an overflow marker is already the tail,
+      // replace it with a fresh frame carrying the latest drop count.
+      if (tail && tail.kind === "raw" && tail.acpMethod === "_overflow") {
         this.queue[this.queue.length - 1] = marker;
+      } else if (this.size === MAX_SUBSCRIBER_BUFFER) {
+        // First overflow while at exact capacity: append marker so a
+        // subscriber can observe truncation in-band.
+        this.queue.push(marker);
       }
       return;
     }
@@ -479,8 +499,23 @@ class AcpSubscriber implements AsyncIterator<Message> {
   }
 
   next(): Promise<IteratorResult<Message>> {
-    const value = this.queue.shift();
-    if (value !== undefined) {
+    if (this.head < this.queue.length) {
+      const value = this.queue[this.head] as Message;
+      // Drop the reference from the backing array so retained messages don't
+      // pin their payloads alive after they've been handed to the consumer.
+      this.queue[this.head] = undefined as unknown as Message;
+      this.head += 1;
+      if (this.head === this.queue.length) {
+        // Fully drained — reset in O(1) so the backing array doesn't grow
+        // unbounded over a long-running subscriber.
+        this.queue.length = 0;
+        this.head = 0;
+      } else if (this.head > 256 && this.head * 2 > this.queue.length) {
+        // Half-drained — periodic compaction keeps the backing array size
+        // proportional to live items without paying O(N) every drain.
+        this.queue = this.queue.slice(this.head);
+        this.head = 0;
+      }
       return Promise.resolve({ value, done: false });
     }
     if (this.finished) {
@@ -497,7 +532,8 @@ class AcpSubscriber implements AsyncIterator<Message> {
     this.onDetach?.();
     // Discard backlog — the consumer has explicitly unsubscribed and must not
     // receive more events, even from what was already in-flight.
-    this.queue.length = 0;
+    this.queue = [];
+    this.head = 0;
     this.finish();
     return Promise.resolve({ value: undefined, done: true });
   }
@@ -528,6 +564,7 @@ export class AcpParser {
    */
   private readonly preSubscriptionBuffer: Message[] = [];
   private firstSubscriberAttached = false;
+  private preDropped = 0;
 
   /**
    * True as soon as a terminal result has been produced. Flipped synchronously
@@ -570,10 +607,11 @@ export class AcpParser {
         // empty log — scheduling-dependent audit history.
         if (!this.firstSubscriberAttached) {
           this.firstSubscriberAttached = true;
-          for (const m of this.preSubscriptionBuffer) {
-            sub.push(m, this.turnId);
+          if (this.preSubscriptionBuffer.length > 0) {
+            sub.seedReplay(this.preSubscriptionBuffer, this.preDropped);
+            this.preSubscriptionBuffer.length = 0;
+            this.preDropped = 0;
           }
-          this.preSubscriptionBuffer.length = 0;
         }
         if (this.streamFinished) {
           sub.finish();
@@ -589,17 +627,37 @@ export class AcpParser {
     if (!this.firstSubscriberAttached) {
       // Buffer until first subscriber attaches (start-of-turn replay).
       // Bounded to prevent OOM if no consumer ever attaches.
-      if (this.preSubscriptionBuffer.length < MAX_SUBSCRIBER_BUFFER) {
-        this.preSubscriptionBuffer.push(message);
-      } else if (this.preSubscriptionBuffer.length === MAX_SUBSCRIBER_BUFFER) {
-        // Replace tail with overflow marker so the replay carries a signal
-        // that events were dropped (same pattern as per-subscriber overflow).
-        this.preSubscriptionBuffer[this.preSubscriptionBuffer.length - 1] = {
+      if (this.preDropped === 0) {
+        if (this.preSubscriptionBuffer.length < MAX_SUBSCRIBER_BUFFER) {
+          this.preSubscriptionBuffer.push(message);
+          return;
+        }
+        // First overflow: append an in-band marker (buffer temporarily holds
+        // MAX+1 items) so delayed first subscribers still receive a clear
+        // truncation signal.
+        this.preDropped = 1;
+        this.preSubscriptionBuffer.push({
           kind: "raw",
           turnId: this.turnId,
           acpMethod: "_overflow",
-          params: { droppedAtLeast: 1, pre: true },
-        };
+          params: { droppedAtLeast: this.preDropped, pre: true },
+        });
+        return;
+      }
+      this.preDropped += 1;
+      const marker: Message = {
+        kind: "raw",
+        turnId: this.turnId,
+        acpMethod: "_overflow",
+        params: { droppedAtLeast: this.preDropped, pre: true },
+      };
+      const tail = this.preSubscriptionBuffer[this.preSubscriptionBuffer.length - 1];
+      // Keep messages immutable: replace the queued marker object rather than
+      // mutating an already-emitted/queued object in place.
+      if (tail && tail.kind === "raw" && tail.acpMethod === "_overflow") {
+        this.preSubscriptionBuffer[this.preSubscriptionBuffer.length - 1] = marker;
+      } else if (this.preSubscriptionBuffer.length === MAX_SUBSCRIBER_BUFFER) {
+        this.preSubscriptionBuffer.push(marker);
       }
       return;
     }
@@ -619,16 +677,30 @@ export class AcpParser {
   }
 
   private async _readStream(stream: Readable, turnId: string): Promise<void> {
+    // StringDecoder holds partial multi-byte sequences across chunk
+    // boundaries. Without it, `(chunk as Buffer).toString("utf8")` called
+    // per-chunk silently produces U+FFFD replacement characters whenever a
+    // 2/3/4-byte UTF-8 glyph straddles a chunk — corrupting emoji / CJK /
+    // accented text in assistant output and breaking JSON.parse on tool
+    // call titles or inputs that contain non-ASCII. Pipes on upstream
+    // acpx stdout are raw Buffers (see acpx-runtime), so this is a real
+    // wire-shape concern, not a theoretical one.
+    const decoder = new StringDecoder("utf8");
     let buffer = "";
     let settled = false;
 
     try {
       for await (const chunk of stream) {
-        buffer += typeof chunk === "string" ? chunk : (chunk as Buffer).toString("utf8");
+        buffer += typeof chunk === "string" ? chunk : decoder.write(chunk as Buffer);
 
-        // Split on newlines — emit complete lines
+        // Skip split/pop when no complete line is available yet — avoids
+        // reallocating lines[] every chunk when the stream dribbles in
+        // sub-line fragments.
+        if (buffer.indexOf("\n") === -1) continue;
+
+        // Split on newlines — emit complete lines.
         const lines = buffer.split("\n");
-        // Last element is incomplete (no trailing newline yet) — keep in buffer
+        // Last element is incomplete (no trailing newline yet) — keep in buffer.
         buffer = lines.pop() ?? "";
 
         for (const raw of lines) {
@@ -645,7 +717,9 @@ export class AcpParser {
         }
       }
 
-      // Flush any trailing content without a newline
+      // Flush any trailing bytes the decoder still holds (incomplete
+      // multi-byte sequence at EOF) + any buffered text without a newline.
+      buffer += decoder.end();
       if (buffer.trim().length > 0) {
         const parsed = parseAcpLine(buffer.trim(), turnId, this.sessionId);
         if (parsed.kind === "result") {

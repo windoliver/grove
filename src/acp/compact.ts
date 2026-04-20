@@ -6,10 +6,12 @@
  * - Tool-call events are merged field-by-field (undefined fields never clobber
  *   previously-known values); status is monotonic (completed/failed are terminal
  *   and won't be reverted by a later "pending"/"in_progress" update).
- * - Canonical usage comes from `result.usage` when present; the last seen
- *   advisory `token_usage` Message is used only as a fallback.
+ * - Canonical usage comes ONLY from `result.usage`; advisory `token_usage`
+ *   frames are preserved separately as `advisoryUsage` and never promoted
+ *   into canonical per-turn accounting.
  */
 
+import { isDeepStrictEqual } from "node:util";
 import type {
   Message,
   PermissionRequest,
@@ -110,13 +112,23 @@ const STATUS_RANK: Record<ToolCallStatus, number> = {
   failed: 2,
 };
 
-/** Finalize a partial accumulator into a fully-populated ToolCall with sensible defaults. */
+/**
+ * Finalize a partial accumulator into a fully-populated ToolCall. The caller
+ * must have verified that `partial.name` and `partial.input` are both set
+ * (`compactTurn` gates this via the `name !== undefined && input !== undefined`
+ * check). Incomplete partials go to `incompleteToolCalls` instead, so the
+ * previous `?? ""` / `?? {}` defaults here were dead code that hid the
+ * invariant.
+ */
 function finalizeToolCall(partial: ToolCallEvent): ToolCall {
+  if (partial.name === undefined || partial.input === undefined) {
+    throw new Error(`finalizeToolCall invariant: name/input required (id=${partial.id})`);
+  }
   const finalized: ToolCall = {
     id: partial.id,
-    name: partial.name ?? "",
+    name: partial.name,
     status: partial.status ?? "pending",
-    input: partial.input ?? {},
+    input: partial.input,
   };
   if (partial.title !== undefined) finalized.title = partial.title;
   if (partial.output !== undefined) finalized.output = partial.output;
@@ -125,11 +137,18 @@ function finalizeToolCall(partial: ToolCallEvent): ToolCall {
   return finalized;
 }
 
-/** Merge an incoming event into the running partial record, preserving known data. */
-function mergeToolCallEvent(existing: ToolCallEvent, incoming: ToolCallEvent): ToolCallEvent {
-  const merged: ToolCallEvent = { ...existing };
-  if (incoming.name !== undefined) merged.name = incoming.name;
-  if (incoming.title !== undefined) merged.title = incoming.title;
+/**
+ * Merge an incoming event into the running partial record, preserving known
+ * data. Mutates `existing` in place — long turns can emit hundreds of updates
+ * against a single tool call, and the old "clone existing on every merge"
+ * pattern was O(M²) field copies. The map holds the only reference, and the
+ * Message's toolCall object is never aliased into the map (compactTurn spreads
+ * `{ ...m.toolCall }` on first insertion), so mutating the accumulator is
+ * safe.
+ */
+function mergeToolCallEvent(existing: ToolCallEvent, incoming: ToolCallEvent): void {
+  if (incoming.name !== undefined) existing.name = incoming.name;
+  if (incoming.title !== undefined) existing.title = incoming.title;
 
   // Gate `status` and its payload (input/output/diff/error) together. Reordered
   // or regressive statuses (e.g. completed→failed duplicate, failed→completed
@@ -138,29 +157,67 @@ function mergeToolCallEvent(existing: ToolCallEvent, incoming: ToolCallEvent): T
   // enrich payload fields, because providers may emit final output/error on a
   // later frame that repeats the already-seen terminal status.
   let payloadAccepted = true;
+  let terminalStatusless = false;
   if (incoming.status !== undefined) {
-    if (merged.status === undefined) {
-      merged.status = incoming.status;
+    if (existing.status === undefined) {
+      existing.status = incoming.status;
     } else {
-      const existingStatus = merged.status;
-      const existingRank = STATUS_RANK[existingStatus];
+      const existingRank = STATUS_RANK[existing.status];
       const incomingRank = STATUS_RANK[incoming.status];
       if (incomingRank > existingRank) {
-        merged.status = incoming.status;
-      } else if (incomingRank === existingRank && incoming.status === existingStatus) {
+        existing.status = incoming.status;
+      } else if (incomingRank === existingRank && incoming.status === existing.status) {
         // Duplicate same-status frame: keep status and accept payload.
       } else {
         payloadAccepted = false;
       }
     }
+  } else if (existing.status !== undefined && STATUS_RANK[existing.status] === 2) {
+    terminalStatusless = true;
+    // Existing call is terminal and the incoming frame carries no lifecycle
+    // information of its own. Permit safe enrichment (fill missing fields)
+    // and ignore per-field conflicts, preserving first-terminal values while
+    // still accepting new diagnostics on other fields from the same frame.
   }
   if (payloadAccepted) {
-    if (incoming.input !== undefined) merged.input = incoming.input;
-    if (incoming.output !== undefined) merged.output = incoming.output;
-    if (incoming.diff !== undefined) merged.diff = incoming.diff;
-    if (incoming.error !== undefined) merged.error = incoming.error;
+    if (terminalStatusless) {
+      // Terminal + no status: atomic enrichment-only path.
+      // Accept the whole payload only when every provided field is compatible
+      // with the existing terminal record (missing-or-equal). If any field
+      // conflicts, reject the entire frame to avoid mixed terminal snapshots
+      // such as {status:"completed", output:"ok", error:"stale"} from stale
+      // duplicates.
+      const compatible =
+        (incoming.input === undefined ||
+          existing.input === undefined ||
+          isDeepStrictEqual(existing.input, incoming.input)) &&
+        (incoming.output === undefined ||
+          existing.output === undefined ||
+          isDeepStrictEqual(existing.output, incoming.output)) &&
+        (incoming.diff === undefined ||
+          existing.diff === undefined ||
+          isDeepStrictEqual(existing.diff, incoming.diff)) &&
+        (incoming.error === undefined ||
+          existing.error === undefined ||
+          isDeepStrictEqual(existing.error, incoming.error));
+
+      if (compatible) {
+        if (incoming.input !== undefined && existing.input === undefined)
+          existing.input = incoming.input;
+        if (incoming.output !== undefined && existing.output === undefined)
+          existing.output = incoming.output;
+        if (incoming.diff !== undefined && existing.diff === undefined)
+          existing.diff = incoming.diff;
+        if (incoming.error !== undefined && existing.error === undefined)
+          existing.error = incoming.error;
+      }
+    } else {
+      if (incoming.input !== undefined) existing.input = incoming.input;
+      if (incoming.output !== undefined) existing.output = incoming.output;
+      if (incoming.diff !== undefined) existing.diff = incoming.diff;
+      if (incoming.error !== undefined) existing.error = incoming.error;
+    }
   }
-  return merged;
 }
 
 export function compactTurn(input: {
@@ -191,10 +248,13 @@ export function compactTurn(input: {
       case "tool_call": {
         const existing = toolCallMap.get(m.toolCall.id);
         if (existing === undefined) {
+          // Spread so the stored accumulator is NOT an alias to the message's
+          // toolCall object — later in-place merges would otherwise leak back
+          // into the original Message sequence (which tests reuse).
           toolCallMap.set(m.toolCall.id, { ...m.toolCall });
           toolCallOrder.push(m.toolCall.id);
         } else {
-          toolCallMap.set(m.toolCall.id, mergeToolCallEvent(existing, m.toolCall));
+          mergeToolCallEvent(existing, m.toolCall);
         }
         break;
       }

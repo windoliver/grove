@@ -244,6 +244,124 @@ test("compactTurn allows equal-status duplicate updates to enrich terminal paylo
   expect(snap.toolCalls[0]?.output).toBe("ok");
 });
 
+test("compactTurn status-less update cannot mutate a terminal tool call's payload", () => {
+  // Regression for review-finding C5: once a tool call is terminal
+  // (completed/failed), a later frame that carries NO status but mutates
+  // output/diff/error must be rejected. Previously `payloadAccepted` stayed
+  // `true` when incoming.status was undefined, letting stale/duplicate frames
+  // rewrite accepted outcomes — yielding audit records like
+  // {status:"completed", output:"ok", error:"late stale duplicate"}.
+  const msgs: Message[] = [
+    {
+      kind: "tool_call",
+      turnId: "t1",
+      toolCall: {
+        id: "tc1",
+        name: "Bash",
+        status: "completed",
+        input: { cmd: "ls" },
+        output: "ok",
+      },
+    },
+    {
+      kind: "tool_call",
+      turnId: "t1",
+      toolCall: { id: "tc1", output: "LATE-DUPLICATE", error: "stale" },
+    },
+  ];
+  const snap = compactTurn({
+    turnId: "t1",
+    messages: msgs,
+    result: { turnId: "t1", stopReason: "end_turn" },
+  });
+  expect(snap.toolCalls[0]?.status).toBe("completed");
+  expect(snap.toolCalls[0]?.output).toBe("ok");
+  expect(snap.toolCalls[0]?.error).toBeUndefined();
+});
+
+test("compactTurn status-less update can safely enrich terminal payload when fields are missing", () => {
+  // Terminal-first frame can arrive before payload-rich status-less updates.
+  // Enrichment is allowed only for fields that were still missing.
+  const msgs: Message[] = [
+    {
+      kind: "tool_call",
+      turnId: "t1",
+      toolCall: { id: "tc1", name: "Bash", status: "completed", input: { cmd: "ls" } },
+    },
+    {
+      kind: "tool_call",
+      turnId: "t1",
+      toolCall: { id: "tc1", output: "ok", diff: "stdout", error: "none" },
+    },
+  ];
+  const snap = compactTurn({
+    turnId: "t1",
+    messages: msgs,
+    result: { turnId: "t1", stopReason: "end_turn" },
+  });
+  expect(snap.toolCalls[0]?.status).toBe("completed");
+  expect(snap.toolCalls[0]?.output).toBe("ok");
+  expect(snap.toolCalls[0]?.diff).toBe("stdout");
+  expect(snap.toolCalls[0]?.error).toBe("none");
+});
+
+test("compactTurn terminal status-less mixed conflicting frame is rejected atomically", () => {
+  // Mixed frame: one field conflicts with existing terminal value while a
+  // different field is new. To avoid mixed terminal snapshots from stale
+  // duplicates, the entire frame is rejected.
+  const msgs: Message[] = [
+    {
+      kind: "tool_call",
+      turnId: "t1",
+      toolCall: {
+        id: "tc1",
+        name: "Bash",
+        status: "completed",
+        input: { cmd: "ls" },
+        output: "ok",
+      },
+    },
+    {
+      kind: "tool_call",
+      turnId: "t1",
+      toolCall: { id: "tc1", output: "CONFLICT", error: "late-diagnostic" },
+    },
+  ];
+  const snap = compactTurn({
+    turnId: "t1",
+    messages: msgs,
+    result: { turnId: "t1", stopReason: "end_turn" },
+  });
+  expect(snap.toolCalls[0]?.status).toBe("completed");
+  expect(snap.toolCalls[0]?.output).toBe("ok");
+  expect(snap.toolCalls[0]?.error).toBeUndefined();
+});
+
+test("compactTurn status-less update still enriches a non-terminal tool call", () => {
+  // The C5 gate is limited to terminal calls. Pending/in_progress calls
+  // still legitimately accept status-less payload enrichment (a later frame
+  // that only adds `diff` during a long-running execution, say).
+  const msgs: Message[] = [
+    {
+      kind: "tool_call",
+      turnId: "t1",
+      toolCall: { id: "tc1", name: "Bash", status: "in_progress", input: { cmd: "sleep 5" } },
+    },
+    {
+      kind: "tool_call",
+      turnId: "t1",
+      toolCall: { id: "tc1", diff: "partial output" },
+    },
+  ];
+  const snap = compactTurn({
+    turnId: "t1",
+    messages: msgs,
+    result: { turnId: "t1", stopReason: "end_turn" },
+  });
+  expect(snap.toolCalls[0]?.status).toBe("in_progress");
+  expect(snap.toolCalls[0]?.diff).toBe("partial output");
+});
+
 test("compactTurn rejected-terminal frames cannot contaminate output/diff/error", () => {
   // A late duplicate terminal update with a conflicting status must not
   // leak its payload into the accepted outcome — otherwise we get audit
