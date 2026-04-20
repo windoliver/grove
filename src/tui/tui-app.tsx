@@ -23,7 +23,7 @@ import { SpawnManager } from "./spawn-manager.js";
 import { SpawnManagerContext } from "./spawn-manager-context.js";
 import { theme } from "./theme.js";
 import { InitProgressView } from "./views/init-progress.js";
-import { WelcomeScreen } from "./views/welcome.js";
+import { WelcomeScreen } from "./views/welcome/index.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -42,15 +42,10 @@ export interface TuiPresetEntry {
 
 /** Props for the TuiApp wrapper component. */
 export interface TuiAppProps {
-  /** Whether a .grove/ directory exists. */
   readonly groveExists: boolean;
-  /** Info about the existing grove (name + preset), if .grove/ exists. */
   readonly groveInfo?: { name: string; preset: string } | undefined;
-  /** Presets for the welcome screen. */
   readonly presets?: readonly TuiPresetEntry[] | undefined;
-  /** Past sessions to display on the welcome screen for context. */
   readonly sessions?: readonly import("./provider.js").SessionRecord[] | undefined;
-  /** Callback to run init for a selected preset + grove name. Returns AppProps on success. */
   readonly onInit?:
     | ((
         presetName: string,
@@ -58,11 +53,13 @@ export interface TuiAppProps {
         onProgress?: (step: string) => void,
       ) => Promise<AppProps>)
     | undefined;
-  /** Callback to start services for an existing grove. Accepts a progress reporter. */
-  readonly onStart?: ((onProgress?: (step: string) => void) => Promise<AppProps>) | undefined;
-  /** Callback to connect to a remote Nexus URL. Returns AppProps on success. */
+  /** Called when resuming an existing grove. `sessionId` is provided when the user picked a specific session from the fast-path list. */
+  readonly onStart?:
+    | ((onProgress?: (step: string) => void, sessionId?: string) => Promise<AppProps>)
+    | undefined;
   readonly onConnect?: ((nexusUrl: string) => Promise<AppProps>) | undefined;
-  /** If set, auto-connect to this Nexus URL on mount (skip welcome screen). */
+  /** Start a new session in an existing grove. */
+  readonly onNewSession?: ((presetName: string) => Promise<AppProps>) | undefined;
   readonly autoConnectNexus?: string | undefined;
 }
 
@@ -87,7 +84,16 @@ const INIT_STEPS = [
 export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(function TuiApp(
   props: TuiAppProps,
 ): React.ReactNode {
-  const { groveExists, groveInfo, presets, onInit, onStart, onConnect, autoConnectNexus } = props;
+  const {
+    groveExists,
+    groveInfo,
+    presets,
+    onInit,
+    onStart,
+    onConnect,
+    onNewSession,
+    autoConnectNexus,
+  } = props;
   const renderer = useRenderer();
 
   const [mode, setMode] = useState<TuiMode>(autoConnectNexus ? "starting" : "setup");
@@ -133,38 +139,36 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
 
   /** Handle "New grove" — preset + name selected, kicks off initialization. */
   const handleSelect = useCallback(
-    (presetName: string, groveName: string) => {
+    (args: {
+      preset: string;
+      name: string;
+      mode: import("./views/welcome/router.js").WelcomeMode;
+      keymap: import("./views/welcome/customize-keyboard.js").KeymapChoice;
+    }) => {
       if (!onInit) return;
-
+      const { preset: presetName, name: groveName } = args;
+      // mode + keymap are honored upstream (keymap via Customize, mode via main.ts resolveBackend).
       setMode("initializing");
       setInitPreset(presetName);
       setInitError(undefined);
       setInitSteps(INIT_STEPS.map((label) => ({ label, done: false })));
 
-      // Run init asynchronously with progressive step updates
       void (async () => {
         try {
           const markStep = (index: number) => {
             setInitSteps((prev) => prev.map((s, i) => (i <= index ? { ...s, done: true } : s)));
           };
-
-          // Mark first step immediately
           markStep(0);
 
           const result = await onInit(presetName, groveName, (step) => {
-            // Mark all existing static steps done, then append the live progress step
             setInitSteps((prev) => {
               const updated = prev.map((s) => ({ ...s, done: true }));
-              // Avoid duplicate labels
               if (updated.some((s) => s.label === step)) return updated;
               return [...updated, { label: step, done: false }];
             });
           });
 
-          // Mark all steps done on success
           setInitSteps((prev) => prev.map((s) => ({ ...s, done: true })));
-
-          // Brief pause to show completion state before transitioning
           await new Promise<void>((resolve) => setTimeout(resolve, 500));
 
           setAppProps(result);
@@ -180,39 +184,75 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
   );
 
   /** Handle "Resume" — start services for existing grove. */
-  const handleResume = useCallback(() => {
-    if (!onStart) return;
+  const handleResume = useCallback(
+    (sessionId?: string) => {
+      if (!onStart) return;
 
-    setMode("starting");
-    setInitError(undefined);
-    setStartingDone(false);
-    setStartingSteps(["Starting services..."]);
-    isResumedRef.current = true;
+      setMode("starting");
+      setInitError(undefined);
+      setStartingDone(false);
+      setStartingSteps(["Starting services..."]);
+      isResumedRef.current = true;
 
-    void (async () => {
-      try {
-        const result = await onStart((step) => {
-          setStartingSteps((prev) => [...prev, step]);
-        });
+      void (async () => {
+        try {
+          const result = await onStart(
+            (step) => setStartingSteps((prev) => [...prev, step]),
+            sessionId,
+          );
 
-        // Mark all steps complete, brief pause to show completion
-        setStartingDone(true);
-        await new Promise<void>((resolve) => setTimeout(resolve, 300));
+          setStartingDone(true);
+          await new Promise<void>((resolve) => setTimeout(resolve, 300));
 
-        setAppProps(result);
-        setMode("boardroom");
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        setInitError(message);
-      }
-    })();
-  }, [onStart]);
+          setAppProps(result);
+          setMode("boardroom");
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          setInitError(message);
+        }
+      })();
+    },
+    [onStart],
+  );
+
+  /** Handle `n` on fast-path — new session in existing grove. */
+  const handleNewSession = useCallback(
+    (presetName: string) => {
+      if (!onNewSession) return;
+
+      setMode("starting");
+      setInitError(undefined);
+      setStartingDone(false);
+      setStartingSteps(["Starting session..."]);
+      isResumedRef.current = false;
+
+      void (async () => {
+        try {
+          const result = await onNewSession(presetName);
+          setStartingDone(true);
+          await new Promise<void>((resolve) => setTimeout(resolve, 200));
+          setAppProps(result);
+          setMode("boardroom");
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          setInitError(message);
+        }
+      })();
+    },
+    [onNewSession],
+  );
+
+  // Preserve the last-attempted Nexus URL across WelcomeScreen unmounts so
+  // an operator who hits a connect error doesn't lose their typed URL when
+  // they Esc back to setup and re-enter Connect.
+  const [lastNexusUrl, setLastNexusUrl] = useState<string | undefined>(undefined);
 
   /** Handle "Connect to remote Nexus" — connect without starting local services. */
   const handleConnect = useCallback(
     (nexusUrl: string) => {
       if (!onConnect) return;
 
+      setLastNexusUrl(nexusUrl);
       setMode("starting");
       setInitError(undefined);
       setStartingDone(false);
@@ -228,6 +268,10 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
 
           setAppProps(result);
           setMode("boardroom");
+          // Drop the stored URL once we've successfully transitioned —
+          // no future boardroom→setup path should pre-fill Connect with
+          // the previously-successful URL.
+          setLastNexusUrl(undefined);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           setInitError(message);
@@ -399,13 +443,18 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
     // Resumed groves start on RunningView (Screen 4); new groves start on
     // PresetSelect (Screen 1) — but for resumed groves that already went
     // through welcome, we skip directly to RunningView.
+    const initialState = appProps.newSessionPreset
+      ? { screen: "goal-input" as const, selectedPreset: appProps.newSessionPreset }
+      : undefined;
     return (
       <SpawnManagerContext value={spawnManager}>
         {React.createElement(ScreenManager, {
           appProps,
           presets,
           sessions: props.sessions,
-          startOnRunning: isResumedRef.current,
+          startOnRunning: isResumedRef.current && !appProps.newSessionPreset,
+          initialState,
+          resumeSessionId: appProps.resumeSessionId,
         })}
       </SpawnManagerContext>
     );
@@ -443,8 +492,11 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
       groveExists,
       groveInfo,
       sessions: props.sessions,
+      connectError: initError,
+      initialNexusUrl: lastNexusUrl,
       onSelect: handleSelect,
       onResume: handleResume,
+      onNewSession: handleNewSession,
       onConnect: handleConnect,
       onQuit: handleQuit,
     });

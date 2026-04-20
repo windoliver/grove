@@ -83,6 +83,8 @@ export interface ScreenManagerProps {
   readonly startOnRunning?: boolean | undefined;
   /** Override initial state (testing only). */
   readonly initialState?: ScreenState | undefined;
+  /** Scope the resumed session's feed/history to this session id. */
+  readonly resumeSessionId?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +99,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     sessions,
     startOnRunning,
     initialState,
+    resumeSessionId: resumeSessionIdFromProps,
   }: ScreenManagerProps): React.ReactNode {
     const renderer = useRenderer();
     const { provider, topology: initialTopology, contract } = appProps;
@@ -115,11 +118,23 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       let resumeSessionStartedAt: string | undefined;
       let resumeSessionId: string | undefined;
       if (startOnRunning && sessions && sessions.length > 0) {
-        const active = sessions.find((s) => s.status === "active");
+        const active = resumeSessionIdFromProps
+          ? sessions.find((s) => s.id === resumeSessionIdFromProps)
+          : sessions.find((s) => s.status === "active");
         if (active) {
           resumeSessionStartedAt = active.createdAt;
           resumeSessionId = active.id;
           resumeScopeIdRef.current = active.id; // captured for mount effect
+        } else if (resumeSessionIdFromProps) {
+          // Explicit resume choice wasn't in the startup session list (e.g.
+          // created after main.ts snapshotted it). Honor the user's choice
+          // anyway and hydrate sessionStartedAt asynchronously from the
+          // provider so the elapsed timer and handoff cutoff recover.
+          resumeSessionId = resumeSessionIdFromProps;
+          resumeScopeIdRef.current = resumeSessionIdFromProps;
+          process.stderr.write(
+            `[screen-manager] resume: session ${resumeSessionIdFromProps} not in startup list; scoping anyway\n`,
+          );
         }
       }
       return {
@@ -146,6 +161,26 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       if (id && "setSessionScope" in provider) {
         (provider as { setSessionScope: (id: string) => void }).setSessionScope(id);
         process.stderr.write(`[screen-manager] resume setSessionScope(${id})\n`);
+        // Hydrate sessionStartedAt when we scoped to a resume id that wasn't
+        // in the startup session list — without it, RunningView's elapsed
+        // timer starts at 0 and handoff fetches fall back to now-2h.
+        if (!state.sessionStartedAt && "getSession" in provider) {
+          void (async () => {
+            try {
+              const rec = await (
+                provider as {
+                  getSession: (id: string) => Promise<{ createdAt?: string } | undefined>;
+                }
+              ).getSession(id);
+              const createdAt = rec?.createdAt;
+              if (createdAt) {
+                setState((prev) => ({ ...prev, sessionStartedAt: createdAt }));
+              }
+            } catch {
+              /* best-effort hydration */
+            }
+          })();
+        }
         // Persist the resumed session id to current-session.json so the HTTP
         // MCP server (serve-http.ts) re-reads and scopes subsequent
         // requests to this session. Without this, resume would leave the
@@ -178,12 +213,20 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // with updated activeRoles from SpawnManager.
     const [reconcileVersion, setReconcileVersion] = useState(0);
     const lastReconciledScreenRef = useRef<string>("");
-    // Tracks the sessionId for which contribution polling was already started.
-    // Prevents duplicate startContributionPolling when spawnManager is recreated
-    // (useMemo in tui-app.tsx recreates SpawnManager when appProps change).
+    // Tracks the sessionStartedAt for which contribution polling was already
+    // started. Both the reconcile.then() and the async-hydration effect
+    // below write here, so whichever fires first wins and the second is
+    // a no-op. Reset to "" on screen-leave.
     const contribPollingStartedRef = useRef<string>("");
     // Whether the HTTP server's SessionOrchestrator is routing IPC (detected async, stored for sync access).
     const serverRoutingActiveRef = useRef<boolean>(false);
+    // Render-committed mirror of sessionStartedAt so reconcile.then()
+    // reads the latest hydrated value (avoids a stale `undefined`
+    // closure on resume flows). Safe under opentui's synchronous
+    // single-pass renderer; would need to move to useLayoutEffect if
+    // opentui ever adopts concurrent rendering.
+    const sessionStartedAtRef = useRef<string | undefined>(state.sessionStartedAt);
+    sessionStartedAtRef.current = state.sessionStartedAt;
     // Spawn guard: prevents duplicate spawn when user presses Escape → Enter twice on agent-detect screen.
     // Reset when user navigates back past goal-input (handleGoalBack) or starts a new session.
     const hasSpawnedRef = useRef<boolean>(false);
@@ -224,13 +267,21 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             }
             // Start polling agent log files for live output
             spawnManager.startLogPolling();
-            spawnManager.startContributionPolling(
-              provider,
-              topology,
-              state.sessionStartedAt,
-              30000,
-              false,
-            );
+            // Read sessionStartedAt from the ref, not the stale closure —
+            // on resume it may have hydrated asynchronously while
+            // reconcile was in flight. Dedupe against the shared ref so
+            // the restart-on-hydration effect below doesn't fire again.
+            const latestCutoff = sessionStartedAtRef.current ?? "";
+            if (contribPollingStartedRef.current !== latestCutoff) {
+              contribPollingStartedRef.current = latestCutoff;
+              spawnManager.startContributionPolling(
+                provider,
+                topology,
+                sessionStartedAtRef.current,
+                30000,
+                serverRoutingActiveRef.current,
+              );
+            }
             // Always bump — even if reattached=0, we need RunningView to pick up
             // the reconciled state (getActiveRoles may have changed).
             setReconcileVersion((v) => v + 1);
@@ -244,15 +295,26 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
         lastReconciledScreenRef.current = "";
         contribPollingStartedRef.current = "";
       }
-    }, [
-      state.screen,
-      state.sessionId,
-      state.sessionStartedAt,
-      spawnManager,
-      topology,
-      appProps.groveDir,
-      provider,
-    ]);
+    }, [state.screen, state.sessionId, spawnManager, topology, appProps.groveDir, provider]);
+
+    // Restart contribution polling when sessionStartedAt hydrates
+    // asynchronously after reconcile (resume flow). Without this, the cutoff
+    // stays stuck at the initial value (often `undefined`) and the feed
+    // shows historical noise or misses recent contributions.
+    useEffect(() => {
+      if (state.screen !== "running") return;
+      if (!spawnManager) return;
+      if (!state.sessionStartedAt) return;
+      if (contribPollingStartedRef.current === state.sessionStartedAt) return;
+      contribPollingStartedRef.current = state.sessionStartedAt;
+      spawnManager.startContributionPolling(
+        provider,
+        topology,
+        state.sessionStartedAt,
+        30000,
+        serverRoutingActiveRef.current,
+      );
+    }, [state.screen, state.sessionStartedAt, spawnManager, provider, topology]);
 
     // Track session start time for duration calculation
     const sessionStartRef = useRef<number>(Date.now());

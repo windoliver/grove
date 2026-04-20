@@ -1,0 +1,8 @@
+{
+  "keymap": {
+    "quit": "q",
+    "help": "?",
+    "palette": "m",
+    "search_start": "/"
+  }
+}

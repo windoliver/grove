@@ -60,6 +60,10 @@ export interface AppProps {
   readonly contract?: import("../core/contract.js").GroveContract | undefined;
   /** User config preloaded in main.ts before React mounts (theme + keymap). */
   readonly userConfig?: GroveUserConfig | undefined;
+  /** When set, ScreenManager should scope the resumed session feed to this id. */
+  readonly resumeSessionId?: string | undefined;
+  /** When set, ScreenManager should open goal-input with this preset pre-selected (new session in existing grove). */
+  readonly newSessionPreset?: string | undefined;
 }
 
 const PAGE_SIZE = 20;
