@@ -12,7 +12,7 @@ import type { AgentProfile } from "./agent-profile.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 import type { GroveContract } from "./contract.js";
 import type { EventBus, GroveEvent } from "./event-bus.js";
-import { resolveMcpServePath } from "./resolve-mcp-serve-path.js";
+import { resolveBundledSkillsRoot, resolveMcpServePath } from "./resolve-mcp-serve-path.js";
 import type { AgentPlatformType, AgentRole, AgentTopology } from "./topology.js";
 import { resolveRoleWorkspaceStrategies, topologicalSortRoles } from "./topology.js";
 import { TopologyRouter } from "./topology-router.js";
@@ -472,6 +472,9 @@ export class SessionOrchestrator {
         mcpServePath: resolveMcpServePath(this.config.projectRoot),
         nexusUrl: process.env.GROVE_NEXUS_URL,
         nexusApiKey: process.env.NEXUS_API_KEY,
+        skills: role.skills,
+        bundledSkillsRoot: resolveBundledSkillsRoot(this.config.projectRoot),
+        workspaceOverrideRoot: join(this.config.projectRoot, ".grove", "skills"),
       });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
