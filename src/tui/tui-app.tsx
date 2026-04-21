@@ -397,21 +397,25 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
         })
         .catch((err) => {
           // Bridge is the ONLY inter-agent delivery channel (no polling
-          // fallback). A silent failure here produces a session that looks
-          // alive but can't route any contributions between roles. Surface
-          // it on stderr in addition to debugLog so operators see it.
+          // fallback). After bounded retries fail, fail closed: mark
+          // delivery disabled on the SpawnManager so spawn() refuses new
+          // multi-role sessions. Single-role topologies continue to work
+          // (they don't need IPC).
           const detail = err instanceof Error ? err.message : String(err);
           debugLog("wsBridge", `FAILED: ${detail}`);
+          manager.markDeliveryDisabled(detail);
           process.stderr.write(
             `[grove] FATAL: NexusWsBridge init failed — contributions will not reach agents. ${detail}\n`,
           );
         });
     } else if (agentRuntime && topo) {
       // Bridge preconditions missing: without a Nexus endpoint + credentials,
-      // nothing will route contributions between agents. Warn loudly — this
-      // used to be silently masked by the (now removed) TUI polling path.
+      // nothing will route contributions between agents. Warn loudly AND
+      // mark delivery disabled so spawn() blocks multi-role sessions.
+      const reason = `missing Nexus config (nexusUrl=${nexusUrl ?? "none"} apiKey=${apiKey ? "set" : "missing"})`;
+      manager.markDeliveryDisabled(reason);
       process.stderr.write(
-        `[grove] WARNING: Nexus bridge not initialized (nexusUrl=${nexusUrl ?? "none"} apiKey=${apiKey ? "set" : "missing"}). Inter-agent contribution delivery is disabled.\n`,
+        `[grove] WARNING: Nexus bridge not initialized (${reason}). Inter-agent contribution delivery is disabled.\n`,
       );
     }
 

@@ -138,6 +138,16 @@ export class NexusWsBridge {
             },
           );
           if (!resp.ok) return { role: role.name, reason: `HTTP ${resp.status}` };
+          // 2xx is necessary but not sufficient — a misconfigured proxy can
+          // serve a success status without an actual event stream. Verify
+          // the response carries a body AND identifies as text/event-stream
+          // so readiness matches the invariant the runtime stream loop
+          // relies on (resp.body.getReader() + SSE framing).
+          if (!resp.body) return { role: role.name, reason: "no response body" };
+          const ctype = resp.headers.get("content-type") ?? "";
+          if (!ctype.toLowerCase().includes("text/event-stream")) {
+            return { role: role.name, reason: `not event-stream (content-type=${ctype})` };
+          }
           return null;
         } catch (err) {
           const reason =
@@ -220,7 +230,10 @@ export class NexusWsBridge {
             }),
             signal: deadline,
           });
-          if (!resp.ok) {
+          // 409 Conflict = "already registered" — idempotent success.
+          // Some deployments pre-provision agents; a fatal role failure
+          // on benign re-registration would block startup unnecessarily.
+          if (!resp.ok && resp.status !== 409) {
             return { role: role.name, reason: `HTTP ${resp.status}` };
           }
           return null;

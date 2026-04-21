@@ -116,6 +116,20 @@ export class SpawnManager {
     return this.acpSessionStore;
   }
 
+  /**
+   * Set when the bridge permanently fails to come online. spawn() will
+   * refuse to start new agents for multi-role topologies in this state —
+   * without a bridge there is no delivery channel (polling was removed),
+   * so a new session would appear alive while every cross-role message
+   * silently dropped. Single-role topologies are still allowed since they
+   * don't need IPC.
+   */
+  private deliveryDisabledReason: string | undefined;
+
+  markDeliveryDisabled(reason: string): void {
+    this.deliveryDisabledReason = reason;
+  }
+
   /** Attach a NexusWsBridge for push-based IPC. Call after construction. */
   setWsBridge(bridge: NexusWsBridge): void {
     this.wsBridge = bridge;
@@ -214,6 +228,15 @@ export class SpawnManager {
     context?: Record<string, unknown>,
   ): Promise<SpawnResult> {
     debugLog("spawn", `role=${roleId} command=${command}`);
+    // Fail closed: if the bridge is permanently unavailable for a multi-role
+    // topology there's no way to deliver cross-role contributions (polling
+    // was removed by design). Refuse to spawn so the operator can't end up
+    // with a session that looks alive but silently drops every handoff.
+    if (this.deliveryDisabledReason && (this.topology?.roles.length ?? 0) > 1) {
+      throw new Error(
+        `Refusing to spawn ${roleId}: inter-agent delivery is disabled (${this.deliveryDisabledReason}). Restart the TUI after Nexus is reachable.`,
+      );
+    }
     const spawnId = `${roleId}-${Date.now().toString(36)}`;
     const agent: AgentIdentity = {
       agentId: spawnId,

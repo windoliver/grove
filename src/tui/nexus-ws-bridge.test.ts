@@ -829,10 +829,59 @@ describe("NexusWsBridge", () => {
   // --- connect() readiness ---
 
   test("connect resolves when every role registers successfully", async () => {
-    globalThis.fetch = (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
+    // Registration accepts any 2xx; stream probe also requires real
+    // text/event-stream content-type to count as ready.
+    globalThis.fetch = ((url: string) => {
+      if (url.includes("/api/v2/ipc/stream/")) {
+        return Promise.resolve(
+          new Response("", { status: 200, headers: { "content-type": "text/event-stream" } }),
+        );
+      }
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    }) as unknown as typeof fetch;
 
     const bridge = new NexusWsBridge(makeBridgeOpts());
     await expect(bridge.connect(1000)).resolves.toBeUndefined();
+    bridge.close();
+  });
+
+  test("connect accepts 409 Conflict as idempotent registration success", async () => {
+    // coder registers fresh (200); reviewer returns 409 (already registered).
+    let regCalls = 0;
+    globalThis.fetch = ((url: string) => {
+      if (url.includes("/api/v2/agents/register")) {
+        regCalls += 1;
+        return Promise.resolve(new Response("", { status: regCalls === 1 ? 200 : 409 }));
+      }
+      if (url.includes("/api/v2/ipc/stream/")) {
+        return Promise.resolve(
+          new Response("", { status: 200, headers: { "content-type": "text/event-stream" } }),
+        );
+      }
+      return Promise.resolve(new Response("", { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    const bridge = new NexusWsBridge(makeBridgeOpts());
+    await expect(bridge.connect(1000)).resolves.toBeUndefined();
+    bridge.close();
+  });
+
+  test("connect rejects when probe returns 2xx without event-stream content-type", async () => {
+    globalThis.fetch = ((url: string) => {
+      if (url.includes("/api/v2/ipc/stream/")) {
+        // 2xx but plain text/html — a misconfigured proxy scenario.
+        return Promise.resolve(
+          new Response("not a stream", {
+            status: 200,
+            headers: { "content-type": "text/html" },
+          }),
+        );
+      }
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    const bridge = new NexusWsBridge(makeBridgeOpts());
+    await expect(bridge.connect(1000)).rejects.toThrow(/not event-stream/);
     bridge.close();
   });
 
