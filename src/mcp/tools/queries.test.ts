@@ -411,3 +411,91 @@ describe("grove_thread", () => {
     expect(result.text).toContain(McpErrorCode.NotFound);
   });
 });
+
+describe("grove_threads", () => {
+  let testDeps: TestMcpDeps;
+  let deps: McpDeps;
+  let server: McpServer;
+
+  beforeEach(async () => {
+    testDeps = await createTestMcpDeps();
+    deps = testDeps.deps;
+    server = new McpServer({ name: "test", version: "0.0.1" }, { capabilities: { tools: {} } });
+    registerQueryTools(server, deps);
+  });
+
+  afterEach(async () => {
+    await testDeps.cleanup();
+  });
+
+  test("ignores empty and duplicate tags in comma-separated input", async () => {
+    const target = makeContribution({
+      kind: "discussion",
+      summary: "Thread with both tags",
+      tags: ["infra", "urgent"],
+      createdAt: "2026-01-01T00:00:00Z",
+    });
+    const targetReply = makeContribution({
+      kind: "discussion",
+      summary: "Reply to target thread",
+      relations: [{ targetCid: target.cid, relationType: "responds_to" }],
+      createdAt: "2026-01-02T00:00:00Z",
+    });
+
+    const nonMatch = makeContribution({
+      kind: "discussion",
+      summary: "Thread with one tag only",
+      tags: ["infra"],
+      createdAt: "2026-01-01T00:00:00Z",
+    });
+    const nonMatchReply = makeContribution({
+      kind: "discussion",
+      summary: "Reply to non-match thread",
+      relations: [{ targetCid: nonMatch.cid, relationType: "responds_to" }],
+      createdAt: "2026-01-03T00:00:00Z",
+    });
+
+    await deps.contributionStore.put(target);
+    await deps.contributionStore.put(targetReply);
+    await deps.contributionStore.put(nonMatch);
+    await deps.contributionStore.put(nonMatchReply);
+
+    const result = await callTool(server, "grove_threads", {
+      tags: "infra, , urgent,infra,,",
+      limit: 10,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const data = JSON.parse(result.text);
+    expect(data.count).toBe(1);
+    expect(data.threads[0].cid).toBe(target.cid);
+  });
+
+  test("treats blank tags input as no filter", async () => {
+    const target = makeContribution({
+      kind: "discussion",
+      summary: "Thread visible without tag filter",
+      tags: ["infra"],
+      createdAt: "2026-01-01T00:00:00Z",
+    });
+    const targetReply = makeContribution({
+      kind: "discussion",
+      summary: "Reply",
+      relations: [{ targetCid: target.cid, relationType: "responds_to" }],
+      createdAt: "2026-01-02T00:00:00Z",
+    });
+
+    await deps.contributionStore.put(target);
+    await deps.contributionStore.put(targetReply);
+
+    const result = await callTool(server, "grove_threads", {
+      tags: "   ,  , ",
+      limit: 10,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const data = JSON.parse(result.text);
+    expect(data.count).toBe(1);
+    expect(data.threads[0].cid).toBe(target.cid);
+  });
+});
