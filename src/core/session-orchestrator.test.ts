@@ -241,11 +241,15 @@ describe("SessionOrchestrator", () => {
 
     const started = await orchestrator.start();
     const coderSessionId = started.agents.find((a) => a.role === "coder")?.session.id;
+    const coderToken = runtime.spawnCalls.find((c) => c.role === "coder")?.config.env
+      ?.GROVE_ROUTING_TOKEN;
     expect(coderSessionId).toBeDefined();
+    expect(coderToken).toBeDefined();
 
     contributions.push(
       makeContribution({
         summary: "local coder contribution",
+        context: { _groveRoutingToken: coderToken ?? "missing-token" },
         agent: { agentId: coderSessionId ?? "missing", role: "coder" },
       }),
     );
@@ -292,6 +296,52 @@ describe("SessionOrchestrator", () => {
       makeContribution({
         summary: "spoofed deterministic id contribution",
         agent: { agentId: `${sessionId}:coder`, role: "coder" },
+      }),
+    );
+
+    await internals.pollContributions();
+
+    // Only initial role-goal sends should be present.
+    expect(runtime.sendCalls).toHaveLength(2);
+    bus.close();
+  });
+
+  test("polling ignores forged session id when routing token is wrong", async () => {
+    const runtime = new MockRuntime();
+    const bus = new LocalEventBus();
+    const contract = makeContract();
+    const contributions: ReturnType<typeof makeContribution>[] = [];
+    const contributionStore = {
+      list: async () => contributions,
+    };
+
+    const orchestrator = new SessionOrchestrator({
+      goal: "Build auth module",
+      contract,
+      topology: contract.topology!,
+      runtime,
+      eventBus: bus,
+      projectRoot: "/tmp",
+      workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback",
+      contributionStore,
+    });
+    const internals = orchestrator as unknown as {
+      startContributionPolling: () => void;
+      pollContributions: () => Promise<void>;
+    };
+    // Avoid a real 15s timer in test; invoke poll manually.
+    internals.startContributionPolling = () => undefined;
+
+    const started = await orchestrator.start();
+    const coderSessionId = started.agents.find((a) => a.role === "coder")?.session.id;
+    expect(coderSessionId).toBeDefined();
+
+    contributions.push(
+      makeContribution({
+        summary: "forged token contribution",
+        context: { _groveRoutingToken: "wrong-token" },
+        agent: { agentId: coderSessionId ?? "missing", role: "coder" },
       }),
     );
 

@@ -253,43 +253,19 @@ function resolveMode(
 }
 
 /**
- * Reject caller-supplied agent overrides that conflict with runtime-issued
- * identity in orchestrated sessions.
+ * Stamp runtime routing provenance into contribution context when available.
+ *
+ * `_groveRoutingToken` is reserved for orchestrator ownership verification.
+ * Runtime value always wins over caller-supplied context to prevent spoofing.
  */
-function validateRuntimeAgentIdentity(
-  overrides: AgentOverrides | undefined,
-): OperationResult<void> | undefined {
-  const runtimeAgentId = process.env.GROVE_AGENT_ID;
-  const runtimeRole = process.env.GROVE_AGENT_ROLE;
-  if (runtimeAgentId === undefined && runtimeRole === undefined) return undefined;
-
-  if (runtimeAgentId !== undefined && overrides?.agentId !== undefined) {
-    if (overrides.agentId !== runtimeAgentId) {
-      return validationErr(
-        `agent.agentId override '${overrides.agentId}' conflicts with runtime identity '${runtimeAgentId}'`,
-      );
-    }
-  }
-  if (runtimeRole !== undefined && overrides?.role !== undefined) {
-    if (overrides.role !== runtimeRole) {
-      return validationErr(
-        `agent.role override '${overrides.role}' conflicts with runtime identity '${runtimeRole}'`,
-      );
-    }
-  }
-  return undefined;
-}
-
-/** Pin resolved identity to runtime-issued values when present. */
-function bindRuntimeAgentIdentity(
-  agent: ReturnType<typeof resolveAgent>,
-): ReturnType<typeof resolveAgent> {
-  const runtimeAgentId = process.env.GROVE_AGENT_ID;
-  const runtimeRole = process.env.GROVE_AGENT_ROLE;
+function withRuntimeRoutingContext(
+  context: Readonly<Record<string, JsonValue>> | undefined,
+): Readonly<Record<string, JsonValue>> | undefined {
+  const routingToken = process.env.GROVE_ROUTING_TOKEN;
+  if (routingToken === undefined) return context;
   return {
-    ...agent,
-    ...(runtimeAgentId !== undefined ? { agentId: runtimeAgentId } : {}),
-    ...(runtimeRole !== undefined ? { role: runtimeRole } : {}),
+    ...(context ?? {}),
+    _groveRoutingToken: routingToken,
   };
 }
 
@@ -815,12 +791,9 @@ export async function contributeOperation(
     const relations = input.relations ?? [];
     const tags = input.tags ?? [];
 
-    const identityErr = validateRuntimeAgentIdentity(input.agent);
-    if (identityErr !== undefined) {
-      return identityErr as OperationResult<ContributeResult>;
-    }
-    const agent = bindRuntimeAgentIdentity(resolveAgent(input.agent));
+    const agent = resolveAgent(input.agent);
     const mode = resolveMode(input.mode, deps);
+    const runtimeContext = withRuntimeRoutingContext(input.context);
     // Normalize to UTC Z-format so lexicographic ORDER BY works without datetime().
     const createdAt = toUtcIso(input.createdAt ?? new Date().toISOString());
 
@@ -972,7 +945,7 @@ export async function contributeOperation(
       relations,
       ...(input.scores !== undefined ? { scores: input.scores } : {}),
       tags: [...tags],
-      ...(input.context !== undefined ? { context: input.context } : {}),
+      ...(runtimeContext !== undefined ? { context: runtimeContext } : {}),
       agent,
       createdAt,
     };

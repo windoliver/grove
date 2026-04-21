@@ -5,6 +5,7 @@
  * sends goals, wires event routing, and monitors for stop conditions.
  */
 
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { AcpxTurn } from "../acp/types.js";
 import { watchTurnError } from "../acp/watch-turn.js";
@@ -86,6 +87,8 @@ export interface AgentSessionInfo {
   readonly workspaceMode: WorkspaceMode;
 }
 
+const ROUTING_TOKEN_CONTEXT_KEY = "_groveRoutingToken";
+
 /**
  * Merge runtime selection fields from role + profile.
  * Precedence: profile > role > default.
@@ -108,6 +111,7 @@ export class SessionOrchestrator {
   private readonly sessionId: string;
   private readonly agents: AgentSessionInfo[] = [];
   private readonly router: TopologyRouter;
+  private readonly routingTokensByRole = new Map<string, string>();
   private eventHandlers?: Map<string, import("./event-bus.js").EventHandler>;
   private stopped = false;
   private stopReason: string | undefined;
@@ -306,24 +310,33 @@ export class SessionOrchestrator {
       const contributions = await this.config.contributionStore.list({ limit: 200 });
       for (const c of contributions) {
         if (this.seenCids.has(c.cid)) continue;
-        this.seenCids.add(c.cid);
-        this.contributionCount++;
 
         const sourceRole = c.agent.role;
         if (!sourceRole) continue;
+        const sourceAgent = this.agents.find((a) => a.role === sourceRole);
+        if (!sourceAgent) continue;
 
-        // Only process contributions from agents in THIS session.
-        // Match by runtime-issued session ID + role to avoid same-role
-        // cross-session collisions during polling.
-        const agentId = c.agent.agentId;
-        const isOurAgent = this.agents.some(
-          (a) => a.role === sourceRole && a.session.id === agentId,
-        );
-        if (!isOurAgent) continue;
+        // Trust boundary: require the per-agent routing token issued at spawn.
+        // This prevents caller-supplied `agent` metadata from impersonating
+        // another role/session in the polling router.
+        const expectedToken = this.routingTokensByRole.get(sourceRole);
+        const context = c.context as Record<string, unknown> | undefined;
+        const observedToken = context?.[ROUTING_TOKEN_CONTEXT_KEY];
+        if (
+          expectedToken === undefined ||
+          typeof observedToken !== "string" ||
+          observedToken !== expectedToken
+        ) {
+          continue;
+        }
+
+        // Mark as seen only after ownership verification so transient identity
+        // skew doesn't permanently suppress routing for this CID.
+        this.seenCids.add(c.cid);
+        this.contributionCount++;
 
         // Find the source agent's workspace path — this is the handoff artifact.
         // The receiving agent reads files directly from this path, no git merge needed.
-        const sourceAgent = this.agents.find((a) => a.role === sourceRole);
         const sourceWorkspace = sourceAgent?.workspaceMode.path ?? "(unknown)";
 
         const action =
@@ -402,6 +415,8 @@ export class SessionOrchestrator {
     // Merge profile overlay (profile > role > default)
     const profile = this.config.profiles?.find((p) => p.role === role.name);
     const resolved = mergeRuntimeConfig(role, profile);
+    const routingToken = randomUUID();
+    this.routingTokensByRole.set(role.name, routingToken);
 
     const agentConfig: AgentConfig = {
       role: role.name,
@@ -414,6 +429,7 @@ export class SessionOrchestrator {
         GROVE_SESSION_ID: this.sessionId,
         GROVE_ROLE: role.name,
         GROVE_AGENT_ROLE: role.name,
+        GROVE_ROUTING_TOKEN: routingToken,
       },
     };
 

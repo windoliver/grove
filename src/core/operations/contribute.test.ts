@@ -85,50 +85,16 @@ describe("contributeOperation", () => {
     if (result.ok) expect(result.value.mode).toBe("exploration");
   });
 
-  test("rejects forged agent overrides when runtime identity is pinned", async () => {
-    const prevAgentId = process.env.GROVE_AGENT_ID;
-    const prevRole = process.env.GROVE_AGENT_ROLE;
-    process.env.GROVE_AGENT_ID = "runtime-agent";
-    process.env.GROVE_AGENT_ROLE = "coder";
+  test("stamps runtime routing token into contribution context", async () => {
+    const prevRoutingToken = process.env.GROVE_ROUTING_TOKEN;
+    process.env.GROVE_ROUTING_TOKEN = "routing-token-1";
     try {
       const result = await contributeOperation(
         {
           kind: "work",
-          summary: "forged identity",
-          agent: { agentId: "spoofed-agent", role: "reviewer" },
-        },
-        deps,
-      );
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.error.code).toBe("VALIDATION_ERROR");
-        expect(result.error.message).toContain("conflicts with runtime identity");
-      }
-    } finally {
-      if (prevAgentId === undefined) {
-        delete process.env.GROVE_AGENT_ID;
-      } else {
-        process.env.GROVE_AGENT_ID = prevAgentId;
-      }
-      if (prevRole === undefined) {
-        delete process.env.GROVE_AGENT_ROLE;
-      } else {
-        process.env.GROVE_AGENT_ROLE = prevRole;
-      }
-    }
-  });
-
-  test("binds contribution identity to runtime agent env", async () => {
-    const prevAgentId = process.env.GROVE_AGENT_ID;
-    const prevRole = process.env.GROVE_AGENT_ROLE;
-    process.env.GROVE_AGENT_ID = "runtime-agent";
-    process.env.GROVE_AGENT_ROLE = "coder";
-    try {
-      const result = await contributeOperation(
-        {
-          kind: "work",
-          summary: "runtime identity",
-          agent: { agentName: "friendly-name" },
+          summary: "runtime routing token",
+          context: { note: "hello" },
+          agent: { agentId: "worker-a" },
         },
         deps,
       );
@@ -136,19 +102,42 @@ describe("contributeOperation", () => {
       if (!result.ok) return;
 
       const stored = await deps.contributionStore.get(result.value.cid);
-      expect(stored?.agent.agentId).toBe("runtime-agent");
-      expect(stored?.agent.role).toBe("coder");
-      expect(stored?.agent.agentName).toBe("friendly-name");
+      const context = stored?.context as Record<string, unknown> | undefined;
+      expect(context?.note).toBe("hello");
+      expect(context?._groveRoutingToken).toBe("routing-token-1");
     } finally {
-      if (prevAgentId === undefined) {
-        delete process.env.GROVE_AGENT_ID;
+      if (prevRoutingToken === undefined) {
+        delete process.env.GROVE_ROUTING_TOKEN;
       } else {
-        process.env.GROVE_AGENT_ID = prevAgentId;
+        process.env.GROVE_ROUTING_TOKEN = prevRoutingToken;
       }
-      if (prevRole === undefined) {
-        delete process.env.GROVE_AGENT_ROLE;
+    }
+  });
+
+  test("runtime routing token overrides caller-supplied reserved context key", async () => {
+    const prevRoutingToken = process.env.GROVE_ROUTING_TOKEN;
+    process.env.GROVE_ROUTING_TOKEN = "runtime-token";
+    try {
+      const result = await contributeOperation(
+        {
+          kind: "work",
+          summary: "reserved context override",
+          context: { _groveRoutingToken: "spoofed-token" },
+          agent: { agentId: "worker-a" },
+        },
+        deps,
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const stored = await deps.contributionStore.get(result.value.cid);
+      const context = stored?.context as Record<string, unknown> | undefined;
+      expect(context?._groveRoutingToken).toBe("runtime-token");
+    } finally {
+      if (prevRoutingToken === undefined) {
+        delete process.env.GROVE_ROUTING_TOKEN;
       } else {
-        process.env.GROVE_AGENT_ROLE = prevRole;
+        process.env.GROVE_ROUTING_TOKEN = prevRoutingToken;
       }
     }
   });
