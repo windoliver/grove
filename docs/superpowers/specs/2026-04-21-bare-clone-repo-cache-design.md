@@ -33,8 +33,8 @@ This spec adds a **user-wide bare-clone cache**. A session targets one or more `
 ### Current state
 
 - `src/core/workspace-provisioner.ts` — `provisionWorkspace({ repoRoot, ... })` runs `git worktree add <path> -b <branch> <base>` with `cwd: repoRoot`. `repoRoot` is the session's one local checkout.
-- `src/core/session-orchestrator.ts` — `SessionOrchestratorConfig.projectRoot: string` is used both as `cwd` for shell-outs and as `repoRoot` for the provisioner.
-- `src/tui/spawn-manager.ts` — derives `projectRoot = resolve(groveDir, "..")` and passes that to the provisioner.
+- `src/core/session-orchestrator.ts` — `SessionOrchestratorConfig.projectRoot: string` has two jobs: (a) `repoRoot` for the provisioner, and (b) grove's launcher directory — used to derive `.grove/`, `mcpServePath`, `bundledSkillsRoot`, `workspaceOverrideRoot`, and the fallback cwd when no workspace is provisioned.
+- `src/tui/spawn-manager.ts` — derives `projectRoot = resolve(groveDir, "..")` and passes that to the provisioner (same dual role).
 - No bare-clone or cache code anywhere in the repo (`rg 'bare.clone|repo-cache|repoCache|--bare'` finds no hits).
 
 ### Gap
@@ -240,19 +240,22 @@ Inside `provisionWorkspace` the only substantive change is `cwd: repoRoot` → `
 ```ts
 // before
 interface SessionOrchestratorConfig {
-  readonly projectRoot: string;
+  readonly projectRoot: string;                      // doubled as grove launcher dir + repoRoot
   ...
 }
 
 // after
 interface SessionOrchestratorConfig {
-  readonly repos: readonly RepoRef[];                // length ≥ 1 (today: exactly 1)
+  readonly projectRoot: string;                      // kept: grove launcher dir (.grove/, mcpServePath, skills roots)
+  readonly repos: readonly RepoRef[];                // new: repos the session targets; length ≥ 1 (today: exactly 1)
   readonly repoCache?: Partial<ResolveRepoOptions>;
   ...
 }
 ```
 
-`projectRoot` is removed from both `SessionOrchestratorConfig` and the `SpawnManager` equivalent in the same PR. Grove has one external CLI entry point plus a handful of test harnesses; no compat shim is needed.
+`projectRoot` is **not** removed. It has a legitimate second job — grove's launcher directory — that is independent of which repo(s) a session targets: it anchors `.grove/`, `mcpServePath`, the bundled skills root, the workspace-override skills root, and the fallback cwd when no workspace is provisioned. The only change is that it stops being passed as `repoRoot` to `provisionWorkspace`; the provisioner instead receives `bareClonePath` from `resolveRepo(session.repos[roleIndex])`.
+
+The same split applies to `SpawnManager`: `projectRoot` stays (still derived as `resolve(groveDir, "..")`), and `repos: RepoRef[]` is added alongside it.
 
 At session start:
 
@@ -311,7 +314,7 @@ No test ever contacts a real remote. CI runs offline.
 Single PR chain, no feature flag:
 
 1. Land `repo-ref.ts` + `repo-cache.ts` + their tests. No callers yet — pure additive.
-2. Change `workspace-provisioner.ts` signature (`repoRoot` → `bareClonePath`); update `SpawnManager`, `SessionOrchestrator`, tests, CLI in one PR.
+2. Change `workspace-provisioner.ts` signature (`repoRoot` → `bareClonePath`); add `repos: RepoRef[]` to session config surfaces (keeping `projectRoot` for its launcher-dir job); update `SpawnManager`, `SessionOrchestrator`, tests, CLI in one PR.
 3. Add `grove repo list` / `grove repo prune` CLI.
 4. Update README, QUICKSTART, GROVE.md for the `--repo` flag and the new cache location.
 
