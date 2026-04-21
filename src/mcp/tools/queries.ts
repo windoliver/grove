@@ -310,7 +310,14 @@ export function registerQueryTools(server: McpServer, deps: McpDeps): void {
       inputSchema: threadsInputSchema,
     },
     async (args) => {
-      const tags = args.tags !== undefined ? args.tags.split(",").map((t) => t.trim()) : undefined;
+      const rawTags =
+        args.tags !== undefined
+          ? args.tags
+              .split(",")
+              .map((tag) => tag.trim())
+              .filter((tag) => tag.length > 0)
+          : undefined;
+      const tags = rawTags !== undefined && rawTags.length > 0 ? [...new Set(rawTags)] : undefined;
       const result = await threadsOperation(
         {
           ...(tags !== undefined ? { tags } : {}),
