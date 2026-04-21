@@ -25,8 +25,9 @@ import { createWsHandler } from "./ws-handler.js";
 const GROVE_DIR = process.env.GROVE_DIR ?? join(process.cwd(), ".grove");
 const PORT = parsePort(process.env.PORT, 4515);
 const HOST = process.env.HOST; // optional — defaults to localhost via Bun
-// Nexus env vars — available for IPC routing but NOT for data stores.
-// Data stores use local SQLite to avoid Nexus VFS rate limits.
+// Nexus env vars — when GROVE_NEXUS_URL is set, contribution/claim/bounty/
+// outcome/CAS reads and writes go through Nexus stores so this process sees
+// the same data MCP agents produce. See the store-construction block below.
 
 // Local runtime for contract parsing, workspace, frontier, goal sessions.
 // Contribution stores are overridden with Nexus when available.
@@ -67,20 +68,86 @@ if (seedPeers.length > 0) {
 // Start server
 // ---------------------------------------------------------------------------
 
-// Use Nexus stores when URL is available (single source of truth).
-// Fall back to local SQLite when Nexus is not configured.
-const serverContributionStore: import("../core/store.js").ContributionStore =
+// When GROVE_NEXUS_URL is set, agents write through the MCP server to Nexus
+// stores (see src/mcp/serve.ts). If the HTTP server kept reading local SQLite
+// in that mode, /api/contributions would return [] and reviewers polling the
+// HTTP API would never see the coder's submitted CID — blocking the
+// review-loop handoff chain. Mirror the MCP pattern: same Nexus stores, same
+// fail-closed semantics when health is unreachable.
+let serverContributionStore: import("../core/store.js").ContributionStore =
   runtime.contributionStore;
-const serverClaimStore: import("../core/store.js").ClaimStore = runtime.claimStore;
-const serverOutcomeStore: import("../core/outcome.js").OutcomeStore | undefined =
+let serverClaimStore: import("../core/store.js").ClaimStore = runtime.claimStore;
+let serverOutcomeStore: import("../core/outcome.js").OutcomeStore | undefined =
   runtime.outcomeStore;
-const serverBountyStore: import("../core/bounty-store.js").BountyStore = runtime.bountyStore;
-const serverCas: import("../core/cas.js").ContentStore = runtime.cas;
+let serverBountyStore: import("../core/bounty-store.js").BountyStore = runtime.bountyStore;
+let serverCas: import("../core/cas.js").ContentStore = runtime.cas;
 const serverFrontier: import("../core/frontier.js").FrontierCalculator = runtime.frontier;
 
-// Server uses local SQLite for reads (same DB as MCP agents write to).
-// Nexus VFS hits rate limits with N reads per list() call.
-// Nexus is used for IPC only (via NexusWsBridge SSE), not for data storage.
+// In Nexus mode, contributions are stored at session-scoped VFS paths
+// (/zones/{zoneId}/sessions/{sessionId}/contributions/). A process-global
+// NexusContributionStore built with sessionId=undefined queries the zone-wide
+// FTS index and never sees per-session writes, so /api/contributions?sessionId=
+// returns []. The factory below builds a scoped store per request; routes use
+// it when the query param is present.
+let contributionStoreForSessionFactory:
+  | ((sessionId: string) => import("../core/store.js").ContributionStore)
+  | undefined;
+
+const nexusUrl = process.env.GROVE_NEXUS_URL;
+const nexusApiKey = process.env.NEXUS_API_KEY;
+const zoneId = process.env.GROVE_ZONE_ID ?? "default";
+if (nexusUrl) {
+  const { NexusHttpClient } = await import("../nexus/nexus-http-client.js");
+  const { NexusContributionStore } = await import("../nexus/nexus-contribution-store.js");
+  const { NexusClaimStore } = await import("../nexus/nexus-claim-store.js");
+  const { NexusBountyStore } = await import("../nexus/nexus-bounty-store.js");
+  const { NexusOutcomeStore } = await import("../nexus/nexus-outcome-store.js");
+  const { NexusCas } = await import("../nexus/nexus-cas.js");
+
+  const nexusClient = new NexusHttpClient({
+    url: nexusUrl,
+    ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+  });
+
+  // Retry health check — during `grove up` Nexus may briefly be unavailable.
+  // Matches the MCP server's retry window so both processes either come up
+  // together or fail together.
+  let health = false;
+  for (let attempt = 1; attempt <= 5 && !health; attempt++) {
+    health = await Promise.race([
+      fetch(`${nexusUrl}/health`, { signal: AbortSignal.timeout(3000) }).then((r) => r.ok),
+      new Promise<boolean>((r) => setTimeout(() => r(false), 3000)),
+    ]).catch(() => false);
+    if (!health && attempt < 5) {
+      console.error(
+        `grove-server: Nexus health attempt ${attempt}/5 failed — retrying in ${attempt}s`,
+      );
+      await new Promise((r) => setTimeout(r, attempt * 1000));
+    }
+  }
+
+  if (!health) {
+    // Fail closed for the same reason as the MCP server: a silent fallback to
+    // local SQLite would split reads from the Nexus writes that MCP agents
+    // already performed, leaving /api/contributions empty and deadlocking any
+    // reviewer that polls the HTTP surface for the coder's CID.
+    console.error(
+      `grove-server: FATAL: GROVE_NEXUS_URL=${nexusUrl} is set but health check failed. ` +
+        `Refusing to fall back to local stores — that would silently bypass Nexus ` +
+        `routing and leave contributions invisible to /api/contributions readers.`,
+    );
+    process.exit(1);
+  }
+
+  serverContributionStore = new NexusContributionStore({ client: nexusClient, zoneId });
+  serverClaimStore = new NexusClaimStore({ client: nexusClient, zoneId });
+  serverBountyStore = new NexusBountyStore({ client: nexusClient, zoneId });
+  serverOutcomeStore = new NexusOutcomeStore({ client: nexusClient, zoneId });
+  serverCas = new NexusCas({ client: nexusClient, zoneId });
+  contributionStoreForSessionFactory = (sessionId: string) =>
+    new NexusContributionStore({ client: nexusClient, zoneId, sessionId });
+  console.log(`grove-server: using Nexus stores at ${nexusUrl} (zone=${zoneId})`);
+}
 
 // Per-request session-scoped handoff store factory. The HTTP handoff
 // routes accept ?sessionId= and use this factory to build a scoped
@@ -94,6 +161,7 @@ const handoffStoreForSession = (sessionId: string) =>
 
 const deps: ServerDeps = {
   contributionStore: serverContributionStore,
+  contributionStoreForSession: contributionStoreForSessionFactory,
   claimStore: serverClaimStore,
   outcomeStore: serverOutcomeStore,
   bountyStore: serverBountyStore,
