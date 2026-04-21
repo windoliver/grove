@@ -65,6 +65,15 @@ export class AcpxTurnImpl implements AcpxTurn {
 
   constructor(opts: {
     sessionId: string;
+    /**
+     * Optional acpx-internal wire sessionId. Pass the UUID learned from the
+     * first turn's `session/new` handshake to hard-bind subsequent turns
+     * that reuse the same acpx child — those turns don't see the handshake
+     * again on stdout, so without this the parser would fail-closed (issue
+     * #319). Leave undefined on the first turn to let AcpParser auto-learn
+     * via in-band correlation.
+     */
+    wireSessionId?: string | undefined;
     turnId: string;
     stdout: Readable;
     cancelFn: () => Promise<void>;
@@ -74,12 +83,13 @@ export class AcpxTurnImpl implements AcpxTurn {
     this.sessionId = opts.sessionId;
     this.turnId = opts.turnId;
     this.cancelFn = opts.cancelFn;
-    // Intentionally NOT passing sessionId to AcpParser: acpx stdout is
-    // single-session, and acpx emits its own internal UUID in session/update
-    // frames (not the caller-supplied `opts.sessionId` label like
-    // `grove-<role>-<n>--<suffix>`). Forwarding the label would demote every
-    // frame to _sessionMismatch — see issue #319.
+    // Do NOT forward the caller's grove label (`opts.sessionId`) to
+    // AcpParser — acpx's wire sessionId is a different value (see #319).
+    // Forward `opts.wireSessionId` when the caller knows acpx's UUID (e.g.
+    // on a second+ turn of the same child); otherwise AcpParser auto-learns
+    // via correlated `session/new` handshake.
     this.parser = new AcpParser({
+      sessionId: opts.wireSessionId,
       turnId: opts.turnId,
       stream: opts.stdout,
     });
@@ -127,5 +137,14 @@ export class AcpxTurnImpl implements AcpxTurn {
 
   async close(): Promise<void> {
     // Parser closes when stdout EOFs; nothing extra to release here.
+  }
+
+  /**
+   * The acpx-internal wire sessionId the parser ended up bound to (if any).
+   * `AcpxRuntime` reads this after a turn settles and caches it so the next
+   * turn on the same child can be hard-bound (issue #319).
+   */
+  get wireSessionId(): string | undefined {
+    return this.parser.wireSessionId;
   }
 }

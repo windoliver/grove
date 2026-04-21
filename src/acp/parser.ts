@@ -114,6 +114,92 @@ function parseResultUsage(usage: Record<string, unknown>): TokenUsage | undefine
   return out;
 }
 
+/**
+ * Session-binding signals extracted from a raw NDJSON line, without
+ * committing to full parsing. Used by `AcpParser` during the bootstrap
+ * window (before a trust anchor is established) to (a) track outgoing
+ * `session/new`/`session/load` request ids, (b) bind on the matching
+ * `result.sessionId` response, (c) quarantine `session/update` frames that
+ * arrive before a binding, (d) let any other frame parse normally.
+ *
+ * Rationale (issue #319): the caller's grove label (`grove-<role>-<n>--...`)
+ * does not match acpx's internal UUID, so we can't hard-bind at construction
+ * time. Learning from the first `session/update` would let a foreign first
+ * frame poison the binding. Learning from any `result.sessionId` would let
+ * a foreign `result` frame poison the binding. Only by correlating a result
+ * frame's id to a previously observed `session/new`/`session/load` request
+ * id do we have a trusted anchor.
+ */
+type SessionBindingHint =
+  | {
+      readonly kind: "session-request";
+      /** JSON-RPC request id — used to correlate with a later response. */
+      readonly id: string | number;
+    }
+  | {
+      readonly kind: "session-response";
+      readonly id: string | number;
+      /** Non-empty `result.sessionId` from a JSON-RPC result frame. */
+      readonly sessionId: string;
+    }
+  | {
+      readonly kind: "session-update";
+      /** Raw params — preserved on quarantine for audit. */
+      readonly params: unknown;
+    }
+  | { readonly kind: "other" };
+
+/**
+ * Canonicalize a JSON-RPC id to a string key. Tolerates providers or
+ * intermediaries that normalize numeric ids to strings (or vice versa) so
+ * that a request with `id: 0` still correlates to a response with `id: "0"`
+ * — otherwise strict equality leaves the parser unbound and the turn fails
+ * `session_unbound` under benign upstream drift (round 5 finding).
+ */
+function canonicalRpcId(id: string | number): string {
+  return typeof id === "number" ? String(id) : id;
+}
+
+function peekSessionBindingHint(line: string): SessionBindingHint {
+  try {
+    const frame = JSON.parse(line) as unknown;
+    if (typeof frame !== "object" || frame === null) return { kind: "other" };
+    const f = frame as Record<string, unknown>;
+    const id = f.id;
+    const hasRpcId = typeof id === "string" || typeof id === "number";
+
+    // Outgoing `session/new` or `session/load` request: these are authored
+    // by acpx (or by grove through acpx) and their response `id` is the
+    // correlation token we need to trust a later `result.sessionId`.
+    const method = f.method;
+    if (
+      hasRpcId &&
+      (method === "session/new" || method === "session/load") &&
+      f.result === undefined
+    ) {
+      return { kind: "session-request", id: id as string | number };
+    }
+
+    // JSON-RPC result frame with a non-empty string sessionId. Only trusted
+    // if its id matches a previously seen session-request (checked upstream).
+    const r = f.result;
+    if (hasRpcId && typeof r === "object" && r !== null) {
+      const sid = (r as Record<string, unknown>).sessionId;
+      if (typeof sid === "string" && sid.length > 0) {
+        return { kind: "session-response", id: id as string | number, sessionId: sid };
+      }
+    }
+
+    if (method === "session/update") {
+      return { kind: "session-update", params: f.params };
+    }
+
+    return { kind: "other" };
+  } catch {
+    return { kind: "other" };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // parseAcpLine — pure, synchronous, never throws
 // ---------------------------------------------------------------------------
@@ -547,7 +633,53 @@ export class AcpParser {
   private streamFinished = false;
   private resolveResult!: (r: Result) => void;
   private readonly turnId: string;
-  private readonly sessionId: string | undefined;
+  /**
+   * Session binding used to demote foreign `session/update` frames to
+   * `_sessionMismatch`. Set either:
+   *   - at construction time (explicit hard-bind — tests, multiplexed callers),
+   *   - OR at runtime via request/response correlation: we see
+   *     `{method:"session/new"|"session/load", id:N}` pass through the
+   *     stream, track N in `pendingSessionRequestIds`, and bind when a
+   *     later `{id:N, result:{sessionId:"..."}}` frame arrives. Any other
+   *     `result.sessionId` (foreign, uncorrelated) is NOT trusted.
+   *
+   * See issue #319. The caller-supplied grove label (`grove-<role>-<n>--...`)
+   * does not match acpx's internal UUID, so we can't hard-bind upfront.
+   */
+  private sessionId: string | undefined;
+  /**
+   * Ids of `session/new`/`session/load` requests seen so far — trusted
+   * anchors. Stored as canonical string keys (via `canonicalRpcId`) so
+   * correlation tolerates provider id-type skew (`0` vs `"0"`): both sides
+   * of the round-trip resolve to the same key.
+   */
+  private readonly pendingSessionRequestIds: Set<string> = new Set();
+  /**
+   * True iff at least one `session/update` arrived while the parser was
+   * unbound (before any correlated handshake had landed). Drives fail-closed:
+   * any quarantined update is a data-loss signal — we override the terminal
+   * stopReason to `error` so the caller can't mistake a silent truncation
+   * for a successful run, whether the binding never happened OR arrived
+   * later (late-binding silent truncation is the round-4 finding).
+   */
+  private sawUnboundSessionUpdate = false;
+  /**
+   * True iff a second correlated handshake arrived with a sessionId that
+   * differs from an already-locked binding — i.e. a foreign handshake
+   * reached us before the real one and poisoned the binding. Drives
+   * fail-closed so the caller does NOT receive a `stopReason: end_turn`
+   * that papers over cross-session contamination (round 4 finding).
+   */
+  private sessionBindingAmbiguous = false;
+  /**
+   * True iff the current `sessionId` was learned via an in-band handshake
+   * (round 3 correlation path). False when bound at construction time by
+   * an explicit caller-supplied sessionId — in that case the caller is
+   * the trust authority, so foreign `result.sessionId` noise on a
+   * multiplexed/shared stream must NOT escalate to `session_ambiguous`.
+   * See round-5 finding on explicit-bound regression.
+   */
+  private sessionBoundFromHandshake = false;
 
   /**
    * Start-of-turn replay buffer. The parser reads eagerly on construction,
@@ -576,6 +708,16 @@ export class AcpParser {
     return this.streamFinished;
   }
 
+  /**
+   * The acpx-internal wire sessionId this parser is (or became) bound to.
+   * Undefined if no binding was ever established. Read by the runtime
+   * after turn settle to propagate the learned id to the next turn's
+   * parser (issue #319).
+   */
+  get wireSessionId(): string | undefined {
+    return this.sessionId;
+  }
+
   constructor({
     sessionId,
     turnId,
@@ -589,7 +731,7 @@ export class AcpParser {
      * wrapping a single acpx child (AcpxTurnImpl) should leave this undefined
      * to avoid demoting every legitimate frame. See issue #319.
      */
-    sessionId?: string;
+    sessionId?: string | undefined;
     turnId: string;
     stream: Readable;
   }) {
@@ -675,13 +817,127 @@ export class AcpParser {
   }
 
   private finish(result: Result): void {
-    this.resolveResult(result);
+    // Fail-closed (issue #319 adversarial review rounds 3 & 4). Surface a
+    // hard error whenever the turn's session-binding integrity is in doubt,
+    // so callers do NOT see `stopReason: end_turn` over a stream that
+    // silently lost or commingled content. Two failure modes:
+    //   (a) `sawUnboundSessionUpdate`: at least one `session/update` arrived
+    //       before binding was established. Whether binding never happened
+    //       OR arrived later, the early updates are irrecoverably missing
+    //       from the semantic stream (they are only in the audit log as
+    //       `_sessionUnbound`). Round-4 added the late-binding arm: before
+    //       this, a late handshake masked early truncation.
+    //   (b) `sessionBindingAmbiguous`: a second correlated handshake landed
+    //       with a different wire sessionId — cross-session contamination.
+    // Already-terminal errors are preserved unchanged (the upstream error
+    // is more informative than our generic session_unbound wrapper).
+    let finalResult = result;
+    if (
+      result.stopReason !== "error" &&
+      (this.sawUnboundSessionUpdate || this.sessionBindingAmbiguous)
+    ) {
+      const code = this.sessionBindingAmbiguous ? "session_ambiguous" : "session_unbound";
+      const message = this.sessionBindingAmbiguous
+        ? "turn ended with conflicting session bindings — multiple correlated handshakes observed with different wire sessionIds"
+        : "turn observed session/update frames before a trusted session binding was established — early content was quarantined as _sessionUnbound";
+      finalResult = {
+        turnId: result.turnId,
+        stopReason: "error",
+        error: { code, message },
+        ...(result.usage !== undefined ? { usage: result.usage } : {}),
+      };
+    }
+    this.resolveResult(finalResult);
     this.streamFinished = true;
     const subs = Array.from(this.subscribers);
     this.subscribers.clear();
     for (const sub of subs) {
       sub.finish();
     }
+  }
+
+  /**
+   * Parse one NDJSON line, applying session-binding discipline (issue #319).
+   *
+   * Binding lifecycle:
+   *   1. Explicit constructor sessionId → bound from line 1.
+   *   2. Otherwise, bind only when a `result.sessionId` frame correlates to
+   *      a previously observed `session/new`/`session/load` request id. This
+   *      defeats foreign `result` frames that would otherwise poison the
+   *      binding (adversarial review round 3).
+   *   3. Until bound, any `session/update` is surfaced as `_sessionUnbound`
+   *      raw rather than parsed as semantic content.
+   *   4. If the turn terminates without a binding AND we quarantined at
+   *      least one `session/update`, `finish` degrades `stopReason` to
+   *      `error` so the caller sees a hard failure, not silent data loss.
+   *
+   * @returns `true` iff a terminal result frame was parsed (caller should stop reading).
+   */
+  private handleLine(line: string, turnId: string): boolean {
+    const hint = peekSessionBindingHint(line);
+
+    // Session-request: always track the id (canonical key), even after
+    // binding, so a later correlated response can be detected for
+    // ambiguity checks.
+    if (hint.kind === "session-request") {
+      this.pendingSessionRequestIds.add(canonicalRpcId(hint.id));
+    }
+
+    // Session-response: ambiguity escalation only applies when the parser
+    // is handshake-bound. Constructor-bound callers (multiplexed / shared
+    // streams with explicit trust authority) must NOT be forced into
+    // `session_ambiguous` by foreign `result.sessionId` noise — that
+    // would be a DoS vector for legitimate multiplexed parsing.
+    if (hint.kind === "session-response") {
+      const key = canonicalRpcId(hint.id);
+      const correlated = this.pendingSessionRequestIds.has(key);
+      if (correlated) {
+        this.pendingSessionRequestIds.delete(key);
+        if (this.sessionId === undefined) {
+          // First correlated handshake → bind.
+          this.sessionId = hint.sessionId;
+          this.sessionBoundFromHandshake = true;
+        } else if (this.sessionBoundFromHandshake && this.sessionId !== hint.sessionId) {
+          // A second correlated handshake disagrees with the learned
+          // binding — cross-session contamination. Not applicable to
+          // constructor-bound parsers (see flag comment above).
+          this.sessionBindingAmbiguous = true;
+        }
+      } else if (
+        this.sessionBoundFromHandshake &&
+        this.sessionId !== undefined &&
+        this.sessionId !== hint.sessionId
+      ) {
+        // Round-5 hardening: uncorrelated response disagrees with a
+        // handshake-learned binding. A conflicting `result.sessionId`
+        // may legitimately lack its echoed request line (schema drift,
+        // partial stream, or provider suppressing the request echo).
+        // Flag only when the binding itself came from in-band learning.
+        this.sessionBindingAmbiguous = true;
+      }
+      // Uncorrelated response when unbound OR when constructor-bound: do
+      // NOT bind, do NOT escalate. Frame flows through as raw `_result`.
+    }
+
+    // Quarantine pre-bind session/update as raw anomaly.
+    if (hint.kind === "session-update" && this.sessionId === undefined) {
+      this.sawUnboundSessionUpdate = true;
+      this.broadcast({
+        kind: "raw",
+        turnId,
+        acpMethod: "_sessionUnbound",
+        params: hint.params,
+      });
+      return false;
+    }
+
+    const parsed = parseAcpLine(line, turnId, this.sessionId);
+    if (parsed.kind === "result") {
+      this.finish({ ...parsed.result, turnId });
+      return true;
+    }
+    this.broadcast(parsed.message);
+    return false;
   }
 
   private async _readStream(stream: Readable, turnId: string): Promise<void> {
@@ -714,14 +970,10 @@ export class AcpParser {
         for (const raw of lines) {
           const line = raw.trim();
           if (!line) continue;
-
-          const parsed = parseAcpLine(line, turnId, this.sessionId);
-          if (parsed.kind === "result") {
+          if (this.handleLine(line, turnId)) {
             settled = true;
-            this.finish({ ...parsed.result, turnId });
             return;
           }
-          this.broadcast(parsed.message);
         }
       }
 
@@ -729,13 +981,10 @@ export class AcpParser {
       // multi-byte sequence at EOF) + any buffered text without a newline.
       buffer += decoder.end();
       if (buffer.trim().length > 0) {
-        const parsed = parseAcpLine(buffer.trim(), turnId, this.sessionId);
-        if (parsed.kind === "result") {
+        if (this.handleLine(buffer.trim(), turnId)) {
           settled = true;
-          this.finish({ ...parsed.result, turnId });
           return;
         }
-        this.broadcast(parsed.message);
       }
     } catch (err) {
       // Stream error — surface as a terminal error result.

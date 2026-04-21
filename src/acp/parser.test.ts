@@ -1208,3 +1208,48 @@ test("AcpParser: foreign-session frames are demoted, not leaked into the iterato
   const rawMismatch = got.find((m) => m.kind === "raw" && m.acpMethod === "_sessionMismatch");
   expect(rawMismatch).toBeDefined();
 });
+
+// Regression (issue #319 round 5): a constructor-bound parser represents
+// an explicit trust authority for a multiplexed/shared stream. Foreign
+// `result.sessionId` noise on that stream must NOT escalate to
+// `session_ambiguous` — only handshake-learned bindings are subject to
+// in-band ambiguity detection. Otherwise this becomes a DoS vector for
+// legitimate multiplexed callers.
+test("AcpParser: explicit-bound parser tolerates foreign result.sessionId noise", async () => {
+  const lines = [
+    // Foreign handshake on a shared stream — not addressed to us.
+    JSON.stringify({
+      jsonrpc: "2.0",
+      id: 99,
+      method: "session/new",
+      params: { cwd: "/tmp", mcpServers: [] },
+    }),
+    JSON.stringify({ jsonrpc: "2.0", id: 99, result: { sessionId: "foreign" } }),
+    // Our legitimate session/update.
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "mine",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "legit" },
+        },
+      },
+    }),
+    JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }),
+  ];
+  const parser = new AcpParser({
+    sessionId: "mine",
+    turnId: "t-multiplex",
+    stream: readableFromString(`${lines.join("\n")}\n`),
+  });
+  const got: Message[] = [];
+  for await (const m of parser.messages) got.push(m);
+  const r = await parser.result;
+
+  // Explicit-bound: foreign noise is observable but not fatal.
+  expect(r.stopReason).toBe("end_turn");
+  const texts = got.filter((m): m is Extract<Message, { kind: "text" }> => m.kind === "text");
+  expect(texts.map((m) => m.text).join("")).toBe("legit");
+});
