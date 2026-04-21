@@ -105,6 +105,19 @@ export class NexusWsBridge {
     this.localInstanceId = opts.localInstanceId ?? getProcessInstanceId();
   }
 
+  /**
+   * Role names this bridge was constructed against. Used by SpawnManager
+   * to detect a topology drift where the bridge was provisioned/probed
+   * for a prior role set before attaching (e.g. topology changed while
+   * bridge init was in flight). An attached bridge whose role set no
+   * longer matches the current topology cannot safely service spawns —
+   * registration, SSE, and health are all per-role and scoped to
+   * construction-time topology.
+   */
+  getProvisionedRoleNames(): readonly string[] {
+    return this.opts.topology.roles.map((r) => r.name);
+  }
+
   registerSession(role: string, session: AgentSession): void {
     this.sessions.set(role, session);
     if (!this.closed) {
@@ -561,22 +574,24 @@ export class NexusWsBridge {
 
   /**
    * Resolve which handoff record this IPC message correlates to, without
-   * changing its state. Used to capture a concrete handoffId at
-   * dispatch-match time so both the delivered-success and dead-letter
-   * failure paths can operate on the same record without re-racing the
-   * ipcMessageId ↔ handoff linkage (which is populated fire-and-forget
-   * from contribute.ts via setIpcMessageId).
+   * changing its state. Correlation is DETERMINISTIC — no time-based or
+   * "most recent" heuristics, which could race and bind to a neighbouring
+   * handoff under concurrent delivery.
    *
-   * Primary: exact ipcMessageId match.
-   * Fallback: most recent pending-pickup handoff from the same sender
-   *           that hasn't been IPC-linked yet.
+   * Match order:
+   *   1. Exact ipcMessageId linkage (set by contribute.ts after IPC send).
+   *   2. Composite key (toRole, fromRole, sourceCid) — sourceCid is the
+   *      unique contribution ID attached to every handoff at creation,
+   *      so this is a bijection. Used before setIpcMessageId() has landed.
    *
-   * Best-effort — returns undefined on any store error.
+   * Best-effort — returns undefined on any store error or miss. Callers
+   * must handle `undefined` (dead-letter deferral, retry).
    */
   private async resolveHandoffIdForMessage(
     ipcMessageId: string,
     targetRole: string,
-    sender?: string,
+    sender: string | undefined,
+    sourceCid: string | undefined,
   ): Promise<string | undefined> {
     try {
       const store = this.opts.handoffStore;
@@ -585,29 +600,25 @@ export class NexusWsBridge {
       const handoffs = await store.list({ toRole: targetRole });
 
       // Primary: exact correlation via linked ipcMessageId.
-      let matching = handoffs.find((h) => h.ipcMessageId === ipcMessageId);
+      const byIpc = handoffs.find((h) => h.ipcMessageId === ipcMessageId);
+      if (byIpc) return byIpc.handoffId;
 
-      // Fallback: most recent pending handoff from this sender whose
-      // ipcMessageId linkage hasn't landed yet.
-      if (!matching && sender) {
-        matching = handoffs
-          .filter(
-            (h) =>
-              h.fromRole === sender &&
-              (h.status === "pending_pickup" || h.status === "delivered") &&
-              !h.ipcMessageId,
-          )
-          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-      }
-
-      if (!matching) {
-        debugLog(
-          "wsBridge.resolveHandoffIdForMessage",
-          `NO MATCH ipcMessageId=${ipcMessageId} role=${targetRole} handoffCount=${handoffs.length}`,
+      // Secondary: deterministic composite key. Contributions carry a
+      // unique sourceCid; (toRole, fromRole, sourceCid) is unique per
+      // handoff. This replaces the older "latest by sender" fallback,
+      // which could cross-match under concurrent delivery.
+      if (sender && sourceCid) {
+        const bySourceCid = handoffs.find(
+          (h) => h.fromRole === sender && h.sourceCid === sourceCid,
         );
-        return undefined;
+        if (bySourceCid) return bySourceCid.handoffId;
       }
-      return matching.handoffId;
+
+      debugLog(
+        "wsBridge.resolveHandoffIdForMessage",
+        `NO MATCH ipcMessageId=${ipcMessageId} role=${targetRole} cid=${sourceCid ?? "none"} handoffCount=${handoffs.length}`,
+      );
+      return undefined;
     } catch (err) {
       debugLog(
         "wsBridge.resolveHandoffIdForMessage",
@@ -748,22 +759,47 @@ export class NexusWsBridge {
     handoffId: string | undefined,
     targetRole: string,
     reason: string,
+    retryContext?: {
+      ipcMessageId: string;
+      sender: string | undefined;
+      sourceCid: string | undefined;
+    },
   ): Promise<void> {
     try {
       const store = this.opts.handoffStore;
-      if (!store || !handoffId) {
-        if (!handoffId) {
-          debugLog(
-            "wsBridge.markHandoffDeadLettered",
-            `NO HANDOFF ID role=${targetRole} reason=${reason} — cannot dead-letter (delivery-match never resolved)`,
+      if (!store) return;
+
+      // If correlation was temporarily unavailable at dispatch time
+      // (setIpcMessageId fire-and-forget hadn't landed yet), retry
+      // re-resolve with bounded backoff. Without this, a real
+      // runtime.send failure + missed correlation would silently leave
+      // the handoff in a stale `delivered` state, invisible to recovery
+      // tooling.
+      let effectiveId = handoffId;
+      if (!effectiveId && retryContext) {
+        const backoffs = [200, 500, 1000];
+        for (const delay of backoffs) {
+          await new Promise((r) => setTimeout(r, delay));
+          effectiveId = await this.resolveHandoffIdForMessage(
+            retryContext.ipcMessageId,
+            targetRole,
+            retryContext.sender,
+            retryContext.sourceCid,
           );
+          if (effectiveId) break;
         }
+      }
+
+      if (!effectiveId) {
+        process.stderr.write(
+          `[NexusWsBridge] CANNOT DEAD-LETTER role=${targetRole} reason=${reason}: correlation unresolved after retry; handoff may be stuck in stale delivered state\n`,
+        );
         return;
       }
 
-      await store.markDeadLettered(handoffId);
+      await store.markDeadLettered(effectiveId);
       process.stderr.write(
-        `[NexusWsBridge] dead-lettered handoffId=${handoffId} role=${targetRole}: ${reason}\n`,
+        `[NexusWsBridge] dead-lettered handoffId=${effectiveId} role=${targetRole}: ${reason}\n`,
       );
 
       const cacheable = store as { invalidateCache?: () => void };
@@ -889,19 +925,29 @@ export class NexusWsBridge {
         return;
       }
 
-      // Capture the correlated handoffId NOW (while the ipcMessageId-to-
-      // handoff linkage is still fresh in memory and the sender fallback
-      // is still valid). Both the success path (markDelivered) and the
-      // failure path (markDeadLettered) will operate on this id so they
-      // cannot race each other or be defeated by a fire-and-forget
-      // setIpcMessageId() that lands after this point. Mark delivered
-      // only AFTER runtime.send succeeds — a premature `delivered` before
-      // the turn completes creates irreversible skew if the turn fails
-      // (handoff stuck `delivered`, recovery tooling blind to the gap).
+      // Capture the correlated handoffId NOW using DETERMINISTIC keys
+      // (exact ipcMessageId → (fromRole, sourceCid) composite). Both the
+      // success path (markDelivered) and the failure path (markDeadLettered)
+      // operate on this id so they cannot race each other or be defeated
+      // by a fire-and-forget setIpcMessageId() that lands after this
+      // point. Mark delivered only AFTER runtime.send succeeds — a
+      // premature `delivered` before the turn completes creates
+      // irreversible skew if the turn fails (handoff stuck `delivered`,
+      // recovery tooling blind to the gap). On failure with missing
+      // correlation, markHandoffDeadLettered re-resolves with backoff
+      // so the linkage race cannot silently swallow a real failure.
       const resolvedHandoffId =
         this.opts.handoffStore && ipcMessageId
-          ? await this.resolveHandoffIdForMessage(ipcMessageId, _targetRole, msgSender)
+          ? await this.resolveHandoffIdForMessage(
+              ipcMessageId,
+              _targetRole,
+              msgSender,
+              cid,
+            )
           : undefined;
+      const retryContext = ipcMessageId
+        ? { ipcMessageId, sender: msgSender, sourceCid: cid }
+        : undefined;
 
       void this.opts.runtime
         .send(session, notification)
@@ -933,6 +979,7 @@ export class NexusWsBridge {
               resolvedHandoffId,
               _targetRole,
               `local push abnormal: ${detail}`,
+              retryContext,
             );
           }
         })
@@ -945,6 +992,7 @@ export class NexusWsBridge {
             resolvedHandoffId,
             _targetRole,
             `runtime.send rejected: ${detail}`,
+            retryContext,
           );
         });
     } catch {

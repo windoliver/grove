@@ -199,6 +199,27 @@ export class SpawnManager {
 
   /** Attach a NexusWsBridge for push-based IPC. Call after construction. */
   setWsBridge(bridge: NexusWsBridge): void {
+    // Topology-drift guard: if the topology changed while bridge init
+    // was in flight (e.g. preset swap during connect()), the bridge we
+    // just received was provisioned/probed against the OLD role set.
+    // Attaching it and flipping delivery to `ready` would create a
+    // fail-open window where spawns proceed against a bridge whose
+    // registration and SSE loops don't cover the current roles. Fail
+    // closed instead — operator must restart after topology settles.
+    if (this.topology !== undefined) {
+      const currentRoles = new Set(this.topology.roles.map((r) => r.name));
+      const provisionedRoles = new Set(bridge.getProvisionedRoleNames());
+      const mismatch =
+        currentRoles.size !== provisionedRoles.size ||
+        [...currentRoles].some((r) => !provisionedRoles.has(r));
+      if (mismatch) {
+        this.wsBridge = bridge;
+        this.markDeliveryDisabled(
+          "bridge provisioned for stale topology; restart TUI after topology settles",
+        );
+        return;
+      }
+    }
     this.wsBridge = bridge;
     this.markDeliveryReady();
     // Register any sessions that were spawned before the bridge was ready.
