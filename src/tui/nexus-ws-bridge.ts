@@ -313,6 +313,13 @@ export class NexusWsBridge {
     });
 
     if (!resp.ok || !resp.body) return false;
+    // Same invariant the startup probe enforces: a 200 with wrong
+    // content-type is not a valid stream. Without this check the
+    // reconnect loop could keep marking misrouted responses as
+    // "healthy cycles" and onRoleUnhealthy would never fire — exactly
+    // the silent post-start outage the migration is supposed to surface.
+    const ctype = resp.headers.get("content-type") ?? "";
+    if (!ctype.toLowerCase().includes("text/event-stream")) return false;
 
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();

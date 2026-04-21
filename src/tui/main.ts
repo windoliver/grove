@@ -620,6 +620,12 @@ export async function handleTui(
         result.appProps.agentRuntime,
         acpSessionStore,
       );
+      // Declare topology up-front so the delivery-ready gate sees the
+      // actual role count — otherwise multi-role --url spawns would bypass
+      // the fail-closed guard (roleCount 0).
+      if (result.appProps.topology) {
+        spawnManager.setTopology(result.appProps.topology);
+      }
       root.render(
         React.createElement(
           DialogProvider,
