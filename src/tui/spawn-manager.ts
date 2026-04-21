@@ -157,7 +157,14 @@ export class SpawnManager {
     for (const w of waiters) w.reject(err);
   }
 
-  private markDeliveryReady(): void {
+  /**
+   * Mark delivery ready without requiring a NexusWsBridge. Used by
+   * tmux-only test harnesses that don't need cross-agent IPC: they
+   * assert "this session has no IPC dependency" so `spawn()` can
+   * proceed against the `pending` → `ready` state machine. Real
+   * multi-role sessions flow through `setWsBridge()` instead.
+   */
+  markDeliveryReady(): void {
     if (this.deliveryState === "disabled") return;
     this.deliveryState = "ready";
     const waiters = this.deliveryReadyWaiters;
