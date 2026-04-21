@@ -419,21 +419,25 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
           );
         });
     } else if (agentRuntime && topo) {
-      // Bridge preconditions missing: without a Nexus endpoint + credentials,
-      // nothing will route contributions between agents. Warn loudly AND
-      // mark delivery disabled so spawn() blocks multi-role sessions.
+      // Bridge preconditions missing: without Nexus + credentials, nothing
+      // routes contributions between agents. Only fail closed when cross-
+      // role delivery is actually needed (multi-role); a single-role
+      // session has no inter-agent traffic, so warn but keep it spawnable.
       const reason = `missing Nexus config (nexusUrl=${nexusUrl ?? "none"} apiKey=${apiKey ? "set" : "missing"})`;
-      manager.markDeliveryDisabled(reason);
+      if (topo.roles.length > 1) {
+        manager.markDeliveryDisabled(reason);
+      }
       process.stderr.write(
         `[grove] WARNING: Nexus bridge not initialized (${reason}). Inter-agent contribution delivery is disabled.\n`,
       );
     } else if (topo && !agentRuntime) {
-      // Topology declared but no agent runtime — multi-role sessions
-      // can't deliver contributions without one. Fail closed rather
-      // than leaving deliveryState at "pending" (which would stall
-      // every spawn for the full 120s budget before rejecting).
+      // Topology declared but no agent runtime. Multi-role sessions
+      // can't deliver contributions without one — fail closed. Single-
+      // role sessions (e.g., tmux fallback with one role) stay spawnable.
       const reason = "agentRuntime unavailable — ACP spawn and delivery are disabled";
-      manager.markDeliveryDisabled(reason);
+      if (topo.roles.length > 1) {
+        manager.markDeliveryDisabled(reason);
+      }
       process.stderr.write(`[grove] WARNING: ${reason}.\n`);
     }
 

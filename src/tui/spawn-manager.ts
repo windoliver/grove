@@ -274,12 +274,17 @@ export class SpawnManager {
    */
   setTopology(topology: AgentTopology | undefined): void {
     this.topology = topology;
-    // A multi-role topology means cross-role IPC is expected; the
-    // bridge must be attached before spawning. Flip to pending so
-    // spawn() waits until setWsBridge / markDeliveryDisabled resolves
-    // the state. Never downgrade from disabled — an operator warning
-    // already fired, and a topology change shouldn't mask it.
-    if (this.deliveryState !== "disabled" && topology !== undefined && topology.roles.length > 1) {
+    // Multi-role topology means cross-role IPC is expected — the bridge
+    // must be attached before spawning. Transition to pending so spawn()
+    // waits for setWsBridge / markDeliveryDisabled to settle. Guards:
+    //   - Never downgrade "disabled" (operator warning already fired).
+    //   - Never downgrade when a bridge is already attached — topology
+    //     is often applied AFTER bridge init completes in the normal
+    //     flow, and re-pending would stall every spawn its full 120s
+    //     budget despite a healthy bridge.
+    if (this.deliveryState === "disabled") return;
+    if (this.wsBridge !== undefined) return;
+    if (topology !== undefined && topology.roles.length > 1) {
       this.deliveryState = "pending";
     }
   }
