@@ -98,6 +98,10 @@ export class TmuxRuntime implements AgentRuntime {
       ...process.env,
       ...config.env,
     } as Record<string, string>;
+    // Bind contribution identity to the runtime-issued session id so
+    // polling can authenticate in-session writes.
+    spawnEnv.GROVE_AGENT_ID = id;
+    spawnEnv.GROVE_AGENT_ROLE = role;
     if (config.platform) spawnEnv.GROVE_AGENT_PLATFORM = config.platform;
     if (config.model) spawnEnv.GROVE_AGENT_MODEL = config.model;
 

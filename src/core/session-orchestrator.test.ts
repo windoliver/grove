@@ -258,7 +258,7 @@ describe("SessionOrchestrator", () => {
     bus.close();
   });
 
-  test("polling forwards contributions tagged with session-scoped GROVE_AGENT_ID", async () => {
+  test("polling ignores contributions with forgeable deterministic agent ids", async () => {
     const runtime = new MockRuntime();
     const bus = new LocalEventBus();
     const contract = makeContract();
@@ -290,16 +290,15 @@ describe("SessionOrchestrator", () => {
     await orchestrator.start();
     contributions.push(
       makeContribution({
-        summary: "env-derived coder contribution",
+        summary: "spoofed deterministic id contribution",
         agent: { agentId: `${sessionId}:coder`, role: "coder" },
       }),
     );
 
     await internals.pollContributions();
 
-    // 2 initial goal sends + 1 routed handoff to reviewer.
-    expect(runtime.sendCalls).toHaveLength(3);
-    expect(runtime.sendCalls[2]!.message).toContain("env-derived coder contribution");
+    // Only initial role-goal sends should be present.
+    expect(runtime.sendCalls).toHaveLength(2);
     bus.close();
   });
 

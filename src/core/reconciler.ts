@@ -13,7 +13,7 @@
 
 import type { ClaimStore, ExpiredClaim } from "./store.js";
 import type { WorkspaceInfo, WorkspaceManager } from "./workspace.js";
-import { WorkspaceStatus } from "./workspace.js";
+import { WorkspaceNotFoundError, WorkspaceStatus } from "./workspace.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -240,8 +240,7 @@ export class DefaultReconciler implements Reconciler {
           // Benign race: workspace disappeared between list() and mark().
           // Surface all other failures so startup reconciliation doesn't
           // silently mask storage/cleanup regressions.
-          const message = err instanceof Error ? err.message : String(err);
-          if (message.toLowerCase().includes("not found")) {
+          if (err instanceof WorkspaceNotFoundError) {
             continue;
           }
           throw err;

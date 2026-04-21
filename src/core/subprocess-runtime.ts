@@ -73,8 +73,12 @@ function splitCommand(command: string): string[] {
   let escaping = false;
   let tokenStarted = false;
 
-  for (const ch of command) {
-    if (escaping) {
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (ch === undefined) break;
+
+    // Outside quotes, backslash escapes the next character verbatim.
+    if (quote === null && escaping) {
       current += ch;
       escaping = false;
       tokenStarted = true;
@@ -105,12 +109,32 @@ function splitCommand(command: string): string[] {
       continue;
     }
 
-    if (ch === quote) {
+    if (quote === "'") {
+      if (ch === "'") {
+        quote = null;
+      } else {
+        current += ch;
+        tokenStarted = true;
+      }
+      continue;
+    }
+
+    // Double-quoted mode: backslash only escapes a shell-defined subset.
+    if (ch === '"') {
       quote = null;
       continue;
     }
-    if (quote === '"' && ch === "\\") {
-      escaping = true;
+    if (ch === "\\") {
+      const next = command[i + 1];
+      if (next === '"' || next === "\\" || next === "$" || next === "`" || next === "\n") {
+        current += next;
+        tokenStarted = true;
+        i += 1;
+      } else {
+        // Keep the backslash literal for non-escapable characters (\d, \w, paths).
+        current += "\\";
+        tokenStarted = true;
+      }
       continue;
     }
     current += ch;
@@ -146,6 +170,10 @@ export class SubprocessRuntime implements AgentRuntime {
       ...process.env,
       ...config.env,
     } as Record<string, string>;
+    // Bind contribution identity to the runtime-issued session id so
+    // SessionOrchestrator polling can verify origin without role-only matching.
+    spawnEnv.GROVE_AGENT_ID = id;
+    spawnEnv.GROVE_AGENT_ROLE = role;
     if (config.platform) spawnEnv.GROVE_AGENT_PLATFORM = config.platform;
     if (config.model) spawnEnv.GROVE_AGENT_MODEL = config.model;
 

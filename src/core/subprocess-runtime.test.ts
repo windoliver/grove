@@ -66,3 +66,39 @@ test("SubprocessRuntime.spawn preserves quoted command arguments", async () => {
     await rt.close(session);
   }
 });
+
+test("SubprocessRuntime.spawn preserves literal backslashes in double-quoted args", async () => {
+  const rt = new SubprocessRuntime();
+  const session = await rt.spawn("quoted-backslash", {
+    role: "quoted-backslash",
+    command:
+      "bun -e \"if (!/\\d+/.test('123') || !/\\w+/.test('abc')) process.exit(42); setInterval(() => {}, 1000)\"",
+    cwd: "/tmp",
+  });
+  try {
+    await new Promise((r) => setTimeout(r, 50));
+    const turn = await rt.send(session, "ping");
+    const result = await turn.result;
+    expect(result.stopReason).toBe("end_turn");
+  } finally {
+    await rt.close(session);
+  }
+});
+
+test("SubprocessRuntime.spawn injects runtime-issued GROVE_AGENT_ID", async () => {
+  const rt = new SubprocessRuntime();
+  const session = await rt.spawn("identity", {
+    role: "identity",
+    command:
+      "bun -e \"if (!/^grove-identity-/.test(process.env.GROVE_AGENT_ID ?? '')) process.exit(42); if (process.env.GROVE_AGENT_ROLE !== 'identity') process.exit(43); setInterval(() => {}, 1000)\"",
+    cwd: "/tmp",
+  });
+  try {
+    await new Promise((r) => setTimeout(r, 50));
+    const turn = await rt.send(session, "ping");
+    const result = await turn.result;
+    expect(result.stopReason).toBe("end_turn");
+  } finally {
+    await rt.close(session);
+  }
+});

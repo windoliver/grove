@@ -9,7 +9,7 @@ import type {
   WorkspaceManager,
   WorkspaceQuery,
 } from "./workspace.js";
-import { WorkspaceStatus } from "./workspace.js";
+import { WorkspaceNotFoundError, WorkspaceStatus } from "./workspace.js";
 
 function makeClaimStore(overrides?: {
   activeClaims?: () => Promise<readonly import("./models.js").Claim[]>;
@@ -165,7 +165,7 @@ describe("DefaultReconciler", () => {
     const workspaceManager = makeWorkspaceManager({
       listWorkspaces: async () => [wsA, wsB],
       markWorkspaceStale: async (cid, agentId) => {
-        if (cid === "cid-a") throw new Error("Workspace for 'cid-a' (agent 'agent-a') not found");
+        if (cid === "cid-a") throw new WorkspaceNotFoundError(cid, agentId);
         return {
           cid,
           workspacePath: `/tmp/${cid}`,
