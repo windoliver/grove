@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { parseSessionId } from "./session-id.js";
 import { SubprocessRuntime } from "./subprocess-runtime.js";
 
 test("SubprocessRuntime.send returns error turn when the child has already exited", async () => {
@@ -28,6 +29,73 @@ test("SubprocessRuntime.send returns end_turn for a live child", async () => {
   const session = await rt.spawn("smoke", { role: "smoke", command: "cat", cwd: "/tmp" });
   try {
     const turn = await rt.send(session, "hello");
+    const result = await turn.result;
+    expect(result.stopReason).toBe("end_turn");
+  } finally {
+    await rt.close(session);
+  }
+});
+
+test("SubprocessRuntime.spawn uses canonical session IDs", async () => {
+  const rt = new SubprocessRuntime();
+  const session = await rt.spawn("smoke", { role: "smoke", command: "cat", cwd: "/tmp" });
+  try {
+    const parsed = parseSessionId(session.id);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.role).toBe("smoke");
+  } finally {
+    await rt.close(session);
+  }
+});
+
+test("SubprocessRuntime.spawn preserves quoted command arguments", async () => {
+  const rt = new SubprocessRuntime();
+  const session = await rt.spawn("quoted", {
+    role: "quoted",
+    // Needs proper quote-aware argv splitting so the whole script stays one arg.
+    command: 'bun -e "setInterval(() => {}, 1000)"',
+    cwd: "/tmp",
+  });
+  try {
+    // Give the child a moment to fail fast if argv parsing was broken.
+    await new Promise((r) => setTimeout(r, 50));
+    const turn = await rt.send(session, "ping");
+    const result = await turn.result;
+    expect(result.stopReason).toBe("end_turn");
+  } finally {
+    await rt.close(session);
+  }
+});
+
+test("SubprocessRuntime.spawn preserves literal backslashes in double-quoted args", async () => {
+  const rt = new SubprocessRuntime();
+  const session = await rt.spawn("quoted-backslash", {
+    role: "quoted-backslash",
+    command:
+      "bun -e \"if (!/\\d+/.test('123') || !/\\w+/.test('abc')) process.exit(42); setInterval(() => {}, 1000)\"",
+    cwd: "/tmp",
+  });
+  try {
+    await new Promise((r) => setTimeout(r, 50));
+    const turn = await rt.send(session, "ping");
+    const result = await turn.result;
+    expect(result.stopReason).toBe("end_turn");
+  } finally {
+    await rt.close(session);
+  }
+});
+
+test("SubprocessRuntime.spawn injects runtime-issued GROVE_AGENT_ID", async () => {
+  const rt = new SubprocessRuntime();
+  const session = await rt.spawn("identity", {
+    role: "identity",
+    command:
+      "bun -e \"if (!/^grove-identity-/.test(process.env.GROVE_AGENT_ID ?? '')) process.exit(42); if (process.env.GROVE_AGENT_ROLE !== 'identity') process.exit(43); setInterval(() => {}, 1000)\"",
+    cwd: "/tmp",
+  });
+  try {
+    await new Promise((r) => setTimeout(r, 50));
+    const turn = await rt.send(session, "ping");
     const result = await turn.result;
     expect(result.stopReason).toBe("end_turn");
   } finally {

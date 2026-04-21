@@ -35,7 +35,7 @@ import type {
   WorkspaceManager,
   WorkspaceQuery,
 } from "../core/workspace.js";
-import { WorkspaceStatus } from "../core/workspace.js";
+import { WorkspaceNotFoundError, WorkspaceStatus } from "../core/workspace.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { FsCas } from "./fs-cas.js";
 
@@ -328,7 +328,7 @@ export class LocalWorkspaceManager implements WorkspaceManager {
   async markWorkspaceStale(cid: string, agentId: string): Promise<WorkspaceInfo> {
     const workspace = await this.getWorkspace(cid, agentId);
     if (workspace === undefined) {
-      throw new Error(`Workspace for '${cid}' (agent '${agentId}') not found`);
+      throw new WorkspaceNotFoundError(cid, agentId);
     }
 
     // Only transition active workspaces — already stale/cleaned is a no-op in terms of effect
@@ -397,7 +397,7 @@ export class LocalWorkspaceManager implements WorkspaceManager {
 
     const workspace = await this.getWorkspace(cid, agentId);
     if (workspace === undefined) {
-      throw new Error(`Workspace for '${cid}' not found`);
+      throw new WorkspaceNotFoundError(cid, agentId);
     }
     return workspace;
   }

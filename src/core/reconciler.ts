@@ -13,7 +13,7 @@
 
 import type { ClaimStore, ExpiredClaim } from "./store.js";
 import type { WorkspaceInfo, WorkspaceManager } from "./workspace.js";
-import { WorkspaceStatus } from "./workspace.js";
+import { WorkspaceNotFoundError, WorkspaceStatus } from "./workspace.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -175,8 +175,15 @@ export class DefaultReconciler implements Reconciler {
     for (const group of groups.values()) {
       if (group.length <= 1) continue;
 
-      // Sort by createdAt descending — keep first (newest)
-      group.sort((a, b) => (a.createdAt > b.createdAt ? -1 : a.createdAt < b.createdAt ? 1 : 0));
+      // Sort by parsed timestamp descending — keep first (newest).
+      // Use Date.parse rather than lexical string order so timestamps with
+      // timezone offsets compare correctly (e.g. "+09:00" vs "Z").
+      group.sort((a, b) => {
+        const ta = Date.parse(a.createdAt);
+        const tb = Date.parse(b.createdAt);
+        if (Number.isFinite(ta) && Number.isFinite(tb) && ta !== tb) return tb - ta;
+        return a.createdAt > b.createdAt ? -1 : a.createdAt < b.createdAt ? 1 : 0;
+      });
 
       for (let i = 1; i < group.length; i++) {
         const claim = group[i];
@@ -223,9 +230,21 @@ export class DefaultReconciler implements Reconciler {
     for (const ws of activeWorkspaces) {
       const key = `${ws.cid}::${ws.agent.agentId}`;
       if (!activeClaimKeys.has(key)) {
-        // Mark orphaned workspace as stale so it's flagged for cleanup
-        const staleWs = await this.workspaceManager?.markWorkspaceStale(ws.cid, ws.agent.agentId);
-        orphaned.push(staleWs);
+        // Mark orphaned workspace as stale so it's flagged for cleanup.
+        // Best-effort: if one workspace disappeared concurrently, continue
+        // scanning others instead of failing startup reconciliation.
+        try {
+          const staleWs = await this.workspaceManager.markWorkspaceStale(ws.cid, ws.agent.agentId);
+          orphaned.push(staleWs);
+        } catch (err) {
+          // Benign race: workspace disappeared between list() and mark().
+          // Surface all other failures so startup reconciliation doesn't
+          // silently mask storage/cleanup regressions.
+          if (err instanceof WorkspaceNotFoundError) {
+            continue;
+          }
+          throw err;
+        }
       }
     }
 

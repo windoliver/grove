@@ -19,7 +19,7 @@ export interface SpawnOptions {
   readonly cwd?: string;
   /** Timeout in milliseconds. Defaults to 30_000 (30s). */
   readonly timeoutMs?: number;
-  /** Maximum stdout buffer size in bytes. Defaults to 10MB. */
+  /** Maximum buffered output size per stream in bytes. Defaults to 10MB. */
   readonly maxBufferBytes?: number;
 }
 
@@ -28,6 +28,43 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 
 /** Default max buffer: 10 MB. */
 const DEFAULT_MAX_BUFFER_BYTES = 10 * 1024 * 1024;
+
+async function readStreamWithLimit(
+  stream: ReadableStream<Uint8Array> | null,
+  maxBufferBytes: number,
+  label: "stdout" | "stderr",
+  onOverflow: () => void,
+): Promise<string> {
+  if (stream === null) return "";
+
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value === undefined) continue;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBufferBytes) {
+        onOverflow();
+        throw new Error(`${label} exceeded max buffer of ${maxBufferBytes} bytes`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const decoder = new TextDecoder();
+  let text = "";
+  for (const chunk of chunks) {
+    text += decoder.decode(chunk, { stream: true });
+  }
+  text += decoder.decode();
+  return text;
+}
 
 /**
  * Spawn a command and collect its output.
@@ -43,7 +80,7 @@ export async function spawnCommand(
 ): Promise<SpawnResult> {
   const cwd = options?.cwd ?? process.cwd();
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const _maxBufferBytes = options?.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES;
+  const maxBufferBytes = options?.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES;
 
   let proc: import("bun").Subprocess<"pipe", "pipe", "pipe">;
   try {
@@ -72,9 +109,15 @@ export async function spawnCommand(
   });
 
   const collectPromise = async (): Promise<SpawnResult> => {
+    let overflowed = false;
+    const killForOverflow = (): void => {
+      if (overflowed) return;
+      overflowed = true;
+      proc.kill();
+    };
     const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
+      readStreamWithLimit(proc.stdout, maxBufferBytes, "stdout", killForOverflow),
+      readStreamWithLimit(proc.stderr, maxBufferBytes, "stderr", killForOverflow),
     ]);
     const exitCode = await proc.exited;
     return { stdout, stderr, exitCode };

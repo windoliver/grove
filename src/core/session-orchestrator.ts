@@ -5,6 +5,7 @@
  * sends goals, wires event routing, and monitors for stop conditions.
  */
 
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { AcpxTurn } from "../acp/types.js";
 import { watchTurnError } from "../acp/watch-turn.js";
@@ -13,6 +14,7 @@ import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js
 import type { GroveContract } from "./contract.js";
 import type { EventBus, GroveEvent } from "./event-bus.js";
 import { resolveMcpServePath } from "./resolve-mcp-serve-path.js";
+import { hasValidRoutingSignature } from "./routing-provenance.js";
 import type { AgentPlatformType, AgentRole, AgentTopology } from "./topology.js";
 import { resolveRoleWorkspaceStrategies, topologicalSortRoles } from "./topology.js";
 import { TopologyRouter } from "./topology-router.js";
@@ -108,6 +110,7 @@ export class SessionOrchestrator {
   private readonly sessionId: string;
   private readonly agents: AgentSessionInfo[] = [];
   private readonly router: TopologyRouter;
+  private readonly routingTokensByRole = new Map<string, string>();
   private eventHandlers?: Map<string, import("./event-bus.js").EventHandler>;
   private stopped = false;
   private stopReason: string | undefined;
@@ -115,6 +118,7 @@ export class SessionOrchestrator {
   private startedAt = 0;
   private readonly seenCids = new Set<string>();
   private contributionPollTimer: ReturnType<typeof setInterval> | null = null;
+  private contributionPollStartTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: SessionConfig) {
     this.config = config;
@@ -245,6 +249,10 @@ export class SessionOrchestrator {
     this.stopReason = reason;
 
     // Stop contribution polling
+    if (this.contributionPollStartTimer) {
+      clearTimeout(this.contributionPollStartTimer);
+      this.contributionPollStartTimer = null;
+    }
     if (this.contributionPollTimer) {
       clearInterval(this.contributionPollTimer);
       this.contributionPollTimer = null;
@@ -281,13 +289,14 @@ export class SessionOrchestrator {
     });
 
     // Start polling after initial delay
-    setTimeout(() => {
+    this.contributionPollStartTimer = setTimeout(() => {
       if (this.stopped) return;
       this.contributionPollTimer = setInterval(() => {
         void this.pollContributions();
       }, POLL_MS);
       // Also poll immediately on first tick
       void this.pollContributions();
+      this.contributionPollStartTimer = null;
     }, INITIAL_DELAY_MS);
   }
 
@@ -300,24 +309,29 @@ export class SessionOrchestrator {
       const contributions = await this.config.contributionStore.list({ limit: 200 });
       for (const c of contributions) {
         if (this.seenCids.has(c.cid)) continue;
-        this.seenCids.add(c.cid);
-        this.contributionCount++;
 
         const sourceRole = c.agent.role;
         if (!sourceRole) continue;
+        const sourceAgent = this.agents.find((a) => a.role === sourceRole);
+        if (!sourceAgent) continue;
 
-        // Only process contributions from agents in THIS session.
-        // Match by agentId (unique per spawn), not just role name (shared across sessions).
-        const agentId = c.agent.agentId;
-        const isOurAgent = this.agents.some(
-          (a) =>
-            a.role === sourceRole && (a.session.id === agentId || a.session.role === sourceRole),
-        );
-        if (!isOurAgent) continue;
+        // Trust boundary: require a valid per-contribution routing signature
+        // and runtime-issued agent session identity.
+        const expectedToken = this.routingTokensByRole.get(sourceRole);
+        if (expectedToken === undefined || !hasValidRoutingSignature(c, expectedToken)) {
+          continue;
+        }
+        if (c.agent.agentId !== sourceAgent.session.id) {
+          continue;
+        }
+
+        // Mark as seen only after ownership verification so transient identity
+        // skew doesn't permanently suppress routing for this CID.
+        this.seenCids.add(c.cid);
+        this.contributionCount++;
 
         // Find the source agent's workspace path — this is the handoff artifact.
         // The receiving agent reads files directly from this path, no git merge needed.
-        const sourceAgent = this.agents.find((a) => a.role === sourceRole);
         const sourceWorkspace = sourceAgent?.workspaceMode.path ?? "(unknown)";
 
         const action =
@@ -396,6 +410,8 @@ export class SessionOrchestrator {
     // Merge profile overlay (profile > role > default)
     const profile = this.config.profiles?.find((p) => p.role === role.name);
     const resolved = mergeRuntimeConfig(role, profile);
+    const routingToken = randomUUID();
+    this.routingTokensByRole.set(role.name, routingToken);
 
     const agentConfig: AgentConfig = {
       role: role.name,
@@ -407,6 +423,8 @@ export class SessionOrchestrator {
       env: {
         GROVE_SESSION_ID: this.sessionId,
         GROVE_ROLE: role.name,
+        GROVE_AGENT_ROLE: role.name,
+        GROVE_ROUTING_TOKEN: routingToken,
       },
     };
 

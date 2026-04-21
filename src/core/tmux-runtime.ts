@@ -98,6 +98,10 @@ export class TmuxRuntime implements AgentRuntime {
       ...process.env,
       ...config.env,
     } as Record<string, string>;
+    // Bind contribution identity to the runtime-issued session id so
+    // polling can authenticate in-session writes.
+    spawnEnv.GROVE_AGENT_ID = id;
+    spawnEnv.GROVE_AGENT_ROLE = role;
     if (config.platform) spawnEnv.GROVE_AGENT_PLATFORM = config.platform;
     if (config.model) spawnEnv.GROVE_AGENT_MODEL = config.model;
 
@@ -243,13 +247,16 @@ export class TmuxRuntime implements AgentRuntime {
       });
 
       if (output === entry.lastOutput && entry.lastOutput !== "") {
-        // Output hasn't changed — fire idle callbacks
-        entry.session = { ...entry.session, status: "idle" };
-        for (const cb of entry.idleCallbacks) {
-          try {
-            cb();
-          } catch {
-            // Don't let callback errors kill the poll loop
+        // Output hasn't changed. Fire callbacks only on transition to idle
+        // to avoid repeated callback storms on every poll tick.
+        if (entry.session.status !== "idle") {
+          entry.session = { ...entry.session, status: "idle" };
+          for (const cb of entry.idleCallbacks) {
+            try {
+              cb();
+            } catch {
+              // Don't let callback errors kill the poll loop
+            }
           }
         }
       } else {

@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 
 import { LocalEventBus } from "../local-event-bus.js";
+import { ROUTING_SIGNATURE_CONTEXT_KEY } from "../routing-provenance.js";
 import type { AgentTopology } from "../topology.js";
 import { TopologyRouter } from "../topology-router.js";
 import {
@@ -83,6 +84,65 @@ describe("contributeOperation", () => {
     );
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value.mode).toBe("exploration");
+  });
+
+  test("stamps runtime routing signature into contribution context", async () => {
+    const prevRoutingToken = process.env.GROVE_ROUTING_TOKEN;
+    process.env.GROVE_ROUTING_TOKEN = "routing-token-1";
+    try {
+      const result = await contributeOperation(
+        {
+          kind: "work",
+          summary: "runtime routing signature",
+          context: { note: "hello" },
+          agent: { agentId: "worker-a" },
+        },
+        deps,
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const stored = await deps.contributionStore.get(result.value.cid);
+      const context = stored?.context as Record<string, unknown> | undefined;
+      expect(context?.note).toBe("hello");
+      expect(context?.[ROUTING_SIGNATURE_CONTEXT_KEY]).toMatch(/^[a-f0-9]{64}$/);
+      expect(context?.[ROUTING_SIGNATURE_CONTEXT_KEY]).not.toBe("routing-token-1");
+    } finally {
+      if (prevRoutingToken === undefined) {
+        delete process.env.GROVE_ROUTING_TOKEN;
+      } else {
+        process.env.GROVE_ROUTING_TOKEN = prevRoutingToken;
+      }
+    }
+  });
+
+  test("runtime routing signature overrides caller-supplied reserved context key", async () => {
+    const prevRoutingToken = process.env.GROVE_ROUTING_TOKEN;
+    process.env.GROVE_ROUTING_TOKEN = "runtime-token";
+    try {
+      const result = await contributeOperation(
+        {
+          kind: "work",
+          summary: "reserved context override",
+          context: { [ROUTING_SIGNATURE_CONTEXT_KEY]: "spoofed-token" },
+          agent: { agentId: "worker-a" },
+        },
+        deps,
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const stored = await deps.contributionStore.get(result.value.cid);
+      const context = stored?.context as Record<string, unknown> | undefined;
+      expect(context?.[ROUTING_SIGNATURE_CONTEXT_KEY]).toMatch(/^[a-f0-9]{64}$/);
+      expect(context?.[ROUTING_SIGNATURE_CONTEXT_KEY]).not.toBe("spoofed-token");
+    } finally {
+      if (prevRoutingToken === undefined) {
+        delete process.env.GROVE_ROUTING_TOKEN;
+      } else {
+        process.env.GROVE_ROUTING_TOKEN = prevRoutingToken;
+      }
+    }
   });
 
   test("validates artifact hashes exist in CAS", async () => {

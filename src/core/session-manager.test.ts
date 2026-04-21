@@ -63,6 +63,51 @@ describe("SessionManager", () => {
     expect(updated!.status).toBe("cancelled");
   });
 
+  test("startSession throws when session does not exist", async () => {
+    const store = new InMemorySessionStore();
+    const manager = new SessionManager(store);
+
+    await expect(manager.startSession("missing-id")).rejects.toThrow("not found");
+  });
+
+  test("archiveSession throws when session does not exist", async () => {
+    const store = new InMemorySessionStore();
+    const manager = new SessionManager(store);
+
+    await expect(manager.archiveSession("missing-id")).rejects.toThrow("not found");
+  });
+
+  test("archiveSession rejects pending → archived transition", async () => {
+    const store = new InMemorySessionStore();
+    const manager = new SessionManager(store);
+
+    const session = await manager.createSession({
+      goal: "Test",
+      presetName: "review-loop",
+    });
+
+    await expect(manager.archiveSession(session.id)).rejects.toThrow(
+      "Invalid session state transition",
+    );
+  });
+
+  test("archiveSession archives completed session", async () => {
+    const store = new InMemorySessionStore();
+    const manager = new SessionManager(store);
+
+    const session = await manager.createSession({
+      goal: "Test",
+      presetName: "review-loop",
+    });
+    await manager.startSession(session.id);
+    await manager.completeSession(session.id);
+    await manager.archiveSession(session.id);
+
+    const updated = await store.getSession(session.id);
+    expect(updated!.status).toBe("archived");
+    expect(updated!.completedAt).toBeTruthy();
+  });
+
   test("listSessions returns all sessions sorted by recency", async () => {
     const store = new InMemorySessionStore();
     const manager = new SessionManager(store);
