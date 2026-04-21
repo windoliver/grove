@@ -78,6 +78,15 @@ interface AcpxSessionEntry {
   logStream: import("node:fs").WriteStream | null;
   /** Log file path for agent output (debug/streaming). */
   logFile: string | null;
+  /**
+   * acpx's internal session UUID (issue #319). The first turn sees
+   * `session/new` on its stdout and the parser learns the id from the
+   * correlated response; subsequent turns on the same acpx child only see
+   * `session/prompt`+`session/update` — no handshake — so they must be
+   * constructed with this id explicitly, or the parser's fail-closed path
+   * would fire on every turn after the first.
+   */
+  wireSessionId: string | undefined;
 }
 
 export class AcpxRuntime implements AgentRuntime {
@@ -264,6 +273,7 @@ export class AcpxRuntime implements AgentRuntime {
       sendChainTail: null,
       logStream,
       logFile,
+      wireSessionId: undefined,
     };
     this.sessions.set(id, entry);
 
@@ -425,8 +435,13 @@ ${message}`;
       throw new Error("acpx child spawned without stdout pipe");
     }
 
-    return new AcpxTurnImpl({
+    const turn = new AcpxTurnImpl({
       sessionId: entry.sessionName,
+      // Issue #319: forward the learned acpx-internal wire sessionId across
+      // turns. Only the first turn sees `session/new` on stdout; subsequent
+      // turns must be constructor-bound or the parser's fail-closed path
+      // fires on every later turn.
+      wireSessionId: entry.wireSessionId,
       turnId,
       stdout: child.stdout,
       cancelFn: async () => {
@@ -440,6 +455,16 @@ ${message}`;
         }
       },
     });
+    // After the first turn settles, stash the learned wire sessionId on the
+    // entry so subsequent turns can hard-bind. Intentionally fire-and-forget:
+    // the caller awaits `turn.result` separately for the stopReason.
+    void turn.result.then(() => {
+      const learned = turn.wireSessionId;
+      if (learned !== undefined && entry.wireSessionId === undefined) {
+        entry.wireSessionId = learned;
+      }
+    });
+    return turn;
   }
 
   async send(session: AgentSession, message: string): Promise<AcpxTurn> {
@@ -468,6 +493,7 @@ ${message}`;
         sendChainTail: null,
         logStream: null,
         logFile: this.logDir ? join(this.logDir, `${session.role}-reattach.log`) : null,
+        wireSessionId: undefined,
       };
       if (entry.logFile) {
         entry.logStream = createWriteStream(entry.logFile, { flags: "a" });
