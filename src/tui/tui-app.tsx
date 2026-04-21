@@ -367,6 +367,16 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
               // Rsync workspace files from sender to recipient before IPC delivery
               manager.syncWorkspaces(sender, recipient);
             },
+            // Post-start outage escalation: if a role's SSE reconnect loop
+            // fails repeatedly, stop pretending the session has delivery.
+            // Flips the SpawnManager to disabled so new spawns for
+            // multi-role topologies fail fast instead of accumulating work
+            // that silently drops. Polling is NOT reintroduced.
+            onRoleUnhealthy: (role, fails) => {
+              const reason = `SSE stream for role=${role} unhealthy after ${fails} consecutive failures`;
+              process.stderr.write(`[grove] DEGRADED: ${reason}\n`);
+              manager.markDeliveryDisabled(reason);
+            },
           });
           // Bridge readiness is a startup invariant: connect() resolves only
           // after every role passes registration + SSE stream handshake.

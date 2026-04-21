@@ -51,6 +51,17 @@ export interface NexusWsBridgeOptions {
    * dedupe (preserves single-process behavior for older wiring).
    */
   localInstanceId?: string | undefined;
+  /**
+   * Called when post-startup SSE reconnection for a role fails more than
+   * `unhealthyThreshold` consecutive times. Lets the caller (SpawnManager /
+   * tui-app) transition to a fail-closed degraded state instead of letting
+   * the silent reconnect loop mask a sustained outage. Without this,
+   * post-start auth/network regressions would stop delivery while the
+   * TUI kept accepting work.
+   */
+  onRoleUnhealthy?: ((role: string, consecutiveFailures: number) => void) | undefined;
+  /** Default: 3. */
+  unhealthyThreshold?: number | undefined;
 }
 
 interface SseEvent {
@@ -252,11 +263,28 @@ export class NexusWsBridge {
   }
 
   private async startSseForRole(role: string): Promise<void> {
+    let consecutiveFailures = 0;
+    const threshold = this.opts.unhealthyThreshold ?? 3;
+    let firedUnhealthy = false;
     while (!this.closed) {
+      let streamOk = false;
       try {
-        await this.connectSse(role);
+        streamOk = await this.connectSse(role);
       } catch {
-        // Reconnect after delay
+        streamOk = false;
+      }
+      if (streamOk) {
+        consecutiveFailures = 0;
+      } else {
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= threshold && !firedUnhealthy) {
+          firedUnhealthy = true;
+          try {
+            this.opts.onRoleUnhealthy?.(role, consecutiveFailures);
+          } catch {
+            // callback errors shouldn't kill the reconnect loop
+          }
+        }
       }
       if (!this.closed) {
         await new Promise((r) => setTimeout(r, 5000));
@@ -264,7 +292,14 @@ export class NexusWsBridge {
     }
   }
 
-  private async connectSse(role: string): Promise<void> {
+  /**
+   * Open an SSE stream for the role. Returns true when the stream
+   * upgraded successfully (2xx + body) and at least one read cycle ran,
+   * false when the server refused/rejected the stream. Used by
+   * startSseForRole to distinguish a real stream cycle from a failed
+   * open for health tracking.
+   */
+  private async connectSse(role: string): Promise<boolean> {
     const ac = new AbortController();
     this.abortControllers.push(ac);
     const url = `${this.opts.nexusUrl}/api/v2/ipc/stream/${encodeURIComponent(role)}`;
@@ -277,7 +312,7 @@ export class NexusWsBridge {
       signal: ac.signal,
     });
 
-    if (!resp.ok || !resp.body) return;
+    if (!resp.ok || !resp.body) return false;
 
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
@@ -305,6 +340,7 @@ export class NexusWsBridge {
         }
       }
     }
+    return true;
   }
 
   private handleEvent(role: string, eventType: string | null, raw: string): void {

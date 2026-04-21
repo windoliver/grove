@@ -117,22 +117,66 @@ export class SpawnManager {
   }
 
   /**
-   * Set when the bridge permanently fails to come online. spawn() will
-   * refuse to start new agents for multi-role topologies in this state —
-   * without a bridge there is no delivery channel (polling was removed),
-   * so a new session would appear alive while every cross-role message
-   * silently dropped. Single-role topologies are still allowed since they
-   * don't need IPC.
+   * Delivery readiness state. Multi-role topologies need an attached
+   * NexusWsBridge (polling was removed by design); single-role
+   * topologies don't care. States:
+   *   "pending"  — bridge init is in flight; spawn() for multi-role
+   *                topologies must wait until resolve to avoid starting
+   *                agents before their IPC subscriptions are live.
+   *   "ready"    — bridge registered; spawn freely.
+   *   "disabled" — bridge permanently failed or misconfigured; spawn()
+   *                for multi-role topologies rejects immediately.
    */
+  private deliveryState: "pending" | "ready" | "disabled" = "pending";
   private deliveryDisabledReason: string | undefined;
+  private deliveryReadyWaiters: Array<{
+    resolve: () => void;
+    reject: (e: Error) => void;
+  }> = [];
 
   markDeliveryDisabled(reason: string): void {
+    this.deliveryState = "disabled";
     this.deliveryDisabledReason = reason;
+    const err = new Error(`Inter-agent delivery disabled: ${reason}`);
+    const waiters = this.deliveryReadyWaiters;
+    this.deliveryReadyWaiters = [];
+    for (const w of waiters) w.reject(err);
+  }
+
+  private markDeliveryReady(): void {
+    if (this.deliveryState === "disabled") return;
+    this.deliveryState = "ready";
+    const waiters = this.deliveryReadyWaiters;
+    this.deliveryReadyWaiters = [];
+    for (const w of waiters) w.resolve();
+  }
+
+  private async waitForDelivery(timeoutMs = 30000): Promise<void> {
+    if (this.deliveryState === "ready") return;
+    if (this.deliveryState === "disabled") {
+      throw new Error(`Inter-agent delivery disabled: ${this.deliveryDisabledReason ?? "unknown"}`);
+    }
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`bridge readiness timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.deliveryReadyWaiters.push({
+        resolve: () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        reject: (e) => {
+          clearTimeout(timer);
+          reject(e);
+        },
+      });
+    });
   }
 
   /** Attach a NexusWsBridge for push-based IPC. Call after construction. */
   setWsBridge(bridge: NexusWsBridge): void {
     this.wsBridge = bridge;
+    this.markDeliveryReady();
     // Register any sessions that were spawned before the bridge was ready.
     // The bridge is created async (dynamic import) so agents may already be running.
     //
@@ -228,14 +272,21 @@ export class SpawnManager {
     context?: Record<string, unknown>,
   ): Promise<SpawnResult> {
     debugLog("spawn", `role=${roleId} command=${command}`);
-    // Fail closed: if the bridge is permanently unavailable for a multi-role
-    // topology there's no way to deliver cross-role contributions (polling
-    // was removed by design). Refuse to spawn so the operator can't end up
-    // with a session that looks alive but silently drops every handoff.
-    if (this.deliveryDisabledReason && (this.topology?.roles.length ?? 0) > 1) {
-      throw new Error(
-        `Refusing to spawn ${roleId}: inter-agent delivery is disabled (${this.deliveryDisabledReason}). Restart the TUI after Nexus is reachable.`,
-      );
+    // Fail closed on delivery for multi-role topologies. A topology with
+    // >1 role is guaranteed to need IPC (delegates/feeds/escalates edges),
+    // so spawning before the bridge is ready would race session startup
+    // against subscription setup. No topology / single-role topology has
+    // no cross-role traffic — skip the gate.
+    const roleCount = this.topology?.roles.length ?? 0;
+    if (roleCount > 1) {
+      try {
+        await this.waitForDelivery();
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `Refusing to spawn ${roleId}: ${detail}. Restart the TUI after Nexus is reachable.`,
+        );
+      }
     }
     const spawnId = `${roleId}-${Date.now().toString(36)}`;
     const agent: AgentIdentity = {
