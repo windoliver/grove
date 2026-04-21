@@ -2,6 +2,10 @@ import { describe, expect, test } from "bun:test";
 import type { GroveContract } from "./contract.js";
 import { LocalEventBus } from "./local-event-bus.js";
 import { MockRuntime } from "./mock-runtime.js";
+import {
+  computeRoutingSignatureForContribution,
+  ROUTING_SIGNATURE_CONTEXT_KEY,
+} from "./routing-provenance.js";
 import { SessionOrchestrator } from "./session-orchestrator.js";
 import { makeContribution } from "./test-helpers.js";
 import type { AgentTopology } from "./topology.js";
@@ -57,6 +61,20 @@ function makeOrchestrator(
     ...(overrides?.sessionId ? { sessionId: overrides.sessionId } : {}),
   });
   return { orchestrator, runtime, bus };
+}
+
+function signContributionForRouting(
+  contribution: ReturnType<typeof makeContribution>,
+  routingToken: string,
+): ReturnType<typeof makeContribution> {
+  const signature = computeRoutingSignatureForContribution(contribution, routingToken);
+  return {
+    ...contribution,
+    context: {
+      ...(contribution.context ?? {}),
+      [ROUTING_SIGNATURE_CONTEXT_KEY]: signature,
+    },
+  };
 }
 
 describe("SessionOrchestrator", () => {
@@ -247,11 +265,13 @@ describe("SessionOrchestrator", () => {
     expect(coderToken).toBeDefined();
 
     contributions.push(
-      makeContribution({
-        summary: "local coder contribution",
-        context: { _groveRoutingToken: coderToken ?? "missing-token" },
-        agent: { agentId: coderSessionId ?? "missing", role: "coder" },
-      }),
+      signContributionForRouting(
+        makeContribution({
+          summary: "local coder contribution",
+          agent: { agentId: coderSessionId ?? "missing", role: "coder" },
+        }),
+        coderToken ?? "missing-token",
+      ),
     );
 
     await internals.pollContributions();
@@ -306,7 +326,53 @@ describe("SessionOrchestrator", () => {
     bus.close();
   });
 
-  test("polling ignores forged session id when routing token is wrong", async () => {
+  test("polling ignores forged session id when routing signature is invalid", async () => {
+    const runtime = new MockRuntime();
+    const bus = new LocalEventBus();
+    const contract = makeContract();
+    const contributions: ReturnType<typeof makeContribution>[] = [];
+    const contributionStore = {
+      list: async () => contributions,
+    };
+
+    const orchestrator = new SessionOrchestrator({
+      goal: "Build auth module",
+      contract,
+      topology: contract.topology!,
+      runtime,
+      eventBus: bus,
+      projectRoot: "/tmp",
+      workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback",
+      contributionStore,
+    });
+    const internals = orchestrator as unknown as {
+      startContributionPolling: () => void;
+      pollContributions: () => Promise<void>;
+    };
+    // Avoid a real 15s timer in test; invoke poll manually.
+    internals.startContributionPolling = () => undefined;
+
+    const started = await orchestrator.start();
+    const coderSessionId = started.agents.find((a) => a.role === "coder")?.session.id;
+    expect(coderSessionId).toBeDefined();
+
+    contributions.push({
+      ...makeContribution({
+        summary: "forged signature contribution",
+        agent: { agentId: coderSessionId ?? "missing", role: "coder" },
+      }),
+      context: { [ROUTING_SIGNATURE_CONTEXT_KEY]: "invalid-signature" },
+    });
+
+    await internals.pollContributions();
+
+    // Only initial role-goal sends should be present.
+    expect(runtime.sendCalls).toHaveLength(2);
+    bus.close();
+  });
+
+  test("polling ignores forged session id when routing signature uses wrong token", async () => {
     const runtime = new MockRuntime();
     const bus = new LocalEventBus();
     const contract = makeContract();
@@ -338,11 +404,13 @@ describe("SessionOrchestrator", () => {
     expect(coderSessionId).toBeDefined();
 
     contributions.push(
-      makeContribution({
-        summary: "forged token contribution",
-        context: { _groveRoutingToken: "wrong-token" },
-        agent: { agentId: coderSessionId ?? "missing", role: "coder" },
-      }),
+      signContributionForRouting(
+        makeContribution({
+          summary: "forged token contribution",
+          agent: { agentId: coderSessionId ?? "missing", role: "coder" },
+        }),
+        "wrong-token",
+      ),
     );
 
     await internals.pollContributions();

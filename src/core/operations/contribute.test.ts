@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 
 import { LocalEventBus } from "../local-event-bus.js";
+import { ROUTING_SIGNATURE_CONTEXT_KEY } from "../routing-provenance.js";
 import type { AgentTopology } from "../topology.js";
 import { TopologyRouter } from "../topology-router.js";
 import {
@@ -85,14 +86,14 @@ describe("contributeOperation", () => {
     if (result.ok) expect(result.value.mode).toBe("exploration");
   });
 
-  test("stamps runtime routing token into contribution context", async () => {
+  test("stamps runtime routing signature into contribution context", async () => {
     const prevRoutingToken = process.env.GROVE_ROUTING_TOKEN;
     process.env.GROVE_ROUTING_TOKEN = "routing-token-1";
     try {
       const result = await contributeOperation(
         {
           kind: "work",
-          summary: "runtime routing token",
+          summary: "runtime routing signature",
           context: { note: "hello" },
           agent: { agentId: "worker-a" },
         },
@@ -104,7 +105,8 @@ describe("contributeOperation", () => {
       const stored = await deps.contributionStore.get(result.value.cid);
       const context = stored?.context as Record<string, unknown> | undefined;
       expect(context?.note).toBe("hello");
-      expect(context?._groveRoutingToken).toBe("routing-token-1");
+      expect(context?.[ROUTING_SIGNATURE_CONTEXT_KEY]).toMatch(/^[a-f0-9]{64}$/);
+      expect(context?.[ROUTING_SIGNATURE_CONTEXT_KEY]).not.toBe("routing-token-1");
     } finally {
       if (prevRoutingToken === undefined) {
         delete process.env.GROVE_ROUTING_TOKEN;
@@ -114,7 +116,7 @@ describe("contributeOperation", () => {
     }
   });
 
-  test("runtime routing token overrides caller-supplied reserved context key", async () => {
+  test("runtime routing signature overrides caller-supplied reserved context key", async () => {
     const prevRoutingToken = process.env.GROVE_ROUTING_TOKEN;
     process.env.GROVE_ROUTING_TOKEN = "runtime-token";
     try {
@@ -122,7 +124,7 @@ describe("contributeOperation", () => {
         {
           kind: "work",
           summary: "reserved context override",
-          context: { _groveRoutingToken: "spoofed-token" },
+          context: { [ROUTING_SIGNATURE_CONTEXT_KEY]: "spoofed-token" },
           agent: { agentId: "worker-a" },
         },
         deps,
@@ -132,7 +134,8 @@ describe("contributeOperation", () => {
 
       const stored = await deps.contributionStore.get(result.value.cid);
       const context = stored?.context as Record<string, unknown> | undefined;
-      expect(context?._groveRoutingToken).toBe("runtime-token");
+      expect(context?.[ROUTING_SIGNATURE_CONTEXT_KEY]).toMatch(/^[a-f0-9]{64}$/);
+      expect(context?.[ROUTING_SIGNATURE_CONTEXT_KEY]).not.toBe("spoofed-token");
     } finally {
       if (prevRoutingToken === undefined) {
         delete process.env.GROVE_ROUTING_TOKEN;

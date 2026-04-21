@@ -14,6 +14,7 @@ import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js
 import type { GroveContract } from "./contract.js";
 import type { EventBus, GroveEvent } from "./event-bus.js";
 import { resolveMcpServePath } from "./resolve-mcp-serve-path.js";
+import { hasValidRoutingSignature } from "./routing-provenance.js";
 import type { AgentPlatformType, AgentRole, AgentTopology } from "./topology.js";
 import { resolveRoleWorkspaceStrategies, topologicalSortRoles } from "./topology.js";
 import { TopologyRouter } from "./topology-router.js";
@@ -86,8 +87,6 @@ export interface AgentSessionInfo {
   /** Describes how this agent's workspace was provisioned. */
   readonly workspaceMode: WorkspaceMode;
 }
-
-const ROUTING_TOKEN_CONTEXT_KEY = "_groveRoutingToken";
 
 /**
  * Merge runtime selection fields from role + profile.
@@ -316,17 +315,13 @@ export class SessionOrchestrator {
         const sourceAgent = this.agents.find((a) => a.role === sourceRole);
         if (!sourceAgent) continue;
 
-        // Trust boundary: require the per-agent routing token issued at spawn.
-        // This prevents caller-supplied `agent` metadata from impersonating
-        // another role/session in the polling router.
+        // Trust boundary: require a valid per-contribution routing signature
+        // and runtime-issued agent session identity.
         const expectedToken = this.routingTokensByRole.get(sourceRole);
-        const context = c.context as Record<string, unknown> | undefined;
-        const observedToken = context?.[ROUTING_TOKEN_CONTEXT_KEY];
-        if (
-          expectedToken === undefined ||
-          typeof observedToken !== "string" ||
-          observedToken !== expectedToken
-        ) {
+        if (expectedToken === undefined || !hasValidRoutingSignature(c, expectedToken)) {
+          continue;
+        }
+        if (c.agent.agentId !== sourceAgent.session.id) {
           continue;
         }
 
