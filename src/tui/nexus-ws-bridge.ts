@@ -531,11 +531,21 @@ export class NexusWsBridge {
         void this.updateHandoffDeliveryStatus(ipcMessageId, _targetRole, msgSender);
       }
 
+      const payload = msg.payload ?? {};
+      const cid = typeof payload.cid === "string" ? payload.cid : undefined;
+      const kind = typeof payload.kind === "string" ? payload.kind : undefined;
       const summary =
-        (msg.payload?.summary as string) ??
-        (msg.payload?.body as string) ??
-        JSON.stringify(msg.payload ?? {}).slice(0, 100);
-      const notification = `[IPC from ${msgSender}] ${summary}`;
+        (payload.summary as string) ??
+        (payload.body as string) ??
+        JSON.stringify(payload).slice(0, 100);
+      // When the payload carries a contribution envelope (cid + kind), the reviewer
+      // needs the CID to call grove_submit_review without a discovery round-trip.
+      // Without this, the reviewer falls back to grove_log/grove_frontier — the
+      // exact "polling" behavior that push is supposed to eliminate.
+      const notification =
+        cid && kind
+          ? `[grove] New ${kind} from ${msgSender}:\n  CID: ${cid}\n  Summary: ${summary}\n\nRespond with the appropriate tool (grove_submit_review for reviews, grove_submit_work for new work).`
+          : `[IPC from ${msgSender}] ${summary}`;
       debugLog(
         "wsBridge.readAndPush",
         `delivering to session=${session.id} role=${_targetRole} notification=${notification.slice(0, 80)}`,

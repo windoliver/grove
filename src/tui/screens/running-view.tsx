@@ -244,10 +244,10 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       feedActive,
     );
 
-    // NOTE: usePolledData's setInterval doesn't work in OpenTUI because the
-    // RunningView component unmounts/remounts during screen transitions, killing
-    // all React effect timers. Contribution polling is handled outside React
-    // by SpawnManager.startContributionPolling() which uses a class-level timer.
+    // usePolledData is only used for UI refresh of the contributions feed display;
+    // agent-to-agent contribution delivery is done via NexusWsBridge SSE push,
+    // not via polling. The eventBus handler below drives immediate UI refresh
+    // when a push arrives.
 
     // When EventBus fires (SSE push from Nexus), trigger immediate re-fetch
     useEffect(() => {

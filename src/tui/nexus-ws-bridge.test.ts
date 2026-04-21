@@ -319,6 +319,60 @@ describe("NexusWsBridge", () => {
     bridge.close();
   });
 
+  test("readAndPush formats routed contribution with CID for direct tool invocation", async () => {
+    const runtime = makeMockRuntime();
+
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          result: {
+            data: Buffer.from(
+              JSON.stringify({
+                sender: "coder",
+                payload: {
+                  cid: "blake3:abc123",
+                  kind: "work",
+                  summary: "implement auth module",
+                  agentId: "coder-1",
+                },
+              }),
+            ).toString("base64"),
+          },
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+
+    const bridge = new TestableNexusWsBridge(makeBridgeOpts({ runtime }));
+    const session = makeSession("reviewer");
+    bridge.registerSession("reviewer", session);
+
+    bridge.testHandleEvent(
+      "reviewer",
+      "message_delivered",
+      JSON.stringify({
+        event: "message_delivered",
+        message_id: "msg-cid-1",
+        sender: "coder",
+        recipient: "reviewer",
+        type: "event",
+        path: "/inbox/msg-cid-1",
+      }),
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(runtime.send).toHaveBeenCalledTimes(1);
+    const sendCall = (runtime.send as ReturnType<typeof mock>).mock.calls[0];
+    const notification = sendCall![1] as string;
+    expect(notification).toContain("blake3:abc123");
+    expect(notification).toContain("New work from coder");
+    expect(notification).toContain("implement auth module");
+    expect(notification).toContain("grove_submit_review");
+    expect(notification).not.toContain("[IPC from coder]");
+
+    bridge.close();
+  });
+
   test("readAndPush handles VFS read failure gracefully", async () => {
     const runtime = makeMockRuntime();
 

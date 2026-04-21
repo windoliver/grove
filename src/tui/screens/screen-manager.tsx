@@ -178,12 +178,6 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // with updated activeRoles from SpawnManager.
     const [reconcileVersion, setReconcileVersion] = useState(0);
     const lastReconciledScreenRef = useRef<string>("");
-    // Tracks the sessionId for which contribution polling was already started.
-    // Prevents duplicate startContributionPolling when spawnManager is recreated
-    // (useMemo in tui-app.tsx recreates SpawnManager when appProps change).
-    const contribPollingStartedRef = useRef<string>("");
-    // Whether the HTTP server's SessionOrchestrator is routing IPC (detected async, stored for sync access).
-    const serverRoutingActiveRef = useRef<boolean>(false);
     // Spawn guard: prevents duplicate spawn when user presses Escape → Enter twice on agent-detect screen.
     // Reset when user navigates back past goal-input (handleGoalBack) or starts a new session.
     const hasSpawnedRef = useRef<boolean>(false);
@@ -224,13 +218,6 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             }
             // Start polling agent log files for live output
             spawnManager.startLogPolling();
-            spawnManager.startContributionPolling(
-              provider,
-              topology,
-              state.sessionStartedAt,
-              30000,
-              false,
-            );
             // Always bump — even if reattached=0, we need RunningView to pick up
             // the reconciled state (getActiveRoles may have changed).
             setReconcileVersion((v) => v + 1);
@@ -242,17 +229,8 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       // Reset when leaving running screen so we reconcile again on re-entry
       if (state.screen !== "running") {
         lastReconciledScreenRef.current = "";
-        contribPollingStartedRef.current = "";
       }
-    }, [
-      state.screen,
-      state.sessionId,
-      state.sessionStartedAt,
-      spawnManager,
-      topology,
-      appProps.groveDir,
-      provider,
-    ]);
+    }, [state.screen, state.sessionId, spawnManager, topology, appProps.groveDir]);
 
     // Track session start time for duration calculation
     const sessionStartRef = useRef<number>(Date.now());
@@ -513,14 +491,8 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           // New session — record current end-of-file for ALL existing role log
           // files so only lines written AFTER this point are shown.
           spawnManager.startLogPolling(2000, true);
-          // Start contribution polling — server routing detected via global flag set in reconcile path.
-          spawnManager.startContributionPolling(
-            provider,
-            topology,
-            sessionStartedAt,
-            3000,
-            serverRoutingActiveRef.current,
-          );
+          // Contributions are delivered to agents via the SSE push bridge owned
+          // by tui-app.tsx. No TUI-side polling — that was a duplicate path.
 
           // Spawn roles in topological order so that source branches exist before
           // dependent roles try to base their worktrees on them (delegates/feeds/escalates).
@@ -813,8 +785,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
                 doneSignaledRef.current = true;
                 return;
               }
-              // NOTE: routing is handled by spawnManager.startContributionPolling (seenCids dedup).
-              // Do NOT call routeContribution here — that causes duplicate IPC delivery.
+              // Routing is handled by the SSE push bridge — don't re-deliver here.
               if (state.sessionId && isSessionProvider(provider)) {
                 void provider.addContributionToSession(state.sessionId, c.cid).catch(() => {
                   /* best-effort */
