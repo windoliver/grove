@@ -123,11 +123,19 @@ export class SpawnManager {
    *   "pending"  — bridge init is in flight; spawn() for multi-role
    *                topologies must wait until resolve to avoid starting
    *                agents before their IPC subscriptions are live.
-   *   "ready"    — bridge registered; spawn freely.
+   *   "ready"    — bridge registered (or no delivery required); spawn
+   *                freely.
    *   "disabled" — bridge permanently failed or misconfigured; spawn()
-   *                for multi-role topologies rejects immediately.
+   *                rejects immediately regardless of topology (operator
+   *                has been warned; don't accumulate more work).
+   *
+   * Default is "ready" — a manager without any declared topology has no
+   * cross-role delivery needs, so spawn should proceed. A multi-role
+   * topology assignment (via setTopology) flips the state to "pending"
+   * until the bridge wires up (setWsBridge / markDeliveryReady) or
+   * fails (markDeliveryDisabled).
    */
-  private deliveryState: "pending" | "ready" | "disabled" = "pending";
+  private deliveryState: "pending" | "ready" | "disabled" = "ready";
   private deliveryDisabledReason: string | undefined;
   private deliveryReadyWaiters: Array<{
     resolve: () => void;
@@ -266,6 +274,14 @@ export class SpawnManager {
    */
   setTopology(topology: AgentTopology | undefined): void {
     this.topology = topology;
+    // A multi-role topology means cross-role IPC is expected; the
+    // bridge must be attached before spawning. Flip to pending so
+    // spawn() waits until setWsBridge / markDeliveryDisabled resolves
+    // the state. Never downgrade from disabled — an operator warning
+    // already fired, and a topology change shouldn't mask it.
+    if (this.deliveryState !== "disabled" && topology !== undefined && topology.roles.length > 1) {
+      this.deliveryState = "pending";
+    }
   }
 
   /**
@@ -282,13 +298,19 @@ export class SpawnManager {
     context?: Record<string, unknown>,
   ): Promise<SpawnResult> {
     debugLog("spawn", `role=${roleId} command=${command}`);
-    // Fail closed on delivery for multi-role topologies. A topology with
-    // >1 role is guaranteed to need IPC (delegates/feeds/escalates edges),
-    // so spawning before the bridge is ready would race session startup
-    // against subscription setup. No topology / single-role topology has
-    // no cross-role traffic — skip the gate.
-    const roleCount = this.topology?.roles.length ?? 0;
-    if (roleCount > 1) {
+    // Fail closed on delivery state:
+    //   disabled → always refuse (operator warned; don't accumulate work).
+    //   pending  → wait for setWsBridge / markDeliveryDisabled to settle.
+    //   ready    → spawn. Default state is "ready"; multi-role topology
+    //              flips it to pending in setTopology.
+    if (this.deliveryState === "disabled") {
+      throw new Error(
+        `Refusing to spawn ${roleId}: Inter-agent delivery disabled: ${
+          this.deliveryDisabledReason ?? "unknown"
+        }. Restart the TUI after Nexus is reachable.`,
+      );
+    }
+    if (this.deliveryState === "pending") {
       try {
         await this.waitForDelivery();
       } catch (err) {
