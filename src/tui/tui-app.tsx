@@ -340,7 +340,7 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
     );
     if (agentRuntime && topo && nexusUrl && apiKey) {
       void import("./nexus-ws-bridge.js")
-        .then(({ NexusWsBridge }) => {
+        .then(async ({ NexusWsBridge }) => {
           debugLog("wsBridge", `creating NexusWsBridge at ${nexusUrl}`);
           // Extract handoffStore from the provider so the bridge can mark
           // handoffs delivered / dead-lettered on IPC lifecycle events.
@@ -368,7 +368,11 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
               manager.syncWorkspaces(sender, recipient);
             },
           });
-          bridge.connect();
+          // Bridge readiness is a startup invariant: connect() resolves only
+          // after at least one role registration returns 2xx, which proves
+          // endpoint + credentials. Without polling fallback, we must not
+          // expose an unready bridge or a "connected" log that outruns reality.
+          await bridge.connect();
           manager.setWsBridge(bridge);
           debugLog("wsBridge", "connected");
         })

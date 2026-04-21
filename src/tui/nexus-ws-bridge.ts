@@ -91,10 +91,22 @@ export class NexusWsBridge {
     this.sessions.delete(role);
   }
 
-  /** Provision agents and connect SSE streams for all topology roles. */
-  connect(): void {
+  /**
+   * Provision agents and start SSE streams. Resolves when at least one
+   * role has successfully registered with Nexus — that proves the
+   * endpoint is reachable AND the API key is accepted. Rejects if every
+   * registration fails, so callers can treat the bridge as a startup
+   * invariant and surface a persistent error rather than entering a
+   * silent no-delivery state.
+   */
+  async connect(): Promise<void> {
     if (this.closed) return;
-    void this.provisionAgents();
+    const ok = await this.provisionAgents();
+    if (!ok) {
+      throw new Error(
+        `NexusWsBridge: registration failed for every role (url=${this.opts.nexusUrl})`,
+      );
+    }
   }
 
   close(): void {
@@ -134,10 +146,12 @@ export class NexusWsBridge {
   }
 
   /** Register agents in Nexus so their inboxes are provisioned. */
-  private async provisionAgents(): Promise<void> {
+  /** Returns true if at least one role registration succeeded (HTTP 2xx). */
+  private async provisionAgents(): Promise<boolean> {
+    let anyOk = false;
     for (const role of this.opts.topology.roles) {
       try {
-        await fetch(`${this.opts.nexusUrl}/api/v2/agents/register`, {
+        const resp = await fetch(`${this.opts.nexusUrl}/api/v2/agents/register`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -149,10 +163,12 @@ export class NexusWsBridge {
             capabilities: [role.name],
           }),
         });
+        if (resp.ok) anyOk = true;
       } catch {
         // Best-effort — agent may already be registered
       }
     }
+    return anyOk;
   }
 
   private async startSseForRole(role: string): Promise<void> {
