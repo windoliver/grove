@@ -265,6 +265,11 @@ export class NexusWsBridge {
   private async startSseForRole(role: string): Promise<void> {
     let consecutiveFailures = 0;
     const threshold = this.opts.unhealthyThreshold ?? 3;
+    // Re-arm the "fired once per breach" latch after any healthy cycle.
+    // Without this, a later regression (single-role → multi-role
+    // promotion, new topology with stricter requirements, or plain
+    // recurrence) would never re-trigger onRoleUnhealthy because the
+    // flag stayed latched from the first breach.
     let firedUnhealthy = false;
     while (!this.closed) {
       let streamOk = false;
@@ -275,6 +280,7 @@ export class NexusWsBridge {
       }
       if (streamOk) {
         consecutiveFailures = 0;
+        firedUnhealthy = false;
       } else {
         consecutiveFailures += 1;
         if (consecutiveFailures >= threshold && !firedUnhealthy) {

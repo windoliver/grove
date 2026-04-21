@@ -334,6 +334,10 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
     const nexusUrl = process.env.GROVE_NEXUS_URL;
     const apiKey = process.env.NEXUS_API_KEY;
     const topo = appProps.topology;
+    // Seed topology synchronously so the fail-closed catch below and
+    // onRoleUnhealthy callback see the right role count even if bridge
+    // init fails before the screen-manager flow calls setTopology.
+    if (topo) manager.setTopology(topo);
     debugLog(
       "wsBridge",
       `check: agentRuntime=${!!agentRuntime} topo=${!!topo} nexusUrl=${nexusUrl ?? "none"} hasApiKey=${!!apiKey} hasEventBus=${!!appProps.eventBus}`,
