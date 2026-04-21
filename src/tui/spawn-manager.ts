@@ -354,7 +354,14 @@ export class SpawnManager {
     //   pending  → wait for setWsBridge / markDeliveryDisabled to settle.
     //   ready    → spawn. Default state is "ready"; multi-role topology
     //              flips it to pending in setTopology.
-    const needsDelivery = (this.topology?.roles.length ?? 0) > 1;
+    //
+    // Scope: the gate only matters when there is an AgentRuntime to
+    // actually deliver IPC through (acpx-backed spawns). Tmux-only
+    // paths (e.g., workspace-provisioning test harnesses) have no
+    // IPC surface, so waiting on a bridge they never intend to wire
+    // up would deadlock the test. Skip the gate in that case —
+    // nothing is lost because nothing could have been delivered.
+    const needsDelivery = (this.topology?.roles.length ?? 0) > 1 && this.agentRuntime !== undefined;
     if (this.deliveryState === "disabled" && needsDelivery) {
       throw new Error(
         `Refusing to spawn ${roleId}: Inter-agent delivery disabled: ${
