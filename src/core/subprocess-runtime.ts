@@ -5,6 +5,7 @@
 
 import type { AcpxTurn } from "../acp/types.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
+import { buildSessionId } from "./session-id.js";
 
 /**
  * SubprocessRuntime does not produce ACP output. Return an already-settled
@@ -59,13 +60,107 @@ interface SessionEntry {
   exited: boolean;
 }
 
+/**
+ * Split a shell-like command string into argv tokens.
+ *
+ * Supports single/double quotes and backslash escaping so profiles can pass
+ * quoted `-e` / `-c` scripts without being corrupted by naive whitespace split.
+ */
+function splitCommand(command: string): string[] {
+  const args: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let escaping = false;
+  let tokenStarted = false;
+
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (ch === undefined) break;
+
+    // Outside quotes, backslash escapes the next character verbatim.
+    if (quote === null && escaping) {
+      current += ch;
+      escaping = false;
+      tokenStarted = true;
+      continue;
+    }
+
+    if (quote === null) {
+      if (ch === " " || ch === "\t" || ch === "\n") {
+        if (tokenStarted) {
+          args.push(current);
+          current = "";
+          tokenStarted = false;
+        }
+        continue;
+      }
+      if (ch === "'" || ch === '"') {
+        quote = ch;
+        tokenStarted = true;
+        continue;
+      }
+      if (ch === "\\") {
+        escaping = true;
+        tokenStarted = true;
+        continue;
+      }
+      current += ch;
+      tokenStarted = true;
+      continue;
+    }
+
+    if (quote === "'") {
+      if (ch === "'") {
+        quote = null;
+      } else {
+        current += ch;
+        tokenStarted = true;
+      }
+      continue;
+    }
+
+    // Double-quoted mode: backslash only escapes a shell-defined subset.
+    if (ch === '"') {
+      quote = null;
+      continue;
+    }
+    if (ch === "\\") {
+      const next = command[i + 1];
+      if (next === '"' || next === "\\" || next === "$" || next === "`" || next === "\n") {
+        current += next;
+        tokenStarted = true;
+        i += 1;
+      } else {
+        // Keep the backslash literal for non-escapable characters (\d, \w, paths).
+        current += "\\";
+        tokenStarted = true;
+      }
+      continue;
+    }
+    current += ch;
+    tokenStarted = true;
+  }
+
+  if (quote !== null) {
+    throw new Error(`Unterminated quote in command: ${command}`);
+  }
+  if (escaping) {
+    current += "\\";
+    tokenStarted = true;
+  }
+  if (tokenStarted) {
+    args.push(current);
+  }
+  return args;
+}
+
 export class SubprocessRuntime implements AgentRuntime {
   private sessions = new Map<string, SessionEntry>();
   private nextId = 0;
 
   async spawn(role: string, config: AgentConfig): Promise<AgentSession> {
-    const id = `subprocess-${role}-${this.nextId++}`;
-    const [cmd, ...args] = config.command.split(/\s+/);
+    const id = buildSessionId(role, this.nextId++);
+    const [cmd, ...args] = splitCommand(config.command);
 
     if (!cmd) {
       throw new Error(`Empty command for role "${role}"`);
@@ -75,6 +170,10 @@ export class SubprocessRuntime implements AgentRuntime {
       ...process.env,
       ...config.env,
     } as Record<string, string>;
+    // Bind contribution identity to the runtime-issued session id so
+    // SessionOrchestrator polling can verify origin without role-only matching.
+    spawnEnv.GROVE_AGENT_ID = id;
+    spawnEnv.GROVE_AGENT_ROLE = role;
     if (config.platform) spawnEnv.GROVE_AGENT_PLATFORM = config.platform;
     if (config.model) spawnEnv.GROVE_AGENT_MODEL = config.model;
 

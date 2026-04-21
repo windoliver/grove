@@ -200,6 +200,11 @@ export class AcpxRuntime implements AgentRuntime {
     }
     const mergedEnv = config.env ? { ...baseEnv, ...config.env } : baseEnv;
 
+    // Bind contribution identity to the runtime-issued session id so
+    // SessionOrchestrator polling can authenticate origin metadata.
+    mergedEnv.GROVE_AGENT_ID = id;
+    mergedEnv.GROVE_AGENT_ROLE = role;
+
     // Export platform/model as env vars so agent identity resolution picks them up
     if (config.platform) mergedEnv.GROVE_AGENT_PLATFORM = config.platform;
     if (config.model) mergedEnv.GROVE_AGENT_MODEL = config.model;

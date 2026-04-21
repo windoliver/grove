@@ -64,6 +64,16 @@ export class SessionManager {
 
   /** Archive a session. */
   async archiveSession(id: string): Promise<void> {
+    const session = await this.store.getSession(id);
+    if (!session) {
+      throw new Error(`Session '${id}' not found`);
+    }
+    const allowed = SessionManager.VALID_TRANSITIONS[session.status] ?? [];
+    if (!allowed.includes("archived")) {
+      throw new Error(
+        `Invalid session state transition: ${session.status} → archived (allowed: ${allowed.join(", ") || "none"})`,
+      );
+    }
     await this.store.archiveSession(id);
   }
 
@@ -74,13 +84,14 @@ export class SessionManager {
     extraFields?: Record<string, unknown>,
   ): Promise<void> {
     const session = await this.store.getSession(id);
-    if (session) {
-      const allowed = SessionManager.VALID_TRANSITIONS[session.status] ?? [];
-      if (!allowed.includes(newStatus)) {
-        throw new Error(
-          `Invalid session state transition: ${session.status} → ${newStatus} (allowed: ${allowed.join(", ") || "none"})`,
-        );
-      }
+    if (!session) {
+      throw new Error(`Session '${id}' not found`);
+    }
+    const allowed = SessionManager.VALID_TRANSITIONS[session.status] ?? [];
+    if (!allowed.includes(newStatus)) {
+      throw new Error(
+        `Invalid session state transition: ${session.status} → ${newStatus} (allowed: ${allowed.join(", ") || "none"})`,
+      );
     }
     await this.store.updateSession(id, {
       status: newStatus,

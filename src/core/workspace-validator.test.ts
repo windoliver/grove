@@ -146,6 +146,25 @@ describe("validateWorkspaceMutations", () => {
     expect(result.violations[0]!.type).toBe("immutable_path");
   });
 
+  test("rename from immutable path is still treated as immutable mutation", () => {
+    writeFile(dir, ".grove/config.yaml", "locked");
+    commitAll(dir, "add immutable config");
+    mkdirSync(join(dir, "src"), { recursive: true });
+
+    // Rename out of immutable directory; both old/new paths are reported by
+    // porcelain -z and old immutable path must still be flagged.
+    execSync('git mv ".grove/config.yaml" "src/config.yaml"', { cwd: dir, stdio: "pipe" });
+
+    const result = validateWorkspaceMutations(dir, {
+      immutablePaths: [".grove/"],
+      mutablePaths: ["src/"],
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.violations.some((v) => v.type === "immutable_path")).toBe(true);
+    expect(result.violations.some((v) => v.path === ".grove/config.yaml")).toBe(true);
+  });
+
   // -------------------------------------------------------------------------
   // Mutable path constraints
   // -------------------------------------------------------------------------

@@ -12,6 +12,10 @@ export interface AgentConfig {
   readonly role: string;
   readonly command: string;
   readonly cwd: string;
+  /**
+   * Environment variables injected into the child agent process.
+   * Runtime implementations MUST pass these through unchanged.
+   */
   readonly env?: Record<string, string> | undefined;
   readonly goal?: string | undefined;
   readonly prompt?: string | undefined;

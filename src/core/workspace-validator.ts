@@ -6,7 +6,7 @@
  * stashes the offending changes.
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { join } from "node:path";
 
@@ -49,8 +49,8 @@ export interface WorkspaceViolation {
  * Run a git command in the workspace directory.
  * Returns trimmed stdout. Throws on non-zero exit.
  */
-function git(workspacePath: string, args: string): string {
-  return execSync(`git ${args}`, {
+function git(workspacePath: string, args: readonly string[]): string {
+  return execFileSync("git", [...args], {
     cwd: workspacePath,
     encoding: "utf-8",
     stdio: ["pipe", "pipe", "pipe"],
@@ -84,9 +84,9 @@ function matchesAnyPattern(filePath: string, patterns: readonly string[]): boole
 function getChangedFiles(workspacePath: string): string[] {
   let output: string;
   try {
-    // Do NOT use the git() helper here — it trims the output, which strips
-    // the leading space from porcelain status indicators like " M file.txt".
-    output = execSync("git status --porcelain", {
+    // Use -z so file names are NUL-delimited and unescaped (safe for spaces,
+    // quotes, and other special characters).
+    output = execFileSync("git", ["status", "--porcelain", "-z"], {
       cwd: workspacePath,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
@@ -96,25 +96,31 @@ function getChangedFiles(workspacePath: string): string[] {
     return [];
   }
 
-  // Remove only trailing whitespace/newlines, preserving leading spaces
-  // that are part of the porcelain status format.
-  const trimmed = output.replace(/\s+$/, "");
-  if (trimmed.length === 0) return [];
+  if (output.length === 0) return [];
 
-  const files: string[] = [];
-  for (const line of trimmed.split("\n")) {
-    // porcelain format: XY <path> or XY <path> -> <newpath> (for renames)
-    // XY is exactly 2 characters, followed by a space, then the path.
-    if (line.length < 4) continue;
-    const rest = line.slice(3);
-    // Handle renames: "R  old -> new" — we care about the new path
-    const arrowIndex = rest.indexOf(" -> ");
-    const filePath = arrowIndex >= 0 ? rest.slice(arrowIndex + 4) : rest;
-    if (filePath.length > 0) {
-      files.push(filePath);
+  const files = new Set<string>();
+  const entries = output.split("\0");
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (!entry || entry.length < 4) continue;
+
+    // Porcelain -z first token: "XY <path>".
+    const status = entry.slice(0, 2);
+    const path = entry.slice(3);
+    if (path.length > 0) {
+      files.add(path);
+    }
+
+    // For rename/copy, git emits a second NUL-delimited path token.
+    if (status[0] === "R" || status[0] === "C" || status[1] === "R" || status[1] === "C") {
+      const oldPath = entries[i + 1];
+      if (oldPath && oldPath.length > 0) {
+        files.add(oldPath);
+      }
+      i += 1;
     }
   }
-  return files;
+  return [...files];
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +159,7 @@ export function validateWorkspaceMutations(
 
   // Check each file against constraints
   const violations: WorkspaceViolation[] = [];
-  const violatingFiles: string[] = [];
+  const violatingFiles = new Set<string>();
 
   for (const filePath of changedFiles) {
     // 1. Immutable path check (takes precedence)
@@ -163,9 +169,7 @@ export function validateWorkspaceMutations(
         path: filePath,
         message: `File '${filePath}' is in an immutable path`,
       });
-      if (!violatingFiles.includes(filePath)) {
-        violatingFiles.push(filePath);
-      }
+      violatingFiles.add(filePath);
       continue; // Skip further checks for this file
     }
 
@@ -176,9 +180,7 @@ export function validateWorkspaceMutations(
         path: filePath,
         message: `File '${filePath}' is outside allowed mutable paths`,
       });
-      if (!violatingFiles.includes(filePath)) {
-        violatingFiles.push(filePath);
-      }
+      violatingFiles.add(filePath);
       continue;
     }
 
@@ -193,9 +195,7 @@ export function validateWorkspaceMutations(
             path: filePath,
             message: `File '${filePath}' is ${stat.size} bytes, exceeds max ${maxFileSize} bytes`,
           });
-          if (!violatingFiles.includes(filePath)) {
-            violatingFiles.push(filePath);
-          }
+          violatingFiles.add(filePath);
         }
       } catch {
         // File may have been deleted — skip size check
@@ -209,16 +209,22 @@ export function validateWorkspaceMutations(
   let stashed = false;
   let stashRef: string | undefined;
 
-  if (!valid && stashOnViolation && violatingFiles.length > 0) {
+  if (!valid && stashOnViolation && violatingFiles.size > 0) {
     try {
       // Stash only the violating files
-      const fileArgs = violatingFiles.map((f) => `"${f}"`).join(" ");
-      git(workspacePath, `stash push -m "grove: workspace constraint violation" -- ${fileArgs}`);
+      git(workspacePath, [
+        "stash",
+        "push",
+        "-m",
+        "grove: workspace constraint violation",
+        "--",
+        ...violatingFiles,
+      ]);
       stashed = true;
 
       // Get the stash ref
       try {
-        stashRef = git(workspacePath, "stash list -1 --format=%H");
+        stashRef = git(workspacePath, ["stash", "list", "-1", "--format=%H"]);
       } catch {
         // stash ref is optional — failing to get it is not critical
         stashRef = "stash@{0}";

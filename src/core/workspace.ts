@@ -29,6 +29,19 @@ export const WorkspaceStatus = {
 } as const;
 export type WorkspaceStatus = (typeof WorkspaceStatus)[keyof typeof WorkspaceStatus];
 
+/** Error thrown when a workspace lookup by (cid, agentId) fails. */
+export class WorkspaceNotFoundError extends Error {
+  readonly cid: string;
+  readonly agentId: string;
+
+  constructor(cid: string, agentId: string) {
+    super(`Workspace for '${cid}' (agent '${agentId}') not found`);
+    this.name = "WorkspaceNotFoundError";
+    this.cid = cid;
+    this.agentId = agentId;
+  }
+}
+
 /** Information about a workspace. */
 export interface WorkspaceInfo {
   /** The contribution CID that was checked out into this workspace. */

@@ -25,6 +25,7 @@ import {
 } from "../models.js";
 import type { PolicyEnforcementResult } from "../policy-enforcer.js";
 import { PolicyEnforcer } from "../policy-enforcer.js";
+import { attachRoutingSignatureToInput } from "../routing-provenance.js";
 import type { ContributionStore } from "../store.js";
 import { toUtcIso } from "../time.js";
 import type { AgentOverrides } from "./agent.js";
@@ -250,6 +251,13 @@ function resolveMode(
   if (explicitMode !== undefined) return explicitMode;
   if (deps.contract?.mode !== undefined) return deps.contract.mode;
   return CM.Evaluation;
+}
+
+/** Attach runtime routing signature when orchestrator token is present. */
+function withRuntimeRoutingSignature(input: ContributionInput): ContributionInput {
+  const routingToken = process.env.GROVE_ROUTING_TOKEN;
+  if (routingToken === undefined) return input;
+  return attachRoutingSignatureToInput(input, routingToken);
 }
 
 // ---------------------------------------------------------------------------
@@ -918,7 +926,7 @@ export async function contributeOperation(
       ownsDurableReservation = true;
     }
 
-    const contributionInput: ContributionInput = {
+    const unsignedContributionInput: ContributionInput = {
       kind: input.kind,
       mode,
       summary: input.summary,
@@ -932,6 +940,7 @@ export async function contributeOperation(
       agent,
       createdAt,
     };
+    const contributionInput = withRuntimeRoutingSignature(unsignedContributionInput);
 
     const contribution = createContribution(contributionInput);
 

@@ -159,12 +159,17 @@ export class DefaultFrontierCalculator implements FrontierCalculator {
     const storeContributions = await this.store.list(storeQuery);
     const filtered = storeContributions.filter((c) => !isEphemeral(c) && matchesFilters(c, query));
 
-    // Fetch only contributions with relations targeting the filtered set,
-    // rather than scanning the entire store. When no filters are applied,
+    // Fetch only contributions with relations targeting the filtered set
+    // whenever in-memory filtering reduced the candidate set OR store-level
+    // filters are active. This avoids scanning every stored contribution for
+    // context-only filters while preserving semantics for indexed filters.
+    // When the candidate set is unchanged and no store-level filters exist,
     // storeContributions already contains everything — no second query needed.
     const filteredCids = filtered.map((c) => c.cid);
     let allContributions: readonly Contribution[];
-    if (Object.keys(storeQuery).length > 0) {
+    const hasStoreFilters = Object.keys(storeQuery).length > 0;
+    const filteredSubset = filtered.length !== storeContributions.length;
+    if (hasStoreFilters || filteredSubset) {
       const sources = await this.store.incomingSources(filteredCids);
       if (query?.sessionId !== undefined) {
         // Session-scoped: restrict incoming sources to the same session's
