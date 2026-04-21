@@ -364,10 +364,15 @@ export class SpawnManager {
     // that explicitly disabled delivery should also refuse to spawn — that's
     // how the operator signaled "this session cannot deliver."
     //
-    // `pending` is only meaningful when a runtime exists to eventually
-    // resolve it via setWsBridge. With no runtime (tmux-only harnesses),
-    // nobody will ever clear pending, so waiting would deadlock. Skip
-    // the wait in that case — there is no IPC surface to gate.
+    // `pending` is fatal for multi-role regardless of runtime: the whole
+    // point of the state is "cross-role IPC is contractually required but
+    // not yet wired." With no runtime, there's no way to ever wire it —
+    // waiting would deadlock, and skipping the wait would silently spawn
+    // agents whose handoffs will never deliver. Fail closed. A tmux-only
+    // harness that genuinely wants multi-role without IPC must explicitly
+    // call markDeliveryDisabled (to flip the state to a loud-failure
+    // mode) or markDeliveryReady (to assert IPC is not needed); pending
+    // itself is never a valid green-light for multi-role spawns.
     const isMultiRole = (this.topology?.roles.length ?? 0) > 1;
     if (this.deliveryState === "disabled" && isMultiRole) {
       throw new Error(
@@ -376,7 +381,14 @@ export class SpawnManager {
         }. Restart the TUI after Nexus is reachable.`,
       );
     }
-    if (this.deliveryState === "pending" && isMultiRole && this.agentRuntime !== undefined) {
+    if (this.deliveryState === "pending" && isMultiRole) {
+      if (this.agentRuntime === undefined) {
+        throw new Error(
+          `Refusing to spawn ${roleId}: Multi-role topology requires a runtime-backed NexusWsBridge, ` +
+            `but no AgentRuntime is configured. Tmux-only harnesses must call ` +
+            `markDeliveryDisabled() or markDeliveryReady() explicitly before spawning.`,
+        );
+      }
       try {
         await this.waitForDelivery();
       } catch (err) {
