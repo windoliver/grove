@@ -122,8 +122,16 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           resumeScopeIdRef.current = active.id; // captured for mount effect
         }
       }
+      // startOnRunning only makes sense when there is actually a session to
+      // resume. A fresh grove with no active session and startOnRunning=true
+      // would drop straight into the running view with no agents spawned and
+      // no goal — silently stuck. Fall back to the normal new-session flow
+      // (goal-input if topology is known, otherwise preset-select) whenever
+      // there is nothing running to reattach to.
+      const hasResumableSession = resumeSessionId !== undefined;
+      const effectiveResume = startOnRunning && hasResumableSession;
       return {
-        screen: startOnRunning
+        screen: effectiveResume
           ? ("running" as const)
           : topology
             ? ("goal-input" as const) // Has topology → goal first, detect later
