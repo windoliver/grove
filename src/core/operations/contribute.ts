@@ -252,6 +252,47 @@ function resolveMode(
   return CM.Evaluation;
 }
 
+/**
+ * Reject caller-supplied agent overrides that conflict with runtime-issued
+ * identity in orchestrated sessions.
+ */
+function validateRuntimeAgentIdentity(
+  overrides: AgentOverrides | undefined,
+): OperationResult<void> | undefined {
+  const runtimeAgentId = process.env.GROVE_AGENT_ID;
+  const runtimeRole = process.env.GROVE_AGENT_ROLE;
+  if (runtimeAgentId === undefined && runtimeRole === undefined) return undefined;
+
+  if (runtimeAgentId !== undefined && overrides?.agentId !== undefined) {
+    if (overrides.agentId !== runtimeAgentId) {
+      return validationErr(
+        `agent.agentId override '${overrides.agentId}' conflicts with runtime identity '${runtimeAgentId}'`,
+      );
+    }
+  }
+  if (runtimeRole !== undefined && overrides?.role !== undefined) {
+    if (overrides.role !== runtimeRole) {
+      return validationErr(
+        `agent.role override '${overrides.role}' conflicts with runtime identity '${runtimeRole}'`,
+      );
+    }
+  }
+  return undefined;
+}
+
+/** Pin resolved identity to runtime-issued values when present. */
+function bindRuntimeAgentIdentity(
+  agent: ReturnType<typeof resolveAgent>,
+): ReturnType<typeof resolveAgent> {
+  const runtimeAgentId = process.env.GROVE_AGENT_ID;
+  const runtimeRole = process.env.GROVE_AGENT_ROLE;
+  return {
+    ...agent,
+    ...(runtimeAgentId !== undefined ? { agentId: runtimeAgentId } : {}),
+    ...(runtimeRole !== undefined ? { role: runtimeRole } : {}),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Idempotency cache
 // ---------------------------------------------------------------------------
@@ -774,7 +815,11 @@ export async function contributeOperation(
     const relations = input.relations ?? [];
     const tags = input.tags ?? [];
 
-    const agent = resolveAgent(input.agent);
+    const identityErr = validateRuntimeAgentIdentity(input.agent);
+    if (identityErr !== undefined) {
+      return identityErr as OperationResult<ContributeResult>;
+    }
+    const agent = bindRuntimeAgentIdentity(resolveAgent(input.agent));
     const mode = resolveMode(input.mode, deps);
     // Normalize to UTC Z-format so lexicographic ORDER BY works without datetime().
     const createdAt = toUtcIso(input.createdAt ?? new Date().toISOString());

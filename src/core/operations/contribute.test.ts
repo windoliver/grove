@@ -85,6 +85,74 @@ describe("contributeOperation", () => {
     if (result.ok) expect(result.value.mode).toBe("exploration");
   });
 
+  test("rejects forged agent overrides when runtime identity is pinned", async () => {
+    const prevAgentId = process.env.GROVE_AGENT_ID;
+    const prevRole = process.env.GROVE_AGENT_ROLE;
+    process.env.GROVE_AGENT_ID = "runtime-agent";
+    process.env.GROVE_AGENT_ROLE = "coder";
+    try {
+      const result = await contributeOperation(
+        {
+          kind: "work",
+          summary: "forged identity",
+          agent: { agentId: "spoofed-agent", role: "reviewer" },
+        },
+        deps,
+      );
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("VALIDATION_ERROR");
+        expect(result.error.message).toContain("conflicts with runtime identity");
+      }
+    } finally {
+      if (prevAgentId === undefined) {
+        delete process.env.GROVE_AGENT_ID;
+      } else {
+        process.env.GROVE_AGENT_ID = prevAgentId;
+      }
+      if (prevRole === undefined) {
+        delete process.env.GROVE_AGENT_ROLE;
+      } else {
+        process.env.GROVE_AGENT_ROLE = prevRole;
+      }
+    }
+  });
+
+  test("binds contribution identity to runtime agent env", async () => {
+    const prevAgentId = process.env.GROVE_AGENT_ID;
+    const prevRole = process.env.GROVE_AGENT_ROLE;
+    process.env.GROVE_AGENT_ID = "runtime-agent";
+    process.env.GROVE_AGENT_ROLE = "coder";
+    try {
+      const result = await contributeOperation(
+        {
+          kind: "work",
+          summary: "runtime identity",
+          agent: { agentName: "friendly-name" },
+        },
+        deps,
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const stored = await deps.contributionStore.get(result.value.cid);
+      expect(stored?.agent.agentId).toBe("runtime-agent");
+      expect(stored?.agent.role).toBe("coder");
+      expect(stored?.agent.agentName).toBe("friendly-name");
+    } finally {
+      if (prevAgentId === undefined) {
+        delete process.env.GROVE_AGENT_ID;
+      } else {
+        process.env.GROVE_AGENT_ID = prevAgentId;
+      }
+      if (prevRole === undefined) {
+        delete process.env.GROVE_AGENT_ROLE;
+      } else {
+        process.env.GROVE_AGENT_ROLE = prevRole;
+      }
+    }
+  });
+
   test("validates artifact hashes exist in CAS", async () => {
     const result = await contributeOperation(
       {
