@@ -825,4 +825,43 @@ describe("NexusWsBridge", () => {
     expect(markDelivered).not.toHaveBeenCalled();
     bridge.close();
   });
+
+  // --- connect() readiness ---
+
+  test("connect resolves when every role registers successfully", async () => {
+    globalThis.fetch = (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
+
+    const bridge = new NexusWsBridge(makeBridgeOpts());
+    await expect(bridge.connect(1000)).resolves.toBeUndefined();
+    bridge.close();
+  });
+
+  test("connect rejects when any role fails to register", async () => {
+    // First call (coder) returns 200, second (reviewer) returns 500.
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response("", { status: calls === 1 ? 200 : 500 });
+    }) as unknown as typeof fetch;
+
+    const bridge = new NexusWsBridge(makeBridgeOpts());
+    await expect(bridge.connect(1000)).rejects.toThrow(/reviewer: HTTP 500/);
+    bridge.close();
+  });
+
+  test("connect rejects with timeout when registration hangs", async () => {
+    globalThis.fetch = ((_url: string, init?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        // Reject when the AbortSignal fires; otherwise never settle.
+        init?.signal?.addEventListener("abort", () => {
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+      })) as unknown as typeof fetch;
+
+    const bridge = new NexusWsBridge(makeBridgeOpts());
+    await expect(bridge.connect(50)).rejects.toThrow(/timeout after 50ms/);
+    bridge.close();
+  });
 });

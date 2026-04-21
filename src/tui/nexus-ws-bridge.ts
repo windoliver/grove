@@ -92,20 +92,19 @@ export class NexusWsBridge {
   }
 
   /**
-   * Provision agents and start SSE streams. Resolves when at least one
-   * role has successfully registered with Nexus — that proves the
-   * endpoint is reachable AND the API key is accepted. Rejects if every
-   * registration fails, so callers can treat the bridge as a startup
-   * invariant and surface a persistent error rather than entering a
-   * silent no-delivery state.
+   * Provision agents for all topology roles and prepare SSE streams.
+   * Resolves only when EVERY role has successfully registered with Nexus
+   * (not just one — a single-role quorum would mask partial outages
+   * where some roles become undeliverable). Rejects on first failing
+   * role or on overall timeout so callers can treat the bridge as a
+   * startup invariant and avoid a silent no-delivery state.
    */
-  async connect(): Promise<void> {
+  async connect(timeoutMs = 10000): Promise<void> {
     if (this.closed) return;
-    const ok = await this.provisionAgents();
-    if (!ok) {
-      throw new Error(
-        `NexusWsBridge: registration failed for every role (url=${this.opts.nexusUrl})`,
-      );
+    const failures = await this.provisionAgents(timeoutMs);
+    if (failures.length > 0) {
+      const detail = failures.map((f) => `${f.role}: ${f.reason}`).join("; ");
+      throw new Error(`NexusWsBridge: registration failed for role(s) [${detail}]`);
     }
   }
 
@@ -146,29 +145,49 @@ export class NexusWsBridge {
   }
 
   /** Register agents in Nexus so their inboxes are provisioned. */
-  /** Returns true if at least one role registration succeeded (HTTP 2xx). */
-  private async provisionAgents(): Promise<boolean> {
-    let anyOk = false;
-    for (const role of this.opts.topology.roles) {
-      try {
-        const resp = await fetch(`${this.opts.nexusUrl}/api/v2/agents/register`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${this.opts.apiKey}`,
-          },
-          body: JSON.stringify({
-            agent_id: role.name,
-            name: role.name,
-            capabilities: [role.name],
-          }),
-        });
-        if (resp.ok) anyOk = true;
-      } catch {
-        // Best-effort — agent may already be registered
-      }
-    }
-    return anyOk;
+  /**
+   * Registers every topology role with Nexus, in parallel, under a shared
+   * timeout. Returns the list of failures (empty when all succeeded). The
+   * caller uses an empty return to gate "bridge ready" — any non-2xx,
+   * network error, or timeout for any role is a partial outage and must
+   * block startup.
+   */
+  private async provisionAgents(
+    timeoutMs: number,
+  ): Promise<Array<{ role: string; reason: string }>> {
+    const deadline = AbortSignal.timeout(timeoutMs);
+    const results = await Promise.all(
+      this.opts.topology.roles.map(async (role) => {
+        try {
+          const resp = await fetch(`${this.opts.nexusUrl}/api/v2/agents/register`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${this.opts.apiKey}`,
+            },
+            body: JSON.stringify({
+              agent_id: role.name,
+              name: role.name,
+              capabilities: [role.name],
+            }),
+            signal: deadline,
+          });
+          if (!resp.ok) {
+            return { role: role.name, reason: `HTTP ${resp.status}` };
+          }
+          return null;
+        } catch (err) {
+          const reason =
+            err instanceof Error
+              ? err.name === "TimeoutError" || err.name === "AbortError"
+                ? `timeout after ${timeoutMs}ms`
+                : err.message
+              : String(err);
+          return { role: role.name, reason };
+        }
+      }),
+    );
+    return results.filter((r): r is { role: string; reason: string } => r !== null);
   }
 
   private async startSseForRole(role: string): Promise<void> {
