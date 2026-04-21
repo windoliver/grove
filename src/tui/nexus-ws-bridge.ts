@@ -665,14 +665,27 @@ export class NexusWsBridge {
       const byIpc = handoffs.find((h) => h.ipcMessageId === ipcMessageId);
       if (byIpc) return byIpc.handoffId;
 
-      // Secondary: deterministic composite key. Contributions carry a
-      // unique sourceCid; (toRole, fromRole, sourceCid) is unique per
-      // handoff. This replaces the older "latest by sender" fallback,
-      // which could cross-match under concurrent delivery.
+      // Secondary: deterministic composite key with STATUS constraint.
+      // Contributions carry a unique sourceCid, but multi-session Nexus
+      // deployments can have historical records sharing a sourceCid
+      // from prior sessions. Restrict the fallback to unresolved
+      // statuses (pending_pickup / delivered) — terminal records
+      // (replied/expired/dead_lettered) are by definition not the one
+      // this event is trying to transition, so excluding them prevents
+      // cross-session incorrect mutations. If multiple candidates
+      // survive the filter, pick the most recent by createdAt — the
+      // only active in-flight handoff for this (fromRole, toRole,
+      // sourceCid, unresolved) tuple.
       if (sender && sourceCid) {
-        const bySourceCid = handoffs.find(
-          (h) => h.fromRole === sender && h.sourceCid === sourceCid,
-        );
+        const candidates = handoffs
+          .filter(
+            (h) =>
+              h.fromRole === sender &&
+              h.sourceCid === sourceCid &&
+              (h.status === "pending_pickup" || h.status === "delivered"),
+          )
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        const bySourceCid = candidates[0];
         if (bySourceCid) return bySourceCid.handoffId;
       }
 
@@ -892,13 +905,16 @@ export class NexusWsBridge {
     targetRole: string,
     reason: string,
   ): void {
-    // Refuse new enqueues once shutdown has begun — the final flush
-    // otherwise drains a snapshot then clears the live array, silently
-    // losing entries appended mid-flush. Log loudly so operators see
-    // the discard path.
-    if (this.draining || this.closed) {
+    // Refuse new enqueues only after close() — the drain-until-no-
+    // progress loop in flushPendingDeadLettersThenLog is robust against
+    // late enqueues during draining (it terminates when a pass makes
+    // no progress, not when size is stable), so entries appended
+    // while draining still get a fair drain attempt before shutdown
+    // clears them. After closed=true, no drain will run, so reject
+    // loudly.
+    if (this.closed) {
       process.stderr.write(
-        `[NexusWsBridge] DROPPED pending dead-letter (shutdown in progress) ipcMessageId=${retryContext.ipcMessageId} role=${targetRole}: ${reason}\n`,
+        `[NexusWsBridge] DROPPED pending dead-letter (bridge closed) ipcMessageId=${retryContext.ipcMessageId} role=${targetRole}: ${reason}\n`,
       );
       return;
     }
@@ -979,19 +995,22 @@ export class NexusWsBridge {
     }
     const store = this.opts.handoffStore;
     if (store) {
-      // Drain until stable or deadline: on a normal shutdown the queue
-      // size monotonically decreases as entries resolve or exhaust; a
-      // stable snapshot (same size before and after a drain pass) means
-      // nothing more will be reconciled without more time, so break.
+      // Drain until no progress or deadline. Track progress via the
+      // bool returned by doDrain: if a pass neither resolved nor
+      // exhausted any entries, no further passes will either (retry
+      // budget hasn't advanced yet), so break. Using a progress bool
+      // (rather than queue size) is robust against concurrent enqueue
+      // from in-flight readAndPush — a new entry doesn't falsely mask
+      // the "no progress" signal by keeping size stable.
       while (Date.now() < deadline && this.pendingDeadLetters.length > 0) {
-        const sizeBefore = this.pendingDeadLetters.length;
         this.pendingDlqDrainInFlight = true;
+        let madeProgress = false;
         try {
-          await this.doDrainPendingDeadLetters(store);
+          madeProgress = await this.doDrainPendingDeadLetters(store);
         } finally {
           this.pendingDlqDrainInFlight = false;
         }
-        if (this.pendingDeadLetters.length >= sizeBefore) break;
+        if (!madeProgress) break;
       }
     }
     for (const entry of this.pendingDeadLetters) {
@@ -1020,17 +1039,22 @@ export class NexusWsBridge {
     }
   }
 
+  /** Returns true if the pass resolved or exhausted any entries. */
   private async doDrainPendingDeadLetters(
     store: HandoffStore,
-  ): Promise<void> {
+  ): Promise<boolean> {
     // Snapshot + iterate; mutations during async await are safe because
     // we filter the live list at the end rather than index in place.
+    // Note: no `this.closed` short-circuit here — a close-time final
+    // drain explicitly needs to run after closed=true, and the timer
+    // callback that could re-enter here is cleared synchronously
+    // before flushPendingDeadLettersThenLog so no concurrent invocation
+    // can occur.
     const entries = [...this.pendingDeadLetters];
     const resolved = new Set<string>();
     const exhausted = new Set<string>();
 
     for (const entry of entries) {
-      if (this.closed) return;
       entry.attempts += 1;
       entry.lastAttemptAt = Date.now();
 
@@ -1065,10 +1089,11 @@ export class NexusWsBridge {
       }
     }
 
-    if (resolved.size === 0 && exhausted.size === 0) return;
+    if (resolved.size === 0 && exhausted.size === 0) return false;
     this.pendingDeadLetters = this.pendingDeadLetters.filter(
       (e) => !resolved.has(e.ipcMessageId) && !exhausted.has(e.ipcMessageId),
     );
+    return true;
   }
 
   private async readAndPush(
@@ -1079,6 +1104,14 @@ export class NexusWsBridge {
     ipcMessageId?: string,
   ): Promise<void> {
     try {
+      // Shutdown teardown guard: refuse to push or retry once shutdown
+      // has begun. Without this, an in-flight read that completed
+      // sys_read before SSE abort could still call runtime.send against
+      // a torn-down session, AND a subsequent runtime.send failure
+      // would enqueue a dead-letter that gets dropped by the
+      // `draining` guard in enqueuePendingDeadLetter — so the real
+      // failure is silently lost. Exit early.
+      if (this.draining || this.closed) return;
       // Retry on 429 (rate limit) — the inbox read is critical for IPC delivery.
       let resp: Response | undefined;
       for (let attempt = 0; attempt < 5; attempt++) {
@@ -1207,6 +1240,13 @@ export class NexusWsBridge {
       const retryContext = ipcMessageId
         ? { ipcMessageId, sender: msgSender, sourceCid: cid }
         : undefined;
+
+      // Second teardown guard: the resolveHandoffIdForMessage await
+      // above can run during shutdown between the entry guard and
+      // runtime.send. Re-check before actually dispatching so a
+      // racing shutdown() aborts this path cleanly instead of pushing
+      // to a torn-down runtime.
+      if (this.draining || this.closed) return;
 
       void this.opts.runtime
         .send(session, notification)
