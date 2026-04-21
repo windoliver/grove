@@ -153,13 +153,15 @@ export class SpawnManager {
 
   /**
    * Wait until the bridge transitions to "ready" or "disabled". Default
-   * timeout (60s) covers the full bridge init retry budget — 4 attempts
-   * at up to 10s each plus exponential backoff (0.5+1+2+4s) totals ≤47.5s
-   * in the worst case. A spawn waiter must not reject before the bridge
-   * has had a chance to complete its retries, or we'd mark delivery
-   * failed spuriously.
+   * timeout (120s) covers the full bridge init retry budget plus margin.
+   * One connect() attempt = provisionAgents(10s) + probeStreams(10s) =
+   * 20s; 4 attempts × 20s + exp backoff (0.5+1+2s = 3.5s) = ~83.5s worst
+   * case. The timer here is only a safety net — bridge init always
+   * resolves or rejects (finite retries, bounded fetches), so spawn
+   * waiters normally settle via setWsBridge/markDeliveryDisabled, not
+   * this timeout.
    */
-  private async waitForDelivery(timeoutMs = 60000): Promise<void> {
+  private async waitForDelivery(timeoutMs = 120000): Promise<void> {
     if (this.deliveryState === "ready") return;
     if (this.deliveryState === "disabled") {
       throw new Error(`Inter-agent delivery disabled: ${this.deliveryDisabledReason ?? "unknown"}`);

@@ -324,16 +324,19 @@ export class NexusWsBridge {
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-    // A cycle only counts as healthy once we've actually parsed an SSE
-    // frame (event delimiter observed). An endpoint that accepts the
-    // connection and immediately closes with done=true would otherwise
-    // pass as healthy, resetting the unhealthy counter every 5s and
-    // preventing onRoleUnhealthy from ever firing on a flapping stream.
-    let sawEvent = false;
+    // Transport health ≠ message arrival. A valid SSE stream may be
+    // quiet for long stretches, emitting only keep-alive comments
+    // (": ping\n") or nothing at all. Count the cycle healthy the
+    // moment the reader yields any bytes — that proves the TCP pipe
+    // is flowing. An immediate EOF (done=true on the first read
+    // without prior bytes) still returns false, which is the one
+    // case the unhealthy counter needs to catch.
+    let sawBytes = false;
 
     while (!this.closed) {
       const { done, value } = await reader.read();
       if (done) break;
+      if (value && value.byteLength > 0) sawBytes = true;
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
@@ -350,11 +353,10 @@ export class NexusWsBridge {
           this.handleEvent(role, eventType, eventData);
           eventType = null;
           eventData = null;
-          sawEvent = true;
         }
       }
     }
-    return sawEvent;
+    return sawBytes;
   }
 
   private handleEvent(role: string, eventType: string | null, raw: string): void {
