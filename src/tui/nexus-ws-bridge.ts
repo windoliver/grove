@@ -320,10 +320,16 @@ export class NexusWsBridge {
       }
       if (!this.closed && !signal.aborted) {
         await new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, 5000);
           // Wake early on abort so torn-down roles don't linger in the
-          // reconnect backoff.
-          const onAbort = () => {
+          // reconnect backoff. When the timer fires the normal way, we
+          // must remove the abort listener — otherwise each reconnect
+          // cycle leaks a closure on the long-lived role signal.
+          let onAbort: (() => void) | undefined;
+          const timer = setTimeout(() => {
+            if (onAbort) signal.removeEventListener("abort", onAbort);
+            resolve();
+          }, 5000);
+          onAbort = () => {
             clearTimeout(timer);
             resolve();
           };
@@ -348,99 +354,115 @@ export class NexusWsBridge {
     // Forward role-level cancellation (unregister / re-register) into the
     // per-connection abort so the in-flight fetch and streaming read wind
     // down promptly instead of waiting for the idle watchdog.
+    //
+    // Listener MUST be removed when the attempt ends. `{ once: true }` only
+    // clears the listener after it fires; on every normal reconnect cycle
+    // the listener is stranded on the long-lived role signal. Over many
+    // reconnects that accumulates closures and amplifies the abort fan-out
+    // at teardown. Track the handler and remove it in the finally block.
+    let forwardAbort: (() => void) | undefined;
     if (roleSignal) {
       if (roleSignal.aborted) ac.abort();
-      else roleSignal.addEventListener("abort", () => ac.abort(), { once: true });
-    }
-    // Open-phase deadline — a half-open TCP/TLS handshake or hung
-    // backend would otherwise block the reconnect loop indefinitely
-    // and prevent onRoleUnhealthy from ever firing.
-    const openMs = 15000;
-    const openTimer = setTimeout(() => ac.abort(), openMs);
-    const url = `${this.opts.nexusUrl}/api/v2/ipc/stream/${encodeURIComponent(role)}`;
-
-    let resp: Response;
-    try {
-      resp = await fetch(url, {
-        headers: {
-          Authorization: `Bearer ${this.opts.apiKey}`,
-          Accept: "text/event-stream",
-        },
-        signal: ac.signal,
-      });
-    } finally {
-      clearTimeout(openTimer);
-    }
-
-    if (!resp.ok || !resp.body) return false;
-    // Same invariant the startup probe enforces: a 200 with wrong
-    // content-type is not a valid stream. Without this check the
-    // reconnect loop could keep marking misrouted responses as
-    // "healthy cycles" and onRoleUnhealthy would never fire — exactly
-    // the silent post-start outage the migration is supposed to surface.
-    const ctype = resp.headers.get("content-type") ?? "";
-    if (!ctype.toLowerCase().includes("text/event-stream")) return false;
-
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    // Transport health ≠ message arrival. A valid SSE stream may be
-    // quiet for long stretches, emitting only keep-alive comments
-    // (": ping\n") or nothing at all. Count the cycle healthy the
-    // moment the reader yields any bytes — that proves the TCP pipe
-    // is flowing. An immediate EOF (done=true on the first read
-    // without prior bytes) still returns false, which is the one
-    // case the unhealthy counter needs to catch.
-    let sawBytes = false;
-    // Idle-read watchdog — if the stream produces no bytes for this
-    // long, abort and treat the cycle as unhealthy. SSE keep-alive
-    // (": ping\n\n") typically fires every 15–30s; 60s idle is well
-    // outside normal operation and catches blackholed proxies.
-    const idleReadMs = 60000;
-    // Track whether the abort was triggered by our idle watchdog.
-    // When the watchdog fires mid-stream, sawBytes may already be
-    // true from an earlier heartbeat, but the stream is still stalled
-    // — we must report the cycle as unhealthy so the consecutive-
-    // failure counter advances and onRoleUnhealthy fires eventually.
-    let abortedByWatchdog = false;
-
-    while (!this.closed) {
-      const idleTimer = setTimeout(() => {
-        abortedByWatchdog = true;
-        ac.abort();
-      }, idleReadMs);
-      let readResult: ReadableStreamReadResult<Uint8Array>;
-      try {
-        readResult = await reader.read();
-      } catch {
-        clearTimeout(idleTimer);
-        return abortedByWatchdog ? false : sawBytes;
-      } finally {
-        clearTimeout(idleTimer);
+      else {
+        forwardAbort = () => ac.abort();
+        roleSignal.addEventListener("abort", forwardAbort, { once: true });
       }
-      const { done, value } = readResult;
-      if (done) break;
-      if (value && value.byteLength > 0) sawBytes = true;
+    }
+    try {
+      // Open-phase deadline — a half-open TCP/TLS handshake or hung
+      // backend would otherwise block the reconnect loop indefinitely
+      // and prevent onRoleUnhealthy from ever firing.
+      const openMs = 15000;
+      const openTimer = setTimeout(() => ac.abort(), openMs);
+      const url = `${this.opts.nexusUrl}/api/v2/ipc/stream/${encodeURIComponent(role)}`;
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
+      let resp: Response;
+      try {
+        resp = await fetch(url, {
+          headers: {
+            Authorization: `Bearer ${this.opts.apiKey}`,
+            Accept: "text/event-stream",
+          },
+          signal: ac.signal,
+        });
+      } finally {
+        clearTimeout(openTimer);
+      }
 
-      let eventType: string | null = null;
-      let eventData: string | null = null;
-      for (const line of lines) {
-        if (line.startsWith("event: ")) {
-          eventType = line.slice(7);
-        } else if (line.startsWith("data: ")) {
-          eventData = line.slice(6);
-        } else if (line === "" && eventData) {
-          this.handleEvent(role, eventType, eventData);
-          eventType = null;
-          eventData = null;
+      if (!resp.ok || !resp.body) return false;
+      // Same invariant the startup probe enforces: a 200 with wrong
+      // content-type is not a valid stream. Without this check the
+      // reconnect loop could keep marking misrouted responses as
+      // "healthy cycles" and onRoleUnhealthy would never fire — exactly
+      // the silent post-start outage the migration is supposed to surface.
+      const ctype = resp.headers.get("content-type") ?? "";
+      if (!ctype.toLowerCase().includes("text/event-stream")) return false;
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      // Transport health ≠ message arrival. A valid SSE stream may be
+      // quiet for long stretches, emitting only keep-alive comments
+      // (": ping\n") or nothing at all. Count the cycle healthy the
+      // moment the reader yields any bytes — that proves the TCP pipe
+      // is flowing. An immediate EOF (done=true on the first read
+      // without prior bytes) still returns false, which is the one
+      // case the unhealthy counter needs to catch.
+      let sawBytes = false;
+      // Idle-read watchdog — if the stream produces no bytes for this
+      // long, abort and treat the cycle as unhealthy. SSE keep-alive
+      // (": ping\n\n") typically fires every 15–30s; 60s idle is well
+      // outside normal operation and catches blackholed proxies.
+      const idleReadMs = 60000;
+      // Track whether the abort was triggered by our idle watchdog.
+      // When the watchdog fires mid-stream, sawBytes may already be
+      // true from an earlier heartbeat, but the stream is still stalled
+      // — we must report the cycle as unhealthy so the consecutive-
+      // failure counter advances and onRoleUnhealthy fires eventually.
+      let abortedByWatchdog = false;
+
+      while (!this.closed) {
+        const idleTimer = setTimeout(() => {
+          abortedByWatchdog = true;
+          ac.abort();
+        }, idleReadMs);
+        let readResult: ReadableStreamReadResult<Uint8Array>;
+        try {
+          readResult = await reader.read();
+        } catch {
+          clearTimeout(idleTimer);
+          return abortedByWatchdog ? false : sawBytes;
+        } finally {
+          clearTimeout(idleTimer);
+        }
+        const { done, value } = readResult;
+        if (done) break;
+        if (value && value.byteLength > 0) sawBytes = true;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        let eventType: string | null = null;
+        let eventData: string | null = null;
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            eventType = line.slice(7);
+          } else if (line.startsWith("data: ")) {
+            eventData = line.slice(6);
+          } else if (line === "" && eventData) {
+            this.handleEvent(role, eventType, eventData);
+            eventType = null;
+            eventData = null;
+          }
         }
       }
+      return sawBytes;
+    } finally {
+      if (roleSignal && forwardAbort) {
+        roleSignal.removeEventListener("abort", forwardAbort);
+      }
     }
-    return sawBytes;
   }
 
   private handleEvent(role: string, eventType: string | null, raw: string): void {

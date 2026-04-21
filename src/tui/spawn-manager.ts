@@ -47,6 +47,12 @@ interface SpawnRecord {
   readonly claimId: string;
   readonly targetRef: string;
   readonly agentId: string;
+  /**
+   * Role name this spawn was registered under. Distinct from `agentId`
+   * (which is the spawnId `role-timestamp`) — the bridge is role-keyed,
+   * so kill() needs the role name to cancel the right SSE loop.
+   */
+  readonly role?: string;
 }
 
 /** Result of a spawn attempt. */
@@ -587,6 +593,7 @@ export class SpawnManager {
       claimId: "",
       targetRef: spawnId,
       agentId: spawnId,
+      role: roleId,
     });
     // Store the actual runtime session ID so reconcile() can correctly
     // match stored records to live acpx sessions. Without this, reconcile
@@ -646,7 +653,13 @@ export class SpawnManager {
     if (tracked) {
       this.spawnRecords.delete(killedAgentId);
       this.sessionStore?.remove(killedAgentId);
-      this.wsBridge?.unregisterSession(killedAgentId);
+      // Bridge is role-keyed (NexusWsBridge tracks sessions + per-role
+      // AbortControllers by role name), but `killedAgentId` is the
+      // spawnId (`role-timestamp`). Passing spawnId here would miss the
+      // registered entry, leave the SSE loop running, and allow the
+      // stale loop to fire onRoleUnhealthy or consume events after kill.
+      const roleKey = tracked.role ?? agentSession?.role ?? killedAgentId;
+      this.wsBridge?.unregisterSession(roleKey);
       // AcpSessionStore is keyed by the runtime's agentSession.id (e.g.
       // `grove-coder-0-abc123`), which may differ from `killedAgentId`
       // (the spawn-manager's agentId key). Prefer the captured
