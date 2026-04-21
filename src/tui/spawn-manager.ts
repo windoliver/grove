@@ -273,11 +273,27 @@ export class SpawnManager {
    * Call before spawning when the topology is known (e.g. after preset selection).
    */
   setTopology(topology: AgentTopology | undefined): void {
+    const prevRoleCount = this.topology?.roles.length ?? 0;
     this.topology = topology;
+    const newRoleCount = topology?.roles.length ?? 0;
+
+    // A session change to single-role or undefined topology clears a
+    // prior "disabled" state: that disable was scoped to a previous
+    // multi-role topology's bridge requirement, and a single-role
+    // session doesn't need cross-role IPC. Without this reset, a
+    // transient bridge fault during a multi-role session would
+    // permanently poison all later single-role sessions on the same
+    // manager until process restart.
+    if (this.deliveryState === "disabled" && newRoleCount <= 1 && prevRoleCount !== newRoleCount) {
+      this.deliveryState = "ready";
+      this.deliveryDisabledReason = undefined;
+    }
+
     // Multi-role topology means cross-role IPC is expected — the bridge
     // must be attached before spawning. Transition to pending so spawn()
     // waits for setWsBridge / markDeliveryDisabled to settle. Guards:
-    //   - Never downgrade "disabled" (operator warning already fired).
+    //   - Never downgrade "disabled" (operator warning already fired
+    //     for a multi-role session; don't mask it).
     //   - Never downgrade when a bridge is already attached — topology
     //     is often applied AFTER bridge init completes in the normal
     //     flow, and re-pending would stall every spawn its full 120s
@@ -304,11 +320,15 @@ export class SpawnManager {
   ): Promise<SpawnResult> {
     debugLog("spawn", `role=${roleId} command=${command}`);
     // Fail closed on delivery state:
-    //   disabled → always refuse (operator warned; don't accumulate work).
+    //   disabled → refuse ONLY when the current topology actually
+    //              needs cross-role IPC (multi-role). A single-role
+    //              topology arriving after a prior multi-role disable
+    //              has no IPC dependency; spawn should proceed.
     //   pending  → wait for setWsBridge / markDeliveryDisabled to settle.
     //   ready    → spawn. Default state is "ready"; multi-role topology
     //              flips it to pending in setTopology.
-    if (this.deliveryState === "disabled") {
+    const needsDelivery = (this.topology?.roles.length ?? 0) > 1;
+    if (this.deliveryState === "disabled" && needsDelivery) {
       throw new Error(
         `Refusing to spawn ${roleId}: Inter-agent delivery disabled: ${
           this.deliveryDisabledReason ?? "unknown"

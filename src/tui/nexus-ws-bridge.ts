@@ -348,15 +348,24 @@ export class NexusWsBridge {
     // (": ping\n\n") typically fires every 15–30s; 60s idle is well
     // outside normal operation and catches blackholed proxies.
     const idleReadMs = 60000;
+    // Track whether the abort was triggered by our idle watchdog.
+    // When the watchdog fires mid-stream, sawBytes may already be
+    // true from an earlier heartbeat, but the stream is still stalled
+    // — we must report the cycle as unhealthy so the consecutive-
+    // failure counter advances and onRoleUnhealthy fires eventually.
+    let abortedByWatchdog = false;
 
     while (!this.closed) {
-      const idleTimer = setTimeout(() => ac.abort(), idleReadMs);
+      const idleTimer = setTimeout(() => {
+        abortedByWatchdog = true;
+        ac.abort();
+      }, idleReadMs);
       let readResult: ReadableStreamReadResult<Uint8Array>;
       try {
         readResult = await reader.read();
       } catch {
         clearTimeout(idleTimer);
-        return sawBytes;
+        return abortedByWatchdog ? false : sawBytes;
       } finally {
         clearTimeout(idleTimer);
       }
