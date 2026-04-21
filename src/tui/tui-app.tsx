@@ -427,6 +427,14 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
       process.stderr.write(
         `[grove] WARNING: Nexus bridge not initialized (${reason}). Inter-agent contribution delivery is disabled.\n`,
       );
+    } else if (topo && !agentRuntime) {
+      // Topology declared but no agent runtime — multi-role sessions
+      // can't deliver contributions without one. Fail closed rather
+      // than leaving deliveryState at "pending" (which would stall
+      // every spawn for the full 120s budget before rejecting).
+      const reason = "agentRuntime unavailable — ACP spawn and delivery are disabled";
+      manager.markDeliveryDisabled(reason);
+      process.stderr.write(`[grove] WARNING: ${reason}.\n`);
     }
 
     return manager;

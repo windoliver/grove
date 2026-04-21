@@ -294,23 +294,34 @@ export class NexusWsBridge {
 
   /**
    * Open an SSE stream for the role. Returns true when the stream
-   * upgraded successfully (2xx + body) and at least one read cycle ran,
-   * false when the server refused/rejected the stream. Used by
+   * upgraded successfully and yielded at least one byte, false when
+   * the server refused/rejected the stream, content-type mismatched,
+   * or the stream stalled with no bytes for `idleReadMs`. Used by
    * startSseForRole to distinguish a real stream cycle from a failed
-   * open for health tracking.
+   * open or a hung half-open connection.
    */
   private async connectSse(role: string): Promise<boolean> {
     const ac = new AbortController();
     this.abortControllers.push(ac);
+    // Open-phase deadline — a half-open TCP/TLS handshake or hung
+    // backend would otherwise block the reconnect loop indefinitely
+    // and prevent onRoleUnhealthy from ever firing.
+    const openMs = 15000;
+    const openTimer = setTimeout(() => ac.abort(), openMs);
     const url = `${this.opts.nexusUrl}/api/v2/ipc/stream/${encodeURIComponent(role)}`;
 
-    const resp = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${this.opts.apiKey}`,
-        Accept: "text/event-stream",
-      },
-      signal: ac.signal,
-    });
+    let resp: Response;
+    try {
+      resp = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${this.opts.apiKey}`,
+          Accept: "text/event-stream",
+        },
+        signal: ac.signal,
+      });
+    } finally {
+      clearTimeout(openTimer);
+    }
 
     if (!resp.ok || !resp.body) return false;
     // Same invariant the startup probe enforces: a 200 with wrong
@@ -332,9 +343,24 @@ export class NexusWsBridge {
     // without prior bytes) still returns false, which is the one
     // case the unhealthy counter needs to catch.
     let sawBytes = false;
+    // Idle-read watchdog — if the stream produces no bytes for this
+    // long, abort and treat the cycle as unhealthy. SSE keep-alive
+    // (": ping\n\n") typically fires every 15–30s; 60s idle is well
+    // outside normal operation and catches blackholed proxies.
+    const idleReadMs = 60000;
 
     while (!this.closed) {
-      const { done, value } = await reader.read();
+      const idleTimer = setTimeout(() => ac.abort(), idleReadMs);
+      let readResult: ReadableStreamReadResult<Uint8Array>;
+      try {
+        readResult = await reader.read();
+      } catch {
+        clearTimeout(idleTimer);
+        return sawBytes;
+      } finally {
+        clearTimeout(idleTimer);
+      }
+      const { done, value } = readResult;
       if (done) break;
       if (value && value.byteLength > 0) sawBytes = true;
 
