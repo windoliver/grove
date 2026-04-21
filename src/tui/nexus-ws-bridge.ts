@@ -735,10 +735,7 @@ export class NexusWsBridge {
    * Mark a specific handoffId as delivered. Called after local push
    * succeeds. Best-effort — handoff store errors don't break delivery.
    */
-  private async markHandoffDeliveredById(
-    handoffId: string,
-    targetRole: string,
-  ): Promise<void> {
+  private async markHandoffDeliveredById(handoffId: string, targetRole: string): Promise<void> {
     try {
       const store = this.opts.handoffStore;
       if (!store) return;
@@ -1068,9 +1065,7 @@ export class NexusWsBridge {
     this.close();
   }
 
-  private async flushPendingDeadLettersThenLog(
-    deadlineMs: number,
-  ): Promise<void> {
+  private async flushPendingDeadLettersThenLog(deadlineMs: number): Promise<void> {
     const deadline = Date.now() + deadlineMs;
     // Bounded wait for any in-flight drain to settle. Prevents an
     // indefinite hang if a background drain is stuck on slow I/O.
@@ -1358,12 +1353,7 @@ export class NexusWsBridge {
       // so the linkage race cannot silently swallow a real failure.
       const resolvedHandoffId =
         this.opts.handoffStore && ipcMessageId
-          ? await this.resolveHandoffIdForMessage(
-              ipcMessageId,
-              _targetRole,
-              msgSender,
-              cid,
-            )
+          ? await this.resolveHandoffIdForMessage(ipcMessageId, _targetRole, msgSender, cid)
           : undefined;
       const retryContext = ipcMessageId
         ? { ipcMessageId, sender: msgSender, sourceCid: cid }
