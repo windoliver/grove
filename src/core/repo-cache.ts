@@ -8,7 +8,9 @@
  * corruption recovery cannot unlink a held lock.
  */
 
+import { execFile } from "node:child_process";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import type { RepoRef } from "./repo-ref.js";
 
 // ---------------------------------------------------------------------------
@@ -52,12 +54,48 @@ export function resolveCacheRoot(inputs: CacheRootInputs): string {
 }
 
 // ---------------------------------------------------------------------------
-// resolveRepo — stub (filled in subsequent tasks)
+// Helpers
+// ---------------------------------------------------------------------------
+
+const execFileAsync = promisify(execFile);
+
+async function readOriginUrl(localPath: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["-C", localPath, "remote", "get-url", "origin"],
+      {
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+      },
+    );
+    const url = stdout.trim();
+    return url.length > 0 ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// resolveRepo
 // ---------------------------------------------------------------------------
 
 export async function resolveRepo(
-  _ref: RepoRef,
-  _opts?: ResolveRepoOptions,
+  ref: RepoRef,
+  opts: ResolveRepoOptions = {},
 ): Promise<ResolvedRepo> {
-  throw new Error("resolveRepo: not implemented");
+  if (ref.kind === "local") {
+    const origin = await readOriginUrl(ref.path);
+    if (origin === null) {
+      return {
+        ref,
+        bareClonePath: ref.path,
+        key: "local",
+        fetched: false,
+        stale: false,
+      };
+    }
+    // origin-present case handled in Task 11 — delegate to URL path
+    return resolveRepo({ kind: "url", url: origin }, opts);
+  }
+  throw new Error("resolveRepo: URL path not yet implemented");
 }
