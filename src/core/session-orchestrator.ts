@@ -126,6 +126,15 @@ export class SessionOrchestrator {
   }
 
   /**
+   * Stable agent identity propagated to child processes via GROVE_AGENT_ID.
+   * This is session-scoped and role-scoped, so contribution polling can
+   * attribute writes even when runtime session IDs are transport-specific.
+   */
+  private sessionScopedAgentId(roleName: string): string {
+    return `${this.sessionId}:${roleName}`;
+  }
+
+  /**
    * Observe a fire-and-forget turn's outcome and surface error stop reasons.
    * With the typed-stream runtime, post-spawn failures (malformed frames,
    * provider rejections, cancelled turns) show up as `stopReason: "error"`
@@ -313,10 +322,14 @@ export class SessionOrchestrator {
         if (!sourceRole) continue;
 
         // Only process contributions from agents in THIS session.
-        // Match by agentId (unique per spawn), not just role name (shared across sessions).
+        // Accept both:
+        // - runtime session IDs (legacy/test path), and
+        // - stable session-scoped GROVE_AGENT_ID values propagated at spawn.
         const agentId = c.agent.agentId;
         const isOurAgent = this.agents.some(
-          (a) => a.role === sourceRole && a.session.id === agentId,
+          (a) =>
+            a.role === sourceRole &&
+            (a.session.id === agentId || this.sessionScopedAgentId(a.role) === agentId),
         );
         if (!isOurAgent) continue;
 
@@ -412,6 +425,8 @@ export class SessionOrchestrator {
       env: {
         GROVE_SESSION_ID: this.sessionId,
         GROVE_ROLE: role.name,
+        GROVE_AGENT_ROLE: role.name,
+        GROVE_AGENT_ID: this.sessionScopedAgentId(role.name),
       },
     };
 

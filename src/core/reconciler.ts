@@ -236,8 +236,15 @@ export class DefaultReconciler implements Reconciler {
         try {
           const staleWs = await this.workspaceManager.markWorkspaceStale(ws.cid, ws.agent.agentId);
           orphaned.push(staleWs);
-        } catch {
-          // Workspace may have been cleaned concurrently — ignore.
+        } catch (err) {
+          // Benign race: workspace disappeared between list() and mark().
+          // Surface all other failures so startup reconciliation doesn't
+          // silently mask storage/cleanup regressions.
+          const message = err instanceof Error ? err.message : String(err);
+          if (message.toLowerCase().includes("not found")) {
+            continue;
+          }
+          throw err;
         }
       }
     }

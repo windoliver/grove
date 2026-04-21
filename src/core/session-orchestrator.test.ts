@@ -258,6 +258,51 @@ describe("SessionOrchestrator", () => {
     bus.close();
   });
 
+  test("polling forwards contributions tagged with session-scoped GROVE_AGENT_ID", async () => {
+    const runtime = new MockRuntime();
+    const bus = new LocalEventBus();
+    const contract = makeContract();
+    const contributions: ReturnType<typeof makeContribution>[] = [];
+    const contributionStore = {
+      list: async () => contributions,
+    };
+
+    const sessionId = "session-routing-1";
+    const orchestrator = new SessionOrchestrator({
+      goal: "Build auth module",
+      contract,
+      topology: contract.topology!,
+      runtime,
+      eventBus: bus,
+      projectRoot: "/tmp",
+      workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback",
+      contributionStore,
+      sessionId,
+    });
+    const internals = orchestrator as unknown as {
+      startContributionPolling: () => void;
+      pollContributions: () => Promise<void>;
+    };
+    // Avoid a real 15s timer in test; invoke poll manually.
+    internals.startContributionPolling = () => undefined;
+
+    await orchestrator.start();
+    contributions.push(
+      makeContribution({
+        summary: "env-derived coder contribution",
+        agent: { agentId: `${sessionId}:coder`, role: "coder" },
+      }),
+    );
+
+    await internals.pollContributions();
+
+    // 2 initial goal sends + 1 routed handoff to reviewer.
+    expect(runtime.sendCalls).toHaveLength(3);
+    expect(runtime.sendCalls[2]!.message).toContain("env-derived coder contribution");
+    bus.close();
+  });
+
   test("stop events are not forwarded to agents", async () => {
     const contract = makeContract();
     const { orchestrator, runtime, bus } = makeOrchestrator(contract);

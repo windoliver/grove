@@ -141,7 +141,7 @@ describe("DefaultReconciler", () => {
     expect(releasedIds).toEqual(["old-offset"]);
   });
 
-  test("startupReconcile continues when one orphan workspace fails to mark stale", async () => {
+  test("startupReconcile continues when one orphan workspace is concurrently removed", async () => {
     const claimStore = makeClaimStore({
       expireStale: async () => [],
       activeClaims: async () => [],
@@ -165,7 +165,7 @@ describe("DefaultReconciler", () => {
     const workspaceManager = makeWorkspaceManager({
       listWorkspaces: async () => [wsA, wsB],
       markWorkspaceStale: async (cid, agentId) => {
-        if (cid === "cid-a") throw new Error("concurrent cleanup");
+        if (cid === "cid-a") throw new Error("Workspace for 'cid-a' (agent 'agent-a') not found");
         return {
           cid,
           workspacePath: `/tmp/${cid}`,
@@ -185,5 +185,30 @@ describe("DefaultReconciler", () => {
     expect(result.orphanedWorkspaces).toHaveLength(1);
     expect(result.orphanedWorkspaces[0]?.cid).toBe("cid-b");
     expect(result.orphanedWorkspaces[0]?.status).toBe(WorkspaceStatus.Stale);
+  });
+
+  test("startupReconcile surfaces non-benign orphan-mark failures", async () => {
+    const claimStore = makeClaimStore({
+      expireStale: async () => [],
+      activeClaims: async () => [],
+    });
+    const workspaceManager = makeWorkspaceManager({
+      listWorkspaces: async () => [
+        {
+          cid: "cid-x",
+          workspacePath: "/tmp/cid-x",
+          agent: { agentId: "agent-x" },
+          status: WorkspaceStatus.Active,
+          createdAt: "2026-01-01T00:00:00Z",
+          lastActivityAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+      markWorkspaceStale: async () => {
+        throw new Error("sqlite write failed");
+      },
+    });
+
+    const reconciler = new DefaultReconciler(claimStore, workspaceManager);
+    await expect(reconciler.startupReconcile()).rejects.toThrow("sqlite write failed");
   });
 });
