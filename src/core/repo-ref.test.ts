@@ -75,6 +75,10 @@ describe("normalizeUrl", () => {
   test("rejects file:// URL with backslash", () => {
     expect(() => normalizeUrl("file:///abs/path\\windows")).toThrow(/backslash/);
   });
+
+  test("rejects double-colon SCP (git@host:port:path)", () => {
+    expect(() => normalizeUrl("git@github.com:22:foo/bar")).toThrow(/colon in segment/);
+  });
 });
 
 describe("deriveCachePath", () => {

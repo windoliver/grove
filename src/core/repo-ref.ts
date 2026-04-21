@@ -91,6 +91,9 @@ function validatePathSegments(path: string): void {
     if (seg.startsWith(".")) {
       throw new Error(`invalid path (leading dot in segment '${seg}'): ${path}`);
     }
+    if (seg.includes(":")) {
+      throw new Error(`invalid path (colon in segment '${seg}'): ${path}`);
+    }
   }
 }
 
