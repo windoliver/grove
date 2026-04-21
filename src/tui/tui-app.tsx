@@ -375,7 +375,12 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
             onRoleUnhealthy: (role, fails) => {
               const reason = `SSE stream for role=${role} unhealthy after ${fails} consecutive failures`;
               process.stderr.write(`[grove] DEGRADED: ${reason}\n`);
-              manager.markDeliveryDisabled(reason);
+              // Only fail closed for multi-role topologies. A single-
+              // role session doesn't use cross-role IPC, so stream
+              // degradation shouldn't prevent it from accepting work.
+              if ((topo?.roles.length ?? 0) > 1) {
+                manager.markDeliveryDisabled(reason);
+              }
             },
           });
           // Bridge readiness is a startup invariant: connect() resolves only
@@ -407,13 +412,14 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
         })
         .catch((err) => {
           // Bridge is the ONLY inter-agent delivery channel (no polling
-          // fallback). After bounded retries fail, fail closed: mark
-          // delivery disabled on the SpawnManager so spawn() refuses new
-          // multi-role sessions. Single-role topologies continue to work
-          // (they don't need IPC).
+          // fallback). After bounded retries fail, fail closed for
+          // multi-role topologies only — single-role sessions don't
+          // need IPC and shouldn't be blocked by a bridge outage.
           const detail = err instanceof Error ? err.message : String(err);
           debugLog("wsBridge", `FAILED: ${detail}`);
-          manager.markDeliveryDisabled(detail);
+          if ((topo?.roles.length ?? 0) > 1) {
+            manager.markDeliveryDisabled(detail);
+          }
           process.stderr.write(
             `[grove] FATAL: NexusWsBridge init failed — contributions will not reach agents. ${detail}\n`,
           );
