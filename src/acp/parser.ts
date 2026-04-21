@@ -547,7 +547,7 @@ export class AcpParser {
   private streamFinished = false;
   private resolveResult!: (r: Result) => void;
   private readonly turnId: string;
-  private readonly sessionId: string;
+  private readonly sessionId: string | undefined;
 
   /**
    * Start-of-turn replay buffer. The parser reads eagerly on construction,
@@ -581,7 +581,15 @@ export class AcpParser {
     turnId,
     stream,
   }: {
-    sessionId: string;
+    /**
+     * Optional. When provided, session/update frames whose params.sessionId
+     * does not match are demoted to raw _sessionMismatch — defense for
+     * multiplexed/shared streams. Per-turn acpx stdout is single-session and
+     * acpx emits its own internal UUID (not the caller's label), so callers
+     * wrapping a single acpx child (AcpxTurnImpl) should leave this undefined
+     * to avoid demoting every legitimate frame. See issue #319.
+     */
+    sessionId?: string;
     turnId: string;
     stream: Readable;
   }) {

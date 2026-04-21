@@ -401,3 +401,42 @@ test("AcpxTurnImpl: chunked text deltas coalesce under default capacity", async 
   expect(totalText.length).toBe(50);
   expect(totalText).toBe("x".repeat(50));
 });
+
+// Regression: issue #319 — acpx emits its own internal session UUID in
+// session/update frames, not the grove sessionName that the runtime used
+// to label the turn. If AcpxTurnImpl forwarded its caller-supplied sessionId
+// to AcpParser for filtering, every frame would be demoted to
+// _sessionMismatch and consumers would see 0 chars of text.
+test("AcpxTurn does not filter frames by caller-supplied sessionId (issue #319)", async () => {
+  const lines = [
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        // acpx's internal UUID, different from the grove sessionName below
+        sessionId: "acpx-internal-uuid-abc123",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "hello" },
+        },
+      },
+    }),
+    JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }),
+  ];
+  const turn = new AcpxTurnImpl({
+    // Grove-style label the runtime hands in — NOT what acpx echoes on the wire.
+    sessionId: "grove-reviewer-1--ab12",
+    turnId: "t1",
+    stdout: Readable.from([`${lines.join("\n")}\n`]),
+    cancelFn: async () => undefined,
+  });
+  const got: Message[] = [];
+  for await (const m of turn.messages) got.push(m);
+  const r = await turn.result;
+  expect(r.stopReason).toBe("end_turn");
+  const texts = got.filter((m): m is Extract<Message, { kind: "text" }> => m.kind === "text");
+  expect(texts).toHaveLength(1);
+  expect(texts[0]?.text).toBe("hello");
+  const mismatches = got.filter((m) => m.kind === "raw" && m.acpMethod === "_sessionMismatch");
+  expect(mismatches).toHaveLength(0);
+});

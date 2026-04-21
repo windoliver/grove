@@ -74,8 +74,12 @@ export class AcpxTurnImpl implements AcpxTurn {
     this.sessionId = opts.sessionId;
     this.turnId = opts.turnId;
     this.cancelFn = opts.cancelFn;
+    // Intentionally NOT passing sessionId to AcpParser: acpx stdout is
+    // single-session, and acpx emits its own internal UUID in session/update
+    // frames (not the caller-supplied `opts.sessionId` label like
+    // `grove-<role>-<n>--<suffix>`). Forwarding the label would demote every
+    // frame to _sessionMismatch — see issue #319.
     this.parser = new AcpParser({
-      sessionId: opts.sessionId,
       turnId: opts.turnId,
       stream: opts.stdout,
     });
