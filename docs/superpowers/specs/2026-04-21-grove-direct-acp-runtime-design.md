@@ -15,6 +15,16 @@ Grove currently spawns `acpx` as a CLI subprocess (`src/core/acpx-runtime.ts`). 
 
 Research (`/tmp/acpx/src/acp/client.ts` ≈ 1436 LOC, total ≈ 3500 LOC) shows grove uses ~20 % of acpx. The used slice — `initialize`, `session/new`, `session/prompt`, `session/cancel`, `session/update` parsing, `session/request_permission` routing, provider install detection — is ≈ 500–600 LOC directly on `@agentclientprotocol/sdk` (v0.19.1, Apache-2.0, zero runtime deps).
 
+## Stance on acpx
+
+Three-layer model:
+
+1. **`@agentclientprotocol/sdk` is the dependency.** It owns the wire protocol, typed schema, and connection state machine. Grove tracks its release line.
+2. **acpx is a reference, not a dependency.** We read `/tmp/acpx/src/` during implementation to learn which features earned their keep (install detection, `session/load` capability fallback, adapter version pinning) and which bugs they papered over (0.3 → 0.5 claude-adapter switch, Cursor error-string quirks). We port the worthwhile ~200 LOC and skip the flow runtime, 15-agent registry, replay viewer, and trace bundles. No `vendor/` copy of acpx, no `@openclaw/acpx` dep.
+3. **Grove-specific layer is additive.** `PermissionResolver`, Nexus IPC push, supervision dock integration (#193), per-worktree session scoping, auditing resolver — all grove-native, none in acpx today.
+
+Parity means **feature parity on the subset grove actually uses**, not bug-for-bug mirroring. If acpx does something grove doesn't need, we don't port it.
+
 ## Goals
 
 - Replace `AcpxRuntime` with `AcpRuntime` that embeds `@agentclientprotocol/sdk` and speaks ACP directly to provider binaries (`codex-acp`, `claude-agent-acp`, `gemini --acp`).
