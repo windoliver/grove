@@ -117,6 +117,10 @@ export class NexusWsBridge {
   private static readonly PENDING_DLQ_MAX_ATTEMPTS = 20;
   private static readonly PENDING_DLQ_INTERVAL_MS = 30000;
   private pendingDlqTimer: ReturnType<typeof setInterval> | null = null;
+  // Single-flight drain lock: prevents overlapping drain runs from
+  // double-incrementing entry.attempts and racing removals. Timer ticks
+  // that fire while a drain is already in progress become no-ops.
+  private pendingDlqDrainInFlight = false;
   private closed = false;
 
   constructor(opts: NexusWsBridgeOptions) {
@@ -268,16 +272,13 @@ export class NexusWsBridge {
       clearInterval(this.pendingDlqTimer);
       this.pendingDlqTimer = null;
     }
-    // Emit a final loud warning per still-unresolved entry so operators
-    // see what was dropped on close rather than discovering stuck
-    // handoffs silently later. The queue itself is best-effort across
-    // process boundaries — a full durable store is a follow-up.
-    for (const entry of this.pendingDeadLetters) {
-      process.stderr.write(
-        `[NexusWsBridge] UNRESOLVED dead-letter on close role=${entry.targetRole} ipcMessageId=${entry.ipcMessageId} attempts=${entry.attempts}: ${entry.reason}\n`,
-      );
+    // Fire-and-forget final drain attempt: best effort in-process
+    // recovery before the synchronous close path logs and clears. For
+    // full durability guarantees across process exit, callers should
+    // await shutdown() instead of close().
+    if (this.pendingDeadLetters.length > 0) {
+      void this.flushPendingDeadLettersThenLog();
     }
-    this.pendingDeadLetters = [];
     for (const ac of this.abortControllers) {
       ac.abort();
     }
@@ -909,11 +910,67 @@ export class NexusWsBridge {
     );
   }
 
+  /**
+   * Await a final drain, then synchronously close. Callers that need
+   * maximum recovery-state preservation (process-exit shutdown path)
+   * should await this instead of the fire-and-forget `close()`.
+   */
+  async shutdown(): Promise<void> {
+    if (this.closed) return;
+    // Stop the background timer first so it can't re-enter during flush.
+    if (this.pendingDlqTimer !== null) {
+      clearInterval(this.pendingDlqTimer);
+      this.pendingDlqTimer = null;
+    }
+    await this.flushPendingDeadLettersThenLog();
+    this.close();
+  }
+
+  private async flushPendingDeadLettersThenLog(): Promise<void> {
+    if (this.pendingDlqDrainInFlight) {
+      // Wait for the in-flight run to settle before issuing the final flush.
+      while (this.pendingDlqDrainInFlight) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+    const store = this.opts.handoffStore;
+    if (store) {
+      this.pendingDlqDrainInFlight = true;
+      try {
+        await this.doDrainPendingDeadLetters(store);
+      } finally {
+        this.pendingDlqDrainInFlight = false;
+      }
+    }
+    for (const entry of this.pendingDeadLetters) {
+      process.stderr.write(
+        `[NexusWsBridge] UNRESOLVED dead-letter on close role=${entry.targetRole} ipcMessageId=${entry.ipcMessageId} attempts=${entry.attempts}: ${entry.reason}\n`,
+      );
+    }
+    this.pendingDeadLetters = [];
+  }
+
   private async drainPendingDeadLetters(): Promise<void> {
     if (this.closed || this.pendingDeadLetters.length === 0) return;
     const store = this.opts.handoffStore;
     if (!store) return;
 
+    // Single-flight guard. A drain run longer than the timer interval
+    // (slow store.list, large queue) would otherwise overlap and share
+    // entry objects across runs — attempts would double-increment and
+    // entries could be removed before correlation resolves.
+    if (this.pendingDlqDrainInFlight) return;
+    this.pendingDlqDrainInFlight = true;
+    try {
+      await this.doDrainPendingDeadLetters(store);
+    } finally {
+      this.pendingDlqDrainInFlight = false;
+    }
+  }
+
+  private async doDrainPendingDeadLetters(
+    store: HandoffStore,
+  ): Promise<void> {
     // Snapshot + iterate; mutations during async await are safe because
     // we filter the live list at the end rather than index in place.
     const entries = [...this.pendingDeadLetters];

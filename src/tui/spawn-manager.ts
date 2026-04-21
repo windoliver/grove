@@ -194,6 +194,9 @@ export class SpawnManager {
         cleanup();
         reject(new Error(`bridge readiness timed out after ${timeoutMs}ms`));
       }, timeoutMs);
+      // Don't keep the event loop alive solely for a readiness timer —
+      // a shutdown during init should be able to exit without waiting.
+      (timer as unknown as { unref?: () => void }).unref?.();
       entry = {
         resolve: () => {
           clearTimeout(timer);
@@ -1198,6 +1201,13 @@ export class SpawnManager {
   destroy(): void {
     this.stopLogPolling();
     this.routableSessions.clear();
+    // Settle any in-flight waitForDelivery calls so destroy() doesn't
+    // leave per-waiter timers holding the event loop open. Route via
+    // markDeliveryDisabled to reject all waiters and clear their timers
+    // through the existing cleanup() path registered in waitForDelivery.
+    if (this.deliveryReadyWaiters.length > 0) {
+      this.markDeliveryDisabled("SpawnManager destroyed");
+    }
     // Close all agent sessions via runtime to prevent accumulation
     if (this.agentRuntime) {
       for (const session of this.agentSessions.values()) {
