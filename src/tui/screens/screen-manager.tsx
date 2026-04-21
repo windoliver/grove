@@ -83,6 +83,8 @@ export interface ScreenManagerProps {
   readonly startOnRunning?: boolean | undefined;
   /** Override initial state (testing only). */
   readonly initialState?: ScreenState | undefined;
+  /** Scope the resumed session's feed/history to this session id. */
+  readonly resumeSessionId?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +99,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     sessions,
     startOnRunning,
     initialState,
+    resumeSessionId: resumeSessionIdFromProps,
   }: ScreenManagerProps): React.ReactNode {
     const renderer = useRenderer();
     const { provider, topology: initialTopology, contract } = appProps;
@@ -115,11 +118,23 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       let resumeSessionStartedAt: string | undefined;
       let resumeSessionId: string | undefined;
       if (startOnRunning && sessions && sessions.length > 0) {
-        const active = sessions.find((s) => s.status === "active");
+        const active = resumeSessionIdFromProps
+          ? sessions.find((s) => s.id === resumeSessionIdFromProps)
+          : sessions.find((s) => s.status === "active");
         if (active) {
           resumeSessionStartedAt = active.createdAt;
           resumeSessionId = active.id;
           resumeScopeIdRef.current = active.id; // captured for mount effect
+        } else if (resumeSessionIdFromProps) {
+          // Explicit resume choice wasn't in the startup session list (e.g.
+          // created after main.ts snapshotted it). Honor the user's choice
+          // anyway and hydrate sessionStartedAt asynchronously from the
+          // provider so the elapsed timer and handoff cutoff recover.
+          resumeSessionId = resumeSessionIdFromProps;
+          resumeScopeIdRef.current = resumeSessionIdFromProps;
+          process.stderr.write(
+            `[screen-manager] resume: session ${resumeSessionIdFromProps} not in startup list; scoping anyway\n`,
+          );
         }
       }
       // startOnRunning only makes sense when there is actually a session to
@@ -154,6 +169,26 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       if (id && "setSessionScope" in provider) {
         (provider as { setSessionScope: (id: string) => void }).setSessionScope(id);
         process.stderr.write(`[screen-manager] resume setSessionScope(${id})\n`);
+        // Hydrate sessionStartedAt when we scoped to a resume id that wasn't
+        // in the startup session list — without it, RunningView's elapsed
+        // timer starts at 0 and handoff fetches fall back to now-2h.
+        if (!state.sessionStartedAt && "getSession" in provider) {
+          void (async () => {
+            try {
+              const rec = await (
+                provider as {
+                  getSession: (id: string) => Promise<{ createdAt?: string } | undefined>;
+                }
+              ).getSession(id);
+              const createdAt = rec?.createdAt;
+              if (createdAt) {
+                setState((prev) => ({ ...prev, sessionStartedAt: createdAt }));
+              }
+            } catch {
+              /* best-effort hydration */
+            }
+          })();
+        }
         // Persist the resumed session id to current-session.json so the HTTP
         // MCP server (serve-http.ts) re-reads and scopes subsequent
         // requests to this session. Without this, resume would leave the

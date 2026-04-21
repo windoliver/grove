@@ -355,7 +355,7 @@ export function createContribution(input: ContributionInput): Contribution {
     kind: input.kind,
     mode: input.mode,
     summary: input.summary,
-    ...stripUndefined({ description: input.description }),
+    ...stripUndefined({ description: input.description, commitHash: input.commitHash }),
     artifacts: { ...input.artifacts },
     ...stripUndefined({ commitHash: input.commitHash }),
     relations: input.relations.map((r) =>

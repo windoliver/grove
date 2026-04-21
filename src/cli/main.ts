@@ -24,21 +24,7 @@
  *   grove tui           — Operator TUI dashboard
  */
 
-import { createSqliteStores } from "../local/sqlite-store.js";
-import { runBounty } from "./commands/bounty.js";
-import { parseCheckoutArgs, runCheckout } from "./commands/checkout.js";
-import { runClaim } from "./commands/claim.js";
-import { runClaims } from "./commands/claims.js";
-import { parseFrontierArgs, runFrontier } from "./commands/frontier.js";
-import { parseLogArgs, runLog } from "./commands/log.js";
-import { runRelease } from "./commands/release.js";
-import { parseSearchArgs, runSearch } from "./commands/search.js";
-import { parseThreadArgs, runThread } from "./commands/thread.js";
-import { parseThreadsArgs, runThreads } from "./commands/threads.js";
-import { parseTreeArgs, runTree } from "./commands/tree.js";
-import { initCliDeps } from "./context.js";
 import { UsageError } from "./errors.js";
-import { resolveGroveDir } from "./utils/grove-dir.js";
 import { suggestCommand } from "./utils/string.js";
 
 // ---------------------------------------------------------------------------
@@ -94,6 +80,7 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
     fn: (args: readonly string[], deps: import("./context.js").CliDeps) => Promise<void>,
     args: readonly string[],
   ): Promise<void> {
+    const { initCliDeps } = await import("./context.js");
     const deps = initCliDeps(process.cwd(), groveOverride);
     try {
       await fn(args, deps);
@@ -162,6 +149,7 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       description: "View a discussion thread",
       needsStore: false,
       handler: async (args) => {
+        const { parseThreadArgs, runThread } = await import("./commands/thread.js");
         await withCliDeps(async (a, deps) => {
           await runThread(parseThreadArgs([...a]), deps);
         }, args);
@@ -172,6 +160,7 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       description: "List active discussion threads",
       needsStore: false,
       handler: async (args) => {
+        const { parseThreadsArgs, runThreads } = await import("./commands/threads.js");
         await withCliDeps(async (a, deps) => {
           await runThreads(parseThreadsArgs([...a]), deps);
         }, args);
@@ -200,6 +189,9 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       description: "Create, list, or claim bounties",
       needsStore: false,
       handler: async (args) => {
+        const { runBounty } = await import("./commands/bounty.js");
+        const { resolveGroveDir } = await import("./utils/grove-dir.js");
+        const { createSqliteStores } = await import("../local/sqlite-store.js");
         const { dbPath } = resolveGroveDir(groveOverride);
         const stores = createSqliteStores(dbPath);
         try {
@@ -218,25 +210,35 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       name: "claim",
       description: "Claim work to prevent duplication",
       needsStore: true,
-      handler: runClaim,
+      handler: async (args, deps) => {
+        const { runClaim } = await import("./commands/claim.js");
+        await runClaim(args, deps);
+      },
     },
     {
       name: "release",
       description: "Release a claim",
       needsStore: true,
-      handler: runRelease,
+      handler: async (args, deps) => {
+        const { runRelease } = await import("./commands/release.js");
+        await runRelease(args, deps);
+      },
     },
     {
       name: "claims",
       description: "List claims",
       needsStore: true,
-      handler: runClaims,
+      handler: async (args, deps) => {
+        const { runClaims } = await import("./commands/claims.js");
+        await runClaims(args, deps);
+      },
     },
     {
       name: "checkout",
       description: "Materialize contribution artifacts",
       needsStore: false,
       handler: async (args) => {
+        const { parseCheckoutArgs, runCheckout } = await import("./commands/checkout.js");
         await withCliDeps(async (a, deps) => {
           await runCheckout(parseCheckoutArgs([...a]), deps);
         }, args);
@@ -247,6 +249,7 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       description: "Show current frontier",
       needsStore: false,
       handler: async (args) => {
+        const { parseFrontierArgs, runFrontier } = await import("./commands/frontier.js");
         await withCliDeps(async (a, deps) => {
           await runFrontier(parseFrontierArgs([...a]), deps);
         }, args);
@@ -257,6 +260,7 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       description: "Search contributions",
       needsStore: false,
       handler: async (args) => {
+        const { parseSearchArgs, runSearch } = await import("./commands/search.js");
         await withCliDeps(async (a, deps) => {
           await runSearch(parseSearchArgs([...a]), deps);
         }, args);
@@ -267,6 +271,7 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       description: "Recent contributions",
       needsStore: false,
       handler: async (args) => {
+        const { parseLogArgs, runLog } = await import("./commands/log.js");
         await withCliDeps(async (a, deps) => {
           await runLog(parseLogArgs([...a]), deps);
         }, args);
@@ -277,8 +282,20 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       description: "DAG visualization",
       needsStore: false,
       handler: async (args) => {
+        const { parseTreeArgs, runTree } = await import("./commands/tree.js");
         await withCliDeps(async (a, deps) => {
           await runTree(parseTreeArgs([...a]), deps);
+        }, args);
+      },
+    },
+    {
+      name: "export-dag",
+      description: "Export contribution DAG as JSON",
+      needsStore: false,
+      handler: async (args) => {
+        const { parseExportDagArgs, runExportDag } = await import("./commands/export-dag.js");
+        await withCliDeps(async (a, deps) => {
+          await runExportDag(parseExportDagArgs([...a]), deps);
         }, args);
       },
     },
@@ -298,6 +315,7 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       handler: async (args) => {
         const { parseOutcomeArgs, runOutcome } = await import("./commands/outcome.js");
         const { SqliteOutcomeStore } = await import("../local/sqlite-outcome-store.js");
+        const { resolveGroveDir } = await import("./utils/grove-dir.js");
         const { dbPath } = resolveGroveDir(groveOverride);
         const { initSqliteDb } = await import("../local/sqlite-store.js");
         const db = initSqliteDb(dbPath);
@@ -420,11 +438,22 @@ async function main(): Promise<void> {
   let groveOverride: string | undefined;
   const args: string[] = [];
   for (let i = 0; i < rawArgs.length; i++) {
-    if (rawArgs[i] === "--grove" && i + 1 < rawArgs.length) {
-      groveOverride = rawArgs[i + 1];
-      i++; // skip value
+    const token = rawArgs[i] ?? "";
+    if (token === "--grove") {
+      const value = rawArgs[i + 1];
+      if (!value) {
+        throw new UsageError("--grove requires a path value");
+      }
+      groveOverride = value;
+      i++; // skip consumed value
+    } else if (token.startsWith("--grove=")) {
+      const value = token.slice("--grove=".length);
+      if (!value) {
+        throw new UsageError("--grove requires a non-empty path value");
+      }
+      groveOverride = value;
     } else {
-      args.push(rawArgs[i] ?? "");
+      args.push(token);
     }
   }
 
@@ -444,7 +473,8 @@ async function main(): Promise<void> {
   }
 
   if (first === "--version" || first === "-v") {
-    console.log("grove 0.1.0");
+    const { handleVersion } = await import("./commands/version.js");
+    handleVersion();
     return;
   }
 
@@ -470,6 +500,8 @@ async function main(): Promise<void> {
   }
 
   if (command.needsStore) {
+    const { resolveGroveDir } = await import("./utils/grove-dir.js");
+    const { createSqliteStores } = await import("../local/sqlite-store.js");
     const { dbPath } = resolveGroveDir(groveOverride);
     const stores = createSqliteStores(dbPath);
     try {
@@ -509,6 +541,7 @@ Navigation:
   grove log [-n <count>]               Recent contributions
   grove frontier [--metric <name>]     Show current frontier
   grove tree [--from <cid>]            DAG visualization
+  grove export-dag [options]           Export contribution DAG as JSON
   grove search [--query <text>]        Search contributions
   grove checkout <cid> --to <dir>      Materialize contribution artifacts
   grove thread <cid>                   View a discussion thread

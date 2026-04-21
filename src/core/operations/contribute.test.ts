@@ -513,6 +513,35 @@ describe("contributeOperation: idempotencyKey", () => {
     expect(second.error.code).toBe("STATE_CONFLICT");
   });
 
+  test("fingerprint rejects same key + different commitHash", async () => {
+    const first = await contributeOperation(
+      {
+        kind: "work",
+        summary: "commit submission",
+        commitHash: "abc123",
+        agent: { agentId: "a1" },
+        idempotencyKey: "commit-hash-key",
+      },
+      deps,
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const second = await contributeOperation(
+      {
+        kind: "work",
+        summary: "commit submission",
+        commitHash: "def456",
+        agent: { agentId: "a1" },
+        idempotencyKey: "commit-hash-key",
+      },
+      deps,
+    );
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.error.code).toBe("STATE_CONFLICT");
+  });
+
   test("fingerprint rejects same key + renamed artifact (same hash)", async () => {
     // Store a single blob in CAS, reference it under two different names.
     const hash = await storeTestContent(deps.cas, "hello world");

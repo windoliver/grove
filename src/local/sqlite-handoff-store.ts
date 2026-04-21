@@ -336,7 +336,7 @@ export class SqliteHandoffStore implements HandoffStore {
       .prepare(
         `UPDATE handoffs SET status = ?, resolved_by_cid = ?${claimSet}
          WHERE handoff_id = ? AND status IN (?, ?)
-           AND (reply_due_at IS NULL OR reply_due_at >= ?)${scopeExtra}`,
+           AND (reply_due_at IS NULL OR reply_due_at > ?)${scopeExtra}`,
       )
       .run(
         HandoffStatus.Replied,
@@ -357,7 +357,7 @@ export class SqliteHandoffStore implements HandoffStore {
         (current.status === HandoffStatus.Delivered ||
           current.status === HandoffStatus.Processed) &&
         current.replyDueAt !== undefined &&
-        current.replyDueAt < now
+        current.replyDueAt <= now
       ) {
         this.db
           .prepare(
@@ -522,7 +522,7 @@ export class SqliteHandoffStore implements HandoffStore {
   async expireStale(now?: string): Promise<readonly Handoff[]> {
     const cutoff = now ?? new Date().toISOString();
     // Expire both pending_pickup AND delivered unresolved handoffs with
-    // past deadlines. Scoped by session so session A's watcher cannot
+    // past-or-equal deadlines. Scoped by session so session A's watcher cannot
     // flip session B's rows. RETURNING ensures idempotency (only newly-
     // transitioned rows).
     const { sql: scopeSql, params: scopeParams } = this.scopeClause();
@@ -533,7 +533,7 @@ export class SqliteHandoffStore implements HandoffStore {
         `UPDATE handoffs
          SET status = ?${claimSet}
          WHERE status IN (?, ?, ?)
-           AND reply_due_at IS NOT NULL AND reply_due_at < ?${scopeExtra}
+           AND reply_due_at IS NOT NULL AND reply_due_at <= ?${scopeExtra}
          RETURNING ${SELECT_COLS}`,
       )
       .all(

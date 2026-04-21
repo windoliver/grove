@@ -458,8 +458,10 @@ export async function handleTui(
 
   // Load past sessions for the welcome screen (informational context).
   // Active sessions are fetched explicitly (no LIMIT) so that a resume target
-  // is never missed when > 20 non-archived sessions exist. The default
-  // listSessions() is capped at 20 for display; we merge both lists.
+  // is never missed when > 20 non-archived sessions exist. Archived sessions
+  // are loaded too so the fast-path `[a]` archive toggle has something to
+  // reveal; the welcome component filters them client-side (hidden by
+  // default). The default listSessions() is capped at 20 for display.
   let sessions: SessionRecord[] = [];
   if (groveDir) {
     try {
@@ -467,15 +469,21 @@ export async function handleTui(
       const dbPath = join(groveDir, "grove.db");
       if (existsSync(dbPath)) {
         const stores = createSqliteStores(dbPath);
-        const [activeSessions, recentSessions] = await Promise.all([
+        const [activeSessions, recentSessions, archivedSessions] = await Promise.all([
           stores.goalSessionStore.listSessions({ status: "active" }),
           stores.goalSessionStore.listSessions(),
+          stores.goalSessionStore.listSessions({ includeArchived: true }),
         ]);
-        // Active sessions first (ensures resume detection works even if the
-        // active session is outside the top-20 most-recent window), then
-        // recent sessions for display, deduped.
+        // Active first (keeps resume detection correct beyond the top-20
+        // recent window), then the recent unarchived list, then archived
+        // sessions that weren't already covered — deduped.
         const seenIds = new Set(activeSessions.map((s) => s.id));
-        sessions = [...activeSessions, ...recentSessions.filter((s) => !seenIds.has(s.id))];
+        const recentNew = recentSessions.filter((s) => !seenIds.has(s.id));
+        for (const s of recentNew) seenIds.add(s.id);
+        const archivedOnly = archivedSessions.filter(
+          (s) => s.status === "archived" && !seenIds.has(s.id),
+        );
+        sessions = [...activeSessions, ...recentNew, ...archivedOnly];
         stores.close();
       }
     } catch {
@@ -739,6 +747,7 @@ export async function handleTui(
     // onStart: handles "Resume" path — start services for existing grove
     const onStart = async (
       onProgress?: (step: string) => void,
+      sessionId?: string,
     ): Promise<import("./app.js").AppProps> => {
       const resolvedGrove = groveDir ?? join(process.cwd(), ".grove");
       const { startServices, persistNexusUrlToConfig } = await import(
@@ -761,7 +770,18 @@ export async function handleTui(
       // Post-startup: update agent skill SKILL.md (non-blocking)
       updateSkillAfterStartup();
 
-      return result.appProps;
+      return { ...result.appProps, resumeSessionId: sessionId };
+    };
+
+    // onNewSession: handles `n` on fast-path — reuse existing grove, start a new
+    // session with the user-picked preset. Delegates to `onInit` which already
+    // handles the `groveExists=true` branch (just startServices + buildAppProps).
+    const onNewSession = async (presetName: string): Promise<import("./app.js").AppProps> => {
+      if (!groveInfo?.name) {
+        throw new Error("onNewSession called without existing grove");
+      }
+      const baseProps = await onInit(presetName, groveInfo.name);
+      return { ...baseProps, newSessionPreset: presetName };
     };
 
     // onConnect: handles "Connect to remote Nexus" path — no local services
@@ -786,6 +806,7 @@ export async function handleTui(
           onInit,
           onStart,
           onConnect,
+          onNewSession,
           autoConnectNexus: opts.nexus,
         }),
         React.createElement(Toaster, { position: "bottom-right" }),

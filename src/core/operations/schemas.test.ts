@@ -6,8 +6,10 @@
  */
 
 import { describe, expect, test } from "bun:test";
-
+import { BountyStatus } from "../bounty.js";
+import { OperationErrorCode } from "./result.js";
 import {
+  BountyStatusSchema,
   CheckoutResultSchema,
   CheckStopResultSchema,
   ClaimBountyResultSchema,
@@ -21,6 +23,7 @@ import {
   ListBountiesResultSchema,
   ListClaimsResultSchema,
   LogResultSchema,
+  OperationErrorCodeSchema,
   OperationErrorSchema,
   OperationErrSchema,
   OperationResultSchema,
@@ -60,6 +63,12 @@ function expectInvalid(schema: { parse: (v: unknown) => unknown }, value: unknow
 // ---------------------------------------------------------------------------
 
 describe("OperationErrorSchema", () => {
+  test("accepts all OperationErrorCode values", () => {
+    for (const code of Object.values(OperationErrorCode)) {
+      expectValid(OperationErrorCodeSchema, code);
+    }
+  });
+
   test("accepts valid error", () => {
     expectValid(OperationErrorSchema, {
       code: "NOT_FOUND",
@@ -554,6 +563,14 @@ describe("CheckStopResultSchema", () => {
 // ---------------------------------------------------------------------------
 // Bounty results
 // ---------------------------------------------------------------------------
+
+describe("BountyStatusSchema", () => {
+  test("accepts all BountyStatus values", () => {
+    for (const status of Object.values(BountyStatus)) {
+      expectValid(BountyStatusSchema, status);
+    }
+  });
+});
 
 describe("CreateBountyResultSchema", () => {
   test("accepts valid result with reservation", () => {

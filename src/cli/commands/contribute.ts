@@ -334,27 +334,29 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
   const dbPath = join(grovePath, "grove.db");
   const casPath = join(grovePath, "cas");
   const db = initSqliteDb(dbPath);
-  const rawStore = new SqliteContributionStore(db);
-  const claimStore = new SqliteClaimStore(db);
-  const idempotencyStore = new SqliteIdempotencyStore(db);
-  const cas = new FsCas(casPath);
-  const frontier = new DefaultFrontierCalculator(rawStore);
-
-  // 3. Load contract for enforcement, default mode, and metric directions.
-  //    Shared bootstrap: session.config > GROVE.md > no enforcement.
-  //    See src/cli/utils/resolve-contract.ts for the full precedence chain.
-  const { SqliteGoalSessionStore } = await import("../../local/sqlite-goal-session-store.js");
-  const { resolveContract } = await import("../utils/resolve-contract.js");
-  const contract = await resolveContract({
-    goalSessionStore: new SqliteGoalSessionStore(db),
-    groveRoot: options.cwd,
-    envSessionId: process.env.GROVE_SESSION_ID,
-  });
-
-  // Wrap store with enforcement if contract is available
-  const store = contract ? new EnforcingContributionStore(rawStore, contract, { cas }) : rawStore;
-
+  // Guarantee close() even when bootstrap (contract resolution, schema checks)
+  // throws before we reach the main work. Without this, a bad GROVE.md or a
+  // missing session row leaks the DB handle.
   try {
+    const rawStore = new SqliteContributionStore(db);
+    const claimStore = new SqliteClaimStore(db);
+    const idempotencyStore = new SqliteIdempotencyStore(db);
+    const cas = new FsCas(casPath);
+    const frontier = new DefaultFrontierCalculator(rawStore);
+
+    // 3. Load contract for enforcement, default mode, and metric directions.
+    //    Shared bootstrap: session.config > GROVE.md > no enforcement.
+    //    See src/cli/utils/resolve-contract.ts for the full precedence chain.
+    const { SqliteGoalSessionStore } = await import("../../local/sqlite-goal-session-store.js");
+    const { resolveContract } = await import("../utils/resolve-contract.js");
+    const contract = await resolveContract({
+      goalSessionStore: new SqliteGoalSessionStore(db),
+      groveRoot: options.cwd,
+      envSessionId: process.env.GROVE_SESSION_ID,
+    });
+
+    // Wrap store with enforcement if contract is available
+    const store = contract ? new EnforcingContributionStore(rawStore, contract, { cas }) : rawStore;
     // 4. Validate parent CID exists (CLI-specific: early user-friendly error)
     if (options.parent) {
       const parent = await store.get(options.parent);

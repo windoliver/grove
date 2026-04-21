@@ -5,6 +5,7 @@
  * configuration. Used by `grove init --preset <name>`.
  */
 
+import { type GroveContract, parseGroveContract } from "../../core/contract.js";
 import type { CorePresetConfig } from "../../core/presets.js";
 import type { AgentTopology } from "../../core/topology.js";
 import type {
@@ -14,6 +15,13 @@ import type {
   MetricEntry,
   StopConditionsConfig,
 } from "../grove-md-builder.js";
+import { buildGroveMd, presetToGroveMdConfig } from "../grove-md-builder.js";
+import { explorationPreset } from "./exploration.js";
+import { federatedSwarmPreset } from "./federated-swarm.js";
+import { prReviewPreset } from "./pr-review.js";
+import { researchLoopPreset } from "./research-loop.js";
+import { reviewLoopPreset } from "./review-loop.js";
+import { swarmOpsPreset } from "./swarm-ops.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -64,28 +72,20 @@ export interface PresetConfig extends CorePresetConfig {
 // Registry
 // ---------------------------------------------------------------------------
 
-export { explorationPreset } from "./exploration.js";
-export { federatedSwarmPreset } from "./federated-swarm.js";
-export { prReviewPreset } from "./pr-review.js";
-export { researchLoopPreset } from "./research-loop.js";
-export { reviewLoopPreset } from "./review-loop.js";
-export { swarmOpsPreset } from "./swarm-ops.js";
+export {
+  explorationPreset,
+  federatedSwarmPreset,
+  prReviewPreset,
+  researchLoopPreset,
+  reviewLoopPreset,
+  swarmOpsPreset,
+};
 
 let _registry: Readonly<Record<string, PresetConfig>> | undefined;
 
 /** All available presets indexed by name (memoized after first call). */
 export function getPresetRegistry(): Readonly<Record<string, PresetConfig>> {
   if (_registry) return _registry;
-
-  // Lazy import to avoid circular deps and keep startup fast
-  const { reviewLoopPreset } = require("./review-loop.js") as typeof import("./review-loop.js");
-  const { explorationPreset } = require("./exploration.js") as typeof import("./exploration.js");
-  const { swarmOpsPreset } = require("./swarm-ops.js") as typeof import("./swarm-ops.js");
-  const { researchLoopPreset } =
-    require("./research-loop.js") as typeof import("./research-loop.js");
-  const { prReviewPreset } = require("./pr-review.js") as typeof import("./pr-review.js");
-  const { federatedSwarmPreset } =
-    require("./federated-swarm.js") as typeof import("./federated-swarm.js");
 
   _registry = {
     "review-loop": reviewLoopPreset,
@@ -107,4 +107,28 @@ export function getPreset(name: string): PresetConfig | undefined {
 /** List all available preset names. */
 export function listPresetNames(): readonly string[] {
   return Object.keys(getPresetRegistry());
+}
+
+// ---------------------------------------------------------------------------
+// Preset → GroveContract conversion
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a `GroveContract` from a preset by round-tripping through
+ * `buildGroveMd` + `parseGroveContract`. This is the same pipeline that
+ * `grove init --preset <name>` uses on disk — same output, same validation
+ * surface. Used by the server when no GROVE.md is loaded and a caller
+ * supplies a preset name on `POST /api/sessions`.
+ *
+ * `name` is the grove-level name (e.g. the goal or a caller-supplied
+ * identifier). The preset's own `name` is the preset ID
+ * (e.g. "review-loop") and is not used here.
+ */
+export function presetToSessionConfig(preset: PresetConfig, name: string): GroveContract {
+  const mdConfig = presetToGroveMdConfig(
+    { ...preset, presetDescription: preset.description },
+    { name, description: preset.description },
+  );
+  const md = buildGroveMd(mdConfig);
+  return parseGroveContract(md);
 }

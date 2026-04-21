@@ -153,131 +153,149 @@ async function sessionStart(args: readonly string[]): Promise<void> {
   // Open SQLite database and create session
   const { initSqliteDb } = await import("../../local/sqlite-store.js");
   const db = initSqliteDb(join(groveDir, "grove.db"));
+
+  // Everything below must run under try/finally so db.close() always fires.
+  // Signal handlers are installed early (before orchestrator.start) so a
+  // Ctrl-C during startup still records a stopReason.
+  let shuttingDown = false;
+  const sigintHandler = () => void handleSignal(130, "User interrupted (SIGINT)");
+  const sigtermHandler = () => void handleSignal(143, "Terminated (SIGTERM)");
+  let sessionId: string | undefined;
   const goalSessionStore = new SqliteGoalSessionStore(db);
 
-  const session = await goalSessionStore.createSession({
-    goal,
-    presetName: presetName ?? contract?.name,
-    topology: resolution.topology,
-    config: contract,
-  });
-
-  // Mirror the session to Nexus so MCP servers spawned by agents (which set
-  // `GROVE_NEXUS_URL`) can resolve the frozen contract. Parallels the TUI path
-  // in `src/tui/nexus-provider.ts` NexusProvider.createSession — without this,
-  // grove-mcp's fail-closed check (see src/mcp/serve.ts around "cannot find
-  // Nexus session") kills every agent spawned through `grove session start`.
-  // Best-effort: we retry a few times, but a hard failure rethrows so the user
-  // sees the problem at session-start time rather than when the first agent
-  // dies mid-turn.
-  const nexusUrl = process.env.GROVE_NEXUS_URL;
-  const nexusApiKey = process.env.NEXUS_API_KEY;
-  if (nexusUrl) {
-    const { NexusHttpClient } = await import("../../nexus/nexus-http-client.js");
-    const { NexusSessionStore } = await import("../../nexus/nexus-session-store.js");
-    const nexusClient = new NexusHttpClient({
-      url: nexusUrl,
-      ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
-    });
-    const zoneId = process.env.GROVE_ZONE_ID ?? "default";
-    const nexusSessionStore = new NexusSessionStore(nexusClient, zoneId);
-
-    const retryDelaysMs = [0, 200, 500, 1000];
-    let lastErr: unknown;
-    for (const delay of retryDelaysMs) {
-      if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-      try {
-        await nexusSessionStore.putSession(session);
-        lastErr = undefined;
-        break;
-      } catch (err) {
-        lastErr = err;
-      }
-    }
-    if (lastErr) {
-      // Roll back the orphan SQLite record so the user can retry cleanly,
-      // matching the TUI's archive-on-failure behaviour.
-      await goalSessionStore.archiveSession(session.id).catch(() => undefined);
-      db.close();
-      throw new Error(
-        `Failed to mirror session ${session.id} to Nexus at ${nexusUrl}: ` +
-          `${lastErr instanceof Error ? lastErr.message : String(lastErr)}. ` +
-          `The local session has been archived; please retry.`,
-      );
-    }
-  }
-
-  // Create contribution store for polling-based routing (MCP runs in child processes)
-  const { SqliteContributionStore } = await import("../../local/sqlite-store.js");
-  const contributionStore = new SqliteContributionStore(db);
-
-  const orchestrator = new SessionOrchestrator({
-    goal,
-    contract: contract ?? { contractVersion: 3, name: presetName ?? "default" },
-    topology: resolution.topology,
-    runtime,
-    eventBus,
-    projectRoot: groveRoot,
-    workspaceBaseDir: join(groveDir, "workspaces"),
-    sessionId: session.id,
-    contributionStore,
-  });
-
-  let status: import("../../core/session-orchestrator.js").SessionStatus;
-  try {
-    status = await orchestrator.start();
-  } catch (err) {
-    // Mark session as cancelled on spawn failure
-    await goalSessionStore.archiveSession(session.id);
-    db.close();
-    throw err;
-  }
-
-  // Register cleanup: mark session completed/cancelled on exit
-  const markDone = async (reason: string) => {
+  const markDone = async (reason: string): Promise<void> => {
+    if (sessionId === undefined) return;
     try {
-      await goalSessionStore.updateSession(session.id, {
+      await goalSessionStore.updateSession(sessionId, {
         status: "completed",
         completedAt: new Date().toISOString(),
         stopReason: reason,
       });
     } catch {
-      // Best-effort — DB may already be closed
+      // Best-effort — DB may already be closed or session archived.
     }
   };
 
-  process.on("SIGINT", () => {
-    void markDone("User interrupted (SIGINT)").then(() => {
-      db.close();
-      process.exit(130);
-    });
-  });
-  process.on("SIGTERM", () => {
-    void markDone("Terminated (SIGTERM)").then(() => {
-      db.close();
-      process.exit(143);
-    });
-  });
+  const handleSignal = async (exitCode: number, reason: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try {
+      await markDone(reason);
+    } finally {
+      try {
+        db.close();
+      } catch {
+        /* already closed */
+      }
+      process.exit(exitCode);
+    }
+  };
 
-  // Output initial status
-  outputJson({
-    sessionId: session.id,
-    goal,
-    preset: presetName ?? contract?.name,
-    agents: status.agents.map((a) => ({
-      role: a.role,
-      sessionId: a.session.id,
-      status: a.session.status,
-    })),
-    message: `Session started with ${status.agents.length} agents`,
-  });
+  process.on("SIGINT", sigintHandler);
+  process.on("SIGTERM", sigtermHandler);
 
-  // Wait for session to complete — agents need time to work, submit, review, and call grove_done.
-  // Without this, the CLI exits immediately and the reviewer never gets routed events.
-  const SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-  const stopReason = await orchestrator.waitForCompletion(SESSION_TIMEOUT_MS);
-  await markDone(stopReason);
-  db.close();
+  try {
+    const session = await goalSessionStore.createSession({
+      goal,
+      presetName: presetName ?? contract?.name,
+      topology: resolution.topology,
+      config: contract,
+    });
+    sessionId = session.id;
+
+    // Mirror the session to Nexus so MCP servers spawned by agents (which set
+    // `GROVE_NEXUS_URL`) can resolve the frozen contract. Parallels the TUI
+    // path in NexusProvider.createSession — without this, grove-mcp's
+    // fail-closed check kills every agent spawned through `grove session
+    // start`. Best-effort with retries; a hard failure archives the orphan
+    // SQLite record and rethrows so the user sees the problem up front.
+    const nexusUrl = process.env.GROVE_NEXUS_URL;
+    const nexusApiKey = process.env.NEXUS_API_KEY;
+    if (nexusUrl) {
+      const { NexusHttpClient } = await import("../../nexus/nexus-http-client.js");
+      const { NexusSessionStore } = await import("../../nexus/nexus-session-store.js");
+      const nexusClient = new NexusHttpClient({
+        url: nexusUrl,
+        ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+      });
+      const zoneId = process.env.GROVE_ZONE_ID ?? "default";
+      const nexusSessionStore = new NexusSessionStore(nexusClient, zoneId);
+
+      const retryDelaysMs = [0, 200, 500, 1000];
+      let lastErr: unknown;
+      for (const delay of retryDelaysMs) {
+        if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+        try {
+          await nexusSessionStore.putSession(session);
+          lastErr = undefined;
+          break;
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+      if (lastErr) {
+        await goalSessionStore.archiveSession(session.id).catch(() => undefined);
+        throw new Error(
+          `Failed to mirror session ${session.id} to Nexus at ${nexusUrl}: ` +
+            `${lastErr instanceof Error ? lastErr.message : String(lastErr)}. ` +
+            `The local session has been archived; please retry.`,
+        );
+      }
+    }
+
+    // Create contribution store for polling-based routing (MCP runs in child processes)
+    const { SqliteContributionStore } = await import("../../local/sqlite-store.js");
+    const contributionStore = new SqliteContributionStore(db);
+
+    const orchestrator = new SessionOrchestrator({
+      goal,
+      contract: contract ?? { contractVersion: 3, name: presetName ?? "default" },
+      topology: resolution.topology,
+      runtime,
+      eventBus,
+      projectRoot: groveRoot,
+      workspaceBaseDir: join(groveDir, "workspaces"),
+      sessionId: session.id,
+      contributionStore,
+    });
+
+    let status: import("../../core/session-orchestrator.js").SessionStatus;
+    try {
+      status = await orchestrator.start();
+    } catch (err) {
+      // Mark session as cancelled on spawn failure. The outer finally still
+      // closes db and removes signal listeners.
+      await goalSessionStore.archiveSession(session.id);
+      throw err;
+    }
+
+    // Output initial status
+    outputJson({
+      sessionId: session.id,
+      goal,
+      preset: presetName ?? contract?.name,
+      agents: status.agents.map((a) => ({
+        role: a.role,
+        sessionId: a.session.id,
+        status: a.session.status,
+      })),
+      message: `Session started with ${status.agents.length} agents`,
+    });
+
+    // Wait for session to complete — agents need time to work, submit, review, and call grove_done.
+    // Without this, the CLI exits immediately and the reviewer never gets routed events.
+    const SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+    const stopReason = await orchestrator.waitForCompletion(SESSION_TIMEOUT_MS);
+    await markDone(stopReason);
+  } finally {
+    process.removeListener("SIGINT", sigintHandler);
+    process.removeListener("SIGTERM", sigtermHandler);
+    try {
+      db.close();
+    } catch {
+      /* already closed */
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -383,12 +401,6 @@ async function sessionStop(args: readonly string[]): Promise<void> {
 
     // Find the latest active session and archive it
     const sessions = await store.listSessions({ status: "active" });
-    if (sessions.length === 0) {
-      outputJson({ message: "No active session to stop" });
-      db.close();
-      return;
-    }
-
     const latest = sessions[0];
     if (!latest) {
       outputJson({ message: "No active session to stop" });

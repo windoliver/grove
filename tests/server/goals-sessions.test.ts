@@ -512,7 +512,7 @@ describe("POST /api/sessions (config snapshot)", () => {
     expect(getRes.status).toBe(200);
   });
 
-  test("session creation without server contract returns 501", async () => {
+  test("session creation without server contract and without preset returns 400", async () => {
     // Create a context without contract
     const tempDir2 = await (await import("node:fs/promises")).mkdtemp(
       (await import("node:path")).join((await import("node:os")).tmpdir(), "grove-no-contract-"),
@@ -536,7 +536,10 @@ describe("POST /api/sessions (config snapshot)", () => {
       body: JSON.stringify({ goal: "Should fail" }),
     });
 
-    expect(res.status).toBe(501);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe("VALIDATION_ERROR");
+    expect(body.error.message).toContain("contract or preset required");
     stores2.close();
     cas2.close();
     await (await import("node:fs/promises")).rm(tempDir2, { recursive: true, force: true });

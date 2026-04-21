@@ -280,7 +280,7 @@ export class NexusHandoffStore implements HandoffStore {
       if (
         (h.status === HandoffStatus.Delivered || h.status === HandoffStatus.Processed) &&
         h.replyDueAt !== undefined &&
-        h.replyDueAt < now
+        h.replyDueAt <= now
       ) {
         deadlineBreached = true;
         return { ...h, status: HandoffStatus.Expired };
@@ -337,7 +337,8 @@ export class NexusHandoffStore implements HandoffStore {
     const cutoff = now ?? new Date().toISOString();
     const expired: Handoff[] = [];
 
-    // Expire all non-terminal states: pending_pickup, delivered, processed.
+    // Expire all non-terminal states on past-or-equal deadlines:
+    // pending_pickup, delivered, processed.
     // Nexus creates handoffs as delivered by default, so restricting to
     // pending_pickup would leave every deadline-backed Nexus handoff
     // unresolvable forever. The state machine allows
@@ -353,7 +354,7 @@ export class NexusHandoffStore implements HandoffStore {
         if (
           expirableStatuses.has(h.status) &&
           h.replyDueAt !== undefined &&
-          h.replyDueAt < cutoff
+          h.replyDueAt <= cutoff
         ) {
           const updated = { ...h, status: HandoffStatus.Expired };
           expired.push(updated);

@@ -203,7 +203,12 @@ describe("logOperation", () => {
   test("respects limit and offset", async () => {
     for (let i = 0; i < 5; i++) {
       await contributeOperation(
-        { kind: "work", summary: `entry ${i}`, agent: { agentId: "a1" } },
+        {
+          kind: "work",
+          summary: `entry ${i}`,
+          createdAt: `2026-01-01T00:00:0${i}.000Z`,
+          agent: { agentId: "a1" },
+        },
         deps,
       );
     }
@@ -213,6 +218,15 @@ describe("logOperation", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.count).toBe(2);
+    expect(result.value.results[0]?.summary).toBe("entry 4");
+    expect(result.value.results[1]?.summary).toBe("entry 3");
+
+    const paged = await logOperation({ limit: 2, offset: 1 }, deps);
+    expect(paged.ok).toBe(true);
+    if (!paged.ok) return;
+    expect(paged.value.count).toBe(2);
+    expect(paged.value.results[0]?.summary).toBe("entry 3");
+    expect(paged.value.results[1]?.summary).toBe("entry 2");
   });
 });
 

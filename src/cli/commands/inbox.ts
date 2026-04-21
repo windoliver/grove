@@ -135,7 +135,7 @@ async function handleSend(args: readonly string[], groveOverride?: string): Prom
       console.log(`  to: ${recipients.join(", ")}`);
     }
   } finally {
-    stores.contributionStore.close();
+    stores.close();
   }
 }
 

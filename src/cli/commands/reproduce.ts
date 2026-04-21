@@ -7,9 +7,12 @@
  *   grove reproduce blake3:abc123 --summary "Partial" --result partial --json
  */
 
+import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { EnforcingContributionStore } from "../../core/enforcing-store.js";
 import { DefaultFrontierCalculator } from "../../core/frontier.js";
 import type { Score } from "../../core/models.js";
+import { ScoreDirection } from "../../core/models.js";
 import type { OperationDeps } from "../../core/operations/deps.js";
 import { reproduceOperation } from "../../core/operations/index.js";
 import { FsCas } from "../../local/fs-cas.js";
@@ -17,13 +20,18 @@ import { createSqliteStores } from "../../local/sqlite-store.js";
 import { resolveAgent } from "../agent.js";
 import { outputJson, outputJsonError } from "../format.js";
 import { resolveGroveDir } from "../utils/grove-dir.js";
+import { resolveContract } from "../utils/resolve-contract.js";
 
 export interface ReproduceOptions {
   readonly targetCid: string;
   readonly summary: string;
   readonly description?: string | undefined;
   readonly result: "confirmed" | "challenged" | "partial";
-  readonly scores: Readonly<Record<string, Score>>;
+  /**
+   * Raw parsed scores as name→value. Direction is deferred to `runReproduce`
+   * so we can honor the GROVE.md contract's metric direction when available.
+   */
+  readonly scores: Readonly<Record<string, number>>;
   readonly tags: readonly string[];
   readonly json: boolean;
 }
@@ -69,8 +77,10 @@ export function parseReproduceArgs(args: readonly string[]): ReproduceOptions {
     );
   }
 
-  // Parse scores from "name=value" format
-  const scores: Record<string, Score> = {};
+  // Parse scores from "name=value" format. Direction is resolved later
+  // against the contract (see runReproduce) so a metric configured as
+  // `minimize` in GROVE.md is not silently recorded as maximize.
+  const scores: Record<string, number> = {};
   for (const s of values.score as string[]) {
     const eq = s.indexOf("=");
     if (eq === -1) {
@@ -81,7 +91,7 @@ export function parseReproduceArgs(args: readonly string[]): ReproduceOptions {
     if (Number.isNaN(value)) {
       throw new Error(`Invalid score value for '${name}': not a number`);
     }
-    scores[name] = { value, direction: "maximize" };
+    scores[name] = value;
   }
 
   return {
@@ -102,17 +112,38 @@ export async function runReproduce(
 ): Promise<void> {
   const { dbPath, groveDir } = resolveGroveDir(groveOverride);
   const stores = createSqliteStores(dbPath);
-  const cas = new FsCas(`${groveDir}/cas`);
+  const cas = new FsCas(join(groveDir, "cas"));
   const frontier = new DefaultFrontierCalculator(stores.contributionStore);
 
   try {
+    // Resolve the contract so reproductions go through the same enforcement
+    // pipeline as contribute/discuss/review/inbox.
+    const contract = await resolveContract({
+      goalSessionStore: stores.goalSessionStore,
+      groveRoot: join(groveDir, ".."),
+      envSessionId: process.env.GROVE_SESSION_ID,
+    });
+
+    const contributionStore = contract
+      ? new EnforcingContributionStore(stores.contributionStore, contract, { cas })
+      : stores.contributionStore;
+
     const agent = resolveAgent();
     const opDeps: OperationDeps = {
-      contributionStore: stores.contributionStore,
+      contributionStore,
       claimStore: stores.claimStore,
       cas,
       frontier,
+      ...(contract !== undefined ? { contract } : {}),
     };
+
+    // Resolve score directions from the contract (defaults to maximize
+    // when unknown) so minimize-metrics aren't inverted.
+    const resolvedScores: Record<string, Score> = {};
+    for (const [name, value] of Object.entries(options.scores)) {
+      const direction = contract?.metrics?.[name]?.direction ?? ScoreDirection.Maximize;
+      resolvedScores[name] = { value, direction };
+    }
 
     const result = await reproduceOperation(
       {
@@ -120,7 +151,7 @@ export async function runReproduce(
         summary: options.summary,
         ...(options.description !== undefined ? { description: options.description } : {}),
         result: options.result,
-        ...(Object.keys(options.scores).length > 0 ? { scores: options.scores } : {}),
+        ...(Object.keys(resolvedScores).length > 0 ? { scores: resolvedScores } : {}),
         ...(options.tags.length > 0 ? { tags: options.tags } : {}),
         agent: { agentId: agent.agentId },
       },

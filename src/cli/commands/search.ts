@@ -111,17 +111,18 @@ export async function runSearch(
       return;
     }
 
-    // Fetch full Contribution objects for display formatting
-    const cids = result.value.results.map((r) => r.cid);
+    // Fetch only the top-N recency-sorted CIDs we will actually display.
+    // The operation already returns summaries that include createdAt, so we can
+    // sort/slice at summary level and avoid loading all full rows.
+    const cids = [...result.value.results]
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+      .slice(0, options.limit)
+      .map((r) => r.cid);
     const fullMap = await deps.store.getMany(cids);
     const full = cids
       .map((cid) => fullMap.get(cid))
       .filter((c): c is import("../../core/models.js").Contribution => c !== undefined);
-    const sorted = [...full]
-      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-      .slice(0, options.limit);
-
-    writer(formatContributions(sorted, { wide: options.wide }));
+    writer(formatContributions(full, { wide: options.wide }));
     return;
   }
 
@@ -136,21 +137,27 @@ export async function runSearch(
       .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
       .slice(0, options.limit);
   } else if (options.sort === "adoption") {
-    // Count adoption + derives_from relations pointing at each result
-    const allContributions = await deps.store.list();
+    // Count adoption + derives_from edges pointing at each result without
+    // scanning the entire DAG. We query incoming relations per candidate.
     const adoptionCounts = new Map<string, number>();
     for (const r of results) {
       adoptionCounts.set(r.cid, 0);
     }
-    for (const c of allContributions) {
-      for (const rel of c.relations) {
-        if (
-          (rel.relationType === "adopts" || rel.relationType === "derives_from") &&
-          adoptionCounts.has(rel.targetCid)
-        ) {
-          adoptionCounts.set(rel.targetCid, (adoptionCounts.get(rel.targetCid) ?? 0) + 1);
-        }
+    const incomingLists = await Promise.all(results.map((r) => deps.store.relatedTo(r.cid)));
+    for (let i = 0; i < results.length; i++) {
+      const resultItem = results[i];
+      if (resultItem === undefined) continue;
+      const incoming = incomingLists[i] ?? [];
+      let count = 0;
+      for (const child of incoming) {
+        const relevant = child.relations.some(
+          (rel) =>
+            rel.targetCid === resultItem.cid &&
+            (rel.relationType === "adopts" || rel.relationType === "derives_from"),
+        );
+        if (relevant) count += 1;
       }
+      adoptionCounts.set(resultItem.cid, count);
     }
     results = [...results]
       .sort((a, b) => (adoptionCounts.get(b.cid) ?? 0) - (adoptionCounts.get(a.cid) ?? 0))

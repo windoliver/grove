@@ -10,22 +10,16 @@
 
 import { z } from "zod";
 
+import { BountyStatus } from "../bounty.js";
+import { OperationErrorCode } from "./result.js";
+
 // ---------------------------------------------------------------------------
 // Shared building blocks
 // ---------------------------------------------------------------------------
 
 /** Error codes shared across all surfaces. */
-export const OperationErrorCodeSchema: z.ZodType = z.enum([
-  "CLAIM_CONFLICT",
-  "CONCURRENCY_LIMIT",
-  "RATE_LIMIT",
-  "ARTIFACT_LIMIT",
-  "RETRY_EXHAUSTED",
-  "LEASE_VIOLATION",
-  "NOT_FOUND",
-  "VALIDATION_ERROR",
-  "INTERNAL_ERROR",
-]);
+const OPERATION_ERROR_CODES = Object.values(OperationErrorCode) as [string, ...string[]];
+export const OperationErrorCodeSchema: z.ZodType = z.enum(OPERATION_ERROR_CODES);
 
 /** Structured error from an operation. */
 export const OperationErrorSchema: z.ZodType = z.object({
@@ -272,15 +266,8 @@ export const CheckStopResultSchema: z.ZodType = z.object({
 // ---------------------------------------------------------------------------
 
 /** Schema for BountyStatus enum values. */
-export const BountyStatusSchema: z.ZodType = z.enum([
-  "draft",
-  "open",
-  "claimed",
-  "completed",
-  "settled",
-  "expired",
-  "cancelled",
-]);
+const BOUNTY_STATUSES = Object.values(BountyStatus) as [string, ...string[]];
+export const BountyStatusSchema: z.ZodType = z.enum(BOUNTY_STATUSES);
 
 /** Schema for CreateBountyResult. */
 export const CreateBountyResultSchema: z.ZodType = z.object({

@@ -12,10 +12,8 @@ import { parseArgs } from "node:util";
 
 import type { Contribution } from "../../core/models.js";
 import { RelationType } from "../../core/models.js";
-import { treeOperation } from "../../core/operations/index.js";
 import type { CliDeps, Writer } from "../context.js";
 import { contributionsToDagNodes, formatDag, renderDag } from "../format-dag.js";
-import { toOperationDeps } from "../operation-adapter.js";
 
 const DEFAULT_DEPTH = 10;
 
@@ -51,7 +49,11 @@ export function parseTreeArgs(argv: string[]): TreeOptions {
 
 /**
  * Collect contributions reachable from a starting CID within a depth limit.
- * Performs a BFS over derives_from and adopts relations (outgoing edges).
+ * Performs a level-wise BFS over derives_from and adopts edges, batching
+ * `store.get` / `store.relatedTo` to avoid N+1 round-trips on deep graphs.
+ *
+ * For each visited node we already have the outgoing relations in memory
+ * (on the fetched Contribution), so only incoming edges need a DB call.
  */
 async function collectSubgraph(
   deps: CliDeps,
@@ -59,39 +61,85 @@ async function collectSubgraph(
   maxDepth: number,
 ): Promise<readonly Contribution[]> {
   const visited = new Map<string, Contribution>();
-  const queue: { cid: string; depth: number }[] = [{ cid: fromCid, depth: 0 }];
+  let frontier: readonly { cid: string; depth: number }[] = [{ cid: fromCid, depth: 0 }];
 
-  while (queue.length > 0) {
-    const item = queue.shift();
-    if (item === undefined) break;
-    if (visited.has(item.cid) || item.depth > maxDepth) continue;
+  while (frontier.length > 0) {
+    // Batch-fetch all nodes in the current frontier that we haven't seen yet.
+    const current = dedupeByCid(frontier).filter((f) => !visited.has(f.cid) && f.depth <= maxDepth);
+    const toFetch = current.map((f) => f.cid);
+    const fetched =
+      toFetch.length > 0 ? await deps.store.getMany(toFetch) : new Map<string, Contribution>();
 
-    const contribution = await deps.store.get(item.cid);
-    if (contribution === undefined) continue;
-
-    visited.set(item.cid, contribution);
-
-    // Follow derives_from and adopts edges (ancestors)
-    for (const rel of contribution.relations) {
-      if (
-        (rel.relationType === "derives_from" || rel.relationType === "adopts") &&
-        !visited.has(rel.targetCid)
-      ) {
-        queue.push({ cid: rel.targetCid, depth: item.depth + 1 });
+    const expandable: Array<{ cid: string; depth: number; contribution: Contribution }> = [];
+    for (const { cid, depth } of current) {
+      const contribution = fetched.get(cid);
+      if (contribution === undefined) continue;
+      visited.set(cid, contribution);
+      if (depth < maxDepth) {
+        expandable.push({ cid, depth, contribution });
       }
     }
 
-    // Follow incoming derives_from and adopts edges (children of this node)
-    const derivesChildren = await deps.store.relatedTo(item.cid, RelationType.DerivesFrom);
-    const adoptsChildren = await deps.store.relatedTo(item.cid, RelationType.Adopts);
-    for (const child of [...derivesChildren, ...adoptsChildren]) {
-      if (!visited.has(child.cid)) {
-        queue.push({ cid: child.cid, depth: item.depth + 1 });
+    const nextFrontier = new Map<string, number>();
+    const enqueue = (cid: string, depth: number): void => {
+      if (visited.has(cid)) return;
+      const prev = nextFrontier.get(cid);
+      if (prev === undefined || depth < prev) {
+        nextFrontier.set(cid, depth);
+      }
+    };
+
+    // Outgoing edges live on the contribution — no DB call needed.
+    for (const { depth, contribution } of expandable) {
+      for (const rel of contribution.relations) {
+        if (
+          (rel.relationType === "derives_from" || rel.relationType === "adopts") &&
+          !visited.has(rel.targetCid)
+        ) {
+          enqueue(rel.targetCid, depth + 1);
+        }
       }
     }
+
+    // Incoming edges: fetch all current frontier nodes in parallel, then
+    // filter for derives_from/adopts in memory.
+    const incomingLists = await Promise.all(expandable.map((n) => deps.store.relatedTo(n.cid)));
+    for (let i = 0; i < expandable.length; i++) {
+      const node = expandable[i];
+      if (node === undefined) continue;
+      const incoming = incomingLists[i] ?? [];
+      for (const child of incoming) {
+        if (visited.has(child.cid)) continue;
+        const hasEdge = child.relations.some(
+          (rel) =>
+            rel.targetCid === node.cid &&
+            (rel.relationType === RelationType.DerivesFrom ||
+              rel.relationType === RelationType.Adopts),
+        );
+        if (hasEdge) {
+          enqueue(child.cid, node.depth + 1);
+        }
+      }
+    }
+
+    frontier = [...nextFrontier.entries()].map(([cid, depth]) => ({ cid, depth }));
   }
 
   return [...visited.values()];
+}
+
+function dedupeByCid(nodes: readonly { cid: string; depth: number }[]): readonly {
+  cid: string;
+  depth: number;
+}[] {
+  const byCid = new Map<string, number>();
+  for (const node of nodes) {
+    const prev = byCid.get(node.cid);
+    if (prev === undefined || node.depth < prev) {
+      byCid.set(node.cid, node.depth);
+    }
+  }
+  return [...byCid.entries()].map(([cid, depth]) => ({ cid, depth }));
 }
 
 export async function runTree(
@@ -102,18 +150,12 @@ export async function runTree(
   let contributions: readonly Contribution[];
 
   if (options.from !== undefined) {
-    // Use the treeOperation to validate the CID exists, then collect full subgraph
-    // for DAG rendering (the operation only returns summaries, but we need full
-    // Contribution objects for the DAG renderer).
-    const result = await treeOperation(
-      { cid: options.from, direction: "both" },
-      toOperationDeps(deps),
-    );
-
-    if (!result.ok) {
+    // Validate the CID exists before walking. Previously this double-walked:
+    // one traversal via treeOperation, then another in collectSubgraph.
+    const root = await deps.store.get(options.from);
+    if (root === undefined) {
       throw new Error(`Contribution '${options.from}' not found.`);
     }
-
     contributions = await collectSubgraph(deps, options.from, options.depth);
   } else {
     // Full graph

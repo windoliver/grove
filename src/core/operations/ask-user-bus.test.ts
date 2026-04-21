@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import type { Contribution, ContributionInput } from "../models.js";
 import { ContributionKind, ContributionMode, RelationType } from "../models.js";
 import { InMemoryContributionStore } from "../testing.js";
-import { answerQuestion, listPendingQuestions, submitQuestion } from "./ask-user-bus.js";
+import { answerQuestion, getAnswer, listPendingQuestions, submitQuestion } from "./ask-user-bus.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -136,6 +136,29 @@ describe("answerQuestion", () => {
       ),
     ).rejects.toThrow(/not a question/);
   });
+
+  test("rejects second answer for the same question", async () => {
+    const store = new InMemoryContributionStore();
+    const question = await submitQuestion(
+      store,
+      { agent: AGENT_CODER, question: "Can I merge now?" },
+      mockComputeCid,
+    );
+
+    await answerQuestion(
+      store,
+      { questionCid: question.cid, answer: "Yes", operator: OPERATOR },
+      mockComputeCid,
+    );
+
+    await expect(
+      answerQuestion(
+        store,
+        { questionCid: question.cid, answer: "No", operator: OPERATOR },
+        mockComputeCid,
+      ),
+    ).rejects.toThrow(/already answered/);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -261,5 +284,90 @@ describe("listPendingQuestions", () => {
     expect(cids).toContain(q1.cid);
     expect(cids).toContain(q2.cid);
     expect(cids).toContain(q3.cid);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getAnswer
+// ---------------------------------------------------------------------------
+
+describe("getAnswer", () => {
+  test("returns the latest answer text when multiple answers exist", async () => {
+    const store = new InMemoryContributionStore();
+    const question = await submitQuestion(
+      store,
+      { agent: AGENT_CODER, question: "Ship now?" },
+      mockComputeCid,
+    );
+
+    // Bypass answerQuestion's single-answer guard to simulate historical
+    // data containing multiple answers for one question.
+    const oldAnswer: Contribution = {
+      cid: mockComputeCid({
+        kind: ContributionKind.Discussion,
+        mode: ContributionMode.Exploration,
+        summary: "old answer",
+        description: "old answer",
+        artifacts: {},
+        relations: [{ targetCid: question.cid, relationType: RelationType.RespondsTo }],
+        tags: ["ask-user", "answer"],
+        context: { ephemeral: true, ask_user_answer: true, answer_text: "old answer" },
+        agent: OPERATOR,
+        createdAt: "2026-01-01T00:00:00Z",
+      }),
+      manifestVersion: 1,
+      kind: ContributionKind.Discussion,
+      mode: ContributionMode.Exploration,
+      summary: "old answer",
+      description: "old answer",
+      artifacts: {},
+      relations: [{ targetCid: question.cid, relationType: RelationType.RespondsTo }],
+      tags: ["ask-user", "answer"],
+      context: { ephemeral: true, ask_user_answer: true, answer_text: "old answer" },
+      agent: OPERATOR,
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    const newAnswer: Contribution = {
+      cid: mockComputeCid({
+        kind: ContributionKind.Discussion,
+        mode: ContributionMode.Exploration,
+        summary: "new answer",
+        description: "new answer",
+        artifacts: {},
+        relations: [{ targetCid: question.cid, relationType: RelationType.RespondsTo }],
+        tags: ["ask-user", "answer"],
+        context: { ephemeral: true, ask_user_answer: true, answer_text: "new answer" },
+        agent: OPERATOR,
+        createdAt: "2026-01-02T00:00:00Z",
+      }),
+      manifestVersion: 1,
+      kind: ContributionKind.Discussion,
+      mode: ContributionMode.Exploration,
+      summary: "new answer",
+      description: "new answer",
+      artifacts: {},
+      relations: [{ targetCid: question.cid, relationType: RelationType.RespondsTo }],
+      tags: ["ask-user", "answer"],
+      context: { ephemeral: true, ask_user_answer: true, answer_text: "new answer" },
+      agent: OPERATOR,
+      createdAt: "2026-01-02T00:00:00Z",
+    };
+    await store.put(oldAnswer);
+    await store.put(newAnswer);
+
+    const answer = await getAnswer(store, question.cid);
+    expect(answer).toBe("new answer");
+  });
+
+  test("returns undefined when question has no answer", async () => {
+    const store = new InMemoryContributionStore();
+    const question = await submitQuestion(
+      store,
+      { agent: AGENT_CODER, question: "Any blockers?" },
+      mockComputeCid,
+    );
+
+    const answer = await getAnswer(store, question.cid);
+    expect(answer).toBeUndefined();
   });
 });

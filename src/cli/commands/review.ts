@@ -7,9 +7,12 @@
  *   grove review blake3:abc123 --summary "Needs work" --score quality=0.3 --json
  */
 
+import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { EnforcingContributionStore } from "../../core/enforcing-store.js";
 import { DefaultFrontierCalculator } from "../../core/frontier.js";
 import type { Score } from "../../core/models.js";
+import { ScoreDirection } from "../../core/models.js";
 import type { OperationDeps } from "../../core/operations/deps.js";
 import { reviewOperation } from "../../core/operations/index.js";
 import { FsCas } from "../../local/fs-cas.js";
@@ -17,12 +20,18 @@ import { createSqliteStores } from "../../local/sqlite-store.js";
 import { resolveAgent } from "../agent.js";
 import { outputJson, outputJsonError } from "../format.js";
 import { resolveGroveDir } from "../utils/grove-dir.js";
+import { resolveContract } from "../utils/resolve-contract.js";
 
 export interface ReviewOptions {
   readonly targetCid: string;
   readonly summary: string;
   readonly description?: string | undefined;
-  readonly scores: Readonly<Record<string, Score>>;
+  /**
+   * Raw parsed scores as name→value. Direction is deferred to `runReview`
+   * so we can honor the GROVE.md contract's metric direction when available,
+   * rather than blindly defaulting to maximize.
+   */
+  readonly scores: Readonly<Record<string, number>>;
   readonly tags: readonly string[];
   readonly json: boolean;
 }
@@ -60,8 +69,10 @@ export function parseReviewArgs(args: readonly string[]): ReviewOptions {
     throw new Error("--summary is required for grove review");
   }
 
-  // Parse scores from "name=value" format
-  const scores: Record<string, Score> = {};
+  // Parse scores from "name=value" format. Direction is resolved later
+  // against the contract (see runReview) so a metric configured as
+  // `minimize` in GROVE.md is not silently recorded as maximize.
+  const scores: Record<string, number> = {};
   for (const s of values.score as string[]) {
     const eq = s.indexOf("=");
     if (eq === -1) {
@@ -72,7 +83,7 @@ export function parseReviewArgs(args: readonly string[]): ReviewOptions {
     if (Number.isNaN(value)) {
       throw new Error(`Invalid score value for '${name}': not a number`);
     }
-    scores[name] = { value, direction: "maximize" };
+    scores[name] = value;
   }
 
   return {
@@ -89,24 +100,46 @@ export function parseReviewArgs(args: readonly string[]): ReviewOptions {
 export async function runReview(options: ReviewOptions, groveOverride?: string): Promise<void> {
   const { dbPath, groveDir } = resolveGroveDir(groveOverride);
   const stores = createSqliteStores(dbPath);
-  const cas = new FsCas(`${groveDir}/cas`);
+  const cas = new FsCas(join(groveDir, "cas"));
   const frontier = new DefaultFrontierCalculator(stores.contributionStore);
 
   try {
+    // Resolve the contract so reviews go through the same enforcement
+    // pipeline as contribute/discuss/inbox. Without this, GROVE.md rate
+    // limits and role-kind rules silently don't apply to reviews.
+    const contract = await resolveContract({
+      goalSessionStore: stores.goalSessionStore,
+      groveRoot: join(groveDir, ".."),
+      envSessionId: process.env.GROVE_SESSION_ID,
+    });
+
+    const contributionStore = contract
+      ? new EnforcingContributionStore(stores.contributionStore, contract, { cas })
+      : stores.contributionStore;
+
     const agent = resolveAgent();
     const opDeps: OperationDeps = {
-      contributionStore: stores.contributionStore,
+      contributionStore,
       claimStore: stores.claimStore,
       cas,
       frontier,
+      ...(contract !== undefined ? { contract } : {}),
     };
+
+    // Resolve score directions from the contract (defaults to maximize
+    // when unknown) so minimize-metrics aren't inverted.
+    const resolvedScores: Record<string, Score> = {};
+    for (const [name, value] of Object.entries(options.scores)) {
+      const direction = contract?.metrics?.[name]?.direction ?? ScoreDirection.Maximize;
+      resolvedScores[name] = { value, direction };
+    }
 
     const result = await reviewOperation(
       {
         targetCid: options.targetCid,
         summary: options.summary,
         ...(options.description !== undefined ? { description: options.description } : {}),
-        ...(Object.keys(options.scores).length > 0 ? { scores: options.scores } : {}),
+        ...(Object.keys(resolvedScores).length > 0 ? { scores: resolvedScores } : {}),
         ...(options.tags.length > 0 ? { tags: options.tags } : {}),
         agent: { agentId: agent.agentId },
       },

@@ -64,6 +64,18 @@ function makeOptions(cwd: string, preset: string, name: string): InitOptions {
   };
 }
 
+function makeBareOptions(cwd: string, name: string): InitOptions {
+  return {
+    name,
+    mode: "evaluation",
+    seed: [],
+    metric: [],
+    force: false,
+    agentOverrides: {},
+    cwd,
+  };
+}
+
 /** Read and parse grove.json from a temp dir */
 function readGroveJson(dir: string): GroveConfig {
   const raw = readFileSync(join(dir, ".grove", "grove.json"), "utf-8");
@@ -1024,6 +1036,34 @@ describe("Re-init with --force", () => {
     expect(config.mode).toBe("local");
     expect(config.nexusManaged).toBeUndefined();
     expect(config.preset).toBe("research-loop");
+  });
+});
+
+// ============================================================================
+// 7. bare init (no --preset)
+// ============================================================================
+
+describe("grove init without --preset", () => {
+  test("creates .grove/ structure without writing GROVE.md", async () => {
+    const dir = await createTempDir("bare");
+    await executeInit(makeBareOptions(dir, "bare project"));
+
+    expect(existsSync(join(dir, ".grove"))).toBe(true);
+    expect(existsSync(join(dir, ".grove", "grove.db"))).toBe(true);
+    expect(existsSync(join(dir, ".grove", "cas"))).toBe(true);
+    expect(existsSync(join(dir, ".grove", "workspaces"))).toBe(true);
+    expect(existsSync(join(dir, ".grove", "grove.json"))).toBe(true);
+    expect(existsSync(join(dir, "GROVE.md"))).toBe(false);
+  });
+
+  test("grove.json is written with preset=undefined and mode=local", async () => {
+    const dir = await createTempDir("bare-grove-json");
+    await executeInit(makeBareOptions(dir, "bare project"));
+
+    const config = readGroveJson(dir);
+    expect(config.preset).toBeUndefined();
+    expect(config.mode).toBe("local");
+    expect(config.name).toBe("bare project");
   });
 });
 

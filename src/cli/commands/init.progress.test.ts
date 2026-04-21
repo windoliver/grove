@@ -40,7 +40,7 @@ describe("executeInit progress callback", () => {
   test("fires progress events in order", async () => {
     const steps: { step: number; label: string }[] = [];
 
-    await executeInit(makeOptions(), (step, label) => {
+    await executeInit(makeOptions({ preset: "review-loop" }), (step, label) => {
       steps.push({ step, label });
     });
 
@@ -76,7 +76,7 @@ describe("executeInit progress callback", () => {
   });
 
   test("grove is fully initialized after all steps", async () => {
-    await executeInit(makeOptions());
+    await executeInit(makeOptions({ preset: "review-loop" }));
 
     expect(existsSync(join(tmpDir, ".grove"))).toBe(true);
     expect(existsSync(join(tmpDir, ".grove", "grove.db"))).toBe(true);
@@ -95,7 +95,7 @@ describe("executeInit progress step count", () => {
   test("fires all 6 defined progress steps", async () => {
     const steps: number[] = [];
 
-    await executeInit(makeOptions(), (step) => {
+    await executeInit(makeOptions({ preset: "review-loop" }), (step) => {
       steps.push(step);
     });
 

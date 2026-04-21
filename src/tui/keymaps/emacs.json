@@ -1,0 +1,8 @@
+{
+  "keymap": {
+    "quit": "C-x C-c",
+    "help": "C-h",
+    "palette": "M-x",
+    "search_start": "C-s"
+  }
+}

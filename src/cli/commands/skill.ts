@@ -55,14 +55,20 @@ export async function handleSkillInstall(args: SkillInstallArgs): Promise<void> 
     );
   }
 
-  const written: string[] = [];
-  for (const target of targets) {
-    const dir = resolvePath(target.path);
-    await mkdir(dir, { recursive: true });
-    const filePath = join(dir, "SKILL.md");
-    await writeFile(filePath, content, "utf-8");
-    written.push(filePath);
-    console.log(`  ${target.platform}: ${filePath}`);
+  // Installs are independent across targets — parallelize the mkdir/write
+  // so the common case of 2-3 targets doesn't serialize fs round-trips.
+  const written = await Promise.all(
+    targets.map(async (target) => {
+      const dir = resolvePath(target.path);
+      await mkdir(dir, { recursive: true });
+      const filePath = join(dir, "SKILL.md");
+      await writeFile(filePath, content, "utf-8");
+      return { platform: target.platform, filePath };
+    }),
+  );
+
+  for (const { platform, filePath } of written) {
+    console.log(`  ${platform}: ${filePath}`);
   }
 
   console.log(`\nInstalled SKILL.md to ${written.length} target(s).`);

@@ -165,8 +165,7 @@ async function readNexusUrlFromConfig(
       // change the port (e.g. after conflict resolution) while grove.json
       // keeps the stale snapshot, silently routing agents at a dead port.
       if (config.nexusManaged && config.mode === "nexus") {
-        const { readNexusUrl } = await import("../cli/nexus-lifecycle.js");
-        const yamlUrl = readNexusUrl(join(groveDir, ".."));
+        const yamlUrl = readNexusUrlFromYaml(join(groveDir, ".."));
         if (yamlUrl) return { url: yamlUrl, fromExplicit: false };
       }
 
@@ -181,13 +180,8 @@ async function readNexusUrlFromConfig(
       };
 
       if (parsed.nexusManaged && parsed.mode === "nexus") {
-        try {
-          const { readNexusUrl } = await import("../cli/nexus-lifecycle.js");
-          const yamlUrl = readNexusUrl(join(groveDir, ".."));
-          if (yamlUrl) return { url: yamlUrl, fromExplicit: false };
-        } catch {
-          // nexus-lifecycle not available
-        }
+        const yamlUrl = readNexusUrlFromYaml(join(groveDir, ".."));
+        if (yamlUrl) return { url: yamlUrl, fromExplicit: false };
       }
 
       if (parsed.nexusUrl) return { url: parsed.nexusUrl, fromExplicit: true };
@@ -195,6 +189,22 @@ async function readNexusUrlFromConfig(
     }
   } catch {
     return none;
+  }
+}
+
+/** Parse managed Nexus URL from project-local nexus.yaml (ports.http). */
+function readNexusUrlFromYaml(projectRoot: string): string | undefined {
+  const yamlPath = join(projectRoot, "nexus.yaml");
+  if (!existsSync(yamlPath)) return undefined;
+  try {
+    const raw = readFileSync(yamlPath, "utf-8");
+    const match = raw.match(/^\s*http:\s*(\d{1,5})\s*$/m);
+    if (!match?.[1]) return undefined;
+    const port = Number(match[1]);
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) return undefined;
+    return `http://localhost:${port}`;
+  } catch {
+    return undefined;
   }
 }
 
@@ -277,8 +287,11 @@ export async function loadTopology(backend: ResolvedBackend): Promise<AgentTopol
     return undefined;
   }
 
-  // Local + nexus: read from local GROVE.md contract.
-  // For nexus mode the grove.json is local, so GROVE.md should be adjacent.
+  // Local + nexus: read from local GROVE.md contract. When GROVE.md is
+  // absent (bare init or user-deleted, per #200), fall back to grove.json's
+  // preset field so the TUI can still render roles and spawn agents —
+  // otherwise resume always lands on "No roles defined" even though the
+  // server-side session carries a full topology snapshot.
   try {
     const { parseGroveContract } = await import("../core/contract.js");
     const { groveDir } = resolveGroveDir(backend.groveOverride);
@@ -287,6 +300,16 @@ export async function loadTopology(backend: ResolvedBackend): Promise<AgentTopol
       const raw = await Bun.file(grovemdPath).text();
       const contract = parseGroveContract(raw);
       return contract.topology;
+    }
+    // GROVE.md absent — resolve via grove.json preset
+    const groveJsonPath = join(groveDir, "grove.json");
+    if (existsSync(groveJsonPath)) {
+      const cfg = (await Bun.file(groveJsonPath).json()) as { preset?: unknown };
+      if (typeof cfg.preset === "string" && cfg.preset.length > 0) {
+        const { getPreset } = await import("../cli/presets/index.js");
+        const preset = getPreset(cfg.preset);
+        if (preset?.topology) return preset.topology;
+      }
     }
   } catch {
     // Topology is optional
@@ -357,6 +380,20 @@ export async function loadContract(
     if (existsSync(grovemdPath)) {
       const raw = readFileSync(grovemdPath, "utf-8");
       return parseGroveContract(raw);
+    }
+    // GROVE.md absent — synthesize contract from grove.json preset (#200).
+    // Keeps existing TUI paths that rely on a contract (dashboard header,
+    // preset picker default, contract-based resume hints) working when the
+    // project was bare-init'd.
+    const groveJsonPath = join(groveDir, "grove.json");
+    if (existsSync(groveJsonPath)) {
+      const cfg = JSON.parse(readFileSync(groveJsonPath, "utf-8")) as { preset?: unknown };
+      if (typeof cfg.preset === "string" && cfg.preset.length > 0) {
+        const { getPreset } = await import("../cli/presets/index.js");
+        const { presetToSessionConfig } = await import("../cli/presets/index.js");
+        const preset = getPreset(cfg.preset);
+        if (preset) return presetToSessionConfig(preset, cfg.preset);
+      }
     }
   } catch {
     // Contract is optional
