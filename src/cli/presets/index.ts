@@ -5,6 +5,7 @@
  * configuration. Used by `grove init --preset <name>`.
  */
 
+import { type GroveContract, parseGroveContract } from "../../core/contract.js";
 import type { CorePresetConfig } from "../../core/presets.js";
 import type { AgentTopology } from "../../core/topology.js";
 import type {
@@ -14,6 +15,7 @@ import type {
   MetricEntry,
   StopConditionsConfig,
 } from "../grove-md-builder.js";
+import { buildGroveMd, presetToGroveMdConfig } from "../grove-md-builder.js";
 import { explorationPreset } from "./exploration.js";
 import { federatedSwarmPreset } from "./federated-swarm.js";
 import { prReviewPreset } from "./pr-review.js";
@@ -105,4 +107,28 @@ export function getPreset(name: string): PresetConfig | undefined {
 /** List all available preset names. */
 export function listPresetNames(): readonly string[] {
   return Object.keys(getPresetRegistry());
+}
+
+// ---------------------------------------------------------------------------
+// Preset → GroveContract conversion
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a `GroveContract` from a preset by round-tripping through
+ * `buildGroveMd` + `parseGroveContract`. This is the same pipeline that
+ * `grove init --preset <name>` uses on disk — same output, same validation
+ * surface. Used by the server when no GROVE.md is loaded and a caller
+ * supplies a preset name on `POST /api/sessions`.
+ *
+ * `name` is the grove-level name (e.g. the goal or a caller-supplied
+ * identifier). The preset's own `name` is the preset ID
+ * (e.g. "review-loop") and is not used here.
+ */
+export function presetToSessionConfig(preset: PresetConfig, name: string): GroveContract {
+  const mdConfig = presetToGroveMdConfig(
+    { ...preset, presetDescription: preset.description },
+    { name, description: preset.description },
+  );
+  const md = buildGroveMd(mdConfig);
+  return parseGroveContract(md);
 }

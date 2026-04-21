@@ -10,6 +10,8 @@
 
 import { Hono } from "hono";
 import { z } from "zod";
+import { getPreset, presetToSessionConfig } from "../../cli/presets/index.js";
+import type { GroveContract } from "../../core/contract.js";
 import { lookupPresetTopology } from "../../core/presets.js";
 import type { Session } from "../../core/session.js";
 import type { AgentTopology } from "../../core/topology.js";
@@ -70,17 +72,6 @@ export const sessions: Hono<ServerEnv> = new Hono<ServerEnv>();
 sessions.post("/", async (c) => {
   const { goalSessionStore, contract } = c.get("deps");
   if (!goalSessionStore) return notConfigured(c, "Goal/session store is not configured");
-  if (!contract) {
-    return c.json(
-      {
-        error: {
-          code: "NOT_CONFIGURED",
-          message: "No contract loaded — cannot snapshot session config",
-        },
-      },
-      501,
-    );
-  }
 
   const body = await c.req.json();
   const parsed = createSessionSchema.safeParse(body);
@@ -90,6 +81,46 @@ sessions.post("/", async (c) => {
 
   // Normalize: accept both "preset" and "presetName"
   const presetName = parsed.data.preset ?? parsed.data.presetName;
+
+  // Resolve base config: frozen snapshot source for this session.
+  // - Prefer a server-loaded GROVE.md (runtime.contract) when present.
+  // - Otherwise fall back to preset resolution; #198/#199 mean the
+  //   session's frozen config is what drives enforcement, so callers
+  //   who supply a preset don't need a contract on the server.
+  // - Reject when neither is available so misconfiguration surfaces.
+  let baseConfig: GroveContract | undefined;
+  if (contract) {
+    baseConfig = contract;
+  } else if (presetName) {
+    const preset = getPreset(presetName);
+    if (!preset) {
+      return c.json(
+        {
+          error: {
+            code: "VALIDATION_ERROR",
+            message: `Unknown preset '${presetName}'`,
+          },
+        },
+        400,
+      );
+    }
+    baseConfig = presetToSessionConfig(preset, presetName);
+  } else {
+    return c.json(
+      {
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "contract or preset required when no GROVE.md is loaded",
+        },
+      },
+      400,
+    );
+  }
+
+  // Invariant: the block above either assigns baseConfig or returns.
+  if (!baseConfig) {
+    throw new Error("unreachable: baseConfig must be assigned or the request must have returned");
+  }
 
   // Parse inline topology — try snake_case wire format first, then validate as camelCase
   let inlineTopology: AgentTopology | undefined;
@@ -142,7 +173,9 @@ sessions.post("/", async (c) => {
   // topology with the resolved topology from the request (which may include
   // TUI-edited edge config like replyTimeoutSeconds). Without this override,
   // the server's config.topology would silently discard per-session edits.
-  const sessionConfig = resolvedTopology ? { ...contract, topology: resolvedTopology } : contract;
+  const sessionConfig = resolvedTopology
+    ? { ...baseConfig, topology: resolvedTopology }
+    : baseConfig;
 
   const session = await goalSessionStore.createSession({
     goal: parsed.data.goal,

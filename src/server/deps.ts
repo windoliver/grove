@@ -20,6 +20,17 @@ import type { GoalSessionStore } from "../local/sqlite-goal-session-store.js";
 /** Dependencies injected into the Hono application. */
 export interface ServerDeps {
   readonly contributionStore: ContributionStore;
+  /**
+   * Factory for session-scoped contribution stores. Optional: when provided,
+   * HTTP routes that accept `?sessionId=` construct a scoped store per request
+   * so the Nexus FTS index is read from `/zones/{zoneId}/sessions/{sessionId}/`
+   * rather than the zone root. When omitted, routes fall back to the global
+   * `contributionStore` (zone-wide).
+   *
+   * Required in Nexus mode because MCP agents write to session-scoped VFS
+   * paths; the HTTP list API would otherwise return [] for any session query.
+   */
+  readonly contributionStoreForSession?: ((sessionId: string) => ContributionStore) | undefined;
   readonly claimStore: ClaimStore;
   readonly cas: ContentStore;
   readonly frontier: FrontierCalculator;

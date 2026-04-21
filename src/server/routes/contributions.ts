@@ -261,6 +261,16 @@ contributions.post("/", async (c) => {
 
   let opDeps = toOperationDeps(serverDeps);
 
+  // Session-scoped store: when sessionId is present and a factory is wired
+  // (Nexus mode), swap the contribution store so writes land at the
+  // session-scoped VFS path — matching where MCP agents write. Without this
+  // the HTTP submit path would write to the zone root while MCP writes go to
+  // sessions/{sessionId}/, splitting the data across two directories.
+  const scopedContributionStore =
+    parsed.sessionId && serverDeps.contributionStoreForSession
+      ? serverDeps.contributionStoreForSession(parsed.sessionId)
+      : serverDeps.contributionStore;
+
   // Session-scoped enforcement: override contract with session config
   if (parsed.sessionId) {
     const { goalSessionStore } = serverDeps;
@@ -289,7 +299,7 @@ contributions.post("/", async (c) => {
         400,
       );
     }
-    opDeps = { ...opDeps, contract: sessionConfig };
+    opDeps = { ...opDeps, contract: sessionConfig, contributionStore: scopedContributionStore };
   }
 
   const result = await contributeOperation(input, opDeps);
@@ -307,21 +317,31 @@ contributions.post("/", async (c) => {
         await goalSessionStore.addContributionToSession(parsed.sessionId, result.value.cid);
       } catch {
         // Fetch the full contribution but flag attachment failure
-        const contribution = await serverDeps.contributionStore.get(result.value.cid);
+        const contribution = await scopedContributionStore.get(result.value.cid);
         return c.json({ ...contribution, _attachmentFailed: true }, 201);
       }
     }
   }
 
   // Fetch the full contribution to preserve the existing response shape
-  const contribution = await serverDeps.contributionStore.get(result.value.cid);
+  const contribution = await scopedContributionStore.get(result.value.cid);
   return c.json(contribution, 201);
 });
 
 /** GET /api/contributions — List contributions with filters. */
 contributions.get("/", zValidator("query", listQuerySchema), async (c) => {
-  const { contributionStore, outcomeStore } = c.get("deps");
+  const deps = c.get("deps");
+  const { outcomeStore } = deps;
   const raw = c.req.valid("query");
+
+  // When a sessionId is present and the deps expose a session-scoped factory
+  // (Nexus mode), build a per-request store so list()/count() hit the
+  // session-scoped FTS index instead of the zone root. Falls back to the
+  // process-global store when no factory is wired (tests, local-only mode).
+  const listStore =
+    raw.sessionId !== undefined && deps.contributionStoreForSession !== undefined
+      ? deps.contributionStoreForSession(raw.sessionId)
+      : deps.contributionStore;
 
   // When outcome filter is specified, we must fetch ALL matching contributions
   // (without limit/offset), filter by outcome status, then paginate manually.
@@ -335,7 +355,7 @@ contributions.get("/", zValidator("query", listQuerySchema), async (c) => {
     }
 
     const baseQuery = toContributionQuery({ ...raw, limit: undefined, offset: undefined });
-    const allResults = await contributionStore.list(baseQuery);
+    const allResults = await listStore.list(baseQuery);
 
     const cids = allResults.map((r) => r.cid);
     const outcomes = await outcomeStore.getBatch(cids);
@@ -354,9 +374,9 @@ contributions.get("/", zValidator("query", listQuerySchema), async (c) => {
   }
 
   const query = toContributionQuery(raw);
-  const results = await contributionStore.list(query);
+  const results = await listStore.list(query);
 
-  const total = await contributionStore.count({
+  const total = await listStore.count({
     kind: query.kind,
     mode: query.mode,
     tags: query.tags,

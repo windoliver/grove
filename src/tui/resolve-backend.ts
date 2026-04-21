@@ -287,8 +287,11 @@ export async function loadTopology(backend: ResolvedBackend): Promise<AgentTopol
     return undefined;
   }
 
-  // Local + nexus: read from local GROVE.md contract.
-  // For nexus mode the grove.json is local, so GROVE.md should be adjacent.
+  // Local + nexus: read from local GROVE.md contract. When GROVE.md is
+  // absent (bare init or user-deleted, per #200), fall back to grove.json's
+  // preset field so the TUI can still render roles and spawn agents —
+  // otherwise resume always lands on "No roles defined" even though the
+  // server-side session carries a full topology snapshot.
   try {
     const { parseGroveContract } = await import("../core/contract.js");
     const { groveDir } = resolveGroveDir(backend.groveOverride);
@@ -297,6 +300,16 @@ export async function loadTopology(backend: ResolvedBackend): Promise<AgentTopol
       const raw = await Bun.file(grovemdPath).text();
       const contract = parseGroveContract(raw);
       return contract.topology;
+    }
+    // GROVE.md absent — resolve via grove.json preset
+    const groveJsonPath = join(groveDir, "grove.json");
+    if (existsSync(groveJsonPath)) {
+      const cfg = (await Bun.file(groveJsonPath).json()) as { preset?: unknown };
+      if (typeof cfg.preset === "string" && cfg.preset.length > 0) {
+        const { getPreset } = await import("../cli/presets/index.js");
+        const preset = getPreset(cfg.preset);
+        if (preset?.topology) return preset.topology;
+      }
     }
   } catch {
     // Topology is optional
@@ -367,6 +380,20 @@ export async function loadContract(
     if (existsSync(grovemdPath)) {
       const raw = readFileSync(grovemdPath, "utf-8");
       return parseGroveContract(raw);
+    }
+    // GROVE.md absent — synthesize contract from grove.json preset (#200).
+    // Keeps existing TUI paths that rely on a contract (dashboard header,
+    // preset picker default, contract-based resume hints) working when the
+    // project was bare-init'd.
+    const groveJsonPath = join(groveDir, "grove.json");
+    if (existsSync(groveJsonPath)) {
+      const cfg = JSON.parse(readFileSync(groveJsonPath, "utf-8")) as { preset?: unknown };
+      if (typeof cfg.preset === "string" && cfg.preset.length > 0) {
+        const { getPreset } = await import("../cli/presets/index.js");
+        const { presetToSessionConfig } = await import("../cli/presets/index.js");
+        const preset = getPreset(cfg.preset);
+        if (preset) return presetToSessionConfig(preset, cfg.preset);
+      }
     }
   } catch {
     // Contract is optional

@@ -12,8 +12,8 @@ import { parseArgs } from "node:util";
 
 import type { AgentOverrides } from "../agent.js";
 import { resolveAgent } from "../agent.js";
-import { buildGroveMd, defaultGroveMdConfig, type GroveMdConfig } from "../grove-md-builder.js";
-import { getPreset, listPresetNames, type PresetConfig } from "../presets/index.js";
+import { buildGroveMd, presetToGroveMdConfig } from "../grove-md-builder.js";
+import { getPreset, listPresetNames } from "../presets/index.js";
 
 // ---------------------------------------------------------------------------
 // Argument parsing
@@ -39,6 +39,11 @@ export interface InitOptions {
  *
  * Usage: grove init [name] [--seed <path>...] [--mode <mode>] [--metric <name:direction>...]
  *        [--description <text>] [--force] [--preset <name>]
+ *
+ * Without `--preset`, init creates a bare `.grove/` and does NOT write
+ * `GROVE.md` — sessions configure themselves from a preset at start time.
+ * With `--preset`, init also generates `GROVE.md` as human-readable
+ * project-level defaults.
  */
 export function parseInitArgs(args: readonly string[]): InitOptions {
   const { values, positionals } = parseArgs({
@@ -138,7 +143,7 @@ export interface InitDeps {
  * 2. Validate seed paths exist
  * 3. Create .grove/ directory structure
  * 4. Initialize SQLite store
- * 5. Generate GROVE.md (from preset or defaults)
+ * 5. Generate GROVE.md (only when a preset is provided)
  * 6. Write grove.json
  * 7. Seed demo contributions if preset defines them
  * 8. Optionally ingest seed artifacts
@@ -187,14 +192,18 @@ export async function executeInit(
   // Everything below runs under try/finally so db.close() always fires — a
   // failure writing GROVE.md, grove.json, or seeding must not leak the DB.
   try {
-    // 5. Generate GROVE.md
-    progress(3, "Generating GROVE.md contract");
-    const grovemdPath = join(options.cwd, "GROVE.md");
-    const mdConfig = preset
-      ? presetToGroveMdConfig(preset, options)
-      : defaultGroveMdConfig(options);
-    const grovemdContent = buildGroveMd(mdConfig);
-    await writeFile(grovemdPath, grovemdContent, "utf-8");
+    // 5. Generate GROVE.md (only when a preset is provided — bare init leaves
+    //    GROVE.md absent so PolicyEnforcer reads from session config #199).
+    if (preset) {
+      progress(3, "Generating GROVE.md contract");
+      const grovemdPath = join(options.cwd, "GROVE.md");
+      const mdConfig = presetToGroveMdConfig(
+        { ...preset, presetDescription: preset.description },
+        { name: options.name, description: options.description },
+      );
+      const grovemdContent = buildGroveMd(mdConfig);
+      await writeFile(grovemdPath, grovemdContent, "utf-8");
+    }
 
     // 6. Write grove.json
     progress(4, "Writing configuration");
@@ -363,32 +372,6 @@ export async function executeInit(
     console.log("\nNext: run 'grove up' to start, or 'grove contribute' to publish work.");
   }
   return { grovePath };
-}
-
-// ---------------------------------------------------------------------------
-// Preset → GroveMdConfig conversion
-// ---------------------------------------------------------------------------
-
-function presetToGroveMdConfig(preset: PresetConfig, options: InitOptions): GroveMdConfig {
-  const description = options.description ?? preset.description;
-  return {
-    contractVersion: preset.topology ? 3 : 2,
-    name: options.name,
-    description,
-    mode: preset.mode,
-    metrics: preset.metrics,
-    topology: preset.topology,
-    gates: preset.gates,
-    stopConditions: preset.stopConditions,
-    concurrency: preset.concurrency,
-    execution: preset.execution,
-    body:
-      `# ${options.name}\n\n${description}\n\n` +
-      `> The topology above is the **default** for this grove. ` +
-      `Override it per-session:\n` +
-      `> \`grove session start --preset <name> --goal "..."\`\n` +
-      `> or via the API: \`POST /api/sessions { "preset": "<name>" }\``,
-  };
 }
 
 // ---------------------------------------------------------------------------
