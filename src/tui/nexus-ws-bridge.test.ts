@@ -319,6 +319,113 @@ describe("NexusWsBridge", () => {
     bridge.close();
   });
 
+  test("readAndPush formats routed contribution with CID for direct tool invocation", async () => {
+    const runtime = makeMockRuntime();
+
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          result: {
+            data: Buffer.from(
+              JSON.stringify({
+                sender: "coder",
+                payload: {
+                  cid: "blake3:abc123",
+                  kind: "work",
+                  summary: "implement auth module",
+                  agentId: "coder-1",
+                },
+              }),
+            ).toString("base64"),
+          },
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+
+    const bridge = new TestableNexusWsBridge(makeBridgeOpts({ runtime }));
+    const session = makeSession("reviewer");
+    bridge.registerSession("reviewer", session);
+
+    bridge.testHandleEvent(
+      "reviewer",
+      "message_delivered",
+      JSON.stringify({
+        event: "message_delivered",
+        message_id: "msg-cid-1",
+        sender: "coder",
+        recipient: "reviewer",
+        type: "event",
+        path: "/inbox/msg-cid-1",
+      }),
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(runtime.send).toHaveBeenCalledTimes(1);
+    const sendCall = (runtime.send as ReturnType<typeof mock>).mock.calls[0];
+    const notification = sendCall![1] as string;
+    expect(notification).toContain("blake3:abc123");
+    expect(notification).toContain("New work from coder");
+    expect(notification).toContain("implement auth module");
+    expect(notification).toContain("grove_submit_review");
+    expect(notification).not.toContain("[IPC from coder]");
+
+    bridge.close();
+  });
+
+  test("readAndPush uses kind-specific action text for review contributions", async () => {
+    const runtime = makeMockRuntime();
+
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          result: {
+            data: Buffer.from(
+              JSON.stringify({
+                sender: "reviewer",
+                payload: {
+                  cid: "blake3:review1",
+                  kind: "review",
+                  summary: "fix the race condition in handler.ts",
+                  agentId: "reviewer-1",
+                },
+              }),
+            ).toString("base64"),
+          },
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+
+    const bridge = new TestableNexusWsBridge(makeBridgeOpts({ runtime }));
+    const session = makeSession("coder");
+    bridge.registerSession("coder", session);
+
+    bridge.testHandleEvent(
+      "coder",
+      "message_delivered",
+      JSON.stringify({
+        event: "message_delivered",
+        message_id: "msg-review-1",
+        sender: "reviewer",
+        recipient: "coder",
+        type: "event",
+        path: "/inbox/msg-review-1",
+      }),
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(runtime.send).toHaveBeenCalledTimes(1);
+    const notification = (runtime.send as ReturnType<typeof mock>).mock.calls[0]![1] as string;
+    // A review arriving at the coder should prompt updated work, NOT another review.
+    expect(notification).toContain("blake3:review1");
+    expect(notification).toContain("New review from reviewer");
+    expect(notification).toContain("grove_submit_work");
+    expect(notification).not.toContain("grove_submit_review");
+
+    bridge.close();
+  });
+
   test("readAndPush handles VFS read failure gracefully", async () => {
     const runtime = makeMockRuntime();
 
@@ -716,6 +823,110 @@ describe("NexusWsBridge", () => {
     // Wait for async readAndPush
     await new Promise((r) => setTimeout(r, 20));
     expect(markDelivered).not.toHaveBeenCalled();
+    bridge.close();
+  });
+
+  // --- connect() readiness ---
+
+  test("connect resolves when every role registers successfully", async () => {
+    // Registration accepts any 2xx; stream probe also requires real
+    // text/event-stream content-type to count as ready.
+    globalThis.fetch = ((url: string) => {
+      if (url.includes("/api/v2/ipc/stream/")) {
+        return Promise.resolve(
+          new Response("", { status: 200, headers: { "content-type": "text/event-stream" } }),
+        );
+      }
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    const bridge = new NexusWsBridge(makeBridgeOpts());
+    await expect(bridge.connect(1000)).resolves.toBeUndefined();
+    bridge.close();
+  });
+
+  test("connect accepts 409 Conflict as idempotent registration success", async () => {
+    // coder registers fresh (200); reviewer returns 409 (already registered).
+    let regCalls = 0;
+    globalThis.fetch = ((url: string) => {
+      if (url.includes("/api/v2/agents/register")) {
+        regCalls += 1;
+        return Promise.resolve(new Response("", { status: regCalls === 1 ? 200 : 409 }));
+      }
+      if (url.includes("/api/v2/ipc/stream/")) {
+        return Promise.resolve(
+          new Response("", { status: 200, headers: { "content-type": "text/event-stream" } }),
+        );
+      }
+      return Promise.resolve(new Response("", { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    const bridge = new NexusWsBridge(makeBridgeOpts());
+    await expect(bridge.connect(1000)).resolves.toBeUndefined();
+    bridge.close();
+  });
+
+  test("connect rejects when probe returns 2xx without event-stream content-type", async () => {
+    globalThis.fetch = ((url: string) => {
+      if (url.includes("/api/v2/ipc/stream/")) {
+        // 2xx but plain text/html — a misconfigured proxy scenario.
+        return Promise.resolve(
+          new Response("not a stream", {
+            status: 200,
+            headers: { "content-type": "text/html" },
+          }),
+        );
+      }
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    const bridge = new NexusWsBridge(makeBridgeOpts());
+    await expect(bridge.connect(1000)).rejects.toThrow(/not event-stream/);
+    bridge.close();
+  });
+
+  test("connect rejects when any role fails to register", async () => {
+    // First call (coder) returns 200, second (reviewer) returns 500.
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response("", { status: calls === 1 ? 200 : 500 });
+    }) as unknown as typeof fetch;
+
+    const bridge = new NexusWsBridge(makeBridgeOpts());
+    await expect(bridge.connect(1000)).rejects.toThrow(/reviewer: HTTP 500/);
+    bridge.close();
+  });
+
+  test("connect rejects with timeout when registration hangs", async () => {
+    globalThis.fetch = ((_url: string, init?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        // Reject when the AbortSignal fires; otherwise never settle.
+        init?.signal?.addEventListener("abort", () => {
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+      })) as unknown as typeof fetch;
+
+    const bridge = new NexusWsBridge(makeBridgeOpts());
+    await expect(bridge.connect(50)).rejects.toThrow(/timeout after 50ms/);
+    bridge.close();
+  });
+
+  test("connect rejects when SSE stream probe returns non-2xx", async () => {
+    // Registration succeeds (POST /agents/register returns 200) but the
+    // stream probe (GET /ipc/stream/<role>) returns 403 — simulating a
+    // deployment where registration is permissive but stream auth is not.
+    globalThis.fetch = ((url: string) => {
+      if (url.includes("/api/v2/ipc/stream/")) {
+        return Promise.resolve(new Response("", { status: 403 }));
+      }
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    const bridge = new NexusWsBridge(makeBridgeOpts());
+    await expect(bridge.connect(1000)).rejects.toThrow(/stream handshake failed.*HTTP 403/);
     bridge.close();
   });
 });

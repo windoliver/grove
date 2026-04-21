@@ -10,13 +10,14 @@
 import { execSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { watchTurnError } from "../acp/watch-turn.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { AgentIdentity } from "../core/models.js";
-import { resolveMcpServePath } from "../core/resolve-mcp-serve-path.js";
+import { resolveBundledSkillsRoot, resolveMcpServePath } from "../core/resolve-mcp-serve-path.js";
 import { parseAcpxSessionId } from "../core/session-id.js";
+import { injectSkills } from "../core/skill-injector.js";
 import type { AgentTopology } from "../core/topology.js";
 import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
 import type { WorkspaceIsolationPolicy, WorkspaceMode } from "../core/workspace-provisioner.js";
@@ -24,29 +25,14 @@ import { provisionWorkspace } from "../core/workspace-provisioner.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
+// ---------------------------------------------------------------------------
+import type { AcpSessionStore } from "./data/acp-session-store.js";
 import { AgentLogBuffer } from "./data/agent-log-buffer.js";
+import { projectSessionToBuffer } from "./data/session-log-projector.js";
 import { loadTraceHistory, saveTraceHistory } from "./data/trace-persistence.js";
 import { debugLog } from "./debug-log.js";
 import type { NexusWsBridge } from "./nexus-ws-bridge.js";
 import type { TuiDataProvider } from "./provider.js";
-
-// ---------------------------------------------------------------------------
-// Module-level global timer tracking
-// ---------------------------------------------------------------------------
-// SpawnManager may be recreated when appProps change (useMemo in tui-app.tsx).
-// A new instance can't clear timers owned by the old instance. Using a module
-// global ensures ALL contribution poll timers are cleared regardless of which
-// instance started them.
-const _allGlobalContribTimers: ReturnType<typeof setInterval>[] = [];
-function clearAllGlobalContribTimers(): void {
-  for (const t of _allGlobalContribTimers) {
-    clearInterval(t);
-  }
-  _allGlobalContribTimers.length = 0;
-}
-
-import type { AcpSessionStore } from "./data/acp-session-store.js";
-import { projectSessionToBuffer } from "./data/session-log-projector.js";
 import type { PersistedSpawnRecord, SessionStore } from "./session-store.js";
 
 /** PR context injected as env vars when spawning agents. */
@@ -61,6 +47,12 @@ interface SpawnRecord {
   readonly claimId: string;
   readonly targetRef: string;
   readonly agentId: string;
+  /**
+   * Role name this spawn was registered under. Distinct from `agentId`
+   * (which is the spawnId `role-timestamp`) — the bridge is role-keyed,
+   * so kill() needs the role name to cancel the right SSE loop.
+   */
+  readonly role?: string;
 }
 
 /** Result of a spawn attempt. */
@@ -98,17 +90,10 @@ export class SpawnManager {
   private workspaceIsolationPolicy: WorkspaceIsolationPolicy = "allow-fallback";
   private topology: AgentTopology | undefined;
   private logPollTimer: ReturnType<typeof setInterval> | null = null;
-  // Track ALL interval handles — prevents "lost handle" leak when startContributionPolling
-  // is called multiple times (e.g. when React effect deps change during session startup).
-  private allContributionPollTimers: ReturnType<typeof setInterval>[] = [];
-  private readonly seenCids = new Set<string>();
   // spawnIds that should receive IPC routing — populated when agents are spawned
   // or explicitly reattached for the CURRENT session. Prevents routing to stale
   // sessions from previous sessions that reconcile() found still alive in acpx.
   private readonly routableSessions = new Set<string>();
-  private onContributionDetected:
-    | ((c: import("../core/models.js").Contribution) => void)
-    | undefined;
 
   constructor(
     provider: TuiDataProvider,
@@ -137,9 +122,129 @@ export class SpawnManager {
     return this.acpSessionStore;
   }
 
+  /**
+   * Delivery readiness state. Multi-role topologies need an attached
+   * NexusWsBridge (polling was removed by design); single-role
+   * topologies don't care. States:
+   *   "pending"  — bridge init is in flight; spawn() for multi-role
+   *                topologies must wait until resolve to avoid starting
+   *                agents before their IPC subscriptions are live.
+   *   "ready"    — bridge registered (or no delivery required); spawn
+   *                freely.
+   *   "disabled" — bridge permanently failed or misconfigured; spawn()
+   *                rejects immediately regardless of topology (operator
+   *                has been warned; don't accumulate more work).
+   *
+   * Default is "ready" — a manager without any declared topology has no
+   * cross-role delivery needs, so spawn should proceed. A multi-role
+   * topology assignment (via setTopology) flips the state to "pending"
+   * until the bridge wires up (setWsBridge / markDeliveryReady) or
+   * fails (markDeliveryDisabled).
+   */
+  private deliveryState: "pending" | "ready" | "disabled" = "ready";
+  private deliveryDisabledReason: string | undefined;
+  private deliveryReadyWaiters: Array<{
+    resolve: () => void;
+    reject: (e: Error) => void;
+  }> = [];
+
+  markDeliveryDisabled(reason: string): void {
+    this.deliveryState = "disabled";
+    this.deliveryDisabledReason = reason;
+    const err = new Error(`Inter-agent delivery disabled: ${reason}`);
+    const waiters = this.deliveryReadyWaiters;
+    this.deliveryReadyWaiters = [];
+    for (const w of waiters) w.reject(err);
+  }
+
+  /**
+   * Mark delivery ready without requiring a NexusWsBridge. Used by
+   * tmux-only test harnesses that don't need cross-agent IPC: they
+   * assert "this session has no IPC dependency" so `spawn()` can
+   * proceed against the `pending` → `ready` state machine. Real
+   * multi-role sessions flow through `setWsBridge()` instead.
+   */
+  markDeliveryReady(): void {
+    if (this.deliveryState === "disabled") return;
+    this.deliveryState = "ready";
+    const waiters = this.deliveryReadyWaiters;
+    this.deliveryReadyWaiters = [];
+    for (const w of waiters) w.resolve();
+  }
+
+  /**
+   * Wait until the bridge transitions to "ready" or "disabled". Default
+   * timeout (120s) covers the full bridge init retry budget plus margin.
+   * One connect() attempt = provisionAgents(10s) + probeStreams(10s) =
+   * 20s; 4 attempts × 20s + exp backoff (0.5+1+2s = 3.5s) = ~83.5s worst
+   * case. The timer here is only a safety net — bridge init always
+   * resolves or rejects (finite retries, bounded fetches), so spawn
+   * waiters normally settle via setWsBridge/markDeliveryDisabled, not
+   * this timeout.
+   */
+  private async waitForDelivery(timeoutMs = 120000): Promise<void> {
+    if (this.deliveryState === "ready") return;
+    if (this.deliveryState === "disabled") {
+      throw new Error(`Inter-agent delivery disabled: ${this.deliveryDisabledReason ?? "unknown"}`);
+    }
+    await new Promise<void>((resolve, reject) => {
+      // Remove `entry` from the pending waiters list so repeated spawn
+      // attempts while readiness never resolves don't accumulate stale
+      // closures. Called from every terminal branch (timeout, resolve,
+      // reject) to guarantee single-removal.
+      let entry: { resolve: () => void; reject: (e: Error) => void };
+      const cleanup = (): void => {
+        const idx = this.deliveryReadyWaiters.indexOf(entry);
+        if (idx !== -1) this.deliveryReadyWaiters.splice(idx, 1);
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`bridge readiness timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      // Don't keep the event loop alive solely for a readiness timer —
+      // a shutdown during init should be able to exit without waiting.
+      (timer as unknown as { unref?: () => void }).unref?.();
+      entry = {
+        resolve: () => {
+          clearTimeout(timer);
+          cleanup();
+          resolve();
+        },
+        reject: (e) => {
+          clearTimeout(timer);
+          cleanup();
+          reject(e);
+        },
+      };
+      this.deliveryReadyWaiters.push(entry);
+    });
+  }
+
   /** Attach a NexusWsBridge for push-based IPC. Call after construction. */
   setWsBridge(bridge: NexusWsBridge): void {
+    // Topology-drift guard: if the topology changed while bridge init
+    // was in flight (e.g. preset swap during connect()), the bridge we
+    // just received was provisioned/probed against the OLD role set.
+    // Attaching it and flipping delivery to `ready` would create a
+    // fail-open window where spawns proceed against a bridge whose
+    // registration and SSE loops don't cover the current roles. Fail
+    // closed instead — operator must restart after topology settles.
+    if (this.topology !== undefined) {
+      const currentRoles = new Set(this.topology.roles.map((r) => r.name));
+      const provisionedRoles = new Set(bridge.getProvisionedRoleNames());
+      const mismatch =
+        currentRoles.size !== provisionedRoles.size ||
+        [...currentRoles].some((r) => !provisionedRoles.has(r));
+      if (mismatch) {
+        this.wsBridge = bridge;
+        this.markDeliveryDisabled(
+          "bridge provisioned for stale topology; restart TUI after topology settles",
+        );
+        return;
+      }
+    }
     this.wsBridge = bridge;
+    this.markDeliveryReady();
     // Register any sessions that were spawned before the bridge was ready.
     // The bridge is created async (dynamic import) so agents may already be running.
     //
@@ -218,7 +323,57 @@ export class SpawnManager {
    * Call before spawning when the topology is known (e.g. after preset selection).
    */
   setTopology(topology: AgentTopology | undefined): void {
+    const prevRoles = new Set(this.topology?.roles.map((r) => r.name) ?? []);
+    const nextRoles = new Set(topology?.roles.map((r) => r.name) ?? []);
+    const prevRoleCount = prevRoles.size;
     this.topology = topology;
+    const newRoleCount = nextRoles.size;
+
+    // A session change to single-role or undefined topology clears
+    // both "disabled" and "pending" states: both were scoped to a
+    // prior multi-role topology's bridge requirement. Single-role
+    // sessions don't need cross-role IPC, so spawn() should proceed
+    // immediately without waiting. Resolve any pending waiters so
+    // they can spawn now.
+    if (newRoleCount <= 1 && prevRoleCount !== newRoleCount) {
+      if (this.deliveryState === "disabled") {
+        this.deliveryState = "ready";
+        this.deliveryDisabledReason = undefined;
+      } else if (this.deliveryState === "pending") {
+        this.markDeliveryReady();
+      }
+    }
+
+    // Multi-role topology means cross-role IPC is expected — the bridge
+    // must be attached before spawning. Transition to pending so spawn()
+    // waits for setWsBridge / markDeliveryDisabled to settle. Guards:
+    //   - Never downgrade "disabled" (operator warning already fired
+    //     for a multi-role session; don't mask it).
+    //   - When a bridge is already attached AND the role set matches the
+    //     bridge's provisioned set, skip the re-pending step — topology
+    //     is often re-applied AFTER bridge init completes in the normal
+    //     flow, and re-pending would stall every spawn its full 120s
+    //     budget despite a healthy bridge.
+    //   - When a bridge is attached but the role set CHANGED, the
+    //     bridge was provisioned/probed for the old roles and cannot
+    //     safely service the new ones (registration, SSE, and health
+    //     are all per-role and scoped to construction-time topology).
+    //     Fail closed rather than silently let spawns through against
+    //     a bridge that never probed the new roles.
+    if (this.deliveryState === "disabled") return;
+    if (topology !== undefined && topology.roles.length > 1) {
+      if (this.wsBridge !== undefined) {
+        const roleSetChanged =
+          prevRoles.size !== nextRoles.size || [...nextRoles].some((r) => !prevRoles.has(r));
+        if (roleSetChanged) {
+          this.markDeliveryDisabled(
+            "topology role set changed after bridge attached; restart TUI to re-probe",
+          );
+        }
+        return;
+      }
+      this.deliveryState = "pending";
+    }
   }
 
   /**
@@ -235,6 +390,58 @@ export class SpawnManager {
     context?: Record<string, unknown>,
   ): Promise<SpawnResult> {
     debugLog("spawn", `role=${roleId} command=${command}`);
+    // Fail closed on delivery state:
+    //   disabled → refuse ONLY when the current topology actually
+    //              needs cross-role IPC (multi-role). A single-role
+    //              topology arriving after a prior multi-role disable
+    //              has no IPC dependency; spawn should proceed.
+    //   pending  → wait for setWsBridge / markDeliveryDisabled to settle.
+    //   ready    → spawn. Default state is "ready"; multi-role topology
+    //              flips it to pending in setTopology.
+    //
+    // Gate scope is split into two axes:
+    //   - isMultiRole  — cross-role IPC is part of the session's contract
+    //   - hasRuntime   — there is an AgentRuntime that would actually deliver
+    //
+    // `disabled` must reject every multi-role spawn regardless of runtime:
+    // failing closed is the whole point of the state. A tmux-only harness
+    // that explicitly disabled delivery should also refuse to spawn — that's
+    // how the operator signaled "this session cannot deliver."
+    //
+    // `pending` is fatal for multi-role regardless of runtime: the whole
+    // point of the state is "cross-role IPC is contractually required but
+    // not yet wired." With no runtime, there's no way to ever wire it —
+    // waiting would deadlock, and skipping the wait would silently spawn
+    // agents whose handoffs will never deliver. Fail closed. A tmux-only
+    // harness that genuinely wants multi-role without IPC must explicitly
+    // call markDeliveryDisabled (to flip the state to a loud-failure
+    // mode) or markDeliveryReady (to assert IPC is not needed); pending
+    // itself is never a valid green-light for multi-role spawns.
+    const isMultiRole = (this.topology?.roles.length ?? 0) > 1;
+    if (this.deliveryState === "disabled" && isMultiRole) {
+      throw new Error(
+        `Refusing to spawn ${roleId}: Inter-agent delivery disabled: ${
+          this.deliveryDisabledReason ?? "unknown"
+        }. Restart the TUI after Nexus is reachable.`,
+      );
+    }
+    if (this.deliveryState === "pending" && isMultiRole) {
+      if (this.agentRuntime === undefined) {
+        throw new Error(
+          `Refusing to spawn ${roleId}: Multi-role topology requires a runtime-backed NexusWsBridge, ` +
+            `but no AgentRuntime is configured. Tmux-only harnesses must call ` +
+            `markDeliveryDisabled() or markDeliveryReady() explicitly before spawning.`,
+        );
+      }
+      try {
+        await this.waitForDelivery();
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `Refusing to spawn ${roleId}: ${detail}. Restart the TUI after Nexus is reachable.`,
+        );
+      }
+    }
     const spawnId = `${roleId}-${Date.now().toString(36)}`;
     const agent: AgentIdentity = {
       agentId: spawnId,
@@ -296,6 +503,20 @@ export class SpawnManager {
           await this.writeAgentInstructions(workspacePath, roleId, context);
           if (context?.rolePrompt || context?.roleDescription) {
             await this.writeAgentContext(workspacePath, roleId, context);
+          }
+          // Inject skills declared by the role. SpawnManager does not use the shared
+          // bootstrapWorkspace; the parallel path performs the same injection to land
+          // `.claude/skills/{name}/` and `.codex/skills/{name}/` in the workspace.
+          const roleSkills = Array.isArray(context?.skills)
+            ? (context.skills as readonly string[])
+            : [];
+          if (roleSkills.length > 0 && this.groveDir) {
+            await injectSkills({
+              workspacePath,
+              skills: roleSkills,
+              bundledSkillsRoot: resolveBundledSkillsRoot(dirname(this.groveDir)),
+              workspaceOverrideRoot: join(this.groveDir, "skills"),
+            });
           }
           // Protect config files from agent mutation (#7 Workspace Mutation Constraints)
           const { chmod } = await import("node:fs/promises");
@@ -460,6 +681,7 @@ export class SpawnManager {
       claimId: "",
       targetRef: spawnId,
       agentId: spawnId,
+      role: roleId,
     });
     // Store the actual runtime session ID so reconcile() can correctly
     // match stored records to live acpx sessions. Without this, reconcile
@@ -519,7 +741,19 @@ export class SpawnManager {
     if (tracked) {
       this.spawnRecords.delete(killedAgentId);
       this.sessionStore?.remove(killedAgentId);
-      this.wsBridge?.unregisterSession(killedAgentId);
+      // Bridge is role-keyed (NexusWsBridge tracks sessions + per-role
+      // AbortControllers by role name), but `killedAgentId` is the
+      // spawnId (`role-timestamp`). Passing spawnId here would miss the
+      // registered entry, leave the SSE loop running, and allow the
+      // stale loop to fire onRoleUnhealthy or consume events after kill.
+      //
+      // Ownership-check the unregister so killing one spawn of a role
+      // does not cut off a sibling spawn sharing the same role (e.g. two
+      // `coder` instances under `maxInstances > 1`). The bridge only
+      // releases the role binding when the currently-registered session
+      // id matches the killed session's id.
+      const roleKey = tracked.role ?? agentSession?.role ?? killedAgentId;
+      this.wsBridge?.unregisterSession(roleKey, agentSession?.id);
       // AcpSessionStore is keyed by the runtime's agentSession.id (e.g.
       // `grove-coder-0-abc123`), which may differ from `killedAgentId`
       // (the spawn-manager's agentId key). Prefer the captured
@@ -732,174 +966,6 @@ export class SpawnManager {
   }
 
   /**
-   * Route a contribution to downstream agents via topology edges.
-   *
-   * This is the local IPC mechanism: when a contribution appears from a source
-   * role, look up topology edges and push a message to each target role's
-   * agent session via runtime.send().
-   */
-  async routeContribution(
-    sourceRole: string,
-    summary: string,
-    kind: string,
-    topology?: import("../core/topology.js").AgentTopology,
-  ): Promise<void> {
-    debugLog(
-      "route",
-      `from=${sourceRole} kind=${kind} summary="${summary.slice(0, 60)}" hasTopology=${!!topology} hasRuntime=${!!this.agentRuntime}`,
-    );
-    if (!topology || !this.agentRuntime) return;
-
-    // Find target roles from topology edges or broadcast mode
-    const sourceRoleDef = topology.roles.find((r) => r.name === sourceRole);
-    if (!sourceRoleDef) return;
-
-    // Find source workspace path
-    let sourceWorkspace: string | undefined;
-    for (const spawnId of this.spawnRecords.keys()) {
-      if (spawnId.startsWith(sourceRole) && this.groveDir) {
-        sourceWorkspace = join(this.groveDir, "workspaces", spawnId);
-        break;
-      }
-    }
-    // Also check agentSessions keys (reconciled sessions use role as key)
-    if (!sourceWorkspace && this.groveDir) {
-      for (const key of this.agentSessions.keys()) {
-        if (key.startsWith(sourceRole)) {
-          sourceWorkspace = join(this.groveDir, "workspaces", key);
-          break;
-        }
-      }
-    }
-
-    // Broadcast mode: notify all other roles. Explicit: follow edges.
-    const targetRoles =
-      sourceRoleDef.mode === "broadcast"
-        ? topology.roles.filter((r) => r.name !== sourceRole).map((r) => r.name)
-        : (sourceRoleDef.edges ?? []).map((e) => e.target);
-    if (targetRoles.length === 0) return;
-    debugLog(
-      "route",
-      `targetRoles=${targetRoles.join(",")} agentSessions=[${[...this.agentSessions.keys()].join(",")}] routableSessions=[${[...this.routableSessions].join(",")}]`,
-    );
-    for (const targetRole of targetRoles) {
-      let foundSpawnId: string | undefined;
-      // Find the agent session for this target role
-      for (const [spawnId, session] of this.agentSessions) {
-        if (spawnId.startsWith(targetRole)) {
-          foundSpawnId = spawnId;
-          // Sync source workspace files to target workspace before sending IPC.
-          // Each agent has its own git worktree — files created by one agent
-          // are invisible to others without syncing.
-          if (sourceWorkspace && this.groveDir) {
-            const targetWorkspace = join(this.groveDir, "workspaces", spawnId);
-            debugLog("route", `rsync ${sourceWorkspace} → ${targetWorkspace}`);
-            try {
-              execSync(
-                `rsync -a --exclude='.git' --exclude='.mcp.json' --exclude='.acpxrc.json' --exclude='CODEX.md' --exclude='CLAUDE.md' --exclude='.grove-role' "${sourceWorkspace}/" "${targetWorkspace}/"`,
-                { stdio: "pipe", timeout: 10_000 },
-              );
-              debugLog("route", `rsync done`);
-            } catch (rsyncErr) {
-              debugLog(
-                "route",
-                `rsync failed: ${rsyncErr instanceof Error ? rsyncErr.message : String(rsyncErr)}`,
-              );
-            }
-          }
-
-          const message = `[IPC from ${sourceRole}] New ${kind}: ${summary}. Please review and respond.`;
-
-          // Only route to sessions that are marked routable (spawned or explicitly
-          // reattached for the current session). Prevents IPC delivery to stale
-          // sessions from previous sessions that reconcile() found still alive.
-          const isRoutable = this.routableSessions.has(spawnId);
-          debugLog(
-            "route",
-            `step: spawnId=${spawnId} routable=${isRoutable} sessionId=${session.id} sessionRole=${session.role} sessionStatus=${session.status} wsBridge=${!!this.wsBridge}`,
-          );
-          if (!isRoutable) {
-            debugLog("route", `SKIP: not routable, breaking`);
-            break;
-          }
-          if (this.wsBridge) {
-            debugLog("route", `wsBridge path: calling wsBridge.send(${sourceRole}→${targetRole})`);
-            // Nexus IPC path: wsBridge.send() stores the message in the agent's inbox,
-            // then NexusWsBridge SSE delivers it via runtime.send().
-            // If wsBridge fails (Nexus unhealthy), fall back to direct runtime.send()
-            // so the reviewer always receives the IPC.
-            let _wsBridgeDelivered = false;
-            try {
-              await (this.wsBridge as import("./nexus-ws-bridge.js").NexusWsBridge).send(
-                sourceRole,
-                targetRole,
-                { summary, kind },
-              );
-              _wsBridgeDelivered = true;
-              debugLog("route", `wsBridge.send succeeded for ${sourceRole}→${targetRole}`);
-            } catch (bridgeErr) {
-              debugLog(
-                "route",
-                `wsBridge.send FAILED: ${bridgeErr instanceof Error ? bridgeErr.message : String(bridgeErr)} — falling back to agentRuntime.send`,
-              );
-            }
-            // ALWAYS deliver directly via agentRuntime — wsBridge.send stores
-            // the message in Nexus for the IPC log, but SSE delivery to the
-            // codex process is unreliable. Direct runtime.send is the only
-            // guaranteed way to push text into the agent's tmux session.
-            debugLog("route", `direct: agentRuntime.send(sessionId=${session.id})`);
-            try {
-              // send() resolution only means the child process was started;
-              // post-spawn failures land on turn.result as stopReason:"error".
-              // Drain in the background so a failed handoff is at least
-              // visible to operators instead of silently marked delivered.
-              const turn = await this.agentRuntime.send(session, message);
-              debugLog("route", `agentRuntime.send succeeded`);
-              // Surface post-spawn delivery failures through stderr too —
-              // debugLog is gated behind GROVE_DEBUG=1, so in normal
-              // operation a silent turn.result error would make failed
-              // routing invisible to the operator.
-              watchTurnError(turn, `route ${sourceRole}→${targetRole}`, (m) => {
-                debugLog("route", m);
-                process.stderr.write(`${m}\n`);
-              });
-            } catch (sendErr) {
-              debugLog(
-                "route",
-                `agentRuntime.send FAILED: ${sendErr instanceof Error ? sendErr.message : String(sendErr)}`,
-              );
-            }
-          } else {
-            // Local path (no Nexus): direct runtime.send() is the only delivery mechanism.
-            debugLog("route", `local path: calling agentRuntime.send(sessionId=${session.id})`);
-            try {
-              const turn = await this.agentRuntime.send(session, message);
-              debugLog("route", `agentRuntime.send completed for sessionId=${session.id}`);
-              // Surface post-spawn delivery failures through stderr too —
-              // debugLog is gated behind GROVE_DEBUG=1, so in normal
-              // operation a silent turn.result error would make failed
-              // routing invisible to the operator.
-              watchTurnError(turn, `route ${sourceRole}→${targetRole}`, (m) => {
-                debugLog("route", m);
-                process.stderr.write(`${m}\n`);
-              });
-            } catch (sendErr) {
-              debugLog(
-                "route",
-                `agentRuntime.send FAILED: ${sendErr instanceof Error ? sendErr.message : String(sendErr)}`,
-              );
-            }
-          }
-          break;
-        }
-      }
-      if (!foundSpawnId) {
-        debugLog("route", `NO session found for targetRole=${targetRole} — routing skipped`);
-      }
-    }
-  }
-
-  /**
    * Send a user message to a specific agent role.
    *
    * Looks up the active agent session for the given role and pushes the
@@ -935,6 +1001,13 @@ export class SpawnManager {
   // ─── Log buffer management (issue #183) ───
 
   /** Get all per-agent log buffers (for TracePane). */
+  /** Current topology. Read by external callers (e.g. tui-app bridge
+   * callbacks) that need to decide fail-closed behavior based on the
+   * live session topology rather than a stale appProps capture. */
+  getTopology(): AgentTopology | undefined {
+    return this.topology;
+  }
+
   getLogBuffers(): ReadonlyMap<string, AgentLogBuffer> {
     return this.logBuffers;
   }
@@ -1064,148 +1137,7 @@ export class SpawnManager {
       clearInterval(this.logPollTimer);
       this.logPollTimer = null;
     }
-    // Kill ALL contribution poll timers globally (covers timers from previous instances too)
-    clearAllGlobalContribTimers();
-    this.allContributionPollTimers = [];
-    // NOTE: do NOT clear routableSessions here — spawn() populates it before polling starts.
-  }
-
-  /**
-   * Start polling contributions outside React (React timers die on unmount).
-   * Detects new CIDs and routes them via routeContribution.
-   */
-  startContributionPolling(
-    provider: TuiDataProvider,
-    topology: import("../core/topology.js").AgentTopology | undefined,
-    sessionStartedAt: string | undefined,
-    intervalMs: number = 3000,
-    /** When true, skip routeContribution — a server-side SessionOrchestrator is handling routing. */
-    serverRoutingActive: boolean = false,
-  ): void {
-    // Kill ALL timers across ALL SpawnManager instances (module-level global).
-    // SpawnManager may be recreated when appProps change; the new instance can't
-    // see the old instance's timer handles without a shared reference.
-    const prevCount = _allGlobalContribTimers.length;
-    clearAllGlobalContribTimers();
-    this.allContributionPollTimers = [];
-    debugLog(
-      "contribPoll",
-      `startContributionPolling called, cleared ${prevCount} global timer(s), seenCids=${this.seenCids.size}`,
-    );
-
-    let pollCount = 0;
-    const timer = setInterval(async () => {
-      try {
-        // Session-scoped contributions: only this session's data is read (1-5 items).
-        // No limit needed — session scoping already bounds the count.
-        const contributions = await provider.getContributions();
-        const feed = sessionStartedAt
-          ? (contributions ?? []).filter((c) => c.createdAt >= sessionStartedAt)
-          : (contributions ?? []);
-
-        if (pollCount < 3 || pollCount % 20 === 0) {
-          debugLog(
-            "contribPoll",
-            `#${pollCount} total=${contributions?.length ?? 0} feed=${feed.length} seen=${this.seenCids.size} sessionStartedAt=${sessionStartedAt ?? "none"}`,
-          );
-        }
-
-        // First poll: seed existing CIDs AND route any that appeared since session start
-        // (the coder may have submitted before polling started — still needs routing).
-        if (pollCount === 0) {
-          for (const c of feed) {
-            this.seenCids.add(c.cid);
-          }
-          debugLog("contribPoll", `seeded ${feed.length} existing CIDs`);
-          // Route contributions from this session that arrived before polling started
-          for (const c of feed) {
-            if (c.agent?.role && topology && !serverRoutingActive) {
-              debugLog(
-                "contribPoll",
-                `first-poll routing cid=${c.cid.slice(0, 12)} role=${c.agent.role}`,
-              );
-              void this.routeContribution(c.agent.role, c.summary, c.kind, topology);
-            }
-            // Mark handoffs as delivered
-            if ((provider as { getHandoffs?: unknown }).getHandoffs) {
-              const hp = provider as unknown as import("./provider.js").TuiHandoffProvider;
-              // Snapshot the session scope before the async read so the
-              // follow-up markHandoffDelivered POST can't drift to a
-              // different session if the user switches mid-loop.
-              const pinnedSessionId = this.sessionId;
-              void hp
-                .getHandoffs({ sourceCid: c.cid, status: "pending_pickup" })
-                .then((hs) => {
-                  for (const h of hs) {
-                    // biome-ignore lint/suspicious/noEmptyBlockStatements: delivery errors silently swallowed per fire-and-forget pattern
-                    void hp.markHandoffDelivered(h.handoffId, pinnedSessionId).catch(() => {});
-                  }
-                })
-                // biome-ignore lint/suspicious/noEmptyBlockStatements: getHandoffs errors silently swallowed
-                .catch(() => {});
-            }
-          }
-        } else {
-          // Subsequent polls: detect new contributions and route them
-          for (const c of feed) {
-            if (!this.seenCids.has(c.cid)) {
-              this.seenCids.add(c.cid);
-              debugLog(
-                "contribPoll",
-                `NEW cid=${c.cid.slice(0, 20)} kind=${c.kind} role=${c.agent?.role}`,
-              );
-              // Route to downstream agents — skip when server-side SessionOrchestrator
-              // is already routing via event bus (prevents double IPC delivery).
-              if (c.agent?.role && topology && !serverRoutingActive) {
-                debugLog(
-                  "contribPoll",
-                  `routing cid=${c.cid.slice(0, 12)} from role=${c.agent.role} kind=${c.kind} serverRoutingActive=${String(serverRoutingActive)} hasBridge=${!!this.wsBridge}`,
-                );
-                void this.routeContribution(c.agent.role, c.summary, c.kind, topology);
-              } else {
-                debugLog(
-                  "contribPoll",
-                  `skip routing cid=${c.cid.slice(0, 12)}: role=${c.agent?.role ?? "none"} hasTopology=${!!topology} serverRoutingActive=${String(serverRoutingActive)}`,
-                );
-              }
-              // Mark upstream handoffs as delivered — the contribution reached the routing layer
-              if ((provider as { getHandoffs?: unknown }).getHandoffs) {
-                const hp = provider as unknown as import("./provider.js").TuiHandoffProvider;
-                // Pin sessionId before the async read so the follow-up POST
-                // targets the session that the read was scoped to.
-                const pinnedSessionId = this.sessionId;
-                void hp
-                  .getHandoffs({ sourceCid: c.cid, status: "pending_pickup" })
-                  .then((hs) => {
-                    for (const h of hs) {
-                      void hp.markHandoffDelivered(h.handoffId, pinnedSessionId).catch(() => {
-                        /* best-effort */
-                      });
-                    }
-                  })
-                  .catch(() => {
-                    /* best-effort */
-                  });
-              }
-              // Notify callback (for TUI feed update)
-              this.onContributionDetected?.(c);
-            }
-          }
-        }
-        pollCount++;
-      } catch (err) {
-        debugLog("contribPoll", `error: ${String(err)}`);
-      }
-    }, intervalMs);
-    this.allContributionPollTimers.push(timer);
-    _allGlobalContribTimers.push(timer);
-  }
-
-  /** Set a callback for when new contributions are detected (for TUI feed notification). */
-  setOnContributionDetected(
-    cb: ((c: import("../core/models.js").Contribution) => void) | undefined,
-  ): void {
-    this.onContributionDetected = cb;
+    // NOTE: do NOT clear routableSessions here — spawn() populates it before the session runs.
   }
 
   /**
@@ -1273,9 +1205,32 @@ export class SpawnManager {
    * across TUI restarts. Without this, each test run leaves sessions that
    * interfere with reconcile fallback and make `acpx sessions list` noisy.
    */
+  /**
+   * Async variant that awaits a bounded final dead-letter drain before
+   * synchronous teardown. Prefer this over `destroy()` in process-exit
+   * shutdown paths where recovery-state preservation matters. React
+   * useEffect cleanups (which cannot await) still use the sync `destroy()`
+   * and accept a best-effort detached drain.
+   */
+  async destroyAsync(shutdownTimeoutMs = 10000): Promise<void> {
+    if (this.wsBridge) {
+      await this.wsBridge.shutdown(shutdownTimeoutMs).catch(() => {
+        /* best-effort */
+      });
+    }
+    this.destroy();
+  }
+
   destroy(): void {
     this.stopLogPolling();
     this.routableSessions.clear();
+    // Settle any in-flight waitForDelivery calls so destroy() doesn't
+    // leave per-waiter timers holding the event loop open. Route via
+    // markDeliveryDisabled to reject all waiters and clear their timers
+    // through the existing cleanup() path registered in waitForDelivery.
+    if (this.deliveryReadyWaiters.length > 0) {
+      this.markDeliveryDisabled("SpawnManager destroyed");
+    }
     // Close all agent sessions via runtime to prevent accumulation
     if (this.agentRuntime) {
       for (const session of this.agentSessions.values()) {

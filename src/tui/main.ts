@@ -394,21 +394,17 @@ async function buildAppProps(
 // ---------------------------------------------------------------------------
 
 /**
- * Fire-and-forget update of SKILL.md with actual server URLs.
+ * Fire-and-forget reinstall of SKILL.md after services start.
  *
- * Called after services start so that AI agent skill files point at
- * the running grove server and MCP endpoints.
+ * The on-disk catalog refactor (b3580a2) removed per-install URL
+ * substitution — SKILL.md is now copied verbatim from the bundled
+ * catalog. This helper retains the post-startup reinstall so the
+ * user's skill directories get refreshed on every `grove tui` boot,
+ * picking up catalog updates shipped with new grove releases.
  */
 function updateSkillAfterStartup(): void {
-  const serverPort = process.env.PORT ?? "4515";
-  const mcpPort = process.env.MCP_PORT ?? "4015";
   void import("../cli/commands/skill.js")
-    .then(({ handleSkillInstall }) =>
-      handleSkillInstall({
-        serverUrl: `http://localhost:${serverPort}`,
-        mcpUrl: `http://localhost:${mcpPort}`,
-      }),
-    )
+    .then(({ handleSkillInstall }) => handleSkillInstall({}))
     .catch(() => {
       /* skill update is best-effort */
     });
@@ -628,6 +624,21 @@ export async function handleTui(
         result.appProps.agentRuntime,
         acpSessionStore,
       );
+      // Declare topology up-front so the delivery-ready gate sees the
+      // actual role count. --url mode does NOT wire the NexusWsBridge
+      // (bridge setup lives in tui-app.tsx's interactive flow), so for
+      // multi-role topologies fail closed explicitly — otherwise spawn
+      // would stall the full 120s budget waiting for a bridge that
+      // will never arrive. Single-role --url sessions have no cross-
+      // role traffic, so leave them in "ready" state and let them spawn.
+      if (result.appProps.topology) {
+        spawnManager.setTopology(result.appProps.topology);
+        if (result.appProps.topology.roles.length > 1) {
+          spawnManager.markDeliveryDisabled(
+            "--url mode does not initialize NexusWsBridge — use the interactive flow for multi-role topologies",
+          );
+        }
+      }
       root.render(
         React.createElement(
           DialogProvider,
@@ -645,7 +656,11 @@ export async function handleTui(
       for (const unsubscribe of acpBusUnsubscribes) {
         unsubscribe();
       }
-      spawnManager.destroy();
+      // destroyAsync awaits bridge.shutdown() so pending dead-letters
+      // get a bounded final drain before the sync teardown path. This
+      // is the process-exit preservation path; React cleanups use the
+      // sync destroy() which accepts a best-effort detached drain.
+      await spawnManager.destroyAsync();
       return;
     }
 

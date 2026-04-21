@@ -721,6 +721,7 @@ export function App({
       if (role?.prompt) context.rolePrompt = role.prompt;
       if (role?.description) context.roleDescription = role.description;
       if (role?.goal) context.roleGoal = role.goal;
+      if (role?.skills && role.skills.length > 0) context.skills = role.skills;
       if (role?.platform) context.platform = role.platform;
       if (role?.model) context.model = role.model;
       if (topology) context.topology = topology;

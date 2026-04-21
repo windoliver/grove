@@ -1,15 +1,4 @@
-/**
- * SKILL.md template for `grove skill install`.
- *
- * Generates the skill manifest that AI coding assistants
- * (Claude Code, Codex, etc.) read to discover Grove tools.
- */
-
-/**
- * Render the SKILL.md content with the given server URLs.
- */
-export function renderSkillTemplate(opts: { serverUrl: string; mcpUrl: string }): string {
-  return `---
+---
 name: grove
 description: Multi-agent collaboration via Grove boardroom.
 ---
@@ -17,10 +6,10 @@ description: Multi-agent collaboration via Grove boardroom.
 ## Grove Boardroom
 
 You are participating in a Grove collaboration session.
-Server: ${opts.serverUrl}
 
 ### MCP Server
-Connect via: grove-mcp (stdio) or HTTP at ${opts.mcpUrl}
+
+Connect via the `grove` MCP server declared in this workspace's `.mcp.json` (stdio).
 
 ### Tools
 - grove_submit_work — publish work with artifacts
@@ -39,5 +28,3 @@ Connect via: grove-mcp (stdio) or HTTP at ${opts.mcpUrl}
 3. Do your work in YOUR code folder
 4. Publish results (grove_submit_work)
 5. Read reviews, iterate
-`;
-}

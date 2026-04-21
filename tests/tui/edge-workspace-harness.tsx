@@ -200,6 +200,10 @@ function HarnessApp(): React.ReactElement {
     sm.setSessionId(SESSION_ID);
     sm.setTopology(topology);
     sm.setIsolationPolicy("allow-fallback");
+    // Tmux-only harness has no runtime/bridge and doesn't exercise
+    // inter-agent IPC; assert delivery is ready so the multi-role
+    // `pending` gate doesn't block spawn().
+    sm.markDeliveryReady();
     smRef.current = sm;
 
     setAgents((prev) => prev.map((a) => ({ ...a, status: "spawning" as const })));

@@ -137,8 +137,16 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           );
         }
       }
+      // startOnRunning only makes sense when there is actually a session to
+      // resume. A fresh grove with no active session and startOnRunning=true
+      // would drop straight into the running view with no agents spawned and
+      // no goal — silently stuck. Fall back to the normal new-session flow
+      // (goal-input if topology is known, otherwise preset-select) whenever
+      // there is nothing running to reattach to.
+      const hasResumableSession = resumeSessionId !== undefined;
+      const effectiveResume = startOnRunning && hasResumableSession;
       return {
-        screen: startOnRunning
+        screen: effectiveResume
           ? ("running" as const)
           : topology
             ? ("goal-input" as const) // Has topology → goal first, detect later
@@ -213,20 +221,6 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     // with updated activeRoles from SpawnManager.
     const [reconcileVersion, setReconcileVersion] = useState(0);
     const lastReconciledScreenRef = useRef<string>("");
-    // Tracks the sessionStartedAt for which contribution polling was already
-    // started. Both the reconcile.then() and the async-hydration effect
-    // below write here, so whichever fires first wins and the second is
-    // a no-op. Reset to "" on screen-leave.
-    const contribPollingStartedRef = useRef<string>("");
-    // Whether the HTTP server's SessionOrchestrator is routing IPC (detected async, stored for sync access).
-    const serverRoutingActiveRef = useRef<boolean>(false);
-    // Render-committed mirror of sessionStartedAt so reconcile.then()
-    // reads the latest hydrated value (avoids a stale `undefined`
-    // closure on resume flows). Safe under opentui's synchronous
-    // single-pass renderer; would need to move to useLayoutEffect if
-    // opentui ever adopts concurrent rendering.
-    const sessionStartedAtRef = useRef<string | undefined>(state.sessionStartedAt);
-    sessionStartedAtRef.current = state.sessionStartedAt;
     // Spawn guard: prevents duplicate spawn when user presses Escape → Enter twice on agent-detect screen.
     // Reset when user navigates back past goal-input (handleGoalBack) or starts a new session.
     const hasSpawnedRef = useRef<boolean>(false);
@@ -267,21 +261,6 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
             }
             // Start polling agent log files for live output
             spawnManager.startLogPolling();
-            // Read sessionStartedAt from the ref, not the stale closure —
-            // on resume it may have hydrated asynchronously while
-            // reconcile was in flight. Dedupe against the shared ref so
-            // the restart-on-hydration effect below doesn't fire again.
-            const latestCutoff = sessionStartedAtRef.current ?? "";
-            if (contribPollingStartedRef.current !== latestCutoff) {
-              contribPollingStartedRef.current = latestCutoff;
-              spawnManager.startContributionPolling(
-                provider,
-                topology,
-                sessionStartedAtRef.current,
-                30000,
-                serverRoutingActiveRef.current,
-              );
-            }
             // Always bump — even if reattached=0, we need RunningView to pick up
             // the reconciled state (getActiveRoles may have changed).
             setReconcileVersion((v) => v + 1);
@@ -293,28 +272,8 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
       // Reset when leaving running screen so we reconcile again on re-entry
       if (state.screen !== "running") {
         lastReconciledScreenRef.current = "";
-        contribPollingStartedRef.current = "";
       }
-    }, [state.screen, state.sessionId, spawnManager, topology, appProps.groveDir, provider]);
-
-    // Restart contribution polling when sessionStartedAt hydrates
-    // asynchronously after reconcile (resume flow). Without this, the cutoff
-    // stays stuck at the initial value (often `undefined`) and the feed
-    // shows historical noise or misses recent contributions.
-    useEffect(() => {
-      if (state.screen !== "running") return;
-      if (!spawnManager) return;
-      if (!state.sessionStartedAt) return;
-      if (contribPollingStartedRef.current === state.sessionStartedAt) return;
-      contribPollingStartedRef.current = state.sessionStartedAt;
-      spawnManager.startContributionPolling(
-        provider,
-        topology,
-        state.sessionStartedAt,
-        30000,
-        serverRoutingActiveRef.current,
-      );
-    }, [state.screen, state.sessionStartedAt, spawnManager, provider, topology]);
+    }, [state.screen, state.sessionId, spawnManager, topology, appProps.groveDir]);
 
     // Track session start time for duration calculation
     const sessionStartRef = useRef<number>(Date.now());
@@ -575,14 +534,8 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
           // New session — record current end-of-file for ALL existing role log
           // files so only lines written AFTER this point are shown.
           spawnManager.startLogPolling(2000, true);
-          // Start contribution polling — server routing detected via global flag set in reconcile path.
-          spawnManager.startContributionPolling(
-            provider,
-            topology,
-            sessionStartedAt,
-            3000,
-            serverRoutingActiveRef.current,
-          );
+          // Contributions are delivered to agents via the SSE push bridge owned
+          // by tui-app.tsx. No TUI-side polling — that was a duplicate path.
 
           // Spawn roles in topological order so that source branches exist before
           // dependent roles try to base their worktrees on them (delegates/feeds/escalates).
@@ -597,6 +550,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
               context.rolePrompt = editedPrompt ?? role.prompt ?? "";
               if (role.description) context.roleDescription = role.description;
               if (role.goal) context.roleGoal = role.goal;
+              if (role.skills && role.skills.length > 0) context.skills = role.skills;
               // If the user explicitly changed the CLI in launch preview, don't pass
               // the topology's platform — it would override the user's choice in
               // resolveAgent(). Let resolveAgent fall back to command parsing instead.
@@ -874,8 +828,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
                 doneSignaledRef.current = true;
                 return;
               }
-              // NOTE: routing is handled by spawnManager.startContributionPolling (seenCids dedup).
-              // Do NOT call routeContribution here — that causes duplicate IPC delivery.
+              // Routing is handled by the SSE push bridge — don't re-deliver here.
               if (state.sessionId && isSessionProvider(provider)) {
                 void provider.addContributionToSession(state.sessionId, c.cid).catch(() => {
                   /* best-effort */

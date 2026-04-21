@@ -53,6 +53,7 @@ export function getPresetTopologyRegistry(): Readonly<Record<string, CorePresetC
               "6. Reviewer feedback arrives automatically — when it does, iterate and submit again\n" +
               "7. NEVER call grove_done yourself. Only the reviewer ends the session.\n" +
               "You MUST call grove_submit_work after editing files — without it, nobody sees your work.",
+            skills: ["grove"],
           },
           {
             name: "reviewer",
@@ -70,6 +71,7 @@ export function getPresetTopologyRegistry(): Readonly<Record<string, CorePresetC
               "5. If changes needed, your review is sent to the coder automatically\n" +
               '6. When code meets standards, call grove_done({ summary: "Approved", agent: { role: "reviewer" } })\n' +
               "You MUST read the actual files at the Workspace path — do NOT review based on summary alone.",
+            skills: ["grove"],
           },
         ],
         spawning: { dynamic: true, maxDepth: 2 },

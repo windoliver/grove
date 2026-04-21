@@ -5,7 +5,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bootstrapWorkspace } from "./workspace-bootstrap.js";
@@ -113,5 +113,85 @@ describe("bootstrapWorkspace", () => {
         goal: "Build",
       }),
     ).rejects.toThrow();
+  });
+
+  test("injects skills when role declares them", async () => {
+    const bundledRoot = mkdtempSync(join(tmpdir(), "grove-bundled-"));
+    const skillDir = join(bundledRoot, "grove");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(join(skillDir, "SKILL.md"), "catalog-grove", "utf-8");
+
+    await bootstrapWorkspace({
+      workspacePath: workspaceDir,
+      roleId: "coder",
+      goal: "Build",
+      skills: ["grove"],
+      bundledSkillsRoot: bundledRoot,
+    });
+
+    const claudePath = join(workspaceDir, ".claude/skills/grove/SKILL.md");
+    const codexPath = join(workspaceDir, ".codex/skills/grove/SKILL.md");
+    expect(existsSync(claudePath)).toBe(true);
+    expect(existsSync(codexPath)).toBe(true);
+    expect(readFileSync(claudePath, "utf-8")).toBe("catalog-grove");
+
+    rmSync(bundledRoot, { recursive: true, force: true });
+  });
+
+  test("does not create .claude/.codex dirs when role has no skills", async () => {
+    await bootstrapWorkspace({
+      workspacePath: workspaceDir,
+      roleId: "coder",
+      goal: "Build",
+    });
+
+    expect(existsSync(join(workspaceDir, ".claude"))).toBe(false);
+    expect(existsSync(join(workspaceDir, ".codex"))).toBe(false);
+  });
+
+  test("propagates skill resolution errors as bootstrap failures", async () => {
+    const bundledRoot = mkdtempSync(join(tmpdir(), "grove-bundled-"));
+
+    await expect(
+      bootstrapWorkspace({
+        workspacePath: workspaceDir,
+        roleId: "coder",
+        goal: "Build",
+        skills: ["missing"],
+        bundledSkillsRoot: bundledRoot,
+      }),
+    ).rejects.toThrow(/missing/);
+
+    rmSync(bundledRoot, { recursive: true, force: true });
+  });
+
+  test("throws when skills non-empty but bundledSkillsRoot missing", async () => {
+    await expect(
+      bootstrapWorkspace({
+        workspacePath: workspaceDir,
+        roleId: "coder",
+        goal: "Build",
+        skills: ["grove"],
+      }),
+    ).rejects.toThrow(/bundledSkillsRoot/);
+  });
+
+  test("bundled grove catalog resolves via default root in repo", async () => {
+    // Resolve the repo-root skills/ dir via import.meta.url, same trick as production.
+    const here = new URL(import.meta.url).pathname;
+    const repoSkills = join(here, "..", "..", "..", "skills");
+
+    await bootstrapWorkspace({
+      workspacePath: workspaceDir,
+      roleId: "coder",
+      goal: "Build",
+      skills: ["grove"],
+      bundledSkillsRoot: repoSkills,
+    });
+
+    const claudePath = join(workspaceDir, ".claude/skills/grove/SKILL.md");
+    const content = readFileSync(claudePath, "utf-8");
+    expect(content).toContain("name: grove");
+    expect(content).toContain("grove_submit_work");
   });
 });

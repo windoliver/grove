@@ -55,3 +55,26 @@ export function resolveMcpServePath(projectRoot?: string): string {
   // "file not found" error rather than a confusing empty path
   return candidates[0] ?? "";
 }
+
+/**
+ * Resolve the bundled skill catalog directory (`<groveRoot>/skills`).
+ *
+ * In dev and build layouts the catalog lives at the repo root, so no
+ * dist/src split is needed — just locate the grove install root.
+ *
+ * @param projectRoot — fallback if no installation path can be derived
+ */
+export function resolveBundledSkillsRoot(projectRoot?: string): string {
+  const entryPoint = process.argv[1] ?? "";
+  // process.argv[1] = "<groveRoot>/dist/cli/main.js" or "<groveRoot>/src/cli/main.ts"
+  const groveRootFromEntry = dirname(dirname(dirname(entryPoint)));
+  const groveRootFromMeta = dirname(dirname(dirname(new URL(import.meta.url).pathname)));
+
+  const candidates = [join(groveRootFromEntry, "skills"), join(groveRootFromMeta, "skills")];
+  if (projectRoot) candidates.push(join(projectRoot, "skills"));
+
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+  return candidates[0] ?? "";
+}

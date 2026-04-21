@@ -393,6 +393,107 @@ describe("SpawnManager", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Skill injection E2E — validates the full path from SpawnManager.spawn()
+// through injectSkills() into the provisioned workspace. Catches regressions
+// where injection is wired but the workspace never actually receives files.
+// ---------------------------------------------------------------------------
+
+describe("SpawnManager — per-role skill injection", () => {
+  test("spawn injects declared 'grove' skill into .claude/skills and .codex/skills", async () => {
+    const { execSync } = await import("node:child_process");
+    const { existsSync, mkdirSync, mkdtempSync, readFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    // Isolated temp git repo — SpawnManager.spawn creates worktrees under
+    // <projectRoot>/.grove/workspaces/<spawnId>/ via provisionWorkspace.
+    // resolveBundledSkillsRoot walks up from process.argv[1]; in bun test
+    // that resolves to the real grove repo, so `grove` skill is guaranteed
+    // to be resolvable. We don't stage a fixture catalog here — the point
+    // is to verify the real injection path writes real files.
+    const projectRoot = mkdtempSync(join(tmpdir(), "grove-skill-e2e-"));
+    execSync("git init -q", { cwd: projectRoot });
+    execSync("git config user.email test@grove.test", { cwd: projectRoot });
+    execSync("git config user.name Grove-Test", { cwd: projectRoot });
+    execSync("git commit --allow-empty -q -m init", { cwd: projectRoot });
+
+    const groveDir = join(projectRoot, ".grove");
+    mkdirSync(groveDir, { recursive: true });
+
+    const provider = makeMockProvider();
+    const tmux = makeMockTmux();
+    const errors: string[] = [];
+    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), undefined, groveDir);
+    manager.setIsolationPolicy("strict");
+
+    const result = await manager.spawn("coder", "bash", undefined, 0, {
+      skills: ["grove"],
+    });
+
+    expect(result.workspaceMode.status).toBe("isolated_worktree");
+
+    const claudeSkill = join(result.workspacePath, ".claude", "skills", "grove", "SKILL.md");
+    const codexSkill = join(result.workspacePath, ".codex", "skills", "grove", "SKILL.md");
+
+    expect(existsSync(claudeSkill)).toBe(true);
+    expect(existsSync(codexSkill)).toBe(true);
+    // Both copies must be real and reference the grove skill (frontmatter).
+    expect(readFileSync(claudeSkill, "utf-8")).toContain("name: grove");
+    expect(readFileSync(codexSkill, "utf-8")).toContain("name: grove");
+
+    // "Config write failed" is the exact symptom when injectSkills throws
+    // and gets swallowed. Must not appear.
+    expect(errors.filter((e) => e.includes("Config write failed"))).toEqual([]);
+  });
+
+  test("two roles in the same session each get their own skill-injected workspace", async () => {
+    const { execSync } = await import("node:child_process");
+    const { existsSync, mkdirSync, mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    const projectRoot = mkdtempSync(join(tmpdir(), "grove-skill-e2e-"));
+    execSync("git init -q", { cwd: projectRoot });
+    execSync("git config user.email test@grove.test", { cwd: projectRoot });
+    execSync("git config user.name Grove-Test", { cwd: projectRoot });
+    execSync("git commit --allow-empty -q -m init", { cwd: projectRoot });
+
+    const groveDir = join(projectRoot, ".grove");
+    mkdirSync(groveDir, { recursive: true });
+
+    const provider = makeMockProvider();
+    const tmux = makeMockTmux();
+    const errors: string[] = [];
+    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), undefined, groveDir);
+    manager.setIsolationPolicy("strict");
+
+    const coderResult = await manager.spawn("coder", "bash", undefined, 0, { skills: ["grove"] });
+    const reviewerResult = await manager.spawn("reviewer", "bash", undefined, 0, {
+      skills: ["grove"],
+    });
+
+    // Different workspaces.
+    expect(coderResult.workspacePath).not.toBe(reviewerResult.workspacePath);
+
+    // Each got its own injected catalog — proves the injector runs per
+    // spawn, not once globally.
+    expect(existsSync(join(coderResult.workspacePath, ".claude/skills/grove/SKILL.md"))).toBe(true);
+    expect(existsSync(join(coderResult.workspacePath, ".codex/skills/grove/SKILL.md"))).toBe(true);
+    expect(existsSync(join(reviewerResult.workspacePath, ".claude/skills/grove/SKILL.md"))).toBe(
+      true,
+    );
+    expect(existsSync(join(reviewerResult.workspacePath, ".codex/skills/grove/SKILL.md"))).toBe(
+      true,
+    );
+
+    // When a role declares no skills, no .claude/skills directory appears.
+    const noSkillResult = await manager.spawn("watcher", "bash", undefined, 0, {});
+    expect(existsSync(join(noSkillResult.workspacePath, ".claude/skills"))).toBe(false);
+    expect(existsSync(join(noSkillResult.workspacePath, ".codex/skills"))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Shell injection regression tests
 // ---------------------------------------------------------------------------
 

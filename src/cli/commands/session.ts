@@ -203,6 +203,46 @@ async function sessionStart(args: readonly string[]): Promise<void> {
     });
     sessionId = session.id;
 
+    // Mirror the session to Nexus so MCP servers spawned by agents (which set
+    // `GROVE_NEXUS_URL`) can resolve the frozen contract. Parallels the TUI
+    // path in NexusProvider.createSession — without this, grove-mcp's
+    // fail-closed check kills every agent spawned through `grove session
+    // start`. Best-effort with retries; a hard failure archives the orphan
+    // SQLite record and rethrows so the user sees the problem up front.
+    const nexusUrl = process.env.GROVE_NEXUS_URL;
+    const nexusApiKey = process.env.NEXUS_API_KEY;
+    if (nexusUrl) {
+      const { NexusHttpClient } = await import("../../nexus/nexus-http-client.js");
+      const { NexusSessionStore } = await import("../../nexus/nexus-session-store.js");
+      const nexusClient = new NexusHttpClient({
+        url: nexusUrl,
+        ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
+      });
+      const zoneId = process.env.GROVE_ZONE_ID ?? "default";
+      const nexusSessionStore = new NexusSessionStore(nexusClient, zoneId);
+
+      const retryDelaysMs = [0, 200, 500, 1000];
+      let lastErr: unknown;
+      for (const delay of retryDelaysMs) {
+        if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+        try {
+          await nexusSessionStore.putSession(session);
+          lastErr = undefined;
+          break;
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+      if (lastErr) {
+        await goalSessionStore.archiveSession(session.id).catch(() => undefined);
+        throw new Error(
+          `Failed to mirror session ${session.id} to Nexus at ${nexusUrl}: ` +
+            `${lastErr instanceof Error ? lastErr.message : String(lastErr)}. ` +
+            `The local session has been archived; please retry.`,
+        );
+      }
+    }
+
     // Create contribution store for polling-based routing (MCP runs in child processes)
     const { SqliteContributionStore } = await import("../../local/sqlite-store.js");
     const contributionStore = new SqliteContributionStore(db);

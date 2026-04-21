@@ -378,13 +378,17 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
     const nexusUrl = process.env.GROVE_NEXUS_URL;
     const apiKey = process.env.NEXUS_API_KEY;
     const topo = appProps.topology;
+    // Seed topology synchronously so the fail-closed catch below and
+    // onRoleUnhealthy callback see the right role count even if bridge
+    // init fails before the screen-manager flow calls setTopology.
+    if (topo) manager.setTopology(topo);
     debugLog(
       "wsBridge",
       `check: agentRuntime=${!!agentRuntime} topo=${!!topo} nexusUrl=${nexusUrl ?? "none"} hasApiKey=${!!apiKey} hasEventBus=${!!appProps.eventBus}`,
     );
     if (agentRuntime && topo && nexusUrl && apiKey) {
       void import("./nexus-ws-bridge.js")
-        .then(({ NexusWsBridge }) => {
+        .then(async ({ NexusWsBridge }) => {
           debugLog("wsBridge", `creating NexusWsBridge at ${nexusUrl}`);
           // Extract handoffStore from the provider so the bridge can mark
           // handoffs delivered / dead-lettered on IPC lifecycle events.
@@ -411,14 +415,87 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
               // Rsync workspace files from sender to recipient before IPC delivery
               manager.syncWorkspaces(sender, recipient);
             },
+            // Post-start outage escalation: if a role's SSE reconnect loop
+            // fails repeatedly, stop pretending the session has delivery.
+            // Flips the SpawnManager to disabled so new spawns for
+            // multi-role topologies fail fast instead of accumulating work
+            // that silently drops. Polling is NOT reintroduced.
+            onRoleUnhealthy: (role, fails) => {
+              const reason = `SSE stream for role=${role} unhealthy after ${fails} consecutive failures`;
+              process.stderr.write(`[grove] DEGRADED: ${reason}\n`);
+              // Query live topology at callback time — a session
+              // topology change after construction (preset picked in
+              // screen-manager) would make the captured `topo` stale.
+              // Fail closed only when the ACTIVE topology is multi-role.
+              if ((manager.getTopology()?.roles.length ?? 0) > 1) {
+                manager.markDeliveryDisabled(reason);
+              }
+            },
           });
-          bridge.connect();
+          // Bridge readiness is a startup invariant: connect() resolves only
+          // after every role passes registration + SSE stream handshake.
+          // Without polling fallback, we must not expose an unready bridge
+          // or a "connected" log that outruns reality. Transient startup
+          // faults (a brief Nexus blip, DNS flake) shouldn't kill a session
+          // permanently, so retry with exponential backoff before giving up.
+          const attempts = 4;
+          let lastErr: unknown;
+          for (let attempt = 1; attempt <= attempts; attempt += 1) {
+            try {
+              await bridge.connect();
+              lastErr = undefined;
+              break;
+            } catch (err) {
+              lastErr = err;
+              const detail = err instanceof Error ? err.message : String(err);
+              debugLog("wsBridge", `attempt ${attempt}/${attempts} failed: ${detail}`);
+              if (attempt < attempts) {
+                const backoffMs = 500 * 2 ** (attempt - 1);
+                await new Promise((r) => setTimeout(r, backoffMs));
+              }
+            }
+          }
+          if (lastErr) throw lastErr;
           manager.setWsBridge(bridge);
           debugLog("wsBridge", "connected");
         })
         .catch((err) => {
-          debugLog("wsBridge", `FAILED: ${String(err)}`);
+          // Bridge is the ONLY inter-agent delivery channel (no polling
+          // fallback). After bounded retries fail, fail closed for
+          // multi-role topologies only — single-role sessions don't
+          // need IPC and shouldn't be blocked by a bridge outage.
+          // Query live topology (session topology may have changed
+          // after this useMemo ran, making `topo` stale).
+          const detail = err instanceof Error ? err.message : String(err);
+          debugLog("wsBridge", `FAILED: ${detail}`);
+          if ((manager.getTopology()?.roles.length ?? 0) > 1) {
+            manager.markDeliveryDisabled(detail);
+          }
+          process.stderr.write(
+            `[grove] FATAL: NexusWsBridge init failed — contributions will not reach agents. ${detail}\n`,
+          );
         });
+    } else if (agentRuntime && topo) {
+      // Bridge preconditions missing: without Nexus + credentials, nothing
+      // routes contributions between agents. Only fail closed when cross-
+      // role delivery is actually needed (multi-role); a single-role
+      // session has no inter-agent traffic, so warn but keep it spawnable.
+      const reason = `missing Nexus config (nexusUrl=${nexusUrl ?? "none"} apiKey=${apiKey ? "set" : "missing"})`;
+      if (topo.roles.length > 1) {
+        manager.markDeliveryDisabled(reason);
+      }
+      process.stderr.write(
+        `[grove] WARNING: Nexus bridge not initialized (${reason}). Inter-agent contribution delivery is disabled.\n`,
+      );
+    } else if (topo && !agentRuntime) {
+      // Topology declared but no agent runtime. Multi-role sessions
+      // can't deliver contributions without one — fail closed. Single-
+      // role sessions (e.g., tmux fallback with one role) stay spawnable.
+      const reason = "agentRuntime unavailable — ACP spawn and delivery are disabled";
+      if (topo.roles.length > 1) {
+        manager.markDeliveryDisabled(reason);
+      }
+      process.stderr.write(`[grove] WARNING: ${reason}.\n`);
     }
 
     return manager;
