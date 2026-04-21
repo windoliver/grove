@@ -622,9 +622,17 @@ export async function handleTui(
       );
       // Declare topology up-front so the delivery-ready gate sees the
       // actual role count — otherwise multi-role --url spawns would bypass
-      // the fail-closed guard (roleCount 0).
+      // the fail-closed guard (roleCount 0). --url mode does NOT wire the
+      // NexusWsBridge (bridge setup lives in tui-app.tsx's interactive
+      // flow), so immediately mark delivery disabled with a concrete
+      // reason; multi-role spawns will fail fast with a clear error
+      // instead of stalling for 30s waiting for a bridge that will never
+      // come. Single-role --url still works.
       if (result.appProps.topology) {
         spawnManager.setTopology(result.appProps.topology);
+        spawnManager.markDeliveryDisabled(
+          "--url mode does not initialize NexusWsBridge — use the interactive flow for multi-role topologies",
+        );
       }
       root.render(
         React.createElement(

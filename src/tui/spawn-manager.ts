@@ -151,7 +151,15 @@ export class SpawnManager {
     for (const w of waiters) w.resolve();
   }
 
-  private async waitForDelivery(timeoutMs = 30000): Promise<void> {
+  /**
+   * Wait until the bridge transitions to "ready" or "disabled". Default
+   * timeout (60s) covers the full bridge init retry budget — 4 attempts
+   * at up to 10s each plus exponential backoff (0.5+1+2+4s) totals ≤47.5s
+   * in the worst case. A spawn waiter must not reject before the bridge
+   * has had a chance to complete its retries, or we'd mark delivery
+   * failed spuriously.
+   */
+  private async waitForDelivery(timeoutMs = 60000): Promise<void> {
     if (this.deliveryState === "ready") return;
     if (this.deliveryState === "disabled") {
       throw new Error(`Inter-agent delivery disabled: ${this.deliveryDisabledReason ?? "unknown"}`);

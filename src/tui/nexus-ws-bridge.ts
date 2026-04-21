@@ -324,6 +324,12 @@ export class NexusWsBridge {
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    // A cycle only counts as healthy once we've actually parsed an SSE
+    // frame (event delimiter observed). An endpoint that accepts the
+    // connection and immediately closes with done=true would otherwise
+    // pass as healthy, resetting the unhealthy counter every 5s and
+    // preventing onRoleUnhealthy from ever firing on a flapping stream.
+    let sawEvent = false;
 
     while (!this.closed) {
       const { done, value } = await reader.read();
@@ -344,10 +350,11 @@ export class NexusWsBridge {
           this.handleEvent(role, eventType, eventData);
           eventType = null;
           eventData = null;
+          sawEvent = true;
         }
       }
     }
-    return true;
+    return sawEvent;
   }
 
   private handleEvent(role: string, eventType: string | null, raw: string): void {
