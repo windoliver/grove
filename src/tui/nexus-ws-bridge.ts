@@ -687,28 +687,34 @@ export class NexusWsBridge {
       const byIpc = handoffs.find((h) => h.ipcMessageId === ipcMessageId);
       if (byIpc) return byIpc.handoffId;
 
-      // Secondary: deterministic composite key with STATUS constraint.
-      // Contributions carry a unique sourceCid, but multi-session Nexus
-      // deployments can have historical records sharing a sourceCid
-      // from prior sessions. Restrict the fallback to unresolved
-      // statuses (pending_pickup / delivered) — terminal records
-      // (replied/expired/dead_lettered) are by definition not the one
-      // this event is trying to transition, so excluding them prevents
-      // cross-session incorrect mutations. If multiple candidates
-      // survive the filter, pick the most recent by createdAt — the
-      // only active in-flight handoff for this (fromRole, toRole,
-      // sourceCid, unresolved) tuple.
+      // Secondary: deterministic composite key with STATUS and
+      // UNIQUENESS constraints. Contributions carry a unique sourceCid,
+      // but multi-session Nexus deployments could theoretically share
+      // a (fromRole, toRole, sourceCid) across sessions. Defense in
+      // depth: restrict to unresolved statuses (pending_pickup /
+      // delivered), then require EXACTLY ONE candidate. If multiple
+      // survive the filter, the fallback is ambiguous — refuse to
+      // mutate rather than risk cross-session corruption. The
+      // ipcMessageId primary path and the deferred-drain retry loop
+      // will succeed once the linkage lands, so returning undefined
+      // here is recoverable.
       if (sender && sourceCid) {
-        const candidates = handoffs
-          .filter(
-            (h) =>
-              h.fromRole === sender &&
-              h.sourceCid === sourceCid &&
-              (h.status === "pending_pickup" || h.status === "delivered"),
-          )
-          .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-        const bySourceCid = candidates[0];
-        if (bySourceCid) return bySourceCid.handoffId;
+        const candidates = handoffs.filter(
+          (h) =>
+            h.fromRole === sender &&
+            h.sourceCid === sourceCid &&
+            (h.status === "pending_pickup" || h.status === "delivered"),
+        );
+        if (candidates.length === 1) {
+          return candidates[0]!.handoffId;
+        }
+        if (candidates.length > 1) {
+          debugLog(
+            "wsBridge.resolveHandoffIdForMessage",
+            `AMBIGUOUS FALLBACK ipcMessageId=${ipcMessageId} role=${targetRole} cid=${sourceCid} candidates=${candidates.length} — deferring`,
+          );
+          return undefined;
+        }
       }
 
       debugLog(
@@ -1178,10 +1184,28 @@ export class NexusWsBridge {
           );
           resolved.add(entry.ipcMessageId);
         } catch (err) {
-          debugLog(
-            "wsBridge.drainPendingDeadLetters",
-            `FAIL handoffId=${id} err=${err instanceof Error ? err.message : String(err)}`,
-          );
+          // Terminal mark failures (invalid transition: the handoff is
+          // already replied/expired/dead_lettered, or the handoff
+          // doesn't exist) cannot be retried — they're not races.
+          // Treat as exhausted so the entry ages out and cannot
+          // occupy the queue forever. Store/IO errors remain retried
+          // (kept in the queue for the next pass).
+          const name = err instanceof Error ? err.name : "";
+          const msg = err instanceof Error ? err.message : String(err);
+          const terminal =
+            name === "InvalidTransitionError" ||
+            /not found|no such|missing|invalid transition/i.test(msg);
+          if (terminal) {
+            process.stderr.write(
+              `[NexusWsBridge] terminal mark failure handoffId=${id} role=${entry.targetRole}: ${msg} — ageing out\n`,
+            );
+            exhausted.add(entry.ipcMessageId);
+          } else {
+            debugLog(
+              "wsBridge.drainPendingDeadLetters",
+              `RETRIABLE FAIL handoffId=${id} err=${msg}`,
+            );
+          }
         }
         continue;
       }
