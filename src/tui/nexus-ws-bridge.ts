@@ -101,11 +101,59 @@ export class NexusWsBridge {
    */
   async connect(timeoutMs = 10000): Promise<void> {
     if (this.closed) return;
-    const failures = await this.provisionAgents(timeoutMs);
-    if (failures.length > 0) {
-      const detail = failures.map((f) => `${f.role}: ${f.reason}`).join("; ");
+    const regFailures = await this.provisionAgents(timeoutMs);
+    if (regFailures.length > 0) {
+      const detail = regFailures.map((f) => `${f.role}: ${f.reason}`).join("; ");
       throw new Error(`NexusWsBridge: registration failed for role(s) [${detail}]`);
     }
+    // Registration alone doesn't prove the SSE stream endpoint is authorized
+    // and serving per role — some deployments accept registration but 403/500
+    // the stream. Probe every role's stream with a short-lived HEAD/GET and
+    // treat any non-2xx as a readiness failure, matching the "no silent
+    // partial outage" contract. The abort after status check ensures we
+    // don't consume stream bytes during readiness.
+    const streamFailures = await this.probeStreams(timeoutMs);
+    if (streamFailures.length > 0) {
+      const detail = streamFailures.map((f) => `${f.role}: ${f.reason}`).join("; ");
+      throw new Error(`NexusWsBridge: stream handshake failed for role(s) [${detail}]`);
+    }
+  }
+
+  private async probeStreams(timeoutMs: number): Promise<Array<{ role: string; reason: string }>> {
+    const deadline = AbortSignal.timeout(timeoutMs);
+    const results = await Promise.all(
+      this.opts.topology.roles.map(async (role) => {
+        const ac = new AbortController();
+        const onAbort = () => ac.abort();
+        deadline.addEventListener("abort", onAbort, { once: true });
+        try {
+          const resp = await fetch(
+            `${this.opts.nexusUrl}/api/v2/ipc/stream/${encodeURIComponent(role.name)}`,
+            {
+              headers: {
+                Authorization: `Bearer ${this.opts.apiKey}`,
+                Accept: "text/event-stream",
+              },
+              signal: ac.signal,
+            },
+          );
+          if (!resp.ok) return { role: role.name, reason: `HTTP ${resp.status}` };
+          return null;
+        } catch (err) {
+          const reason =
+            err instanceof Error
+              ? err.name === "TimeoutError" || err.name === "AbortError"
+                ? `stream timeout after ${timeoutMs}ms`
+                : err.message
+              : String(err);
+          return { role: role.name, reason };
+        } finally {
+          ac.abort(); // don't hold the stream open
+          deadline.removeEventListener("abort", onAbort);
+        }
+      }),
+    );
+    return results.filter((r): r is { role: string; reason: string } => r !== null);
   }
 
   close(): void {

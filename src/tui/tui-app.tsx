@@ -369,10 +369,29 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
             },
           });
           // Bridge readiness is a startup invariant: connect() resolves only
-          // after at least one role registration returns 2xx, which proves
-          // endpoint + credentials. Without polling fallback, we must not
-          // expose an unready bridge or a "connected" log that outruns reality.
-          await bridge.connect();
+          // after every role passes registration + SSE stream handshake.
+          // Without polling fallback, we must not expose an unready bridge
+          // or a "connected" log that outruns reality. Transient startup
+          // faults (a brief Nexus blip, DNS flake) shouldn't kill a session
+          // permanently, so retry with exponential backoff before giving up.
+          const attempts = 4;
+          let lastErr: unknown;
+          for (let attempt = 1; attempt <= attempts; attempt += 1) {
+            try {
+              await bridge.connect();
+              lastErr = undefined;
+              break;
+            } catch (err) {
+              lastErr = err;
+              const detail = err instanceof Error ? err.message : String(err);
+              debugLog("wsBridge", `attempt ${attempt}/${attempts} failed: ${detail}`);
+              if (attempt < attempts) {
+                const backoffMs = 500 * 2 ** (attempt - 1);
+                await new Promise((r) => setTimeout(r, backoffMs));
+              }
+            }
+          }
+          if (lastErr) throw lastErr;
           manager.setWsBridge(bridge);
           debugLog("wsBridge", "connected");
         })

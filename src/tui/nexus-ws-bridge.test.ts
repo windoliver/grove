@@ -864,4 +864,20 @@ describe("NexusWsBridge", () => {
     await expect(bridge.connect(50)).rejects.toThrow(/timeout after 50ms/);
     bridge.close();
   });
+
+  test("connect rejects when SSE stream probe returns non-2xx", async () => {
+    // Registration succeeds (POST /agents/register returns 200) but the
+    // stream probe (GET /ipc/stream/<role>) returns 403 — simulating a
+    // deployment where registration is permissive but stream auth is not.
+    globalThis.fetch = ((url: string) => {
+      if (url.includes("/api/v2/ipc/stream/")) {
+        return Promise.resolve(new Response("", { status: 403 }));
+      }
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    const bridge = new NexusWsBridge(makeBridgeOpts());
+    await expect(bridge.connect(1000)).rejects.toThrow(/stream handshake failed.*HTTP 403/);
+    bridge.close();
+  });
 });
