@@ -3,6 +3,7 @@ import type { GroveContract } from "./contract.js";
 import { LocalEventBus } from "./local-event-bus.js";
 import { MockRuntime } from "./mock-runtime.js";
 import { SessionOrchestrator } from "./session-orchestrator.js";
+import { makeContribution } from "./test-helpers.js";
 import type { AgentTopology } from "./topology.js";
 
 function makeContract(overrides?: Partial<GroveContract>): GroveContract {
@@ -168,6 +169,92 @@ describe("SessionOrchestrator", () => {
     // 2 goal sends (MockRuntime) + 1 contribution forwarding = 3
     expect(runtime.sendCalls.length).toBe(3);
     expect(runtime.sendCalls[2]!.message).toContain("coder");
+    bus.close();
+  });
+
+  test("polling ignores contributions from same-role agents in other sessions", async () => {
+    const runtime = new MockRuntime();
+    const bus = new LocalEventBus();
+    const contract = makeContract();
+    const contributions = [
+      makeContribution({
+        summary: "external coder contribution",
+        agent: { agentId: "external-session-coder", role: "coder" },
+      }),
+    ];
+    const contributionStore = {
+      list: async () => contributions,
+    };
+
+    const orchestrator = new SessionOrchestrator({
+      goal: "Build auth module",
+      contract,
+      topology: contract.topology!,
+      runtime,
+      eventBus: bus,
+      projectRoot: "/tmp",
+      workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback",
+      contributionStore,
+    });
+    const internals = orchestrator as unknown as {
+      startContributionPolling: () => void;
+      pollContributions: () => Promise<void>;
+    };
+    // Avoid a real 15s timer in test; invoke poll manually.
+    internals.startContributionPolling = () => undefined;
+
+    await orchestrator.start();
+    await internals.pollContributions();
+
+    // Only initial role-goal sends should be present.
+    expect(runtime.sendCalls).toHaveLength(2);
+    bus.close();
+  });
+
+  test("polling forwards contributions from this session's agentId", async () => {
+    const runtime = new MockRuntime();
+    const bus = new LocalEventBus();
+    const contract = makeContract();
+    const contributions: ReturnType<typeof makeContribution>[] = [];
+    const contributionStore = {
+      list: async () => contributions,
+    };
+
+    const orchestrator = new SessionOrchestrator({
+      goal: "Build auth module",
+      contract,
+      topology: contract.topology!,
+      runtime,
+      eventBus: bus,
+      projectRoot: "/tmp",
+      workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback",
+      contributionStore,
+    });
+    const internals = orchestrator as unknown as {
+      startContributionPolling: () => void;
+      pollContributions: () => Promise<void>;
+    };
+    // Avoid a real 15s timer in test; invoke poll manually.
+    internals.startContributionPolling = () => undefined;
+
+    const started = await orchestrator.start();
+    const coderSessionId = started.agents.find((a) => a.role === "coder")?.session.id;
+    expect(coderSessionId).toBeDefined();
+
+    contributions.push(
+      makeContribution({
+        summary: "local coder contribution",
+        agent: { agentId: coderSessionId ?? "missing", role: "coder" },
+      }),
+    );
+
+    await internals.pollContributions();
+
+    // 2 initial goal sends + 1 routed handoff to reviewer.
+    expect(runtime.sendCalls).toHaveLength(3);
+    expect(runtime.sendCalls[2]!.message).toContain("local coder contribution");
     bus.close();
   });
 

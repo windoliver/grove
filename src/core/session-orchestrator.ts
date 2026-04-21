@@ -115,6 +115,7 @@ export class SessionOrchestrator {
   private startedAt = 0;
   private readonly seenCids = new Set<string>();
   private contributionPollTimer: ReturnType<typeof setInterval> | null = null;
+  private contributionPollStartTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: SessionConfig) {
     this.config = config;
@@ -245,6 +246,10 @@ export class SessionOrchestrator {
     this.stopReason = reason;
 
     // Stop contribution polling
+    if (this.contributionPollStartTimer) {
+      clearTimeout(this.contributionPollStartTimer);
+      this.contributionPollStartTimer = null;
+    }
     if (this.contributionPollTimer) {
       clearInterval(this.contributionPollTimer);
       this.contributionPollTimer = null;
@@ -281,13 +286,14 @@ export class SessionOrchestrator {
     });
 
     // Start polling after initial delay
-    setTimeout(() => {
+    this.contributionPollStartTimer = setTimeout(() => {
       if (this.stopped) return;
       this.contributionPollTimer = setInterval(() => {
         void this.pollContributions();
       }, POLL_MS);
       // Also poll immediately on first tick
       void this.pollContributions();
+      this.contributionPollStartTimer = null;
     }, INITIAL_DELAY_MS);
   }
 
@@ -310,8 +316,7 @@ export class SessionOrchestrator {
         // Match by agentId (unique per spawn), not just role name (shared across sessions).
         const agentId = c.agent.agentId;
         const isOurAgent = this.agents.some(
-          (a) =>
-            a.role === sourceRole && (a.session.id === agentId || a.session.role === sourceRole),
+          (a) => a.role === sourceRole && a.session.id === agentId,
         );
         if (!isOurAgent) continue;
 

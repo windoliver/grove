@@ -243,13 +243,16 @@ export class TmuxRuntime implements AgentRuntime {
       });
 
       if (output === entry.lastOutput && entry.lastOutput !== "") {
-        // Output hasn't changed — fire idle callbacks
-        entry.session = { ...entry.session, status: "idle" };
-        for (const cb of entry.idleCallbacks) {
-          try {
-            cb();
-          } catch {
-            // Don't let callback errors kill the poll loop
+        // Output hasn't changed. Fire callbacks only on transition to idle
+        // to avoid repeated callback storms on every poll tick.
+        if (entry.session.status !== "idle") {
+          entry.session = { ...entry.session, status: "idle" };
+          for (const cb of entry.idleCallbacks) {
+            try {
+              cb();
+            } catch {
+              // Don't let callback errors kill the poll loop
+            }
           }
         }
       } else {

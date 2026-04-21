@@ -5,6 +5,7 @@
 
 import type { AcpxTurn } from "../acp/types.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
+import { buildSessionId } from "./session-id.js";
 
 /**
  * SubprocessRuntime does not produce ACP output. Return an already-settled
@@ -59,13 +60,83 @@ interface SessionEntry {
   exited: boolean;
 }
 
+/**
+ * Split a shell-like command string into argv tokens.
+ *
+ * Supports single/double quotes and backslash escaping so profiles can pass
+ * quoted `-e` / `-c` scripts without being corrupted by naive whitespace split.
+ */
+function splitCommand(command: string): string[] {
+  const args: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let escaping = false;
+  let tokenStarted = false;
+
+  for (const ch of command) {
+    if (escaping) {
+      current += ch;
+      escaping = false;
+      tokenStarted = true;
+      continue;
+    }
+
+    if (quote === null) {
+      if (ch === " " || ch === "\t" || ch === "\n") {
+        if (tokenStarted) {
+          args.push(current);
+          current = "";
+          tokenStarted = false;
+        }
+        continue;
+      }
+      if (ch === "'" || ch === '"') {
+        quote = ch;
+        tokenStarted = true;
+        continue;
+      }
+      if (ch === "\\") {
+        escaping = true;
+        tokenStarted = true;
+        continue;
+      }
+      current += ch;
+      tokenStarted = true;
+      continue;
+    }
+
+    if (ch === quote) {
+      quote = null;
+      continue;
+    }
+    if (quote === '"' && ch === "\\") {
+      escaping = true;
+      continue;
+    }
+    current += ch;
+    tokenStarted = true;
+  }
+
+  if (quote !== null) {
+    throw new Error(`Unterminated quote in command: ${command}`);
+  }
+  if (escaping) {
+    current += "\\";
+    tokenStarted = true;
+  }
+  if (tokenStarted) {
+    args.push(current);
+  }
+  return args;
+}
+
 export class SubprocessRuntime implements AgentRuntime {
   private sessions = new Map<string, SessionEntry>();
   private nextId = 0;
 
   async spawn(role: string, config: AgentConfig): Promise<AgentSession> {
-    const id = `subprocess-${role}-${this.nextId++}`;
-    const [cmd, ...args] = config.command.split(/\s+/);
+    const id = buildSessionId(role, this.nextId++);
+    const [cmd, ...args] = splitCommand(config.command);
 
     if (!cmd) {
       throw new Error(`Empty command for role "${role}"`);

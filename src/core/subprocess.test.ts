@@ -46,6 +46,22 @@ describe("spawnCommand", () => {
     expect(result.exitCode).toBe(127);
     expect(result.stderr).toBeTruthy();
   });
+
+  test("throws when stdout exceeds maxBufferBytes", async () => {
+    await expect(
+      spawnCommand(["bun", "-e", "process.stdout.write('a'.repeat(2048))"], {
+        maxBufferBytes: 1024,
+      }),
+    ).rejects.toThrow(/stdout exceeded max buffer/i);
+  });
+
+  test("throws when stderr exceeds maxBufferBytes", async () => {
+    await expect(
+      spawnCommand(["bun", "-e", "process.stderr.write('e'.repeat(2048))"], {
+        maxBufferBytes: 1024,
+      }),
+    ).rejects.toThrow(/stderr exceeded max buffer/i);
+  });
 });
 
 describe("spawnOrThrow", () => {
