@@ -20,6 +20,7 @@ export const reviewLoopPreset: PresetConfig = {
         maxInstances: 1,
         mode: "broadcast",
         platform: "claude-code",
+        skills: ["grove"],
         prompt:
           "You are a software engineer. Your workflow:\n" +
           "1. Read the codebase and understand the goal\n" +
@@ -38,6 +39,7 @@ export const reviewLoopPreset: PresetConfig = {
         maxInstances: 1,
         mode: "broadcast",
         platform: "claude-code",
+        skills: ["grove"],
         prompt:
           "You are a code reviewer. Your workflow:\n" +
           "1. You will receive a notification with the coder's Workspace path\n" +
