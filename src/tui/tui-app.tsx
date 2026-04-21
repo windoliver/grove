@@ -375,10 +375,11 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
             onRoleUnhealthy: (role, fails) => {
               const reason = `SSE stream for role=${role} unhealthy after ${fails} consecutive failures`;
               process.stderr.write(`[grove] DEGRADED: ${reason}\n`);
-              // Only fail closed for multi-role topologies. A single-
-              // role session doesn't use cross-role IPC, so stream
-              // degradation shouldn't prevent it from accepting work.
-              if ((topo?.roles.length ?? 0) > 1) {
+              // Query live topology at callback time — a session
+              // topology change after construction (preset picked in
+              // screen-manager) would make the captured `topo` stale.
+              // Fail closed only when the ACTIVE topology is multi-role.
+              if ((manager.getTopology()?.roles.length ?? 0) > 1) {
                 manager.markDeliveryDisabled(reason);
               }
             },
@@ -415,9 +416,11 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
           // fallback). After bounded retries fail, fail closed for
           // multi-role topologies only — single-role sessions don't
           // need IPC and shouldn't be blocked by a bridge outage.
+          // Query live topology (session topology may have changed
+          // after this useMemo ran, making `topo` stale).
           const detail = err instanceof Error ? err.message : String(err);
           debugLog("wsBridge", `FAILED: ${detail}`);
-          if ((topo?.roles.length ?? 0) > 1) {
+          if ((manager.getTopology()?.roles.length ?? 0) > 1) {
             manager.markDeliveryDisabled(detail);
           }
           process.stderr.write(

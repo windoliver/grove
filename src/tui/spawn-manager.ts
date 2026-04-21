@@ -277,16 +277,19 @@ export class SpawnManager {
     this.topology = topology;
     const newRoleCount = topology?.roles.length ?? 0;
 
-    // A session change to single-role or undefined topology clears a
-    // prior "disabled" state: that disable was scoped to a previous
-    // multi-role topology's bridge requirement, and a single-role
-    // session doesn't need cross-role IPC. Without this reset, a
-    // transient bridge fault during a multi-role session would
-    // permanently poison all later single-role sessions on the same
-    // manager until process restart.
-    if (this.deliveryState === "disabled" && newRoleCount <= 1 && prevRoleCount !== newRoleCount) {
-      this.deliveryState = "ready";
-      this.deliveryDisabledReason = undefined;
+    // A session change to single-role or undefined topology clears
+    // both "disabled" and "pending" states: both were scoped to a
+    // prior multi-role topology's bridge requirement. Single-role
+    // sessions don't need cross-role IPC, so spawn() should proceed
+    // immediately without waiting. Resolve any pending waiters so
+    // they can spawn now.
+    if (newRoleCount <= 1 && prevRoleCount !== newRoleCount) {
+      if (this.deliveryState === "disabled") {
+        this.deliveryState = "ready";
+        this.deliveryDisabledReason = undefined;
+      } else if (this.deliveryState === "pending") {
+        this.markDeliveryReady();
+      }
     }
 
     // Multi-role topology means cross-role IPC is expected — the bridge
@@ -335,7 +338,7 @@ export class SpawnManager {
         }. Restart the TUI after Nexus is reachable.`,
       );
     }
-    if (this.deliveryState === "pending") {
+    if (this.deliveryState === "pending" && needsDelivery) {
       try {
         await this.waitForDelivery();
       } catch (err) {
@@ -891,6 +894,13 @@ export class SpawnManager {
   // ─── Log buffer management (issue #183) ───
 
   /** Get all per-agent log buffers (for TracePane). */
+  /** Current topology. Read by external callers (e.g. tui-app bridge
+   * callbacks) that need to decide fail-closed behavior based on the
+   * live session topology rather than a stale appProps capture. */
+  getTopology(): AgentTopology | undefined {
+    return this.topology;
+  }
+
   getLogBuffers(): ReadonlyMap<string, AgentLogBuffer> {
     return this.logBuffers;
   }
