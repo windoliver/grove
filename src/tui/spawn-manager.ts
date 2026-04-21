@@ -279,9 +279,11 @@ export class SpawnManager {
    * Call before spawning when the topology is known (e.g. after preset selection).
    */
   setTopology(topology: AgentTopology | undefined): void {
-    const prevRoleCount = this.topology?.roles.length ?? 0;
+    const prevRoles = new Set(this.topology?.roles.map((r) => r.name) ?? []);
+    const nextRoles = new Set(topology?.roles.map((r) => r.name) ?? []);
+    const prevRoleCount = prevRoles.size;
     this.topology = topology;
-    const newRoleCount = topology?.roles.length ?? 0;
+    const newRoleCount = nextRoles.size;
 
     // A session change to single-role or undefined topology clears
     // both "disabled" and "pending" states: both were scoped to a
@@ -303,13 +305,29 @@ export class SpawnManager {
     // waits for setWsBridge / markDeliveryDisabled to settle. Guards:
     //   - Never downgrade "disabled" (operator warning already fired
     //     for a multi-role session; don't mask it).
-    //   - Never downgrade when a bridge is already attached — topology
-    //     is often applied AFTER bridge init completes in the normal
+    //   - When a bridge is already attached AND the role set matches the
+    //     bridge's provisioned set, skip the re-pending step — topology
+    //     is often re-applied AFTER bridge init completes in the normal
     //     flow, and re-pending would stall every spawn its full 120s
     //     budget despite a healthy bridge.
+    //   - When a bridge is attached but the role set CHANGED, the
+    //     bridge was provisioned/probed for the old roles and cannot
+    //     safely service the new ones (registration, SSE, and health
+    //     are all per-role and scoped to construction-time topology).
+    //     Fail closed rather than silently let spawns through against
+    //     a bridge that never probed the new roles.
     if (this.deliveryState === "disabled") return;
-    if (this.wsBridge !== undefined) return;
     if (topology !== undefined && topology.roles.length > 1) {
+      if (this.wsBridge !== undefined) {
+        const roleSetChanged =
+          prevRoles.size !== nextRoles.size || [...nextRoles].some((r) => !prevRoles.has(r));
+        if (roleSetChanged) {
+          this.markDeliveryDisabled(
+            "topology role set changed after bridge attached; restart TUI to re-probe",
+          );
+        }
+        return;
+      }
       this.deliveryState = "pending";
     }
   }

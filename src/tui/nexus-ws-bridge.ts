@@ -83,6 +83,15 @@ export class NexusWsBridge {
   // its consecutive-failure counter and fire onRoleUnhealthy for a role the
   // caller has already torn down, incorrectly flipping delivery to disabled.
   private roleAborts = new Map<string, AbortController>();
+  // Per-role recent-message cache: rejects duplicate deliveries of the
+  // same Nexus message_id through the same role. Re-registering a role
+  // (kill + respawn) aborts the old SSE loop but cannot guarantee the
+  // old loop has finished dispatching its in-flight event before the
+  // new loop connects. Both may observe the same message_delivered
+  // during the handoff window. Without dedupe the runtime would receive
+  // the prompt twice. Bounded per role to keep memory flat.
+  private recentMessageIds = new Map<string, Set<string>>();
+  private static readonly RECENT_CAP = 256;
   private closed = false;
 
   constructor(opts: NexusWsBridgeOptions) {
@@ -116,6 +125,7 @@ export class NexusWsBridge {
       controller.abort();
       this.roleAborts.delete(role);
     }
+    this.recentMessageIds.delete(role);
   }
 
   /**
@@ -203,6 +213,7 @@ export class NexusWsBridge {
       ac.abort();
     }
     this.roleAborts.clear();
+    this.recentMessageIds.clear();
     this.sessions.clear();
   }
 
@@ -474,6 +485,28 @@ export class NexusWsBridge {
         "wsBridge.handleEvent",
         `role=${role} sender=${event.sender} path=${event.path} registeredSessions=[${[...this.sessions.keys()].join(",")}]`,
       );
+
+      // Per-role dedupe: re-register aborts the old loop but cannot
+      // force the in-flight dispatch to unwind before the new loop
+      // comes online. Both loops can see the same Nexus message_id in
+      // the handoff window — without this guard the runtime would
+      // receive the same prompt twice.
+      if (event.message_id) {
+        let seen = this.recentMessageIds.get(role);
+        if (!seen) {
+          seen = new Set<string>();
+          this.recentMessageIds.set(role, seen);
+        }
+        if (seen.has(event.message_id)) {
+          debugLog("wsBridge.handleEvent", `DEDUPE role=${role} message_id=${event.message_id}`);
+          return;
+        }
+        seen.add(event.message_id);
+        if (seen.size > NexusWsBridge.RECENT_CAP) {
+          const first = seen.values().next().value;
+          if (first !== undefined) seen.delete(first);
+        }
+      }
 
       // Notify the TUI EventBus — triggers contribution feed refresh (no polling needed)
       if (this.opts.eventBus) {
@@ -820,6 +853,23 @@ export class NexusWsBridge {
         "wsBridge.readAndPush",
         `delivering to session=${session.id} role=${_targetRole} notification=${notification.slice(0, 80)}`,
       );
+
+      // Session-identity re-check: handleEvent captured `session` at SSE
+      // dispatch time, but the sys_read fetch + decode above are async.
+      // If the role was unregistered or replaced during that window, the
+      // captured session may now be closed. Push to a dead session would
+      // fail and — worse — trigger dead-lettering for a handoff that a
+      // replacement session should still receive. Skip delivery and skip
+      // dead-lettering in that case; the replacement's own SSE loop will
+      // pick up the redelivery from Nexus.
+      const current = this.sessions.get(_targetRole);
+      if (!current || current.id !== session.id) {
+        debugLog(
+          "wsBridge.readAndPush",
+          `SKIP stale session for role=${_targetRole} captured=${session.id} current=${current?.id ?? "none"}`,
+        );
+        return;
+      }
 
       // The handoff has already been marked `delivered` upstream on the
       // Nexus inbox SSE. Full separation of "inbox delivered" vs "agent
