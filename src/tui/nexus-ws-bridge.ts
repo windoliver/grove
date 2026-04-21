@@ -118,7 +118,22 @@ export class NexusWsBridge {
     }
   }
 
-  unregisterSession(role: string): void {
+  /**
+   * Remove the session binding for a role and cancel its SSE loop.
+   *
+   * When `expectedSessionId` is provided, the removal is ownership-checked:
+   * if the currently-registered session for that role has a different id
+   * (e.g. a later spawn already replaced it, or a sibling same-role spawn
+   * re-registered), this is a no-op. This prevents `kill(oldSpawnId)` from
+   * cutting off a still-live sibling spawn that shares the role name —
+   * the bridge maps one session per role, so unconditional removal on
+   * kill would take down the surviving binding.
+   */
+  unregisterSession(role: string, expectedSessionId?: string): void {
+    if (expectedSessionId !== undefined) {
+      const current = this.sessions.get(role);
+      if (!current || current.id !== expectedSessionId) return;
+    }
     this.sessions.delete(role);
     const controller = this.roleAborts.get(role);
     if (controller) {
@@ -809,15 +824,6 @@ export class NexusWsBridge {
         return;
       }
 
-      // Non-ACP prose IPC: this is a real handoff notification, so now
-      // advance the handoff's delivery state. Running this AFTER the ACP
-      // check prevents ACP envelopes (never backed by a handoff record)
-      // from triggering updateHandoffDeliveryStatus's sender-fallback
-      // and falsely marking an unrelated pending handoff as delivered.
-      if (this.opts.handoffStore && ipcMessageId) {
-        void this.updateHandoffDeliveryStatus(ipcMessageId, _targetRole, msgSender);
-      }
-
       const payload = msg.payload ?? {};
       const cid = typeof payload.cid === "string" ? payload.cid : undefined;
       const kind = typeof payload.kind === "string" ? payload.kind : undefined;
@@ -869,6 +875,18 @@ export class NexusWsBridge {
           `SKIP stale session for role=${_targetRole} captured=${session.id} current=${current?.id ?? "none"}`,
         );
         return;
+      }
+
+      // Advance the handoff's delivery state ONLY after the stale-session
+      // gate passes. If we mark `delivered` before re-validating and then
+      // skip the push, the handoff is stuck in a terminal `delivered`
+      // state even though the intended recipient never actually received
+      // it — irreversible skew that hides the stuck work from recovery
+      // tooling. Move the transition below the gate so `delivered` is
+      // only reached when a live session actually gets the notification.
+      // The replacement session's own SSE loop handles the redelivery.
+      if (this.opts.handoffStore && ipcMessageId) {
+        void this.updateHandoffDeliveryStatus(ipcMessageId, _targetRole, msgSender);
       }
 
       // The handoff has already been marked `delivered` upstream on the

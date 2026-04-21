@@ -355,21 +355,28 @@ export class SpawnManager {
     //   ready    → spawn. Default state is "ready"; multi-role topology
     //              flips it to pending in setTopology.
     //
-    // Scope: the gate only matters when there is an AgentRuntime to
-    // actually deliver IPC through (acpx-backed spawns). Tmux-only
-    // paths (e.g., workspace-provisioning test harnesses) have no
-    // IPC surface, so waiting on a bridge they never intend to wire
-    // up would deadlock the test. Skip the gate in that case —
-    // nothing is lost because nothing could have been delivered.
-    const needsDelivery = (this.topology?.roles.length ?? 0) > 1 && this.agentRuntime !== undefined;
-    if (this.deliveryState === "disabled" && needsDelivery) {
+    // Gate scope is split into two axes:
+    //   - isMultiRole  — cross-role IPC is part of the session's contract
+    //   - hasRuntime   — there is an AgentRuntime that would actually deliver
+    //
+    // `disabled` must reject every multi-role spawn regardless of runtime:
+    // failing closed is the whole point of the state. A tmux-only harness
+    // that explicitly disabled delivery should also refuse to spawn — that's
+    // how the operator signaled "this session cannot deliver."
+    //
+    // `pending` is only meaningful when a runtime exists to eventually
+    // resolve it via setWsBridge. With no runtime (tmux-only harnesses),
+    // nobody will ever clear pending, so waiting would deadlock. Skip
+    // the wait in that case — there is no IPC surface to gate.
+    const isMultiRole = (this.topology?.roles.length ?? 0) > 1;
+    if (this.deliveryState === "disabled" && isMultiRole) {
       throw new Error(
         `Refusing to spawn ${roleId}: Inter-agent delivery disabled: ${
           this.deliveryDisabledReason ?? "unknown"
         }. Restart the TUI after Nexus is reachable.`,
       );
     }
-    if (this.deliveryState === "pending" && needsDelivery) {
+    if (this.deliveryState === "pending" && isMultiRole && this.agentRuntime !== undefined) {
       try {
         await this.waitForDelivery();
       } catch (err) {
@@ -683,8 +690,14 @@ export class SpawnManager {
       // spawnId (`role-timestamp`). Passing spawnId here would miss the
       // registered entry, leave the SSE loop running, and allow the
       // stale loop to fire onRoleUnhealthy or consume events after kill.
+      //
+      // Ownership-check the unregister so killing one spawn of a role
+      // does not cut off a sibling spawn sharing the same role (e.g. two
+      // `coder` instances under `maxInstances > 1`). The bridge only
+      // releases the role binding when the currently-registered session
+      // id matches the killed session's id.
       const roleKey = tracked.role ?? agentSession?.role ?? killedAgentId;
-      this.wsBridge?.unregisterSession(roleKey);
+      this.wsBridge?.unregisterSession(roleKey, agentSession?.id);
       // AcpSessionStore is keyed by the runtime's agentSession.id (e.g.
       // `grove-coder-0-abc123`), which may differ from `killedAgentId`
       // (the spawn-manager's agentId key). Prefer the captured
