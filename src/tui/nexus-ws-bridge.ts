@@ -78,6 +78,11 @@ export class NexusWsBridge {
   private readonly localInstanceId: string;
   private readonly sessions = new Map<string, AgentSession>();
   private abortControllers: AbortController[] = [];
+  // Per-role cancellation token. When a role is unregistered (or re-registered),
+  // its old SSE loop must exit — otherwise a stale loop can keep incrementing
+  // its consecutive-failure counter and fire onRoleUnhealthy for a role the
+  // caller has already torn down, incorrectly flipping delivery to disabled.
+  private roleAborts = new Map<string, AbortController>();
   private closed = false;
 
   constructor(opts: NexusWsBridgeOptions) {
@@ -94,12 +99,23 @@ export class NexusWsBridge {
   registerSession(role: string, session: AgentSession): void {
     this.sessions.set(role, session);
     if (!this.closed) {
-      void this.startSseForRole(role);
+      // Cancel any prior loop for this role so we don't run two concurrent
+      // reconnect loops against the same Nexus stream after a re-register.
+      const prior = this.roleAborts.get(role);
+      if (prior) prior.abort();
+      const controller = new AbortController();
+      this.roleAborts.set(role, controller);
+      void this.startSseForRole(role, controller.signal);
     }
   }
 
   unregisterSession(role: string): void {
     this.sessions.delete(role);
+    const controller = this.roleAborts.get(role);
+    if (controller) {
+      controller.abort();
+      this.roleAborts.delete(role);
+    }
   }
 
   /**
@@ -183,6 +199,10 @@ export class NexusWsBridge {
       ac.abort();
     }
     this.abortControllers = [];
+    for (const ac of this.roleAborts.values()) {
+      ac.abort();
+    }
+    this.roleAborts.clear();
     this.sessions.clear();
   }
 
@@ -262,7 +282,7 @@ export class NexusWsBridge {
     return results.filter((r): r is { role: string; reason: string } => r !== null);
   }
 
-  private async startSseForRole(role: string): Promise<void> {
+  private async startSseForRole(role: string, signal: AbortSignal): Promise<void> {
     let consecutiveFailures = 0;
     const threshold = this.opts.unhealthyThreshold ?? 3;
     // Re-arm the "fired once per breach" latch after any healthy cycle.
@@ -271,19 +291,25 @@ export class NexusWsBridge {
     // recurrence) would never re-trigger onRoleUnhealthy because the
     // flag stayed latched from the first breach.
     let firedUnhealthy = false;
-    while (!this.closed) {
+    while (!this.closed && !signal.aborted) {
       let streamOk = false;
       try {
-        streamOk = await this.connectSse(role);
+        streamOk = await this.connectSse(role, signal);
       } catch {
         streamOk = false;
       }
+      if (signal.aborted) return;
       if (streamOk) {
         consecutiveFailures = 0;
         firedUnhealthy = false;
       } else {
         consecutiveFailures += 1;
-        if (consecutiveFailures >= threshold && !firedUnhealthy) {
+        // Gate escalation on the role still being live. A stale loop that
+        // was cancelled mid-flight (unregister or re-register) must NOT
+        // fire onRoleUnhealthy — the caller has already torn down that
+        // role's session, and flipping delivery to disabled from a ghost
+        // loop would be a false-positive outage signal.
+        if (consecutiveFailures >= threshold && !firedUnhealthy && !signal.aborted) {
           firedUnhealthy = true;
           try {
             this.opts.onRoleUnhealthy?.(role, consecutiveFailures);
@@ -292,8 +318,18 @@ export class NexusWsBridge {
           }
         }
       }
-      if (!this.closed) {
-        await new Promise((r) => setTimeout(r, 5000));
+      if (!this.closed && !signal.aborted) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 5000);
+          // Wake early on abort so torn-down roles don't linger in the
+          // reconnect backoff.
+          const onAbort = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+          if (signal.aborted) onAbort();
+          else signal.addEventListener("abort", onAbort, { once: true });
+        });
       }
     }
   }
@@ -306,9 +342,16 @@ export class NexusWsBridge {
    * startSseForRole to distinguish a real stream cycle from a failed
    * open or a hung half-open connection.
    */
-  private async connectSse(role: string): Promise<boolean> {
+  private async connectSse(role: string, roleSignal?: AbortSignal): Promise<boolean> {
     const ac = new AbortController();
     this.abortControllers.push(ac);
+    // Forward role-level cancellation (unregister / re-register) into the
+    // per-connection abort so the in-flight fetch and streaming read wind
+    // down promptly instead of waiting for the idle watchdog.
+    if (roleSignal) {
+      if (roleSignal.aborted) ac.abort();
+      else roleSignal.addEventListener("abort", () => ac.abort(), { once: true });
+    }
     // Open-phase deadline — a half-open TCP/TLS handshake or hung
     // backend would otherwise block the reconnect loop indefinitely
     // and prevent onRoleUnhealthy from ever firing.
