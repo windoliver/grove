@@ -296,17 +296,43 @@ export async function logOperation(
       return validationErr("Query operations not available (missing contributionStore)");
     }
 
-    const results = await deps.contributionStore.list({
+    const baseQuery = {
       kind: input.kind,
       mode: input.mode,
       tags: input.tags,
       agentId: input.agentId,
-      limit: input.limit,
-      offset: input.offset,
+    };
+
+    // Fast path: no pagination requested.
+    if (input.limit === undefined && (input.offset === undefined || input.offset === 0)) {
+      const results = await deps.contributionStore.list(baseQuery);
+      // Store returns oldest-first; reverse for newest-first.
+      const summaries = results.map(toContributionSummary).reverse();
+      return ok({ results: summaries, count: summaries.length });
+    }
+
+    // Pagination requested in newest-first order. The underlying store paginates
+    // oldest-first, so translate the requested descending window into an
+    // equivalent ascending offset/limit window.
+    const total = await deps.contributionStore.count(baseQuery);
+    const descOffset = Math.max(0, input.offset ?? 0);
+    const descLimit = input.limit !== undefined ? Math.max(0, input.limit) : undefined;
+
+    if (total === 0 || descOffset >= total || descLimit === 0) {
+      return ok({ results: [], count: 0 });
+    }
+
+    const ascWindowEnd = total - descOffset;
+    const ascWindowStart = descLimit !== undefined ? Math.max(0, ascWindowEnd - descLimit) : 0;
+    const ascWindowSize = ascWindowEnd - ascWindowStart;
+
+    const pagedResults = await deps.contributionStore.list({
+      ...baseQuery,
+      offset: ascWindowStart,
+      limit: ascWindowSize,
     });
 
-    // Store returns oldest-first; reverse for newest-first
-    const summaries = results.map(toContributionSummary).reverse();
+    const summaries = pagedResults.map(toContributionSummary).reverse();
     return ok({ results: summaries, count: summaries.length });
   } catch (error) {
     return fromGroveError(error);

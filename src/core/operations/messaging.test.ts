@@ -405,6 +405,28 @@ describe("readInbox", () => {
     expect(bodies).not.toContain("to-dave");
   });
 
+  test("multi-recipient query also includes @all broadcasts", async () => {
+    const store = new InMemoryContributionStore();
+    await seedMessages(store, [
+      {
+        from: AGENT_ALICE,
+        body: "broadcast",
+        recipients: ["@all"],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        from: AGENT_ALICE,
+        body: "to-charlie",
+        recipients: ["@charlie"],
+        createdAt: "2026-01-01T01:00:00Z",
+      },
+    ]);
+
+    const inbox = await readInbox(store, { recipients: ["@bob", "@dave"] });
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0]?.body).toBe("broadcast");
+  });
+
   test("empty inbox returns empty array", async () => {
     const store = new InMemoryContributionStore();
     const inbox = await readInbox(store, { recipient: "@bob" });

@@ -139,6 +139,15 @@ export async function answerQuestion(
     throw new Error(`Contribution ${input.questionCid} is not a question`);
   }
 
+  // Prevent ambiguous state: a question can have at most one answer.
+  const existingAnswers = await store.relatedTo(input.questionCid, RelationType.RespondsTo);
+  const alreadyAnswered = existingAnswers.some(
+    (c) => c.context?.ephemeral === true && c.context?.ask_user_answer === true,
+  );
+  if (alreadyAnswered) {
+    throw new Error(`Question already answered: ${input.questionCid}`);
+  }
+
   const contributionInput: ContributionInput = {
     kind: ContributionKind.Discussion,
     mode: ContributionMode.Exploration,
@@ -179,18 +188,22 @@ export async function listPendingQuestions(
   store: ContributionStore,
   options?: { readonly sessionId?: string | undefined },
 ): Promise<readonly PendingQuestion[]> {
-  const contributions = await store.list({
+  const baseQuery = {
     kind: ContributionKind.Discussion,
     ...(options?.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
-  });
+  };
+  const [questionCandidates, answerCandidates] = await Promise.all([
+    store.list({ ...baseQuery, tags: ["ask-user", "question"] }),
+    store.list({ ...baseQuery, tags: ["ask-user", "answer"] }),
+  ]);
 
-  const questions = contributions.filter(
+  const questions = questionCandidates.filter(
     (c) => c.context?.ephemeral === true && c.context?.ask_user_question === true,
   );
 
   // Find answered question CIDs
   const answeredCids = new Set<string>();
-  const answers = contributions.filter(
+  const answers = answerCandidates.filter(
     (c) => c.context?.ephemeral === true && c.context?.ask_user_answer === true,
   );
   for (const a of answers) {
@@ -232,9 +245,10 @@ export async function getAnswer(
   questionCid: string,
 ): Promise<string | undefined> {
   const children = await store.relatedTo(questionCid, RelationType.RespondsTo);
-  const answer = children.find(
-    (c) => c.context?.ephemeral === true && c.context?.ask_user_answer === true,
-  );
+  const answers = children
+    .filter((c) => c.context?.ephemeral === true && c.context?.ask_user_answer === true)
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  const answer = answers[0];
   return answer !== undefined
     ? ((answer.context?.answer_text as string) ?? answer.description ?? answer.summary)
     : undefined;
