@@ -114,7 +114,9 @@ export class SessionOrchestrator {
   private contributionCount = 0;
   private startedAt = 0;
   private readonly seenCids = new Set<string>();
+  private readonly sessionAgentIdsByRole = new Map<string, Set<string>>();
   private contributionPollTimer: ReturnType<typeof setInterval> | null = null;
+  private contributionPollStartTimeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: SessionConfig) {
     this.config = config;
@@ -187,6 +189,7 @@ export class SessionOrchestrator {
     for (const result of spawnResults) {
       if (result.status === "fulfilled") {
         this.agents.push(result.value);
+        this.recordSessionAgentId(result.value.role, result.value.session.id);
       } else {
         process.stderr.write(`[SessionOrchestrator] spawn failed: ${result.reason}\n`);
       }
@@ -241,8 +244,15 @@ export class SessionOrchestrator {
 
   /** Stop the session gracefully. */
   async stop(reason: string): Promise<void> {
+    if (this.stopped) return;
     this.stopped = true;
     this.stopReason = reason;
+
+    // Stop contribution polling
+    if (this.contributionPollStartTimeout) {
+      clearTimeout(this.contributionPollStartTimeout);
+      this.contributionPollStartTimeout = null;
+    }
 
     // Stop contribution polling
     if (this.contributionPollTimer) {
@@ -253,9 +263,25 @@ export class SessionOrchestrator {
     // Notify all agents
     await this.router.broadcastStop(reason);
 
-    // Close all agent sessions
-    for (const agent of this.agents) {
-      await this.config.runtime.close(agent.session);
+    // Unsubscribe all role handlers to avoid post-stop forwarding/memory leaks.
+    if (this.eventHandlers) {
+      for (const [role, handler] of this.eventHandlers) {
+        this.config.eventBus.unsubscribe(role, handler);
+      }
+      this.eventHandlers.clear();
+    }
+
+    // Close all agent sessions (best-effort)
+    const closeResults = await Promise.allSettled(
+      this.agents.map((agent) => this.config.runtime.close(agent.session)),
+    );
+    for (const [index, result] of closeResults.entries()) {
+      if (result.status === "rejected") {
+        const role = this.agents[index]?.role ?? "(unknown)";
+        process.stderr.write(
+          `[SessionOrchestrator] close failed for role '${role}': ${String(result.reason)}\n`,
+        );
+      }
     }
   }
 
@@ -272,16 +298,33 @@ export class SessionOrchestrator {
     const POLL_MS = 3_000;
     const INITIAL_DELAY_MS = 15_000; // wait for agents to go idle first
 
+    if (this.contributionPollStartTimeout) {
+      clearTimeout(this.contributionPollStartTimeout);
+      this.contributionPollStartTimeout = null;
+    }
+
+    if (this.contributionPollTimer) {
+      clearInterval(this.contributionPollTimer);
+      this.contributionPollTimer = null;
+    }
+
     // Seed seenCids with ALL contributions that existed before session started.
     // Use same limit as poll to ensure no gap between seed and first poll.
-    void this.config.contributionStore?.list({ limit: 1000 }).then((existing) => {
-      for (const c of existing) {
-        this.seenCids.add(c.cid);
-      }
-    });
+    void this.config.contributionStore
+      ?.list({ limit: 1000 })
+      .then((existing) => {
+        for (const c of existing) {
+          this.seenCids.add(c.cid);
+        }
+      })
+      .catch(() => {
+        // Best effort: failure here just means the first poll may
+        // re-observe some pre-existing contributions.
+      });
 
     // Start polling after initial delay
-    setTimeout(() => {
+    this.contributionPollStartTimeout = setTimeout(() => {
+      this.contributionPollStartTimeout = null;
       if (this.stopped) return;
       this.contributionPollTimer = setInterval(() => {
         void this.pollContributions();
@@ -298,27 +341,27 @@ export class SessionOrchestrator {
       // Fetch recent contributions (newest first via DESC, then reverse for processing order).
       // Using a large limit ensures we don't miss contributions in active sessions.
       const contributions = await this.config.contributionStore.list({ limit: 200 });
+      const agentsByRole = new Map(this.agents.map((a) => [a.role, a] as const));
       for (const c of contributions) {
         if (this.seenCids.has(c.cid)) continue;
         this.seenCids.add(c.cid);
-        this.contributionCount++;
 
         const sourceRole = c.agent.role;
         if (!sourceRole) continue;
+        const sourceAgent = agentsByRole.get(sourceRole);
+        if (!sourceAgent) continue;
 
         // Only process contributions from agents in THIS session.
-        // Match by agentId (unique per spawn), not just role name (shared across sessions).
+        // Match by an explicit allowlist of session IDs observed in this orchestrator,
+        // not just role name (shared across sessions).
         const agentId = c.agent.agentId;
-        const isOurAgent = this.agents.some(
-          (a) =>
-            a.role === sourceRole && (a.session.id === agentId || a.session.role === sourceRole),
-        );
-        if (!isOurAgent) continue;
+        const allowedAgentIds = this.sessionAgentIdsByRole.get(sourceRole);
+        if (allowedAgentIds === undefined || !allowedAgentIds.has(agentId)) continue;
+        this.contributionCount++;
 
         // Find the source agent's workspace path — this is the handoff artifact.
         // The receiving agent reads files directly from this path, no git merge needed.
-        const sourceAgent = this.agents.find((a) => a.role === sourceRole);
-        const sourceWorkspace = sourceAgent?.workspaceMode.path ?? "(unknown)";
+        const sourceWorkspace = sourceAgent.workspaceMode.path;
 
         const action =
           c.kind === "review"
@@ -340,7 +383,7 @@ export class SessionOrchestrator {
         });
 
         for (const { targetRole } of routeResults) {
-          const targetAgent = this.agents.find((a) => a.role === targetRole);
+          const targetAgent = agentsByRole.get(targetRole);
           if (targetAgent) {
             const turn = await this.config.runtime.send(targetAgent.session, message);
             this.watchTurn(targetAgent.role, turn);
@@ -495,6 +538,8 @@ export class SessionOrchestrator {
   }
 
   private async handleEvent(agent: AgentSessionInfo, event: GroveEvent): Promise<void> {
+    if (this.stopped) return;
+
     if (event.type === "stop") {
       // Auto-close session on stop event
       if (!this.stopped) {
@@ -569,15 +614,23 @@ export class SessionOrchestrator {
 
     const deadline = Date.now() + timeoutMs;
     return new Promise<string>((resolve) => {
-      const poll = setInterval(async () => {
-        await this.checkAllIdle();
-        if (this.stopped || Date.now() >= deadline) {
-          clearInterval(poll);
-          if (!this.stopped) {
-            void this.stop("Session timed out");
+      const poll = setInterval(() => {
+        void (async () => {
+          try {
+            await this.checkAllIdle();
+          } catch {
+            // Best effort: transient runtime/listSessions failures should not
+            // leave waiters hanging forever.
           }
-          resolve(this.stopReason ?? "Timed out");
-        }
+
+          if (this.stopped || Date.now() >= deadline) {
+            clearInterval(poll);
+            if (!this.stopped) {
+              void this.stop("Session timed out");
+            }
+            resolve(this.stopReason ?? "Timed out");
+          }
+        })();
       }, pollMs);
     });
   }
@@ -621,6 +674,7 @@ export class SessionOrchestrator {
     } else {
       this.agents.push(newSession);
     }
+    this.recordSessionAgentId(newSession.role, newSession.session.id);
 
     // Unsubscribe old handler before re-subscribing (prevents leak)
     const oldHandler = this.eventHandlers?.get(role);
@@ -633,5 +687,14 @@ export class SessionOrchestrator {
     this.config.eventBus.subscribe(role, newHandler);
 
     return newSession;
+  }
+
+  private recordSessionAgentId(role: string, sessionId: string): void {
+    const existing = this.sessionAgentIdsByRole.get(role);
+    if (existing) {
+      existing.add(sessionId);
+      return;
+    }
+    this.sessionAgentIdsByRole.set(role, new Set([sessionId]));
   }
 }

@@ -460,6 +460,54 @@ describe("EnforcingContributionStore", () => {
         await cleanup(dir, db);
       }
     });
+
+    test("clears pre-write hook when enforcement rejects before hook runs", async () => {
+      const { dir, db, contributionStore } = await setupStores();
+      try {
+        const contract = makeContract({
+          rateLimits: { maxContributionsPerAgentPerHour: 1 },
+        });
+        const store = new EnforcingContributionStore(contributionStore, contract);
+        const hooks = (
+          store as unknown as { preWriteHooks: Map<string, (c: unknown) => Promise<void>> }
+        ).preWriteHooks;
+
+        await store.put(makeRecentContribution({ summary: "at-limit" }));
+        const blocked = makeRecentContribution({ summary: "blocked" });
+
+        let hookRan = false;
+        store.setPreWriteHook(blocked.cid, async () => {
+          hookRan = true;
+        });
+
+        await expect(store.put(blocked)).rejects.toThrow(RateLimitError);
+        expect(hookRan).toBe(false);
+        expect(hooks.has(blocked.cid)).toBe(false);
+      } finally {
+        await cleanup(dir, db);
+      }
+    });
+
+    test("clears pre-write hook when hook throws", async () => {
+      const { dir, db, contributionStore } = await setupStores();
+      try {
+        const store = new EnforcingContributionStore(contributionStore, makeContract());
+        const hooks = (
+          store as unknown as { preWriteHooks: Map<string, (c: unknown) => Promise<void>> }
+        ).preWriteHooks;
+        const c = makeRecentContribution({ summary: "hook-throws" });
+
+        store.setPreWriteHook(c.cid, async () => {
+          throw new Error("hook boom");
+        });
+
+        await expect(store.put(c)).rejects.toThrow("hook boom");
+        expect(hooks.has(c.cid)).toBe(false);
+        expect(await store.count()).toBe(0);
+      } finally {
+        await cleanup(dir, db);
+      }
+    });
   });
 
   describe("clock skew rejection", () => {
@@ -1555,6 +1603,42 @@ describe("EnforcingContributionStore: putWithCowrite preservation", () => {
       // Confirm the second was never written.
       const stored = await contributionStore.get(c2.cid);
       expect(stored).toBeUndefined();
+    } finally {
+      await cleanup(dir, db);
+    }
+  });
+
+  test("putWithCowrite clears pre-write hook when enforcement rejects", async () => {
+    const { dir, db, contributionStore } = await setupStores();
+    try {
+      const contract = makeContract({
+        rateLimits: { maxContributionsPerAgentPerHour: 1 },
+      });
+      const store = new EnforcingContributionStore(contributionStore, contract);
+      const hooks = (
+        store as unknown as { preWriteHooks: Map<string, (c: unknown) => Promise<void>> }
+      ).preWriteHooks;
+      const cowriteFn = (): void => {
+        /* no handoffs in this test */
+      };
+      type CowriteStore = { putWithCowrite: (c: unknown, fn: () => void) => Promise<void> };
+
+      await (store as unknown as CowriteStore).putWithCowrite(
+        makeRecentContribution({ summary: "first", agent: { agentId: "agent-y" } }),
+        cowriteFn,
+      );
+
+      const blocked = makeRecentContribution({ summary: "blocked", agent: { agentId: "agent-y" } });
+      let hookRan = false;
+      store.setPreWriteHook(blocked.cid, async () => {
+        hookRan = true;
+      });
+
+      await expect(
+        (store as unknown as CowriteStore).putWithCowrite(blocked, cowriteFn),
+      ).rejects.toThrow(RateLimitError);
+      expect(hookRan).toBe(false);
+      expect(hooks.has(blocked.cid)).toBe(false);
     } finally {
       await cleanup(dir, db);
     }

@@ -167,20 +167,28 @@ export class EnforcingContributionStore implements ContributionStore {
 
   put = async (contribution: Contribution): Promise<void> => {
     return this.writeMutex.runExclusive(async () => {
-      // Idempotent: if CID already exists, skip enforcement and delegate (no-op)
-      const existing = await this.inner.get(contribution.cid);
-      if (existing !== undefined) {
-        return this.inner.put(contribution);
-      }
-
-      await this.enforceContributionLimits(contribution, 0, []);
-      // Run per-CID policy enforcement inside mutex (TOCTOU-safe, no shared state race)
       const hook = this.preWriteHooks.get(contribution.cid);
-      if (hook) {
-        this.preWriteHooks.delete(contribution.cid);
-        await hook(contribution);
+      try {
+        // Idempotent: if CID already exists, skip enforcement and delegate (no-op)
+        const existing = await this.inner.get(contribution.cid);
+        if (existing !== undefined) {
+          return this.inner.put(contribution);
+        }
+
+        await this.enforceContributionLimits(contribution, 0, []);
+        // Run per-CID policy enforcement inside mutex (TOCTOU-safe, no shared state race)
+        if (hook) {
+          await hook(contribution);
+        }
+        return await this.inner.put(contribution);
+      } finally {
+        // One-shot hook lifecycle: clear stale registrations even when
+        // enforcement/write fails. Only remove if unchanged to avoid racing
+        // with a newer registration for the same CID.
+        if (hook !== undefined && this.preWriteHooks.get(contribution.cid) === hook) {
+          this.preWriteHooks.delete(contribution.cid);
+        }
       }
-      return await this.inner.put(contribution);
     });
   };
 
@@ -209,33 +217,38 @@ export class EnforcingContributionStore implements ContributionStore {
    */
   putWithCowrite = async (contribution: Contribution, cowriteFn: () => void): Promise<void> => {
     return this.writeMutex.runExclusive(async () => {
-      const existing = await this.inner.get(contribution.cid);
-      if (existing !== undefined) {
-        // Idempotent: contribution already present, skip enforcement and
-        // the cowrite (no handoffs to insert for an existing row).
-        return;
-      }
-
-      await this.enforceContributionLimits(contribution, 0, []);
       const hook = this.preWriteHooks.get(contribution.cid);
-      if (hook) {
-        this.preWriteHooks.delete(contribution.cid);
-        await hook(contribution);
-      }
-
-      const innerCowrite = (
-        this.inner as unknown as {
-          putWithCowrite?: (c: Contribution, fn: () => void) => void;
+      try {
+        const existing = await this.inner.get(contribution.cid);
+        if (existing !== undefined) {
+          // Idempotent: contribution already present, skip enforcement and
+          // the cowrite (no handoffs to insert for an existing row).
+          return;
         }
-      ).putWithCowrite;
-      if (innerCowrite !== undefined) {
-        innerCowrite.call(this.inner, contribution, cowriteFn);
-      } else {
-        // Defensive fallback — inner store does not support atomic cowrite.
-        // Do the best we can: put the contribution, then run the cowrite fn
-        // serially. This loses atomicity but matches the serial write path.
-        await this.inner.put(contribution);
-        cowriteFn();
+
+        await this.enforceContributionLimits(contribution, 0, []);
+        if (hook) {
+          await hook(contribution);
+        }
+
+        const innerCowrite = (
+          this.inner as unknown as {
+            putWithCowrite?: (c: Contribution, fn: () => void) => void;
+          }
+        ).putWithCowrite;
+        if (innerCowrite !== undefined) {
+          innerCowrite.call(this.inner, contribution, cowriteFn);
+        } else {
+          // Defensive fallback — inner store does not support atomic cowrite.
+          // Do the best we can: put the contribution, then run the cowrite fn
+          // serially. This loses atomicity but matches the serial write path.
+          await this.inner.put(contribution);
+          cowriteFn();
+        }
+      } finally {
+        if (hook !== undefined && this.preWriteHooks.get(contribution.cid) === hook) {
+          this.preWriteHooks.delete(contribution.cid);
+        }
       }
     });
   };
@@ -465,17 +478,25 @@ export class EnforcingContributionStore implements ContributionStore {
    * Finds the oldest in-window contribution and calculates when it rolls out.
    */
   private computeRetryAfterMs(contributions: readonly Contribution[], windowStart: Date): number {
-    const now = this.clock();
-    const inWindow = contributions
-      .filter((c) => new Date(c.createdAt).getTime() >= windowStart.getTime())
-      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    const nowMs = this.clock().getTime();
+    const windowStartMs = windowStart.getTime();
+    let oldestInWindowMs: number | undefined;
 
-    const oldest = inWindow[0];
-    if (oldest === undefined) return 0;
+    // Single-pass scan avoids an O(n log n) sort while preserving behavior.
+    for (const contribution of contributions) {
+      const createdAtMs = Date.parse(contribution.createdAt);
+      if (!Number.isFinite(createdAtMs) || createdAtMs < windowStartMs) {
+        continue;
+      }
+      if (oldestInWindowMs === undefined || createdAtMs < oldestInWindowMs) {
+        oldestInWindowMs = createdAtMs;
+      }
+    }
 
-    const oldestTime = new Date(oldest.createdAt).getTime();
-    const rolloutTime = oldestTime + RATE_LIMIT_WINDOW_SECONDS * 1000;
-    return Math.max(0, rolloutTime - now.getTime());
+    if (oldestInWindowMs === undefined) return 0;
+
+    const rolloutTime = oldestInWindowMs + RATE_LIMIT_WINDOW_SECONDS * 1000;
+    return Math.max(0, rolloutTime - nowMs);
   }
 }
 

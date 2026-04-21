@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { GroveContract } from "./contract.js";
 import { LocalEventBus } from "./local-event-bus.js";
 import { MockRuntime } from "./mock-runtime.js";
+import { type Contribution, ContributionKind, ContributionMode } from "./models.js";
 import { SessionOrchestrator } from "./session-orchestrator.js";
 import type { AgentTopology } from "./topology.js";
 
@@ -38,6 +39,9 @@ function makeOrchestrator(
     bus?: InstanceType<typeof LocalEventBus>;
     goal?: string;
     sessionId?: string;
+    contributionStore?:
+      | { list(query?: { limit?: number }): Promise<readonly Contribution[]> }
+      | undefined;
   },
 ) {
   const runtime = overrides?.runtime ?? new MockRuntime();
@@ -54,6 +58,7 @@ function makeOrchestrator(
     // allow-fallback lets agents start despite that.
     workspaceIsolationPolicy: "allow-fallback",
     ...(overrides?.sessionId ? { sessionId: overrides.sessionId } : {}),
+    ...(overrides?.contributionStore ? { contributionStore: overrides.contributionStore } : {}),
   });
   return { orchestrator, runtime, bus };
 }
@@ -171,6 +176,109 @@ describe("SessionOrchestrator", () => {
     bus.close();
   });
 
+  test("polling forwards only contributions from this session's agent IDs", async () => {
+    const contract = makeContract();
+    const contributions: Contribution[] = [];
+    const contributionStore = {
+      list: async (_query?: { limit?: number }): Promise<readonly Contribution[]> => contributions,
+    };
+    const { orchestrator, runtime, bus } = makeOrchestrator(contract, { contributionStore });
+
+    const status = await orchestrator.start();
+    const coderSession = status.agents.find((a) => a.role === "coder")?.session.id;
+    expect(coderSession).toBeDefined();
+    if (coderSession === undefined) {
+      throw new Error("Expected coder session to be defined");
+    }
+
+    contributions.push(
+      {
+        cid: `blake3:${"a".repeat(64)}`,
+        manifestVersion: 1,
+        kind: ContributionKind.Work,
+        mode: ContributionMode.Exploration,
+        summary: "Foreign coder contribution",
+        artifacts: {},
+        relations: [],
+        tags: ["work"],
+        agent: { agentId: "mock-coder-other", role: "coder" },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        cid: `blake3:${"b".repeat(64)}`,
+        manifestVersion: 1,
+        kind: ContributionKind.Work,
+        mode: ContributionMode.Exploration,
+        summary: "Local coder contribution",
+        artifacts: {},
+        relations: [],
+        tags: ["work"],
+        agent: { agentId: coderSession, role: "coder" },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      },
+    );
+
+    const before = runtime.sendCalls.length;
+    await (
+      orchestrator as unknown as {
+        pollContributions: () => Promise<void>;
+      }
+    ).pollContributions();
+    const forwarded = runtime.sendCalls.slice(before);
+
+    expect(forwarded).toHaveLength(1);
+    expect(forwarded[0]!.message).toContain("Local coder contribution");
+    expect(forwarded[0]!.message).not.toContain("Foreign coder contribution");
+
+    await orchestrator.stop("done");
+    bus.close();
+  });
+
+  test("polling still accepts contributions from pre-resume session IDs", async () => {
+    const contract = makeContract();
+    const contributions: Contribution[] = [];
+    const contributionStore = {
+      list: async (_query?: { limit?: number }): Promise<readonly Contribution[]> => contributions,
+    };
+    const { orchestrator, runtime, bus } = makeOrchestrator(contract, { contributionStore });
+
+    const status = await orchestrator.start();
+    const originalCoderSession = status.agents.find((a) => a.role === "coder")?.session.id;
+    expect(originalCoderSession).toBeDefined();
+    if (originalCoderSession === undefined) {
+      throw new Error("Expected original coder session to be defined");
+    }
+
+    await orchestrator.resumeAgent("coder");
+
+    contributions.push({
+      cid: `blake3:${"c".repeat(64)}`,
+      manifestVersion: 1,
+      kind: ContributionKind.Work,
+      mode: ContributionMode.Exploration,
+      summary: "Contribution from old coder session",
+      artifacts: {},
+      relations: [],
+      tags: ["work"],
+      agent: { agentId: originalCoderSession, role: "coder" },
+      createdAt: "2026-01-01T00:00:02.000Z",
+    });
+
+    const before = runtime.sendCalls.length;
+    await (
+      orchestrator as unknown as {
+        pollContributions: () => Promise<void>;
+      }
+    ).pollContributions();
+    const forwarded = runtime.sendCalls.slice(before);
+
+    expect(forwarded).toHaveLength(1);
+    expect(forwarded[0]!.message).toContain("Contribution from old coder session");
+
+    await orchestrator.stop("done");
+    bus.close();
+  });
+
   test("stop events are not forwarded to agents", async () => {
     const contract = makeContract();
     const { orchestrator, runtime, bus } = makeOrchestrator(contract);
@@ -191,6 +299,26 @@ describe("SessionOrchestrator", () => {
 
     // 2 goal sends (MockRuntime), no forwarded stop events
     expect(runtime.sendCalls.length).toBe(2);
+    bus.close();
+  });
+
+  test("contribution events are ignored after stop", async () => {
+    const contract = makeContract();
+    const { orchestrator, runtime, bus } = makeOrchestrator(contract);
+
+    await orchestrator.start();
+    await orchestrator.stop("done");
+
+    const before = runtime.sendCalls.length;
+    await bus.publish({
+      type: "contribution",
+      sourceRole: "coder",
+      targetRole: "reviewer",
+      payload: { cid: "blake3:abc", summary: "late event" },
+      timestamp: new Date().toISOString(),
+    });
+
+    expect(runtime.sendCalls.length).toBe(before);
     bus.close();
   });
 
@@ -309,6 +437,34 @@ describe("SessionOrchestrator", () => {
     const stopped = await orchestrator.checkIdleCompletion();
     expect(stopped).toBe(false);
     expect(orchestrator.getStatus().stopped).toBe(false);
+    bus.close();
+  });
+
+  test("waitForCompletion times out even when idle checks throw", async () => {
+    class ThrowingListSessionsRuntime extends MockRuntime {
+      override async listSessions(): Promise<readonly import("./agent-runtime.js").AgentSession[]> {
+        throw new Error("listSessions failed");
+      }
+    }
+
+    const contract = makeContract();
+    const runtime = new ThrowingListSessionsRuntime();
+    const bus = new LocalEventBus();
+    const orchestrator = new SessionOrchestrator({
+      goal: "Build auth module",
+      contract,
+      topology: contract.topology!,
+      runtime,
+      eventBus: bus,
+      projectRoot: "/tmp",
+      workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback",
+    });
+
+    await orchestrator.start();
+    const reason = await orchestrator.waitForCompletion(40, 10);
+    expect(reason).toBe("Session timed out");
+    expect(orchestrator.getStatus().stopped).toBe(true);
     bus.close();
   });
 
