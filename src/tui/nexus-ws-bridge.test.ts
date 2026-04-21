@@ -373,6 +373,59 @@ describe("NexusWsBridge", () => {
     bridge.close();
   });
 
+  test("readAndPush uses kind-specific action text for review contributions", async () => {
+    const runtime = makeMockRuntime();
+
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          result: {
+            data: Buffer.from(
+              JSON.stringify({
+                sender: "reviewer",
+                payload: {
+                  cid: "blake3:review1",
+                  kind: "review",
+                  summary: "fix the race condition in handler.ts",
+                  agentId: "reviewer-1",
+                },
+              }),
+            ).toString("base64"),
+          },
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+
+    const bridge = new TestableNexusWsBridge(makeBridgeOpts({ runtime }));
+    const session = makeSession("coder");
+    bridge.registerSession("coder", session);
+
+    bridge.testHandleEvent(
+      "coder",
+      "message_delivered",
+      JSON.stringify({
+        event: "message_delivered",
+        message_id: "msg-review-1",
+        sender: "reviewer",
+        recipient: "coder",
+        type: "event",
+        path: "/inbox/msg-review-1",
+      }),
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(runtime.send).toHaveBeenCalledTimes(1);
+    const notification = (runtime.send as ReturnType<typeof mock>).mock.calls[0]![1] as string;
+    // A review arriving at the coder should prompt updated work, NOT another review.
+    expect(notification).toContain("blake3:review1");
+    expect(notification).toContain("New review from reviewer");
+    expect(notification).toContain("grove_submit_work");
+    expect(notification).not.toContain("grove_submit_review");
+
+    bridge.close();
+  });
+
   test("readAndPush handles VFS read failure gracefully", async () => {
     const runtime = makeMockRuntime();
 

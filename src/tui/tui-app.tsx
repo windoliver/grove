@@ -373,8 +373,23 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
           debugLog("wsBridge", "connected");
         })
         .catch((err) => {
-          debugLog("wsBridge", `FAILED: ${String(err)}`);
+          // Bridge is the ONLY inter-agent delivery channel (no polling
+          // fallback). A silent failure here produces a session that looks
+          // alive but can't route any contributions between roles. Surface
+          // it on stderr in addition to debugLog so operators see it.
+          const detail = err instanceof Error ? err.message : String(err);
+          debugLog("wsBridge", `FAILED: ${detail}`);
+          process.stderr.write(
+            `[grove] FATAL: NexusWsBridge init failed — contributions will not reach agents. ${detail}\n`,
+          );
         });
+    } else if (agentRuntime && topo) {
+      // Bridge preconditions missing: without a Nexus endpoint + credentials,
+      // nothing will route contributions between agents. Warn loudly — this
+      // used to be silently masked by the (now removed) TUI polling path.
+      process.stderr.write(
+        `[grove] WARNING: Nexus bridge not initialized (nexusUrl=${nexusUrl ?? "none"} apiKey=${apiKey ? "set" : "missing"}). Inter-agent contribution delivery is disabled.\n`,
+      );
     }
 
     return manager;

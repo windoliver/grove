@@ -538,13 +538,29 @@ export class NexusWsBridge {
         (payload.summary as string) ??
         (payload.body as string) ??
         JSON.stringify(payload).slice(0, 100);
-      // When the payload carries a contribution envelope (cid + kind), the reviewer
-      // needs the CID to call grove_submit_review without a discovery round-trip.
-      // Without this, the reviewer falls back to grove_log/grove_frontier — the
-      // exact "polling" behavior that push is supposed to eliminate.
+      // When the payload carries a contribution envelope (cid + kind), include
+      // the CID and a kind-specific action hint so the recipient can act without
+      // a discovery round-trip (grove_log/grove_frontier — the "polling" pattern
+      // push is supposed to eliminate). Action text is keyed by inbound kind:
+      // a `work` contribution arriving at the reviewer → submit a review.
+      // A `review` arriving at the coder → submit updated work. Unknown kinds
+      // fall back to neutral guidance.
+      const actionHint = ((): string => {
+        switch (kind) {
+          case "work":
+            return "Respond with grove_submit_review to review this work.";
+          case "review":
+            return "Respond with grove_submit_work to submit updated work addressing this review.";
+          case "plan":
+          case "discussion":
+            return "Respond with grove_send_message or grove_submit_work as appropriate.";
+          default:
+            return "Respond with the appropriate grove_* tool for this contribution.";
+        }
+      })();
       const notification =
         cid && kind
-          ? `[grove] New ${kind} from ${msgSender}:\n  CID: ${cid}\n  Summary: ${summary}\n\nRespond with the appropriate tool (grove_submit_review for reviews, grove_submit_work for new work).`
+          ? `[grove] New ${kind} from ${msgSender}:\n  CID: ${cid}\n  Summary: ${summary}\n\n${actionHint}`
           : `[IPC from ${msgSender}] ${summary}`;
       debugLog(
         "wsBridge.readAndPush",
