@@ -394,21 +394,17 @@ async function buildAppProps(
 // ---------------------------------------------------------------------------
 
 /**
- * Fire-and-forget update of SKILL.md with actual server URLs.
+ * Fire-and-forget reinstall of SKILL.md after services start.
  *
- * Called after services start so that AI agent skill files point at
- * the running grove server and MCP endpoints.
+ * The on-disk catalog refactor (b3580a2) removed per-install URL
+ * substitution — SKILL.md is now copied verbatim from the bundled
+ * catalog. This helper retains the post-startup reinstall so the
+ * user's skill directories get refreshed on every `grove tui` boot,
+ * picking up catalog updates shipped with new grove releases.
  */
 function updateSkillAfterStartup(): void {
-  const serverPort = process.env.PORT ?? "4515";
-  const mcpPort = process.env.MCP_PORT ?? "4015";
   void import("../cli/commands/skill.js")
-    .then(({ handleSkillInstall }) =>
-      handleSkillInstall({
-        serverUrl: `http://localhost:${serverPort}`,
-        mcpUrl: `http://localhost:${mcpPort}`,
-      }),
-    )
+    .then(({ handleSkillInstall }) => handleSkillInstall({}))
     .catch(() => {
       /* skill update is best-effort */
     });

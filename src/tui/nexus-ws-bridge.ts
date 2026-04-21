@@ -545,7 +545,7 @@ export class NexusWsBridge {
           abortedByWatchdog = true;
           ac.abort();
         }, idleReadMs);
-        let readResult: ReadableStreamReadResult<Uint8Array>;
+        let readResult: Awaited<ReturnType<typeof reader.read>>;
         try {
           readResult = await reader.read();
         } catch {
