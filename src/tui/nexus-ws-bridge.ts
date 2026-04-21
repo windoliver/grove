@@ -127,6 +127,12 @@ export class NexusWsBridge {
   // the flush then clears without reconciling).
   private draining = false;
   private closed = false;
+  // In-flight runtime.send promises. shutdown() awaits these (bounded)
+  // before the final drain so a send failing after shutdown can still
+  // enqueue and be reconciled by the drain loop. Without tracking
+  // these, a late runtime.send failure would either be dropped (closed
+  // guard in enqueue) or never reach the drain loop at all.
+  private inFlightSends = new Set<Promise<void>>();
 
   constructor(opts: NexusWsBridgeOptions) {
     this.opts = opts;
@@ -961,20 +967,45 @@ export class NexusWsBridge {
    */
   async shutdown(shutdownTimeoutMs = 10000): Promise<void> {
     if (this.closed) return;
+    const overallDeadline = Date.now() + shutdownTimeoutMs;
     if (this.pendingDlqTimer !== null) {
       clearInterval(this.pendingDlqTimer);
       this.pendingDlqTimer = null;
     }
     // Quiesce ingress BEFORE flushing: set draining to block new
-    // enqueues, then abort SSE/read loops so in-flight readAndPush
-    // cannot append more entries during the flush window.
+    // SSE-driven sends, then abort SSE/read loops so in-flight
+    // readAndPush cannot start new sends during the await below.
+    // In-flight readAndPush that already passed the draining guard
+    // will still dispatch runtime.send, and those sends need to
+    // complete before we final-drain.
     this.draining = true;
     for (const ac of this.abortControllers) ac.abort();
     this.abortControllers.clear();
     for (const ac of this.roleAborts.values()) ac.abort();
     this.roleAborts.clear();
 
-    await this.flushPendingDeadLettersThenLog(shutdownTimeoutMs);
+    // Wait for in-flight sends (bounded) so any dead-letter enqueues
+    // from send failures land before the drain snapshot. A timeout
+    // prevents a stuck send from blocking shutdown forever; we take
+    // half the total budget, leaving room for the subsequent drain.
+    const sendWaitBudget = Math.max(0, Math.floor((overallDeadline - Date.now()) / 2));
+    if (this.inFlightSends.size > 0 && sendWaitBudget > 0) {
+      const timer = new Promise<void>((resolve) => setTimeout(resolve, sendWaitBudget));
+      await Promise.race([
+        Promise.allSettled([...this.inFlightSends]).then(() => {
+          /* all sends settled */
+        }),
+        timer,
+      ]);
+      if (this.inFlightSends.size > 0) {
+        process.stderr.write(
+          `[NexusWsBridge] shutdown: ${this.inFlightSends.size} in-flight send(s) still pending after ${sendWaitBudget}ms; proceeding to final drain\n`,
+        );
+      }
+    }
+
+    const remainingBudget = Math.max(0, overallDeadline - Date.now());
+    await this.flushPendingDeadLettersThenLog(remainingBudget);
     this.close();
   }
 
@@ -995,22 +1026,26 @@ export class NexusWsBridge {
     }
     const store = this.opts.handoffStore;
     if (store) {
-      // Drain until no progress or deadline. Track progress via the
-      // bool returned by doDrain: if a pass neither resolved nor
-      // exhausted any entries, no further passes will either (retry
-      // budget hasn't advanced yet), so break. Using a progress bool
-      // (rather than queue size) is robust against concurrent enqueue
-      // from in-flight readAndPush — a new entry doesn't falsely mask
-      // the "no progress" signal by keeping size stable.
+      // Drain until deadline OR queue empty. Keep retrying even when a
+      // pass makes no progress — IPC→handoff linkage (setIpcMessageId
+      // in contribute.ts is fire-and-forget) can land between passes,
+      // so a short backoff plus retry catches entries that would
+      // otherwise be permanently stale. Only a bounded total deadline
+      // stops the loop; within it, unresolved entries get repeated
+      // reconciliation attempts.
+      const backoffMs = 250;
       while (Date.now() < deadline && this.pendingDeadLetters.length > 0) {
         this.pendingDlqDrainInFlight = true;
-        let madeProgress = false;
         try {
-          madeProgress = await this.doDrainPendingDeadLetters(store);
+          await this.doDrainPendingDeadLetters(store);
         } finally {
           this.pendingDlqDrainInFlight = false;
         }
-        if (!madeProgress) break;
+        if (this.pendingDeadLetters.length === 0) break;
+        const sleepUntil = Math.min(Date.now() + backoffMs, deadline);
+        const sleepFor = sleepUntil - Date.now();
+        if (sleepFor <= 0) break;
+        await new Promise((r) => setTimeout(r, sleepFor));
       }
     }
     for (const entry of this.pendingDeadLetters) {
@@ -1248,7 +1283,7 @@ export class NexusWsBridge {
       // to a torn-down runtime.
       if (this.draining || this.closed) return;
 
-      void this.opts.runtime
+      const sendPromise = this.opts.runtime
         .send(session, notification)
         .then(async (turn) => {
           const result = await turn.result.catch((err) => ({
@@ -1294,6 +1329,16 @@ export class NexusWsBridge {
             retryContext,
           );
         });
+
+      // Track the send-and-status-update promise so shutdown() can
+      // await it (bounded) before the final drain. Without this, a
+      // late failure could try to enqueue after closed=true and get
+      // dropped. Removal happens in finally so successes and failures
+      // both get cleaned up.
+      const tracked = sendPromise.finally(() => {
+        this.inFlightSends.delete(tracked);
+      });
+      this.inFlightSends.add(tracked);
     } catch {
       // Non-fatal
     }
