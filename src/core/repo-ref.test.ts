@@ -41,6 +41,40 @@ describe("normalizeUrl", () => {
   test("rejects non-absolute local path", () => {
     expect(() => normalizeUrl("relative/path/repo")).toThrow(/absolute/);
   });
+
+  test("rejects URL with null byte", () => {
+    expect(() => normalizeUrl("https://github.com/foo/bar\x00baz")).toThrow(/null byte/);
+  });
+
+  test("rejects URL with backslash", () => {
+    expect(() => normalizeUrl("https://github.com/foo\\bar")).toThrow(/backslash/);
+  });
+
+  test("rejects percent-encoded `..` traversal", () => {
+    expect(() => normalizeUrl("https://github.com/foo/%2e%2e/bar")).toThrow(/traversal/);
+  });
+
+  test("rejects percent-encoded null byte", () => {
+    expect(() => normalizeUrl("https://github.com/foo/bar%00baz")).toThrow(/null byte/);
+  });
+
+  test("rejects percent-encoded slash (%2F) producing empty segment or traversal", () => {
+    expect(() => normalizeUrl("https://github.com/foo/%2F..%2Fetc")).toThrow(
+      /empty segment|traversal/,
+    );
+  });
+
+  test("rejects malformed percent-encoding", () => {
+    expect(() => normalizeUrl("https://github.com/foo/%ZZ")).toThrow(/percent-encoding/);
+  });
+
+  test("rejects local path with null byte", () => {
+    expect(() => normalizeUrl("/abs/path/\x00secret")).toThrow(/null byte/);
+  });
+
+  test("rejects file:// URL with backslash", () => {
+    expect(() => normalizeUrl("file:///abs/path\\windows")).toThrow(/backslash/);
+  });
 });
 
 describe("deriveCachePath", () => {

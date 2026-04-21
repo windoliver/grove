@@ -42,12 +42,22 @@ export function normalizeUrl(raw: string): NormalizedRepo {
       host = "local";
       // Extract raw pathname from the URL string to catch traversal before URL() normalizes it.
       rawPath = trimmed.replace(/^file:\/\//i, "").replace(/^\//, "");
+      try {
+        rawPath = decodeURIComponent(rawPath);
+      } catch {
+        throw new Error(`invalid path (malformed percent-encoding): ${raw}`);
+      }
     } else {
       host = u.hostname;
       // Extract raw path from the URL string to catch traversal before URL() normalizes it.
       // Strip scheme://[user@]host from front, then strip leading slash.
       const afterHost = trimmed.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, "");
       rawPath = afterHost.replace(/^\//, "");
+      try {
+        rawPath = decodeURIComponent(rawPath);
+      } catch {
+        throw new Error(`invalid path (malformed percent-encoding): ${raw}`);
+      }
     }
   } else if (trimmed.startsWith("/")) {
     host = "local";
@@ -71,6 +81,8 @@ export function normalizeUrl(raw: string): NormalizedRepo {
 }
 
 function validatePathSegments(path: string): void {
+  if (path.includes("\x00")) throw new Error(`invalid path (null byte): ${path}`);
+  if (path.includes("\\")) throw new Error(`invalid path (backslash): ${path}`);
   for (const seg of path.split("/")) {
     if (seg === "") throw new Error(`invalid path (empty segment): ${path}`);
     if (seg === ".." || seg === ".") {
