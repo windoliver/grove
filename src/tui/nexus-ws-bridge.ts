@@ -133,6 +133,11 @@ export class NexusWsBridge {
   // these, a late runtime.send failure would either be dropped (closed
   // guard in enqueue) or never reach the drain loop at all.
   private inFlightSends = new Set<Promise<void>>();
+  // Single-flight shutdown latch. Concurrent shutdown() callers await
+  // the same in-progress teardown instead of racing each other (a
+  // second caller entering while the first is mid-drain could close()
+  // and clear the queue before the first finishes).
+  private shutdownPromise: Promise<void> | null = null;
 
   constructor(opts: NexusWsBridgeOptions) {
     this.opts = opts;
@@ -278,19 +283,30 @@ export class NexusWsBridge {
   }
 
   close(): void {
+    // Reentrancy guard: when shutdown() is active, it owns the queue
+    // (has its own deadline-bounded drain loop and final clear). A
+    // concurrent or internal close() call must not touch
+    // pendingDeadLetters or the drain would lose entries mid-flight.
+    // The shutdown itself invokes close() at the end as a last step;
+    // at that point the drain is done and the queue is already
+    // cleared, so no-op on the queue is correct.
+    const shutdownOwnsQueue = this.shutdownPromise !== null;
     this.closed = true;
     if (this.pendingDlqTimer !== null) {
       clearInterval(this.pendingDlqTimer);
       this.pendingDlqTimer = null;
     }
-    // Fire-and-forget final drain attempt: best effort in-process
-    // recovery before the synchronous close path logs and clears.
-    // Callers that need durability guarantees should use `shutdown()`
-    // (two-phase teardown with bounded wait) instead of `close()`.
-    // Skip the implicit drain when `draining` is already set — shutdown
-    // has a stable-queue drain loop and clearing pendingDeadLetters
-    // here would fight it.
-    if (!this.draining && this.pendingDeadLetters.length > 0) {
+    // Queue handling:
+    //   - shutdown() owns the queue after draining=true: it runs a
+    //     deadline-bounded drain loop and then clears in its own
+    //     finalize. close() MUST NOT touch pendingDeadLetters while
+    //     shutdown is active or entries can be lost mid-drain.
+    //   - Non-shutdown close() (React unmount destroy() path): fire
+    //     a detached best-effort final drain. Callers that need
+    //     durability guarantees should await shutdown() instead.
+    if (shutdownOwnsQueue) {
+      // No-op: shutdown() owns pendingDeadLetters.
+    } else if (!this.draining && this.pendingDeadLetters.length > 0) {
       void this.flushPendingDeadLettersThenLog(5000);
     } else if (this.draining) {
       // Already drained by shutdown(); residual entries (if any) were
@@ -967,6 +983,23 @@ export class NexusWsBridge {
    */
   async shutdown(shutdownTimeoutMs = 10000): Promise<void> {
     if (this.closed) return;
+    // Single-flight: concurrent shutdown() callers must await the same
+    // teardown rather than racing. Without this latch, two callers can
+    // enter the drain/close sequence simultaneously, the second one's
+    // close() clearing the queue before the first's drain completes.
+    if (this.shutdownPromise) {
+      await this.shutdownPromise;
+      return;
+    }
+    this.shutdownPromise = this.doShutdown(shutdownTimeoutMs);
+    try {
+      await this.shutdownPromise;
+    } finally {
+      this.shutdownPromise = null;
+    }
+  }
+
+  private async doShutdown(shutdownTimeoutMs: number): Promise<void> {
     const overallDeadline = Date.now() + shutdownTimeoutMs;
     if (this.pendingDlqTimer !== null) {
       clearInterval(this.pendingDlqTimer);
@@ -984,28 +1017,48 @@ export class NexusWsBridge {
     for (const ac of this.roleAborts.values()) ac.abort();
     this.roleAborts.clear();
 
-    // Wait for in-flight sends (bounded) so any dead-letter enqueues
-    // from send failures land before the drain snapshot. A timeout
-    // prevents a stuck send from blocking shutdown forever; we take
-    // half the total budget, leaving room for the subsequent drain.
-    const sendWaitBudget = Math.max(0, Math.floor((overallDeadline - Date.now()) / 2));
-    if (this.inFlightSends.size > 0 && sendWaitBudget > 0) {
-      const timer = new Promise<void>((resolve) => setTimeout(resolve, sendWaitBudget));
-      await Promise.race([
-        Promise.allSettled([...this.inFlightSends]).then(() => {
-          /* all sends settled */
-        }),
-        timer,
-      ]);
+    // Interleave: wait for in-flight sends and drain the queue in
+    // alternating passes until both are empty or deadline exhausts.
+    // Each pass: (1) wait briefly for any in-flight sends so late
+    // failures can enqueue, (2) drain the queue. This catches entries
+    // that enqueue between passes, which a single wait-then-drain
+    // sequence would miss.
+    while (Date.now() < overallDeadline) {
+      if (this.inFlightSends.size === 0 && this.pendingDeadLetters.length === 0) break;
+      const perPassBudget = Math.min(500, Math.max(0, overallDeadline - Date.now()));
+      if (perPassBudget === 0) break;
       if (this.inFlightSends.size > 0) {
-        process.stderr.write(
-          `[NexusWsBridge] shutdown: ${this.inFlightSends.size} in-flight send(s) still pending after ${sendWaitBudget}ms; proceeding to final drain\n`,
-        );
+        const timer = new Promise<void>((resolve) => setTimeout(resolve, perPassBudget));
+        await Promise.race([
+          Promise.allSettled([...this.inFlightSends]).then(() => {
+            /* settled */
+          }),
+          timer,
+        ]);
+      }
+      if (this.pendingDeadLetters.length > 0) {
+        const remaining = Math.max(0, overallDeadline - Date.now());
+        if (remaining === 0) break;
+        await this.flushPendingDeadLettersThenLog(remaining);
       }
     }
-
-    const remainingBudget = Math.max(0, overallDeadline - Date.now());
-    await this.flushPendingDeadLettersThenLog(remainingBudget);
+    if (this.inFlightSends.size > 0) {
+      process.stderr.write(
+        `[NexusWsBridge] shutdown deadline reached with ${this.inFlightSends.size} in-flight send(s) unresolved\n`,
+      );
+    }
+    if (this.pendingDeadLetters.length > 0) {
+      // flushPendingDeadLettersThenLog logs unresolved + clears. If we
+      // reach here without it running (e.g. deadline exhausted before
+      // flush was called), still log + clear so shutdown's guarantee
+      // holds: no queue survives shutdown.
+      for (const entry of this.pendingDeadLetters) {
+        process.stderr.write(
+          `[NexusWsBridge] UNRESOLVED dead-letter on close role=${entry.targetRole} ipcMessageId=${entry.ipcMessageId} attempts=${entry.attempts}: ${entry.reason}\n`,
+        );
+      }
+      this.pendingDeadLetters = [];
+    }
     this.close();
   }
 
@@ -1037,7 +1090,12 @@ export class NexusWsBridge {
       while (Date.now() < deadline && this.pendingDeadLetters.length > 0) {
         this.pendingDlqDrainInFlight = true;
         try {
-          await this.doDrainPendingDeadLetters(store);
+          // countAttempts=false: shutdown's 250ms cadence is far more
+          // aggressive than the 30s background cadence. Counting each
+          // retry against PENDING_DLQ_MAX_ATTEMPTS (20) would exhaust
+          // the budget in ~5s and drop recoverable entries. The total
+          // time budget is the only bound during shutdown flush.
+          await this.doDrainPendingDeadLetters(store, false);
         } finally {
           this.pendingDlqDrainInFlight = false;
         }
@@ -1074,9 +1132,18 @@ export class NexusWsBridge {
     }
   }
 
-  /** Returns true if the pass resolved or exhausted any entries. */
+  /**
+   * Returns true if the pass resolved or exhausted any entries.
+   * When `countAttempts` is false (shutdown fast-loop), entry.attempts
+   * is NOT incremented — the 250ms retry cadence during shutdown is
+   * far more aggressive than the 30s normal background cadence, and
+   * counting each retry against the same attempt budget would exhaust
+   * it in seconds. Attempts still stop at PENDING_DLQ_MAX_ATTEMPTS
+   * when charged normally.
+   */
   private async doDrainPendingDeadLetters(
     store: HandoffStore,
+    countAttempts = true,
   ): Promise<boolean> {
     // Snapshot + iterate; mutations during async await are safe because
     // we filter the live list at the end rather than index in place.
@@ -1090,8 +1157,10 @@ export class NexusWsBridge {
     const exhausted = new Set<string>();
 
     for (const entry of entries) {
-      entry.attempts += 1;
-      entry.lastAttemptAt = Date.now();
+      if (countAttempts) {
+        entry.attempts += 1;
+        entry.lastAttemptAt = Date.now();
+      }
 
       const id = await this.resolveHandoffIdForMessage(
         entry.ipcMessageId,
@@ -1116,7 +1185,7 @@ export class NexusWsBridge {
         }
         continue;
       }
-      if (entry.attempts >= NexusWsBridge.PENDING_DLQ_MAX_ATTEMPTS) {
+      if (countAttempts && entry.attempts >= NexusWsBridge.PENDING_DLQ_MAX_ATTEMPTS) {
         process.stderr.write(
           `[NexusWsBridge] GIVING UP pending dead-letter role=${entry.targetRole} ipcMessageId=${entry.ipcMessageId} after ${entry.attempts} attempts: ${entry.reason}\n`,
         );
