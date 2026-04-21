@@ -77,7 +77,11 @@ export class NexusWsBridge {
   private readonly opts: NexusWsBridgeOptions;
   private readonly localInstanceId: string;
   private readonly sessions = new Map<string, AgentSession>();
-  private abortControllers: AbortController[] = [];
+  // Active per-connect controllers. Each connectSse attempt creates one
+  // and removes it in finally so long-running bridges don't accumulate
+  // controllers across reconnect churn. A Set rather than array keeps
+  // removal O(1).
+  private abortControllers = new Set<AbortController>();
   // Per-role cancellation token. When a role is unregistered (or re-registered),
   // its old SSE loop must exit — otherwise a stale loop can keep incrementing
   // its consecutive-failure counter and fire onRoleUnhealthy for a role the
@@ -92,6 +96,27 @@ export class NexusWsBridge {
   // the prompt twice. Bounded per role to keep memory flat.
   private recentMessageIds = new Map<string, Set<string>>();
   private static readonly RECENT_CAP = 256;
+  // Unresolved-dead-letter queue: when a local push fails but correlation
+  // could not be resolved even after in-line retry (linkage race or
+  // transient store outage), the pending entry is queued here so a
+  // periodic reconciler can re-resolve once the ipcMessageId ↔ handoff
+  // link lands, and then dead-letter the correct record. Without this,
+  // failed handoffs silently remain in stale `delivered`/`pending_pickup`
+  // state and recovery tooling is blind to the gap. Bounded to keep
+  // memory flat under prolonged outage.
+  private pendingDeadLetters: Array<{
+    ipcMessageId: string;
+    targetRole: string;
+    sender: string | undefined;
+    sourceCid: string | undefined;
+    reason: string;
+    attempts: number;
+    lastAttemptAt: number;
+  }> = [];
+  private static readonly PENDING_DLQ_CAP = 1024;
+  private static readonly PENDING_DLQ_MAX_ATTEMPTS = 20;
+  private static readonly PENDING_DLQ_INTERVAL_MS = 30000;
+  private pendingDlqTimer: ReturnType<typeof setInterval> | null = null;
   private closed = false;
 
   constructor(opts: NexusWsBridgeOptions) {
@@ -103,6 +128,12 @@ export class NexusWsBridge {
     // necessarily differ, and pure role-name fallback is only active in
     // tests that explicitly opt out by constructing with no localInstanceId.
     this.localInstanceId = opts.localInstanceId ?? getProcessInstanceId();
+    this.pendingDlqTimer = setInterval(() => {
+      void this.drainPendingDeadLetters();
+    }, NexusWsBridge.PENDING_DLQ_INTERVAL_MS);
+    // Don't hold the event loop open for this timer alone.
+    const timer = this.pendingDlqTimer as unknown as { unref?: () => void };
+    timer.unref?.();
   }
 
   /**
@@ -233,10 +264,24 @@ export class NexusWsBridge {
 
   close(): void {
     this.closed = true;
+    if (this.pendingDlqTimer !== null) {
+      clearInterval(this.pendingDlqTimer);
+      this.pendingDlqTimer = null;
+    }
+    // Emit a final loud warning per still-unresolved entry so operators
+    // see what was dropped on close rather than discovering stuck
+    // handoffs silently later. The queue itself is best-effort across
+    // process boundaries — a full durable store is a follow-up.
+    for (const entry of this.pendingDeadLetters) {
+      process.stderr.write(
+        `[NexusWsBridge] UNRESOLVED dead-letter on close role=${entry.targetRole} ipcMessageId=${entry.ipcMessageId} attempts=${entry.attempts}: ${entry.reason}\n`,
+      );
+    }
+    this.pendingDeadLetters = [];
     for (const ac of this.abortControllers) {
       ac.abort();
     }
-    this.abortControllers = [];
+    this.abortControllers.clear();
     for (const ac of this.roleAborts.values()) {
       ac.abort();
     }
@@ -389,7 +434,7 @@ export class NexusWsBridge {
    */
   private async connectSse(role: string, roleSignal?: AbortSignal): Promise<boolean> {
     const ac = new AbortController();
-    this.abortControllers.push(ac);
+    this.abortControllers.add(ac);
     // Forward role-level cancellation (unregister / re-register) into the
     // per-connection abort so the in-flight fetch and streaming read wind
     // down promptly instead of waiting for the idle watchdog.
@@ -501,6 +546,10 @@ export class NexusWsBridge {
       if (roleSignal && forwardAbort) {
         roleSignal.removeEventListener("abort", forwardAbort);
       }
+      // Remove this attempt's controller from the active set so long-
+      // running bridges don't accumulate controllers across reconnect
+      // churn. Safe even when close() already cleared the set.
+      this.abortControllers.delete(ac);
     }
   }
 
@@ -791,9 +840,18 @@ export class NexusWsBridge {
       }
 
       if (!effectiveId) {
-        process.stderr.write(
-          `[NexusWsBridge] CANNOT DEAD-LETTER role=${targetRole} reason=${reason}: correlation unresolved after retry; handoff may be stuck in stale delivered state\n`,
-        );
+        // Enqueue for deferred reconciliation. A background drain
+        // (pendingDlqTimer) re-attempts resolution on the interval; if
+        // the linkage eventually lands (typical outcome), the correct
+        // handoff will be dead-lettered. Queue is bounded; close()
+        // emits a loud stderr log for anything still pending.
+        if (retryContext && !this.closed) {
+          this.enqueuePendingDeadLetter(retryContext, targetRole, reason);
+        } else {
+          process.stderr.write(
+            `[NexusWsBridge] CANNOT DEAD-LETTER role=${targetRole} reason=${reason}: correlation unresolved and no retry context available\n`,
+          );
+        }
         return;
       }
 
@@ -810,6 +868,98 @@ export class NexusWsBridge {
         `FAIL handoffId=${handoffId} err=${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
+
+  private enqueuePendingDeadLetter(
+    retryContext: {
+      ipcMessageId: string;
+      sender: string | undefined;
+      sourceCid: string | undefined;
+    },
+    targetRole: string,
+    reason: string,
+  ): void {
+    // De-dupe by ipcMessageId — a repeat failure for the same message
+    // must not inflate the queue.
+    const existing = this.pendingDeadLetters.find(
+      (e) => e.ipcMessageId === retryContext.ipcMessageId,
+    );
+    if (existing) return;
+    if (this.pendingDeadLetters.length >= NexusWsBridge.PENDING_DLQ_CAP) {
+      // Drop oldest (FIFO) under sustained backpressure, but log loudly
+      // so operators see queue saturation instead of silent eviction.
+      const dropped = this.pendingDeadLetters.shift();
+      if (dropped) {
+        process.stderr.write(
+          `[NexusWsBridge] DROPPED pending dead-letter (queue full) ipcMessageId=${dropped.ipcMessageId} role=${dropped.targetRole}: ${dropped.reason}\n`,
+        );
+      }
+    }
+    this.pendingDeadLetters.push({
+      ipcMessageId: retryContext.ipcMessageId,
+      targetRole,
+      sender: retryContext.sender,
+      sourceCid: retryContext.sourceCid,
+      reason,
+      attempts: 0,
+      lastAttemptAt: Date.now(),
+    });
+    process.stderr.write(
+      `[NexusWsBridge] queued pending dead-letter role=${targetRole} ipcMessageId=${retryContext.ipcMessageId}: ${reason} (queueSize=${this.pendingDeadLetters.length})\n`,
+    );
+  }
+
+  private async drainPendingDeadLetters(): Promise<void> {
+    if (this.closed || this.pendingDeadLetters.length === 0) return;
+    const store = this.opts.handoffStore;
+    if (!store) return;
+
+    // Snapshot + iterate; mutations during async await are safe because
+    // we filter the live list at the end rather than index in place.
+    const entries = [...this.pendingDeadLetters];
+    const resolved = new Set<string>();
+    const exhausted = new Set<string>();
+
+    for (const entry of entries) {
+      if (this.closed) return;
+      entry.attempts += 1;
+      entry.lastAttemptAt = Date.now();
+
+      const id = await this.resolveHandoffIdForMessage(
+        entry.ipcMessageId,
+        entry.targetRole,
+        entry.sender,
+        entry.sourceCid,
+      );
+      if (id) {
+        try {
+          await store.markDeadLettered(id);
+          const cacheable = store as { invalidateCache?: () => void };
+          cacheable.invalidateCache?.();
+          process.stderr.write(
+            `[NexusWsBridge] deferred dead-letter succeeded handoffId=${id} role=${entry.targetRole} attempts=${entry.attempts}: ${entry.reason}\n`,
+          );
+          resolved.add(entry.ipcMessageId);
+        } catch (err) {
+          debugLog(
+            "wsBridge.drainPendingDeadLetters",
+            `FAIL handoffId=${id} err=${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        continue;
+      }
+      if (entry.attempts >= NexusWsBridge.PENDING_DLQ_MAX_ATTEMPTS) {
+        process.stderr.write(
+          `[NexusWsBridge] GIVING UP pending dead-letter role=${entry.targetRole} ipcMessageId=${entry.ipcMessageId} after ${entry.attempts} attempts: ${entry.reason}\n`,
+        );
+        exhausted.add(entry.ipcMessageId);
+      }
+    }
+
+    if (resolved.size === 0 && exhausted.size === 0) return;
+    this.pendingDeadLetters = this.pendingDeadLetters.filter(
+      (e) => !resolved.has(e.ipcMessageId) && !exhausted.has(e.ipcMessageId),
+    );
   }
 
   private async readAndPush(

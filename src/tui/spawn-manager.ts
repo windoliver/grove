@@ -181,19 +181,32 @@ export class SpawnManager {
       throw new Error(`Inter-agent delivery disabled: ${this.deliveryDisabledReason ?? "unknown"}`);
     }
     await new Promise<void>((resolve, reject) => {
+      // Remove `entry` from the pending waiters list so repeated spawn
+      // attempts while readiness never resolves don't accumulate stale
+      // closures. Called from every terminal branch (timeout, resolve,
+      // reject) to guarantee single-removal.
+      let entry: { resolve: () => void; reject: (e: Error) => void };
+      const cleanup = (): void => {
+        const idx = this.deliveryReadyWaiters.indexOf(entry);
+        if (idx !== -1) this.deliveryReadyWaiters.splice(idx, 1);
+      };
       const timer = setTimeout(() => {
+        cleanup();
         reject(new Error(`bridge readiness timed out after ${timeoutMs}ms`));
       }, timeoutMs);
-      this.deliveryReadyWaiters.push({
+      entry = {
         resolve: () => {
           clearTimeout(timer);
+          cleanup();
           resolve();
         },
         reject: (e) => {
           clearTimeout(timer);
+          cleanup();
           reject(e);
         },
-      });
+      };
+      this.deliveryReadyWaiters.push(entry);
     });
   }
 
