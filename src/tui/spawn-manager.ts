@@ -1198,6 +1198,22 @@ export class SpawnManager {
    * across TUI restarts. Without this, each test run leaves sessions that
    * interfere with reconcile fallback and make `acpx sessions list` noisy.
    */
+  /**
+   * Async variant that awaits a bounded final dead-letter drain before
+   * synchronous teardown. Prefer this over `destroy()` in process-exit
+   * shutdown paths where recovery-state preservation matters. React
+   * useEffect cleanups (which cannot await) still use the sync `destroy()`
+   * and accept a best-effort detached drain.
+   */
+  async destroyAsync(shutdownTimeoutMs = 10000): Promise<void> {
+    if (this.wsBridge) {
+      await this.wsBridge.shutdown(shutdownTimeoutMs).catch(() => {
+        /* best-effort */
+      });
+    }
+    this.destroy();
+  }
+
   destroy(): void {
     this.stopLogPolling();
     this.routableSessions.clear();

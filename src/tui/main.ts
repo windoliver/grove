@@ -652,16 +652,11 @@ export async function handleTui(
       for (const unsubscribe of acpBusUnsubscribes) {
         unsubscribe();
       }
-      // Await bridge shutdown so pending dead-letters get a final drain
-      // before the process exits. destroy() would invoke close() which
-      // fires a detached drain that may not complete in time.
-      const bridge = spawnManager.getWsBridge();
-      if (bridge) {
-        await bridge.shutdown().catch(() => {
-          /* best-effort */
-        });
-      }
-      spawnManager.destroy();
+      // destroyAsync awaits bridge.shutdown() so pending dead-letters
+      // get a bounded final drain before the sync teardown path. This
+      // is the process-exit preservation path; React cleanups use the
+      // sync destroy() which accepts a best-effort detached drain.
+      await spawnManager.destroyAsync();
       return;
     }
 

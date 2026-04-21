@@ -121,6 +121,11 @@ export class NexusWsBridge {
   // double-incrementing entry.attempts and racing removals. Timer ticks
   // that fire while a drain is already in progress become no-ops.
   private pendingDlqDrainInFlight = false;
+  // Two-phase teardown state. Flipped to true by shutdown() before the
+  // final drain so new enqueues during the flush window are rejected
+  // (otherwise readAndPush racing with shutdown could append entries
+  // the flush then clears without reconciling).
+  private draining = false;
   private closed = false;
 
   constructor(opts: NexusWsBridgeOptions) {
@@ -273,11 +278,18 @@ export class NexusWsBridge {
       this.pendingDlqTimer = null;
     }
     // Fire-and-forget final drain attempt: best effort in-process
-    // recovery before the synchronous close path logs and clears. For
-    // full durability guarantees across process exit, callers should
-    // await shutdown() instead of close().
-    if (this.pendingDeadLetters.length > 0) {
-      void this.flushPendingDeadLettersThenLog();
+    // recovery before the synchronous close path logs and clears.
+    // Callers that need durability guarantees should use `shutdown()`
+    // (two-phase teardown with bounded wait) instead of `close()`.
+    // Skip the implicit drain when `draining` is already set — shutdown
+    // has a stable-queue drain loop and clearing pendingDeadLetters
+    // here would fight it.
+    if (!this.draining && this.pendingDeadLetters.length > 0) {
+      void this.flushPendingDeadLettersThenLog(5000);
+    } else if (this.draining) {
+      // Already drained by shutdown(); residual entries (if any) were
+      // logged there. Just clear to release memory.
+      this.pendingDeadLetters = [];
     }
     for (const ac of this.abortControllers) {
       ac.abort();
@@ -880,6 +892,16 @@ export class NexusWsBridge {
     targetRole: string,
     reason: string,
   ): void {
+    // Refuse new enqueues once shutdown has begun — the final flush
+    // otherwise drains a snapshot then clears the live array, silently
+    // losing entries appended mid-flush. Log loudly so operators see
+    // the discard path.
+    if (this.draining || this.closed) {
+      process.stderr.write(
+        `[NexusWsBridge] DROPPED pending dead-letter (shutdown in progress) ipcMessageId=${retryContext.ipcMessageId} role=${targetRole}: ${reason}\n`,
+      );
+      return;
+    }
     // De-dupe by ipcMessageId — a repeat failure for the same message
     // must not inflate the queue.
     const existing = this.pendingDeadLetters.find(
@@ -911,35 +933,65 @@ export class NexusWsBridge {
   }
 
   /**
-   * Await a final drain, then synchronously close. Callers that need
+   * Two-phase teardown with bounded final drain. Callers that need
    * maximum recovery-state preservation (process-exit shutdown path)
    * should await this instead of the fire-and-forget `close()`.
+   *
+   * Phase 1: Enter `draining` — stop accepting new pending dead-letters
+   *          and abort SSE loops so no more entries can be enqueued.
+   * Phase 2: Await a bounded final drain loop until the queue is stable
+   *          (or the overall deadline expires).
+   * Phase 3: Close (sync) to release remaining resources.
    */
-  async shutdown(): Promise<void> {
+  async shutdown(shutdownTimeoutMs = 10000): Promise<void> {
     if (this.closed) return;
-    // Stop the background timer first so it can't re-enter during flush.
     if (this.pendingDlqTimer !== null) {
       clearInterval(this.pendingDlqTimer);
       this.pendingDlqTimer = null;
     }
-    await this.flushPendingDeadLettersThenLog();
+    // Quiesce ingress BEFORE flushing: set draining to block new
+    // enqueues, then abort SSE/read loops so in-flight readAndPush
+    // cannot append more entries during the flush window.
+    this.draining = true;
+    for (const ac of this.abortControllers) ac.abort();
+    this.abortControllers.clear();
+    for (const ac of this.roleAborts.values()) ac.abort();
+    this.roleAborts.clear();
+
+    await this.flushPendingDeadLettersThenLog(shutdownTimeoutMs);
     this.close();
   }
 
-  private async flushPendingDeadLettersThenLog(): Promise<void> {
-    if (this.pendingDlqDrainInFlight) {
-      // Wait for the in-flight run to settle before issuing the final flush.
-      while (this.pendingDlqDrainInFlight) {
-        await new Promise((r) => setTimeout(r, 50));
+  private async flushPendingDeadLettersThenLog(
+    deadlineMs: number,
+  ): Promise<void> {
+    const deadline = Date.now() + deadlineMs;
+    // Bounded wait for any in-flight drain to settle. Prevents an
+    // indefinite hang if a background drain is stuck on slow I/O.
+    while (this.pendingDlqDrainInFlight) {
+      if (Date.now() >= deadline) {
+        process.stderr.write(
+          `[NexusWsBridge] shutdown flush timed out waiting for in-flight drain; falling through\n`,
+        );
+        break;
       }
+      await new Promise((r) => setTimeout(r, 50));
     }
     const store = this.opts.handoffStore;
     if (store) {
-      this.pendingDlqDrainInFlight = true;
-      try {
-        await this.doDrainPendingDeadLetters(store);
-      } finally {
-        this.pendingDlqDrainInFlight = false;
+      // Drain until stable or deadline: on a normal shutdown the queue
+      // size monotonically decreases as entries resolve or exhaust; a
+      // stable snapshot (same size before and after a drain pass) means
+      // nothing more will be reconciled without more time, so break.
+      while (Date.now() < deadline && this.pendingDeadLetters.length > 0) {
+        const sizeBefore = this.pendingDeadLetters.length;
+        this.pendingDlqDrainInFlight = true;
+        try {
+          await this.doDrainPendingDeadLetters(store);
+        } finally {
+          this.pendingDlqDrainInFlight = false;
+        }
+        if (this.pendingDeadLetters.length >= sizeBefore) break;
       }
     }
     for (const entry of this.pendingDeadLetters) {
