@@ -249,18 +249,30 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     // not via polling. The eventBus handler below drives immediate UI refresh
     // when a push arrives.
 
-    // When EventBus fires (SSE push from Nexus), trigger immediate re-fetch
+    // When EventBus fires (SSE push from Nexus), trigger immediate re-fetch.
+    //
+    // LocalEventBus fans out by `role:<targetRole>` channel, and NexusWsBridge
+    // publishes contribution events with `targetRole` set to the role that
+    // received the inbox delivery (coder / reviewer / …). Subscribing to a
+    // sentinel channel like "system" never receives anything, which is how
+    // the feed silently stopped refreshing on push in live sessions — the
+    // per-poll interval was the only refresh path.
+    //
+    // Subscribe once per topology role so any push triggers a refresh.
     useEffect(() => {
-      debugLog("eventBus", `exists=${!!eventBus}`);
+      debugLog("eventBus", `exists=${!!eventBus} roles=${topology?.roles.length ?? 0}`);
       if (!eventBus) return;
       const handler = () => {
         debugLog("eventBus", "SSE event received — refreshing polls");
         dashboardPoll.refresh();
         contributionsPoll.refresh();
       };
-      eventBus.subscribe("system", handler);
-      return () => eventBus.unsubscribe("system", handler);
-    }, [eventBus, dashboardPoll.refresh, contributionsPoll.refresh]);
+      const roles = topology?.roles.map((r) => r.name) ?? [];
+      for (const role of roles) eventBus.subscribe(role, handler);
+      return () => {
+        for (const role of roles) eventBus.unsubscribe(role, handler);
+      };
+    }, [eventBus, topology, dashboardPoll.refresh, contributionsPoll.refresh]);
 
     const dashboard = dashboardPoll.data ?? undefined;
     const contributions = contributionsPoll.data;
@@ -919,7 +931,21 @@ function renderAgentSection(
         );
         const platformColor = PLATFORM_COLORS[role.platform ?? "claude-code"] ?? theme.text;
         const output = monitor.agentOutputs.get(role.name);
-        const lastLine = output && output.length > 0 ? (output[output.length - 1] ?? "") : "";
+        // Skip raw ACP JSON-RPC envelopes bleeding through from acpx stdout.
+        // They're control-plane frames, not agent prose, and showing them as
+        // the role label produces garbled rows like:
+        //   ○ coder [1] {"jsonrpc":"2.0","id":4,"result":{"stopReason":"end_turn"...
+        // Prefer the most recent non-envelope line; fall back to empty.
+        const lastLine = ((): string => {
+          if (!output || output.length === 0) return "";
+          for (let i = output.length - 1; i >= 0; i--) {
+            const line = output[i] ?? "";
+            const trimmed = line.trimStart();
+            if (trimmed.startsWith('{"jsonrpc"') || trimmed.startsWith('{"jsonrpc"')) continue;
+            return line;
+          }
+          return "";
+        })();
 
         const status = activeClaim ? "running" : "idle";
         const badge = agentStatusIcon(status, activeClaim ? monitor.spinnerFrame : undefined);
