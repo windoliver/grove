@@ -428,6 +428,7 @@ surfaces. It defines:
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `GROVE_DIR` | Override `.grove` discovery | `$(pwd)/.grove` |
+| `GROVE_REPO_CACHE` | Override bare-clone cache root | `$XDG_CACHE_HOME/grove/repo-cache` (or `~/.cache/grove/repo-cache`) |
 | `GROVE_AGENT_ID` | Agent identity for CLI and MCP | -- |
 | `GROVE_AGENT_NAME` | Human-readable agent name | -- |
 | `GROVE_AGENT_ROLE` | Role hint for topology-aware workflows | -- |
@@ -440,6 +441,41 @@ surfaces. It defines:
 | `NEXUS_SOURCE` | Path to nexus source checkout for `--build` | -- |
 | `GROVE_ASK_USER_CONFIG` | JSON config for `@grove/ask-user` | built-in defaults |
 | `ANTHROPIC_API_KEY` | Required for `ask_user` LLM strategy | -- |
+
+### Repo cache
+
+Grove uses a user-wide bare-clone cache so agent worktrees are cheap regardless of
+whether the repo is checked out locally.
+
+Cache location (first match wins):
+
+1. `$GROVE_REPO_CACHE`
+2. `$XDG_CACHE_HOME/grove/repo-cache/`
+3. `~/.cache/grove/repo-cache/`
+
+Maintenance:
+
+```bash
+grove repo list              # every cached repo with manifest summary
+grove repo prune <key>       # remove one entry (refuses if any worktree still references it)
+grove repo prune --all       # remove every entry
+grove repo fetch <key>       # force a fetch on an existing cache entry
+```
+
+Cache growth is unbounded by design — Grove never evicts without being told. Run
+`grove repo prune --all` if disk pressure bites.
+
+### Selecting a repo
+
+By default Grove targets the git repo your shell is currently in. Override with
+`--repo` (URL or local path):
+
+```bash
+grove up --repo https://github.com/you/project
+grove session start --goal ... --repo /abs/path/to/checkout
+```
+
+Only one `--repo` is accepted today; multi-repo sessions ship in a later release.
 
 <details>
 <summary><strong>Additional agent metadata variables</strong></summary>

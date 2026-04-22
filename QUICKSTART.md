@@ -43,6 +43,21 @@ needed. If already initialized, `grove up` starts services and the TUI directly.
 
 Use `--headless` for CI environments or `--no-tui` for server-only mode.
 
+### Pointing at a specific repo
+
+By default Grove uses the git repo your shell is currently in. To target a
+different repo — checked out locally or not — pass `--repo`:
+
+```bash
+grove up --repo https://github.com/you/project
+grove up --repo /abs/path/to/checkout
+```
+
+Grove caches bare clones under `$XDG_CACHE_HOME/grove/repo-cache/` (override
+with `$GROVE_REPO_CACHE`). Inspect and maintain the cache with
+`grove repo list`, `grove repo prune`, and `grove repo fetch`. Only one
+`--repo` is accepted today; multi-repo sessions ship in a later release.
+
 ### Alternative: initialize from the CLI
 
 If you prefer initializing from the command line:
