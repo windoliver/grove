@@ -170,3 +170,40 @@ describe("resolveRepo — cache hit", () => {
     }
   });
 });
+
+describe("resolveRepo — fresh hard-fail", () => {
+  test("opts.fresh + unreachable remote throws", async () => {
+    const fixture = makeFixtureRepo();
+    const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
+    try {
+      // Prime the cache against the fixture.
+      await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
+      // Nuke the fixture so the next fetch fails.
+      rmSync(fixture, { recursive: true, force: true });
+
+      await expect(
+        resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot, fresh: true }),
+      ).rejects.toThrow(/--fresh fetch failed/);
+    } finally {
+      rmSync(cacheRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("stale path (no --fresh) proceeds with stale=true when fetch fails", async () => {
+    const fixture = makeFixtureRepo();
+    const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
+    try {
+      await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
+      rmSync(fixture, { recursive: true, force: true });
+
+      const result = await resolveRepo(
+        { kind: "url", url: `file://${fixture}` },
+        { cacheRoot, fetchTtlMs: 0 },
+      );
+      expect(result.stale).toBe(true);
+      expect(result.fetched).toBe(false);
+    } finally {
+      rmSync(cacheRoot, { recursive: true, force: true });
+    }
+  });
+});
