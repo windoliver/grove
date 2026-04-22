@@ -417,3 +417,41 @@ describe("topology skills field", () => {
     ).toThrow();
   });
 });
+
+describe("topology repo_index field", () => {
+  test("parses repo_index as repoIndex on a role", () => {
+    const parsed = AgentTopologySchema.parse({
+      structure: "flat",
+      roles: [{ name: "coder", repo_index: 0 }],
+    });
+    const topology = wireToTopology(parsed);
+    expect(topology.roles[0]?.repoIndex).toBe(0);
+  });
+
+  test("omits repoIndex when not provided", () => {
+    const parsed = AgentTopologySchema.parse({
+      structure: "flat",
+      roles: [{ name: "coder" }],
+    });
+    const topology = wireToTopology(parsed);
+    expect(topology.roles[0]?.repoIndex).toBeUndefined();
+  });
+
+  test("rejects negative repo_index", () => {
+    expect(() =>
+      AgentTopologySchema.parse({
+        structure: "flat",
+        roles: [{ name: "coder", repo_index: -1 }],
+      }),
+    ).toThrow();
+  });
+
+  test("rejects non-integer repo_index", () => {
+    expect(() =>
+      AgentTopologySchema.parse({
+        structure: "flat",
+        roles: [{ name: "coder", repo_index: 1.5 }],
+      }),
+    ).toThrow();
+  });
+});

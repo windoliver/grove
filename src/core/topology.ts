@@ -70,6 +70,7 @@ const TopologyRoleWithEdgesSchema = z
     prompt: z.string().max(4096).optional(),
     goal: z.string().max(512).optional(),
     skills: z.array(z.string().min(1)).optional(),
+    repo_index: z.number().int().nonnegative().optional(),
   })
   .strict();
 
@@ -103,6 +104,7 @@ interface WireAgentTopology {
     readonly prompt?: string | undefined;
     readonly goal?: string | undefined;
     readonly skills?: readonly string[] | undefined;
+    readonly repo_index?: number | undefined;
   }[];
   readonly spawning?:
     | {
@@ -343,6 +345,11 @@ export interface AgentRole {
   readonly goal?: string | undefined;
   /** Names of skills to inject into this role's workspace at bootstrap. */
   readonly skills?: readonly string[] | undefined;
+  /**
+   * Index into the session's `repos` array. Defaults to 0.
+   * Forward-compat hook for multi-repo sessions; unused today.
+   */
+  readonly repoIndex?: number | undefined;
 }
 
 /** Spawning configuration for dynamic agent creation. */
@@ -394,6 +401,7 @@ export function wireToTopology(wire: z.infer<typeof AgentTopologySchema>): Agent
         ...(role.prompt !== undefined && { prompt: role.prompt }),
         ...(role.goal !== undefined && { goal: role.goal }),
         ...(role.skills !== undefined && { skills: role.skills }),
+        ...(role.repo_index !== undefined && { repoIndex: role.repo_index }),
       }),
     ),
     ...(wire.spawning !== undefined && {
