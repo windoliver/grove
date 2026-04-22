@@ -10,6 +10,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { buildRepos } from "../cli/utils/build-repos.js";
 import { findGroveDir as findNearestGroveDir } from "../cli/utils/grove-dir.js";
 import type { RunningServices } from "../shared/service-lifecycle.js";
 import type { SessionRecord, TuiDataProvider } from "./provider.js";
@@ -31,6 +32,7 @@ export function parseTuiArgs(args: readonly string[]): {
   readonly url: string | undefined;
   readonly nexus: string | undefined;
   readonly groveOverride: string | undefined;
+  readonly repos: readonly string[];
 } {
   const { values } = parseArgs({
     args: [...args],
@@ -39,6 +41,7 @@ export function parseTuiArgs(args: readonly string[]): {
       url: { type: "string", short: "u" },
       nexus: { type: "string", short: "n" },
       grove: { type: "string", short: "g" },
+      repo: { type: "string", multiple: true },
       help: { type: "boolean", short: "h" },
     },
     allowPositionals: false,
@@ -56,6 +59,7 @@ Options:
   -u, --url <url>           Remote grove-server URL
   -n, --nexus <url>         Override Nexus URL (bypasses auto-detection)
   -g, --grove <path>        Path to .grove directory (not the repo root)
+      --repo <url-or-path>  Target repo (URL or local path). Repeatable, but today only one honored.
   -h, --help                Show this help message
 
 Backend auto-detection:
@@ -89,6 +93,7 @@ Keybindings:
     url: values.url as string | undefined,
     nexus: values.nexus as string | undefined,
     groveOverride: values.grove as string | undefined,
+    repos: (values.repo as readonly string[] | undefined) ?? [],
   };
 }
 
@@ -619,9 +624,10 @@ export async function handleTui(
         result.appProps.provider,
         result.appProps.tmux,
         (msg) => process.stderr.write(`[spawn] ${msg}\n`),
-        result.appProps.groveDir
-          ? [{ kind: "local" as const, path: join(result.appProps.groveDir, "..") }]
-          : [{ kind: "local" as const, path: process.cwd() }],
+        buildRepos({
+          rawRepo: opts.repos,
+          cwd: result.appProps.groveDir ? join(result.appProps.groveDir, "..") : process.cwd(),
+        }),
         sessionStore,
         result.appProps.groveDir,
         result.appProps.agentRuntime,
