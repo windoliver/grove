@@ -230,3 +230,31 @@ describe("resolveRepo — corruption recovery", () => {
     }
   });
 });
+
+describe("resolveRepo — timeout", () => {
+  test("clone timeout throws and leaves the entry recoverable", async () => {
+    const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
+    try {
+      // Use a non-existent remote to force a slow git failure; 1ms timeout ensures abort.
+      await expect(
+        resolveRepo(
+          { kind: "url", url: "https://example.invalid/does/not/exist" },
+          { cacheRoot, timeoutMs: 1 },
+        ),
+      ).rejects.toBeDefined();
+
+      // Next call (with a working fixture) must still succeed — the failed
+      // cacheDir must either not exist or be recoverable.
+      const fixture = makeFixtureRepo();
+      try {
+        // Different URL → different cache entry; just prove the cache root itself is usable.
+        const result = await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
+        expect(result.fetched).toBe(true);
+      } finally {
+        rmSync(fixture, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(cacheRoot, { recursive: true, force: true });
+    }
+  });
+});
