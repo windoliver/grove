@@ -351,6 +351,15 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       },
     },
     {
+      name: "repo",
+      description: "Inspect and maintain the bare-clone repo cache",
+      needsStore: false,
+      handler: async (args) => {
+        const { executeRepo } = await import("./commands/repo.js");
+        await executeRepo(args);
+      },
+    },
+    {
       name: "tui",
       description: "Operator TUI dashboard",
       needsStore: false,

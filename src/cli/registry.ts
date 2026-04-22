@@ -233,6 +233,20 @@ export const COMMANDS: readonly CommandMeta[] = [
     ],
   },
   {
+    name: "repo",
+    description: "Inspect and maintain the bare-clone repo cache",
+    flags: [],
+    subcommands: [
+      { name: "list", description: "List every cached repo with manifest summary", flags: [] },
+      {
+        name: "prune",
+        description: "Remove one or all cache entries",
+        flags: ["all"],
+      },
+      { name: "fetch", description: "Force a fetch on an existing cache entry", flags: [] },
+    ],
+  },
+  {
     name: "tui",
     description: "Operator TUI dashboard",
     flags: ["interval", "url", "nexus", "grove", "help"],
