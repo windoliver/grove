@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveCacheRoot, resolveRepo } from "./repo-cache.js";
@@ -96,6 +96,74 @@ describe("resolveRepo — fresh clone", () => {
       expect(typeof manifest.createdAt).toBe("string");
       expect(typeof manifest.lastFetchedAt).toBe("string");
       expect(typeof manifest.lastAccessedAt).toBe("string");
+    } finally {
+      rmSync(cacheRoot, { recursive: true, force: true });
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("resolveRepo — cache hit", () => {
+  test("second call within TTL does not fetch", async () => {
+    const fixture = makeFixtureRepo();
+    const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
+    try {
+      const first = await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
+      expect(first.fetched).toBe(true);
+
+      const second = await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
+      expect(second.fetched).toBe(false);
+      expect(second.stale).toBe(false);
+      expect(second.bareClonePath).toBe(first.bareClonePath);
+    } finally {
+      rmSync(cacheRoot, { recursive: true, force: true });
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  test("TTL expiry triggers fetch", async () => {
+    const fixture = makeFixtureRepo();
+    const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
+    try {
+      const first = await resolveRepo(
+        { kind: "url", url: `file://${fixture}` },
+        { cacheRoot, fetchTtlMs: 0 },
+      );
+      expect(first.fetched).toBe(true);
+
+      // Backdate last-fetch by 10s
+      const lastFetch = join(first.bareClonePath, ".grove-cache", "last-fetch");
+      const past = new Date(Date.now() - 10_000);
+      utimesSync(lastFetch, past, past);
+
+      const second = await resolveRepo(
+        { kind: "url", url: `file://${fixture}` },
+        { cacheRoot, fetchTtlMs: 1000 },
+      );
+      expect(second.fetched).toBe(true);
+      expect(second.stale).toBe(false);
+    } finally {
+      rmSync(cacheRoot, { recursive: true, force: true });
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  test("appends new alias on URL-form change", async () => {
+    const fixture = makeFixtureRepo();
+    const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
+    try {
+      await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
+      await resolveRepo({ kind: "url", url: `file://${fixture}/` }, { cacheRoot }); // trailing slash → same key
+
+      const manifestPath = join(
+        cacheRoot,
+        `local/${fixture.replace(/^\//, "")}.git`,
+        ".grove-cache",
+        "manifest.json",
+      );
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+      expect(manifest.aliases).toContain(`file://${fixture}`);
+      expect(manifest.aliases).toContain(`file://${fixture}/`);
     } finally {
       rmSync(cacheRoot, { recursive: true, force: true });
       rmSync(fixture, { recursive: true, force: true });

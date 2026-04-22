@@ -10,7 +10,7 @@
 
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import lockfile from "proper-lockfile";
@@ -173,6 +173,11 @@ export async function resolveRepo(
       await runGit(["clone", "--bare", ref.url, cacheDir], {
         timeoutMs: opts.timeoutMs ?? 300_000,
       });
+      // Ensure the remote has a fetch refspec so future `git fetch --all` works
+      // (bare clones via file:// may omit it when the upstream HEAD is ambiguous).
+      await runGit(["config", "--add", "remote.origin.fetch", "+refs/heads/*:refs/heads/*"], {
+        cwd: cacheDir,
+      });
       await mkdir(metaDir, { recursive: true });
       const now = new Date().toISOString();
       const manifest: Manifest = {
@@ -188,8 +193,45 @@ export async function resolveRepo(
       return { ref, bareClonePath: cacheDir, key, fetched: true, stale: false };
     }
 
-    // Cache-hit path fills in Task 6.
-    throw new Error("resolveRepo: cache-hit path not yet implemented");
+    // Cache hit. Update manifest (alias + lastAccessedAt).
+    const manifestPath = join(metaDir, "manifest.json");
+    const manifest: Manifest = JSON.parse(await readFile(manifestPath, "utf-8"));
+    const now = new Date().toISOString();
+    manifest.lastAccessedAt = now;
+    if (!manifest.aliases.includes(ref.url)) manifest.aliases.push(ref.url);
+
+    const ttlMs = opts.fetchTtlMs ?? 60_000;
+    const lastFetchStat = await stat(join(metaDir, "last-fetch"));
+    const ageMs = Date.now() - lastFetchStat.mtimeMs;
+    const mustFetch = opts.fresh === true || ageMs > ttlMs;
+
+    let fetched = false;
+    let stale = false;
+
+    if (mustFetch) {
+      try {
+        await runGit(["fetch", "--all", "--prune"], {
+          cwd: cacheDir,
+          timeoutMs: opts.timeoutMs ?? 300_000,
+        });
+        const fetchTime = new Date();
+        await writeFile(join(metaDir, "last-fetch"), "", "utf-8"); // ensure file exists
+        await utimes(join(metaDir, "last-fetch"), fetchTime, fetchTime);
+        manifest.lastFetchedAt = fetchTime.toISOString();
+        fetched = true;
+      } catch (err) {
+        if (opts.fresh === true) {
+          await writeManifest(metaDir, manifest);
+          throw new Error(
+            `resolveRepo: --fresh fetch failed for ${ref.url}: ${(err as Error).message}`,
+          );
+        }
+        stale = true;
+      }
+    }
+
+    await writeManifest(metaDir, manifest);
+    return { ref, bareClonePath: cacheDir, key, fetched, stale };
   } finally {
     await release();
   }
