@@ -7,7 +7,7 @@ import { resolveCacheRoot, resolveRepo } from "./repo-cache.js";
 
 function makeFixtureRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "grove-rc-fx-"));
-  execSync("git init --bare", { cwd: dir, stdio: "pipe" });
+  execSync("git -c init.defaultBranch=main init --bare", { cwd: dir, stdio: "pipe" });
   // Push an initial commit via a scratch clone
   const scratch = mkdtempSync(join(tmpdir(), "grove-rc-scratch-"));
   execSync(`git clone "${dir}" "${scratch}"`, { stdio: "pipe" });

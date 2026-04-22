@@ -173,11 +173,6 @@ export async function resolveRepo(
       await runGit(["clone", "--bare", ref.url, cacheDir], {
         timeoutMs: opts.timeoutMs ?? 300_000,
       });
-      // Ensure the remote has a fetch refspec so future `git fetch --all` works
-      // (bare clones via file:// may omit it when the upstream HEAD is ambiguous).
-      await runGit(["config", "--add", "remote.origin.fetch", "+refs/heads/*:refs/heads/*"], {
-        cwd: cacheDir,
-      });
       await mkdir(metaDir, { recursive: true });
       const now = new Date().toISOString();
       const manifest: Manifest = {
