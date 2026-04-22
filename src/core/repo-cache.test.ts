@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveCacheRoot, resolveRepo } from "./repo-cache.js";
@@ -204,6 +204,29 @@ describe("resolveRepo — fresh hard-fail", () => {
       expect(result.fetched).toBe(false);
     } finally {
       rmSync(cacheRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("resolveRepo — corruption recovery", () => {
+  test("absent .ok triggers nuke + re-clone", async () => {
+    const fixture = makeFixtureRepo();
+    const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
+    try {
+      const first = await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
+      expect(first.fetched).toBe(true);
+
+      // Simulate crash: remove .ok, leave garbage behind.
+      rmSync(join(first.bareClonePath, ".grove-cache", ".ok"));
+      writeFileSync(join(first.bareClonePath, "garbage"), "x");
+
+      const second = await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
+      expect(second.fetched).toBe(true);
+      expect(existsSync(join(second.bareClonePath, "garbage"))).toBe(false);
+      expect(existsSync(join(second.bareClonePath, ".grove-cache", ".ok"))).toBe(true);
+    } finally {
+      rmSync(cacheRoot, { recursive: true, force: true });
+      rmSync(fixture, { recursive: true, force: true });
     }
   });
 });
