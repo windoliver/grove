@@ -258,3 +258,25 @@ describe("resolveRepo — timeout", () => {
     }
   });
 });
+
+describe("resolveRepo — concurrency", () => {
+  test("five concurrent callers produce one clone + four hits", async () => {
+    const fixture = makeFixtureRepo();
+    const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
+    try {
+      const results = await Promise.all(
+        Array.from({ length: 5 }, () =>
+          resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot }),
+        ),
+      );
+      const fetched = results.filter((r) => r.fetched).length;
+      expect(fetched).toBe(1);
+      for (const r of results) {
+        expect(r.bareClonePath).toBe(results[0]!.bareClonePath);
+      }
+    } finally {
+      rmSync(cacheRoot, { recursive: true, force: true });
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+});
