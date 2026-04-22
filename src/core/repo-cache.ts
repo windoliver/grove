@@ -79,10 +79,6 @@ async function readOriginUrl(localPath: string): Promise<string | null> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 interface Manifest {
   canonicalUrl: string;
   aliases: string[];
@@ -159,8 +155,7 @@ export async function resolveRepo(
   const lockFile = join(locksDir, `${encodeLockName(key)}.lock`);
 
   await mkdir(locksDir, { recursive: true });
-  // proper-lockfile requires the target to exist
-  if (!existsSync(lockFile)) await writeFile(lockFile, "", "utf-8");
+  await writeFile(lockFile, "", { flag: "a" });
 
   const release = await lockfile.lock(lockFile, {
     retries: { retries: 50, minTimeout: 50, maxTimeout: 500 },

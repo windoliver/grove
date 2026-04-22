@@ -79,6 +79,14 @@ describe("normalizeUrl", () => {
   test("rejects double-colon SCP (git@host:port:path)", () => {
     expect(() => normalizeUrl("git@github.com:22:foo/bar")).toThrow(/colon in segment/);
   });
+
+  test("rejects dotdot hostname (SCP)", () => {
+    expect(() => normalizeUrl("git@..:foo/bar")).toThrow(/traversal in hostname/);
+  });
+
+  test("rejects dotdot hostname (HTTPS)", () => {
+    expect(() => normalizeUrl("https://../foo/bar")).toThrow(/traversal in hostname/);
+  });
 });
 
 describe("deriveCachePath", () => {

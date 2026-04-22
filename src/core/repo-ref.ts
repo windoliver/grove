@@ -68,6 +68,12 @@ export function normalizeUrl(raw: string): NormalizedRepo {
 
   if (host === "") throw new Error(`normalized host is empty: ${raw}`);
 
+  for (const label of host.split(".")) {
+    if (label === ".." || label === "." || label === "") {
+      throw new Error(`invalid host (traversal in hostname): ${raw}`);
+    }
+  }
+
   // Validate raw path BEFORE cleaning, so traversal segments (e.g. `..`) that
   // URL() would silently normalize away are still caught.
   const rawCleaned = rawPath.replace(/\.git$/, "").replace(/\/+$/, "");
