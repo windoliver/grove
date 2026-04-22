@@ -15,6 +15,8 @@ import { dirname, join, resolve } from "node:path";
 import { watchTurnError } from "../acp/watch-turn.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { AgentIdentity } from "../core/models.js";
+import { type ResolvedRepo, type ResolveRepoOptions, resolveRepo } from "../core/repo-cache.js";
+import type { RepoRef } from "../core/repo-ref.js";
 import { resolveBundledSkillsRoot, resolveMcpServePath } from "../core/resolve-mcp-serve-path.js";
 import { parseAcpxSessionId } from "../core/session-id.js";
 import { injectSkills } from "../core/skill-injector.js";
@@ -94,6 +96,9 @@ export class SpawnManager {
   // or explicitly reattached for the CURRENT session. Prevents routing to stale
   // sessions from previous sessions that reconcile() found still alive in acpx.
   private readonly routableSessions = new Set<string>();
+  private repos: readonly RepoRef[] = [];
+  private repoCache: Partial<ResolveRepoOptions> | undefined;
+  private resolvedRepos: readonly ResolvedRepo[] = [];
 
   constructor(
     provider: TuiDataProvider,
@@ -319,6 +324,30 @@ export class SpawnManager {
   }
 
   /**
+   * Set the repos list for workspace provisioning. When set, spawn() routes
+   * worktree creation through the repo-cache bareClonePath instead of the
+   * projectRoot derived from groveDir.
+   */
+  setRepos(repos: readonly RepoRef[], repoCache?: Partial<ResolveRepoOptions>): void {
+    this.repos = repos;
+    this.repoCache = repoCache;
+    this.resolvedRepos = []; // reset so ensureReposResolved re-resolves on next spawn
+  }
+
+  private async ensureReposResolved(): Promise<void> {
+    if (this.resolvedRepos.length > 0) return;
+    if (this.repos.length === 0) return; // no repos configured — fall through to projectRoot
+    if (this.repos.length > 1) {
+      throw new Error(
+        "SpawnManager: multi-repo sessions are not yet supported; pass exactly one repo.",
+      );
+    }
+    this.resolvedRepos = await Promise.all(
+      this.repos.map((ref) => resolveRepo(ref, this.repoCache ?? {})),
+    );
+  }
+
+  /**
    * Set the session topology so spawn() can resolve edge-type-aware base branches.
    * Call before spawning when the topology is known (e.g. after preset selection).
    */
@@ -470,13 +499,18 @@ export class SpawnManager {
 
       let provisioned: import("../core/workspace-provisioner.js").ProvisionedWorkspace | undefined;
       try {
+        await this.ensureReposResolved();
         // Use wsSessionId (stable session-level ID) so branch names are predictable
         // and match what resolveRoleWorkspaceStrategies() computes for dependents.
+        const bareClonePath =
+          this.resolvedRepos.length > 0
+            ? (this.resolvedRepos[0]?.bareClonePath ?? projectRoot)
+            : projectRoot;
         provisioned = await provisionWorkspace({
           role: roleId,
           sessionId: wsSessionId,
           baseDir,
-          repoRoot: projectRoot,
+          bareClonePath,
           baseBranch,
         });
         workspacePath = provisioned.path;
