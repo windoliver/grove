@@ -491,7 +491,7 @@ export class SessionOrchestrator {
         role: role.name,
         sessionId: this.sessionId,
         baseDir: this.config.workspaceBaseDir,
-        bareClonePath: this.resolvedRepos[0]?.bareClonePath ?? this.config.projectRoot,
+        bareClonePath: this.resolvedRepos[0]!.bareClonePath,
         baseBranch: baseBranch ?? "HEAD",
       });
     } catch (err) {

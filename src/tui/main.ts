@@ -619,6 +619,9 @@ export async function handleTui(
         result.appProps.provider,
         result.appProps.tmux,
         (msg) => process.stderr.write(`[spawn] ${msg}\n`),
+        result.appProps.groveDir
+          ? [{ kind: "local" as const, path: join(result.appProps.groveDir, "..") }]
+          : [{ kind: "local" as const, path: process.cwd() }],
         sessionStore,
         result.appProps.groveDir,
         result.appProps.agentRuntime,

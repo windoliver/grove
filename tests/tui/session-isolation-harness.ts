@@ -153,6 +153,7 @@ async function main() {
     () => {
       /* test harness — errors are silent */
     },
+    [{ kind: "local" as const, path: groveDir }],
   );
 
   const appProps = {

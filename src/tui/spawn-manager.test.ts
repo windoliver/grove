@@ -211,6 +211,7 @@ describe("SpawnManager", () => {
       provider,
       tmux,
       (msg) => errors.push(msg),
+      [{ kind: "local" as const, path: "/tmp" }],
       undefined,
       "/tmp/no-grove",
     );
@@ -244,6 +245,7 @@ describe("SpawnManager", () => {
       provider,
       tmux,
       (msg) => errors.push(msg),
+      [{ kind: "local" as const, path: "/tmp" }],
       undefined,
       "/tmp/no-grove",
     );
@@ -270,7 +272,9 @@ describe("SpawnManager", () => {
     const provider = makeMockProvider();
     const tmux = makeMockTmux(true); // configured to fail
     const errors: string[] = [];
-    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg));
+    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), [
+      { kind: "local" as const, path: "/tmp" },
+    ]);
 
     await expect(manager.spawn("claude", "bash")).rejects.toThrow("tmux spawn failed");
 
@@ -285,7 +289,9 @@ describe("SpawnManager", () => {
     const provider = makeMockProvider();
     const tmux = makeMockTmux();
     const errors: string[] = [];
-    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg));
+    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), [
+      { kind: "local" as const, path: "/tmp" },
+    ]);
 
     const result = await manager.spawn("claude", "bash");
     // No explicit groveDir — workspace mode depends on whether process.cwd() is a git repo
@@ -308,7 +314,9 @@ describe("SpawnManager", () => {
     const provider = makeMockProvider();
     const tmux = makeMockTmux();
     const errors: string[] = [];
-    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg));
+    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), [
+      { kind: "local" as const, path: "/tmp" },
+    ]);
 
     const result1 = await manager.spawn("agent-a", "bash");
     const result2 = await manager.spawn("agent-b", "bash");
@@ -337,9 +345,14 @@ describe("SpawnManager", () => {
     (provider as unknown as Record<string, unknown>).checkoutWorkspace = undefined;
 
     const tmux = makeMockTmux();
-    manager = new SpawnManager(provider, tmux, () => {
-      /* noop */
-    });
+    manager = new SpawnManager(
+      provider,
+      tmux,
+      () => {
+        /* noop */
+      },
+      [{ kind: "local" as const, path: "/tmp" }],
+    );
 
     // Spawn may succeed (git worktree) or fail (no git repo), but should not
     // throw "Provider does not support workspace checkout"
@@ -358,6 +371,7 @@ describe("SpawnManager", () => {
       provider,
       tmux,
       (msg) => errors.push(msg),
+      [{ kind: "local" as const, path: "/tmp" }],
       undefined,
       "/tmp/no-grove",
     );
@@ -382,6 +396,7 @@ describe("SpawnManager", () => {
       provider,
       tmux,
       (msg) => errors.push(msg),
+      [{ kind: "local" as const, path: "/tmp" }],
       undefined,
       "/tmp/no-grove",
     );
@@ -423,7 +438,14 @@ describe("SpawnManager — per-role skill injection", () => {
     const provider = makeMockProvider();
     const tmux = makeMockTmux();
     const errors: string[] = [];
-    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), undefined, groveDir);
+    manager = new SpawnManager(
+      provider,
+      tmux,
+      (msg) => errors.push(msg),
+      [{ kind: "local" as const, path: projectRoot }],
+      undefined,
+      groveDir,
+    );
     manager.setIsolationPolicy("strict");
 
     const result = await manager.spawn("coder", "bash", undefined, 0, {
@@ -464,7 +486,14 @@ describe("SpawnManager — per-role skill injection", () => {
     const provider = makeMockProvider();
     const tmux = makeMockTmux();
     const errors: string[] = [];
-    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), undefined, groveDir);
+    manager = new SpawnManager(
+      provider,
+      tmux,
+      (msg) => errors.push(msg),
+      [{ kind: "local" as const, path: projectRoot }],
+      undefined,
+      groveDir,
+    );
     manager.setIsolationPolicy("strict");
 
     const coderResult = await manager.spawn("coder", "bash", undefined, 0, { skills: ["grove"] });
@@ -503,7 +532,9 @@ describe("SpawnManager — shell injection safety", () => {
     const provider = makeMockProvider();
     const tmux = new MockTmuxManager();
     const errors: string[] = [];
-    const mgr = new SpawnManager(provider, tmux, (msg) => errors.push(msg));
+    const mgr = new SpawnManager(provider, tmux, (msg) => errors.push(msg), [
+      { kind: "local" as const, path: "/tmp" },
+    ]);
 
     // Assign to module-level `manager` so afterEach can call destroy().
     manager = mgr;
@@ -568,7 +599,9 @@ describe("SpawnManager — shell injection safety", () => {
     const provider = makeMockProvider();
     const tmux = new MockTmuxManager();
     const errors: string[] = [];
-    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg));
+    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), [
+      { kind: "local" as const, path: "/tmp" },
+    ]);
     manager.setPrContext({ number: 99, title, filesChanged: 10 });
 
     const result = await manager.spawn("claude", "bash");
@@ -639,7 +672,13 @@ describe("SpawnManager — session persistence", () => {
     const tmux = makeMockTmux();
     const store = makeMockSessionStore();
     const errors: string[] = [];
-    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), store);
+    manager = new SpawnManager(
+      provider,
+      tmux,
+      (msg) => errors.push(msg),
+      [{ kind: "local" as const, path: "/tmp" }],
+      store,
+    );
 
     const result = await manager.spawn("claude", "bash");
 
@@ -662,7 +701,13 @@ describe("SpawnManager — session persistence", () => {
     const tmux = makeMockTmux();
     const store = makeMockSessionStore();
     const errors: string[] = [];
-    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), store);
+    manager = new SpawnManager(
+      provider,
+      tmux,
+      (msg) => errors.push(msg),
+      [{ kind: "local" as const, path: "/tmp" }],
+      store,
+    );
 
     const result = await manager.spawn("claude", "bash");
     expect(["isolated_worktree", "fallback_workspace", "bootstrap_failed"]).toContain(
@@ -688,6 +733,7 @@ describe("SpawnManager — session persistence", () => {
       provider,
       tmux,
       (msg) => errors.push(msg),
+      [{ kind: "local" as const, path: "/tmp" }],
       undefined,
       "/tmp/no-grove",
     );
@@ -703,7 +749,13 @@ describe("SpawnManager — session persistence", () => {
     const tmux = makeMockTmux();
     const store = makeMockSessionStore();
     const errors: string[] = [];
-    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), store);
+    manager = new SpawnManager(
+      provider,
+      tmux,
+      (msg) => errors.push(msg),
+      [{ kind: "local" as const, path: "/tmp" }],
+      store,
+    );
 
     const result = await manager.spawn("claude", "bash");
     expect(["isolated_worktree", "fallback_workspace", "bootstrap_failed"]).toContain(
@@ -743,7 +795,13 @@ describe("SpawnManager — reconciliation", () => {
     // Simulate the tmux session being alive
     tmux.spawnedSessions.push("grove-agent-live");
 
-    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), store);
+    manager = new SpawnManager(
+      provider,
+      tmux,
+      (msg) => errors.push(msg),
+      [{ kind: "local" as const, path: "/tmp" }],
+      store,
+    );
     const result = await manager.reconcile();
 
     expect(result.reattached).toBe(1);
@@ -776,7 +834,13 @@ describe("SpawnManager — reconciliation", () => {
 
     // tmux has no live sessions — agent-dead is orphaned
 
-    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), store);
+    manager = new SpawnManager(
+      provider,
+      tmux,
+      (msg) => errors.push(msg),
+      [{ kind: "local" as const, path: "/tmp" }],
+      store,
+    );
     const result = await manager.reconcile();
 
     expect(result.reattached).toBe(0);
@@ -819,7 +883,13 @@ describe("SpawnManager — reconciliation", () => {
     // Only "alive" has a tmux session
     tmux.spawnedSessions.push("grove-alive");
 
-    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), store);
+    manager = new SpawnManager(
+      provider,
+      tmux,
+      (msg) => errors.push(msg),
+      [{ kind: "local" as const, path: "/tmp" }],
+      store,
+    );
     const result = await manager.reconcile();
 
     expect(result.reattached).toBe(1);
@@ -839,7 +909,9 @@ describe("SpawnManager — reconciliation", () => {
     const tmux = makeMockTmux();
     const errors: string[] = [];
 
-    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg));
+    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), [
+      { kind: "local" as const, path: "/tmp" },
+    ]);
     const result = await manager.reconcile();
 
     expect(result.reattached).toBe(0);
@@ -852,7 +924,13 @@ describe("SpawnManager — reconciliation", () => {
     const store = makeMockSessionStore();
     const errors: string[] = [];
 
-    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), store);
+    manager = new SpawnManager(
+      provider,
+      tmux,
+      (msg) => errors.push(msg),
+      [{ kind: "local" as const, path: "/tmp" }],
+      store,
+    );
     const result = await manager.reconcile();
 
     expect(result.reattached).toBe(0);
@@ -866,7 +944,9 @@ describe("SpawnManager — reconciliation", () => {
     const provider = makeMockProvider();
     const tmux = makeMockTmux();
     const errors: string[] = [];
-    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg));
+    manager = new SpawnManager(provider, tmux, (msg) => errors.push(msg), [
+      { kind: "local" as const, path: "/tmp" },
+    ]);
 
     const seedSession = {
       id: "grove-code-reviewer-0--mo3i3zh6",

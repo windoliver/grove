@@ -110,6 +110,7 @@ async function main() {
     () => {
       /* no-op */
     },
+    [{ kind: "local" as const, path: "/tmp" }],
   );
 
   // Pre-populate log buffers on the spawn manager

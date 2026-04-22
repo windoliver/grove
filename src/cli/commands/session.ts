@@ -254,6 +254,7 @@ async function sessionStart(args: readonly string[]): Promise<void> {
       runtime,
       eventBus,
       projectRoot: groveRoot,
+      repos: [{ kind: "local", path: groveRoot }],
       workspaceBaseDir: join(groveDir, "workspaces"),
       sessionId: session.id,
       contributionStore,

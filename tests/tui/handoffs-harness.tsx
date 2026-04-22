@@ -175,6 +175,7 @@ async function main() {
     () => {
       /* no-op */
     },
+    [{ kind: "local" as const, path: "/tmp" }],
   );
 
   const initialState: ScreenState = {
