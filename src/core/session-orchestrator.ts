@@ -460,6 +460,9 @@ export class SessionOrchestrator {
 
   private async ensureReposResolved(): Promise<void> {
     if (this.resolvedRepos.length > 0) return;
+    if (this.config.repos.length === 0) {
+      throw new Error("SessionOrchestrator: repos must be non-empty; pass at least one RepoRef.");
+    }
     if (this.config.repos.length > 1) {
       throw new Error(
         "SessionOrchestrator: multi-repo sessions are not yet supported; pass exactly one repo.",
@@ -483,6 +486,10 @@ export class SessionOrchestrator {
     baseBranch?: string,
   ): Promise<{ readonly cwd: string; readonly workspaceMode: WorkspaceMode }> {
     await this.ensureReposResolved();
+    const resolvedRepo = this.resolvedRepos[0];
+    if (!resolvedRepo) {
+      throw new Error("unreachable: ensureReposResolved did not populate resolvedRepos");
+    }
     let provisioned: ProvisionedWorkspace;
 
     // Step 1: Git worktree — base branch determined by edge type
@@ -491,7 +498,7 @@ export class SessionOrchestrator {
         role: role.name,
         sessionId: this.sessionId,
         baseDir: this.config.workspaceBaseDir,
-        bareClonePath: this.resolvedRepos[0]!.bareClonePath,
+        bareClonePath: resolvedRepo.bareClonePath,
         baseBranch: baseBranch ?? "HEAD",
       });
     } catch (err) {
