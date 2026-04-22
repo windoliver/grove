@@ -280,3 +280,23 @@ describe("resolveRepo — concurrency", () => {
     }
   });
 });
+
+describe("resolveRepo — local with origin", () => {
+  test("reads origin and caches via URL path", async () => {
+    const fixture = makeFixtureRepo();
+    const workTree = mkdtempSync(join(tmpdir(), "grove-rc-wt-"));
+    execSync(`git clone "${fixture}" "${workTree}"`, { stdio: "pipe" });
+
+    const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
+    try {
+      const result = await resolveRepo({ kind: "local", path: workTree }, { cacheRoot });
+      expect(result.fetched).toBe(true);
+      expect(result.bareClonePath).not.toBe(workTree);
+      expect(result.bareClonePath.startsWith(cacheRoot)).toBe(true);
+    } finally {
+      rmSync(cacheRoot, { recursive: true, force: true });
+      rmSync(workTree, { recursive: true, force: true });
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+});
