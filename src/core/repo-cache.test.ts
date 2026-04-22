@@ -1,9 +1,24 @@
 import { describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveCacheRoot, resolveRepo } from "./repo-cache.js";
+
+function makeFixtureRepo(): string {
+  const dir = mkdtempSync(join(tmpdir(), "grove-rc-fx-"));
+  execSync("git init --bare", { cwd: dir, stdio: "pipe" });
+  // Push an initial commit via a scratch clone
+  const scratch = mkdtempSync(join(tmpdir(), "grove-rc-scratch-"));
+  execSync(`git clone "${dir}" "${scratch}"`, { stdio: "pipe" });
+  execSync('git config user.email "t@t"', { cwd: scratch, stdio: "pipe" });
+  execSync('git config user.name "t"', { cwd: scratch, stdio: "pipe" });
+  execSync("git commit --allow-empty -m init", { cwd: scratch, stdio: "pipe" });
+  execSync("git branch -M main", { cwd: scratch, stdio: "pipe" });
+  execSync("git push origin main", { cwd: scratch, stdio: "pipe" });
+  rmSync(scratch, { recursive: true, force: true });
+  return dir;
+}
 
 describe("resolveCacheRoot", () => {
   test("honors GROVE_REPO_CACHE when set", () => {
@@ -55,6 +70,35 @@ describe("resolveRepo — local path without origin", () => {
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("resolveRepo — fresh clone", () => {
+  test("clones into cache, writes .ok, manifest, last-fetch", async () => {
+    const fixture = makeFixtureRepo();
+    const cacheRoot = mkdtempSync(join(tmpdir(), "grove-rc-cache-"));
+    try {
+      const result = await resolveRepo({ kind: "url", url: `file://${fixture}` }, { cacheRoot });
+
+      expect(result.fetched).toBe(true);
+      expect(result.stale).toBe(false);
+      expect(result.key).toBe(`local/${fixture.replace(/^\//, "")}.git`);
+      expect(existsSync(join(result.bareClonePath, "HEAD"))).toBe(true);
+      expect(existsSync(join(result.bareClonePath, ".grove-cache", ".ok"))).toBe(true);
+      expect(existsSync(join(result.bareClonePath, ".grove-cache", "last-fetch"))).toBe(true);
+
+      const manifest = JSON.parse(
+        readFileSync(join(result.bareClonePath, ".grove-cache", "manifest.json"), "utf-8"),
+      );
+      expect(manifest.canonicalUrl).toBe(`file://${fixture}`);
+      expect(manifest.aliases).toEqual([`file://${fixture}`]);
+      expect(typeof manifest.createdAt).toBe("string");
+      expect(typeof manifest.lastFetchedAt).toBe("string");
+      expect(typeof manifest.lastAccessedAt).toBe("string");
+    } finally {
+      rmSync(cacheRoot, { recursive: true, force: true });
+      rmSync(fixture, { recursive: true, force: true });
     }
   });
 });
