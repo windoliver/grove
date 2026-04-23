@@ -42,8 +42,8 @@ export interface WorkspaceProvisionOptions {
   readonly sessionId: string;
   /** Base directory for worktrees (e.g., .grove/workspaces). */
   readonly baseDir: string;
-  /** Root of the source repo to create worktrees from. */
-  readonly repoRoot: string;
+  /** Path to the bare clone to create worktrees from (from `resolveRepo(ref).bareClonePath`). */
+  readonly bareClonePath: string;
   /** MCP config to write into the worktree. */
   readonly mcpConfig?: Record<string, unknown> | undefined;
   /** Base branch to create worktree from (default: HEAD). */
@@ -89,7 +89,7 @@ export interface WorkspaceProvisionError {
 export async function provisionWorkspace(
   options: WorkspaceProvisionOptions,
 ): Promise<ProvisionedWorkspace> {
-  const { role, sessionId, baseDir, repoRoot, mcpConfig, baseBranch } = options;
+  const { role, sessionId, baseDir, bareClonePath, mcpConfig, baseBranch } = options;
 
   const worktreePath = join(baseDir, `${role}-${sessionId.slice(0, 8)}`);
   const branch = `grove/${sessionId}/${role}`;
@@ -101,7 +101,7 @@ export async function provisionWorkspace(
   // injection via role name or path and allowing true async execution.
   const base = baseBranch ?? "HEAD";
   await execFileAsync("git", ["worktree", "add", worktreePath, "-b", branch, base], {
-    cwd: repoRoot,
+    cwd: bareClonePath,
   });
 
   // Write .mcp.json if provided
@@ -122,7 +122,7 @@ export async function provisionSessionWorkspaces(
   roles: readonly string[],
   sessionId: string,
   baseDir: string,
-  repoRoot: string,
+  bareClonePath: string,
   mcpConfig?: Record<string, unknown>,
   baseBranch?: string,
 ): Promise<SessionWorkspaces> {
@@ -135,7 +135,7 @@ export async function provisionSessionWorkspaces(
   // Create all worktrees in parallel
   const results = await Promise.allSettled(
     roles.map((role) =>
-      provisionWorkspace({ role, sessionId, baseDir, repoRoot, mcpConfig, baseBranch }),
+      provisionWorkspace({ role, sessionId, baseDir, bareClonePath, mcpConfig, baseBranch }),
     ),
   );
 
@@ -171,18 +171,20 @@ export async function provisionSessionWorkspaces(
  */
 export async function cleanupSessionWorkspaces(
   workspaces: readonly ProvisionedWorkspace[],
-  repoRoot: string,
+  bareClonePath: string,
 ): Promise<void> {
   await Promise.allSettled(
     workspaces.map(async (ws) => {
       try {
-        await execFileAsync("git", ["worktree", "remove", ws.path, "--force"], { cwd: repoRoot });
+        await execFileAsync("git", ["worktree", "remove", ws.path, "--force"], {
+          cwd: bareClonePath,
+        });
       } catch {
         // Best effort — worktree may already be removed
       }
 
       try {
-        await execFileAsync("git", ["branch", "-D", ws.branch], { cwd: repoRoot });
+        await execFileAsync("git", ["branch", "-D", ws.branch], { cwd: bareClonePath });
       } catch {
         // Best effort
       }

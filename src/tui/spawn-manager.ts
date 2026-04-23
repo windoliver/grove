@@ -15,6 +15,8 @@ import { dirname, join, resolve } from "node:path";
 import { watchTurnError } from "../acp/watch-turn.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { AgentIdentity } from "../core/models.js";
+import { type ResolvedRepo, type ResolveRepoOptions, resolveRepo } from "../core/repo-cache.js";
+import type { RepoRef } from "../core/repo-ref.js";
 import { resolveBundledSkillsRoot, resolveMcpServePath } from "../core/resolve-mcp-serve-path.js";
 import { parseAcpxSessionId } from "../core/session-id.js";
 import { injectSkills } from "../core/skill-injector.js";
@@ -94,11 +96,15 @@ export class SpawnManager {
   // or explicitly reattached for the CURRENT session. Prevents routing to stale
   // sessions from previous sessions that reconcile() found still alive in acpx.
   private readonly routableSessions = new Set<string>();
+  private readonly repos: readonly RepoRef[];
+  private repoCache: Partial<ResolveRepoOptions> | undefined;
+  private resolvedRepos: readonly ResolvedRepo[] = [];
 
   constructor(
     provider: TuiDataProvider,
     tmux: TmuxManager | undefined,
     onError: (message: string) => void,
+    repos: readonly RepoRef[],
     sessionStore?: SessionStore,
     groveDir?: string,
     agentRuntime?: AgentRuntime,
@@ -108,6 +114,7 @@ export class SpawnManager {
     this.tmux = tmux;
     this.agentRuntime = agentRuntime;
     this.onError = onError;
+    this.repos = repos;
     this.sessionStore = sessionStore;
     this.groveDir = groveDir;
     this.acpSessionStore = acpSessionStore;
@@ -318,6 +325,23 @@ export class SpawnManager {
     this.workspaceIsolationPolicy = policy;
   }
 
+  private async ensureReposResolved(): Promise<void> {
+    if (this.resolvedRepos.length > 0) return;
+    if (this.repos.length === 0) {
+      throw new Error(
+        "SpawnManager: repos must be non-empty; pass at least one RepoRef at construction.",
+      );
+    }
+    if (this.repos.length > 1) {
+      throw new Error(
+        "SpawnManager: multi-repo sessions are not yet supported; pass exactly one repo.",
+      );
+    }
+    this.resolvedRepos = await Promise.all(
+      this.repos.map((ref) => resolveRepo(ref, this.repoCache ?? {})),
+    );
+  }
+
   /**
    * Set the session topology so spawn() can resolve edge-type-aware base branches.
    * Call before spawning when the topology is known (e.g. after preset selection).
@@ -470,13 +494,14 @@ export class SpawnManager {
 
       let provisioned: import("../core/workspace-provisioner.js").ProvisionedWorkspace | undefined;
       try {
+        await this.ensureReposResolved();
         // Use wsSessionId (stable session-level ID) so branch names are predictable
         // and match what resolveRoleWorkspaceStrategies() computes for dependents.
         provisioned = await provisionWorkspace({
           role: roleId,
           sessionId: wsSessionId,
           baseDir,
-          repoRoot: projectRoot,
+          bareClonePath: this.resolvedRepos[0]!.bareClonePath,
           baseBranch,
         });
         workspacePath = provisioned.path;

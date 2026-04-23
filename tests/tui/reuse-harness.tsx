@@ -118,6 +118,7 @@ async function main() {
     () => {
       /* test harness — errors are silent */
     },
+    [{ kind: "local" as const, path: "/tmp" }],
   );
 
   const appProps = {
