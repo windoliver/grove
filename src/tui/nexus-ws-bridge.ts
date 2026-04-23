@@ -706,7 +706,7 @@ export class NexusWsBridge {
             (h.status === "pending_pickup" || h.status === "delivered"),
         );
         if (candidates.length === 1) {
-          return candidates[0]!.handoffId;
+          return candidates[0]?.handoffId;
         }
         if (candidates.length > 1) {
           debugLog(

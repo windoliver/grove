@@ -218,13 +218,14 @@ let sessionService: SessionService | undefined;
 let wsHandler: ReturnType<typeof createWsHandler> | undefined;
 
 if (runtime.contract?.topology !== undefined) {
-  // Create an agent runtime — prefer acpx, fall back to tmux
+  // Create an agent runtime via selectRuntime (honors GROVE_RUNTIME env),
+  // fall back to tmux when neither acp nor acpx is available
   let agentRuntime: import("../core/agent-runtime.js").AgentRuntime;
   {
-    const { AcpxRuntime } = await import("../core/acpx-runtime.js");
-    const acpx = new AcpxRuntime();
-    if (await acpx.isAvailable()) {
-      agentRuntime = acpx;
+    const { selectRuntime } = await import("../core/select-runtime.js");
+    const picked = selectRuntime();
+    if (await picked.isAvailable()) {
+      agentRuntime = picked;
     } else {
       agentRuntime = new TmuxRuntime();
     }

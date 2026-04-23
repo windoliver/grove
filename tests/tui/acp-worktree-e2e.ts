@@ -1,14 +1,14 @@
 /**
- * Real E2E test: AcpxRuntime + provisioned worktrees + delegates edge.
+ * Real E2E test: AcpRuntime + provisioned worktrees + delegates edge.
  *
  * Proves:
- *   1. acpx agent actually starts in the provisioned worktree (not project root)
+ *   1. ACP agent actually starts in the provisioned worktree (not project root)
  *   2. Coder's worktree is based on HEAD
  *   3. Reviewer's worktree is based on coder's branch (delegates edge)
  *   4. After coder commits, reviewer sees the commit
  *
  * Usage:
- *   bun run tests/tui/acpx-worktree-e2e.ts --repo /tmp/grove-acpx-e2e-XXXXX
+ *   bun run tests/tui/acp-worktree-e2e.ts --repo /tmp/grove-acp-e2e-XXXXX
  */
 
 import { execSync } from "node:child_process";
@@ -16,7 +16,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 
-import { AcpxRuntime } from "../../src/core/acpx-runtime.js";
+import { AcpRuntime } from "../../src/core/acp-runtime.js";
 import type { AgentTopology } from "../../src/core/topology.js";
 import { resolveRoleWorkspaceStrategies } from "../../src/core/topology.js";
 import { provisionWorkspace } from "../../src/core/workspace-provisioner.js";
@@ -36,7 +36,7 @@ if (!repoRoot || !existsSync(repoRoot)) {
   process.exit(1);
 }
 
-const SESSION_ID = `acpx-e2e-${Date.now().toString(36)}`;
+const SESSION_ID = `acp-e2e-${Date.now().toString(36)}`;
 const baseDir = join(repoRoot, ".grove", "workspaces");
 
 // Topology: coder → reviewer (delegates)
@@ -88,28 +88,25 @@ assert(existsSync(coderWs.path), "coder worktree exists on disk");
 assert(existsSync(join(coderWs.path, "README.md")), "coder sees README.md from HEAD");
 
 // ---------------------------------------------------------------------------
-// Step 2: Spawn coder via AcpxRuntime in the worktree
+// Step 2: Spawn coder via AcpRuntime in the worktree
 // ---------------------------------------------------------------------------
 
-console.log("\n=== Step 2: Spawn coder agent (acpx codex) in worktree ===");
-const runtime = new AcpxRuntime({ agent: "codex", logDir: join(repoRoot, ".grove", "logs") });
+console.log("\n=== Step 2: Spawn coder agent (codex) in worktree ===");
+const runtime = new AcpRuntime({ logDir: join(repoRoot, ".grove", "logs") });
 const available = await runtime.isAvailable();
-assert(available, "acpx is available");
+assert(available, "runtime is available");
 
 const coderSession = await runtime.spawn("coder", {
   role: "coder",
   command: "codex",
+  platform: "codex",
   cwd: coderWs.path,
   goal: "Create a file called proof-coder.txt with the content 'coder was here'. Then stop.",
   env: { GROVE_SESSION_ID: SESSION_ID, GROVE_ROLE: "coder" },
 });
-console.log(`  acpx session: ${coderSession.id}`);
-console.log(`  status:       ${coderSession.status}`);
+console.log(`  session: ${coderSession.id}`);
+console.log(`  status:  ${coderSession.status}`);
 assert(coderSession.id.startsWith("grove-coder-"), `session name starts with grove-coder-`);
-
-// Verify via acpx sessions list
-const sessionList = execSync("acpx codex sessions list", { encoding: "utf-8", cwd: coderWs.path });
-assert(sessionList.includes(coderSession.id), `acpx sessions list includes ${coderSession.id}`);
 
 // Wait for agent to finish (poll for proof-coder.txt, max 60s)
 console.log("  Waiting for coder agent to create proof-coder.txt...");
@@ -140,7 +137,7 @@ if (coderProofExists) {
 
 // Close coder session
 await runtime.close(coderSession);
-console.log("  Closed coder acpx session");
+console.log("  Closed coder session");
 
 // ---------------------------------------------------------------------------
 // Step 3: Provision reviewer worktree (base: coder's branch — delegates)
@@ -184,15 +181,16 @@ assert(reviewerLog.includes("coder: add proof"), "reviewer git log shows coder's
 // Step 4: Spawn reviewer agent in reviewer worktree
 // ---------------------------------------------------------------------------
 
-console.log("\n=== Step 4: Spawn reviewer agent (acpx codex) in reviewer worktree ===");
+console.log("\n=== Step 4: Spawn reviewer agent (codex) in reviewer worktree ===");
 const reviewerSession = await runtime.spawn("reviewer", {
   role: "reviewer",
   command: "codex",
+  platform: "codex",
   cwd: reviewerWs.path,
   goal: "Read proof-coder.txt and create a file called review-result.txt with 'reviewed: ' followed by the content of proof-coder.txt. Then stop.",
   env: { GROVE_SESSION_ID: SESSION_ID, GROVE_ROLE: "reviewer" },
 });
-console.log(`  acpx session: ${reviewerSession.id}`);
+console.log(`  session: ${reviewerSession.id}`);
 assert(
   reviewerSession.id.startsWith("grove-reviewer-"),
   `session name starts with grove-reviewer-`,
@@ -215,7 +213,7 @@ if (reviewResultExists) {
 
 // Close reviewer session
 await runtime.close(reviewerSession);
-console.log("  Closed reviewer acpx session");
+console.log("  Closed reviewer session");
 
 // ---------------------------------------------------------------------------
 // Step 5: Show final state

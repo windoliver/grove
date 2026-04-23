@@ -89,8 +89,8 @@ test("coalesce key isolation: delta_a and delta_b coalesce independently", async
   for await (const e of ch) got.push(e);
   expect(got).toHaveLength(2);
   const byKind = Object.fromEntries(got.map((e) => [e.kind, e.text]));
-  expect(byKind["delta_a"]).toBe("aaaaa");
-  expect(byKind["delta_b"]).toBe("bbbbb");
+  expect(byKind.delta_a).toBe("aaaaa");
+  expect(byKind.delta_b).toBe("bbbbb");
 });
 
 test("coalesce tail invalidated on consume: next delta starts new entry", async () => {

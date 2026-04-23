@@ -144,10 +144,13 @@ async function sessionStart(args: readonly string[]): Promise<void> {
     return;
   }
 
-  // Create runtime — prefer acpx, fall back to mock
-  const { AcpxRuntime } = await import("../../core/acpx-runtime.js");
-  const acpx = new AcpxRuntime({ logDir: join(groveDir, "agent-logs") });
-  const runtime = (await acpx.isAvailable()) ? acpx : new MockRuntime();
+  // Create runtime via selectRuntime (honors GROVE_RUNTIME env), fall back to mock
+  const { selectRuntime } = await import("../../core/select-runtime.js");
+  const picked = selectRuntime({
+    acpx: { logDir: join(groveDir, "agent-logs") },
+    acp: { logDir: join(groveDir, "agent-logs") },
+  });
+  const runtime = (await picked.isAvailable()) ? picked : new MockRuntime();
   const eventBus = new LocalEventBus();
 
   // Open SQLite database and create session

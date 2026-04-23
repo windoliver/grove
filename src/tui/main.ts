@@ -262,17 +262,59 @@ async function buildAppProps(
   const userConfig = await loadGroveConfig(groveDir);
   configureTheme(userConfig.theme);
 
-  // Create AcpxRuntime for agent spawning (preferred over tmux)
+  // Create agent runtime via selectRuntime (honors GROVE_RUNTIME env)
   let agentRuntime: import("../core/agent-runtime.js").AgentRuntime | undefined;
   {
-    const { AcpxRuntime } = await import("../core/acpx-runtime.js");
+    const { selectRuntime } = await import("../core/select-runtime.js");
+    const { ALLOW_ALL_RESOLVER, ChainResolver, DENY_ALL_RESOLVER } = await import(
+      "../core/permission-resolver.js"
+    );
+    const { RulesResolver } = await import("../core/permission-rules.js");
     const effectiveGrovePath = groveDir;
-    // Note: no `agent` override — AcpxRuntime.spawn() derives the agent
+    // Note: no `agent` override — runtime.spawn() derives the agent
     // (claude/codex/gemini) from each role's AgentConfig.command, which comes
     // from the launch-preview role→CLI mapping. Setting it here would force
     // every role to the same agent regardless of the user's selection.
-    const runtime = new AcpxRuntime({
-      ...(effectiveGrovePath ? { logDir: join(effectiveGrovePath, "agent-logs") } : {}),
+    //
+    // Permission resolver selection (safe-by-default):
+    // - default → RulesResolver allowing read/search/fetch/think/other only,
+    //   falling back to DENY_ALL. Destructive tools are not auto-approved.
+    // - GROVE_ALLOW_ALL_PERMISSIONS=1 → ALLOW_ALL_RESOLVER (legacy
+    //   `acpx --approve-all` parity; required for agents to edit/execute
+    //   until interactive approval lands via issue #193).
+    const allowAll = process.env.GROVE_ALLOW_ALL_PERMISSIONS === "1";
+    const permissionResolver = allowAll
+      ? ALLOW_ALL_RESOLVER
+      : new ChainResolver([
+          // Allow only kinds that cannot cross a trust boundary by default.
+          // Excluded on purpose:
+          //  - `other`: ACP's catch-all; would bypass DENY_ALL for unknown tools.
+          //  - `fetch`: network egress; combined with `read` an agent could
+          //    exfiltrate workspace data without operator approval.
+          new RulesResolver({
+            allowKinds: ["read", "search", "think"],
+            denyTitleSubstrings: ["rm -rf", "sudo", "shutdown"],
+          }),
+          DENY_ALL_RESOLVER,
+        ]);
+    if (allowAll) {
+      process.stderr.write(
+        "[grove] permission-resolver: ALLOW_ALL (GROVE_ALLOW_ALL_PERMISSIONS=1). " +
+          "Destructive tool calls are auto-approved — match acpx --approve-all.\n",
+      );
+    } else {
+      process.stderr.write(
+        "[grove] permission-resolver: RulesResolver (read/search/think only). " +
+          "Edit/execute/fetch tool calls will be denied until issue #193 lands — " +
+          "set GROVE_ALLOW_ALL_PERMISSIONS=1 for legacy acpx parity.\n",
+      );
+    }
+    const acpOpts: import("../core/acp-runtime.js").AcpRuntimeOptions = effectiveGrovePath
+      ? { permissionResolver, logDir: join(effectiveGrovePath, "agent-logs") }
+      : { permissionResolver };
+    const runtime = selectRuntime({
+      acpx: effectiveGrovePath ? { logDir: join(effectiveGrovePath, "agent-logs") } : {},
+      acp: acpOpts,
     });
     const available = await runtime.isAvailable();
     agentRuntime = available ? runtime : undefined;
@@ -520,16 +562,6 @@ export async function handleTui(
     try {
       const { execSync } = await import("node:child_process");
       execSync("pkill -f 'bun.*mcp/serve' 2>/dev/null || true", { stdio: "pipe", timeout: 5000 });
-    } catch {
-      // best-effort
-    }
-    // Kill all acpx agent sessions for this grove
-    try {
-      const { execSync } = await import("node:child_process");
-      execSync(
-        "acpx codex sessions list 2>/dev/null | grep grove | awk '{print $1}' | xargs -I{} acpx codex sessions close {} 2>/dev/null || true",
-        { stdio: "pipe", timeout: 10000 },
-      );
     } catch {
       // best-effort
     }

@@ -6,8 +6,6 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { AcpxRuntime, KNOWN_ACPX_AGENTS, PLATFORM_TO_AGENT } from "./acpx-runtime.js";
-import type { AgentConfig } from "./agent-runtime.js";
 import { LocalEventBus } from "./local-event-bus.js";
 import { MockRuntime } from "./mock-runtime.js";
 import { mergeRuntimeConfig, SessionOrchestrator } from "./session-orchestrator.js";
@@ -89,30 +87,6 @@ describe("Issue 207 — full platform/model integration", () => {
     expect(reviewerConfig.command).toBe("claude");
     expect(reviewerConfig.platform).toBe("claude-code");
     expect(reviewerConfig.model).toBe("claude-opus-4-6");
-  });
-
-  // ── AcpxRuntime.resolveAgent ───────────────────────────────────────────
-
-  test("resolveAgent picks correct backend for each platform", () => {
-    const rt = new AcpxRuntime();
-
-    const coderConfig: AgentConfig = {
-      role: "coder",
-      command: "codex",
-      platform: "codex",
-      model: "gpt-4.1",
-      cwd: "/tmp",
-    };
-    const reviewerConfig: AgentConfig = {
-      role: "reviewer",
-      command: "claude",
-      platform: "claude-code",
-      model: "claude-opus-4-6",
-      cwd: "/tmp",
-    };
-
-    expect(rt.resolveAgent(coderConfig)).toBe("codex");
-    expect(rt.resolveAgent(reviewerConfig)).toBe("claude");
   });
 
   // ── SessionOrchestrator → MockRuntime ──────────────────────────────────
@@ -267,20 +241,5 @@ describe("Issue 207 — full platform/model integration", () => {
     expect(escaped).toContain("'\\''");
     expect(escaped.startsWith("'")).toBe(true);
     expect(escaped.endsWith("'")).toBe(true);
-  });
-
-  // ── Constants consistency ──────────────────────────────────────────────
-
-  test("every PLATFORM_TO_AGENT value is in KNOWN_ACPX_AGENTS", () => {
-    for (const agent of Object.values(PLATFORM_TO_AGENT)) {
-      expect(KNOWN_ACPX_AGENTS.has(agent)).toBe(true);
-    }
-  });
-
-  test("all topology platform enum values have a mapping", () => {
-    const topologyPlatforms = ["claude-code", "codex", "gemini", "custom"] as const;
-    for (const p of topologyPlatforms) {
-      expect(PLATFORM_TO_AGENT[p]).toBeDefined();
-    }
   });
 });
