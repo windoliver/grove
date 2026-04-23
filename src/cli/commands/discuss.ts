@@ -75,7 +75,7 @@ export function parseDiscussArgs(args: readonly string[]): DiscussOptions {
   } else if (first !== undefined && CID_PATTERN.test(first)) {
     respondsTo = first;
     message = positionals.slice(1).join(" ");
-  } else if (first !== undefined && first.toLowerCase().startsWith("blake3:")) {
+  } else if (first?.toLowerCase().startsWith("blake3:")) {
     throw new Error(
       `Invalid CID '${first}'. Expected format: blake3:<64 lowercase hex characters> ` +
         "(or pass --root to treat it as literal message text).",

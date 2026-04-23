@@ -55,6 +55,8 @@
     "postinstall": "bun run --cwd packages/ask-user build && bun ./scripts/install-hooks.mjs"
   },
   "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "^0.30.0",
+    "@agentclientprotocol/sdk": "^0.19.1",
     "@grove/ask-user": "workspace:*",
     "@hono/zod-validator": "0.7.6",
     "@modelcontextprotocol/sdk": "^1.27.0",
@@ -64,6 +66,7 @@
     "@opentui/react": "^0.1.87",
     "@xterm/addon-serialize": "0.14.0",
     "@xterm/headless": "6.0.0",
+    "@zed-industries/codex-acp": "^0.11.1",
     "blake3": "^1.0.2",
     "hono": "^4.12.6",
     "proper-lockfile": "^4.1.2",

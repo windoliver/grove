@@ -25,6 +25,18 @@ export interface AgentConfig {
   readonly platform?: AgentPlatformType | undefined;
   /** Model identifier, e.g. "claude-opus-4-6". Passed through to the runtime. */
   readonly model?: string | undefined;
+  /**
+   * MCP servers forwarded to the ACP agent via `session/new`. Lets Grove's
+   * grove_submit_work / grove_submit_review / grove_done tools reach the
+   * agent through ACP in addition to the workspace-local `.mcp.json` /
+   * codex registry paths.
+   */
+  readonly mcpServers?: ReadonlyArray<{
+    readonly name: string;
+    readonly command: string;
+    readonly args?: readonly string[];
+    readonly env?: Readonly<Record<string, string>>;
+  }>;
 }
 
 /**

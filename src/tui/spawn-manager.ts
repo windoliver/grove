@@ -96,6 +96,19 @@ export class SpawnManager {
   // or explicitly reattached for the CURRENT session. Prevents routing to stale
   // sessions from previous sessions that reconcile() found still alive in acpx.
   private readonly routableSessions = new Set<string>();
+  /**
+   * Grove MCP server definition captured the first time writeMcpConfig runs.
+   * Passed to AgentConfig.mcpServers so AcpRuntime forwards it via ACP's
+   * session/new to agents that rely on protocol-level MCP discovery.
+   */
+  private groveMcpServer:
+    | {
+        readonly name: string;
+        readonly command: string;
+        readonly args: readonly string[];
+        readonly env: Readonly<Record<string, string>>;
+      }
+    | undefined;
   private readonly repos: readonly RepoRef[];
   private repoCache: Partial<ResolveRepoOptions> | undefined;
   private resolvedRepos: readonly ResolvedRepo[] = [];
@@ -657,6 +670,13 @@ export class SpawnManager {
           waitForPush,
           platform,
           model,
+          // Forward grove's MCP server so AcpRuntime hands grove_submit_work /
+          // grove_submit_review / grove_done to the agent via ACP's session/new.
+          // Workspace-local .mcp.json / codex registry are still written (see
+          // writeMcpConfig) for CLIs that discover MCP from disk, but adapters
+          // that rely on ACP's mcpServers parameter (e.g. future gemini --acp)
+          // need it on the protocol level.
+          ...(this.groveMcpServer ? { mcpServers: [this.groveMcpServer] } : {}),
         };
         const session = await this.agentRuntime.spawn(roleId, agentConfig);
         this.agentSessions.set(spawnId, session);
@@ -1342,6 +1362,17 @@ export class SpawnManager {
     // Find the grove MCP server: check dist/ first (installed), then src/ (dev)
     const mcpServePath = resolveMcpServePath(projectRoot);
     debugLog("mcpConfig", `selected mcpServePath=${mcpServePath}`);
+
+    // Cache the grove MCP server definition so AgentConfig.mcpServers can
+    // forward it via ACP's session/new. Otherwise AcpRuntime would spawn with
+    // mcpServers=[] and agents that rely on ACP-forwarded MCP (rather than
+    // discovering .mcp.json locally) have no grove_* tools available.
+    this.groveMcpServer = {
+      name: "grove",
+      command: "bun",
+      args: ["run", mcpServePath],
+      env: { ...mcpEnv },
+    };
 
     const mcpConfig = {
       mcpServers: {

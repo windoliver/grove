@@ -1,4 +1,5 @@
-export { AcpxRuntime } from "./acpx-runtime.js";
+export type { AcpRuntimeOptions } from "./acp-runtime.js";
+export { AcpRuntime } from "./acp-runtime.js";
 export type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 export {
   extractChoices,
@@ -189,6 +190,14 @@ export {
   validateArtifactName,
   validateWorkspaceKey,
 } from "./path-safety.js";
+export {
+  ALLOW_ALL_RESOLVER,
+  AuditingResolver,
+  ChainResolver,
+  DENY_ALL_RESOLVER,
+  type PermissionResolver,
+} from "./permission-resolver.js";
+export { RulesResolver } from "./permission-rules.js";
 export type {
   DerivedOutcome,
   PolicyEnforcementResult,
@@ -205,6 +214,7 @@ export type {
   StartupReconcileResult,
 } from "./reconciler.js";
 export { DefaultReconciler } from "./reconciler.js";
+export { selectRuntime } from "./select-runtime.js";
 export type {
   CreateSessionInput,
   Session,

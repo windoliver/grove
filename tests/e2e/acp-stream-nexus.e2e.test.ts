@@ -1,10 +1,9 @@
 /**
- * E2E: spawn a real acpx agent, publish its typed turn stream through a
+ * E2E: spawn a real ACP agent, publish its typed turn stream through a
  * real Nexus instance, and verify delivery via Nexus HTTP.
  *
  * Skipped unless both NEXUS_URL and NEXUS_API_KEY are set so `bun test`
- * stays green on machines without a running Nexus stack. Also gated on
- * AcpxRuntime.isAvailable() (no mock fallback — acpx absence is a skip).
+ * stays green on machines without a running Nexus stack.
  *
  * Requires a Nexus agent whose inbox already exists. Configure via
  * NEXUS_TEST_AGENT_ID; the test uses that agent as both sender and
@@ -17,7 +16,6 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { AcpxRuntime } from "../../src/core/acpx-runtime.js";
 import { publishTurnToNexus } from "../../src/nexus/nexus-agent-publisher.js";
 import { NexusEventBus } from "../../src/nexus/nexus-event-bus.js";
 import { NexusIpcClient } from "../../src/nexus/nexus-ipc-client.js";
@@ -45,9 +43,10 @@ async function inboxCount(agentId: string): Promise<number> {
 
 describe.skipIf(!gated)("acp stream → Nexus E2E", () => {
   test("published turn events land in the recipient's Nexus inbox", async () => {
-    const rt = new AcpxRuntime();
+    const { selectRuntime } = await import("../../src/core/select-runtime.js");
+    const rt = selectRuntime();
     if (!(await rt.isAvailable())) {
-      console.warn("[skip] acpx not installed");
+      console.warn("[skip] runtime not available");
       return;
     }
 
@@ -106,9 +105,10 @@ describe.skipIf(!gated)("acp stream → Nexus E2E", () => {
     // store accumulate typed messages locally without relying on SSE.
     // Nexus HTTP round-trip is still exercised because NexusEventBus.publish
     // both sends via IPC and fires local handlers.
-    const rt = new AcpxRuntime();
+    const { selectRuntime } = await import("../../src/core/select-runtime.js");
+    const rt = selectRuntime();
     if (!(await rt.isAvailable())) {
-      console.warn("[skip] acpx not installed");
+      console.warn("[skip] runtime not available");
       return;
     }
 
