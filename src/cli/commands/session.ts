@@ -23,6 +23,7 @@ import type { AgentTopology } from "../../core/topology.js";
 import { resolveTopology } from "../../core/topology-resolver.js";
 import { SqliteGoalSessionStore } from "../../local/sqlite-goal-session-store.js";
 import { outputJson, outputJsonError } from "../format.js";
+import { buildRepos } from "../utils/build-repos.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -70,6 +71,7 @@ async function sessionStart(args: readonly string[]): Promise<void> {
       preset: { type: "string" },
       roles: { type: "string" },
       runtime: { type: "string", default: "mock" },
+      repo: { type: "string", multiple: true },
     },
     strict: false,
   });
@@ -95,6 +97,19 @@ async function sessionStart(args: readonly string[]): Promise<void> {
 
   const groveRoot = resolve(groveDir, "..");
   const contractPath = join(groveRoot, "GROVE.md");
+
+  const rawRepo = (values.repo as readonly string[] | undefined) ?? [];
+  let repos: readonly import("../../core/repo-ref.js").RepoRef[];
+  try {
+    repos = buildRepos({ rawRepo, cwd: groveRoot });
+  } catch (err) {
+    outputJsonError({
+      code: "VALIDATION_ERROR",
+      message: err instanceof Error ? err.message : String(err),
+    });
+    process.exitCode = 1;
+    return;
+  }
 
   let contract: GroveContract | undefined;
   if (existsSync(contractPath)) {
@@ -257,6 +272,7 @@ async function sessionStart(args: readonly string[]): Promise<void> {
       runtime,
       eventBus,
       projectRoot: groveRoot,
+      repos,
       workspaceBaseDir: join(groveDir, "workspaces"),
       sessionId: session.id,
       contributionStore,

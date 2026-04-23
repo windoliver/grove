@@ -145,6 +145,7 @@ export class SessionService {
       runtime: this.config.runtime,
       eventBus: this.config.eventBus,
       projectRoot: this.config.projectRoot,
+      repos: [{ kind: "local", path: this.config.projectRoot }],
       workspaceBaseDir: this.config.workspaceBaseDir,
       sessionId: this.sessionId,
       workspaceIsolationPolicy: this.config.workspaceIsolationPolicy,

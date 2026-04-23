@@ -13,6 +13,8 @@ import type { AgentProfile } from "./agent-profile.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 import type { GroveContract } from "./contract.js";
 import type { EventBus, GroveEvent } from "./event-bus.js";
+import { type ResolvedRepo, type ResolveRepoOptions, resolveRepo } from "./repo-cache.js";
+import type { RepoRef } from "./repo-ref.js";
 import { resolveBundledSkillsRoot, resolveMcpServePath } from "./resolve-mcp-serve-path.js";
 import { hasValidRoutingSignature } from "./routing-provenance.js";
 import type { AgentPlatformType, AgentRole, AgentTopology } from "./topology.js";
@@ -40,8 +42,23 @@ export interface SessionConfig {
   readonly runtime: AgentRuntime;
   /** The event bus for inter-agent notifications. */
   readonly eventBus: EventBus;
-  /** Working directory for the project. */
+  /**
+   * Grove launcher directory — anchors `.grove/`, `mcpServePath`, the
+   * bundled skills root, workspace-override skills root, and fallback
+   * cwd when no workspace is provisioned. Independent of `repos`.
+   */
   readonly projectRoot: string;
+
+  /**
+   * Repositories the session targets. Length ≥ 1; today exactly 1 is
+   * honored (the forward-compat hook for multi-repo sessions).
+   * Resolved to bare clones via `resolveRepo` at session start.
+   */
+  readonly repos: readonly RepoRef[];
+
+  /** Overrides for cache resolution (tests, CI, explicit cache root). */
+  readonly repoCache?: Partial<ResolveRepoOptions>;
+
   /** Base directory for agent workspaces. */
   readonly workspaceBaseDir: string;
   /** Optional session ID (generated if not provided). */
@@ -119,6 +136,7 @@ export class SessionOrchestrator {
   private readonly seenCids = new Set<string>();
   private contributionPollTimer: ReturnType<typeof setInterval> | null = null;
   private contributionPollStartTimer: ReturnType<typeof setTimeout> | null = null;
+  private resolvedRepos: readonly ResolvedRepo[] = [];
 
   constructor(config: SessionConfig) {
     this.config = config;
@@ -440,6 +458,21 @@ export class SessionOrchestrator {
     };
   }
 
+  private async ensureReposResolved(): Promise<void> {
+    if (this.resolvedRepos.length > 0) return;
+    if (this.config.repos.length === 0) {
+      throw new Error("SessionOrchestrator: repos must be non-empty; pass at least one RepoRef.");
+    }
+    if (this.config.repos.length > 1) {
+      throw new Error(
+        "SessionOrchestrator: multi-repo sessions are not yet supported; pass exactly one repo.",
+      );
+    }
+    this.resolvedRepos = await Promise.all(
+      this.config.repos.map((ref) => resolveRepo(ref, this.config.repoCache ?? {})),
+    );
+  }
+
   /**
    * Provision a workspace for an agent role and run bootstrap.
    *
@@ -452,6 +485,11 @@ export class SessionOrchestrator {
     policy: WorkspaceIsolationPolicy,
     baseBranch?: string,
   ): Promise<{ readonly cwd: string; readonly workspaceMode: WorkspaceMode }> {
+    await this.ensureReposResolved();
+    const resolvedRepo = this.resolvedRepos[0];
+    if (!resolvedRepo) {
+      throw new Error("unreachable: ensureReposResolved did not populate resolvedRepos");
+    }
     let provisioned: ProvisionedWorkspace;
 
     // Step 1: Git worktree — base branch determined by edge type
@@ -460,7 +498,7 @@ export class SessionOrchestrator {
         role: role.name,
         sessionId: this.sessionId,
         baseDir: this.config.workspaceBaseDir,
-        repoRoot: this.config.projectRoot,
+        bareClonePath: resolvedRepo.bareClonePath,
         baseBranch: baseBranch ?? "HEAD",
       });
     } catch (err) {

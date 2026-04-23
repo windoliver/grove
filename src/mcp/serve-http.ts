@@ -18,6 +18,7 @@
  *   DELETE /mcp — Close a session
  */
 
+import { readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -29,6 +30,7 @@ import { TopologyRouter } from "../core/topology-router.js";
 import { createLocalRuntime } from "../local/runtime.js";
 import { parsePort } from "../shared/env.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
+import { parseCurrentSessionPayload, SessionStateReadError } from "./current-session.js";
 import type { McpDeps } from "./deps.js";
 import { createMcpServer } from "./server.js";
 
@@ -187,21 +189,9 @@ interface ScopedDeps {
   readonly close: () => void;
 }
 
-/**
- * Error raised when the current-session state file exists but cannot be
- * parsed or read. Distinct from "file absent" (a valid pre-session state)
- * so the caller can fail closed on corrupted state instead of silently
- * falling through to unscoped stores.
- */
-class SessionStateReadError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "SessionStateReadError";
-  }
-}
-
 const depsCache = new Map<string, ScopedDeps>();
 let lastSessionFileMtimeMs = -1;
+let lastSessionFileSize = -1;
 let lastSessionFileId: string | undefined;
 
 /**
@@ -209,49 +199,62 @@ let lastSessionFileId: string | undefined;
  *
  * Returns `undefined` ONLY when no session has been created yet (env var is
  * unset AND the state file does not exist). Throws `SessionStateReadError`
- * when the state file is present but unreadable or unparseable — callers
- * must decide whether to fail closed (Nexus mode) or tolerate the error.
+ * when the state file is present but unreadable, unparseable, or malformed —
+ * callers must decide whether to fail closed (Nexus mode) or tolerate
+ * the error.
  *
- * Caching semantics: we only update the cached mtime/sessionId after a
+ * Caching semantics: we only update the cached stat/sessionId after a
  * SUCCESSFUL parse. A parse failure leaves the cache untouched so that
- * every subsequent call re-runs the read against the current mtime — the
+ * every subsequent call re-runs the read against the current stat — the
  * caller keeps seeing errors until the writer either fixes the file or
- * produces a new mtime with valid JSON.
+ * produces new file metadata with valid JSON.
  */
 function readCurrentSessionId(): string | undefined {
   const fromEnv = process.env.GROVE_SESSION_ID;
   if (fromEnv) return fromEnv;
-  const { existsSync, readFileSync, statSync } = require("node:fs") as typeof import("node:fs");
   const sessionFile = `${groveDir}/current-session.json`;
-  if (!existsSync(sessionFile)) return undefined;
   let stat: ReturnType<typeof statSync>;
   try {
     stat = statSync(sessionFile);
   } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      // Clear cached stat/id when the file disappears so a subsequent recreate
+      // cannot accidentally match stale metadata from the old file.
+      lastSessionFileMtimeMs = -1;
+      lastSessionFileSize = -1;
+      lastSessionFileId = undefined;
+      return undefined;
+    }
     throw new SessionStateReadError(
       `stat ${sessionFile} failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
-  if (stat.mtimeMs === lastSessionFileMtimeMs && lastSessionFileMtimeMs > 0) {
+  if (
+    stat.mtimeMs === lastSessionFileMtimeMs &&
+    stat.size === lastSessionFileSize &&
+    lastSessionFileMtimeMs > 0
+  ) {
     return lastSessionFileId;
   }
-  let raw: { sessionId?: string };
+  let sessionId: string;
   try {
-    raw = JSON.parse(readFileSync(sessionFile, "utf-8")) as { sessionId?: string };
+    sessionId = parseCurrentSessionPayload(readFileSync(sessionFile, "utf-8"), sessionFile);
   } catch (err) {
     // Do NOT update the cache — leave lastSessionFileMtimeMs/lastSessionFileId
     // untouched so the next call re-reads. Otherwise a single torn-write
     // during a concurrent session switch would poison the cache and every
     // subsequent request would read the stale (or undefined) session id
     // without surfacing the error.
+    if (err instanceof SessionStateReadError) throw err;
     throw new SessionStateReadError(
       `read/parse ${sessionFile} failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
   // Success — commit to cache.
   lastSessionFileMtimeMs = stat.mtimeMs;
-  lastSessionFileId = raw.sessionId;
-  return raw.sessionId;
+  lastSessionFileSize = stat.size;
+  lastSessionFileId = sessionId;
+  return sessionId;
 }
 
 async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDeps> {
@@ -488,7 +491,8 @@ const SESSION_TTL_MS = (() => {
 })();
 
 /** How often the reaper sweeps for stale sessions. Adapts to low TTLs. */
-const REAP_INTERVAL_MS = Math.min(60_000, Math.floor(SESSION_TTL_MS / 3));
+const REAP_INTERVAL_MS = Math.max(50, Math.min(60_000, Math.floor(SESSION_TTL_MS / 3)));
+const KEEPALIVE_INTERVAL_MS = Math.max(25, Math.floor(REAP_INTERVAL_MS / 2));
 
 interface ManagedSession {
   server: McpServer;
@@ -692,7 +696,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     // client is actively waiting for server-initiated messages.
     const keepAlive = setInterval(() => {
       getSession.lastActivity = Date.now();
-    }, REAP_INTERVAL_MS / 2);
+    }, KEEPALIVE_INTERVAL_MS);
     res.on("close", () => clearInterval(keepAlive));
     await getSession.transport.handleRequest(req, res);
   } else if (req.method === "DELETE") {

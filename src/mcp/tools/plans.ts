@@ -41,7 +41,7 @@ const updatePlanInputSchema = z.object({
   tasks: z.array(planTaskSchema).min(1).describe("Updated list of plan tasks"),
   title: z.string().optional().describe("Updated plan title (defaults to previous)"),
   description: z.string().optional().describe("Updated plan description"),
-  tags: z.array(z.string()).optional().default([]).describe("Tags for filtering"),
+  tags: z.array(z.string()).optional().describe("Tags for filtering"),
   agent: agentSchema,
 });
 
@@ -93,7 +93,7 @@ export function registerPlanTools(server: McpServer, deps: McpDeps): void {
           tasks: args.tasks as unknown as readonly PlanTask[],
           ...(args.title !== undefined ? { title: args.title } : {}),
           ...(args.description !== undefined ? { description: args.description } : {}),
-          tags: args.tags,
+          ...(args.tags !== undefined ? { tags: args.tags } : {}),
           agent: args.agent as AgentOverrides,
         },
         opDeps,

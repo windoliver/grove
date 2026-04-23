@@ -122,6 +122,7 @@ describe("Issue 207 — full platform/model integration", () => {
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
       workspaceBaseDir: "/tmp/workspaces",
       workspaceIsolationPolicy: "allow-fallback",
     });
@@ -164,6 +165,7 @@ describe("Issue 207 — full platform/model integration", () => {
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
       workspaceBaseDir: "/tmp/workspaces",
       workspaceIsolationPolicy: "allow-fallback",
     });
@@ -203,6 +205,7 @@ describe("Issue 207 — full platform/model integration", () => {
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
       workspaceBaseDir: "/tmp/workspaces",
       workspaceIsolationPolicy: "allow-fallback",
       profiles: [

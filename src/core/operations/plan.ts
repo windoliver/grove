@@ -135,6 +135,8 @@ export async function updatePlanOperation(
 
   const previousContext = parsePlanContext(previous.context);
   const title = input.title ?? previousContext?.plan_title ?? "Untitled Plan";
+  // Omitted tags keep the previous plan's tags; explicit tags replace.
+  const tags = [...new Set([...(input.tags ?? previous.tags), "plan"])];
 
   const result = await contributeOperation(
     {
@@ -148,7 +150,7 @@ export async function updatePlanOperation(
           relationType: RelationType.DerivesFrom,
         },
       ],
-      tags: [...(input.tags ?? []), "plan"],
+      tags,
       context: buildPlanContext({ title, tasks: input.tasks }),
       ...(input.agent !== undefined ? { agent: input.agent } : {}),
       ...(input.idempotencyKey !== undefined ? { idempotencyKey: input.idempotencyKey } : {}),

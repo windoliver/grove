@@ -169,6 +169,7 @@ function HarnessApp(): React.ReactElement {
       mockProvider,
       mockTmux,
       (err: string) => process.stderr.write(`[harness] spawn error: ${err}\n`),
+      [{ kind: "local" as const, path: tempRoot }],
       undefined,
       groveDir,
     );

@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { execSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { GroveContract } from "./contract.js";
 import { LocalEventBus } from "./local-event-bus.js";
 import { MockRuntime } from "./mock-runtime.js";
@@ -9,6 +13,23 @@ import {
 import { SessionOrchestrator } from "./session-orchestrator.js";
 import { makeContribution } from "./test-helpers.js";
 import type { AgentTopology } from "./topology.js";
+
+/**
+ * Create a temporary bare clone with a seeded initial commit.
+ * Returns the path to the bare repo.
+ */
+function makeFixtureBareRepo(): string {
+  const dir = mkdtempSync(join(tmpdir(), "grove-so-fx-"));
+  execSync("git -c init.defaultBranch=main init --bare", { cwd: dir, stdio: "pipe" });
+  const scratch = mkdtempSync(join(tmpdir(), "grove-so-scratch-"));
+  execSync(`git clone "${dir}" "${scratch}"`, { stdio: "pipe" });
+  execSync('git config user.email "t@t"', { cwd: scratch, stdio: "pipe" });
+  execSync('git config user.name "t"', { cwd: scratch, stdio: "pipe" });
+  execSync("git commit --allow-empty -m init", { cwd: scratch, stdio: "pipe" });
+  execSync("git push origin main", { cwd: scratch, stdio: "pipe" });
+  rmSync(scratch, { recursive: true, force: true });
+  return dir;
+}
 
 function makeContract(overrides?: Partial<GroveContract>): GroveContract {
   return {
@@ -54,6 +75,7 @@ function makeOrchestrator(
     runtime,
     eventBus: bus,
     projectRoot: "/tmp",
+    repos: [{ kind: "local", path: "/tmp" }],
     workspaceBaseDir: "/tmp/workspaces",
     // /tmp is not a git repo, so worktrees always fail in tests.
     // allow-fallback lets agents start despite that.
@@ -142,6 +164,7 @@ describe("SessionOrchestrator", () => {
           runtime,
           eventBus: bus,
           projectRoot: "/tmp",
+          repos: [{ kind: "local", path: "/tmp" }],
           workspaceBaseDir: "/tmp/workspaces",
         }),
     ).toThrow();
@@ -211,6 +234,7 @@ describe("SessionOrchestrator", () => {
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
       workspaceBaseDir: "/tmp/workspaces",
       workspaceIsolationPolicy: "allow-fallback",
       contributionStore,
@@ -246,6 +270,7 @@ describe("SessionOrchestrator", () => {
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
       workspaceBaseDir: "/tmp/workspaces",
       workspaceIsolationPolicy: "allow-fallback",
       contributionStore,
@@ -299,6 +324,7 @@ describe("SessionOrchestrator", () => {
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
       workspaceBaseDir: "/tmp/workspaces",
       workspaceIsolationPolicy: "allow-fallback",
       contributionStore,
@@ -342,6 +368,7 @@ describe("SessionOrchestrator", () => {
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
       workspaceBaseDir: "/tmp/workspaces",
       workspaceIsolationPolicy: "allow-fallback",
       contributionStore,
@@ -388,6 +415,7 @@ describe("SessionOrchestrator", () => {
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
       workspaceBaseDir: "/tmp/workspaces",
       workspaceIsolationPolicy: "allow-fallback",
       contributionStore,
@@ -636,6 +664,7 @@ describe("SessionOrchestrator — platform/model passthrough", () => {
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
       workspaceBaseDir: "/tmp/workspaces",
       workspaceIsolationPolicy: "allow-fallback",
     });
@@ -664,6 +693,7 @@ describe("SessionOrchestrator — platform/model passthrough", () => {
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
       workspaceBaseDir: "/tmp/workspaces",
       workspaceIsolationPolicy: "allow-fallback",
     });
@@ -699,6 +729,7 @@ describe("SessionOrchestrator — platform/model passthrough", () => {
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
       workspaceBaseDir: "/tmp/workspaces",
       workspaceIsolationPolicy: "allow-fallback",
       profiles: [
@@ -746,6 +777,7 @@ describe("SessionOrchestrator — platform/model passthrough", () => {
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
       workspaceBaseDir: "/tmp/workspaces",
       workspaceIsolationPolicy: "allow-fallback",
       profiles: [
@@ -799,6 +831,7 @@ describe("SessionOrchestrator — platform/model passthrough", () => {
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
       workspaceBaseDir: "/tmp/workspaces",
       workspaceIsolationPolicy: "allow-fallback",
     });
@@ -839,6 +872,7 @@ describe("SessionOrchestrator — platform/model passthrough", () => {
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
       workspaceBaseDir: "/tmp/workspaces",
       workspaceIsolationPolicy: "allow-fallback",
     });
@@ -875,6 +909,7 @@ describe("SessionOrchestrator — workspace isolation policy", () => {
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
       workspaceBaseDir: "/tmp/workspaces",
       workspaceIsolationPolicy: "strict",
     });
@@ -906,6 +941,7 @@ describe("SessionOrchestrator — workspace isolation policy", () => {
       runtime,
       eventBus: bus,
       projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
       workspaceBaseDir: "/tmp/workspaces",
       workspaceIsolationPolicy: "allow-fallback",
     });
@@ -927,19 +963,11 @@ describe("SessionOrchestrator — workspace isolation policy", () => {
   });
 
   test("allow-fallback policy: successful worktree produces isolated_worktree mode", async () => {
-    const { execSync } = await import("node:child_process");
-    const { mkdtempSync, rmSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const { join: pathJoin } = await import("node:path");
+    const { rmSync } = await import("node:fs");
 
-    // Create a real git repo with initial commit
-    const repoDir = mkdtempSync(pathJoin(tmpdir(), "grove-so-test-"));
+    // Create a bare clone — matches the new workspace-provisioner contract.
+    const bareRepo = makeFixtureBareRepo();
     try {
-      execSync("git init", { cwd: repoDir, stdio: "pipe" });
-      execSync('git config user.email "test@test.com"', { cwd: repoDir, stdio: "pipe" });
-      execSync('git config user.name "Test"', { cwd: repoDir, stdio: "pipe" });
-      execSync("git commit --allow-empty -m 'init'", { cwd: repoDir, stdio: "pipe" });
-
       const runtime = new MockRuntime();
       const bus = new LocalEventBus();
       const contract = makeContract({
@@ -955,8 +983,9 @@ describe("SessionOrchestrator — workspace isolation policy", () => {
         topology: contract.topology!,
         runtime,
         eventBus: bus,
-        projectRoot: repoDir,
-        workspaceBaseDir: pathJoin(repoDir, ".grove", "workspaces"),
+        projectRoot: bareRepo,
+        repos: [{ kind: "local", path: bareRepo }],
+        workspaceBaseDir: join(tmpdir(), `grove-so-ws-${Date.now()}`),
         workspaceIsolationPolicy: "allow-fallback",
         sessionId: "testsessionid12345678",
       });
@@ -971,32 +1000,22 @@ describe("SessionOrchestrator — workspace isolation policy", () => {
       expect(["isolated_worktree", "bootstrap_failed"]).toContain(agent.workspaceMode.status);
 
       // In either case, the agent cwd is inside the repo, NOT the repo root itself
-      expect(agent.workspaceMode.path).not.toBe(repoDir);
+      expect(agent.workspaceMode.path).not.toBe(bareRepo);
       bus.close();
     } finally {
       try {
-        // Clean up worktrees before removing the directory
-        execSync("git worktree prune", { cwd: repoDir, stdio: "pipe" });
+        rmSync(bareRepo, { recursive: true, force: true });
       } catch {
         // best-effort
       }
-      rmSync(repoDir, { recursive: true, force: true });
     }
   });
 
   test("bootstrap failure with allow-fallback produces bootstrap_failed mode", async () => {
-    const { execSync } = await import("node:child_process");
-    const { mkdtempSync, rmSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const { join: pathJoin } = await import("node:path");
+    const { rmSync } = await import("node:fs");
 
-    const repoDir = mkdtempSync(pathJoin(tmpdir(), "grove-so-bootstrap-test-"));
+    const bareRepo = makeFixtureBareRepo();
     try {
-      execSync("git init", { cwd: repoDir, stdio: "pipe" });
-      execSync('git config user.email "test@test.com"', { cwd: repoDir, stdio: "pipe" });
-      execSync('git config user.name "Test"', { cwd: repoDir, stdio: "pipe" });
-      execSync("git commit --allow-empty -m 'init'", { cwd: repoDir, stdio: "pipe" });
-
       const runtime = new MockRuntime();
       const bus = new LocalEventBus();
       const contract = makeContract({
@@ -1006,9 +1025,6 @@ describe("SessionOrchestrator — workspace isolation policy", () => {
         },
       });
 
-      // Point mcpServePath to a real path that bootstrapWorkspace can resolve.
-      // bootstrapWorkspace writes CLAUDE.md even if MCP serve path is absent,
-      // but writing config may fail when the worktree path itself doesn't exist yet.
       // We just need the worktree creation to succeed and bootstrap to at least attempt.
       const orchestrator = new SessionOrchestrator({
         goal: "Test bootstrap mode",
@@ -1016,8 +1032,9 @@ describe("SessionOrchestrator — workspace isolation policy", () => {
         topology: contract.topology!,
         runtime,
         eventBus: bus,
-        projectRoot: repoDir,
-        workspaceBaseDir: pathJoin(repoDir, ".grove", "workspaces"),
+        projectRoot: bareRepo,
+        repos: [{ kind: "local", path: bareRepo }],
+        workspaceBaseDir: join(tmpdir(), `grove-so-ws-${Date.now()}`),
         workspaceIsolationPolicy: "allow-fallback",
         sessionId: "bootsessionid12345678",
       });
@@ -1031,11 +1048,10 @@ describe("SessionOrchestrator — workspace isolation policy", () => {
       bus.close();
     } finally {
       try {
-        execSync("git worktree prune", { cwd: repoDir, stdio: "pipe" });
+        rmSync(bareRepo, { recursive: true, force: true });
       } catch {
         // best-effort
       }
-      rmSync(repoDir, { recursive: true, force: true });
     }
   });
 

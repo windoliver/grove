@@ -22,16 +22,21 @@ describe("WorkspaceProvisioner", () => {
   let baseDir: string;
 
   beforeEach(() => {
-    // Create a real git repo with an initial commit (set identity for CI)
-    repoDir = mkdtempSync(join(tmpdir(), "grove-wp-test-"));
-    execSync("git init", { cwd: repoDir, stdio: "pipe" });
-    execSync('git config user.email "test@test.com"', { cwd: repoDir, stdio: "pipe" });
-    execSync('git config user.name "Test"', { cwd: repoDir, stdio: "pipe" });
-    execSync("git commit --allow-empty -m 'init'", {
-      cwd: repoDir,
-      stdio: "pipe",
-    });
-    baseDir = join(repoDir, ".grove", "workspaces");
+    // Create a bare clone with a seeded initial commit — matches the new
+    // workspace-provisioner contract (worktrees are added from a bare clone).
+    repoDir = mkdtempSync(join(tmpdir(), "grove-wp-bare-"));
+    execSync("git -c init.defaultBranch=main init --bare", { cwd: repoDir, stdio: "pipe" });
+
+    const scratch = mkdtempSync(join(tmpdir(), "grove-wp-scratch-"));
+    execSync(`git clone "${repoDir}" "${scratch}"`, { stdio: "pipe" });
+    execSync('git config user.email "test@test.com"', { cwd: scratch, stdio: "pipe" });
+    execSync('git config user.name "Test"', { cwd: scratch, stdio: "pipe" });
+    execSync("git commit --allow-empty -m 'init'", { cwd: scratch, stdio: "pipe" });
+    execSync("git branch -M main", { cwd: scratch, stdio: "pipe" });
+    execSync("git push origin main", { cwd: scratch, stdio: "pipe" });
+    rmSync(scratch, { recursive: true, force: true });
+
+    baseDir = join(tmpdir(), `grove-wp-base-${Date.now()}`);
   });
 
   afterEach(() => {
@@ -68,7 +73,7 @@ describe("WorkspaceProvisioner", () => {
       role: "coder",
       sessionId,
       baseDir,
-      repoRoot: repoDir,
+      bareClonePath: repoDir,
     });
 
     expect(result.role).toBe("coder");
@@ -100,7 +105,7 @@ describe("WorkspaceProvisioner", () => {
       role: "reviewer",
       sessionId: "sess00001111222233",
       baseDir,
-      repoRoot: repoDir,
+      bareClonePath: repoDir,
       mcpConfig,
     });
 
@@ -153,7 +158,7 @@ describe("WorkspaceProvisioner", () => {
 
     // Provision first
     const workspaces = await Promise.all(
-      roles.map((role) => provisionWorkspace({ role, sessionId, baseDir, repoRoot: repoDir })),
+      roles.map((role) => provisionWorkspace({ role, sessionId, baseDir, bareClonePath: repoDir })),
     );
 
     // Verify they exist
@@ -186,7 +191,7 @@ describe("WorkspaceProvisioner", () => {
       role: "planner",
       sessionId,
       baseDir,
-      repoRoot: repoDir,
+      bareClonePath: repoDir,
     });
 
     // Path should be <baseDir>/<role>-<first 8 chars of sessionId>
@@ -195,30 +200,26 @@ describe("WorkspaceProvisioner", () => {
   });
 
   test("provisionWorkspace respects baseBranch option", async () => {
-    // Create a new branch in the repo
-    execSync("git checkout -b feature-base", { cwd: repoDir, stdio: "pipe" });
-    execSync("git commit --allow-empty -m 'feature commit'", {
-      cwd: repoDir,
-      stdio: "pipe",
-    });
-    execSync("git checkout -", { cwd: repoDir, stdio: "pipe" });
+    // Create a scratch clone to produce a second branch, then push it to the bare.
+    const scratch = mkdtempSync(join(tmpdir(), "grove-wp-scratch2-"));
+    execSync(`git clone "${repoDir}" "${scratch}"`, { stdio: "pipe" });
+    execSync('git config user.email "t@t"', { cwd: scratch, stdio: "pipe" });
+    execSync('git config user.name "t"', { cwd: scratch, stdio: "pipe" });
+    execSync("git checkout -b feature-base", { cwd: scratch, stdio: "pipe" });
+    execSync("git commit --allow-empty -m 'feature commit'", { cwd: scratch, stdio: "pipe" });
+    execSync("git push origin feature-base", { cwd: scratch, stdio: "pipe" });
+    rmSync(scratch, { recursive: true, force: true });
 
     const result = await provisionWorkspace({
       role: "tester",
       sessionId: "base-branch-session",
       baseDir,
-      repoRoot: repoDir,
+      bareClonePath: repoDir,
       baseBranch: "feature-base",
     });
 
-    // The worktree should exist and its branch should be based on feature-base
     expect(existsSync(result.path)).toBe(true);
-
-    // Verify the commit from feature-base is in the worktree history
-    const log = execSync("git log --oneline", {
-      cwd: result.path,
-      encoding: "utf-8",
-    });
+    const log = execSync("git log --oneline", { cwd: result.path, encoding: "utf-8" });
     expect(log).toContain("feature commit");
   });
 

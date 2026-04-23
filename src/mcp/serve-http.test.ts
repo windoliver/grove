@@ -43,6 +43,7 @@ interface TestServerContext {
   baseUrl: string;
   sessions: Map<string, ManagedSession>;
   reapTimer: ReturnType<typeof setInterval> | undefined;
+  reapIntervalMs: number;
   deps: McpDeps;
 }
 
@@ -60,8 +61,8 @@ function buildTestServer(deps: McpDeps, opts: BuildTestServerOptions): TestServe
   const { sessionTtlMs, authToken, maxBodySize = MAX_MCP_BODY_SIZE } = opts;
   const sessions = new Map<string, ManagedSession>();
 
-  // Mirror production: reap interval = min(60s, TTL/3).
-  const reapIntervalMs = Math.min(60_000, Math.floor(sessionTtlMs / 3));
+  // Mirror production: clamp low TTL values to avoid 0ms timer spin loops.
+  const reapIntervalMs = Math.max(50, Math.min(60_000, Math.floor(sessionTtlMs / 3)));
 
   const reapTimer = setInterval(() => {
     const now = Date.now();
@@ -205,7 +206,7 @@ function buildTestServer(deps: McpDeps, opts: BuildTestServerOptions): TestServe
     });
   });
 
-  return { httpServer, baseUrl: "", sessions, reapTimer, deps };
+  return { httpServer, baseUrl: "", sessions, reapTimer, reapIntervalMs, deps };
 }
 
 /** Start server on port 0 (OS picks a free port) and return the base URL. */
@@ -480,6 +481,22 @@ describe("MCP HTTP session management", () => {
     expect(newSessionId).not.toBe("does-not-exist");
     // A new session should have been created
     expect(ctx.sessions.size).toBeGreaterThan(countBefore);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reap interval guardrails
+// ---------------------------------------------------------------------------
+
+describe("MCP HTTP reap interval", () => {
+  test("clamps very low TTL values to avoid zero-ms timer loops", async () => {
+    const testDeps = await createTestMcpDeps();
+    const tinyCtx = buildTestServer(testDeps.deps, { sessionTtlMs: 1 });
+
+    expect(tinyCtx.reapIntervalMs).toBe(50);
+
+    if (tinyCtx.reapTimer) clearInterval(tinyCtx.reapTimer);
+    await testDeps.cleanup();
   });
 });
 

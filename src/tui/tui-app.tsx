@@ -11,6 +11,7 @@
  * (ScreenManager) or the full boardroom App (advanced mode via Tab).
  */
 
+import { join } from "node:path";
 import { useKeyboard, useRenderer } from "@opentui/react";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AppProps } from "./app.js";
@@ -368,6 +369,9 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
       (msg) => {
         process.stderr.write(`[spawn] ${msg}\n`);
       },
+      groveDir
+        ? [{ kind: "local" as const, path: join(groveDir, "..") }]
+        : [{ kind: "local" as const, path: process.cwd() }],
       sessionStore,
       groveDir,
       agentRuntime,
