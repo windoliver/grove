@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { Condition, ConditionStatus, Entity, EntityMetadata } from "./entity.js";
 
 describe("Entity envelope types", () => {
-  test("Condition has the five required fields", () => {
+  test("Condition has six required fields", () => {
     const c: Condition = {
       type: "Ready",
       status: "True",
