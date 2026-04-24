@@ -1685,8 +1685,18 @@ export class SqliteClaimStore implements ClaimStore {
   };
 
   async listEntities(query?: ClaimQuery): Promise<readonly ClaimEntity[]> {
-    const items = await this.listClaims(query);
-    return items.map((c) => claimToEntity(c));
+    // listEntities semantics: query.status filters on the **effective**
+    // (lease-aware) phase, not the raw persisted phase. So we fetch
+    // without the status filter, project, and then filter on the
+    // projected phase. Consumers that truly want raw persisted phase
+    // should call listClaims() directly.
+    const baseQuery: ClaimQuery | undefined =
+      query === undefined ? undefined : { ...query, status: undefined };
+    const items = await this.listClaims(baseQuery);
+    const entities = items.map((c) => claimToEntity(c));
+    if (query?.status === undefined) return entities;
+    const wanted = Array.isArray(query.status) ? new Set(query.status) : new Set([query.status]);
+    return entities.filter((e) => wanted.has(e.status.phase));
   }
 
   /**

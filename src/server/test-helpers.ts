@@ -258,13 +258,13 @@ export class InMemoryClaimStore implements ClaimStore {
 
   async listEntities(query?: ClaimQuery): Promise<readonly ClaimEntity[]> {
     let results = [...this.claims.values()];
-    if (query?.status) {
-      const statuses = Array.isArray(query.status) ? query.status : [query.status];
-      results = results.filter((c) => statuses.includes(c.status));
-    }
     if (query?.agentId) results = results.filter((c) => c.agent.agentId === query.agentId);
     if (query?.targetRef) results = results.filter((c) => c.targetRef === query.targetRef);
-    return results.map((c) => claimToEntity(c));
+    // Filter on effective (lease-aware) phase after projection.
+    const entities = results.map((c) => claimToEntity(c));
+    if (query?.status === undefined) return entities;
+    const wanted = Array.isArray(query.status) ? new Set(query.status) : new Set([query.status]);
+    return entities.filter((e) => wanted.has(e.status.phase));
   }
 
   close(): void {

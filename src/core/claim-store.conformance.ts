@@ -1007,6 +1007,26 @@ export function runClaimStoreTests(
         expect(found?.metadata.generation).toBe(1);
       });
 
+      test("listEntities({status: Active}) excludes active rows whose lease has expired", async () => {
+        const fresh = makeClaim({ claimId: "rv-fresh", targetRef: "t-rv-fresh" });
+        const stale = makeClaim({
+          claimId: "rv-stale",
+          targetRef: "t-rv-stale",
+          leaseExpiresAt: new Date(Date.now() - 10_000).toISOString(),
+        });
+        await store.createClaim(fresh);
+        await store.createClaim(stale);
+
+        const actives = await store.listEntities({ status: ClaimStatus.Active });
+        const activeIds = actives.map((e) => e.id);
+        expect(activeIds).toContain(fresh.claimId);
+        expect(activeIds).not.toContain(stale.claimId);
+
+        const expireds = await store.listEntities({ status: ClaimStatus.Expired });
+        const expiredIds = expireds.map((e) => e.id);
+        expect(expiredIds).toContain(stale.claimId);
+      });
+
       test("listEntities resourceVersion advances after heartbeat and transition", async () => {
         const claim = makeClaim({ claimId: "rv-claim", targetRef: "rv-target" });
         await store.createClaim(claim);

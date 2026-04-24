@@ -411,8 +411,17 @@ export class NexusClaimStore implements ClaimStore {
   }
 
   async listEntities(query?: ClaimQuery): Promise<readonly ClaimEntity[]> {
-    const items = await this.listClaims(query);
-    return items.map((c) => claimToEntity(c));
+    // query.status filters on the **effective** (lease-aware) phase.
+    // Fetch without status, project, then filter on projected phase so
+    // an active-but-lease-past row is correctly returned as "expired"
+    // and excluded from "active" queries.
+    const baseQuery: ClaimQuery | undefined =
+      query === undefined ? undefined : { ...query, status: undefined };
+    const items = await this.listClaims(baseQuery);
+    const entities = items.map((c) => claimToEntity(c));
+    if (query?.status === undefined) return entities;
+    const wanted = Array.isArray(query.status) ? new Set(query.status) : new Set([query.status]);
+    return entities.filter((e) => wanted.has(e.status.phase));
   }
 
   close(): void {
@@ -427,6 +436,17 @@ export class NexusClaimStore implements ClaimStore {
     const result = await this.readClaimWithEtag(claimId);
     validateTransition(result?.claim, claimId, newStatus);
     const { claim: validClaim, etag } = result as ClaimWithEtag;
+
+    // Belt-and-suspenders: re-check the lease immediately before the
+    // CAS write. Between the first validate and writeClaimCas, the
+    // lease may have passed and another agent may have acquired the
+    // target. We cannot make the lease part of the claim-file CAS
+    // (the lease and the target lock live in separate VFS nodes), but
+    // a second `now` comparison narrows the race to the window between
+    // this check and the RPC. If the lease has expired, we surface the
+    // same StateConflictError as validateTransition so callers have a
+    // single failure mode.
+    validateTransition(validClaim, claimId, newStatus);
 
     const updated: Claim = {
       ...validClaim,
@@ -517,44 +537,61 @@ export class NexusClaimStore implements ClaimStore {
     } catch (err) {
       if (!(err instanceof NexusConflictError)) throw err;
 
-      // Lock conflict — check if the holder is still active.
-      // IMPORTANT: bypass cache to get fresh state (the holder may have
-      // heartbeated recently, and stale cache would cause false expiry).
-      const existingLockData = await withSemaphore(this.semaphore, () =>
-        this.client.read(lockFile),
+      // Lock conflict — read the current lock with its ETag so we can
+      // CAS-replace it atomically (prevents the stale-takeover race
+      // where delete+retry could remove a fresh claimant's lock).
+      // IMPORTANT: bypass the cache to get fresh holder state.
+      const existingMeta = await withSemaphore(this.semaphore, () =>
+        this.client.readWithMeta(lockFile),
       );
-      if (existingLockData !== undefined) {
-        const holderId = decoder.decode(existingLockData);
+      if (existingMeta === undefined) throw err;
+
+      const holderId = decoder.decode(existingMeta.content);
+
+      // Empty bytes => prior owner released via the CAS tombstone path
+      // (see deleteActiveIndex). Treat as "no holder" for takeover.
+      const isEmptyTombstone = holderId.length === 0;
+
+      let holderStale = isEmptyTombstone;
+      if (!holderStale) {
         const holderResult = await this.readClaimWithEtag(holderId);
         const holderClaim = holderResult?.claim;
-
-        // If the holder is gone, expired, released, or completed, clean up and retry
-        if (
+        holderStale =
           holderClaim === undefined ||
           holderClaim.status !== "active" ||
-          new Date(holderClaim.leaseExpiresAt).getTime() < Date.now()
-        ) {
-          // Clean up stale lock and index
-          await safeCleanup(
-            withSemaphore(this.semaphore, () => this.client.delete(lockFile)),
-            "delete stale target lock",
-          );
-          const staleIndexFile = activeClaimIndexPath(this.zoneId, claim.targetRef, holderId);
-          await safeCleanup(
-            withSemaphore(this.semaphore, () => this.client.delete(staleIndexFile)),
-            "delete stale claim index",
-          );
+          new Date(holderClaim.leaseExpiresAt).getTime() < Date.now();
+      }
 
-          // Retry the lock
-          await withSemaphore(this.semaphore, () =>
-            this.client.write(lockFile, encoder.encode(claim.claimId), { ifNoneMatch: "*" }),
-          );
-        } else {
-          // Genuine conflict — another active claim owns this target
-          throw err;
-        }
-      } else {
+      if (!holderStale) {
+        // Genuine conflict — another live active claim owns this target.
         throw err;
+      }
+
+      // Atomic takeover: CAS-replace the lock with our claimId only if
+      // nothing has changed since we read it. If the ETag has moved
+      // (another claimant won the takeover race), surface the original
+      // conflict — the caller will retry claim creation from scratch.
+      try {
+        await withSemaphore(this.semaphore, () =>
+          this.client.write(lockFile, encoder.encode(claim.claimId), {
+            ifMatch: existingMeta.etag,
+          }),
+        );
+      } catch (casErr) {
+        if (casErr instanceof NexusConflictError) throw err;
+        if ((casErr as Error | undefined)?.name === "StateConflictError") throw err;
+        throw casErr;
+      }
+
+      // Only after winning the CAS do we clean up the stale per-claim
+      // index (safe because its filename includes the old holderId,
+      // so it cannot accidentally touch the new owner's index).
+      if (!isEmptyTombstone) {
+        const staleIndexFile = activeClaimIndexPath(this.zoneId, claim.targetRef, holderId);
+        await safeCleanup(
+          withSemaphore(this.semaphore, () => this.client.delete(staleIndexFile)),
+          "delete stale claim index",
+        );
       }
     }
 
