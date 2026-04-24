@@ -129,26 +129,64 @@ export interface ClaimStatusBody {
 
 export type ClaimEntity = Entity<"Claim", ClaimSpec, ClaimStatusBody>;
 
-export function claimToEntity(c: Claim): ClaimEntity {
+/**
+ * Project a Claim into the Entity envelope.
+ *
+ * Conditions are lease-aware: when the persisted `status` is still
+ * `active` but `leaseExpiresAt` is in the past, `Active` collapses to
+ * False with reason `"lease-expired"` and `Expired` raises to True.
+ * This prevents consumers (UI, controllers) from treating a stale row
+ * as a live claim during the window before expireStale() rewrites it.
+ *
+ * The `now` clock is injectable for test determinism. Default is
+ * wall-clock `Date.now()`, which is safe for read-only projection.
+ */
+export function claimToEntity(c: Claim, now: () => number = () => Date.now()): ClaimEntity {
   const rev = c.revision ?? 0;
   const metaGen = c.revision ?? 1;
-  const phase = c.status;
+  const persistedPhase = c.status;
 
-  const mkCond = (type: string, active: boolean, lastTransitionTime: string): Condition => ({
+  const leaseExpiredAt = Date.parse(c.leaseExpiresAt);
+  const leaseIsExpired =
+    Number.isFinite(leaseExpiredAt) && leaseExpiredAt <= now() && persistedPhase === "active";
+
+  // Effective view: if persisted phase is `active` but lease is past,
+  // act as if phase transitioned to `expired` for Entity consumers.
+  const effectivePhase: ClaimPhase = leaseIsExpired ? ("expired" as ClaimPhase) : persistedPhase;
+
+  const mkCond = (
+    type: string,
+    active: boolean,
+    lastTransitionTime: string,
+    reason: string = effectivePhase,
+  ): Condition => ({
     type,
     status: active ? "True" : "False",
     observedGeneration: rev,
     lastTransitionTime,
-    reason: phase,
+    reason,
     message: "",
   });
 
-  const conditions: readonly Condition[] = [
-    mkCond("Active", phase === "active", c.heartbeatAt),
-    mkCond("Expired", phase === "expired", c.leaseExpiresAt),
-    // No completedAt on Claim; heartbeatAt is the last operational timestamp.
-    mkCond("Completed", phase === "completed", c.heartbeatAt),
-  ];
+  const activeCondition: Condition = mkCond(
+    "Active",
+    effectivePhase === "active",
+    c.heartbeatAt,
+    leaseIsExpired ? "lease-expired" : effectivePhase,
+  );
+  const expiredCondition: Condition = mkCond(
+    "Expired",
+    effectivePhase === "expired",
+    c.leaseExpiresAt,
+    leaseIsExpired ? "lease-expired" : effectivePhase,
+  );
+  const completedCondition: Condition = mkCond(
+    "Completed",
+    effectivePhase === "completed",
+    c.heartbeatAt,
+  );
+
+  const conditions: readonly Condition[] = [activeCondition, expiredCondition, completedCondition];
 
   return {
     kind: "Claim",
@@ -161,7 +199,9 @@ export function claimToEntity(c: Claim): ClaimEntity {
       context: c.context,
     },
     status: {
-      phase,
+      // status.phase reflects the persisted row (what a controller last
+      // wrote); conditions express the lease-aware derived view.
+      phase: persistedPhase,
       heartbeatAt: c.heartbeatAt,
       leaseExpiresAt: c.leaseExpiresAt,
       attemptCount: c.attemptCount ?? 0,
@@ -191,9 +231,21 @@ export interface AgentSessionStatusBody {
 
 export type AgentSessionEntity = Entity<"AgentSession", AgentSessionSpec, AgentSessionStatusBody>;
 
+/**
+ * Sentinel used when no real transition timestamp is available.
+ *
+ * AgentSession (pre-Epic D #285) does not record per-phase transition
+ * times. Rather than fabricating `new Date()` on every projection — which
+ * produces phantom changes across `listSessionEntities()` polls while
+ * `resourceVersion` stays at `"0"` — we return an empty string. Callers
+ * that can supply a real timestamp (e.g. a controller that tracks
+ * phase-change events) should pass one via the `now` argument.
+ */
+export const UNKNOWN_TRANSITION_TIME = "";
+
 export function agentSessionToEntity(
   s: AgentSession,
-  now: () => string = () => new Date().toISOString(),
+  now: () => string = () => UNKNOWN_TRANSITION_TIME,
 ): AgentSessionEntity {
   const t = now();
   const phase = s.status;

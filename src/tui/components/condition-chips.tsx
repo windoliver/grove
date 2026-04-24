@@ -13,6 +13,32 @@ export interface ConditionChipsProps {
   readonly conditions: readonly Condition[];
 }
 
+/**
+ * Negative-polarity condition types: "True" means something is wrong.
+ * For these, the color mapping inverts (True=red, False=green) so a
+ * healthy state ("Crashed=False") does not render as an error chip.
+ *
+ * Kept as a simple allowlist rather than a field on Condition so the
+ * chip component stays consumer-only and adapters can keep emitting
+ * plain Condition records.
+ */
+export const NEGATIVE_POLARITY_CONDITION_TYPES: ReadonlySet<string> = new Set([
+  "Crashed",
+  "Expired",
+  "Failed",
+  "Stalled",
+  "Degraded",
+  "Unreachable",
+]);
+
+export function colorForCondition(c: Condition): string {
+  if (c.status === "Unknown") return theme.warning;
+  const isNegative = NEGATIVE_POLARITY_CONDITION_TYPES.has(c.type);
+  const isBad = isNegative ? c.status === "True" : c.status === "False";
+  return isBad ? theme.error : theme.success;
+}
+
+/** @deprecated Use colorForCondition — raw status ignores condition polarity. */
 export function colorForStatus(status: ConditionStatus): string {
   if (status === "True") return theme.success;
   if (status === "False") return theme.error;
@@ -20,7 +46,9 @@ export function colorForStatus(status: ConditionStatus): string {
 }
 
 export function shouldShowReason(c: Condition): boolean {
-  return c.status !== "True" && c.reason.length > 0;
+  const isNegative = NEGATIVE_POLARITY_CONDITION_TYPES.has(c.type);
+  const isHealthy = isNegative ? c.status === "False" : c.status === "True";
+  return !isHealthy && c.reason.length > 0;
 }
 
 export const ConditionChips: React.NamedExoticComponent<ConditionChipsProps> = React.memo(
@@ -33,7 +61,7 @@ export const ConditionChips: React.NamedExoticComponent<ConditionChipsProps> = R
           {conditions.map((c, i) => (
             <React.Fragment key={c.type}>
               {i > 0 && <text> </text>}
-              <text color="white" backgroundColor={colorForStatus(c.status)}>
+              <text color="white" backgroundColor={colorForCondition(c)}>
                 {" "}
                 {c.type}{" "}
               </text>

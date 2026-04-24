@@ -412,7 +412,7 @@ export class NexusClaimStore implements ClaimStore {
 
   async listEntities(query?: ClaimQuery): Promise<readonly ClaimEntity[]> {
     const items = await this.listClaims(query);
-    return items.map(claimToEntity);
+    return items.map((c) => claimToEntity(c));
   }
 
   close(): void {

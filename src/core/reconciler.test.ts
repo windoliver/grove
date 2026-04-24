@@ -62,7 +62,7 @@ function makeClaimStore(overrides?: {
         result = result.filter((c) => statuses.includes(c.status));
       }
       if (query?.agentId) result = result.filter((c) => c.agent.agentId === query.agentId);
-      return result.map(claimToEntity);
+      return result.map((c) => claimToEntity(c));
     },
     close: () => undefined,
   };

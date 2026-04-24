@@ -264,7 +264,7 @@ export class InMemoryClaimStore implements ClaimStore {
     }
     if (query?.agentId) results = results.filter((c) => c.agent.agentId === query.agentId);
     if (query?.targetRef) results = results.filter((c) => c.targetRef === query.targetRef);
-    return results.map(claimToEntity);
+    return results.map((c) => claimToEntity(c));
   }
 
   close(): void {
