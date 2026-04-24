@@ -15,7 +15,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { mkdir, readdir, rm, utimes } from "node:fs/promises";
+import { lstat, mkdir, readdir, rm, symlink, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -554,6 +554,32 @@ describe("LocalWorkspaceManager implementation", () => {
       const file = Bun.file(join(info.workspacePath, "file.txt"));
       expect(await file.text()).toBe("data");
     } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("checkout recreates an active workspace path replaced by a symlink", async () => {
+    const ctx = await createTestContext();
+    const outsideDir = join(tmpdir(), `grove-workspace-symlink-${Date.now()}`);
+    try {
+      const contribution = await ctx.createContributionWithArtifacts({
+        "file.txt": new TextEncoder().encode("data"),
+      });
+      const agent = makeAgent({ agentId: "symlink-agent" });
+
+      const first = await ctx.manager.checkout(contribution.cid, { agent });
+      await mkdir(outsideDir, { recursive: true });
+      await Bun.write(join(outsideDir, "file.txt"), "outside");
+
+      await rm(first.workspacePath, { recursive: true, force: true });
+      await symlink(outsideDir, first.workspacePath);
+
+      const second = await ctx.manager.checkout(contribution.cid, { agent });
+      const stats = await lstat(second.workspacePath);
+      expect(stats.isSymbolicLink()).toBe(false);
+      expect(await Bun.file(join(second.workspacePath, "file.txt")).text()).toBe("data");
+    } finally {
+      await rm(outsideDir, { recursive: true, force: true });
       await ctx.cleanup();
     }
   });

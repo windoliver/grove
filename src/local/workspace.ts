@@ -16,7 +16,7 @@
 import type { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { copyFile, mkdir, rename, rm, stat } from "node:fs/promises";
+import { copyFile, lstat, mkdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { HookEntry, HookRunner, HooksConfig } from "../core/hooks.js";
@@ -24,6 +24,7 @@ import type { AgentIdentity, JsonValue } from "../core/models.js";
 import {
   assertWithinBoundary,
   ensureArtifactParentDir,
+  PathContainmentError,
   sanitizeCidForPath,
   validateArtifactName,
   validateWorkspaceKey,
@@ -145,9 +146,7 @@ export class LocalWorkspaceManager implements WorkspaceManager {
     validateWorkspaceKey(agentId);
 
     // Compute workspace directory path — scoped by CID + agent
-    const cidHex = sanitizeCidForPath(cid);
-    const workspacePath = join(this.workspacesRoot, `${cidHex}-${agentId}`);
-    const lockPath = `${workspacePath}.lock`;
+    const { workspacePath, lockPath } = this.checkoutPaths(cid, agentId);
 
     // Check for existing active workspace for this (cid, agent) pair
     const existing = await this.getReadyWorkspace(cid, agentId);
@@ -229,6 +228,9 @@ export class LocalWorkspaceManager implements WorkspaceManager {
       // Run after_checkout before publishing the workspace as active so
       // concurrent callers do not race ahead of workspace-local setup.
       await this.runHook("after_checkout", workspacePath);
+      if (!(await this.validateReadyWorkspacePath(workspacePath))) {
+        throw new Error(`Workspace '${workspacePath}' became invalid during checkout`);
+      }
 
       // Record workspace in SQLite only after the workspace is fully ready.
       this.upsertWorkspaceRow({
@@ -300,46 +302,66 @@ export class LocalWorkspaceManager implements WorkspaceManager {
   async cleanWorkspace(cid: string, agentId: string): Promise<boolean> {
     const workspace = await this.getWorkspace(cid, agentId);
     if (workspace === undefined) return false;
+    validateWorkspaceKey(agentId);
 
-    // Check if there's an active claim for this CID
-    const activeClaim = this.db
-      .prepare(
-        `SELECT claim_id FROM claims
-         WHERE target_ref = ? AND agent_id = ? AND status = 'active'
-         AND lease_expires_at >= ?`,
-      )
-      .get(cid, agentId, new Date().toISOString()) as { claim_id: string } | null;
-
-    if (activeClaim !== null) {
-      throw new Error(
-        `Cannot clean workspace for '${cid}': claim '${activeClaim.claim_id}' is still active`,
-      );
-    }
-
-    // Re-validate workspace path is under our workspace root before rm()
-    // to protect against corrupted/tampered SQLite rows pointing outside Grove
+    // Validate before deriving the lock path from the persisted row.
     await assertWithinBoundary(workspace.workspacePath, this.workspacesRoot);
+    const lockPath = `${workspace.workspacePath}.lock`;
 
-    // Remove the directory
-    try {
-      await rm(workspace.workspacePath, { recursive: true, force: true });
-    } catch (err) {
-      // Directory might already be gone — that's fine
-      if (
-        !(err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT")
-      ) {
-        throw err;
-      }
+    while (!(await this.tryAcquireWorkspaceLock(lockPath))) {
+      await this.waitForWorkspaceLockRelease(lockPath);
     }
 
-    // Update status in SQLite
-    this.db
-      .prepare(
-        "UPDATE workspaces SET status = ?, last_activity_at = ? WHERE cid = ? AND agent_id = ?",
-      )
-      .run(WorkspaceStatus.Cleaned, new Date().toISOString(), cid, agentId);
+    try {
+      const current = await this.getWorkspace(cid, agentId);
+      if (current === undefined) return false;
 
-    return true;
+      // Check if there's an active claim for this CID
+      const activeClaim = this.db
+        .prepare(
+          `SELECT claim_id FROM claims
+           WHERE target_ref = ? AND agent_id = ? AND status = 'active'
+           AND lease_expires_at >= ?`,
+        )
+        .get(cid, agentId, new Date().toISOString()) as { claim_id: string } | null;
+
+      if (activeClaim !== null) {
+        throw new Error(
+          `Cannot clean workspace for '${cid}': claim '${activeClaim.claim_id}' is still active`,
+        );
+      }
+
+      // Re-validate workspace path is under our workspace root before rm()
+      // to protect against corrupted/tampered SQLite rows pointing outside Grove
+      await assertWithinBoundary(current.workspacePath, this.workspacesRoot);
+
+      // Remove the directory
+      try {
+        await rm(current.workspacePath, { recursive: true, force: true });
+      } catch (err) {
+        // Directory might already be gone — that's fine
+        if (
+          !(
+            err instanceof Error &&
+            "code" in err &&
+            (err as NodeJS.ErrnoException).code === "ENOENT"
+          )
+        ) {
+          throw err;
+        }
+      }
+
+      // Update status in SQLite
+      this.db
+        .prepare(
+          "UPDATE workspaces SET status = ?, last_activity_at = ? WHERE cid = ? AND agent_id = ?",
+        )
+        .run(WorkspaceStatus.Cleaned, new Date().toISOString(), cid, agentId);
+
+      return true;
+    } finally {
+      await this.releaseWorkspaceLock(lockPath);
+    }
   }
 
   async markStale(options: StaleOptions): Promise<readonly WorkspaceInfo[]> {
@@ -509,11 +531,15 @@ export class LocalWorkspaceManager implements WorkspaceManager {
     cid: string,
     agentId: string,
   ): Promise<WorkspaceInfo | undefined> {
+    const { workspacePath } = this.checkoutPaths(cid, agentId);
     const existing = await this.getWorkspace(cid, agentId);
     if (existing === undefined || existing.status !== WorkspaceStatus.Active) {
       return undefined;
     }
-    return (await this.pathExists(existing.workspacePath)) ? existing : undefined;
+    if (existing.workspacePath !== workspacePath) {
+      return undefined;
+    }
+    return (await this.validateReadyWorkspacePath(existing.workspacePath)) ? existing : undefined;
   }
 
   private async pathExists(path: string): Promise<boolean> {
@@ -561,33 +587,38 @@ export class LocalWorkspaceManager implements WorkspaceManager {
       if (!(await this.pathExists(lockPath))) {
         return undefined;
       }
-      const owner = await this.readWorkspaceLockOwner(lockPath);
-      if (owner !== undefined && !this.isProcessAlive(owner.pid)) {
-        await this.releaseWorkspaceLock(lockPath);
+      if (await this.tryRecoverStaleWorkspaceLock(lockPath)) {
         return undefined;
-      }
-      if (owner === undefined) {
-        const ageMs = await this.getLockAgeMs(lockPath);
-        if (ageMs !== undefined && ageMs >= WORKSPACE_LOCK_OWNER_GRACE_MS) {
-          await this.releaseWorkspaceLock(lockPath);
-          return undefined;
-        }
       }
       await sleep(WORKSPACE_LOCK_POLL_MS);
     }
-    const owner = await this.readWorkspaceLockOwner(lockPath);
-    if (owner !== undefined && !this.isProcessAlive(owner.pid)) {
-      await this.releaseWorkspaceLock(lockPath);
+    if (!(await this.pathExists(lockPath))) {
       return undefined;
     }
-    if (owner === undefined) {
-      const ageMs = await this.getLockAgeMs(lockPath);
-      if (ageMs !== undefined && ageMs >= WORKSPACE_LOCK_OWNER_GRACE_MS) {
-        await this.releaseWorkspaceLock(lockPath);
-        return undefined;
-      }
+    if (await this.tryRecoverStaleWorkspaceLock(lockPath)) {
+      return undefined;
     }
     throw new Error(`Timed out waiting for workspace checkout for '${cid}' (agent '${agentId}')`);
+  }
+
+  private async waitForWorkspaceLockRelease(lockPath: string): Promise<void> {
+    const deadline = Date.now() + WORKSPACE_LOCK_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (!(await this.pathExists(lockPath))) {
+        return;
+      }
+      if (await this.tryRecoverStaleWorkspaceLock(lockPath)) {
+        return;
+      }
+      await sleep(WORKSPACE_LOCK_POLL_MS);
+    }
+    if (!(await this.pathExists(lockPath))) {
+      return;
+    }
+    if (await this.tryRecoverStaleWorkspaceLock(lockPath)) {
+      return;
+    }
+    throw new Error(`Timed out waiting for workspace lock '${lockPath}'`);
   }
 
   private async releaseWorkspaceLock(lockPath: string): Promise<void> {
@@ -631,6 +662,48 @@ export class LocalWorkspaceManager implements WorkspaceManager {
     } catch (err) {
       return !isErrnoCode(err, "ESRCH");
     }
+  }
+
+  private checkoutPaths(
+    cid: string,
+    agentId: string,
+  ): { readonly workspacePath: string; readonly lockPath: string } {
+    const cidHex = sanitizeCidForPath(cid);
+    const workspacePath = join(this.workspacesRoot, `${cidHex}-${agentId}`);
+    return { workspacePath, lockPath: `${workspacePath}.lock` };
+  }
+
+  private async validateReadyWorkspacePath(workspacePath: string): Promise<boolean> {
+    try {
+      const entry = await lstat(workspacePath);
+      if (entry.isSymbolicLink() || !entry.isDirectory()) {
+        return false;
+      }
+      await assertWithinBoundary(workspacePath, this.workspacesRoot);
+      return true;
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT") || err instanceof PathContainmentError) {
+        return false;
+      }
+      throw err;
+    }
+  }
+
+  private async tryRecoverStaleWorkspaceLock(lockPath: string): Promise<boolean> {
+    const owner = await this.readWorkspaceLockOwner(lockPath);
+    if (owner !== undefined) {
+      if (!this.isProcessAlive(owner.pid)) {
+        await this.releaseWorkspaceLock(lockPath);
+        return true;
+      }
+      return false;
+    }
+    const ageMs = await this.getLockAgeMs(lockPath);
+    if (ageMs !== undefined && ageMs >= WORKSPACE_LOCK_OWNER_GRACE_MS) {
+      await this.releaseWorkspaceLock(lockPath);
+      return true;
+    }
+    return false;
   }
 
   /** Insert or update a workspace row in SQLite. */

@@ -652,6 +652,9 @@ function buildFilteredQuery(opts: BuildFilteredQueryOptions): BuiltQuery {
   // Uses intersecting EXISTS subqueries for indexed point lookups on (tag, cid).
   if (query?.tags !== undefined && query.tags.length > 0) {
     const uniqueTags = [...new Set(query.tags)];
+    if (uniqueTags.length > SQLITE_BIND_LIMIT) {
+      throw new Error(`Too many tag filters: maximum ${SQLITE_BIND_LIMIT}`);
+    }
     for (const tag of uniqueTags) {
       conditions.push(
         `EXISTS (SELECT 1 FROM contribution_tags ct WHERE ct.cid = c.cid AND ct.tag = ?)`,

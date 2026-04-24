@@ -542,4 +542,12 @@ describe("putMany with rich contributions", () => {
       expect(result.get(contribution.cid)?.cid).toBe(contribution.cid);
     }
   });
+
+  test("list rejects tag filters beyond the SQLite-safe limit", async () => {
+    const tooManyTags = Array.from(
+      { length: sqliteBindLimit(db) + 1 },
+      (_, index) => `tag-${index}`,
+    );
+    await expect(store.list({ tags: tooManyTags })).rejects.toThrow("Too many tag filters");
+  });
 });
