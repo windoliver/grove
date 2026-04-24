@@ -1801,11 +1801,33 @@ export class SqliteClaimStore implements ClaimStore {
 // ---------------------------------------------------------------------------
 
 /**
- * Combined store that implements both ContributionStore and ClaimStore.
+ * Combined-facade store backed by a single SQLite file.
  *
- * Delegates to SqliteContributionStore and SqliteClaimStore internally.
- * Provided for backwards compatibility — prefer createSqliteStores() for
- * new code.
+ * **Type contract changed in #287.** The facade now formally implements
+ * `ContributionStore` only. It exposes the split sub-stores as public
+ * readonly properties (`store.contributions`, `store.claims`) for callers
+ * that need a kind-specific interface:
+ *
+ * ```ts
+ * const store = new SqliteStore(dbPath);
+ *
+ * // Works — SqliteStore satisfies ContributionStore:
+ * const cs: ContributionStore = store;
+ *
+ * // Does NOT typecheck anymore — use store.claims instead:
+ * // const csm: ClaimStore = store;                     // error
+ * const csm: ClaimStore = store.claims;                 // correct
+ * ```
+ *
+ * Why: `ContributionStore.listEntities()` and `ClaimStore.listEntities()`
+ * share a method name but return different `Entity` kinds. A combined
+ * facade that implements both cannot dispatch a bare `listEntities()`
+ * call unambiguously. The split sub-stores each have a single, well-typed
+ * `listEntities()`. All other ClaimStore methods (createClaim, heartbeat,
+ * release, complete, …) remain available on the facade for convenience.
+ *
+ * Prefer `createSqliteStores(dbPath)` for new code — it returns a
+ * `{ contributionStore, claimStore, close }` bundle directly.
  */
 export class SqliteStore implements ContributionStore {
   readonly storeIdentity: string;
