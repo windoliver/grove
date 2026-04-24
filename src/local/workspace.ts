@@ -14,6 +14,7 @@
  */
 
 import type { Database } from "bun:sqlite";
+import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { copyFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -44,6 +45,10 @@ import type { FsCas } from "./fs-cas.js";
 // ---------------------------------------------------------------------------
 
 const WORKSPACES_DIR = "workspaces";
+const WORKSPACE_LOCK_POLL_MS = 25;
+const WORKSPACE_LOCK_TIMEOUT_MS = 300_000;
+const WORKSPACE_LOCK_OWNER_FILE = "owner.json";
+const WORKSPACE_LOCK_OWNER_GRACE_MS = 5_000;
 
 // ---------------------------------------------------------------------------
 // SQLite workspace table operations
@@ -77,6 +82,18 @@ function rowToWorkspaceInfo(row: WorkspaceRow): WorkspaceInfo {
     };
   }
   return base;
+}
+
+function isErrnoCode(err: unknown, code: string): boolean {
+  return err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === code;
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+interface WorkspaceLockOwner {
+  readonly pid: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -127,9 +144,14 @@ export class LocalWorkspaceManager implements WorkspaceManager {
     // Validate agentId for safe use as a directory name
     validateWorkspaceKey(agentId);
 
+    // Compute workspace directory path — scoped by CID + agent
+    const cidHex = sanitizeCidForPath(cid);
+    const workspacePath = join(this.workspacesRoot, `${cidHex}-${agentId}`);
+    const lockPath = `${workspacePath}.lock`;
+
     // Check for existing active workspace for this (cid, agent) pair
-    const existing = await this.getWorkspace(cid, agentId);
-    if (existing !== undefined && existing.status === WorkspaceStatus.Active) {
+    const existing = await this.getReadyWorkspace(cid, agentId);
+    if (existing !== undefined) {
       return existing;
     }
 
@@ -139,89 +161,99 @@ export class LocalWorkspaceManager implements WorkspaceManager {
       throw new Error(`Contribution '${cid}' not found`);
     }
 
-    // Compute workspace directory path — scoped by CID + agent
-    const cidHex = sanitizeCidForPath(cid);
-    const workspacePath = join(this.workspacesRoot, `${cidHex}-${agentId}`);
-
     // Ensure workspaces root exists
     await mkdir(this.workspacesRoot, { recursive: true });
 
-    // Transactional materialization: temp dir → rename
-    const tmpDir = `${workspacePath}.tmp.${Date.now()}`;
-    await mkdir(tmpDir, { recursive: true });
-
-    try {
-      // Materialize each artifact from CAS into the temp directory
-      for (const [name, contentHash] of Object.entries(contribution.artifacts)) {
-        // Validate artifact name to prevent path traversal
-        validateArtifactName(name);
-
-        const destPath = join(tmpDir, name);
-
-        // Verify the destination stays within the temp directory
-        await assertWithinBoundary(destPath, tmpDir);
-
-        // Create parent directories for nested artifact paths (e.g., src/main.py)
-        await ensureArtifactParentDir(name, tmpDir);
-
-        // Copy from CAS using FICLONE (CoW when filesystem supports it)
-        const found = await this.casGetToFile(contentHash, destPath);
-        if (!found) {
-          throw new Error(`Artifact '${name}' with hash '${contentHash}' not found in CAS`);
-        }
+    // Serialize materialization per (cid, agentId). Without this, concurrent
+    // checkouts can both race through temp-dir creation and one caller can
+    // delete a workspace the other already returned.
+    while (!(await this.tryAcquireWorkspaceLock(lockPath))) {
+      const ready = await this.waitForReadyWorkspace(cid, agentId, lockPath);
+      if (ready !== undefined) {
+        return ready;
       }
-
-      // Atomic placement: rename temp dir to final location
-      // If the workspace directory already exists (e.g., from a cleaned workspace),
-      // remove it first
-      try {
-        await stat(workspacePath);
-        await rm(workspacePath, { recursive: true, force: true });
-      } catch (err) {
-        if (
-          !(
-            err instanceof Error &&
-            "code" in err &&
-            (err as NodeJS.ErrnoException).code === "ENOENT"
-          )
-        ) {
-          throw err;
-        }
-      }
-      await rename(tmpDir, workspacePath);
-    } catch (err) {
-      // Clean up temp directory on failure
-      await safeCleanup(rm(tmpDir, { recursive: true, force: true }), "remove temp workspace dir", {
-        silent: true,
-      });
-      throw err;
     }
 
-    // Record workspace in SQLite
-    const now = new Date().toISOString();
-    this.upsertWorkspaceRow({
-      cid,
-      agentId,
-      workspacePath,
-      agent: options.agent,
-      status: WorkspaceStatus.Active,
-      createdAt: now,
-      lastActivityAt: now,
-      context: options.context,
-    });
+    try {
+      // Another caller may have completed the checkout while we were waiting
+      // for the lock; return the ready workspace instead of rematerializing it.
+      const ready = await this.getReadyWorkspace(cid, agentId);
+      if (ready !== undefined) {
+        return ready;
+      }
 
-    // Run after_checkout hook if configured
-    await this.runHook("after_checkout", workspacePath);
+      // Transactional materialization: temp dir → rename
+      const tmpDir = `${workspacePath}.tmp.${Date.now()}.${randomBytes(4).toString("hex")}`;
+      await mkdir(tmpDir, { recursive: true });
 
-    return {
-      cid,
-      workspacePath,
-      agent: options.agent,
-      status: WorkspaceStatus.Active,
-      createdAt: now,
-      lastActivityAt: now,
-      ...(options.context !== undefined && { context: options.context }),
-    };
+      try {
+        // Materialize each artifact from CAS into the temp directory
+        for (const [name, contentHash] of Object.entries(contribution.artifacts)) {
+          // Validate artifact name to prevent path traversal
+          validateArtifactName(name);
+
+          const destPath = join(tmpDir, name);
+
+          // Verify the destination stays within the temp directory
+          await assertWithinBoundary(destPath, tmpDir);
+
+          // Create parent directories for nested artifact paths (e.g., src/main.py)
+          await ensureArtifactParentDir(name, tmpDir);
+
+          // Copy from CAS using FICLONE (CoW when filesystem supports it)
+          const found = await this.casGetToFile(contentHash, destPath);
+          if (!found) {
+            throw new Error(`Artifact '${name}' with hash '${contentHash}' not found in CAS`);
+          }
+        }
+
+        // Atomic placement: rename temp dir to final location.
+        // We only remove an existing path while holding the per-workspace lock.
+        if (await this.pathExists(workspacePath)) {
+          await rm(workspacePath, { recursive: true, force: true });
+        }
+        await rename(tmpDir, workspacePath);
+      } catch (err) {
+        // Clean up temp directory on failure
+        await safeCleanup(
+          rm(tmpDir, { recursive: true, force: true }),
+          "remove temp workspace dir",
+          {
+            silent: true,
+          },
+        );
+        throw err;
+      }
+
+      const now = new Date().toISOString();
+      // Run after_checkout before publishing the workspace as active so
+      // concurrent callers do not race ahead of workspace-local setup.
+      await this.runHook("after_checkout", workspacePath);
+
+      // Record workspace in SQLite only after the workspace is fully ready.
+      this.upsertWorkspaceRow({
+        cid,
+        agentId,
+        workspacePath,
+        agent: options.agent,
+        status: WorkspaceStatus.Active,
+        createdAt: now,
+        lastActivityAt: now,
+        context: options.context,
+      });
+
+      return {
+        cid,
+        workspacePath,
+        agent: options.agent,
+        status: WorkspaceStatus.Active,
+        createdAt: now,
+        lastActivityAt: now,
+        ...(options.context !== undefined && { context: options.context }),
+      };
+    } finally {
+      await this.releaseWorkspaceLock(lockPath);
+    }
   }
 
   async getWorkspace(cid: string, agentId: string): Promise<WorkspaceInfo | undefined> {
@@ -249,7 +281,7 @@ export class LocalWorkspaceManager implements WorkspaceManager {
       params.push(query.status);
     }
     if (query?.agentId !== undefined) {
-      conditions.push("json_extract(agent_json, '$.agentId') = ?");
+      conditions.push("agent_id = ?");
       params.push(query.agentId);
     }
     if (conditions.length > 0) {
@@ -273,10 +305,10 @@ export class LocalWorkspaceManager implements WorkspaceManager {
     const activeClaim = this.db
       .prepare(
         `SELECT claim_id FROM claims
-         WHERE target_ref = ? AND status = 'active'
+         WHERE target_ref = ? AND agent_id = ? AND status = 'active'
          AND lease_expires_at >= ?`,
       )
-      .get(cid, new Date().toISOString()) as { claim_id: string } | null;
+      .get(cid, agentId, new Date().toISOString()) as { claim_id: string } | null;
 
     if (activeClaim !== null) {
       throw new Error(
@@ -354,7 +386,11 @@ export class LocalWorkspaceManager implements WorkspaceManager {
 
     // Idempotent: return existing active workspace
     const existing = await this.getWorkspace(key, agentId);
-    if (existing !== undefined && existing.status === WorkspaceStatus.Active) {
+    if (
+      existing !== undefined &&
+      existing.status === WorkspaceStatus.Active &&
+      (await this.pathExists(existing.workspacePath))
+    ) {
       return existing;
     }
 
@@ -466,6 +502,134 @@ export class LocalWorkspaceManager implements WorkspaceManager {
         return false;
       }
       throw err;
+    }
+  }
+
+  private async getReadyWorkspace(
+    cid: string,
+    agentId: string,
+  ): Promise<WorkspaceInfo | undefined> {
+    const existing = await this.getWorkspace(cid, agentId);
+    if (existing === undefined || existing.status !== WorkspaceStatus.Active) {
+      return undefined;
+    }
+    return (await this.pathExists(existing.workspacePath)) ? existing : undefined;
+  }
+
+  private async pathExists(path: string): Promise<boolean> {
+    try {
+      await stat(path);
+      return true;
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return false;
+      throw err;
+    }
+  }
+
+  private async tryAcquireWorkspaceLock(lockPath: string): Promise<boolean> {
+    try {
+      await mkdir(lockPath);
+      await Bun.write(
+        join(lockPath, WORKSPACE_LOCK_OWNER_FILE),
+        JSON.stringify({ pid: process.pid } satisfies WorkspaceLockOwner),
+      );
+      return true;
+    } catch (err) {
+      if (isErrnoCode(err, "EEXIST")) return false;
+      await safeCleanup(
+        rm(lockPath, { recursive: true, force: true }),
+        "remove failed workspace lock",
+        {
+          silent: true,
+        },
+      );
+      throw err;
+    }
+  }
+
+  private async waitForReadyWorkspace(
+    cid: string,
+    agentId: string,
+    lockPath: string,
+  ): Promise<WorkspaceInfo | undefined> {
+    const deadline = Date.now() + WORKSPACE_LOCK_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      const ready = await this.getReadyWorkspace(cid, agentId);
+      if (ready !== undefined) {
+        return ready;
+      }
+      if (!(await this.pathExists(lockPath))) {
+        return undefined;
+      }
+      const owner = await this.readWorkspaceLockOwner(lockPath);
+      if (owner !== undefined && !this.isProcessAlive(owner.pid)) {
+        await this.releaseWorkspaceLock(lockPath);
+        return undefined;
+      }
+      if (owner === undefined) {
+        const ageMs = await this.getLockAgeMs(lockPath);
+        if (ageMs !== undefined && ageMs >= WORKSPACE_LOCK_OWNER_GRACE_MS) {
+          await this.releaseWorkspaceLock(lockPath);
+          return undefined;
+        }
+      }
+      await sleep(WORKSPACE_LOCK_POLL_MS);
+    }
+    const owner = await this.readWorkspaceLockOwner(lockPath);
+    if (owner !== undefined && !this.isProcessAlive(owner.pid)) {
+      await this.releaseWorkspaceLock(lockPath);
+      return undefined;
+    }
+    if (owner === undefined) {
+      const ageMs = await this.getLockAgeMs(lockPath);
+      if (ageMs !== undefined && ageMs >= WORKSPACE_LOCK_OWNER_GRACE_MS) {
+        await this.releaseWorkspaceLock(lockPath);
+        return undefined;
+      }
+    }
+    throw new Error(`Timed out waiting for workspace checkout for '${cid}' (agent '${agentId}')`);
+  }
+
+  private async releaseWorkspaceLock(lockPath: string): Promise<void> {
+    await safeCleanup(rm(lockPath, { recursive: true, force: true }), "remove workspace lock dir", {
+      silent: true,
+    });
+  }
+
+  private async readWorkspaceLockOwner(lockPath: string): Promise<WorkspaceLockOwner | undefined> {
+    try {
+      const text = await Bun.file(join(lockPath, WORKSPACE_LOCK_OWNER_FILE)).text();
+      const parsed = JSON.parse(text) as { pid?: unknown };
+      if (typeof parsed.pid === "number" && Number.isInteger(parsed.pid) && parsed.pid > 0) {
+        return { pid: parsed.pid };
+      }
+      return undefined;
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT") || err instanceof SyntaxError) {
+        return undefined;
+      }
+      throw err;
+    }
+  }
+
+  private async getLockAgeMs(lockPath: string): Promise<number | undefined> {
+    try {
+      const lockStats = await stat(lockPath);
+      return Date.now() - lockStats.mtimeMs;
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) {
+        return undefined;
+      }
+      throw err;
+    }
+  }
+
+  private isProcessAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (err) {
+      return !isErrnoCode(err, "ESRCH");
     }
   }
 

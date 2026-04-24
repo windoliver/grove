@@ -15,10 +15,11 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { mkdir, readdir, rm } from "node:fs/promises";
+import { mkdir, readdir, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import type { HookRunner } from "../core/hooks.js";
 import { createContribution } from "../core/manifest.js";
 import type { ContributionInput } from "../core/models.js";
 import { ContributionKind, ContributionMode } from "../core/models.js";
@@ -35,7 +36,12 @@ import { LocalWorkspaceManager } from "./workspace.js";
 // Factory for conformance tests
 // ---------------------------------------------------------------------------
 
-async function createTestContext(): Promise<WorkspaceTestContext> {
+type LocalWorkspaceTestContext = WorkspaceTestContext & {
+  readonly createActiveClaimForAgent: (targetRef: string, agentId: string) => Promise<void>;
+  readonly workspacesRoot: string;
+};
+
+async function createTestContext(): Promise<LocalWorkspaceTestContext> {
   const dir = join(tmpdir(), `grove-workspace-test-${Date.now()}`);
   await mkdir(dir, { recursive: true });
 
@@ -59,9 +65,24 @@ async function createTestContext(): Promise<WorkspaceTestContext> {
   });
 
   let artifactCounter = 0;
+  const createActiveClaimForAgent = async (targetRef: string, agentId: string) => {
+    const now = new Date();
+    const lease = new Date(now.getTime() + 300_000);
+    await claimStore.createClaim({
+      claimId: `claim-${targetRef}-${agentId}-${Date.now()}`,
+      targetRef,
+      agent: makeAgent({ agentId }),
+      status: "active" as const,
+      intentSummary: "Test claim",
+      createdAt: now.toISOString(),
+      heartbeatAt: now.toISOString(),
+      leaseExpiresAt: lease.toISOString(),
+    });
+  };
 
   return {
     manager,
+    workspacesRoot: join(groveRoot, "workspaces"),
     createContributionWithArtifacts: async (
       artifacts: Record<string, Uint8Array>,
       overrides?: Partial<ContributionInput>,
@@ -90,20 +111,9 @@ async function createTestContext(): Promise<WorkspaceTestContext> {
       await contributionStore.put(contribution);
       return contribution;
     },
-    createActiveClaim: async (targetRef: string) => {
-      const now = new Date();
-      const lease = new Date(now.getTime() + 300_000);
-      await claimStore.createClaim({
-        claimId: `claim-${targetRef}-${Date.now()}`,
-        targetRef,
-        agent: makeAgent(),
-        status: "active" as const,
-        intentSummary: "Test claim",
-        createdAt: now.toISOString(),
-        heartbeatAt: now.toISOString(),
-        leaseExpiresAt: lease.toISOString(),
-      });
-    },
+    createActiveClaim: async (targetRef: string) =>
+      createActiveClaimForAgent(targetRef, makeAgent().agentId),
+    createActiveClaimForAgent,
     cleanup: async () => {
       db.close();
       await rm(dir, { recursive: true, force: true });
@@ -354,6 +364,238 @@ describe("LocalWorkspaceManager implementation", () => {
     } finally {
       db.close();
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("concurrent checkout waits for after_checkout hook completion", async () => {
+    const dir = join(tmpdir(), `grove-workspace-hook-race-${Date.now()}`);
+    await mkdir(dir, { recursive: true });
+
+    const dbPath = join(dir, "test.db");
+    const casRoot = join(dir, "cas");
+    const groveRoot = join(dir, "grove");
+
+    await mkdir(casRoot, { recursive: true });
+    await mkdir(groveRoot, { recursive: true });
+
+    const db = initSqliteDb(dbPath);
+    const contributionStore = new SqliteContributionStore(db);
+    const cas = new FsCas(casRoot);
+
+    let releaseHook!: () => void;
+    const hookReleased = new Promise<void>((resolve) => {
+      releaseHook = resolve;
+    });
+    let signalHookStarted!: () => void;
+    const hookStarted = new Promise<void>((resolve) => {
+      signalHookStarted = resolve;
+    });
+    const hookRunner: HookRunner = {
+      run: async () => {
+        signalHookStarted();
+        await hookReleased;
+        return {
+          success: true,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          command: "test-hook",
+          durationMs: 0,
+        };
+      },
+    };
+
+    const manager = new LocalWorkspaceManager({
+      groveRoot,
+      db,
+      contributionStore,
+      cas,
+      hookRunner,
+      hooksConfig: {
+        after_checkout: "test-hook",
+      },
+    });
+
+    try {
+      const hash = await cas.put(new TextEncoder().encode("data"));
+      const input: ContributionInput = {
+        kind: ContributionKind.Work,
+        mode: ContributionMode.Evaluation,
+        summary: "Hook race test",
+        artifacts: { "data.txt": hash },
+        relations: [],
+        tags: [],
+        agent: makeAgent(),
+        createdAt: new Date().toISOString(),
+      };
+      const contribution = createContribution(input);
+      await contributionStore.put(contribution);
+
+      const agent = makeAgent({ agentId: "hook-agent" });
+      const firstCheckout = manager.checkout(contribution.cid, { agent });
+      await hookStarted;
+
+      const secondCheckout = manager.checkout(contribution.cid, { agent });
+      const secondState = await Promise.race([
+        secondCheckout.then(() => "resolved" as const),
+        new Promise<"pending">((resolve) => {
+          setTimeout(() => resolve("pending"), 150);
+        }),
+      ]);
+
+      expect(secondState).toBe("pending");
+
+      releaseHook();
+
+      const [first, second] = await Promise.all([firstCheckout, secondCheckout]);
+      expect(first.workspacePath).toBe(second.workspacePath);
+    } finally {
+      db.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("concurrent checkout for the same agent waits for the first materialization", async () => {
+    const ctx = await createTestContext();
+    const manager = ctx.manager as unknown as {
+      casGetToFile: (contentHash: string, destPath: string) => Promise<boolean>;
+    };
+    const originalCasGetToFile = manager.casGetToFile.bind(ctx.manager);
+
+    let releaseFirstCopy!: () => void;
+    const firstCopyReleased = new Promise<void>((resolve) => {
+      releaseFirstCopy = resolve;
+    });
+    let signalFirstCopyStarted!: () => void;
+    const firstCopyStarted = new Promise<void>((resolve) => {
+      signalFirstCopyStarted = resolve;
+    });
+    let intercepted = false;
+
+    manager.casGetToFile = async (contentHash: string, destPath: string) => {
+      if (!intercepted) {
+        intercepted = true;
+        signalFirstCopyStarted();
+        await firstCopyReleased;
+      }
+      return originalCasGetToFile(contentHash, destPath);
+    };
+
+    try {
+      const contribution = await ctx.createContributionWithArtifacts({
+        "file.txt": new TextEncoder().encode("data"),
+      });
+      const agent = makeAgent({ agentId: "shared-agent" });
+
+      const firstCheckout = ctx.manager.checkout(contribution.cid, { agent });
+      await firstCopyStarted;
+
+      const secondCheckout = ctx.manager.checkout(contribution.cid, { agent });
+      const secondState = await Promise.race([
+        secondCheckout.then(() => "resolved" as const),
+        new Promise<"pending">((resolve) => {
+          setTimeout(() => resolve("pending"), 100);
+        }),
+      ]);
+
+      expect(secondState).toBe("pending");
+
+      releaseFirstCopy();
+
+      const [first, second] = await Promise.all([firstCheckout, secondCheckout]);
+      expect(first.workspacePath).toBe(second.workspacePath);
+
+      const file = Bun.file(join(first.workspacePath, "file.txt"));
+      expect(await file.text()).toBe("data");
+    } finally {
+      manager.casGetToFile = originalCasGetToFile;
+      await ctx.cleanup();
+    }
+  });
+
+  test("checkout recovers from a stale workspace lock owned by a dead process", async () => {
+    const ctx = await createTestContext();
+    try {
+      const contribution = await ctx.createContributionWithArtifacts({
+        "file.txt": new TextEncoder().encode("data"),
+      });
+      const agent = makeAgent({ agentId: "stale-lock-agent" });
+      const cidHex = contribution.cid.replace("blake3:", "");
+      const workspacePath = join(ctx.workspacesRoot, `${cidHex}-${agent.agentId}`);
+      const lockPath = `${workspacePath}.lock`;
+
+      await mkdir(lockPath, { recursive: true });
+      await Bun.write(join(lockPath, "owner.json"), JSON.stringify({ pid: 999_999_999 }));
+
+      const info = await ctx.manager.checkout(contribution.cid, { agent });
+      const file = Bun.file(join(info.workspacePath, "file.txt"));
+      expect(await file.text()).toBe("data");
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("checkout recovers from a stale workspace lock missing owner metadata", async () => {
+    const ctx = await createTestContext();
+    try {
+      const contribution = await ctx.createContributionWithArtifacts({
+        "file.txt": new TextEncoder().encode("data"),
+      });
+      const agent = makeAgent({ agentId: "missing-owner-agent" });
+      const cidHex = contribution.cid.replace("blake3:", "");
+      const workspacePath = join(ctx.workspacesRoot, `${cidHex}-${agent.agentId}`);
+      const lockPath = `${workspacePath}.lock`;
+      const staleTime = new Date(Date.now() - 10_000);
+
+      await mkdir(lockPath, { recursive: true });
+      await utimes(lockPath, staleTime, staleTime);
+
+      const info = await ctx.manager.checkout(contribution.cid, { agent });
+      const file = Bun.file(join(info.workspacePath, "file.txt"));
+      expect(await file.text()).toBe("data");
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("createBareWorkspace recreates a missing active directory", async () => {
+    const ctx = await createTestContext();
+    try {
+      const agent = makeAgent({ agentId: "bare-agent" });
+      const first = await ctx.manager.createBareWorkspace("spawn-1", { agent });
+
+      await rm(first.workspacePath, { recursive: true, force: true });
+
+      const second = await ctx.manager.createBareWorkspace("spawn-1", { agent });
+      await Bun.write(join(second.workspacePath, ".probe"), "ok");
+      expect(await Bun.file(join(second.workspacePath, ".probe")).text()).toBe("ok");
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("cleanup ignores an active claim held by another agent", async () => {
+    const ctx = await createTestContext();
+    try {
+      const contribution = await ctx.createContributionWithArtifacts({
+        "file.txt": new TextEncoder().encode("data"),
+      });
+      const alice = makeAgent({ agentId: "alice" });
+      const bob = makeAgent({ agentId: "bob" });
+
+      await ctx.manager.checkout(contribution.cid, { agent: alice });
+      const bobWorkspace = await ctx.manager.checkout(contribution.cid, { agent: bob });
+      await ctx.createActiveClaimForAgent(contribution.cid, "bob");
+
+      await expect(ctx.manager.cleanWorkspace(contribution.cid, "alice")).resolves.toBe(true);
+
+      const aliceInfo = await ctx.manager.getWorkspace(contribution.cid, "alice");
+      expect(aliceInfo?.status).toBe(WorkspaceStatus.Cleaned);
+
+      const bobFile = Bun.file(join(bobWorkspace.workspacePath, "file.txt"));
+      expect(await bobFile.text()).toBe("data");
+    } finally {
+      await ctx.cleanup();
     }
   });
 });

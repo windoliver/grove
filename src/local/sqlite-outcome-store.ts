@@ -29,6 +29,8 @@ export const OUTCOME_DDL = `
   CREATE INDEX IF NOT EXISTS idx_outcomes_evaluated_by ON outcomes(evaluated_by);
 `;
 
+const SQLITE_BIND_LIMIT = 900;
+
 /** SQLite-backed OutcomeStore. */
 export class SqliteOutcomeStore implements OutcomeStore {
   private readonly db: Database;
@@ -93,14 +95,17 @@ export class SqliteOutcomeStore implements OutcomeStore {
   async getBatch(cids: readonly string[]): Promise<ReadonlyMap<string, OutcomeRecord>> {
     if (cids.length === 0) return new Map();
 
-    const placeholders = cids.map(() => "?").join(",");
-    const rows = this.db
-      .prepare(`SELECT * FROM outcomes WHERE cid IN (${placeholders})`)
-      .all(...cids) as OutcomeRow[];
-
     const map = new Map<string, OutcomeRecord>();
-    for (const row of rows) {
-      map.set(row.cid, rowToRecord(row));
+    const uniqueCids = [...new Set(cids)];
+    for (let i = 0; i < uniqueCids.length; i += SQLITE_BIND_LIMIT) {
+      const chunk = uniqueCids.slice(i, i + SQLITE_BIND_LIMIT);
+      const placeholders = chunk.map(() => "?").join(",");
+      const rows = this.db
+        .prepare(`SELECT * FROM outcomes WHERE cid IN (${placeholders})`)
+        .all(...chunk) as OutcomeRow[];
+      for (const row of rows) {
+        map.set(row.cid, rowToRecord(row));
+      }
     }
     return map;
   }
@@ -119,11 +124,20 @@ export class SqliteOutcomeStore implements OutcomeStore {
     }
 
     const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
-    const limit = query?.limit ? `LIMIT ${query.limit}` : "";
-    const offset = query?.offset ? `OFFSET ${query.offset}` : "";
+    let pagination = "";
+    if (query?.limit !== undefined) {
+      pagination += " LIMIT ?";
+      params.push(query.limit);
+    } else if (query?.offset !== undefined) {
+      pagination += " LIMIT -1";
+    }
+    if (query?.offset !== undefined) {
+      pagination += " OFFSET ?";
+      params.push(query.offset);
+    }
 
     const rows = this.db
-      .prepare(`SELECT * FROM outcomes ${where} ORDER BY evaluated_at DESC ${limit} ${offset}`)
+      .prepare(`SELECT * FROM outcomes ${where} ORDER BY evaluated_at DESC${pagination}`)
       .all(...params) as OutcomeRow[];
 
     return rows.map(rowToRecord);

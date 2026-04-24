@@ -8,6 +8,7 @@
  * and SqliteClaimStore independently.
  */
 
+import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,6 +19,14 @@ import { runContributionStoreTests } from "../core/store.conformance.js";
 import type { ContributionStore } from "../core/store.js";
 import { makeContribution } from "../core/test-helpers.js";
 import { createSqliteStores, SqliteStore } from "./sqlite-store.js";
+
+function sqliteBindLimit(db: Database): number {
+  const rows = db.prepare("PRAGMA compile_options").all() as readonly {
+    compile_options: string;
+  }[];
+  const option = rows.find((row) => row.compile_options.startsWith("MAX_VARIABLE_NUMBER="));
+  return option ? Number(option.compile_options.slice("MAX_VARIABLE_NUMBER=".length)) : 999;
+}
 
 // ---------------------------------------------------------------------------
 // Legacy SqliteStore — ContributionStore conformance
@@ -97,6 +106,7 @@ describe("putMany with rich contributions", () => {
   let store: ContributionStore;
   let dir: string;
   let closeStore: () => void;
+  let db: Database;
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "sqlite-putmany-rich-"));
@@ -104,6 +114,7 @@ describe("putMany with rich contributions", () => {
     const stores = createSqliteStores(dbPath);
     store = stores.contributionStore;
     closeStore = stores.close;
+    db = stores.db;
   });
 
   afterEach(async () => {
@@ -510,5 +521,25 @@ describe("putMany with rich contributions", () => {
     const uniqueSearchCids = [...new Set(searchCids)];
     expect(searchCids.length).toBe(uniqueSearchCids.length);
     expect(uniqueSearchCids.length).toBe(5);
+  });
+
+  test("getMany chunks requests larger than SQLite's bind limit", async () => {
+    const bindLimit = sqliteBindLimit(db);
+    const existing = [
+      makeContribution({ summary: "bind-limit-1", createdAt: "2026-06-01T00:00:00Z" }),
+      makeContribution({ summary: "bind-limit-2", createdAt: "2026-06-01T00:00:01Z" }),
+      makeContribution({ summary: "bind-limit-3", createdAt: "2026-06-01T00:00:02Z" }),
+    ];
+    await store.putMany(existing);
+
+    const cids = Array.from({ length: bindLimit + 1 }, (_, index) =>
+      index < existing.length ? (existing[index]?.cid ?? "") : `missing-${index}`,
+    );
+    const result = await store.getMany(cids);
+
+    expect(result.size).toBe(existing.length);
+    for (const contribution of existing) {
+      expect(result.get(contribution.cid)?.cid).toBe(contribution.cid);
+    }
   });
 });
