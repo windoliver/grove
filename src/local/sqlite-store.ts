@@ -132,7 +132,8 @@ const SCHEMA_DDL = `
     lease_expires_at TEXT NOT NULL,
     context_json TEXT,
     agent_json TEXT NOT NULL,
-    attempt_count INTEGER NOT NULL DEFAULT 0
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    revision INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE INDEX IF NOT EXISTS idx_claims_target ON claims(target_ref);
@@ -284,6 +285,11 @@ export function initSqliteDb(dbPath: string): Database {
       // From v4→v5: add attempt_count to claims
       if (!columnNames.has("attempt_count")) {
         db.run("ALTER TABLE claims ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0");
+      }
+
+      // Revision column — monotonic resourceVersion for Entity watch semantics (#287).
+      if (!columnNames.has("revision")) {
+        db.run("ALTER TABLE claims ADD COLUMN revision INTEGER NOT NULL DEFAULT 0");
       }
     }
 
@@ -700,6 +706,7 @@ interface ClaimRow {
   readonly context_json: string | null;
   readonly agent_json: string;
   readonly attempt_count: number;
+  readonly revision: number;
 }
 
 function rowToClaim(row: ClaimRow, statusOverride?: ClaimStatus): Claim {
@@ -713,6 +720,7 @@ function rowToClaim(row: ClaimRow, statusOverride?: ClaimStatus): Claim {
     heartbeatAt: row.heartbeat_at,
     leaseExpiresAt: row.lease_expires_at,
     ...(row.attempt_count > 0 && { attemptCount: row.attempt_count }),
+    revision: row.revision,
   };
   if (row.context_json !== null) {
     return {
@@ -1323,7 +1331,7 @@ export class SqliteContributionStore implements ContributionStore {
 // ---------------------------------------------------------------------------
 
 const CLAIM_SELECT_COLS = `claim_id, target_ref, agent_id, status, intent_summary,
-  created_at, heartbeat_at, lease_expires_at, context_json, agent_json, attempt_count`;
+  created_at, heartbeat_at, lease_expires_at, context_json, agent_json, attempt_count, revision`;
 
 /**
  * SQLite-backed ClaimStore with lease-based coordination.
@@ -1431,7 +1439,8 @@ export class SqliteClaimStore implements ClaimStore {
           const freshExpiry = new Date(now.getTime() + durationMs).toISOString();
           this.db
             .prepare(
-              `UPDATE claims SET heartbeat_at = ?, lease_expires_at = ?, intent_summary = ?
+              `UPDATE claims SET heartbeat_at = ?, lease_expires_at = ?, intent_summary = ?,
+                 revision = revision + 1
                WHERE claim_id = ?`,
             )
             .run(nowIso, freshExpiry, claim.intentSummary, activeOnTarget.claim_id);
@@ -1489,7 +1498,7 @@ export class SqliteClaimStore implements ClaimStore {
     const rows = this.db
       .prepare(
         `UPDATE claims
-         SET heartbeat_at = ?, lease_expires_at = ?
+         SET heartbeat_at = ?, lease_expires_at = ?, revision = revision + 1
          WHERE claim_id = ? AND status = 'active' AND lease_expires_at >= ?
          RETURNING ${CLAIM_SELECT_COLS}`,
       )
@@ -1547,10 +1556,10 @@ export class SqliteClaimStore implements ClaimStore {
       // Step 1: Expire claims with expired leases
       const leaseExpired = this.db
         .prepare(
-          `UPDATE claims SET status = 'expired'
+          `UPDATE claims SET status = 'expired', revision = revision + 1
            WHERE status = 'active' AND lease_expires_at < ?
            RETURNING claim_id, target_ref, agent_id, status, intent_summary,
-                     created_at, heartbeat_at, lease_expires_at, context_json, agent_json, attempt_count`,
+                     created_at, heartbeat_at, lease_expires_at, context_json, agent_json, attempt_count, revision`,
         )
         .all(nowIso) as readonly ClaimRow[];
 
@@ -1563,10 +1572,10 @@ export class SqliteClaimStore implements ClaimStore {
         const stallCutoff = new Date(now.getTime() - options.stallThresholdMs).toISOString();
         const stalled = this.db
           .prepare(
-            `UPDATE claims SET status = 'expired'
+            `UPDATE claims SET status = 'expired', revision = revision + 1
              WHERE status = 'active' AND heartbeat_at < ?
              RETURNING claim_id, target_ref, agent_id, status, intent_summary,
-                       created_at, heartbeat_at, lease_expires_at, context_json, agent_json, attempt_count`,
+                       created_at, heartbeat_at, lease_expires_at, context_json, agent_json, attempt_count, revision`,
           )
           .all(stallCutoff) as readonly ClaimRow[];
 
@@ -1734,7 +1743,7 @@ export class SqliteClaimStore implements ClaimStore {
     // Atomic UPDATE WHERE: only succeeds if claim is currently active
     const rows = this.db
       .prepare(
-        `UPDATE claims SET status = ?
+        `UPDATE claims SET status = ?, revision = revision + 1
          WHERE claim_id = ? AND status = 'active'
          RETURNING ${CLAIM_SELECT_COLS}`,
       )
@@ -1856,25 +1865,23 @@ export class SqliteStore implements ContributionStore, ClaimStore {
    * Return ContributionEntities wrapped in the Entity envelope.
    * Acceptance criterion for #287.
    */
-  listEntities(query?: ContributionQuery): Promise<readonly ContributionEntity[]>;
-  listEntities(query?: ClaimQuery): Promise<readonly ClaimEntity[]>;
-  listEntities(
-    query?: ContributionQuery | ClaimQuery,
-  ): Promise<readonly ContributionEntity[] | readonly ClaimEntity[]> {
-    // Dispatch to the correct inner store based on which interface is being used.
-    // ClaimQuery has `status` and `targetRef` fields that ContributionQuery does not.
-    // When called with no query (or a query that has no claim-specific fields),
-    // the legacy `SqliteStore` is ambiguous. We detect claim context via `status` / `targetRef`.
-    const isClaimQuery =
-      query !== undefined &&
-      ("status" in query || "targetRef" in query) &&
-      !("kind" in query) &&
-      !("mode" in query) &&
-      !("tags" in query);
-    if (isClaimQuery) {
-      return this.claims.listEntities(query as ClaimQuery);
-    }
-    return this.contributions.listEntities(query as ContributionQuery);
+  /**
+   * Ambiguous on the combined facade — both ContributionStore and ClaimStore
+   * require `listEntities`, and the query shapes overlap (e.g. `agentId` is
+   * shared, a bare `listEntities()` has no discriminator). Rather than guess
+   * and silently return the wrong kind, throw. Callers MUST pick the inner
+   * store explicitly: `store.contributions.listEntities(...)` or
+   * `store.claims.listEntities(...)`.
+   */
+  listEntities(_query?: ContributionQuery): Promise<readonly ContributionEntity[]>;
+  listEntities(_query?: ClaimQuery): Promise<readonly ClaimEntity[]>;
+  listEntities(): Promise<never> {
+    return Promise.reject(
+      new Error(
+        "SqliteStore.listEntities() is ambiguous on the combined facade. " +
+          "Use store.contributions.listEntities(...) or store.claims.listEntities(...) directly.",
+      ),
+    );
   }
 
   close(): void {

@@ -969,6 +969,31 @@ export function runClaimStoreTests(
         const activeEntities = await store.listEntities({ status: ClaimStatus.Active });
         expect(activeEntities.length).toBe(active.length);
       });
+
+      test("listEntities resourceVersion advances after heartbeat and transition", async () => {
+        const claim = makeClaim({ claimId: "rv-claim", targetRef: "rv-target" });
+        await store.createClaim(claim);
+
+        const findVersion = async (): Promise<string> => {
+          const entities = await store.listEntities();
+          const found = entities.find((e) => e.id === claim.claimId);
+          if (!found) throw new Error(`claim ${claim.claimId} missing from listEntities`);
+          return found.resourceVersion;
+        };
+
+        const v0 = await findVersion();
+        expect(typeof v0).toBe("string");
+        expect(v0.length).toBeGreaterThan(0);
+
+        await store.heartbeat(claim.claimId);
+        const v1 = await findVersion();
+        expect(v1).not.toBe(v0);
+
+        await store.complete(claim.claimId);
+        const v2 = await findVersion();
+        expect(v2).not.toBe(v1);
+        expect(v2).not.toBe(v0);
+      });
     }
 
     // ------------------------------------------------------------------

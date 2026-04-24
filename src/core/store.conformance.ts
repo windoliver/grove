@@ -18,12 +18,26 @@ export type ContributionStoreFactory = () => Promise<{
 }>;
 
 /**
+ * Options for the conformance test suite.
+ *
+ * - `skipListEntities`: Skip the listEntities tests. Use for legacy combined-store
+ *   implementations (e.g. SqliteStore) that cannot unambiguously dispatch
+ *   listEntities() because they implement both ContributionStore and ClaimStore.
+ */
+export interface ContributionStoreConformanceOptions {
+  readonly skipListEntities?: boolean;
+}
+
+/**
  * Run the full ContributionStore conformance test suite.
  *
  * Call this from your backend-specific test file with a factory
  * that creates and tears down store instances.
  */
-export function runContributionStoreTests(factory: ContributionStoreFactory): void {
+export function runContributionStoreTests(
+  factory: ContributionStoreFactory,
+  options: ContributionStoreConformanceOptions = {},
+): void {
   describe("ContributionStore conformance", () => {
     let store: ContributionStore;
     let cleanup: () => Promise<void>;
@@ -644,21 +658,26 @@ export function runContributionStoreTests(factory: ContributionStoreFactory): vo
     // listEntities — Entity envelope. Acceptance criterion for #287.
     // ------------------------------------------------------------------
 
-    test("listEntities returns Entity-shaped objects with kind Contribution", async () => {
-      const c1 = makeContribution({ summary: "entity-a" });
-      const c2 = makeContribution({ summary: "entity-b" });
-      await store.putMany([c1, c2]);
+    const listEntitiesTest = options.skipListEntities ? test.skip : test;
 
-      const entities = await store.listEntities();
-      expect(entities.length).toBe(2);
-      for (const e of entities) {
-        expect(e.kind).toBe("Contribution");
-        expect(e.conditions.length).toBeGreaterThan(0);
-        expect(typeof e.id).toBe("string");
-      }
-    });
+    listEntitiesTest(
+      "listEntities returns Entity-shaped objects with kind Contribution",
+      async () => {
+        const c1 = makeContribution({ summary: "entity-a" });
+        const c2 = makeContribution({ summary: "entity-b" });
+        await store.putMany([c1, c2]);
 
-    test("listEntities length matches list() length", async () => {
+        const entities = await store.listEntities();
+        expect(entities.length).toBe(2);
+        for (const e of entities) {
+          expect(e.kind).toBe("Contribution");
+          expect(e.conditions.length).toBeGreaterThan(0);
+          expect(typeof e.id).toBe("string");
+        }
+      },
+    );
+
+    listEntitiesTest("listEntities length matches list() length", async () => {
       const c1 = makeContribution({ summary: "len-a" });
       const c2 = makeContribution({ summary: "len-b" });
       const c3 = makeContribution({

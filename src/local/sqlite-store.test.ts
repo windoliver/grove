@@ -23,18 +23,23 @@ import { createSqliteStores, SqliteStore } from "./sqlite-store.js";
 // Legacy SqliteStore — ContributionStore conformance
 // ---------------------------------------------------------------------------
 
-runContributionStoreTests(async () => {
-  const dir = await mkdtemp(join(tmpdir(), "sqlite-store-contrib-"));
-  const dbPath = join(dir, "test.db");
-  const store = new SqliteStore(dbPath);
+// Skip listEntities for the legacy combined SqliteStore (same reason as the
+// ClaimStore block below — ambiguous dispatch now fails loud by design).
+runContributionStoreTests(
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-store-contrib-"));
+    const dbPath = join(dir, "test.db");
+    const store = new SqliteStore(dbPath);
 
-  return {
-    store,
-    cleanup: async () => {
-      await rm(dir, { recursive: true, force: true });
-    },
-  };
-});
+    return {
+      store,
+      cleanup: async () => {
+        await rm(dir, { recursive: true, force: true });
+      },
+    };
+  },
+  { skipListEntities: true },
+);
 
 // ---------------------------------------------------------------------------
 // Legacy SqliteStore — ClaimStore conformance
