@@ -15,8 +15,7 @@ function makeTmpDir(): string {
 }
 
 function initGitRepo(dir: string): void {
-  const run = (args: string[]) =>
-    spawnSync("git", ["-C", dir, ...args], { stdio: "ignore" });
+  const run = (args: string[]) => spawnSync("git", ["-C", dir, ...args], { stdio: "ignore" });
   run(["init", "-q"]);
   run(["config", "user.email", "test@example.com"]);
   run(["config", "user.name", "test"]);
@@ -68,11 +67,9 @@ describe("detectOriginUrl", () => {
   test("returns the raw origin URL", () => {
     const dir = makeTmpDir();
     initGitRepo(dir);
-    spawnSync(
-      "git",
-      ["-C", dir, "remote", "add", "origin", "git@github.com:foo/bar.git"],
-      { stdio: "ignore" },
-    );
+    spawnSync("git", ["-C", dir, "remote", "add", "origin", "git@github.com:foo/bar.git"], {
+      stdio: "ignore",
+    });
     expect(detectOriginUrl(dir)).toBe("git@github.com:foo/bar.git");
   });
 });

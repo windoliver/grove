@@ -211,12 +211,12 @@ export async function executeInit(
   const ensureResult = await ensureProjectId({
     groveDir: grovePath,
     cwd: options.cwd,
-    unify: options.unify,
-    registryPath: hooks?.registryPath,
     isTTY: hooks?.isTTY ?? Boolean(process.stdout.isTTY && process.stdin.isTTY),
-    stdin: hooks?.stdin,
-    stdout: hooks?.stdout,
-    now: hooks?.now,
+    ...(options.unify === undefined ? {} : { unify: options.unify }),
+    ...(hooks?.registryPath === undefined ? {} : { registryPath: hooks.registryPath }),
+    ...(hooks?.stdin === undefined ? {} : { stdin: hooks.stdin }),
+    ...(hooks?.stdout === undefined ? {} : { stdout: hooks.stdout }),
+    ...(hooks?.now === undefined ? {} : { now: hooks.now }),
   });
   const projectId = ensureResult.id;
 

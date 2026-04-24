@@ -11,8 +11,7 @@ import { join } from "node:path";
 
 export const PROJECT_ID_FILE = "project-id";
 
-const UUID_V4_REGEX =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function isValidProjectId(s: string): boolean {
   return UUID_V4_REGEX.test(s);
@@ -34,9 +33,7 @@ export function readProjectId(groveDir: string): string | null {
   const trimmed = raw.endsWith("\n") ? raw.slice(0, -1) : raw;
   if (trimmed === "") return null;
   if (!isValidProjectId(trimmed)) {
-    throw new Error(
-      `Invalid project id in ${path}. Fix the file or delete it to regenerate.`,
-    );
+    throw new Error(`Invalid project id in ${path}. Fix the file or delete it to regenerate.`);
   }
   return trimmed;
 }

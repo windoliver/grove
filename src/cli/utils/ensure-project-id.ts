@@ -8,16 +8,12 @@
  *   4. Registry hit → adopt (unify) or new, per flag / TTY prompt / non-TTY default.
  */
 
+import { generateProjectId, readProjectId, writeProjectId } from "../../core/project-id.js";
 import {
-  generateProjectId,
-  readProjectId,
-  writeProjectId,
-} from "../../core/project-id.js";
-import {
-  type RegistryEntry,
   defaultRegistryPath,
   loadRegistry,
   lookupByOrigin,
+  type RegistryEntry,
   saveRegistry,
   upsertEntry,
 } from "../../core/project-registry.js";
@@ -130,10 +126,7 @@ export async function ensureProjectId(opts: EnsureOpts): Promise<EnsureResult> {
   };
 }
 
-async function decideAdopt(
-  opts: EnsureOpts,
-  hit: RegistryEntry,
-): Promise<"adopt" | "new"> {
+async function decideAdopt(opts: EnsureOpts, hit: RegistryEntry): Promise<"adopt" | "new"> {
   if (opts.unify === true) return "adopt";
   if (opts.unify === false) return "new";
   if (!opts.isTTY) return "new";

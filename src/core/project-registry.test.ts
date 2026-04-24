@@ -6,10 +6,10 @@ import {
   defaultRegistryPath,
   loadRegistry,
   lookupByOrigin,
-  saveRegistry,
-  upsertEntry,
   type Registry,
   type RegistryEntry,
+  saveRegistry,
+  upsertEntry,
 } from "./project-registry.js";
 
 function makeTmpFile(basename: string): string {
@@ -67,9 +67,7 @@ describe("loadRegistry", () => {
     );
     const r = loadRegistry(path);
     expect(r.version).toBe(1);
-    expect(r.projects["github.com/foo/bar"]?.id).toBe(
-      "550e8400-e29b-41d4-a716-446655440000",
-    );
+    expect(r.projects["github.com/foo/bar"]?.id).toBe("550e8400-e29b-41d4-a716-446655440000");
     expect(r.projects["github.com/foo/bar"]?.name).toBe("foo/bar");
   });
 
@@ -177,9 +175,7 @@ describe("upsertEntry", () => {
       name: "foo/bar",
       createdAt: "2026-04-24T00:00:00.000Z",
     });
-    expect(next.projects["github.com/foo/bar"]?.id).toBe(
-      "550e8400-e29b-41d4-a716-446655440000",
-    );
+    expect(next.projects["github.com/foo/bar"]?.id).toBe("550e8400-e29b-41d4-a716-446655440000");
     expect(base.projects["github.com/foo/bar"]).toBeUndefined();
   });
 
@@ -199,8 +195,6 @@ describe("upsertEntry", () => {
       name: "foo/bar",
       createdAt: "2026-04-25T00:00:00.000Z",
     });
-    expect(next.projects["github.com/foo/bar"]?.id).toBe(
-      "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
-    );
+    expect(next.projects["github.com/foo/bar"]?.id).toBe("3f2504e0-4f89-41d3-9a0c-0305e82c3301");
   });
 });

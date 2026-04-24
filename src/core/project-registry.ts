@@ -60,18 +60,14 @@ export function loadRegistry(path: string): Registry {
   const projects: Record<string, RegistryEntry> = {};
   for (const [key, valueRaw] of Object.entries(projectsRaw as Record<string, unknown>)) {
     if (valueRaw == null || typeof valueRaw !== "object") {
-      throw new Error(
-        `Malformed registry at ${path}: entry '${key}' must be a mapping.`,
-      );
+      throw new Error(`Malformed registry at ${path}: entry '${key}' must be a mapping.`);
     }
     const entry = valueRaw as Record<string, unknown>;
     const id = entry.id;
     const name = entry.name;
     const createdAt = entry.createdAt;
     if (typeof id !== "string" || !isValidProjectId(id)) {
-      throw new Error(
-        `Invalid registry entry '${key}' at ${path}: id is not a valid UUIDv4.`,
-      );
+      throw new Error(`Invalid registry entry '${key}' at ${path}: id is not a valid UUIDv4.`);
     }
     if (typeof name !== "string" || typeof createdAt !== "string") {
       throw new Error(
@@ -91,18 +87,11 @@ export function saveRegistry(path: string, reg: Registry): void {
   renameSync(tmp, path);
 }
 
-export function lookupByOrigin(
-  reg: Registry,
-  origin: string,
-): RegistryEntry | null {
+export function lookupByOrigin(reg: Registry, origin: string): RegistryEntry | null {
   return reg.projects[origin] ?? null;
 }
 
-export function upsertEntry(
-  reg: Registry,
-  origin: string,
-  entry: RegistryEntry,
-): Registry {
+export function upsertEntry(reg: Registry, origin: string, entry: RegistryEntry): Registry {
   return {
     version: 1,
     projects: { ...reg.projects, [origin]: entry },

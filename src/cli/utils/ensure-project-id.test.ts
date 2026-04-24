@@ -10,18 +10,14 @@ import type { EnsureOpts } from "./ensure-project-id.js";
 import { ensureProjectId } from "./ensure-project-id.js";
 
 function mkTmp(prefix: string): string {
-  const dir = join(
-    tmpdir(),
-    `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-  );
+  const dir = join(tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(dir, { recursive: true });
   return dir;
 }
 
 function mkClone(origin: string | null): string {
   const dir = mkTmp("grove-ensure-clone");
-  const run = (args: string[]) =>
-    spawnSync("git", ["-C", dir, ...args], { stdio: "ignore" });
+  const run = (args: string[]) => spawnSync("git", ["-C", dir, ...args], { stdio: "ignore" });
   run(["init", "-q"]);
   run(["config", "user.email", "t@t"]);
   run(["config", "user.name", "t"]);
@@ -51,10 +47,7 @@ describe("ensureProjectId — no prompt paths", () => {
   test("returns 'local' when .grove/project-id already exists", async () => {
     const clone = mkClone("git@github.com:foo/bar.git");
     const groveDir = mkGroveDir(clone);
-    writeFileSync(
-      join(groveDir, "project-id"),
-      "550e8400-e29b-41d4-a716-446655440000\n",
-    );
+    writeFileSync(join(groveDir, "project-id"), "550e8400-e29b-41d4-a716-446655440000\n");
     const registryPath = join(mkTmp("registry"), "projects.yaml");
     const res = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
     expect(res.source).toBe("local");
@@ -161,12 +154,8 @@ describe("ensureProjectId — no prompt paths", () => {
     const clone = mkClone("git@github.com:foo/bar.git");
     const groveDir = mkGroveDir(clone);
     const registryPath = join(mkTmp("registry"), "projects.yaml");
-    const first = await ensureProjectId(
-      baseOpts({ groveDir, cwd: clone, registryPath }),
-    );
-    const second = await ensureProjectId(
-      baseOpts({ groveDir, cwd: clone, registryPath }),
-    );
+    const first = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
+    const second = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
     expect(second.source).toBe("local");
     expect(second.id).toBe(first.id);
   });
@@ -176,9 +165,9 @@ describe("ensureProjectId — no prompt paths", () => {
     const groveDir = mkGroveDir(clone);
     writeFileSync(join(groveDir, "project-id"), "garbage\n");
     const registryPath = join(mkTmp("registry"), "projects.yaml");
-    await expect(
-      ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath })),
-    ).rejects.toThrow(/Invalid project id/);
+    await expect(ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }))).rejects.toThrow(
+      /Invalid project id/,
+    );
   });
 });
 
