@@ -4,6 +4,10 @@ import type { Contribution } from "./models.js";
 import { ContributionKind, ContributionMode } from "./models.js";
 import type { ContributionEntity } from "./entity.js";
 import { contributionToEntity } from "./entity.js";
+import type { Claim } from "./models.js";
+import { ClaimStatus } from "./models.js";
+import type { ClaimEntity } from "./entity.js";
+import { claimToEntity } from "./entity.js";
 
 describe("Entity envelope types", () => {
   test("Condition has six required fields", () => {
@@ -120,5 +124,102 @@ describe("contributionToEntity", () => {
     expect(e.spec.agent).toEqual({ agentId: "agent-1" });
     expect(e.spec.mode).toBe("evaluation");
     expect(e.spec.artifacts).toEqual({});
+  });
+});
+
+function makeClaim(overrides: Partial<Claim> = {}): Claim {
+  return {
+    claimId: "claim-1",
+    targetRef: "target-x",
+    agent: { agentId: "agent-1" },
+    status: ClaimStatus.Active,
+    intentSummary: "do x",
+    createdAt: "2026-04-23T00:00:00Z",
+    heartbeatAt: "2026-04-23T00:01:00Z",
+    leaseExpiresAt: "2026-04-23T00:05:00Z",
+    ...overrides,
+  };
+}
+
+describe("claimToEntity", () => {
+  test("wraps claimId as id, kind=Claim", () => {
+    const e: ClaimEntity = claimToEntity(makeClaim());
+    expect(e.kind).toBe("Claim");
+    expect(e.id).toBe("claim-1");
+    expect(e.namespace).toBe("default");
+  });
+
+  test("spec carries targetRef, agent, intentSummary, context", () => {
+    const e = claimToEntity(makeClaim({ context: { k: "v" } }));
+    expect(e.spec.targetRef).toBe("target-x");
+    expect(e.spec.intentSummary).toBe("do x");
+    expect(e.spec.context).toEqual({ k: "v" });
+  });
+
+  test("status carries phase/heartbeatAt/leaseExpiresAt/attemptCount", () => {
+    const e = claimToEntity(makeClaim({ attemptCount: 2 }));
+    expect(e.status.phase).toBe("active");
+    expect(e.status.heartbeatAt).toBe("2026-04-23T00:01:00Z");
+    expect(e.status.leaseExpiresAt).toBe("2026-04-23T00:05:00Z");
+    expect(e.status.attemptCount).toBe(2);
+  });
+
+  test("attemptCount defaults to 0 when undefined on input", () => {
+    const e = claimToEntity(makeClaim());
+    expect(e.status.attemptCount).toBe(0);
+  });
+
+  test("revision maps to resourceVersion + observedGeneration + metadata.generation", () => {
+    const e = claimToEntity(makeClaim({ revision: 7 }));
+    expect(e.resourceVersion).toBe("7");
+    expect(e.observedGeneration).toBe(7);
+    expect(e.metadata.generation).toBe(7);
+  });
+
+  test("missing revision → resourceVersion='0', generation=1", () => {
+    const e = claimToEntity(makeClaim());
+    expect(e.resourceVersion).toBe("0");
+    expect(e.observedGeneration).toBe(0);
+    expect(e.metadata.generation).toBe(1);
+  });
+
+  test("active phase → Active=True, Expired=False, Completed=False", () => {
+    const e = claimToEntity(makeClaim({ status: ClaimStatus.Active }));
+    const m = Object.fromEntries(e.conditions.map((c) => [c.type, c]));
+    expect(m.Active?.status).toBe("True");
+    expect(m.Expired?.status).toBe("False");
+    expect(m.Completed?.status).toBe("False");
+    expect(m.Active?.reason).toBe("active");
+    expect(m.Active?.lastTransitionTime).toBe("2026-04-23T00:01:00Z");
+  });
+
+  test("expired phase → Expired=True, Active=False", () => {
+    const e = claimToEntity(makeClaim({ status: ClaimStatus.Expired }));
+    const m = Object.fromEntries(e.conditions.map((c) => [c.type, c]));
+    expect(m.Active?.status).toBe("False");
+    expect(m.Expired?.status).toBe("True");
+    expect(m.Expired?.lastTransitionTime).toBe("2026-04-23T00:05:00Z");
+  });
+
+  test("completed phase → Completed=True, Active=False", () => {
+    const e = claimToEntity(makeClaim({ status: ClaimStatus.Completed }));
+    const m = Object.fromEntries(e.conditions.map((c) => [c.type, c]));
+    expect(m.Completed?.status).toBe("True");
+    expect(m.Active?.status).toBe("False");
+  });
+
+  test("released phase → Active=False, Expired=False, Completed=False", () => {
+    const e = claimToEntity(makeClaim({ status: ClaimStatus.Released }));
+    const m = Object.fromEntries(e.conditions.map((c) => [c.type, c]));
+    expect(m.Active?.status).toBe("False");
+    expect(m.Expired?.status).toBe("False");
+    expect(m.Completed?.status).toBe("False");
+  });
+
+  test("conditions observedGeneration mirrors entity observedGeneration", () => {
+    const e = claimToEntity(makeClaim({ revision: 3 }));
+    for (const c of e.conditions) {
+      expect(c.observedGeneration).toBe(3);
+    }
   });
 });

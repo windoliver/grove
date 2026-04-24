@@ -11,6 +11,8 @@
 
 import type {
   AgentIdentity,
+  Claim,
+  ClaimStatus as ClaimPhase,
   Contribution,
   ContributionKind,
   ContributionMode,
@@ -108,6 +110,73 @@ export function contributionToEntity(c: Contribution): ContributionEntity {
     resourceVersion: "0",
     metadata: {
       generation: 1,
+      creationTimestamp: c.createdAt,
+    },
+  };
+}
+
+export interface ClaimSpec {
+  readonly targetRef: string;
+  readonly agent: AgentIdentity;
+  readonly intentSummary: string;
+  readonly context?: Readonly<Record<string, JsonValue>> | undefined;
+}
+
+export interface ClaimStatusBody {
+  readonly phase: ClaimPhase;
+  readonly heartbeatAt: string;
+  readonly leaseExpiresAt: string;
+  readonly attemptCount: number;
+}
+
+export type ClaimEntity = Entity<"Claim", ClaimSpec, ClaimStatusBody>;
+
+export function claimToEntity(c: Claim): ClaimEntity {
+  const generation = c.revision ?? 0;
+  const obs = c.revision ?? 0;
+  const metaGen = c.revision ?? 1;
+  const phase = c.status;
+
+  const mkCond = (
+    type: string,
+    active: boolean,
+    lastTransitionTime: string,
+  ): Condition => ({
+    type,
+    status: active ? "True" : "False",
+    observedGeneration: obs,
+    lastTransitionTime,
+    reason: phase,
+    message: "",
+  });
+
+  const conditions: readonly Condition[] = [
+    mkCond("Active", phase === "active", c.heartbeatAt),
+    mkCond("Expired", phase === "expired", c.leaseExpiresAt),
+    mkCond("Completed", phase === "completed", c.heartbeatAt),
+  ];
+
+  return {
+    kind: "Claim",
+    namespace: "default",
+    id: c.claimId,
+    spec: {
+      targetRef: c.targetRef,
+      agent: c.agent,
+      intentSummary: c.intentSummary,
+      context: c.context,
+    },
+    status: {
+      phase,
+      heartbeatAt: c.heartbeatAt,
+      leaseExpiresAt: c.leaseExpiresAt,
+      attemptCount: c.attemptCount ?? 0,
+    },
+    conditions,
+    observedGeneration: obs,
+    resourceVersion: String(generation),
+    metadata: {
+      generation: metaGen,
       creationTimestamp: c.createdAt,
     },
   };
