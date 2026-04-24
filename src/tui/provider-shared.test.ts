@@ -110,6 +110,7 @@ function makeMockClaimStore(): ClaimStore {
     cleanCompleted: async () => 0,
     countActiveClaims: async () => 0,
     detectStalled: async () => [],
+    listEntities: async () => [],
     close: () => {
       /* noop */
     },

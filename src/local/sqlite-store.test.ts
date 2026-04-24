@@ -23,6 +23,11 @@ import { createSqliteStores, SqliteStore } from "./sqlite-store.js";
 // Legacy SqliteStore — ContributionStore conformance
 // ---------------------------------------------------------------------------
 
+// The legacy combined SqliteStore now dispatches listEntities() at runtime:
+// bare calls (and calls carrying only contribution-shaped or shared keys)
+// route to the contribution store, so the full contribution conformance
+// suite runs here. Claim-shaped queries route to the claim store; see the
+// ClaimStore block below for why that conformance remains partial.
 runContributionStoreTests(async () => {
   const dir = await mkdtemp(join(tmpdir(), "sqlite-store-contrib-"));
   const dbPath = join(dir, "test.db");
@@ -40,14 +45,20 @@ runContributionStoreTests(async () => {
 // Legacy SqliteStore — ClaimStore conformance
 // ---------------------------------------------------------------------------
 
+// The legacy combined SqliteStore no longer claims to implement ClaimStore
+// at the type level (`listEntities()` would be ambiguous). Callers who
+// want a ClaimStore-shaped view of the legacy facade use `store.claims`,
+// the publicly exposed SqliteClaimStore sub-store — which has a single,
+// well-typed `listEntities()` and passes the full conformance suite here.
 runClaimStoreTests(async () => {
   const dir = await mkdtemp(join(tmpdir(), "sqlite-store-claim-"));
   const dbPath = join(dir, "test.db");
   const store = new SqliteStore(dbPath);
 
   return {
-    store,
+    store: store.claims,
     cleanup: async () => {
+      store.close();
       await rm(dir, { recursive: true, force: true });
     },
   };

@@ -5,6 +5,8 @@
 
 import type { AcpxTurn } from "../acp/types.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
+import type { AgentSessionEntity } from "./entity.js";
+import { agentSessionToEntity } from "./entity.js";
 import { buildSessionId } from "./session-id.js";
 
 /**
@@ -263,6 +265,11 @@ export class SubprocessRuntime implements AgentRuntime {
 
   async listSessions(): Promise<readonly AgentSession[]> {
     return [...this.sessions.values()].map((e) => e.session);
+  }
+
+  async listSessionEntities(): Promise<readonly AgentSessionEntity[]> {
+    const items = await this.listSessions();
+    return items.map((s) => agentSessionToEntity(s));
   }
 
   async isAvailable(): Promise<boolean> {

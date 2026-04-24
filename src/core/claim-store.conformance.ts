@@ -18,13 +18,27 @@ export type ClaimStoreFactory = () => Promise<{
   cleanup: () => Promise<void>;
 }>;
 
+/** Options for running ClaimStore conformance tests. */
+export interface ClaimStoreConformanceOptions {
+  /**
+   * Set to true to skip the listEntities tests.
+   * Use for legacy combined-store implementations (e.g. SqliteStore)
+   * that implement both ContributionStore and ClaimStore and cannot
+   * unambiguously dispatch listEntities() to the claim store.
+   */
+  readonly skipListEntities?: boolean;
+}
+
 /**
  * Run the full ClaimStore conformance test suite.
  *
  * Call this from your backend-specific test file with a factory
  * that creates and tears down store instances.
  */
-export function runClaimStoreTests(factory: ClaimStoreFactory): void {
+export function runClaimStoreTests(
+  factory: ClaimStoreFactory,
+  options?: ClaimStoreConformanceOptions,
+): void {
   describe("ClaimStore conformance", () => {
     let store: ClaimStore;
     let cleanup: () => Promise<void>;
@@ -213,6 +227,30 @@ export function runClaimStoreTests(factory: ClaimStoreFactory): void {
       await expect(store.complete(claim.claimId)).rejects.toThrow();
     });
 
+    test("release throws when active lease has expired (stale claimant blocked)", async () => {
+      // Create a claim whose lease is already in the past but whose
+      // persisted status is still "active" (simulates the window before
+      // expireStale runs). The original owner must not be able to
+      // mutate it: another agent may already have acquired the target.
+      const staleClaim = makeClaim({
+        claimId: "stale-release",
+        targetRef: "t-stale-release",
+        leaseExpiresAt: new Date(Date.now() - 10_000).toISOString(),
+      });
+      await store.createClaim(staleClaim);
+      await expect(store.release(staleClaim.claimId)).rejects.toThrow(/lease expired/);
+    });
+
+    test("complete throws when active lease has expired (stale claimant blocked)", async () => {
+      const staleClaim = makeClaim({
+        claimId: "stale-complete",
+        targetRef: "t-stale-complete",
+        leaseExpiresAt: new Date(Date.now() - 10_000).toISOString(),
+      });
+      await store.createClaim(staleClaim);
+      await expect(store.complete(staleClaim.claimId)).rejects.toThrow(/lease expired/);
+    });
+
     // ------------------------------------------------------------------
     // expireStale
     // ------------------------------------------------------------------
@@ -233,12 +271,18 @@ export function runClaimStoreTests(factory: ClaimStoreFactory): void {
     });
 
     test("expireStale returns the expired claims", async () => {
+      // Distinct targetRefs so each claim stands on its own — some
+      // backends (Nexus) enforce one-active-claim-per-target strictly
+      // and will eagerly expire a same-target stale claim during a
+      // second createClaim takeover, which would make this test flaky.
       const expired1 = makeClaim({
         claimId: "exp-1",
+        targetRef: "target-exp-1",
         leaseExpiresAt: new Date(Date.now() - 5_000).toISOString(),
       });
       const expired2 = makeClaim({
         claimId: "exp-2",
+        targetRef: "target-exp-2",
         leaseExpiresAt: new Date(Date.now() - 5_000).toISOString(),
       });
       await store.createClaim(expired1);
@@ -252,13 +296,17 @@ export function runClaimStoreTests(factory: ClaimStoreFactory): void {
     });
 
     test("expireStale does not affect non-expired active claims", async () => {
-      // One expired, one still active
+      // One expired, one still active, on different targets so the
+      // backend's one-active-per-target invariant does not cross-expire
+      // them during createClaim.
       const expired = makeClaim({
         claimId: "stale",
+        targetRef: "target-stale",
         leaseExpiresAt: new Date(Date.now() - 10_000).toISOString(),
       });
       const active = makeClaim({
         claimId: "fresh",
+        targetRef: "target-fresh",
         leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
       });
       await store.createClaim(expired);
@@ -919,6 +967,101 @@ export function runClaimStoreTests(factory: ClaimStoreFactory): void {
       expect(result[0]?.claimId).toBe("lo-2");
       expect(result[1]?.claimId).toBe("lo-1");
     });
+
+    // ------------------------------------------------------------------
+    // listEntities — Entity envelope. Acceptance criterion for #287.
+    // ------------------------------------------------------------------
+
+    if (!options?.skipListEntities) {
+      test("listEntities returns Entity-shaped objects with kind Claim", async () => {
+        const c1 = makeClaim({ claimId: "ent-1", targetRef: "t-ent-1" });
+        const c2 = makeClaim({ claimId: "ent-2", targetRef: "t-ent-2" });
+        await store.createClaim(c1);
+        await store.createClaim(c2);
+
+        const entities = await store.listEntities();
+        expect(entities.length).toBeGreaterThanOrEqual(2);
+        for (const e of entities) {
+          expect(e.kind).toBe("Claim");
+          expect(e.conditions.length).toBeGreaterThan(0);
+          expect(typeof e.id).toBe("string");
+        }
+      });
+
+      test("listEntities length matches listClaims() length", async () => {
+        const c1 = makeClaim({ claimId: "ent-len-1", targetRef: "t-ent-len-1" });
+        const c2 = makeClaim({ claimId: "ent-len-2", targetRef: "t-ent-len-2" });
+        await store.createClaim(c1);
+        await store.createClaim(c2);
+        await store.release(c2.claimId);
+
+        const all = await store.listClaims();
+        const allEntities = await store.listEntities();
+        expect(allEntities.length).toBe(all.length);
+
+        const active = await store.listClaims({ status: ClaimStatus.Active });
+        const activeEntities = await store.listEntities({ status: ClaimStatus.Active });
+        expect(activeEntities.length).toBe(active.length);
+      });
+
+      test("newly created claim has resourceVersion='1' and observedGeneration=1", async () => {
+        const claim = makeClaim({ claimId: "init-rv", targetRef: "t-init-rv" });
+        await store.createClaim(claim);
+        const entities = await store.listEntities();
+        const found = entities.find((e) => e.id === claim.claimId);
+        expect(found).toBeDefined();
+        // New Entities start at generation/resourceVersion "1" across all
+        // backends — a 0 value would imply an uninitialized envelope.
+        expect(found?.resourceVersion).toBe("1");
+        expect(found?.observedGeneration).toBe(1);
+        expect(found?.metadata.generation).toBe(1);
+      });
+
+      test("listEntities({status: Active}) excludes active rows whose lease has expired", async () => {
+        const fresh = makeClaim({ claimId: "rv-fresh", targetRef: "t-rv-fresh" });
+        const stale = makeClaim({
+          claimId: "rv-stale",
+          targetRef: "t-rv-stale",
+          leaseExpiresAt: new Date(Date.now() - 10_000).toISOString(),
+        });
+        await store.createClaim(fresh);
+        await store.createClaim(stale);
+
+        const actives = await store.listEntities({ status: ClaimStatus.Active });
+        const activeIds = actives.map((e) => e.id);
+        expect(activeIds).toContain(fresh.claimId);
+        expect(activeIds).not.toContain(stale.claimId);
+
+        const expireds = await store.listEntities({ status: ClaimStatus.Expired });
+        const expiredIds = expireds.map((e) => e.id);
+        expect(expiredIds).toContain(stale.claimId);
+      });
+
+      test("listEntities resourceVersion advances after heartbeat and transition", async () => {
+        const claim = makeClaim({ claimId: "rv-claim", targetRef: "rv-target" });
+        await store.createClaim(claim);
+
+        const findVersion = async (): Promise<string> => {
+          const entities = await store.listEntities();
+          const found = entities.find((e) => e.id === claim.claimId);
+          if (!found) throw new Error(`claim ${claim.claimId} missing from listEntities`);
+          return found.resourceVersion;
+        };
+
+        const v0 = await findVersion();
+        expect(typeof v0).toBe("string");
+        expect(v0.length).toBeGreaterThan(0);
+
+        await store.heartbeat(claim.claimId);
+        const v1 = await findVersion();
+        expect(v1).not.toBe(v0);
+
+        await store.complete(claim.claimId);
+        const v2 = await findVersion();
+        expect(v2).not.toBe(v1);
+        expect(v2).not.toBe(v0);
+      });
+    }
 
     // ------------------------------------------------------------------
     // close

@@ -64,11 +64,19 @@ export function validateHeartbeat(claim: Claim | undefined, claimId: string): vo
 /**
  * Validate that a claim can transition to a new status (release/complete).
  * Throws with a specific error message if the transition is invalid.
+ *
+ * Rejects transitions on lease-expired claims: once the lease has
+ * passed, another agent may already have acquired the target, and
+ * letting the stale claimant mutate state (including deleting the
+ * shared target lock) breaks the one-active-claim-per-target
+ * invariant. Expired claims must be reclaimed or cleaned up via
+ * `expireStale`, not transitioned by their original owner.
  */
 export function validateTransition(
   claim: Claim | undefined,
   claimId: string,
   newStatus: ClaimStatus,
+  now: Date = new Date(),
 ): void {
   if (claim === undefined) {
     throw new NotFoundError({
@@ -82,6 +90,13 @@ export function validateTransition(
       resource: "Claim",
       reason: `status is '${claim.status}'`,
       message: `Cannot transition claim '${claimId}' from '${claim.status}' to '${newStatus}' (must be active)`,
+    });
+  }
+  if (new Date(claim.leaseExpiresAt).getTime() < now.getTime()) {
+    throw new StateConflictError({
+      resource: "Claim",
+      reason: "lease expired",
+      message: `Cannot ${newStatus === "completed" ? "complete" : "release"} claim '${claimId}': lease expired at ${claim.leaseExpiresAt}`,
     });
   }
 }

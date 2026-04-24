@@ -9,6 +9,8 @@
 import { execSync } from "node:child_process";
 import type { AcpxTurn } from "../acp/types.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
+import type { AgentSessionEntity } from "./entity.js";
+import { agentSessionToEntity } from "./entity.js";
 import { buildSessionId, parseSessionId, SESSION_ID_PREFIX } from "./session-id.js";
 import { shellEscape } from "./shell-utils.js";
 
@@ -233,6 +235,11 @@ export class TmuxRuntime implements AgentRuntime {
       // No tmux server running or not installed
       return [];
     }
+  }
+
+  async listSessionEntities(): Promise<readonly AgentSessionEntity[]> {
+    const items = await this.listSessions();
+    return items.map((s) => agentSessionToEntity(s));
   }
 
   /** Poll-based idle detection: compare pane output between ticks. */

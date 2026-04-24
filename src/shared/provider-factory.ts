@@ -42,6 +42,7 @@ export function createStubContributionStore(identity?: string): ContributionStor
     relatedTo: async () => [],
     findExisting: async () => [],
     replyCounts: async () => new Map(),
+    listEntities: async () => [],
     close: () => {
       /* expected */
     },

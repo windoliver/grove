@@ -5,6 +5,7 @@
  */
 
 import type { AcpxTurn } from "../acp/types.js";
+import type { AgentSessionEntity } from "./entity.js";
 import type { AgentPlatformType } from "./topology.js";
 
 /** Configuration for spawning an agent. */
@@ -80,6 +81,11 @@ export interface AgentRuntime {
   onIdle(session: AgentSession, callback: () => void): void;
   /** List all active sessions. */
   listSessions(): Promise<readonly AgentSession[]>;
+  /**
+   * Return AgentSessions wrapped in the Entity envelope (derived via agentSessionToEntity adapter).
+   * Acceptance criterion for #287.
+   */
+  listSessionEntities(): Promise<readonly AgentSessionEntity[]>;
   /** Check if the runtime's dependencies are available. */
   isAvailable(): Promise<boolean>;
 }

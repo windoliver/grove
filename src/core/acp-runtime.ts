@@ -13,6 +13,8 @@ import { AcpTurnImpl } from "../acp/turn-direct.js";
 import type { AcpxTurn, Message, Result } from "../acp/types.js";
 import { resolveAcpLaunch } from "./acp-launch.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
+import type { AgentSessionEntity } from "./entity.js";
+import { agentSessionToEntity } from "./entity.js";
 import { DENY_ALL_RESOLVER, type PermissionResolver } from "./permission-resolver.js";
 import { buildSessionId } from "./session-id.js";
 
@@ -337,6 +339,11 @@ export class AcpRuntime implements AgentRuntime {
 
   async listSessions(): Promise<readonly AgentSession[]> {
     return [...this.sessions.values()].map((e) => e.session);
+  }
+
+  async listSessionEntities(): Promise<readonly AgentSessionEntity[]> {
+    const items = await this.listSessions();
+    return items.map((s) => agentSessionToEntity(s));
   }
 
   private findEntryByWireSession(wireId: string): AcpSessionEntry | undefined {

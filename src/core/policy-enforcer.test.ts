@@ -15,6 +15,8 @@
 import { describe, expect, test } from "bun:test";
 
 import type { GroveContract } from "./contract.js";
+import type { ContributionEntity } from "./entity.js";
+import { contributionToEntity } from "./entity.js";
 import { PolicyViolationError } from "./errors.js";
 import type { Contribution, Score } from "./models.js";
 import {
@@ -25,7 +27,7 @@ import {
 } from "./models.js";
 import { PolicyEnforcer } from "./policy-enforcer.js";
 import type { SessionRuntimeConfig } from "./session-config.js";
-import type { ContributionStore } from "./store.js";
+import type { ContributionQuery, ContributionStore } from "./store.js";
 import { makeContribution as makeContributionFromHelper } from "./test-helpers.js";
 import { InMemoryContributionStore } from "./testing.js";
 
@@ -108,6 +110,14 @@ function makeStore(contributions: Contribution[] = []): ContributionStore {
     incomingSources: async () => [],
     replyCounts: async () => new Map(),
     hotThreads: async () => [],
+    listEntities: async (query?: ContributionQuery): Promise<readonly ContributionEntity[]> => {
+      let result = [...items];
+      if (query?.kind) result = result.filter((c) => c.kind === query.kind);
+      if (query?.mode) result = result.filter((c) => c.mode === query.mode);
+      if (query?.agentId) result = result.filter((c) => c.agent.agentId === query.agentId);
+      if (query?.limit) result = result.slice(0, query.limit);
+      return result.map(contributionToEntity);
+    },
     close: () => {
       /* noop */
     },

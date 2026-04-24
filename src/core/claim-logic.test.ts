@@ -287,6 +287,36 @@ describe("validateTransition", () => {
       expect(msg).toContain("completed");
     }
   });
+
+  test("throws when active lease has expired (prevents stale-claim mutation)", () => {
+    const expiredLease = "2020-01-01T00:00:00.000Z";
+    const claim = makeClaim({ status: "active", leaseExpiresAt: expiredLease });
+    expect(() => validateTransition(claim, "claim-1", "completed")).toThrow(/lease expired/);
+    expect(() => validateTransition(claim, "claim-1", "released")).toThrow(/lease expired/);
+  });
+
+  test("expired-lease error message includes lease timestamp", () => {
+    const expiredLease = "2020-01-01T00:00:00.000Z";
+    const claim = makeClaim({ leaseExpiresAt: expiredLease });
+    try {
+      validateTransition(claim, "claim-1", "completed");
+      throw new Error("Expected to throw");
+    } catch (e) {
+      expect((e as Error).message).toContain(expiredLease);
+    }
+  });
+
+  test("accepts custom now clock for deterministic lease comparison", () => {
+    const claim = makeClaim({ leaseExpiresAt: "2026-01-01T00:00:00.000Z" });
+    // Clock before lease expiry: allowed.
+    expect(() =>
+      validateTransition(claim, "claim-1", "completed", new Date("2025-12-31T23:00:00Z")),
+    ).not.toThrow();
+    // Clock after lease expiry: rejected.
+    expect(() =>
+      validateTransition(claim, "claim-1", "completed", new Date("2026-01-01T01:00:00Z")),
+    ).toThrow(/lease expired/);
+  });
 });
 
 // ---------------------------------------------------------------------------

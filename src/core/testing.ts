@@ -6,6 +6,8 @@
  * a single place to update when the ContributionStore interface evolves.
  */
 
+import type { ContributionEntity } from "./entity.js";
+import { contributionToEntity } from "./entity.js";
 import type { Contribution, ContributionKind, Relation, RelationType } from "./models.js";
 import type {
   ContributionQuery,
@@ -341,6 +343,11 @@ export class InMemoryContributionStore implements ContributionStore {
     const limit = opts?.limit ?? 20;
     return summaries.slice(0, limit);
   };
+
+  async listEntities(query?: ContributionQuery): Promise<readonly ContributionEntity[]> {
+    const items = await this.list(query);
+    return items.map(contributionToEntity);
+  }
 
   close(): void {
     // No resources to release in the in-memory store.

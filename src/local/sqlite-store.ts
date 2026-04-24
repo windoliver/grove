@@ -46,6 +46,8 @@ import { SqliteOutcomeStore } from "./sqlite-outcome-store.js";
 // ---------------------------------------------------------------------------
 
 import { DEFAULT_LEASE_DURATION_MS } from "../core/claim-logic.js";
+import type { ClaimEntity, ContributionEntity } from "../core/entity.js";
+import { claimToEntity, contributionToEntity } from "../core/entity.js";
 import { ClaimConflictError, NotFoundError, StateConflictError } from "../core/errors.js";
 import { toUtcIso } from "../core/time.js";
 
@@ -130,7 +132,8 @@ const SCHEMA_DDL = `
     lease_expires_at TEXT NOT NULL,
     context_json TEXT,
     agent_json TEXT NOT NULL,
-    attempt_count INTEGER NOT NULL DEFAULT 0
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    revision INTEGER NOT NULL DEFAULT 1
   );
 
   CREATE INDEX IF NOT EXISTS idx_claims_target ON claims(target_ref);
@@ -282,6 +285,15 @@ export function initSqliteDb(dbPath: string): Database {
       // From v4→v5: add attempt_count to claims
       if (!columnNames.has("attempt_count")) {
         db.run("ALTER TABLE claims ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0");
+      }
+
+      // Revision column — monotonic resourceVersion for Entity watch semantics (#287).
+      // Newly created claims start at revision=1 to match NexusClaimStore; when the
+      // column is added to an existing database we backfill live rows to 1 for the
+      // same reason (generation 0 reads as "uninitialized").
+      if (!columnNames.has("revision")) {
+        db.run("ALTER TABLE claims ADD COLUMN revision INTEGER NOT NULL DEFAULT 1");
+        db.run("UPDATE claims SET revision = 1 WHERE revision = 0");
       }
     }
 
@@ -698,6 +710,7 @@ interface ClaimRow {
   readonly context_json: string | null;
   readonly agent_json: string;
   readonly attempt_count: number;
+  readonly revision: number;
 }
 
 function rowToClaim(row: ClaimRow, statusOverride?: ClaimStatus): Claim {
@@ -711,6 +724,7 @@ function rowToClaim(row: ClaimRow, statusOverride?: ClaimStatus): Claim {
     heartbeatAt: row.heartbeat_at,
     leaseExpiresAt: row.lease_expires_at,
     ...(row.attempt_count > 0 && { attemptCount: row.attempt_count }),
+    revision: row.revision,
   };
   if (row.context_json !== null) {
     return {
@@ -1204,6 +1218,11 @@ export class SqliteContributionStore implements ContributionStore {
     );
   };
 
+  async listEntities(query?: ContributionQuery): Promise<readonly ContributionEntity[]> {
+    const items = await this.list(query);
+    return items.map(contributionToEntity);
+  }
+
   /**
    * No-op when used via createSqliteStores() — the factory's close() owns the
    * shared Database handle. Calling this will NOT close the underlying DB.
@@ -1316,7 +1335,7 @@ export class SqliteContributionStore implements ContributionStore {
 // ---------------------------------------------------------------------------
 
 const CLAIM_SELECT_COLS = `claim_id, target_ref, agent_id, status, intent_summary,
-  created_at, heartbeat_at, lease_expires_at, context_json, agent_json, attempt_count`;
+  created_at, heartbeat_at, lease_expires_at, context_json, agent_json, attempt_count, revision`;
 
 /**
  * SQLite-backed ClaimStore with lease-based coordination.
@@ -1424,7 +1443,8 @@ export class SqliteClaimStore implements ClaimStore {
           const freshExpiry = new Date(now.getTime() + durationMs).toISOString();
           this.db
             .prepare(
-              `UPDATE claims SET heartbeat_at = ?, lease_expires_at = ?, intent_summary = ?
+              `UPDATE claims SET heartbeat_at = ?, lease_expires_at = ?, intent_summary = ?,
+                 revision = revision + 1
                WHERE claim_id = ?`,
             )
             .run(nowIso, freshExpiry, claim.intentSummary, activeOnTarget.claim_id);
@@ -1482,7 +1502,7 @@ export class SqliteClaimStore implements ClaimStore {
     const rows = this.db
       .prepare(
         `UPDATE claims
-         SET heartbeat_at = ?, lease_expires_at = ?
+         SET heartbeat_at = ?, lease_expires_at = ?, revision = revision + 1
          WHERE claim_id = ? AND status = 'active' AND lease_expires_at >= ?
          RETURNING ${CLAIM_SELECT_COLS}`,
       )
@@ -1540,10 +1560,10 @@ export class SqliteClaimStore implements ClaimStore {
       // Step 1: Expire claims with expired leases
       const leaseExpired = this.db
         .prepare(
-          `UPDATE claims SET status = 'expired'
+          `UPDATE claims SET status = 'expired', revision = revision + 1
            WHERE status = 'active' AND lease_expires_at < ?
            RETURNING claim_id, target_ref, agent_id, status, intent_summary,
-                     created_at, heartbeat_at, lease_expires_at, context_json, agent_json, attempt_count`,
+                     created_at, heartbeat_at, lease_expires_at, context_json, agent_json, attempt_count, revision`,
         )
         .all(nowIso) as readonly ClaimRow[];
 
@@ -1556,10 +1576,10 @@ export class SqliteClaimStore implements ClaimStore {
         const stallCutoff = new Date(now.getTime() - options.stallThresholdMs).toISOString();
         const stalled = this.db
           .prepare(
-            `UPDATE claims SET status = 'expired'
+            `UPDATE claims SET status = 'expired', revision = revision + 1
              WHERE status = 'active' AND heartbeat_at < ?
              RETURNING claim_id, target_ref, agent_id, status, intent_summary,
-                       created_at, heartbeat_at, lease_expires_at, context_json, agent_json, attempt_count`,
+                       created_at, heartbeat_at, lease_expires_at, context_json, agent_json, attempt_count, revision`,
           )
           .all(stallCutoff) as readonly ClaimRow[];
 
@@ -1664,6 +1684,21 @@ export class SqliteClaimStore implements ClaimStore {
     return rows.map((row) => rowToClaim(row));
   };
 
+  async listEntities(query?: ClaimQuery): Promise<readonly ClaimEntity[]> {
+    // listEntities semantics: query.status filters on the **effective**
+    // (lease-aware) phase, not the raw persisted phase. So we fetch
+    // without the status filter, project, and then filter on the
+    // projected phase. Consumers that truly want raw persisted phase
+    // should call listClaims() directly.
+    const baseQuery: ClaimQuery | undefined =
+      query === undefined ? undefined : { ...query, status: undefined };
+    const items = await this.listClaims(baseQuery);
+    const entities = items.map((c) => claimToEntity(c));
+    if (query?.status === undefined) return entities;
+    const wanted = Array.isArray(query.status) ? new Set(query.status) : new Set([query.status]);
+    return entities.filter((e) => wanted.has(e.status.phase));
+  }
+
   /**
    * No-op when used via createSqliteStores() — the factory's close() owns the
    * shared Database handle. Calling this will NOT close the underlying DB.
@@ -1720,13 +1755,18 @@ export class SqliteClaimStore implements ClaimStore {
 
   private transitionClaim(claimId: string, newStatus: ClaimStatus): Claim {
     // Atomic UPDATE WHERE: only succeeds if claim is currently active
+    // AND the lease has not expired. Rejecting lease-expired transitions
+    // prevents a stale claimant from releasing/completing a claim whose
+    // target lock may already belong to another agent (finding: Codex
+    // round-3 one-active-claim-per-target invariant).
+    const nowIso = new Date().toISOString();
     const rows = this.db
       .prepare(
-        `UPDATE claims SET status = ?
-         WHERE claim_id = ? AND status = 'active'
+        `UPDATE claims SET status = ?, revision = revision + 1
+         WHERE claim_id = ? AND status = 'active' AND lease_expires_at >= ?
          RETURNING ${CLAIM_SELECT_COLS}`,
       )
-      .all(newStatus, claimId) as readonly ClaimRow[];
+      .all(newStatus, claimId, nowIso) as readonly ClaimRow[];
 
     if (rows.length > 0 && rows[0] !== undefined) {
       return rowToClaim(rows[0]);
@@ -1741,10 +1781,17 @@ export class SqliteClaimStore implements ClaimStore {
         message: `Claim '${claimId}' not found`,
       });
     }
+    if (existing.status !== "active") {
+      throw new StateConflictError({
+        resource: "Claim",
+        reason: `status is '${existing.status}'`,
+        message: `Cannot transition claim '${claimId}' from '${existing.status}' to '${newStatus}' (must be active)`,
+      });
+    }
     throw new StateConflictError({
       resource: "Claim",
-      reason: `status is '${existing.status}'`,
-      message: `Cannot transition claim '${claimId}' from '${existing.status}' to '${newStatus}' (must be active)`,
+      reason: "lease expired",
+      message: `Cannot ${newStatus === "completed" ? "complete" : "release"} claim '${claimId}': lease expired at ${existing.leaseExpiresAt}`,
     });
   }
 }
@@ -1754,18 +1801,47 @@ export class SqliteClaimStore implements ClaimStore {
 // ---------------------------------------------------------------------------
 
 /**
- * Combined store that implements both ContributionStore and ClaimStore.
+ * Combined-facade store backed by a single SQLite file.
  *
- * Delegates to SqliteContributionStore and SqliteClaimStore internally.
- * Provided for backwards compatibility — prefer createSqliteStores() for
- * new code.
+ * **Type contract changed in #287.** The facade now formally implements
+ * `ContributionStore` only. It exposes the split sub-stores as public
+ * readonly properties (`store.contributions`, `store.claims`) for callers
+ * that need a kind-specific interface:
+ *
+ * ```ts
+ * const store = new SqliteStore(dbPath);
+ *
+ * // Works — SqliteStore satisfies ContributionStore:
+ * const cs: ContributionStore = store;
+ *
+ * // Does NOT typecheck anymore — use store.claims instead:
+ * // const csm: ClaimStore = store;                     // error
+ * const csm: ClaimStore = store.claims;                 // correct
+ * ```
+ *
+ * Why: `ContributionStore.listEntities()` and `ClaimStore.listEntities()`
+ * share a method name but return different `Entity` kinds. A combined
+ * facade that implements both cannot dispatch a bare `listEntities()`
+ * call unambiguously. The split sub-stores each have a single, well-typed
+ * `listEntities()`. All other ClaimStore methods (createClaim, heartbeat,
+ * release, complete, …) remain available on the facade for convenience.
+ *
+ * Prefer `createSqliteStores(dbPath)` for new code — it returns a
+ * `{ contributionStore, claimStore, close }` bundle directly.
  */
-export class SqliteStore implements ContributionStore, ClaimStore {
+export class SqliteStore implements ContributionStore {
   readonly storeIdentity: string;
   readonly dbPath: string;
   private readonly db: Database;
-  private readonly contributions: SqliteContributionStore;
-  private readonly claims: SqliteClaimStore;
+  /**
+   * Split sub-stores exposed publicly so callers that want a clean
+   * `ClaimStore` (unambiguous `listEntities()`) can reach for
+   * `store.claims` rather than treating this facade as a `ClaimStore`.
+   * The facade itself formally implements only `ContributionStore` so
+   * that `listEntities()` has a single, unambiguous kind.
+   */
+  readonly contributions: SqliteContributionStore;
+  readonly claims: SqliteClaimStore;
 
   constructor(dbPath: string) {
     this.dbPath = dbPath;
@@ -1832,6 +1908,18 @@ export class SqliteStore implements ContributionStore, ClaimStore {
     this.claims.countActiveClaims(filter);
   detectStalled = (stallTimeoutMs: number): Promise<readonly Claim[]> =>
     this.claims.detectStalled(stallTimeoutMs);
+
+  /**
+   * ContributionStore.listEntities — delegates to the contribution sub-store.
+   *
+   * The facade no longer tries to service ClaimStore.listEntities through
+   * the same method (see class docstring): callers that need claim
+   * entities should use `store.claims.listEntities(...)` explicitly,
+   * which has a single, well-typed signature.
+   */
+  listEntities(query?: ContributionQuery): Promise<readonly ContributionEntity[]> {
+    return this.contributions.listEntities(query);
+  }
 
   close(): void {
     this.db.close();

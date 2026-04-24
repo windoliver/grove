@@ -11,6 +11,8 @@
  * - FTS:        /zones/{zoneId}/indexes/fts/{cid}.json
  */
 
+import type { ContributionEntity } from "../core/entity.js";
+import { contributionToEntity } from "../core/entity.js";
 import { fromManifest, toManifest, verifyCid } from "../core/manifest.js";
 import type {
   Contribution,
@@ -590,6 +592,11 @@ export class NexusContributionStore implements ContributionStore {
     });
 
     return summaries.slice(0, limit);
+  }
+
+  async listEntities(query?: ContributionQuery): Promise<readonly ContributionEntity[]> {
+    const items = await this.list(query);
+    return items.map(contributionToEntity);
   }
 
   close(): void {

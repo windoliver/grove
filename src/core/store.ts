@@ -5,6 +5,7 @@
  * The local SQLite adapter and the Nexus adapter both satisfy these protocols.
  */
 
+import type { ClaimEntity, ContributionEntity } from "./entity.js";
 import type {
   Claim,
   ClaimStatus,
@@ -189,6 +190,12 @@ export interface ContributionStore {
    */
   hotThreads(opts?: HotThreadsOptions): Promise<readonly ThreadSummary[]>;
 
+  /**
+   * Return Contributions wrapped in the Entity envelope (derived via contributionToEntity adapter).
+   * Acceptance criterion for #287.
+   */
+  listEntities(query?: ContributionQuery): Promise<readonly ContributionEntity[]>;
+
   /** Release resources (e.g., close database connections). */
   close(): void;
 }
@@ -318,6 +325,12 @@ export interface ClaimStore {
    * This is advisory — callers decide what to do with stalled claims.
    */
   detectStalled(stallTimeoutMs: number): Promise<readonly Claim[]>;
+
+  /**
+   * Return Claims wrapped in the Entity envelope (derived via claimToEntity adapter).
+   * Acceptance criterion for #287.
+   */
+  listEntities(query?: ClaimQuery): Promise<readonly ClaimEntity[]>;
 
   /** Release resources (e.g., close database connections). */
   close(): void;
