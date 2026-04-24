@@ -5,11 +5,24 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { access, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { isValidProjectId } from "../../core/project-id.js";
+import { loadRegistry } from "../../core/project-registry.js";
 import type { InitOptions } from "./init.js";
 import { executeInit, parseInitArgs } from "./init.js";
+
+function initGitRepo(cwd: string, origin: string | null): void {
+  const run = (args: string[]) =>
+    spawnSync("git", ["-C", cwd, ...args], { stdio: "ignore" });
+  run(["init", "-q"]);
+  run(["config", "user.email", "t@t"]);
+  run(["config", "user.name", "t"]);
+  if (origin) run(["remote", "add", "origin", origin]);
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -258,5 +271,21 @@ describe("grove init E2E", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("grove init — project identity (#288)", () => {
+  test("creates .grove/project-id with a valid UUIDv4 on a fresh repo", async () => {
+    const cwd = await createTempDir();
+    initGitRepo(cwd, null);
+    const registryPath = join(cwd, "test-registry.yaml");
+    await executeInit(
+      makeOptions({ name: "one", cwd }),
+      undefined,
+      { registryPath },
+    );
+    const id = readFileSync(join(cwd, ".grove", "project-id"), "utf8").trim();
+    expect(isValidProjectId(id)).toBe(true);
+    await rm(cwd, { recursive: true, force: true });
   });
 });

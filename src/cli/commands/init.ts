@@ -32,6 +32,7 @@ export interface InitOptions {
   readonly preset?: string | undefined;
   readonly nexusUrl?: string | undefined;
   readonly nexusChannel?: string | undefined;
+  readonly unify?: boolean;
 }
 
 /**
@@ -63,6 +64,8 @@ export function parseInitArgs(args: readonly string[]): InitOptions {
       model: { type: "string" },
       platform: { type: "string" },
       role: { type: "string" },
+      unify: { type: "boolean" },
+      "no-unify": { type: "boolean" },
     },
     allowPositionals: true,
     strict: true,
@@ -101,6 +104,13 @@ export function parseInitArgs(args: readonly string[]): InitOptions {
 
   const name = positionals[0] ?? basename(process.cwd());
 
+  const unifyFlag = values.unify as boolean | undefined;
+  const noUnifyFlag = values["no-unify"] as boolean | undefined;
+  if (unifyFlag && noUnifyFlag) {
+    throw new Error("--unify and --no-unify are mutually exclusive.");
+  }
+  const unify = unifyFlag === true ? true : noUnifyFlag === true ? false : undefined;
+
   return {
     name,
     mode: mode as "evaluation" | "exploration",
@@ -121,6 +131,7 @@ export function parseInitArgs(args: readonly string[]): InitOptions {
       role: values.role as string | undefined,
     },
     cwd: process.cwd(),
+    ...(unify === undefined ? {} : { unify }),
   };
 }
 
@@ -134,6 +145,15 @@ export type InitProgressCallback = (step: number, label: string) => void;
 /** Dependencies for executeInit (injectable for testing). */
 export interface InitDeps {
   readonly cwd: string;
+}
+
+/** Test-only injection points for executeInit. */
+export interface ExecuteInitTestHooks {
+  readonly registryPath?: string;
+  readonly isTTY?: boolean;
+  readonly stdin?: NodeJS.ReadableStream;
+  readonly stdout?: NodeJS.WritableStream;
+  readonly now?: () => Date;
 }
 
 /**
@@ -151,7 +171,8 @@ export interface InitDeps {
 export async function executeInit(
   options: InitOptions,
   onProgress?: InitProgressCallback,
-): Promise<{ grovePath: string }> {
+  hooks?: ExecuteInitTestHooks,
+): Promise<{ grovePath: string; projectId: string }> {
   const grovePath = join(options.cwd, ".grove");
   // biome-ignore lint/suspicious/noEmptyBlockStatements: intentional no-op fallback
   const progress = onProgress ?? (() => {});
@@ -183,6 +204,21 @@ export async function executeInit(
   const workspacesPath = join(grovePath, "workspaces");
   await mkdir(casPath, { recursive: true });
   await mkdir(workspacesPath, { recursive: true });
+
+  // 3b. Ensure `.grove/project-id` exists (spec #288). Folded under the
+  //     directory-creation step to keep progress indices stable.
+  const { ensureProjectId } = await import("../utils/ensure-project-id.js");
+  const ensureResult = await ensureProjectId({
+    groveDir: grovePath,
+    cwd: options.cwd,
+    unify: options.unify,
+    registryPath: hooks?.registryPath,
+    isTTY: hooks?.isTTY ?? Boolean(process.stdout.isTTY && process.stdin.isTTY),
+    stdin: hooks?.stdin,
+    stdout: hooks?.stdout,
+    now: hooks?.now,
+  });
+  const projectId = ensureResult.id;
 
   // 4. Initialize SQLite store
   progress(2, "Initializing database");
@@ -358,6 +394,23 @@ export async function executeInit(
   }
 
   console.log(`Initialized grove '${options.name}' at ${grovePath}`);
+  switch (ensureResult.source) {
+    case "local":
+      console.log(`project id ${projectId} (existing)`);
+      break;
+    case "registry":
+      console.log(`project id ${projectId} (unified with ${ensureResult.registryName})`);
+      break;
+    case "generated":
+      if (ensureResult.origin && ensureResult.registered) {
+        console.log(`project id ${projectId} (new, registered as ${ensureResult.registryName})`);
+      } else if (ensureResult.origin) {
+        console.log(`project id ${projectId} (new, origin already owned — not registered)`);
+      } else {
+        console.log(`project id ${projectId} (new, no origin — not registered)`);
+      }
+      break;
+  }
   if (preset) {
     const services: string[] = [];
     if (preset.services?.server) services.push("HTTP server");
@@ -371,7 +424,7 @@ export async function executeInit(
   } else {
     console.log("\nNext: run 'grove up' to start, or 'grove contribute' to publish work.");
   }
-  return { grovePath };
+  return { grovePath, projectId };
 }
 
 // ---------------------------------------------------------------------------
