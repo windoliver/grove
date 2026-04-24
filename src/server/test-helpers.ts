@@ -7,6 +7,8 @@
 
 import type { Hono } from "hono";
 import type { ContentStore, PutOptions } from "../core/cas.js";
+import type { ClaimEntity } from "../core/entity.js";
+import { claimToEntity } from "../core/entity.js";
 import { NotFoundError, StateConflictError } from "../core/errors.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
 import type { AgentIdentity, Artifact, Claim, ContributionInput } from "../core/models.js";
@@ -252,6 +254,17 @@ export class InMemoryClaimStore implements ClaimStore {
 
   async detectStalled(_stallTimeoutMs: number): Promise<readonly Claim[]> {
     return [];
+  }
+
+  async listEntities(query?: ClaimQuery): Promise<readonly ClaimEntity[]> {
+    let results = [...this.claims.values()];
+    if (query?.status) {
+      const statuses = Array.isArray(query.status) ? query.status : [query.status];
+      results = results.filter((c) => statuses.includes(c.status));
+    }
+    if (query?.agentId) results = results.filter((c) => c.agent.agentId === query.agentId);
+    if (query?.targetRef) results = results.filter((c) => c.targetRef === query.targetRef);
+    return results.map(claimToEntity);
   }
 
   close(): void {

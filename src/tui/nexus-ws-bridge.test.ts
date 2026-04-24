@@ -45,6 +45,7 @@ function makeMockRuntime(): AgentRuntime {
     // biome-ignore lint/suspicious/noEmptyBlockStatements: mock no-op
     onIdle: mock(() => {}),
     listSessions: mock(() => Promise.resolve([])),
+    listSessionEntities: mock(() => Promise.resolve([])),
     isAvailable: mock(() => Promise.resolve(true)),
   };
 }

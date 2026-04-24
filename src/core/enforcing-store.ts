@@ -15,6 +15,7 @@
  */
 
 import type { ContentStore } from "./cas.js";
+import type { ClaimEntity, ContributionEntity } from "./entity.js";
 import {
   ArtifactLimitError,
   ConcurrencyLimitError,
@@ -307,6 +308,9 @@ export class EnforcingContributionStore implements ContributionStore {
   hotThreads = (
     opts?: import("./store.js").HotThreadsOptions,
   ): Promise<readonly import("./store.js").ThreadSummary[]> => this.inner.hotThreads(opts);
+  listEntities = (
+    query?: import("./store.js").ContributionQuery,
+  ): Promise<readonly ContributionEntity[]> => this.inner.listEntities(query);
   close = (): void => this.inner.close();
 
   // ========================================================================
@@ -568,6 +572,8 @@ export class EnforcingClaimStore implements ClaimStore {
     this.inner.countActiveClaims(filter);
   detectStalled = (stallTimeoutMs: number): Promise<readonly Claim[]> =>
     this.inner.detectStalled(stallTimeoutMs);
+  listEntities = (query?: import("./store.js").ClaimQuery): Promise<readonly ClaimEntity[]> =>
+    this.inner.listEntities(query);
   close = (): void => this.inner.close();
 
   // ========================================================================

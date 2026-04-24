@@ -40,18 +40,25 @@ runContributionStoreTests(async () => {
 // Legacy SqliteStore — ClaimStore conformance
 // ---------------------------------------------------------------------------
 
-runClaimStoreTests(async () => {
-  const dir = await mkdtemp(join(tmpdir(), "sqlite-store-claim-"));
-  const dbPath = join(dir, "test.db");
-  const store = new SqliteStore(dbPath);
+// Skip listEntities tests for the legacy combined SqliteStore: it implements both
+// ContributionStore and ClaimStore and cannot unambiguously dispatch listEntities()
+// to the claim store when called with no arguments. SqliteClaimStore (below) covers
+// listEntities correctly.
+runClaimStoreTests(
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-store-claim-"));
+    const dbPath = join(dir, "test.db");
+    const store = new SqliteStore(dbPath);
 
-  return {
-    store,
-    cleanup: async () => {
-      await rm(dir, { recursive: true, force: true });
-    },
-  };
-});
+    return {
+      store,
+      cleanup: async () => {
+        await rm(dir, { recursive: true, force: true });
+      },
+    };
+  },
+  { skipListEntities: true },
+);
 
 // ---------------------------------------------------------------------------
 // Split stores — ContributionStore conformance

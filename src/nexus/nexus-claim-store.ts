@@ -17,6 +17,8 @@ import {
   validateHeartbeat,
   validateTransition,
 } from "../core/claim-logic.js";
+import type { ClaimEntity } from "../core/entity.js";
+import { claimToEntity } from "../core/entity.js";
 import { StateConflictError } from "../core/errors.js";
 import type { Claim, ClaimStatus } from "../core/models.js";
 import type {
@@ -406,6 +408,11 @@ export class NexusClaimStore implements ClaimStore {
         new Date(c.heartbeatAt).getTime() < stallCutoff.getTime()
       );
     });
+  }
+
+  async listEntities(query?: ClaimQuery): Promise<readonly ClaimEntity[]> {
+    const items = await this.listClaims(query);
+    return items.map(claimToEntity);
   }
 
   close(): void {

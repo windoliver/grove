@@ -19,13 +19,15 @@ import {
 import { LocalWorkspaceManager } from "../../local/workspace.js";
 import type { ContentStore } from "../cas.js";
 import type { GroveContract } from "../contract.js";
+import type { ContributionEntity } from "../entity.js";
+import { contributionToEntity } from "../entity.js";
 import { DefaultFrontierCalculator } from "../frontier.js";
 import type { HandoffStore } from "../handoff.js";
 import { InMemoryCreditsService } from "../in-memory-credits.js";
 import { InMemoryHandoffStore } from "../in-memory-handoff-store.js";
 import type { Contribution } from "../models.js";
 import type { OutcomeStore } from "../outcome.js";
-import type { ContributionStore } from "../store.js";
+import type { ContributionQuery, ContributionStore } from "../store.js";
 import type { OperationDeps } from "./deps.js";
 
 /**
@@ -82,6 +84,14 @@ export function makeInMemoryContributionStore(items: Contribution[] = []): Contr
     incomingSources: async () => [],
     replyCounts: async () => new Map(),
     hotThreads: async () => [],
+    listEntities: async (query?: ContributionQuery): Promise<readonly ContributionEntity[]> => {
+      let result = [...store];
+      if (query?.kind) result = result.filter((c) => c.kind === query.kind);
+      if (query?.mode) result = result.filter((c) => c.mode === query.mode);
+      if (query?.agentId) result = result.filter((c) => c.agent.agentId === query.agentId);
+      if (query?.limit) result = result.slice(0, query.limit);
+      return result.map(contributionToEntity);
+    },
     close: () => {
       /* expected */
     },

@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import type { ClaimEntity } from "./entity.js";
+import { claimToEntity } from "./entity.js";
 import { ClaimStatus } from "./models.js";
 import { DefaultReconciler } from "./reconciler.js";
-import type { ClaimStore, ExpiredClaim } from "./store.js";
+import type { ClaimQuery, ClaimStore, ExpiredClaim } from "./store.js";
 import { ExpiryReason } from "./store.js";
 import type {
   CheckoutOptions,
@@ -52,6 +54,16 @@ function makeClaimStore(overrides?: {
     cleanCompleted: overrides?.cleanCompleted ?? (async () => 0),
     countActiveClaims: async () => 0,
     detectStalled: async () => [],
+    listEntities: async (query?: ClaimQuery): Promise<readonly ClaimEntity[]> => {
+      const allClaims = [...claimsById.values()];
+      let result = allClaims;
+      if (query?.status) {
+        const statuses = Array.isArray(query.status) ? query.status : [query.status];
+        result = result.filter((c) => statuses.includes(c.status));
+      }
+      if (query?.agentId) result = result.filter((c) => c.agent.agentId === query.agentId);
+      return result.map(claimToEntity);
+    },
     close: () => undefined,
   };
 }

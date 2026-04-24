@@ -9,6 +9,8 @@
 
 import type { AcpxTurn, Message, Result } from "../acp/types.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
+import type { AgentSessionEntity } from "./entity.js";
+import { agentSessionToEntity } from "./entity.js";
 
 export class MockRuntime implements AgentRuntime {
   readonly spawnCalls: Array<{ role: string; config: AgentConfig }> = [];
@@ -82,6 +84,11 @@ export class MockRuntime implements AgentRuntime {
 
   async listSessions(): Promise<readonly AgentSession[]> {
     return [...this.sessions.values()];
+  }
+
+  async listSessionEntities(): Promise<readonly AgentSessionEntity[]> {
+    const items = await this.listSessions();
+    return items.map((s) => agentSessionToEntity(s));
   }
 
   async isAvailable(): Promise<boolean> {

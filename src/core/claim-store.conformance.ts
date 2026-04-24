@@ -18,13 +18,27 @@ export type ClaimStoreFactory = () => Promise<{
   cleanup: () => Promise<void>;
 }>;
 
+/** Options for running ClaimStore conformance tests. */
+export interface ClaimStoreConformanceOptions {
+  /**
+   * Set to true to skip the listEntities tests.
+   * Use for legacy combined-store implementations (e.g. SqliteStore)
+   * that implement both ContributionStore and ClaimStore and cannot
+   * unambiguously dispatch listEntities() to the claim store.
+   */
+  readonly skipListEntities?: boolean;
+}
+
 /**
  * Run the full ClaimStore conformance test suite.
  *
  * Call this from your backend-specific test file with a factory
  * that creates and tears down store instances.
  */
-export function runClaimStoreTests(factory: ClaimStoreFactory): void {
+export function runClaimStoreTests(
+  factory: ClaimStoreFactory,
+  options?: ClaimStoreConformanceOptions,
+): void {
   describe("ClaimStore conformance", () => {
     let store: ClaimStore;
     let cleanup: () => Promise<void>;
@@ -919,6 +933,43 @@ export function runClaimStoreTests(factory: ClaimStoreFactory): void {
       expect(result[0]?.claimId).toBe("lo-2");
       expect(result[1]?.claimId).toBe("lo-1");
     });
+
+    // ------------------------------------------------------------------
+    // listEntities — Entity envelope. Acceptance criterion for #287.
+    // ------------------------------------------------------------------
+
+    if (!options?.skipListEntities) {
+      test("listEntities returns Entity-shaped objects with kind Claim", async () => {
+        const c1 = makeClaim({ claimId: "ent-1", targetRef: "t-ent-1" });
+        const c2 = makeClaim({ claimId: "ent-2", targetRef: "t-ent-2" });
+        await store.createClaim(c1);
+        await store.createClaim(c2);
+
+        const entities = await store.listEntities();
+        expect(entities.length).toBeGreaterThanOrEqual(2);
+        for (const e of entities) {
+          expect(e.kind).toBe("Claim");
+          expect(e.conditions.length).toBeGreaterThan(0);
+          expect(typeof e.id).toBe("string");
+        }
+      });
+
+      test("listEntities length matches listClaims() length", async () => {
+        const c1 = makeClaim({ claimId: "ent-len-1", targetRef: "t-ent-len-1" });
+        const c2 = makeClaim({ claimId: "ent-len-2", targetRef: "t-ent-len-2" });
+        await store.createClaim(c1);
+        await store.createClaim(c2);
+        await store.release(c2.claimId);
+
+        const all = await store.listClaims();
+        const allEntities = await store.listEntities();
+        expect(allEntities.length).toBe(all.length);
+
+        const active = await store.listClaims({ status: ClaimStatus.Active });
+        const activeEntities = await store.listEntities({ status: ClaimStatus.Active });
+        expect(activeEntities.length).toBe(active.length);
+      });
+    }
 
     // ------------------------------------------------------------------
     // close

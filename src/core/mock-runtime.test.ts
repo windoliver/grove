@@ -1,6 +1,23 @@
 import { expect, test } from "bun:test";
 import { MockRuntime } from "./mock-runtime.js";
 
+// listSessionEntities — Entity envelope. Acceptance criterion for #287.
+test("MockRuntime.listSessionEntities returns Entity-shaped objects with kind AgentSession", async () => {
+  const rt = new MockRuntime();
+  await rt.spawn("coder", { role: "coder", command: "codex", cwd: "." });
+  await rt.spawn("reviewer", { role: "reviewer", command: "codex", cwd: "." });
+
+  const sessions = await rt.listSessions();
+  const entities = await rt.listSessionEntities();
+
+  expect(entities.length).toBe(sessions.length);
+  for (const e of entities) {
+    expect(e.kind).toBe("AgentSession");
+    expect(e.conditions.length).toBeGreaterThan(0);
+    expect(typeof e.id).toBe("string");
+  }
+});
+
 test("MockRuntime.send returns a drainable AcpxTurn with canned messages", async () => {
   const rt = new MockRuntime();
   const s = await rt.spawn("coder", { role: "coder", command: "codex", cwd: "." });

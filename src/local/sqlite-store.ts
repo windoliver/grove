@@ -46,6 +46,8 @@ import { SqliteOutcomeStore } from "./sqlite-outcome-store.js";
 // ---------------------------------------------------------------------------
 
 import { DEFAULT_LEASE_DURATION_MS } from "../core/claim-logic.js";
+import type { ClaimEntity, ContributionEntity } from "../core/entity.js";
+import { claimToEntity, contributionToEntity } from "../core/entity.js";
 import { ClaimConflictError, NotFoundError, StateConflictError } from "../core/errors.js";
 import { toUtcIso } from "../core/time.js";
 
@@ -1204,6 +1206,11 @@ export class SqliteContributionStore implements ContributionStore {
     );
   };
 
+  async listEntities(query?: ContributionQuery): Promise<readonly ContributionEntity[]> {
+    const items = await this.list(query);
+    return items.map(contributionToEntity);
+  }
+
   /**
    * No-op when used via createSqliteStores() — the factory's close() owns the
    * shared Database handle. Calling this will NOT close the underlying DB.
@@ -1664,6 +1671,11 @@ export class SqliteClaimStore implements ClaimStore {
     return rows.map((row) => rowToClaim(row));
   };
 
+  async listEntities(query?: ClaimQuery): Promise<readonly ClaimEntity[]> {
+    const items = await this.listClaims(query);
+    return items.map(claimToEntity);
+  }
+
   /**
    * No-op when used via createSqliteStores() — the factory's close() owns the
    * shared Database handle. Calling this will NOT close the underlying DB.
@@ -1832,6 +1844,38 @@ export class SqliteStore implements ContributionStore, ClaimStore {
     this.claims.countActiveClaims(filter);
   detectStalled = (stallTimeoutMs: number): Promise<readonly Claim[]> =>
     this.claims.detectStalled(stallTimeoutMs);
+
+  /**
+   * Returns Entity-shaped objects for the underlying store.
+   *
+   * This legacy class implements both ContributionStore and ClaimStore, which
+   * both define listEntities with different signatures. This implementation
+   * delegates to contributions.listEntities (ContributionStore interpretation).
+   * For claim entities use createSqliteStores() and SqliteClaimStore directly.
+   *
+   * Return ContributionEntities wrapped in the Entity envelope.
+   * Acceptance criterion for #287.
+   */
+  listEntities(query?: ContributionQuery): Promise<readonly ContributionEntity[]>;
+  listEntities(query?: ClaimQuery): Promise<readonly ClaimEntity[]>;
+  listEntities(
+    query?: ContributionQuery | ClaimQuery,
+  ): Promise<readonly ContributionEntity[] | readonly ClaimEntity[]> {
+    // Dispatch to the correct inner store based on which interface is being used.
+    // ClaimQuery has `status` and `targetRef` fields that ContributionQuery does not.
+    // When called with no query (or a query that has no claim-specific fields),
+    // the legacy `SqliteStore` is ambiguous. We detect claim context via `status` / `targetRef`.
+    const isClaimQuery =
+      query !== undefined &&
+      ("status" in query || "targetRef" in query) &&
+      !("kind" in query) &&
+      !("mode" in query) &&
+      !("tags" in query);
+    if (isClaimQuery) {
+      return this.claims.listEntities(query as ClaimQuery);
+    }
+    return this.contributions.listEntities(query as ContributionQuery);
+  }
 
   close(): void {
     this.db.close();
