@@ -7,7 +7,7 @@
  * lowercased and the path case preserved.
  */
 
-import { spawnSync } from "node:child_process";
+import { type SpawnSyncReturns, spawnSync } from "node:child_process";
 
 const SCHEME_RE = /^(?:https?|ssh|git|git\+ssh):\/\//i;
 
@@ -72,7 +72,7 @@ export function normalizeOriginUrl(raw: string): string | null {
 }
 
 export function detectOriginUrl(cwd: string): string | null {
-  let result: ReturnType<typeof spawnSync>;
+  let result: SpawnSyncReturns<string>;
   try {
     result = spawnSync("git", ["-C", cwd, "remote", "get-url", "origin"], {
       encoding: "utf8",
