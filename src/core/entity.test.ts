@@ -210,6 +210,37 @@ describe("claimToEntity", () => {
     expect(m.Expired?.reason).toBe("lease-expired");
   });
 
+  test("resourceVersion changes when crossing the lease-expiry boundary", () => {
+    // Same persisted claim (revision=5, phase=active), two different
+    // wall clocks: one before the lease, one after. The lease-aware
+    // projection must signal a version change so downstream caches
+    // cannot conflate the Active and Expired snapshots.
+    const claim = makeClaim({ status: ClaimStatus.Active, revision: 5 });
+    const fresh = claimToEntity(claim, claimClock);
+    const stale = claimToEntity(claim, pastLeaseClock);
+    expect(fresh.resourceVersion).toBe("5");
+    expect(stale.resourceVersion).toBe("5-lease-expired");
+    expect(stale.resourceVersion).not.toBe(fresh.resourceVersion);
+    // observedGeneration stays pinned to the persisted revision — no
+    // controller has reconciled the lease-expired view, so generation
+    // tracking should not imply one did.
+    expect(fresh.observedGeneration).toBe(5);
+    expect(stale.observedGeneration).toBe(5);
+  });
+
+  test("lease-expired suffix does not apply to terminal phases", () => {
+    const completed = claimToEntity(
+      makeClaim({ status: ClaimStatus.Completed, revision: 3 }),
+      pastLeaseClock,
+    );
+    expect(completed.resourceVersion).toBe("3");
+    const released = claimToEntity(
+      makeClaim({ status: ClaimStatus.Released, revision: 4 }),
+      pastLeaseClock,
+    );
+    expect(released.resourceVersion).toBe("4");
+  });
+
   test("released claim with past lease stays released (lease-gate only applies to active)", () => {
     const e = claimToEntity(makeClaim({ status: ClaimStatus.Released }), pastLeaseClock);
     const m = Object.fromEntries(e.conditions.map((c) => [c.type, c]));

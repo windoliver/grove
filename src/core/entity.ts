@@ -208,7 +208,12 @@ export function claimToEntity(c: Claim, now: () => number = () => Date.now()): C
     },
     conditions,
     observedGeneration: rev,
-    resourceVersion: String(rev),
+    // When lease expiry is derived from wall-clock (not yet persisted by
+    // expireStale), the logical Entity state has changed even though
+    // `revision` has not. Encode the lease-crossed boundary in the
+    // resourceVersion so caches/informers see a version change at the
+    // boundary and do not conflate the two snapshots.
+    resourceVersion: leaseIsExpired ? `${rev}-lease-expired` : String(rev),
     metadata: {
       generation: metaGen,
       creationTimestamp: c.createdAt,

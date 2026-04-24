@@ -1741,13 +1741,18 @@ export class SqliteClaimStore implements ClaimStore {
 
   private transitionClaim(claimId: string, newStatus: ClaimStatus): Claim {
     // Atomic UPDATE WHERE: only succeeds if claim is currently active
+    // AND the lease has not expired. Rejecting lease-expired transitions
+    // prevents a stale claimant from releasing/completing a claim whose
+    // target lock may already belong to another agent (finding: Codex
+    // round-3 one-active-claim-per-target invariant).
+    const nowIso = new Date().toISOString();
     const rows = this.db
       .prepare(
         `UPDATE claims SET status = ?, revision = revision + 1
-         WHERE claim_id = ? AND status = 'active'
+         WHERE claim_id = ? AND status = 'active' AND lease_expires_at >= ?
          RETURNING ${CLAIM_SELECT_COLS}`,
       )
-      .all(newStatus, claimId) as readonly ClaimRow[];
+      .all(newStatus, claimId, nowIso) as readonly ClaimRow[];
 
     if (rows.length > 0 && rows[0] !== undefined) {
       return rowToClaim(rows[0]);
@@ -1762,10 +1767,17 @@ export class SqliteClaimStore implements ClaimStore {
         message: `Claim '${claimId}' not found`,
       });
     }
+    if (existing.status !== "active") {
+      throw new StateConflictError({
+        resource: "Claim",
+        reason: `status is '${existing.status}'`,
+        message: `Cannot transition claim '${claimId}' from '${existing.status}' to '${newStatus}' (must be active)`,
+      });
+    }
     throw new StateConflictError({
       resource: "Claim",
-      reason: `status is '${existing.status}'`,
-      message: `Cannot transition claim '${claimId}' from '${existing.status}' to '${newStatus}' (must be active)`,
+      reason: "lease expired",
+      message: `Cannot ${newStatus === "completed" ? "complete" : "release"} claim '${claimId}': lease expired at ${existing.leaseExpiresAt}`,
     });
   }
 }

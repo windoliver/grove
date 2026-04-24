@@ -227,6 +227,30 @@ export function runClaimStoreTests(
       await expect(store.complete(claim.claimId)).rejects.toThrow();
     });
 
+    test("release throws when active lease has expired (stale claimant blocked)", async () => {
+      // Create a claim whose lease is already in the past but whose
+      // persisted status is still "active" (simulates the window before
+      // expireStale runs). The original owner must not be able to
+      // mutate it: another agent may already have acquired the target.
+      const staleClaim = makeClaim({
+        claimId: "stale-release",
+        targetRef: "t-stale-release",
+        leaseExpiresAt: new Date(Date.now() - 10_000).toISOString(),
+      });
+      await store.createClaim(staleClaim);
+      await expect(store.release(staleClaim.claimId)).rejects.toThrow(/lease expired/);
+    });
+
+    test("complete throws when active lease has expired (stale claimant blocked)", async () => {
+      const staleClaim = makeClaim({
+        claimId: "stale-complete",
+        targetRef: "t-stale-complete",
+        leaseExpiresAt: new Date(Date.now() - 10_000).toISOString(),
+      });
+      await store.createClaim(staleClaim);
+      await expect(store.complete(staleClaim.claimId)).rejects.toThrow(/lease expired/);
+    });
+
     // ------------------------------------------------------------------
     // expireStale
     // ------------------------------------------------------------------
