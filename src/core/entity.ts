@@ -132,8 +132,7 @@ export interface ClaimStatusBody {
 export type ClaimEntity = Entity<"Claim", ClaimSpec, ClaimStatusBody>;
 
 export function claimToEntity(c: Claim): ClaimEntity {
-  const generation = c.revision ?? 0;
-  const obs = c.revision ?? 0;
+  const rev = c.revision ?? 0;
   const metaGen = c.revision ?? 1;
   const phase = c.status;
 
@@ -144,7 +143,7 @@ export function claimToEntity(c: Claim): ClaimEntity {
   ): Condition => ({
     type,
     status: active ? "True" : "False",
-    observedGeneration: obs,
+    observedGeneration: rev,
     lastTransitionTime,
     reason: phase,
     message: "",
@@ -153,6 +152,7 @@ export function claimToEntity(c: Claim): ClaimEntity {
   const conditions: readonly Condition[] = [
     mkCond("Active", phase === "active", c.heartbeatAt),
     mkCond("Expired", phase === "expired", c.leaseExpiresAt),
+    // No completedAt on Claim; heartbeatAt is the last operational timestamp.
     mkCond("Completed", phase === "completed", c.heartbeatAt),
   ];
 
@@ -173,8 +173,8 @@ export function claimToEntity(c: Claim): ClaimEntity {
       attemptCount: c.attemptCount ?? 0,
     },
     conditions,
-    observedGeneration: obs,
-    resourceVersion: String(generation),
+    observedGeneration: rev,
+    resourceVersion: String(rev),
     metadata: {
       generation: metaGen,
       creationTimestamp: c.createdAt,
