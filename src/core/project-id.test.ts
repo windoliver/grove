@@ -1,5 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import { generateProjectId, isValidProjectId } from "./project-id.js";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  generateProjectId,
+  isValidProjectId,
+  readProjectId,
+} from "./project-id.js";
+
+function makeTmpGroveDir(): string {
+  const dir = join(
+    tmpdir(),
+    `grove-project-id-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
 
 describe("isValidProjectId", () => {
   test("accepts a canonical UUIDv4", () => {
@@ -41,5 +57,36 @@ describe("generateProjectId", () => {
     const a = generateProjectId();
     const b = generateProjectId();
     expect(a).not.toBe(b);
+  });
+});
+
+describe("readProjectId", () => {
+  test("returns null when file is missing", () => {
+    const dir = makeTmpGroveDir();
+    expect(readProjectId(dir)).toBeNull();
+  });
+
+  test("returns null when file is empty", () => {
+    const dir = makeTmpGroveDir();
+    writeFileSync(join(dir, "project-id"), "");
+    expect(readProjectId(dir)).toBeNull();
+  });
+
+  test("returns id without trailing newline", () => {
+    const dir = makeTmpGroveDir();
+    writeFileSync(join(dir, "project-id"), "550e8400-e29b-41d4-a716-446655440000");
+    expect(readProjectId(dir)).toBe("550e8400-e29b-41d4-a716-446655440000");
+  });
+
+  test("returns id with trailing newline", () => {
+    const dir = makeTmpGroveDir();
+    writeFileSync(join(dir, "project-id"), "550e8400-e29b-41d4-a716-446655440000\n");
+    expect(readProjectId(dir)).toBe("550e8400-e29b-41d4-a716-446655440000");
+  });
+
+  test("throws on malformed contents", () => {
+    const dir = makeTmpGroveDir();
+    writeFileSync(join(dir, "project-id"), "garbage\n");
+    expect(() => readProjectId(dir)).toThrow(/Invalid project id/);
   });
 });

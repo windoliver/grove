@@ -21,3 +21,22 @@ export function isValidProjectId(s: string): boolean {
 export function generateProjectId(): string {
   return randomUUID();
 }
+
+export function readProjectId(groveDir: string): string | null {
+  const path = join(groveDir, PROJECT_ID_FILE);
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+  const trimmed = raw.endsWith("\n") ? raw.slice(0, -1) : raw;
+  if (trimmed === "") return null;
+  if (!isValidProjectId(trimmed)) {
+    throw new Error(
+      `Invalid project id in ${path}. Fix the file or delete it to regenerate.`,
+    );
+  }
+  return trimmed;
+}
