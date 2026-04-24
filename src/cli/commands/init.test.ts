@@ -289,3 +289,78 @@ describe("grove init — project identity (#288)", () => {
     await rm(cwd, { recursive: true, force: true });
   });
 });
+
+describe("grove init — #288 acceptance", () => {
+  test("two independent clones of same origin (non-TTY) get distinct UUIDs", async () => {
+    const sharedRegistry = join(await createTempDir(), "projects.yaml");
+
+    const cloneA = await createTempDir();
+    initGitRepo(cloneA, "git@github.com:foo/bar.git");
+    const a = await executeInit(
+      makeOptions({ name: "a", cwd: cloneA }),
+      undefined,
+      { registryPath: sharedRegistry, isTTY: false },
+    );
+
+    const cloneB = await createTempDir();
+    initGitRepo(cloneB, "https://github.com/foo/bar.git");
+    const b = await executeInit(
+      makeOptions({ name: "b", cwd: cloneB }),
+      undefined,
+      { registryPath: sharedRegistry, isTTY: false },
+    );
+
+    expect(a.projectId).not.toBe(b.projectId);
+    const reg = loadRegistry(sharedRegistry);
+    expect(Object.keys(reg.projects)).toEqual(["github.com/foo/bar"]);
+    expect(reg.projects["github.com/foo/bar"]?.id).toBe(a.projectId);
+
+    await rm(cloneA, { recursive: true, force: true });
+    await rm(cloneB, { recursive: true, force: true });
+  });
+
+  test("--unify merges second clone into first's id; registry stays single-entry", async () => {
+    const sharedRegistry = join(await createTempDir(), "projects.yaml");
+
+    const cloneA = await createTempDir();
+    initGitRepo(cloneA, "git@github.com:foo/bar.git");
+    const a = await executeInit(
+      makeOptions({ name: "a", cwd: cloneA }),
+      undefined,
+      { registryPath: sharedRegistry },
+    );
+
+    const cloneB = await createTempDir();
+    initGitRepo(cloneB, "https://github.com/foo/bar.git");
+    const b = await executeInit(
+      makeOptions({ name: "b", cwd: cloneB, unify: true }),
+      undefined,
+      { registryPath: sharedRegistry },
+    );
+
+    expect(b.projectId).toBe(a.projectId);
+    const reg = loadRegistry(sharedRegistry);
+    expect(Object.keys(reg.projects)).toEqual(["github.com/foo/bar"]);
+
+    await rm(cloneA, { recursive: true, force: true });
+    await rm(cloneB, { recursive: true, force: true });
+  });
+
+  test("re-running grove init leaves the project id unchanged", async () => {
+    const registryPath = join(await createTempDir(), "projects.yaml");
+    const cwd = await createTempDir();
+    initGitRepo(cwd, "git@github.com:foo/bar.git");
+    const first = await executeInit(
+      makeOptions({ name: "one", cwd }),
+      undefined,
+      { registryPath },
+    );
+    const second = await executeInit(
+      makeOptions({ name: "one", cwd, force: true }),
+      undefined,
+      { registryPath },
+    );
+    expect(second.projectId).toBe(first.projectId);
+    await rm(cwd, { recursive: true, force: true });
+  });
+});
