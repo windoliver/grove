@@ -622,10 +622,35 @@ export class NexusClaimStore implements ClaimStore {
           await this.writeClaimCas(expiredHolder, holderResult.etag);
           this.claimCache.set(expiredHolder.claimId, expiredHolder);
         } catch (expireErr) {
-          // Someone else (expireStale, another takeover) already moved
-          // the holder — benign. Any other failure propagates.
-          if (!(expireErr instanceof NexusConflictError)) {
-            if ((expireErr as Error | undefined)?.name !== "StateConflictError") throw expireErr;
+          // CAS-expire conflict: the holder record changed under us.
+          // This can be benign (another takeover / expireStale already
+          // marked it non-active) OR it can be a live heartbeat that
+          // refreshed the lease in between. We cannot tell from the
+          // conflict alone, so re-read the holder and re-evaluate:
+          // only treat as stale if the fresh record confirms it.
+          // Any non-conflict error propagates.
+          const isConflict =
+            expireErr instanceof NexusConflictError ||
+            (expireErr as Error | undefined)?.name === "StateConflictError";
+          if (!isConflict) throw expireErr;
+
+          const refreshed = await this.readClaimWithEtag(holderId);
+          const refreshedIsStale =
+            refreshed === undefined ||
+            refreshed.claim.status !== "active" ||
+            new Date(refreshed.claim.leaseExpiresAt).getTime() < Date.now();
+          if (!refreshedIsStale) {
+            // The holder heartbeated (or was renewed) and is live
+            // again — abort the takeover. Re-throw the ORIGINAL
+            // NexusConflictError so the caller sees a genuine
+            // "target already has an active claim" error.
+            throw err;
+          }
+          // Still stale on the refresh — safe to proceed. Populate
+          // the cache from the refresh so a subsequent same-process
+          // reader sees the latest state.
+          if (refreshed !== undefined) {
+            this.claimCache.set(refreshed.claim.claimId, refreshed.claim);
           }
         }
       }

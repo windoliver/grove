@@ -45,28 +45,24 @@ runContributionStoreTests(async () => {
 // Legacy SqliteStore — ClaimStore conformance
 // ---------------------------------------------------------------------------
 
-// The legacy combined SqliteStore routes listEntities() dispatch based on
-// query shape: a bare `listEntities()` with no discriminator defaults to
-// contributions (matching the facade's historical behavior), so the
-// ClaimStore conformance cannot exercise listEntities via this combined
-// entry point — its tests call `store.listEntities()` without args and
-// expect claim entities. skipListEntities stays set here; the fully
-// type-safe path is `createSqliteStores().claimStore`, covered below.
-runClaimStoreTests(
-  async () => {
-    const dir = await mkdtemp(join(tmpdir(), "sqlite-store-claim-"));
-    const dbPath = join(dir, "test.db");
-    const store = new SqliteStore(dbPath);
+// The legacy combined SqliteStore no longer claims to implement ClaimStore
+// at the type level (`listEntities()` would be ambiguous). Callers who
+// want a ClaimStore-shaped view of the legacy facade use `store.claims`,
+// the publicly exposed SqliteClaimStore sub-store — which has a single,
+// well-typed `listEntities()` and passes the full conformance suite here.
+runClaimStoreTests(async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sqlite-store-claim-"));
+  const dbPath = join(dir, "test.db");
+  const store = new SqliteStore(dbPath);
 
-    return {
-      store,
-      cleanup: async () => {
-        await rm(dir, { recursive: true, force: true });
-      },
-    };
-  },
-  { skipListEntities: true },
-);
+  return {
+    store: store.claims,
+    cleanup: async () => {
+      store.close();
+      await rm(dir, { recursive: true, force: true });
+    },
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Split stores — ContributionStore conformance

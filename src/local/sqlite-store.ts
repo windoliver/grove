@@ -1800,32 +1800,6 @@ export class SqliteClaimStore implements ClaimStore {
 // Legacy convenience class (backwards-compatible)
 // ---------------------------------------------------------------------------
 
-/** ClaimStatus values, as a runtime set for SqliteStore.listEntities dispatch. */
-const CLAIM_STATUS_VALUES: ReadonlySet<string> = new Set([
-  "active",
-  "released",
-  "completed",
-  "expired",
-]);
-
-/**
- * Runtime shape check: does this query look like a ClaimQuery?
- *
- * A query is claim-shaped when it names a ClaimStore-only discriminator —
- * `targetRef`, or `status` that is (or contains) a ClaimStatus literal.
- * Queries using only shared fields (bare object, just `agentId`, just
- * `limit`) are not treated as claim-shaped; they fall through to the
- * contribution store, matching the combined facade's default.
- */
-function isClaimQueryShape(query: ContributionQuery | ClaimQuery): query is ClaimQuery {
-  if ("targetRef" in query && query.targetRef !== undefined) return true;
-  const status = (query as { readonly status?: unknown }).status;
-  if (status === undefined) return false;
-  if (typeof status === "string") return CLAIM_STATUS_VALUES.has(status);
-  if (Array.isArray(status)) return status.every((s) => CLAIM_STATUS_VALUES.has(String(s)));
-  return false;
-}
-
 /**
  * Combined store that implements both ContributionStore and ClaimStore.
  *
@@ -1833,12 +1807,19 @@ function isClaimQueryShape(query: ContributionQuery | ClaimQuery): query is Clai
  * Provided for backwards compatibility — prefer createSqliteStores() for
  * new code.
  */
-export class SqliteStore implements ContributionStore, ClaimStore {
+export class SqliteStore implements ContributionStore {
   readonly storeIdentity: string;
   readonly dbPath: string;
   private readonly db: Database;
-  private readonly contributions: SqliteContributionStore;
-  private readonly claims: SqliteClaimStore;
+  /**
+   * Split sub-stores exposed publicly so callers that want a clean
+   * `ClaimStore` (unambiguous `listEntities()`) can reach for
+   * `store.claims` rather than treating this facade as a `ClaimStore`.
+   * The facade itself formally implements only `ContributionStore` so
+   * that `listEntities()` has a single, unambiguous kind.
+   */
+  readonly contributions: SqliteContributionStore;
+  readonly claims: SqliteClaimStore;
 
   constructor(dbPath: string) {
     this.dbPath = dbPath;
@@ -1907,28 +1888,14 @@ export class SqliteStore implements ContributionStore, ClaimStore {
     this.claims.detectStalled(stallTimeoutMs);
 
   /**
-   * Entity-envelope listing for the combined facade.
+   * ContributionStore.listEntities — delegates to the contribution sub-store.
    *
-   * SqliteStore implements both ContributionStore and ClaimStore, which each
-   * define `listEntities` with a kind-specific query. We dispatch at runtime:
-   *
-   * - If the query carries a claim-only discriminator (`targetRef` or a
-   *   `status` that names a ClaimStatus), route to the claim store.
-   * - If the query carries a contribution-only discriminator (`kind`,
-   *   `mode`, `tags`, `agentName`, `platform`, `sessionId`, or `offset`),
-   *   route to the contribution store.
-   * - A bare `listEntities()` has no discriminator. By convention, the
-   *   combined facade defaults to contributions; callers that need claim
-   *   entities without a query should use `createSqliteStores()` and call
-   *   `claimStore.listEntities()` directly.
+   * The facade no longer tries to service ClaimStore.listEntities through
+   * the same method (see class docstring): callers that need claim
+   * entities should use `store.claims.listEntities(...)` explicitly,
+   * which has a single, well-typed signature.
    */
-  listEntities(query?: ContributionQuery): Promise<readonly ContributionEntity[]>;
-  listEntities(query?: ClaimQuery): Promise<readonly ClaimEntity[]>;
-  listEntities(
-    query?: ContributionQuery | ClaimQuery,
-  ): Promise<readonly ContributionEntity[] | readonly ClaimEntity[]> {
-    if (query === undefined) return this.contributions.listEntities();
-    if (isClaimQueryShape(query)) return this.claims.listEntities(query);
+  listEntities(query?: ContributionQuery): Promise<readonly ContributionEntity[]> {
     return this.contributions.listEntities(query);
   }
 
