@@ -1,7 +1,7 @@
 ---
 contract_version: 3
 
-name: clever-dreaming-peacock
+name: flickering-dancing-spark
 
 description: Code review loop with coder and reviewer roles
 
@@ -57,32 +57,33 @@ agent_topology:
         You are a software engineer. Your workflow:
         1. Read the codebase and understand the goal
         2. Edit files to implement the solution
-        3. Call grove_submit_work to submit your work:
-           grove_submit_work({ summary: "Implemented landing page", artifacts: {"index.html": "blake3:..."}, agent: { role: "coder" } })
-        4. Reviewer feedback arrives automatically — when it does, iterate and grove_submit_work again
-        5. NEVER call grove_done yourself. Only the reviewer ends the session.
+        3. Commit your changes: git add -A && git commit -m 'description'
+        4. Get the commit hash: run git rev-parse HEAD
+        5. Submit your work:
+           grove_submit_work({ summary: "what you did", commitHash: "<hash from step 4>", agent: { role: "coder" } })
+        6. Reviewer feedback arrives automatically — when it does, iterate and submit again
+        7. NEVER call grove_done yourself. Only the reviewer ends the session.
         You MUST call grove_submit_work after editing files — without it, nobody sees your work.
       max_instances: 1
+      mode: broadcast
       platform: claude-code
-      edges:
-        - target: reviewer
-          edge_type: delegates
+      skills: ["grove"]
     - name: reviewer
       description: "Reviews code and provides feedback"
       prompt: |
         You are a code reviewer. Your workflow:
-        1. Coder contributions arrive automatically — wait for the first one
-        2. Read the files in your workspace and review for bugs, security, edge cases, quality
-        3. Submit your review via grove_submit_review:
-           grove_submit_review({ targetCid: "blake3:...", summary: "LGTM — clean implementation", scores: {"correctness": {"value": 0.9, "direction": "maximize"}}, agent: { role: "reviewer" } })
-        4. If changes needed, your review is sent to the coder automatically
-        5. When code meets standards, call grove_done({ summary: "Approved — code meets standards", agent: { role: "reviewer" } })
-        You MUST call grove_submit_review for every review — without it, the coder gets no feedback.
+        1. You will receive a notification with the coder's Workspace path
+        2. Read the actual source files at that path (e.g., cat /path/to/coder-workspace/app.js)
+        3. Review for bugs, correctness, security, edge cases, code quality
+        4. Submit your review:
+           grove_submit_review({ targetCid: "<CID from notification>", summary: "your review", scores: {"correctness": {"value": 0.9, "direction": "maximize"}}, agent: { role: "reviewer" } })
+        5. If changes needed, your review is sent to the coder automatically
+        6. When code meets standards, call grove_done({ summary: "Approved", agent: { role: "reviewer" } })
+        You MUST read the actual files at the Workspace path — do NOT review based on summary alone.
       max_instances: 1
+      mode: broadcast
       platform: claude-code
-      edges:
-        - target: coder
-          edge_type: feedback
+      skills: ["grove"]
   spawning:
     dynamic: true
     max_depth: 2
@@ -110,6 +111,10 @@ agent_topology:
 #   after_contribute: "echo 'Contribution submitted'"
 ---
 
-# clever-dreaming-peacock
+# flickering-dancing-spark
 
 Code review loop with coder and reviewer roles
+
+> The topology above is the **default** for this grove. Override it per-session:
+> `grove session start --preset <name> --goal "..."`
+> or via the API: `POST /api/sessions { "preset": "<name>" }`
