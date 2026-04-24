@@ -364,3 +364,26 @@ describe("grove init — #288 acceptance", () => {
     await rm(cwd, { recursive: true, force: true });
   });
 });
+
+describe("parseInitArgs — unify flags", () => {
+  test("--unify sets unify: true", () => {
+    const opts = parseInitArgs(["--unify"]);
+    expect(opts.unify).toBe(true);
+  });
+
+  test("--no-unify sets unify: false", () => {
+    const opts = parseInitArgs(["--no-unify"]);
+    expect(opts.unify).toBe(false);
+  });
+
+  test("neither flag leaves unify undefined", () => {
+    const opts = parseInitArgs([]);
+    expect(opts.unify).toBeUndefined();
+  });
+
+  test("both --unify and --no-unify is an error", () => {
+    expect(() => parseInitArgs(["--unify", "--no-unify"])).toThrow(
+      /mutually exclusive/,
+    );
+  });
+});
