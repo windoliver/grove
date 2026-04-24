@@ -5,10 +5,10 @@
  * Used by `grove init` to correlate clones of the same remote.
  */
 
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { parse as parseYaml } from "yaml";
+import { dirname, join } from "node:path";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { isValidProjectId } from "./project-id.js";
 
 export interface RegistryEntry {
@@ -81,4 +81,30 @@ export function loadRegistry(path: string): Registry {
     projects[key] = { id, name, createdAt };
   }
   return { version: 1, projects };
+}
+
+export function saveRegistry(path: string, reg: Registry): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const body = stringifyYaml(reg);
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, body, { encoding: "utf8", mode: 0o644 });
+  renameSync(tmp, path);
+}
+
+export function lookupByOrigin(
+  reg: Registry,
+  origin: string,
+): RegistryEntry | null {
+  return reg.projects[origin] ?? null;
+}
+
+export function upsertEntry(
+  reg: Registry,
+  origin: string,
+  entry: RegistryEntry,
+): Registry {
+  return {
+    version: 1,
+    projects: { ...reg.projects, [origin]: entry },
+  };
 }
