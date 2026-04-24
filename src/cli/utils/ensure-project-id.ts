@@ -132,10 +132,40 @@ export async function ensureProjectId(opts: EnsureOpts): Promise<EnsureResult> {
 
 async function decideAdopt(
   opts: EnsureOpts,
-  _hit: RegistryEntry,
+  hit: RegistryEntry,
 ): Promise<"adopt" | "new"> {
   if (opts.unify === true) return "adopt";
   if (opts.unify === false) return "new";
-  // Prompt added in Task 10. For now, default matches non-TTY.
+  if (!opts.isTTY) return "new";
+
+  const stdout = opts.stdout ?? process.stdout;
+  const stdin = opts.stdin ?? process.stdin;
+  const prompt = `Matching project '${hit.name}' already registered (id ${hit.id}). Unify? [Y/n] `;
+  stdout.write(prompt);
+
+  const answer = await readLine(stdin);
+  const trimmed = answer.trim().toLowerCase();
+  if (trimmed === "" || trimmed === "y" || trimmed === "yes") return "adopt";
   return "new";
+}
+
+function readLine(stream: NodeJS.ReadableStream): Promise<string> {
+  return new Promise((resolve) => {
+    let buf = "";
+    const onData = (chunk: Buffer | string) => {
+      buf += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      const nl = buf.indexOf("\n");
+      if (nl !== -1) {
+        stream.off("data", onData);
+        stream.off("end", onEnd);
+        resolve(buf.slice(0, nl));
+      }
+    };
+    const onEnd = () => {
+      stream.off("data", onData);
+      resolve(buf);
+    };
+    stream.on("data", onData);
+    stream.on("end", onEnd);
+  });
 }

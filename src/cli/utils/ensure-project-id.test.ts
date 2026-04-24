@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import { readProjectId } from "../../core/project-id.js";
 import { loadRegistry } from "../../core/project-registry.js";
 import type { EnsureOpts } from "./ensure-project-id.js";
@@ -178,5 +179,94 @@ describe("ensureProjectId — no prompt paths", () => {
     await expect(
       ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath })),
     ).rejects.toThrow(/Invalid project id/);
+  });
+});
+
+function stdinFeeding(input: string): NodeJS.ReadableStream {
+  const s = new PassThrough();
+  s.end(input);
+  return s;
+}
+
+function captureStdout(): { stream: NodeJS.WritableStream; text: () => string } {
+  const chunks: string[] = [];
+  const s = new PassThrough();
+  s.on("data", (b) => chunks.push(b.toString("utf8")));
+  return { stream: s, text: () => chunks.join("") };
+}
+
+describe("ensureProjectId — TTY prompt", () => {
+  test("TTY + 'y\\n' adopts", async () => {
+    const firstClone = mkClone("git@github.com:foo/bar.git");
+    const firstGrove = mkGroveDir(firstClone);
+    const registryPath = join(mkTmp("registry"), "projects.yaml");
+    const first = await ensureProjectId(
+      baseOpts({ groveDir: firstGrove, cwd: firstClone, registryPath }),
+    );
+
+    const secondClone = mkClone("https://github.com/foo/bar.git");
+    const secondGrove = mkGroveDir(secondClone);
+    const out = captureStdout();
+    const second = await ensureProjectId(
+      baseOpts({
+        groveDir: secondGrove,
+        cwd: secondClone,
+        registryPath,
+        isTTY: true,
+        stdin: stdinFeeding("y\n"),
+        stdout: out.stream,
+      }),
+    );
+    expect(second.source).toBe("registry");
+    expect(second.id).toBe(first.id);
+    expect(out.text()).toMatch(/Unify\?/);
+  });
+
+  test("TTY + Enter (default Y) adopts", async () => {
+    const firstClone = mkClone("git@github.com:foo/bar.git");
+    const firstGrove = mkGroveDir(firstClone);
+    const registryPath = join(mkTmp("registry"), "projects.yaml");
+    const first = await ensureProjectId(
+      baseOpts({ groveDir: firstGrove, cwd: firstClone, registryPath }),
+    );
+
+    const secondClone = mkClone("https://github.com/foo/bar.git");
+    const secondGrove = mkGroveDir(secondClone);
+    const second = await ensureProjectId(
+      baseOpts({
+        groveDir: secondGrove,
+        cwd: secondClone,
+        registryPath,
+        isTTY: true,
+        stdin: stdinFeeding("\n"),
+        stdout: new PassThrough(),
+      }),
+    );
+    expect(second.source).toBe("registry");
+    expect(second.id).toBe(first.id);
+  });
+
+  test("TTY + 'n\\n' creates new", async () => {
+    const firstClone = mkClone("git@github.com:foo/bar.git");
+    const firstGrove = mkGroveDir(firstClone);
+    const registryPath = join(mkTmp("registry"), "projects.yaml");
+    const first = await ensureProjectId(
+      baseOpts({ groveDir: firstGrove, cwd: firstClone, registryPath }),
+    );
+
+    const secondClone = mkClone("https://github.com/foo/bar.git");
+    const secondGrove = mkGroveDir(secondClone);
+    const second = await ensureProjectId(
+      baseOpts({
+        groveDir: secondGrove,
+        cwd: secondClone,
+        registryPath,
+        isTTY: true,
+        stdin: stdinFeeding("n\n"),
+        stdout: new PassThrough(),
+      }),
+    );
+    expect(second.source).toBe("generated");
+    expect(second.id).not.toBe(first.id);
   });
 });
