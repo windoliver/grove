@@ -202,7 +202,7 @@ describe("handoff tool hot paths", () => {
     expect(handoffStore.expireCalls).toBe(1);
   });
 
-  test("grove_list_handoffs skips inline expiry when a deadline watcher is active", async () => {
+  test("grove_list_handoffs skips inline expiry when deadline handling is managed", async () => {
     testDeps = await createTestMcpDeps();
     const handoffStore = new ExpireTrackingHandoffStore();
     const server = new McpServer(
@@ -213,6 +213,7 @@ describe("handoff tool hot paths", () => {
       ...testDeps.deps,
       handoffStore,
       deadlineWatcher: {} as NonNullable<McpDeps["deadlineWatcher"]>,
+      handoffExpiryManaged: true,
     });
 
     await callTool(server, "grove_list_handoffs", {});

@@ -21,7 +21,8 @@ import { createMcpServer } from "./server.js";
 
 // --- Initialization (eager — catches config errors at startup) ------------
 
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const groveOverride = process.env.GROVE_DIR ?? undefined;
@@ -50,26 +51,82 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-function tryAcquireDeadlineWatcherLock(lockPath: string): boolean {
-  const payload = JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() });
+const DEADLINE_WATCHER_LOCK_HEARTBEAT_MS = 30_000;
+const DEADLINE_WATCHER_LOCK_STALE_MS = 90_000;
+
+function isGroveMcpProcess(pid: number): boolean {
+  try {
+    const command = execFileSync("ps", ["-o", "command=", "-p", String(pid)], {
+      encoding: "utf-8",
+    }).trim();
+    return command.includes("grove-mcp") || command.includes("src/mcp/serve.ts");
+  } catch {
+    return true;
+  }
+}
+
+function lockPayload(token: string): string {
+  return JSON.stringify({
+    pid: process.pid,
+    token,
+    heartbeatAt: new Date().toISOString(),
+    acquiredAt: new Date().toISOString(),
+  });
+}
+
+function writeDeadlineWatcherLock(lockPath: string, token: string): void {
+  const tmpPath = `${lockPath}.${process.pid}.${token}.tmp`;
+  writeFileSync(tmpPath, lockPayload(token));
+  renameSync(tmpPath, lockPath);
+}
+
+function readDeadlineWatcherLock(
+  lockPath: string,
+): { pid?: number; token?: string; heartbeatAt?: number; mtimeMs?: number } | undefined {
+  try {
+    const stat = statSync(lockPath);
+    const existing = JSON.parse(readFileSync(lockPath, "utf-8")) as {
+      pid?: unknown;
+      token?: unknown;
+      heartbeatAt?: unknown;
+    };
+    const pid =
+      typeof existing.pid === "number" && Number.isInteger(existing.pid) ? existing.pid : undefined;
+    const token = typeof existing.token === "string" ? existing.token : undefined;
+    const heartbeatAt =
+      typeof existing.heartbeatAt === "string" ? Date.parse(existing.heartbeatAt) : undefined;
+    return {
+      ...(pid !== undefined ? { pid } : {}),
+      ...(token !== undefined ? { token } : {}),
+      ...(heartbeatAt !== undefined ? { heartbeatAt } : {}),
+      mtimeMs: stat.mtimeMs,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function tryAcquireDeadlineWatcherLock(lockPath: string, token: string): boolean {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      writeFileSync(lockPath, payload, { flag: "wx" });
+      writeFileSync(lockPath, lockPayload(token), { flag: "wx" });
       return true;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "EEXIST") return false;
-      try {
-        const existing = JSON.parse(readFileSync(lockPath, "utf-8")) as { pid?: unknown };
-        const existingPid =
-          typeof existing.pid === "number" && Number.isInteger(existing.pid)
-            ? existing.pid
-            : undefined;
-        if (existingPid !== undefined && isProcessAlive(existingPid)) {
-          return false;
-        }
-      } catch {
-        // Malformed or unreadable lock file — treat as stale and retry once.
+      const existing = readDeadlineWatcherLock(lockPath);
+      if (
+        existing?.pid !== undefined &&
+        isProcessAlive(existing.pid) &&
+        isGroveMcpProcess(existing.pid)
+      ) {
+        return false;
+      }
+      const lockFresh =
+        existing?.mtimeMs !== undefined &&
+        Date.now() - existing.mtimeMs < DEADLINE_WATCHER_LOCK_STALE_MS;
+      if (lockFresh) {
+        return false;
       }
       try {
         unlinkSync(lockPath);
@@ -81,9 +138,13 @@ function tryAcquireDeadlineWatcherLock(lockPath: string): boolean {
   return false;
 }
 
-function releaseDeadlineWatcherLock(lockPath: string | undefined): void {
-  if (lockPath === undefined) return;
+function releaseDeadlineWatcherLock(lockPath: string | undefined, token: string | undefined): void {
+  if (lockPath === undefined || token === undefined) return;
   try {
+    const existing = readDeadlineWatcherLock(lockPath);
+    if (existing?.token !== undefined && existing.token !== token) {
+      return;
+    }
     unlinkSync(lockPath);
   } catch {
     // best-effort
@@ -94,6 +155,10 @@ let deps: McpDeps;
 let close: () => void;
 let preset: import("./server.js").McpPresetConfig | undefined;
 let deadlineWatcherLockPath: string | undefined;
+let deadlineWatcherLockToken: string | undefined;
+let deadlineWatcherLockHeartbeat: ReturnType<typeof setInterval> | undefined;
+let deadlineWatcherRebuildTimer: ReturnType<typeof setInterval> | undefined;
+let deadlineWatcherRebuildInFlight = false;
 
 try {
   const groveDir = groveOverride ?? findGroveDir(cwd);
@@ -354,28 +419,85 @@ try {
   // when GROVE_SESSION_ID is unset) are detected by rebuildFromStore and
   // skip the startup rebuild automatically.
   let deadlineWatcher: import("../core/deadline-watcher.js").DeadlineWatcher | undefined;
+  let handoffExpiryManaged = false;
   const activeHandoffStore = nexusHandoffStore ?? runtime.handoffStore;
   if (activeHandoffStore !== undefined && eventBus !== undefined) {
+    const { DeadlineWatcher } = await import("../core/deadline-watcher.js");
+    deadlineWatcher = new DeadlineWatcher({ handoffStore: activeHandoffStore, eventBus });
+    handoffExpiryManaged = true;
     const deadlineWatcherSessionKey = process.env.GROVE_SESSION_ID ?? "bootstrap";
     const lockPath = join(groveDir, `.grove-deadline-watcher.${deadlineWatcherSessionKey}.lock`);
-    const ownsDeadlineWatcher = tryAcquireDeadlineWatcherLock(lockPath);
+    const lockToken = crypto.randomUUID();
+    const ownsDeadlineWatcher = tryAcquireDeadlineWatcherLock(lockPath, lockToken);
     if (!ownsDeadlineWatcher) {
       process.stderr.write(
-        `grove-mcp: deadline watcher already owned for session ${deadlineWatcherSessionKey}; skipping duplicate rebuild\n`,
+        `grove-mcp: deadline watcher already owned for session ${deadlineWatcherSessionKey}; keeping local watcher without rebuild\n`,
       );
     } else {
       deadlineWatcherLockPath = lockPath;
-    }
-    if (ownsDeadlineWatcher) {
-      const { DeadlineWatcher } = await import("../core/deadline-watcher.js");
-      deadlineWatcher = new DeadlineWatcher({ handoffStore: activeHandoffStore, eventBus });
+      deadlineWatcherLockToken = lockToken;
+      deadlineWatcherLockHeartbeat = setInterval(() => {
+        try {
+          const existing = readDeadlineWatcherLock(lockPath);
+          if (existing?.token !== lockToken) {
+            clearInterval(deadlineWatcherLockHeartbeat);
+            deadlineWatcherLockHeartbeat = undefined;
+            clearInterval(deadlineWatcherRebuildTimer);
+            deadlineWatcherRebuildTimer = undefined;
+            deadlineWatcher?.close();
+            deadlineWatcher = undefined;
+            handoffExpiryManaged = false;
+            return;
+          }
+          writeDeadlineWatcherLock(lockPath, lockToken);
+        } catch {
+          // best-effort heartbeat; lock takeover falls back to staleness TTL
+        }
+      }, DEADLINE_WATCHER_LOCK_HEARTBEAT_MS);
+      deadlineWatcherLockHeartbeat.unref?.();
       const backend = nexusHandoffStore !== undefined ? "Nexus" : "SQLite";
       process.stderr.write(`grove-mcp: DeadlineWatcher created (${backend} backend)\n`);
-      const rebuiltCount = await deadlineWatcher.rebuildFromStore().catch(() => 0);
-      if (rebuiltCount > 0) {
+      try {
+        const rebuiltCount = await deadlineWatcher.rebuildFromStore();
+        if (rebuiltCount > 0) {
+          process.stderr.write(
+            `grove-mcp: DeadlineWatcher rebuilt ${rebuiltCount} timer(s) from store\n`,
+          );
+        }
+        deadlineWatcherRebuildTimer = setInterval(() => {
+          if (deadlineWatcherRebuildInFlight) return;
+          deadlineWatcherRebuildInFlight = true;
+          void deadlineWatcher
+            ?.rebuildFromStore()
+            .catch(() => {
+              /* best-effort periodic catch-up for deadlines created by peer processes */
+            })
+            .finally(() => {
+              deadlineWatcherRebuildInFlight = false;
+            });
+        }, DEADLINE_WATCHER_LOCK_HEARTBEAT_MS);
+        deadlineWatcherRebuildTimer.unref?.();
+      } catch (error) {
         process.stderr.write(
-          `grove-mcp: DeadlineWatcher rebuilt ${rebuiltCount} timer(s) from store\n`,
+          `grove-mcp: WARN: deadline watcher rebuild failed for session ${deadlineWatcherSessionKey}: ${
+            error instanceof Error ? error.message : String(error)
+          }\n`,
         );
+        deadlineWatcher.close();
+        deadlineWatcher = undefined;
+        handoffExpiryManaged = false;
+        if (deadlineWatcherLockHeartbeat !== undefined) {
+          clearInterval(deadlineWatcherLockHeartbeat);
+          deadlineWatcherLockHeartbeat = undefined;
+        }
+        if (deadlineWatcherRebuildTimer !== undefined) {
+          clearInterval(deadlineWatcherRebuildTimer);
+          deadlineWatcherRebuildTimer = undefined;
+        }
+        deadlineWatcherRebuildInFlight = false;
+        releaseDeadlineWatcherLock(deadlineWatcherLockPath, deadlineWatcherLockToken);
+        deadlineWatcherLockPath = undefined;
+        deadlineWatcherLockToken = undefined;
       }
     }
   }
@@ -398,9 +520,7 @@ try {
     // Nexus handoff store when available, falls back to local SQLite
     handoffStore: activeHandoffStore,
     idempotencyStore: runtime.idempotencyStore,
-    ...(activeHandoffStore !== undefined && eventBus !== undefined
-      ? { handoffExpiryManaged: true }
-      : {}),
+    ...(handoffExpiryManaged ? { handoffExpiryManaged: true } : {}),
     ...(deadlineWatcher ? { deadlineWatcher } : {}),
   };
   // Derive MCP tool preset from contract mode — #11 MCP Tool Surface + #12 Concept Usage
@@ -443,7 +563,16 @@ try {
 
   close = () => {
     deadlineWatcher?.close();
-    releaseDeadlineWatcherLock(deadlineWatcherLockPath);
+    if (deadlineWatcherRebuildTimer !== undefined) {
+      clearInterval(deadlineWatcherRebuildTimer);
+      deadlineWatcherRebuildTimer = undefined;
+    }
+    deadlineWatcherRebuildInFlight = false;
+    if (deadlineWatcherLockHeartbeat !== undefined) {
+      clearInterval(deadlineWatcherLockHeartbeat);
+      deadlineWatcherLockHeartbeat = undefined;
+    }
+    releaseDeadlineWatcherLock(deadlineWatcherLockPath, deadlineWatcherLockToken);
     eventBus?.close();
     nexusClient?.close();
     runtime.close();

@@ -18,6 +18,7 @@
  *   DELETE /mcp — Close a session
  */
 
+import { type FSWatcher, readFileSync, statSync, watch } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
@@ -210,14 +211,84 @@ interface ScopeMutationGuard {
   assertMutable(operation: string): void;
 }
 
-function createScopeMutationGuard(): ScopeMutationGuard {
+function readCurrentSessionIdSyncForMutationGuard(): string | undefined {
+  const fromEnv = process.env.GROVE_SESSION_ID;
+  if (fromEnv) return fromEnv;
+  if (!sessionStateCacheDirty) {
+    return lastSessionFileId;
+  }
+  const sessionFile = `${groveDir}/current-session.json`;
+  let sessionFileStat: ReturnType<typeof statSync>;
+  try {
+    sessionFileStat = statSync(sessionFile);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      lastSessionFileMtimeMs = -1;
+      lastSessionFileSize = -1;
+      lastSessionFileId = undefined;
+      sessionStateCacheDirty = false;
+      return undefined;
+    }
+    throw new SessionStateReadError(
+      `stat ${sessionFile} failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (
+    sessionFileStat.mtimeMs === lastSessionFileMtimeMs &&
+    sessionFileStat.size === lastSessionFileSize &&
+    lastSessionFileMtimeMs > 0
+  ) {
+    sessionStateCacheDirty = false;
+    return lastSessionFileId;
+  }
+  try {
+    const sessionId = parseCurrentSessionPayload(readFileSync(sessionFile, "utf-8"), sessionFile);
+    lastSessionFileMtimeMs = sessionFileStat.mtimeMs;
+    lastSessionFileSize = sessionFileStat.size;
+    lastSessionFileId = sessionId;
+    sessionStateCacheDirty = false;
+    return sessionId;
+  } catch (err) {
+    if (err instanceof SessionStateReadError) throw err;
+    throw new SessionStateReadError(
+      `read/parse ${sessionFile} failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function createScopeMutationGuard(expectedSessionId: string | undefined): ScopeMutationGuard {
   let active = true;
   return {
     deactivate() {
       active = false;
     },
     assertMutable(operation: string) {
-      if (active) return;
+      if (active) {
+        try {
+          const currentSessionId = readCurrentSessionIdSyncForMutationGuard();
+          if (currentSessionId === expectedSessionId) {
+            return;
+          }
+          active = false;
+          throw new StateConflictError({
+            resource: "MCP session",
+            reason: "session scope changed while the request was still running",
+            message:
+              `HTTP MCP session is stale for '${operation}' (expected session '${expectedSessionId ?? "__bootstrap__"}', current '${currentSessionId ?? "__bootstrap__"}'). ` +
+              "Re-initialize the MCP connection and retry.",
+          });
+        } catch (error) {
+          if (error instanceof StateConflictError) throw error;
+          active = false;
+          throw new StateConflictError({
+            resource: "MCP session",
+            reason: "could not confirm current session before mutation",
+            message:
+              `HTTP MCP session cannot safely run '${operation}' because the current session state could not be read. ` +
+              "Re-initialize the MCP connection and retry.",
+          });
+        }
+      }
       throw new StateConflictError({
         resource: "MCP session",
         reason: "session scope changed while the request was still running",
@@ -243,6 +314,14 @@ function guardMutableMethods<T extends object>(
       if (mutable.has(methodName)) {
         return (...args: readonly unknown[]) => {
           guard.assertMutable(methodName);
+          if (methodName === "putWithCowrite" && typeof args[1] === "function") {
+            const [contribution, cowriteFn] = args as readonly [unknown, () => void];
+            const guardedCowrite = () => {
+              guard.assertMutable(`${methodName}.commit`);
+              cowriteFn();
+            };
+            return Reflect.apply(value, obj, [contribution, guardedCowrite]);
+          }
           return Reflect.apply(value, obj, args);
         };
       }
@@ -256,6 +335,24 @@ const pendingScopeEntries = new Map<string, Promise<ScopeEntry>>();
 let lastSessionFileMtimeMs = -1;
 let lastSessionFileSize = -1;
 let lastSessionFileId: string | undefined;
+let sessionStateCacheDirty = true;
+let sessionFileWatcher: FSWatcher | undefined;
+
+if (!process.env.GROVE_SESSION_ID) {
+  try {
+    sessionFileWatcher = watch(groveDir, (_eventType, filename) => {
+      if (typeof filename === "string" && filename !== "current-session.json") {
+        return;
+      }
+      sessionStateCacheDirty = true;
+      void refreshSessionScopes().catch(() => {
+        /* best-effort cache refresh */
+      });
+    });
+  } catch {
+    // best-effort watcher; sync fallback still protects correctness
+  }
+}
 
 /**
  * Read the current grove session ID from env or state file.
@@ -286,6 +383,7 @@ async function readCurrentSessionId(): Promise<string | undefined> {
       lastSessionFileMtimeMs = -1;
       lastSessionFileSize = -1;
       lastSessionFileId = undefined;
+      sessionStateCacheDirty = false;
       return undefined;
     }
     throw new SessionStateReadError(
@@ -317,6 +415,7 @@ async function readCurrentSessionId(): Promise<string | undefined> {
   lastSessionFileMtimeMs = sessionFileStat.mtimeMs;
   lastSessionFileSize = sessionFileStat.size;
   lastSessionFileId = sessionId;
+  sessionStateCacheDirty = false;
   return sessionId;
 }
 
@@ -331,7 +430,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
   let nexusHandoffStore: import("../nexus/nexus-handoff-store.js").NexusHandoffStore | undefined;
   let topologyRouter: TopologyRouter | undefined;
   let loadedContract: import("../core/contract.js").GroveContract | undefined = runtime.contract;
-  const mutationGuard = createScopeMutationGuard();
+  const mutationGuard = createScopeMutationGuard(sessionId);
 
   if (nexusClient) {
     const { NexusContributionStore } = await import("../nexus/nexus-contribution-store.js");
@@ -404,29 +503,6 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     }
   }
 
-  if (loadedContract !== undefined) {
-    const { EnforcingContributionStore } = await import("../core/enforcing-store.js");
-    contributionStore = new EnforcingContributionStore(contributionStore, loadedContract, { cas });
-  }
-
-  // Wire EventBus + TopologyRouter for IPC when topology exists.
-  // Mirrors serve.ts: use NexusEventBus when Nexus is available,
-  // otherwise fall back to LocalEventBus for local-mode routing.
-  let eventBus: import("../core/event-bus.js").EventBus | undefined;
-  if (loadedContract?.topology) {
-    if (nexusClient) {
-      const { NexusEventBus } = await import("../nexus/nexus-event-bus.js");
-      const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
-      const apiKey = process.env.NEXUS_API_KEY;
-      const ipcClient = nexusUrl && apiKey ? new NexusIpcClient({ nexusUrl, apiKey }) : undefined;
-      eventBus = new NexusEventBus(ipcClient);
-    } else {
-      const { LocalEventBus } = await import("../core/local-event-bus.js");
-      eventBus = new LocalEventBus();
-    }
-    topologyRouter = new TopologyRouter(loadedContract.topology, eventBus);
-  }
-
   // Build a session-scoped handoff store per request. In Nexus mode, use the
   // already-scoped nexusHandoffStore. In local mode, construct a fresh
   // SqliteHandoffStore bound to THIS request's session ID (not the process-
@@ -446,20 +522,8 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     activeHandoffStore = runtime.handoffStore;
   }
 
-  // Wire DeadlineWatcher when any handoff store + event bus are available.
-  // Both Nexus and session-scoped SQLite (GROVE_SESSION_ID set) safely
-  // support it; unscoped SQLite stores leave listForCurrentSession undefined
-  // so rebuildFromStore skips automatically. See serve.ts for more context.
-  let deadlineWatcher: import("../core/deadline-watcher.js").DeadlineWatcher | undefined;
-  if (activeHandoffStore !== undefined && eventBus !== undefined) {
-    const { DeadlineWatcher } = await import("../core/deadline-watcher.js");
-    deadlineWatcher = new DeadlineWatcher({ handoffStore: activeHandoffStore, eventBus });
-    await deadlineWatcher.rebuildFromStore().catch(() => {
-      /* non-fatal */
-    });
-  }
-
-  contributionStore = guardMutableMethods(contributionStore, mutationGuard, ["put", "putMany"]);
+  const contributionMutations = ["put", "putMany", "putWithCowrite"] as const;
+  contributionStore = guardMutableMethods(contributionStore, mutationGuard, contributionMutations);
   claimStore = guardMutableMethods(claimStore, mutationGuard, [
     "createClaim",
     "claimOrRenew",
@@ -510,6 +574,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     activeHandoffStore = guardMutableMethods(activeHandoffStore, mutationGuard, [
       "create",
       "createMany",
+      "insertSync",
       "markDelivered",
       "markProcessed",
       "markReplied",
@@ -520,15 +585,68 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
       "expireStale",
     ]);
   }
-  if (eventBus !== undefined) {
+
+  if (loadedContract !== undefined) {
+    const { EnforcingContributionStore } = await import("../core/enforcing-store.js");
+    contributionStore = guardMutableMethods(
+      new EnforcingContributionStore(contributionStore, loadedContract, { cas }),
+      mutationGuard,
+      contributionMutations,
+    );
+  }
+
+  // Wire EventBus + TopologyRouter for IPC when topology exists.
+  // Mirrors serve.ts: use NexusEventBus when Nexus is available,
+  // otherwise fall back to LocalEventBus for local-mode routing.
+  let eventBus: import("../core/event-bus.js").EventBus | undefined;
+  if (loadedContract?.topology) {
+    if (nexusClient) {
+      const { NexusEventBus } = await import("../nexus/nexus-event-bus.js");
+      const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
+      const apiKey = process.env.NEXUS_API_KEY;
+      const ipcClient = nexusUrl && apiKey ? new NexusIpcClient({ nexusUrl, apiKey }) : undefined;
+      eventBus = new NexusEventBus(ipcClient);
+    } else {
+      const { LocalEventBus } = await import("../core/local-event-bus.js");
+      eventBus = new LocalEventBus();
+    }
     eventBus = guardMutableMethods(eventBus, mutationGuard, [
       "publish",
       "subscribe",
       "unsubscribe",
     ]);
+    topologyRouter = guardMutableMethods(
+      new TopologyRouter(loadedContract.topology, eventBus),
+      mutationGuard,
+      ["route", "broadcastStop"],
+    );
   }
-  if (topologyRouter !== undefined) {
-    topologyRouter = guardMutableMethods(topologyRouter, mutationGuard, ["route", "broadcastStop"]);
+
+  // Wire DeadlineWatcher when any handoff store + event bus are available.
+  // Both Nexus and session-scoped SQLite (GROVE_SESSION_ID set) safely
+  // support it; unscoped SQLite stores leave listForCurrentSession undefined
+  // so rebuildFromStore skips automatically. See serve.ts for more context.
+  let deadlineWatcher: import("../core/deadline-watcher.js").DeadlineWatcher | undefined;
+  let handoffExpiryManaged = false;
+  if (activeHandoffStore !== undefined && eventBus !== undefined) {
+    const { DeadlineWatcher } = await import("../core/deadline-watcher.js");
+    deadlineWatcher = new DeadlineWatcher({ handoffStore: activeHandoffStore, eventBus });
+    try {
+      await deadlineWatcher.rebuildFromStore();
+      handoffExpiryManaged = true;
+    } catch (error) {
+      process.stderr.write(
+        `grove-mcp-http: WARN: deadline watcher rebuild failed for session ${sessionId ?? "__bootstrap__"}: ${
+          error instanceof Error ? error.message : String(error)
+        }\n`,
+      );
+      deadlineWatcher.close();
+      deadlineWatcher = undefined;
+    }
+  }
+
+  if (eventBus !== undefined) {
+    // eventBus already guarded before router/watcher construction.
   }
   if (deadlineWatcher !== undefined) {
     deadlineWatcher = guardMutableMethods(deadlineWatcher, mutationGuard, [
@@ -555,9 +673,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     // Nexus handoff store when available, falls back to local SQLite
     handoffStore: activeHandoffStore,
     idempotencyStore,
-    ...(activeHandoffStore !== undefined && eventBus !== undefined
-      ? { handoffExpiryManaged: true }
-      : {}),
+    ...(handoffExpiryManaged ? { handoffExpiryManaged: true } : {}),
     ...(deadlineWatcher ? { deadlineWatcher } : {}),
   };
   const deactivate = () => {
@@ -1189,6 +1305,7 @@ httpServer.listen(port, () => {
 const shutdown = async (): Promise<void> => {
   httpSweepReconciler?.stop();
   clearInterval(reapTimer);
+  sessionFileWatcher?.close();
   // Close all active sessions
   for (const [id, session] of sessions) {
     await closeManagedSession(id, session, "shutdown MCP session");

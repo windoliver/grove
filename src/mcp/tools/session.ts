@@ -22,6 +22,15 @@ const listSessionsInputSchema = z.object({
     .enum(["active", "archived"])
     .optional()
     .describe("Filter sessions by status. Omit to list all sessions."),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .max(100)
+    .optional()
+    .default(20)
+    .describe("Maximum number of sessions to return (default: 20, max: 100)"),
+  offset: z.number().int().min(0).optional().default(0).describe("Pagination offset"),
 });
 
 const createSessionInputSchema = z.object({
@@ -53,12 +62,19 @@ export function registerSessionTools(server: McpServer, deps: McpDeps): void {
 
       const query = args.status !== undefined ? { status: args.status } : undefined;
       const sessions = await store.listSessions(query);
+      const offset = args.offset ?? 0;
+      const limit = args.limit ?? 20;
+      const pagedSessions = sessions.slice(offset, offset + limit);
 
       return {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ count: sessions.length, sessions }),
+            text: JSON.stringify({
+              count: pagedSessions.length,
+              total: sessions.length,
+              sessions: pagedSessions,
+            }),
           },
         ],
       };

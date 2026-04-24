@@ -39,7 +39,7 @@ const lastInlineExpiryAt = new WeakMap<HandoffStore, number>();
 const pendingInlineExpiry = new WeakMap<HandoffStore, Promise<void>>();
 
 async function maybeExpireBeforeList(store: HandoffStore, deps: McpDeps): Promise<void> {
-  if (deps.deadlineWatcher !== undefined || deps.handoffExpiryManaged === true) {
+  if (deps.handoffExpiryManaged === true) {
     return;
   }
   const pendingSweep = pendingInlineExpiry.get(store);
