@@ -32,7 +32,7 @@ describe("schema migration", () => {
       db.close();
 
       expect(row).toBeDefined();
-      expect(row?.version).toBe(9);
+      expect(row?.version).toBe(10);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -173,7 +173,7 @@ describe("schema migration", () => {
       db.close();
 
       expect(rows.length).toBe(1);
-      expect(rows[0]?.version).toBe(9);
+      expect(rows[0]?.version).toBe(10);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -191,7 +191,7 @@ describe("schema migration", () => {
         .get() as {
         version: number;
       } | null;
-      expect(row?.version).toBe(9);
+      expect(row?.version).toBe(10);
 
       db.close();
     } finally {
@@ -356,6 +356,103 @@ describe("schema migration", () => {
     }
   });
 
+  test("backfill repairs partially populated junction tables", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-migration-"));
+    const dbPath = join(dir, "test.db");
+    try {
+      const db = new Database(dbPath);
+      db.run("PRAGMA journal_mode = WAL");
+      db.run("PRAGMA foreign_keys = ON");
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS contributions (
+          cid TEXT PRIMARY KEY, kind TEXT NOT NULL, mode TEXT NOT NULL,
+          summary TEXT NOT NULL, description TEXT, agent_id TEXT NOT NULL,
+          agent_name TEXT, created_at TEXT NOT NULL,
+          tags_json TEXT NOT NULL DEFAULT '[]', manifest_json TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS contribution_tags (
+          cid TEXT NOT NULL,
+          tag TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS artifacts (
+          contribution_cid TEXT NOT NULL,
+          name TEXT NOT NULL,
+          content_hash TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS relations (
+          source_cid TEXT NOT NULL, target_cid TEXT NOT NULL,
+          relation_type TEXT NOT NULL, metadata_json TEXT,
+          FOREIGN KEY (source_cid) REFERENCES contributions(cid)
+        );
+        CREATE TABLE IF NOT EXISTS claims (
+          claim_id TEXT PRIMARY KEY, target_ref TEXT NOT NULL,
+          agent_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+          heartbeat_at TEXT NOT NULL, lease_expires_at TEXT NOT NULL,
+          intent_summary TEXT NOT NULL, agent_json TEXT NOT NULL
+        );
+        CREATE VIRTUAL TABLE IF NOT EXISTS contributions_fts USING fts5(cid, summary, description);
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (1, '2026-01-01T00:00:00Z');
+      `);
+
+      const contribution = makeContribution({
+        summary: "partial-backfill",
+        tags: ["alpha", "beta"],
+        artifacts: {
+          "a.txt": "artifact-hash-a",
+          "b.txt": "artifact-hash-b",
+        },
+      });
+      const manifestJson = JSON.stringify(toManifest(contribution));
+      db.run(
+        `INSERT INTO contributions (cid, kind, mode, summary, description,
+         agent_id, agent_name, created_at, tags_json, manifest_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          contribution.cid,
+          contribution.kind,
+          contribution.mode,
+          contribution.summary,
+          contribution.description ?? null,
+          contribution.agent.agentId,
+          contribution.agent.agentName ?? null,
+          contribution.createdAt,
+          JSON.stringify(contribution.tags),
+          manifestJson,
+        ],
+      );
+      db.run("INSERT INTO contribution_tags (cid, tag) VALUES (?, ?)", [contribution.cid, "alpha"]);
+      db.run("INSERT INTO artifacts (contribution_cid, name, content_hash) VALUES (?, ?, ?)", [
+        contribution.cid,
+        "a.txt",
+        "artifact-hash-a",
+      ]);
+      db.close();
+
+      const db2 = initSqliteDb(dbPath);
+      const tags = db2
+        .prepare("SELECT tag FROM contribution_tags WHERE cid = ? ORDER BY tag")
+        .all(contribution.cid) as readonly { tag: string }[];
+      const artifacts = db2
+        .prepare(
+          "SELECT name, content_hash FROM artifacts WHERE contribution_cid = ? ORDER BY name",
+        )
+        .all(contribution.cid) as readonly { name: string; content_hash: string }[];
+      db2.close();
+
+      expect(tags.map((row) => row.tag)).toEqual(["alpha", "beta"]);
+      expect(artifacts).toEqual([
+        { name: "a.txt", content_hash: "artifact-hash-a" },
+        { name: "b.txt", content_hash: "artifact-hash-b" },
+      ]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("legacy DB with no schema_migrations rows gets claims columns added", async () => {
     const dir = await mkdtemp(join(tmpdir(), "sqlite-migration-"));
     const dbPath = join(dir, "test.db");
@@ -437,7 +534,7 @@ describe("schema migration", () => {
           v: number | null;
         }
       ).v;
-      expect(version).toBe(9);
+      expect(version).toBe(10);
 
       db2.close();
     } finally {

@@ -128,26 +128,39 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
   }
 
   let contract: GroveContract | undefined;
-  if (shouldParseContract) {
-    // Session-scoped config: when GROVE_SESSION_ID is set, load the frozen
-    // contract snapshot from the session record instead of reading GROVE.md.
-    const envSessionId = process.env.GROVE_SESSION_ID;
-    if (envSessionId) {
-      const sessionConfig = stores.goalSessionStore.getSessionConfigSync(envSessionId);
-      if (sessionConfig) {
-        contract = sessionConfig;
-      } else {
-        throw new Error(
-          `Session ${envSessionId} has no stored config. ` +
-            `Cannot load contract for GROVE_SESSION_ID=${envSessionId}.`,
-        );
+  try {
+    if (shouldParseContract) {
+      // Session-scoped config: when GROVE_SESSION_ID is set, prefer the frozen
+      // contract snapshot from the session record. Configless sessions are valid
+      // legacy/current state and should fall back to live GROVE.md.
+      if (envSessionId) {
+        const result = stores.goalSessionStore.resolveSessionConfigSync(envSessionId);
+        if (result.kind === "ok") {
+          contract = result.config;
+        } else if (result.kind === "not-found") {
+          throw new Error(
+            `Session ${envSessionId} not found. GROVE_SESSION_ID points at a ` +
+              `session that does not exist in this grove's session store.`,
+          );
+        } else if (result.kind === "malformed") {
+          throw new Error(
+            `Session ${envSessionId} has malformed config_json: ${result.reason}. ` +
+              `Refusing to proceed with unknown enforcement state.`,
+          );
+        }
       }
-    } else {
-      const contractPath = join(groveRoot, "GROVE.md");
-      if (existsSync(contractPath)) {
-        contract = parseGroveContract(readFileSync(contractPath, "utf-8"));
+      if (contract === undefined) {
+        const contractPath = join(groveRoot, "GROVE.md");
+        if (existsSync(contractPath)) {
+          contract = parseGroveContract(readFileSync(contractPath, "utf-8"));
+        }
       }
     }
+  } catch (err) {
+    workspace?.close();
+    cas.close();
+    stores.close();
+    throw err;
   }
 
   return {

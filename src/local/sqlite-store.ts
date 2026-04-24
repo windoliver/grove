@@ -51,7 +51,8 @@ import { claimToEntity, contributionToEntity } from "../core/entity.js";
 import { ClaimConflictError, NotFoundError, StateConflictError } from "../core/errors.js";
 import { toUtcIso } from "../core/time.js";
 
-const CURRENT_SCHEMA_VERSION = 9;
+const CURRENT_SCHEMA_VERSION = 10;
+const SQLITE_BIND_LIMIT = 900;
 
 // ---------------------------------------------------------------------------
 // Schema DDL
@@ -156,6 +157,7 @@ const SCHEMA_DDL = `
 
   CREATE INDEX IF NOT EXISTS idx_workspaces_status ON workspaces(status);
   CREATE INDEX IF NOT EXISTS idx_workspaces_activity ON workspaces(last_activity_at);
+  CREATE INDEX IF NOT EXISTS idx_workspaces_agent_id ON workspaces(agent_id);
 
   -- Idempotency cache: persists across process restarts so CLI retries work.
   -- The in-memory Map in contribute.ts handles single-flight within a process;
@@ -260,6 +262,7 @@ export function initSqliteDb(dbPath: string): Database {
         v: number | null;
       }
     ).v;
+    const needsLegacyBackfill = currentVersion === null || currentVersion < CURRENT_SCHEMA_VERSION;
 
     // Column-safe migrations: always run regardless of schema version.
     // Each uses PRAGMA table_info to check before altering, making them
@@ -319,6 +322,7 @@ export function initSqliteDb(dbPath: string): Database {
         );
         CREATE INDEX IF NOT EXISTS idx_workspaces_status ON workspaces(status);
         CREATE INDEX IF NOT EXISTS idx_workspaces_activity ON workspaces(last_activity_at);
+        CREATE INDEX IF NOT EXISTS idx_workspaces_agent_id ON workspaces(agent_id);
       `);
     }
 
@@ -448,24 +452,28 @@ export function initSqliteDb(dbPath: string): Database {
       new Date().toISOString(),
     ]);
 
-    // Backfill junction tables for pre-existing contributions.
-    // INSERT OR IGNORE prevents duplicates when the tables already have rows.
-    db.run(`
-      INSERT OR IGNORE INTO contribution_tags (cid, tag)
-      SELECT c.cid, j.value
-      FROM contributions c, json_each(c.tags_json) j
-      WHERE NOT EXISTS (
-        SELECT 1 FROM contribution_tags ct WHERE ct.cid = c.cid
-      )
-    `);
-    db.run(`
-      INSERT OR IGNORE INTO artifacts (contribution_cid, name, content_hash)
-      SELECT c.cid, j.key, j.value
-      FROM contributions c, json_each(json_extract(c.manifest_json, '$.artifacts')) j
-      WHERE NOT EXISTS (
-        SELECT 1 FROM artifacts a WHERE a.contribution_cid = c.cid
-      )
-    `);
+    if (needsLegacyBackfill) {
+      // Backfill junction tables for pre-existing contributions once while
+      // upgrading legacy databases. INSERT OR IGNORE prevents duplicates.
+      db.run(`
+        INSERT OR IGNORE INTO contribution_tags (cid, tag)
+        SELECT c.cid, j.value
+        FROM contributions c, json_each(c.tags_json) j
+        WHERE NOT EXISTS (
+          SELECT 1 FROM contribution_tags ct WHERE ct.cid = c.cid AND ct.tag = j.value
+        )
+      `);
+      db.run(`
+        INSERT OR IGNORE INTO artifacts (contribution_cid, name, content_hash)
+        SELECT c.cid, j.key, j.value
+        FROM contributions c, json_each(json_extract(c.manifest_json, '$.artifacts')) j
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM artifacts a
+          WHERE a.contribution_cid = c.cid AND a.name = j.key AND a.content_hash = j.value
+        )
+      `);
+    }
   });
   initSchema.immediate();
 
@@ -656,6 +664,9 @@ function buildFilteredQuery(opts: BuildFilteredQueryOptions): BuiltQuery {
   // Uses intersecting EXISTS subqueries for indexed point lookups on (tag, cid).
   if (query?.tags !== undefined && query.tags.length > 0) {
     const uniqueTags = [...new Set(query.tags)];
+    if (uniqueTags.length > SQLITE_BIND_LIMIT) {
+      throw new Error(`Too many tag filters: maximum ${SQLITE_BIND_LIMIT}`);
+    }
     for (const tag of uniqueTags) {
       conditions.push(
         `EXISTS (SELECT 1 FROM contribution_tags ct WHERE ct.cid = c.cid AND ct.tag = ?)`,
@@ -914,12 +925,16 @@ export class SqliteContributionStore implements ContributionStore {
     const result = new Map<string, Contribution>();
     if (cids.length === 0) return result;
 
-    const placeholders = cids.map(() => "?").join(", ");
-    const sql = `SELECT manifest_json FROM contributions WHERE cid IN (${placeholders})`;
-    const rows = this.db.prepare(sql).all(...cids) as readonly { manifest_json: string }[];
-    for (const row of rows) {
-      const contribution = rowToContribution(row);
-      result.set(contribution.cid, contribution);
+    const uniqueCids = [...new Set(cids)];
+    for (let i = 0; i < uniqueCids.length; i += SQLITE_BIND_LIMIT) {
+      const chunk = uniqueCids.slice(i, i + SQLITE_BIND_LIMIT);
+      const placeholders = chunk.map(() => "?").join(", ");
+      const sql = `SELECT manifest_json FROM contributions WHERE cid IN (${placeholders})`;
+      const rows = this.db.prepare(sql).all(...chunk) as readonly { manifest_json: string }[];
+      for (const row of rows) {
+        const contribution = rowToContribution(row);
+        result.set(contribution.cid, contribution);
+      }
     }
     return result;
   };
@@ -1306,7 +1321,7 @@ export class SqliteContributionStore implements ContributionStore {
   /** Multi-row INSERT helper. Chunks rows to stay under SQLITE_MAX_VARIABLE_NUMBER (999). */
   private batchInsert(prefix: string, cols: number, rows: SQLQueryBindings[][]): void {
     if (rows.length === 0) return;
-    const chunkSize = Math.floor(999 / cols);
+    const chunkSize = Math.floor(SQLITE_BIND_LIMIT / cols);
     for (let i = 0; i < rows.length; i += chunkSize) {
       const chunk = rows.slice(i, i + chunkSize);
       const placeholderRow = `(${Array(cols).fill("?").join(", ")})`;
