@@ -121,7 +121,22 @@ export interface ClaimSpec {
 }
 
 export interface ClaimStatusBody {
+  /**
+   * Effective phase as seen by Entity consumers. For an active row
+   * whose lease has passed, this collapses to `"expired"` — keeping
+   * `status.phase` consistent with the lease-aware condition view
+   * (Active=False, Expired=True). Consumers that filter "active"
+   * claims by phase will correctly skip stale leases.
+   */
   readonly phase: ClaimPhase;
+  /**
+   * The raw phase from the persisted row. Equal to `phase` except at
+   * the lease-expired-but-not-yet-persisted boundary, where
+   * `persistedPhase === "active"` and `phase === "expired"`. Use this
+   * when you specifically need to know what the store last wrote, e.g.
+   * to decide whether `expireStale` needs to run.
+   */
+  readonly persistedPhase: ClaimPhase;
   readonly heartbeatAt: string;
   readonly leaseExpiresAt: string;
   readonly attemptCount: number;
@@ -199,9 +214,12 @@ export function claimToEntity(c: Claim, now: () => number = () => Date.now()): C
       context: c.context,
     },
     status: {
-      // status.phase reflects the persisted row (what a controller last
-      // wrote); conditions express the lease-aware derived view.
-      phase: persistedPhase,
+      // phase = effective, lease-aware view so consumers that filter
+      // "active" via phase do not see stale leases.
+      // persistedPhase = raw store state, exposed separately for
+      // callers that need to decide whether expireStale should run.
+      phase: effectivePhase,
+      persistedPhase,
       heartbeatAt: c.heartbeatAt,
       leaseExpiresAt: c.leaseExpiresAt,
       attemptCount: c.attemptCount ?? 0,

@@ -167,9 +167,16 @@ describe("claimToEntity", () => {
   test("status carries phase/heartbeatAt/leaseExpiresAt/attemptCount", () => {
     const e = claimToEntity(makeClaim({ attemptCount: 2 }), claimClock);
     expect(e.status.phase).toBe("active");
+    expect(e.status.persistedPhase).toBe("active");
     expect(e.status.heartbeatAt).toBe("2026-04-23T00:01:00Z");
     expect(e.status.leaseExpiresAt).toBe("2026-04-23T00:05:00Z");
     expect(e.status.attemptCount).toBe(2);
+  });
+
+  test("status.phase is effective (lease-aware); persistedPhase is raw", () => {
+    const e = claimToEntity(makeClaim({ status: ClaimStatus.Active }), pastLeaseClock);
+    expect(e.status.phase).toBe("expired");
+    expect(e.status.persistedPhase).toBe("active");
   });
 
   test("attemptCount defaults to 0 when undefined on input", () => {

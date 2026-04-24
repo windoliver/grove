@@ -572,25 +572,38 @@ export class NexusClaimStore implements ClaimStore {
       "delete active claim index",
     );
 
-    // Owner-conditional target-lock cleanup. The shared target lock may
-    // already have been reassigned to a fresh claimant after a lease
-    // boundary, and blindly deleting it here would break the
-    // one-active-claim-per-target invariant. Re-read the lock and only
-    // delete it if it still points to this claim.
+    // Atomic, owner-conditional target-lock release.
     //
-    // There is a narrow TOCTOU window between the read and the delete,
-    // but it collapses the typical stale-owner-after-lease-boundary
-    // race without requiring a conditional-delete primitive in the
-    // NexusClient surface.
+    // The shared target lock may already have been reassigned to a
+    // fresh claimant across a lease boundary. Blindly deleting it
+    // would break the one-active-claim-per-target invariant. We do an
+    // ETag-bound CAS that clears the lock to empty bytes only if its
+    // current content still matches this claim: a single atomic
+    // write-with-ifMatch, no read/delete TOCTOU.
+    //
+    // An empty-bytes lock is treated as "released" by
+    // writeActiveIndexExclusive's takeover path, which removes it and
+    // retries the atomic ifNoneMatch="*" create. If another claimant
+    // already replaced the lock, the ifMatch CAS fails (StateConflict
+    // or NexusConflictError) and we leave their lock untouched.
     const lockFile = targetLockPath(this.zoneId, claim.targetRef);
-    const lockData = await withSemaphore(this.semaphore, () => this.client.read(lockFile)).catch(
-      () => undefined,
-    );
-    if (lockData !== undefined && decoder.decode(lockData) === claim.claimId) {
-      await safeCleanup(
-        withSemaphore(this.semaphore, () => this.client.delete(lockFile)),
-        "delete target lock",
+    const meta = await withSemaphore(this.semaphore, () =>
+      this.client.readWithMeta(lockFile),
+    ).catch(() => undefined);
+    if (meta === undefined) return;
+    if (decoder.decode(meta.content) !== claim.claimId) return;
+    try {
+      await withSemaphore(this.semaphore, () =>
+        this.client.write(lockFile, new Uint8Array(0), { ifMatch: meta.etag }),
       );
+    } catch (err) {
+      // ifMatch mismatch (another claimant replaced the lock between
+      // read and write) is a benign no-op — we must not stomp their
+      // state. Other errors bubble up: they indicate a real fault.
+      if (err instanceof NexusConflictError) return;
+      // StateConflictError from the client layer also maps to CAS fail.
+      if ((err as Error | undefined)?.name === "StateConflictError") return;
+      throw err;
     }
   }
 
