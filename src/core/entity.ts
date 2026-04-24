@@ -180,6 +180,7 @@ export interface AgentSessionSpec {
   readonly role: string;
   readonly platform?: AgentPlatformType | undefined;
   readonly model?: string | undefined;
+  /** Agent backend name (e.g. "claude", "codex", "gemini"); not an AgentIdentity record. */
   readonly agent?: string | undefined;
 }
 
