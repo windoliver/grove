@@ -16,7 +16,7 @@
 import type { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { copyFile, lstat, mkdir, rename, rm, stat } from "node:fs/promises";
+import { copyFile, lstat, mkdir, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { HookEntry, HookRunner, HooksConfig } from "../core/hooks.js";
@@ -48,8 +48,6 @@ import type { FsCas } from "./fs-cas.js";
 const WORKSPACES_DIR = "workspaces";
 const WORKSPACE_LOCK_POLL_MS = 25;
 const WORKSPACE_LOCK_TIMEOUT_MS = 300_000;
-const WORKSPACE_LOCK_OWNER_FILE = "owner.json";
-const WORKSPACE_LOCK_OWNER_GRACE_MS = 5_000;
 
 // ---------------------------------------------------------------------------
 // SQLite workspace table operations
@@ -95,6 +93,7 @@ async function sleep(ms: number): Promise<void> {
 
 interface WorkspaceLockOwner {
   readonly pid: number;
+  readonly token: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -166,7 +165,12 @@ export class LocalWorkspaceManager implements WorkspaceManager {
     // Serialize materialization per (cid, agentId). Without this, concurrent
     // checkouts can both race through temp-dir creation and one caller can
     // delete a workspace the other already returned.
-    while (!(await this.tryAcquireWorkspaceLock(lockPath))) {
+    let lockToken: string | undefined;
+    while (lockToken === undefined) {
+      lockToken = await this.tryAcquireWorkspaceLock(lockPath);
+      if (lockToken !== undefined) {
+        break;
+      }
       const ready = await this.waitForReadyWorkspace(cid, agentId, lockPath);
       if (ready !== undefined) {
         return ready;
@@ -208,9 +212,7 @@ export class LocalWorkspaceManager implements WorkspaceManager {
 
         // Atomic placement: rename temp dir to final location.
         // We only remove an existing path while holding the per-workspace lock.
-        if (await this.pathExists(workspacePath)) {
-          await rm(workspacePath, { recursive: true, force: true });
-        }
+        await this.removeWorkspacePathIfPresent(workspacePath);
         await rename(tmpDir, workspacePath);
       } catch (err) {
         // Clean up temp directory on failure
@@ -254,7 +256,9 @@ export class LocalWorkspaceManager implements WorkspaceManager {
         ...(options.context !== undefined && { context: options.context }),
       };
     } finally {
-      await this.releaseWorkspaceLock(lockPath);
+      if (lockToken !== undefined) {
+        await this.releaseWorkspaceLock(lockPath, lockToken);
+      }
     }
   }
 
@@ -308,7 +312,12 @@ export class LocalWorkspaceManager implements WorkspaceManager {
     await assertWithinBoundary(workspace.workspacePath, this.workspacesRoot);
     const lockPath = `${workspace.workspacePath}.lock`;
 
-    while (!(await this.tryAcquireWorkspaceLock(lockPath))) {
+    let lockToken: string | undefined;
+    while (lockToken === undefined) {
+      lockToken = await this.tryAcquireWorkspaceLock(lockPath);
+      if (lockToken !== undefined) {
+        break;
+      }
       await this.waitForWorkspaceLockRelease(lockPath);
     }
 
@@ -337,7 +346,7 @@ export class LocalWorkspaceManager implements WorkspaceManager {
 
       // Remove the directory
       try {
-        await rm(current.workspacePath, { recursive: true, force: true });
+        await this.removeWorkspacePathIfPresent(current.workspacePath);
       } catch (err) {
         // Directory might already be gone — that's fine
         if (
@@ -360,7 +369,9 @@ export class LocalWorkspaceManager implements WorkspaceManager {
 
       return true;
     } finally {
-      await this.releaseWorkspaceLock(lockPath);
+      if (lockToken !== undefined) {
+        await this.releaseWorkspaceLock(lockPath, lockToken);
+      }
     }
   }
 
@@ -405,21 +416,23 @@ export class LocalWorkspaceManager implements WorkspaceManager {
     const agentId = options.agent.agentId;
     validateWorkspaceKey(agentId);
     validateWorkspaceKey(key);
+    const workspacePath = join(this.workspacesRoot, `${key}-${agentId}`);
 
     // Idempotent: return existing active workspace
     const existing = await this.getWorkspace(key, agentId);
     if (
       existing !== undefined &&
       existing.status === WorkspaceStatus.Active &&
-      (await this.pathExists(existing.workspacePath))
+      existing.workspacePath === workspacePath &&
+      (await this.validateReadyWorkspacePath(existing.workspacePath))
     ) {
       return existing;
     }
 
     // Create empty workspace directory
     // Key is a spawnId (not a CID), so use it directly after validation
-    const workspacePath = join(this.workspacesRoot, `${key}-${agentId}`);
     await mkdir(this.workspacesRoot, { recursive: true });
+    await this.removeWorkspacePathIfPresent(workspacePath);
     await mkdir(workspacePath, { recursive: true });
 
     // Record in SQLite
@@ -544,7 +557,7 @@ export class LocalWorkspaceManager implements WorkspaceManager {
 
   private async pathExists(path: string): Promise<boolean> {
     try {
-      await stat(path);
+      await lstat(path);
       return true;
     } catch (err) {
       if (isErrnoCode(err, "ENOENT")) return false;
@@ -552,23 +565,40 @@ export class LocalWorkspaceManager implements WorkspaceManager {
     }
   }
 
-  private async tryAcquireWorkspaceLock(lockPath: string): Promise<boolean> {
+  private async removeWorkspacePathIfPresent(path: string): Promise<void> {
     try {
-      await mkdir(lockPath);
-      await Bun.write(
-        join(lockPath, WORKSPACE_LOCK_OWNER_FILE),
-        JSON.stringify({ pid: process.pid } satisfies WorkspaceLockOwner),
-      );
-      return true;
+      const entry = await lstat(path);
+      if (entry.isDirectory() && !entry.isSymbolicLink()) {
+        await rm(path, { recursive: true, force: true });
+      } else {
+        await unlink(path);
+      }
     } catch (err) {
-      if (isErrnoCode(err, "EEXIST")) return false;
-      await safeCleanup(
-        rm(lockPath, { recursive: true, force: true }),
-        "remove failed workspace lock",
+      if (isErrnoCode(err, "ENOENT")) {
+        return;
+      }
+      throw err;
+    }
+  }
+
+  private async tryAcquireWorkspaceLock(lockPath: string): Promise<string | undefined> {
+    const token = randomBytes(8).toString("hex");
+    try {
+      await writeFile(
+        lockPath,
+        JSON.stringify({ pid: process.pid, token } satisfies WorkspaceLockOwner),
         {
-          silent: true,
+          flag: "wx",
         },
       );
+      const owner = await this.readWorkspaceLockOwner(lockPath);
+      if (owner?.token !== token) {
+        await this.releaseWorkspaceLock(lockPath, token);
+        throw new Error(`Workspace lock '${lockPath}' could not verify its owner token`);
+      }
+      return token;
+    } catch (err) {
+      if (isErrnoCode(err, "EEXIST")) return undefined;
       throw err;
     }
   }
@@ -621,18 +651,28 @@ export class LocalWorkspaceManager implements WorkspaceManager {
     throw new Error(`Timed out waiting for workspace lock '${lockPath}'`);
   }
 
-  private async releaseWorkspaceLock(lockPath: string): Promise<void> {
-    await safeCleanup(rm(lockPath, { recursive: true, force: true }), "remove workspace lock dir", {
+  private async releaseWorkspaceLock(lockPath: string, token: string): Promise<void> {
+    const owner = await this.readWorkspaceLockOwner(lockPath);
+    if (owner === undefined || owner.token !== token) {
+      return;
+    }
+    await safeCleanup(unlink(lockPath), "remove workspace lock file", {
       silent: true,
     });
   }
 
   private async readWorkspaceLockOwner(lockPath: string): Promise<WorkspaceLockOwner | undefined> {
     try {
-      const text = await Bun.file(join(lockPath, WORKSPACE_LOCK_OWNER_FILE)).text();
-      const parsed = JSON.parse(text) as { pid?: unknown };
-      if (typeof parsed.pid === "number" && Number.isInteger(parsed.pid) && parsed.pid > 0) {
-        return { pid: parsed.pid };
+      const text = await Bun.file(lockPath).text();
+      const parsed = JSON.parse(text) as { pid?: unknown; token?: unknown };
+      if (
+        typeof parsed.pid === "number" &&
+        Number.isInteger(parsed.pid) &&
+        parsed.pid > 0 &&
+        typeof parsed.token === "string" &&
+        parsed.token.length > 0
+      ) {
+        return { pid: parsed.pid, token: parsed.token };
       }
       return undefined;
     } catch (err) {
@@ -693,14 +733,16 @@ export class LocalWorkspaceManager implements WorkspaceManager {
     const owner = await this.readWorkspaceLockOwner(lockPath);
     if (owner !== undefined) {
       if (!this.isProcessAlive(owner.pid)) {
-        await this.releaseWorkspaceLock(lockPath);
+        await this.releaseWorkspaceLock(lockPath, owner.token);
         return true;
       }
       return false;
     }
     const ageMs = await this.getLockAgeMs(lockPath);
-    if (ageMs !== undefined && ageMs >= WORKSPACE_LOCK_OWNER_GRACE_MS) {
-      await this.releaseWorkspaceLock(lockPath);
+    if (ageMs !== undefined && ageMs >= WORKSPACE_LOCK_TIMEOUT_MS) {
+      await safeCleanup(unlink(lockPath), "remove stale malformed workspace lock", {
+        silent: true,
+      });
       return true;
     }
     return false;

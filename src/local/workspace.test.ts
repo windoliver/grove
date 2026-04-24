@@ -524,8 +524,7 @@ describe("LocalWorkspaceManager implementation", () => {
       const workspacePath = join(ctx.workspacesRoot, `${cidHex}-${agent.agentId}`);
       const lockPath = `${workspacePath}.lock`;
 
-      await mkdir(lockPath, { recursive: true });
-      await Bun.write(join(lockPath, "owner.json"), JSON.stringify({ pid: 999_999_999 }));
+      await Bun.write(lockPath, JSON.stringify({ pid: 999_999_999, token: "dead-token" }));
 
       const info = await ctx.manager.checkout(contribution.cid, { agent });
       const file = Bun.file(join(info.workspacePath, "file.txt"));
@@ -545,9 +544,9 @@ describe("LocalWorkspaceManager implementation", () => {
       const cidHex = contribution.cid.replace("blake3:", "");
       const workspacePath = join(ctx.workspacesRoot, `${cidHex}-${agent.agentId}`);
       const lockPath = `${workspacePath}.lock`;
-      const staleTime = new Date(Date.now() - 10_000);
+      const staleTime = new Date(Date.now() - 10 * 60 * 1000);
 
-      await mkdir(lockPath, { recursive: true });
+      await Bun.write(lockPath, "");
       await utimes(lockPath, staleTime, staleTime);
 
       const info = await ctx.manager.checkout(contribution.cid, { agent });
@@ -596,6 +595,29 @@ describe("LocalWorkspaceManager implementation", () => {
       await Bun.write(join(second.workspacePath, ".probe"), "ok");
       expect(await Bun.file(join(second.workspacePath, ".probe")).text()).toBe("ok");
     } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test("createBareWorkspace recreates an active workspace path replaced by a symlink", async () => {
+    const ctx = await createTestContext();
+    const outsideDir = join(tmpdir(), `grove-bare-workspace-symlink-${Date.now()}`);
+    try {
+      const agent = makeAgent({ agentId: "bare-symlink-agent" });
+      const first = await ctx.manager.createBareWorkspace("spawn-symlink", { agent });
+      await mkdir(outsideDir, { recursive: true });
+      await Bun.write(join(outsideDir, ".probe"), "outside");
+
+      await rm(first.workspacePath, { recursive: true, force: true });
+      await symlink(outsideDir, first.workspacePath);
+
+      const second = await ctx.manager.createBareWorkspace("spawn-symlink", { agent });
+      const stats = await lstat(second.workspacePath);
+      expect(stats.isSymbolicLink()).toBe(false);
+      await Bun.write(join(second.workspacePath, ".probe"), "ok");
+      expect(await Bun.file(join(second.workspacePath, ".probe")).text()).toBe("ok");
+    } finally {
+      await rm(outsideDir, { recursive: true, force: true });
       await ctx.cleanup();
     }
   });
