@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   generateProjectId,
   isValidProjectId,
   readProjectId,
+  writeProjectId,
 } from "./project-id.js";
 
 function makeTmpGroveDir(): string {
@@ -88,5 +89,44 @@ describe("readProjectId", () => {
     const dir = makeTmpGroveDir();
     writeFileSync(join(dir, "project-id"), "garbage\n");
     expect(() => readProjectId(dir)).toThrow(/Invalid project id/);
+  });
+});
+
+describe("writeProjectId", () => {
+  test("writes id with trailing newline", () => {
+    const dir = makeTmpGroveDir();
+    const id = "550e8400-e29b-41d4-a716-446655440000";
+    writeProjectId(dir, id);
+    const raw = readFileSync(join(dir, "project-id"), "utf8");
+    expect(raw).toBe(`${id}\n`);
+  });
+
+  test("rejects invalid id", () => {
+    const dir = makeTmpGroveDir();
+    expect(() => writeProjectId(dir, "not-a-uuid")).toThrow(/invalid/i);
+  });
+
+  test("round-trips through readProjectId", () => {
+    const dir = makeTmpGroveDir();
+    const id = generateProjectId();
+    writeProjectId(dir, id);
+    expect(readProjectId(dir)).toBe(id);
+  });
+
+  test("is stable on repeated writes with same id", () => {
+    const dir = makeTmpGroveDir();
+    const id = generateProjectId();
+    writeProjectId(dir, id);
+    const first = readFileSync(join(dir, "project-id"), "utf8");
+    writeProjectId(dir, id);
+    const second = readFileSync(join(dir, "project-id"), "utf8");
+    expect(second).toBe(first);
+  });
+
+  test("writes mode 0644", () => {
+    const dir = makeTmpGroveDir();
+    writeProjectId(dir, generateProjectId());
+    const mode = statSync(join(dir, "project-id")).mode & 0o777;
+    expect(mode).toBe(0o644);
   });
 });

@@ -40,3 +40,13 @@ export function readProjectId(groveDir: string): string | null {
   }
   return trimmed;
 }
+
+export function writeProjectId(groveDir: string, id: string): void {
+  if (!isValidProjectId(id)) {
+    throw new Error(`Cannot write invalid project id: ${JSON.stringify(id)}`);
+  }
+  const target = join(groveDir, PROJECT_ID_FILE);
+  const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, `${id}\n`, { encoding: "utf8", mode: 0o644 });
+  renameSync(tmp, target);
+}
