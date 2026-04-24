@@ -243,6 +243,12 @@ export class NexusClaimStore implements ClaimStore {
     validateHeartbeat(result?.claim, claimId);
     const { claim: validClaim, etag } = result as ClaimWithEtag;
 
+    // Lock-ownership fence: if the target lock no longer points to
+    // this claim, a takeover has already superseded us. Renewing the
+    // lease would resurrect a zombie active claim that no longer
+    // controls its target.
+    await this.assertLockOwned(validClaim.targetRef, claimId);
+
     const now = new Date();
     const duration = leaseDurationMs ?? DEFAULT_LEASE_DURATION_MS;
     const updated: Claim = {
@@ -256,6 +262,28 @@ export class NexusClaimStore implements ClaimStore {
     this.claimCache.set(updated.claimId, updated);
     this.invalidateActiveClaimsCache();
     return updated;
+  }
+
+  /**
+   * Verify that the target lock for this claim still points to us.
+   * Called by heartbeat and terminal transitions as a last-mile fence
+   * against takeovers that rewrite the lock without mutating the old
+   * claim file.
+   */
+  private async assertLockOwned(targetRef: string, expectedClaimId: string): Promise<void> {
+    const lockPath = targetLockPath(this.zoneId, targetRef);
+    const lockData = await withSemaphore(this.semaphore, () => this.client.read(lockPath)).catch(
+      () => undefined,
+    );
+    const holder = lockData !== undefined ? decoder.decode(lockData) : "";
+    if (holder === expectedClaimId) return;
+    throw new StateConflictError({
+      resource: "Claim",
+      reason: "lost target lock",
+      message: `Claim '${expectedClaimId}' no longer owns target '${targetRef}' — lock ${
+        holder.length === 0 ? "is unowned" : `held by '${holder}'`
+      }`,
+    });
   }
 
   async release(claimId: string): Promise<Claim> {
@@ -448,28 +476,13 @@ export class NexusClaimStore implements ClaimStore {
     // single failure mode.
     validateTransition(validClaim, claimId, newStatus);
 
-    // Lock-ownership fence: verify the target lock *still* points to
-    // this claim right before we mutate it. A stale caller that held
-    // the claim ETag across a lease boundary will lose this check
-    // because writeActiveIndexExclusive's CAS takeover rewrites the
-    // lock contents. An empty-bytes lock (released via deleteActiveIndex's
-    // CAS tombstone) also fails ownership — we cannot retroactively
-    // "re-release" a claim whose lock has already been surrendered.
-    // This narrows the race to the window between this read and the
-    // RPC; a fully atomic fix would require a multi-key transaction
-    // that Nexus does not currently expose.
-    const lockPath = targetLockPath(this.zoneId, validClaim.targetRef);
-    const lockMeta = await withSemaphore(this.semaphore, () => this.client.readWithMeta(lockPath));
-    const lockHolder = lockMeta !== undefined ? decoder.decode(lockMeta.content) : "";
-    if (lockHolder !== claimId) {
-      throw new StateConflictError({
-        resource: "Claim",
-        reason: "lost target lock",
-        message: `Cannot transition claim '${claimId}': target lock ${
-          lockHolder.length === 0 ? "is unowned (released)" : `is now held by '${lockHolder}'`
-        }`,
-      });
-    }
+    // Lock-ownership fence: see assertLockOwned for details. The
+    // takeover path in writeActiveIndexExclusive CAS-expires the
+    // stale holder before rewriting the lock, so a stale caller's
+    // writeClaimCas below would already fail on ETag mismatch — but
+    // we belt-and-suspenders the lock check too, to catch empty-bytes
+    // tombstones left by deleteActiveIndex's CAS release path.
+    await this.assertLockOwned(validClaim.targetRef, claimId);
 
     const updated: Claim = {
       ...validClaim,
@@ -576,8 +589,9 @@ export class NexusClaimStore implements ClaimStore {
       const isEmptyTombstone = holderId.length === 0;
 
       let holderStale = isEmptyTombstone;
+      let holderResult: ClaimWithEtag | undefined;
       if (!holderStale) {
-        const holderResult = await this.readClaimWithEtag(holderId);
+        holderResult = await this.readClaimWithEtag(holderId);
         const holderClaim = holderResult?.claim;
         holderStale =
           holderClaim === undefined ||
@@ -588,6 +602,32 @@ export class NexusClaimStore implements ClaimStore {
       if (!holderStale) {
         // Genuine conflict — another live active claim owns this target.
         throw err;
+      }
+
+      // Before reassigning the lock, CAS-mark the stale holder as
+      // `expired` using its current claim-file ETag. This invalidates
+      // any in-flight writeClaimCas/heartbeat the stale owner might
+      // still attempt — their old ETag no longer matches, so they fail
+      // fast instead of resurrecting a zombie active claim. If the
+      // holder record has moved under us (another party already
+      // expired it, or the record was deleted), fall through: the
+      // holder is already non-active and our lock takeover is safe.
+      if (holderResult !== undefined && holderResult.claim.status === "active") {
+        const expiredHolder: Claim = {
+          ...holderResult.claim,
+          status: "expired" as ClaimStatus,
+          revision: (holderResult.claim.revision ?? 0) + 1,
+        };
+        try {
+          await this.writeClaimCas(expiredHolder, holderResult.etag);
+          this.claimCache.set(expiredHolder.claimId, expiredHolder);
+        } catch (expireErr) {
+          // Someone else (expireStale, another takeover) already moved
+          // the holder — benign. Any other failure propagates.
+          if (!(expireErr instanceof NexusConflictError)) {
+            if ((expireErr as Error | undefined)?.name !== "StateConflictError") throw expireErr;
+          }
+        }
       }
 
       // Atomic takeover: CAS-replace the lock with our claimId only if

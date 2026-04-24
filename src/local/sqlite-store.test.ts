@@ -23,32 +23,35 @@ import { createSqliteStores, SqliteStore } from "./sqlite-store.js";
 // Legacy SqliteStore — ContributionStore conformance
 // ---------------------------------------------------------------------------
 
-// Skip listEntities for the legacy combined SqliteStore (same reason as the
-// ClaimStore block below — ambiguous dispatch now fails loud by design).
-runContributionStoreTests(
-  async () => {
-    const dir = await mkdtemp(join(tmpdir(), "sqlite-store-contrib-"));
-    const dbPath = join(dir, "test.db");
-    const store = new SqliteStore(dbPath);
+// The legacy combined SqliteStore now dispatches listEntities() at runtime:
+// bare calls (and calls carrying only contribution-shaped or shared keys)
+// route to the contribution store, so the full contribution conformance
+// suite runs here. Claim-shaped queries route to the claim store; see the
+// ClaimStore block below for why that conformance remains partial.
+runContributionStoreTests(async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sqlite-store-contrib-"));
+  const dbPath = join(dir, "test.db");
+  const store = new SqliteStore(dbPath);
 
-    return {
-      store,
-      cleanup: async () => {
-        await rm(dir, { recursive: true, force: true });
-      },
-    };
-  },
-  { skipListEntities: true },
-);
+  return {
+    store,
+    cleanup: async () => {
+      await rm(dir, { recursive: true, force: true });
+    },
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Legacy SqliteStore — ClaimStore conformance
 // ---------------------------------------------------------------------------
 
-// Skip listEntities tests for the legacy combined SqliteStore: it implements both
-// ContributionStore and ClaimStore and cannot unambiguously dispatch listEntities()
-// to the claim store when called with no arguments. SqliteClaimStore (below) covers
-// listEntities correctly.
+// The legacy combined SqliteStore routes listEntities() dispatch based on
+// query shape: a bare `listEntities()` with no discriminator defaults to
+// contributions (matching the facade's historical behavior), so the
+// ClaimStore conformance cannot exercise listEntities via this combined
+// entry point — its tests call `store.listEntities()` without args and
+// expect claim entities. skipListEntities stays set here; the fully
+// type-safe path is `createSqliteStores().claimStore`, covered below.
 runClaimStoreTests(
   async () => {
     const dir = await mkdtemp(join(tmpdir(), "sqlite-store-claim-"));
