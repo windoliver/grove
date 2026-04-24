@@ -30,10 +30,14 @@ export const ConditionChips: React.NamedExoticComponent<ConditionChipsProps> = R
     return (
       <box flexDirection="column" marginBottom={1}>
         <box flexDirection="row">
-          {conditions.map((c) => (
-            <text key={c.type} color={colorForStatus(c.status)}>
-              [{c.type}]{" "}
-            </text>
+          {conditions.map((c, i) => (
+            <React.Fragment key={c.type}>
+              {i > 0 && <text> </text>}
+              <text color="white" backgroundColor={colorForStatus(c.status)}>
+                {" "}
+                {c.type}{" "}
+              </text>
+            </React.Fragment>
           ))}
         </box>
         {reasons.length > 0 && (

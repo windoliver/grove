@@ -213,7 +213,7 @@ already present on the input record.
   - Contribution: published condition is always True, `id === cid`, creation timestamp passes through.
   - Claim: 4 phases × 3 condition types matrix; `revision` → `resourceVersion` and `observedGeneration`.
   - AgentSession: 4 phases → Ready/Crashed matrix; `id` pass-through; pid carried on status.
-- `src/tui/components/condition-chips.test.tsx` — ink-testing-library render assertions for each status → color mapping. Uses the same helper pattern as existing TUI component tests.
+- `src/tui/components/condition-chips.test.ts` — prop-contract + color-mapping tests (pure logic, no renderer — matches `empty-state.test.ts` pattern).
 - TDD order: adapters → chips component → detail view integration.
 
 ## Files
@@ -223,7 +223,7 @@ already present on the input record.
 - `src/core/entity.ts`
 - `src/core/entity.test.ts`
 - `src/tui/components/condition-chips.tsx`
-- `src/tui/components/condition-chips.test.tsx`
+- `src/tui/components/condition-chips.test.ts`
 
 **Edited**
 

@@ -91,4 +91,17 @@ describe("shouldShowReason", () => {
       }),
     ).toBe(false);
   });
+
+  test("shows reason line for Unknown conditions with a reason", () => {
+    expect(
+      shouldShowReason({
+        type: "Ready",
+        status: "Unknown",
+        observedGeneration: 0,
+        lastTransitionTime: "",
+        reason: "waiting",
+        message: "",
+      }),
+    ).toBe(true);
+  });
 });
