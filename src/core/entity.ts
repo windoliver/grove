@@ -208,6 +208,8 @@ export function agentSessionToEntity(
 ): AgentSessionEntity {
   const t = now();
   const phase = s.status;
+  // Both conditions share the same observed-at instant; per-condition
+  // timestamps will be recorded by the controller in Epic D (#285).
   const mkCond = (type: string, active: boolean): Condition => ({
     type,
     status: active ? "True" : "False",

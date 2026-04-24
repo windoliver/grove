@@ -305,4 +305,12 @@ describe("agentSessionToEntity", () => {
     expect(typeof e.conditions[0]?.lastTransitionTime).toBe("string");
     expect(e.conditions[0]?.lastTransitionTime).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
+
+  test("conditions observedGeneration matches entity observedGeneration (invariant)", () => {
+    const e = agentSessionToEntity(makeSession(), fixedClock);
+    for (const c of e.conditions) {
+      expect(c.observedGeneration).toBe(0);
+      expect(c.observedGeneration).toBe(e.observedGeneration);
+    }
+  });
 });
