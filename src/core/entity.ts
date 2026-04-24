@@ -9,6 +9,16 @@
  * isolation. That is the only call-site that needs to change.
  */
 
+import type {
+  AgentIdentity,
+  Contribution,
+  ContributionKind,
+  ContributionMode,
+  JsonValue,
+  Relation,
+  Score,
+} from "./models.js";
+
 export type ConditionStatus = "True" | "False" | "Unknown";
 
 export interface Condition {
@@ -43,16 +53,6 @@ export interface Entity<K extends string, Spec, Status> {
   readonly resourceVersion: string;
   readonly metadata: EntityMetadata;
 }
-
-import type {
-  AgentIdentity,
-  Contribution,
-  ContributionKind,
-  ContributionMode,
-  JsonValue,
-  Relation,
-  Score,
-} from "./models.js";
 
 export interface ContributionSpec {
   readonly contributionKind: ContributionKind;

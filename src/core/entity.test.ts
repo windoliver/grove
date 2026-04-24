@@ -101,6 +101,8 @@ describe("contributionToEntity", () => {
     expect(published?.status).toBe("True");
     expect(published?.reason).toBe("Created");
     expect(published?.lastTransitionTime).toBe("2026-04-23T00:00:00Z");
+    expect(published?.observedGeneration).toBe(0);
+    expect(published?.message).toBe("");
   });
 
   test("preserves all spec fields from the contribution", () => {
@@ -116,5 +118,7 @@ describe("contributionToEntity", () => {
     expect(e.spec.tags).toEqual(["a", "b"]);
     expect(e.spec.commitHash).toBe("abc123");
     expect(e.spec.agent).toEqual({ agentId: "agent-1" });
+    expect(e.spec.mode).toBe("evaluation");
+    expect(e.spec.artifacts).toEqual({});
   });
 });
