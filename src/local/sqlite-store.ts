@@ -133,7 +133,7 @@ const SCHEMA_DDL = `
     context_json TEXT,
     agent_json TEXT NOT NULL,
     attempt_count INTEGER NOT NULL DEFAULT 0,
-    revision INTEGER NOT NULL DEFAULT 0
+    revision INTEGER NOT NULL DEFAULT 1
   );
 
   CREATE INDEX IF NOT EXISTS idx_claims_target ON claims(target_ref);
@@ -288,8 +288,12 @@ export function initSqliteDb(dbPath: string): Database {
       }
 
       // Revision column — monotonic resourceVersion for Entity watch semantics (#287).
+      // Newly created claims start at revision=1 to match NexusClaimStore; when the
+      // column is added to an existing database we backfill live rows to 1 for the
+      // same reason (generation 0 reads as "uninitialized").
       if (!columnNames.has("revision")) {
-        db.run("ALTER TABLE claims ADD COLUMN revision INTEGER NOT NULL DEFAULT 0");
+        db.run("ALTER TABLE claims ADD COLUMN revision INTEGER NOT NULL DEFAULT 1");
+        db.run("UPDATE claims SET revision = 1 WHERE revision = 0");
       }
     }
 

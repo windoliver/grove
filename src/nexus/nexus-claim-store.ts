@@ -564,17 +564,34 @@ export class NexusClaimStore implements ClaimStore {
   }
 
   private async deleteActiveIndex(claim: Claim): Promise<void> {
-    // Delete both the per-claim index and the target lock
+    // Delete the per-claim index unconditionally — it is namespaced by
+    // claimId and only this claim can own it.
     const indexFile = activeClaimIndexPath(this.zoneId, claim.targetRef, claim.claimId);
-    const lockFile = targetLockPath(this.zoneId, claim.targetRef);
     await safeCleanup(
       withSemaphore(this.semaphore, () => this.client.delete(indexFile)),
       "delete active claim index",
     );
-    await safeCleanup(
-      withSemaphore(this.semaphore, () => this.client.delete(lockFile)),
-      "delete target lock",
+
+    // Owner-conditional target-lock cleanup. The shared target lock may
+    // already have been reassigned to a fresh claimant after a lease
+    // boundary, and blindly deleting it here would break the
+    // one-active-claim-per-target invariant. Re-read the lock and only
+    // delete it if it still points to this claim.
+    //
+    // There is a narrow TOCTOU window between the read and the delete,
+    // but it collapses the typical stale-owner-after-lease-boundary
+    // race without requiring a conditional-delete primitive in the
+    // NexusClient surface.
+    const lockFile = targetLockPath(this.zoneId, claim.targetRef);
+    const lockData = await withSemaphore(this.semaphore, () => this.client.read(lockFile)).catch(
+      () => undefined,
     );
+    if (lockData !== undefined && decoder.decode(lockData) === claim.claimId) {
+      await safeCleanup(
+        withSemaphore(this.semaphore, () => this.client.delete(lockFile)),
+        "delete target lock",
+      );
+    }
   }
 
   private async findActiveOnTarget(targetRef: string, now: Date): Promise<Claim | undefined> {

@@ -994,6 +994,19 @@ export function runClaimStoreTests(
         expect(activeEntities.length).toBe(active.length);
       });
 
+      test("newly created claim has resourceVersion='1' and observedGeneration=1", async () => {
+        const claim = makeClaim({ claimId: "init-rv", targetRef: "t-init-rv" });
+        await store.createClaim(claim);
+        const entities = await store.listEntities();
+        const found = entities.find((e) => e.id === claim.claimId);
+        expect(found).toBeDefined();
+        // New Entities start at generation/resourceVersion "1" across all
+        // backends — a 0 value would imply an uninitialized envelope.
+        expect(found?.resourceVersion).toBe("1");
+        expect(found?.observedGeneration).toBe(1);
+        expect(found?.metadata.generation).toBe(1);
+      });
+
       test("listEntities resourceVersion advances after heartbeat and transition", async () => {
         const claim = makeClaim({ claimId: "rv-claim", targetRef: "rv-target" });
         await store.createClaim(claim);
