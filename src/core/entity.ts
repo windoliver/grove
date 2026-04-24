@@ -9,6 +9,7 @@
  * isolation. That is the only call-site that needs to change.
  */
 
+import type { AgentSession } from "./agent-runtime.js";
 import type {
   AgentIdentity,
   Claim,
@@ -20,7 +21,6 @@ import type {
   Relation,
   Score,
 } from "./models.js";
-import type { AgentSession } from "./agent-runtime.js";
 import type { AgentPlatformType } from "./topology.js";
 
 export type ConditionStatus = "True" | "False" | "Unknown";
@@ -74,11 +74,7 @@ export interface ContributionSpec {
 
 export type ContributionStatus = Record<string, never>;
 
-export type ContributionEntity = Entity<
-  "Contribution",
-  ContributionSpec,
-  ContributionStatus
->;
+export type ContributionEntity = Entity<"Contribution", ContributionSpec, ContributionStatus>;
 
 export function contributionToEntity(c: Contribution): ContributionEntity {
   const published: Condition = {
@@ -138,11 +134,7 @@ export function claimToEntity(c: Claim): ClaimEntity {
   const metaGen = c.revision ?? 1;
   const phase = c.status;
 
-  const mkCond = (
-    type: string,
-    active: boolean,
-    lastTransitionTime: string,
-  ): Condition => ({
+  const mkCond = (type: string, active: boolean, lastTransitionTime: string): Condition => ({
     type,
     status: active ? "True" : "False",
     observedGeneration: rev,
@@ -196,11 +188,7 @@ export interface AgentSessionStatusBody {
   readonly pid?: number | undefined;
 }
 
-export type AgentSessionEntity = Entity<
-  "AgentSession",
-  AgentSessionSpec,
-  AgentSessionStatusBody
->;
+export type AgentSessionEntity = Entity<"AgentSession", AgentSessionSpec, AgentSessionStatusBody>;
 
 export function agentSessionToEntity(
   s: AgentSession,
