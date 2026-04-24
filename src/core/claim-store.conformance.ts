@@ -271,12 +271,18 @@ export function runClaimStoreTests(
     });
 
     test("expireStale returns the expired claims", async () => {
+      // Distinct targetRefs so each claim stands on its own — some
+      // backends (Nexus) enforce one-active-claim-per-target strictly
+      // and will eagerly expire a same-target stale claim during a
+      // second createClaim takeover, which would make this test flaky.
       const expired1 = makeClaim({
         claimId: "exp-1",
+        targetRef: "target-exp-1",
         leaseExpiresAt: new Date(Date.now() - 5_000).toISOString(),
       });
       const expired2 = makeClaim({
         claimId: "exp-2",
+        targetRef: "target-exp-2",
         leaseExpiresAt: new Date(Date.now() - 5_000).toISOString(),
       });
       await store.createClaim(expired1);
@@ -290,13 +296,17 @@ export function runClaimStoreTests(
     });
 
     test("expireStale does not affect non-expired active claims", async () => {
-      // One expired, one still active
+      // One expired, one still active, on different targets so the
+      // backend's one-active-per-target invariant does not cross-expire
+      // them during createClaim.
       const expired = makeClaim({
         claimId: "stale",
+        targetRef: "target-stale",
         leaseExpiresAt: new Date(Date.now() - 10_000).toISOString(),
       });
       const active = makeClaim({
         claimId: "fresh",
+        targetRef: "target-fresh",
         leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
       });
       await store.createClaim(expired);
