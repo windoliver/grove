@@ -20,6 +20,8 @@ import type {
   Relation,
   Score,
 } from "./models.js";
+import type { AgentSession } from "./agent-runtime.js";
+import type { AgentPlatformType } from "./topology.js";
 
 export type ConditionStatus = "True" | "False" | "Unknown";
 
@@ -178,6 +180,65 @@ export function claimToEntity(c: Claim): ClaimEntity {
     metadata: {
       generation: metaGen,
       creationTimestamp: c.createdAt,
+    },
+  };
+}
+
+export interface AgentSessionSpec {
+  readonly role: string;
+  readonly platform?: AgentPlatformType | undefined;
+  readonly model?: string | undefined;
+  readonly agent?: string | undefined;
+}
+
+export interface AgentSessionStatusBody {
+  readonly phase: "running" | "idle" | "stopped" | "crashed";
+  readonly pid?: number | undefined;
+}
+
+export type AgentSessionEntity = Entity<
+  "AgentSession",
+  AgentSessionSpec,
+  AgentSessionStatusBody
+>;
+
+export function agentSessionToEntity(
+  s: AgentSession,
+  now: () => string = () => new Date().toISOString(),
+): AgentSessionEntity {
+  const t = now();
+  const phase = s.status;
+  const mkCond = (type: string, active: boolean): Condition => ({
+    type,
+    status: active ? "True" : "False",
+    observedGeneration: 0,
+    lastTransitionTime: t,
+    reason: phase,
+    message: "",
+  });
+
+  return {
+    kind: "AgentSession",
+    namespace: "default",
+    id: s.id,
+    spec: {
+      role: s.role,
+      platform: s.platform,
+      model: s.model,
+      agent: s.agent,
+    },
+    status: {
+      phase,
+      pid: s.pid,
+    },
+    conditions: [
+      mkCond("Ready", phase === "running" || phase === "idle"),
+      mkCond("Crashed", phase === "crashed"),
+    ],
+    observedGeneration: 0,
+    resourceVersion: "0",
+    metadata: {
+      generation: 1,
     },
   };
 }

@@ -1,13 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import type { Condition, ConditionStatus, Entity, EntityMetadata } from "./entity.js";
-import type { Contribution } from "./models.js";
-import { ContributionKind, ContributionMode } from "./models.js";
-import type { ContributionEntity } from "./entity.js";
-import { contributionToEntity } from "./entity.js";
-import type { Claim } from "./models.js";
-import { ClaimStatus } from "./models.js";
-import type { ClaimEntity } from "./entity.js";
-import { claimToEntity } from "./entity.js";
+import type { Condition, ConditionStatus, Entity, EntityMetadata, ContributionEntity, ClaimEntity, AgentSessionEntity } from "./entity.js";
+import { contributionToEntity, claimToEntity, agentSessionToEntity } from "./entity.js";
+import type { Contribution, Claim } from "./models.js";
+import { ContributionKind, ContributionMode, ClaimStatus } from "./models.js";
+import type { AgentSession } from "./agent-runtime.js";
 
 describe("Entity envelope types", () => {
   test("Condition has six required fields", () => {
@@ -221,5 +217,92 @@ describe("claimToEntity", () => {
     for (const c of e.conditions) {
       expect(c.observedGeneration).toBe(3);
     }
+  });
+});
+
+function makeSession(overrides: Partial<AgentSession> = {}): AgentSession {
+  return {
+    id: "grove-coder-1-abc",
+    role: "coder",
+    status: "running",
+    ...overrides,
+  };
+}
+
+const fixedClock = () => "2026-04-23T12:00:00Z";
+
+describe("agentSessionToEntity", () => {
+  test("wraps id as id, kind=AgentSession", () => {
+    const e: AgentSessionEntity = agentSessionToEntity(makeSession(), fixedClock);
+    expect(e.kind).toBe("AgentSession");
+    expect(e.id).toBe("grove-coder-1-abc");
+    expect(e.namespace).toBe("default");
+  });
+
+  test("spec carries role/platform/model/agent", () => {
+    const e = agentSessionToEntity(
+      makeSession({ platform: "claude-code", model: "sonnet", agent: "claude" }),
+      fixedClock,
+    );
+    expect(e.spec.role).toBe("coder");
+    expect(e.spec.platform).toBe("claude-code");
+    expect(e.spec.model).toBe("sonnet");
+    expect(e.spec.agent).toBe("claude");
+  });
+
+  test("status carries phase + pid", () => {
+    const e = agentSessionToEntity(makeSession({ pid: 4242 }), fixedClock);
+    expect(e.status.phase).toBe("running");
+    expect(e.status.pid).toBe(4242);
+  });
+
+  test("running → Ready=True, Crashed=False", () => {
+    const e = agentSessionToEntity(makeSession({ status: "running" }), fixedClock);
+    const m = Object.fromEntries(e.conditions.map((c) => [c.type, c]));
+    expect(m.Ready?.status).toBe("True");
+    expect(m.Crashed?.status).toBe("False");
+    expect(m.Ready?.reason).toBe("running");
+  });
+
+  test("idle → Ready=True", () => {
+    const e = agentSessionToEntity(makeSession({ status: "idle" }), fixedClock);
+    const m = Object.fromEntries(e.conditions.map((c) => [c.type, c]));
+    expect(m.Ready?.status).toBe("True");
+    expect(m.Crashed?.status).toBe("False");
+  });
+
+  test("stopped → Ready=False, Crashed=False", () => {
+    const e = agentSessionToEntity(makeSession({ status: "stopped" }), fixedClock);
+    const m = Object.fromEntries(e.conditions.map((c) => [c.type, c]));
+    expect(m.Ready?.status).toBe("False");
+    expect(m.Crashed?.status).toBe("False");
+  });
+
+  test("crashed → Ready=False, Crashed=True", () => {
+    const e = agentSessionToEntity(makeSession({ status: "crashed" }), fixedClock);
+    const m = Object.fromEntries(e.conditions.map((c) => [c.type, c]));
+    expect(m.Ready?.status).toBe("False");
+    expect(m.Crashed?.status).toBe("True");
+  });
+
+  test("lastTransitionTime uses injected clock", () => {
+    const e = agentSessionToEntity(makeSession(), fixedClock);
+    for (const c of e.conditions) {
+      expect(c.lastTransitionTime).toBe("2026-04-23T12:00:00Z");
+    }
+  });
+
+  test("resourceVersion='0', metadata.generation=1, creationTimestamp undefined", () => {
+    const e = agentSessionToEntity(makeSession(), fixedClock);
+    expect(e.resourceVersion).toBe("0");
+    expect(e.observedGeneration).toBe(0);
+    expect(e.metadata.generation).toBe(1);
+    expect(e.metadata.creationTimestamp).toBeUndefined();
+  });
+
+  test("default clock parameter produces an ISO string", () => {
+    const e = agentSessionToEntity(makeSession());
+    expect(typeof e.conditions[0]?.lastTransitionTime).toBe("string");
+    expect(e.conditions[0]?.lastTransitionTime).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 });
