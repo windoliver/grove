@@ -1,9 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import type { Condition, ConditionStatus, Entity, EntityMetadata, ContributionEntity, ClaimEntity, AgentSessionEntity } from "./entity.js";
-import { contributionToEntity, claimToEntity, agentSessionToEntity } from "./entity.js";
-import type { Contribution, Claim } from "./models.js";
-import { ContributionKind, ContributionMode, ClaimStatus } from "./models.js";
 import type { AgentSession } from "./agent-runtime.js";
+import type {
+  AgentSessionEntity,
+  ClaimEntity,
+  Condition,
+  ConditionStatus,
+  ContributionEntity,
+  Entity,
+  EntityMetadata,
+} from "./entity.js";
+import { agentSessionToEntity, claimToEntity, contributionToEntity } from "./entity.js";
+import type { Claim, Contribution } from "./models.js";
+import { ClaimStatus, ContributionKind, ContributionMode } from "./models.js";
 
 describe("Entity envelope types", () => {
   test("Condition has six required fields", () => {
@@ -74,9 +82,7 @@ describe("contributionToEntity", () => {
   });
 
   test("projects domain kind into spec.contributionKind", () => {
-    const e = contributionToEntity(
-      makeContribution({ kind: ContributionKind.Review }),
-    );
+    const e = contributionToEntity(makeContribution({ kind: ContributionKind.Review }));
     expect(e.spec.contributionKind).toBe("review");
   });
 
@@ -312,5 +318,14 @@ describe("agentSessionToEntity", () => {
       expect(c.observedGeneration).toBe(0);
       expect(c.observedGeneration).toBe(e.observedGeneration);
     }
+  });
+});
+
+describe("core/index exports", () => {
+  test("re-exports Entity adapters and types", async () => {
+    const mod = await import("./index.js");
+    expect(typeof mod.contributionToEntity).toBe("function");
+    expect(typeof mod.claimToEntity).toBe("function");
+    expect(typeof mod.agentSessionToEntity).toBe("function");
   });
 });

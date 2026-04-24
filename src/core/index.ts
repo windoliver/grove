@@ -105,6 +105,27 @@ export type {
 export type { DeadlineWatcherOpts } from "./deadline-watcher.js";
 export { DeadlineWatcher } from "./deadline-watcher.js";
 export { EnforcingClaimStore, EnforcingContributionStore } from "./enforcing-store.js";
+export type {
+  AgentSessionEntity,
+  AgentSessionSpec,
+  AgentSessionStatusBody,
+  ClaimEntity,
+  ClaimSpec,
+  ClaimStatusBody,
+  Condition,
+  ConditionStatus,
+  ContributionEntity,
+  ContributionSpec,
+  ContributionStatus,
+  Entity,
+  EntityMetadata,
+  OwnerRef,
+} from "./entity.js";
+export {
+  agentSessionToEntity,
+  claimToEntity,
+  contributionToEntity,
+} from "./entity.js";
 export {
   ArtifactLimitError,
   ConcurrencyLimitError,
