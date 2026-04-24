@@ -448,6 +448,29 @@ export class NexusClaimStore implements ClaimStore {
     // single failure mode.
     validateTransition(validClaim, claimId, newStatus);
 
+    // Lock-ownership fence: verify the target lock *still* points to
+    // this claim right before we mutate it. A stale caller that held
+    // the claim ETag across a lease boundary will lose this check
+    // because writeActiveIndexExclusive's CAS takeover rewrites the
+    // lock contents. An empty-bytes lock (released via deleteActiveIndex's
+    // CAS tombstone) also fails ownership — we cannot retroactively
+    // "re-release" a claim whose lock has already been surrendered.
+    // This narrows the race to the window between this read and the
+    // RPC; a fully atomic fix would require a multi-key transaction
+    // that Nexus does not currently expose.
+    const lockPath = targetLockPath(this.zoneId, validClaim.targetRef);
+    const lockMeta = await withSemaphore(this.semaphore, () => this.client.readWithMeta(lockPath));
+    const lockHolder = lockMeta !== undefined ? decoder.decode(lockMeta.content) : "";
+    if (lockHolder !== claimId) {
+      throw new StateConflictError({
+        resource: "Claim",
+        reason: "lost target lock",
+        message: `Cannot transition claim '${claimId}': target lock ${
+          lockHolder.length === 0 ? "is unowned (released)" : `is now held by '${lockHolder}'`
+        }`,
+      });
+    }
+
     const updated: Claim = {
       ...validClaim,
       status: newStatus,

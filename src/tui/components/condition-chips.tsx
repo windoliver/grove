@@ -61,10 +61,15 @@ export const ConditionChips: React.NamedExoticComponent<ConditionChipsProps> = R
           {conditions.map((c, i) => (
             <React.Fragment key={c.type}>
               {i > 0 && <text> </text>}
-              <text color="white" backgroundColor={colorForCondition(c)}>
-                {" "}
-                {c.type}{" "}
-              </text>
+              {/*
+                OpenTUI renders a stable chip background when it lives on a
+                <box>, but text-level backgroundColor is not always honored
+                by every terminal. Wrapping the label keeps the status color
+                visible regardless of `backgroundColor` support on <text>.
+              */}
+              <box backgroundColor={colorForCondition(c)} paddingLeft={1} paddingRight={1}>
+                <text color="white">{c.type}</text>
+              </box>
             </React.Fragment>
           ))}
         </box>
