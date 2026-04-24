@@ -5,8 +5,11 @@
  * Used by `grove init` to correlate clones of the same remote.
  */
 
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
+import { isValidProjectId } from "./project-id.js";
 
 export interface RegistryEntry {
   readonly id: string;
@@ -25,4 +28,57 @@ export function defaultRegistryPath(): string {
     throw new Error("Cannot resolve user home directory for ~/.grove registry.");
   }
   return join(home, ".grove", "projects.yaml");
+}
+
+export function loadRegistry(path: string): Registry {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return { version: 1, projects: {} };
+    }
+    throw err;
+  }
+  const parsed = parseYaml(raw) as unknown;
+  if (parsed == null || typeof parsed !== "object") {
+    throw new Error(`Malformed registry at ${path}: expected a YAML mapping.`);
+  }
+  const root = parsed as Record<string, unknown>;
+  if (root.version !== 1) {
+    throw new Error(
+      `Unknown registry version at ${path}: got ${JSON.stringify(root.version)}, expected 1.`,
+    );
+  }
+  const projectsRaw = root.projects;
+  if (projectsRaw == null) {
+    return { version: 1, projects: {} };
+  }
+  if (typeof projectsRaw !== "object") {
+    throw new Error(`Malformed registry at ${path}: 'projects' must be a mapping.`);
+  }
+  const projects: Record<string, RegistryEntry> = {};
+  for (const [key, valueRaw] of Object.entries(projectsRaw as Record<string, unknown>)) {
+    if (valueRaw == null || typeof valueRaw !== "object") {
+      throw new Error(
+        `Malformed registry at ${path}: entry '${key}' must be a mapping.`,
+      );
+    }
+    const entry = valueRaw as Record<string, unknown>;
+    const id = entry.id;
+    const name = entry.name;
+    const createdAt = entry.createdAt;
+    if (typeof id !== "string" || !isValidProjectId(id)) {
+      throw new Error(
+        `Invalid registry entry '${key}' at ${path}: id is not a valid UUIDv4.`,
+      );
+    }
+    if (typeof name !== "string" || typeof createdAt !== "string") {
+      throw new Error(
+        `Invalid registry entry '${key}' at ${path}: name and createdAt must be strings.`,
+      );
+    }
+    projects[key] = { id, name, createdAt };
+  }
+  return { version: 1, projects };
 }
