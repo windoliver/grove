@@ -196,12 +196,22 @@ function withDefaultRole(agent: AgentOverrides | undefined): AgentOverrides {
   return agent ?? {};
 }
 
+function scopeIdempotencyKey(
+  key: string | undefined,
+  scope: string | undefined,
+): string | undefined {
+  if (key === undefined) return undefined;
+  if (scope === undefined || scope.length === 0) return key;
+  return `${key}\x01${scope}`;
+}
+
 // ---------------------------------------------------------------------------
 // Tool registration
 // ---------------------------------------------------------------------------
 
 export function registerContributionTools(server: McpServer, deps: McpDeps): void {
   const opDeps = toOperationDeps(deps);
+  const idempotencyKeyScope = deps.idempotencyKeyScope;
 
   // --- grove_submit_work ----------------------------------------------------
   server.registerTool(
@@ -241,7 +251,11 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
           relations: args.relations as unknown as readonly Relation[],
           tags: args.tags,
           agent: withDefaultRole(args.agent as AgentOverrides),
-          ...(args.idempotencyKey !== undefined ? { idempotencyKey: args.idempotencyKey } : {}),
+          ...(scopeIdempotencyKey(args.idempotencyKey, idempotencyKeyScope) !== undefined
+            ? {
+                idempotencyKey: scopeIdempotencyKey(args.idempotencyKey, idempotencyKeyScope),
+              }
+            : {}),
         },
         opDeps,
       );
@@ -286,7 +300,11 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
           ...(args.metadata !== undefined
             ? { metadata: args.metadata as Readonly<Record<string, JsonValue>> }
             : {}),
-          ...(args.idempotencyKey !== undefined ? { idempotencyKey: args.idempotencyKey } : {}),
+          ...(scopeIdempotencyKey(args.idempotencyKey, idempotencyKeyScope) !== undefined
+            ? {
+                idempotencyKey: scopeIdempotencyKey(args.idempotencyKey, idempotencyKeyScope),
+              }
+            : {}),
         },
         opDeps,
       );
@@ -324,7 +342,11 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
           ...(args.context !== undefined
             ? { context: args.context as Readonly<Record<string, JsonValue>> }
             : {}),
-          ...(args.idempotencyKey !== undefined ? { idempotencyKey: args.idempotencyKey } : {}),
+          ...(scopeIdempotencyKey(args.idempotencyKey, idempotencyKeyScope) !== undefined
+            ? {
+                idempotencyKey: scopeIdempotencyKey(args.idempotencyKey, idempotencyKeyScope),
+              }
+            : {}),
         },
         opDeps,
       );
@@ -356,7 +378,11 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
           ...(args.context !== undefined
             ? { context: args.context as Readonly<Record<string, JsonValue>> }
             : {}),
-          ...(args.idempotencyKey !== undefined ? { idempotencyKey: args.idempotencyKey } : {}),
+          ...(scopeIdempotencyKey(args.idempotencyKey, idempotencyKeyScope) !== undefined
+            ? {
+                idempotencyKey: scopeIdempotencyKey(args.idempotencyKey, idempotencyKeyScope),
+              }
+            : {}),
         },
         opDeps,
       );
@@ -386,7 +412,11 @@ export function registerContributionTools(server: McpServer, deps: McpDeps): voi
           ...(args.context !== undefined
             ? { context: args.context as Readonly<Record<string, JsonValue>> }
             : {}),
-          ...(args.idempotencyKey !== undefined ? { idempotencyKey: args.idempotencyKey } : {}),
+          ...(scopeIdempotencyKey(args.idempotencyKey, idempotencyKeyScope) !== undefined
+            ? {
+                idempotencyKey: scopeIdempotencyKey(args.idempotencyKey, idempotencyKeyScope),
+              }
+            : {}),
         },
         opDeps,
       );

@@ -80,6 +80,27 @@ describe("NexusSessionStore", () => {
     expect(fetched).toBeUndefined();
   });
 
+  it("getSessionRecord() reads only session metadata", async () => {
+    const baseClient = createMockClient();
+    const readPaths: string[] = [];
+    const client = {
+      ...baseClient,
+      read: async (path: string) => {
+        readPaths.push(path);
+        return baseClient.read(path);
+      },
+    } as NexusClient;
+    const store = new NexusSessionStore(client, "test-zone");
+    const created = await store.createSession({ goal: "Metadata only" });
+    await store.addContribution(created.id, "blake3:test");
+
+    readPaths.length = 0;
+    const fetched = await store.getSessionRecord(created.id);
+
+    expect(fetched).toBeDefined();
+    expect(readPaths).toEqual([`/zones/test-zone/sessions/${created.id}.json`]);
+  });
+
   it("putSession() stores an existing session record", async () => {
     const client = createMockClient();
     const store = new NexusSessionStore(client, "test-zone");

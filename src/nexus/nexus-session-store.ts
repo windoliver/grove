@@ -49,16 +49,27 @@ export class NexusSessionStore implements SessionStore {
     await this.client.write(this.sessionPath(session.id), encoder.encode(JSON.stringify(session)));
   }
 
-  async getSession(id: string): Promise<Session | undefined> {
+  /**
+   * Read only the session metadata record, without loading contribution counts.
+   *
+   * MCP startup only needs config/topology/preset fields; avoiding the
+   * contribution sidecar read keeps that hot path O(1) in session size.
+   */
+  async getSessionRecord(id: string): Promise<Session | undefined> {
     try {
       const data = await this.client.read(this.sessionPath(id));
       if (!data) return undefined;
-      const session = JSON.parse(decoder.decode(data)) as Session;
-      const cids = await this.getContributions(id);
-      return { ...session, contributionCount: cids.length };
+      return JSON.parse(decoder.decode(data)) as Session;
     } catch {
       return undefined;
     }
+  }
+
+  async getSession(id: string): Promise<Session | undefined> {
+    const session = await this.getSessionRecord(id);
+    if (!session) return undefined;
+    const cids = await this.getContributions(id);
+    return { ...session, contributionCount: cids.length };
   }
 
   async updateSession(
