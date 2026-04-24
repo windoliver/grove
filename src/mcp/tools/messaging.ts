@@ -52,9 +52,10 @@ const readInboxInputSchema = z.object({
     .number()
     .int()
     .positive()
+    .max(100)
     .optional()
     .default(50)
-    .describe("Maximum number of messages to return (default: 50)"),
+    .describe("Maximum number of messages to return (default: 50, max: 100)"),
 });
 
 const reportUsageInputSchema = z.object({

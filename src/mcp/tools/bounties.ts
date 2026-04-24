@@ -81,7 +81,14 @@ const listBountiesSchema = z.object({
     .optional()
     .describe("Filter by bounty status"),
   creatorAgentId: z.string().optional().describe("Filter by creator agent ID"),
-  limit: z.number().int().positive().optional().default(20).describe("Max results (default: 20)"),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .max(100)
+    .optional()
+    .default(20)
+    .describe("Max results (default: 20, max: 100)"),
 });
 
 const settleBountySchema = z.object({

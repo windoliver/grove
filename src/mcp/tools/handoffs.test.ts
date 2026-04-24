@@ -33,6 +33,50 @@ async function callTool(
   return { isError: result.isError, text: result.content[0]?.text ?? "" };
 }
 
+class ExpireTrackingHandoffStore extends InMemoryHandoffStore {
+  expireCalls = 0;
+
+  override async expireStale(now?: string) {
+    this.expireCalls += 1;
+    return super.expireStale(now);
+  }
+}
+
+class SessionCheckThrowingHandoffStore extends InMemoryHandoffStore {
+  override async isInCurrentSession(_handoffId: string): Promise<boolean> {
+    throw new Error("isInCurrentSession should not be called by MCP handoff tools");
+  }
+}
+
+class BlockingExpireHandoffStore extends InMemoryHandoffStore {
+  expireCalls = 0;
+  private readonly releaseSweep: Promise<void>;
+  private resolveReleaseSweep!: () => void;
+  readonly sweepStarted: Promise<void>;
+  private resolveSweepStarted!: () => void;
+
+  constructor() {
+    super();
+    this.releaseSweep = new Promise((resolve) => {
+      this.resolveReleaseSweep = resolve;
+    });
+    this.sweepStarted = new Promise((resolve) => {
+      this.resolveSweepStarted = resolve;
+    });
+  }
+
+  unblock(): void {
+    this.resolveReleaseSweep();
+  }
+
+  override async expireStale(now?: string) {
+    this.expireCalls += 1;
+    this.resolveSweepStarted();
+    await this.releaseSweep;
+    return super.expireStale(now);
+  }
+}
+
 describe("grove_ack_handoff authorization", () => {
   let testDeps: TestMcpDeps;
   let deps: McpDeps;
@@ -127,5 +171,163 @@ describe("grove_ack_handoff authorization", () => {
     expect(registeredTools.grove_list_handoffs).toBeDefined();
     expect(registeredTools.grove_get_handoff).toBeDefined();
     expect(registeredTools.grove_ack_handoff).toBeUndefined();
+  });
+});
+
+describe("handoff tool hot paths", () => {
+  let testDeps: TestMcpDeps;
+
+  afterEach(async () => {
+    await testDeps.cleanup();
+  });
+
+  test("grove_list_handoffs throttles inline expiry sweeps", async () => {
+    testDeps = await createTestMcpDeps();
+    const handoffStore = new ExpireTrackingHandoffStore();
+    await handoffStore.create({
+      sourceCid: "blake3:list",
+      fromRole: "coder",
+      toRole: "reviewer",
+    });
+
+    const server = new McpServer(
+      { name: "test", version: "0.0.1" },
+      { capabilities: { tools: {} } },
+    );
+    registerHandoffTools(server, { ...testDeps.deps, handoffStore });
+
+    await callTool(server, "grove_list_handoffs", {});
+    await callTool(server, "grove_list_handoffs", {});
+
+    expect(handoffStore.expireCalls).toBe(1);
+  });
+
+  test("grove_list_handoffs skips inline expiry when deadline handling is managed", async () => {
+    testDeps = await createTestMcpDeps();
+    const handoffStore = new ExpireTrackingHandoffStore();
+    const server = new McpServer(
+      { name: "test", version: "0.0.1" },
+      { capabilities: { tools: {} } },
+    );
+    registerHandoffTools(server, {
+      ...testDeps.deps,
+      handoffStore,
+      deadlineWatcher: {} as NonNullable<McpDeps["deadlineWatcher"]>,
+      handoffExpiryManaged: true,
+    });
+
+    await callTool(server, "grove_list_handoffs", {});
+
+    expect(handoffStore.expireCalls).toBe(0);
+  });
+
+  test("grove_list_handoffs skips inline expiry when expiry is managed externally", async () => {
+    testDeps = await createTestMcpDeps();
+    const handoffStore = new ExpireTrackingHandoffStore();
+    const server = new McpServer(
+      { name: "test", version: "0.0.1" },
+      { capabilities: { tools: {} } },
+    );
+    registerHandoffTools(server, {
+      ...testDeps.deps,
+      handoffStore,
+      handoffExpiryManaged: true,
+    });
+
+    await callTool(server, "grove_list_handoffs", {});
+
+    expect(handoffStore.expireCalls).toBe(0);
+  });
+
+  test("grove_list_handoffs reuses an in-flight expiry sweep", async () => {
+    testDeps = await createTestMcpDeps();
+    const handoffStore = new BlockingExpireHandoffStore();
+    await handoffStore.create({
+      sourceCid: "blake3:concurrent-list",
+      fromRole: "coder",
+      toRole: "reviewer",
+    });
+
+    const server = new McpServer(
+      { name: "test", version: "0.0.1" },
+      { capabilities: { tools: {} } },
+    );
+    registerHandoffTools(server, { ...testDeps.deps, handoffStore });
+
+    const firstList = callTool(server, "grove_list_handoffs", {});
+    await handoffStore.sweepStarted;
+    const secondList = callTool(server, "grove_list_handoffs", {});
+
+    expect(handoffStore.expireCalls).toBe(1);
+
+    handoffStore.unblock();
+    await Promise.all([firstList, secondList]);
+    expect(handoffStore.expireCalls).toBe(1);
+  });
+
+  test("grove_ack_handoff does not re-check session ownership on scoped stores", async () => {
+    testDeps = await createTestMcpDeps();
+    const handoffStore = new SessionCheckThrowingHandoffStore();
+    const server = new McpServer(
+      { name: "test", version: "0.0.1" },
+      { capabilities: { tools: {} } },
+    );
+    registerHandoffTools(server, { ...testDeps.deps, handoffStore });
+    const originalRole = process.env.GROVE_AGENT_ROLE;
+
+    try {
+      const handoff = await handoffStore.create({
+        sourceCid: "blake3:ack",
+        fromRole: "coder",
+        toRole: "reviewer",
+      });
+      process.env.GROVE_AGENT_ROLE = "reviewer";
+
+      const result = await callTool(server, "grove_ack_handoff", {
+        handoffId: handoff.handoffId,
+        level: "acked",
+      });
+
+      expect(result.isError).toBeUndefined();
+    } finally {
+      if (originalRole === undefined) {
+        delete process.env.GROVE_AGENT_ROLE;
+      } else {
+        process.env.GROVE_AGENT_ROLE = originalRole;
+      }
+    }
+  });
+
+  test("grove_process_handoff does not re-check session ownership on scoped stores", async () => {
+    testDeps = await createTestMcpDeps();
+    const handoffStore = new SessionCheckThrowingHandoffStore();
+    const server = new McpServer(
+      { name: "test", version: "0.0.1" },
+      { capabilities: { tools: {} } },
+    );
+    registerHandoffTools(server, { ...testDeps.deps, handoffStore });
+    const originalRole = process.env.GROVE_AGENT_ROLE;
+
+    try {
+      const handoff = await handoffStore.create({
+        sourceCid: "blake3:process",
+        fromRole: "coder",
+        toRole: "reviewer",
+      });
+      await handoffStore.markDelivered(handoff.handoffId);
+      process.env.GROVE_AGENT_ROLE = "reviewer";
+
+      const result = await callTool(server, "grove_process_handoff", {
+        handoffId: handoff.handoffId,
+      });
+
+      expect(result.isError).toBeUndefined();
+    } finally {
+      if (originalRole === undefined) {
+        delete process.env.GROVE_AGENT_ROLE;
+      } else {
+        process.env.GROVE_AGENT_ROLE = originalRole;
+      }
+    }
   });
 });

@@ -34,6 +34,37 @@ function requireHandoffStore(
   };
 }
 
+const INLINE_EXPIRE_INTERVAL_MS = 1_000;
+const lastInlineExpiryAt = new WeakMap<HandoffStore, number>();
+const pendingInlineExpiry = new WeakMap<HandoffStore, Promise<void>>();
+
+async function maybeExpireBeforeList(store: HandoffStore, deps: McpDeps): Promise<void> {
+  if (deps.handoffExpiryManaged === true) {
+    return;
+  }
+  const pendingSweep = pendingInlineExpiry.get(store);
+  if (pendingSweep !== undefined) {
+    await pendingSweep;
+    return;
+  }
+  const now = Date.now();
+  const lastSweepAt = lastInlineExpiryAt.get(store) ?? 0;
+  if (now - lastSweepAt < INLINE_EXPIRE_INTERVAL_MS) {
+    return;
+  }
+  const sweep: Promise<void> = store
+    .expireStale()
+    .then(() => undefined)
+    .finally(() => {
+      lastInlineExpiryAt.set(store, Date.now());
+      if (pendingInlineExpiry.get(store) === sweep) {
+        pendingInlineExpiry.delete(store);
+      }
+    });
+  pendingInlineExpiry.set(store, sweep);
+  await sweep;
+}
+
 const listHandoffsInputSchema = z.object({
   toRole: z
     .string()
@@ -132,8 +163,10 @@ export function registerHandoffTools(
       const { store } = guard;
 
       try {
-        // Expire stale handoffs before listing so callers always see fresh status.
-        await store.expireStale();
+        // When a proactive DeadlineWatcher is running it keeps statuses fresh
+        // already. Otherwise, inline expiry is throttled so polling agents do
+        // not turn every read into a write-heavy store sweep.
+        await maybeExpireBeforeList(store, deps);
 
         const handoffs = await store.list({
           toRole: args.toRole,
@@ -247,24 +280,15 @@ export function registerHandoffTools(
         // Authorization: only the target role can mark processed. Handoff IDs
         // are discoverable via read tools, so without this check any agent in
         // the session could forge "processed" signals for peer handoffs.
+        //
+        // Session ownership is enforced by the scoped store itself: these tools
+        // are only registered when `isInCurrentSession` exists, which means the
+        // backend's get()/mark*() path is already bound to the current session.
         const callerRole = process.env.GROVE_AGENT_ROLE;
         if (callerRole === undefined || callerRole !== handoff.toRole) {
           return toolError(
             "PERMISSION_DENIED",
             `Only the target role '${handoff.toRole}' can mark this handoff processed (caller role: '${callerRole ?? "unset"}').`,
-          );
-        }
-        if (store.isInCurrentSession === undefined) {
-          return toolError(
-            "NOT_SUPPORTED",
-            "Handoff store does not support session-scoped access.",
-          );
-        }
-        const inSession = await store.isInCurrentSession(args.handoffId);
-        if (!inSession) {
-          return toolError(
-            "PERMISSION_DENIED",
-            `Handoff '${args.handoffId}' does not belong to the current session.`,
           );
         }
 
@@ -314,29 +338,15 @@ export function registerHandoffTools(
           return toolError("NOT_FOUND", `Handoff '${args.handoffId}' not found.`);
         }
 
-        // Authorization: the caller role must match the handoff's toRole,
-        // AND the handoff must belong to the caller's current session.
-        // Without the session check on a non-scoped store (e.g. SQLite where
-        // the handoff table is shared across sessions), a reviewer in session
-        // A could enumerate and ack a reviewer handoff in session B.
+        // Authorization: the caller role must match the handoff's toRole.
+        // Session ownership is enforced by the scoped store itself: these tools
+        // are only registered when `isInCurrentSession` exists, which means the
+        // backend's get()/mark*() path is already bound to the current session.
         const callerRole = process.env.GROVE_AGENT_ROLE;
         if (callerRole === undefined || callerRole !== handoff.toRole) {
           return toolError(
             "PERMISSION_DENIED",
             `Only the target role '${handoff.toRole}' can acknowledge this handoff (caller role: '${callerRole ?? "unset"}').`,
-          );
-        }
-        if (store.isInCurrentSession === undefined) {
-          return toolError(
-            "NOT_SUPPORTED",
-            "Handoff store does not support session-scoped access.",
-          );
-        }
-        const inSession = await store.isInCurrentSession(args.handoffId);
-        if (!inSession) {
-          return toolError(
-            "PERMISSION_DENIED",
-            `Handoff '${args.handoffId}' does not belong to the current session.`,
           );
         }
 

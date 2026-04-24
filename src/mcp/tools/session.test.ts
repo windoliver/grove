@@ -70,6 +70,20 @@ describe("grove_list_sessions", () => {
     expect(data.sessions.length).toBe(2);
   });
 
+  test("supports pagination for sessions", async () => {
+    await callTool(server, "grove_create_session", { goal: "Session A" });
+    await callTool(server, "grove_create_session", { goal: "Session B" });
+    await callTool(server, "grove_create_session", { goal: "Session C" });
+
+    const result = await callTool(server, "grove_list_sessions", { limit: 1, offset: 1 });
+
+    expect(result.isError).toBeUndefined();
+    const data = JSON.parse(result.text);
+    expect(data.total).toBe(3);
+    expect(data.count).toBe(1);
+    expect(data.sessions.length).toBe(1);
+  });
+
   test("returns NOT_CONFIGURED when goalSessionStore is missing", async () => {
     const serverNoStore = new McpServer(
       { name: "test", version: "0.0.1" },

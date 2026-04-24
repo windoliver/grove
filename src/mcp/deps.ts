@@ -23,6 +23,14 @@ export interface McpDeps extends ServerDeps {
   readonly workspace: WorkspaceManager;
   /** GROVE.md contract for stop condition evaluation. Undefined if no contract exists. */
   readonly contract?: GroveContract | undefined;
+  /**
+   * Optional scope suffix for client-supplied idempotency keys.
+   *
+   * HTTP MCP multiplexes multiple Grove sessions through one process, so the
+   * same raw idempotency key must be decorated with the bound Grove session to
+   * avoid cross-session cache collisions inside contributeOperation.
+   */
+  readonly idempotencyKeyScope?: string | undefined;
   /** Called after a contribution is written to invalidate caches (e.g., frontier). */
   readonly onContributionWrite?: (() => void) | undefined;
   /** Called after a contribution is written, receiving its CID (for session tagging). */
@@ -43,4 +51,9 @@ export interface McpDeps extends ServerDeps {
   readonly workspaceBoundary: string;
   /** Optional deadline watcher for proactive overdue detection. */
   readonly deadlineWatcher?: DeadlineWatcher | undefined;
+  /**
+   * True when handoff expiry is managed by a proactive watcher elsewhere,
+   * so polling read paths should not run inline expiry sweeps.
+   */
+  readonly handoffExpiryManaged?: boolean | undefined;
 }

@@ -18,7 +18,8 @@
  *   DELETE /mcp — Close a session
  */
 
-import { readFileSync, statSync } from "node:fs";
+import { type FSWatcher, readFileSync, statSync, watch } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -26,6 +27,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 import { findGroveDir } from "../cli/context.js";
+import { StateConflictError } from "../core/errors.js";
 import { TopologyRouter } from "../core/topology-router.js";
 import { createLocalRuntime } from "../local/runtime.js";
 import { parsePort } from "../shared/env.js";
@@ -180,6 +182,7 @@ let httpSweepReconciler: SweepReconciler | undefined;
 interface ScopedDeps {
   readonly deps: McpDeps;
   readonly sessionId: string | undefined;
+  readonly deactivate: () => void;
   /**
    * Cleanup for scoped per-session resources (DeadlineWatcher timers,
    * scoped EventBus, etc.). Must be invoked on cache eviction and session
@@ -189,10 +192,167 @@ interface ScopedDeps {
   readonly close: () => void;
 }
 
-const depsCache = new Map<string, ScopedDeps>();
+interface ScopeEntry {
+  readonly key: string;
+  readonly scoped: ScopedDeps;
+  refCount: number;
+  deactivated: boolean;
+  closed: boolean;
+}
+
+interface AcquiredScopedDeps {
+  readonly scoped: ScopedDeps;
+  readonly deactivate: () => void;
+  readonly release: () => void;
+}
+
+interface ScopeMutationGuard {
+  deactivate(): void;
+  assertMutable(operation: string): void;
+}
+
+function readCurrentSessionIdSyncForMutationGuard(): string | undefined {
+  const fromEnv = process.env.GROVE_SESSION_ID;
+  if (fromEnv) return fromEnv;
+  if (!sessionStateCacheDirty) {
+    return lastSessionFileId;
+  }
+  const sessionFile = `${groveDir}/current-session.json`;
+  let sessionFileStat: ReturnType<typeof statSync>;
+  try {
+    sessionFileStat = statSync(sessionFile);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      lastSessionFileMtimeMs = -1;
+      lastSessionFileSize = -1;
+      lastSessionFileId = undefined;
+      sessionStateCacheDirty = false;
+      return undefined;
+    }
+    throw new SessionStateReadError(
+      `stat ${sessionFile} failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (
+    sessionFileStat.mtimeMs === lastSessionFileMtimeMs &&
+    sessionFileStat.size === lastSessionFileSize &&
+    lastSessionFileMtimeMs > 0
+  ) {
+    sessionStateCacheDirty = false;
+    return lastSessionFileId;
+  }
+  try {
+    const sessionId = parseCurrentSessionPayload(readFileSync(sessionFile, "utf-8"), sessionFile);
+    lastSessionFileMtimeMs = sessionFileStat.mtimeMs;
+    lastSessionFileSize = sessionFileStat.size;
+    lastSessionFileId = sessionId;
+    sessionStateCacheDirty = false;
+    return sessionId;
+  } catch (err) {
+    if (err instanceof SessionStateReadError) throw err;
+    throw new SessionStateReadError(
+      `read/parse ${sessionFile} failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function createScopeMutationGuard(expectedSessionId: string | undefined): ScopeMutationGuard {
+  let active = true;
+  return {
+    deactivate() {
+      active = false;
+    },
+    assertMutable(operation: string) {
+      if (active) {
+        try {
+          const currentSessionId = readCurrentSessionIdSyncForMutationGuard();
+          if (currentSessionId === expectedSessionId) {
+            return;
+          }
+          active = false;
+          throw new StateConflictError({
+            resource: "MCP session",
+            reason: "session scope changed while the request was still running",
+            message:
+              `HTTP MCP session is stale for '${operation}' (expected session '${expectedSessionId ?? "__bootstrap__"}', current '${currentSessionId ?? "__bootstrap__"}'). ` +
+              "Re-initialize the MCP connection and retry.",
+          });
+        } catch (error) {
+          if (error instanceof StateConflictError) throw error;
+          active = false;
+          throw new StateConflictError({
+            resource: "MCP session",
+            reason: "could not confirm current session before mutation",
+            message:
+              `HTTP MCP session cannot safely run '${operation}' because the current session state could not be read. ` +
+              "Re-initialize the MCP connection and retry.",
+          });
+        }
+      }
+      throw new StateConflictError({
+        resource: "MCP session",
+        reason: "session scope changed while the request was still running",
+        message:
+          `HTTP MCP session is closing; '${operation}' cannot continue against a stale Grove session. ` +
+          "Re-initialize the MCP connection and retry.",
+      });
+    },
+  };
+}
+
+function guardMutableMethods<T extends object>(
+  target: T,
+  guard: ScopeMutationGuard,
+  mutableMethods: readonly string[],
+): T {
+  const mutable = new Set(mutableMethods);
+  return new Proxy(target, {
+    get(obj, prop, receiver) {
+      const value = Reflect.get(obj, prop, receiver);
+      if (typeof value !== "function") return value;
+      const methodName = String(prop);
+      if (mutable.has(methodName)) {
+        return (...args: readonly unknown[]) => {
+          guard.assertMutable(methodName);
+          if (methodName === "putWithCowrite" && typeof args[1] === "function") {
+            const [contribution, cowriteFn] = args as readonly [unknown, () => void];
+            const guardedCowrite = () => {
+              guard.assertMutable(`${methodName}.commit`);
+              cowriteFn();
+            };
+            return Reflect.apply(value, obj, [contribution, guardedCowrite]);
+          }
+          return Reflect.apply(value, obj, args);
+        };
+      }
+      return (...args: readonly unknown[]) => Reflect.apply(value, obj, args);
+    },
+  }) as T;
+}
+
+const scopeEntries = new Map<string, ScopeEntry>();
+const pendingScopeEntries = new Map<string, Promise<ScopeEntry>>();
 let lastSessionFileMtimeMs = -1;
 let lastSessionFileSize = -1;
 let lastSessionFileId: string | undefined;
+let sessionStateCacheDirty = true;
+let sessionFileWatcher: FSWatcher | undefined;
+
+if (!process.env.GROVE_SESSION_ID) {
+  try {
+    sessionFileWatcher = watch(groveDir, (_eventType, filename) => {
+      if (typeof filename === "string" && filename !== "current-session.json") {
+        return;
+      }
+      sessionStateCacheDirty = true;
+      void refreshSessionScopes().catch(() => {
+        /* best-effort cache refresh */
+      });
+    });
+  } catch {
+    // best-effort watcher; sync fallback still protects correctness
+  }
+}
 
 /**
  * Read the current grove session ID from env or state file.
@@ -209,13 +369,13 @@ let lastSessionFileId: string | undefined;
  * caller keeps seeing errors until the writer either fixes the file or
  * produces new file metadata with valid JSON.
  */
-function readCurrentSessionId(): string | undefined {
+async function readCurrentSessionId(): Promise<string | undefined> {
   const fromEnv = process.env.GROVE_SESSION_ID;
   if (fromEnv) return fromEnv;
   const sessionFile = `${groveDir}/current-session.json`;
-  let stat: ReturnType<typeof statSync>;
+  let sessionFileStat: Awaited<ReturnType<typeof stat>>;
   try {
-    stat = statSync(sessionFile);
+    sessionFileStat = await stat(sessionFile);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       // Clear cached stat/id when the file disappears so a subsequent recreate
@@ -223,6 +383,7 @@ function readCurrentSessionId(): string | undefined {
       lastSessionFileMtimeMs = -1;
       lastSessionFileSize = -1;
       lastSessionFileId = undefined;
+      sessionStateCacheDirty = false;
       return undefined;
     }
     throw new SessionStateReadError(
@@ -230,15 +391,15 @@ function readCurrentSessionId(): string | undefined {
     );
   }
   if (
-    stat.mtimeMs === lastSessionFileMtimeMs &&
-    stat.size === lastSessionFileSize &&
+    sessionFileStat.mtimeMs === lastSessionFileMtimeMs &&
+    sessionFileStat.size === lastSessionFileSize &&
     lastSessionFileMtimeMs > 0
   ) {
     return lastSessionFileId;
   }
   let sessionId: string;
   try {
-    sessionId = parseCurrentSessionPayload(readFileSync(sessionFile, "utf-8"), sessionFile);
+    sessionId = parseCurrentSessionPayload(await readFile(sessionFile, "utf-8"), sessionFile);
   } catch (err) {
     // Do NOT update the cache — leave lastSessionFileMtimeMs/lastSessionFileId
     // untouched so the next call re-reads. Otherwise a single torn-write
@@ -251,9 +412,10 @@ function readCurrentSessionId(): string | undefined {
     );
   }
   // Success — commit to cache.
-  lastSessionFileMtimeMs = stat.mtimeMs;
-  lastSessionFileSize = stat.size;
+  lastSessionFileMtimeMs = sessionFileStat.mtimeMs;
+  lastSessionFileSize = sessionFileStat.size;
   lastSessionFileId = sessionId;
+  sessionStateCacheDirty = false;
   return sessionId;
 }
 
@@ -262,9 +424,13 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
   let claimStore = runtime.claimStore as import("../core/store.js").ClaimStore;
   let bountyStore = runtime.bountyStore as import("../core/bounty-store.js").BountyStore;
   let cas = runtime.cas as import("../core/cas.js").ContentStore;
+  let goalSessionStore = runtime.goalSessionStore;
+  let workspace = runtime.workspace as import("../core/workspace.js").WorkspaceManager;
+  let idempotencyStore = runtime.idempotencyStore;
   let nexusHandoffStore: import("../nexus/nexus-handoff-store.js").NexusHandoffStore | undefined;
   let topologyRouter: TopologyRouter | undefined;
   let loadedContract: import("../core/contract.js").GroveContract | undefined = runtime.contract;
+  const mutationGuard = createScopeMutationGuard(sessionId);
 
   if (nexusClient) {
     const { NexusContributionStore } = await import("../nexus/nexus-contribution-store.js");
@@ -287,7 +453,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
       let sessionRecord: import("../core/session.js").Session | undefined;
       for (const delay of retryDelaysMs) {
         if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-        sessionRecord = await nexusSessionStore.getSession(sessionId).catch(() => undefined);
+        sessionRecord = await nexusSessionStore.getSessionRecord(sessionId).catch(() => undefined);
         if (sessionRecord?.config) break;
       }
       // Policy matches serve.ts: default to weak (compatible) fallback,
@@ -337,29 +503,6 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     }
   }
 
-  if (loadedContract !== undefined) {
-    const { EnforcingContributionStore } = await import("../core/enforcing-store.js");
-    contributionStore = new EnforcingContributionStore(contributionStore, loadedContract, { cas });
-  }
-
-  // Wire EventBus + TopologyRouter for IPC when topology exists.
-  // Mirrors serve.ts: use NexusEventBus when Nexus is available,
-  // otherwise fall back to LocalEventBus for local-mode routing.
-  let eventBus: import("../core/event-bus.js").EventBus | undefined;
-  if (loadedContract?.topology) {
-    if (nexusClient) {
-      const { NexusEventBus } = await import("../nexus/nexus-event-bus.js");
-      const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
-      const apiKey = process.env.NEXUS_API_KEY;
-      const ipcClient = nexusUrl && apiKey ? new NexusIpcClient({ nexusUrl, apiKey }) : undefined;
-      eventBus = new NexusEventBus(ipcClient);
-    } else {
-      const { LocalEventBus } = await import("../core/local-event-bus.js");
-      eventBus = new LocalEventBus();
-    }
-    topologyRouter = new TopologyRouter(loadedContract.topology, eventBus);
-  }
-
   // Build a session-scoped handoff store per request. In Nexus mode, use the
   // already-scoped nexusHandoffStore. In local mode, construct a fresh
   // SqliteHandoffStore bound to THIS request's session ID (not the process-
@@ -379,17 +522,138 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     activeHandoffStore = runtime.handoffStore;
   }
 
+  const contributionMutations = ["put", "putMany", "putWithCowrite"] as const;
+  contributionStore = guardMutableMethods(contributionStore, mutationGuard, contributionMutations);
+  claimStore = guardMutableMethods(claimStore, mutationGuard, [
+    "createClaim",
+    "claimOrRenew",
+    "heartbeat",
+    "release",
+    "complete",
+    "expireStale",
+    "cleanCompleted",
+  ]);
+  bountyStore = guardMutableMethods(bountyStore, mutationGuard, [
+    "createBounty",
+    "fundBounty",
+    "claimBounty",
+    "beginSettlement",
+    "completeBounty",
+    "settleBounty",
+    "expireBounty",
+    "cancelBounty",
+    "repairIndex",
+    "recordReward",
+  ]);
+  cas = guardMutableMethods(cas, mutationGuard, ["put", "delete", "putFile", "getToFile"]);
+  workspace = guardMutableMethods(workspace, mutationGuard, [
+    "checkout",
+    "cleanWorkspace",
+    "markStale",
+    "markWorkspaceStale",
+    "createBareWorkspace",
+    "touchWorkspace",
+  ]);
+  idempotencyStore = guardMutableMethods(idempotencyStore, mutationGuard, [
+    "reserve",
+    "store",
+    "rollback",
+    "clear",
+  ]);
+  if (goalSessionStore !== undefined) {
+    goalSessionStore = guardMutableMethods(goalSessionStore, mutationGuard, [
+      "setGoal",
+      "createSession",
+      "updateSession",
+      "archiveSession",
+      "addContributionToSession",
+      "gcStaleSessions",
+    ]);
+  }
+  if (activeHandoffStore !== undefined) {
+    activeHandoffStore = guardMutableMethods(activeHandoffStore, mutationGuard, [
+      "create",
+      "createMany",
+      "insertSync",
+      "markDelivered",
+      "markProcessed",
+      "markReplied",
+      "markDeadLettered",
+      "setIpcMessageId",
+      "markSeen",
+      "markAcked",
+      "expireStale",
+    ]);
+  }
+
+  if (loadedContract !== undefined) {
+    const { EnforcingContributionStore } = await import("../core/enforcing-store.js");
+    contributionStore = guardMutableMethods(
+      new EnforcingContributionStore(contributionStore, loadedContract, { cas }),
+      mutationGuard,
+      contributionMutations,
+    );
+  }
+
+  // Wire EventBus + TopologyRouter for IPC when topology exists.
+  // Mirrors serve.ts: use NexusEventBus when Nexus is available,
+  // otherwise fall back to LocalEventBus for local-mode routing.
+  let eventBus: import("../core/event-bus.js").EventBus | undefined;
+  if (loadedContract?.topology) {
+    if (nexusClient) {
+      const { NexusEventBus } = await import("../nexus/nexus-event-bus.js");
+      const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
+      const apiKey = process.env.NEXUS_API_KEY;
+      const ipcClient = nexusUrl && apiKey ? new NexusIpcClient({ nexusUrl, apiKey }) : undefined;
+      eventBus = new NexusEventBus(ipcClient);
+    } else {
+      const { LocalEventBus } = await import("../core/local-event-bus.js");
+      eventBus = new LocalEventBus();
+    }
+    eventBus = guardMutableMethods(eventBus, mutationGuard, [
+      "publish",
+      "subscribe",
+      "unsubscribe",
+    ]);
+    topologyRouter = guardMutableMethods(
+      new TopologyRouter(loadedContract.topology, eventBus),
+      mutationGuard,
+      ["route", "broadcastStop"],
+    );
+  }
+
   // Wire DeadlineWatcher when any handoff store + event bus are available.
   // Both Nexus and session-scoped SQLite (GROVE_SESSION_ID set) safely
   // support it; unscoped SQLite stores leave listForCurrentSession undefined
   // so rebuildFromStore skips automatically. See serve.ts for more context.
   let deadlineWatcher: import("../core/deadline-watcher.js").DeadlineWatcher | undefined;
+  let handoffExpiryManaged = false;
   if (activeHandoffStore !== undefined && eventBus !== undefined) {
     const { DeadlineWatcher } = await import("../core/deadline-watcher.js");
     deadlineWatcher = new DeadlineWatcher({ handoffStore: activeHandoffStore, eventBus });
-    void deadlineWatcher.rebuildFromStore().catch(() => {
-      /* non-fatal */
-    });
+    try {
+      await deadlineWatcher.rebuildFromStore();
+      handoffExpiryManaged = true;
+    } catch (error) {
+      process.stderr.write(
+        `grove-mcp-http: WARN: deadline watcher rebuild failed for session ${sessionId ?? "__bootstrap__"}: ${
+          error instanceof Error ? error.message : String(error)
+        }\n`,
+      );
+      deadlineWatcher.close();
+      deadlineWatcher = undefined;
+    }
+  }
+
+  if (eventBus !== undefined) {
+    // eventBus already guarded before router/watcher construction.
+  }
+  if (deadlineWatcher !== undefined) {
+    deadlineWatcher = guardMutableMethods(deadlineWatcher, mutationGuard, [
+      "watch",
+      "cancel",
+      "rebuildFromStore",
+    ]);
   }
 
   const deps: McpDeps = {
@@ -398,43 +662,36 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     bountyStore,
     cas,
     frontier: runtime.frontier,
-    // biome-ignore lint/style/noNonNullAssertion: checked above (workspace guard throws if undefined)
-    workspace: runtime.workspace!,
+    workspace,
     contract: loadedContract,
+    ...(sessionId !== undefined ? { idempotencyKeyScope: sessionId } : {}),
     onContributionWrite: runtime.onContributionWrite,
     workspaceBoundary: runtime.groveRoot,
-    goalSessionStore: runtime.goalSessionStore,
+    goalSessionStore,
     ...(eventBus ? { eventBus } : {}),
     ...(topologyRouter ? { topologyRouter } : {}),
     // Nexus handoff store when available, falls back to local SQLite
     handoffStore: activeHandoffStore,
-    idempotencyStore: runtime.idempotencyStore,
+    idempotencyStore,
+    ...(handoffExpiryManaged ? { handoffExpiryManaged: true } : {}),
     ...(deadlineWatcher ? { deadlineWatcher } : {}),
+  };
+  const deactivate = () => {
+    mutationGuard.deactivate();
   };
   const close = () => {
     deadlineWatcher?.close();
+    eventBus?.close();
+    if (activeHandoffStore !== undefined && activeHandoffStore !== runtime.handoffStore) {
+      activeHandoffStore.close();
+    }
     // eventBus is shared with the TUI/other surfaces for Nexus-backed IPC,
     // so don't close it here — only per-scope resources.
   };
-  return { deps, sessionId, close };
+  return { deps, sessionId, deactivate, close };
 }
 
-async function resolveDeps(): Promise<ScopedDeps> {
-  let sessionId: string | undefined;
-  try {
-    sessionId = readCurrentSessionId();
-  } catch (err) {
-    // The state file EXISTS but is corrupted. Refuse to continue in Nexus
-    // mode — silently building unscoped stores would accept writes that
-    // bypass contract enforcement and leak across sessions. In local mode
-    // we still fail hard because a malformed state file is a bug, not a
-    // normal bootstrap state.
-    throw new Error(
-      `grove-mcp-http: refusing to scope session — ${err instanceof Error ? err.message : String(err)}. ` +
-        `Fix or remove ${groveDir}/current-session.json and retry.`,
-    );
-  }
-
+function logBootstrapMode(sessionId: string | undefined): void {
   // When no session exists yet (sessionId === undefined), fall into a
   // degraded "bootstrap" mode that serves read-only tools against the
   // zone-global path. The HTTP MCP server is started by `grove up` before
@@ -449,31 +706,101 @@ async function resolveDeps(): Promise<ScopedDeps> {
   // coder→reviewer loop is unaffected because the TUI spawns agents via
   // stdio MCP (serve.ts) which has GROVE_SESSION_ID in its env, not via
   // this HTTP endpoint.
-  if (!sessionId) {
+  if (sessionId === undefined) {
     process.stderr.write(
       `grove-mcp-http: no grove session selected — serving in bootstrap mode ` +
         `(reads work against the zone-global path, writes will be session-less). ` +
         `Start a session via the TUI to enable full routing.\n`,
     );
   }
+}
 
-  const key = sessionId ?? "__bootstrap__";
-  const cached = depsCache.get(key);
-  if (cached) return cached;
-  // A new session id invalidates the entire cache so we never mix scopes.
-  // Close each evicted entry's scoped resources (timers, watchers) so
-  // they cannot outlive the session they were bound to.
-  for (const prev of depsCache.values()) {
-    try {
-      prev.close();
-    } catch {
-      // best-effort
-    }
+async function getOrCreateScopeEntry(
+  key: string,
+  sessionId: string | undefined,
+): Promise<ScopeEntry> {
+  const existing = scopeEntries.get(key);
+  if (existing) return existing;
+
+  const pending = pendingScopeEntries.get(key);
+  if (pending !== undefined) {
+    return pending;
   }
-  depsCache.clear();
-  const scoped = await buildScopedDeps(sessionId);
-  depsCache.set(key, scoped);
-  return scoped;
+
+  const buildPromise = buildScopedDeps(sessionId)
+    .then((scoped) => {
+      const cached = scopeEntries.get(key);
+      if (cached !== undefined) {
+        scoped.close();
+        return cached;
+      }
+      const created: ScopeEntry = {
+        key,
+        scoped,
+        refCount: 0,
+        deactivated: false,
+        closed: false,
+      };
+      scopeEntries.set(key, created);
+      return created;
+    })
+    .finally(() => {
+      if (pendingScopeEntries.get(key) === buildPromise) {
+        pendingScopeEntries.delete(key);
+      }
+    });
+
+  pendingScopeEntries.set(key, buildPromise);
+  return buildPromise;
+}
+
+function deactivateScopeEntry(entry: ScopeEntry): void {
+  if (entry.deactivated) return;
+  entry.deactivated = true;
+  if (scopeEntries.get(entry.key) === entry) {
+    scopeEntries.delete(entry.key);
+  }
+  entry.scoped.deactivate();
+}
+
+function releaseScopeEntry(entry: ScopeEntry): void {
+  entry.refCount = Math.max(0, entry.refCount - 1);
+  if (entry.refCount > 0) return;
+  if (entry.closed) return;
+  if (scopeEntries.get(entry.key) === entry) {
+    scopeEntries.delete(entry.key);
+  }
+  entry.closed = true;
+  try {
+    entry.scoped.close();
+  } catch {
+    // best-effort
+  }
+}
+
+function retainScopeEntry(entry: ScopeEntry): AcquiredScopedDeps {
+  entry.refCount += 1;
+  let released = false;
+  return {
+    scoped: entry.scoped,
+    deactivate: () => deactivateScopeEntry(entry),
+    release: () => {
+      if (released) return;
+      released = true;
+      releaseScopeEntry(entry);
+    },
+  };
+}
+
+async function acquireScopedDeps(sessionId: string | undefined): Promise<AcquiredScopedDeps> {
+  logBootstrapMode(sessionId);
+  const key = sessionId ?? "__bootstrap__";
+  const cached = scopeEntries.get(key);
+  if (cached !== undefined) {
+    return retainScopeEntry(cached);
+  }
+  const entry = await getOrCreateScopeEntry(key, sessionId);
+  return retainScopeEntry(entry);
 }
 
 // --- Session management -----------------------------------------------------
@@ -492,22 +819,80 @@ const SESSION_TTL_MS = (() => {
 
 /** How often the reaper sweeps for stale sessions. Adapts to low TTLs. */
 const REAP_INTERVAL_MS = Math.max(50, Math.min(60_000, Math.floor(SESSION_TTL_MS / 3)));
-const KEEPALIVE_INTERVAL_MS = Math.max(25, Math.floor(REAP_INTERVAL_MS / 2));
 
 interface ManagedSession {
+  id: string;
   server: McpServer;
   transport: StreamableHTTPServerTransport;
   lastActivity: number;
+  inFlight: number;
+  openResponses: number;
+  blockingResponses: number;
+  closing: boolean;
+  closeFinalized: boolean;
+  closeReason?: string;
+  sseResponses: Set<ServerResponse>;
   /** The grove session ID these stores are bound to (undefined = bootstrap). */
   groveSessionId: string | undefined;
+  /** Deactivates the shared scope so stale mutating calls fail. */
+  deactivateScope: () => void;
+  /** Releases the session-bound scoped deps when the MCP session ends. */
+  releaseScope: () => void;
 }
 
 /** Map of MCP-session ID → managed session for active sessions. */
 const sessions = new Map<string, ManagedSession>();
+let lastInvalidatedGroveSessionId: string | undefined;
+let hasInvalidatedGroveSession = false;
+
+async function closeManagedSession(
+  id: string,
+  session: ManagedSession,
+  reason: string,
+): Promise<void> {
+  if (session.closeFinalized) {
+    return;
+  }
+  session.closing = true;
+  session.closeReason = reason;
+  if (session.inFlight > 0 || session.openResponses > 0) {
+    for (const response of session.sseResponses) {
+      response.destroy();
+    }
+    return;
+  }
+  sessions.delete(id);
+  session.closeFinalized = true;
+  session.releaseScope();
+  await safeCleanup(session.server.close(), reason, { silent: true });
+}
+
+function retainResponse(session: ManagedSession, res: ServerResponse, blockReap: boolean): void {
+  session.openResponses += 1;
+  if (blockReap) {
+    session.blockingResponses += 1;
+  }
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    res.off("close", release);
+    res.off("finish", release);
+    session.openResponses = Math.max(0, session.openResponses - 1);
+    if (blockReap) {
+      session.blockingResponses = Math.max(0, session.blockingResponses - 1);
+    }
+    if (session.closing) {
+      void closeManagedSession(session.id, session, session.closeReason ?? "close MCP session");
+    }
+  };
+  res.on("close", release);
+  res.on("finish", release);
+}
 
 /**
  * Invalidate all MCP sessions bound to a grove session other than `current`.
- * Called on every POST before routing to catch a grove session switch. The
+ * Called when the grove session selection changes. The
  * McpServer captures its deps at construction, so when the grove session
  * changes we cannot simply swap stores — we must close the old MCP session
  * and force the client to re-initialize against fresh scoped deps.
@@ -515,11 +900,35 @@ const sessions = new Map<string, ManagedSession>();
 function invalidateStaleSessions(current: string | undefined): void {
   for (const [id, session] of sessions) {
     if (session.groveSessionId !== current) {
-      void safeCleanup(session.server.close(), "invalidate stale-scope MCP session", {
-        silent: true,
-      });
-      sessions.delete(id);
+      session.deactivateScope();
+      void closeManagedSession(id, session, "invalidate stale-scope MCP session");
     }
+  }
+}
+
+function maybeInvalidateStaleSessions(current: string | undefined): void {
+  if (hasInvalidatedGroveSession && current === lastInvalidatedGroveSessionId) {
+    return;
+  }
+  hasInvalidatedGroveSession = true;
+  lastInvalidatedGroveSessionId = current;
+  invalidateStaleSessions(current);
+}
+
+function sessionNotReadyMessage(err: unknown): string {
+  return (
+    `grove-mcp-http: refusing to scope session — ${err instanceof Error ? err.message : String(err)}. ` +
+    `Fix or remove ${groveDir}/current-session.json and retry.`
+  );
+}
+
+async function refreshSessionScopes(): Promise<string | undefined> {
+  try {
+    const currentGroveSessionId = await readCurrentSessionId();
+    maybeInvalidateStaleSessions(currentGroveSessionId);
+    return currentGroveSessionId;
+  } catch (err) {
+    throw new Error(sessionNotReadyMessage(err));
   }
 }
 
@@ -527,9 +936,11 @@ function invalidateStaleSessions(current: string | undefined): void {
 const reapTimer = setInterval(() => {
   const now = Date.now();
   for (const [id, session] of sessions) {
+    if (session.inFlight > 0 || session.blockingResponses > 0) {
+      continue;
+    }
     if (now - session.lastActivity > SESSION_TTL_MS) {
-      void safeCleanup(session.server.close(), "reap idle MCP session", { silent: true });
-      sessions.delete(id);
+      void closeManagedSession(id, session, "reap idle MCP session");
     }
   }
 }, REAP_INTERVAL_MS);
@@ -598,31 +1009,51 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     // live connections would be strictly worse than leaving them alone for
     // this one request. The corrupted-state path is caught below in
     // resolveDeps() where it's turned into a 503 for this specific request.
-    let sessionReadFailed = false;
     let currentGroveSessionId: string | undefined;
     try {
-      currentGroveSessionId = readCurrentSessionId();
-    } catch {
-      sessionReadFailed = true;
-    }
-    if (!sessionReadFailed) {
-      invalidateStaleSessions(currentGroveSessionId);
+      currentGroveSessionId = await refreshSessionScopes();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`${msg}\n`);
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(httpError("SESSION_NOT_READY", msg));
+      return;
     }
 
     // If we have a session ID and it's still bound to the current grove
     // session, route to the existing MCP session.
     const existingSession = sessionId ? sessions.get(sessionId) : undefined;
+    if (existingSession?.closing) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(
+        httpError("INVALID_SESSION", "Session is closing; re-initialize the MCP connection."),
+      );
+      return;
+    }
     if (existingSession) {
       existingSession.lastActivity = Date.now();
-      await existingSession.transport.handleRequest(req, res, parsed);
+      existingSession.inFlight += 1;
+      retainResponse(existingSession, res, true);
+      try {
+        await existingSession.transport.handleRequest(req, res, parsed);
+      } finally {
+        existingSession.inFlight = Math.max(0, existingSession.inFlight - 1);
+        if (existingSession.closing) {
+          await closeManagedSession(
+            existingSession.id,
+            existingSession,
+            existingSession.closeReason ?? "close MCP session",
+          );
+        }
+      }
       return;
     }
 
     // New MCP session — resolve session-scoped deps NOW (not at boot) so the
     // server binds to whatever grove session is current.
-    let scoped: ScopedDeps;
+    let acquiredScope: AcquiredScopedDeps;
     try {
-      scoped = await resolveDeps();
+      acquiredScope = await acquireScopedDeps(currentGroveSessionId);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(`${msg}\n`);
@@ -637,7 +1068,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     // a grove session appears. Clients must retry after `grove up` selects
     // a session. Local mode can initialize freely since there is no Nexus
     // scoping at all.
-    if (nexusClient && scoped.sessionId === undefined) {
+    if (nexusClient && acquiredScope.scoped.sessionId === undefined) {
+      acquiredScope.release();
       res.writeHead(503, { "Content-Type": "application/json" });
       res.end(
         httpError(
@@ -650,17 +1082,37 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       return;
     }
 
-    const scopedDeps = scoped.deps;
-    const boundGroveSessionId = scoped.sessionId;
+    const scopedDeps = acquiredScope.scoped.deps;
+    const boundGroveSessionId = acquiredScope.scoped.sessionId;
+    let initializedSessionId: string | undefined;
+    let initializedSession: ManagedSession | undefined;
+    let shouldCloseInitializedSession = false;
+    let server!: McpServer;
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
       onsessioninitialized: (id) => {
-        sessions.set(id, {
+        initializedSessionId = id;
+        const session: ManagedSession = {
+          id,
           server,
           transport,
           lastActivity: Date.now(),
+          inFlight: 1,
+          openResponses: 0,
+          blockingResponses: 0,
+          closing: false,
+          closeFinalized: false,
+          sseResponses: new Set(),
           groveSessionId: boundGroveSessionId,
-        });
+          deactivateScope: acquiredScope.deactivate,
+          releaseScope: acquiredScope.release,
+        };
+        retainResponse(session, res, true);
+        initializedSession = session;
+        sessions.set(id, session);
+        if (hasInvalidatedGroveSession && boundGroveSessionId !== lastInvalidatedGroveSessionId) {
+          shouldCloseInitializedSession = true;
+        }
       },
     });
     // grove_eval executes arbitrary shell commands. Disable it on the HTTP
@@ -668,48 +1120,133 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     // opted in via GROVE_MCP_EVAL_ENABLED=true. Unauthenticated HTTP exposure
     // of shell execution is a remote-code-execution risk.
     const evalEnabled = AUTH_TOKEN !== undefined && process.env.GROVE_MCP_EVAL_ENABLED === "true";
-    const server = await createMcpServer(scopedDeps, {
-      eval: evalEnabled,
-      transport: "http",
-    });
+    try {
+      server = await createMcpServer(scopedDeps, {
+        eval: evalEnabled,
+        transport: "http",
+      });
+    } catch (err) {
+      acquiredScope.release();
+      throw err;
+    }
 
     transport.onclose = () => {
-      const sid = transport.sessionId;
-      if (sid) {
-        sessions.delete(sid);
+      const sid = initializedSessionId ?? transport.sessionId;
+      const session = initializedSession;
+      if (sid !== undefined && session !== undefined) {
+        void closeManagedSession(
+          sid,
+          session,
+          session.closeReason ?? "transport closed MCP session",
+        );
       }
     };
 
-    await server.connect(transport as unknown as Transport);
-    await transport.handleRequest(req, res, parsed);
+    try {
+      await server.connect(transport as unknown as Transport);
+      await transport.handleRequest(req, res, parsed);
+    } catch (err) {
+      if (initializedSessionId !== undefined && initializedSession !== undefined) {
+        await closeManagedSession(
+          initializedSessionId,
+          initializedSession,
+          "failed MCP session setup",
+        );
+      } else {
+        acquiredScope.release();
+      }
+      throw err;
+    } finally {
+      if (initializedSession !== undefined) {
+        initializedSession.inFlight = Math.max(0, initializedSession.inFlight - 1);
+        if (initializedSession.closing) {
+          await closeManagedSession(
+            initializedSession.id,
+            initializedSession,
+            initializedSession.closeReason ?? "close MCP session",
+          );
+        }
+      }
+    }
+
+    if (initializedSessionId === undefined) {
+      acquiredScope.release();
+      return;
+    }
+    if (shouldCloseInitializedSession && initializedSession !== undefined) {
+      initializedSession.deactivateScope();
+      await closeManagedSession(
+        initializedSessionId,
+        initializedSession,
+        "close stale initialized MCP session",
+      );
+    }
   } else if (req.method === "GET") {
     // SSE stream for server-initiated messages
+    try {
+      await refreshSessionScopes();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(httpError("SESSION_NOT_READY", msg));
+      return;
+    }
     const getSession = sessionId ? sessions.get(sessionId) : undefined;
-    if (!getSession) {
+    if (!getSession || getSession.closing) {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(httpError("INVALID_SESSION", "Missing or invalid Mcp-Session-Id header"));
       return;
     }
     getSession.lastActivity = Date.now();
-    // Keep the session alive while the SSE stream is open. Without this,
-    // long-lived GET streams would be reaped as "idle" even though the
-    // client is actively waiting for server-initiated messages.
-    const keepAlive = setInterval(() => {
-      getSession.lastActivity = Date.now();
-    }, KEEPALIVE_INTERVAL_MS);
-    res.on("close", () => clearInterval(keepAlive));
-    await getSession.transport.handleRequest(req, res);
+    getSession.inFlight += 1;
+    retainResponse(getSession, res, false);
+    getSession.sseResponses.add(res);
+    try {
+      await getSession.transport.handleRequest(req, res);
+    } finally {
+      getSession.sseResponses.delete(res);
+      getSession.inFlight = Math.max(0, getSession.inFlight - 1);
+      if (getSession.closing) {
+        await closeManagedSession(
+          getSession.id,
+          getSession,
+          getSession.closeReason ?? "close MCP session",
+        );
+      }
+    }
   } else if (req.method === "DELETE") {
     // Close session
+    try {
+      await refreshSessionScopes();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(httpError("SESSION_NOT_READY", msg));
+      return;
+    }
     const delSession = sessionId ? sessions.get(sessionId) : undefined;
-    if (!delSession) {
+    if (!delSession || delSession.closing) {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(httpError("NOT_FOUND", "Session not found"));
       return;
     }
-    await delSession.transport.handleRequest(req, res);
-    await delSession.server.close();
-    if (sessionId) sessions.delete(sessionId);
+    delSession.inFlight += 1;
+    retainResponse(delSession, res, true);
+    try {
+      await delSession.transport.handleRequest(req, res);
+    } finally {
+      delSession.inFlight = Math.max(0, delSession.inFlight - 1);
+      if (delSession.closing) {
+        await closeManagedSession(
+          delSession.id,
+          delSession,
+          delSession.closeReason ?? "close MCP session",
+        );
+      }
+    }
+    if (sessionId) {
+      await closeManagedSession(sessionId, delSession, "delete MCP session");
+    }
   } else {
     res.writeHead(405, { "Content-Type": "application/json" });
     res.end(httpError("METHOD_NOT_ALLOWED", "Method not allowed"));
@@ -768,11 +1305,20 @@ httpServer.listen(port, () => {
 const shutdown = async (): Promise<void> => {
   httpSweepReconciler?.stop();
   clearInterval(reapTimer);
+  sessionFileWatcher?.close();
   // Close all active sessions
-  for (const [, session] of sessions) {
-    await session.server.close();
+  for (const [id, session] of sessions) {
+    await closeManagedSession(id, session, "shutdown MCP session");
   }
   sessions.clear();
+  for (const entry of scopeEntries.values()) {
+    try {
+      entry.scoped.close();
+    } catch {
+      // best-effort
+    }
+  }
+  scopeEntries.clear();
   httpServer.close();
   closeStores();
   process.exit(0);

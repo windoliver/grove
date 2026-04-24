@@ -228,3 +228,43 @@ describe("grove_release", () => {
     expect(result.text).toContain(McpErrorCode.NotFound);
   });
 });
+
+describe("grove_list_claims pagination", () => {
+  let testDeps: TestMcpDeps;
+  let deps: McpDeps;
+  let server: McpServer;
+
+  beforeEach(async () => {
+    testDeps = await createTestMcpDeps();
+    deps = testDeps.deps;
+    server = new McpServer({ name: "test", version: "0.0.1" }, { capabilities: { tools: {} } });
+    registerClaimTools(server, deps);
+  });
+
+  afterEach(async () => {
+    await testDeps.cleanup();
+  });
+
+  test("supports limit and offset for claim listings", async () => {
+    await callTool(server, "grove_claim", {
+      targetRef: "task-1",
+      agent: { agentId: "agent-1" },
+      intentSummary: "First claim",
+      leaseDurationMs: 300_000,
+    });
+    await callTool(server, "grove_claim", {
+      targetRef: "task-2",
+      agent: { agentId: "agent-1" },
+      intentSummary: "Second claim",
+      leaseDurationMs: 300_000,
+    });
+
+    const result = await callTool(server, "grove_list_claims", { limit: 1, offset: 1 });
+
+    expect(result.isError).toBeUndefined();
+    const data = JSON.parse(result.text);
+    expect(data.total).toBe(2);
+    expect(data.count).toBe(1);
+    expect(data.claims.length).toBe(1);
+  });
+});

@@ -739,4 +739,44 @@ describe("MCP idempotencyKey plumbing", () => {
 
     expect(secondData.cid).toBe(firstData.cid);
   });
+
+  test("same raw idempotency key does not collide across MCP session scopes", async () => {
+    const hash = await storeTestContent(deps.cas, "shared content");
+    const scopedServerA = new McpServer(
+      { name: "test-a", version: "0.0.1" },
+      { capabilities: { tools: {} } },
+    );
+    const scopedServerB = new McpServer(
+      { name: "test-b", version: "0.0.1" },
+      { capabilities: { tools: {} } },
+    );
+    registerContributionTools(scopedServerA, { ...deps, idempotencyKeyScope: "session-a" });
+    registerContributionTools(scopedServerB, { ...deps, idempotencyKeyScope: "session-b" });
+
+    const argsA = {
+      summary: "Scoped work A",
+      artifacts: { "file.ts": hash },
+      agent: { agentId: "coder-1", role: "coder" },
+      idempotencyKey: "shared-http-key",
+    };
+    const argsB = {
+      summary: "Scoped work B",
+      artifacts: { "file.ts": hash },
+      agent: { agentId: "coder-1", role: "coder" },
+      idempotencyKey: "shared-http-key",
+    };
+
+    const first = await callTool(scopedServerA, "grove_submit_work", argsA);
+    expect(first.isError).toBeUndefined();
+
+    const second = await callTool(scopedServerB, "grove_submit_work", argsB);
+    expect(second.isError).toBeUndefined();
+    const secondData = JSON.parse(second.text);
+
+    const retry = await callTool(scopedServerB, "grove_submit_work", argsB);
+    expect(retry.isError).toBeUndefined();
+    const retryData = JSON.parse(retry.text);
+
+    expect(retryData.cid).toBe(secondData.cid);
+  });
 });

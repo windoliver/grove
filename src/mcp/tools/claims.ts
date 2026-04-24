@@ -57,6 +57,15 @@ const listClaimsInputSchema = z.object({
     .describe("Filter by claim status"),
   agentId: z.string().optional().describe("Filter by agent ID"),
   targetRef: z.string().optional().describe("Filter by target reference"),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .max(100)
+    .optional()
+    .default(50)
+    .describe("Maximum number of claims to return (default: 50, max: 100)"),
+  offset: z.number().int().min(0).optional().default(0).describe("Pagination offset"),
 });
 
 // ---------------------------------------------------------------------------
@@ -152,7 +161,20 @@ export function registerClaimTools(server: McpServer, deps: McpDeps): void {
         },
         opDeps,
       );
-      return toMcpResult(result);
+      if (!result.ok) {
+        return toMcpResult(result);
+      }
+      const offset = args.offset ?? 0;
+      const limit = args.limit ?? 50;
+      const pagedClaims = result.value.claims.slice(offset, offset + limit);
+      return toMcpResult({
+        ok: true,
+        value: {
+          claims: pagedClaims,
+          count: pagedClaims.length,
+          total: result.value.count,
+        },
+      });
     },
   );
 }

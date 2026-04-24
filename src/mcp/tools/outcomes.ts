@@ -44,7 +44,14 @@ const listOutcomesSchema = z.object({
     .enum(["accepted", "rejected", "crashed", "invalidated"])
     .optional()
     .describe("Filter by outcome status"),
-  limit: z.number().int().positive().optional().default(20).describe("Max results (default: 20)"),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .max(100)
+    .optional()
+    .default(20)
+    .describe("Max results (default: 20, max: 100)"),
 });
 
 // ---------------------------------------------------------------------------
