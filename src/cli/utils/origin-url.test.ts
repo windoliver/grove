@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { detectOriginUrl, normalizeOriginUrl } from "./origin-url.js";
+import { detectOriginUrl, normalizeOriginUrl, sanitizeOriginForLog } from "./origin-url.js";
 
 function makeTmpDir(): string {
   const dir = join(
@@ -49,6 +49,8 @@ describe("normalizeOriginUrl", () => {
     ["C:/repos/foo.git", null],
     ["relative/path.git", null],
     ["foo/bar.git", null],
+    ["github.com/foo.git", null],
+    ["./github.com/foo.git", null],
   ];
 
   for (const [input, expected] of cases) {
@@ -62,6 +64,25 @@ describe("normalizeOriginUrl", () => {
       "gitlab.com/Acme/Service",
     );
   });
+});
+
+describe("sanitizeOriginForLog", () => {
+  const cases: Array<[string, string]> = [
+    ["https://user:pass@github.com/foo/bar.git", "https://github.com/foo/bar.git"],
+    ["https://x-access-token:ghp_xxx@github.com/foo/bar", "https://github.com/foo/bar"],
+    ["https://token@github.com/foo/bar.git", "https://github.com/foo/bar.git"],
+    ["http://u:p@host/path", "http://host/path"],
+    ["ssh://git@github.com/foo/bar.git", "ssh://github.com/foo/bar.git"],
+    ["git@github.com:foo/bar.git", "github.com:foo/bar.git"],
+    ["https://github.com/foo/bar", "https://github.com/foo/bar"],
+    ["", ""],
+    ["not a url", "not a url"],
+  ];
+  for (const [input, expected] of cases) {
+    test(`${JSON.stringify(input)} → ${JSON.stringify(expected)}`, () => {
+      expect(sanitizeOriginForLog(input)).toBe(expected);
+    });
+  }
 });
 
 describe("detectOriginUrl", () => {

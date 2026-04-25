@@ -298,6 +298,53 @@ describe("ensureProjectId — failure recovery", () => {
     expect(loadRegistry(goodPath).projects["github.com/foo/bar"]?.id).toBe(result.id);
   });
 
+  test("concurrent inits for SAME origin: distinct-by-default (non-TTY, no flag)", async () => {
+    // Two parallel `grove init` for clones of the same remote, neither with --unify
+    // flag and neither attached to a TTY. The first writer wins the registry slot;
+    // the second must NOT silently adopt — it gets a fresh, unregistered id.
+    const sharedRegistry = join(mkTmp("registry"), "projects.yaml");
+
+    const cloneA = mkClone("git@github.com:foo/bar.git");
+    const groveA = mkGroveDir(cloneA);
+    const cloneB = mkClone("git@github.com:foo/bar.git");
+    const groveB = mkGroveDir(cloneB);
+
+    const [resultA, resultB] = await Promise.all([
+      ensureProjectId(baseOpts({ groveDir: groveA, cwd: cloneA, registryPath: sharedRegistry })),
+      ensureProjectId(baseOpts({ groveDir: groveB, cwd: cloneB, registryPath: sharedRegistry })),
+    ]);
+
+    expect(resultA.id).not.toBe(resultB.id);
+    const registered = [resultA, resultB].filter((r) => r.registered);
+    const generated = [resultA, resultB].filter((r) => !r.registered);
+    expect(registered).toHaveLength(1);
+    expect(generated).toHaveLength(1);
+    expect(generated[0]?.source).toBe("generated");
+    const reg = loadRegistry(sharedRegistry);
+    expect(reg.projects["github.com/foo/bar"]?.id).toBe(registered[0]?.id);
+  });
+
+  test("concurrent inits for SAME origin with --unify both adopt the winning id", async () => {
+    const sharedRegistry = join(mkTmp("registry"), "projects.yaml");
+    const cloneA = mkClone("git@github.com:foo/bar.git");
+    const groveA = mkGroveDir(cloneA);
+    const cloneB = mkClone("git@github.com:foo/bar.git");
+    const groveB = mkGroveDir(cloneB);
+
+    const [resultA, resultB] = await Promise.all([
+      ensureProjectId(
+        baseOpts({ groveDir: groveA, cwd: cloneA, registryPath: sharedRegistry, unify: true }),
+      ),
+      ensureProjectId(
+        baseOpts({ groveDir: groveB, cwd: cloneB, registryPath: sharedRegistry, unify: true }),
+      ),
+    ]);
+
+    expect(resultA.id).toBe(resultB.id);
+    const reg = loadRegistry(sharedRegistry);
+    expect(reg.projects["github.com/foo/bar"]?.id).toBe(resultA.id);
+  });
+
   test("concurrent inits for distinct origins both register", async () => {
     const sharedRegistry = join(mkTmp("registry"), "projects.yaml");
 

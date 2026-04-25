@@ -32,20 +32,15 @@ export function normalizeOriginUrl(raw: string): string | null {
   const hadScheme = SCHEME_RE.test(s);
   if (hadScheme) s = s.replace(SCHEME_RE, "");
 
-  // Without a scheme, require either SCP-style (host:path with no slash
-  // before the colon) or look like a host (contain a dot before the path).
-  // Bare relative paths (e.g. "relative/path.git") have no host and must
-  // not produce registry keys.
+  // Without a scheme, require strict SCP form (host:path with no slash
+  // before the colon). Anything else — including dotted relative paths
+  // like "github.com/foo.git" which git treats as a filesystem directory —
+  // is rejected so we don't pollute the cross-machine registry.
   if (!hadScheme) {
     const colonIdx = s.indexOf(":");
     const slashIdx = s.indexOf("/");
     const isScpForm = colonIdx > 0 && (slashIdx === -1 || colonIdx < slashIdx);
-    if (!isScpForm) {
-      const hostPart = slashIdx === -1 ? s : s.slice(0, slashIdx);
-      // Host must contain a dot (e.g. github.com) to be plausibly a remote.
-      // Rejects "foo/bar.git", "relative/path", etc.
-      if (!hostPart.includes(".")) return null;
-    }
+    if (!isScpForm) return null;
   }
 
   // 2. Strip leading user@ (with scheme: terminator is '/' only, since
@@ -100,6 +95,38 @@ export function normalizeOriginUrl(raw: string): string | null {
   const afterSlash = s.slice(firstSlash + 1);
   if (!afterSlash) return null;
 
+  return s;
+}
+
+/**
+ * Strip credential userinfo from a URL-like string for safe logging.
+ *
+ * - `https://user:pass@host/path` → `https://host/path`
+ * - `git@host:path` → `host:path`
+ * - Anything else → returned unchanged.
+ *
+ * Use this on raw origin strings before writing to stderr/stdout/log files.
+ */
+export function sanitizeOriginForLog(raw: string): string {
+  if (!raw) return raw;
+  let s = raw;
+  const schemeMatch = s.match(/^(https?|ssh|git|git\+ssh):\/\//i);
+  if (schemeMatch) {
+    const scheme = schemeMatch[0];
+    const rest = s.slice(scheme.length);
+    const atIdx = rest.indexOf("@");
+    const slashIdx = rest.indexOf("/");
+    if (atIdx > -1 && (slashIdx === -1 || atIdx < slashIdx)) {
+      s = `${scheme}${rest.slice(atIdx + 1)}`;
+    }
+    return s;
+  }
+  // SCP-style: strip "user@" prefix when present and before the ':'.
+  const atIdx = s.indexOf("@");
+  const colonIdx = s.indexOf(":");
+  if (atIdx > 0 && colonIdx > atIdx) {
+    s = s.slice(atIdx + 1);
+  }
   return s;
 }
 

@@ -17,7 +17,7 @@ import {
   updateRegistry,
   upsertEntry,
 } from "../../core/project-registry.js";
-import { detectOriginUrl, normalizeOriginUrl } from "./origin-url.js";
+import { detectOriginUrl, normalizeOriginUrl, sanitizeOriginForLog } from "./origin-url.js";
 
 export interface EnsureOpts {
   readonly groveDir: string;
@@ -67,7 +67,7 @@ export async function ensureProjectId(opts: EnsureOpts): Promise<EnsureResult> {
   if (origin == null) {
     if (raw != null) {
       process.stderr.write(
-        `grove init: unrecognized origin URL format: ${raw} — registry skipped.\n`,
+        `grove init: unrecognized origin URL format: ${sanitizeOriginForLog(raw)} — registry skipped.\n`,
       );
     }
     const id = generateProjectId();
@@ -95,29 +95,42 @@ export async function ensureProjectId(opts: EnsureOpts): Promise<EnsureResult> {
     const id = generateProjectId();
     const name = nameFromOrigin(origin);
     const createdAt = now().toISOString();
-    let resolvedEntry: RegistryEntry = { id, name, createdAt };
+    const newEntry: RegistryEntry = { id, name, createdAt };
+    let concurrentHit: RegistryEntry | null = null;
     await updateRegistry(registryPath, (current) => {
-      const concurrentHit = lookupByOrigin(current, origin);
-      if (concurrentHit) {
+      const found = lookupByOrigin(current, origin);
+      if (found) {
         // Another process registered the same origin between our read
-        // and our lock acquisition. Adopt their entry rather than
-        // overwriting it.
-        resolvedEntry = concurrentHit;
+        // and our lock acquisition. Treat exactly like a registry hit —
+        // do NOT auto-adopt; route through the same decision path so
+        // distinct-by-default still applies.
+        concurrentHit = found;
         return current;
       }
-      return upsertEntry(current, origin, resolvedEntry);
+      return upsertEntry(current, origin, newEntry);
     });
-    writeProjectId(opts.groveDir, resolvedEntry.id);
+    if (concurrentHit !== null) {
+      return resolveHit(opts, origin, concurrentHit);
+    }
+    writeProjectId(opts.groveDir, newEntry.id);
     return {
-      id: resolvedEntry.id,
+      id: newEntry.id,
       source: "generated",
       origin,
       registered: true,
-      registryName: resolvedEntry.name,
+      registryName: newEntry.name,
     };
   }
 
   // 4. Hit: decide adopt vs new.
+  return resolveHit(opts, origin, hit);
+}
+
+async function resolveHit(
+  opts: EnsureOpts,
+  origin: string,
+  hit: RegistryEntry,
+): Promise<EnsureResult> {
   const decision = await decideAdopt(opts, hit);
   if (decision === "adopt") {
     writeProjectId(opts.groveDir, hit.id);

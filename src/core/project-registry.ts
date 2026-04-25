@@ -5,7 +5,7 @@
  * Used by `grove init` to correlate clones of the same remote.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
@@ -95,22 +95,19 @@ export function saveRegistry(path: string, reg: Registry): void {
  * otherwise race in `saveRegistry` and silently drop each other's entries.
  * `updateRegistry` reloads the on-disk registry inside the lock so the
  * caller's modify function always sees the latest state.
+ *
+ * Lock target is the parent directory rather than `projects.yaml` itself
+ * so a missing registry file (first run) does not race with bootstrap —
+ * the directory always exists after `mkdirSync` and `loadRegistry`
+ * already returns an empty registry on ENOENT.
  */
 export async function updateRegistry(
   path: string,
   modify: (current: Registry) => Registry,
 ): Promise<Registry> {
-  mkdirSync(dirname(path), { recursive: true });
-  // proper-lockfile requires the target file to exist.
-  if (!existsSync(path)) {
-    const tmp = `${path}.init-${process.pid}-${Date.now()}`;
-    writeFileSync(tmp, stringifyYaml({ version: 1, projects: {} }), {
-      encoding: "utf8",
-      mode: 0o644,
-    });
-    renameSync(tmp, path);
-  }
-  const release = await lockfile.lock(path, {
+  const dir = dirname(path);
+  mkdirSync(dir, { recursive: true });
+  const release = await lockfile.lock(dir, {
     retries: { retries: 10, minTimeout: 50, maxTimeout: 500 },
     stale: 5_000,
   });
