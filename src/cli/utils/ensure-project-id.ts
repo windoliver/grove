@@ -112,7 +112,25 @@ export async function ensureProjectId(opts: EnsureOpts): Promise<EnsureResult> {
     if (concurrentHit !== null) {
       return resolveHit(opts, origin, concurrentHit);
     }
-    writeProjectId(opts.groveDir, newEntry.id);
+    try {
+      writeProjectId(opts.groveDir, newEntry.id);
+    } catch (err) {
+      // Local write failed after we registered. Roll back the registry
+      // entry so a retry isn't blocked by an orphaned record nobody owns.
+      // Only delete if it's still our entry (a parallel process may have
+      // already replaced it; that one is durable).
+      await updateRegistry(registryPath, (current) => {
+        const found = lookupByOrigin(current, origin);
+        if (found?.id !== newEntry.id) return current;
+        const next: Record<string, RegistryEntry> = { ...current.projects };
+        delete next[origin];
+        return { version: 1, projects: next };
+      }).catch(() => {
+        // Registry rollback is best-effort; the original error is what we
+        // owe the caller.
+      });
+      throw err;
+    }
     return {
       id: newEntry.id,
       source: "generated",
@@ -160,12 +178,12 @@ async function decideAdopt(opts: EnsureOpts, hit: RegistryEntry): Promise<"adopt
 
   const stdout = opts.stdout ?? process.stdout;
   const stdin = opts.stdin ?? process.stdin;
-  const prompt = `Matching project '${hit.name}' already registered (id ${hit.id}). Unify? [Y/n] `;
+  const prompt = `Matching project '${hit.name}' already registered (id ${hit.id}). Unify? [y/N] `;
   stdout.write(prompt);
 
   const answer = await readLine(stdin);
   const trimmed = answer.trim().toLowerCase();
-  if (trimmed === "" || trimmed === "y" || trimmed === "yes") return "adopt";
+  if (trimmed === "y" || trimmed === "yes") return "adopt";
   return "new";
 }
 

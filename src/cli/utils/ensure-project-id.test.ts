@@ -211,7 +211,7 @@ describe("ensureProjectId — TTY prompt", () => {
     expect(out.text()).toMatch(/Unify\?/);
   });
 
-  test("TTY + Enter (default Y) adopts", async () => {
+  test("TTY + Enter (default N) creates new — distinct-by-default", async () => {
     const firstClone = mkClone("git@github.com:foo/bar.git");
     const firstGrove = mkGroveDir(firstClone);
     const registryPath = join(mkTmp("registry"), "projects.yaml");
@@ -221,6 +221,7 @@ describe("ensureProjectId — TTY prompt", () => {
 
     const secondClone = mkClone("https://github.com/foo/bar.git");
     const secondGrove = mkGroveDir(secondClone);
+    const out = captureStdout();
     const second = await ensureProjectId(
       baseOpts({
         groveDir: secondGrove,
@@ -228,11 +229,12 @@ describe("ensureProjectId — TTY prompt", () => {
         registryPath,
         isTTY: true,
         stdin: stdinFeeding("\n"),
-        stdout: new PassThrough(),
+        stdout: out.stream,
       }),
     );
-    expect(second.source).toBe("registry");
-    expect(second.id).toBe(first.id);
+    expect(second.source).toBe("generated");
+    expect(second.id).not.toBe(first.id);
+    expect(out.text()).toMatch(/\[y\/N\]/);
   });
 
   test("TTY + 'n\\n' creates new", async () => {
@@ -296,6 +298,22 @@ describe("ensureProjectId — failure recovery", () => {
     expect(result.source).toBe("generated");
     expect(result.registered).toBe(true);
     expect(loadRegistry(goodPath).projects["github.com/foo/bar"]?.id).toBe(result.id);
+  });
+
+  test("local write failure rolls back the registry entry it just inserted", async () => {
+    const clone = mkClone("git@github.com:foo/bar.git");
+    // groveDir intentionally does NOT exist — writeProjectId will throw
+    // (writeFileSync ENOENT), triggering the registry rollback path.
+    const missingGroveDir = join(clone, "does-not-exist", ".grove");
+    const registryPath = join(mkTmp("registry"), "projects.yaml");
+
+    await expect(
+      ensureProjectId(baseOpts({ groveDir: missingGroveDir, cwd: clone, registryPath })),
+    ).rejects.toThrow();
+
+    // Registry must NOT contain a stale entry for this origin.
+    const reg = loadRegistry(registryPath);
+    expect(reg.projects["github.com/foo/bar"]).toBeUndefined();
   });
 
   test("concurrent inits for SAME origin: distinct-by-default (non-TTY, no flag)", async () => {

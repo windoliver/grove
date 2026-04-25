@@ -51,6 +51,23 @@ describe("normalizeOriginUrl", () => {
     ["foo/bar.git", null],
     ["github.com/foo.git", null],
     ["./github.com/foo.git", null],
+
+    // Query strings and fragments must never enter the registry key.
+    ["https://github.com/foo/bar?access_token=secret", "github.com/foo/bar"],
+    ["https://github.com/foo/bar.git?token=abc#anchor", "github.com/foo/bar"],
+    ["https://github.com/foo/bar#fragment", "github.com/foo/bar"],
+    ["git+ssh://git@github.com/foo/bar.git?ref=main", "github.com/foo/bar"],
+
+    // Default ports are stripped; non-default ports are preserved as part
+    // of the origin authority.
+    ["ssh://git@github.com:22/Foo/Bar.git", "github.com/Foo/Bar"],
+    ["ssh://git@git.example.com:2222/team/repo.git", "git.example.com:2222/team/repo"],
+    ["https://github.com:443/foo/bar.git", "github.com/foo/bar"],
+    ["https://gitea.example.com:8443/team/repo", "gitea.example.com:8443/team/repo"],
+    ["http://repo.example.com:80/team/repo", "repo.example.com/team/repo"],
+    ["http://repo.example.com:8080/team/repo", "repo.example.com:8080/team/repo"],
+    ["git://github.com:9418/foo/bar", "github.com/foo/bar"],
+    ["git://github.com:9419/foo/bar", "github.com:9419/foo/bar"],
   ];
 
   for (const [input, expected] of cases) {

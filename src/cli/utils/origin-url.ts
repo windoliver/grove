@@ -9,7 +9,15 @@
 
 import { type SpawnSyncReturns, spawnSync } from "node:child_process";
 
-const SCHEME_RE = /^(?:https?|ssh|git|git\+ssh):\/\//i;
+const SCHEME_RE = /^(https?|ssh|git|git\+ssh):\/\//i;
+
+const DEFAULT_PORTS: Record<string, string> = {
+  https: "443",
+  http: "80",
+  ssh: "22",
+  "git+ssh": "22",
+  git: "9418",
+};
 
 export function normalizeOriginUrl(raw: string): string | null {
   if (!raw) return null;
@@ -28,9 +36,17 @@ export function normalizeOriginUrl(raw: string): string | null {
   }
   if (/^[a-zA-Z]:[\\/]/.test(s)) return null; // Windows drive letter
 
-  // 1. Strip known scheme.
-  const hadScheme = SCHEME_RE.test(s);
-  if (hadScheme) s = s.replace(SCHEME_RE, "");
+  // 1. Strip known scheme; remember which one for default-port handling.
+  const schemeMatch = s.match(SCHEME_RE);
+  const scheme = schemeMatch ? (schemeMatch[1]?.toLowerCase() ?? null) : null;
+  const hadScheme = scheme !== null;
+  if (hadScheme && schemeMatch) s = s.slice(schemeMatch[0].length);
+
+  // 1a. Strip query string (`?...`) and fragment (`#...`). They are never
+  //     part of a git origin path, and `?access_token=...` style URLs
+  //     would otherwise persist credentials into the registry key.
+  const qIdx = s.search(/[?#]/);
+  if (qIdx !== -1) s = s.slice(0, qIdx);
 
   // Without a scheme, require strict SCP form (host:path with no slash
   // before the colon). Anything else — including dotted relative paths
@@ -74,10 +90,16 @@ export function normalizeOriginUrl(raw: string): string | null {
     }
   }
 
-  // 4. Strip :<port> between host and '/'.
+  // 4. Strip the scheme's default port between host and '/'. Non-default
+  //    ports are part of the origin authority — keep them so a remote on
+  //    :2222 doesn't collide with the same host on :22.
   const portMatch = s.match(/^([^/:]+):(\d+)\//);
   if (portMatch) {
-    s = `${portMatch[1]}/${s.slice(portMatch[0].length)}`;
+    const port = portMatch[2];
+    const defaultPort = scheme ? DEFAULT_PORTS[scheme] : undefined;
+    if (port === defaultPort) {
+      s = `${portMatch[1]}/${s.slice(portMatch[0].length)}`;
+    }
   }
 
   // 5. Strip trailing .git.

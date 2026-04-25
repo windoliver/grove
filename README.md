@@ -508,14 +508,19 @@ grove init my-project --unify
 grove init my-project --no-unify
 ```
 
-In an interactive terminal, `grove init` prompts `Unify? [Y/n]` when the
-origin matches an existing registry entry. In CI / non-TTY contexts the
-default is "new" and the prompt is suppressed.
+In an interactive terminal, `grove init` prompts `Unify? [y/N]` when the
+origin matches an existing registry entry. The default is **N** — pressing
+Enter creates a new, distinct id, matching the documented "distinct by
+default" contract. Type `y` (or pass `--unify`) to share identity. In CI /
+non-TTY contexts the prompt is suppressed and the default is "new".
 
 Origin URL normalization collapses HTTPS / SSH / SCP variants (with or
-without `.git`, port, or `user:password@` credentials) to a single canonical
-`host/path` key, so two clones cloned via different URL forms still recognize
-each other.
+without `.git`, default port, or `user:password@` credentials) to a single
+canonical `host/path` key, so two clones cloned via different URL forms
+still recognize each other. **Non-default** ports are preserved (a remote
+on `:2222` is treated as a distinct origin from the same host on the SSH
+default `:22`), and any `?query` or `#fragment` is stripped before keying so
+credentials embedded in URL parameters never reach the registry.
 
 Delete `~/.grove/projects.yaml` to start the registry from scratch; delete
 `.grove/project-id` to regenerate a clone's identity on the next `grove init`.
