@@ -56,9 +56,44 @@ export async function ensureProjectId(opts: EnsureOpts): Promise<EnsureResult> {
   const registryPath = opts.registryPath ?? defaultRegistryPath();
   const now = opts.now ?? (() => new Date());
 
-  // 1. Existing local.
+  // 1. Existing local. If the clone has a git origin, reconcile the
+  //    registry under the lock — covers the kill-between-writes case
+  //    where `writeProjectId` succeeded but `saveRegistry` did not, so
+  //    a retry doesn't leave the clone permanently unregistered. We
+  //    only insert when the origin has NO entry yet; if a different id
+  //    already owns the origin (another clone got there first), leave
+  //    it intact and report `registered: false`.
   const existing = readProjectId(opts.groveDir);
   if (existing != null) {
+    const raw = detectOriginUrl(opts.cwd);
+    const origin = raw ? normalizeOriginUrl(raw) : null;
+    if (origin != null) {
+      let registered = false;
+      let registryName: string | null = null;
+      await updateRegistry(registryPath, (current) => {
+        const found = lookupByOrigin(current, origin);
+        if (found != null) {
+          registered = found.id === existing;
+          registryName = found.name;
+          return current;
+        }
+        const newEntry: RegistryEntry = {
+          id: existing,
+          name: nameFromOrigin(origin),
+          createdAt: now().toISOString(),
+        };
+        registered = true;
+        registryName = newEntry.name;
+        return upsertEntry(current, origin, newEntry);
+      });
+      return {
+        id: existing,
+        source: "local",
+        origin,
+        registered,
+        registryName,
+      };
+    }
     return {
       id: existing,
       source: "local",

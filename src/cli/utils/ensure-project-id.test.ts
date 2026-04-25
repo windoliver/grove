@@ -44,7 +44,10 @@ function baseOpts(overrides: Partial<EnsureOpts>): EnsureOpts {
 }
 
 describe("ensureProjectId — no prompt paths", () => {
-  test("returns 'local' when .grove/project-id already exists", async () => {
+  test("returns 'local' when .grove/project-id already exists, reconciling registry", async () => {
+    // The local short-circuit now ALSO reconciles the registry: if the
+    // origin has no entry, publish ours so a retry after an interrupted
+    // first-init isn't left invisible to future `--unify` clones.
     const clone = mkClone("git@github.com:foo/bar.git");
     const groveDir = mkGroveDir(clone);
     writeFileSync(join(groveDir, "project-id"), "550e8400-e29b-41d4-a716-446655440000\n");
@@ -52,7 +55,43 @@ describe("ensureProjectId — no prompt paths", () => {
     const res = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
     expect(res.source).toBe("local");
     expect(res.id).toBe("550e8400-e29b-41d4-a716-446655440000");
-    expect(loadRegistry(registryPath)).toEqual({ version: 1, projects: {} });
+    expect(res.registered).toBe(true);
+    expect(res.origin).toBe("github.com/foo/bar");
+    expect(loadRegistry(registryPath).projects["github.com/foo/bar"]?.id).toBe(
+      "550e8400-e29b-41d4-a716-446655440000",
+    );
+  });
+
+  test("local short-circuit leaves registry empty when no git origin", async () => {
+    const clone = mkClone(null);
+    const groveDir = mkGroveDir(clone);
+    writeFileSync(join(groveDir, "project-id"), "550e8400-e29b-41d4-a716-446655440000\n");
+    const registryPath = join(mkTmp("registry"), "projects.yaml");
+    const res = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
+    expect(res.source).toBe("local");
+    expect(res.registered).toBe(false);
+    expect(res.origin).toBeNull();
+  });
+
+  test("local short-circuit does not disturb a different clone's registry entry", async () => {
+    // Origin already owned by another clone with id Y; this clone has
+    // local id X. Reconciliation must NOT replace Y, and must report
+    // registered:false to reflect that the registry doesn't point at us.
+    const clone = mkClone("git@github.com:foo/bar.git");
+    const groveDir = mkGroveDir(clone);
+    writeFileSync(join(groveDir, "project-id"), "550e8400-e29b-41d4-a716-446655440000\n");
+    const registryPath = join(mkTmp("registry"), "projects.yaml");
+    writeFileSync(
+      registryPath,
+      `version: 1\nprojects:\n  github.com/foo/bar:\n    id: 11111111-1111-4111-8111-111111111111\n    name: bar\n    createdAt: '2026-04-24T00:00:00.000Z'\n`,
+    );
+    const res = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
+    expect(res.source).toBe("local");
+    expect(res.id).toBe("550e8400-e29b-41d4-a716-446655440000");
+    expect(res.registered).toBe(false);
+    expect(loadRegistry(registryPath).projects["github.com/foo/bar"]?.id).toBe(
+      "11111111-1111-4111-8111-111111111111",
+    );
   });
 
   test("generates new + skips registry when no git origin", async () => {
@@ -298,6 +337,33 @@ describe("ensureProjectId — failure recovery", () => {
     expect(result.source).toBe("generated");
     expect(result.registered).toBe(true);
     expect(loadRegistry(goodPath).projects["github.com/foo/bar"]?.id).toBe(result.id);
+  });
+
+  test("crash-recovery: local id present but registry empty → retry registers existing id", async () => {
+    // Simulates the kill-between-writes case from round-8 codex: a
+    // previous init's `writeProjectId` succeeded but `saveRegistry` did
+    // not (process killed, power loss). The next `grove init` must not
+    // leave the clone permanently unregistered.
+    const clone = mkClone("git@github.com:foo/bar.git");
+    const groveDir = mkGroveDir(clone);
+    writeFileSync(join(groveDir, "project-id"), "550e8400-e29b-41d4-a716-446655440000\n");
+    const registryPath = join(mkTmp("registry"), "projects.yaml");
+    // Registry is empty / not yet created — same as if saveRegistry never ran.
+
+    const res = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
+    expect(res.source).toBe("local");
+    expect(res.id).toBe("550e8400-e29b-41d4-a716-446655440000");
+    expect(res.registered).toBe(true);
+    expect(loadRegistry(registryPath).projects["github.com/foo/bar"]?.id).toBe(res.id);
+
+    // A future `--unify` clone of the same origin adopts the SAME id.
+    const otherClone = mkClone("git@github.com:foo/bar.git");
+    const otherGrove = mkGroveDir(otherClone);
+    const adopter = await ensureProjectId(
+      baseOpts({ groveDir: otherGrove, cwd: otherClone, registryPath, unify: true }),
+    );
+    expect(adopter.source).toBe("registry");
+    expect(adopter.id).toBe(res.id);
   });
 
   test("local write failure rolls back the registry entry it just inserted", async () => {
