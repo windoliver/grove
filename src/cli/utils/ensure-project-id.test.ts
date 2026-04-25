@@ -387,7 +387,11 @@ describe("ensureProjectId — failure recovery", () => {
 });
 
 describe("rollbackProjectIdentity", () => {
-  test("removes local project-id and registry entry on freshly registered miss", async () => {
+  test("removes local project-id but PRESERVES registry entry on freshly registered miss", async () => {
+    // Once a registry entry has been published it may already have been
+    // adopted by a parallel `grove init --unify`. Rollback must not yank
+    // the entry — the orphaned record (without a finished local clone)
+    // is benign; the safety harm of deleting a now-adopted id is severe.
     const clone = mkClone("git@github.com:foo/bar.git");
     const groveDir = mkGroveDir(clone);
     const registryPath = join(mkTmp("registry"), "projects.yaml");
@@ -400,7 +404,8 @@ describe("rollbackProjectIdentity", () => {
     await rollbackProjectIdentity(groveDir, result, registryPath);
 
     expect(readProjectId(groveDir)).toBeNull();
-    expect(loadRegistry(registryPath).projects["github.com/foo/bar"]).toBeUndefined();
+    // Registry entry stays — a future clone can adopt it via --unify.
+    expect(loadRegistry(registryPath).projects["github.com/foo/bar"]?.id).toBe(result.id);
   });
 
   test("does not touch the registry entry of an adopted hit (source=registry)", async () => {
@@ -427,14 +432,14 @@ describe("rollbackProjectIdentity", () => {
     expect(loadRegistry(registryPath).projects["github.com/foo/bar"]?.id).toBe(owner.id);
   });
 
-  test("preserves a registry entry whose id was replaced concurrently", async () => {
+  test("never deletes a registry entry, even if id no longer matches", async () => {
     const clone = mkClone("git@github.com:foo/bar.git");
     const groveDir = mkGroveDir(clone);
     const registryPath = join(mkTmp("registry"), "projects.yaml");
     const result = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
 
-    // Simulate a concurrent process that replaced the entry with a
-    // different id. Rollback must NOT delete it.
+    // Whether the entry's id changed in the meantime or not, rollback is
+    // local-file-only — so the registry stays intact in either case.
     writeFileSync(
       registryPath,
       `version: 1\nprojects:\n  github.com/foo/bar:\n    id: 550e8400-e29b-41d4-a716-446655440000\n    name: bar\n    createdAt: '2026-04-24T00:00:00.000Z'\n`,
@@ -446,23 +451,16 @@ describe("rollbackProjectIdentity", () => {
     );
   });
 
-  test("adopt-fallback (hit vanished) marks source=generated so rollback owns the new entry", async () => {
-    // Setup: simulate a stale optimistic-hit by writing a registry entry,
-    // then deleting it before the adopt-path lock re-verifies. The
-    // adopt-fallback registers fresh; result should be source=generated
-    // so a later rollback removes the entry.
+  test("adopt-fallback (hit vanished) returns source=generated, registered=true", async () => {
+    // First call: miss → registers fresh, returns source=generated.
+    // Verifies the adopt-fallback shape: even with --unify, when the
+    // optimistic hit doesn't exist, we register a fresh entry with
+    // source=generated so the user-facing log line and future rollback
+    // semantics are accurate.
     const clone = mkClone("git@github.com:foo/bar.git");
     const groveDir = mkGroveDir(clone);
     const registryPath = join(mkTmp("registry"), "projects.yaml");
 
-    // Seed a stale entry under a different name so the hit-path triggers,
-    // then delete the registry file just before ensureProjectId acquires
-    // the lock. We approximate this by writing the registry empty between
-    // the optimistic load and the lock acquisition, which we can't easily
-    // intercept — so instead we verify the desired post-condition by
-    // exercising the path indirectly via a manual rollback assertion:
-    // after a fresh miss (source=generated), the rollback removes the
-    // entry. The same code path runs in adopt-fallback.
     const result = await ensureProjectId(
       baseOpts({ groveDir, cwd: clone, registryPath, unify: true }),
     );
@@ -470,8 +468,10 @@ describe("rollbackProjectIdentity", () => {
     expect(result.registered).toBe(true);
     expect(result.origin).toBe("github.com/foo/bar");
 
+    // Rollback removes only the local file; registry entry persists.
     await rollbackProjectIdentity(groveDir, result, registryPath);
-    expect(loadRegistry(registryPath).projects["github.com/foo/bar"]).toBeUndefined();
+    expect(readProjectId(groveDir)).toBeNull();
+    expect(loadRegistry(registryPath).projects["github.com/foo/bar"]?.id).toBe(result.id);
   });
 
   test("source=local: leaves both local file and registry untouched", async () => {

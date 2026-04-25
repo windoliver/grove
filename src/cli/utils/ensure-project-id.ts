@@ -245,10 +245,19 @@ async function decideAdopt(opts: EnsureOpts, hit: RegistryEntry): Promise<"adopt
 
 /**
  * Roll back an `ensureProjectId` commit when later `grove init` steps
- * fail. Removes `.grove/project-id` (so the next retry takes the same
- * derivation path) and, when this clone freshly registered the origin,
- * deletes its registry entry — but only when the entry's id still
- * matches what we wrote, so a parallel adopter is not yanked.
+ * fail. Removes `.grove/project-id` so the next retry retakes the
+ * registry-aware derivation path instead of being short-circuited as
+ * `source: local`.
+ *
+ * The registry entry is intentionally NOT deleted. Once published, an
+ * entry may already have been adopted by a parallel `grove init --unify`
+ * (whose lock-and-commit completed in the gap between this call's
+ * registration and the eventual init failure); deleting it under that
+ * adopter would leave them with a local id that no future clone can
+ * discover, splitting project identity. An orphaned registry entry whose
+ * sole owner failed to finish init is benign: future clones either adopt
+ * it via `--unify` and finish init themselves, or stay distinct (the
+ * non-TTY default), at no cost.
  *
  * Best-effort: rollback errors are swallowed because the caller's
  * original error is what should propagate.
@@ -256,29 +265,11 @@ async function decideAdopt(opts: EnsureOpts, hit: RegistryEntry): Promise<"adopt
 export async function rollbackProjectIdentity(
   groveDir: string,
   ensureResult: EnsureResult,
-  registryPath?: string,
+  _registryPath?: string,
 ): Promise<void> {
   if (ensureResult.source !== "local") {
     try {
       rmSync(join(groveDir, PROJECT_ID_FILE), { force: true });
-    } catch {
-      // ignore
-    }
-  }
-  if (
-    ensureResult.source === "generated" &&
-    ensureResult.registered &&
-    ensureResult.origin != null
-  ) {
-    const path = registryPath ?? defaultRegistryPath();
-    try {
-      await updateRegistry(path, (current) => {
-        const found = lookupByOrigin(current, ensureResult.origin as string);
-        if (found?.id !== ensureResult.id) return current;
-        const next: Record<string, RegistryEntry> = { ...current.projects };
-        delete next[ensureResult.origin as string];
-        return { version: 1, projects: next };
-      });
     } catch {
       // ignore
     }

@@ -160,9 +160,13 @@ export function sanitizeOriginForLog(raw: string): string {
   // input shape, including `file://`, helper-style and unrecognized URLs.
   const qIdx = s.search(/[?#]/);
   if (qIdx !== -1) s = s.slice(0, qIdx);
-  const schemeMatch = s.match(/^(https?|ssh|git|git\+ssh):\/\//i);
-  if (schemeMatch) {
-    const scheme = schemeMatch[0];
+  // Strip userinfo for ANY `scheme://userinfo@host` shape, supported or
+  // not. The known-scheme allowlist is a registry concern; for logging we
+  // must redact every plausible URL form, including `foo://`, `file://`,
+  // and arbitrary helper schemes.
+  const schemePrefixMatch = s.match(/^[A-Za-z][A-Za-z0-9+.-]*:\/\//);
+  if (schemePrefixMatch) {
+    const scheme = schemePrefixMatch[0];
     const rest = s.slice(scheme.length);
     const atIdx = rest.indexOf("@");
     const slashIdx = rest.indexOf("/");

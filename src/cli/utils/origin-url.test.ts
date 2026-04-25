@@ -118,6 +118,14 @@ describe("sanitizeOriginForLog", () => {
     ["unknown://host/path?token=secret", "unknown://host/path"],
     ["arbitrary string?token=secret", "arbitrary string"],
     ["git@host:path?token=secret", "host:path"],
+
+    // Userinfo redacted for ANY scheme://userinfo@host shape, even those
+    // that normalize-rejects as unsupported. Logging must be safe even
+    // when the registry refuses the URL.
+    ["foo://user:pass@host/repo", "foo://host/repo"],
+    ["file://user:pass@host/repo", "file://host/repo"],
+    ["foo://user:pass@host/repo?token=x", "foo://host/repo"],
+    ["custom+scheme://user:pass@host/repo#frag", "custom+scheme://host/repo"],
   ];
   for (const [input, expected] of cases) {
     test(`${JSON.stringify(input)} → ${JSON.stringify(expected)}`, () => {
