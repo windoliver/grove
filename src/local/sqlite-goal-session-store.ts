@@ -567,12 +567,29 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
 
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
 
-    // Apply LIMIT only for default (unfiltered) queries; explicit queries get all results.
-    const limitClause = query?.status === undefined && !query?.includeArchived ? " LIMIT 20" : "";
+    const defaultLimit =
+      query?.status === undefined && !query?.includeArchived && query?.limit === undefined
+        ? 20
+        : undefined;
+    const effectiveLimit = query?.limit ?? defaultLimit;
+    const offset = query?.offset;
+    let paginationClause = "";
+    const paginationParams: Array<string | number> = [];
+    if (effectiveLimit !== undefined) {
+      paginationClause += " LIMIT ?";
+      paginationParams.push(effectiveLimit);
+    }
+    if (offset !== undefined) {
+      if (effectiveLimit === undefined) {
+        paginationClause += " LIMIT -1";
+      }
+      paginationClause += " OFFSET ?";
+      paginationParams.push(offset);
+    }
 
     const rows = this.db
-      .prepare(`${baseSelect}${where} ORDER BY s.started_at DESC${limitClause}`)
-      .all(...params) as SessionListRow[];
+      .prepare(`${baseSelect}${where} ORDER BY s.started_at DESC${paginationClause}`)
+      .all(...params, ...paginationParams) as SessionListRow[];
 
     return rows.map(listRowToSession);
   };

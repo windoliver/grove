@@ -263,7 +263,6 @@ describe("grove_list_claims pagination", () => {
 
     expect(result.isError).toBeUndefined();
     const data = JSON.parse(result.text);
-    expect(data.total).toBe(2);
     expect(data.count).toBe(1);
     expect(data.claims.length).toBe(1);
   });

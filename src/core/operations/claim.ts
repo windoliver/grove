@@ -77,6 +77,8 @@ export interface ListClaimsInput {
   readonly status?: ClaimStatus | readonly ClaimStatus[] | undefined;
   readonly agentId?: string | undefined;
   readonly targetRef?: string | undefined;
+  readonly limit?: number | undefined;
+  readonly offset?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +182,8 @@ export async function listClaimsOperation(
       status: input.status,
       agentId: input.agentId,
       targetRef: input.targetRef,
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      ...(input.offset !== undefined ? { offset: input.offset } : {}),
     });
 
     const summaries: ClaimSummary[] = claims.map((c) => ({

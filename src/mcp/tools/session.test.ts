@@ -79,7 +79,6 @@ describe("grove_list_sessions", () => {
 
     expect(result.isError).toBeUndefined();
     const data = JSON.parse(result.text);
-    expect(data.total).toBe(3);
     expect(data.count).toBe(1);
     expect(data.sessions.length).toBe(1);
   });

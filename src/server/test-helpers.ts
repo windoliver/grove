@@ -236,6 +236,12 @@ export class InMemoryClaimStore implements ClaimStore {
     if (query?.targetRef) {
       results = results.filter((c) => c.targetRef === query.targetRef);
     }
+    if (query?.offset !== undefined) {
+      results = results.slice(query.offset);
+    }
+    if (query?.limit !== undefined) {
+      results = results.slice(0, query.limit);
+    }
     return results;
   }
 

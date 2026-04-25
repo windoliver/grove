@@ -227,6 +227,7 @@ function readCurrentSessionIdSyncForMutationGuard(): string | undefined {
       lastSessionFileSize = -1;
       lastSessionFileId = undefined;
       sessionStateCacheDirty = false;
+      lastSessionCacheCheckedAtMs = Date.now();
       return undefined;
     }
     throw new SessionStateReadError(
@@ -239,6 +240,7 @@ function readCurrentSessionIdSyncForMutationGuard(): string | undefined {
     lastSessionFileMtimeMs > 0
   ) {
     sessionStateCacheDirty = false;
+    lastSessionCacheCheckedAtMs = Date.now();
     return lastSessionFileId;
   }
   try {
@@ -247,6 +249,7 @@ function readCurrentSessionIdSyncForMutationGuard(): string | undefined {
     lastSessionFileSize = sessionFileStat.size;
     lastSessionFileId = sessionId;
     sessionStateCacheDirty = false;
+    lastSessionCacheCheckedAtMs = Date.now();
     return sessionId;
   } catch (err) {
     if (err instanceof SessionStateReadError) throw err;
@@ -337,6 +340,10 @@ let lastSessionFileSize = -1;
 let lastSessionFileId: string | undefined;
 let sessionStateCacheDirty = true;
 let sessionFileWatcher: FSWatcher | undefined;
+let pendingSessionRefresh: Promise<string | undefined> | undefined;
+let lastSessionCacheCheckedAtMs = 0;
+
+const SESSION_CACHE_MAX_AGE_MS = 250;
 
 if (!process.env.GROVE_SESSION_ID) {
   try {
@@ -345,9 +352,11 @@ if (!process.env.GROVE_SESSION_ID) {
         return;
       }
       sessionStateCacheDirty = true;
-      void refreshSessionScopes().catch(() => {
-        /* best-effort cache refresh */
-      });
+      if (typeof filename === "string") {
+        void refreshSessionScopes().catch(() => {
+          /* best-effort cache refresh */
+        });
+      }
     });
   } catch {
     // best-effort watcher; sync fallback still protects correctness
@@ -372,6 +381,12 @@ if (!process.env.GROVE_SESSION_ID) {
 async function readCurrentSessionId(): Promise<string | undefined> {
   const fromEnv = process.env.GROVE_SESSION_ID;
   if (fromEnv) return fromEnv;
+  if (
+    !sessionStateCacheDirty &&
+    Date.now() - lastSessionCacheCheckedAtMs < SESSION_CACHE_MAX_AGE_MS
+  ) {
+    return lastSessionFileId;
+  }
   const sessionFile = `${groveDir}/current-session.json`;
   let sessionFileStat: Awaited<ReturnType<typeof stat>>;
   try {
@@ -384,6 +399,7 @@ async function readCurrentSessionId(): Promise<string | undefined> {
       lastSessionFileSize = -1;
       lastSessionFileId = undefined;
       sessionStateCacheDirty = false;
+      lastSessionCacheCheckedAtMs = Date.now();
       return undefined;
     }
     throw new SessionStateReadError(
@@ -395,6 +411,7 @@ async function readCurrentSessionId(): Promise<string | undefined> {
     sessionFileStat.size === lastSessionFileSize &&
     lastSessionFileMtimeMs > 0
   ) {
+    lastSessionCacheCheckedAtMs = Date.now();
     return lastSessionFileId;
   }
   let sessionId: string;
@@ -416,6 +433,7 @@ async function readCurrentSessionId(): Promise<string | undefined> {
   lastSessionFileSize = sessionFileStat.size;
   lastSessionFileId = sessionId;
   sessionStateCacheDirty = false;
+  lastSessionCacheCheckedAtMs = Date.now();
   return sessionId;
 }
 
@@ -923,13 +941,21 @@ function sessionNotReadyMessage(err: unknown): string {
 }
 
 async function refreshSessionScopes(): Promise<string | undefined> {
-  try {
-    const currentGroveSessionId = await readCurrentSessionId();
-    maybeInvalidateStaleSessions(currentGroveSessionId);
-    return currentGroveSessionId;
-  } catch (err) {
-    throw new Error(sessionNotReadyMessage(err));
+  if (pendingSessionRefresh !== undefined) {
+    return pendingSessionRefresh;
   }
+  pendingSessionRefresh = (async () => {
+    try {
+      const currentGroveSessionId = await readCurrentSessionId();
+      maybeInvalidateStaleSessions(currentGroveSessionId);
+      return currentGroveSessionId;
+    } catch (err) {
+      throw new Error(sessionNotReadyMessage(err));
+    } finally {
+      pendingSessionRefresh = undefined;
+    }
+  })();
+  return pendingSessionRefresh;
 }
 
 /** Periodically close sessions that have been idle longer than SESSION_TTL_MS. */

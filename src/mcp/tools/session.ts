@@ -60,20 +60,19 @@ export function registerSessionTools(server: McpServer, deps: McpDeps): void {
         return toolError("NOT_CONFIGURED", "Goal/session store is not configured");
       }
 
-      const query = args.status !== undefined ? { status: args.status } : undefined;
-      const sessions = await store.listSessions(query);
-      const offset = args.offset ?? 0;
-      const limit = args.limit ?? 20;
-      const pagedSessions = sessions.slice(offset, offset + limit);
+      const sessions = await store.listSessions({
+        ...(args.status !== undefined ? { status: args.status } : {}),
+        ...(args.limit !== undefined ? { limit: args.limit } : {}),
+        ...(args.offset !== undefined ? { offset: args.offset } : {}),
+      });
 
       return {
         content: [
           {
             type: "text" as const,
             text: JSON.stringify({
-              count: pagedSessions.length,
-              total: sessions.length,
-              sessions: pagedSessions,
+              count: sessions.length,
+              sessions,
             }),
           },
         ],

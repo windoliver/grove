@@ -362,6 +362,12 @@ export class NexusClaimStore implements ClaimStore {
     }
 
     claims.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    if (query?.offset !== undefined) {
+      claims = claims.slice(query.offset);
+    }
+    if (query?.limit !== undefined) {
+      claims = claims.slice(0, query.limit);
+    }
     return claims;
   }
 

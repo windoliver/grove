@@ -106,7 +106,14 @@ export class NexusSessionStore implements SessionStore {
           // Skip malformed
         }
       }
-      return sessions.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+      let ordered = sessions.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+      if (query?.offset !== undefined) {
+        ordered = ordered.slice(query.offset);
+      }
+      if (query?.limit !== undefined) {
+        ordered = ordered.slice(0, query.limit);
+      }
+      return ordered;
     } catch {
       return [];
     }

@@ -54,10 +54,17 @@ export class InMemorySessionStore implements SessionStore {
       filtered = filtered.filter((s) => s.presetName === query.presetName);
     }
     // Most recent first
-    return [...filtered].reverse().map((s) => {
+    let ordered = [...filtered].reverse().map((s) => {
       const cids = this.contributions.get(s.id) ?? [];
       return { ...s, contributionCount: cids.length };
     });
+    if (query?.offset !== undefined) {
+      ordered = ordered.slice(query.offset);
+    }
+    if (query?.limit !== undefined) {
+      ordered = ordered.slice(0, query.limit);
+    }
+    return ordered;
   }
 
   async archiveSession(id: string): Promise<void> {

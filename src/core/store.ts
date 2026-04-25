@@ -225,6 +225,8 @@ export interface ClaimQuery {
   readonly status?: ClaimStatus | readonly ClaimStatus[] | undefined;
   readonly agentId?: string | undefined;
   readonly targetRef?: string | undefined;
+  readonly limit?: number | undefined;
+  readonly offset?: number | undefined;
 }
 
 /** Store for mutable claims (coordination objects). */

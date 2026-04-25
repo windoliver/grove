@@ -158,23 +158,12 @@ export function registerClaimTools(server: McpServer, deps: McpDeps): void {
           ...(args.status !== undefined ? { status: args.status } : {}),
           ...(args.agentId !== undefined ? { agentId: args.agentId } : {}),
           ...(args.targetRef !== undefined ? { targetRef: args.targetRef } : {}),
+          ...(args.limit !== undefined ? { limit: args.limit } : {}),
+          ...(args.offset !== undefined ? { offset: args.offset } : {}),
         },
         opDeps,
       );
-      if (!result.ok) {
-        return toMcpResult(result);
-      }
-      const offset = args.offset ?? 0;
-      const limit = args.limit ?? 50;
-      const pagedClaims = result.value.claims.slice(offset, offset + limit);
-      return toMcpResult({
-        ok: true,
-        value: {
-          claims: pagedClaims,
-          count: pagedClaims.length,
-          total: result.value.count,
-        },
-      });
+      return toMcpResult(result);
     },
   );
 }

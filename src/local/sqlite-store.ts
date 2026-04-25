@@ -1608,6 +1608,17 @@ export class SqliteClaimStore implements ClaimStore {
     }
 
     sql += " ORDER BY created_at DESC";
+    if (query?.limit !== undefined) {
+      sql += " LIMIT ?";
+      params.push(query.limit);
+    }
+    if (query?.offset !== undefined) {
+      if (query.limit === undefined) {
+        sql += " LIMIT -1";
+      }
+      sql += " OFFSET ?";
+      params.push(query.offset);
+    }
     const rows = this.db.prepare(sql).all(...params) as readonly ClaimRow[];
     return rows.map((row) => rowToClaim(row));
   };

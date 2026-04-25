@@ -79,6 +79,8 @@ export interface SessionQuery {
    * always takes precedence.
    */
   readonly includeArchived?: boolean | undefined;
+  readonly limit?: number | undefined;
+  readonly offset?: number | undefined;
 }
 
 /**
