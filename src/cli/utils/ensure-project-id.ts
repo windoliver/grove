@@ -111,21 +111,39 @@ async function commitMissOrAdopt(
   // not save the new entry, and no orphan is published — so no rollback
   // race window exists for another process to read+adopt then have the
   // entry deleted from under it.
+  //
+  // The remaining failure mode is `saveRegistry` itself throwing AFTER
+  // the callback already wrote the local id. In that case roll the local
+  // id back so a retry isn't short-circuited as `source: local` and
+  // permanently misses registration.
   const newEntry: RegistryEntry = {
     id: generateProjectId(),
     name: nameFromOrigin(origin),
     createdAt: now().toISOString(),
   };
   let concurrentHit: RegistryEntry | null = null;
-  await updateRegistry(registryPath, (current) => {
-    const found = lookupByOrigin(current, origin);
-    if (found) {
-      concurrentHit = found;
-      return current;
+  let localWritten = false;
+  try {
+    await updateRegistry(registryPath, (current) => {
+      const found = lookupByOrigin(current, origin);
+      if (found) {
+        concurrentHit = found;
+        return current;
+      }
+      writeProjectId(opts.groveDir, newEntry.id);
+      localWritten = true;
+      return upsertEntry(current, origin, newEntry);
+    });
+  } catch (err) {
+    if (localWritten) {
+      try {
+        rmSync(join(opts.groveDir, PROJECT_ID_FILE), { force: true });
+      } catch {
+        // best-effort
+      }
     }
-    writeProjectId(opts.groveDir, newEntry.id);
-    return upsertEntry(current, origin, newEntry);
-  });
+    throw err;
+  }
   if (concurrentHit !== null) {
     // Another process registered first. Route through the same
     // decision path as a normal registry hit so distinct-by-default
@@ -164,31 +182,47 @@ async function resolveHit(
   // commit local-id under the lock. If the entry has vanished (e.g. the
   // owner of an in-flight registration crashed), re-register fresh in
   // the same lock turn so the adopting clone always lands on a durable
-  // registry entry.
+  // registry entry. When we register fresh, mark this as `source:
+  // generated` so `rollbackProjectIdentity` knows it owns the entry and
+  // will delete it if later init steps fail.
   let resolved: RegistryEntry = hit;
-  let registered = true;
-  await updateRegistry(registryPath, (current) => {
-    const found = lookupByOrigin(current, origin);
-    if (found) {
-      resolved = found;
-      writeProjectId(opts.groveDir, found.id);
-      return current;
+  let createdFresh = false;
+  let localWritten = false;
+  try {
+    await updateRegistry(registryPath, (current) => {
+      const found = lookupByOrigin(current, origin);
+      if (found) {
+        resolved = found;
+        writeProjectId(opts.groveDir, found.id);
+        localWritten = true;
+        return current;
+      }
+      const fresh: RegistryEntry = {
+        id: generateProjectId(),
+        name: nameFromOrigin(origin),
+        createdAt: now().toISOString(),
+      };
+      writeProjectId(opts.groveDir, fresh.id);
+      localWritten = true;
+      resolved = fresh;
+      createdFresh = true;
+      return upsertEntry(current, origin, fresh);
+    });
+  } catch (err) {
+    if (localWritten) {
+      try {
+        rmSync(join(opts.groveDir, PROJECT_ID_FILE), { force: true });
+      } catch {
+        // best-effort
+      }
     }
-    const fresh: RegistryEntry = {
-      id: generateProjectId(),
-      name: nameFromOrigin(origin),
-      createdAt: now().toISOString(),
-    };
-    writeProjectId(opts.groveDir, fresh.id);
-    resolved = fresh;
-    registered = true;
-    return upsertEntry(current, origin, fresh);
-  });
+    throw err;
+  }
   return {
     id: resolved.id,
-    source: "registry",
+    source: createdFresh ? "generated" : "registry",
     origin,
-    registered,
+    registered: true,
     registryName: resolved.name,
   };
 }

@@ -42,6 +42,16 @@ export function normalizeOriginUrl(raw: string): string | null {
   const hadScheme = scheme !== null;
   if (hadScheme && schemeMatch) s = s.slice(schemeMatch[0].length);
 
+  // 1b. Reject every other URI scheme (`foo://...`) and git remote-helper
+  //     forms (`transport::address`). They are not git origin URLs we
+  //     correlate, and falling through to the SCP branch would happily
+  //     accept the userinfo of e.g. `foo://user:pass@host/repo` as part
+  //     of a registry key.
+  if (!hadScheme) {
+    if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(s)) return null;
+    if (/^[A-Za-z][A-Za-z0-9+.-]*::/.test(s)) return null;
+  }
+
   // 1a. Strip query string (`?...`) and fragment (`#...`). They are never
   //     part of a git origin path, and `?access_token=...` style URLs
   //     would otherwise persist credentials into the registry key.

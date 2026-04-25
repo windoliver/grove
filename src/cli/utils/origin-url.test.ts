@@ -74,6 +74,13 @@ describe("normalizeOriginUrl", () => {
     ["https://github.com/foo/bar.git//", "github.com/foo/bar"],
     ["https://github.com/foo/bar.git/?token=x", "github.com/foo/bar"],
     ["git@github.com:foo/bar.git/", "github.com/foo/bar"],
+
+    // Unsupported URI schemes and remote-helper forms must be rejected,
+    // never coerced into a registry key carrying userinfo.
+    ["foo://user:pass@host/repo", null],
+    ["custom://github.com/foo/bar", null],
+    ["transport::address", null],
+    ["foo+bar://host/repo", null],
   ];
 
   for (const [input, expected] of cases) {
