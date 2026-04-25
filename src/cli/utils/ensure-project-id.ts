@@ -56,42 +56,26 @@ export async function ensureProjectId(opts: EnsureOpts): Promise<EnsureResult> {
   const registryPath = opts.registryPath ?? defaultRegistryPath();
   const now = opts.now ?? (() => new Date());
 
-  // 1. Existing local. If the clone has a git origin, reconcile the
-  //    registry under the lock — covers the kill-between-writes case
-  //    where `writeProjectId` succeeded but `saveRegistry` did not, so
-  //    a retry doesn't leave the clone permanently unregistered. We
-  //    only insert when the origin has NO entry yet; if a different id
-  //    already owns the origin (another clone got there first), leave
-  //    it intact and report `registered: false`.
+  // 1. Existing local — read-only. We do NOT touch the registry here:
+  //    publishing an id whose owning clone hasn't completed init yet
+  //    would let `--unify` adopters land on incomplete clones. Registry
+  //    reconciliation is deferred to `finalizeProjectIdentity`, which
+  //    `executeInit` calls only after every fallible step has succeeded.
+  //    The kill-between-writes recovery (local present, registry empty)
+  //    is handled there too.
   const existing = readProjectId(opts.groveDir);
   if (existing != null) {
     const raw = detectOriginUrl(opts.cwd);
     const origin = raw ? normalizeOriginUrl(raw) : null;
     if (origin != null) {
-      let registered = false;
-      let registryName: string | null = null;
-      await updateRegistry(registryPath, (current) => {
-        const found = lookupByOrigin(current, origin);
-        if (found != null) {
-          registered = found.id === existing;
-          registryName = found.name;
-          return current;
-        }
-        const newEntry: RegistryEntry = {
-          id: existing,
-          name: nameFromOrigin(origin),
-          createdAt: now().toISOString(),
-        };
-        registered = true;
-        registryName = newEntry.name;
-        return upsertEntry(current, origin, newEntry);
-      });
+      const reg = loadRegistry(registryPath);
+      const found = lookupByOrigin(reg, origin);
       return {
         id: existing,
         source: "local",
         origin,
-        registered,
-        registryName,
+        registered: found?.id === existing,
+        registryName: found?.name ?? null,
       };
     }
     return {
@@ -139,58 +123,22 @@ async function commitMissOrAdopt(
   opts: EnsureOpts,
   origin: string,
   registryPath: string,
-  now: () => Date,
+  _now: () => Date,
 ): Promise<EnsureResult> {
-  // Miss path: write local-id INSIDE the registry lock, before saveRegistry
-  // returns. If writeProjectId throws, modify throws, updateRegistry does
-  // not save the new entry, and no orphan is published — so no rollback
-  // race window exists for another process to read+adopt then have the
-  // entry deleted from under it.
-  //
-  // The remaining failure mode is `saveRegistry` itself throwing AFTER
-  // the callback already wrote the local id. In that case roll the local
-  // id back so a retry isn't short-circuited as `source: local` and
-  // permanently misses registration.
-  const newEntry: RegistryEntry = {
-    id: generateProjectId(),
-    name: nameFromOrigin(origin),
-    createdAt: now().toISOString(),
-  };
-  let concurrentHit: RegistryEntry | null = null;
-  let localWritten = false;
-  try {
-    await updateRegistry(registryPath, (current) => {
-      const found = lookupByOrigin(current, origin);
-      if (found) {
-        concurrentHit = found;
-        return current;
-      }
-      writeProjectId(opts.groveDir, newEntry.id);
-      localWritten = true;
-      return upsertEntry(current, origin, newEntry);
-    });
-  } catch (err) {
-    if (localWritten) {
-      try {
-        rmSync(join(opts.groveDir, PROJECT_ID_FILE), { force: true });
-      } catch {
-        // best-effort
-      }
-    }
-    throw err;
-  }
-  if (concurrentHit !== null) {
-    // Another process registered first. Route through the same
-    // decision path as a normal registry hit so distinct-by-default
-    // still applies.
-    return resolveHit(opts, origin, registryPath, concurrentHit, now);
-  }
+  // Miss path: generate a local id and write the local file. We do NOT
+  // write to the registry here — that write is deferred to
+  // `finalizeProjectIdentity`, which the caller invokes only after the
+  // rest of init has succeeded. Publishing in two phases prevents a
+  // failed init from leaving an incomplete clone exposed to future
+  // `--unify` adopters.
+  const id = generateProjectId();
+  writeProjectId(opts.groveDir, id);
   return {
-    id: newEntry.id,
+    id,
     source: "generated",
     origin,
-    registered: true,
-    registryName: newEntry.name,
+    registered: false,
+    registryName: null,
   };
 }
 
@@ -199,7 +147,7 @@ async function resolveHit(
   origin: string,
   registryPath: string,
   hit: RegistryEntry,
-  now: () => Date,
+  _now: () => Date,
 ): Promise<EnsureResult> {
   const decision = await decideAdopt(opts, hit);
   if (decision === "new") {
@@ -213,53 +161,78 @@ async function resolveHit(
       registryName: hit.name,
     };
   }
-  // Adopt path. Take the lock, re-verify the entry still exists, and
-  // commit local-id under the lock. If the entry has vanished (e.g. the
-  // owner of an in-flight registration crashed), re-register fresh in
-  // the same lock turn so the adopting clone always lands on a durable
-  // registry entry. When we register fresh, mark this as `source:
-  // generated` so `rollbackProjectIdentity` knows it owns the entry and
-  // will delete it if later init steps fail.
-  let resolved: RegistryEntry = hit;
-  let createdFresh = false;
-  let localWritten = false;
-  try {
-    await updateRegistry(registryPath, (current) => {
-      const found = lookupByOrigin(current, origin);
-      if (found) {
-        resolved = found;
-        writeProjectId(opts.groveDir, found.id);
-        localWritten = true;
-        return current;
-      }
-      const fresh: RegistryEntry = {
-        id: generateProjectId(),
-        name: nameFromOrigin(origin),
-        createdAt: now().toISOString(),
-      };
-      writeProjectId(opts.groveDir, fresh.id);
-      localWritten = true;
-      resolved = fresh;
-      createdFresh = true;
-      return upsertEntry(current, origin, fresh);
-    });
-  } catch (err) {
-    if (localWritten) {
-      try {
-        rmSync(join(opts.groveDir, PROJECT_ID_FILE), { force: true });
-      } catch {
-        // best-effort
-      }
+  // Adopt path. The user (via `--unify` or the prompt) approved adoption
+  // of a specific id+name shown in the optimistic `hit`. Re-verify under
+  // the registry lock that the same entry is still present. If it
+  // changed or vanished while the prompt was open, abort with a clear
+  // error rather than silently binding to a different id.
+  let confirmed: RegistryEntry | null = null;
+  await updateRegistry(registryPath, (current) => {
+    const found = lookupByOrigin(current, origin);
+    if (found?.id === hit.id && found.name === hit.name) {
+      confirmed = found;
     }
-    throw err;
+    return current;
+  });
+  if (confirmed == null) {
+    throw new Error(
+      `grove init: registry entry for origin '${origin}' changed during the unify prompt; re-run grove init to retry.`,
+    );
   }
+  writeProjectId(opts.groveDir, confirmed.id);
   return {
-    id: resolved.id,
-    source: createdFresh ? "generated" : "registry",
+    id: confirmed.id,
+    source: "registry",
     origin,
     registered: true,
-    registryName: resolved.name,
+    registryName: confirmed.name,
   };
+}
+
+/**
+ * Publish the project identity to the registry once `grove init` has
+ * reached a durable completion point. Idempotent and lock-safe.
+ *
+ * Behaviors:
+ * - No origin → no-op (nothing to register).
+ * - Registry has no entry for the origin → insert ours. Covers both
+ *   first-init publication and the kill-between-writes recovery path
+ *   (local id present, registry empty).
+ * - Registry has an entry whose id matches ours → no-op (already correct).
+ * - Registry has an entry whose id differs → leave it intact. Another
+ *   clone owns the origin; this clone stays unregistered and reports
+ *   `registered: false`.
+ *
+ * Returns an `EnsureResult` with up-to-date `registered`/`registryName`
+ * fields.
+ */
+export async function finalizeProjectIdentity(
+  ensureResult: EnsureResult,
+  opts: { registryPath?: string; now?: () => Date } = {},
+): Promise<EnsureResult> {
+  if (ensureResult.origin == null) return ensureResult;
+  const path = opts.registryPath ?? defaultRegistryPath();
+  const now = opts.now ?? (() => new Date());
+  let registered = ensureResult.registered;
+  let registryName: string | null = ensureResult.registryName;
+  await updateRegistry(path, (current) => {
+    const origin = ensureResult.origin as string;
+    const found = lookupByOrigin(current, origin);
+    if (found != null) {
+      registered = found.id === ensureResult.id;
+      registryName = found.name;
+      return current;
+    }
+    const newEntry: RegistryEntry = {
+      id: ensureResult.id,
+      name: nameFromOrigin(origin),
+      createdAt: now().toISOString(),
+    };
+    registered = true;
+    registryName = newEntry.name;
+    return upsertEntry(current, origin, newEntry);
+  });
+  return { ...ensureResult, registered, registryName };
 }
 
 async function decideAdopt(opts: EnsureOpts, hit: RegistryEntry): Promise<"adopt" | "new"> {

@@ -399,18 +399,28 @@ export async function executeInit(
       db.close();
     }
 
+    // All fallible init steps have succeeded — publish project identity
+    // to the user-level registry. Deferring this write until now means a
+    // failed init never exposes an incomplete clone to future `--unify`
+    // adopters.
+    const { finalizeProjectIdentity } = await import("../utils/ensure-project-id.js");
+    const finalResult = await finalizeProjectIdentity(ensureResult, {
+      ...(hooks?.registryPath === undefined ? {} : { registryPath: hooks.registryPath }),
+      ...(hooks?.now === undefined ? {} : { now: hooks.now }),
+    });
+
     console.log(`Initialized grove '${options.name}' at ${grovePath}`);
-    switch (ensureResult.source) {
+    switch (finalResult.source) {
       case "local":
         console.log(`project id ${projectId} (existing)`);
         break;
       case "registry":
-        console.log(`project id ${projectId} (unified with ${ensureResult.registryName})`);
+        console.log(`project id ${projectId} (unified with ${finalResult.registryName})`);
         break;
       case "generated":
-        if (ensureResult.origin && ensureResult.registered) {
-          console.log(`project id ${projectId} (new, registered as ${ensureResult.registryName})`);
-        } else if (ensureResult.origin) {
+        if (finalResult.origin && finalResult.registered) {
+          console.log(`project id ${projectId} (new, registered as ${finalResult.registryName})`);
+        } else if (finalResult.origin) {
           console.log(`project id ${projectId} (new, origin already owned — not registered)`);
         } else {
           console.log(`project id ${projectId} (new, no origin — not registered)`);

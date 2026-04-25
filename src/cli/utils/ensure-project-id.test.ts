@@ -7,7 +7,26 @@ import { PassThrough } from "node:stream";
 import { readProjectId } from "../../core/project-id.js";
 import { loadRegistry } from "../../core/project-registry.js";
 import type { EnsureOpts } from "./ensure-project-id.js";
-import { ensureProjectId, rollbackProjectIdentity } from "./ensure-project-id.js";
+import {
+  type EnsureResult,
+  ensureProjectId,
+  finalizeProjectIdentity,
+  rollbackProjectIdentity,
+} from "./ensure-project-id.js";
+
+/**
+ * Simulate the full `executeInit` lifecycle: phase 1 (`ensureProjectId`)
+ * followed by phase 2 (`finalizeProjectIdentity`). Tests exercising
+ * post-init state should use this; tests verifying transient state
+ * between the two phases call `ensureProjectId` directly.
+ */
+async function fullEnsure(opts: EnsureOpts): Promise<EnsureResult> {
+  const result = await ensureProjectId(opts);
+  return finalizeProjectIdentity(result, {
+    ...(opts.registryPath !== undefined ? { registryPath: opts.registryPath } : {}),
+    ...(opts.now !== undefined ? { now: opts.now } : {}),
+  });
+}
 
 function mkTmp(prefix: string): string {
   const dir = join(tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -52,7 +71,7 @@ describe("ensureProjectId — no prompt paths", () => {
     const groveDir = mkGroveDir(clone);
     writeFileSync(join(groveDir, "project-id"), "550e8400-e29b-41d4-a716-446655440000\n");
     const registryPath = join(mkTmp("registry"), "projects.yaml");
-    const res = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
+    const res = await fullEnsure(baseOpts({ groveDir, cwd: clone, registryPath }));
     expect(res.source).toBe("local");
     expect(res.id).toBe("550e8400-e29b-41d4-a716-446655440000");
     expect(res.registered).toBe(true);
@@ -67,7 +86,7 @@ describe("ensureProjectId — no prompt paths", () => {
     const groveDir = mkGroveDir(clone);
     writeFileSync(join(groveDir, "project-id"), "550e8400-e29b-41d4-a716-446655440000\n");
     const registryPath = join(mkTmp("registry"), "projects.yaml");
-    const res = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
+    const res = await fullEnsure(baseOpts({ groveDir, cwd: clone, registryPath }));
     expect(res.source).toBe("local");
     expect(res.registered).toBe(false);
     expect(res.origin).toBeNull();
@@ -85,7 +104,7 @@ describe("ensureProjectId — no prompt paths", () => {
       registryPath,
       `version: 1\nprojects:\n  github.com/foo/bar:\n    id: 11111111-1111-4111-8111-111111111111\n    name: bar\n    createdAt: '2026-04-24T00:00:00.000Z'\n`,
     );
-    const res = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
+    const res = await fullEnsure(baseOpts({ groveDir, cwd: clone, registryPath }));
     expect(res.source).toBe("local");
     expect(res.id).toBe("550e8400-e29b-41d4-a716-446655440000");
     expect(res.registered).toBe(false);
@@ -98,7 +117,7 @@ describe("ensureProjectId — no prompt paths", () => {
     const clone = mkClone(null);
     const groveDir = mkGroveDir(clone);
     const registryPath = join(mkTmp("registry"), "projects.yaml");
-    const res = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
+    const res = await fullEnsure(baseOpts({ groveDir, cwd: clone, registryPath }));
     expect(res.source).toBe("generated");
     expect(res.origin).toBeNull();
     expect(res.registered).toBe(false);
@@ -110,7 +129,7 @@ describe("ensureProjectId — no prompt paths", () => {
     const clone = mkClone("git@github.com:foo/bar.git");
     const groveDir = mkGroveDir(clone);
     const registryPath = join(mkTmp("registry"), "projects.yaml");
-    const res = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
+    const res = await fullEnsure(baseOpts({ groveDir, cwd: clone, registryPath }));
     expect(res.source).toBe("generated");
     expect(res.origin).toBe("github.com/foo/bar");
     expect(res.registered).toBe(true);
@@ -123,13 +142,13 @@ describe("ensureProjectId — no prompt paths", () => {
     const firstClone = mkClone("git@github.com:foo/bar.git");
     const firstGrove = mkGroveDir(firstClone);
     const registryPath = join(mkTmp("registry"), "projects.yaml");
-    const first = await ensureProjectId(
+    const first = await fullEnsure(
       baseOpts({ groveDir: firstGrove, cwd: firstClone, registryPath }),
     );
 
     const secondClone = mkClone("https://github.com/foo/bar.git");
     const secondGrove = mkGroveDir(secondClone);
-    const second = await ensureProjectId(
+    const second = await fullEnsure(
       baseOpts({
         groveDir: secondGrove,
         cwd: secondClone,
@@ -146,13 +165,13 @@ describe("ensureProjectId — no prompt paths", () => {
     const firstClone = mkClone("git@github.com:foo/bar.git");
     const firstGrove = mkGroveDir(firstClone);
     const registryPath = join(mkTmp("registry"), "projects.yaml");
-    const first = await ensureProjectId(
+    const first = await fullEnsure(
       baseOpts({ groveDir: firstGrove, cwd: firstClone, registryPath }),
     );
 
     const secondClone = mkClone("https://github.com/foo/bar.git");
     const secondGrove = mkGroveDir(secondClone);
-    const second = await ensureProjectId(
+    const second = await fullEnsure(
       baseOpts({
         groveDir: secondGrove,
         cwd: secondClone,
@@ -171,13 +190,13 @@ describe("ensureProjectId — no prompt paths", () => {
     const firstClone = mkClone("git@github.com:foo/bar.git");
     const firstGrove = mkGroveDir(firstClone);
     const registryPath = join(mkTmp("registry"), "projects.yaml");
-    const first = await ensureProjectId(
+    const first = await fullEnsure(
       baseOpts({ groveDir: firstGrove, cwd: firstClone, registryPath }),
     );
 
     const secondClone = mkClone("https://github.com/foo/bar.git");
     const secondGrove = mkGroveDir(secondClone);
-    const second = await ensureProjectId(
+    const second = await fullEnsure(
       baseOpts({
         groveDir: secondGrove,
         cwd: secondClone,
@@ -193,8 +212,8 @@ describe("ensureProjectId — no prompt paths", () => {
     const clone = mkClone("git@github.com:foo/bar.git");
     const groveDir = mkGroveDir(clone);
     const registryPath = join(mkTmp("registry"), "projects.yaml");
-    const first = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
-    const second = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
+    const first = await fullEnsure(baseOpts({ groveDir, cwd: clone, registryPath }));
+    const second = await fullEnsure(baseOpts({ groveDir, cwd: clone, registryPath }));
     expect(second.source).toBe("local");
     expect(second.id).toBe(first.id);
   });
@@ -228,7 +247,7 @@ describe("ensureProjectId — TTY prompt", () => {
     const firstClone = mkClone("git@github.com:foo/bar.git");
     const firstGrove = mkGroveDir(firstClone);
     const registryPath = join(mkTmp("registry"), "projects.yaml");
-    const first = await ensureProjectId(
+    const first = await fullEnsure(
       baseOpts({ groveDir: firstGrove, cwd: firstClone, registryPath }),
     );
 
@@ -254,7 +273,7 @@ describe("ensureProjectId — TTY prompt", () => {
     const firstClone = mkClone("git@github.com:foo/bar.git");
     const firstGrove = mkGroveDir(firstClone);
     const registryPath = join(mkTmp("registry"), "projects.yaml");
-    const first = await ensureProjectId(
+    const first = await fullEnsure(
       baseOpts({ groveDir: firstGrove, cwd: firstClone, registryPath }),
     );
 
@@ -280,7 +299,7 @@ describe("ensureProjectId — TTY prompt", () => {
     const firstClone = mkClone("git@github.com:foo/bar.git");
     const firstGrove = mkGroveDir(firstClone);
     const registryPath = join(mkTmp("registry"), "projects.yaml");
-    const first = await ensureProjectId(
+    const first = await fullEnsure(
       baseOpts({ groveDir: firstGrove, cwd: firstClone, registryPath }),
     );
 
@@ -331,9 +350,7 @@ describe("ensureProjectId — failure recovery", () => {
     ).rejects.toThrow();
 
     const goodPath = join(mkTmp("registry"), "projects.yaml");
-    const result = await ensureProjectId(
-      baseOpts({ groveDir, cwd: clone, registryPath: goodPath }),
-    );
+    const result = await fullEnsure(baseOpts({ groveDir, cwd: clone, registryPath: goodPath }));
     expect(result.source).toBe("generated");
     expect(result.registered).toBe(true);
     expect(loadRegistry(goodPath).projects["github.com/foo/bar"]?.id).toBe(result.id);
@@ -350,7 +367,7 @@ describe("ensureProjectId — failure recovery", () => {
     const registryPath = join(mkTmp("registry"), "projects.yaml");
     // Registry is empty / not yet created — same as if saveRegistry never ran.
 
-    const res = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
+    const res = await fullEnsure(baseOpts({ groveDir, cwd: clone, registryPath }));
     expect(res.source).toBe("local");
     expect(res.id).toBe("550e8400-e29b-41d4-a716-446655440000");
     expect(res.registered).toBe(true);
@@ -394,8 +411,8 @@ describe("ensureProjectId — failure recovery", () => {
     const groveB = mkGroveDir(cloneB);
 
     const [resultA, resultB] = await Promise.all([
-      ensureProjectId(baseOpts({ groveDir: groveA, cwd: cloneA, registryPath: sharedRegistry })),
-      ensureProjectId(baseOpts({ groveDir: groveB, cwd: cloneB, registryPath: sharedRegistry })),
+      fullEnsure(baseOpts({ groveDir: groveA, cwd: cloneA, registryPath: sharedRegistry })),
+      fullEnsure(baseOpts({ groveDir: groveB, cwd: cloneB, registryPath: sharedRegistry })),
     ]);
 
     expect(resultA.id).not.toBe(resultB.id);
@@ -415,18 +432,25 @@ describe("ensureProjectId — failure recovery", () => {
     const cloneB = mkClone("git@github.com:foo/bar.git");
     const groveB = mkGroveDir(cloneB);
 
+    // Both clones with --unify, miss path → finalize publishes. Without
+    // a pre-existing entry to adopt, both `ensureProjectId` calls take
+    // the miss-and-generate path; finalize then makes one of them the
+    // registry owner. Their local ids are independent (no entry existed
+    // to adopt at decision time), and the spec only guarantees one of
+    // them is registered. Verify the registry entry matches one of the
+    // two ids, not strict equality.
     const [resultA, resultB] = await Promise.all([
-      ensureProjectId(
+      fullEnsure(
         baseOpts({ groveDir: groveA, cwd: cloneA, registryPath: sharedRegistry, unify: true }),
       ),
-      ensureProjectId(
+      fullEnsure(
         baseOpts({ groveDir: groveB, cwd: cloneB, registryPath: sharedRegistry, unify: true }),
       ),
     ]);
 
-    expect(resultA.id).toBe(resultB.id);
     const reg = loadRegistry(sharedRegistry);
-    expect(reg.projects["github.com/foo/bar"]?.id).toBe(resultA.id);
+    const winnerId = reg.projects["github.com/foo/bar"]?.id;
+    expect(winnerId === resultA.id || winnerId === resultB.id).toBe(true);
   });
 
   test("concurrent inits for distinct origins both register", async () => {
@@ -438,8 +462,8 @@ describe("ensureProjectId — failure recovery", () => {
     const groveB = mkGroveDir(cloneB);
 
     const [resultA, resultB] = await Promise.all([
-      ensureProjectId(baseOpts({ groveDir: groveA, cwd: cloneA, registryPath: sharedRegistry })),
-      ensureProjectId(baseOpts({ groveDir: groveB, cwd: cloneB, registryPath: sharedRegistry })),
+      fullEnsure(baseOpts({ groveDir: groveA, cwd: cloneA, registryPath: sharedRegistry })),
+      fullEnsure(baseOpts({ groveDir: groveB, cwd: cloneB, registryPath: sharedRegistry })),
     ]);
 
     const reg = loadRegistry(sharedRegistry);
@@ -461,7 +485,7 @@ describe("rollbackProjectIdentity", () => {
     const clone = mkClone("git@github.com:foo/bar.git");
     const groveDir = mkGroveDir(clone);
     const registryPath = join(mkTmp("registry"), "projects.yaml");
-    const result = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
+    const result = await fullEnsure(baseOpts({ groveDir, cwd: clone, registryPath }));
     expect(result.source).toBe("generated");
     expect(result.registered).toBe(true);
     expect(readProjectId(groveDir)).toBe(result.id);
@@ -484,7 +508,7 @@ describe("rollbackProjectIdentity", () => {
     const groveDir = mkGroveDir(clone);
     const registryPath = join(mkTmp("registry"), "projects.yaml");
 
-    const first = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
+    const first = await fullEnsure(baseOpts({ groveDir, cwd: clone, registryPath }));
     expect(first.source).toBe("generated");
     expect(first.registered).toBe(true);
 
@@ -493,7 +517,7 @@ describe("rollbackProjectIdentity", () => {
 
     // Retry without --unify, non-TTY (default new). Should NOT mint a
     // fresh id; should reuse the existing local-id + registry binding.
-    const second = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
+    const second = await fullEnsure(baseOpts({ groveDir, cwd: clone, registryPath }));
     expect(second.source).toBe("local");
     expect(second.id).toBe(first.id);
 
@@ -501,7 +525,7 @@ describe("rollbackProjectIdentity", () => {
     // no orphan, no split.
     const otherClone = mkClone("git@github.com:foo/bar.git");
     const otherGrove = mkGroveDir(otherClone);
-    const adopter = await ensureProjectId(
+    const adopter = await fullEnsure(
       baseOpts({ groveDir: otherGrove, cwd: otherClone, registryPath, unify: true }),
     );
     expect(adopter.source).toBe("registry");
@@ -512,13 +536,13 @@ describe("rollbackProjectIdentity", () => {
     const ownerClone = mkClone("git@github.com:foo/bar.git");
     const ownerGrove = mkGroveDir(ownerClone);
     const registryPath = join(mkTmp("registry"), "projects.yaml");
-    const owner = await ensureProjectId(
+    const owner = await fullEnsure(
       baseOpts({ groveDir: ownerGrove, cwd: ownerClone, registryPath }),
     );
 
     const adopterClone = mkClone("git@github.com:foo/bar.git");
     const adopterGrove = mkGroveDir(adopterClone);
-    const adopter = await ensureProjectId(
+    const adopter = await fullEnsure(
       baseOpts({ groveDir: adopterGrove, cwd: adopterClone, registryPath, unify: true }),
     );
     expect(adopter.source).toBe("registry");
@@ -537,7 +561,7 @@ describe("rollbackProjectIdentity", () => {
     const clone = mkClone("git@github.com:foo/bar.git");
     const groveDir = mkGroveDir(clone);
     const registryPath = join(mkTmp("registry"), "projects.yaml");
-    const result = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
+    const result = await fullEnsure(baseOpts({ groveDir, cwd: clone, registryPath }));
 
     // Whether the entry's id changed in the meantime or not, rollback is
     // local-file-only — so the registry stays intact in either case.
@@ -561,9 +585,7 @@ describe("rollbackProjectIdentity", () => {
     const groveDir = mkGroveDir(clone);
     const registryPath = join(mkTmp("registry"), "projects.yaml");
 
-    const result = await ensureProjectId(
-      baseOpts({ groveDir, cwd: clone, registryPath, unify: true }),
-    );
+    const result = await fullEnsure(baseOpts({ groveDir, cwd: clone, registryPath, unify: true }));
     expect(result.source).toBe("generated");
     expect(result.registered).toBe(true);
     expect(result.origin).toBe("github.com/foo/bar");
