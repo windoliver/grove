@@ -7,7 +7,7 @@ import { PassThrough } from "node:stream";
 import { readProjectId } from "../../core/project-id.js";
 import { loadRegistry } from "../../core/project-registry.js";
 import type { EnsureOpts } from "./ensure-project-id.js";
-import { ensureProjectId } from "./ensure-project-id.js";
+import { ensureProjectId, rollbackProjectIdentity } from "./ensure-project-id.js";
 
 function mkTmp(prefix: string): string {
   const dir = join(tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -383,5 +383,79 @@ describe("ensureProjectId — failure recovery", () => {
       "github.com/acme/service",
       "github.com/foo/bar",
     ]);
+  });
+});
+
+describe("rollbackProjectIdentity", () => {
+  test("removes local project-id and registry entry on freshly registered miss", async () => {
+    const clone = mkClone("git@github.com:foo/bar.git");
+    const groveDir = mkGroveDir(clone);
+    const registryPath = join(mkTmp("registry"), "projects.yaml");
+    const result = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
+    expect(result.source).toBe("generated");
+    expect(result.registered).toBe(true);
+    expect(readProjectId(groveDir)).toBe(result.id);
+    expect(loadRegistry(registryPath).projects["github.com/foo/bar"]?.id).toBe(result.id);
+
+    await rollbackProjectIdentity(groveDir, result, registryPath);
+
+    expect(readProjectId(groveDir)).toBeNull();
+    expect(loadRegistry(registryPath).projects["github.com/foo/bar"]).toBeUndefined();
+  });
+
+  test("does not touch the registry entry of an adopted hit (source=registry)", async () => {
+    const ownerClone = mkClone("git@github.com:foo/bar.git");
+    const ownerGrove = mkGroveDir(ownerClone);
+    const registryPath = join(mkTmp("registry"), "projects.yaml");
+    const owner = await ensureProjectId(
+      baseOpts({ groveDir: ownerGrove, cwd: ownerClone, registryPath }),
+    );
+
+    const adopterClone = mkClone("git@github.com:foo/bar.git");
+    const adopterGrove = mkGroveDir(adopterClone);
+    const adopter = await ensureProjectId(
+      baseOpts({ groveDir: adopterGrove, cwd: adopterClone, registryPath, unify: true }),
+    );
+    expect(adopter.source).toBe("registry");
+    expect(adopter.id).toBe(owner.id);
+
+    await rollbackProjectIdentity(adopterGrove, adopter, registryPath);
+
+    // Local file removed for the adopter — but the shared registry entry
+    // remains intact because the OWNER (other clone) still depends on it.
+    expect(readProjectId(adopterGrove)).toBeNull();
+    expect(loadRegistry(registryPath).projects["github.com/foo/bar"]?.id).toBe(owner.id);
+  });
+
+  test("preserves a registry entry whose id was replaced concurrently", async () => {
+    const clone = mkClone("git@github.com:foo/bar.git");
+    const groveDir = mkGroveDir(clone);
+    const registryPath = join(mkTmp("registry"), "projects.yaml");
+    const result = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
+
+    // Simulate a concurrent process that replaced the entry with a
+    // different id. Rollback must NOT delete it.
+    writeFileSync(
+      registryPath,
+      `version: 1\nprojects:\n  github.com/foo/bar:\n    id: 550e8400-e29b-41d4-a716-446655440000\n    name: bar\n    createdAt: '2026-04-24T00:00:00.000Z'\n`,
+    );
+
+    await rollbackProjectIdentity(groveDir, result, registryPath);
+    expect(loadRegistry(registryPath).projects["github.com/foo/bar"]?.id).toBe(
+      "550e8400-e29b-41d4-a716-446655440000",
+    );
+  });
+
+  test("source=local: leaves both local file and registry untouched", async () => {
+    const clone = mkClone("git@github.com:foo/bar.git");
+    const groveDir = mkGroveDir(clone);
+    writeFileSync(join(groveDir, "project-id"), "550e8400-e29b-41d4-a716-446655440000\n");
+    const registryPath = join(mkTmp("registry"), "projects.yaml");
+    const result = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
+    expect(result.source).toBe("local");
+
+    await rollbackProjectIdentity(groveDir, result, registryPath);
+
+    expect(readProjectId(groveDir)).toBe("550e8400-e29b-41d4-a716-446655440000");
   });
 });

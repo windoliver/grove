@@ -102,11 +102,22 @@ export function normalizeOriginUrl(raw: string): string | null {
     }
   }
 
-  // 5. Strip trailing .git.
-  if (s.toLowerCase().endsWith(".git")) s = s.slice(0, -4);
-
-  // 6. Strip trailing /.
-  while (s.endsWith("/")) s = s.slice(0, -1);
+  // 5. Strip trailing slashes and `.git`, repeatedly. Order matters and
+  //    inputs vary: `host/path.git/` needs the slash stripped before the
+  //    `.git`, and `host/path.git/.git` (rare but possible from misuse)
+  //    needs both rounds. Loop until stable.
+  while (true) {
+    let changed = false;
+    while (s.endsWith("/")) {
+      s = s.slice(0, -1);
+      changed = true;
+    }
+    if (s.toLowerCase().endsWith(".git")) {
+      s = s.slice(0, -4);
+      changed = true;
+    }
+    if (!changed) break;
+  }
 
   // 7. Lowercase host (characters up to the first '/').
   const firstSlash = s.indexOf("/");
@@ -121,17 +132,24 @@ export function normalizeOriginUrl(raw: string): string | null {
 }
 
 /**
- * Strip credential userinfo from a URL-like string for safe logging.
+ * Strip credential material (userinfo, query strings, fragments) from a
+ * URL-like string for safe logging.
  *
- * - `https://user:pass@host/path` → `https://host/path`
- * - `git@host:path` → `host:path`
- * - Anything else → returned unchanged.
+ * - `https://user:pass@host/path?token=x` → `https://host/path`
+ * - `git@host:path?token=x` → `host:path`
+ * - `file:///tmp/repo?token=x` → `file:///tmp/repo`
+ * - Anything else → returned with `?...` and `#...` removed.
  *
  * Use this on raw origin strings before writing to stderr/stdout/log files.
  */
 export function sanitizeOriginForLog(raw: string): string {
   if (!raw) return raw;
   let s = raw;
+  // Strip query/fragment unconditionally — never part of a logged origin
+  // identity, and frequently used to smuggle credentials. Applies to every
+  // input shape, including `file://`, helper-style and unrecognized URLs.
+  const qIdx = s.search(/[?#]/);
+  if (qIdx !== -1) s = s.slice(0, qIdx);
   const schemeMatch = s.match(/^(https?|ssh|git|git\+ssh):\/\//i);
   if (schemeMatch) {
     const scheme = schemeMatch[0];

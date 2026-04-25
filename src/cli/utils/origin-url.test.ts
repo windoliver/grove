@@ -68,6 +68,12 @@ describe("normalizeOriginUrl", () => {
     ["http://repo.example.com:8080/team/repo", "repo.example.com:8080/team/repo"],
     ["git://github.com:9418/foo/bar", "github.com/foo/bar"],
     ["git://github.com:9419/foo/bar", "github.com:9419/foo/bar"],
+
+    // Trailing slash + .git ordering — both must collapse to the same key.
+    ["https://github.com/foo/bar.git/", "github.com/foo/bar"],
+    ["https://github.com/foo/bar.git//", "github.com/foo/bar"],
+    ["https://github.com/foo/bar.git/?token=x", "github.com/foo/bar"],
+    ["git@github.com:foo/bar.git/", "github.com/foo/bar"],
   ];
 
   for (const [input, expected] of cases) {
@@ -94,6 +100,17 @@ describe("sanitizeOriginForLog", () => {
     ["https://github.com/foo/bar", "https://github.com/foo/bar"],
     ["", ""],
     ["not a url", "not a url"],
+
+    // Query/fragment must be stripped for ALL inputs, not just known
+    // schemes — file://, helper-style, and unsupported URLs included.
+    ["https://host/path?token=secret", "https://host/path"],
+    ["https://host/path#frag", "https://host/path"],
+    ["https://user:pass@host/path?token=secret", "https://host/path"],
+    ["file:///tmp/repo?token=secret", "file:///tmp/repo"],
+    ["file:///tmp/repo#frag", "file:///tmp/repo"],
+    ["unknown://host/path?token=secret", "unknown://host/path"],
+    ["arbitrary string?token=secret", "arbitrary string"],
+    ["git@host:path?token=secret", "host:path"],
   ];
   for (const [input, expected] of cases) {
     test(`${JSON.stringify(input)} → ${JSON.stringify(expected)}`, () => {

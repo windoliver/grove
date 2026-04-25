@@ -8,7 +8,14 @@
  *   4. Registry hit → adopt (unify) or new, per flag / TTY prompt / non-TTY default.
  */
 
-import { generateProjectId, readProjectId, writeProjectId } from "../../core/project-id.js";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
+import {
+  generateProjectId,
+  PROJECT_ID_FILE,
+  readProjectId,
+  writeProjectId,
+} from "../../core/project-id.js";
 import {
   defaultRegistryPath,
   loadRegistry,
@@ -81,93 +88,108 @@ export async function ensureProjectId(opts: EnsureOpts): Promise<EnsureResult> {
     };
   }
 
-  // 3. Registry lookup.
+  // 3. Registry lookup. The unlocked load is an optimistic fast-path —
+  //    every commit (miss-register, hit-adopt) re-verifies under the lock.
   const reg = loadRegistry(registryPath);
   const hit = lookupByOrigin(reg, origin);
   if (hit == null) {
-    // Atomic load → check → upsert → save inside a filesystem lock.
-    // updateRegistry reloads inside the lock so a parallel `grove init`
-    // for a different origin can't be silently overwritten.
-    //
-    // Save registry BEFORE writing the local id so a registry failure
-    // doesn't leave behind a `.grove/project-id` that short-circuits all
-    // future retries (which would lose registry correlation).
-    const id = generateProjectId();
-    const name = nameFromOrigin(origin);
-    const createdAt = now().toISOString();
-    const newEntry: RegistryEntry = { id, name, createdAt };
-    let concurrentHit: RegistryEntry | null = null;
-    await updateRegistry(registryPath, (current) => {
-      const found = lookupByOrigin(current, origin);
-      if (found) {
-        // Another process registered the same origin between our read
-        // and our lock acquisition. Treat exactly like a registry hit —
-        // do NOT auto-adopt; route through the same decision path so
-        // distinct-by-default still applies.
-        concurrentHit = found;
-        return current;
-      }
-      return upsertEntry(current, origin, newEntry);
-    });
-    if (concurrentHit !== null) {
-      return resolveHit(opts, origin, concurrentHit);
-    }
-    try {
-      writeProjectId(opts.groveDir, newEntry.id);
-    } catch (err) {
-      // Local write failed after we registered. Roll back the registry
-      // entry so a retry isn't blocked by an orphaned record nobody owns.
-      // Only delete if it's still our entry (a parallel process may have
-      // already replaced it; that one is durable).
-      await updateRegistry(registryPath, (current) => {
-        const found = lookupByOrigin(current, origin);
-        if (found?.id !== newEntry.id) return current;
-        const next: Record<string, RegistryEntry> = { ...current.projects };
-        delete next[origin];
-        return { version: 1, projects: next };
-      }).catch(() => {
-        // Registry rollback is best-effort; the original error is what we
-        // owe the caller.
-      });
-      throw err;
-    }
-    return {
-      id: newEntry.id,
-      source: "generated",
-      origin,
-      registered: true,
-      registryName: newEntry.name,
-    };
+    return commitMissOrAdopt(opts, origin, registryPath, now);
   }
 
   // 4. Hit: decide adopt vs new.
-  return resolveHit(opts, origin, hit);
+  return resolveHit(opts, origin, registryPath, hit, now);
+}
+
+async function commitMissOrAdopt(
+  opts: EnsureOpts,
+  origin: string,
+  registryPath: string,
+  now: () => Date,
+): Promise<EnsureResult> {
+  // Miss path: write local-id INSIDE the registry lock, before saveRegistry
+  // returns. If writeProjectId throws, modify throws, updateRegistry does
+  // not save the new entry, and no orphan is published — so no rollback
+  // race window exists for another process to read+adopt then have the
+  // entry deleted from under it.
+  const newEntry: RegistryEntry = {
+    id: generateProjectId(),
+    name: nameFromOrigin(origin),
+    createdAt: now().toISOString(),
+  };
+  let concurrentHit: RegistryEntry | null = null;
+  await updateRegistry(registryPath, (current) => {
+    const found = lookupByOrigin(current, origin);
+    if (found) {
+      concurrentHit = found;
+      return current;
+    }
+    writeProjectId(opts.groveDir, newEntry.id);
+    return upsertEntry(current, origin, newEntry);
+  });
+  if (concurrentHit !== null) {
+    // Another process registered first. Route through the same
+    // decision path as a normal registry hit so distinct-by-default
+    // still applies.
+    return resolveHit(opts, origin, registryPath, concurrentHit, now);
+  }
+  return {
+    id: newEntry.id,
+    source: "generated",
+    origin,
+    registered: true,
+    registryName: newEntry.name,
+  };
 }
 
 async function resolveHit(
   opts: EnsureOpts,
   origin: string,
+  registryPath: string,
   hit: RegistryEntry,
+  now: () => Date,
 ): Promise<EnsureResult> {
   const decision = await decideAdopt(opts, hit);
-  if (decision === "adopt") {
-    writeProjectId(opts.groveDir, hit.id);
+  if (decision === "new") {
+    const id = generateProjectId();
+    writeProjectId(opts.groveDir, id);
     return {
-      id: hit.id,
-      source: "registry",
+      id,
+      source: "generated",
       origin,
-      registered: true,
+      registered: false,
       registryName: hit.name,
     };
   }
-  const id = generateProjectId();
-  writeProjectId(opts.groveDir, id);
+  // Adopt path. Take the lock, re-verify the entry still exists, and
+  // commit local-id under the lock. If the entry has vanished (e.g. the
+  // owner of an in-flight registration crashed), re-register fresh in
+  // the same lock turn so the adopting clone always lands on a durable
+  // registry entry.
+  let resolved: RegistryEntry = hit;
+  let registered = true;
+  await updateRegistry(registryPath, (current) => {
+    const found = lookupByOrigin(current, origin);
+    if (found) {
+      resolved = found;
+      writeProjectId(opts.groveDir, found.id);
+      return current;
+    }
+    const fresh: RegistryEntry = {
+      id: generateProjectId(),
+      name: nameFromOrigin(origin),
+      createdAt: now().toISOString(),
+    };
+    writeProjectId(opts.groveDir, fresh.id);
+    resolved = fresh;
+    registered = true;
+    return upsertEntry(current, origin, fresh);
+  });
   return {
-    id,
-    source: "generated",
+    id: resolved.id,
+    source: "registry",
     origin,
-    registered: false,
-    registryName: hit.name,
+    registered,
+    registryName: resolved.name,
   };
 }
 
@@ -185,6 +207,48 @@ async function decideAdopt(opts: EnsureOpts, hit: RegistryEntry): Promise<"adopt
   const trimmed = answer.trim().toLowerCase();
   if (trimmed === "y" || trimmed === "yes") return "adopt";
   return "new";
+}
+
+/**
+ * Roll back an `ensureProjectId` commit when later `grove init` steps
+ * fail. Removes `.grove/project-id` (so the next retry takes the same
+ * derivation path) and, when this clone freshly registered the origin,
+ * deletes its registry entry — but only when the entry's id still
+ * matches what we wrote, so a parallel adopter is not yanked.
+ *
+ * Best-effort: rollback errors are swallowed because the caller's
+ * original error is what should propagate.
+ */
+export async function rollbackProjectIdentity(
+  groveDir: string,
+  ensureResult: EnsureResult,
+  registryPath?: string,
+): Promise<void> {
+  if (ensureResult.source !== "local") {
+    try {
+      rmSync(join(groveDir, PROJECT_ID_FILE), { force: true });
+    } catch {
+      // ignore
+    }
+  }
+  if (
+    ensureResult.source === "generated" &&
+    ensureResult.registered &&
+    ensureResult.origin != null
+  ) {
+    const path = registryPath ?? defaultRegistryPath();
+    try {
+      await updateRegistry(path, (current) => {
+        const found = lookupByOrigin(current, ensureResult.origin as string);
+        if (found?.id !== ensureResult.id) return current;
+        const next: Record<string, RegistryEntry> = { ...current.projects };
+        delete next[ensureResult.origin as string];
+        return { version: 1, projects: next };
+      });
+    } catch {
+      // ignore
+    }
+  }
 }
 
 function readLine(stream: NodeJS.ReadableStream): Promise<string> {
