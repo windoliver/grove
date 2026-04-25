@@ -779,4 +779,64 @@ describe("MCP idempotencyKey plumbing", () => {
 
     expect(retryData.cid).toBe(secondData.cid);
   });
+
+  test("idempotency scope encoding avoids delimiter-based collisions", async () => {
+    const hash = await storeTestContent(deps.cas, "scoped content");
+    const scopedServerA = new McpServer(
+      { name: "test-a", version: "0.0.1" },
+      { capabilities: { tools: {} } },
+    );
+    const scopedServerB = new McpServer(
+      { name: "test-b", version: "0.0.1" },
+      { capabilities: { tools: {} } },
+    );
+    registerContributionTools(scopedServerA, { ...deps, idempotencyKeyScope: "b" });
+    registerContributionTools(scopedServerB, { ...deps, idempotencyKeyScope: "c\u0001b" });
+
+    const first = await callTool(scopedServerA, "grove_submit_work", {
+      summary: "Scoped work one",
+      artifacts: { "file.ts": hash },
+      agent: { agentId: "coder-1", role: "coder" },
+      idempotencyKey: "a\u0001c",
+    });
+    expect(first.isError).toBeUndefined();
+
+    const second = await callTool(scopedServerB, "grove_submit_work", {
+      summary: "Scoped work two",
+      artifacts: { "file.ts": hash },
+      agent: { agentId: "coder-1", role: "coder" },
+      idempotencyKey: "a",
+    });
+    expect(second.isError).toBeUndefined();
+  });
+
+  test("unscoped keys cannot collide with scoped tuple encoding", async () => {
+    const hash = await storeTestContent(deps.cas, "tuple content");
+    const unscopedServer = new McpServer(
+      { name: "test-unscoped", version: "0.0.1" },
+      { capabilities: { tools: {} } },
+    );
+    const scopedServer = new McpServer(
+      { name: "test-scoped", version: "0.0.1" },
+      { capabilities: { tools: {} } },
+    );
+    registerContributionTools(unscopedServer, deps);
+    registerContributionTools(scopedServer, { ...deps, idempotencyKeyScope: "session-a" });
+
+    const scoped = await callTool(scopedServer, "grove_submit_work", {
+      summary: "Scoped tuple work",
+      artifacts: { "file.ts": hash },
+      agent: { agentId: "coder-1", role: "coder" },
+      idempotencyKey: "retry-1",
+    });
+    expect(scoped.isError).toBeUndefined();
+
+    const unscoped = await callTool(unscopedServer, "grove_submit_work", {
+      summary: "Unscoped tuple work",
+      artifacts: { "file.ts": hash },
+      agent: { agentId: "coder-1", role: "coder" },
+      idempotencyKey: JSON.stringify(["session-a", "retry-1"]),
+    });
+    expect(unscoped.isError).toBeUndefined();
+  });
 });

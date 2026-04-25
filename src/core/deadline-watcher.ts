@@ -48,6 +48,7 @@ export class DeadlineWatcher {
   private readonly eventBus: EventBus;
   private readonly maxRebuildAgeMs: number;
   private readonly unrefTimers: boolean;
+  private closed = false;
 
   /** Active timers keyed by handoffId. */
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -67,6 +68,7 @@ export class DeadlineWatcher {
    * If a timer already exists for this handoffId, it is replaced.
    */
   watch(handoff: Handoff): void {
+    if (this.closed) return;
     if (handoff.replyDueAt === undefined) return;
 
     // Cancel any existing timer for this handoff
@@ -98,6 +100,7 @@ export class DeadlineWatcher {
    * Cancel the deadline timer for a handoff (e.g., when resolved).
    */
   cancel(handoffId: string): void {
+    if (this.closed) return;
     const timer = this.timers.get(handoffId);
     if (timer !== undefined) {
       log(`CANCEL handoff=${handoffId.slice(0, 8)} — resolved before deadline`);
@@ -114,6 +117,7 @@ export class DeadlineWatcher {
    * Processed handoffs are still deadline-backed until they reply.
    */
   async rebuildFromStore(): Promise<number> {
+    if (this.closed) return 0;
     // Rebuild requires session-scoped enumeration. Stores that don't
     // implement listForCurrentSession share data across sessions (e.g.
     // SQLite without a session_id column on handoffs, or Nexus in certain
@@ -137,6 +141,7 @@ export class DeadlineWatcher {
     let registered = 0;
     for (const h of unresolved) {
       if (h.replyDueAt !== undefined && h.createdAt >= cutoffDate) {
+        if (this.closed) return registered;
         this.watch(h);
         registered++;
       }
@@ -153,6 +158,7 @@ export class DeadlineWatcher {
 
   /** Cancel all timers and release resources. */
   close(): void {
+    this.closed = true;
     for (const timer of this.timers.values()) {
       clearTimeout(timer);
     }
@@ -168,6 +174,7 @@ export class DeadlineWatcher {
     fromRole: string,
     toRole: string,
   ): Promise<void> {
+    if (this.closed) return;
     try {
       // Re-read the handoff to check if it's still unresolved
       const handoff = await this.handoffStore.get(handoffId);

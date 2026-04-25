@@ -251,11 +251,7 @@ contributions.post("/", async (c) => {
     // sessions is treated as distinct — prevents cross-session cache
     // contamination and policy bypass.
     ...(idempotencyKey !== undefined
-      ? {
-          idempotencyKey: parsed.sessionId
-            ? `${idempotencyKey}\x01${parsed.sessionId}`
-            : idempotencyKey,
-        }
+      ? { idempotencyKey: JSON.stringify([parsed.sessionId ?? null, idempotencyKey]) }
       : {}),
   };
 
@@ -391,8 +387,13 @@ contributions.get("/", zValidator("query", listQuerySchema), async (c) => {
 
 /** GET /api/contributions/:cid — Get a single contribution by CID. */
 contributions.get("/:cid", zValidator("param", cidParamSchema), async (c) => {
-  const { contributionStore } = c.get("deps");
+  const deps = c.get("deps");
   const { cid } = c.req.valid("param");
+  const sessionId = c.req.query("sessionId");
+  const contributionStore =
+    sessionId !== undefined && deps.contributionStoreForSession !== undefined
+      ? deps.contributionStoreForSession(sessionId)
+      : deps.contributionStore;
 
   const contribution = await contributionStore.get(cid);
   if (!contribution) {
@@ -404,9 +405,15 @@ contributions.get("/:cid", zValidator("param", cidParamSchema), async (c) => {
 
 /** GET /api/contributions/:cid/artifacts/:name — Download artifact blob. */
 contributions.get("/:cid/artifacts/:name", async (c) => {
-  const { contributionStore, cas } = c.get("deps");
+  const deps = c.get("deps");
+  const { cas } = deps;
   const cid = c.req.param("cid");
   const name = c.req.param("name");
+  const sessionId = c.req.query("sessionId");
+  const contributionStore =
+    sessionId !== undefined && deps.contributionStoreForSession !== undefined
+      ? deps.contributionStoreForSession(sessionId)
+      : deps.contributionStore;
 
   const contribution = await contributionStore.get(cid);
   if (!contribution) {
@@ -446,9 +453,15 @@ contributions.get("/:cid/artifacts/:name", async (c) => {
 
 /** GET /api/contributions/:cid/artifacts/:name/meta — Artifact metadata (size + mediaType). */
 contributions.get("/:cid/artifacts/:name/meta", async (c) => {
-  const { contributionStore, cas } = c.get("deps");
+  const deps = c.get("deps");
+  const { cas } = deps;
   const cid = c.req.param("cid");
   const name = c.req.param("name");
+  const sessionId = c.req.query("sessionId");
+  const contributionStore =
+    sessionId !== undefined && deps.contributionStoreForSession !== undefined
+      ? deps.contributionStoreForSession(sessionId)
+      : deps.contributionStore;
 
   const contribution = await contributionStore.get(cid);
   if (!contribution) {

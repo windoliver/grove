@@ -201,8 +201,7 @@ function scopeIdempotencyKey(
   scope: string | undefined,
 ): string | undefined {
   if (key === undefined) return undefined;
-  if (scope === undefined || scope.length === 0) return key;
-  return `${key}\x01${scope}`;
+  return JSON.stringify([scope ?? null, key]);
 }
 
 // ---------------------------------------------------------------------------

@@ -151,8 +151,8 @@ function releaseDeadlineWatcherLock(lockPath: string | undefined, token: string 
   }
 }
 
-let deps: McpDeps;
-let close: () => void;
+let deps: McpDeps | undefined;
+let close: () => void = () => {};
 let preset: import("./server.js").McpPresetConfig | undefined;
 let deadlineWatcherLockPath: string | undefined;
 let deadlineWatcherLockToken: string | undefined;
@@ -421,6 +421,20 @@ try {
   let deadlineWatcher: import("../core/deadline-watcher.js").DeadlineWatcher | undefined;
   let handoffExpiryManaged = false;
   const activeHandoffStore = nexusHandoffStore ?? runtime.handoffStore;
+  const syncDeadlineWatcherDeps = (): void => {
+    if (deps === undefined) return;
+    const mutableDeps = deps as unknown as Record<string, unknown>;
+    if (deadlineWatcher !== undefined) {
+      mutableDeps.deadlineWatcher = deadlineWatcher;
+    } else {
+      delete mutableDeps.deadlineWatcher;
+    }
+    if (handoffExpiryManaged) {
+      mutableDeps.handoffExpiryManaged = true;
+    } else {
+      delete mutableDeps.handoffExpiryManaged;
+    }
+  };
   if (activeHandoffStore !== undefined && eventBus !== undefined) {
     const { DeadlineWatcher } = await import("../core/deadline-watcher.js");
     deadlineWatcher = new DeadlineWatcher({ handoffStore: activeHandoffStore, eventBus });
@@ -447,6 +461,7 @@ try {
             deadlineWatcher?.close();
             deadlineWatcher = undefined;
             handoffExpiryManaged = false;
+            syncDeadlineWatcherDeps();
             return;
           }
           writeDeadlineWatcherLock(lockPath, lockToken);
@@ -486,6 +501,7 @@ try {
         deadlineWatcher.close();
         deadlineWatcher = undefined;
         handoffExpiryManaged = false;
+        syncDeadlineWatcherDeps();
         if (deadlineWatcherLockHeartbeat !== undefined) {
           clearInterval(deadlineWatcherLockHeartbeat);
           deadlineWatcherLockHeartbeat = undefined;
@@ -523,6 +539,7 @@ try {
     ...(handoffExpiryManaged ? { handoffExpiryManaged: true } : {}),
     ...(deadlineWatcher ? { deadlineWatcher } : {}),
   };
+  syncDeadlineWatcherDeps();
   // Derive MCP tool preset from contract mode — #11 MCP Tool Surface + #12 Concept Usage
   const contractMode = loadedContract?.mode ?? "exploration";
   const hasMetrics =
@@ -582,6 +599,10 @@ try {
   const message = error instanceof Error ? error.message : String(error);
   process.stderr.write(`grove-mcp: ${message}\n`);
   process.exit(1);
+}
+
+if (deps === undefined) {
+  throw new Error("grove-mcp: dependencies not initialized");
 }
 
 // --- Server setup ---------------------------------------------------------
