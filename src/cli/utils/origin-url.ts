@@ -20,9 +20,33 @@ export function normalizeOriginUrl(raw: string): string | null {
   // Reject schemes we don't correlate (file://, local paths).
   if (s.toLowerCase().startsWith("file://")) return null;
 
+  // Reject filesystem paths — absolute (/foo, ~/foo, C:\foo), relative
+  // (./foo, ../foo), or bare relative paths with no host (foo/bar.git).
+  // These belong to a single machine and must not become registry keys.
+  if (s.startsWith("/") || s.startsWith("./") || s.startsWith("../") || s.startsWith("~")) {
+    return null;
+  }
+  if (/^[a-zA-Z]:[\\/]/.test(s)) return null; // Windows drive letter
+
   // 1. Strip known scheme.
   const hadScheme = SCHEME_RE.test(s);
   if (hadScheme) s = s.replace(SCHEME_RE, "");
+
+  // Without a scheme, require either SCP-style (host:path with no slash
+  // before the colon) or look like a host (contain a dot before the path).
+  // Bare relative paths (e.g. "relative/path.git") have no host and must
+  // not produce registry keys.
+  if (!hadScheme) {
+    const colonIdx = s.indexOf(":");
+    const slashIdx = s.indexOf("/");
+    const isScpForm = colonIdx > 0 && (slashIdx === -1 || colonIdx < slashIdx);
+    if (!isScpForm) {
+      const hostPart = slashIdx === -1 ? s : s.slice(0, slashIdx);
+      // Host must contain a dot (e.g. github.com) to be plausibly a remote.
+      // Rejects "foo/bar.git", "relative/path", etc.
+      if (!hostPart.includes(".")) return null;
+    }
+  }
 
   // 2. Strip leading user@ (with scheme: terminator is '/' only, since
   //    `user:password@host/path` is legal HTTPS auth — colon is part of

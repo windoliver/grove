@@ -14,7 +14,7 @@ import {
   loadRegistry,
   lookupByOrigin,
   type RegistryEntry,
-  saveRegistry,
+  updateRegistry,
   upsertEntry,
 } from "../../core/project-registry.js";
 import { detectOriginUrl, normalizeOriginUrl } from "./origin-url.js";
@@ -85,21 +85,35 @@ export async function ensureProjectId(opts: EnsureOpts): Promise<EnsureResult> {
   const reg = loadRegistry(registryPath);
   const hit = lookupByOrigin(reg, origin);
   if (hit == null) {
+    // Atomic load → check → upsert → save inside a filesystem lock.
+    // updateRegistry reloads inside the lock so a parallel `grove init`
+    // for a different origin can't be silently overwritten.
+    //
+    // Save registry BEFORE writing the local id so a registry failure
+    // doesn't leave behind a `.grove/project-id` that short-circuits all
+    // future retries (which would lose registry correlation).
     const id = generateProjectId();
-    writeProjectId(opts.groveDir, id);
     const name = nameFromOrigin(origin);
-    const entry: RegistryEntry = {
-      id,
-      name,
-      createdAt: now().toISOString(),
-    };
-    saveRegistry(registryPath, upsertEntry(reg, origin, entry));
+    const createdAt = now().toISOString();
+    let resolvedEntry: RegistryEntry = { id, name, createdAt };
+    await updateRegistry(registryPath, (current) => {
+      const concurrentHit = lookupByOrigin(current, origin);
+      if (concurrentHit) {
+        // Another process registered the same origin between our read
+        // and our lock acquisition. Adopt their entry rather than
+        // overwriting it.
+        resolvedEntry = concurrentHit;
+        return current;
+      }
+      return upsertEntry(current, origin, resolvedEntry);
+    });
+    writeProjectId(opts.groveDir, resolvedEntry.id);
     return {
-      id,
+      id: resolvedEntry.id,
       source: "generated",
       origin,
       registered: true,
-      registryName: name,
+      registryName: resolvedEntry.name,
     };
   }
 

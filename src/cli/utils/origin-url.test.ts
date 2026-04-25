@@ -40,6 +40,15 @@ describe("normalizeOriginUrl", () => {
     ["", null],
     ["just-a-string", null],
     ["file:///tmp/repo", null],
+    ["/tmp/upstream.git", null],
+    ["/Users/me/repos/foo.git", null],
+    ["../upstream.git", null],
+    ["./upstream.git", null],
+    ["~/repos/foo.git", null],
+    ["C:\\repos\\foo.git", null],
+    ["C:/repos/foo.git", null],
+    ["relative/path.git", null],
+    ["foo/bar.git", null],
   ];
 
   for (const [input, expected] of cases) {

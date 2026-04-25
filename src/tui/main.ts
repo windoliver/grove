@@ -541,7 +541,14 @@ export async function handleTui(
   // terminal capability negotiation. With `allow-passthrough off` (tmux
   // default) those queries hang the TUI on startup.
   const { ensureTmuxPassthrough } = await import("../cli/utils/tmux-compat.js");
-  ensureTmuxPassthrough();
+  const tmuxResult = ensureTmuxPassthrough();
+  if (!tmuxResult.applied && tmuxResult.reason === "tmux-failed") {
+    process.stderr.write(
+      `grove: tmux is set in the environment but 'tmux set-option allow-passthrough on' failed. ` +
+        `The TUI may hang on startup. Add 'set -g allow-passthrough on' to ~/.tmux.conf as a workaround.\n` +
+        (tmuxResult.stderr ? `tmux stderr: ${tmuxResult.stderr}\n` : ""),
+    );
+  }
 
   // Dynamic import of React/OpenTUI — only loaded when TUI is actually used
   const { createCliRenderer } = await import("@opentui/core");

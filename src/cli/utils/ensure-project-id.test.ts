@@ -259,3 +259,64 @@ describe("ensureProjectId — TTY prompt", () => {
     expect(second.id).not.toBe(first.id);
   });
 });
+
+describe("ensureProjectId — failure recovery", () => {
+  test("registry write failure leaves no partial local id", async () => {
+    const clone = mkClone("git@github.com:foo/bar.git");
+    const groveDir = mkGroveDir(clone);
+    // Point registry at a path inside a regular file — saveRegistry's
+    // mkdirSync(dirname(path)) will fail because the parent is a file.
+    const blocker = mkTmp("registry-blocker");
+    writeFileSync(join(blocker, "block"), "");
+    const registryPath = join(blocker, "block", "projects.yaml");
+
+    await expect(
+      ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath })),
+    ).rejects.toThrow();
+
+    // No local file written → retry can still take the miss path cleanly.
+    expect(readProjectId(groveDir)).toBeNull();
+  });
+
+  test("retry after registry write failure registers properly", async () => {
+    const clone = mkClone("git@github.com:foo/bar.git");
+    const groveDir = mkGroveDir(clone);
+    const blocker = mkTmp("registry-blocker");
+    writeFileSync(join(blocker, "block"), "");
+    const blockedPath = join(blocker, "block", "projects.yaml");
+
+    await expect(
+      ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath: blockedPath })),
+    ).rejects.toThrow();
+
+    const goodPath = join(mkTmp("registry"), "projects.yaml");
+    const result = await ensureProjectId(
+      baseOpts({ groveDir, cwd: clone, registryPath: goodPath }),
+    );
+    expect(result.source).toBe("generated");
+    expect(result.registered).toBe(true);
+    expect(loadRegistry(goodPath).projects["github.com/foo/bar"]?.id).toBe(result.id);
+  });
+
+  test("concurrent inits for distinct origins both register", async () => {
+    const sharedRegistry = join(mkTmp("registry"), "projects.yaml");
+
+    const cloneA = mkClone("git@github.com:foo/bar.git");
+    const groveA = mkGroveDir(cloneA);
+    const cloneB = mkClone("git@github.com:acme/service.git");
+    const groveB = mkGroveDir(cloneB);
+
+    const [resultA, resultB] = await Promise.all([
+      ensureProjectId(baseOpts({ groveDir: groveA, cwd: cloneA, registryPath: sharedRegistry })),
+      ensureProjectId(baseOpts({ groveDir: groveB, cwd: cloneB, registryPath: sharedRegistry })),
+    ]);
+
+    const reg = loadRegistry(sharedRegistry);
+    expect(reg.projects["github.com/foo/bar"]?.id).toBe(resultA.id);
+    expect(reg.projects["github.com/acme/service"]?.id).toBe(resultB.id);
+    expect(Object.keys(reg.projects).sort()).toEqual([
+      "github.com/acme/service",
+      "github.com/foo/bar",
+    ]);
+  });
+});

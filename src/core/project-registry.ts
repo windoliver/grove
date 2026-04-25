@@ -5,9 +5,10 @@
  * Used by `grove init` to correlate clones of the same remote.
  */
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import lockfile from "proper-lockfile";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { isValidProjectId } from "./project-id.js";
 
@@ -85,6 +86,42 @@ export function saveRegistry(path: string, reg: Registry): void {
   const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
   writeFileSync(tmp, body, { encoding: "utf8", mode: 0o644 });
   renameSync(tmp, path);
+}
+
+/**
+ * Atomic load → modify → save under a filesystem lock.
+ *
+ * Two parallel `grove init` processes targeting different origins would
+ * otherwise race in `saveRegistry` and silently drop each other's entries.
+ * `updateRegistry` reloads the on-disk registry inside the lock so the
+ * caller's modify function always sees the latest state.
+ */
+export async function updateRegistry(
+  path: string,
+  modify: (current: Registry) => Registry,
+): Promise<Registry> {
+  mkdirSync(dirname(path), { recursive: true });
+  // proper-lockfile requires the target file to exist.
+  if (!existsSync(path)) {
+    const tmp = `${path}.init-${process.pid}-${Date.now()}`;
+    writeFileSync(tmp, stringifyYaml({ version: 1, projects: {} }), {
+      encoding: "utf8",
+      mode: 0o644,
+    });
+    renameSync(tmp, path);
+  }
+  const release = await lockfile.lock(path, {
+    retries: { retries: 10, minTimeout: 50, maxTimeout: 500 },
+    stale: 5_000,
+  });
+  try {
+    const current = loadRegistry(path);
+    const next = modify(current);
+    saveRegistry(path, next);
+    return next;
+  } finally {
+    await release();
+  }
 }
 
 export function lookupByOrigin(reg: Registry, origin: string): RegistryEntry | null {
