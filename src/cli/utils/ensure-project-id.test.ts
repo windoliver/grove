@@ -387,11 +387,11 @@ describe("ensureProjectId — failure recovery", () => {
 });
 
 describe("rollbackProjectIdentity", () => {
-  test("removes local project-id but PRESERVES registry entry on freshly registered miss", async () => {
-    // Once a registry entry has been published it may already have been
-    // adopted by a parallel `grove init --unify`. Rollback must not yank
-    // the entry — the orphaned record (without a finished local clone)
-    // is benign; the safety harm of deleting a now-adopted id is severe.
+  test("preserves BOTH local-id and registry on freshly registered miss", async () => {
+    // The id has been published. Keeping local + registry in sync
+    // means a retry resumes cleanly via `source: local` and the
+    // registry mapping continues to point at the eventual completed
+    // clone (no orphan, no adopter yanked).
     const clone = mkClone("git@github.com:foo/bar.git");
     const groveDir = mkGroveDir(clone);
     const registryPath = join(mkTmp("registry"), "projects.yaml");
@@ -403,9 +403,43 @@ describe("rollbackProjectIdentity", () => {
 
     await rollbackProjectIdentity(groveDir, result, registryPath);
 
-    expect(readProjectId(groveDir)).toBeNull();
-    // Registry entry stays — a future clone can adopt it via --unify.
+    // Both stay. Retry will see source=local and reuse the registered id.
+    expect(readProjectId(groveDir)).toBe(result.id);
     expect(loadRegistry(registryPath).projects["github.com/foo/bar"]?.id).toBe(result.id);
+  });
+
+  test("retry after post-identity init failure: same id, registry still bound", async () => {
+    // Regression for the round-7 codex finding. After ensureProjectId
+    // publishes a registered miss and a subsequent (simulated) init
+    // failure runs rollback, a retry must:
+    //   - return the SAME id (not generate a fresh unregistered one), and
+    //   - keep the registry pointing at the surviving clone's id.
+    const clone = mkClone("git@github.com:foo/bar.git");
+    const groveDir = mkGroveDir(clone);
+    const registryPath = join(mkTmp("registry"), "projects.yaml");
+
+    const first = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
+    expect(first.source).toBe("generated");
+    expect(first.registered).toBe(true);
+
+    // Simulate `executeInit` failure after `ensureProjectId` returned.
+    await rollbackProjectIdentity(groveDir, first, registryPath);
+
+    // Retry without --unify, non-TTY (default new). Should NOT mint a
+    // fresh id; should reuse the existing local-id + registry binding.
+    const second = await ensureProjectId(baseOpts({ groveDir, cwd: clone, registryPath }));
+    expect(second.source).toBe("local");
+    expect(second.id).toBe(first.id);
+
+    // Future `--unify` clone of the same origin adopts the SAME id —
+    // no orphan, no split.
+    const otherClone = mkClone("git@github.com:foo/bar.git");
+    const otherGrove = mkGroveDir(otherClone);
+    const adopter = await ensureProjectId(
+      baseOpts({ groveDir: otherGrove, cwd: otherClone, registryPath, unify: true }),
+    );
+    expect(adopter.source).toBe("registry");
+    expect(adopter.id).toBe(first.id);
   });
 
   test("does not touch the registry entry of an adopted hit (source=registry)", async () => {
@@ -426,9 +460,10 @@ describe("rollbackProjectIdentity", () => {
 
     await rollbackProjectIdentity(adopterGrove, adopter, registryPath);
 
-    // Local file removed for the adopter — but the shared registry entry
-    // remains intact because the OWNER (other clone) still depends on it.
-    expect(readProjectId(adopterGrove)).toBeNull();
+    // Both the adopter's local file AND the shared registry entry stay.
+    // The local file matches the registry, so a retry resumes via
+    // `source: local` cleanly.
+    expect(readProjectId(adopterGrove)).toBe(owner.id);
     expect(loadRegistry(registryPath).projects["github.com/foo/bar"]?.id).toBe(owner.id);
   });
 
@@ -455,8 +490,7 @@ describe("rollbackProjectIdentity", () => {
     // First call: miss → registers fresh, returns source=generated.
     // Verifies the adopt-fallback shape: even with --unify, when the
     // optimistic hit doesn't exist, we register a fresh entry with
-    // source=generated so the user-facing log line and future rollback
-    // semantics are accurate.
+    // source=generated so the user-facing log line stays accurate.
     const clone = mkClone("git@github.com:foo/bar.git");
     const groveDir = mkGroveDir(clone);
     const registryPath = join(mkTmp("registry"), "projects.yaml");
@@ -468,9 +502,9 @@ describe("rollbackProjectIdentity", () => {
     expect(result.registered).toBe(true);
     expect(result.origin).toBe("github.com/foo/bar");
 
-    // Rollback removes only the local file; registry entry persists.
+    // Rollback is a no-op for registered=true: keeps both files in sync.
     await rollbackProjectIdentity(groveDir, result, registryPath);
-    expect(readProjectId(groveDir)).toBeNull();
+    expect(readProjectId(groveDir)).toBe(result.id);
     expect(loadRegistry(registryPath).projects["github.com/foo/bar"]?.id).toBe(result.id);
   });
 

@@ -245,19 +245,27 @@ async function decideAdopt(opts: EnsureOpts, hit: RegistryEntry): Promise<"adopt
 
 /**
  * Roll back an `ensureProjectId` commit when later `grove init` steps
- * fail. Removes `.grove/project-id` so the next retry retakes the
- * registry-aware derivation path instead of being short-circuited as
- * `source: local`.
+ * fail.
  *
- * The registry entry is intentionally NOT deleted. Once published, an
- * entry may already have been adopted by a parallel `grove init --unify`
- * (whose lock-and-commit completed in the gap between this call's
- * registration and the eventual init failure); deleting it under that
- * adopter would leave them with a local id that no future clone can
- * discover, splitting project identity. An orphaned registry entry whose
- * sole owner failed to finish init is benign: future clones either adopt
- * it via `--unify` and finish init themselves, or stay distinct (the
- * non-TTY default), at no cost.
+ * Two invariants drive the policy:
+ *
+ * - Never delete the registry entry. Once published, it may already
+ *   have been adopted by a parallel `grove init --unify` whose
+ *   lock-and-commit completed before this caller failed; deleting it
+ *   would leave the adopter with a local id no future clone can
+ *   discover, splitting project identity.
+ * - Never delete `.grove/project-id` when it matches a published
+ *   registry entry (`source: "registry"` or `source: "generated"` with
+ *   `registered: true`). Removing it would let a retry generate a fresh
+ *   unregistered id, leaving the registry orphaned and future `--unify`
+ *   clones to adopt the failed attempt's id instead of the completed
+ *   clone. Keeping local + registry in sync means a retry resumes
+ *   cleanly via the `source: local` short-circuit.
+ *
+ * The only case where we DO remove the local file is `source:
+ * "generated"` with `registered: false` — the id was never published,
+ * so a clean retry should be free to mint a new one (no-origin clones
+ * and explicit-distinct chooser).
  *
  * Best-effort: rollback errors are swallowed because the caller's
  * original error is what should propagate.
@@ -267,11 +275,11 @@ export async function rollbackProjectIdentity(
   ensureResult: EnsureResult,
   _registryPath?: string,
 ): Promise<void> {
-  if (ensureResult.source !== "local") {
+  if (ensureResult.source === "generated" && !ensureResult.registered) {
     try {
       rmSync(join(groveDir, PROJECT_ID_FILE), { force: true });
     } catch {
-      // ignore
+      // best-effort
     }
   }
 }
