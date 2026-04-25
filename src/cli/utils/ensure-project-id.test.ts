@@ -476,6 +476,60 @@ describe("ensureProjectId — failure recovery", () => {
   });
 });
 
+describe("finalizeProjectIdentity — adopt invariant", () => {
+  test("source=registry: throws when entry vanished between adopt and finalize", async () => {
+    // Owner publishes id X. Adopter does ensureProjectId with --unify
+    // (under-lock verify passes, local file written with X). Before
+    // finalize runs, the registry entry is deleted. Finalize must throw
+    // rather than silently flipping registered:false.
+    const ownerClone = mkClone("git@github.com:foo/bar.git");
+    const ownerGrove = mkGroveDir(ownerClone);
+    const registryPath = join(mkTmp("registry"), "projects.yaml");
+    const owner = await fullEnsure(
+      baseOpts({ groveDir: ownerGrove, cwd: ownerClone, registryPath }),
+    );
+
+    const adopterClone = mkClone("git@github.com:foo/bar.git");
+    const adopterGrove = mkGroveDir(adopterClone);
+    const adopted = await ensureProjectId(
+      baseOpts({ groveDir: adopterGrove, cwd: adopterClone, registryPath, unify: true }),
+    );
+    expect(adopted.source).toBe("registry");
+    expect(adopted.id).toBe(owner.id);
+
+    // Mutate the registry between adopt and finalize.
+    writeFileSync(registryPath, "version: 1\nprojects: {}\n");
+
+    await expect(finalizeProjectIdentity(adopted, { registryPath })).rejects.toThrow(
+      /changed between adopt and finalize/,
+    );
+  });
+
+  test("source=registry: throws when entry's id changed between adopt and finalize", async () => {
+    const ownerClone = mkClone("git@github.com:foo/bar.git");
+    const ownerGrove = mkGroveDir(ownerClone);
+    const registryPath = join(mkTmp("registry"), "projects.yaml");
+    await fullEnsure(baseOpts({ groveDir: ownerGrove, cwd: ownerClone, registryPath }));
+
+    const adopterClone = mkClone("git@github.com:foo/bar.git");
+    const adopterGrove = mkGroveDir(adopterClone);
+    const adopted = await ensureProjectId(
+      baseOpts({ groveDir: adopterGrove, cwd: adopterClone, registryPath, unify: true }),
+    );
+    expect(adopted.source).toBe("registry");
+
+    // Replace the entry's id under us.
+    writeFileSync(
+      registryPath,
+      `version: 1\nprojects:\n  github.com/foo/bar:\n    id: 11111111-1111-4111-8111-111111111111\n    name: bar\n    createdAt: '2026-04-24T00:00:00.000Z'\n`,
+    );
+
+    await expect(finalizeProjectIdentity(adopted, { registryPath })).rejects.toThrow(
+      /changed between adopt and finalize/,
+    );
+  });
+});
+
 describe("rollbackProjectIdentity", () => {
   test("preserves BOTH local-id and registry on freshly registered miss", async () => {
     // The id has been published. Keeping local + registry in sync

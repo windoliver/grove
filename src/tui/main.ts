@@ -737,16 +737,23 @@ export async function handleTui(
       if (!groveExists) {
         // Truly new grove — run full init (creates .grove/, nexus.yaml, GROVE.md)
         const { executeInit } = await import("../cli/commands/init.js");
-        await executeInit({
-          name: groveName,
-          mode: "evaluation",
-          seed: [],
-          metric: [],
-          force: true,
-          agentOverrides: {},
-          cwd: join(newGroveDir, ".."),
-          preset: presetName,
-        });
+        await executeInit(
+          {
+            name: groveName,
+            mode: "evaluation",
+            seed: [],
+            metric: [],
+            force: true,
+            agentOverrides: {},
+            cwd: join(newGroveDir, ".."),
+            preset: presetName,
+          },
+          undefined,
+          // TUI owns stdin/stdout; force non-interactive identity flow so
+          // the project-id `Unify? [y/N]` prompt cannot fire from inside
+          // OpenTUI. The non-TTY default ("new") matches docs.
+          { isTTY: false },
+        );
       }
       if (groveExists) {
         // Grove exists — start services to ensure Nexus is running (handles resume/reuse/cold-start).

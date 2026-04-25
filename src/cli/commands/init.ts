@@ -412,10 +412,20 @@ export async function executeInit(
     console.log(`Initialized grove '${options.name}' at ${grovePath}`);
     switch (finalResult.source) {
       case "local":
-        console.log(`project id ${projectId} (existing)`);
+        if (finalResult.origin && finalResult.registered) {
+          console.log(
+            `project id ${projectId} (existing, registered as ${finalResult.registryName})`,
+          );
+        } else {
+          console.log(`project id ${projectId} (existing)`);
+        }
         break;
       case "registry":
-        console.log(`project id ${projectId} (unified with ${finalResult.registryName})`);
+        if (finalResult.registered) {
+          console.log(`project id ${projectId} (unified with ${finalResult.registryName})`);
+        } else {
+          console.log(`project id ${projectId} (adopted, but registry no longer points here)`);
+        }
         break;
       case "generated":
         if (finalResult.origin && finalResult.registered) {

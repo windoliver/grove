@@ -224,12 +224,30 @@ export async function finalizeProjectIdentity(
   const now = opts.now ?? (() => new Date());
   let registered = ensureResult.registered;
   let registryName: string | null = ensureResult.registryName;
+  let staleAdopt = false;
   await updateRegistry(path, (current) => {
     const origin = ensureResult.origin as string;
     const found = lookupByOrigin(current, origin);
     if (found != null) {
+      // For an adopted hit (`source: 'registry'`), the local file already
+      // contains an id whose owning registry entry the user explicitly
+      // approved. If that entry has since changed or vanished, the adopt
+      // invariant is broken — fail loudly rather than silently flipping
+      // `registered: false` and shipping with an id no future `--unify`
+      // clone will follow.
+      if (
+        ensureResult.source === "registry" &&
+        (found.id !== ensureResult.id || found.name !== ensureResult.registryName)
+      ) {
+        staleAdopt = true;
+        return current;
+      }
       registered = found.id === ensureResult.id;
       registryName = found.name;
+      return current;
+    }
+    if (ensureResult.source === "registry") {
+      staleAdopt = true;
       return current;
     }
     const newEntry: RegistryEntry = {
@@ -241,6 +259,11 @@ export async function finalizeProjectIdentity(
     registryName = newEntry.name;
     return upsertEntry(current, origin, newEntry);
   });
+  if (staleAdopt) {
+    throw new Error(
+      `grove init: registry entry for origin '${ensureResult.origin}' changed between adopt and finalize; re-run grove init to retry.`,
+    );
+  }
   return { ...ensureResult, registered, registryName };
 }
 
