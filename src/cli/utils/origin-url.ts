@@ -24,16 +24,24 @@ export function normalizeOriginUrl(raw: string): string | null {
   const hadScheme = SCHEME_RE.test(s);
   if (hadScheme) s = s.replace(SCHEME_RE, "");
 
-  // 2. Strip leading user@ (only if it appears before the first '/' or ':').
+  // 2. Strip leading user@ (with scheme: terminator is '/' only, since
+  //    `user:password@host/path` is legal HTTPS auth — colon is part of
+  //    user-info. Without scheme: SCP form `user@host:path`, terminator is
+  //    '/' or ':').
   const atIdx = s.indexOf("@");
   if (atIdx > -1) {
-    const firstSep = Math.min(
-      ...["/", ":"].map((c) => {
-        const i = s.indexOf(c);
-        return i === -1 ? Number.POSITIVE_INFINITY : i;
-      }),
-    );
-    if (atIdx < firstSep) {
+    const slashIdx = s.indexOf("/");
+    const hardSep = hadScheme
+      ? slashIdx === -1
+        ? Number.POSITIVE_INFINITY
+        : slashIdx
+      : Math.min(
+          ...["/", ":"].map((c) => {
+            const i = s.indexOf(c);
+            return i === -1 ? Number.POSITIVE_INFINITY : i;
+          }),
+        );
+    if (atIdx < hardSep) {
       s = s.slice(atIdx + 1);
     }
   }
