@@ -166,15 +166,8 @@ async function resolveHit(
   // the registry lock that the same entry is still present. If it
   // changed or vanished while the prompt was open, abort with a clear
   // error rather than silently binding to a different id.
-  let confirmed: RegistryEntry | null = null;
-  await updateRegistry(registryPath, (current) => {
-    const found = lookupByOrigin(current, origin);
-    if (found?.id === hit.id && found.name === hit.name) {
-      confirmed = found;
-    }
-    return current;
-  });
-  if (confirmed == null) {
+  const confirmed = await readEntryUnderLock(registryPath, origin, hit);
+  if (confirmed === null) {
     throw new Error(
       `grove init: registry entry for origin '${origin}' changed during the unify prompt; re-run grove init to retry.`,
     );
@@ -187,6 +180,22 @@ async function resolveHit(
     registered: true,
     registryName: confirmed.name,
   };
+}
+
+async function readEntryUnderLock(
+  registryPath: string,
+  origin: string,
+  expected: RegistryEntry,
+): Promise<RegistryEntry | null> {
+  let captured: RegistryEntry | null = null;
+  await updateRegistry(registryPath, (current) => {
+    const found = lookupByOrigin(current, origin);
+    if (found?.id === expected.id && found.name === expected.name) {
+      captured = found;
+    }
+    return current;
+  });
+  return captured;
 }
 
 /**
