@@ -537,6 +537,12 @@ export async function handleTui(
   // Bun compatibility: ensure stdin is in raw mode for keyboard input
   process.stdin.resume();
 
+  // Tmux compatibility: OpenTUI sends Ptmux passthrough sequences for
+  // terminal capability negotiation. With `allow-passthrough off` (tmux
+  // default) those queries hang the TUI on startup.
+  const { ensureTmuxPassthrough } = await import("../cli/utils/tmux-compat.js");
+  ensureTmuxPassthrough();
+
   // Dynamic import of React/OpenTUI — only loaded when TUI is actually used
   const { createCliRenderer } = await import("@opentui/core");
   const { createRoot } = await import("@opentui/react");
