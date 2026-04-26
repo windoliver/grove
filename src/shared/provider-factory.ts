@@ -168,19 +168,30 @@ async function createNexusProvider(
     // Best-effort — grove.db may not exist yet
   }
 
-  // Read the local .grove/api-key for authenticating to the co-located HTTP server.
+  // Resolve zone identifier and server API key from the local .grove directory.
+  let nexusZoneId = "default";
   let serverApiKey: string | undefined;
   try {
     const { resolveGroveDir } = await import("../cli/utils/grove-dir.js");
-    const { readClientKey } = await import("../core/project-key.js");
+    const { readClientKey, readNamespace, detectWorktreeName } = await import("../core/project-key.js");
+    const { readProjectId } = await import("../core/project-id.js");
     const { groveDir } = resolveGroveDir(backend.groveOverride);
+    // Use the same namespace derivation as serve.ts and mcp/serve.ts.
+    const ns = readNamespace(groveDir) ?? process.env.GROVE_ZONE_ID;
+    if (ns) {
+      nexusZoneId = ns;
+    } else {
+      const projectId = readProjectId(groveDir);
+      const worktreeName = await detectWorktreeName();
+      if (projectId) nexusZoneId = `${projectId}/${worktreeName}`;
+    }
     serverApiKey = readClientKey(groveDir);
   } catch {
-    // No .grove/api-key found — server calls will get 400
+    // .grove not found — use default zone and no auth key
   }
 
   return new NexusDataProvider({
-    nexusConfig: { client, zoneId: "default" },
+    nexusConfig: { client, zoneId: nexusZoneId },
     workspaceManager,
     backendLabel: label,
     serverUrl,

@@ -31,14 +31,17 @@ const capabilitiesSchema = z.record(
   z.union([z.string(), z.number(), z.boolean(), z.null(), z.undefined()]).optional(),
 );
 
-const gossipMessageSchema = z.object({
-  peerId: z.string().min(1),
-  address: z.string().optional(),
-  frontier: z.array(frontierDigestEntrySchema).max(MAX_GOSSIP_FRONTIER_ENTRIES),
-  load: z.object({ queueDepth: z.number().int().min(0) }),
-  capabilities: capabilitiesSchema,
-  timestamp: z.string(),
-});
+const gossipMessageSchema = z
+  .object({
+    peerId: z.string().min(1),
+    address: z.string().optional(),
+    frontier: z.array(frontierDigestEntrySchema).max(MAX_GOSSIP_FRONTIER_ENTRIES),
+    load: z.object({ queueDepth: z.number().int().min(0) }),
+    capabilities: capabilitiesSchema,
+    timestamp: z.string(),
+    // Preserve all signed fields (hmacSignature, etc.) so verifyPayload can check them.
+  })
+  .passthrough();
 
 const peerInfoSchema = z.object({
   peerId: z.string().min(1),
@@ -47,10 +50,13 @@ const peerInfoSchema = z.object({
   lastSeen: z.string(),
 });
 
-const shuffleRequestSchema = z.object({
-  sender: peerInfoSchema,
-  offered: z.array(peerInfoSchema).max(MAX_GOSSIP_OFFERED_PEERS),
-});
+const shuffleRequestSchema = z
+  .object({
+    sender: peerInfoSchema,
+    offered: z.array(peerInfoSchema).max(MAX_GOSSIP_OFFERED_PEERS),
+    // Preserve signed fields (hmacSignature, etc.) for verifyPayload.
+  })
+  .passthrough();
 
 // ---------------------------------------------------------------------------
 // Routes
