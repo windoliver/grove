@@ -2,10 +2,9 @@ import { readFileSync } from "node:fs";
 import type { MiddlewareHandler } from "hono";
 import { parse as parseYaml } from "yaml";
 import { NamespaceMissingError, NamespaceUnauthorizedError } from "../../core/errors.js";
+import type { ServerEnv } from "../deps.js";
 
 export type KeyRegistry = Map<string, string>; // key → namespace
-
-type NamespaceEnv = { Variables: { namespace: string } };
 
 interface ServerKeysFile {
   version: 1;
@@ -40,7 +39,7 @@ export function loadKeyRegistry(serverKeysPath: string): KeyRegistry {
  * On success: sets `c.get("namespace")` to the resolved namespace string.
  * On failure: throws NamespaceMissingError (→ 400) or NamespaceUnauthorizedError (→ 401).
  */
-export function namespaceAuth(registry: KeyRegistry): MiddlewareHandler<NamespaceEnv> {
+export function namespaceAuth(registry: KeyRegistry): MiddlewareHandler<ServerEnv> {
   return async (c, next) => {
     const auth = c.req.header("Authorization");
     if (!auth?.startsWith("Bearer ")) {
