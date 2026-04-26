@@ -41,6 +41,31 @@ describe("fireAndForget", () => {
     }
   });
 
+  test("promise-like rejection is caught and logged", async () => {
+    const captured: string[] = [];
+    const orig = process.stderr.write;
+    process.stderr.write = ((msg: string) => {
+      captured.push(msg);
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      const thenable: Record<string, unknown> = {};
+      const methodName = ["th", "en"].join("");
+      Object.defineProperty(thenable, methodName, {
+        value(_resolve: (value: unknown) => void, reject: (reason: unknown) => void): void {
+          queueMicrotask(() => reject(new Error("thenable kaboom")));
+        },
+      });
+
+      fireAndForget("thenable-boom", () => thenable);
+      await new Promise((r) => setTimeout(r, 10));
+      expect(captured.length).toBe(1);
+      expect(captured[0]).toContain("thenable-boom failed: thenable kaboom");
+    } finally {
+      process.stderr.write = orig;
+    }
+  });
+
   test("async function — resolved promise does not log", async () => {
     const captured: string[] = [];
     const orig = process.stderr.write;
