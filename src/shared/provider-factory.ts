@@ -60,7 +60,21 @@ export async function createProvider(
 ): Promise<TuiDataProvider> {
   if (backend.mode === "remote") {
     const { RemoteDataProvider } = await import("../tui/remote-provider.js");
-    return new RemoteDataProvider(backend.url, label);
+    let apiKey: string | undefined;
+    try {
+      const { resolveGroveDir } = await import("../cli/utils/grove-dir.js");
+      const { readClientKey } = await import("../core/project-key.js");
+      const { groveDir } = resolveGroveDir(
+        (backend as { groveOverride?: string }).groveOverride,
+      );
+      apiKey = readClientKey(groveDir);
+    } catch {
+      // No .grove/api-key found — requests will get 400 from the server
+    }
+    return new RemoteDataProvider(backend.url, {
+      ...(apiKey !== undefined ? { apiKey } : {}),
+      backendLabel: label,
+    });
   }
 
   if (backend.mode === "nexus") {

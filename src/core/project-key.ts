@@ -47,6 +47,17 @@ export async function detectWorktreeName(): Promise<string> {
   }
 }
 
+/** Read the client credential from `<groveDir>/api-key`. Returns undefined if absent. */
+export function readClientKey(groveDir: string): string | undefined {
+  const filePath = join(groveDir, CLIENT_KEY_FILE);
+  try {
+    return readFileSync(filePath, "utf8").trim();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw err;
+  }
+}
+
 /** Write the client credential to `<groveDir>/api-key` (overwrites). */
 export function writeClientKey(groveDir: string, key: string): void {
   const target = join(groveDir, CLIENT_KEY_FILE);
