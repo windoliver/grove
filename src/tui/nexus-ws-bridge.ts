@@ -522,12 +522,28 @@ export class NexusWsBridge {
       let buffer = "";
       // Transport health ≠ message arrival. A valid SSE stream may be
       // quiet for long stretches, emitting only keep-alive comments
-      // (": ping\n") or nothing at all. Count the cycle healthy the
-      // moment the reader yields any bytes — that proves the TCP pipe
-      // is flowing. An immediate EOF (done=true on the first read
-      // without prior bytes) still returns false, which is the one
-      // case the unhealthy counter needs to catch.
+      // (": ping\n") or nothing at all. Count the cycle healthy when
+      // EITHER (a) we hold the stream open past the durability
+      // threshold below, OR (b) we receive a real `message_delivered`
+      // event before EOF.
+      //
+      // Just "saw bytes" is NOT enough — Nexus emits a `connected`
+      // event immediately on stream open, so a misbehaving server or
+      // proxy that accepts the request, hands back the connect frame,
+      // and then EOFs would otherwise look healthy on every cycle and
+      // the consecutive-failure counter would never advance. Require
+      // either real delivery work OR a minimum healthy duration so a
+      // tight connect/close loop still escalates to onRoleUnhealthy.
       let sawBytes = false;
+      let sawDelivery = false;
+      const cycleStartMs = Date.now();
+      // Hold the stream open this long before treating bytes-only as a
+      // healthy cycle. Comfortably above any plausible reverse-proxy
+      // post-handshake timeout, comfortably below the 5 min idle
+      // watchdog so a healthy idle stream still crosses the threshold.
+      const minHealthyDurationMs = 30_000;
+      const cycleDurable = (): boolean => Date.now() - cycleStartMs >= minHealthyDurationMs;
+      const cycleHealthy = (): boolean => sawDelivery || (sawBytes && cycleDurable());
       // Idle-read watchdog — if the stream produces no bytes for this
       // long, abort and treat the cycle as unhealthy. Catches blackholed
       // proxies stuck mid-stream that hold the TCP pipe open without
@@ -559,15 +575,13 @@ export class NexusWsBridge {
           readResult = await reader.read();
         } catch {
           clearTimeout(idleTimer);
-          // Watchdog fire AFTER we already saw bytes (e.g. the initial
-          // `connected` event from Nexus) means the stream connected and
-          // produced data — it just went quiet. Treat the cycle as
-          // healthy so the consecutive-failure counter stays at zero.
-          // Without this the counter drifts up over time on idle
-          // streams and eventually trips onRoleUnhealthy on a perfectly
-          // good channel.
-          if (abortedByWatchdog && sawBytes) return true;
-          return abortedByWatchdog ? false : sawBytes;
+          // Watchdog fire AFTER the cycle is healthy (saw delivery, or
+          // held open past the durability threshold) means the stream
+          // was working and just went quiet — don't penalize. Otherwise
+          // we couldn't prove the channel was ever delivering, so the
+          // cycle is unhealthy.
+          if (abortedByWatchdog && cycleHealthy()) return true;
+          return abortedByWatchdog ? false : cycleHealthy();
         } finally {
           clearTimeout(idleTimer);
         }
@@ -587,13 +601,17 @@ export class NexusWsBridge {
           } else if (line.startsWith("data: ")) {
             eventData = line.slice(6);
           } else if (line === "" && eventData) {
+            if (eventType === "message_delivered") sawDelivery = true;
             this.handleEvent(role, eventType, eventData);
             eventType = null;
             eventData = null;
           }
         }
       }
-      return sawBytes;
+      // EOF path: server closed the stream cleanly. Count the cycle
+      // healthy only if we had real delivery or held open long enough
+      // to prove durability. A connect-and-close loop still escalates.
+      return cycleHealthy();
     } finally {
       if (roleSignal && forwardAbort) {
         roleSignal.removeEventListener("abort", forwardAbort);
@@ -636,24 +654,6 @@ export class NexusWsBridge {
           if (first !== undefined) seen.delete(first);
         }
       }
-
-      // Notify the TUI EventBus — triggers contribution feed refresh (no polling needed)
-      if (this.opts.eventBus) {
-        const groveEvent: GroveEvent = {
-          type: "contribution",
-          sourceRole: event.sender,
-          targetRole: role,
-          payload: { message_id: event.message_id },
-          timestamp: new Date().toISOString(),
-        };
-        void this.opts.eventBus.publish(groveEvent);
-      }
-
-      // Handoff delivery-status transitions are deferred until after
-      // ACP classification in readAndPush. ACP envelopes (high-volume,
-      // never backed by a handoff record) would otherwise trigger the
-      // sender-based fallback in resolveHandoffIdForMessage and
-      // falsely mark an unrelated pending handoff as delivered.
 
       const session = this.sessions.get(role);
       if (!session) {
@@ -1274,6 +1274,10 @@ export class NexusWsBridge {
       }
       if (!resp || !resp.ok) {
         debugLog("wsBridge.readAndPush", `FAIL resp.status=${resp?.status ?? "none"} path=${path}`);
+        // handleEvent already deduped message_id; redelivery will not repair
+        // the cache. Emit a bounded invalidation so the next panel refresh
+        // picks up any contribution that did make it into the VFS store.
+        this.publishInvalidation(_targetRole, ipcMessageId);
         return;
       }
 
@@ -1283,6 +1287,7 @@ export class NexusWsBridge {
           "wsBridge.readAndPush",
           `NO DATA path=${path} error=${JSON.stringify(result.error ?? "none").slice(0, 100)}`,
         );
+        this.publishInvalidation(_targetRole, ipcMessageId);
         return;
       }
 
@@ -1307,6 +1312,22 @@ export class NexusWsBridge {
       const payload = msg.payload ?? {};
       const cid = typeof payload.cid === "string" ? payload.cid : undefined;
       const kind = typeof payload.kind === "string" ? payload.kind : undefined;
+
+      // Notify the TUI EventBus that a contribution was delivered, so
+      // panels can invalidate their list cache and refetch. Gated on
+      // (cid + kind) to skip non-contribution inbox traffic — otherwise
+      // every ACP envelope (already filtered above) or generic IPC
+      // notification would trigger a full VFS rescan.
+      if (this.opts.eventBus && cid && kind) {
+        const groveEvent: GroveEvent = {
+          type: "contribution",
+          sourceRole: msgSender,
+          targetRole: _targetRole,
+          payload: { message_id: ipcMessageId, cid, kind },
+          timestamp: new Date().toISOString(),
+        };
+        void this.opts.eventBus.publish(groveEvent);
+      }
       const summary =
         (payload.summary as string) ??
         (payload.body as string) ??
@@ -1440,7 +1461,30 @@ export class NexusWsBridge {
       });
       this.inFlightSends.add(tracked);
     } catch {
-      // Non-fatal
+      // Non-fatal — emit invalidation so transient parse/network failures
+      // don't permanently silence the cache-refresh path for this delivery.
+      this.publishInvalidation(_targetRole, ipcMessageId);
     }
+  }
+
+  /**
+   * Emit a "contribution invalidation" event for failure paths in
+   * readAndPush. handleEvent registers `message_id` in `recentMessageIds`
+   * before this method runs, so a failed sys_read / parse leaves the
+   * delivery permanently deduped — without a subsequent invalidation
+   * signal, TUI panels would not drop their list-cache and would keep
+   * showing stale data until the next 30 s poll. Payload omits cid/kind
+   * because the read failed; the subscriber treats it as "refetch now".
+   */
+  private publishInvalidation(targetRole: string, ipcMessageId?: string): void {
+    if (!this.opts.eventBus) return;
+    const groveEvent: GroveEvent = {
+      type: "contribution",
+      sourceRole: "system",
+      targetRole,
+      payload: { message_id: ipcMessageId, invalidation: true },
+      timestamp: new Date().toISOString(),
+    };
+    void this.opts.eventBus.publish(groveEvent);
   }
 }

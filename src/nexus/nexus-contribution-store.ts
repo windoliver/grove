@@ -78,9 +78,51 @@ export class NexusContributionStore implements ContributionStore {
   // and the panel doesn't update until the next 30 s poll. 2 s still de-duplicates
   // the back-to-back fetches that several panels (Feed, DAG, Frontier) issue
   // immediately after a refresh signal — which was the original storm risk.
+  //
+  // The cache is also explicitly invalidated by `invalidateListCache()` — the
+  // SSE/EventBus refresh path calls it before bumping `refreshSignal` so the
+  // fan-out re-fetches see fresh data even when an inbox push lands inside
+  // the 2 s TTL window. Without that, a remote contribution arriving 1.5 s
+  // after the previous scan would still hit the cache and the UI would not
+  // update until the next 30 s fallback poll.
   private listCacheResult: Contribution[] | undefined;
   private listCacheTime = 0;
   private readonly listCacheTtlMs = 2_000;
+
+  // Epoch versioning for the list cache. Every invalidate() / write
+  // increments the epoch. A list() cache miss captures the epoch at
+  // scan start and only commits the result if the epoch is unchanged
+  // when the scan returns. Without this, an in-flight scan that
+  // started BEFORE an SSE-triggered invalidation could resurrect the
+  // pre-arrival snapshot when it resolves, defeating the point of
+  // invalidating in the first place.
+  private listCacheEpoch = 0;
+  // Shared in-flight scan promise — concurrent callers all await the
+  // same VFS round trip instead of issuing N parallel scans. Cleared
+  // by invalidateListCache() so a post-invalidation call always starts
+  // a fresh scan against the latest epoch.
+  private listCacheInflight: Promise<Contribution[]> | undefined = undefined;
+
+  /**
+   * Drop the cached list() snapshot so the next call re-scans the VFS.
+   * Idempotent. Call from any code path that has out-of-band proof of new
+   * contributions (e.g. SSE inbox-delivery push) so the next read does not
+   * return a stale pre-arrival snapshot from the TTL window. Also bumps
+   * the epoch so any concurrent in-flight scan started before this call
+   * will discard its result rather than overwrite the cache with a stale
+   * snapshot.
+   */
+  invalidateListCache(): void {
+    this.listCacheResult = undefined;
+    this.listCacheTime = 0;
+    this.listCacheEpoch += 1;
+    // Do NOT clear listCacheInflight here. If a scan is already running,
+    // the epoch bump guarantees it will throw (stale epoch), which triggers
+    // clearIfOwner and naturally opens a slot for one replacement scan.
+    // Clearing here would break the single-flight guarantee: each SSE burst
+    // event would clear the handle and cause a new full scan to start, up to
+    // N parallel scans for N burst events.
+  }
 
   constructor(config: NexusConfig) {
     this.config = resolveConfig(config);
@@ -149,7 +191,9 @@ export class NexusContributionStore implements ContributionStore {
     );
 
     this.cache.set(contribution.cid, contribution);
-    this.listCacheResult = undefined; // Invalidate list cache on write
+    // Bump epoch on every write so any concurrent in-flight list() scan
+    // will discard its result and the next read re-scans the VFS.
+    this.invalidateListCache();
     debugLog(
       "store.put",
       `cid=${contribution.cid.slice(0, 16)} sessionId=${this.sessionId ?? "none"} path=${manifestPath}`,
@@ -211,38 +255,26 @@ export class NexusContributionStore implements ContributionStore {
     if (cacheHit) {
       allContributions = [...(this.listCacheResult as Contribution[])];
     } else {
-      const entries = await listAllPages(this.client, this.semaphore, this.config, ftsDir, {
-        recursive: true,
-      });
-
-      const nonDirEntries = entries.filter((e) => !e.isDirectory);
-
-      // Read ALL FTS entries (no query filter — cache the full set)
-      const ftsResults = await batchParallel(nonDirEntries, async (entry) => {
-        const ftsData = await withSemaphore(this.semaphore, () => this.client.read(entry.path));
-        if (ftsData === undefined) return undefined;
-        const fts = decode<Record<string, JsonValue>>(ftsData);
-        return fts.cid as string;
-      });
-
-      const allCids = ftsResults.filter((cid): cid is string => cid !== undefined);
-
-      // Fetch ALL contributions
-      const fetched = await batchParallel(allCids, (cid) => this.get(cid));
-      allContributions = fetched.filter((c): c is Contribution => c !== undefined);
-      debugLog(
-        "store.list",
-        `ftsEntries=${nonDirEntries.length} matchingCids=${allCids.length} total=${allContributions.length}`,
-      );
-
-      // Sort by createdAt ascending (matches SQLite store behavior)
-      allContributions.sort(
-        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
-      );
-
-      // Cache the full unfiltered result
-      this.listCacheResult = allContributions;
-      this.listCacheTime = Date.now();
+      // Deduplicate concurrent scans: all callers that arrive during an
+      // in-flight VFS round trip share the same promise instead of
+      // issuing N parallel scans. This prevents the refresh fan-out
+      // (feed + dashboard + frontier all refetch on SSE push) from
+      // stampeding Nexus with redundant reads.
+      if (!this.listCacheInflight) {
+        const scanPromise: Promise<Contribution[]> = this.runListScan(ftsDir);
+        this.listCacheInflight = scanPromise;
+        // Clear ownership on both fulfillment and rejection so the next
+        // cache miss can start a fresh scan. Using then/catch instead of
+        // finally().catch() avoids an unhandled-rejection from the new
+        // Promise that finally() returns (which rejects when the scan throws).
+        const clearIfOwner = () => {
+          if (this.listCacheInflight === scanPromise) {
+            this.listCacheInflight = undefined;
+          }
+        };
+        void scanPromise.then(clearIfOwner, clearIfOwner);
+      }
+      allContributions = [...(await this.listCacheInflight)];
     }
 
     // Apply query filters in-memory (cheap — no VFS calls)
@@ -270,6 +302,54 @@ export class NexusContributionStore implements ContributionStore {
         : contributions.slice(offset);
 
     return limited;
+  }
+
+  private async runListScan(ftsDir: string): Promise<Contribution[]> {
+    // Capture epoch before any awaits so we can detect mid-scan invalidations.
+    const epochAtStart = this.listCacheEpoch;
+
+    const entries = await listAllPages(this.client, this.semaphore, this.config, ftsDir, {
+      recursive: true,
+    });
+
+    const nonDirEntries = entries.filter((e) => !e.isDirectory);
+
+    const ftsResults = await batchParallel(nonDirEntries, async (entry) => {
+      const ftsData = await withSemaphore(this.semaphore, () => this.client.read(entry.path));
+      if (ftsData === undefined) return undefined;
+      const fts = decode<Record<string, JsonValue>>(ftsData);
+      return fts.cid as string;
+    });
+
+    const allCids = ftsResults.filter((cid): cid is string => cid !== undefined);
+    const ftsComplete = ftsResults.every((r) => r !== undefined);
+
+    const fetched = await batchParallel(allCids, (cid) => this.get(cid));
+    const allContributions = fetched.filter((c): c is Contribution => c !== undefined);
+    const manifestComplete = fetched.every((c) => c !== undefined);
+    debugLog(
+      "store.list",
+      `ftsEntries=${nonDirEntries.length} matchingCids=${allCids.length} total=${allContributions.length} complete=${ftsComplete && manifestComplete}`,
+    );
+
+    allContributions.sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+    );
+
+    if (this.listCacheEpoch !== epochAtStart) {
+      // An invalidation arrived while we were scanning. Throw so all
+      // waiting callers (usePolledData et al.) preserve their last-known-
+      // good data instead of overwriting it with a stale pre-invalidation
+      // snapshot. The post-invalidation scan (started by the SSE refresh
+      // handler) will resolve with fresh data on the next await.
+      throw new Error("list scan superseded by cache invalidation — discard result");
+    }
+
+    if (ftsComplete && manifestComplete) {
+      this.listCacheResult = allContributions;
+      this.listCacheTime = Date.now();
+    }
+    return allContributions;
   }
 
   async children(cid: string): Promise<readonly Contribution[]> {

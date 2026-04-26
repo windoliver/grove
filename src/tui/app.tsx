@@ -537,12 +537,21 @@ export function App({
     if (!eventBus) return;
     const roles = topology?.roles.map((r) => r.name) ?? [];
     if (roles.length === 0) return;
-    const handler = () => setRefreshSignal((s) => s + 1);
+    const handler = () => {
+      // Invalidate provider TTL caches BEFORE bumping the refresh signal.
+      // The store-backed provider hands back its last full scan inside
+      // the 2 s list-cache window; without invalidation a contribution
+      // landing 1.5 s after the previous scan would still return the
+      // pre-arrival snapshot and the UI would not update until the
+      // next 30 s fallback poll.
+      provider.invalidateCaches?.();
+      setRefreshSignal((s) => s + 1);
+    };
     for (const role of roles) eventBus.subscribe(role, handler);
     return () => {
       for (const role of roles) eventBus.unsubscribe(role, handler);
     };
-  }, [eventBus, topology]);
+  }, [eventBus, topology, provider]);
 
   const hasGoals = isGoalProvider(provider);
   const paletteItems = useMemo(
