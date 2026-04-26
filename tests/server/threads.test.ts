@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { createTestContext, validManifestBody } from "./helpers.js";
+import { TEST_AUTH_HEADERS, createTestContext, validManifestBody } from "./helpers.js";
 
 // ---------------------------------------------------------------------------
 // GET /api/threads/:cid — View a discussion thread
@@ -20,7 +20,7 @@ describe("GET /api/threads/:cid", () => {
     // Create root discussion
     const rootRes = await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(validManifestBody({ kind: "discussion", summary: "Root topic" })),
     });
     const root = (await rootRes.json()) as { cid: string };
@@ -28,7 +28,7 @@ describe("GET /api/threads/:cid", () => {
     // Create reply
     await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(
         validManifestBody({
           kind: "discussion",
@@ -39,7 +39,7 @@ describe("GET /api/threads/:cid", () => {
       ),
     });
 
-    const res = await ctx.app.request(`/api/threads/${root.cid}`);
+    const res = await ctx.app.request(`/api/threads/${root.cid}`, { headers: TEST_AUTH_HEADERS });
     expect(res.status).toBe(200);
     const data = (await res.json()) as {
       nodes: Array<{ cid: string; depth: number }>;
@@ -52,14 +52,14 @@ describe("GET /api/threads/:cid", () => {
 
   test("returns 404 for non-existent CID", async () => {
     const fakeCid = "blake3:0000000000000000000000000000000000000000000000000000000000000000";
-    const res = await ctx.app.request(`/api/threads/${fakeCid}`);
+    const res = await ctx.app.request(`/api/threads/${fakeCid}`, { headers: TEST_AUTH_HEADERS });
     expect(res.status).toBe(404);
     const data = (await res.json()) as { error: { code: string } };
     expect(data.error.code).toBe("NOT_FOUND");
   });
 
   test("returns 400 for invalid CID format", async () => {
-    const res = await ctx.app.request("/api/threads/invalid-cid");
+    const res = await ctx.app.request("/api/threads/invalid-cid", { headers: TEST_AUTH_HEADERS });
     expect(res.status).toBe(400);
   });
 });
@@ -79,7 +79,7 @@ describe("GET /api/threads", () => {
   });
 
   test("returns empty array when no threads", async () => {
-    const res = await ctx.app.request("/api/threads");
+    const res = await ctx.app.request("/api/threads", { headers: TEST_AUTH_HEADERS });
     expect(res.status).toBe(200);
     const data = (await res.json()) as { threads: unknown[]; count: number };
     expect(data).toEqual({ threads: [], count: 0 });
@@ -89,7 +89,7 @@ describe("GET /api/threads", () => {
     // Thread A: 2 replies
     const rootARes = await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(validManifestBody({ kind: "discussion", summary: "Thread A" })),
     });
     const rootA = (await rootARes.json()) as { cid: string };
@@ -97,7 +97,7 @@ describe("GET /api/threads", () => {
     for (let i = 0; i < 2; i++) {
       await ctx.app.request("/api/contributions", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
         body: JSON.stringify(
           validManifestBody({
             kind: "discussion",
@@ -112,7 +112,7 @@ describe("GET /api/threads", () => {
     // Thread B: 1 reply
     const rootBRes = await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(
         validManifestBody({
           kind: "discussion",
@@ -125,7 +125,7 @@ describe("GET /api/threads", () => {
 
     await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(
         validManifestBody({
           kind: "discussion",
@@ -136,7 +136,7 @@ describe("GET /api/threads", () => {
       ),
     });
 
-    const res = await ctx.app.request("/api/threads");
+    const res = await ctx.app.request("/api/threads", { headers: TEST_AUTH_HEADERS });
     expect(res.status).toBe(200);
     const data = (await res.json()) as {
       threads: Array<{ cid: string; replyCount: number }>;
@@ -153,7 +153,7 @@ describe("GET /api/threads", () => {
     for (let i = 0; i < 3; i++) {
       const rootRes = await ctx.app.request("/api/contributions", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
         body: JSON.stringify(
           validManifestBody({
             kind: "discussion",
@@ -166,7 +166,7 @@ describe("GET /api/threads", () => {
 
       await ctx.app.request("/api/contributions", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
         body: JSON.stringify(
           validManifestBody({
             kind: "discussion",
@@ -178,7 +178,7 @@ describe("GET /api/threads", () => {
       });
     }
 
-    const res = await ctx.app.request("/api/threads?limit=2");
+    const res = await ctx.app.request("/api/threads?limit=2", { headers: TEST_AUTH_HEADERS });
     expect(res.status).toBe(200);
     const data = (await res.json()) as { threads: unknown[]; count: number };
     expect(data.threads).toHaveLength(2);

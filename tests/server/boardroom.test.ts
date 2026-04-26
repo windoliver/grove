@@ -9,7 +9,7 @@ import { describe, expect, test } from "bun:test";
 
 import { computeCid } from "../../src/core/manifest.js";
 import type { ContributionInput } from "../../src/core/models.js";
-import { createTestContext } from "./helpers.js";
+import { TEST_AUTH_HEADERS, createTestContext } from "./helpers.js";
 
 /** Create a valid contribution with computed CID. */
 function makeContribution(input: ContributionInput) {
@@ -21,7 +21,7 @@ describe("boardroom routes", () => {
   test("GET /api/boardroom/summary returns empty summary", async () => {
     const ctx = await createTestContext();
     try {
-      const resp = await ctx.app.request("/api/boardroom/summary");
+      const resp = await ctx.app.request("/api/boardroom/summary", { headers: TEST_AUTH_HEADERS });
       expect(resp.status).toBe(200);
 
       const body = (await resp.json()) as {
@@ -60,7 +60,7 @@ describe("boardroom routes", () => {
       };
       await ctx.contributionStore.put(makeContribution(input));
 
-      const resp = await ctx.app.request("/api/boardroom/summary");
+      const resp = await ctx.app.request("/api/boardroom/summary", { headers: TEST_AUTH_HEADERS });
       expect(resp.status).toBe(200);
 
       const body = (await resp.json()) as {
@@ -97,7 +97,7 @@ describe("boardroom routes", () => {
       };
       await ctx.contributionStore.put(makeContribution(input));
 
-      const resp = await ctx.app.request("/api/boardroom/summary");
+      const resp = await ctx.app.request("/api/boardroom/summary", { headers: TEST_AUTH_HEADERS });
       const body = (await resp.json()) as {
         pendingQuestions: readonly { question: string; agentName?: string }[];
       };
@@ -133,7 +133,7 @@ describe("boardroom routes", () => {
 
       const resp = await ctx.app.request("/api/boardroom/answer", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
         body: JSON.stringify({
           questionCid: question.cid,
           answer: "Yes, fix now",
@@ -154,7 +154,7 @@ describe("boardroom routes", () => {
     try {
       const resp = await ctx.app.request("/api/boardroom/answer", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
         body: JSON.stringify({ questionCid: "blake3:abcd" }),
       });
       expect(resp.status).toBe(400);
@@ -168,7 +168,7 @@ describe("boardroom routes", () => {
     try {
       const resp = await ctx.app.request("/api/boardroom/message", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
         body: JSON.stringify({
           body: "Team update: deployment complete",
           recipients: ["@all"],
@@ -189,7 +189,7 @@ describe("boardroom routes", () => {
     try {
       const resp = await ctx.app.request("/api/boardroom/message", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
         body: JSON.stringify({ body: "hello" }),
       });
       expect(resp.status).toBe(400);

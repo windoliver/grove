@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { createTestContext, validManifestBody } from "./helpers.js";
+import { TEST_AUTH_HEADERS, createTestContext, validManifestBody } from "./helpers.js";
 
 describe("POST /api/contributions", () => {
   let ctx: TestContext;
@@ -17,7 +17,7 @@ describe("POST /api/contributions", () => {
 
     const res = await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(body),
     });
 
@@ -33,7 +33,7 @@ describe("POST /api/contributions", () => {
 
     const res = await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(body),
     });
 
@@ -55,6 +55,7 @@ describe("POST /api/contributions", () => {
 
     const res = await ctx.app.request("/api/contributions", {
       method: "POST",
+      headers: TEST_AUTH_HEADERS,
       body: formData,
     });
 
@@ -78,6 +79,7 @@ describe("POST /api/contributions", () => {
 
     const res = await ctx.app.request("/api/contributions", {
       method: "POST",
+      headers: TEST_AUTH_HEADERS,
       body: formData,
     });
 
@@ -94,6 +96,7 @@ describe("POST /api/contributions", () => {
 
     const res = await ctx.app.request("/api/contributions", {
       method: "POST",
+      headers: TEST_AUTH_HEADERS,
       body: formData,
     });
 
@@ -108,6 +111,7 @@ describe("POST /api/contributions", () => {
 
     const res = await ctx.app.request("/api/contributions", {
       method: "POST",
+      headers: TEST_AUTH_HEADERS,
       body: formData,
     });
 
@@ -119,7 +123,7 @@ describe("POST /api/contributions", () => {
   test("rejects malformed JSON body with 400", async () => {
     const res = await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: "not valid json{{{",
     });
 
@@ -137,7 +141,7 @@ describe("POST /api/contributions", () => {
 
     const res = await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(body),
     });
 
@@ -150,7 +154,7 @@ describe("POST /api/contributions", () => {
 
     const res = await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(body),
     });
 
@@ -163,7 +167,7 @@ describe("POST /api/contributions", () => {
   test("rejects manifest missing required fields", async () => {
     const res = await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({ kind: "work" }),
     });
 
@@ -175,7 +179,7 @@ describe("POST /api/contributions", () => {
 
     const res1 = await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(body),
     });
     expect(res1.status).toBe(201);
@@ -183,7 +187,7 @@ describe("POST /api/contributions", () => {
     // Same body → same CID → idempotent put
     const res2 = await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(body),
     });
     expect(res2.status).toBe(201);
@@ -197,6 +201,7 @@ describe("POST /api/contributions", () => {
 
     const res = await ctx.app.request("/api/contributions", {
       method: "POST",
+      headers: TEST_AUTH_HEADERS,
       body: formData,
     });
 
@@ -209,7 +214,7 @@ describe("POST /api/contributions", () => {
     const body = validManifestBody({ kind: "invalid-kind" });
     const res = await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(body),
     });
 
@@ -220,7 +225,7 @@ describe("POST /api/contributions", () => {
     const body = validManifestBody({ summary: "" });
     const res = await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(body),
     });
 
@@ -231,7 +236,7 @@ describe("POST /api/contributions", () => {
     const body = validManifestBody({ agent: { agentId: "" } });
     const res = await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(body),
     });
 
@@ -242,7 +247,7 @@ describe("POST /api/contributions", () => {
     const body = validManifestBody({ mode: "invalid-mode" });
     const res = await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(body),
     });
 
@@ -253,7 +258,7 @@ describe("POST /api/contributions", () => {
     const body = validManifestBody({ artifacts: { "file.txt": "not-a-hash" } });
     const res = await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(body),
     });
 
@@ -267,7 +272,7 @@ describe("POST /api/contributions", () => {
 
     const res = await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(body),
     });
 
@@ -288,7 +293,7 @@ describe("GET /api/contributions", () => {
   });
 
   test("returns empty array when no contributions exist", async () => {
-    const res = await ctx.app.request("/api/contributions");
+    const res = await ctx.app.request("/api/contributions", { headers: TEST_AUTH_HEADERS });
 
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -301,7 +306,7 @@ describe("GET /api/contributions", () => {
     for (let i = 0; i < 3; i++) {
       await ctx.app.request("/api/contributions", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
         body: JSON.stringify(
           validManifestBody({
             summary: `Contribution ${i}`,
@@ -311,7 +316,9 @@ describe("GET /api/contributions", () => {
       });
     }
 
-    const res = await ctx.app.request("/api/contributions?limit=2&offset=0");
+    const res = await ctx.app.request("/api/contributions?limit=2&offset=0", {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data).toHaveLength(2);
@@ -321,12 +328,12 @@ describe("GET /api/contributions", () => {
   test("filters by kind", async () => {
     await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(validManifestBody({ kind: "work" })),
     });
     await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(
         validManifestBody({
           kind: "review",
@@ -336,7 +343,9 @@ describe("GET /api/contributions", () => {
       ),
     });
 
-    const res = await ctx.app.request("/api/contributions?kind=review");
+    const res = await ctx.app.request("/api/contributions?kind=review", {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data).toHaveLength(1);
@@ -346,38 +355,50 @@ describe("GET /api/contributions", () => {
   test("returns empty array when offset exceeds total", async () => {
     await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(validManifestBody()),
     });
 
-    const res = await ctx.app.request("/api/contributions?offset=100");
+    const res = await ctx.app.request("/api/contributions?offset=100", {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data).toEqual([]);
   });
 
   test("rejects invalid pagination params", async () => {
-    const res = await ctx.app.request("/api/contributions?limit=-1");
+    const res = await ctx.app.request("/api/contributions?limit=-1", {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(400);
   });
 
   test("rejects limit=0", async () => {
-    const res = await ctx.app.request("/api/contributions?limit=0");
+    const res = await ctx.app.request("/api/contributions?limit=0", {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(400);
   });
 
   test("rejects negative offset", async () => {
-    const res = await ctx.app.request("/api/contributions?offset=-5");
+    const res = await ctx.app.request("/api/contributions?offset=-5", {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(400);
   });
 
   test("rejects limit exceeding maximum", async () => {
-    const res = await ctx.app.request("/api/contributions?limit=101");
+    const res = await ctx.app.request("/api/contributions?limit=101", {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(400);
   });
 
   test("rejects non-numeric limit", async () => {
-    const res = await ctx.app.request("/api/contributions?limit=abc");
+    const res = await ctx.app.request("/api/contributions?limit=abc", {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(400);
   });
 });
@@ -395,12 +416,14 @@ describe("GET /api/contributions/:cid", () => {
   test("returns contribution by CID", async () => {
     const createRes = await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(validManifestBody()),
     });
     const created = await createRes.json();
 
-    const res = await ctx.app.request(`/api/contributions/${created.cid}`);
+    const res = await ctx.app.request(`/api/contributions/${created.cid}`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.cid).toBe(created.cid);
@@ -408,14 +431,18 @@ describe("GET /api/contributions/:cid", () => {
 
   test("returns 404 for non-existent CID", async () => {
     const fakeCid = `blake3:${"a".repeat(64)}`;
-    const res = await ctx.app.request(`/api/contributions/${fakeCid}`);
+    const res = await ctx.app.request(`/api/contributions/${fakeCid}`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(404);
     const data = await res.json();
     expect(data.error.code).toBe("NOT_FOUND");
   });
 
   test("returns 400 for invalid CID format", async () => {
-    const res = await ctx.app.request("/api/contributions/not-a-valid-cid");
+    const res = await ctx.app.request("/api/contributions/not-a-valid-cid", {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(400);
   });
 });
@@ -438,12 +465,14 @@ describe("GET /api/contributions/:cid/artifacts/:name", () => {
     const body = validManifestBody({ artifacts: { "main.py": hash } });
     const createRes = await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(body),
     });
     const created = await createRes.json();
 
-    const res = await ctx.app.request(`/api/contributions/${created.cid}/artifacts/main.py`);
+    const res = await ctx.app.request(`/api/contributions/${created.cid}/artifacts/main.py`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/x-python");
 
@@ -464,11 +493,14 @@ describe("GET /api/contributions/:cid/artifacts/:name", () => {
 
     const createRes = await ctx.app.request("/api/contributions", {
       method: "POST",
+      headers: TEST_AUTH_HEADERS,
       body: formData,
     });
     const created = await createRes.json();
 
-    const res = await ctx.app.request(`/api/contributions/${created.cid}/artifacts/script.py`);
+    const res = await ctx.app.request(`/api/contributions/${created.cid}/artifacts/script.py`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
 
     const downloaded = new Uint8Array(await res.arrayBuffer());
@@ -478,18 +510,23 @@ describe("GET /api/contributions/:cid/artifacts/:name", () => {
   test("returns 404 for non-existent artifact name", async () => {
     const createRes = await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(validManifestBody()),
     });
     const created = await createRes.json();
 
-    const res = await ctx.app.request(`/api/contributions/${created.cid}/artifacts/nonexistent`);
+    const res = await ctx.app.request(
+      `/api/contributions/${created.cid}/artifacts/nonexistent`,
+      { headers: TEST_AUTH_HEADERS },
+    );
     expect(res.status).toBe(404);
   });
 
   test("returns 404 for non-existent contribution CID", async () => {
     const fakeCid = `blake3:${"b".repeat(64)}`;
-    const res = await ctx.app.request(`/api/contributions/${fakeCid}/artifacts/main.py`);
+    const res = await ctx.app.request(`/api/contributions/${fakeCid}/artifacts/main.py`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(404);
   });
 
@@ -502,11 +539,14 @@ describe("GET /api/contributions/:cid/artifacts/:name", () => {
 
     const createRes = await ctx.app.request("/api/contributions", {
       method: "POST",
+      headers: TEST_AUTH_HEADERS,
       body: formData,
     });
     const created = await createRes.json();
 
-    const res = await ctx.app.request(`/api/contributions/${created.cid}/artifacts/data.bin`);
+    const res = await ctx.app.request(`/api/contributions/${created.cid}/artifacts/data.bin`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("application/octet-stream");
   });
