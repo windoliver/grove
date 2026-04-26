@@ -5,6 +5,8 @@ import {
   ConcurrencyLimitError,
   GroveError,
   LeaseViolationError,
+  NamespaceMissingError,
+  NamespaceUnauthorizedError,
   NotFoundError,
   RateLimitError,
   RetryExhaustedError,
@@ -166,7 +168,6 @@ describe("error handler", () => {
   });
 
   it("maps NamespaceMissingError to 400", async () => {
-    const { NamespaceMissingError } = await import("../../core/errors.js");
     const app = appThatThrows(new NamespaceMissingError());
 
     const res = await app.request("/test");
@@ -177,7 +178,6 @@ describe("error handler", () => {
   });
 
   it("maps NamespaceUnauthorizedError to 401", async () => {
-    const { NamespaceUnauthorizedError } = await import("../../core/errors.js");
     const app = appThatThrows(new NamespaceUnauthorizedError());
 
     const res = await app.request("/test");
