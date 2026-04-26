@@ -200,3 +200,19 @@ export class LeaseViolationError extends GroveError {
     this.maxSeconds = opts.maxSeconds;
   }
 }
+
+/** Thrown when Authorization header is absent or malformed (400). */
+export class NamespaceMissingError extends GroveError {
+  constructor(message?: string) {
+    super(message ?? "Authorization header is missing or malformed");
+    this.name = "NamespaceMissingError";
+  }
+}
+
+/** Thrown when the provided API key is not in the server's registry (401). */
+export class NamespaceUnauthorizedError extends GroveError {
+  constructor(message?: string) {
+    super(message ?? "API key is not authorized");
+    this.name = "NamespaceUnauthorizedError";
+  }
+}
