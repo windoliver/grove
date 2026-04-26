@@ -277,9 +277,11 @@ export class InMemoryClaimStore implements ClaimStore {
 // Test auth constants
 // ---------------------------------------------------------------------------
 
-export const TEST_NAMESPACE_KEY = `grv_${"b".repeat(64)}`;
-export const TEST_NAMESPACE = "test-uuid/test-worktree";
-export const TEST_AUTH_HEADERS = { Authorization: `Bearer ${TEST_NAMESPACE_KEY}` };
+export const TEST_NAMESPACE_KEY: string = `grv_${"b".repeat(64)}`;
+export const TEST_NAMESPACE: string = "test-uuid/test-worktree";
+export const TEST_AUTH_HEADERS: Record<string, string> = {
+  Authorization: `Bearer ${TEST_NAMESPACE_KEY}`,
+};
 
 // ---------------------------------------------------------------------------
 // Test app factory
