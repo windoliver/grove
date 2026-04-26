@@ -270,8 +270,11 @@ function mapApiSession(raw: ApiSessionResponse): SessionRecord {
 }
 
 /** Fetch the current goal from a grove-server HTTP API. */
-export async function fetchGoalHttp(baseUrl: string): Promise<GoalData | undefined> {
-  const resp = await fetch(`${baseUrl}/api/session/goal`);
+export async function fetchGoalHttp(
+  baseUrl: string,
+  authHeaders?: Record<string, string>,
+): Promise<GoalData | undefined> {
+  const resp = await fetch(`${baseUrl}/api/session/goal`, { headers: authHeaders });
   if (resp.ok) return (await resp.json()) as GoalData;
   if (resp.status === 404) return undefined;
   return undefined;
@@ -282,10 +285,11 @@ export async function setGoalHttp(
   baseUrl: string,
   goal: string,
   acceptance: readonly string[],
+  authHeaders?: Record<string, string>,
 ): Promise<GoalData> {
   const resp = await fetch(`${baseUrl}/api/session/goal`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders },
     body: JSON.stringify({ goal, acceptance }),
   });
   if (resp.ok) return (await resp.json()) as GoalData;
@@ -296,12 +300,15 @@ export async function setGoalHttp(
 export async function listSessionsHttp(
   baseUrl: string,
   query?: { status?: "active" | "archived"; presetName?: string },
+  authHeaders?: Record<string, string>,
 ): Promise<readonly SessionRecord[]> {
   const params = new URLSearchParams();
   if (query?.status) params.set("status", query.status);
   if (query?.presetName) params.set("preset_name", query.presetName);
   const qs = params.toString();
-  const resp = await fetch(`${baseUrl}/api/sessions${qs ? `?${qs}` : ""}`);
+  const resp = await fetch(`${baseUrl}/api/sessions${qs ? `?${qs}` : ""}`, {
+    headers: authHeaders,
+  });
   if (resp.ok) {
     const body = (await resp.json()) as { sessions: readonly ApiSessionResponse[] };
     return body.sessions.map(mapApiSession);
@@ -313,10 +320,11 @@ export async function listSessionsHttp(
 export async function createSessionHttp(
   baseUrl: string,
   input: SessionInput,
+  authHeaders?: Record<string, string>,
 ): Promise<SessionRecord> {
   const resp = await fetch(`${baseUrl}/api/sessions`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders },
     body: JSON.stringify(input),
   });
   if (resp.ok) return mapApiSession((await resp.json()) as ApiSessionResponse);
@@ -327,17 +335,25 @@ export async function createSessionHttp(
 export async function getSessionHttp(
   baseUrl: string,
   sessionId: string,
+  authHeaders?: Record<string, string>,
 ): Promise<SessionRecord | undefined> {
-  const resp = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}`);
+  const resp = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}`, {
+    headers: authHeaders,
+  });
   if (resp.ok) return mapApiSession((await resp.json()) as ApiSessionResponse);
   if (resp.status === 404) return undefined;
   return undefined;
 }
 
 /** Archive a session via a grove-server HTTP API. */
-export async function archiveSessionHttp(baseUrl: string, sessionId: string): Promise<void> {
+export async function archiveSessionHttp(
+  baseUrl: string,
+  sessionId: string,
+  authHeaders?: Record<string, string>,
+): Promise<void> {
   const resp = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/archive`, {
     method: "PUT",
+    headers: authHeaders,
   });
   if (resp.ok) return;
   throw new Error(`Failed to archive session: HTTP ${String(resp.status)}`);
@@ -348,12 +364,13 @@ export async function addContributionToSessionHttp(
   baseUrl: string,
   sessionId: string,
   cid: string,
+  authHeaders?: Record<string, string>,
 ): Promise<void> {
   const resp = await fetch(
     `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/contributions`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders },
       body: JSON.stringify({ cid }),
     },
   );
