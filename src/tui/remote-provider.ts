@@ -95,7 +95,7 @@ export class RemoteDataProvider
     handoffs: true, // Available via GET /api/handoffs on the local grove server
   };
 
-  private readonly baseUrl: string;
+  readonly baseUrl: string;
   private readonly label: string;
   private readonly apiKey: string | undefined;
   /** Set by {@link setSessionScope} — scopes contribution and frontier reads to this session. */
@@ -116,6 +116,11 @@ export class RemoteDataProvider
   /** Auth headers sent on every request when an API key is configured. */
   private get authHeaders(): Record<string, string> {
     return this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {};
+  }
+
+  /** Public auth headers for direct fetch calls that bypass provider methods. */
+  get httpAuthHeaders(): Record<string, string> {
+    return this.authHeaders;
   }
 
   /**

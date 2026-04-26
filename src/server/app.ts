@@ -42,6 +42,19 @@ import { threads } from "./routes/threads.js";
  * @returns Configured Hono application.
  */
 export function createApp(deps: ServerDeps, registry: KeyRegistry): Hono<ServerEnv> {
+  // Data isolation requires that all keys in the registry map to the same namespace.
+  // Routes use process-global stores (scoped to the server's single namespace); a
+  // registry with multiple namespaces would allow cross-namespace data access.
+  // serve.ts enforces this by filtering the loaded registry to the server's own zoneId.
+  const uniqueNamespaces = new Set(registry.values());
+  if (uniqueNamespaces.size > 1) {
+    console.warn(
+      `createApp: registry contains ${uniqueNamespaces.size} distinct namespaces — ` +
+        `data isolation is NOT enforced (routes use shared stores). ` +
+        `Each server process should serve only one namespace.`,
+    );
+  }
+
   const app = new Hono<ServerEnv>();
 
   // Global body-size limit (10 MB)

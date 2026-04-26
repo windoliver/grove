@@ -448,6 +448,15 @@ export function App({
   // Only advertise spawn if the provider supports workspace checkout (remote does not).
   const canSpawn = provider.checkoutWorkspace !== undefined;
 
+  // Peer delegation requires unauthenticated access to the peer server.
+  // When the local provider uses bearer auth, peer servers require their own credentials
+  // (which we don't have), so hide delegate actions entirely.
+  const canDelegate = useMemo(() => {
+    const rp = provider as unknown as { httpAuthHeaders?: Record<string, string> };
+    const headers = rp.httpAuthHeaders;
+    return !headers || Object.keys(headers).length === 0;
+  }, [provider]);
+
   // Load agent profiles from .grove/agents.json
   const profilesFetcher = useCallback(async () => {
     try {
@@ -562,7 +571,7 @@ export function App({
         canSpawn,
         true,
         paletteParentId,
-        gossipPeers ?? undefined,
+        canDelegate ? (gossipPeers ?? undefined) : undefined,
         agentProfiles ?? undefined,
         hasGoals,
       ),
@@ -572,6 +581,7 @@ export function App({
       paletteSessions,
       tmux,
       canSpawn,
+      canDelegate,
       paletteParentId,
       gossipPeers,
       agentProfiles,
@@ -653,11 +663,11 @@ export function App({
           return;
         }
         // Fallback: POST to boardroom endpoint (works for remote providers)
-        const rp = provider as unknown as { baseUrl?: string };
+        const rp = provider as unknown as { baseUrl?: string; httpAuthHeaders?: Record<string, string> };
         const baseUrl = rp.baseUrl ?? "http://localhost:4515";
         const resp = await fetch(`${baseUrl}/api/boardroom/message`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...rp.httpAuthHeaders },
           body: JSON.stringify({
             body,
             recipients: recipients.split(",").map((r) => r.trim()),
