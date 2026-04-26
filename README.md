@@ -143,6 +143,11 @@ needed. If already initialized, `grove up` starts services and the TUI directly.
 
 Use `--headless` for CI or `--no-tui` for server-only mode.
 
+> **tmux note.** When the TUI launches inside a tmux session it automatically
+> runs `tmux set-option -g allow-passthrough on` so OpenTUI's terminal-capability
+> queries reach the outer terminal. If you prefer to set this once globally,
+> add `set -g allow-passthrough on` to your `~/.tmux.conf`.
+
 ```bash
 # Or initialize from the CLI if you prefer
 grove init "Latency hunt" --preset review-loop
@@ -428,6 +433,7 @@ surfaces. It defines:
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `GROVE_DIR` | Override `.grove` discovery | `$(pwd)/.grove` |
+| `GROVE_NO_ALT_SCREEN` | Disable TUI alternate-screen (useful for tmux capture-pane debugging) | -- |
 | `GROVE_REPO_CACHE` | Override bare-clone cache root | `$XDG_CACHE_HOME/grove/repo-cache` (or `~/.cache/grove/repo-cache`) |
 | `GROVE_AGENT_ID` | Agent identity for CLI and MCP | -- |
 | `GROVE_AGENT_NAME` | Human-readable agent name | -- |
@@ -476,6 +482,48 @@ grove session start --goal ... --repo /abs/path/to/checkout
 ```
 
 Only one `--repo` is accepted today; multi-repo sessions ship in a later release.
+
+### Project identity
+
+`grove init` writes a UUIDv4 to `.grove/project-id` (gitignored) that uniquely
+identifies the clone for the life of its `.grove/` directory. A user-level
+registry at `~/.grove/projects.yaml` maps each git origin URL to the first
+clone's id, so multiple clones of the same remote can opt into sharing a
+project identity.
+
+Default: every clone gets a **distinct** id. Two clones of the same remote are
+two logical projects unless you explicitly unify them.
+
+```bash
+# First clone — generates a fresh UUID and registers it.
+grove init my-project
+
+# Second clone of the same remote — gets a NEW UUID by default.
+grove init my-project
+
+# Second clone, explicitly adopting the registry id.
+grove init my-project --unify
+
+# Second clone, explicitly opting out (bypasses the TTY prompt).
+grove init my-project --no-unify
+```
+
+In an interactive terminal, `grove init` prompts `Unify? [y/N]` when the
+origin matches an existing registry entry. The default is **N** — pressing
+Enter creates a new, distinct id, matching the documented "distinct by
+default" contract. Type `y` (or pass `--unify`) to share identity. In CI /
+non-TTY contexts the prompt is suppressed and the default is "new".
+
+Origin URL normalization collapses HTTPS / SSH / SCP variants (with or
+without `.git`, default port, or `user:password@` credentials) to a single
+canonical `host/path` key, so two clones cloned via different URL forms
+still recognize each other. **Non-default** ports are preserved (a remote
+on `:2222` is treated as a distinct origin from the same host on the SSH
+default `:22`), and any `?query` or `#fragment` is stripped before keying so
+credentials embedded in URL parameters never reach the registry.
+
+Delete `~/.grove/projects.yaml` to start the registry from scratch; delete
+`.grove/project-id` to regenerate a clone's identity on the next `grove init`.
 
 <details>
 <summary><strong>Additional agent metadata variables</strong></summary>

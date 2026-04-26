@@ -1,0 +1,201 @@
+/**
+ * Git origin URL detection and normalization.
+ *
+ * Normalization collapses the common "same repo, different URL" cases
+ * (HTTPS vs SSH, with/without .git suffix, with/without port, mixed case
+ * host) to a single canonical key of the form "host/path" with the host
+ * lowercased and the path case preserved.
+ */
+
+import { type SpawnSyncReturns, spawnSync } from "node:child_process";
+
+const SCHEME_RE = /^(https?|ssh|git|git\+ssh):\/\//i;
+
+const DEFAULT_PORTS: Record<string, string> = {
+  https: "443",
+  http: "80",
+  ssh: "22",
+  "git+ssh": "22",
+  git: "9418",
+};
+
+export function normalizeOriginUrl(raw: string): string | null {
+  if (!raw) return null;
+
+  let s = raw.trim();
+  if (!s) return null;
+
+  // Reject schemes we don't correlate (file://, local paths).
+  if (s.toLowerCase().startsWith("file://")) return null;
+
+  // Reject filesystem paths — absolute (/foo, ~/foo, C:\foo), relative
+  // (./foo, ../foo), or bare relative paths with no host (foo/bar.git).
+  // These belong to a single machine and must not become registry keys.
+  if (s.startsWith("/") || s.startsWith("./") || s.startsWith("../") || s.startsWith("~")) {
+    return null;
+  }
+  if (/^[a-zA-Z]:[\\/]/.test(s)) return null; // Windows drive letter
+
+  // 1. Strip known scheme; remember which one for default-port handling.
+  const schemeMatch = s.match(SCHEME_RE);
+  const scheme = schemeMatch ? (schemeMatch[1]?.toLowerCase() ?? null) : null;
+  const hadScheme = scheme !== null;
+  if (hadScheme && schemeMatch) s = s.slice(schemeMatch[0].length);
+
+  // 1b. Reject every other URI scheme (`foo://...`) and git remote-helper
+  //     forms (`transport::address`). They are not git origin URLs we
+  //     correlate, and falling through to the SCP branch would happily
+  //     accept the userinfo of e.g. `foo://user:pass@host/repo` as part
+  //     of a registry key.
+  if (!hadScheme) {
+    if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(s)) return null;
+    if (/^[A-Za-z][A-Za-z0-9+.-]*::/.test(s)) return null;
+  }
+
+  // 1a. Strip query string (`?...`) and fragment (`#...`). They are never
+  //     part of a git origin path, and `?access_token=...` style URLs
+  //     would otherwise persist credentials into the registry key.
+  const qIdx = s.search(/[?#]/);
+  if (qIdx !== -1) s = s.slice(0, qIdx);
+
+  // Without a scheme, require strict SCP form (host:path with no slash
+  // before the colon). Anything else — including dotted relative paths
+  // like "github.com/foo.git" which git treats as a filesystem directory —
+  // is rejected so we don't pollute the cross-machine registry.
+  if (!hadScheme) {
+    const colonIdx = s.indexOf(":");
+    const slashIdx = s.indexOf("/");
+    const isScpForm = colonIdx > 0 && (slashIdx === -1 || colonIdx < slashIdx);
+    if (!isScpForm) return null;
+  }
+
+  // 2. Strip leading user@ (with scheme: terminator is '/' only, since
+  //    `user:password@host/path` is legal HTTPS auth — colon is part of
+  //    user-info. Without scheme: SCP form `user@host:path`, terminator is
+  //    '/' or ':').
+  const atIdx = s.indexOf("@");
+  if (atIdx > -1) {
+    const slashIdx = s.indexOf("/");
+    const hardSep = hadScheme
+      ? slashIdx === -1
+        ? Number.POSITIVE_INFINITY
+        : slashIdx
+      : Math.min(
+          ...["/", ":"].map((c) => {
+            const i = s.indexOf(c);
+            return i === -1 ? Number.POSITIVE_INFINITY : i;
+          }),
+        );
+    if (atIdx < hardSep) {
+      s = s.slice(atIdx + 1);
+    }
+  }
+
+  // 3. SCP-style host:path → host/path (only when there is no '/' before the ':').
+  if (!hadScheme) {
+    const colonIdx = s.indexOf(":");
+    const slashIdx = s.indexOf("/");
+    if (colonIdx > 0 && (slashIdx === -1 || colonIdx < slashIdx)) {
+      s = `${s.slice(0, colonIdx)}/${s.slice(colonIdx + 1)}`;
+    }
+  }
+
+  // 4. Strip the scheme's default port between host and '/'. Non-default
+  //    ports are part of the origin authority — keep them so a remote on
+  //    :2222 doesn't collide with the same host on :22.
+  const portMatch = s.match(/^([^/:]+):(\d+)\//);
+  if (portMatch) {
+    const port = portMatch[2];
+    const defaultPort = scheme ? DEFAULT_PORTS[scheme] : undefined;
+    if (port === defaultPort) {
+      s = `${portMatch[1]}/${s.slice(portMatch[0].length)}`;
+    }
+  }
+
+  // 5. Strip trailing slashes and `.git`, repeatedly. Order matters and
+  //    inputs vary: `host/path.git/` needs the slash stripped before the
+  //    `.git`, and `host/path.git/.git` (rare but possible from misuse)
+  //    needs both rounds. Loop until stable.
+  while (true) {
+    let changed = false;
+    while (s.endsWith("/")) {
+      s = s.slice(0, -1);
+      changed = true;
+    }
+    if (s.toLowerCase().endsWith(".git")) {
+      s = s.slice(0, -4);
+      changed = true;
+    }
+    if (!changed) break;
+  }
+
+  // 7. Lowercase host (characters up to the first '/').
+  const firstSlash = s.indexOf("/");
+  if (firstSlash === -1) return null;
+  s = `${s.slice(0, firstSlash).toLowerCase()}${s.slice(firstSlash)}`;
+
+  // 8. Reject if no path part after host.
+  const afterSlash = s.slice(firstSlash + 1);
+  if (!afterSlash) return null;
+
+  return s;
+}
+
+/**
+ * Strip credential material (userinfo, query strings, fragments) from a
+ * URL-like string for safe logging.
+ *
+ * - `https://user:pass@host/path?token=x` → `https://host/path`
+ * - `git@host:path?token=x` → `host:path`
+ * - `file:///tmp/repo?token=x` → `file:///tmp/repo`
+ * - Anything else → returned with `?...` and `#...` removed.
+ *
+ * Use this on raw origin strings before writing to stderr/stdout/log files.
+ */
+export function sanitizeOriginForLog(raw: string): string {
+  if (!raw) return raw;
+  let s = raw;
+  // Strip query/fragment unconditionally — never part of a logged origin
+  // identity, and frequently used to smuggle credentials. Applies to every
+  // input shape, including `file://`, helper-style and unrecognized URLs.
+  const qIdx = s.search(/[?#]/);
+  if (qIdx !== -1) s = s.slice(0, qIdx);
+  // Strip userinfo for ANY `scheme://userinfo@host` shape, supported or
+  // not. The known-scheme allowlist is a registry concern; for logging we
+  // must redact every plausible URL form, including `foo://`, `file://`,
+  // and arbitrary helper schemes.
+  const schemePrefixMatch = s.match(/^[A-Za-z][A-Za-z0-9+.-]*:\/\//);
+  if (schemePrefixMatch) {
+    const scheme = schemePrefixMatch[0];
+    const rest = s.slice(scheme.length);
+    const atIdx = rest.indexOf("@");
+    const slashIdx = rest.indexOf("/");
+    if (atIdx > -1 && (slashIdx === -1 || atIdx < slashIdx)) {
+      s = `${scheme}${rest.slice(atIdx + 1)}`;
+    }
+    return s;
+  }
+  // SCP-style: strip "user@" prefix when present and before the ':'.
+  const atIdx = s.indexOf("@");
+  const colonIdx = s.indexOf(":");
+  if (atIdx > 0 && colonIdx > atIdx) {
+    s = s.slice(atIdx + 1);
+  }
+  return s;
+}
+
+export function detectOriginUrl(cwd: string): string | null {
+  let result: SpawnSyncReturns<string>;
+  try {
+    result = spawnSync("git", ["-C", cwd, "remote", "get-url", "origin"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch {
+    return null;
+  }
+  if (result.error) return null;
+  if (result.status !== 0) return null;
+  const out = (result.stdout ?? "").trim();
+  return out === "" ? null : out;
+}

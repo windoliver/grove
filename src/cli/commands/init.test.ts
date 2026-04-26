@@ -5,11 +5,23 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { access, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { isValidProjectId } from "../../core/project-id.js";
+import { loadRegistry } from "../../core/project-registry.js";
 import type { InitOptions } from "./init.js";
 import { executeInit, parseInitArgs } from "./init.js";
+
+function initGitRepo(cwd: string, origin: string | null): void {
+  const run = (args: string[]) => spawnSync("git", ["-C", cwd, ...args], { stdio: "ignore" });
+  run(["init", "-q"]);
+  run(["config", "user.email", "t@t"]);
+  run(["config", "user.name", "t"]);
+  if (origin) run(["remote", "add", "origin", origin]);
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -258,5 +270,101 @@ describe("grove init E2E", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("grove init — project identity (#288)", () => {
+  test("creates .grove/project-id with a valid UUIDv4 on a fresh repo", async () => {
+    const cwd = await createTempDir();
+    initGitRepo(cwd, null);
+    const registryPath = join(cwd, "test-registry.yaml");
+    await executeInit(makeOptions({ name: "one", cwd }), undefined, { registryPath });
+    const id = readFileSync(join(cwd, ".grove", "project-id"), "utf8").trim();
+    expect(isValidProjectId(id)).toBe(true);
+    await rm(cwd, { recursive: true, force: true });
+  });
+});
+
+describe("grove init — #288 acceptance", () => {
+  test("two independent clones of same origin (non-TTY) get distinct UUIDs", async () => {
+    const sharedRegistry = join(await createTempDir(), "projects.yaml");
+
+    const cloneA = await createTempDir();
+    initGitRepo(cloneA, "git@github.com:foo/bar.git");
+    const a = await executeInit(makeOptions({ name: "a", cwd: cloneA }), undefined, {
+      registryPath: sharedRegistry,
+      isTTY: false,
+    });
+
+    const cloneB = await createTempDir();
+    initGitRepo(cloneB, "https://github.com/foo/bar.git");
+    const b = await executeInit(makeOptions({ name: "b", cwd: cloneB }), undefined, {
+      registryPath: sharedRegistry,
+      isTTY: false,
+    });
+
+    expect(a.projectId).not.toBe(b.projectId);
+    const reg = loadRegistry(sharedRegistry);
+    expect(Object.keys(reg.projects)).toEqual(["github.com/foo/bar"]);
+    expect(reg.projects["github.com/foo/bar"]?.id).toBe(a.projectId);
+
+    await rm(cloneA, { recursive: true, force: true });
+    await rm(cloneB, { recursive: true, force: true });
+  });
+
+  test("--unify merges second clone into first's id; registry stays single-entry", async () => {
+    const sharedRegistry = join(await createTempDir(), "projects.yaml");
+
+    const cloneA = await createTempDir();
+    initGitRepo(cloneA, "git@github.com:foo/bar.git");
+    const a = await executeInit(makeOptions({ name: "a", cwd: cloneA }), undefined, {
+      registryPath: sharedRegistry,
+    });
+
+    const cloneB = await createTempDir();
+    initGitRepo(cloneB, "https://github.com/foo/bar.git");
+    const b = await executeInit(makeOptions({ name: "b", cwd: cloneB, unify: true }), undefined, {
+      registryPath: sharedRegistry,
+    });
+
+    expect(b.projectId).toBe(a.projectId);
+    const reg = loadRegistry(sharedRegistry);
+    expect(Object.keys(reg.projects)).toEqual(["github.com/foo/bar"]);
+
+    await rm(cloneA, { recursive: true, force: true });
+    await rm(cloneB, { recursive: true, force: true });
+  });
+
+  test("re-running grove init leaves the project id unchanged", async () => {
+    const registryPath = join(await createTempDir(), "projects.yaml");
+    const cwd = await createTempDir();
+    initGitRepo(cwd, "git@github.com:foo/bar.git");
+    const first = await executeInit(makeOptions({ name: "one", cwd }), undefined, { registryPath });
+    const second = await executeInit(makeOptions({ name: "one", cwd, force: true }), undefined, {
+      registryPath,
+    });
+    expect(second.projectId).toBe(first.projectId);
+    await rm(cwd, { recursive: true, force: true });
+  });
+});
+
+describe("parseInitArgs — unify flags", () => {
+  test("--unify sets unify: true", () => {
+    const opts = parseInitArgs(["--unify"]);
+    expect(opts.unify).toBe(true);
+  });
+
+  test("--no-unify sets unify: false", () => {
+    const opts = parseInitArgs(["--no-unify"]);
+    expect(opts.unify).toBe(false);
+  });
+
+  test("neither flag leaves unify undefined", () => {
+    const opts = parseInitArgs([]);
+    expect(opts.unify).toBeUndefined();
+  });
+
+  test("both --unify and --no-unify is an error", () => {
+    expect(() => parseInitArgs(["--unify", "--no-unify"])).toThrow(/mutually exclusive/);
   });
 });

@@ -537,6 +537,19 @@ export async function handleTui(
   // Bun compatibility: ensure stdin is in raw mode for keyboard input
   process.stdin.resume();
 
+  // Tmux compatibility: OpenTUI sends Ptmux passthrough sequences for
+  // terminal capability negotiation. With `allow-passthrough off` (tmux
+  // default) those queries hang the TUI on startup.
+  const { ensureTmuxPassthrough } = await import("../cli/utils/tmux-compat.js");
+  const tmuxResult = ensureTmuxPassthrough();
+  if (!tmuxResult.applied && tmuxResult.reason === "tmux-failed") {
+    process.stderr.write(
+      `grove: tmux is set in the environment but 'tmux set-option allow-passthrough on' failed. ` +
+        `The TUI may hang on startup. Add 'set -g allow-passthrough on' to ~/.tmux.conf as a workaround.\n` +
+        (tmuxResult.stderr ? `tmux stderr: ${tmuxResult.stderr}\n` : ""),
+    );
+  }
+
   // Dynamic import of React/OpenTUI — only loaded when TUI is actually used
   const { createCliRenderer } = await import("@opentui/core");
   const { createRoot } = await import("@opentui/react");
@@ -724,16 +737,23 @@ export async function handleTui(
       if (!groveExists) {
         // Truly new grove — run full init (creates .grove/, nexus.yaml, GROVE.md)
         const { executeInit } = await import("../cli/commands/init.js");
-        await executeInit({
-          name: groveName,
-          mode: "evaluation",
-          seed: [],
-          metric: [],
-          force: true,
-          agentOverrides: {},
-          cwd: join(newGroveDir, ".."),
-          preset: presetName,
-        });
+        await executeInit(
+          {
+            name: groveName,
+            mode: "evaluation",
+            seed: [],
+            metric: [],
+            force: true,
+            agentOverrides: {},
+            cwd: join(newGroveDir, ".."),
+            preset: presetName,
+          },
+          undefined,
+          // TUI owns stdin/stdout; force non-interactive identity flow so
+          // the project-id `Unify? [y/N]` prompt cannot fire from inside
+          // OpenTUI. The non-TTY default ("new") matches docs.
+          { isTTY: false },
+        );
       }
       if (groveExists) {
         // Grove exists — start services to ensure Nexus is running (handles resume/reuse/cold-start).
