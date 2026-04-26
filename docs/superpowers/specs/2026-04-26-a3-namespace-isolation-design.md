@@ -96,7 +96,7 @@ export function appendServerKey(
 
 ### Modified files
 
-**`src/cli/init.ts`** (or wherever `grove init` is implemented)
+**`src/cli/commands/init.ts`**
 - After `ensureProjectId()`: call `detectWorktreeName()`, compute namespace,
   generate key, write `.grove/api-key`, append `.grove/server-keys.yaml`,
   ensure both paths in `.grove/.gitignore`.
@@ -104,8 +104,8 @@ export function appendServerKey(
 **`src/server/app.ts`**
 - Accept `registry: KeyRegistry` in the app factory options.
 - Mount `namespaceAuth(registry)` on `"/api/*"` after the request-size
-  middleware. Health endpoint (`/api/health`) is exempt — mount it before the
-  auth middleware or move it to `/health`.
+  middleware. Move the health route from `/api/health` to `/health` so it
+  falls outside the `/api/*` auth guard.
 
 **`src/server/serve.ts`**
 - Remove `const zoneId = process.env.GROVE_ZONE_ID ?? "default"` and the
@@ -166,7 +166,7 @@ definition.
 - Missing `Authorization` header → 400 `namespace_missing`
 - Unknown key → 401 `namespace_unauthorized`
 - Valid key → `c.get("namespace")` equals the registered namespace
-- `/api/health` with no key → 200 (exempt)
+- `/health` with no key → 200 (exempt, moved off `/api/*`)
 
 ### Two-worktree isolation integration test
 
@@ -192,7 +192,7 @@ keyA requests and `"uuid/worktree-b"` for keyB requests — never mixed.
 
 - `GET /api/contributions` with no `Authorization` → 400
 - `GET /api/contributions` with unknown key → 401
-- `GET /api/health` with no `Authorization` → 200
+- `GET /health` with no `Authorization` → 200
 
 ## Acceptance criteria (from issue)
 
