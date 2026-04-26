@@ -274,10 +274,15 @@ export async function checkNexusHealth(
  * - nexus: tries remote endpoint first, falls back to local GROVE.md
  * - local: reads GROVE.md contract from the parent of .grove/
  */
-export async function loadTopology(backend: ResolvedBackend): Promise<AgentTopology | undefined> {
+export async function loadTopology(
+  backend: ResolvedBackend,
+  authHeaders?: Record<string, string>,
+): Promise<AgentTopology | undefined> {
   if (backend.mode === "remote") {
     try {
-      const resp = await fetch(`${backend.url.replace(/\/+$/, "")}/api/grove/topology`);
+      const resp = await fetch(`${backend.url.replace(/\/+$/, "")}/api/grove/topology`, {
+        headers: authHeaders,
+      });
       if (resp.ok) {
         return (await resp.json()) as AgentTopology;
       }
@@ -330,10 +335,13 @@ export async function loadTopology(backend: ResolvedBackend): Promise<AgentTopol
  */
 export async function loadContract(
   backend: ResolvedBackend,
+  authHeaders?: Record<string, string>,
 ): Promise<import("../core/contract.js").GroveContract | undefined> {
   if (backend.mode === "remote") {
     try {
-      const resp = await fetch(`${backend.url.replace(/\/+$/, "")}/api/grove/contract`);
+      const resp = await fetch(`${backend.url.replace(/\/+$/, "")}/api/grove/contract`, {
+        headers: authHeaders,
+      });
       if (resp.ok) {
         return (await resp.json()) as import("../core/contract.js").GroveContract;
       }
