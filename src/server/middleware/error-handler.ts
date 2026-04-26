@@ -27,6 +27,8 @@ const ERROR_MAP = new Map<string, ErrorMapping>([
   ["GossipTimeoutError", { status: 504, code: "GOSSIP_TIMEOUT" }],
   ["NotFoundError", { status: 404, code: "NOT_FOUND" }],
   ["StateConflictError", { status: 409, code: "STATE_CONFLICT" }],
+  ["NamespaceMissingError", { status: 400, code: "NAMESPACE_MISSING" }],
+  ["NamespaceUnauthorizedError", { status: 401, code: "NAMESPACE_UNAUTHORIZED" }],
 ]);
 
 /** Format error response body. */
