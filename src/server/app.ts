@@ -70,11 +70,21 @@ export function createApp(deps: ServerDeps, registry: KeyRegistry): Hono<ServerE
   // Health check — exempt from namespace auth (used by grove up readiness probes)
   app.route("/health", health);
 
+  // Gossip federation requires HMAC when the service is enabled — POST gossip routes are
+  // exempt from bearer auth (peers use HMAC instead), so allowing gossip without a secret
+  // would leave exchange/shuffle completely unauthenticated.
+  if (deps.gossip && !deps.gossipHmacSecret) {
+    throw new Error(
+      "createApp: deps.gossip is configured but deps.gossipHmacSecret is absent. " +
+        "Set GROVE_GOSSIP_HMAC_SECRET to authenticate gossip peers, or disable gossip.",
+    );
+  }
+
   // All /api/* routes require a valid namespace bearer token.
   // POST gossip endpoints are exempt — they verify HMAC signatures from peer servers.
   // GET gossip endpoints (peers, frontier) still require a bearer token.
   app.use("/api/*", namespaceAuth(registry, {
-    exempt: (c) => c.req.method === "POST" && c.req.path.startsWith("/api/gossip"),
+    exempt: (c) => deps.gossip !== undefined && c.req.method === "POST" && c.req.path.startsWith("/api/gossip"),
   }));
 
   // Mount route groups

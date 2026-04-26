@@ -70,7 +70,7 @@ describe("GET /api/grove", () => {
       },
     };
 
-    const depsWithGossip: ServerDeps = { ...ctx.deps, gossip: mockGossip };
+    const depsWithGossip: ServerDeps = { ...ctx.deps, gossip: mockGossip, gossipHmacSecret: "test-hmac-secret" };
     const testRegistry: KeyRegistry = new Map([[TEST_KEY, TEST_NAMESPACE]]);
     const appWithGossip = createApp(depsWithGossip, testRegistry);
     const res = await appWithGossip.request("/api/grove", { headers: TEST_AUTH_HEADERS });
