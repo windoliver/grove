@@ -164,4 +164,25 @@ describe("error handler", () => {
       console.error = origError;
     }
   });
+
+  it("maps NamespaceMissingError to 400", async () => {
+    const { NamespaceMissingError } = await import("../../core/errors.js");
+    const app = appThatThrows(new NamespaceMissingError());
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as Json;
+    expect(data.error.code).toBe("NAMESPACE_MISSING");
+    expect(data.error.message).toContain("Authorization");
+  });
+
+  it("maps NamespaceUnauthorizedError to 401", async () => {
+    const { NamespaceUnauthorizedError } = await import("../../core/errors.js");
+    const app = appThatThrows(new NamespaceUnauthorizedError());
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(401);
+    const data = (await res.json()) as Json;
+    expect(data.error.code).toBe("NAMESPACE_UNAUTHORIZED");
+  });
 });

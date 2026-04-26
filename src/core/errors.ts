@@ -200,3 +200,19 @@ export class LeaseViolationError extends GroveError {
     this.maxSeconds = opts.maxSeconds;
   }
 }
+
+/** Thrown when no Authorization header is present on an API request. */
+export class NamespaceMissingError extends GroveError {
+  constructor() {
+    super("Authorization: Bearer <key> header required");
+    this.name = "NamespaceMissingError";
+  }
+}
+
+/** Thrown when the bearer token is not in the server's key registry. */
+export class NamespaceUnauthorizedError extends GroveError {
+  constructor() {
+    super("Bearer token not recognized");
+    this.name = "NamespaceUnauthorizedError";
+  }
+}
