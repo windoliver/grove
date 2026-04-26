@@ -17,8 +17,11 @@ import { HttpGossipTransport } from "../gossip/http-transport.js";
 import { DefaultGossipService } from "../gossip/protocol.js";
 import { createLocalRuntime } from "../local/runtime.js";
 import { parseGossipSeeds, parsePort } from "../shared/env.js";
+import { readProjectId } from "../core/project-id.js";
+import { detectWorktreeName } from "../core/project-key.js";
 import { createApp } from "./app.js";
 import type { ServerDeps } from "./deps.js";
+import { loadKeyRegistry } from "./middleware/namespace-auth.js";
 import { SessionService } from "./session-service.js";
 import { memoizeContributionStoreForSession } from "./session-store-factory.js";
 import { createWsHandler } from "./ws-handler.js";
@@ -96,9 +99,6 @@ let contributionStoreForSessionFactory:
 
 const nexusUrl = process.env.GROVE_NEXUS_URL;
 const nexusApiKey = process.env.NEXUS_API_KEY;
-const { readProjectId } = await import("../core/project-id.js");
-const { detectWorktreeName } = await import("../core/project-key.js");
-const { loadKeyRegistry } = await import("./middleware/namespace-auth.js");
 
 const projectId = readProjectId(GROVE_DIR);
 const worktreeName = await detectWorktreeName();
