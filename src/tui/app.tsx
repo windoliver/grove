@@ -244,6 +244,7 @@ export function App({
   presetName,
   groveDir,
   userConfig,
+  eventBus,
 }: AppProps): React.ReactNode {
   const renderer = useRenderer();
   const nav = useNavigation();
@@ -523,6 +524,25 @@ export function App({
     refreshProfiles,
     refreshTerminalBuffers,
   ]);
+
+  // SSE push → global refresh fan-out. NexusWsBridge publishes inbox-delivery
+  // events on `role:<targetRole>` channels. Bumping refreshSignal here makes
+  // every panel-level usePolledData (DAG, Frontier, Dashboard …) re-fetch
+  // immediately instead of waiting up to `intervalMs` for the next poll.
+  // The Feed view also subscribes directly inside running-view for fast-path
+  // refresh without a full app re-render — that path stays as defense in
+  // depth and is not removed here.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: eventBus is used in body; biome miscounts the conditional access.
+  useEffect(() => {
+    if (!eventBus) return;
+    const roles = topology?.roles.map((r) => r.name) ?? [];
+    if (roles.length === 0) return;
+    const handler = () => setRefreshSignal((s) => s + 1);
+    for (const role of roles) eventBus.subscribe(role, handler);
+    return () => {
+      for (const role of roles) eventBus.unsubscribe(role, handler);
+    };
+  }, [eventBus, topology]);
 
   const hasGoals = isGoalProvider(provider);
   const paletteItems = useMemo(

@@ -71,9 +71,16 @@ export class NexusContributionStore implements ContributionStore {
   private readonly sessionId: string | undefined;
   // TTL cache for list() — avoids the N+1 VFS read storm (1 list + N FTS + N manifest)
   // that exhausts Nexus's 300/min rate limit when multiple callers poll independently.
+  // TTL is short (2s) so SSE-triggered refreshes (running-view bumps refreshSignal
+  // on inbox-delivery events) actually return fresh data instead of replaying the
+  // last full scan. Anything longer makes the TUI feel laggy: a contribution lands,
+  // SSE fires, a refetch happens, but the cache hands back the pre-arrival snapshot
+  // and the panel doesn't update until the next 30 s poll. 2 s still de-duplicates
+  // the back-to-back fetches that several panels (Feed, DAG, Frontier) issue
+  // immediately after a refresh signal — which was the original storm risk.
   private listCacheResult: Contribution[] | undefined;
   private listCacheTime = 0;
-  private readonly listCacheTtlMs = 15_000; // 15s TTL
+  private readonly listCacheTtlMs = 2_000;
 
   constructor(config: NexusConfig) {
     this.config = resolveConfig(config);

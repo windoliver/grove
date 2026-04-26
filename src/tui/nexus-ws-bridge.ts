@@ -529,10 +529,19 @@ export class NexusWsBridge {
       // case the unhealthy counter needs to catch.
       let sawBytes = false;
       // Idle-read watchdog — if the stream produces no bytes for this
-      // long, abort and treat the cycle as unhealthy. SSE keep-alive
-      // (": ping\n\n") typically fires every 15–30s; 60s idle is well
-      // outside normal operation and catches blackholed proxies.
-      const idleReadMs = 60000;
+      // long, abort and treat the cycle as unhealthy. Catches blackholed
+      // proxies stuck mid-stream that hold the TCP pipe open without
+      // delivering data.
+      //
+      // Set to 5 min because Nexus's `/api/v2/ipc/stream` does NOT emit
+      // keep-alive comments — it sends a single `connected` event then
+      // stays silent until an inbox message lands. A shorter watchdog
+      // (60 s) would treat every quiet stretch as an outage, escalate
+      // through 3 reconnect cycles, and fire onRoleUnhealthy → flip
+      // delivery to disabled even though the channel is healthy. 5 min
+      // is well under Nexus's natural channel lifetime and still bounds
+      // the time to detect a truly dead pipe.
+      const idleReadMs = 300_000;
       // Track whether the abort was triggered by our idle watchdog.
       // When the watchdog fires mid-stream, sawBytes may already be
       // true from an earlier heartbeat, but the stream is still stalled
@@ -550,6 +559,14 @@ export class NexusWsBridge {
           readResult = await reader.read();
         } catch {
           clearTimeout(idleTimer);
+          // Watchdog fire AFTER we already saw bytes (e.g. the initial
+          // `connected` event from Nexus) means the stream connected and
+          // produced data — it just went quiet. Treat the cycle as
+          // healthy so the consecutive-failure counter stays at zero.
+          // Without this the counter drifts up over time on idle
+          // streams and eventually trips onRoleUnhealthy on a perfectly
+          // good channel.
+          if (abortedByWatchdog && sawBytes) return true;
           return abortedByWatchdog ? false : sawBytes;
         } finally {
           clearTimeout(idleTimer);
