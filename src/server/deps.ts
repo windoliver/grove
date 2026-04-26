@@ -67,5 +67,6 @@ export interface ServerDeps {
 export interface ServerEnv {
   Variables: {
     deps: ServerDeps;
+    namespace: string;
   };
 }
