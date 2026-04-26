@@ -5,6 +5,8 @@ import { NamespaceMissingError, NamespaceUnauthorizedError } from "../../core/er
 
 export type KeyRegistry = Map<string, string>; // key → namespace
 
+type NamespaceEnv = { Variables: { namespace: string } };
+
 interface ServerKeysFile {
   version: 1;
   keys: Record<string, { namespace: string; createdAt: string }>;
@@ -38,7 +40,7 @@ export function loadKeyRegistry(serverKeysPath: string): KeyRegistry {
  * On success: sets `c.get("namespace")` to the resolved namespace string.
  * On failure: throws NamespaceMissingError (→ 400) or NamespaceUnauthorizedError (→ 401).
  */
-export function namespaceAuth(registry: KeyRegistry): MiddlewareHandler {
+export function namespaceAuth(registry: KeyRegistry): MiddlewareHandler<NamespaceEnv> {
   return async (c, next) => {
     const auth = c.req.header("Authorization");
     if (!auth?.startsWith("Bearer ")) {
