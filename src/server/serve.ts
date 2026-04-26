@@ -122,9 +122,12 @@ if (registry.size === 0) {
   // Pre-A3 workspace: project-id exists but no server-keys.yaml yet.
   // Auto-generate credentials so API routes are usable immediately (upgrade path).
   const { randomBytes } = await import("node:crypto");
-  const existingClientKey = readClientKey(GROVE_DIR);
-  const clientKey = existingClientKey ?? randomBytes(32).toString("hex");
-  if (!existingClientKey) {
+  const rawClientKey = readClientKey(GROVE_DIR);
+  // Require ≥32 hex chars (128-bit entropy) — reject empty/malformed keys to prevent
+  // "Authorization: Bearer " (empty token) from authenticating after registry lookup.
+  const isValidKey = typeof rawClientKey === "string" && /^[0-9a-f]{32,}$/.test(rawClientKey);
+  const clientKey = isValidKey ? rawClientKey : randomBytes(32).toString("hex");
+  if (!isValidKey) {
     writeClientKey(GROVE_DIR, clientKey);
   }
   appendServerKey(GROVE_DIR, clientKey, zoneId);

@@ -46,6 +46,9 @@ import {
 } from "../core/gossip/types.js";
 import { CyclonPeerSampler } from "./cyclon.js";
 
+/** Maximum age of a signed gossip message before it is rejected as a potential replay. */
+const GOSSIP_MAX_MESSAGE_AGE_MS = 5 * 60 * 1000; // 5 minutes
+
 // ---------------------------------------------------------------------------
 // Direction-aware helpers
 // ---------------------------------------------------------------------------
@@ -92,7 +95,7 @@ interface LivenessState {
 // ---------------------------------------------------------------------------
 
 /** Compute HMAC-SHA256 over a payload (excluding the hmacSignature field). */
-function signPayload(payload: Record<string, unknown>, secret: string): string {
+export function signPayload(payload: Record<string, unknown>, secret: string): string {
   const { hmacSignature: _, ...data } = payload;
   const hmac = createHmac("sha256", secret);
   hmac.update(JSON.stringify(data));
@@ -242,6 +245,12 @@ export class DefaultGossipService implements GossipService {
         console.warn(`Gossip: rejecting exchange from ${message.peerId} — invalid or missing HMAC`);
         return this.currentMessage();
       }
+      // Reject messages outside the 5-minute clock-skew window to prevent replay attacks.
+      const age = Math.abs(this.now() - new Date(message.timestamp).getTime());
+      if (age > GOSSIP_MAX_MESSAGE_AGE_MS) {
+        console.warn(`Gossip: rejecting exchange from ${message.peerId} — message too old (${age}ms)`);
+        return this.currentMessage();
+      }
     }
 
     // Update liveness for sender
@@ -271,6 +280,15 @@ export class DefaultGossipService implements GossipService {
       if (!verifyPayload(request as unknown as Record<string, unknown>, this.config.hmacSecret)) {
         console.warn(
           `Gossip: rejecting shuffle from ${request.sender.peerId} — invalid or missing HMAC`,
+        );
+        return { offered: [] };
+      }
+      // Reject replayed messages outside the 5-minute clock-skew window.
+      const ts = request.sender.lastSeen;
+      const age = Math.abs(this.now() - new Date(ts).getTime());
+      if (age > GOSSIP_MAX_MESSAGE_AGE_MS) {
+        console.warn(
+          `Gossip: rejecting shuffle from ${request.sender.peerId} — message too old (${age}ms)`,
         );
         return { offered: [] };
       }
