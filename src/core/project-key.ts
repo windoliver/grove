@@ -1,3 +1,13 @@
+/**
+ * Namespace key management — bearer token generation and credential I/O.
+ *
+ * Generates opaque API keys scoped to a `{project-uuid}/{worktree-name}` namespace.
+ * - `.grove/api-key` — client credential (one key per clone, 0o600)
+ * - `.grove/server-keys.yaml` — server registry mapping keys to namespaces (0o600)
+ *
+ * Both files are covered by the root `.gitignore` (`.grove/` is excluded).
+ */
+
 import { randomBytes } from "node:crypto";
 import { execSync } from "node:child_process";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -38,7 +48,7 @@ export async function detectWorktreeName(): Promise<string> {
 }
 
 /** Write the client credential to `<groveDir>/api-key` (overwrites). */
-export async function writeClientKey(groveDir: string, key: string): Promise<void> {
+export function writeClientKey(groveDir: string, key: string): void {
   const target = join(groveDir, CLIENT_KEY_FILE);
   const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
   writeFileSync(tmp, `${key}\n`, { encoding: "utf8", mode: 0o600 });
@@ -51,15 +61,15 @@ interface ServerKeysFile {
 }
 
 /** Append a key → namespace entry to `<groveDir>/server-keys.yaml`. */
-export async function appendServerKey(
+export function appendServerKey(
   groveDir: string,
   key: string,
   namespace: string,
-): Promise<void> {
-  const path = join(groveDir, SERVER_KEYS_FILE);
+): void {
+  const filePath = join(groveDir, SERVER_KEYS_FILE);
   let existing: ServerKeysFile = { version: 1, keys: {} };
   try {
-    const raw = readFileSync(path, "utf8");
+    const raw = readFileSync(filePath, "utf8");
     const parsed = parseYaml(raw) as ServerKeysFile;
     if (parsed?.version === 1 && parsed.keys) {
       existing = parsed;
@@ -68,7 +78,7 @@ export async function appendServerKey(
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
   existing.keys[key] = { namespace, createdAt: new Date().toISOString() };
-  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
+  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   writeFileSync(tmp, stringifyYaml(existing), { encoding: "utf8", mode: 0o600 });
-  renameSync(tmp, path);
+  renameSync(tmp, filePath);
 }
