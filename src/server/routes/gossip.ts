@@ -24,6 +24,7 @@ const frontierDigestEntrySchema = z.object({
   value: z.number(),
   cid: z.string(),
   tags: z.array(z.string()).optional(),
+  direction: z.enum(["minimize", "maximize"]).optional(),
 });
 
 const capabilitiesSchema = z.record(
