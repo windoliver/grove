@@ -8,7 +8,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { computeCid } from "../core/manifest.js";
 import type { ContributionInput } from "../core/models.js";
-import { createTestApp } from "../server/test-helpers.js";
+import { createTestApp, TEST_NAMESPACE_KEY } from "../server/test-helpers.js";
 import { runProviderConformanceTests } from "./provider.conformance.js";
 import { RemoteDataProvider } from "./remote-provider.js";
 
@@ -83,7 +83,9 @@ async function createTestProvider(): Promise<{
     fetch: ctx.app.fetch,
   });
 
-  const provider = new RemoteDataProvider(`http://localhost:${server.port}`);
+  const provider = new RemoteDataProvider(`http://localhost:${server.port}`, {
+    apiKey: TEST_NAMESPACE_KEY,
+  });
 
   return {
     provider,
