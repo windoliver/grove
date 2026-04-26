@@ -22,6 +22,7 @@ import type {
 import { InMemoryContributionStore } from "../core/testing.js";
 import { createApp } from "./app.js";
 import type { ServerDeps, ServerEnv } from "./deps.js";
+import type { KeyRegistry } from "./middleware/namespace-auth.js";
 
 // ---------------------------------------------------------------------------
 // In-memory ContentStore (CAS)
@@ -292,7 +293,8 @@ export function createTestApp(): TestContext {
   const frontier = new DefaultFrontierCalculator(contributionStore);
 
   const deps: ServerDeps = { contributionStore, claimStore, cas, frontier };
-  const app = createApp(deps);
+  const registry: KeyRegistry = new Map();
+  const app = createApp(deps, registry);
 
   return { app, deps, contributionStore, claimStore, cas };
 }

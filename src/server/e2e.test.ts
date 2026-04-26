@@ -12,6 +12,7 @@ import { _resetIdempotencyCacheForTests } from "../core/operations/contribute.js
 import { InMemoryContributionStore } from "../core/testing.js";
 import { createApp } from "./app.js";
 import type { ServerDeps } from "./deps.js";
+import type { KeyRegistry } from "./middleware/namespace-auth.js";
 import {
   InMemoryClaimStore,
   InMemoryContentStore,
@@ -32,7 +33,8 @@ beforeAll(() => {
   const frontier = new DefaultFrontierCalculator(contributionStore);
 
   const deps: ServerDeps = { contributionStore, claimStore, cas, frontier };
-  const app = createApp(deps);
+  const registry: KeyRegistry = new Map();
+  const app = createApp(deps, registry);
 
   server = Bun.serve({
     port: 0, // Random available port
@@ -46,8 +48,8 @@ afterAll(() => {
 });
 
 describe("E2E: health check", () => {
-  it("GET /api/health returns ok status", async () => {
-    const res = await fetch(`${baseUrl}/api/health`);
+  it("GET /health returns ok status", async () => {
+    const res = await fetch(`${baseUrl}/health`);
     expect(res.status).toBe(200);
     const data = (await res.json()) as Json;
     expect(data.status).toBe("ok");
