@@ -168,11 +168,23 @@ async function createNexusProvider(
     // Best-effort — grove.db may not exist yet
   }
 
+  // Read the local .grove/api-key for authenticating to the co-located HTTP server.
+  let serverApiKey: string | undefined;
+  try {
+    const { resolveGroveDir } = await import("../cli/utils/grove-dir.js");
+    const { readClientKey } = await import("../core/project-key.js");
+    const { groveDir } = resolveGroveDir(backend.groveOverride);
+    serverApiKey = readClientKey(groveDir);
+  } catch {
+    // No .grove/api-key found — server calls will get 400
+  }
+
   return new NexusDataProvider({
     nexusConfig: { client, zoneId: "default" },
     workspaceManager,
     backendLabel: label,
     serverUrl,
+    serverApiKey,
     goalSessionStore,
     handoffStore,
   });

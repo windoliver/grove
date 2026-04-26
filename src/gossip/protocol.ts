@@ -100,7 +100,7 @@ function signPayload(payload: Record<string, unknown>, secret: string): string {
 }
 
 /** Verify HMAC-SHA256 signature on a payload using timing-safe comparison. */
-function verifyPayload(
+export function verifyPayload(
   payload: Record<string, unknown> & { hmacSignature?: string },
   secret: string,
 ): boolean {

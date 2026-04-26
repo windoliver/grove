@@ -57,8 +57,11 @@ export function createApp(deps: ServerDeps, registry: KeyRegistry): Hono<ServerE
   app.route("/health", health);
 
   // All /api/* routes require a valid namespace bearer token.
-  // Gossip routes are exempt — they use their own HMAC-based server-to-server auth.
-  app.use("/api/*", namespaceAuth(registry, { exempt: ["/api/gossip"] }));
+  // POST gossip endpoints are exempt — they verify HMAC signatures from peer servers.
+  // GET gossip endpoints (peers, frontier) still require a bearer token.
+  app.use("/api/*", namespaceAuth(registry, {
+    exempt: (c) => c.req.method === "POST" && c.req.path.startsWith("/api/gossip"),
+  }));
 
   // Mount route groups
   app.route("/api/agents", agents);

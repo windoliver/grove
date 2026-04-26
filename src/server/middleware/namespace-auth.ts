@@ -39,14 +39,15 @@ export function loadKeyRegistry(serverKeysPath: string): KeyRegistry {
  * On success: sets `c.get("namespace")` to the resolved namespace string.
  * On failure: throws NamespaceMissingError (→ 400) or NamespaceUnauthorizedError (→ 401).
  *
- * @param exempt - Path prefixes to skip auth on (e.g. gossip uses its own HMAC auth).
+ * @param exempt - Predicate returning true for requests that bypass bearer-token auth.
+ *   Use this for routes with their own auth mechanism (e.g. POST gossip uses HMAC).
  */
 export function namespaceAuth(
   registry: KeyRegistry,
-  { exempt = [] }: { exempt?: string[] } = {},
+  { exempt }: { exempt?: (c: { req: { path: string; method: string } }) => boolean } = {},
 ): MiddlewareHandler<ServerEnv> {
   return async (c, next) => {
-    if (exempt.some((prefix) => c.req.path.startsWith(prefix))) {
+    if (exempt?.(c)) {
       await next();
       return;
     }

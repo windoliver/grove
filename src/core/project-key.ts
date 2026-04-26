@@ -11,7 +11,7 @@
 import { randomBytes } from "node:crypto";
 import { execSync } from "node:child_process";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 export const CLIENT_KEY_FILE = "api-key";
@@ -24,17 +24,34 @@ export function generateApiKey(): string {
 }
 
 /**
- * Detect the current git worktree name (branch name or commit hash fallback).
- * Returns "main" if git is unavailable or in a detached HEAD with no branch.
+ * Detect a stable worktree name from the git worktree directory path.
+ *
+ * Uses the basename of the worktree's top-level directory — stable across branch
+ * renames and unique for each worktree path. Two detached worktrees at the same
+ * commit will get distinct names as long as they live in different directories.
+ *
+ * Falls back to branch name, then short commit hash, then "main".
  */
 export async function detectWorktreeName(): Promise<string> {
   try {
+    // Primary: stable identity from the worktree directory name.
+    const toplevel = execSync("git rev-parse --show-toplevel", {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (toplevel) {
+      const name = basename(toplevel).replace(/[^a-zA-Z0-9._-]/g, "-");
+      if (name && name !== ".") return name;
+    }
+  } catch { /* fall through */ }
+
+  try {
+    // Fallback: branch name (changes on checkout, but better than a commit hash).
     const branch = execSync("git rev-parse --abbrev-ref HEAD", {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
     if (branch && branch !== "HEAD") {
-      // Sanitize: replace chars invalid in a URL path segment
       return branch.replace(/[^a-zA-Z0-9._-]/g, "-");
     }
     // Detached HEAD — use short commit hash

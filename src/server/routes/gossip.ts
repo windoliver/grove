@@ -12,6 +12,7 @@ import type { Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
 import { MAX_GOSSIP_FRONTIER_ENTRIES, MAX_GOSSIP_OFFERED_PEERS } from "../../core/constants.js";
+import { verifyPayload } from "../../gossip/protocol.js";
 import type { ServerEnv } from "../deps.js";
 
 // ---------------------------------------------------------------------------
@@ -59,24 +60,30 @@ const gossip: HonoType<ServerEnv> = new Hono<ServerEnv>();
 
 /** POST /api/gossip/exchange — Handle incoming gossip exchange. */
 gossip.post("/exchange", zValidator("json", gossipMessageSchema), async (c) => {
-  const { gossip: gossipService } = c.get("deps");
+  const { gossip: gossipService, gossipHmacSecret } = c.get("deps");
   if (!gossipService) {
     return c.json({ error: { code: "NOT_CONFIGURED", message: "Gossip is not enabled" } }, 501);
   }
 
   const message = c.req.valid("json");
+  if (gossipHmacSecret && !verifyPayload(message as unknown as Record<string, unknown>, gossipHmacSecret)) {
+    return c.json({ error: { code: "GOSSIP_AUTH_FAILED", message: "Invalid or missing HMAC signature" } }, 401);
+  }
   const response = await gossipService.handleExchange(message);
   return c.json(response);
 });
 
 /** POST /api/gossip/shuffle — Handle incoming CYCLON shuffle. */
 gossip.post("/shuffle", zValidator("json", shuffleRequestSchema), async (c) => {
-  const { gossip: gossipService } = c.get("deps");
+  const { gossip: gossipService, gossipHmacSecret } = c.get("deps");
   if (!gossipService) {
     return c.json({ error: { code: "NOT_CONFIGURED", message: "Gossip is not enabled" } }, 501);
   }
 
   const request = c.req.valid("json");
+  if (gossipHmacSecret && !verifyPayload(request as unknown as Record<string, unknown>, gossipHmacSecret)) {
+    return c.json({ error: { code: "GOSSIP_AUTH_FAILED", message: "Invalid or missing HMAC signature" } }, 401);
+  }
   const response = gossipService.handleShuffle(request);
   return c.json(response);
 });
