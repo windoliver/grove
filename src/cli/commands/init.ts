@@ -220,6 +220,18 @@ export async function executeInit(
   });
   const projectId = ensureResult.id;
 
+  // Generate namespace key for this worktree.
+  {
+    const { detectWorktreeName, generateApiKey, writeClientKey, appendServerKey } =
+      await import("../../core/project-key.js");
+    const worktreeName = await detectWorktreeName();
+    const namespace = `${projectId}/${worktreeName}`;
+    const apiKey = generateApiKey();
+    writeClientKey(grovePath, apiKey);
+    appendServerKey(grovePath, apiKey, namespace);
+    console.log(`  namespace: ${namespace}`);
+  }
+
   // 4. Initialize SQLite store. Wrap everything from here through the end
   //    of init in a catch that rolls back the project identity we just
   //    committed in step 3b — otherwise a failure in DB init / config /
