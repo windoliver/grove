@@ -141,9 +141,8 @@ if (registry.size === 0) {
 
 if (seedPeers.length > 0) {
   const allowPrivateIPs = process.env.GROVE_GOSSIP_ALLOW_PRIVATE_IPS === "true";
-  // Pass this server's own API key so peer servers can authenticate gossip requests.
-  const gossipBearerToken = [...registry.keys()][0];
-  const transport = new HttpGossipTransport({ allowPrivateIPs, bearerToken: gossipBearerToken });
+  // Use HMAC (not bearer token) for peer-to-peer auth — namespace API keys must never be sent to peers.
+  const transport = new HttpGossipTransport({ allowPrivateIPs, hmacSecret: gossipHmacSecret });
   gossipService = new DefaultGossipService({
     config: { peerId, address: peerAddress, seedPeers: [...seedPeers], hmacSecret: gossipHmacSecret },
     transport,

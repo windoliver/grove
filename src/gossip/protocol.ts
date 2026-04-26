@@ -277,7 +277,14 @@ export class DefaultGossipService implements GossipService {
     }
 
     this.markAlive(request.sender.peerId);
-    return this.sampler.handleShuffleRequest(request);
+    const response = this.sampler.handleShuffleRequest(request);
+    if (this.config.hmacSecret) {
+      return {
+        ...response,
+        hmacSignature: signPayload(response as unknown as Record<string, unknown>, this.config.hmacSecret),
+      };
+    }
+    return response;
   }
 
   // -------------------------------------------------------------------------
