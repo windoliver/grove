@@ -15,6 +15,16 @@ import { FsCas } from "../../src/local/fs-cas.js";
 import { createSqliteStores } from "../../src/local/sqlite-store.js";
 import { createApp } from "../../src/server/app.js";
 import type { ServerDeps, ServerEnv } from "../../src/server/deps.js";
+import type { KeyRegistry } from "../../src/server/middleware/namespace-auth.js";
+
+// ---------------------------------------------------------------------------
+// Auth constants for this test file
+// ---------------------------------------------------------------------------
+
+const GS_TEST_KEY = `grv_${"d".repeat(64)}`;
+const GS_TEST_NAMESPACE = "goals-sessions-test/main";
+const GS_TEST_AUTH_HEADERS = { Authorization: `Bearer ${GS_TEST_KEY}` };
+const GS_TEST_REGISTRY: KeyRegistry = new Map([[GS_TEST_KEY, GS_TEST_NAMESPACE]]);
 
 // ---------------------------------------------------------------------------
 // Test context with goalSessionStore
@@ -45,7 +55,7 @@ async function createGoalSessionContext(): Promise<GoalSessionTestContext> {
     contract: { contractVersion: 3, name: "test-contract" },
   };
 
-  const app = createApp(deps);
+  const app = createApp(deps, GS_TEST_REGISTRY);
 
   return {
     app,
@@ -80,7 +90,7 @@ describe("PUT /api/session/goal", () => {
   test("creates a goal", async () => {
     const res = await ctx.app.request("/api/session/goal", {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({
         goal: "Ship feature X",
         acceptance: ["Tests pass", "Docs updated"],
@@ -99,7 +109,7 @@ describe("PUT /api/session/goal", () => {
   test("validates input (missing goal field returns 400)", async () => {
     const res = await ctx.app.request("/api/session/goal", {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({
         acceptance: ["Something"],
       }),
@@ -114,7 +124,7 @@ describe("PUT /api/session/goal", () => {
   test("accepts missing acceptance field (defaults to empty array)", async () => {
     const res = await ctx.app.request("/api/session/goal", {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({
         goal: "Ship it",
       }),
@@ -129,7 +139,7 @@ describe("PUT /api/session/goal", () => {
   test("accepts empty acceptance array (goal without criteria)", async () => {
     const res = await ctx.app.request("/api/session/goal", {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({
         goal: "Ship it",
         acceptance: [],
@@ -145,7 +155,7 @@ describe("PUT /api/session/goal", () => {
 
 describe("GET /api/session/goal", () => {
   test("returns 404 when no goal set", async () => {
-    const res = await ctx.app.request("/api/session/goal");
+    const res = await ctx.app.request("/api/session/goal", { headers: GS_TEST_AUTH_HEADERS });
     expect(res.status).toBe(404);
     const data = await res.json();
     expect(data.error.code).toBe("NOT_FOUND");
@@ -155,14 +165,14 @@ describe("GET /api/session/goal", () => {
     // Set a goal first
     await ctx.app.request("/api/session/goal", {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({
         goal: "Build the widget",
         acceptance: ["Widget works"],
       }),
     });
 
-    const res = await ctx.app.request("/api/session/goal");
+    const res = await ctx.app.request("/api/session/goal", { headers: GS_TEST_AUTH_HEADERS });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.goal).toBe("Build the widget");
@@ -178,7 +188,7 @@ describe("POST /api/sessions", () => {
   test("creates a session", async () => {
     const res = await ctx.app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({}),
     });
 
@@ -192,7 +202,7 @@ describe("POST /api/sessions", () => {
   test("creates a session with goal", async () => {
     const res = await ctx.app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({ goal: "Fix all bugs" }),
     });
 
@@ -207,16 +217,16 @@ describe("GET /api/sessions", () => {
     // Create two sessions
     await ctx.app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({}),
     });
     await ctx.app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({ goal: "Session 2" }),
     });
 
-    const res = await ctx.app.request("/api/sessions");
+    const res = await ctx.app.request("/api/sessions", { headers: GS_TEST_AUTH_HEADERS });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.sessions).toBeDefined();
@@ -227,23 +237,24 @@ describe("GET /api/sessions", () => {
     // Create two sessions, archive one
     const res1 = await ctx.app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({}),
     });
     const s1 = await res1.json();
 
     await ctx.app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({}),
     });
 
     // Archive the first
     await ctx.app.request(`/api/sessions/${s1.sessionId}/archive`, {
       method: "PUT",
+      headers: GS_TEST_AUTH_HEADERS,
     });
 
-    const res = await ctx.app.request("/api/sessions?status=active");
+    const res = await ctx.app.request("/api/sessions?status=active", { headers: GS_TEST_AUTH_HEADERS });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.sessions.length).toBe(1);
@@ -254,12 +265,12 @@ describe("GET /api/sessions/:id", () => {
   test("returns session by ID", async () => {
     const createRes = await ctx.app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({ goal: "My session" }),
     });
     const created = await createRes.json();
 
-    const res = await ctx.app.request(`/api/sessions/${created.sessionId}`);
+    const res = await ctx.app.request(`/api/sessions/${created.sessionId}`, { headers: GS_TEST_AUTH_HEADERS });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.sessionId).toBe(created.sessionId);
@@ -267,7 +278,7 @@ describe("GET /api/sessions/:id", () => {
   });
 
   test("returns 404 for missing session", async () => {
-    const res = await ctx.app.request("/api/sessions/nonexistent-id");
+    const res = await ctx.app.request("/api/sessions/nonexistent-id", { headers: GS_TEST_AUTH_HEADERS });
     expect(res.status).toBe(404);
     const data = await res.json();
     expect(data.error.code).toBe("NOT_FOUND");
@@ -278,18 +289,19 @@ describe("PUT /api/sessions/:id/archive", () => {
   test("archives a session", async () => {
     const createRes = await ctx.app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({}),
     });
     const created = await createRes.json();
 
     const res = await ctx.app.request(`/api/sessions/${created.sessionId}/archive`, {
       method: "PUT",
+      headers: GS_TEST_AUTH_HEADERS,
     });
     expect(res.status).toBe(204);
 
     // Verify archived
-    const getRes = await ctx.app.request(`/api/sessions/${created.sessionId}`);
+    const getRes = await ctx.app.request(`/api/sessions/${created.sessionId}`, { headers: GS_TEST_AUTH_HEADERS });
     const data = await getRes.json();
     expect(data.status).toBe("archived");
     expect(data.endedAt).toBeTruthy();
@@ -298,6 +310,7 @@ describe("PUT /api/sessions/:id/archive", () => {
   test("returns 404 for missing session", async () => {
     const res = await ctx.app.request("/api/sessions/nonexistent-id/archive", {
       method: "PUT",
+      headers: GS_TEST_AUTH_HEADERS,
     });
     expect(res.status).toBe(404);
   });
@@ -307,20 +320,20 @@ describe("POST /api/sessions/:id/contributions", () => {
   test("adds contribution to session", async () => {
     const createRes = await ctx.app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({}),
     });
     const created = await createRes.json();
 
     const res = await ctx.app.request(`/api/sessions/${created.sessionId}/contributions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({ cid: "blake3:abc123" }),
     });
     expect(res.status).toBe(204);
 
     // Verify contribution count increased
-    const getRes = await ctx.app.request(`/api/sessions/${created.sessionId}`);
+    const getRes = await ctx.app.request(`/api/sessions/${created.sessionId}`, { headers: GS_TEST_AUTH_HEADERS });
     const data = await getRes.json();
     expect(data.contributionCount).toBe(1);
   });
@@ -328,7 +341,7 @@ describe("POST /api/sessions/:id/contributions", () => {
   test("returns 404 for missing session", async () => {
     const res = await ctx.app.request("/api/sessions/nonexistent-id/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({ cid: "blake3:abc" }),
     });
     expect(res.status).toBe(404);
@@ -337,14 +350,14 @@ describe("POST /api/sessions/:id/contributions", () => {
   test("validates input (missing cid returns 400)", async () => {
     const createRes = await ctx.app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({}),
     });
     const created = await createRes.json();
 
     const res = await ctx.app.request(`/api/sessions/${created.sessionId}/contributions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(400);
@@ -359,7 +372,7 @@ describe("POST /api/sessions — topology and preset", () => {
   test("creates session with preset field", async () => {
     const res = await ctx.app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({ preset: "review-loop" }),
     });
 
@@ -380,7 +393,7 @@ describe("POST /api/sessions — topology and preset", () => {
   test("creates session with inline topology", async () => {
     const res = await ctx.app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({
         topology: {
           structure: "flat",
@@ -401,7 +414,7 @@ describe("POST /api/sessions — topology and preset", () => {
   test("rejects unknown preset name", async () => {
     const res = await ctx.app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({ preset: "nonexistent-preset" }),
     });
 
@@ -416,13 +429,13 @@ describe("POST /api/sessions — topology and preset", () => {
     // Create with preset
     const createRes = await ctx.app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({ preset: "review-loop" }),
     });
     const created = await createRes.json();
 
     // GET by ID should include topology
-    const res = await ctx.app.request(`/api/sessions/${created.sessionId}`);
+    const res = await ctx.app.request(`/api/sessions/${created.sessionId}`, { headers: GS_TEST_AUTH_HEADERS });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.topology).toBeDefined();
@@ -434,12 +447,12 @@ describe("POST /api/sessions — topology and preset", () => {
     // Create a session with preset (which has topology)
     await ctx.app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({ preset: "review-loop" }),
     });
 
     // List should NOT include topology (it is omitted for performance)
-    const res = await ctx.app.request("/api/sessions");
+    const res = await ctx.app.request("/api/sessions", { headers: GS_TEST_AUTH_HEADERS });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.sessions.length).toBeGreaterThanOrEqual(1);
@@ -456,7 +469,7 @@ describe("POST /api/sessions — topology and preset", () => {
 
     const res = await ctx.app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({
         preset: "review-loop",
         topology: inlineTopology,
@@ -475,7 +488,7 @@ describe("POST /api/sessions — topology and preset", () => {
   test("creates session with goal + preset", async () => {
     const res = await ctx.app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({
         goal: "Fix bugs",
         preset: "review-loop",
@@ -499,7 +512,7 @@ describe("POST /api/sessions (config snapshot)", () => {
   test("session creation snapshots server contract as config", async () => {
     const res = await ctx.app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({ goal: "Config snapshot test" }),
     });
 
@@ -508,7 +521,7 @@ describe("POST /api/sessions (config snapshot)", () => {
     expect(data.sessionId).toBeDefined();
 
     // Retrieve the session and check config is stored
-    const getRes = await ctx.app.request(`/api/sessions/${data.sessionId}`);
+    const getRes = await ctx.app.request(`/api/sessions/${data.sessionId}`, { headers: GS_TEST_AUTH_HEADERS });
     expect(getRes.status).toBe(200);
   });
 
@@ -528,11 +541,11 @@ describe("POST /api/sessions (config snapshot)", () => {
       goalSessionStore: stores2.goalSessionStore,
       // No contract!
     };
-    const app2 = createApp(deps2);
+    const app2 = createApp(deps2, GS_TEST_REGISTRY);
 
     const res = await app2.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({ goal: "Should fail" }),
     });
 
@@ -546,7 +559,7 @@ describe("POST /api/sessions (config snapshot)", () => {
   });
 
   test("GET /api/grove/contract returns configured contract", async () => {
-    const res = await ctx.app.request("/api/grove/contract");
+    const res = await ctx.app.request("/api/grove/contract", { headers: GS_TEST_AUTH_HEADERS });
     expect(res.status).toBe(200);
     const data = (await res.json()) as { name: string };
     expect(data.name).toBe("test-contract");
@@ -565,9 +578,9 @@ describe("POST /api/sessions (config snapshot)", () => {
       cas: cas3,
       frontier: frontier3,
     };
-    const app3 = createApp(deps3);
+    const app3 = createApp(deps3, GS_TEST_REGISTRY);
 
-    const res = await app3.request("/api/grove/contract");
+    const res = await app3.request("/api/grove/contract", { headers: GS_TEST_AUTH_HEADERS });
     expect(res.status).toBe(404);
     stores3.close();
     cas3.close();
@@ -578,7 +591,7 @@ describe("POST /api/sessions (config snapshot)", () => {
     // Create session
     const createRes = await ctx.app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({ goal: "Lifecycle test" }),
     });
     expect(createRes.status).toBe(201);
@@ -587,11 +600,12 @@ describe("POST /api/sessions (config snapshot)", () => {
     // Archive session
     const archiveRes = await ctx.app.request(`/api/sessions/${sessionId}/archive`, {
       method: "PUT",
+      headers: GS_TEST_AUTH_HEADERS,
     });
     expect(archiveRes.status).toBe(204);
 
     // Config should still be retrievable
-    const getRes = await ctx.app.request(`/api/sessions/${sessionId}`);
+    const getRes = await ctx.app.request(`/api/sessions/${sessionId}`, { headers: GS_TEST_AUTH_HEADERS });
     expect(getRes.status).toBe(200);
   });
 });

@@ -7,6 +7,7 @@ import { SqliteGoalSessionStore } from "../../../src/local/sqlite-goal-session-s
 import { initSqliteDb } from "../../../src/local/sqlite-store.js";
 import { createApp } from "../../../src/server/app.js";
 import type { ServerDeps } from "../../../src/server/deps.js";
+import type { KeyRegistry } from "../../../src/server/middleware/namespace-auth.js";
 
 interface NoContractFixture {
   readonly deps: ServerDeps;
@@ -48,13 +49,18 @@ function makeDepsWithoutContract(): NoContractFixture {
   };
 }
 
+const NC_TEST_KEY = `grv_${"e".repeat(64)}`;
+const NC_TEST_NAMESPACE = "no-contract-test/main";
+const NC_TEST_AUTH_HEADERS = { Authorization: `Bearer ${NC_TEST_KEY}` };
+const NC_TEST_REGISTRY: KeyRegistry = new Map([[NC_TEST_KEY, NC_TEST_NAMESPACE]]);
+
 describe("POST /api/sessions without loaded contract", () => {
   let fixture: NoContractFixture;
   let app: ReturnType<typeof createApp>;
 
   beforeEach(() => {
     fixture = makeDepsWithoutContract();
-    app = createApp(fixture.deps);
+    app = createApp(fixture.deps, NC_TEST_REGISTRY);
   });
 
   afterEach(async () => {
@@ -64,7 +70,7 @@ describe("POST /api/sessions without loaded contract", () => {
   test("with preset only → 201 with snapshotted session config", async () => {
     const resp = await app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...NC_TEST_AUTH_HEADERS },
       body: JSON.stringify({ goal: "test goal", preset: "review-loop" }),
     });
 
@@ -79,7 +85,7 @@ describe("POST /api/sessions without loaded contract", () => {
   test("with neither preset nor contract → 400", async () => {
     const resp = await app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...NC_TEST_AUTH_HEADERS },
       body: JSON.stringify({ goal: "test goal" }),
     });
 
@@ -92,7 +98,7 @@ describe("POST /api/sessions without loaded contract", () => {
   test("with unknown preset → 400", async () => {
     const resp = await app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...NC_TEST_AUTH_HEADERS },
       body: JSON.stringify({ goal: "test goal", preset: "does-not-exist" }),
     });
 

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { createTestContext, validManifestBody } from "./helpers.js";
+import { TEST_AUTH_HEADERS, createTestContext, validManifestBody } from "./helpers.js";
 
 describe("GET /api/frontier", () => {
   let ctx: TestContext;
@@ -13,7 +13,7 @@ describe("GET /api/frontier", () => {
   });
 
   test("returns empty frontier when no contributions exist", async () => {
-    const res = await ctx.app.request("/api/frontier");
+    const res = await ctx.app.request("/api/frontier", { headers: TEST_AUTH_HEADERS });
 
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -27,11 +27,11 @@ describe("GET /api/frontier", () => {
   test("returns frontier with recency dimension", async () => {
     await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(validManifestBody({ summary: "First" })),
     });
 
-    const res = await ctx.app.request("/api/frontier");
+    const res = await ctx.app.request("/api/frontier", { headers: TEST_AUTH_HEADERS });
 
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -43,7 +43,7 @@ describe("GET /api/frontier", () => {
     for (let i = 0; i < 3; i++) {
       await ctx.app.request("/api/contributions", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
         body: JSON.stringify(
           validManifestBody({
             summary: `Item ${i}`,
@@ -53,7 +53,7 @@ describe("GET /api/frontier", () => {
       });
     }
 
-    const res = await ctx.app.request("/api/frontier?limit=2");
+    const res = await ctx.app.request("/api/frontier?limit=2", { headers: TEST_AUTH_HEADERS });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.byRecency).toHaveLength(2);
@@ -62,12 +62,12 @@ describe("GET /api/frontier", () => {
   test("filters by kind", async () => {
     await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(validManifestBody({ kind: "work", summary: "Work item" })),
     });
     await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(
         validManifestBody({
           kind: "review",
@@ -77,7 +77,7 @@ describe("GET /api/frontier", () => {
       ),
     });
 
-    const res = await ctx.app.request("/api/frontier?kind=work");
+    const res = await ctx.app.request("/api/frontier?kind=work", { headers: TEST_AUTH_HEADERS });
     expect(res.status).toBe(200);
     const data = await res.json();
     // Only work contributions in recency
@@ -89,11 +89,11 @@ describe("GET /api/frontier", () => {
   test("filters by tags", async () => {
     await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(validManifestBody({ summary: "Tagged item", tags: ["perf"] })),
     });
 
-    const res = await ctx.app.request("/api/frontier?tags=perf");
+    const res = await ctx.app.request("/api/frontier?tags=perf", { headers: TEST_AUTH_HEADERS });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.byRecency).toHaveLength(1);
@@ -102,7 +102,7 @@ describe("GET /api/frontier", () => {
   test("filters by context field", async () => {
     await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(
         validManifestBody({
           summary: "H100 run",
@@ -112,7 +112,7 @@ describe("GET /api/frontier", () => {
     });
     await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(
         validManifestBody({
           summary: "A100 run",
@@ -124,6 +124,7 @@ describe("GET /api/frontier", () => {
 
     const res = await ctx.app.request(
       `/api/frontier?context=${encodeURIComponent('{"hardware":"H100"}')}`,
+      { headers: TEST_AUTH_HEADERS },
     );
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -132,21 +133,30 @@ describe("GET /api/frontier", () => {
   });
 
   test("returns 400 for invalid context JSON", async () => {
-    const res = await ctx.app.request(`/api/frontier?context=${encodeURIComponent("not-json")}`);
+    const res = await ctx.app.request(
+      `/api/frontier?context=${encodeURIComponent("not-json")}`,
+      { headers: TEST_AUTH_HEADERS },
+    );
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toContain("Invalid context");
   });
 
   test("returns 400 for null context", async () => {
-    const res = await ctx.app.request(`/api/frontier?context=${encodeURIComponent("null")}`);
+    const res = await ctx.app.request(
+      `/api/frontier?context=${encodeURIComponent("null")}`,
+      { headers: TEST_AUTH_HEADERS },
+    );
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toContain("must be a JSON object");
   });
 
   test("returns 400 for array context", async () => {
-    const res = await ctx.app.request(`/api/frontier?context=${encodeURIComponent("[1,2]")}`);
+    const res = await ctx.app.request(
+      `/api/frontier?context=${encodeURIComponent("[1,2]")}`,
+      { headers: TEST_AUTH_HEADERS },
+    );
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toContain("must be a JSON object");
