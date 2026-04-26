@@ -532,7 +532,6 @@ export function App({
   // The Feed view also subscribes directly inside running-view for fast-path
   // refresh without a full app re-render — that path stays as defense in
   // depth and is not removed here.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: eventBus is used in body; biome miscounts the conditional access.
   useEffect(() => {
     if (!eventBus) return;
     const roles = topology?.roles.map((r) => r.name) ?? [];
