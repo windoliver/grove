@@ -525,8 +525,7 @@ export function App({
     refreshTerminalBuffers,
   ]);
 
-  // SSE push → global refresh fan-out. NexusWsBridge publishes inbox-delivery
-  // events on `role:<targetRole>` channels. Bumping refreshSignal here makes
+  // SSE push → global refresh fan-out. Bumping refreshSignal here makes
   // every panel-level usePolledData (DAG, Frontier, Dashboard …) re-fetch
   // immediately instead of waiting up to `intervalMs` for the next poll.
   // The Feed view also subscribes directly inside running-view for fast-path
