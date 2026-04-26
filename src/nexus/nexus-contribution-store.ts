@@ -683,7 +683,7 @@ export class NexusContributionStore implements ContributionStore {
 
   async listEntities(query?: ContributionQuery): Promise<readonly ContributionEntity[]> {
     const items = await this.list(query);
-    return items.map(contributionToEntity);
+    return items.map((c) => contributionToEntity(c, this.zoneId));
   }
 
   close(): void {

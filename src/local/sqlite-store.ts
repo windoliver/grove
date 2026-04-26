@@ -1235,7 +1235,7 @@ export class SqliteContributionStore implements ContributionStore {
 
   async listEntities(query?: ContributionQuery): Promise<readonly ContributionEntity[]> {
     const items = await this.list(query);
-    return items.map(contributionToEntity);
+    return items.map((c) => contributionToEntity(c, "default"));
   }
 
   /**
@@ -1708,7 +1708,7 @@ export class SqliteClaimStore implements ClaimStore {
     const baseQuery: ClaimQuery | undefined =
       query === undefined ? undefined : { ...query, status: undefined };
     const items = await this.listClaims(baseQuery);
-    const entities = items.map((c) => claimToEntity(c));
+    const entities = items.map((c) => claimToEntity(c, () => Date.now()));
     if (query?.status === undefined) return entities;
     const wanted = Array.isArray(query.status) ? new Set(query.status) : new Set([query.status]);
     return entities.filter((e) => wanted.has(e.status.phase));
