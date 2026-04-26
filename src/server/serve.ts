@@ -18,7 +18,7 @@ import { DefaultGossipService } from "../gossip/protocol.js";
 import { createLocalRuntime } from "../local/runtime.js";
 import { parseGossipSeeds, parsePort } from "../shared/env.js";
 import { readProjectId } from "../core/project-id.js";
-import { detectWorktreeName, readNamespace } from "../core/project-key.js";
+import { appendServerKey, detectWorktreeName, readClientKey, readNamespace, writeClientKey, writeNamespace } from "../core/project-key.js";
 import { createApp } from "./app.js";
 import type { ServerDeps } from "./deps.js";
 import { loadKeyRegistry } from "./middleware/namespace-auth.js";
@@ -118,10 +118,25 @@ if (!zoneId) {
 
 const rawRegistry = loadKeyRegistry(join(GROVE_DIR, "server-keys.yaml"));
 // Scope registry to this server's own namespace only — reject keys for other worktrees.
-const registry = new Map([...rawRegistry].filter(([, ns]) => ns === zoneId));
+let registry = new Map([...rawRegistry].filter(([, ns]) => ns === zoneId));
 if (registry.size === 0) {
+  // Pre-A3 workspace: project-id exists but no server-keys.yaml yet.
+  // Auto-generate credentials so API routes are usable immediately (upgrade path).
+  const { randomBytes } = await import("node:crypto");
+  const existingClientKey = readClientKey(GROVE_DIR);
+  const clientKey = existingClientKey ?? randomBytes(32).toString("hex");
+  if (!existingClientKey) {
+    writeClientKey(GROVE_DIR, clientKey);
+  }
+  appendServerKey(GROVE_DIR, clientKey, zoneId);
+  // Persist the namespace file so future startups skip auto-derive.
+  if (!readNamespace(GROVE_DIR)) {
+    writeNamespace(GROVE_DIR, zoneId);
+  }
+  registry = new Map([[clientKey, zoneId]]);
   console.warn(
-    "grove-server: server-keys.yaml is absent or empty (or no key matches this namespace) — all API calls will return 400. Run `grove init`.",
+    `grove-server: auto-generated namespace credentials for '${zoneId}'. ` +
+      `Re-run 'grove init' to register additional keys.`,
   );
 }
 
