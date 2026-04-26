@@ -244,6 +244,7 @@ export function App({
   presetName,
   groveDir,
   userConfig,
+  eventBus,
 }: AppProps): React.ReactNode {
   const renderer = useRenderer();
   const nav = useNavigation();
@@ -523,6 +524,32 @@ export function App({
     refreshProfiles,
     refreshTerminalBuffers,
   ]);
+
+  // SSE push → global refresh fan-out. Bumping refreshSignal here makes
+  // every panel-level usePolledData (DAG, Frontier, Dashboard …) re-fetch
+  // immediately instead of waiting up to `intervalMs` for the next poll.
+  // The Feed view also subscribes directly inside running-view for fast-path
+  // refresh without a full app re-render — that path stays as defense in
+  // depth and is not removed here.
+  useEffect(() => {
+    if (!eventBus) return;
+    const roles = topology?.roles.map((r) => r.name) ?? [];
+    if (roles.length === 0) return;
+    const handler = () => {
+      // Invalidate provider TTL caches BEFORE bumping the refresh signal.
+      // The store-backed provider hands back its last full scan inside
+      // the 2 s list-cache window; without invalidation a contribution
+      // landing 1.5 s after the previous scan would still return the
+      // pre-arrival snapshot and the UI would not update until the
+      // next 30 s fallback poll.
+      provider.invalidateCaches?.();
+      setRefreshSignal((s) => s + 1);
+    };
+    for (const role of roles) eventBus.subscribe(role, handler);
+    return () => {
+      for (const role of roles) eventBus.unsubscribe(role, handler);
+    };
+  }, [eventBus, topology, provider]);
 
   const hasGoals = isGoalProvider(provider);
   const paletteItems = useMemo(

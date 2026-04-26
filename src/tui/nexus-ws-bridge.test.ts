@@ -134,7 +134,7 @@ describe("NexusWsBridge", () => {
     bus.close();
   });
 
-  test("handleEvent publishes to EventBus on message_delivered", () => {
+  test("handleEvent publishes to EventBus on contribution-bearing message_delivered", async () => {
     const runtime = makeMockRuntime();
     const bus = new LocalEventBus();
     const received: GroveEvent[] = [];
@@ -144,13 +144,19 @@ describe("NexusWsBridge", () => {
     const session = makeSession("reviewer");
     bridge.registerSession("reviewer", session);
 
-    // Mock fetch for readAndPush VFS read — return valid data
+    // Mock fetch for readAndPush VFS read — return a contribution
+    // payload (cid + kind). Without those fields, the publish path
+    // intentionally skips firing so non-contribution IPC traffic does
+    // not invalidate the contribution list cache.
     globalThis.fetch = (async () =>
       new Response(
         JSON.stringify({
           result: {
             data: Buffer.from(
-              JSON.stringify({ sender: "coder", payload: { summary: "test contribution" } }),
+              JSON.stringify({
+                sender: "coder",
+                payload: { cid: "blake3:abc", kind: "work", summary: "test contribution" },
+              }),
             ).toString("base64"),
           },
         }),
@@ -170,12 +176,65 @@ describe("NexusWsBridge", () => {
       }),
     );
 
-    // EventBus should have received the event
+    // readAndPush is fire-and-forget — wait for the microtask queue to
+    // drain so the publish call inside it has run.
+    await new Promise((r) => setTimeout(r, 0));
+
     expect(received).toHaveLength(1);
     expect(received[0]!.type).toBe("contribution");
     expect(received[0]!.sourceRole).toBe("coder");
     expect(received[0]!.targetRole).toBe("reviewer");
-    expect(received[0]!.payload).toEqual({ message_id: "msg-1" });
+    expect(received[0]!.payload).toMatchObject({
+      message_id: "msg-1",
+      cid: "blake3:abc",
+      kind: "work",
+    });
+
+    bridge.close();
+    bus.close();
+  });
+
+  test("handleEvent does NOT publish for non-contribution IPC (no cid+kind)", async () => {
+    const runtime = makeMockRuntime();
+    const bus = new LocalEventBus();
+    const received: GroveEvent[] = [];
+    bus.subscribe("reviewer", (e) => received.push(e));
+
+    const bridge = new TestableNexusWsBridge(makeBridgeOpts({ runtime, eventBus: bus }));
+    const session = makeSession("reviewer");
+    bridge.registerSession("reviewer", session);
+
+    // Plain IPC payload — no cid + kind. Should NOT trigger a
+    // contribution event on the bus, otherwise high-volume ACP/agent
+    // traffic would force a full VFS rescan per delivery.
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          result: {
+            data: Buffer.from(
+              JSON.stringify({ sender: "coder", payload: { summary: "plain notice" } }),
+            ).toString("base64"),
+          },
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+
+    bridge.testHandleEvent(
+      "reviewer",
+      "message_delivered",
+      JSON.stringify({
+        event: "message_delivered",
+        message_id: "msg-2",
+        sender: "coder",
+        recipient: "reviewer",
+        type: "event",
+        path: "/inbox/msg-2",
+      }),
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(received).toHaveLength(0);
 
     bridge.close();
     bus.close();

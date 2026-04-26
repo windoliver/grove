@@ -584,6 +584,20 @@ export abstract class StoreBackedProvider
   }
 
   /**
+   * Drop the contribution store's TTL list cache so the next read re-scans
+   * the backend. Used by the SSE refresh fan-out (app.tsx) so an inbox
+   * push that lands inside the cache TTL window doesn't leave the UI on
+   * the pre-arrival snapshot until the next 30 s fallback poll.
+   *
+   * Stores without a list cache implement this as a no-op (only
+   * NexusContributionStore currently has one).
+   */
+  invalidateCaches(): void {
+    const store = this.store as ContributionStore & { invalidateListCache?: () => void };
+    store.invalidateListCache?.();
+  }
+
+  /**
    * Hook for subclasses to release additional resources during {@link close}.
    * Called after the core stores have been closed. Override this instead of
    * `close()` to avoid forgetting the base cleanup.

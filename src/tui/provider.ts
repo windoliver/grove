@@ -264,6 +264,15 @@ export interface TuiDataProvider {
   /** Clean up a workspace directory by targetRef and agentId (optional). */
   cleanWorkspace?(targetRef: string, agentId: string): Promise<void>;
 
+  /**
+   * Drop any in-memory snapshot caches the provider is holding (e.g. the
+   * NexusContributionStore list-cache). Optional — providers without TTL
+   * caches need not implement this. Callers with out-of-band proof of new
+   * data (SSE inbox-delivery push) should invoke this BEFORE triggering a
+   * refetch so the next read does not return a stale snapshot.
+   */
+  invalidateCaches?(): void;
+
   /** Release resources. */
   close(): void;
 }

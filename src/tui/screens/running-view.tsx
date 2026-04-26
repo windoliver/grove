@@ -258,21 +258,25 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     // the feed silently stopped refreshing on push in live sessions — the
     // per-poll interval was the only refresh path.
     //
-    // Subscribe once per topology role so any push triggers a refresh.
+    // ScreenManager renders RunningView OUTSIDE App's RefreshContext
+    // provider (advanced/boardroom mode is a different screen state),
+    // so useRefreshSignal does nothing here. Subscribe directly to the
+    // EventBus so SSE pushes refresh the feed/dashboard immediately.
     useEffect(() => {
-      debugLog("eventBus", `exists=${!!eventBus} roles=${topology?.roles.length ?? 0}`);
       if (!eventBus) return;
+      const roles = topology?.roles.map((r) => r.name) ?? [];
+      if (roles.length === 0) return;
       const handler = () => {
-        debugLog("eventBus", "SSE event received — refreshing polls");
+        const p = provider as { invalidateCaches?: () => void };
+        p.invalidateCaches?.();
         dashboardPoll.refresh();
         contributionsPoll.refresh();
       };
-      const roles = topology?.roles.map((r) => r.name) ?? [];
       for (const role of roles) eventBus.subscribe(role, handler);
       return () => {
         for (const role of roles) eventBus.unsubscribe(role, handler);
       };
-    }, [eventBus, topology, dashboardPoll.refresh, contributionsPoll.refresh]);
+    }, [eventBus, topology, provider, dashboardPoll.refresh, contributionsPoll.refresh]);
 
     const dashboard = dashboardPoll.data ?? undefined;
     const contributions = contributionsPoll.data;
