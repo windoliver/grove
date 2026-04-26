@@ -212,6 +212,7 @@ const deps: ServerDeps = {
   cas: serverCas,
   frontier: serverFrontier,
   gossip: gossipService,
+  gossipHmacSecret: gossipHmacSecret,
   topology: runtime.contract?.topology,
   contract: runtime.contract,
   idempotencyStore: runtime.idempotencyStore,

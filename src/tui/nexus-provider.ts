@@ -58,6 +58,8 @@ export interface NexusProviderConfig {
    * from the server's HTTP API so that all agents share the same state.
    */
   readonly serverUrl?: string | undefined;
+  /** Bearer token for authenticating to the co-located server (from .grove/api-key). */
+  readonly serverApiKey?: string | undefined;
   /** Optional goal/session store — only used when no serverUrl is available. */
   readonly goalSessionStore?: GoalSessionStore | undefined;
   /** Optional handoff store — reads from local grove.db, not Nexus. */
@@ -83,6 +85,7 @@ export class NexusDataProvider
   private readonly zoneId: string;
   private readonly bountyStore: NexusBountyStore;
   private readonly serverUrl: string | undefined;
+  private readonly serverApiKey: string | undefined;
   private readonly nexusSessionStore: NexusSessionStore;
 
   constructor(config: NexusProviderConfig) {
@@ -123,11 +126,16 @@ export class NexusDataProvider
 
     this.bountyStore = new NexusBountyStore(config.nexusConfig);
     this.serverUrl = config.serverUrl?.replace(/\/+$/, "");
+    this.serverApiKey = config.serverApiKey;
 
     const resolved = resolveConfig(config.nexusConfig);
     this.client = resolved.client;
     this.zoneId = resolved.zoneId;
     this.nexusSessionStore = new NexusSessionStore(this.client, this.zoneId);
+  }
+
+  private get authHeaders(): Record<string, string> | undefined {
+    return this.serverApiKey ? { Authorization: `Bearer ${this.serverApiKey}` } : undefined;
   }
 
   /**
@@ -248,7 +256,7 @@ export class NexusDataProvider
     // peer data from its /api/gossip/peers endpoint.
     if (this.serverUrl) {
       try {
-        const resp = await fetch(`${this.serverUrl}/api/gossip/peers`);
+        const resp = await fetch(`${this.serverUrl}/api/gossip/peers`, { headers: this.authHeaders });
         if (resp.ok) {
           const body = (await resp.json()) as { peers: readonly PeerInfo[] };
           return body.peers;
@@ -268,7 +276,7 @@ export class NexusDataProvider
   override async getGoal(): Promise<GoalData | undefined> {
     if (this.serverUrl) {
       try {
-        return await fetchGoalHttp(this.serverUrl);
+        return await fetchGoalHttp(this.serverUrl, this.authHeaders);
       } catch {
         /* server unreachable — fall through to local store */
       }
@@ -278,7 +286,7 @@ export class NexusDataProvider
 
   override async setGoal(goal: string, acceptance: readonly string[]): Promise<GoalData> {
     if (this.serverUrl) {
-      return setGoalHttp(this.serverUrl, goal, acceptance);
+      return setGoalHttp(this.serverUrl, goal, acceptance, this.authHeaders);
     }
     return super.setGoal(goal, acceptance);
   }
@@ -289,7 +297,7 @@ export class NexusDataProvider
   }): Promise<readonly SessionRecord[]> {
     if (this.serverUrl) {
       try {
-        return await listSessionsHttp(this.serverUrl, query);
+        return await listSessionsHttp(this.serverUrl, query, this.authHeaders);
       } catch {
         /* fall through */
       }
@@ -303,7 +311,7 @@ export class NexusDataProvider
     let result: SessionRecord;
     if (this.serverUrl) {
       try {
-        result = await createSessionHttp(this.serverUrl, input);
+        result = await createSessionHttp(this.serverUrl, input, this.authHeaders);
       } catch {
         // HTTP server not running — fall back to local SQLite
         result = await super.createSession(input);
@@ -363,7 +371,7 @@ export class NexusDataProvider
   override async getSession(sessionId: string): Promise<SessionRecord | undefined> {
     if (this.serverUrl) {
       try {
-        return await getSessionHttp(this.serverUrl, sessionId);
+        return await getSessionHttp(this.serverUrl, sessionId, this.authHeaders);
       } catch {
         /* fall through */
       }
@@ -373,14 +381,14 @@ export class NexusDataProvider
 
   override async archiveSession(sessionId: string): Promise<void> {
     if (this.serverUrl) {
-      return archiveSessionHttp(this.serverUrl, sessionId);
+      return archiveSessionHttp(this.serverUrl, sessionId, this.authHeaders);
     }
     return super.archiveSession(sessionId);
   }
 
   override async addContributionToSession(sessionId: string, cid: string): Promise<void> {
     if (this.serverUrl) {
-      return addContributionToSessionHttp(this.serverUrl, sessionId, cid);
+      return addContributionToSessionHttp(this.serverUrl, sessionId, cid, this.authHeaders);
     }
     return super.addContributionToSession(sessionId, cid);
   }
