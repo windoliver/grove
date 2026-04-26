@@ -6,7 +6,7 @@ import { loadKeyRegistry, namespaceAuth } from "./namespace-auth.js";
 // biome-ignore lint/suspicious/noExplicitAny: test file
 type Json = Record<string, any>;
 
-function makeApp(registry: Map<string, string>): Hono {
+function makeApp(registry: Map<string, string>): Hono<{ Variables: { namespace: string } }> {
   const app = new Hono<{ Variables: { namespace: string } }>();
   app.use("/api/*", namespaceAuth(registry));
   app.get("/api/ping", (c) => c.json({ namespace: c.get("namespace") }));
