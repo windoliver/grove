@@ -12,7 +12,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { RunningServices } from "./service-lifecycle.js";
+import * as lifecycle from "./service-lifecycle.js";
 import { stopServices } from "./service-lifecycle.js";
+
+const helpers = lifecycle as typeof lifecycle & {
+  resolveBunExecutable?: (execPath?: string) => string;
+  resolveServicePort?: (name: string, env?: NodeJS.ProcessEnv) => number;
+};
 
 // ---------------------------------------------------------------------------
 // Helpers — fake child process objects
@@ -151,5 +157,26 @@ describe("stopServices", () => {
 
     // Should not throw even though kill() throws
     await stopServices(services);
+  });
+});
+
+describe("service startup configuration", () => {
+  test("server uses PORT while MCP uses MCP_PORT", () => {
+    expect(helpers.resolveServicePort).toBeDefined();
+    const resolveServicePort = helpers.resolveServicePort;
+    if (resolveServicePort === undefined) throw new Error("resolveServicePort is not exported");
+
+    expect(resolveServicePort("server", { PORT: "5515" } as NodeJS.ProcessEnv)).toBe(5515);
+    expect(resolveServicePort("mcp", { MCP_PORT: "4415" } as NodeJS.ProcessEnv)).toBe(4415);
+    expect(resolveServicePort("mcp", { PORT: "5515" } as NodeJS.ProcessEnv)).toBe(4015);
+  });
+
+  test("spawned services prefer the current Bun executable when available", () => {
+    expect(helpers.resolveBunExecutable).toBeDefined();
+    const resolveBunExecutable = helpers.resolveBunExecutable;
+    if (resolveBunExecutable === undefined) throw new Error("resolveBunExecutable is not exported");
+
+    expect(resolveBunExecutable("/Users/example/.bun/bin/bun")).toBe("/Users/example/.bun/bin/bun");
+    expect(resolveBunExecutable("/usr/local/bin/node")).toBe("bun");
   });
 });

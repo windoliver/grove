@@ -6,7 +6,8 @@
  */
 
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { parsePort } from "./env.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -275,11 +276,28 @@ export async function stopServices(services: RunningServices): Promise<void> {
 // Service spawning with health check
 // ---------------------------------------------------------------------------
 
-/** Known service ports. */
-const SERVICE_PORTS: Record<string, number> = { server: 4515, mcp: 4015 };
+/** Default service ports. */
+const DEFAULT_SERVICE_PORTS = { server: 4515, mcp: 4015 } as const;
 
 /** Service health-check timeout (ms). */
 const SERVICE_HEALTH_TIMEOUT_MS = 10_000;
+
+/** Resolve the port a managed service should bind to. */
+export function resolveServicePort(name: string, env: NodeJS.ProcessEnv = process.env): number {
+  if (name === "server") return parsePort(env.PORT, DEFAULT_SERVICE_PORTS.server);
+  if (name === "mcp") return parsePort(env.MCP_PORT, DEFAULT_SERVICE_PORTS.mcp);
+  return 0;
+}
+
+/** Resolve the Bun executable used to spawn managed services. */
+export function resolveBunExecutable(execPath: string = process.execPath): string {
+  return basename(execPath) === "bun" ? execPath : "bun";
+}
+
+function serviceEnv(name: string, groveDir: string): NodeJS.ProcessEnv {
+  const port = resolveServicePort(name);
+  return { ...process.env, GROVE_DIR: groveDir, PORT: String(port) };
+}
 
 /**
  * Poll a /health endpoint until it returns 200 OK or the timeout expires.
@@ -308,7 +326,7 @@ async function spawnService(
   entryPoint: string,
   groveDir: string,
 ): Promise<ChildProcess | null> {
-  const port = SERVICE_PORTS[name];
+  const port = resolveServicePort(name);
   if (port) {
     try {
       const resp = await fetch(`http://localhost:${port}/health`, {
@@ -325,10 +343,10 @@ async function spawnService(
 
   try {
     const { spawn: nodeSpawn } = await import("node:child_process");
-    const child = nodeSpawn("bun", [entryPoint], {
+    const child = nodeSpawn(resolveBunExecutable(), [entryPoint], {
       cwd: join(groveDir, ".."),
       stdio: "ignore",
-      env: { ...process.env, GROVE_DIR: groveDir },
+      env: serviceEnv(name, groveDir),
       detached: true,
     });
     const pid = child.pid ?? 0;
