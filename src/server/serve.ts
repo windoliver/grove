@@ -96,7 +96,26 @@ let contributionStoreForSessionFactory:
 
 const nexusUrl = process.env.GROVE_NEXUS_URL;
 const nexusApiKey = process.env.NEXUS_API_KEY;
-const zoneId = process.env.GROVE_ZONE_ID ?? "default";
+const { readProjectId } = await import("../core/project-id.js");
+const { detectWorktreeName } = await import("../core/project-key.js");
+const { loadKeyRegistry } = await import("./middleware/namespace-auth.js");
+
+const projectId = readProjectId(GROVE_DIR);
+const worktreeName = await detectWorktreeName();
+const zoneId = projectId ? `${projectId}/${worktreeName}` : "default";
+if (!projectId) {
+  console.warn(
+    "grove-server: no project-id found — namespace defaults to 'default'. Run `grove init`.",
+  );
+}
+
+const registry = loadKeyRegistry(join(GROVE_DIR, "server-keys.yaml"));
+if (registry.size === 0) {
+  console.warn(
+    "grove-server: server-keys.yaml is absent or empty — all API calls will return 400. Run `grove init`.",
+  );
+}
+
 if (nexusUrl) {
   const { NexusHttpClient } = await import("../nexus/nexus-http-client.js");
   const { NexusContributionStore } = await import("../nexus/nexus-contribution-store.js");
@@ -178,7 +197,7 @@ const deps: ServerDeps = {
   idempotencyStore: runtime.idempotencyStore,
 };
 
-const app = createApp(deps);
+const app = createApp(deps, registry);
 
 // ---------------------------------------------------------------------------
 // Background sweep reconciler
