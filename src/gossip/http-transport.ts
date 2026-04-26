@@ -16,6 +16,7 @@ import type {
   ShuffleRequest,
   ShuffleResponse,
 } from "../core/gossip/types.js";
+import { verifyPayload } from "./protocol.js";
 
 // ---------------------------------------------------------------------------
 // URL validation — SSRF prevention
@@ -283,8 +284,12 @@ export interface HttpTransportConfig {
    * networks can be reached. Only enable this for trusted environments.
    */
   readonly allowPrivateIPs?: boolean | undefined;
-  /** Bearer token sent as `Authorization: Bearer <token>` to peer servers. */
-  readonly bearerToken?: string | undefined;
+  /**
+   * Shared HMAC-SHA256 secret used to verify signatures on peer responses.
+   * When set, exchange responses and shuffle responses with invalid or missing
+   * signatures are rejected before their data is merged.
+   */
+  readonly hmacSecret?: string | undefined;
 }
 
 /** Default request timeout: 10 seconds. */
@@ -299,18 +304,21 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 export class HttpGossipTransport implements GossipTransport {
   private readonly timeoutMs: number;
   private readonly allowPrivateIPs: boolean;
-  private readonly bearerToken: string | undefined;
+  private readonly hmacSecret: string | undefined;
 
   constructor(config?: HttpTransportConfig) {
     this.timeoutMs = config?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.allowPrivateIPs = config?.allowPrivateIPs ?? false;
-    this.bearerToken = config?.bearerToken;
+    this.hmacSecret = config?.hmacSecret;
   }
 
   async exchange(peer: PeerInfo, message: GossipMessage): Promise<GossipMessage> {
     const url = `${peer.address}/api/gossip/exchange`;
     const validated = await validatePeerUrl(url, { allowPrivateIPs: this.allowPrivateIPs });
     const response = await this.post<GossipMessage>(validated, message, peer.peerId);
+    if (this.hmacSecret && !verifyPayload(response as unknown as Record<string, unknown>, this.hmacSecret)) {
+      throw new PeerUnreachableError({ peerId: peer.peerId, address: validated.pinnedUrl, cause: new Error("exchange response: invalid or missing HMAC signature") });
+    }
     return response;
   }
 
@@ -318,6 +326,9 @@ export class HttpGossipTransport implements GossipTransport {
     const url = `${peer.address}/api/gossip/shuffle`;
     const validated = await validatePeerUrl(url, { allowPrivateIPs: this.allowPrivateIPs });
     const response = await this.post<ShuffleResponse>(validated, request, peer.peerId);
+    if (this.hmacSecret && !verifyPayload(response as unknown as Record<string, unknown>, this.hmacSecret)) {
+      throw new PeerUnreachableError({ peerId: peer.peerId, address: validated.pinnedUrl, cause: new Error("shuffle response: invalid or missing HMAC signature") });
+    }
     return response;
   }
 
@@ -333,7 +344,6 @@ export class HttpGossipTransport implements GossipTransport {
           headers: {
             "Content-Type": "application/json",
             Host: hostHeader,
-            ...(this.bearerToken ? { Authorization: `Bearer ${this.bearerToken}` } : {}),
           },
           body: JSON.stringify(body),
           signal: controller.signal,
