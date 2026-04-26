@@ -56,6 +56,19 @@ const peerId = process.env.GOSSIP_PEER_ID ?? `grove-${PORT}`;
 const peerAddress = process.env.GOSSIP_ADDRESS ?? `http://localhost:${PORT}`;
 
 const seedPeers = parseGossipSeeds(gossipSeedsRaw);
+const gossipHmacSecret = process.env.GROVE_GOSSIP_HMAC_SECRET || undefined;
+
+// Gossip routes bypass namespace auth (peers have different namespaces), so HMAC
+// is the only protection. Require it when gossip is actually configured.
+if (seedPeers.length > 0 && !gossipHmacSecret) {
+  console.error(
+    "grove-server: FATAL: GOSSIP_SEEDS is set without GROVE_GOSSIP_HMAC_SECRET.\n" +
+      "  Gossip routes (/api/gossip/*) are exempt from namespace auth — HMAC is required.\n" +
+      "  Set GROVE_GOSSIP_HMAC_SECRET to a shared secret for all federated peers,\n" +
+      "  or unset GOSSIP_SEEDS to disable gossip.",
+  );
+  process.exit(1);
+}
 
 // ---------------------------------------------------------------------------
 // Start server
@@ -114,12 +127,11 @@ if (registry.size === 0) {
 
 if (seedPeers.length > 0) {
   const allowPrivateIPs = process.env.GROVE_GOSSIP_ALLOW_PRIVATE_IPS === "true";
-  const hmacSecret = process.env.GROVE_GOSSIP_HMAC_SECRET || undefined;
   // Pass this server's own API key so peer servers can authenticate gossip requests.
   const gossipBearerToken = [...registry.keys()][0];
   const transport = new HttpGossipTransport({ allowPrivateIPs, bearerToken: gossipBearerToken });
   gossipService = new DefaultGossipService({
-    config: { peerId, address: peerAddress, seedPeers: [...seedPeers], hmacSecret },
+    config: { peerId, address: peerAddress, seedPeers: [...seedPeers], hmacSecret: gossipHmacSecret },
     transport,
     frontier: runtime.frontier,
     getLoad: () => ({ queueDepth: 0 }),

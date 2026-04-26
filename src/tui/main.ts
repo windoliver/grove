@@ -242,10 +242,22 @@ async function buildAppProps(
 
   const label = backendLabel(backend);
 
+  // For remote backends, read the local API key so topology/contract probes authenticate.
+  let remoteAuthHeaders: Record<string, string> | undefined;
+  if (backend.mode === "remote") {
+    const { resolveGroveDir } = await import("../cli/utils/grove-dir.js");
+    const { readClientKey } = await import("../core/project-key.js");
+    try {
+      const { groveDir } = resolveGroveDir(effectiveGrove);
+      const apiKey = readClientKey(groveDir);
+      if (apiKey) remoteAuthHeaders = { Authorization: `Bearer ${apiKey}` };
+    } catch { /* no key available */ }
+  }
+
   const [provider, topology, contract] = await Promise.all([
     createProviderForTui(backend, label),
-    loadTopology(backend),
-    loadContract(backend),
+    loadTopology(backend, remoteAuthHeaders),
+    loadContract(backend, remoteAuthHeaders),
   ]);
 
   // Create TmuxManager for agent management
