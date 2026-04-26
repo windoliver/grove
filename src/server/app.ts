@@ -48,10 +48,11 @@ export function createApp(deps: ServerDeps, registry: KeyRegistry): Hono<ServerE
   // serve.ts enforces this by filtering the loaded registry to the server's own zoneId.
   const uniqueNamespaces = new Set(registry.values());
   if (uniqueNamespaces.size > 1) {
-    console.warn(
+    throw new Error(
       `createApp: registry contains ${uniqueNamespaces.size} distinct namespaces — ` +
-        `data isolation is NOT enforced (routes use shared stores). ` +
-        `Each server process should serve only one namespace.`,
+        `routes use shared process-global stores so cross-namespace access would be possible. ` +
+        `Each server process must serve exactly one namespace. ` +
+        `Filter the registry to the server's own namespace before calling createApp.`,
     );
   }
 
