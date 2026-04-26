@@ -283,6 +283,8 @@ export interface HttpTransportConfig {
    * networks can be reached. Only enable this for trusted environments.
    */
   readonly allowPrivateIPs?: boolean | undefined;
+  /** Bearer token sent as `Authorization: Bearer <token>` to peer servers. */
+  readonly bearerToken?: string | undefined;
 }
 
 /** Default request timeout: 10 seconds. */
@@ -297,10 +299,12 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 export class HttpGossipTransport implements GossipTransport {
   private readonly timeoutMs: number;
   private readonly allowPrivateIPs: boolean;
+  private readonly bearerToken: string | undefined;
 
   constructor(config?: HttpTransportConfig) {
     this.timeoutMs = config?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.allowPrivateIPs = config?.allowPrivateIPs ?? false;
+    this.bearerToken = config?.bearerToken;
   }
 
   async exchange(peer: PeerInfo, message: GossipMessage): Promise<GossipMessage> {
@@ -326,7 +330,11 @@ export class HttpGossipTransport implements GossipTransport {
       try {
         const response = await fetch(pinnedUrl, {
           method: "POST",
-          headers: { "Content-Type": "application/json", Host: hostHeader },
+          headers: {
+            "Content-Type": "application/json",
+            Host: hostHeader,
+            ...(this.bearerToken ? { Authorization: `Bearer ${this.bearerToken}` } : {}),
+          },
           body: JSON.stringify(body),
           signal: controller.signal,
         });

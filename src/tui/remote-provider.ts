@@ -609,7 +609,7 @@ export class RemoteDataProvider
 
   async getGoal(): Promise<import("./provider.js").GoalData | undefined> {
     try {
-      return await fetchGoalHttp(this.baseUrl);
+      return await fetchGoalHttp(this.baseUrl, this.authHeaders);
     } catch {
       /* server unreachable */
     }
@@ -620,7 +620,7 @@ export class RemoteDataProvider
     goal: string,
     acceptance: readonly string[],
   ): Promise<import("./provider.js").GoalData> {
-    return setGoalHttp(this.baseUrl, goal, acceptance);
+    return setGoalHttp(this.baseUrl, goal, acceptance, this.authHeaders);
   }
 
   // ---------------------------------------------------------------------------
@@ -632,7 +632,7 @@ export class RemoteDataProvider
     presetName?: string;
   }): Promise<readonly import("./provider.js").SessionRecord[]> {
     try {
-      return await listSessionsHttp(this.baseUrl, query);
+      return await listSessionsHttp(this.baseUrl, query, this.authHeaders);
     } catch {
       /* fall through */
     }
@@ -642,12 +642,12 @@ export class RemoteDataProvider
   async createSession(
     input: import("./provider.js").SessionInput,
   ): Promise<import("./provider.js").SessionRecord> {
-    return createSessionHttp(this.baseUrl, input);
+    return createSessionHttp(this.baseUrl, input, this.authHeaders);
   }
 
   async getSession(sessionId: string): Promise<import("./provider.js").SessionRecord | undefined> {
     try {
-      return await getSessionHttp(this.baseUrl, sessionId);
+      return await getSessionHttp(this.baseUrl, sessionId, this.authHeaders);
     } catch {
       /* fall through */
     }
@@ -655,11 +655,11 @@ export class RemoteDataProvider
   }
 
   async archiveSession(sessionId: string): Promise<void> {
-    return archiveSessionHttp(this.baseUrl, sessionId);
+    return archiveSessionHttp(this.baseUrl, sessionId, this.authHeaders);
   }
 
   async addContributionToSession(sessionId: string, cid: string): Promise<void> {
-    return addContributionToSessionHttp(this.baseUrl, sessionId, cid);
+    return addContributionToSessionHttp(this.baseUrl, sessionId, cid, this.authHeaders);
   }
 
   // ---------------------------------------------------------------------------

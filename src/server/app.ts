@@ -56,8 +56,9 @@ export function createApp(deps: ServerDeps, registry: KeyRegistry): Hono<ServerE
   // Health check — exempt from namespace auth (used by grove up readiness probes)
   app.route("/health", health);
 
-  // All /api/* routes require a valid namespace bearer token
-  app.use("/api/*", namespaceAuth(registry));
+  // All /api/* routes require a valid namespace bearer token.
+  // Gossip routes are exempt — they use their own HMAC-based server-to-server auth.
+  app.use("/api/*", namespaceAuth(registry, { exempt: ["/api/gossip"] }));
 
   // Mount route groups
   app.route("/api/agents", agents);

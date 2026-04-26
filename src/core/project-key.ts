@@ -16,6 +16,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 export const CLIENT_KEY_FILE = "api-key";
 export const SERVER_KEYS_FILE = "server-keys.yaml";
+export const NAMESPACE_FILE = "namespace";
 
 /** Generate a unique opaque bearer token prefixed with `grv_`. */
 export function generateApiKey(): string {
@@ -69,6 +70,30 @@ export function writeClientKey(groveDir: string, key: string): void {
 interface ServerKeysFile {
   version: 1;
   keys: Record<string, { namespace: string; createdAt: string }>;
+}
+
+/**
+ * Persist the resolved namespace to `<groveDir>/namespace`.
+ * Written at `grove init` so serve.ts can read a stable identity on startup
+ * regardless of the current branch name.
+ */
+export function writeNamespace(groveDir: string, namespace: string): void {
+  const target = join(groveDir, NAMESPACE_FILE);
+  const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, `${namespace}\n`, { encoding: "utf8", mode: 0o600 });
+  renameSync(tmp, target);
+}
+
+/** Read the persisted namespace from `<groveDir>/namespace`. Returns undefined if absent. */
+export function readNamespace(groveDir: string): string | undefined {
+  const filePath = join(groveDir, NAMESPACE_FILE);
+  try {
+    const ns = readFileSync(filePath, "utf8").trim();
+    return ns || undefined;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw err;
+  }
 }
 
 /** Append a key → namespace entry to `<groveDir>/server-keys.yaml`. */

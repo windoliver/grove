@@ -222,13 +222,14 @@ export async function executeInit(
 
   // Generate namespace key for this worktree.
   {
-    const { detectWorktreeName, generateApiKey, writeClientKey, appendServerKey } =
+    const { detectWorktreeName, generateApiKey, writeClientKey, appendServerKey, writeNamespace } =
       await import("../../core/project-key.js");
     const worktreeName = await detectWorktreeName();
     const namespace = `${projectId}/${worktreeName}`;
     const apiKey = generateApiKey();
     writeClientKey(grovePath, apiKey);
     appendServerKey(grovePath, apiKey, namespace);
+    writeNamespace(grovePath, namespace);
     console.log(`  namespace: ${namespace}`);
   }
 
