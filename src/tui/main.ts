@@ -251,9 +251,7 @@ async function buildAppProps(
       const { groveDir } = resolveGroveDir(effectiveGrove);
       const apiKey = readClientKey(groveDir);
       if (apiKey) remoteAuthHeaders = { Authorization: `Bearer ${apiKey}` };
-    } catch {
-      /* no key available */
-    }
+    } catch { /* no key available */ }
   }
 
   const [provider, topology, contract] = await Promise.all([
@@ -562,14 +560,6 @@ export async function handleTui(
         `The TUI may hang on startup. Add 'set -g allow-passthrough on' to ~/.tmux.conf as a workaround.\n` +
         (tmuxResult.stderr ? `tmux stderr: ${tmuxResult.stderr}\n` : ""),
     );
-  }
-
-  // When running inside tmux, force stdout-based rendering so tmux capture-pane
-  // can track rendered content. The Zig native renderer writes directly to the
-  // TTY via DCS passthrough, bypassing tmux's cell grid — capture-pane sees
-  // only empty cells. OTUI_NO_NATIVE_RENDER swaps it for flushStdoutCache().
-  if (process.env.TMUX && !process.env.OTUI_NO_NATIVE_RENDER) {
-    process.env.OTUI_NO_NATIVE_RENDER = "1";
   }
 
   // Dynamic import of React/OpenTUI — only loaded when TUI is actually used
