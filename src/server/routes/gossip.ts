@@ -12,7 +12,7 @@ import type { Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
 import { MAX_GOSSIP_FRONTIER_ENTRIES, MAX_GOSSIP_OFFERED_PEERS } from "../../core/constants.js";
-import { verifyPayload } from "../../gossip/protocol.js";
+import { GossipAuthError, verifyPayload } from "../../gossip/protocol.js";
 import type { ServerEnv } from "../deps.js";
 
 // ---------------------------------------------------------------------------
@@ -73,11 +73,24 @@ gossip.post("/exchange", zValidator("json", gossipMessageSchema), async (c) => {
   }
 
   const message = c.req.valid("json");
-  if (gossipHmacSecret && !verifyPayload(message as unknown as Record<string, unknown>, gossipHmacSecret)) {
-    return c.json({ error: { code: "GOSSIP_AUTH_FAILED", message: "Invalid or missing HMAC signature" } }, 401);
+  if (
+    gossipHmacSecret &&
+    !verifyPayload(message as unknown as Record<string, unknown>, gossipHmacSecret)
+  ) {
+    return c.json(
+      { error: { code: "GOSSIP_AUTH_FAILED", message: "Invalid or missing HMAC signature" } },
+      401,
+    );
   }
-  const response = await gossipService.handleExchange(message);
-  return c.json(response);
+  try {
+    const response = await gossipService.handleExchange(message);
+    return c.json(response);
+  } catch (err) {
+    if (err instanceof GossipAuthError) {
+      return c.json({ error: { code: "GOSSIP_AUTH_FAILED", message: err.message } }, 401);
+    }
+    throw err;
+  }
 });
 
 /** POST /api/gossip/shuffle — Handle incoming CYCLON shuffle. */
@@ -88,8 +101,14 @@ gossip.post("/shuffle", zValidator("json", shuffleRequestSchema), async (c) => {
   }
 
   const request = c.req.valid("json");
-  if (gossipHmacSecret && !verifyPayload(request as unknown as Record<string, unknown>, gossipHmacSecret)) {
-    return c.json({ error: { code: "GOSSIP_AUTH_FAILED", message: "Invalid or missing HMAC signature" } }, 401);
+  if (
+    gossipHmacSecret &&
+    !verifyPayload(request as unknown as Record<string, unknown>, gossipHmacSecret)
+  ) {
+    return c.json(
+      { error: { code: "GOSSIP_AUTH_FAILED", message: "Invalid or missing HMAC signature" } },
+      401,
+    );
   }
   const response = gossipService.handleShuffle(request);
   return c.json(response);

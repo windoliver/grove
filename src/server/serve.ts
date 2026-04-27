@@ -12,13 +12,20 @@
 import { join } from "node:path";
 import type { GossipService } from "../core/gossip/types.js";
 import { LocalEventBus } from "../core/local-event-bus.js";
+import { readProjectId } from "../core/project-id.js";
+import {
+  appendServerKey,
+  detectWorktreeName,
+  readClientKey,
+  readNamespace,
+  writeClientKey,
+  writeNamespace,
+} from "../core/project-key.js";
 import { TmuxRuntime } from "../core/tmux-runtime.js";
 import { HttpGossipTransport } from "../gossip/http-transport.js";
 import { DefaultGossipService } from "../gossip/protocol.js";
 import { createLocalRuntime } from "../local/runtime.js";
 import { parseGossipSeeds, parsePort } from "../shared/env.js";
-import { readProjectId } from "../core/project-id.js";
-import { appendServerKey, detectWorktreeName, readClientKey, readNamespace, writeClientKey, writeNamespace } from "../core/project-key.js";
 import { createApp } from "./app.js";
 import type { ServerDeps } from "./deps.js";
 import { loadKeyRegistry } from "./middleware/namespace-auth.js";
@@ -120,13 +127,24 @@ const rawRegistry = loadKeyRegistry(join(GROVE_DIR, "server-keys.yaml"));
 // Scope registry to this server's own namespace only — reject keys for other worktrees.
 let registry = new Map([...rawRegistry].filter(([, ns]) => ns === zoneId));
 if (registry.size === 0) {
+  // Never auto-generate credentials for the shared 'default' namespace — doing so
+  // would let uninitialized servers read/write each other's Nexus state.
+  if (zoneId === "default") {
+    console.error(
+      "grove-server: cannot start without a project namespace.\n" +
+        "  Run 'grove init' to generate a unique project-id and namespace credentials,\n" +
+        "  or set GROVE_ZONE_ID to an explicit namespace before starting.",
+    );
+    process.exit(1);
+  }
   // Pre-A3 workspace: project-id exists but no server-keys.yaml yet.
   // Auto-generate credentials so API routes are usable immediately (upgrade path).
   const { randomBytes } = await import("node:crypto");
   const rawClientKey = readClientKey(GROVE_DIR);
   // Accept grv_-prefixed keys (from grove init) or raw hex keys (from older auto-upgrade).
   // Require non-empty with ≥32 chars of hex content to prevent empty-token bypass.
-  const isValidKey = typeof rawClientKey === "string" &&
+  const isValidKey =
+    typeof rawClientKey === "string" &&
     /^(?:grv_)?[0-9a-f]{32,}$/i.test(rawClientKey) &&
     rawClientKey.replace(/^grv_/, "").length >= 32;
   const clientKey = isValidKey ? rawClientKey : randomBytes(32).toString("hex");
@@ -150,7 +168,12 @@ if (seedPeers.length > 0) {
   // Use HMAC (not bearer token) for peer-to-peer auth — namespace API keys must never be sent to peers.
   const transport = new HttpGossipTransport({ allowPrivateIPs, hmacSecret: gossipHmacSecret });
   gossipService = new DefaultGossipService({
-    config: { peerId, address: peerAddress, seedPeers: [...seedPeers], hmacSecret: gossipHmacSecret },
+    config: {
+      peerId,
+      address: peerAddress,
+      seedPeers: [...seedPeers],
+      hmacSecret: gossipHmacSecret,
+    },
     transport,
     frontier: runtime.frontier,
     getLoad: () => ({ queueDepth: 0 }),
@@ -353,7 +376,12 @@ function startServer() {
           const key = auth?.startsWith("Bearer ") ? auth.slice(7).trim() : undefined;
           if (!key || !registry.has(key)) {
             return new Response(
-              JSON.stringify({ error: { code: "NAMESPACE_UNAUTHORIZED", message: "Invalid or missing bearer token" } }),
+              JSON.stringify({
+                error: {
+                  code: "NAMESPACE_UNAUTHORIZED",
+                  message: "Invalid or missing bearer token",
+                },
+              }),
               { status: 401, headers: { "Content-Type": "application/json" } },
             );
           }
