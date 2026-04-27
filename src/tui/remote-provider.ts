@@ -179,21 +179,31 @@ export class RemoteDataProvider
     if (effectiveSessionId) params.set("sessionId", effectiveSessionId);
 
     const qs = params.toString();
-    const resp = await fetch(`${this.baseUrl}/api/contributions${qs ? `?${qs}` : ""}`, { headers: this.authHeaders });
+    const resp = await fetch(`${this.baseUrl}/api/contributions${qs ? `?${qs}` : ""}`, {
+      headers: this.authHeaders,
+    });
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
     return parseContributions(await resp.json());
   }
 
   async getContribution(cid: string): Promise<ContributionDetail | undefined> {
-    const resp = await fetch(`${this.baseUrl}/api/contributions/${encodeURIComponent(cid)}`, { headers: this.authHeaders });
+    const resp = await fetch(`${this.baseUrl}/api/contributions/${encodeURIComponent(cid)}`, {
+      headers: this.authHeaders,
+    });
     if (resp.status === 404) return undefined;
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
     const contribution = parseContribution(await resp.json());
 
     const [ancestorsResp, childrenResp, threadResp] = await Promise.all([
-      fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(cid)}/ancestors`, { headers: this.authHeaders }),
-      fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(cid)}/children`, { headers: this.authHeaders }),
-      fetch(`${this.baseUrl}/api/threads/${encodeURIComponent(cid)}`, { headers: this.authHeaders }),
+      fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(cid)}/ancestors`, {
+        headers: this.authHeaders,
+      }),
+      fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(cid)}/children`, {
+        headers: this.authHeaders,
+      }),
+      fetch(`${this.baseUrl}/api/threads/${encodeURIComponent(cid)}`, {
+        headers: this.authHeaders,
+      }),
     ]);
 
     const ancestors = ancestorsResp.ok ? parseContributions(await ancestorsResp.json()) : [];
@@ -219,7 +229,9 @@ export class RemoteDataProvider
     if (query?.agentId) params.set("agentId", query.agentId);
 
     const qs = params.toString();
-    const resp = await fetch(`${this.baseUrl}/api/claims${qs ? `?${qs}` : ""}`, { headers: this.authHeaders });
+    const resp = await fetch(`${this.baseUrl}/api/claims${qs ? `?${qs}` : ""}`, {
+      headers: this.authHeaders,
+    });
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
     const body = (await resp.json()) as { claims: unknown };
     return parseClaims(body.claims);
@@ -255,7 +267,9 @@ export class RemoteDataProvider
     if (effectiveSessionId) params.set("sessionId", effectiveSessionId);
 
     const qs = params.toString();
-    const resp = await fetch(`${this.baseUrl}/api/frontier${qs ? `?${qs}` : ""}`, { headers: this.authHeaders });
+    const resp = await fetch(`${this.baseUrl}/api/frontier${qs ? `?${qs}` : ""}`, {
+      headers: this.authHeaders,
+    });
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
     return parseFrontier(await resp.json());
   }
@@ -273,9 +287,15 @@ export class RemoteDataProvider
   async getDag(rootCid?: string): Promise<DagData> {
     if (rootCid) {
       const [ancestorsResp, childrenResp, rootResp] = await Promise.all([
-        fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(rootCid)}/ancestors`, { headers: this.authHeaders }),
-        fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(rootCid)}/children`, { headers: this.authHeaders }),
-        fetch(`${this.baseUrl}/api/contributions/${encodeURIComponent(rootCid)}`, { headers: this.authHeaders }),
+        fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(rootCid)}/ancestors`, {
+          headers: this.authHeaders,
+        }),
+        fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(rootCid)}/children`, {
+          headers: this.authHeaders,
+        }),
+        fetch(`${this.baseUrl}/api/contributions/${encodeURIComponent(rootCid)}`, {
+          headers: this.authHeaders,
+        }),
       ]);
 
       const contributions: Contribution[] = [];
@@ -300,7 +320,9 @@ export class RemoteDataProvider
 
   async getHotThreads(limit = 20): Promise<readonly ThreadSummary[]> {
     const params = new URLSearchParams({ limit: String(limit) });
-    const resp = await fetch(`${this.baseUrl}/api/threads?${params.toString()}`, { headers: this.authHeaders });
+    const resp = await fetch(`${this.baseUrl}/api/threads?${params.toString()}`, {
+      headers: this.authHeaders,
+    });
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
     const body = (await resp.json()) as { threads: unknown };
     return parseThreadSummaries(body.threads);
@@ -311,7 +333,9 @@ export class RemoteDataProvider
   // ---------------------------------------------------------------------------
 
   async getOutcome(cid: string): Promise<OutcomeRecord | undefined> {
-    const resp = await fetch(`${this.baseUrl}/api/outcomes/${encodeURIComponent(cid)}`, { headers: this.authHeaders });
+    const resp = await fetch(`${this.baseUrl}/api/outcomes/${encodeURIComponent(cid)}`, {
+      headers: this.authHeaders,
+    });
     if (resp.status === 404 || resp.status === 501) return undefined;
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
     return parseOutcomeRecord(await resp.json());
@@ -332,7 +356,9 @@ export class RemoteDataProvider
     const chunkResults = await Promise.allSettled(
       chunks.map(async (chunk) => {
         const params = new URLSearchParams({ cids: chunk.join(",") });
-        const resp = await fetch(`${this.baseUrl}/api/outcomes?${params.toString()}`, { headers: this.authHeaders });
+        const resp = await fetch(`${this.baseUrl}/api/outcomes?${params.toString()}`, {
+          headers: this.authHeaders,
+        });
         if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
         return parseOutcomeRecords(await resp.json());
       }),
@@ -392,7 +418,9 @@ export class RemoteDataProvider
     if (query?.status) params.set("status", query.status);
     const qs = params.toString();
     try {
-      const resp = await fetch(`${this.baseUrl}/api/outcomes${qs ? `?${qs}` : ""}`, { headers: this.authHeaders });
+      const resp = await fetch(`${this.baseUrl}/api/outcomes${qs ? `?${qs}` : ""}`, {
+        headers: this.authHeaders,
+      });
       if (resp.ok) return parseOutcomeRecords(await resp.json());
     } catch {
       // Fallback
@@ -433,7 +461,9 @@ export class RemoteDataProvider
   }
 
   async search(query: string): Promise<readonly Contribution[]> {
-    const resp = await fetch(`${this.baseUrl}/api/search?q=${encodeURIComponent(query)}`, { headers: this.authHeaders });
+    const resp = await fetch(`${this.baseUrl}/api/search?q=${encodeURIComponent(query)}`, {
+      headers: this.authHeaders,
+    });
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
     const body = (await resp.json()) as { results: unknown };
     return parseContributions(body.results);
@@ -454,7 +484,9 @@ export class RemoteDataProvider
 
     const qs = params.toString();
     try {
-      const resp = await fetch(`${this.baseUrl}/api/bounties${qs ? `?${qs}` : ""}`, { headers: this.authHeaders });
+      const resp = await fetch(`${this.baseUrl}/api/bounties${qs ? `?${qs}` : ""}`, {
+        headers: this.authHeaders,
+      });
       if (resp.ok) {
         const body = (await resp.json()) as { bounties: unknown };
         return parseBounties(body.bounties);
@@ -735,7 +767,9 @@ export class RemoteDataProvider
     if (query?.limit) params.set("limit", String(query.limit));
     if (this.activeSessionId) params.set("sessionId", this.activeSessionId);
     const qs = params.toString();
-    const resp = await fetch(`${this.baseUrl}/api/handoffs${qs ? `?${qs}` : ""}`, { headers: this.authHeaders });
+    const resp = await fetch(`${this.baseUrl}/api/handoffs${qs ? `?${qs}` : ""}`, {
+      headers: this.authHeaders,
+    });
     if (!resp.ok) return [];
     const data = (await resp.json()) as { handoffs?: import("../core/handoff.js").Handoff[] };
     return data.handoffs ?? [];

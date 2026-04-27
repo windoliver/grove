@@ -8,8 +8,8 @@
  * Both files are covered by the root `.gitignore` (`.grove/` is excluded).
  */
 
-import { randomBytes } from "node:crypto";
 import { execSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
@@ -43,7 +43,9 @@ export async function detectWorktreeName(): Promise<string> {
       const name = basename(toplevel).replace(/[^a-zA-Z0-9._-]/g, "-");
       if (name && name !== ".") return name;
     }
-  } catch { /* fall through */ }
+  } catch {
+    /* fall through */
+  }
 
   try {
     // Fallback: branch name (changes on checkout, but better than a commit hash).
@@ -114,11 +116,7 @@ export function readNamespace(groveDir: string): string | undefined {
 }
 
 /** Append a key → namespace entry to `<groveDir>/server-keys.yaml`. */
-export function appendServerKey(
-  groveDir: string,
-  key: string,
-  namespace: string,
-): void {
+export function appendServerKey(groveDir: string, key: string, namespace: string): void {
   const filePath = join(groveDir, SERVER_KEYS_FILE);
   let existing: ServerKeysFile = { version: 1, keys: {} };
   try {

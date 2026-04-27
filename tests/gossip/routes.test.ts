@@ -18,7 +18,12 @@ import { InMemoryContributionStore } from "../../src/core/testing.js";
 import { DefaultGossipService, signPayload } from "../../src/gossip/protocol.js";
 import { createApp } from "../../src/server/app.js";
 import type { ServerDeps } from "../../src/server/deps.js";
-import { InMemoryClaimStore, InMemoryContentStore, TEST_AUTH_HEADERS, TEST_NAMESPACE_KEY } from "../../src/server/test-helpers.js";
+import {
+  InMemoryClaimStore,
+  InMemoryContentStore,
+  TEST_AUTH_HEADERS,
+  TEST_NAMESPACE_KEY,
+} from "../../src/server/test-helpers.js";
 
 const TEST_REGISTRY = new Map([[TEST_NAMESPACE_KEY, "test-project/main"]]);
 const TEST_HMAC_SECRET = "test-hmac-secret-for-routes-test";

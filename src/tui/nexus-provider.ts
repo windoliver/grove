@@ -256,7 +256,9 @@ export class NexusDataProvider
     // peer data from its /api/gossip/peers endpoint.
     if (this.serverUrl) {
       try {
-        const resp = await fetch(`${this.serverUrl}/api/gossip/peers`, { headers: this.authHeaders });
+        const resp = await fetch(`${this.serverUrl}/api/gossip/peers`, {
+          headers: this.authHeaders,
+        });
         if (resp.ok) {
           const body = (await resp.json()) as { peers: readonly PeerInfo[] };
           return body.peers;

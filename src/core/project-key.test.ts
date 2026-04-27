@@ -2,11 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  appendServerKey,
-  generateApiKey,
-  writeClientKey,
-} from "./project-key.js";
+import { appendServerKey, generateApiKey, writeClientKey } from "./project-key.js";
 
 // detectWorktreeName requires a real git repo — tested in integration only
 
@@ -41,14 +37,14 @@ describe("writeClientKey / appendServerKey", () => {
   });
 
   it("writeClientKey overwrites on second call (idempotent)", () => {
-    writeClientKey(dir, "grv_" + "a".repeat(64));
-    writeClientKey(dir, "grv_" + "b".repeat(64));
+    writeClientKey(dir, `grv_${"a".repeat(64)}`);
+    writeClientKey(dir, `grv_${"b".repeat(64)}`);
     const content = readFileSync(join(dir, "api-key"), "utf8").trim();
-    expect(content).toBe("grv_" + "b".repeat(64));
+    expect(content).toBe(`grv_${"b".repeat(64)}`);
   });
 
   it("appendServerKey creates server-keys.yaml with correct structure", () => {
-    const key = "grv_" + "a".repeat(64);
+    const key = `grv_${"a".repeat(64)}`;
     appendServerKey(dir, key, "uuid-1234/main");
     const raw = readFileSync(join(dir, "server-keys.yaml"), "utf8");
     expect(raw).toContain("version: 1");
@@ -57,8 +53,8 @@ describe("writeClientKey / appendServerKey", () => {
   });
 
   it("appendServerKey appends a second key without removing the first", () => {
-    const keyA = "grv_" + "a".repeat(64);
-    const keyB = "grv_" + "b".repeat(64);
+    const keyA = `grv_${"a".repeat(64)}`;
+    const keyB = `grv_${"b".repeat(64)}`;
     appendServerKey(dir, keyA, "uuid-1234/main");
     appendServerKey(dir, keyB, "uuid-1234/main");
     const raw = readFileSync(join(dir, "server-keys.yaml"), "utf8");
@@ -68,7 +64,7 @@ describe("writeClientKey / appendServerKey", () => {
 
   it("appendServerKey creates server-keys.yaml if absent", () => {
     expect(existsSync(join(dir, "server-keys.yaml"))).toBe(false);
-    appendServerKey(dir, "grv_" + "c".repeat(64), "uuid/worktree");
+    appendServerKey(dir, `grv_${"c".repeat(64)}`, "uuid/worktree");
     expect(existsSync(join(dir, "server-keys.yaml"))).toBe(true);
   });
 
