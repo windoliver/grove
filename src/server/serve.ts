@@ -20,6 +20,7 @@ import { parseGossipSeeds, parsePort } from "../shared/env.js";
 import { createApp } from "./app.js";
 import type { ServerDeps } from "./deps.js";
 import { SessionService } from "./session-service.js";
+import { memoizeContributionStoreForSession } from "./session-store-factory.js";
 import { createWsHandler } from "./ws-handler.js";
 
 const GROVE_DIR = process.env.GROVE_DIR ?? join(process.cwd(), ".grove");
@@ -144,8 +145,9 @@ if (nexusUrl) {
   serverBountyStore = new NexusBountyStore({ client: nexusClient, zoneId });
   serverOutcomeStore = new NexusOutcomeStore({ client: nexusClient, zoneId });
   serverCas = new NexusCas({ client: nexusClient, zoneId });
-  contributionStoreForSessionFactory = (sessionId: string) =>
-    new NexusContributionStore({ client: nexusClient, zoneId, sessionId });
+  contributionStoreForSessionFactory = memoizeContributionStoreForSession(
+    (sessionId: string) => new NexusContributionStore({ client: nexusClient, zoneId, sessionId }),
+  );
   console.log(`grove-server: using Nexus stores at ${nexusUrl} (zone=${zoneId})`);
 }
 

@@ -8,7 +8,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import type { ServerEnv } from "../deps.js";
-import { notConfigured } from "./shared.js";
+import { notConfigured, readJsonBody } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -31,8 +31,10 @@ goals.put("/goal", async (c) => {
   const { goalSessionStore } = c.get("deps");
   if (!goalSessionStore) return notConfigured(c, "Goal/session store is not configured");
 
-  const body = await c.req.json();
-  const parsed = setGoalSchema.safeParse(body);
+  const json = await readJsonBody(c);
+  if (!json.ok) return json.response;
+
+  const parsed = setGoalSchema.safeParse(json.body);
   if (!parsed.success) {
     return c.json({ error: { code: "VALIDATION_ERROR", details: parsed.error.issues } }, 400);
   }

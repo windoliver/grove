@@ -12,6 +12,7 @@ import type { ContributionKind, ContributionMode } from "../../core/models.js";
 import { searchOperation } from "../../core/operations/index.js";
 import type { ServerEnv } from "../deps.js";
 import { toHttpResult, toOperationDeps } from "../operation-adapter.js";
+import { contributionStoreForSession } from "./shared.js";
 
 const querySchema = z.object({
   q: z.string().min(1, "Search query is required"),
@@ -22,6 +23,7 @@ const querySchema = z.object({
   tags: z.string().optional(),
   agentId: z.string().optional(),
   agentName: z.string().optional(),
+  sessionId: z.string().optional(),
 });
 
 const search: HonoType<ServerEnv> = new Hono<ServerEnv>();
@@ -30,7 +32,9 @@ const search: HonoType<ServerEnv> = new Hono<ServerEnv>();
 search.get("/", zValidator("query", querySchema), async (c) => {
   const raw = c.req.valid("query");
 
-  const deps = toOperationDeps(c.get("deps"));
+  const serverDeps = c.get("deps");
+  const scopedStore = contributionStoreForSession(serverDeps, raw.sessionId);
+  const deps = toOperationDeps({ ...serverDeps, contributionStore: scopedStore });
   const result = await searchOperation(
     {
       query: raw.q,
@@ -41,6 +45,7 @@ search.get("/", zValidator("query", querySchema), async (c) => {
       agentName: raw.agentName,
       limit: raw.limit,
       offset: raw.offset,
+      ...(raw.sessionId !== undefined ? { sessionId: raw.sessionId } : {}),
     },
     deps,
   );

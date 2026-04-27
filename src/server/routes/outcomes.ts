@@ -22,6 +22,7 @@ import { postCheckRun, postOutcomeComment } from "../../github/outcome-poster.js
 import type { ServerEnv } from "../deps.js";
 import { toHttpResult, toOperationDeps } from "../operation-adapter.js";
 import { CID_REGEX } from "../schemas.js";
+import { readJsonBody } from "./shared.js";
 
 const cidParamSchema = z.object({
   cid: z.string().regex(CID_REGEX, "CID must be in format blake3:<64-hex-chars>"),
@@ -67,8 +68,10 @@ outcomes.get("/:cid", zValidator("param", cidParamSchema), async (c) => {
 // POST /api/outcomes/:cid
 outcomes.post("/:cid", zValidator("param", cidParamSchema), async (c) => {
   const { cid } = c.req.valid("param");
-  const body = await c.req.json();
-  const parsed = setOutcomeSchema.safeParse(body);
+  const json = await readJsonBody(c);
+  if (!json.ok) return json.response;
+
+  const parsed = setOutcomeSchema.safeParse(json.body);
   if (!parsed.success) {
     return c.json({ error: "Invalid input", details: parsed.error.issues }, 400);
   }
