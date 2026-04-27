@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { TEST_AUTH_HEADERS, createTestContext, validManifestBody } from "./helpers.js";
+import { createTestContext, TEST_AUTH_HEADERS, validManifestBody } from "./helpers.js";
 
 // ---------------------------------------------------------------------------
 // GET /api/threads/:cid — View a discussion thread

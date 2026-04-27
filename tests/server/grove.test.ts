@@ -5,7 +5,13 @@ import { createApp } from "../../src/server/app.js";
 import type { ServerDeps } from "../../src/server/deps.js";
 import type { KeyRegistry } from "../../src/server/middleware/namespace-auth.js";
 import type { TestContext } from "./helpers.js";
-import { TEST_AUTH_HEADERS, TEST_KEY, TEST_NAMESPACE, createTestContext, validManifestBody } from "./helpers.js";
+import {
+  createTestContext,
+  TEST_AUTH_HEADERS,
+  TEST_KEY,
+  TEST_NAMESPACE,
+  validManifestBody,
+} from "./helpers.js";
 
 describe("GET /api/grove", () => {
   let ctx: TestContext;
@@ -70,7 +76,11 @@ describe("GET /api/grove", () => {
       },
     };
 
-    const depsWithGossip: ServerDeps = { ...ctx.deps, gossip: mockGossip, gossipHmacSecret: "test-hmac-secret" };
+    const depsWithGossip: ServerDeps = {
+      ...ctx.deps,
+      gossip: mockGossip,
+      gossipHmacSecret: "test-hmac-secret",
+    };
     const testRegistry: KeyRegistry = new Map([[TEST_KEY, TEST_NAMESPACE]]);
     const appWithGossip = createApp(depsWithGossip, testRegistry);
     const res = await appWithGossip.request("/api/grove", { headers: TEST_AUTH_HEADERS });

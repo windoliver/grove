@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { TEST_AUTH_HEADERS, createTestContext, validManifestBody } from "./helpers.js";
+import { createTestContext, TEST_AUTH_HEADERS, validManifestBody } from "./helpers.js";
 
 describe("GET /api/search", () => {
   let ctx: TestContext;
@@ -63,7 +63,9 @@ describe("GET /api/search", () => {
       });
     }
 
-    const res = await ctx.app.request("/api/search?q=parser&limit=2", { headers: TEST_AUTH_HEADERS });
+    const res = await ctx.app.request("/api/search?q=parser&limit=2", {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.results.length).toBeLessThanOrEqual(2);
@@ -88,7 +90,9 @@ describe("GET /api/search", () => {
       ),
     });
 
-    const res = await ctx.app.request("/api/search?q=parser&tags=optimization", { headers: TEST_AUTH_HEADERS });
+    const res = await ctx.app.request("/api/search?q=parser&tags=optimization", {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.results).toHaveLength(1);

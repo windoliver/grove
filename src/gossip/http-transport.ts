@@ -316,8 +316,15 @@ export class HttpGossipTransport implements GossipTransport {
     const url = `${peer.address}/api/gossip/exchange`;
     const validated = await validatePeerUrl(url, { allowPrivateIPs: this.allowPrivateIPs });
     const response = await this.post<GossipMessage>(validated, message, peer.peerId);
-    if (this.hmacSecret && !verifyPayload(response as unknown as Record<string, unknown>, this.hmacSecret)) {
-      throw new PeerUnreachableError({ peerId: peer.peerId, address: validated.pinnedUrl, cause: new Error("exchange response: invalid or missing HMAC signature") });
+    if (
+      this.hmacSecret &&
+      !verifyPayload(response as unknown as Record<string, unknown>, this.hmacSecret)
+    ) {
+      throw new PeerUnreachableError({
+        peerId: peer.peerId,
+        address: validated.pinnedUrl,
+        cause: new Error("exchange response: invalid or missing HMAC signature"),
+      });
     }
     return response;
   }
@@ -326,8 +333,15 @@ export class HttpGossipTransport implements GossipTransport {
     const url = `${peer.address}/api/gossip/shuffle`;
     const validated = await validatePeerUrl(url, { allowPrivateIPs: this.allowPrivateIPs });
     const response = await this.post<ShuffleResponse>(validated, request, peer.peerId);
-    if (this.hmacSecret && !verifyPayload(response as unknown as Record<string, unknown>, this.hmacSecret)) {
-      throw new PeerUnreachableError({ peerId: peer.peerId, address: validated.pinnedUrl, cause: new Error("shuffle response: invalid or missing HMAC signature") });
+    if (
+      this.hmacSecret &&
+      !verifyPayload(response as unknown as Record<string, unknown>, this.hmacSecret)
+    ) {
+      throw new PeerUnreachableError({
+        peerId: peer.peerId,
+        address: validated.pinnedUrl,
+        cause: new Error("shuffle response: invalid or missing HMAC signature"),
+      });
     }
     return response;
   }

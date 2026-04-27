@@ -22,7 +22,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { TEST_AUTH_HEADERS, createTestContext, postContribution } from "./helpers.js";
+import { createTestContext, postContribution, TEST_AUTH_HEADERS } from "./helpers.js";
 
 const FAKE_CID = `blake3:${"0".repeat(64)}`;
 
@@ -59,7 +59,9 @@ describe("routes — /api/diff", () => {
       createdAt: new Date(Date.now() + 1).toISOString(),
     });
 
-    const res = await ctx.app.request(`/api/diff/${parent.cid}/${child.cid}/file.txt`, { headers: TEST_AUTH_HEADERS });
+    const res = await ctx.app.request(`/api/diff/${parent.cid}/${child.cid}/file.txt`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     const data = (await res.json()) as { parent: string; child: string };
     expect(data.parent).toBe("version 1");
@@ -69,7 +71,9 @@ describe("routes — /api/diff", () => {
   test("GET /:parentCid/:childCid/:artifactName returns 404 for non-existent parent", async () => {
     const child = await postContribution(ctx, { summary: "Orphan child" });
 
-    const res = await ctx.app.request(`/api/diff/${FAKE_CID}/${child.cid}/file.txt`, { headers: TEST_AUTH_HEADERS });
+    const res = await ctx.app.request(`/api/diff/${FAKE_CID}/${child.cid}/file.txt`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(404);
     const data = (await res.json()) as { error: { code: string; message: string } };
     expect(data.error.code).toBe("NOT_FOUND");
@@ -79,7 +83,9 @@ describe("routes — /api/diff", () => {
   test("GET /:parentCid/:childCid/:artifactName returns 404 for non-existent child", async () => {
     const parent = await postContribution(ctx, { summary: "Lonely parent" });
 
-    const res = await ctx.app.request(`/api/diff/${parent.cid}/${FAKE_CID}/file.txt`, { headers: TEST_AUTH_HEADERS });
+    const res = await ctx.app.request(`/api/diff/${parent.cid}/${FAKE_CID}/file.txt`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(404);
     const data = (await res.json()) as { error: { code: string; message: string } };
     expect(data.error.code).toBe("NOT_FOUND");
@@ -93,7 +99,9 @@ describe("routes — /api/diff", () => {
       createdAt: new Date(Date.now() + 1).toISOString(),
     });
 
-    const res = await ctx.app.request(`/api/diff/${parent.cid}/${child.cid}/missing.txt`, { headers: TEST_AUTH_HEADERS });
+    const res = await ctx.app.request(`/api/diff/${parent.cid}/${child.cid}/missing.txt`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(404);
     const data = (await res.json()) as { error: { code: string; message: string } };
     expect(data.error.code).toBe("NOT_FOUND");
@@ -113,7 +121,9 @@ describe("routes — /api/diff", () => {
       createdAt: new Date(Date.now() + 1).toISOString(),
     });
 
-    const res = await ctx.app.request(`/api/diff/${parent.cid}/${child.cid}/file.txt`, { headers: TEST_AUTH_HEADERS });
+    const res = await ctx.app.request(`/api/diff/${parent.cid}/${child.cid}/file.txt`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(404);
     const data = (await res.json()) as { error: { code: string; message: string } };
     expect(data.error.code).toBe("NOT_FOUND");
@@ -233,7 +243,9 @@ describe("routes — /api/bounties", () => {
   });
 
   test("GET /:id returns 501 when bountyStore is not configured", async () => {
-    const res = await ctx.app.request("/api/bounties/some-bounty-id", { headers: TEST_AUTH_HEADERS });
+    const res = await ctx.app.request("/api/bounties/some-bounty-id", {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(501);
     const data = (await res.json()) as { error: { code: string; message: string } };
     expect(data.error.code).toBe("NOT_CONFIGURED");
@@ -241,7 +253,9 @@ describe("routes — /api/bounties", () => {
   });
 
   test("GET / with query params still returns 501 when not configured", async () => {
-    const res = await ctx.app.request("/api/bounties?status=open&creatorAgentId=agent-1&limit=10", { headers: TEST_AUTH_HEADERS });
+    const res = await ctx.app.request("/api/bounties?status=open&creatorAgentId=agent-1&limit=10", {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(501);
     const data = (await res.json()) as { error: { code: string } };
     expect(data.error.code).toBe("NOT_CONFIGURED");

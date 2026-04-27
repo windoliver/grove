@@ -251,7 +251,9 @@ describe("E2E: DAG traversal", () => {
     expect(children[0].cid).toBe(child.cid);
 
     // Ancestors of child
-    const ancestorsRes = await fetch(`${baseUrl}/api/dag/${child.cid}/ancestors`, { headers: AUTH });
+    const ancestorsRes = await fetch(`${baseUrl}/api/dag/${child.cid}/ancestors`, {
+      headers: AUTH,
+    });
     expect(ancestorsRes.status).toBe(200);
     const ancestors = (await ancestorsRes.json()) as Json;
     expect(ancestors).toHaveLength(1);

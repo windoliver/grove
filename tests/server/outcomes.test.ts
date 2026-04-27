@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { TEST_AUTH_HEADERS, createTestContext, outcomeBody } from "./helpers.js";
+import { createTestContext, outcomeBody, TEST_AUTH_HEADERS } from "./helpers.js";
 
 const VALID_CID = `blake3:${"a".repeat(64)}`;
 const VALID_CID_2 = `blake3:${"b".repeat(64)}`;
@@ -142,7 +142,9 @@ describe("POST /api/outcomes/:cid", () => {
     expect(data.reason).toBe("Second review");
 
     // Verify via GET that the overwrite persisted
-    const getRes = await ctx.app.request(`/api/outcomes/${VALID_CID}`, { headers: TEST_AUTH_HEADERS });
+    const getRes = await ctx.app.request(`/api/outcomes/${VALID_CID}`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(getRes.status).toBe(200);
     const record = await getRes.json();
     expect(record.status).toBe("rejected");
@@ -230,7 +232,9 @@ describe("GET /api/outcomes", () => {
       body: JSON.stringify(outcomeBody({ status: "rejected" })),
     });
 
-    const res = await ctx.app.request("/api/outcomes?status=accepted", { headers: TEST_AUTH_HEADERS });
+    const res = await ctx.app.request("/api/outcomes?status=accepted", {
+      headers: TEST_AUTH_HEADERS,
+    });
 
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -273,7 +277,9 @@ describe("GET /api/outcomes", () => {
   });
 
   test("GET /api/outcomes?cids=nonexistent returns empty for unknown CIDs", async () => {
-    const res = await ctx.app.request(`/api/outcomes?cids=${VALID_CID_3}`, { headers: TEST_AUTH_HEADERS });
+    const res = await ctx.app.request(`/api/outcomes?cids=${VALID_CID_3}`, {
+      headers: TEST_AUTH_HEADERS,
+    });
 
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -303,10 +309,9 @@ describe("GET /api/outcomes", () => {
   });
 
   test("GET /api/outcomes?cids=a,b&limit=5 returns 400", async () => {
-    const res = await ctx.app.request(
-      `/api/outcomes?cids=${VALID_CID},${VALID_CID_2}&limit=5`,
-      { headers: TEST_AUTH_HEADERS },
-    );
+    const res = await ctx.app.request(`/api/outcomes?cids=${VALID_CID},${VALID_CID_2}&limit=5`, {
+      headers: TEST_AUTH_HEADERS,
+    });
 
     expect(res.status).toBe(400);
     const data = await res.json();
@@ -314,10 +319,9 @@ describe("GET /api/outcomes", () => {
   });
 
   test("GET /api/outcomes?cids=a,b&offset=1 returns 400", async () => {
-    const res = await ctx.app.request(
-      `/api/outcomes?cids=${VALID_CID},${VALID_CID_2}&offset=1`,
-      { headers: TEST_AUTH_HEADERS },
-    );
+    const res = await ctx.app.request(`/api/outcomes?cids=${VALID_CID},${VALID_CID_2}&offset=1`, {
+      headers: TEST_AUTH_HEADERS,
+    });
 
     expect(res.status).toBe(400);
     const data = await res.json();

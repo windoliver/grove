@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { TEST_AUTH_HEADERS, createTestContext, validManifestBody } from "./helpers.js";
+import { createTestContext, TEST_AUTH_HEADERS, validManifestBody } from "./helpers.js";
 
 describe("GET /api/frontier", () => {
   let ctx: TestContext;
@@ -133,30 +133,27 @@ describe("GET /api/frontier", () => {
   });
 
   test("returns 400 for invalid context JSON", async () => {
-    const res = await ctx.app.request(
-      `/api/frontier?context=${encodeURIComponent("not-json")}`,
-      { headers: TEST_AUTH_HEADERS },
-    );
+    const res = await ctx.app.request(`/api/frontier?context=${encodeURIComponent("not-json")}`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toContain("Invalid context");
   });
 
   test("returns 400 for null context", async () => {
-    const res = await ctx.app.request(
-      `/api/frontier?context=${encodeURIComponent("null")}`,
-      { headers: TEST_AUTH_HEADERS },
-    );
+    const res = await ctx.app.request(`/api/frontier?context=${encodeURIComponent("null")}`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toContain("must be a JSON object");
   });
 
   test("returns 400 for array context", async () => {
-    const res = await ctx.app.request(
-      `/api/frontier?context=${encodeURIComponent("[1,2]")}`,
-      { headers: TEST_AUTH_HEADERS },
-    );
+    const res = await ctx.app.request(`/api/frontier?context=${encodeURIComponent("[1,2]")}`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toContain("must be a JSON object");

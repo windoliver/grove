@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { TEST_AUTH_HEADERS, claimBody, createTestContext } from "./helpers.js";
+import { claimBody, createTestContext, TEST_AUTH_HEADERS } from "./helpers.js";
 
 describe("POST /api/claims", () => {
   let ctx: TestContext;
@@ -333,7 +333,9 @@ describe("GET /api/claims", () => {
       body: JSON.stringify(claimBody({ agent: { agentId: "agent-2" }, targetRef: "other-target" })),
     });
 
-    const res = await ctx.app.request("/api/claims?agentId=agent-1", { headers: TEST_AUTH_HEADERS });
+    const res = await ctx.app.request("/api/claims?agentId=agent-1", {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.claims).toHaveLength(1);

@@ -278,7 +278,9 @@ describe("GET /api/sessions", () => {
       headers: GS_TEST_AUTH_HEADERS,
     });
 
-    const res = await ctx.app.request("/api/sessions?status=active", { headers: GS_TEST_AUTH_HEADERS });
+    const res = await ctx.app.request("/api/sessions?status=active", {
+      headers: GS_TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.sessions.length).toBe(1);
@@ -294,7 +296,9 @@ describe("GET /api/sessions/:id", () => {
     });
     const created = await createRes.json();
 
-    const res = await ctx.app.request(`/api/sessions/${created.sessionId}`, { headers: GS_TEST_AUTH_HEADERS });
+    const res = await ctx.app.request(`/api/sessions/${created.sessionId}`, {
+      headers: GS_TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.sessionId).toBe(created.sessionId);
@@ -302,7 +306,9 @@ describe("GET /api/sessions/:id", () => {
   });
 
   test("returns 404 for missing session", async () => {
-    const res = await ctx.app.request("/api/sessions/nonexistent-id", { headers: GS_TEST_AUTH_HEADERS });
+    const res = await ctx.app.request("/api/sessions/nonexistent-id", {
+      headers: GS_TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(404);
     const data = await res.json();
     expect(data.error.code).toBe("NOT_FOUND");
@@ -325,7 +331,9 @@ describe("PUT /api/sessions/:id/archive", () => {
     expect(res.status).toBe(204);
 
     // Verify archived
-    const getRes = await ctx.app.request(`/api/sessions/${created.sessionId}`, { headers: GS_TEST_AUTH_HEADERS });
+    const getRes = await ctx.app.request(`/api/sessions/${created.sessionId}`, {
+      headers: GS_TEST_AUTH_HEADERS,
+    });
     const data = await getRes.json();
     expect(data.status).toBe("archived");
     expect(data.endedAt).toBeTruthy();
@@ -357,7 +365,9 @@ describe("POST /api/sessions/:id/contributions", () => {
     expect(res.status).toBe(204);
 
     // Verify contribution count increased
-    const getRes = await ctx.app.request(`/api/sessions/${created.sessionId}`, { headers: GS_TEST_AUTH_HEADERS });
+    const getRes = await ctx.app.request(`/api/sessions/${created.sessionId}`, {
+      headers: GS_TEST_AUTH_HEADERS,
+    });
     const data = await getRes.json();
     expect(data.contributionCount).toBe(1);
   });
@@ -459,7 +469,9 @@ describe("POST /api/sessions — topology and preset", () => {
     const created = await createRes.json();
 
     // GET by ID should include topology
-    const res = await ctx.app.request(`/api/sessions/${created.sessionId}`, { headers: GS_TEST_AUTH_HEADERS });
+    const res = await ctx.app.request(`/api/sessions/${created.sessionId}`, {
+      headers: GS_TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.topology).toBeDefined();
@@ -545,7 +557,9 @@ describe("POST /api/sessions (config snapshot)", () => {
     expect(data.sessionId).toBeDefined();
 
     // Retrieve the session and check config is stored
-    const getRes = await ctx.app.request(`/api/sessions/${data.sessionId}`, { headers: GS_TEST_AUTH_HEADERS });
+    const getRes = await ctx.app.request(`/api/sessions/${data.sessionId}`, {
+      headers: GS_TEST_AUTH_HEADERS,
+    });
     expect(getRes.status).toBe(200);
   });
 
@@ -629,7 +643,9 @@ describe("POST /api/sessions (config snapshot)", () => {
     expect(archiveRes.status).toBe(204);
 
     // Config should still be retrievable
-    const getRes = await ctx.app.request(`/api/sessions/${sessionId}`, { headers: GS_TEST_AUTH_HEADERS });
+    const getRes = await ctx.app.request(`/api/sessions/${sessionId}`, {
+      headers: GS_TEST_AUTH_HEADERS,
+    });
     expect(getRes.status).toBe(200);
   });
 });

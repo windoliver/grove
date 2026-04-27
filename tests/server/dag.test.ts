@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { TEST_AUTH_HEADERS, createTestContext, validManifestBody } from "./helpers.js";
+import { createTestContext, TEST_AUTH_HEADERS, validManifestBody } from "./helpers.js";
 
 describe("GET /api/dag/:cid/children", () => {
   let ctx: TestContext;
@@ -20,7 +20,9 @@ describe("GET /api/dag/:cid/children", () => {
     });
     const parent = await createRes.json();
 
-    const res = await ctx.app.request(`/api/dag/${parent.cid}/children`, { headers: TEST_AUTH_HEADERS });
+    const res = await ctx.app.request(`/api/dag/${parent.cid}/children`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data).toEqual([]);
@@ -48,7 +50,9 @@ describe("GET /api/dag/:cid/children", () => {
       body: JSON.stringify(childInput),
     });
 
-    const res = await ctx.app.request(`/api/dag/${parent.cid}/children`, { headers: TEST_AUTH_HEADERS });
+    const res = await ctx.app.request(`/api/dag/${parent.cid}/children`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data).toHaveLength(1);
@@ -57,14 +61,18 @@ describe("GET /api/dag/:cid/children", () => {
 
   test("returns empty array for non-existent CID", async () => {
     const fakeCid = `blake3:${"c".repeat(64)}`;
-    const res = await ctx.app.request(`/api/dag/${fakeCid}/children`, { headers: TEST_AUTH_HEADERS });
+    const res = await ctx.app.request(`/api/dag/${fakeCid}/children`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data).toEqual([]);
   });
 
   test("returns 400 for invalid CID format", async () => {
-    const res = await ctx.app.request("/api/dag/invalid-cid/children", { headers: TEST_AUTH_HEADERS });
+    const res = await ctx.app.request("/api/dag/invalid-cid/children", {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(400);
   });
 });
@@ -102,7 +110,9 @@ describe("GET /api/dag/:cid/ancestors", () => {
     });
     const descendant = await descRes.json();
 
-    const res = await ctx.app.request(`/api/dag/${descendant.cid}/ancestors`, { headers: TEST_AUTH_HEADERS });
+    const res = await ctx.app.request(`/api/dag/${descendant.cid}/ancestors`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data).toHaveLength(1);
@@ -117,7 +127,9 @@ describe("GET /api/dag/:cid/ancestors", () => {
     });
     const contribution = await createRes.json();
 
-    const res = await ctx.app.request(`/api/dag/${contribution.cid}/ancestors`, { headers: TEST_AUTH_HEADERS });
+    const res = await ctx.app.request(`/api/dag/${contribution.cid}/ancestors`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data).toEqual([]);

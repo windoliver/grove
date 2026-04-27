@@ -19,7 +19,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { TEST_AUTH_HEADERS, createTestContext, postContribution } from "./helpers.js";
+import { createTestContext, postContribution, TEST_AUTH_HEADERS } from "./helpers.js";
 
 // ===================================================================
 // Frontier — byMetric dimension (not covered by frontier.test.ts)

@@ -169,7 +169,7 @@ if (registry.size === 0) {
       process.exit(1);
     }
   }
-  const clientKey = isValidKey ? rawClientKey! : randomBytes(32).toString("hex");
+  const clientKey = isValidKey && rawClientKey ? rawClientKey : randomBytes(32).toString("hex");
   if (!isValidKey) {
     writeClientKey(GROVE_DIR, clientKey);
   }

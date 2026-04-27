@@ -18,7 +18,7 @@ import { FsCas } from "../../src/local/fs-cas.js";
 import { createSqliteStores } from "../../src/local/sqlite-store.js";
 import { createApp } from "../../src/server/app.js";
 import type { ServerDeps, ServerEnv } from "../../src/server/deps.js";
-import { type KeyRegistry } from "../../src/server/middleware/namespace-auth.js";
+import type { KeyRegistry } from "../../src/server/middleware/namespace-auth.js";
 
 export interface TestContext {
   readonly app: Hono<ServerEnv>;

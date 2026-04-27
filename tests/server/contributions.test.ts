@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { TEST_AUTH_HEADERS, createTestContext, validManifestBody } from "./helpers.js";
+import { createTestContext, TEST_AUTH_HEADERS, validManifestBody } from "./helpers.js";
 
 describe("POST /api/contributions", () => {
   let ctx: TestContext;
@@ -515,10 +515,9 @@ describe("GET /api/contributions/:cid/artifacts/:name", () => {
     });
     const created = await createRes.json();
 
-    const res = await ctx.app.request(
-      `/api/contributions/${created.cid}/artifacts/nonexistent`,
-      { headers: TEST_AUTH_HEADERS },
-    );
+    const res = await ctx.app.request(`/api/contributions/${created.cid}/artifacts/nonexistent`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(404);
   });
 

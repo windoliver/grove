@@ -9,7 +9,7 @@ import { describe, expect, test } from "bun:test";
 
 import { computeCid } from "../../src/core/manifest.js";
 import type { ContributionInput } from "../../src/core/models.js";
-import { TEST_AUTH_HEADERS, createTestContext } from "./helpers.js";
+import { createTestContext, TEST_AUTH_HEADERS } from "./helpers.js";
 
 /** Create a valid contribution with computed CID. */
 function makeContribution(input: ContributionInput) {

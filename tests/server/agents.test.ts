@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { TEST_AUTH_HEADERS, createTestContext } from "./helpers.js";
+import { createTestContext, TEST_AUTH_HEADERS } from "./helpers.js";
 
 // ---------------------------------------------------------------------------
 // POST /api/agents/spawn
