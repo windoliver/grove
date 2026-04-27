@@ -124,9 +124,11 @@ if (registry.size === 0) {
   // Auto-generate credentials so API routes are usable immediately (upgrade path).
   const { randomBytes } = await import("node:crypto");
   const rawClientKey = readClientKey(GROVE_DIR);
-  // Require ≥32 hex chars (128-bit entropy) — reject empty/malformed keys to prevent
-  // "Authorization: Bearer " (empty token) from authenticating after registry lookup.
-  const isValidKey = typeof rawClientKey === "string" && /^[0-9a-f]{32,}$/.test(rawClientKey);
+  // Accept grv_-prefixed keys (from grove init) or raw hex keys (from older auto-upgrade).
+  // Require non-empty with ≥32 chars of hex content to prevent empty-token bypass.
+  const isValidKey = typeof rawClientKey === "string" &&
+    /^(?:grv_)?[0-9a-f]{32,}$/i.test(rawClientKey) &&
+    rawClientKey.replace(/^grv_/, "").length >= 32;
   const clientKey = isValidKey ? rawClientKey : randomBytes(32).toString("hex");
   if (!isValidKey) {
     writeClientKey(GROVE_DIR, clientKey);
