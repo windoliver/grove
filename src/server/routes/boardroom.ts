@@ -20,6 +20,7 @@ import { answerQuestion } from "../../core/operations/ask-user-bus.js";
 import { sendMessageAsDiscussion } from "../../core/operations/messaging.js";
 import type { ServerEnv } from "../deps.js";
 import { toOperationDeps } from "../operation-adapter.js";
+import { contributionStoreForSession } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // File-local schemas (not exported — avoids isolatedDeclarations issues)
@@ -92,9 +93,9 @@ export const boardroom: Hono<ServerEnv> = new Hono<ServerEnv>();
  */
 boardroom.get("/summary", zValidator("query", summaryQuerySchema), async (c) => {
   const deps = c.get("deps");
-  const store = deps.contributionStore;
   const claimStore = deps.claimStore;
   const { sessionId } = c.req.valid("query");
+  const store = contributionStoreForSession(deps, sessionId);
 
   // Fetch ephemeral discussions in a single query, optionally scoped to a session
   const discussions = await store.list({
@@ -210,9 +211,8 @@ boardroom.get("/summary", zValidator("query", summaryQuerySchema), async (c) => 
  */
 boardroom.post("/answer", zValidator("json", answerBodySchema), async (c) => {
   const deps = c.get("deps");
-  const store = deps.contributionStore;
-
   const body = c.req.valid("json");
+  const store = contributionStoreForSession(deps, body.sessionId);
 
   const operator = { agentId: "tui-operator", agentName: "operator" };
   const contribution = await answerQuestion(
@@ -242,6 +242,7 @@ boardroom.post("/answer", zValidator("json", answerBodySchema), async (c) => {
 boardroom.post("/message", zValidator("json", messageBodySchema), async (c) => {
   const deps = c.get("deps");
   const body = c.req.valid("json");
+  const store = contributionStoreForSession(deps, body.sessionId);
 
   const result = await sendMessageAsDiscussion(
     {
@@ -250,7 +251,7 @@ boardroom.post("/message", zValidator("json", messageBodySchema), async (c) => {
       recipients: body.recipients,
       ...(body.inReplyTo !== undefined ? { inReplyTo: body.inReplyTo } : {}),
     },
-    toOperationDeps(deps),
+    toOperationDeps({ ...deps, contributionStore: store }),
   );
 
   if (!result.ok) {

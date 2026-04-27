@@ -141,6 +141,18 @@ describe("PUT /api/session/goal", () => {
     expect(data.goal).toBe("Ship it");
     expect(data.acceptance).toEqual([]);
   });
+
+  test("rejects malformed JSON with 400", async () => {
+    const res = await ctx.app.request("/api/session/goal", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: "not-json{{{",
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as { error: { code: string } };
+    expect(data.error.code).toBe("VALIDATION_ERROR");
+  });
 });
 
 describe("GET /api/session/goal", () => {
@@ -199,6 +211,18 @@ describe("POST /api/sessions", () => {
     expect(res.status).toBe(201);
     const data = await res.json();
     expect(data.goal).toBe("Fix all bugs");
+  });
+
+  test("rejects malformed JSON with 400", async () => {
+    const res = await ctx.app.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "not-json{{{",
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as { error: { code: string } };
+    expect(data.error.code).toBe("VALIDATION_ERROR");
   });
 });
 

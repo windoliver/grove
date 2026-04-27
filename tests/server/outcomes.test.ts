@@ -108,6 +108,18 @@ describe("POST /api/outcomes/:cid", () => {
     expect(res.status).toBe(400);
   });
 
+  test("returns 400 for malformed JSON body", async () => {
+    const res = await ctx.app.request(`/api/outcomes/${VALID_CID}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "not-json{{{",
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as { error: { code: string } };
+    expect(data.error.code).toBe("VALIDATION_ERROR");
+  });
+
   test("overwrites existing outcome", async () => {
     // Create initial outcome
     await ctx.app.request(`/api/outcomes/${VALID_CID}`, {

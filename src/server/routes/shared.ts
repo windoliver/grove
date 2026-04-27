@@ -7,6 +7,8 @@
 
 import type { Context } from "hono";
 import { z } from "zod";
+import type { ContributionStore } from "../../core/store.js";
+import type { ServerDeps } from "../deps.js";
 import { CID_REGEX } from "../schemas.js";
 
 // ---------------------------------------------------------------------------
@@ -33,4 +35,31 @@ export const cidParamSchema: z.ZodObject<{ cid: z.ZodString }> = z.object({
  */
 export function notConfigured(c: Context, message: string): Response {
   return c.json({ error: { code: "NOT_CONFIGURED", message } }, 501);
+}
+
+/** Resolve the contribution store for an optional session-scoped request. */
+export function contributionStoreForSession(
+  deps: ServerDeps,
+  sessionId: string | undefined,
+): ContributionStore {
+  if (sessionId !== undefined && deps.contributionStoreForSession !== undefined) {
+    return deps.contributionStoreForSession(sessionId);
+  }
+  return deps.contributionStore;
+}
+
+export type JsonBodyResult =
+  | { readonly ok: true; readonly body: unknown }
+  | { readonly ok: false; readonly response: Response };
+
+/** Parse a JSON request body, returning a consistent 400 on malformed input. */
+export async function readJsonBody(c: Context): Promise<JsonBodyResult> {
+  try {
+    return { ok: true, body: await c.req.json() };
+  } catch {
+    return {
+      ok: false,
+      response: c.json({ error: { code: "VALIDATION_ERROR", message: "Invalid JSON body" } }, 400),
+    };
+  }
 }

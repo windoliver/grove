@@ -18,7 +18,7 @@ import type { AgentTopology } from "../../core/topology.js";
 import { AgentTopologySchema, wireToTopology } from "../../core/topology.js";
 import { resolveTopology } from "../../core/topology-resolver.js";
 import type { ServerEnv } from "../deps.js";
-import { notConfigured } from "./shared.js";
+import { contributionStoreForSession, notConfigured, readJsonBody } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -73,8 +73,10 @@ sessions.post("/", async (c) => {
   const { goalSessionStore, contract } = c.get("deps");
   if (!goalSessionStore) return notConfigured(c, "Goal/session store is not configured");
 
-  const body = await c.req.json();
-  const parsed = createSessionSchema.safeParse(body);
+  const json = await readJsonBody(c);
+  if (!json.ok) return json.response;
+
+  const parsed = createSessionSchema.safeParse(json.body);
   if (!parsed.success) {
     return c.json({ error: { code: "VALIDATION_ERROR", details: parsed.error.issues } }, 400);
   }
@@ -240,7 +242,7 @@ sessions.put("/:id/archive", async (c) => {
 /** POST /api/sessions/:id/contributions — Record a contribution against a session. */
 sessions.post("/:id/contributions", async (c) => {
   const deps = c.get("deps");
-  const { goalSessionStore, contributionStore } = deps;
+  const { goalSessionStore } = deps;
   if (!goalSessionStore) return notConfigured(c, "Goal/session store is not configured");
 
   const sessionId = c.req.param("id");
@@ -254,13 +256,16 @@ sessions.post("/:id/contributions", async (c) => {
     );
   }
 
-  const body = await c.req.json();
-  const parsed = addContributionSchema.safeParse(body);
+  const json = await readJsonBody(c);
+  if (!json.ok) return json.response;
+
+  const parsed = addContributionSchema.safeParse(json.body);
   if (!parsed.success) {
     return c.json({ error: { code: "VALIDATION_ERROR", details: parsed.error.issues } }, 400);
   }
 
   // Verify contribution exists and run policy enforcement when possible
+  const contributionStore = contributionStoreForSession(deps, sessionId);
   const contribution = await contributionStore.get(parsed.data.cid);
   if (contribution) {
     // Policy enforcement against session config (only when contribution is available)
