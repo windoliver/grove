@@ -61,13 +61,19 @@ export async function createProvider(
   if (backend.mode === "remote") {
     const { RemoteDataProvider } = await import("../tui/remote-provider.js");
     let apiKey: string | undefined;
-    try {
-      const { resolveGroveDir } = await import("../cli/utils/grove-dir.js");
-      const { readClientKey } = await import("../core/project-key.js");
-      const { groveDir } = resolveGroveDir(backend.groveOverride);
-      apiKey = readClientKey(groveDir);
-    } catch {
-      // No .grove/api-key found — requests will get 400 from the server
+    // Only forward the local API key when the user explicitly opted in via
+    // --grove, indicating they intend to authenticate against that remote with
+    // their local credentials. Without --grove, silently omit the key so we
+    // don't leak credentials to arbitrary --url targets.
+    if (backend.groveOverride) {
+      try {
+        const { resolveGroveDir } = await import("../cli/utils/grove-dir.js");
+        const { readClientKey } = await import("../core/project-key.js");
+        const { groveDir } = resolveGroveDir(backend.groveOverride);
+        apiKey = readClientKey(groveDir);
+      } catch {
+        // No .grove/api-key found — requests will proceed unauthenticated
+      }
     }
     return new RemoteDataProvider(backend.url, {
       ...(apiKey !== undefined ? { apiKey } : {}),

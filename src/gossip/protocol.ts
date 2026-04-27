@@ -162,6 +162,8 @@ export class DefaultGossipService implements GossipService {
   private running = false;
   private consecutiveFailures = 0;
   private readonly now: () => number;
+  /** Per-peer monotonic timestamp (ms) for replay detection. */
+  private readonly peerLastTimestamp = new Map<string, number>();
 
   constructor(opts: {
     config: GossipConfig;
@@ -257,10 +259,19 @@ export class DefaultGossipService implements GossipService {
         throw new GossipAuthError(`invalid or missing HMAC from peer ${message.peerId}`);
       }
       // Reject messages outside the 5-minute clock-skew window to prevent replay attacks.
-      const age = Math.abs(this.now() - new Date(message.timestamp).getTime());
+      const msgTimestampMs = new Date(message.timestamp).getTime();
+      const age = Math.abs(this.now() - msgTimestampMs);
       if (age > GOSSIP_MAX_MESSAGE_AGE_MS) {
         throw new GossipAuthError(`message too old (${age}ms) from peer ${message.peerId}`);
       }
+      // Monotonic timestamp guard: reject replays within the valid window.
+      const lastSeen = this.peerLastTimestamp.get(message.peerId);
+      if (lastSeen !== undefined && msgTimestampMs <= lastSeen) {
+        throw new GossipAuthError(
+          `replay detected from peer ${message.peerId} (ts=${msgTimestampMs} <= last=${lastSeen})`,
+        );
+      }
+      this.peerLastTimestamp.set(message.peerId, msgTimestampMs);
     }
 
     // Update liveness for sender

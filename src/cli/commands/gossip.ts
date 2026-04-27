@@ -333,10 +333,16 @@ async function handleShuffle(args: readonly string[], writer: Writer): Promise<v
 
   const target = urlToPeerInfo(peerUrl);
   // Don't include self in offered — CLI can't receive incoming gossip
-  const request: ShuffleRequest = {
+  const rawRequest: ShuffleRequest = {
     sender: { ...selfPeer, age: 0 },
     offered: [],
   };
+  const request = hmacSecret
+    ? {
+        ...rawRequest,
+        hmacSignature: signPayload(rawRequest as unknown as Record<string, unknown>, hmacSecret),
+      }
+    : rawRequest;
 
   writer(`Shuffling with ${peerUrl}...`);
   const response = await transport.shuffle(target, request);
@@ -412,10 +418,19 @@ async function handleSync(args: readonly string[], deps: CliDeps, writer: Writer
     try {
       writer(`  Shuffling with ${seed.peerId} (${seed.address})...`);
       // Don't include self in offered — CLI can't receive incoming gossip
-      const request: ShuffleRequest = {
+      const rawShuffleReq: ShuffleRequest = {
         sender: { ...selfPeer, age: 0 },
         offered: [],
       };
+      const request = hmacSecret
+        ? {
+            ...rawShuffleReq,
+            hmacSignature: signPayload(
+              rawShuffleReq as unknown as Record<string, unknown>,
+              hmacSecret,
+            ),
+          }
+        : rawShuffleReq;
       const shuffleResp = await transport.shuffle(seed, request);
       sampler.processShuffleResponse(shuffleResp, request.offered);
 
