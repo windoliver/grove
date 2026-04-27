@@ -497,10 +497,17 @@ export function initSqliteDb(dbPath: string): Database {
  * Returns `"default"` if no migration has been applied yet.
  */
 export function readStoreNamespace(db: Database): string {
-  const row = db.prepare("SELECT value FROM project_settings WHERE key = 'namespace'").get() as {
-    value: string;
-  } | null;
-  return row?.value ?? "default";
+  // Tolerate missing table so callers (e.g. `grove migrate --dry-run` opening
+  // a legacy DB read-only) do not crash before schema migrations have run.
+  try {
+    const row = db.prepare("SELECT value FROM project_settings WHERE key = 'namespace'").get() as {
+      value: string;
+    } | null;
+    return row?.value ?? "default";
+  } catch (err) {
+    if ((err as Error).message?.includes("no such table")) return "default";
+    throw err;
+  }
 }
 
 /**
@@ -1743,7 +1750,8 @@ export class SqliteClaimStore implements ClaimStore {
     const baseQuery: ClaimQuery | undefined =
       query === undefined ? undefined : { ...query, status: undefined };
     const items = await this.listClaims(baseQuery);
-    const entities = items.map((c) => claimToEntity(c, () => Date.now()));
+    const namespace = readStoreNamespace(this.db);
+    const entities = items.map((c) => claimToEntity(c, () => Date.now(), namespace));
     if (query?.status === undefined) return entities;
     const wanted = Array.isArray(query.status) ? new Set(query.status) : new Set([query.status]);
     return entities.filter((e) => wanted.has(e.status.phase));
