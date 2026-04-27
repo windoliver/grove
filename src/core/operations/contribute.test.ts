@@ -706,6 +706,60 @@ describe("contributeOperation: idempotencyKey", () => {
     expect(matching).toHaveLength(1);
   });
 
+  test("serial idempotency commit failure after put does not turn committed write into error", async () => {
+    // biome-ignore lint/suspicious/noEmptyBlockStatements: spy suppresses output intentionally
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    let storeCalls = 0;
+    const flakyIdempotencyStore: FullOperationDeps["idempotencyStore"] = {
+      lookup: deps.idempotencyStore.lookup.bind(deps.idempotencyStore),
+      reserve: deps.idempotencyStore.reserve.bind(deps.idempotencyStore),
+      rollback: deps.idempotencyStore.rollback.bind(deps.idempotencyStore),
+      store: (cacheKey, fingerprint, resultJson) => {
+        storeCalls++;
+        if (storeCalls === 1) {
+          throw new Error("simulated idempotency commit failure");
+        }
+        deps.idempotencyStore.store(cacheKey, fingerprint, resultJson);
+      },
+      clear: deps.idempotencyStore.clear.bind(deps.idempotencyStore),
+    };
+
+    // Object spread copies the store's arrow-method implementation but not
+    // the prototype putWithCowrite() capability, forcing writeSerial().
+    const serialContributionStore = {
+      ...deps.contributionStore,
+    };
+
+    const serialDeps: FullOperationDeps = {
+      ...deps,
+      contributionStore: serialContributionStore,
+      idempotencyStore: flakyIdempotencyStore,
+    };
+
+    const input = {
+      kind: "work" as const,
+      summary: "serial-idempotency-store-failure",
+      agent: { agentId: "a1" },
+      idempotencyKey: "serial-idempotency-store-failure-key",
+    };
+
+    const first = await contributeOperation(input, serialDeps);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const second = await contributeOperation(input, serialDeps);
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.cid).toBe(first.value.cid);
+
+    const stored = await deps.contributionStore.list({ limit: 20 });
+    const matching = stored.filter((c) => c.summary === "serial-idempotency-store-failure");
+    expect(matching).toHaveLength(1);
+    expect(warnSpy).toHaveBeenCalled();
+
+    warnSpy.mockRestore();
+  });
+
   test("ephemeral flag on non-discussion kind is rejected", async () => {
     // Regression guard: context.ephemeral=true is reserved for discussions
     // (chat messages + grove_done markers). Allowing it on work/review
