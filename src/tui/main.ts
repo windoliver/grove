@@ -588,7 +588,7 @@ export async function handleTui(
     // the rendered output. By default on macOS, useThread=true routes writes
     // through a Zig FFI background thread, bypassing Node stdout and tmux's
     // cell-grid tracking. Linux already forces useThread=false.
-    useThread: process.env.TMUX ? false : undefined,
+    ...(process.env.TMUX ? { useThread: false } : {}),
   });
 
   const root = createRoot(renderer);
