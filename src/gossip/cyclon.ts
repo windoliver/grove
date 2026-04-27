@@ -97,9 +97,13 @@ export class CyclonPeerSampler {
     const candidates = this.view.filter((p) => p.peerId !== target.peerId);
     const randomSubset = shuffleArray(candidates).slice(0, this.config.shuffleLength - 1);
 
+    // Stamp self with the current time so HMAC replay protection doesn't
+    // reject shuffles after the service has been running past the max-age window.
+    const now = new Date().toISOString();
+    const freshSelf = { ...this.selfPeer, age: 0, lastSeen: now };
     return {
-      sender: { ...this.selfPeer, age: 0 },
-      offered: [{ ...this.selfPeer, age: 0 }, ...randomSubset],
+      sender: freshSelf,
+      offered: [freshSelf, ...randomSubset],
     };
   }
 
