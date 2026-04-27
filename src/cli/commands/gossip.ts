@@ -35,7 +35,7 @@ import { readClientKey } from "../../core/project-key.js";
 import { CachedFrontierCalculator } from "../../gossip/cached-frontier.js";
 import { CyclonPeerSampler } from "../../gossip/cyclon.js";
 import { HttpGossipTransport } from "../../gossip/http-transport.js";
-import { DefaultGossipService } from "../../gossip/protocol.js";
+import { DefaultGossipService, GossipAuthError } from "../../gossip/protocol.js";
 import { SqliteGossipStore } from "../../local/gossip-store.js";
 import type { CliDeps, Writer } from "../context.js";
 import { resolveGroveDir } from "../utils/grove-dir.js";
@@ -584,8 +584,15 @@ async function handleDaemon(
             const msg = err instanceof Error ? err.message : String(err);
             return Response.json({ error: `invalid JSON: ${msg}` }, { status: 400 });
           }
-          const response = await gossipService.handleExchange(body);
-          return Response.json(response);
+          try {
+            const response = await gossipService.handleExchange(body);
+            return Response.json(response);
+          } catch (err) {
+            if (err instanceof GossipAuthError) {
+              return Response.json({ error: err.message }, { status: 401 });
+            }
+            throw err;
+          }
         }
 
         if (req.method === "POST" && path === "/api/gossip/shuffle") {

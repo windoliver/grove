@@ -49,6 +49,18 @@ import { CyclonPeerSampler } from "./cyclon.js";
 /** Maximum age of a signed gossip message before it is rejected as a potential replay. */
 const GOSSIP_MAX_MESSAGE_AGE_MS = 5 * 60 * 1000; // 5 minutes
 
+/**
+ * Thrown by handleExchange/handleShuffle when HMAC verification or freshness
+ * checks fail. Callers (HTTP routes, daemon handlers) must catch this and
+ * return 401/403 — never leak gossip state to an unauthenticated peer.
+ */
+export class GossipAuthError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = "GossipAuthError";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Direction-aware helpers
 // ---------------------------------------------------------------------------
@@ -242,14 +254,12 @@ export class DefaultGossipService implements GossipService {
     // Verify HMAC if configured
     if (this.config.hmacSecret) {
       if (!verifyPayload(message as unknown as Record<string, unknown>, this.config.hmacSecret)) {
-        console.warn(`Gossip: rejecting exchange from ${message.peerId} — invalid or missing HMAC`);
-        return this.currentMessage();
+        throw new GossipAuthError(`invalid or missing HMAC from peer ${message.peerId}`);
       }
       // Reject messages outside the 5-minute clock-skew window to prevent replay attacks.
       const age = Math.abs(this.now() - new Date(message.timestamp).getTime());
       if (age > GOSSIP_MAX_MESSAGE_AGE_MS) {
-        console.warn(`Gossip: rejecting exchange from ${message.peerId} — message too old (${age}ms)`);
-        return this.currentMessage();
+        throw new GossipAuthError(`message too old (${age}ms) from peer ${message.peerId}`);
       }
     }
 
@@ -299,7 +309,10 @@ export class DefaultGossipService implements GossipService {
     if (this.config.hmacSecret) {
       return {
         ...response,
-        hmacSignature: signPayload(response as unknown as Record<string, unknown>, this.config.hmacSecret),
+        hmacSignature: signPayload(
+          response as unknown as Record<string, unknown>,
+          this.config.hmacSecret,
+        ),
       };
     }
     return response;
