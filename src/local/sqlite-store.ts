@@ -51,7 +51,7 @@ import { claimToEntity, contributionToEntity } from "../core/entity.js";
 import { ClaimConflictError, NotFoundError, StateConflictError } from "../core/errors.js";
 import { toUtcIso } from "../core/time.js";
 
-const CURRENT_SCHEMA_VERSION = 10;
+const CURRENT_SCHEMA_VERSION = 11;
 const SQLITE_BIND_LIMIT = 900;
 
 // ---------------------------------------------------------------------------
@@ -169,6 +169,12 @@ const SCHEMA_DDL = `
     result_json TEXT NOT NULL DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'pending',
     stored_at INTEGER NOT NULL
+  );
+
+  -- Key-value store for per-grove settings (e.g. migrated namespace).
+  CREATE TABLE IF NOT EXISTS project_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
   );
 `;
 
@@ -447,6 +453,10 @@ export function initSqliteDb(dbPath: string): Database {
       }
     }
 
+    // Migration → v11: create project_settings table (key-value store for
+    // per-grove settings like the migrated namespace from `grove migrate`).
+    // Handled by SCHEMA_DDL CREATE TABLE IF NOT EXISTS — no ALTER needed.
+
     db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [
       CURRENT_SCHEMA_VERSION,
       new Date().toISOString(),
@@ -478,6 +488,30 @@ export function initSqliteDb(dbPath: string): Database {
   initSchema.immediate();
 
   return db;
+}
+
+/**
+ * Read the effective namespace for this grove's SQLite store.
+ *
+ * Written by `grove migrate` when upgrading a legacy installation.
+ * Returns `"default"` if no migration has been applied yet.
+ */
+export function readStoreNamespace(db: Database): string {
+  const row = db.prepare("SELECT value FROM project_settings WHERE key = 'namespace'").get() as {
+    value: string;
+  } | null;
+  return row?.value ?? "default";
+}
+
+/**
+ * Persist the store namespace in project_settings (upsert).
+ * Used by `grove migrate` and `grove init` to wire the local store to
+ * the project's canonical `{uuid}/{worktree}` namespace.
+ */
+export function writeStoreNamespace(db: Database, namespace: string): void {
+  db.run("INSERT OR REPLACE INTO project_settings (key, value) VALUES ('namespace', ?)", [
+    namespace,
+  ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1235,7 +1269,8 @@ export class SqliteContributionStore implements ContributionStore {
 
   async listEntities(query?: ContributionQuery): Promise<readonly ContributionEntity[]> {
     const items = await this.list(query);
-    return items.map((c) => contributionToEntity(c, "default"));
+    const namespace = readStoreNamespace(this.db);
+    return items.map((c) => contributionToEntity(c, namespace));
   }
 
   /**
