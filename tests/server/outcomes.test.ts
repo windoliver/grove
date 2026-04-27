@@ -111,7 +111,7 @@ describe("POST /api/outcomes/:cid", () => {
   test("returns 400 for malformed JSON body", async () => {
     const res = await ctx.app.request(`/api/outcomes/${VALID_CID}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: "not-json{{{",
     });
 

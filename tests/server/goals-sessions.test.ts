@@ -155,7 +155,7 @@ describe("PUT /api/session/goal", () => {
   test("rejects malformed JSON with 400", async () => {
     const res = await ctx.app.request("/api/session/goal", {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: "not-json{{{",
     });
 
@@ -226,7 +226,7 @@ describe("POST /api/sessions", () => {
   test("rejects malformed JSON with 400", async () => {
     const res = await ctx.app.request("/api/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: "not-json{{{",
     });
 
