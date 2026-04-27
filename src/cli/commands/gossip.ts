@@ -47,8 +47,28 @@ import { resolveGroveDir } from "../utils/grove-dir.js";
 const DEFAULT_SERVER = "http://localhost:4515";
 const DEFAULT_DIGEST_LIMIT = 5;
 
-/** Read the local API key and return an Authorization header, or empty object if unavailable. */
-function resolveServerAuthHeaders(groveOverride: string | undefined): Record<string, string> {
+/** Return true when the server URL is a trusted loopback target. */
+function isTrustedServerUrl(serverUrl: string): boolean {
+  try {
+    const { hostname } = new URL(serverUrl);
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Read the local API key and return an Authorization header, or empty object
+ * if unavailable or the server is not a trusted loopback target.
+ *
+ * Credentials are only forwarded to localhost to prevent leaking the namespace
+ * token when `--server` points to an arbitrary remote origin.
+ */
+function resolveServerAuthHeaders(
+  groveOverride: string | undefined,
+  serverUrl: string,
+): Record<string, string> {
+  if (!isTrustedServerUrl(serverUrl)) return {};
   try {
     const { groveDir } = resolveGroveDir(groveOverride);
     const apiKey = readClientKey(groveDir);
@@ -137,7 +157,7 @@ async function handlePeers(
   writer: Writer,
 ): Promise<void> {
   const { server, json } = parseServerArgs([...args]);
-  const authHeaders = resolveServerAuthHeaders(groveOverride);
+  const authHeaders = resolveServerAuthHeaders(groveOverride, server);
 
   const res = await fetch(`${server}/api/gossip/peers`, { headers: authHeaders });
   if (!res.ok) {
@@ -180,7 +200,7 @@ async function handleStatus(
   writer: Writer,
 ): Promise<void> {
   const { server, json } = parseServerArgs([...args]);
-  const authHeaders = resolveServerAuthHeaders(groveOverride);
+  const authHeaders = resolveServerAuthHeaders(groveOverride, server);
 
   const res = await fetch(`${server}/api/grove`, { headers: authHeaders });
   if (!res.ok) {
@@ -226,7 +246,7 @@ async function handleFrontier(
   writer: Writer,
 ): Promise<void> {
   const { server, json } = parseServerArgs([...args]);
-  const authHeaders = resolveServerAuthHeaders(groveOverride);
+  const authHeaders = resolveServerAuthHeaders(groveOverride, server);
 
   const res = await fetch(`${server}/api/gossip/frontier`, { headers: authHeaders });
   if (!res.ok) {
@@ -737,7 +757,7 @@ async function handleWatch(
   const server = values.server ?? process.env.GROVE_SERVER ?? DEFAULT_SERVER;
   const intervalSec = values.interval ? Number.parseInt(values.interval, 10) : 5;
   const json = values.json ?? false;
-  const authHeaders = resolveServerAuthHeaders(groveOverride);
+  const authHeaders = resolveServerAuthHeaders(groveOverride, server);
 
   writer(
     `Watching gossip events on ${server} (poll every ${intervalSec}s). Press Ctrl+C to stop.\n`,

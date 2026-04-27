@@ -306,13 +306,22 @@ export class DefaultGossipService implements GossipService {
       }
       // Reject replayed messages outside the 5-minute clock-skew window.
       const ts = request.sender.lastSeen;
-      const age = Math.abs(this.now() - new Date(ts).getTime());
+      const shuffleTs = new Date(ts).getTime();
+      const age = Math.abs(this.now() - shuffleTs);
       if (age > GOSSIP_MAX_MESSAGE_AGE_MS) {
         console.warn(
           `Gossip: rejecting shuffle from ${request.sender.peerId} — message too old (${age}ms)`,
         );
         return { offered: [] };
       }
+      // Monotonic timestamp guard: reject replayed shuffles within the window.
+      const shuffleKey = `shuffle:${request.sender.peerId}`;
+      const lastSeen = this.peerLastTimestamp.get(shuffleKey);
+      if (lastSeen !== undefined && shuffleTs <= lastSeen) {
+        console.warn(`Gossip: rejecting replayed shuffle from ${request.sender.peerId}`);
+        return { offered: [] };
+      }
+      this.peerLastTimestamp.set(shuffleKey, shuffleTs);
     }
 
     this.markAlive(request.sender.peerId);

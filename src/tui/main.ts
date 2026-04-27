@@ -242,13 +242,15 @@ async function buildAppProps(
 
   const label = backendLabel(backend);
 
-  // For remote backends, read the local API key so topology/contract probes authenticate.
+  // For remote backends, attach the local API key for topology/contract probes
+  // only when the user explicitly provided --grove (opting into credential scope).
+  // Without --grove, omit credentials to avoid leaking tokens to arbitrary --url targets.
   let remoteAuthHeaders: Record<string, string> | undefined;
-  if (backend.mode === "remote") {
+  if (backend.mode === "remote" && backend.groveOverride) {
     const { resolveGroveDir } = await import("../cli/utils/grove-dir.js");
     const { readClientKey } = await import("../core/project-key.js");
     try {
-      const { groveDir } = resolveGroveDir(effectiveGrove);
+      const { groveDir } = resolveGroveDir(backend.groveOverride);
       const apiKey = readClientKey(groveDir);
       if (apiKey) remoteAuthHeaders = { Authorization: `Bearer ${apiKey}` };
     } catch {
