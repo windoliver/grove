@@ -230,6 +230,22 @@ export async function executeInit(
   //    Namespace credential generation is included in this block so a failure
   //    (e.g. disk full, malformed existing YAML) rolls back project identity
   //    rather than leaving partial credential files behind.
+  // Snapshot credential files that may exist (--force rerun) so rollback can
+  // restore them rather than unconditionally deleting the whole registry.
+  const credFiles = ["api-key", "server-keys.yaml", "namespace"] as const;
+  type CredSnapshot = { file: string; content: Buffer | null }[];
+  const credSnapshot: CredSnapshot = await Promise.all(
+    credFiles.map(async (f) => {
+      const path = join(grovePath, f);
+      try {
+        const { readFile } = await import("node:fs/promises");
+        return { file: path, content: await readFile(path) };
+      } catch {
+        return { file: path, content: null };
+      }
+    }),
+  );
+
   try {
     // Generate namespace key for this worktree (inside rollback-protected block).
     {
@@ -474,14 +490,14 @@ export async function executeInit(
   } catch (err) {
     const { rollbackProjectIdentity } = await import("../utils/ensure-project-id.js");
     await rollbackProjectIdentity(grovePath, ensureResult, hooks?.registryPath);
-    // Remove credential files written during this init attempt so a failed
-    // init doesn't leave a usable namespace/api-key that the server would trust.
-    const { rm } = await import("node:fs/promises");
-    await Promise.allSettled([
-      rm(join(grovePath, "api-key"), { force: true }),
-      rm(join(grovePath, "server-keys.yaml"), { force: true }),
-      rm(join(grovePath, "namespace"), { force: true }),
-    ]);
+    // Restore credential files to their pre-init state so a failed --force
+    // reinit doesn't delete credentials that existed before this attempt.
+    const { rm, writeFile } = await import("node:fs/promises");
+    await Promise.allSettled(
+      credSnapshot.map(({ file, content }) =>
+        content !== null ? writeFile(file, content) : rm(file, { force: true }),
+      ),
+    );
     throw err;
   }
   return { grovePath, projectId };

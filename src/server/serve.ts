@@ -155,7 +155,21 @@ if (registry.size === 0) {
     typeof rawClientKey === "string" &&
     /^(?:grv_)?[0-9a-f]{32,}$/i.test(rawClientKey) &&
     rawClientKey.replace(/^grv_/, "").length >= 32;
-  const clientKey = isValidKey ? rawClientKey : randomBytes(32).toString("hex");
+  // Fail closed if the existing client key is already registered for a DIFFERENT namespace.
+  // Reusing the same key for a different namespace would silently convert authorization
+  // from the old namespace to the new one, making old-namespace data appear missing.
+  if (isValidKey && rawClientKey) {
+    const existingNs = rawRegistry.get(rawClientKey);
+    if (existingNs !== undefined && existingNs !== zoneId) {
+      console.error(
+        `grove-server: cannot start — existing api-key is registered for namespace '${existingNs}' ` +
+          `but computed namespace is '${zoneId}'.\n` +
+          `  Run 'grove init' to generate fresh credentials for the current namespace.`,
+      );
+      process.exit(1);
+    }
+  }
+  const clientKey = isValidKey ? rawClientKey! : randomBytes(32).toString("hex");
   if (!isValidKey) {
     writeClientKey(GROVE_DIR, clientKey);
   }
