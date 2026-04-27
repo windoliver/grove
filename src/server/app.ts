@@ -83,9 +83,24 @@ export function createApp(deps: ServerDeps, registry: KeyRegistry): Hono<ServerE
   // All /api/* routes require a valid namespace bearer token.
   // POST gossip endpoints are exempt — they verify HMAC signatures from peer servers.
   // GET gossip endpoints (peers, frontier) still require a bearer token.
-  app.use("/api/*", namespaceAuth(registry, {
-    exempt: (c) => deps.gossip !== undefined && c.req.method === "POST" && c.req.path.startsWith("/api/gossip"),
-  }));
+  app.use(
+    "/api/*",
+    namespaceAuth(registry, {
+      exempt: (c) =>
+        deps.gossip !== undefined &&
+        c.req.method === "POST" &&
+        c.req.path.startsWith("/api/gossip"),
+    }),
+  );
+
+  // E2E access log — logs authenticated /api/* requests when GROVE_ACCESS_LOG=1
+  if (process.env.GROVE_ACCESS_LOG) {
+    app.use("/api/*", async (c, next) => {
+      const ns = c.get("namespace") as string | undefined;
+      process.stdout.write(`[access] ${c.req.method} ${c.req.path} ns=${ns ?? "NONE"}\n`);
+      await next();
+    });
+  }
 
   // Mount route groups
   app.route("/api/agents", agents);
