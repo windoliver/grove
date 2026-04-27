@@ -49,6 +49,15 @@ export function createStubContributionStore(identity?: string): ContributionStor
   };
 }
 
+function isLoopbackUrl(url: string): boolean {
+  try {
+    const { hostname } = new URL(url);
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Create a TuiDataProvider from a resolved backend.
  *
@@ -61,11 +70,11 @@ export async function createProvider(
   if (backend.mode === "remote") {
     const { RemoteDataProvider } = await import("../tui/remote-provider.js");
     let apiKey: string | undefined;
-    // Only forward the local API key when the user explicitly opted in via
-    // --grove, indicating they intend to authenticate against that remote with
-    // their local credentials. Without --grove, silently omit the key so we
-    // don't leak credentials to arbitrary --url targets.
-    if (backend.groveOverride) {
+    // Forward the local API key when the user explicitly provided --grove OR
+    // when the URL targets a trusted loopback address (common dev/CI pattern:
+    // `grove tui --url http://localhost:4515` should authenticate normally).
+    const isLoopback = isLoopbackUrl(backend.url);
+    if (backend.groveOverride || isLoopback) {
       try {
         const { resolveGroveDir } = await import("../cli/utils/grove-dir.js");
         const { readClientKey } = await import("../core/project-key.js");

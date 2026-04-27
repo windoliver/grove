@@ -306,22 +306,28 @@ export class DefaultGossipService implements GossipService {
       }
       // Reject replayed messages outside the 5-minute clock-skew window.
       const ts = request.sender.lastSeen;
-      const shuffleTs = new Date(ts).getTime();
-      const age = Math.abs(this.now() - shuffleTs);
+      const senderTs = new Date(ts).getTime();
+      const age = Math.abs(this.now() - senderTs);
       if (age > GOSSIP_MAX_MESSAGE_AGE_MS) {
         console.warn(
           `Gossip: rejecting shuffle from ${request.sender.peerId} — message too old (${age}ms)`,
         );
         return { offered: [] };
       }
-      // Monotonic timestamp guard: reject replayed shuffles within the window.
+      // Monotonic guard: use our clock to bound how often a peer can shuffle
+      // with us. We can't rely on sender-provided timestamps being monotonic
+      // (peers may reuse the same lastSeen if they don't refresh it per round).
+      // Rate-limiting by our own receive time ensures forward progress without
+      // depending on sender clock accuracy.
       const shuffleKey = `shuffle:${request.sender.peerId}`;
-      const lastSeen = this.peerLastTimestamp.get(shuffleKey);
-      if (lastSeen !== undefined && shuffleTs <= lastSeen) {
-        console.warn(`Gossip: rejecting replayed shuffle from ${request.sender.peerId}`);
+      const nowMs = this.now();
+      const lastReceived = this.peerLastTimestamp.get(shuffleKey);
+      if (lastReceived !== undefined && nowMs - lastReceived < 1000) {
+        // Reject if the same peer shuffles again within 1 s (likely a replay).
+        console.warn(`Gossip: rejecting rapid-fire shuffle from ${request.sender.peerId}`);
         return { offered: [] };
       }
-      this.peerLastTimestamp.set(shuffleKey, shuffleTs);
+      this.peerLastTimestamp.set(shuffleKey, nowMs);
     }
 
     this.markAlive(request.sender.peerId);

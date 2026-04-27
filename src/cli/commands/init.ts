@@ -220,26 +220,34 @@ export async function executeInit(
   });
   const projectId = ensureResult.id;
 
-  // Generate namespace key for this worktree.
-  {
-    const { detectWorktreeName, generateApiKey, writeClientKey, appendServerKey, writeNamespace } =
-      await import("../../core/project-key.js");
-    const worktreeName = await detectWorktreeName();
-    const namespace = `${projectId}/${worktreeName}`;
-    const apiKey = generateApiKey();
-    writeClientKey(grovePath, apiKey);
-    appendServerKey(grovePath, apiKey, namespace);
-    writeNamespace(grovePath, namespace);
-    console.log(`  namespace: ${namespace}`);
-  }
-
   // 4. Initialize SQLite store. Wrap everything from here through the end
   //    of init in a catch that rolls back the project identity we just
   //    committed in step 3b — otherwise a failure in DB init / config /
   //    Nexus / seeding would leave `~/.grove/projects.yaml` pointing at an
   //    incomplete clone, and a subsequent `grove init` could end up
   //    adopting an orphaned id.
+  //
+  //    Namespace credential generation is included in this block so a failure
+  //    (e.g. disk full, malformed existing YAML) rolls back project identity
+  //    rather than leaving partial credential files behind.
   try {
+    // Generate namespace key for this worktree (inside rollback-protected block).
+    {
+      const {
+        detectWorktreeName,
+        generateApiKey,
+        writeClientKey,
+        appendServerKey,
+        writeNamespace,
+      } = await import("../../core/project-key.js");
+      const worktreeName = await detectWorktreeName();
+      const namespace = `${projectId}/${worktreeName}`;
+      const apiKey = generateApiKey();
+      writeClientKey(grovePath, apiKey);
+      appendServerKey(grovePath, apiKey, namespace);
+      writeNamespace(grovePath, namespace);
+      console.log(`  namespace: ${namespace}`);
+    }
     progress(2, "Initializing database");
     const dbPath = join(grovePath, "grove.db");
     const { initSqliteDb } = await import("../../local/sqlite-store.js");
