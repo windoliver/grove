@@ -584,6 +584,11 @@ export async function handleTui(
   const renderer = await createCliRenderer({
     exitOnCtrlC: true,
     useAlternateScreen: !process.env.GROVE_NO_ALT_SCREEN,
+    // In tmux, force stdout-based I/O (useThread=false) so capture-pane can see
+    // the rendered output. By default on macOS, useThread=true routes writes
+    // through a Zig FFI background thread, bypassing Node stdout and tmux's
+    // cell-grid tracking. Linux already forces useThread=false.
+    useThread: process.env.TMUX ? false : undefined,
   });
 
   const root = createRoot(renderer);
