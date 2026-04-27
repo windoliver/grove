@@ -119,10 +119,14 @@ export function verifyPayload(
   payload: Record<string, unknown> & { hmacSignature?: string },
   secret: string,
 ): boolean {
-  if (!payload.hmacSignature) return false;
+  const sig = payload.hmacSignature;
+  if (!sig) return false;
+  // Reject non-hex or wrong-length signatures before calling timingSafeEqual.
+  // timingSafeEqual throws RangeError when buffer byte lengths differ, which
+  // happens when non-ASCII characters make a 64-char string longer than 64 bytes.
+  if (!/^[0-9a-f]{64}$/i.test(sig)) return false;
   const expected = signPayload(payload, secret);
-  if (payload.hmacSignature.length !== expected.length) return false;
-  return timingSafeEqual(Buffer.from(payload.hmacSignature), Buffer.from(expected));
+  return timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expected, "hex"));
 }
 
 // ---------------------------------------------------------------------------

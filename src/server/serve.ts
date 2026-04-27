@@ -125,6 +125,14 @@ if (!zoneId) {
 
 const rawRegistry = loadKeyRegistry(join(GROVE_DIR, "server-keys.yaml"));
 // Scope registry to this server's own namespace only — reject keys for other worktrees.
+// This server is one-namespace-per-process: all stores are process-global and
+// scoped to zoneId. Keys for other namespaces would allow cross-namespace access.
+const droppedCount = [...rawRegistry.values()].filter((ns) => ns !== zoneId).length;
+if (droppedCount > 0) {
+  console.log(
+    `grove-server: dropping ${droppedCount} key(s) for other namespaces (this process serves '${zoneId}' only).`,
+  );
+}
 let registry = new Map([...rawRegistry].filter(([, ns]) => ns === zoneId));
 if (registry.size === 0) {
   // Never auto-generate credentials for the shared 'default' namespace — doing so

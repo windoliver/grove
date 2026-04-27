@@ -474,6 +474,14 @@ export async function executeInit(
   } catch (err) {
     const { rollbackProjectIdentity } = await import("../utils/ensure-project-id.js");
     await rollbackProjectIdentity(grovePath, ensureResult, hooks?.registryPath);
+    // Remove credential files written during this init attempt so a failed
+    // init doesn't leave a usable namespace/api-key that the server would trust.
+    const { rm } = await import("node:fs/promises");
+    await Promise.allSettled([
+      rm(join(grovePath, "api-key"), { force: true }),
+      rm(join(grovePath, "server-keys.yaml"), { force: true }),
+      rm(join(grovePath, "namespace"), { force: true }),
+    ]);
     throw err;
   }
   return { grovePath, projectId };
