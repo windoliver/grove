@@ -84,17 +84,19 @@ export function computeIsStale<T>(state: PollState<T>): boolean {
  * @param fetcher - Async function that returns fresh data.
  * @param intervalMs - Polling interval in milliseconds. Pass 0 to disable.
  * @param active - Whether this hook should poll. Set to false for inactive views.
+ * @param initialData - Pre-fetched data to show before the first poll completes.
  */
 export function usePolledData<T>(
   fetcher: () => Promise<T>,
   intervalMs: number,
   active = true,
+  initialData?: T,
 ): PolledDataResult<T> {
   const initialState: PollState<T> = {
-    data: null,
-    loading: true,
+    data: initialData ?? null,
+    loading: initialData === undefined,
     error: null,
-    lastSuccessAt: null,
+    lastSuccessAt: initialData !== undefined ? Date.now() : null,
   };
 
   const [state, dispatch] = useReducer(pollReducer<T>, initialState);

@@ -64,6 +64,8 @@ export interface AppProps {
   readonly resumeSessionId?: string | undefined;
   /** When set, ScreenManager should open goal-input with this preset pre-selected (new session in existing grove). */
   readonly newSessionPreset?: string | undefined;
+  /** Pre-fetched dashboard data — populates the first render before polling hooks fire. */
+  readonly initialDashboard?: import("./provider.js").DashboardData | undefined;
 }
 
 const PAGE_SIZE = 20;
@@ -245,6 +247,7 @@ export function App({
   groveDir,
   userConfig,
   eventBus,
+  initialDashboard,
 }: AppProps): React.ReactNode {
   const renderer = useRenderer();
   const nav = useNavigation();
@@ -404,6 +407,7 @@ export function App({
     dashboardFetcher,
     intervalMs * 3,
     true,
+    initialDashboard,
   );
 
   // Sync PR context to SpawnManager whenever it changes
@@ -663,7 +667,10 @@ export function App({
           return;
         }
         // Fallback: POST to boardroom endpoint (works for remote providers)
-        const rp = provider as unknown as { baseUrl?: string; httpAuthHeaders?: Record<string, string> };
+        const rp = provider as unknown as {
+          baseUrl?: string;
+          httpAuthHeaders?: Record<string, string>;
+        };
         const baseUrl = rp.baseUrl ?? "http://localhost:4515";
         const resp = await fetch(`${baseUrl}/api/boardroom/message`, {
           method: "POST",

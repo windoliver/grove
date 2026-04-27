@@ -251,7 +251,9 @@ async function buildAppProps(
       const { groveDir } = resolveGroveDir(effectiveGrove);
       const apiKey = readClientKey(groveDir);
       if (apiKey) remoteAuthHeaders = { Authorization: `Bearer ${apiKey}` };
-    } catch { /* no key available */ }
+    } catch {
+      /* no key available */
+    }
   }
 
   const [provider, topology, contract] = await Promise.all([
@@ -259,6 +261,15 @@ async function buildAppProps(
     loadTopology(backend, remoteAuthHeaders),
     loadContract(backend, remoteAuthHeaders),
   ]);
+
+  // Pre-fetch dashboard data before the renderer starts so the first render
+  // has content even when usePolledData hooks can't fire (e.g. Zig render loop).
+  let initialDashboard: import("./provider.js").DashboardData | undefined;
+  try {
+    initialDashboard = await provider.getDashboard();
+  } catch {
+    // Non-fatal — TUI renders with empty dashboard and polls on next cycle.
+  }
 
   // Create TmuxManager for agent management
   let tmux: import("./agents/tmux-manager.js").TmuxManager | undefined;
@@ -442,6 +453,7 @@ async function buildAppProps(
       agentRuntime,
       contract,
       userConfig,
+      initialDashboard,
     },
     provider,
     stopGc,
