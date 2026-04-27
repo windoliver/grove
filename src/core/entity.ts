@@ -4,9 +4,6 @@
  * This file only defines the envelope shape and per-kind projections for
  * Contribution, Claim, AgentSession. Stores still return the flat types;
  * callers project to Entity via the adapters in this module.
- *
- * Namespace is hardcoded to "default" until #290 lands server-enforced
- * isolation. That is the only call-site that needs to change.
  */
 
 import type { AgentSession } from "./agent-runtime.js";
@@ -76,7 +73,7 @@ export type ContributionStatus = Record<string, never>;
 
 export type ContributionEntity = Entity<"Contribution", ContributionSpec, ContributionStatus>;
 
-export function contributionToEntity(c: Contribution): ContributionEntity {
+export function contributionToEntity(c: Contribution, namespace: string): ContributionEntity {
   const published: Condition = {
     type: "Published",
     status: "True",
@@ -87,7 +84,7 @@ export function contributionToEntity(c: Contribution): ContributionEntity {
   };
   return {
     kind: "Contribution",
-    namespace: "default",
+    namespace,
     id: c.cid,
     spec: {
       contributionKind: c.kind,
@@ -156,7 +153,11 @@ export type ClaimEntity = Entity<"Claim", ClaimSpec, ClaimStatusBody>;
  * The `now` clock is injectable for test determinism. Default is
  * wall-clock `Date.now()`, which is safe for read-only projection.
  */
-export function claimToEntity(c: Claim, now: () => number = () => Date.now()): ClaimEntity {
+export function claimToEntity(
+  c: Claim,
+  now: () => number = () => Date.now(),
+  namespace = "default",
+): ClaimEntity {
   const rev = c.revision ?? 0;
   const metaGen = c.revision ?? 1;
   const persistedPhase = c.status;
@@ -205,7 +206,7 @@ export function claimToEntity(c: Claim, now: () => number = () => Date.now()): C
 
   return {
     kind: "Claim",
-    namespace: "default",
+    namespace,
     id: c.claimId,
     spec: {
       targetRef: c.targetRef,
@@ -269,6 +270,7 @@ export const UNKNOWN_TRANSITION_TIME = "";
 export function agentSessionToEntity(
   s: AgentSession,
   now: () => string = () => UNKNOWN_TRANSITION_TIME,
+  namespace = "default",
 ): AgentSessionEntity {
   const t = now();
   const phase = s.status;
@@ -285,7 +287,7 @@ export function agentSessionToEntity(
 
   return {
     kind: "AgentSession",
-    namespace: "default",
+    namespace,
     id: s.id,
     spec: {
       role: s.role,

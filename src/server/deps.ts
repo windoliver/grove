@@ -36,6 +36,8 @@ export interface ServerDeps {
   readonly frontier: FrontierCalculator;
   /** Optional gossip service. Routes return 501 when not configured. */
   readonly gossip?: GossipService | undefined;
+  /** HMAC secret for gossip route verification (required when gossip is configured). */
+  readonly gossipHmacSecret?: string | undefined;
   /** Optional outcome store. Routes return 501 when not configured. */
   readonly outcomeStore?: OutcomeStore | undefined;
   /** Optional bounty store. Routes return 501 when not configured. */
@@ -67,5 +69,6 @@ export interface ServerDeps {
 export interface ServerEnv {
   Variables: {
     deps: ServerDeps;
+    namespace: string;
   };
 }

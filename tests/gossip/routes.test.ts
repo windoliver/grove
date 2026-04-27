@@ -15,10 +15,22 @@ import type {
   ShuffleResponse,
 } from "../../src/core/gossip/types.js";
 import { InMemoryContributionStore } from "../../src/core/testing.js";
-import { DefaultGossipService } from "../../src/gossip/protocol.js";
+import { DefaultGossipService, signPayload } from "../../src/gossip/protocol.js";
 import { createApp } from "../../src/server/app.js";
 import type { ServerDeps } from "../../src/server/deps.js";
-import { InMemoryClaimStore, InMemoryContentStore } from "../../src/server/test-helpers.js";
+import {
+  InMemoryClaimStore,
+  InMemoryContentStore,
+  TEST_AUTH_HEADERS,
+  TEST_NAMESPACE_KEY,
+} from "../../src/server/test-helpers.js";
+
+const TEST_REGISTRY = new Map([[TEST_NAMESPACE_KEY, "test-project/main"]]);
+const TEST_HMAC_SECRET = "test-hmac-secret-for-routes-test";
+
+function signGossipPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  return { ...payload, hmacSignature: signPayload(payload, TEST_HMAC_SECRET) };
+}
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -65,6 +77,7 @@ beforeAll(() => {
           lastSeen: new Date().toISOString(),
         },
       ],
+      hmacSecret: TEST_HMAC_SECRET,
     },
     transport: new NoOpTransport(),
     frontier,
@@ -76,8 +89,9 @@ beforeAll(() => {
     cas,
     frontier,
     gossip: gossipService,
+    gossipHmacSecret: TEST_HMAC_SECRET,
   };
-  const app = createApp(deps);
+  const app = createApp(deps, TEST_REGISTRY);
 
   server = Bun.serve({ port: 0, fetch: app.fetch });
   baseUrl = `http://localhost:${server.port}`;
@@ -102,7 +116,7 @@ describe("gossip routes: not configured", () => {
     const frontier = new DefaultFrontierCalculator(contributionStore);
 
     const deps: ServerDeps = { contributionStore, claimStore, cas, frontier };
-    const app = createApp(deps);
+    const app = createApp(deps, TEST_REGISTRY);
     noGossipServer = Bun.serve({ port: 0, fetch: app.fetch });
     noGossipUrl = `http://localhost:${noGossipServer.port}`;
   });
@@ -114,7 +128,7 @@ describe("gossip routes: not configured", () => {
   it("POST /api/gossip/exchange returns 501 when gossip not configured", async () => {
     const res = await fetch(`${noGossipUrl}/api/gossip/exchange`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({
         peerId: "remote",
         frontier: [],
@@ -131,7 +145,7 @@ describe("gossip routes: not configured", () => {
   it("POST /api/gossip/shuffle returns 501 when gossip not configured", async () => {
     const res = await fetch(`${noGossipUrl}/api/gossip/shuffle`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({
         sender: {
           peerId: "remote",
@@ -146,12 +160,12 @@ describe("gossip routes: not configured", () => {
   });
 
   it("GET /api/gossip/peers returns 501 when gossip not configured", async () => {
-    const res = await fetch(`${noGossipUrl}/api/gossip/peers`);
+    const res = await fetch(`${noGossipUrl}/api/gossip/peers`, { headers: TEST_AUTH_HEADERS });
     expect(res.status).toBe(501);
   });
 
   it("GET /api/gossip/frontier returns 501 when gossip not configured", async () => {
-    const res = await fetch(`${noGossipUrl}/api/gossip/frontier`);
+    const res = await fetch(`${noGossipUrl}/api/gossip/frontier`, { headers: TEST_AUTH_HEADERS });
     expect(res.status).toBe(501);
   });
 });
@@ -162,16 +176,17 @@ describe("gossip routes: not configured", () => {
 
 describe("POST /api/gossip/exchange", () => {
   it("returns 200 with our gossip message", async () => {
+    const payload = {
+      peerId: "incoming-peer",
+      frontier: [{ metric: "val_bpb", value: 0.97, cid: "blake3:abc123" }],
+      load: { queueDepth: 2 },
+      capabilities: { platform: "H100" },
+      timestamp: new Date().toISOString(),
+    };
     const res = await fetch(`${baseUrl}/api/gossip/exchange`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        peerId: "incoming-peer",
-        frontier: [{ metric: "val_bpb", value: 0.97, cid: "blake3:abc123" }],
-        load: { queueDepth: 2 },
-        capabilities: { platform: "H100" },
-        timestamp: new Date().toISOString(),
-      }),
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify(signGossipPayload(payload)),
     });
     expect(res.status).toBe(200);
     const data = (await res.json()) as Record<string, unknown>;
@@ -185,7 +200,7 @@ describe("POST /api/gossip/exchange", () => {
   it("returns 400 for invalid body", async () => {
     const res = await fetch(`${baseUrl}/api/gossip/exchange`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({ invalid: true }),
     });
     expect(res.status).toBe(400);
@@ -198,25 +213,26 @@ describe("POST /api/gossip/exchange", () => {
 
 describe("POST /api/gossip/shuffle", () => {
   it("returns 200 with shuffle response", async () => {
-    const res = await fetch(`${baseUrl}/api/gossip/shuffle`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sender: {
-          peerId: "shuffle-peer",
-          address: "http://shuffle-peer:4515",
-          age: 0,
+    const payload = {
+      sender: {
+        peerId: "shuffle-peer",
+        address: "http://shuffle-peer:4515",
+        age: 0,
+        lastSeen: new Date().toISOString(),
+      },
+      offered: [
+        {
+          peerId: "offered-peer",
+          address: "http://offered-peer:4515",
+          age: 1,
           lastSeen: new Date().toISOString(),
         },
-        offered: [
-          {
-            peerId: "offered-peer",
-            address: "http://offered-peer:4515",
-            age: 1,
-            lastSeen: new Date().toISOString(),
-          },
-        ],
-      }),
+      ],
+    };
+    const res = await fetch(`${baseUrl}/api/gossip/shuffle`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify(signGossipPayload(payload)),
     });
     expect(res.status).toBe(200);
     const data = (await res.json()) as Record<string, unknown>;
@@ -227,7 +243,7 @@ describe("POST /api/gossip/shuffle", () => {
   it("returns 400 for missing sender", async () => {
     const res = await fetch(`${baseUrl}/api/gossip/shuffle`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({ offered: [] }),
     });
     expect(res.status).toBe(400);
@@ -240,7 +256,7 @@ describe("POST /api/gossip/shuffle", () => {
 
 describe("GET /api/gossip/peers", () => {
   it("returns peers and liveness", async () => {
-    const res = await fetch(`${baseUrl}/api/gossip/peers`);
+    const res = await fetch(`${baseUrl}/api/gossip/peers`, { headers: TEST_AUTH_HEADERS });
     expect(res.status).toBe(200);
     const data = (await res.json()) as Record<string, unknown>;
     expect(data).toHaveProperty("peers");
@@ -256,7 +272,7 @@ describe("GET /api/gossip/peers", () => {
 
 describe("GET /api/gossip/frontier", () => {
   it("returns merged frontier entries", async () => {
-    const res = await fetch(`${baseUrl}/api/gossip/frontier`);
+    const res = await fetch(`${baseUrl}/api/gossip/frontier`, { headers: TEST_AUTH_HEADERS });
     expect(res.status).toBe(200);
     const data = (await res.json()) as Record<string, unknown>;
     expect(data).toHaveProperty("entries");

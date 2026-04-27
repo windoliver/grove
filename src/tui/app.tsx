@@ -7,6 +7,8 @@
  * the single source of truth for keyboard handling.
  */
 
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { useKeyboard, useRenderer } from "@opentui/react";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
@@ -64,6 +66,8 @@ export interface AppProps {
   readonly resumeSessionId?: string | undefined;
   /** When set, ScreenManager should open goal-input with this preset pre-selected (new session in existing grove). */
   readonly newSessionPreset?: string | undefined;
+  /** Pre-fetched dashboard data — populates the first render before polling hooks fire. */
+  readonly initialDashboard?: import("./provider.js").DashboardData | undefined;
 }
 
 const PAGE_SIZE = 20;
@@ -245,6 +249,7 @@ export function App({
   groveDir,
   userConfig,
   eventBus,
+  initialDashboard,
 }: AppProps): React.ReactNode {
   const renderer = useRenderer();
   const nav = useNavigation();
@@ -404,6 +409,7 @@ export function App({
     dashboardFetcher,
     intervalMs * 3,
     true,
+    initialDashboard,
   );
 
   // Sync PR context to SpawnManager whenever it changes
@@ -447,6 +453,18 @@ export function App({
   // Derive the palette items so the keyboard handler can look up the selected action.
   // Only advertise spawn if the provider supports workspace checkout (remote does not).
   const canSpawn = provider.checkoutWorkspace !== undefined;
+
+  // Peer delegation posts to a peer server's /api/agents/spawn.
+  // When namespace auth is active (remote provider has auth headers OR the
+  // local grove has a namespace file) every peer server requires its own bearer
+  // token — one we have no mechanism to obtain or forward — so delegation
+  // would always fail with 400/401. Hide the action in those cases.
+  const canDelegate = useMemo(() => {
+    const rp = provider as unknown as { httpAuthHeaders?: Record<string, string> };
+    if (rp.httpAuthHeaders && Object.keys(rp.httpAuthHeaders).length > 0) return false;
+    if (groveDir && existsSync(join(groveDir, "namespace"))) return false;
+    return true;
+  }, [provider, groveDir]);
 
   // Load agent profiles from .grove/agents.json
   const profilesFetcher = useCallback(async () => {
@@ -562,7 +580,7 @@ export function App({
         canSpawn,
         true,
         paletteParentId,
-        gossipPeers ?? undefined,
+        canDelegate ? (gossipPeers ?? undefined) : undefined,
         agentProfiles ?? undefined,
         hasGoals,
       ),
@@ -572,6 +590,7 @@ export function App({
       paletteSessions,
       tmux,
       canSpawn,
+      canDelegate,
       paletteParentId,
       gossipPeers,
       agentProfiles,
@@ -653,11 +672,14 @@ export function App({
           return;
         }
         // Fallback: POST to boardroom endpoint (works for remote providers)
-        const rp = provider as unknown as { baseUrl?: string };
+        const rp = provider as unknown as {
+          baseUrl?: string;
+          httpAuthHeaders?: Record<string, string>;
+        };
         const baseUrl = rp.baseUrl ?? "http://localhost:4515";
         const resp = await fetch(`${baseUrl}/api/boardroom/message`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...rp.httpAuthHeaders },
           body: JSON.stringify({
             body,
             recipients: recipients.split(",").map((r) => r.trim()),

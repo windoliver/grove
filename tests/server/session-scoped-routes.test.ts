@@ -6,9 +6,15 @@ import { ContributionKind, ContributionMode, RelationType } from "../../src/core
 import { InMemoryContributionStore } from "../../src/core/testing.js";
 import { createApp } from "../../src/server/app.js";
 import type { ServerEnv } from "../../src/server/deps.js";
-import { InMemoryClaimStore, InMemoryContentStore } from "../../src/server/test-helpers.js";
+import {
+  InMemoryClaimStore,
+  InMemoryContentStore,
+  TEST_NAMESPACE,
+  TEST_NAMESPACE_KEY,
+} from "../../src/server/test-helpers.js";
 
 const SESSION_ID = "session-1";
+const TEST_AUTH_HEADERS = { Authorization: `Bearer ${TEST_NAMESPACE_KEY}` };
 const ROOT_CID = `blake3:${"1".repeat(64)}`;
 const CHILD_CID = `blake3:${"2".repeat(64)}`;
 
@@ -44,7 +50,8 @@ function makeAppWithScopedStore(contributions: readonly Contribution[]): {
     cas,
     frontier: new DefaultFrontierCalculator(globalStore),
   };
-  return { app: createApp(deps), scopedStore, cas };
+  const registry = new Map([[TEST_NAMESPACE_KEY, TEST_NAMESPACE]]);
+  return { app: createApp(deps, registry), scopedStore, cas };
 }
 
 describe("session-scoped server routes", () => {
@@ -52,7 +59,12 @@ describe("session-scoped server routes", () => {
     const contribution = makeContribution();
     const { app } = makeAppWithScopedStore([contribution]);
 
-    const res = await app.request(`/api/contributions/${contribution.cid}?sessionId=${SESSION_ID}`);
+    const res = await app.request(
+      `/api/contributions/${contribution.cid}?sessionId=${SESSION_ID}`,
+      {
+        headers: TEST_AUTH_HEADERS,
+      },
+    );
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as { cid: string; summary: string };
@@ -70,6 +82,7 @@ describe("session-scoped server routes", () => {
 
     const res = await app.request(
       `/api/contributions/${contribution.cid}/artifacts/note.txt/meta?sessionId=${SESSION_ID}`,
+      { headers: TEST_AUTH_HEADERS },
     );
 
     expect(res.status).toBe(200);
@@ -82,7 +95,9 @@ describe("session-scoped server routes", () => {
     const contribution = makeContribution();
     const { app } = makeAppWithScopedStore([contribution]);
 
-    const res = await app.request(`/api/frontier?sessionId=${SESSION_ID}`);
+    const res = await app.request(`/api/frontier?sessionId=${SESSION_ID}`, {
+      headers: TEST_AUTH_HEADERS,
+    });
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as { byRecency: readonly { cid: string }[] };
@@ -93,7 +108,9 @@ describe("session-scoped server routes", () => {
     const contribution = makeContribution();
     const { app } = makeAppWithScopedStore([contribution]);
 
-    const res = await app.request(`/api/search?q=needle&sessionId=${SESSION_ID}`);
+    const res = await app.request(`/api/search?q=needle&sessionId=${SESSION_ID}`, {
+      headers: TEST_AUTH_HEADERS,
+    });
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as { results: readonly { cid: string }[] };
@@ -110,7 +127,9 @@ describe("session-scoped server routes", () => {
     });
     const { app } = makeAppWithScopedStore([root, child]);
 
-    const res = await app.request(`/api/dag/${root.cid}/children?sessionId=${SESSION_ID}`);
+    const res = await app.request(`/api/dag/${root.cid}/children?sessionId=${SESSION_ID}`, {
+      headers: TEST_AUTH_HEADERS,
+    });
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as readonly { cid: string }[];
@@ -128,7 +147,9 @@ describe("session-scoped server routes", () => {
     });
     const { app } = makeAppWithScopedStore([root, reply]);
 
-    const res = await app.request(`/api/threads/${root.cid}?sessionId=${SESSION_ID}`);
+    const res = await app.request(`/api/threads/${root.cid}?sessionId=${SESSION_ID}`, {
+      headers: TEST_AUTH_HEADERS,
+    });
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as { nodes: readonly { cid: string }[] };
@@ -148,7 +169,9 @@ describe("session-scoped server routes", () => {
     });
     const { app } = makeAppWithScopedStore([message]);
 
-    const res = await app.request(`/api/boardroom/summary?sessionId=${SESSION_ID}`);
+    const res = await app.request(`/api/boardroom/summary?sessionId=${SESSION_ID}`, {
+      headers: TEST_AUTH_HEADERS,
+    });
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as {

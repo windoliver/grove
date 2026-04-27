@@ -12,6 +12,15 @@
 import { join } from "node:path";
 import type { GossipService } from "../core/gossip/types.js";
 import { LocalEventBus } from "../core/local-event-bus.js";
+import { readProjectId } from "../core/project-id.js";
+import {
+  appendServerKey,
+  detectWorktreeName,
+  readClientKey,
+  readNamespace,
+  writeClientKey,
+  writeNamespace,
+} from "../core/project-key.js";
 import { TmuxRuntime } from "../core/tmux-runtime.js";
 import { HttpGossipTransport } from "../gossip/http-transport.js";
 import { DefaultGossipService } from "../gossip/protocol.js";
@@ -19,6 +28,7 @@ import { createLocalRuntime } from "../local/runtime.js";
 import { parseGossipSeeds, parsePort } from "../shared/env.js";
 import { createApp } from "./app.js";
 import type { ServerDeps } from "./deps.js";
+import { loadKeyRegistry } from "./middleware/namespace-auth.js";
 import { SessionService } from "./session-service.js";
 import { memoizeContributionStoreForSession } from "./session-store-factory.js";
 import { createWsHandler } from "./ws-handler.js";
@@ -53,16 +63,18 @@ const peerId = process.env.GOSSIP_PEER_ID ?? `grove-${PORT}`;
 const peerAddress = process.env.GOSSIP_ADDRESS ?? `http://localhost:${PORT}`;
 
 const seedPeers = parseGossipSeeds(gossipSeedsRaw);
-if (seedPeers.length > 0) {
-  const allowPrivateIPs = process.env.GROVE_GOSSIP_ALLOW_PRIVATE_IPS === "true";
-  const hmacSecret = process.env.GROVE_GOSSIP_HMAC_SECRET || undefined;
-  const transport = new HttpGossipTransport({ allowPrivateIPs });
-  gossipService = new DefaultGossipService({
-    config: { peerId, address: peerAddress, seedPeers: [...seedPeers], hmacSecret },
-    transport,
-    frontier: runtime.frontier,
-    getLoad: () => ({ queueDepth: 0 }),
-  });
+const gossipHmacSecret = process.env.GROVE_GOSSIP_HMAC_SECRET || undefined;
+
+// Gossip routes bypass namespace auth (peers have different namespaces), so HMAC
+// is the only protection. Require it when gossip is actually configured.
+if (seedPeers.length > 0 && !gossipHmacSecret) {
+  console.error(
+    "grove-server: FATAL: GOSSIP_SEEDS is set without GROVE_GOSSIP_HMAC_SECRET.\n" +
+      "  Gossip routes (/api/gossip/*) are exempt from namespace auth — HMAC is required.\n" +
+      "  Set GROVE_GOSSIP_HMAC_SECRET to a shared secret for all federated peers,\n" +
+      "  or unset GOSSIP_SEEDS to disable gossip.",
+  );
+  process.exit(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -96,7 +108,100 @@ let contributionStoreForSessionFactory:
 
 const nexusUrl = process.env.GROVE_NEXUS_URL;
 const nexusApiKey = process.env.NEXUS_API_KEY;
-const zoneId = process.env.GROVE_ZONE_ID ?? "default";
+
+// Prefer the namespace persisted by `grove init` — stable across branch renames.
+// Fall back to GROVE_ZONE_ID env var, then auto-derive from project-id/branch.
+let zoneId = readNamespace(GROVE_DIR) ?? process.env.GROVE_ZONE_ID;
+if (!zoneId) {
+  const projectId = readProjectId(GROVE_DIR);
+  const worktreeName = await detectWorktreeName();
+  zoneId = projectId ? `${projectId}/${worktreeName}` : "default";
+  if (!projectId) {
+    console.warn(
+      "grove-server: no project-id found — namespace defaults to 'default'. Run `grove init`.",
+    );
+  }
+}
+
+const rawRegistry = loadKeyRegistry(join(GROVE_DIR, "server-keys.yaml"));
+// Scope registry to this server's own namespace only — reject keys for other worktrees.
+// This server is one-namespace-per-process: all stores are process-global and
+// scoped to zoneId. Keys for other namespaces would allow cross-namespace access.
+const droppedCount = [...rawRegistry.values()].filter((ns) => ns !== zoneId).length;
+if (droppedCount > 0) {
+  console.log(
+    `grove-server: dropping ${droppedCount} key(s) for other namespaces (this process serves '${zoneId}' only).`,
+  );
+}
+let registry = new Map([...rawRegistry].filter(([, ns]) => ns === zoneId));
+if (registry.size === 0) {
+  // Never auto-generate credentials for the shared 'default' namespace — doing so
+  // would let uninitialized servers read/write each other's Nexus state.
+  if (zoneId === "default") {
+    console.error(
+      "grove-server: cannot start without a project namespace.\n" +
+        "  Run 'grove init' to generate a unique project-id and namespace credentials,\n" +
+        "  or set GROVE_ZONE_ID to an explicit namespace before starting.",
+    );
+    process.exit(1);
+  }
+  // Pre-A3 workspace: project-id exists but no server-keys.yaml yet.
+  // Auto-generate credentials so API routes are usable immediately (upgrade path).
+  const { randomBytes } = await import("node:crypto");
+  const rawClientKey = readClientKey(GROVE_DIR);
+  // Accept grv_-prefixed keys (from grove init) or raw hex keys (from older auto-upgrade).
+  // Require non-empty with ≥32 chars of hex content to prevent empty-token bypass.
+  const isValidKey =
+    typeof rawClientKey === "string" &&
+    /^(?:grv_)?[0-9a-f]{32,}$/i.test(rawClientKey) &&
+    rawClientKey.replace(/^grv_/, "").length >= 32;
+  // Fail closed if the existing client key is already registered for a DIFFERENT namespace.
+  // Reusing the same key for a different namespace would silently convert authorization
+  // from the old namespace to the new one, making old-namespace data appear missing.
+  if (isValidKey && rawClientKey) {
+    const existingNs = rawRegistry.get(rawClientKey);
+    if (existingNs !== undefined && existingNs !== zoneId) {
+      console.error(
+        `grove-server: cannot start — existing api-key is registered for namespace '${existingNs}' ` +
+          `but computed namespace is '${zoneId}'.\n` +
+          `  Run 'grove init' to generate fresh credentials for the current namespace.`,
+      );
+      process.exit(1);
+    }
+  }
+  const clientKey = isValidKey && rawClientKey ? rawClientKey : randomBytes(32).toString("hex");
+  if (!isValidKey) {
+    writeClientKey(GROVE_DIR, clientKey);
+  }
+  appendServerKey(GROVE_DIR, clientKey, zoneId);
+  // Persist the namespace file so future startups skip auto-derive.
+  if (!readNamespace(GROVE_DIR)) {
+    writeNamespace(GROVE_DIR, zoneId);
+  }
+  registry = new Map([[clientKey, zoneId]]);
+  console.warn(
+    `grove-server: auto-generated namespace credentials for '${zoneId}'. ` +
+      `Re-run 'grove init' to register additional keys.`,
+  );
+}
+
+if (seedPeers.length > 0) {
+  const allowPrivateIPs = process.env.GROVE_GOSSIP_ALLOW_PRIVATE_IPS === "true";
+  // Use HMAC (not bearer token) for peer-to-peer auth — namespace API keys must never be sent to peers.
+  const transport = new HttpGossipTransport({ allowPrivateIPs, hmacSecret: gossipHmacSecret });
+  gossipService = new DefaultGossipService({
+    config: {
+      peerId,
+      address: peerAddress,
+      seedPeers: [...seedPeers],
+      hmacSecret: gossipHmacSecret,
+    },
+    transport,
+    frontier: runtime.frontier,
+    getLoad: () => ({ queueDepth: 0 }),
+  });
+}
+
 if (nexusUrl) {
   const { NexusHttpClient } = await import("../nexus/nexus-http-client.js");
   const { NexusContributionStore } = await import("../nexus/nexus-contribution-store.js");
@@ -173,12 +278,13 @@ const deps: ServerDeps = {
   cas: serverCas,
   frontier: serverFrontier,
   gossip: gossipService,
+  gossipHmacSecret: gossipHmacSecret,
   topology: runtime.contract?.topology,
   contract: runtime.contract,
   idempotencyStore: runtime.idempotencyStore,
 };
 
-const app = createApp(deps);
+const app = createApp(deps, registry);
 
 // ---------------------------------------------------------------------------
 // Background sweep reconciler
@@ -288,6 +394,19 @@ function startServer() {
       fetch(req, server) {
         const url = new URL(req.url);
         if (url.pathname === "/ws") {
+          const auth = req.headers.get("Authorization");
+          const key = auth?.startsWith("Bearer ") ? auth.slice(7).trim() : undefined;
+          if (!key || !registry.has(key)) {
+            return new Response(
+              JSON.stringify({
+                error: {
+                  code: "NAMESPACE_UNAUTHORIZED",
+                  message: "Invalid or missing bearer token",
+                },
+              }),
+              { status: 401, headers: { "Content-Type": "application/json" } },
+            );
+          }
           const upgraded = server.upgrade(req);
           if (upgraded) return undefined;
           return new Response("WebSocket upgrade failed", { status: 400 });

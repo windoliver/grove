@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { createTestContext } from "./helpers.js";
+import { createTestContext, TEST_AUTH_HEADERS } from "./helpers.js";
 
 // ---------------------------------------------------------------------------
 // POST /api/agents/spawn
@@ -19,7 +19,7 @@ describe("POST /api/agents/spawn", () => {
   test("valid spawn request succeeds", async () => {
     const res = await ctx.app.request("/api/agents/spawn", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({ role: "researcher" }),
     });
 
@@ -35,7 +35,7 @@ describe("POST /api/agents/spawn", () => {
   test("missing role field returns 400", async () => {
     const res = await ctx.app.request("/api/agents/spawn", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({}),
     });
 
@@ -45,7 +45,7 @@ describe("POST /api/agents/spawn", () => {
   test("empty role field returns 400 (Zod min(1) validation)", async () => {
     const res = await ctx.app.request("/api/agents/spawn", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({ role: "" }),
     });
 
@@ -55,7 +55,7 @@ describe("POST /api/agents/spawn", () => {
   test("extra unknown fields are handled gracefully", async () => {
     const res = await ctx.app.request("/api/agents/spawn", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({ role: "builder", unknownField: "ignored" }),
     });
 
@@ -69,7 +69,7 @@ describe("POST /api/agents/spawn", () => {
   test("optional fields (command, targetRef, context) work when provided", async () => {
     const res = await ctx.app.request("/api/agents/spawn", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({
         role: "deployer",
         command: "deploy --production",
@@ -92,7 +92,7 @@ describe("POST /api/agents/spawn", () => {
     for (let i = 0; i < 8; i++) {
       const res = await ctx.app.request("/api/agents/spawn", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
         body: JSON.stringify({ role: `worker` }),
       });
       expect(res.status).toBe(200);
@@ -101,7 +101,7 @@ describe("POST /api/agents/spawn", () => {
     // The 9th request should be rejected with 503
     const res = await ctx.app.request("/api/agents/spawn", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({ role: "worker" }),
     });
 
@@ -128,7 +128,9 @@ describe("GET /api/agents/capacity", () => {
   });
 
   test("returns correct slot counts when no claims exist", async () => {
-    const res = await ctx.app.request("/api/agents/capacity");
+    const res = await ctx.app.request("/api/agents/capacity", {
+      headers: TEST_AUTH_HEADERS,
+    });
 
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -142,13 +144,15 @@ describe("GET /api/agents/capacity", () => {
     for (let i = 0; i < 3; i++) {
       const spawnRes = await ctx.app.request("/api/agents/spawn", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
         body: JSON.stringify({ role: "worker" }),
       });
       expect(spawnRes.status).toBe(200);
     }
 
-    const res = await ctx.app.request("/api/agents/capacity");
+    const res = await ctx.app.request("/api/agents/capacity", {
+      headers: TEST_AUTH_HEADERS,
+    });
 
     expect(res.status).toBe(200);
     const data = await res.json();

@@ -120,6 +120,8 @@ export interface ShuffleRequest {
 export interface ShuffleResponse {
   /** Subset of the receiver's partial view to send back. */
   readonly offered: readonly PeerInfo[];
+  /** HMAC-SHA256 signature over the response payload (set when hmacSecret is configured). */
+  readonly hmacSignature?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ import type {
 import { InMemoryContributionStore } from "../core/testing.js";
 import { createApp } from "./app.js";
 import type { ServerDeps, ServerEnv } from "./deps.js";
+import type { KeyRegistry } from "./middleware/namespace-auth.js";
 
 // ---------------------------------------------------------------------------
 // In-memory ContentStore (CAS)
@@ -273,6 +274,16 @@ export class InMemoryClaimStore implements ClaimStore {
 }
 
 // ---------------------------------------------------------------------------
+// Test auth constants
+// ---------------------------------------------------------------------------
+
+export const TEST_NAMESPACE_KEY: string = `grv_${"b".repeat(64)}`;
+export const TEST_NAMESPACE: string = "test-uuid/test-worktree";
+export const TEST_AUTH_HEADERS: Record<string, string> = {
+  Authorization: `Bearer ${TEST_NAMESPACE_KEY}`,
+};
+
+// ---------------------------------------------------------------------------
 // Test app factory
 // ---------------------------------------------------------------------------
 
@@ -292,7 +303,8 @@ export function createTestApp(): TestContext {
   const frontier = new DefaultFrontierCalculator(contributionStore);
 
   const deps: ServerDeps = { contributionStore, claimStore, cas, frontier };
-  const app = createApp(deps);
+  const registry: KeyRegistry = new Map([[TEST_NAMESPACE_KEY, TEST_NAMESPACE]]);
+  const app = createApp(deps, registry);
 
   return { app, deps, contributionStore, claimStore, cas };
 }

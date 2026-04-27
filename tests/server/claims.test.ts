@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { claimBody, createTestContext } from "./helpers.js";
+import { claimBody, createTestContext, TEST_AUTH_HEADERS } from "./helpers.js";
 
 describe("POST /api/claims", () => {
   let ctx: TestContext;
@@ -15,7 +15,7 @@ describe("POST /api/claims", () => {
   test("creates a claim with default lease", async () => {
     const res = await ctx.app.request("/api/claims", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(claimBody()),
     });
 
@@ -29,7 +29,7 @@ describe("POST /api/claims", () => {
   test("creates a claim with custom lease duration", async () => {
     const res = await ctx.app.request("/api/claims", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(claimBody({ leaseDurationMs: 600_000 })),
     });
 
@@ -46,7 +46,7 @@ describe("POST /api/claims", () => {
 
     const res1 = await ctx.app.request("/api/claims", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(body),
     });
     expect(res1.status).toBe(201);
@@ -54,7 +54,7 @@ describe("POST /api/claims", () => {
     // Same agent, same target → renew
     const res2 = await ctx.app.request("/api/claims", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(body),
     });
     expect(res2.status).toBe(201);
@@ -65,13 +65,13 @@ describe("POST /api/claims", () => {
   test("rejects claim on already-claimed target by different agent", async () => {
     await ctx.app.request("/api/claims", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(claimBody({ agent: { agentId: "agent-1" } })),
     });
 
     const res = await ctx.app.request("/api/claims", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(claimBody({ agent: { agentId: "agent-2" } })),
     });
 
@@ -82,7 +82,7 @@ describe("POST /api/claims", () => {
   test("rejects missing required fields", async () => {
     const res = await ctx.app.request("/api/claims", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({ targetRef: "foo" }),
     });
 
@@ -92,7 +92,7 @@ describe("POST /api/claims", () => {
   test("rejects missing targetRef", async () => {
     const res = await ctx.app.request("/api/claims", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(claimBody({ targetRef: undefined })),
     });
 
@@ -102,7 +102,7 @@ describe("POST /api/claims", () => {
   test("rejects empty string agentId", async () => {
     const res = await ctx.app.request("/api/claims", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(claimBody({ agent: { agentId: "" } })),
     });
 
@@ -112,7 +112,7 @@ describe("POST /api/claims", () => {
   test("rejects empty string targetRef", async () => {
     const res = await ctx.app.request("/api/claims", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(claimBody({ targetRef: "" })),
     });
 
@@ -122,7 +122,7 @@ describe("POST /api/claims", () => {
   test("rejects empty string intentSummary", async () => {
     const res = await ctx.app.request("/api/claims", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(claimBody({ intentSummary: "" })),
     });
 
@@ -132,7 +132,7 @@ describe("POST /api/claims", () => {
   test("rejects non-positive leaseDurationMs", async () => {
     const res = await ctx.app.request("/api/claims", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(claimBody({ leaseDurationMs: -1 })),
     });
 
@@ -153,14 +153,14 @@ describe("PATCH /api/claims/:id", () => {
   test("heartbeats an active claim", async () => {
     const createRes = await ctx.app.request("/api/claims", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(claimBody()),
     });
     const created = await createRes.json();
 
     const res = await ctx.app.request(`/api/claims/${created.claimId}`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({ action: "heartbeat" }),
     });
 
@@ -172,14 +172,14 @@ describe("PATCH /api/claims/:id", () => {
   test("releases an active claim", async () => {
     const createRes = await ctx.app.request("/api/claims", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(claimBody()),
     });
     const created = await createRes.json();
 
     const res = await ctx.app.request(`/api/claims/${created.claimId}`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({ action: "release" }),
     });
 
@@ -191,14 +191,14 @@ describe("PATCH /api/claims/:id", () => {
   test("completes an active claim", async () => {
     const createRes = await ctx.app.request("/api/claims", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(claimBody()),
     });
     const created = await createRes.json();
 
     const res = await ctx.app.request(`/api/claims/${created.claimId}`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({ action: "complete" }),
     });
 
@@ -210,7 +210,7 @@ describe("PATCH /api/claims/:id", () => {
   test("full lifecycle: create → heartbeat → complete", async () => {
     const createRes = await ctx.app.request("/api/claims", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(claimBody()),
     });
     const created = await createRes.json();
@@ -218,7 +218,7 @@ describe("PATCH /api/claims/:id", () => {
     // Heartbeat
     const hbRes = await ctx.app.request(`/api/claims/${created.claimId}`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({ action: "heartbeat" }),
     });
     expect(hbRes.status).toBe(200);
@@ -226,7 +226,7 @@ describe("PATCH /api/claims/:id", () => {
     // Complete
     const completeRes = await ctx.app.request(`/api/claims/${created.claimId}`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({ action: "complete" }),
     });
     expect(completeRes.status).toBe(200);
@@ -237,7 +237,7 @@ describe("PATCH /api/claims/:id", () => {
   test("returns 404 for non-existent claim heartbeat", async () => {
     const res = await ctx.app.request("/api/claims/nonexistent-id", {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({ action: "heartbeat" }),
     });
 
@@ -249,7 +249,7 @@ describe("PATCH /api/claims/:id", () => {
   test("returns 404 for non-existent claim release", async () => {
     const res = await ctx.app.request("/api/claims/nonexistent-id", {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({ action: "release" }),
     });
 
@@ -259,7 +259,7 @@ describe("PATCH /api/claims/:id", () => {
   test("returns 404 for non-existent claim complete", async () => {
     const res = await ctx.app.request("/api/claims/nonexistent-id", {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({ action: "complete" }),
     });
 
@@ -269,7 +269,7 @@ describe("PATCH /api/claims/:id", () => {
   test("rejects invalid action value", async () => {
     const res = await ctx.app.request("/api/claims/some-id", {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({ action: "invalid" }),
     });
 
@@ -281,7 +281,7 @@ describe("PATCH /api/claims/:id", () => {
   test("rejects PATCH with missing action field", async () => {
     const res = await ctx.app.request("/api/claims/some-id", {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({}),
     });
 
@@ -300,7 +300,7 @@ describe("GET /api/claims", () => {
   });
 
   test("returns empty array when no claims exist", async () => {
-    const res = await ctx.app.request("/api/claims");
+    const res = await ctx.app.request("/api/claims", { headers: TEST_AUTH_HEADERS });
 
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -310,11 +310,11 @@ describe("GET /api/claims", () => {
   test("lists active claims", async () => {
     await ctx.app.request("/api/claims", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(claimBody()),
     });
 
-    const res = await ctx.app.request("/api/claims?status=active");
+    const res = await ctx.app.request("/api/claims?status=active", { headers: TEST_AUTH_HEADERS });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.claims).toHaveLength(1);
@@ -324,16 +324,18 @@ describe("GET /api/claims", () => {
   test("filters by agentId", async () => {
     await ctx.app.request("/api/claims", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(claimBody({ agent: { agentId: "agent-1" } })),
     });
     await ctx.app.request("/api/claims", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(claimBody({ agent: { agentId: "agent-2" }, targetRef: "other-target" })),
     });
 
-    const res = await ctx.app.request("/api/claims?agentId=agent-1");
+    const res = await ctx.app.request("/api/claims?agentId=agent-1", {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.claims).toHaveLength(1);

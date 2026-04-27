@@ -446,7 +446,7 @@ export class NexusClaimStore implements ClaimStore {
     const baseQuery: ClaimQuery | undefined =
       query === undefined ? undefined : { ...query, status: undefined };
     const items = await this.listClaims(baseQuery);
-    const entities = items.map((c) => claimToEntity(c));
+    const entities = items.map((c) => claimToEntity(c, () => Date.now(), this.zoneId));
     if (query?.status === undefined) return entities;
     const wanted = Array.isArray(query.status) ? new Set(query.status) : new Set([query.status]);
     return entities.filter((e) => wanted.has(e.status.phase));

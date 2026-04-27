@@ -86,7 +86,19 @@ try {
   }
 
   nexusApiKey = process.env.NEXUS_API_KEY;
-  zoneId = process.env.GROVE_ZONE_ID ?? "default";
+  // Prefer the namespace persisted by `grove init` — stable across branch renames.
+  // Fall back to GROVE_ZONE_ID env var, then auto-derive from project-id/worktree-name.
+  const { readNamespace } = await import("../core/project-key.js");
+  const { readProjectId } = await import("../core/project-id.js");
+  const resolvedNs = readNamespace(groveDir) ?? process.env.GROVE_ZONE_ID;
+  if (resolvedNs) {
+    zoneId = resolvedNs;
+  } else {
+    const { detectWorktreeName } = await import("../core/project-key.js");
+    const projectId = readProjectId(groveDir);
+    const worktreeName = await detectWorktreeName();
+    zoneId = projectId ? `${projectId}/${worktreeName}` : "default";
+  }
 
   if (nexusUrl) {
     try {
