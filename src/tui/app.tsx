@@ -7,6 +7,8 @@
  * the single source of truth for keyboard handling.
  */
 
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { useKeyboard, useRenderer } from "@opentui/react";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
@@ -452,14 +454,17 @@ export function App({
   // Only advertise spawn if the provider supports workspace checkout (remote does not).
   const canSpawn = provider.checkoutWorkspace !== undefined;
 
-  // Peer delegation requires unauthenticated access to the peer server.
-  // When the local provider uses bearer auth, peer servers require their own credentials
-  // (which we don't have), so hide delegate actions entirely.
+  // Peer delegation posts to a peer server's /api/agents/spawn.
+  // When namespace auth is active (remote provider has auth headers OR the
+  // local grove has a namespace file) every peer server requires its own bearer
+  // token — one we have no mechanism to obtain or forward — so delegation
+  // would always fail with 400/401. Hide the action in those cases.
   const canDelegate = useMemo(() => {
     const rp = provider as unknown as { httpAuthHeaders?: Record<string, string> };
-    const headers = rp.httpAuthHeaders;
-    return !headers || Object.keys(headers).length === 0;
-  }, [provider]);
+    if (rp.httpAuthHeaders && Object.keys(rp.httpAuthHeaders).length > 0) return false;
+    if (groveDir && existsSync(join(groveDir, "namespace"))) return false;
+    return true;
+  }, [provider, groveDir]);
 
   // Load agent profiles from .grove/agents.json
   const profilesFetcher = useCallback(async () => {

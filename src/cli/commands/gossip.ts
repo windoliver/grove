@@ -31,6 +31,7 @@ import type {
   PeerLiveness,
   ShuffleRequest,
 } from "../../core/gossip/types.js";
+import { readClientKey } from "../../core/project-key.js";
 import { CachedFrontierCalculator } from "../../gossip/cached-frontier.js";
 import { CyclonPeerSampler } from "../../gossip/cyclon.js";
 import { HttpGossipTransport } from "../../gossip/http-transport.js";
@@ -45,6 +46,18 @@ import { resolveGroveDir } from "../utils/grove-dir.js";
 
 const DEFAULT_SERVER = "http://localhost:4515";
 const DEFAULT_DIGEST_LIMIT = 5;
+
+/** Read the local API key and return an Authorization header, or empty object if unavailable. */
+function resolveServerAuthHeaders(groveOverride: string | undefined): Record<string, string> {
+  try {
+    const { groveDir } = resolveGroveDir(groveOverride);
+    const apiKey = readClientKey(groveDir);
+    if (apiKey) return { Authorization: `Bearer ${apiKey}` };
+  } catch {
+    // .grove not found or no key available — proceed unauthenticated
+  }
+  return {};
+}
 
 // ---------------------------------------------------------------------------
 // Main entry point
@@ -65,13 +78,13 @@ export async function handleGossip(
 
   switch (subcommand) {
     case "peers":
-      await handlePeers(subArgs, writer);
+      await handlePeers(subArgs, groveOverride, writer);
       break;
     case "status":
-      await handleStatus(subArgs, writer);
+      await handleStatus(subArgs, groveOverride, writer);
       break;
     case "frontier":
-      await handleFrontier(subArgs, writer);
+      await handleFrontier(subArgs, groveOverride, writer);
       break;
     case "exchange":
       if (!withCliDeps) {
@@ -98,7 +111,7 @@ export async function handleGossip(
       );
       break;
     case "watch":
-      await handleWatch(subArgs, writer);
+      await handleWatch(subArgs, groveOverride, writer);
       break;
     case "add-peer":
       handleAddPeer(subArgs, groveOverride, writer);
@@ -118,10 +131,15 @@ export async function handleGossip(
 // Server query commands
 // ---------------------------------------------------------------------------
 
-async function handlePeers(args: readonly string[], writer: Writer): Promise<void> {
+async function handlePeers(
+  args: readonly string[],
+  groveOverride: string | undefined,
+  writer: Writer,
+): Promise<void> {
   const { server, json } = parseServerArgs([...args]);
+  const authHeaders = resolveServerAuthHeaders(groveOverride);
 
-  const res = await fetch(`${server}/api/gossip/peers`);
+  const res = await fetch(`${server}/api/gossip/peers`, { headers: authHeaders });
   if (!res.ok) {
     throw new Error(`Server error: ${res.status} ${res.statusText}`);
   }
@@ -156,10 +174,15 @@ async function handlePeers(args: readonly string[], writer: Writer): Promise<voi
   writer(`\nTotal: ${data.peers.length} peer(s)`);
 }
 
-async function handleStatus(args: readonly string[], writer: Writer): Promise<void> {
+async function handleStatus(
+  args: readonly string[],
+  groveOverride: string | undefined,
+  writer: Writer,
+): Promise<void> {
   const { server, json } = parseServerArgs([...args]);
+  const authHeaders = resolveServerAuthHeaders(groveOverride);
 
-  const res = await fetch(`${server}/api/grove`);
+  const res = await fetch(`${server}/api/grove`, { headers: authHeaders });
   if (!res.ok) {
     throw new Error(`Server error: ${res.status} ${res.statusText}`);
   }
@@ -197,10 +220,15 @@ async function handleStatus(args: readonly string[], writer: Writer): Promise<vo
   }
 }
 
-async function handleFrontier(args: readonly string[], writer: Writer): Promise<void> {
+async function handleFrontier(
+  args: readonly string[],
+  groveOverride: string | undefined,
+  writer: Writer,
+): Promise<void> {
   const { server, json } = parseServerArgs([...args]);
+  const authHeaders = resolveServerAuthHeaders(groveOverride);
 
-  const res = await fetch(`${server}/api/gossip/frontier`);
+  const res = await fetch(`${server}/api/gossip/frontier`, { headers: authHeaders });
   if (!res.ok) {
     throw new Error(`Server error: ${res.status} ${res.statusText}`);
   }
@@ -466,6 +494,15 @@ async function handleDaemon(
   const intervalSec = values.interval ? Number.parseInt(values.interval, 10) : 30;
   const seeds = parseSeedList(seedsArg);
   const address = `http://${hostname()}:${port}`;
+  const hmacSecret = process.env.GROVE_GOSSIP_HMAC_SECRET || undefined;
+
+  if (seeds.length > 0 && !hmacSecret) {
+    process.stderr.write(
+      "grove gossip daemon: WARNING: GROVE_GOSSIP_HMAC_SECRET is not set.\n" +
+        "  Incoming exchange/shuffle requests will not be authenticated.\n" +
+        "  Set GROVE_GOSSIP_HMAC_SECRET to the shared secret used by all federated peers.\n",
+    );
+  }
 
   // Open gossip state store
   const { groveDir } = resolveGroveDir(groveOverride);
@@ -483,15 +520,17 @@ async function handleDaemon(
   // Load persisted frontier
   const persistedFrontier = gossipStore.loadFrontier();
 
-  // Create gossip service
+  // Create gossip service — wire HMAC so outgoing messages are signed and
+  // incoming exchange/shuffle requests are verified when a secret is configured.
   const cachedFrontier = new CachedFrontierCalculator(deps.frontier);
-  const transport = new HttpGossipTransport({ allowPrivateIPs: true });
+  const transport = new HttpGossipTransport({ allowPrivateIPs: true, hmacSecret });
   const gossipService = new DefaultGossipService({
     config: {
       peerId,
       address,
       seedPeers: allSeeds,
       intervalMs: intervalSec * 1000,
+      hmacSecret,
     },
     transport,
     frontier: cachedFrontier,
@@ -637,7 +676,11 @@ async function handleDaemon(
 // Watch mode
 // ---------------------------------------------------------------------------
 
-async function handleWatch(args: readonly string[], writer: Writer): Promise<void> {
+async function handleWatch(
+  args: readonly string[],
+  groveOverride: string | undefined,
+  writer: Writer,
+): Promise<void> {
   const { values } = parseArgs({
     args: [...args],
     options: {
@@ -652,6 +695,7 @@ async function handleWatch(args: readonly string[], writer: Writer): Promise<voi
   const server = values.server ?? process.env.GROVE_SERVER ?? DEFAULT_SERVER;
   const intervalSec = values.interval ? Number.parseInt(values.interval, 10) : 5;
   const json = values.json ?? false;
+  const authHeaders = resolveServerAuthHeaders(groveOverride);
 
   writer(
     `Watching gossip events on ${server} (poll every ${intervalSec}s). Press Ctrl+C to stop.\n`,
@@ -671,8 +715,8 @@ async function handleWatch(args: readonly string[], writer: Writer): Promise<voi
   while (running) {
     try {
       const [peersRes, frontierRes] = await Promise.all([
-        fetch(`${server}/api/gossip/peers`),
-        fetch(`${server}/api/gossip/frontier`),
+        fetch(`${server}/api/gossip/peers`, { headers: authHeaders }),
+        fetch(`${server}/api/gossip/frontier`, { headers: authHeaders }),
       ]);
 
       if (!peersRes.ok || !frontierRes.ok) {
