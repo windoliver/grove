@@ -626,7 +626,14 @@ async function writeSerial(
   // immediately after the contribution commit. Not fully crash-safe (the
   // contribution and idempotency row are separate writes), but the window
   // is minimal and matches the existing handoff best-effort pattern.
-  onCommit?.();
+  try {
+    onCommit?.();
+  } catch (err) {
+    // The contribution is already committed on the serial path. Do not let a
+    // secondary idempotency write failure turn the durable write into an error:
+    // the final post-commit refresh below can still update the durable row.
+    console.warn(`[grove] post-commit callback failed for cid=${contribution.cid}`, err);
+  }
 
   const handoffIds: string[] = [];
   if (handoffStore === undefined || routedTo === undefined || agentRole === undefined) {
