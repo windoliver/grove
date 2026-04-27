@@ -64,9 +64,7 @@ export async function createProvider(
     try {
       const { resolveGroveDir } = await import("../cli/utils/grove-dir.js");
       const { readClientKey } = await import("../core/project-key.js");
-      const { groveDir } = resolveGroveDir(
-        (backend as { groveOverride?: string }).groveOverride,
-      );
+      const { groveDir } = resolveGroveDir(backend.groveOverride);
       apiKey = readClientKey(groveDir);
     } catch {
       // No .grove/api-key found — requests will get 400 from the server
@@ -173,7 +171,9 @@ async function createNexusProvider(
   let serverApiKey: string | undefined;
   try {
     const { resolveGroveDir } = await import("../cli/utils/grove-dir.js");
-    const { readClientKey, readNamespace, detectWorktreeName } = await import("../core/project-key.js");
+    const { readClientKey, readNamespace, detectWorktreeName } = await import(
+      "../core/project-key.js"
+    );
     const { readProjectId } = await import("../core/project-id.js");
     const { groveDir } = resolveGroveDir(backend.groveOverride);
     // Use the same namespace derivation as serve.ts and mcp/serve.ts.

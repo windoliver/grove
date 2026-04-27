@@ -35,7 +35,7 @@ import { readClientKey } from "../../core/project-key.js";
 import { CachedFrontierCalculator } from "../../gossip/cached-frontier.js";
 import { CyclonPeerSampler } from "../../gossip/cyclon.js";
 import { HttpGossipTransport } from "../../gossip/http-transport.js";
-import { DefaultGossipService, GossipAuthError } from "../../gossip/protocol.js";
+import { DefaultGossipService, GossipAuthError, signPayload } from "../../gossip/protocol.js";
 import { SqliteGossipStore } from "../../local/gossip-store.js";
 import type { CliDeps, Writer } from "../context.js";
 import { resolveGroveDir } from "../utils/grove-dir.js";
@@ -273,8 +273,15 @@ async function handleExchange(
 ): Promise<void> {
   const { peerUrl, peerId, json } = parseDirectArgs([...args]);
 
-  const transport = new HttpGossipTransport({ allowPrivateIPs: true });
-  const message = await buildGossipMessage(peerId, deps);
+  const hmacSecret = process.env.GROVE_GOSSIP_HMAC_SECRET || undefined;
+  const transport = new HttpGossipTransport({ allowPrivateIPs: true, hmacSecret });
+  const rawMessage = await buildGossipMessage(peerId, deps);
+  const message = hmacSecret
+    ? {
+        ...rawMessage,
+        hmacSignature: signPayload(rawMessage as unknown as Record<string, unknown>, hmacSecret),
+      }
+    : rawMessage;
   const target = urlToPeerInfo(peerUrl);
 
   writer(`Exchanging frontier with ${peerUrl}...`);
@@ -313,7 +320,8 @@ async function handleExchange(
 async function handleShuffle(args: readonly string[], writer: Writer): Promise<void> {
   const { peerUrl, peerId, json } = parseDirectArgs([...args]);
 
-  const transport = new HttpGossipTransport({ allowPrivateIPs: true });
+  const hmacSecret = process.env.GROVE_GOSSIP_HMAC_SECRET || undefined;
+  const transport = new HttpGossipTransport({ allowPrivateIPs: true, hmacSecret });
   // Use the target URL as our address — not routable for incoming gossip,
   // but satisfies the sender schema and identifies the request origin.
   const selfPeer: PeerInfo = {
@@ -367,7 +375,8 @@ async function handleSync(args: readonly string[], deps: CliDeps, writer: Writer
 
   const peerId = values["peer-id"] ?? `cli-${hostname()}-${process.pid}`;
   const json = values.json ?? false;
-  const transport = new HttpGossipTransport({ allowPrivateIPs: true });
+  const hmacSecret = process.env.GROVE_GOSSIP_HMAC_SECRET || undefined;
+  const transport = new HttpGossipTransport({ allowPrivateIPs: true, hmacSecret });
 
   // Parse seeds: either "peerId@url" or just "url"
   const seeds = parseSeedList(seedsArg);
@@ -382,7 +391,16 @@ async function handleSync(args: readonly string[], deps: CliDeps, writer: Writer
   };
   const sampler = new CyclonPeerSampler(selfPeer, { maxViewSize: 10, shuffleLength: 5 }, seeds);
 
-  const message = await buildGossipMessage(peerId, deps);
+  const rawSyncMessage = await buildGossipMessage(peerId, deps);
+  const message = hmacSecret
+    ? {
+        ...rawSyncMessage,
+        hmacSignature: signPayload(
+          rawSyncMessage as unknown as Record<string, unknown>,
+          hmacSecret,
+        ),
+      }
+    : rawSyncMessage;
 
   writer(`Syncing with ${seeds.length} seed(s)...\n`);
 
@@ -498,10 +516,12 @@ async function handleDaemon(
 
   if (seeds.length > 0 && !hmacSecret) {
     process.stderr.write(
-      "grove gossip daemon: WARNING: GROVE_GOSSIP_HMAC_SECRET is not set.\n" +
-        "  Incoming exchange/shuffle requests will not be authenticated.\n" +
+      "grove gossip daemon: ERROR: GROVE_GOSSIP_HMAC_SECRET is not set.\n" +
+        "  Federation with remote seeds requires a shared HMAC secret so that\n" +
+        "  exchange/shuffle endpoints are not open to unauthenticated injection.\n" +
         "  Set GROVE_GOSSIP_HMAC_SECRET to the shared secret used by all federated peers.\n",
     );
+    process.exit(1);
   }
 
   // Open gossip state store

@@ -17,7 +17,12 @@ import type { AgentTopology } from "../core/topology.js";
 
 /** Discriminated union describing the resolved backend. */
 export type ResolvedBackend =
-  | { readonly mode: "remote"; readonly url: string; readonly source: "flag" }
+  | {
+      readonly mode: "remote";
+      readonly url: string;
+      readonly source: "flag";
+      readonly groveOverride?: string | undefined;
+    }
   | {
       readonly mode: "nexus";
       readonly url: string;
@@ -55,7 +60,7 @@ export interface ResolveBackendFlags {
 export async function resolveBackend(flags: ResolveBackendFlags): Promise<ResolvedBackend> {
   // 1. Explicit --url flag -> remote
   if (flags.url) {
-    return { mode: "remote", url: flags.url, source: "flag" };
+    return { mode: "remote", url: flags.url, source: "flag", groveOverride: flags.groveOverride };
   }
 
   // 2. Explicit --nexus flag -> nexus
