@@ -35,10 +35,7 @@ export async function readSseEvents(
       result = await Promise.race([
         reader.read(),
         new Promise<ReadResult>((resolve) =>
-          setTimeout(
-            () => resolve({ value: undefined, done: false } as ReadResult),
-            remainingMs,
-          ),
+          setTimeout(() => resolve({ value: undefined, done: false } as ReadResult), remainingMs),
         ),
       ]);
     } catch {
@@ -47,8 +44,8 @@ export async function readSseEvents(
     if (result.done) break;
     if (result.value === undefined) continue; // timed out this read
     buf += decoder.decode(result.value, { stream: true });
-    let idx;
-    while ((idx = buf.indexOf("\n\n")) >= 0) {
+    let idx = buf.indexOf("\n\n");
+    while (idx >= 0) {
       const block = buf.slice(0, idx);
       buf = buf.slice(idx + 2);
       const id = /^id: (.*)$/m.exec(block)?.[1] ?? "";
@@ -61,6 +58,7 @@ export async function readSseEvents(
         data = dataLine;
       }
       events.push({ id, event, data });
+      idx = buf.indexOf("\n\n");
     }
   }
   try {

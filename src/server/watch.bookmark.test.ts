@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { readSseEvents } from "./sse-test-utils.js";
-import { TEST_AUTH_HEADERS, createTestApp } from "./test-helpers.js";
+import { createTestApp, TEST_AUTH_HEADERS } from "./test-helpers.js";
 
 describe("watch BOOKMARK cadence (issue #292 acceptance #3)", () => {
   test("emits BOOKMARK at least once within bookmarkIntervalMs on idle stream", async () => {

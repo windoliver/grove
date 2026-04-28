@@ -73,9 +73,7 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
 
       const send = (event: string, data: unknown, id?: string): void => {
         if (closed) return;
-        const payload = `id: ${id ?? ""}\nevent: ${event}\ndata: ${JSON.stringify(
-          data,
-        )}\n\n`;
+        const payload = `id: ${id ?? ""}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
         try {
           controller.enqueue(encoder.encode(payload));
         } catch {

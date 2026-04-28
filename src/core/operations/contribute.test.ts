@@ -6,9 +6,9 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 
 import { LocalEventBus } from "../local-event-bus.js";
 import { ROUTING_SIGNATURE_CONTEXT_KEY } from "../routing-provenance.js";
-import type { EntityWriteEvent } from "../watch-events.js";
 import type { AgentTopology } from "../topology.js";
 import { TopologyRouter } from "../topology-router.js";
+import type { EntityWriteEvent } from "../watch-events.js";
 import {
   _resetIdempotencyCacheForTests,
   contributeOperation,

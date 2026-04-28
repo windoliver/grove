@@ -107,10 +107,9 @@ describe("GET /api/watch", () => {
       expect(res.status).toBe(201);
     }
 
-    const watchRes = await app.request(
-      `/api/watch?kind=Contribution&resumeFrom=0`,
-      { headers: TEST_AUTH_HEADERS },
-    );
+    const watchRes = await app.request(`/api/watch?kind=Contribution&resumeFrom=0`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     const events = await readSseEvents(watchRes, 1, 2_000);
     expect(events[0]?.event).toBe("ERROR");
     expect((events[0]?.data as { code: number }).code).toBe(410);

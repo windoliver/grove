@@ -9,17 +9,9 @@
  */
 
 import type { EventBus, EventHandler } from "../core/event-bus.js";
-import type {
-  EntityWriteEvent,
-  WatchEntity,
-  WatchKind,
-  WatchOp,
-} from "../core/watch-events.js";
+import type { EntityWriteEvent, WatchEntity, WatchKind, WatchOp } from "../core/watch-events.js";
 import type { WatchHub } from "../core/watch-hub.js";
-import {
-  ENTITY_CHANGED,
-  type EntityChangedEnvelope,
-} from "./nexus-watch-publisher.js";
+import { ENTITY_CHANGED, type EntityChangedEnvelope } from "./nexus-watch-publisher.js";
 
 const SUBSCRIBE_ROLE = "*";
 const DEFAULT_DEDUP_WINDOW_MS = 5_000;
@@ -28,11 +20,7 @@ export interface NexusWatchSubscriberOptions {
   readonly bus: EventBus;
   readonly hub: WatchHub;
   /** Fetch the full entity for an envelope — keeps the wire format minimal. */
-  readonly fetchEntity: (
-    kind: WatchKind,
-    namespace: string,
-    id: string,
-  ) => Promise<WatchEntity>;
+  readonly fetchEntity: (kind: WatchKind, namespace: string, id: string) => Promise<WatchEntity>;
   /** Dedupe window for in-process fast-path replays. Default 5_000ms. */
   readonly dedupWindowMs?: number;
 }
@@ -73,11 +61,7 @@ export class NexusWatchSubscriber {
    * subscriber will then ignore the matching cross-process envelope that
    * arrives shortly after via the Nexus event-bus.
    */
-  markSeen(envelope: {
-    kind: WatchKind;
-    entityId: string;
-    generation: number;
-  }): void {
+  markSeen(envelope: { kind: WatchKind; entityId: string; generation: number }): void {
     this.seen.push({
       key: this.dedupKey(envelope),
       seenAt: Date.now(),
@@ -112,11 +96,7 @@ export class NexusWatchSubscriber {
     this.opts.hub.recordWrite(e);
   }
 
-  private dedupKey(env: {
-    kind: WatchKind;
-    entityId: string;
-    generation: number;
-  }): string {
+  private dedupKey(env: { kind: WatchKind; entityId: string; generation: number }): string {
     return `${env.kind}\x00${env.entityId}\x00${env.generation}`;
   }
 

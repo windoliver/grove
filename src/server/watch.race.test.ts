@@ -6,11 +6,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readSseEvents } from "./sse-test-utils.js";
-import {
-  TEST_AUTH_HEADERS,
-  createTestApp,
-  makeManifestBody,
-} from "./test-helpers.js";
+import { createTestApp, makeManifestBody, TEST_AUTH_HEADERS } from "./test-helpers.js";
 
 describe("watch handshake-race (issue #292 acceptance #2)", () => {
   beforeEach(() => {
@@ -25,12 +21,9 @@ describe("watch handshake-race (issue #292 acceptance #2)", () => {
     const N = 25;
 
     // Begin list (will block 150ms inside the handler)
-    const listPromise: Promise<{ items: unknown[]; listResourceVersion: string }> =
-      Promise.resolve(
-        app.request("/api/list?kind=Contribution", { headers: TEST_AUTH_HEADERS }),
-      ).then(
-        (r) => r.json() as Promise<{ items: unknown[]; listResourceVersion: string }>,
-      );
+    const listPromise: Promise<{ items: unknown[]; listResourceVersion: string }> = Promise.resolve(
+      app.request("/api/list?kind=Contribution", { headers: TEST_AUTH_HEADERS }),
+    ).then((r) => r.json() as Promise<{ items: unknown[]; listResourceVersion: string }>);
 
     // Inject N concurrent writes during the list delay window
     await new Promise((r) => setTimeout(r, 20)); // ensure list is mid-flight

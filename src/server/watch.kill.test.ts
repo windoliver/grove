@@ -6,11 +6,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { readSseEvents } from "./sse-test-utils.js";
-import {
-  TEST_AUTH_HEADERS,
-  createTestApp,
-  makeManifestBody,
-} from "./test-helpers.js";
+import { createTestApp, makeManifestBody, TEST_AUTH_HEADERS } from "./test-helpers.js";
 
 describe("watch kill-9 resume (issue #292 acceptance #1)", () => {
   test("reconnect with stored RV → zero missed events", async () => {
@@ -25,10 +21,10 @@ describe("watch kill-9 resume (issue #292 acceptance #1)", () => {
     // First connection: open the watch, then immediately abort to simulate kill -9.
     const ac = new AbortController();
     try {
-      await app.request(
-        `/api/watch?kind=Contribution&resumeFrom=${list.listResourceVersion}`,
-        { headers: TEST_AUTH_HEADERS, signal: ac.signal },
-      );
+      await app.request(`/api/watch?kind=Contribution&resumeFrom=${list.listResourceVersion}`, {
+        headers: TEST_AUTH_HEADERS,
+        signal: ac.signal,
+      });
     } catch {
       /* signal abort can throw on some Bun versions; ignore */
     }
@@ -49,11 +45,9 @@ describe("watch kill-9 resume (issue #292 acceptance #1)", () => {
       expect(res.status).toBe(201);
     }
     const writtenIds = new Set(
-      (
-        await Promise.all(
-          writeResponses.map((r) => r.json() as Promise<{ cid: string }>),
-        )
-      ).map((c) => c.cid),
+      (await Promise.all(writeResponses.map((r) => r.json() as Promise<{ cid: string }>))).map(
+        (c) => c.cid,
+      ),
     );
 
     // Reconnect with the same resumeFrom.
@@ -75,8 +69,7 @@ describe("watch kill-9 resume (issue #292 acceptance #1)", () => {
     // No duplicates: the count of ADDED events with our CIDs should equal M.
     const addedFromOurWrites = events.filter(
       (e) =>
-        e.event === "ADDED" &&
-        writtenIds.has((e.data as { entity: { id: string } }).entity.id),
+        e.event === "ADDED" && writtenIds.has((e.data as { entity: { id: string } }).entity.id),
     );
     expect(addedFromOurWrites.length).toBe(M);
   }, 10_000);

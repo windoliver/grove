@@ -117,8 +117,7 @@ describe("WatchHub ring buffer", () => {
 describe("WatchHub.subscribe", () => {
   test("replays events with rv > fromRv then tails new writes", async () => {
     const hub = new WatchHub();
-    const ent = (cid: string) =>
-      contributionToEntity(fixtureContribution(cid), "ns/wt");
+    const ent = (cid: string) => contributionToEntity(fixtureContribution(cid), "ns/wt");
     const rv1 = hub.recordWrite({
       kind: "Contribution",
       namespace: "ns/wt",
@@ -158,8 +157,7 @@ describe("WatchHub.subscribe", () => {
 
   test("throws StaleResourceVersionError when fromRv < ring.oldestRv", () => {
     const hub = new WatchHub({ maxEventsPerKey: 2 });
-    const ent = (cid: string) =>
-      contributionToEntity(fixtureContribution(cid), "ns/wt");
+    const ent = (cid: string) => contributionToEntity(fixtureContribution(cid), "ns/wt");
     for (const cid of ["a", "b", "c"]) {
       hub.recordWrite({
         kind: "Contribution",
@@ -178,8 +176,7 @@ describe("WatchHub.subscribe", () => {
 describe("WatchHub overflow", () => {
   test("slow consumer triggers BufferOverflowError after outbox cap exceeded", async () => {
     const hub = new WatchHub({ perClientOutboxCap: 2 });
-    const ent = (cid: string) =>
-      contributionToEntity(fixtureContribution(cid), "ns/wt");
+    const ent = (cid: string) => contributionToEntity(fixtureContribution(cid), "ns/wt");
 
     const ac = new AbortController();
     const stream = hub.subscribe("ns/wt", "Contribution", 0n, ac.signal);

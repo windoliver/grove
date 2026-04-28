@@ -11,7 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import { NexusWatchPublisher } from "../nexus/nexus-watch-publisher.js";
 import { readSseEvents } from "./sse-test-utils.js";
-import { TEST_AUTH_HEADERS, TEST_NAMESPACE, createTestApp } from "./test-helpers.js";
+import { createTestApp, TEST_AUTH_HEADERS, TEST_NAMESPACE } from "./test-helpers.js";
 
 describe("watch cross-process via event-bus", () => {
   test("an entity.changed envelope from another writer surfaces on the watch stream", async () => {
@@ -29,7 +29,7 @@ describe("watch cross-process via event-bus", () => {
 
     // Simulate an out-of-band write: write directly to the store. Build a
     // minimal Contribution that conforms to the Contribution interface.
-    const cid = "blake3:" + "ab".repeat(32);
+    const cid = `blake3:${"ab".repeat(32)}`;
     await contributionStore.put({
       cid,
       manifestVersion: 1,

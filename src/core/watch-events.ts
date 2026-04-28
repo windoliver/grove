@@ -6,11 +6,7 @@
  * revision) — see docs/superpowers/specs/2026-04-27-a5-watch-protocol-design.md.
  */
 
-import type {
-  AgentSessionEntity,
-  ClaimEntity,
-  ContributionEntity,
-} from "./entity.js";
+import type { AgentSessionEntity, ClaimEntity, ContributionEntity } from "./entity.js";
 
 export type WatchKind = "Contribution" | "Claim" | "AgentSession";
 

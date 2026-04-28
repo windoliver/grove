@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { LocalEventBus } from "../core/local-event-bus.js";
 import type { ContributionEntity } from "../core/entity.js";
+import { LocalEventBus } from "../core/local-event-bus.js";
 import type { WatchEntity } from "../core/watch-events.js";
 import { WatchHub } from "../core/watch-hub.js";
 import { NexusWatchPublisher } from "./nexus-watch-publisher.js";
@@ -33,11 +33,7 @@ describe("NexusWatchSubscriber", () => {
     const bus = new LocalEventBus();
     const hub = new WatchHub();
     let fetched = 0;
-    const fetchEntity = async (
-      kind: string,
-      ns: string,
-      id: string,
-    ): Promise<WatchEntity> => {
+    const fetchEntity = async (kind: string, ns: string, id: string): Promise<WatchEntity> => {
       fetched += 1;
       void kind;
       return fakeContributionEntity(id, ns);
@@ -66,11 +62,7 @@ describe("NexusWatchSubscriber", () => {
     const bus = new LocalEventBus();
     const hub = new WatchHub();
     let fetched = 0;
-    const fetchEntity = async (
-      kind: string,
-      ns: string,
-      id: string,
-    ): Promise<WatchEntity> => {
+    const fetchEntity = async (kind: string, ns: string, id: string): Promise<WatchEntity> => {
       fetched += 1;
       void kind;
       return fakeContributionEntity(id, ns);
@@ -104,11 +96,8 @@ describe("NexusWatchSubscriber", () => {
   test("ignores non-entity.changed events on the same role", async () => {
     const bus = new LocalEventBus();
     const hub = new WatchHub();
-    const fetchEntity = async (
-      kind: string,
-      ns: string,
-      id: string,
-    ): Promise<WatchEntity> => fakeContributionEntity(id, ns);
+    const fetchEntity = async (_kind: string, ns: string, id: string): Promise<WatchEntity> =>
+      fakeContributionEntity(id, ns);
     const sub = new NexusWatchSubscriber({ bus, hub, fetchEntity });
     sub.start();
 
