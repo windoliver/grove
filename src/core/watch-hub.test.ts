@@ -6,6 +6,7 @@ import { WatchHub } from "./watch-hub.js";
 function fixtureContribution(cid: string): Contribution {
   return {
     cid,
+    manifestVersion: 1,
     kind: "work",
     mode: "evaluation",
     summary: "fixture",
@@ -14,7 +15,7 @@ function fixtureContribution(cid: string): Contribution {
     tags: [],
     agent: { agentId: "a-1" },
     createdAt: new Date().toISOString(),
-  } as Contribution;
+  };
 }
 
 describe("WatchHub.recordWrite", () => {

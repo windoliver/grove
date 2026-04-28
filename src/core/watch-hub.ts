@@ -1,9 +1,6 @@
 /**
- * WatchHub — per-(namespace, kind) monotonic resourceVersion authority,
- * ring buffer, and subscriber fan-out for the watch protocol (#292).
- *
- * No HTTP, no I/O. Pure in-memory state. See
- * docs/superpowers/specs/2026-04-27-a5-watch-protocol-design.md.
+ * WatchHub — per-(namespace, kind) monotonic resourceVersion counter (#292).
+ * See docs/superpowers/specs/2026-04-27-a5-watch-protocol-design.md.
  */
 
 import type { EntityWriteEvent, WatchKind } from "./watch-events.js";
