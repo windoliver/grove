@@ -93,4 +93,27 @@ describe("GET /api/watch", () => {
     // Verify the SSE event id equals the rv (a stringified bigint)
     expect(events[0]?.id).toMatch(/^[0-9]+$/);
   });
+
+  test("ERROR 410 when resumeFrom is older than the ring's oldest rv", async () => {
+    const { app } = createTestApp({ watchHubOptions: { maxEventsPerKey: 2 } });
+
+    // Three writes evict the first one from the ring (cap=2).
+    for (const summary of ["a", "b", "c"]) {
+      const res = await app.request("/api/contributions", {
+        method: "POST",
+        headers: { ...TEST_AUTH_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify(makeManifestBody({ summary })),
+      });
+      expect(res.status).toBe(201);
+    }
+
+    const watchRes = await app.request(
+      `/api/watch?kind=Contribution&resumeFrom=0`,
+      { headers: TEST_AUTH_HEADERS },
+    );
+    const events = await readSseEvents(watchRes, 1, 2_000);
+    expect(events[0]?.event).toBe("ERROR");
+    expect((events[0]?.data as { code: number }).code).toBe(410);
+    expect((events[0]?.data as { reason: string }).reason).toBe("expired");
+  });
 });

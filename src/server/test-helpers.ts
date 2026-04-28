@@ -20,7 +20,7 @@ import type {
   ExpireStaleOptions,
 } from "../core/store.js";
 import { InMemoryContributionStore } from "../core/testing.js";
-import { WatchHub } from "../core/watch-hub.js";
+import { WatchHub, type WatchHubOptions } from "../core/watch-hub.js";
 import { createApp } from "./app.js";
 import type { ServerDeps, ServerEnv } from "./deps.js";
 import type { KeyRegistry } from "./middleware/namespace-auth.js";
@@ -294,26 +294,32 @@ export interface TestContext {
   contributionStore: InMemoryContributionStore;
   claimStore: InMemoryClaimStore;
   cas: InMemoryContentStore;
+  watchHub: WatchHub;
+}
+
+export interface CreateTestAppOptions {
+  readonly watchHubOptions?: WatchHubOptions;
 }
 
 /** Create a test app with fresh in-memory stores. */
-export function createTestApp(): TestContext {
+export function createTestApp(opts: CreateTestAppOptions = {}): TestContext {
   const contributionStore = new InMemoryContributionStore();
   const claimStore = new InMemoryClaimStore();
   const cas = new InMemoryContentStore();
   const frontier = new DefaultFrontierCalculator(contributionStore);
+  const watchHub = new WatchHub(opts.watchHubOptions);
 
   const deps: ServerDeps = {
     contributionStore,
     claimStore,
     cas,
     frontier,
-    watchHub: new WatchHub(),
+    watchHub,
   };
   const registry: KeyRegistry = new Map([[TEST_NAMESPACE_KEY, TEST_NAMESPACE]]);
   const app = createApp(deps, registry);
 
-  return { app, deps, contributionStore, claimStore, cas };
+  return { app, deps, contributionStore, claimStore, cas, watchHub };
 }
 
 // ---------------------------------------------------------------------------
