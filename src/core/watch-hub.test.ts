@@ -70,3 +70,20 @@ describe("WatchHub.recordWrite", () => {
     expect(hub.currentRv("ns/A", "AgentSession")).toBe(0n);
   });
 });
+
+describe("WatchHub ring buffer", () => {
+  test("retains last maxEventsPerKey events per (ns, kind)", () => {
+    const hub = new WatchHub({ maxEventsPerKey: 3 });
+    for (let i = 0; i < 5; i++) {
+      hub.recordWrite({
+        kind: "Contribution",
+        namespace: "ns/wt",
+        op: "ADDED",
+        entity: contributionToEntity(fixtureContribution(`cid-${i}`), "ns/wt"),
+      });
+    }
+    const buffered = hub.snapshotRing("ns/wt", "Contribution");
+    expect(buffered.length).toBe(3);
+    expect(buffered.map((e) => e.rv)).toEqual([3n, 4n, 5n]);
+  });
+});
