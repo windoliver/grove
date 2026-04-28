@@ -22,6 +22,7 @@ import {
   writeNamespace,
 } from "../core/project-key.js";
 import { TmuxRuntime } from "../core/tmux-runtime.js";
+import { WatchHub } from "../core/watch-hub.js";
 import { HttpGossipTransport } from "../gossip/http-transport.js";
 import { DefaultGossipService } from "../gossip/protocol.js";
 import { createLocalRuntime } from "../local/runtime.js";
@@ -282,6 +283,7 @@ const deps: ServerDeps = {
   topology: runtime.contract?.topology,
   contract: runtime.contract,
   idempotencyStore: runtime.idempotencyStore,
+  watchHub: new WatchHub(),
 };
 
 const app = createApp(deps, registry);

@@ -15,6 +15,7 @@ import type {
   ShuffleResponse,
 } from "../../src/core/gossip/types.js";
 import { InMemoryContributionStore } from "../../src/core/testing.js";
+import { WatchHub } from "../../src/core/watch-hub.js";
 import { DefaultGossipService, signPayload } from "../../src/gossip/protocol.js";
 import { createApp } from "../../src/server/app.js";
 import type { ServerDeps } from "../../src/server/deps.js";
@@ -90,6 +91,7 @@ beforeAll(() => {
     frontier,
     gossip: gossipService,
     gossipHmacSecret: TEST_HMAC_SECRET,
+    watchHub: new WatchHub(),
   };
   const app = createApp(deps, TEST_REGISTRY);
 
@@ -115,7 +117,13 @@ describe("gossip routes: not configured", () => {
     const cas = new InMemoryContentStore();
     const frontier = new DefaultFrontierCalculator(contributionStore);
 
-    const deps: ServerDeps = { contributionStore, claimStore, cas, frontier };
+    const deps: ServerDeps = {
+      contributionStore,
+      claimStore,
+      cas,
+      frontier,
+      watchHub: new WatchHub(),
+    };
     const app = createApp(deps, TEST_REGISTRY);
     noGossipServer = Bun.serve({ port: 0, fetch: app.fetch });
     noGossipUrl = `http://localhost:${noGossipServer.port}`;

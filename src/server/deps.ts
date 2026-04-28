@@ -15,6 +15,7 @@ import type { IdempotencyStore } from "../core/operations/deps.js";
 import type { OutcomeStore } from "../core/outcome.js";
 import type { ClaimStore, ContributionStore } from "../core/store.js";
 import type { AgentTopology } from "../core/topology.js";
+import type { WatchHub } from "../core/watch-hub.js";
 import type { GoalSessionStore } from "../local/sqlite-goal-session-store.js";
 
 /** Dependencies injected into the Hono application. */
@@ -63,6 +64,8 @@ export interface ServerDeps {
   readonly handoffStoreForSession?: (sessionId: string) => HandoffStore | undefined;
   /** Optional idempotency store for cross-process deduplication. */
   readonly idempotencyStore?: IdempotencyStore | undefined;
+  /** Watch hub for list→watch handshake (#292). */
+  readonly watchHub: WatchHub;
 }
 
 /** Hono environment type carrying injected dependencies. */

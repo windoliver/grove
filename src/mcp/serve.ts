@@ -15,6 +15,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 
 import { findGroveDir } from "../cli/context.js";
 import { TopologyRouter } from "../core/topology-router.js";
+import { WatchHub } from "../core/watch-hub.js";
 import { createLocalRuntime } from "../local/runtime.js";
 import type { McpDeps } from "./deps.js";
 import { createMcpServer } from "./server.js";
@@ -532,6 +533,7 @@ try {
     idempotencyStore: runtime.idempotencyStore,
     ...(handoffExpiryManaged ? { handoffExpiryManaged: true } : {}),
     ...(deadlineWatcher ? { deadlineWatcher } : {}),
+    watchHub: new WatchHub(),
   };
   // Derive MCP tool preset from contract mode — #11 MCP Tool Surface + #12 Concept Usage
   const contractMode = loadedContract?.mode ?? "exploration";

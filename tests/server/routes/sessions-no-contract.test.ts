@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { WatchHub } from "../../../src/core/watch-hub.js";
 import { SqliteGoalSessionStore } from "../../../src/local/sqlite-goal-session-store.js";
 import { initSqliteDb } from "../../../src/local/sqlite-store.js";
 import { createApp } from "../../../src/server/app.js";
@@ -38,6 +39,7 @@ function makeDepsWithoutContract(): NoContractFixture {
     topology: undefined,
     contract: undefined,
     idempotencyStore: {} as never,
+    watchHub: new WatchHub(),
   } as ServerDeps;
 
   return {

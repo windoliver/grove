@@ -14,6 +14,7 @@ import type { FrontierCalculator } from "../../src/core/frontier.js";
 import { DefaultFrontierCalculator } from "../../src/core/frontier.js";
 import type { OutcomeStore } from "../../src/core/outcome.js";
 import type { ClaimStore, ContributionStore } from "../../src/core/store.js";
+import { WatchHub } from "../../src/core/watch-hub.js";
 import { FsCas } from "../../src/local/fs-cas.js";
 import { createSqliteStores } from "../../src/local/sqlite-store.js";
 import { createApp } from "../../src/server/app.js";
@@ -53,6 +54,7 @@ export async function createTestContext(): Promise<TestContext> {
     outcomeStore: stores.outcomeStore,
     cas,
     frontier,
+    watchHub: new WatchHub(),
   };
 
   const app = createApp(deps, TEST_REGISTRY);

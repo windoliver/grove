@@ -20,6 +20,7 @@ import type {
   ExpireStaleOptions,
 } from "../core/store.js";
 import { InMemoryContributionStore } from "../core/testing.js";
+import { WatchHub } from "../core/watch-hub.js";
 import { createApp } from "./app.js";
 import type { ServerDeps, ServerEnv } from "./deps.js";
 import type { KeyRegistry } from "./middleware/namespace-auth.js";
@@ -302,7 +303,13 @@ export function createTestApp(): TestContext {
   const cas = new InMemoryContentStore();
   const frontier = new DefaultFrontierCalculator(contributionStore);
 
-  const deps: ServerDeps = { contributionStore, claimStore, cas, frontier };
+  const deps: ServerDeps = {
+    contributionStore,
+    claimStore,
+    cas,
+    frontier,
+    watchHub: new WatchHub(),
+  };
   const registry: KeyRegistry = new Map([[TEST_NAMESPACE_KEY, TEST_NAMESPACE]]);
   const app = createApp(deps, registry);
 

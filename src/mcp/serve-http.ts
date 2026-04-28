@@ -29,6 +29,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { findGroveDir } from "../cli/context.js";
 import { StateConflictError } from "../core/errors.js";
 import { TopologyRouter } from "../core/topology-router.js";
+import { WatchHub } from "../core/watch-hub.js";
 import { createLocalRuntime } from "../local/runtime.js";
 import { parsePort } from "../shared/env.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
@@ -687,6 +688,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     idempotencyStore,
     ...(handoffExpiryManaged ? { handoffExpiryManaged: true } : {}),
     ...(deadlineWatcher ? { deadlineWatcher } : {}),
+    watchHub: new WatchHub(),
   };
   const deactivate = () => {
     mutationGuard.deactivate();

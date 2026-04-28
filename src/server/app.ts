@@ -33,6 +33,7 @@ import { outcomes } from "./routes/outcomes.js";
 import { search } from "./routes/search.js";
 import { sessions } from "./routes/sessions.js";
 import { threads } from "./routes/threads.js";
+import { watch } from "./routes/watch.js";
 
 /**
  * Create a Hono application with all grove-server routes.
@@ -119,6 +120,7 @@ export function createApp(deps: ServerDeps, registry: KeyRegistry): Hono<ServerE
   app.route("/api/session", goals);
   app.route("/api/sessions", sessions);
   app.route("/api/handoffs", handoffs);
+  app.route("/api", watch);
 
   // Centralized error handling
   app.onError(handleError);

@@ -10,6 +10,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { DefaultFrontierCalculator } from "../core/frontier.js";
 import { _resetIdempotencyCacheForTests } from "../core/operations/contribute.js";
 import { InMemoryContributionStore } from "../core/testing.js";
+import { WatchHub } from "../core/watch-hub.js";
 import { createApp } from "./app.js";
 import type { ServerDeps } from "./deps.js";
 import type { KeyRegistry } from "./middleware/namespace-auth.js";
@@ -36,7 +37,13 @@ beforeAll(() => {
   const cas = new InMemoryContentStore();
   const frontier = new DefaultFrontierCalculator(contributionStore);
 
-  const deps: ServerDeps = { contributionStore, claimStore, cas, frontier };
+  const deps: ServerDeps = {
+    contributionStore,
+    claimStore,
+    cas,
+    frontier,
+    watchHub: new WatchHub(),
+  };
   const registry: KeyRegistry = new Map([[TEST_KEY, TEST_NAMESPACE]]);
   const app = createApp(deps, registry);
 
