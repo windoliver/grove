@@ -33,7 +33,20 @@ export function toOperationDeps(deps: ServerDeps): OperationDeps {
     ...(deps.outcomeStore !== undefined ? { outcomeStore: deps.outcomeStore } : {}),
     ...(deps.contract !== undefined ? { contract: deps.contract } : {}),
     ...(deps.idempotencyStore !== undefined ? { idempotencyStore: deps.idempotencyStore } : {}),
-    onEntityWrite: (event) => deps.watchHub.recordWrite(event),
+    onEntityWrite: (event) => {
+      deps.watchHub.recordWrite(event);
+      // Cross-process dedupe (#292): record this write so the matching
+      // `entity.changed` envelope (published by the Nexus store at write
+      // time) is suppressed when it lands on the subscriber. Without
+      // this, the same write would record twice — once via the in-process
+      // fast path, once via the bus — and the WatchHub RV would advance
+      // by 2 instead of 1 per logical write.
+      deps.watchSubscriber?.markSeen({
+        kind: event.kind,
+        entityId: event.entity.id,
+        generation: event.entity.metadata.generation,
+      });
+    },
   };
 }
 

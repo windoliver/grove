@@ -17,6 +17,7 @@ import type { ClaimStore, ContributionStore } from "../core/store.js";
 import type { AgentTopology } from "../core/topology.js";
 import type { WatchHub } from "../core/watch-hub.js";
 import type { GoalSessionStore } from "../local/sqlite-goal-session-store.js";
+import type { NexusWatchSubscriber } from "../nexus/nexus-watch-subscriber.js";
 
 /** Dependencies injected into the Hono application. */
 export interface ServerDeps {
@@ -66,6 +67,16 @@ export interface ServerDeps {
   readonly idempotencyStore?: IdempotencyStore | undefined;
   /** Watch hub for list→watch handshake (#292). */
   readonly watchHub: WatchHub;
+  /**
+   * Optional cross-process watch subscriber (#292). When present, the
+   * operation-adapter calls `markSeen` on it after each in-process write
+   * so that the matching cross-process envelope (published by the same
+   * write through Nexus → NexusWatchPublisher) is suppressed at the
+   * subscriber instead of being replayed back into the WatchHub.
+   *
+   * Optional so test harnesses that build ServerDeps inline can omit it.
+   */
+  readonly watchSubscriber?: NexusWatchSubscriber | undefined;
 }
 
 /** Hono environment type carrying injected dependencies. */
