@@ -91,7 +91,8 @@ claims.patch("/:id", zValidator("json", patchBodySchema), async (c) => {
   }
 
   // Release / complete via shared operation
-  const deps = toOperationDeps(c.get("deps"));
+  let deps = toOperationDeps(c.get("deps"));
+  deps = { ...deps, namespace: c.get("namespace") };
   const result = await releaseOperation({ claimId, action }, deps);
 
   const { data, status } = toHttpResult(result);
