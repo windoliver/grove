@@ -5,6 +5,7 @@
  */
 
 import type { EntityWriteEvent, WatchEvent, WatchKind } from "./watch-events.js";
+import { StaleResourceVersionError } from "./watch-events.js";
 
 export interface WatchHubOptions {
   readonly maxEventsPerKey?: number;
@@ -49,11 +50,102 @@ export class WatchHub {
     s.ring.push(watchEvent);
     s.insertedAt.push(this.now());
     this.trim(s);
+    this.fanout(key, watchEvent);
     return s.counter;
   }
 
   currentRv(namespace: string, kind: WatchKind): bigint {
     return this.state.get(this.key(namespace, kind))?.counter ?? 0n;
+  }
+
+  subscribe(
+    namespace: string,
+    kind: WatchKind,
+    fromRv: bigint,
+    signal: AbortSignal,
+  ): AsyncIterable<WatchEvent> {
+    const key = this.key(namespace, kind);
+    const s = this.getOrCreate(key);
+
+    const oldestRv = s.ring.length > 0 ? (s.ring[0] as WatchEvent).rv : 0n;
+    // Resume from rv == oldestRv - 1 means "I have everything through oldestRv-1,
+    // give me oldestRv onward." Anything strictly older is unrecoverable → 410.
+    if (fromRv < oldestRv - 1n) {
+      throw new StaleResourceVersionError(namespace, kind, fromRv, oldestRv);
+    }
+
+    const replay: WatchEvent[] = s.ring.filter((e) => e.rv > fromRv);
+
+    const subscriber: Subscriber = {
+      namespace,
+      kind,
+      queue: [...replay],
+      pending: null,
+      closed: false,
+      overflow: false,
+    };
+    this.subscribersFor(key).add(subscriber);
+
+    signal.addEventListener("abort", () => this.closeSubscriber(key, subscriber));
+
+    return {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          while (true) {
+            if (subscriber.overflow) {
+              this.closeSubscriber(key, subscriber);
+              throw new BufferOverflowError(namespace, kind);
+            }
+            if (subscriber.queue.length > 0) {
+              const value = subscriber.queue.shift() as WatchEvent;
+              return { value, done: false };
+            }
+            if (subscriber.closed) {
+              return { value: undefined as unknown as WatchEvent, done: true };
+            }
+            await new Promise<void>((resolve) => {
+              subscriber.pending = resolve;
+            });
+          }
+        },
+        return: async () => {
+          this.closeSubscriber(key, subscriber);
+          return { value: undefined as unknown as WatchEvent, done: true };
+        },
+      }),
+    };
+  }
+
+  private subscribersByKey = new Map<string, Set<Subscriber>>();
+
+  private subscribersFor(key: string): Set<Subscriber> {
+    let set = this.subscribersByKey.get(key);
+    if (!set) {
+      set = new Set();
+      this.subscribersByKey.set(key, set);
+    }
+    return set;
+  }
+
+  private fanout(key: string, event: WatchEvent): void {
+    const set = this.subscribersByKey.get(key);
+    if (!set) return;
+    for (const sub of set) {
+      if (sub.queue.length >= this.perClientOutboxCap) {
+        sub.overflow = true;
+      } else {
+        sub.queue.push(event);
+      }
+      sub.pending?.();
+      sub.pending = null;
+    }
+  }
+
+  private closeSubscriber(key: string, sub: Subscriber): void {
+    sub.closed = true;
+    sub.pending?.();
+    sub.pending = null;
+    this.subscribersByKey.get(key)?.delete(sub);
   }
 
   /** Test-only inspector. Returns a copy. */
@@ -85,5 +177,27 @@ export class WatchHub {
       s.ring.shift();
       s.insertedAt.shift();
     }
+  }
+}
+
+interface Subscriber {
+  readonly namespace: string;
+  readonly kind: WatchKind;
+  queue: WatchEvent[];
+  pending: (() => void) | null;
+  closed: boolean;
+  overflow: boolean;
+}
+
+export class BufferOverflowError extends Error {
+  readonly code = 503;
+  readonly namespace: string;
+  readonly kind: WatchKind;
+
+  constructor(namespace: string, kind: WatchKind) {
+    super(`watch outbox overflowed for ${namespace}/${kind}`);
+    this.name = "BufferOverflowError";
+    this.namespace = namespace;
+    this.kind = kind;
   }
 }

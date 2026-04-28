@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { contributionToEntity } from "./entity.js";
 import type { Contribution } from "./models.js";
+import { StaleResourceVersionError } from "./watch-events.js";
 import { WatchHub } from "./watch-hub.js";
 
 function fixtureContribution(cid: string): Contribution {
@@ -110,5 +111,66 @@ describe("WatchHub ring buffer", () => {
     const buffered = hub.snapshotRing("ns/wt", "Contribution");
     expect(buffered.length).toBe(1);
     expect(buffered[0]?.entity.id).toBe("cid-new");
+  });
+});
+
+describe("WatchHub.subscribe", () => {
+  test("replays events with rv > fromRv then tails new writes", async () => {
+    const hub = new WatchHub();
+    const ent = (cid: string) =>
+      contributionToEntity(fixtureContribution(cid), "ns/wt");
+    const rv1 = hub.recordWrite({
+      kind: "Contribution",
+      namespace: "ns/wt",
+      op: "ADDED",
+      entity: ent("cid-1"),
+    });
+    hub.recordWrite({
+      kind: "Contribution",
+      namespace: "ns/wt",
+      op: "ADDED",
+      entity: ent("cid-2"),
+    });
+
+    const ac = new AbortController();
+    const seen: bigint[] = [];
+    const stream = hub.subscribe("ns/wt", "Contribution", rv1, ac.signal);
+
+    const drain = (async () => {
+      for await (const ev of stream) {
+        seen.push(ev.rv);
+        if (seen.length === 2) ac.abort();
+      }
+    })();
+
+    queueMicrotask(() => {
+      hub.recordWrite({
+        kind: "Contribution",
+        namespace: "ns/wt",
+        op: "ADDED",
+        entity: ent("cid-3"),
+      });
+    });
+
+    await drain;
+    expect(seen).toEqual([2n, 3n]);
+  });
+
+  test("throws StaleResourceVersionError when fromRv < ring.oldestRv", () => {
+    const hub = new WatchHub({ maxEventsPerKey: 2 });
+    const ent = (cid: string) =>
+      contributionToEntity(fixtureContribution(cid), "ns/wt");
+    for (const cid of ["a", "b", "c"]) {
+      hub.recordWrite({
+        kind: "Contribution",
+        namespace: "ns/wt",
+        op: "ADDED",
+        entity: ent(cid),
+      });
+    }
+    expect(() => {
+      const ac = new AbortController();
+      hub.subscribe("ns/wt", "Contribution", 0n, ac.signal);
+    }).toThrow(StaleResourceVersionError);
   });
 });
