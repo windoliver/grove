@@ -2,6 +2,7 @@
  * Tests for `grove migrate` command (A4: legacy → namespaced migration).
  */
 
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
@@ -441,10 +442,73 @@ describe("handleMigrate: rollback fails closed when server-keys version is unsup
 
   afterEach(() => cleanup(dir));
 
-  it("preserves inverse-plan.json when rollback fails", async () => {
-    await expect(handleMigrate(["--rollback"], join(dir, ".grove"))).rejects.toThrow("incomplete");
-    // Inverse plan must be preserved so operator can retry rollback.
+  it("preserves inverse-plan.json and credential files when preflight fails", async () => {
+    await expect(handleMigrate(["--rollback"], join(dir, ".grove"))).rejects.toThrow(
+      "unsupported state",
+    );
+    // Inverse plan + local credentials must be preserved so operator can retry.
     expect(existsSync(join(dir, ".grove", "migrations", "inverse-plan.json"))).toBe(true);
+    expect(existsSync(join(dir, ".grove", "project-id"))).toBe(true);
+    expect(existsSync(join(dir, ".grove", "api-key"))).toBe(true);
+    expect(existsSync(join(dir, ".grove", "namespace"))).toBe(true);
+  });
+});
+
+describe("handleMigrate: appendServerKey rejects forward-version registries", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await createLegacyGrove();
+    // Pre-seed a forward-version registry that we should never silently overwrite.
+    writeFileSync(
+      join(dir, ".grove", "server-keys.yaml"),
+      ["version: 2", "keys:", "  grv_future_key: foo", ""].join("\n"),
+      "utf8",
+    );
+  });
+
+  afterEach(() => cleanup(dir));
+
+  it("refuses migration without clobbering forward-version data", async () => {
+    await expect(handleMigrate([], join(dir, ".grove"))).rejects.toThrow("unsupported version");
+    // Original future-version content must be intact.
+    const content = readFileSync(join(dir, ".grove", "server-keys.yaml"), "utf8");
+    expect(content).toContain("version: 2");
+    expect(content).toContain("grv_future_key");
+    // No project-id, no api-key written.
+    expect(existsSync(join(dir, ".grove", "project-id"))).toBe(false);
+    expect(existsSync(join(dir, ".grove", "api-key"))).toBe(false);
+  });
+});
+
+describe("handleMigrate: refused migration leaves DB schema untouched", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await createLegacyGrove();
+    writeFileSync(join(dir, ".grove", "api-key"), "grv_preexisting\n", "utf8");
+  });
+
+  afterEach(() => cleanup(dir));
+
+  it("does not run schema migrations when clobber check fails", async () => {
+    // Capture the DB state before refusal: schema_migrations rows.
+    const dbPath = join(dir, ".grove", "grove.db");
+    const before = new Database(dbPath, { readonly: true });
+    const beforeRows = before
+      .prepare("SELECT version FROM schema_migrations ORDER BY version")
+      .all() as { version: number }[];
+    before.close();
+
+    await expect(handleMigrate([], join(dir, ".grove"))).rejects.toThrow("refusing to overwrite");
+
+    // schema_migrations table must be unchanged (or absent on truly legacy).
+    const after = new Database(dbPath, { readonly: true });
+    const afterRows = after
+      .prepare("SELECT version FROM schema_migrations ORDER BY version")
+      .all() as { version: number }[];
+    after.close();
+    expect(afterRows).toEqual(beforeRows);
   });
 });
 

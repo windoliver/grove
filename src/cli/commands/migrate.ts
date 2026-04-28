@@ -21,6 +21,7 @@ import {
   CLIENT_KEY_FILE,
   generateApiKey,
   NAMESPACE_FILE,
+  parseServerKeys,
   removeServerKey,
   SERVER_KEYS_FILE,
   writeClientKey,
@@ -150,6 +151,43 @@ export async function handleMigrate(
     );
   }
 
+  // Filesystem preconditions BEFORE opening the DB. initSqliteDb runs
+  // schema migrations, so if we open it and then refuse on a clobber, we'd
+  // leave behind a schema upgrade despite migration not proceeding.
+  const apiKeyExists = existsSync(join(groveDir, CLIENT_KEY_FILE));
+  const namespaceFileExists = existsSync(join(groveDir, NAMESPACE_FILE));
+
+  // Read orphan flag via a read-only DB handle; readStoreNamespace tolerates
+  // a missing project_settings table on truly legacy DBs.
+  const orphanProbe = new Database(dbPath, { readonly: true });
+  let orphan: string;
+  try {
+    orphan = readStoreNamespace(orphanProbe);
+  } finally {
+    orphanProbe.close();
+  }
+
+  if (orphan !== "default" && (apiKeyExists || namespaceFileExists)) {
+    throw new Error(
+      "grove migrate: detected incomplete prior migration (orphaned SQLite namespace " +
+        `'${orphan}' plus leftover credential files). Inspect .grove/api-key, ` +
+        ".grove/namespace, and the project_settings row, remove them manually, " +
+        "then re-run.",
+    );
+  }
+  if (apiKeyExists) {
+    throw new Error(
+      "grove migrate: refusing to overwrite existing .grove/api-key. " +
+        "Investigate and remove it manually if this grove is truly a legacy install.",
+    );
+  }
+  if (namespaceFileExists) {
+    throw new Error(
+      "grove migrate: refusing to overwrite existing .grove/namespace. " +
+        "Investigate and remove it manually if this grove is truly a legacy install.",
+    );
+  }
+
   // Dry-run uses a read-only handle so planning never mutates the DB
   // (including running schema migrations).
   if (opts.dryRun) {
@@ -166,36 +204,6 @@ export async function handleMigrate(
 
   const db = initSqliteDb(dbPath);
   try {
-    // Run ALL preconditions up-front before mutating anything. The order
-    // matters: detect partial-migration state (orphan + leftover files)
-    // first, refuse if files-only conflict, and only then clear an orphan
-    // namespace if the rest of the setup is clean. This prevents the DB
-    // from being mutated when applyMigration is going to refuse anyway.
-    const orphan = readStoreNamespace(db);
-    const apiKeyExists = existsSync(join(groveDir, CLIENT_KEY_FILE));
-    const namespaceFileExists = existsSync(join(groveDir, NAMESPACE_FILE));
-
-    if (orphan !== "default" && (apiKeyExists || namespaceFileExists)) {
-      throw new Error(
-        "grove migrate: detected incomplete prior migration (orphaned SQLite namespace " +
-          `'${orphan}' plus leftover credential files). Inspect .grove/api-key, ` +
-          ".grove/namespace, and the project_settings row, remove them manually, " +
-          "then re-run.",
-      );
-    }
-    if (apiKeyExists) {
-      throw new Error(
-        "grove migrate: refusing to overwrite existing .grove/api-key. " +
-          "Investigate and remove it manually if this grove is truly a legacy install.",
-      );
-    }
-    if (namespaceFileExists) {
-      throw new Error(
-        "grove migrate: refusing to overwrite existing .grove/namespace. " +
-          "Investigate and remove it manually if this grove is truly a legacy install.",
-      );
-    }
-
     // Pure orphan with no leftover files: a previous run died between
     // writeStoreNamespace and writeClientKey. Safe to clear because no
     // migration-owned artifacts on disk reference this namespace.
@@ -450,10 +458,53 @@ async function executeRollback(groveDir: string, dbPath: string): Promise<void> 
   console.log(`  namespace was:  ${plan.namespace}`);
   console.log(`  reverting to:   ${plan.previousNamespace}`);
 
+  // Preflight: validate the server-keys.yaml registry parses before
+  // deleting anything. If parsing fails (unsupported version, malformed
+  // YAML), we abort rollback while local credential files are still
+  // intact — leaving the workspace authorized rather than half-revoked.
+  try {
+    parseServerKeys(groveDir);
+  } catch (err) {
+    throw new Error(
+      `grove migrate --rollback: cannot proceed; .grove/${SERVER_KEYS_FILE} ` +
+        `is in an unsupported state (${(err as Error).message}). ` +
+        `Local credentials and inverse-plan retained — fix the registry, then retry.`,
+    );
+  }
+
   // Collect failures rather than swallowing them. Rollback must fail closed:
   // if any expected mutation does not succeed (or cannot be verified as
   // already done), preserve inverse-plan.json so the operator can retry.
   const failures: string[] = [];
+
+  // Order: registry surgery FIRST, then local file deletes, then DB. This
+  // way a failure in registry mutation (the most likely failure path on
+  // unusual disk state) leaves the workspace fully authorized rather than
+  // partially de-authorized with credentials missing.
+  try {
+    const result = removeServerKey(groveDir, plan.apiKey);
+    if (result.registryFound && result.removed) {
+      if (result.remaining === 0) {
+        rmSync(join(groveDir, SERVER_KEYS_FILE), { force: true });
+        console.log(`  removed: .grove/${SERVER_KEYS_FILE} (empty after key removal)`);
+      } else {
+        console.log(
+          `  removed migrated key from .grove/${SERVER_KEYS_FILE} (${result.remaining} keys left)`,
+        );
+      }
+    } else if (!result.registryFound) {
+      console.log(`  .grove/${SERVER_KEYS_FILE} absent (skipping)`);
+    } else {
+      console.log(`  migrated key already absent from .grove/${SERVER_KEYS_FILE} (skipping)`);
+    }
+  } catch (err) {
+    // We already preflight-validated, so this is a write error (disk full,
+    // permissions). Bail before touching local files.
+    throw new Error(
+      `grove migrate --rollback: server-keys.yaml mutation failed (${(err as Error).message}). ` +
+        `Local credentials and inverse-plan retained — fix the registry, then retry.`,
+    );
+  }
 
   // Remove migration-owned credential files. Allowlist + basename check
   // prevents a tampered inverse-plan from deleting unrelated entries.
@@ -469,8 +520,6 @@ async function executeRollback(groveDir: string, dbPath: string): Promise<void> 
     const filePath = join(groveDir, file);
     try {
       rmSync(filePath, { force: true });
-      // Verify the file is gone; rmSync with force doesn't throw on ENOENT,
-      // but a permission/IO error elsewhere could leave it behind.
       if (existsSync(filePath)) {
         failures.push(`.grove/${file} still present after removal attempt`);
       } else {
@@ -479,32 +528,6 @@ async function executeRollback(groveDir: string, dbPath: string): Promise<void> 
     } catch (err) {
       failures.push(`could not remove .grove/${file}: ${(err as Error).message}`);
     }
-  }
-
-  // Surgical removal of OUR key from server-keys.yaml — preserves any other
-  // entries an operator may have added. Delete the file only if empty.
-  try {
-    const result = removeServerKey(groveDir, plan.apiKey);
-    if (result.registryFound && result.removed) {
-      if (result.remaining === 0) {
-        rmSync(join(groveDir, SERVER_KEYS_FILE), { force: true });
-        console.log(`  removed: .grove/${SERVER_KEYS_FILE} (empty after key removal)`);
-      } else {
-        console.log(
-          `  removed migrated key from .grove/${SERVER_KEYS_FILE} (${result.remaining} keys left)`,
-        );
-      }
-    } else if (!result.registryFound) {
-      // server-keys.yaml absent — already-rolled-back or never written.
-      console.log(`  .grove/${SERVER_KEYS_FILE} absent (skipping)`);
-    } else {
-      // Registry exists but our key is not in it — treat as already removed.
-      console.log(`  migrated key already absent from .grove/${SERVER_KEYS_FILE} (skipping)`);
-    }
-  } catch (err) {
-    failures.push(
-      `could not remove migrated key from .grove/${SERVER_KEYS_FILE}: ${(err as Error).message}`,
-    );
   }
 
   // Restore previous namespace in the SQLite store.
