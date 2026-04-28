@@ -434,10 +434,17 @@ if (HOST && !LOCALHOST_ADDRESSES.has(HOST)) {
 function startServer() {
   const hostnameOpts = HOST ? { hostname: HOST } : {};
 
+  // SSE watch streams (#292) hold connections idle for up to bookmarkIntervalMs
+  // (default 30s) plus replay drift. Bun's default idleTimeout is 10s — without
+  // raising it, the watcher's TCP connection is closed before the next BOOKMARK
+  // fires and clients see silent disconnects. 255 is Bun's max.
+  const idleTimeout = 255;
+
   if (wsHandler !== undefined) {
     const wsh = wsHandler;
     return Bun.serve({
       port: PORT,
+      idleTimeout,
       ...hostnameOpts,
       fetch(req, server) {
         const url = new URL(req.url);
@@ -480,6 +487,7 @@ function startServer() {
 
   return Bun.serve({
     port: PORT,
+    idleTimeout,
     ...hostnameOpts,
     fetch: app.fetch,
   });
