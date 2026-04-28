@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { contributionToEntity } from "./entity.js";
 import type { Contribution } from "./models.js";
 import { StaleResourceVersionError } from "./watch-events.js";
-import { WatchHub } from "./watch-hub.js";
+import { BufferOverflowError, WatchHub } from "./watch-hub.js";
 
 function fixtureContribution(cid: string): Contribution {
   return {
@@ -172,5 +172,33 @@ describe("WatchHub.subscribe", () => {
       const ac = new AbortController();
       hub.subscribe("ns/wt", "Contribution", 0n, ac.signal);
     }).toThrow(StaleResourceVersionError);
+  });
+});
+
+describe("WatchHub overflow", () => {
+  test("slow consumer triggers BufferOverflowError after outbox cap exceeded", async () => {
+    const hub = new WatchHub({ perClientOutboxCap: 2 });
+    const ent = (cid: string) =>
+      contributionToEntity(fixtureContribution(cid), "ns/wt");
+
+    const ac = new AbortController();
+    const stream = hub.subscribe("ns/wt", "Contribution", 0n, ac.signal);
+
+    // Don't drain — let the queue fill up
+    for (let i = 0; i < 5; i++) {
+      hub.recordWrite({
+        kind: "Contribution",
+        namespace: "ns/wt",
+        op: "ADDED",
+        entity: ent(`cid-${i}`),
+      });
+    }
+
+    const it = stream[Symbol.asyncIterator]();
+    expect((await it.next()).value.rv).toBe(1n);
+    expect((await it.next()).value.rv).toBe(2n);
+    const rejection = it.next();
+    await expect(rejection).rejects.toThrow("watch outbox overflowed");
+    await expect(rejection).rejects.toBeInstanceOf(BufferOverflowError);
   });
 });
