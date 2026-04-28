@@ -92,13 +92,15 @@ export class WatchHub {
       [Symbol.asyncIterator]: () => ({
         next: async () => {
           while (true) {
-            if (subscriber.overflow) {
-              this.closeSubscriber(key, subscriber);
-              throw new BufferOverflowError(namespace, kind);
-            }
+            // Drain already-queued events first; only signal overflow once
+            // the consumer has caught up with what was successfully buffered.
             if (subscriber.queue.length > 0) {
               const value = subscriber.queue.shift() as WatchEvent;
               return { value, done: false };
+            }
+            if (subscriber.overflow) {
+              this.closeSubscriber(key, subscriber);
+              throw new BufferOverflowError(namespace, kind);
             }
             if (subscriber.closed) {
               return { value: undefined as unknown as WatchEvent, done: true };
