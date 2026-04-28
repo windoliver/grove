@@ -134,28 +134,69 @@ export function appendServerKey(groveDir: string, key: string, namespace: string
   renameSync(tmp, filePath);
 }
 
+export interface RemoveServerKeyResult {
+  /** True iff a parseable version-1 registry was found on disk. */
+  readonly registryFound: boolean;
+  /** True iff the key was present and has now been removed. */
+  readonly removed: boolean;
+  /** Remaining key count after removal. 0 when registry absent. */
+  readonly remaining: number;
+}
+
 /**
  * Remove a single key from `<groveDir>/server-keys.yaml`.
  *
- * Returns the number of remaining keys after removal (so callers can decide
- * whether to delete the file entirely). If the file does not exist, returns
- * 0. Safe to call when the key is not present — it is a no-op in that case.
+ * Strict parse: throws if the file exists but is not a recognized
+ * version-1 registry (so we never silently treat a forward-version file as
+ * empty and let callers delete it). The returned result distinguishes the
+ * three cases: registry absent, key already absent, key removed.
  */
-export function removeServerKey(groveDir: string, key: string): number {
+export function removeServerKey(groveDir: string, key: string): RemoveServerKeyResult {
   const filePath = join(groveDir, SERVER_KEYS_FILE);
-  let existing: ServerKeysFile;
+  let raw: string;
   try {
-    const raw = readFileSync(filePath, "utf8");
-    const parsed = parseYaml(raw) as ServerKeysFile;
-    existing = parsed?.version === 1 && parsed.keys ? parsed : { version: 1, keys: {} };
+    raw = readFileSync(filePath, "utf8");
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return { registryFound: false, removed: false, remaining: 0 };
+    }
     throw err;
   }
-  if (!(key in existing.keys)) return Object.keys(existing.keys).length;
-  delete existing.keys[key];
+
+  let parsed: unknown;
+  try {
+    parsed = parseYaml(raw);
+  } catch (err) {
+    throw new Error(`server-keys.yaml is not valid YAML: ${(err as Error).message}`);
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error("server-keys.yaml is not a YAML object");
+  }
+  const candidate = parsed as { version?: unknown; keys?: unknown };
+  if (candidate.version !== 1) {
+    throw new Error(
+      `server-keys.yaml has unsupported version=${String(candidate.version)}; refusing to mutate`,
+    );
+  }
+  if (typeof candidate.keys !== "object" || candidate.keys === null) {
+    throw new Error("server-keys.yaml is missing the 'keys' map; refusing to mutate");
+  }
+  const registry: ServerKeysFile = { version: 1, keys: candidate.keys as ServerKeysFile["keys"] };
+
+  if (!(key in registry.keys)) {
+    return {
+      registryFound: true,
+      removed: false,
+      remaining: Object.keys(registry.keys).length,
+    };
+  }
+  delete registry.keys[key];
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmp, stringifyYaml(existing), { encoding: "utf8", mode: 0o600 });
+  writeFileSync(tmp, stringifyYaml(registry), { encoding: "utf8", mode: 0o600 });
   renameSync(tmp, filePath);
-  return Object.keys(existing.keys).length;
+  return {
+    registryFound: true,
+    removed: true,
+    remaining: Object.keys(registry.keys).length,
+  };
 }

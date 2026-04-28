@@ -398,6 +398,56 @@ describe("handleMigrate: surgical server-keys.yaml rollback", () => {
   });
 });
 
+describe("handleMigrate: orphan + leftover files refuses without DB mutation", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await createLegacyGrove();
+    // Set orphaned namespace AND leave a stale credential file behind.
+    const db = initSqliteDb(join(dir, ".grove", "grove.db"));
+    db.run(
+      "INSERT OR REPLACE INTO project_settings (key, value) VALUES ('namespace', 'orphan/main')",
+    );
+    db.close();
+    writeFileSync(join(dir, ".grove", "api-key"), "grv_stale\n", "utf8");
+  });
+
+  afterEach(() => cleanup(dir));
+
+  it("refuses and leaves SQLite namespace unchanged", async () => {
+    await expect(handleMigrate([], join(dir, ".grove"))).rejects.toThrow(
+      "incomplete prior migration",
+    );
+    // Verify the orphan was NOT cleared (DB unchanged).
+    const db = initSqliteDb(join(dir, ".grove", "grove.db"));
+    expect(readStoreNamespace(db)).toBe("orphan/main");
+    db.close();
+    // Stale file still there for operator to inspect.
+    expect(existsSync(join(dir, ".grove", "api-key"))).toBe(true);
+  });
+});
+
+describe("handleMigrate: rollback fails closed when server-keys version is unsupported", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await createLegacyGrove();
+    await handleMigrate([], join(dir, ".grove"));
+    // Tamper with server-keys.yaml: bump to a future version.
+    const skPath = join(dir, ".grove", "server-keys.yaml");
+    const tampered = readFileSync(skPath, "utf8").replace("version: 1", "version: 2");
+    writeFileSync(skPath, tampered, "utf8");
+  });
+
+  afterEach(() => cleanup(dir));
+
+  it("preserves inverse-plan.json when rollback fails", async () => {
+    await expect(handleMigrate(["--rollback"], join(dir, ".grove"))).rejects.toThrow("incomplete");
+    // Inverse plan must be preserved so operator can retry rollback.
+    expect(existsSync(join(dir, ".grove", "migrations", "inverse-plan.json"))).toBe(true);
+  });
+});
+
 describe("handleMigrate: --rollback rejects corrupted inverse-plan", () => {
   let dir: string;
 

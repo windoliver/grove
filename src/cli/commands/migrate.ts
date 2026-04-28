@@ -166,13 +166,39 @@ export async function handleMigrate(
 
   const db = initSqliteDb(dbPath);
   try {
-    // Recovery: if project-id is absent but the SQLite namespace is non-default,
-    // a previous migration died after writeStoreNamespace but before writing
-    // project-id. The non-default value is NOT a legitimate previous namespace —
-    // only `grove migrate` ever writes to project_settings on a legacy DB. Clear
-    // it so buildPlan sees the true baseline ("default"), preventing rollback
-    // from restoring to the orphaned namespace.
+    // Run ALL preconditions up-front before mutating anything. The order
+    // matters: detect partial-migration state (orphan + leftover files)
+    // first, refuse if files-only conflict, and only then clear an orphan
+    // namespace if the rest of the setup is clean. This prevents the DB
+    // from being mutated when applyMigration is going to refuse anyway.
     const orphan = readStoreNamespace(db);
+    const apiKeyExists = existsSync(join(groveDir, CLIENT_KEY_FILE));
+    const namespaceFileExists = existsSync(join(groveDir, NAMESPACE_FILE));
+
+    if (orphan !== "default" && (apiKeyExists || namespaceFileExists)) {
+      throw new Error(
+        "grove migrate: detected incomplete prior migration (orphaned SQLite namespace " +
+          `'${orphan}' plus leftover credential files). Inspect .grove/api-key, ` +
+          ".grove/namespace, and the project_settings row, remove them manually, " +
+          "then re-run.",
+      );
+    }
+    if (apiKeyExists) {
+      throw new Error(
+        "grove migrate: refusing to overwrite existing .grove/api-key. " +
+          "Investigate and remove it manually if this grove is truly a legacy install.",
+      );
+    }
+    if (namespaceFileExists) {
+      throw new Error(
+        "grove migrate: refusing to overwrite existing .grove/namespace. " +
+          "Investigate and remove it manually if this grove is truly a legacy install.",
+      );
+    }
+
+    // Pure orphan with no leftover files: a previous run died between
+    // writeStoreNamespace and writeClientKey. Safe to clear because no
+    // migration-owned artifacts on disk reference this namespace.
     if (orphan !== "default") {
       console.warn(
         `grove migrate: detected orphaned namespace '${orphan}' from a previous incomplete run; resetting before re-planning.`,
@@ -228,17 +254,9 @@ function printPlan(plan: MigrationPlan): void {
 // ---------------------------------------------------------------------------
 
 function applyMigration(plan: MigrationPlan, groveDir: string, db: Database): void {
-  // Refuse to clobber existing credential files. A legitimate legacy install
-  // has none of these — if they exist, an operator may have manually placed
-  // them, and we must not overwrite (or have them deleted by rollback).
-  for (const name of [CLIENT_KEY_FILE, NAMESPACE_FILE]) {
-    if (existsSync(join(groveDir, name))) {
-      throw new Error(
-        `grove migrate: refusing to overwrite existing .grove/${name}. ` +
-          `Investigate and remove it manually if this grove is truly a legacy install.`,
-      );
-    }
-  }
+  // Preconditions (clobber checks, orphan recovery) are enforced in
+  // handleMigrate before this function runs. By this point we own writes
+  // to api-key, namespace, project-id, and the project_settings row.
 
   // Order matters: project-id is written LAST as the "commit marker" — its
   // absence is the fresh-install guard's signal that migration may safely
@@ -326,8 +344,8 @@ function cleanupPartial(
   }
   if (serverKey !== undefined) {
     try {
-      const remaining = removeServerKey(groveDir, serverKey);
-      if (remaining === 0) {
+      const result = removeServerKey(groveDir, serverKey);
+      if (result.registryFound && result.removed && result.remaining === 0) {
         rmSync(join(groveDir, SERVER_KEYS_FILE), { force: true });
       }
     } catch {
@@ -432,59 +450,89 @@ async function executeRollback(groveDir: string, dbPath: string): Promise<void> 
   console.log(`  namespace was:  ${plan.namespace}`);
   console.log(`  reverting to:   ${plan.previousNamespace}`);
 
-  // Remove migration-owned credential files. The allowlist + basename check
-  // prevents a tampered inverse-plan from deleting unrelated entries (e.g.
-  // grove.db, path-traversal targets outside .grove/).
+  // Collect failures rather than swallowing them. Rollback must fail closed:
+  // if any expected mutation does not succeed (or cannot be verified as
+  // already done), preserve inverse-plan.json so the operator can retry.
+  const failures: string[] = [];
+
+  // Remove migration-owned credential files. Allowlist + basename check
+  // prevents a tampered inverse-plan from deleting unrelated entries.
   for (const file of plan.filesCreated) {
     if (!ALLOWED_FILES.has(file)) {
-      console.warn(`  warning: skipping unrecognized entry '${file}' (not in allowlist)`);
+      failures.push(`unrecognized entry '${file}' (not in allowlist)`);
       continue;
     }
     if (file.includes("/") || file.includes("\\") || file === "." || file === "..") {
-      console.warn(`  warning: skipping suspicious entry '${file}'`);
+      failures.push(`suspicious entry '${file}'`);
       continue;
     }
     const filePath = join(groveDir, file);
     try {
       rmSync(filePath, { force: true });
-      console.log(`  removed: .grove/${file}`);
+      // Verify the file is gone; rmSync with force doesn't throw on ENOENT,
+      // but a permission/IO error elsewhere could leave it behind.
+      if (existsSync(filePath)) {
+        failures.push(`.grove/${file} still present after removal attempt`);
+      } else {
+        console.log(`  removed: .grove/${file}`);
+      }
     } catch (err) {
-      console.warn(`  warning: could not remove .grove/${file}: ${(err as Error).message}`);
+      failures.push(`could not remove .grove/${file}: ${(err as Error).message}`);
     }
   }
 
   // Surgical removal of OUR key from server-keys.yaml — preserves any other
   // entries an operator may have added. Delete the file only if empty.
   try {
-    const remaining = removeServerKey(groveDir, plan.apiKey);
-    if (remaining === 0) {
-      rmSync(join(groveDir, SERVER_KEYS_FILE), { force: true });
-      console.log(`  removed: .grove/${SERVER_KEYS_FILE} (empty after key removal)`);
+    const result = removeServerKey(groveDir, plan.apiKey);
+    if (result.registryFound && result.removed) {
+      if (result.remaining === 0) {
+        rmSync(join(groveDir, SERVER_KEYS_FILE), { force: true });
+        console.log(`  removed: .grove/${SERVER_KEYS_FILE} (empty after key removal)`);
+      } else {
+        console.log(
+          `  removed migrated key from .grove/${SERVER_KEYS_FILE} (${result.remaining} keys left)`,
+        );
+      }
+    } else if (!result.registryFound) {
+      // server-keys.yaml absent — already-rolled-back or never written.
+      console.log(`  .grove/${SERVER_KEYS_FILE} absent (skipping)`);
     } else {
-      console.log(
-        `  removed migrated key from .grove/${SERVER_KEYS_FILE} (${remaining} keys left)`,
-      );
+      // Registry exists but our key is not in it — treat as already removed.
+      console.log(`  migrated key already absent from .grove/${SERVER_KEYS_FILE} (skipping)`);
     }
   } catch (err) {
-    console.warn(
-      `  warning: could not surgically remove key from .grove/${SERVER_KEYS_FILE}: ${(err as Error).message}`,
+    failures.push(
+      `could not remove migrated key from .grove/${SERVER_KEYS_FILE}: ${(err as Error).message}`,
     );
   }
 
   // Restore previous namespace in the SQLite store.
   const db = initSqliteDb(dbPath);
   try {
-    if (plan.previousNamespace === "default") {
-      // No explicit namespace was set before; remove the row.
-      db.run("DELETE FROM project_settings WHERE key = 'namespace'");
-    } else {
-      writeStoreNamespace(db, plan.previousNamespace);
+    try {
+      if (plan.previousNamespace === "default") {
+        db.run("DELETE FROM project_settings WHERE key = 'namespace'");
+      } else {
+        writeStoreNamespace(db, plan.previousNamespace);
+      }
+    } catch (err) {
+      failures.push(`could not restore SQLite namespace: ${(err as Error).message}`);
     }
   } finally {
     db.close();
   }
 
-  // Remove inverse-plan.json so rollback is idempotent.
+  if (failures.length > 0) {
+    // Preserve inverse-plan.json so the operator can retry rollback.
+    throw new Error(
+      `grove migrate --rollback: incomplete (${failures.length} failure${failures.length === 1 ? "" : "s"}). ` +
+        `Inverse plan retained at .grove/${MIGRATIONS_DIR}/${INVERSE_PLAN_FILE}. Failures:\n  - ` +
+        failures.join("\n  - "),
+    );
+  }
+
+  // Remove inverse-plan.json only on full success so rollback is idempotent.
   rmSync(inversePlanPath, { force: true });
 
   console.log("\nRollback complete.");
