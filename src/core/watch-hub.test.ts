@@ -86,4 +86,29 @@ describe("WatchHub ring buffer", () => {
     expect(buffered.length).toBe(3);
     expect(buffered.map((e) => e.rv)).toEqual([3n, 4n, 5n]);
   });
+
+  test("evicts events older than maxAgeMsPerKey", () => {
+    let clock = 1_000_000;
+    const hub = new WatchHub({
+      maxEventsPerKey: 1024,
+      maxAgeMsPerKey: 1_000,
+      now: () => clock,
+    });
+    hub.recordWrite({
+      kind: "Contribution",
+      namespace: "ns/wt",
+      op: "ADDED",
+      entity: contributionToEntity(fixtureContribution("cid-old"), "ns/wt"),
+    });
+    clock += 5_000;
+    hub.recordWrite({
+      kind: "Contribution",
+      namespace: "ns/wt",
+      op: "ADDED",
+      entity: contributionToEntity(fixtureContribution("cid-new"), "ns/wt"),
+    });
+    const buffered = hub.snapshotRing("ns/wt", "Contribution");
+    expect(buffered.length).toBe(1);
+    expect(buffered[0]?.entity.id).toBe("cid-new");
+  });
 });
