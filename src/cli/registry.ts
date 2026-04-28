@@ -43,6 +43,11 @@ export const COMMANDS: readonly CommandMeta[] = [
     ],
   },
   {
+    name: "migrate",
+    description: "Migrate legacy grove to namespaced identity",
+    flags: ["dry-run", "rollback", "grove", "help"],
+  },
+  {
     name: "up",
     description: "Start all grove services and TUI",
     flags: ["headless", "no-tui", "grove", "build", "nexus-source", "help"],

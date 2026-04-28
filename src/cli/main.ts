@@ -369,6 +369,15 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       },
     },
     {
+      name: "migrate",
+      description: "Migrate legacy grove to namespaced identity",
+      needsStore: false,
+      handler: async (args) => {
+        const { handleMigrate } = await import("./commands/migrate.js");
+        await handleMigrate(args, groveOverride);
+      },
+    },
+    {
       name: "up",
       description: "Start all grove services and TUI",
       needsStore: false,
@@ -537,6 +546,7 @@ function printUsage(): void {
 Getting Started:
   grove                                Launch TUI (default)
   grove init [--preset <name>] [name]  Create a new grove
+  grove migrate [--dry-run|--rollback] Migrate legacy grove to namespaced identity
   grove up [--headless] [--no-tui]     Start all services and TUI
   grove down                           Stop all services
 

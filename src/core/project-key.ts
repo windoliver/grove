@@ -115,21 +115,89 @@ export function readNamespace(groveDir: string): string | undefined {
   }
 }
 
-/** Append a key → namespace entry to `<groveDir>/server-keys.yaml`. */
+/**
+ * Strict-parse `<groveDir>/server-keys.yaml`.
+ *
+ * Returns `null` if the file does not exist. Throws on any other failure
+ * mode (unparseable YAML, non-object root, unsupported version, missing
+ * `keys` map). Callers must NEVER fall back to an empty registry on
+ * failure — doing so would silently overwrite forward-version files that
+ * may carry credentials this code base does not understand.
+ */
+export function parseServerKeys(groveDir: string): ServerKeysFile | null {
+  const filePath = join(groveDir, SERVER_KEYS_FILE);
+  let raw: string;
+  try {
+    raw = readFileSync(filePath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+  let parsed: unknown;
+  try {
+    parsed = parseYaml(raw);
+  } catch (err) {
+    throw new Error(`server-keys.yaml is not valid YAML: ${(err as Error).message}`);
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error("server-keys.yaml is not a YAML object");
+  }
+  const candidate = parsed as { version?: unknown; keys?: unknown };
+  if (candidate.version !== 1) {
+    throw new Error(
+      `server-keys.yaml has unsupported version=${String(candidate.version)}; refusing to mutate`,
+    );
+  }
+  if (typeof candidate.keys !== "object" || candidate.keys === null) {
+    throw new Error("server-keys.yaml is missing the 'keys' map; refusing to mutate");
+  }
+  return { version: 1, keys: candidate.keys as ServerKeysFile["keys"] };
+}
+
+/**
+ * Append a key → namespace entry to `<groveDir>/server-keys.yaml`.
+ *
+ * Strict: throws if an existing file is not a recognized version-1
+ * registry (preserves forward-version data; never silently clobbers).
+ */
 export function appendServerKey(groveDir: string, key: string, namespace: string): void {
   const filePath = join(groveDir, SERVER_KEYS_FILE);
-  let existing: ServerKeysFile = { version: 1, keys: {} };
-  try {
-    const raw = readFileSync(filePath, "utf8");
-    const parsed = parseYaml(raw) as ServerKeysFile;
-    if (parsed?.version === 1 && parsed.keys) {
-      existing = parsed;
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-  }
+  const existing = parseServerKeys(groveDir) ?? { version: 1 as const, keys: {} };
   existing.keys[key] = { namespace, createdAt: new Date().toISOString() };
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   writeFileSync(tmp, stringifyYaml(existing), { encoding: "utf8", mode: 0o600 });
   renameSync(tmp, filePath);
+}
+
+export interface RemoveServerKeyResult {
+  /** True iff a parseable version-1 registry was found on disk. */
+  readonly registryFound: boolean;
+  /** True iff the key was present and has now been removed. */
+  readonly removed: boolean;
+  /** Remaining key count after removal. 0 when registry absent. */
+  readonly remaining: number;
+}
+
+/**
+ * Remove a single key from `<groveDir>/server-keys.yaml`.
+ *
+ * Strict parse: throws if the file exists but is not a recognized
+ * version-1 registry (so we never silently treat a forward-version file as
+ * empty and let callers delete it). The returned result distinguishes the
+ * three cases: registry absent, key already absent, key removed.
+ */
+export function removeServerKey(groveDir: string, key: string): RemoveServerKeyResult {
+  const registry = parseServerKeys(groveDir);
+  if (registry === null) {
+    return { registryFound: false, removed: false, remaining: 0 };
+  }
+  if (!(key in registry.keys)) {
+    return { registryFound: true, removed: false, remaining: Object.keys(registry.keys).length };
+  }
+  delete registry.keys[key];
+  const filePath = join(groveDir, SERVER_KEYS_FILE);
+  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, stringifyYaml(registry), { encoding: "utf8", mode: 0o600 });
+  renameSync(tmp, filePath);
+  return { registryFound: true, removed: true, remaining: Object.keys(registry.keys).length };
 }
