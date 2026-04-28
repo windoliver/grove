@@ -262,3 +262,169 @@ describe("handleMigrate: --rollback", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Round-2 hardening tests
+// ---------------------------------------------------------------------------
+
+describe("handleMigrate: --dry-run --rollback rejected", () => {
+  it("rejects both flags at parse time", () => {
+    expect(() => parseMigrateArgs(["--dry-run", "--rollback"])).toThrow("mutually exclusive");
+  });
+});
+
+describe("handleMigrate: refuses to clobber existing credential files", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await createLegacyGrove();
+  });
+
+  afterEach(() => cleanup(dir));
+
+  it("refuses if api-key already exists", async () => {
+    writeFileSync(join(dir, ".grove", "api-key"), "grv_preexisting\n", "utf8");
+    await expect(handleMigrate([], join(dir, ".grove"))).rejects.toThrow(
+      "refusing to overwrite existing .grove/api-key",
+    );
+    // No project-id should have been written.
+    expect(existsSync(join(dir, ".grove", "project-id"))).toBe(false);
+  });
+
+  it("refuses if namespace file already exists", async () => {
+    writeFileSync(join(dir, ".grove", "namespace"), "manual/ns\n", "utf8");
+    await expect(handleMigrate([], join(dir, ".grove"))).rejects.toThrow(
+      "refusing to overwrite existing .grove/namespace",
+    );
+  });
+});
+
+describe("handleMigrate: refuses on missing grove.db", () => {
+  it("errors with clear message when DB is missing", async () => {
+    const dir = join(
+      tmpdir(),
+      `grove-migrate-missingdb-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    mkdirSync(join(dir, ".grove"), { recursive: true });
+    writeFileSync(join(dir, ".grove", "grove.json"), "{}", "utf8");
+    try {
+      await expect(handleMigrate([], join(dir, ".grove"))).rejects.toThrow("not found");
+      // Migration must not have stamped identity onto a non-existent DB.
+      expect(existsSync(join(dir, ".grove", "project-id"))).toBe(false);
+      expect(existsSync(join(dir, ".grove", "grove.db"))).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("handleMigrate: orphaned namespace recovery", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await createLegacyGrove();
+    // Simulate a crashed previous run: SQLite has a non-default namespace
+    // but no project-id was ever written.
+    const db = initSqliteDb(join(dir, ".grove", "grove.db"));
+    db.run(
+      "INSERT OR REPLACE INTO project_settings (key, value) VALUES ('namespace', 'orphan-uuid/main')",
+    );
+    db.close();
+  });
+
+  afterEach(() => cleanup(dir));
+
+  it("clears orphan namespace and the new inverse-plan rolls back to 'default'", async () => {
+    await handleMigrate([], join(dir, ".grove"));
+    const planPath = join(dir, ".grove", "migrations", "inverse-plan.json");
+    const plan = JSON.parse(readFileSync(planPath, "utf8"));
+    expect(plan.previousNamespace).toBe("default");
+    expect(plan.namespace).not.toBe("orphan-uuid/main");
+
+    // Rollback should restore to default, NOT to the orphan value.
+    await handleMigrate(["--rollback"], join(dir, ".grove"));
+    const db = initSqliteDb(join(dir, ".grove", "grove.db"));
+    const ns = readStoreNamespace(db);
+    db.close();
+    expect(ns).toBe("default");
+  });
+});
+
+describe("handleMigrate: surgical server-keys.yaml rollback", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await createLegacyGrove();
+  });
+
+  afterEach(() => cleanup(dir));
+
+  it("rollback removes only the migrated key, preserving other entries", async () => {
+    // Pre-seed server-keys.yaml with an unrelated entry from a different worktree.
+    const serverKeysPath = join(dir, ".grove", "server-keys.yaml");
+    writeFileSync(
+      serverKeysPath,
+      [
+        "version: 1",
+        "keys:",
+        "  grv_other_worktree_key:",
+        "    namespace: other-uuid/branch-a",
+        "    createdAt: 2026-01-01T00:00:00Z",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    await handleMigrate([], join(dir, ".grove"));
+    // Both keys present after migration.
+    const afterMigrate = readFileSync(serverKeysPath, "utf8");
+    expect(afterMigrate).toContain("grv_other_worktree_key");
+
+    await handleMigrate(["--rollback"], join(dir, ".grove"));
+    // File still exists; only our key was removed.
+    expect(existsSync(serverKeysPath)).toBe(true);
+    const afterRollback = readFileSync(serverKeysPath, "utf8");
+    expect(afterRollback).toContain("grv_other_worktree_key");
+    expect(afterRollback).not.toContain("/main");
+  });
+
+  it("rollback deletes server-keys.yaml when migrated key was the only entry", async () => {
+    await handleMigrate([], join(dir, ".grove"));
+    const serverKeysPath = join(dir, ".grove", "server-keys.yaml");
+    expect(existsSync(serverKeysPath)).toBe(true);
+
+    await handleMigrate(["--rollback"], join(dir, ".grove"));
+    expect(existsSync(serverKeysPath)).toBe(false);
+  });
+});
+
+describe("handleMigrate: --rollback rejects corrupted inverse-plan", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await createLegacyGrove();
+    await handleMigrate([], join(dir, ".grove"));
+  });
+
+  afterEach(() => cleanup(dir));
+
+  it("rejects path-traversal entries in filesCreated", async () => {
+    const planPath = join(dir, ".grove", "migrations", "inverse-plan.json");
+    const tampered = JSON.parse(readFileSync(planPath, "utf8"));
+    tampered.filesCreated = ["../../etc/passwd", ...tampered.filesCreated];
+    writeFileSync(planPath, JSON.stringify(tampered), "utf8");
+    await expect(handleMigrate(["--rollback"], join(dir, ".grove"))).rejects.toThrow(
+      "disallowed file",
+    );
+  });
+
+  it("rejects unsupported version", async () => {
+    const planPath = join(dir, ".grove", "migrations", "inverse-plan.json");
+    const tampered = JSON.parse(readFileSync(planPath, "utf8"));
+    tampered.version = 999;
+    writeFileSync(planPath, JSON.stringify(tampered), "utf8");
+    await expect(handleMigrate(["--rollback"], join(dir, ".grove"))).rejects.toThrow(
+      "unsupported inverse-plan version",
+    );
+  });
+});

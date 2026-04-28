@@ -18,7 +18,11 @@ import { parseArgs } from "node:util";
 import { generateProjectId, readProjectId, writeProjectId } from "../../core/project-id.js";
 import {
   appendServerKey,
+  CLIENT_KEY_FILE,
   generateApiKey,
+  NAMESPACE_FILE,
+  removeServerKey,
+  SERVER_KEYS_FILE,
   writeClientKey,
   writeNamespace,
 } from "../../core/project-key.js";
@@ -29,8 +33,12 @@ import { resolveGroveDir } from "../utils/grove-dir.js";
  * Files the migration is allowed to create or remove inside the grove dir.
  * Used as a whitelist for rollback to prevent a tampered inverse-plan.json
  * from deleting unrelated files (e.g. grove.db, grove.json).
+ *
+ * Note: server-keys.yaml is intentionally absent — rollback removes only
+ * the migrated key from it via removeServerKey, never the whole file
+ * (other worktrees may have entries there).
  */
-const ALLOWED_FILES = new Set(["project-id", "api-key", "server-keys.yaml", "namespace"]);
+const ALLOWED_FILES = new Set(["project-id", "api-key", "namespace"]);
 
 // ---------------------------------------------------------------------------
 // Types
@@ -61,6 +69,12 @@ interface InversePlan {
   readonly previousNamespace: string;
   readonly contributionCount: number;
   readonly claimCount: number;
+  /**
+   * Bearer token added to server-keys.yaml by this migration. Recorded so
+   * rollback can surgically remove only this key — preserving any other
+   * keys an operator may have added — instead of deleting the whole file.
+   */
+  readonly apiKey: string;
 }
 
 const MIGRATIONS_DIR = "migrations";
@@ -84,9 +98,16 @@ export function parseMigrateArgs(args: readonly string[]): MigrateOptions {
     strict: true,
   });
 
+  const dryRun = (values["dry-run"] as boolean) ?? false;
+  const rollback = (values.rollback as boolean) ?? false;
+  if (dryRun && rollback) {
+    throw new Error(
+      "grove migrate: --dry-run and --rollback are mutually exclusive (rollback is destructive).",
+    );
+  }
   return {
-    dryRun: (values["dry-run"] as boolean) ?? false,
-    rollback: (values.rollback as boolean) ?? false,
+    dryRun,
+    rollback,
     cwd: process.cwd(),
     groveOverride: values.grove as string | undefined,
   };
@@ -145,6 +166,20 @@ export async function handleMigrate(
 
   const db = initSqliteDb(dbPath);
   try {
+    // Recovery: if project-id is absent but the SQLite namespace is non-default,
+    // a previous migration died after writeStoreNamespace but before writing
+    // project-id. The non-default value is NOT a legitimate previous namespace —
+    // only `grove migrate` ever writes to project_settings on a legacy DB. Clear
+    // it so buildPlan sees the true baseline ("default"), preventing rollback
+    // from restoring to the orphaned namespace.
+    const orphan = readStoreNamespace(db);
+    if (orphan !== "default") {
+      console.warn(
+        `grove migrate: detected orphaned namespace '${orphan}' from a previous incomplete run; resetting before re-planning.`,
+      );
+      db.run("DELETE FROM project_settings WHERE key = 'namespace'");
+    }
+
     const plan = buildPlan(db);
     printPlan(plan);
     applyMigration(plan, groveDir, db);
@@ -193,6 +228,18 @@ function printPlan(plan: MigrationPlan): void {
 // ---------------------------------------------------------------------------
 
 function applyMigration(plan: MigrationPlan, groveDir: string, db: Database): void {
+  // Refuse to clobber existing credential files. A legitimate legacy install
+  // has none of these — if they exist, an operator may have manually placed
+  // them, and we must not overwrite (or have them deleted by rollback).
+  for (const name of [CLIENT_KEY_FILE, NAMESPACE_FILE]) {
+    if (existsSync(join(groveDir, name))) {
+      throw new Error(
+        `grove migrate: refusing to overwrite existing .grove/${name}. ` +
+          `Investigate and remove it manually if this grove is truly a legacy install.`,
+      );
+    }
+  }
+
   // Order matters: project-id is written LAST as the "commit marker" — its
   // absence is the fresh-install guard's signal that migration may safely
   // retry. If anything before fails, we roll back partial state and the
@@ -201,22 +248,27 @@ function applyMigration(plan: MigrationPlan, groveDir: string, db: Database): vo
   const migrationsDir = join(groveDir, MIGRATIONS_DIR);
   const inversePlanPath = join(migrationsDir, INVERSE_PLAN_FILE);
   let dbNamespaceWritten = false;
+  let serverKeyAppended = false;
 
   try {
     // 1. SQLite store namespace (idempotent via INSERT OR REPLACE).
     writeStoreNamespace(db, plan.namespace);
     dbNamespaceWritten = true;
 
-    // 2. Credential files.
+    // 2. Credential files. server-keys.yaml may already exist with unrelated
+    //    keys (e.g. another worktree's registration); appendServerKey
+    //    preserves them. Rollback removes only OUR key, never the file.
     writeClientKey(groveDir, plan.apiKey);
     filesCreated.push("api-key");
     appendServerKey(groveDir, plan.apiKey, plan.namespace);
-    filesCreated.push("server-keys.yaml");
+    serverKeyAppended = true;
     writeNamespace(groveDir, plan.namespace);
     filesCreated.push("namespace");
 
     // 3. Inverse plan (must include project-id even though we write it last,
-    //    so rollback after a successful migration removes it).
+    //    so rollback after a successful migration removes it). server-keys.yaml
+    //    is intentionally NOT in filesCreated — rollback removes our key
+    //    surgically via apiKey.
     mkdirSync(migrationsDir, { recursive: true });
     const inversePlan: InversePlan = {
       type: "namespace-migration",
@@ -227,6 +279,7 @@ function applyMigration(plan: MigrationPlan, groveDir: string, db: Database): vo
       previousNamespace: plan.previousNamespace,
       contributionCount: plan.contributionCount,
       claimCount: plan.claimCount,
+      apiKey: plan.apiKey,
     };
     writeFileSync(inversePlanPath, `${JSON.stringify(inversePlan, null, 2)}\n`, {
       encoding: "utf8",
@@ -237,7 +290,14 @@ function applyMigration(plan: MigrationPlan, groveDir: string, db: Database): vo
     //    runs hit the fresh-install guard and skip.
     writeProjectId(groveDir, plan.projectId);
   } catch (err) {
-    cleanupPartial(groveDir, db, filesCreated, dbNamespaceWritten, plan.previousNamespace);
+    cleanupPartial(
+      groveDir,
+      db,
+      filesCreated,
+      dbNamespaceWritten,
+      plan.previousNamespace,
+      serverKeyAppended ? plan.apiKey : undefined,
+    );
     rmSync(inversePlanPath, { force: true });
     throw err;
   }
@@ -254,11 +314,22 @@ function cleanupPartial(
   filesCreated: readonly string[],
   dbNamespaceWritten: boolean,
   previousNamespace: string,
+  serverKey: string | undefined,
 ): void {
   for (const name of filesCreated) {
     if (!ALLOWED_FILES.has(name)) continue;
     try {
       rmSync(join(groveDir, name), { force: true });
+    } catch {
+      /* best-effort */
+    }
+  }
+  if (serverKey !== undefined) {
+    try {
+      const remaining = removeServerKey(groveDir, serverKey);
+      if (remaining === 0) {
+        rmSync(join(groveDir, SERVER_KEYS_FILE), { force: true });
+      }
     } catch {
       /* best-effort */
     }
@@ -324,6 +395,9 @@ function parseInversePlan(raw: string): InversePlan {
       );
     }
   }
+  if (typeof p.apiKey !== "string" || p.apiKey.length === 0) {
+    throw new Error("grove migrate --rollback: inverse-plan.json missing apiKey");
+  }
   return {
     type: "namespace-migration",
     version: 1,
@@ -333,6 +407,7 @@ function parseInversePlan(raw: string): InversePlan {
     previousNamespace: p.previousNamespace,
     contributionCount: typeof p.contributionCount === "number" ? p.contributionCount : 0,
     claimCount: typeof p.claimCount === "number" ? p.claimCount : 0,
+    apiKey: p.apiKey,
   };
 }
 
@@ -357,9 +432,9 @@ async function executeRollback(groveDir: string, dbPath: string): Promise<void> 
   console.log(`  namespace was:  ${plan.namespace}`);
   console.log(`  reverting to:   ${plan.previousNamespace}`);
 
-  // Remove credential files. The whitelist + basename check prevents a
-  // tampered inverse-plan from deleting unrelated entries (e.g. grove.db,
-  // path-traversal targets outside .grove/).
+  // Remove migration-owned credential files. The allowlist + basename check
+  // prevents a tampered inverse-plan from deleting unrelated entries (e.g.
+  // grove.db, path-traversal targets outside .grove/).
   for (const file of plan.filesCreated) {
     if (!ALLOWED_FILES.has(file)) {
       console.warn(`  warning: skipping unrecognized entry '${file}' (not in allowlist)`);
@@ -376,6 +451,24 @@ async function executeRollback(groveDir: string, dbPath: string): Promise<void> 
     } catch (err) {
       console.warn(`  warning: could not remove .grove/${file}: ${(err as Error).message}`);
     }
+  }
+
+  // Surgical removal of OUR key from server-keys.yaml — preserves any other
+  // entries an operator may have added. Delete the file only if empty.
+  try {
+    const remaining = removeServerKey(groveDir, plan.apiKey);
+    if (remaining === 0) {
+      rmSync(join(groveDir, SERVER_KEYS_FILE), { force: true });
+      console.log(`  removed: .grove/${SERVER_KEYS_FILE} (empty after key removal)`);
+    } else {
+      console.log(
+        `  removed migrated key from .grove/${SERVER_KEYS_FILE} (${remaining} keys left)`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `  warning: could not surgically remove key from .grove/${SERVER_KEYS_FILE}: ${(err as Error).message}`,
+    );
   }
 
   // Restore previous namespace in the SQLite store.

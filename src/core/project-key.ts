@@ -133,3 +133,29 @@ export function appendServerKey(groveDir: string, key: string, namespace: string
   writeFileSync(tmp, stringifyYaml(existing), { encoding: "utf8", mode: 0o600 });
   renameSync(tmp, filePath);
 }
+
+/**
+ * Remove a single key from `<groveDir>/server-keys.yaml`.
+ *
+ * Returns the number of remaining keys after removal (so callers can decide
+ * whether to delete the file entirely). If the file does not exist, returns
+ * 0. Safe to call when the key is not present — it is a no-op in that case.
+ */
+export function removeServerKey(groveDir: string, key: string): number {
+  const filePath = join(groveDir, SERVER_KEYS_FILE);
+  let existing: ServerKeysFile;
+  try {
+    const raw = readFileSync(filePath, "utf8");
+    const parsed = parseYaml(raw) as ServerKeysFile;
+    existing = parsed?.version === 1 && parsed.keys ? parsed : { version: 1, keys: {} };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw err;
+  }
+  if (!(key in existing.keys)) return Object.keys(existing.keys).length;
+  delete existing.keys[key];
+  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, stringifyYaml(existing), { encoding: "utf8", mode: 0o600 });
+  renameSync(tmp, filePath);
+  return Object.keys(existing.keys).length;
+}
