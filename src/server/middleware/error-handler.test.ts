@@ -12,6 +12,7 @@ import {
   RetryExhaustedError,
   StateConflictError,
 } from "../../core/errors.js";
+import { HandoffStatus, InvalidTransitionError } from "../../core/handoff.js";
 import { handleError } from "./error-handler.js";
 
 // biome-ignore lint/suspicious/noExplicitAny: test file — JSON responses are dynamically shaped
@@ -145,6 +146,18 @@ describe("error handler", () => {
     expect(res.status).toBe(409);
     const data = (await res.json()) as Json;
     expect(data.error.code).toBe("STATE_CONFLICT");
+  });
+
+  it("maps handoff InvalidTransitionError to 409", async () => {
+    const app = appThatThrows(
+      new InvalidTransitionError("handoff-1", HandoffStatus.Replied, HandoffStatus.Delivered),
+    );
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(409);
+    const data = (await res.json()) as Json;
+    expect(data.error.code).toBe("STATE_CONFLICT");
+    expect(data.error.message).toContain("Invalid handoff transition");
   });
 
   it("maps unknown errors to 500 without leaking details", async () => {

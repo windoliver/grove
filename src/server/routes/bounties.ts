@@ -4,11 +4,30 @@
  * GET /api/bounties — List bounties with optional status/creator filters.
  */
 
+import { zValidator } from "@hono/zod-validator";
 import type { Hono as HonoType } from "hono";
 import { Hono } from "hono";
-import type { BountyStatus } from "../../core/bounty.js";
+import { z } from "zod";
+import { BountyStatus } from "../../core/bounty.js";
 import type { BountyQuery } from "../../core/bounty-store.js";
 import type { ServerEnv } from "../deps.js";
+
+const listQuerySchema = z.object({
+  status: z
+    .enum([
+      BountyStatus.Draft,
+      BountyStatus.Open,
+      BountyStatus.Claimed,
+      BountyStatus.PendingSettlement,
+      BountyStatus.Completed,
+      BountyStatus.Settled,
+      BountyStatus.Expired,
+      BountyStatus.Cancelled,
+    ])
+    .optional(),
+  creatorAgentId: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
 
 // ---------------------------------------------------------------------------
 // Routes
@@ -17,7 +36,7 @@ import type { ServerEnv } from "../deps.js";
 const bounties: HonoType<ServerEnv> = new Hono<ServerEnv>();
 
 /** GET /api/bounties — List bounties. */
-bounties.get("/", async (c) => {
+bounties.get("/", zValidator("query", listQuerySchema), async (c) => {
   const { bountyStore } = c.get("deps");
   if (!bountyStore) {
     return c.json(
@@ -26,14 +45,12 @@ bounties.get("/", async (c) => {
     );
   }
 
-  const status = c.req.query("status");
-  const creatorAgentId = c.req.query("creatorAgentId");
-  const limit = c.req.query("limit");
+  const { status, creatorAgentId, limit } = c.req.valid("query");
 
   const query: BountyQuery = {
-    ...(status ? { status: status as BountyStatus } : {}),
-    ...(creatorAgentId ? { creatorAgentId } : {}),
-    ...(limit ? { limit: Number(limit) } : {}),
+    ...(status !== undefined ? { status } : {}),
+    ...(creatorAgentId !== undefined ? { creatorAgentId } : {}),
+    ...(limit !== undefined ? { limit } : {}),
   };
 
   const results = await bountyStore.listBounties(query);

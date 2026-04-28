@@ -21,8 +21,17 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { HandoffStatus } from "../../src/core/handoff.js";
+import { InMemoryHandoffStore } from "../../src/core/in-memory-handoff-store.js";
+import { createApp } from "../../src/server/app.js";
 import type { TestContext } from "./helpers.js";
-import { createTestContext, postContribution, TEST_AUTH_HEADERS } from "./helpers.js";
+import {
+  createTestContext,
+  postContribution,
+  TEST_AUTH_HEADERS,
+  TEST_KEY,
+  TEST_NAMESPACE,
+} from "./helpers.js";
 
 const FAKE_CID = `blake3:${"0".repeat(64)}`;
 
@@ -259,5 +268,59 @@ describe("routes — /api/bounties", () => {
     expect(res.status).toBe(501);
     const data = (await res.json()) as { error: { code: string } };
     expect(data.error.code).toBe("NOT_CONFIGURED");
+  });
+
+  test("GET / rejects invalid limit before hitting storage", async () => {
+    const res = await ctx.app.request("/api/bounties?limit=-1", {
+      headers: TEST_AUTH_HEADERS,
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
+// ===================================================================
+// 5. Handoffs route (/api/handoffs)
+// ===================================================================
+
+describe("routes — /api/handoffs", () => {
+  let ctx: TestContext;
+  let handoffStore: InMemoryHandoffStore;
+  let app: ReturnType<typeof createApp>;
+
+  beforeEach(async () => {
+    ctx = await createTestContext();
+    handoffStore = new InMemoryHandoffStore();
+    app = createApp({ ...ctx.deps, handoffStore }, new Map([[TEST_KEY, TEST_NAMESPACE]]));
+  });
+  afterEach(async () => {
+    await ctx.cleanup();
+  });
+
+  test("GET / rejects negative limit", async () => {
+    const res = await app.request("/api/handoffs?limit=-1", {
+      headers: TEST_AUTH_HEADERS,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test("POST /:id/delivered returns 409 when the handoff cannot transition", async () => {
+    const handoff = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+    await handoffStore.markDelivered(handoff.handoffId);
+    await handoffStore.markReplied(handoff.handoffId, FAKE_CID);
+
+    const res = await app.request(`/api/handoffs/${handoff.handoffId}/delivered`, {
+      method: "POST",
+      headers: TEST_AUTH_HEADERS,
+    });
+
+    expect(res.status).toBe(409);
+    const data = (await res.json()) as { error: { code: string; message: string } };
+    expect(data.error.code).toBe("STATE_CONFLICT");
+    expect(data.error.message).toContain(HandoffStatus.Replied);
   });
 });
