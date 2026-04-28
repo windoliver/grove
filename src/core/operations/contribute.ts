@@ -9,6 +9,7 @@
 
 import { fireAndForget } from "../../shared/fire-and-forget.js";
 import { pickDefined } from "../../shared/pick-defined.js";
+import { contributionToEntity } from "../entity.js";
 import { type HandoffInput, HandoffStatus, type HandoffStore } from "../handoff.js";
 import { createContribution } from "../manifest.js";
 import {
@@ -1206,9 +1207,17 @@ export async function contributeOperation(
     try {
       deps.onContributionWrite?.();
       deps.onContributionWritten?.(contribution.cid);
+      if (deps.onEntityWrite && deps.namespace) {
+        deps.onEntityWrite({
+          kind: "Contribution",
+          namespace: deps.namespace,
+          op: "ADDED",
+          entity: contributionToEntity(contribution, deps.namespace),
+        });
+      }
     } catch (callbackErr) {
       process.stderr.write(
-        `[grove] Warning: onContributionWrite* callback threw after commit: ${
+        `[grove] Warning: post-commit callback threw after contribution commit: ${
           callbackErr instanceof Error ? callbackErr.message : String(callbackErr)
         }\n`,
       );
