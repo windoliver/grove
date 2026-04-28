@@ -261,6 +261,7 @@ contributions.post("/", async (c) => {
   };
 
   let opDeps = toOperationDeps(serverDeps);
+  opDeps = { ...opDeps, namespace: c.get("namespace") };
 
   // Session-scoped store: when sessionId is present and a factory is wired
   // (Nexus mode), swap the contribution store so writes land at the
