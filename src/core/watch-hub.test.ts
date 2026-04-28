@@ -202,3 +202,16 @@ describe("WatchHub overflow", () => {
     await expect(rejection).rejects.toBeInstanceOf(BufferOverflowError);
   });
 });
+
+describe("WatchHub config", () => {
+  test("exposes bookmarkIntervalMs and perClientOutboxCap from options", () => {
+    const hub = new WatchHub({ bookmarkIntervalMs: 5_000, perClientOutboxCap: 16 });
+    expect(hub.bookmarkIntervalMs).toBe(5_000);
+    expect(hub.perClientOutboxCap).toBe(16);
+  });
+
+  test("defaults bookmarkIntervalMs to 30000", () => {
+    const hub = new WatchHub();
+    expect(hub.bookmarkIntervalMs).toBe(30_000);
+  });
+});
