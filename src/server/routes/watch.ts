@@ -45,6 +45,11 @@ watch.get("/list", zValidator("query", listQuerySchema), async (c) => {
   // list query. Any write that lands during the list has rv > listRv and is
   // therefore guaranteed to be replayed when the watch resumes.
   const listRv = hub.currentRv(namespace, kind as WatchKind);
+  // Test-only widening of the handshake window. See watch.race.test.ts (#292).
+  const delayMs = Number(process.env.GROVE_WATCH_LIST_DELAY_MS);
+  if (Number.isFinite(delayMs) && delayMs > 0) {
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
   const items = await listForKind(deps, namespace, kind as WatchKind);
 
   return c.json({ items, listResourceVersion: String(listRv) });
