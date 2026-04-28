@@ -14,6 +14,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { readSseEvents } from "./sse-test-utils.js";
 import { createTestApp, makeManifestBody, TEST_AUTH_HEADERS } from "./test-helpers.js";
 
 describe("GET /api/list", () => {
@@ -57,5 +58,39 @@ describe("GET /api/list", () => {
     const { app } = createTestApp();
     const res = await app.request("/api/list?kind=Contribution");
     expect([400, 401]).toContain(res.status);
+  });
+});
+
+describe("GET /api/watch", () => {
+  test("streams ADDED events for writes after subscribe", async () => {
+    const { app } = createTestApp();
+    const listRes = await app.request("/api/list?kind=Contribution", {
+      headers: TEST_AUTH_HEADERS,
+    });
+    const list = (await listRes.json()) as { listResourceVersion: string };
+
+    const watchRes = await app.request(
+      `/api/watch?kind=Contribution&resumeFrom=${list.listResourceVersion}`,
+      { headers: TEST_AUTH_HEADERS },
+    );
+    expect(watchRes.status).toBe(200);
+    expect(watchRes.headers.get("content-type")).toMatch(/text\/event-stream/);
+
+    // POST a contribution AFTER opening the watch. Reuse the existing
+    // contribution-POST pattern from watch-wiring.test.ts (T12 commit 8703e68)
+    // / watch.integration.test.ts (T13 commit 2fb87ea).
+    const writePromise = app.request("/api/contributions", {
+      method: "POST",
+      headers: { ...TEST_AUTH_HEADERS, "Content-Type": "application/json" },
+      body: JSON.stringify(makeManifestBody({ summary: "live-1" })),
+    });
+
+    const events = await readSseEvents(watchRes, 1, 2_000);
+    await writePromise;
+
+    expect(events.length).toBeGreaterThanOrEqual(1);
+    expect(events[0]?.event).toBe("ADDED");
+    // Verify the SSE event id equals the rv (a stringified bigint)
+    expect(events[0]?.id).toMatch(/^[0-9]+$/);
   });
 });
