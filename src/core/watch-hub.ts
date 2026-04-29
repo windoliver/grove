@@ -26,6 +26,8 @@ export interface CompactionStats {
 }
 
 interface KeyState {
+  readonly namespace: string;
+  readonly kind: WatchKind;
   counter: bigint;
   ring: WatchEvent[];
   insertedAt: number[];
@@ -55,8 +57,8 @@ export class WatchHub {
   }
 
   recordWrite(event: EntityWriteEvent): bigint {
+    const s = this.getOrCreate(event.namespace, event.kind);
     const key = this.key(event.namespace, event.kind);
-    const s = this.getOrCreate(key);
     s.counter += 1n;
     const watchEvent: WatchEvent = { ...event, rv: s.counter };
     s.ring.push(watchEvent);
@@ -77,7 +79,7 @@ export class WatchHub {
     signal: AbortSignal,
   ): AsyncIterable<WatchEvent> {
     const key = this.key(namespace, kind);
-    const s = this.getOrCreate(key);
+    const s = this.getOrCreate(namespace, kind);
 
     const oldestRv = s.ring.length > 0 ? (s.ring[0] as WatchEvent).rv : 0n;
     // Resume from rv == oldestRv - 1 means "I have everything through oldestRv-1,
@@ -177,14 +179,11 @@ export class WatchHub {
   /** Snapshot of compaction counters across all (ns, kind) keys. */
   getCompactionStats(): readonly CompactionStats[] {
     const out: CompactionStats[] = [];
-    for (const [keyStr, s] of this.state.entries()) {
-      const sep = keyStr.indexOf("\x00");
-      const namespace = keyStr.slice(0, sep);
-      const kind = keyStr.slice(sep + 1) as WatchKind;
+    for (const s of this.state.values()) {
       const oldestRv = s.ring.length > 0 ? (s.ring[0] as WatchEvent).rv : 0n;
       out.push({
-        namespace,
-        kind,
+        namespace: s.namespace,
+        kind: s.kind,
         evictedByAge: s.evictedByAge,
         evictedByCapacity: s.evictedByCapacity,
         currentRingSize: s.ring.length,
@@ -199,10 +198,13 @@ export class WatchHub {
     return `${namespace}\x00${kind}`;
   }
 
-  private getOrCreate(key: string): KeyState {
+  private getOrCreate(namespace: string, kind: WatchKind): KeyState {
+    const key = this.key(namespace, kind);
     let s = this.state.get(key);
     if (!s) {
       s = {
+        namespace,
+        kind,
         counter: 0n,
         ring: [],
         insertedAt: [],

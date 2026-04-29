@@ -84,7 +84,7 @@ describe("WatchHub compaction stats", () => {
     expect(namespaces).toEqual(["ns-a", "ns-b"]);
   });
 
-  test("oldestRv is '0' when ring is empty after full eviction", () => {
+  test("oldestRv tracks the surviving event after age eviction", () => {
     let now = 1_000;
     const hub = new WatchHub({
       maxEventsPerKey: 100,
@@ -96,6 +96,22 @@ describe("WatchHub compaction stats", () => {
     writeOne(hub, "ns", "y"); // triggers age eviction of x; y stays
     expect(hub.getCompactionStats()[0]?.currentRingSize).toBe(1);
     expect(hub.getCompactionStats()[0]?.oldestRv).toBe("2");
+  });
+
+  test("oldestRv reports '0' for a key with no writes", async () => {
+    const hub = new WatchHub({ maxEventsPerKey: 5, maxAgeMsPerKey: 60_000 });
+    const ac = new AbortController();
+    // subscribe creates the key via getOrCreate without writing.
+    const iter = hub.subscribe("ns", "Contribution", 0n, ac.signal);
+    // Abort immediately — we just need the key to exist.
+    ac.abort();
+    // Drain the (already aborted) iterator to release resources.
+    for await (const _ev of iter) break;
+    const stats = hub.getCompactionStats();
+    expect(stats.length).toBe(1);
+    expect(stats[0]?.currentRingSize).toBe(0);
+    expect(stats[0]?.oldestRv).toBe("0");
+    expect(stats[0]?.currentRv).toBe("0");
   });
 
   test("public maxAgeMsPerKey and maxEventsPerKey reflect constructor args", () => {
