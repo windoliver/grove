@@ -15,10 +15,22 @@ export interface WatchHubOptions {
   readonly now?: () => number;
 }
 
+export interface CompactionStats {
+  readonly namespace: string;
+  readonly kind: WatchKind;
+  readonly evictedByAge: number;
+  readonly evictedByCapacity: number;
+  readonly currentRingSize: number;
+  readonly oldestRv: string;
+  readonly currentRv: string;
+}
+
 interface KeyState {
   counter: bigint;
   ring: WatchEvent[];
   insertedAt: number[];
+  evictedByAge: number;
+  evictedByCapacity: number;
 }
 
 const DEFAULT_MAX_EVENTS = 1024;
@@ -28,8 +40,8 @@ const DEFAULT_OUTBOX_CAP = 256;
 
 export class WatchHub {
   private readonly state = new Map<string, KeyState>();
-  private readonly maxEventsPerKey: number;
-  private readonly maxAgeMsPerKey: number;
+  readonly maxEventsPerKey: number;
+  readonly maxAgeMsPerKey: number;
   readonly bookmarkIntervalMs: number;
   readonly perClientOutboxCap: number;
   private readonly now: () => number;
@@ -162,6 +174,27 @@ export class WatchHub {
     return s ? [...s.ring] : [];
   }
 
+  /** Snapshot of compaction counters across all (ns, kind) keys. */
+  getCompactionStats(): readonly CompactionStats[] {
+    const out: CompactionStats[] = [];
+    for (const [keyStr, s] of this.state.entries()) {
+      const sep = keyStr.indexOf("\x00");
+      const namespace = keyStr.slice(0, sep);
+      const kind = keyStr.slice(sep + 1) as WatchKind;
+      const oldestRv = s.ring.length > 0 ? (s.ring[0] as WatchEvent).rv : 0n;
+      out.push({
+        namespace,
+        kind,
+        evictedByAge: s.evictedByAge,
+        evictedByCapacity: s.evictedByCapacity,
+        currentRingSize: s.ring.length,
+        oldestRv: String(oldestRv),
+        currentRv: String(s.counter),
+      });
+    }
+    return out;
+  }
+
   private key(namespace: string, kind: WatchKind): string {
     return `${namespace}\x00${kind}`;
   }
@@ -169,7 +202,13 @@ export class WatchHub {
   private getOrCreate(key: string): KeyState {
     let s = this.state.get(key);
     if (!s) {
-      s = { counter: 0n, ring: [], insertedAt: [] };
+      s = {
+        counter: 0n,
+        ring: [],
+        insertedAt: [],
+        evictedByAge: 0,
+        evictedByCapacity: 0,
+      };
       this.state.set(key, s);
     }
     return s;
@@ -179,11 +218,13 @@ export class WatchHub {
     while (s.ring.length > this.maxEventsPerKey) {
       s.ring.shift();
       s.insertedAt.shift();
+      s.evictedByCapacity += 1;
     }
     const cutoff = this.now() - this.maxAgeMsPerKey;
     while (s.ring.length > 0 && (s.insertedAt[0] ?? 0) < cutoff) {
       s.ring.shift();
       s.insertedAt.shift();
+      s.evictedByAge += 1;
     }
   }
 }
