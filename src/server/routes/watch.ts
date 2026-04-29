@@ -284,6 +284,23 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
   });
 });
 
+/** GET /api/watch/metrics — retention config + per-(ns,kind) compaction stats. */
+watch.get("/watch/metrics", async (c) => {
+  const namespace = c.get("namespace");
+  const hub: WatchHub = c.get("deps").watchHub;
+  const allStats = hub.getCompactionStats();
+  // Filter to caller's namespace so namespaces don't leak each other's
+  // traffic shape. The request is already authenticated by namespaceAuth.
+  const keys = allStats.filter((s) => s.namespace === namespace);
+  return c.json({
+    retention: {
+      maxAgeMs: hub.maxAgeMsPerKey,
+      maxEvents: hub.maxEventsPerKey,
+    },
+    keys,
+  });
+});
+
 async function listForKind(
   deps: ServerDeps,
   namespace: string,
