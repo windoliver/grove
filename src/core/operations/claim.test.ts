@@ -275,3 +275,118 @@ describe("listClaimsOperation", () => {
     if (releasedResult.ok) expect(releasedResult.value.count).toBe(1);
   });
 });
+
+describe("claim → onEntityWrite", () => {
+  let testDeps: TestOperationDeps;
+
+  beforeEach(async () => {
+    testDeps = await createTestOperationDeps();
+  });
+
+  afterEach(async () => {
+    await testDeps.cleanup();
+  });
+
+  test("claimOperation fires ADDED on first claim", async () => {
+    const events: Array<{
+      kind: string;
+      op: string;
+      phase: string;
+      namespace: string;
+    }> = [];
+    const deps: OperationDeps = {
+      ...testDeps.deps,
+      onEntityWrite: (e) =>
+        events.push({
+          kind: e.kind,
+          op: e.op,
+          phase: (e.entity as { status: { phase: string } }).status.phase,
+          namespace: e.namespace,
+        }),
+      namespace: "ns/wt",
+    };
+
+    const result = await claimOperation(
+      { targetRef: "t1", agent: { agentId: "a-1" }, intentSummary: "first" },
+      deps,
+    );
+    expect(result.ok).toBe(true);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      kind: "Claim",
+      op: "ADDED",
+      namespace: "ns/wt",
+    });
+    expect(events[0]?.phase).toBe("active");
+  });
+
+  test("claimOperation suppresses event on heartbeat-like renewal (no phase change)", async () => {
+    const events: Array<{ op: string }> = [];
+    const deps: OperationDeps = {
+      ...testDeps.deps,
+      onEntityWrite: (e) => events.push({ op: e.op }),
+      namespace: "ns/wt",
+    };
+
+    const first = await claimOperation(
+      { targetRef: "t1", agent: { agentId: "a-1" }, intentSummary: "first" },
+      deps,
+    );
+    expect(first.ok).toBe(true);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.op).toBe("ADDED");
+
+    // Renew — same agent, same target, still active. No phase transition,
+    // so no event should fire.
+    const renewed = await claimOperation(
+      { targetRef: "t1", agent: { agentId: "a-1" }, intentSummary: "renewed" },
+      deps,
+    );
+    expect(renewed.ok).toBe(true);
+    expect(events).toHaveLength(1);
+  });
+
+  test("releaseOperation fires MODIFIED with the released phase", async () => {
+    const events: Array<{ op: string; phase: string }> = [];
+    const deps: OperationDeps = {
+      ...testDeps.deps,
+      onEntityWrite: (e) =>
+        events.push({
+          op: e.op,
+          phase: (e.entity as { status: { phase: string } }).status.phase,
+        }),
+      namespace: "ns/wt",
+    };
+
+    const created = await claimOperation(
+      { targetRef: "t1", agent: { agentId: "a-1" }, intentSummary: "first" },
+      deps,
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    events.length = 0; // reset to focus on the release event
+    const released = await releaseOperation(
+      { claimId: created.value.claimId, action: "release" },
+      deps,
+    );
+    expect(released.ok).toBe(true);
+    expect(events.some((e) => e.op === "MODIFIED")).toBe(true);
+    expect(events.some((e) => e.phase === "released")).toBe(true);
+  });
+
+  test("skips onEntityWrite when namespace is missing", async () => {
+    const events: unknown[] = [];
+    const deps: OperationDeps = {
+      ...testDeps.deps,
+      onEntityWrite: (e: unknown) => events.push(e),
+      namespace: undefined, // explicit override of helper's default
+    };
+    const result = await claimOperation(
+      { targetRef: "t1", agent: { agentId: "a-1" }, intentSummary: "first" },
+      deps,
+    );
+    expect(result.ok).toBe(true);
+    expect(events).toHaveLength(0);
+  });
+});

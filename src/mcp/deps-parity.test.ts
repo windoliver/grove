@@ -11,6 +11,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { WatchHub } from "../core/watch-hub.js";
 import { createLocalRuntime, type LocalRuntime } from "../local/runtime.js";
 import type { McpDeps } from "./deps.js";
 
@@ -54,6 +55,7 @@ describe("MCP deps parity with LocalRuntime", () => {
       workspaceBoundary: runtime.groveRoot,
       goalSessionStore: runtime.goalSessionStore,
       handoffStore: runtime.handoffStore,
+      watchHub: new WatchHub(),
     };
 
     expect(deps.goalSessionStore).toBeDefined();
@@ -73,6 +75,7 @@ describe("MCP deps parity with LocalRuntime", () => {
       onContributionWrite: runtime.onContributionWrite,
       workspaceBoundary: runtime.groveRoot,
       goalSessionStore: runtime.goalSessionStore,
+      watchHub: new WatchHub(),
     };
 
     expect(deps.goalSessionStore).toBeDefined();

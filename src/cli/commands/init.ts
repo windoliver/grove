@@ -246,6 +246,7 @@ export async function executeInit(
     }),
   );
 
+  let namespace: string;
   try {
     // Generate namespace key for this worktree (inside rollback-protected block).
     {
@@ -257,7 +258,7 @@ export async function executeInit(
         writeNamespace,
       } = await import("../../core/project-key.js");
       const worktreeName = await detectWorktreeName();
-      const namespace = `${projectId}/${worktreeName}`;
+      namespace = `${projectId}/${worktreeName}`;
       const apiKey = generateApiKey();
       writeClientKey(grovePath, apiKey);
       appendServerKey(grovePath, apiKey, namespace);
@@ -266,8 +267,12 @@ export async function executeInit(
     }
     progress(2, "Initializing database");
     const dbPath = join(grovePath, "grove.db");
-    const { initSqliteDb } = await import("../../local/sqlite-store.js");
+    const { initSqliteDb, writeStoreNamespace } = await import("../../local/sqlite-store.js");
     const db = initSqliteDb(dbPath);
+    // Persist the same namespace into the SQLite store so listEntities()
+    // tags rows with the auth-derived namespace instead of falling back to
+    // "default", matching what the watch route emits via `c.get("namespace")`.
+    writeStoreNamespace(db, namespace);
     // Everything below runs under try/finally so db.close() always fires — a
     // failure writing GROVE.md, grove.json, or seeding must not leak the DB.
     try {

@@ -261,6 +261,14 @@ contributions.post("/", async (c) => {
   };
 
   let opDeps = toOperationDeps(serverDeps);
+  // Inject namespace only for non-session writes (#292). When sessionId
+  // is set, the write lands in the session-scoped store but /api/list
+  // reads the process-global store, so emitting a watch event the lister
+  // can't mirror would violate the list→watch RV invariant. Session-scoped
+  // watch is tracked as a follow-up.
+  if (parsed.sessionId === undefined) {
+    opDeps = { ...opDeps, namespace: c.get("namespace") };
+  }
 
   // Session-scoped store: when sessionId is present and a factory is wired
   // (Nexus mode), swap the contribution store so writes land at the

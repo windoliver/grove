@@ -17,6 +17,12 @@ import type { ServerDeps } from "./deps.js";
  * ServerDeps is a structural subset of OperationDeps — this function
  * selects the fields that operations require, dropping transport-specific
  * dependencies (gossip, topology).
+ *
+ * The `onEntityWrite` hook is wired here to forward Entity-write events
+ * (#287/#292) into the WatchHub on `deps.watchHub`. The per-request
+ * `namespace` field is NOT set here — route handlers must inject it from
+ * the auth context (`c.get("namespace")`) before invoking an operation,
+ * since the watch protocol scopes events per-namespace.
  */
 export function toOperationDeps(deps: ServerDeps): OperationDeps {
   return {
@@ -27,6 +33,20 @@ export function toOperationDeps(deps: ServerDeps): OperationDeps {
     ...(deps.outcomeStore !== undefined ? { outcomeStore: deps.outcomeStore } : {}),
     ...(deps.contract !== undefined ? { contract: deps.contract } : {}),
     ...(deps.idempotencyStore !== undefined ? { idempotencyStore: deps.idempotencyStore } : {}),
+    onEntityWrite: (event) => {
+      deps.watchHub.recordWrite(event);
+      // Cross-process dedupe (#292): record this write so the matching
+      // `entity.changed` envelope (published by the Nexus store at write
+      // time) is suppressed when it lands on the subscriber. Without
+      // this, the same write would record twice — once via the in-process
+      // fast path, once via the bus — and the WatchHub RV would advance
+      // by 2 instead of 1 per logical write.
+      deps.watchSubscriber?.markSeen({
+        kind: event.kind,
+        entityId: event.entity.id,
+        generation: event.entity.metadata.generation,
+      });
+    },
   };
 }
 

@@ -10,6 +10,7 @@
  */
 
 import { join } from "node:path";
+import { claimToEntity, contributionToEntity } from "../core/entity.js";
 import type { GossipService } from "../core/gossip/types.js";
 import { LocalEventBus } from "../core/local-event-bus.js";
 import { readProjectId } from "../core/project-id.js";
@@ -22,9 +23,12 @@ import {
   writeNamespace,
 } from "../core/project-key.js";
 import { TmuxRuntime } from "../core/tmux-runtime.js";
+import type { WatchEntity, WatchKind } from "../core/watch-events.js";
+import { WatchHub } from "../core/watch-hub.js";
 import { HttpGossipTransport } from "../gossip/http-transport.js";
 import { DefaultGossipService } from "../gossip/protocol.js";
 import { createLocalRuntime } from "../local/runtime.js";
+import { NexusWatchSubscriber } from "../nexus/nexus-watch-subscriber.js";
 import { parseGossipSeeds, parsePort } from "../shared/env.js";
 import { createApp } from "./app.js";
 import type { ServerDeps } from "./deps.js";
@@ -202,6 +206,17 @@ if (seedPeers.length > 0) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Watch protocol (#292)
+// ---------------------------------------------------------------------------
+// `watchHub` holds per-(namespace, kind) RV counters and the replay ring.
+// `watchEventBus` is the in-process fan-out channel for `entity.changed`
+// envelopes; the publisher lives inside Nexus stores and the subscriber
+// lives here in the server. Even in pure-local mode we instantiate both
+// so the wiring is uniform — the bus is just idle when nothing publishes.
+const watchHub = new WatchHub();
+const watchEventBus = new LocalEventBus();
+
 if (nexusUrl) {
   const { NexusHttpClient } = await import("../nexus/nexus-http-client.js");
   const { NexusContributionStore } = await import("../nexus/nexus-contribution-store.js");
@@ -209,11 +224,19 @@ if (nexusUrl) {
   const { NexusBountyStore } = await import("../nexus/nexus-bounty-store.js");
   const { NexusOutcomeStore } = await import("../nexus/nexus-outcome-store.js");
   const { NexusCas } = await import("../nexus/nexus-cas.js");
+  const { NexusWatchPublisher } = await import("../nexus/nexus-watch-publisher.js");
 
   const nexusClient = new NexusHttpClient({
     url: nexusUrl,
     ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
   });
+
+  // Publisher fans out `entity.changed` envelopes from store mutations
+  // onto the local event-bus, where the subscriber (instantiated below
+  // after the stores) hydrates them into the WatchHub. This closes the
+  // cross-process loop: writes from MCP / other grove processes that
+  // share the same Nexus VFS reach this server's watchers.
+  const watchPublisher = new NexusWatchPublisher(watchEventBus);
 
   // Retry health check — during `grove up` Nexus may briefly be unavailable.
   // Matches the MCP server's retry window so both processes either come up
@@ -245,13 +268,23 @@ if (nexusUrl) {
     process.exit(1);
   }
 
-  serverContributionStore = new NexusContributionStore({ client: nexusClient, zoneId });
-  serverClaimStore = new NexusClaimStore({ client: nexusClient, zoneId });
+  serverContributionStore = new NexusContributionStore({
+    client: nexusClient,
+    zoneId,
+    watchPublisher,
+  });
+  serverClaimStore = new NexusClaimStore({ client: nexusClient, zoneId, watchPublisher });
   serverBountyStore = new NexusBountyStore({ client: nexusClient, zoneId });
   serverOutcomeStore = new NexusOutcomeStore({ client: nexusClient, zoneId });
   serverCas = new NexusCas({ client: nexusClient, zoneId });
   contributionStoreForSessionFactory = memoizeContributionStoreForSession(
-    (sessionId: string) => new NexusContributionStore({ client: nexusClient, zoneId, sessionId }),
+    (sessionId: string) =>
+      new NexusContributionStore({
+        client: nexusClient,
+        zoneId,
+        sessionId,
+        watchPublisher,
+      }),
   );
   console.log(`grove-server: using Nexus stores at ${nexusUrl} (zone=${zoneId})`);
 }
@@ -265,6 +298,19 @@ const { SqliteHandoffStore: _SqliteHandoffStore } = await import(
 );
 const handoffStoreForSession = (sessionId: string) =>
   new _SqliteHandoffStore(runtime.db, sessionId) as import("../core/handoff.js").HandoffStore;
+
+// Subscribe to cross-process `entity.changed` envelopes (#292). Started in
+// every mode so future bus-publishers (Nexus-backed bus, other processes)
+// fan in uniformly; idle no-op when nothing publishes (pure local).
+const watchSubscriber = new NexusWatchSubscriber({
+  bus: watchEventBus,
+  hub: watchHub,
+  fetchEntity: makeWatchEntityFetcher({
+    contributionStore: serverContributionStore,
+    claimStore: serverClaimStore,
+  }),
+});
+watchSubscriber.start();
 
 const deps: ServerDeps = {
   contributionStore: serverContributionStore,
@@ -282,6 +328,8 @@ const deps: ServerDeps = {
   topology: runtime.contract?.topology,
   contract: runtime.contract,
   idempotencyStore: runtime.idempotencyStore,
+  watchHub,
+  watchSubscriber,
 };
 
 const app = createApp(deps, registry);
@@ -317,6 +365,47 @@ if (serverBountyStore) {
   sweepReconciler.start();
   console.log("sweep-reconciler started (BountyIndexSweep, SettlementSweep)");
 }
+
+// ---------------------------------------------------------------------------
+// Claim expiry sweep — drives lease-derived state changes into the watch log
+// ---------------------------------------------------------------------------
+//
+// expireStale() flips active claims past their lease to `expired` and bumps
+// revision, but it does not on its own emit a watch event in SQLite mode and
+// the Nexus mode publisher can be self-filtered by sourceInstanceId. Without
+// this sweep, /api/watch?kind=Claim clients would never observe a lease-only
+// expiry — they'd see the claim as active until another write touched it.
+const CLAIM_EXPIRY_INTERVAL_MS = 30_000;
+const claimExpiryTimer = setInterval(async () => {
+  try {
+    const expired = await serverClaimStore.expireStale();
+    for (const { claim } of expired) {
+      const entity = claimToEntity(claim, () => Date.now(), zoneId);
+      try {
+        watchHub.recordWrite({ kind: "Claim", namespace: zoneId, op: "MODIFIED", entity });
+        watchSubscriber.markSeen({
+          kind: "Claim",
+          entityId: claim.claimId,
+          generation: entity.metadata.generation,
+        });
+      } catch (err) {
+        process.stderr.write(
+          `[grove] Warning: claim-expiry watch fan-out threw: ${
+            err instanceof Error ? err.message : String(err)
+          }\n`,
+        );
+      }
+    }
+  } catch (err) {
+    process.stderr.write(
+      `[grove] Warning: claim-expiry sweep failed: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+  }
+}, CLAIM_EXPIRY_INTERVAL_MS);
+// Don't hold the event loop open just for this timer.
+(claimExpiryTimer as unknown as { unref?: () => void }).unref?.();
 
 // ---------------------------------------------------------------------------
 // Optional SessionService + WebSocket push
@@ -386,10 +475,17 @@ if (HOST && !LOCALHOST_ADDRESSES.has(HOST)) {
 function startServer() {
   const hostnameOpts = HOST ? { hostname: HOST } : {};
 
+  // SSE watch streams (#292) hold connections idle for up to bookmarkIntervalMs
+  // (default 30s) plus replay drift. Bun's default idleTimeout is 10s — without
+  // raising it, the watcher's TCP connection is closed before the next BOOKMARK
+  // fires and clients see silent disconnects. 255 is Bun's max.
+  const idleTimeout = 255;
+
   if (wsHandler !== undefined) {
     const wsh = wsHandler;
     return Bun.serve({
       port: PORT,
+      idleTimeout,
       ...hostnameOpts,
       fetch(req, server) {
         const url = new URL(req.url);
@@ -432,6 +528,7 @@ function startServer() {
 
   return Bun.serve({
     port: PORT,
+    idleTimeout,
     ...hostnameOpts,
     fetch: app.fetch,
   });
@@ -459,6 +556,7 @@ async function shutdown(): Promise<void> {
   if (gossipService) {
     await gossipService.stop();
   }
+  watchSubscriber.stop();
   server.stop();
   runtime.close();
   process.exit(0);
@@ -466,3 +564,31 @@ async function shutdown(): Promise<void> {
 
 process.on("SIGTERM", () => void shutdown());
 process.on("SIGINT", () => void shutdown());
+
+// ---------------------------------------------------------------------------
+// Watch entity fetcher (#292)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a fetcher used by NexusWatchSubscriber to hydrate `entity.changed`
+ * envelopes into full WatchEntity payloads via the same stores the server
+ * uses for HTTP reads — keeping the wire format minimal.
+ */
+function makeWatchEntityFetcher(stores: {
+  contributionStore: import("../core/store.js").ContributionStore;
+  claimStore: import("../core/store.js").ClaimStore;
+}): (kind: WatchKind, namespace: string, id: string) => Promise<WatchEntity> {
+  return async (kind, namespace, id) => {
+    if (kind === "Contribution") {
+      const c = await stores.contributionStore.get(id);
+      if (!c) throw new Error(`Contribution ${id} not found`);
+      return contributionToEntity(c, namespace);
+    }
+    if (kind === "Claim") {
+      const c = await stores.claimStore.getClaim(id);
+      if (!c) throw new Error(`Claim ${id} not found`);
+      return claimToEntity(c, () => Date.now(), namespace);
+    }
+    throw new Error(`Unsupported kind for watch fetcher: ${kind}`);
+  };
+}

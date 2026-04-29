@@ -8,9 +8,11 @@
 import type { Hono } from "hono";
 import type { ContentStore, PutOptions } from "../core/cas.js";
 import type { ClaimEntity } from "../core/entity.js";
-import { claimToEntity } from "../core/entity.js";
+import { claimToEntity, contributionToEntity } from "../core/entity.js";
 import { NotFoundError, StateConflictError } from "../core/errors.js";
+import type { EventBus } from "../core/event-bus.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
+import { LocalEventBus } from "../core/local-event-bus.js";
 import type { AgentIdentity, Artifact, Claim, ContributionInput } from "../core/models.js";
 import type {
   ActiveClaimFilter,
@@ -20,6 +22,8 @@ import type {
   ExpireStaleOptions,
 } from "../core/store.js";
 import { InMemoryContributionStore } from "../core/testing.js";
+import { WatchHub, type WatchHubOptions } from "../core/watch-hub.js";
+import { NexusWatchSubscriber } from "../nexus/nexus-watch-subscriber.js";
 import { createApp } from "./app.js";
 import type { ServerDeps, ServerEnv } from "./deps.js";
 import type { KeyRegistry } from "./middleware/namespace-auth.js";
@@ -293,20 +297,63 @@ export interface TestContext {
   contributionStore: InMemoryContributionStore;
   claimStore: InMemoryClaimStore;
   cas: InMemoryContentStore;
+  watchHub: WatchHub;
+  watchEventBus: EventBus;
+}
+
+export interface CreateTestAppOptions {
+  readonly watchHubOptions?: WatchHubOptions;
+  readonly eventBus?: EventBus;
 }
 
 /** Create a test app with fresh in-memory stores. */
-export function createTestApp(): TestContext {
+export function createTestApp(opts: CreateTestAppOptions = {}): TestContext {
   const contributionStore = new InMemoryContributionStore();
   const claimStore = new InMemoryClaimStore();
   const cas = new InMemoryContentStore();
   const frontier = new DefaultFrontierCalculator(contributionStore);
+  const watchHub = new WatchHub(opts.watchHubOptions);
 
-  const deps: ServerDeps = { contributionStore, claimStore, cas, frontier };
+  // Cross-process subscriber that fans `entity.changed` envelopes from the
+  // shared event-bus into the WatchHub. fetchEntity uses the same in-memory
+  // stores so tests can simulate out-of-band writes (#292 T23).
+  const watchEventBus = opts.eventBus ?? new LocalEventBus();
+  const watchSubscriber = new NexusWatchSubscriber({
+    bus: watchEventBus,
+    hub: watchHub,
+    // Pin a stable instanceId distinct from the default process id so the
+    // cross-process integration test (#292 T23) can publish with a different
+    // id and exercise the cross-process branch — instead of being filtered
+    // out as a self-emitted envelope.
+    instanceId: "test-server-proc",
+    fetchEntity: async (kind, namespace, id) => {
+      if (kind === "Contribution") {
+        const c = await contributionStore.get(id);
+        if (!c) throw new Error(`Contribution ${id} not found`);
+        return contributionToEntity(c, namespace);
+      }
+      if (kind === "Claim") {
+        const c = await claimStore.getClaim(id);
+        if (!c) throw new Error(`Claim ${id} not found`);
+        return claimToEntity(c, () => Date.now(), namespace);
+      }
+      throw new Error(`Unsupported kind: ${kind}`);
+    },
+  });
+  watchSubscriber.start();
+
+  const deps: ServerDeps = {
+    contributionStore,
+    claimStore,
+    cas,
+    frontier,
+    watchHub,
+    watchSubscriber,
+  };
   const registry: KeyRegistry = new Map([[TEST_NAMESPACE_KEY, TEST_NAMESPACE]]);
   const app = createApp(deps, registry);
 
-  return { app, deps, contributionStore, claimStore, cas };
+  return { app, deps, contributionStore, claimStore, cas, watchHub, watchEventBus };
 }
 
 // ---------------------------------------------------------------------------

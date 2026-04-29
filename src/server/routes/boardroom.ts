@@ -14,6 +14,7 @@ import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { z } from "zod";
 
+import { contributionToEntity } from "../../core/entity.js";
 import { computeCid } from "../../core/manifest.js";
 import { ContributionKind, RelationType } from "../../core/models.js";
 import { answerQuestion } from "../../core/operations/ask-user-bus.js";
@@ -211,6 +212,8 @@ boardroom.get("/summary", zValidator("query", summaryQuerySchema), async (c) => 
  */
 boardroom.post("/answer", zValidator("json", answerBodySchema), async (c) => {
   const deps = c.get("deps");
+  const namespace = c.get("namespace");
+  const { watchHub, watchSubscriber } = deps;
   const body = c.req.valid("json");
   const store = contributionStoreForSession(deps, body.sessionId);
 
@@ -220,6 +223,33 @@ boardroom.post("/answer", zValidator("json", answerBodySchema), async (c) => {
     { questionCid: body.questionCid, answer: body.answer, operator },
     computeCid,
   );
+
+  // Watch fan-out (#292). answerQuestion writes the contribution directly to
+  // the store, bypassing the operations layer's onEntityWrite hook, so we
+  // advance the WatchHub manually.
+  //
+  // Only fan out for non-session writes. When `sessionId` is set, the
+  // write lands in the session-scoped store but `/api/list` reads the
+  // process-global store, so emitting a watch event the lister can't
+  // mirror would break the list→watch RV invariant. Session-scoped
+  // watch is tracked as a follow-up.
+  if (body.sessionId === undefined) {
+    try {
+      const entity = contributionToEntity(contribution, namespace);
+      watchHub.recordWrite({ kind: "Contribution", namespace, op: "ADDED", entity });
+      watchSubscriber?.markSeen({
+        kind: "Contribution",
+        entityId: entity.id,
+        generation: entity.metadata.generation,
+      });
+    } catch (err) {
+      process.stderr.write(
+        `[grove] Warning: watch fan-out threw after POST /api/boardroom/answer: ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
+    }
+  }
 
   // Link the answer contribution to the session so it is visible in scoped reads
   if (body.sessionId && deps.goalSessionStore) {
@@ -241,9 +271,17 @@ boardroom.post("/answer", zValidator("json", answerBodySchema), async (c) => {
  */
 boardroom.post("/message", zValidator("json", messageBodySchema), async (c) => {
   const deps = c.get("deps");
+  const namespace = c.get("namespace");
   const body = c.req.valid("json");
   const store = contributionStoreForSession(deps, body.sessionId);
 
+  // Inject namespace only for non-session writes (#292). When `sessionId`
+  // is set, the write lands in the session-scoped store but `/api/list`
+  // reads the process-global store, so firing a watch event the lister
+  // can't mirror would violate the list→watch RV invariant. Session-scoped
+  // watch is tracked as a follow-up.
+  const baseOpDeps = toOperationDeps({ ...deps, contributionStore: store });
+  const opDeps = body.sessionId === undefined ? { ...baseOpDeps, namespace } : baseOpDeps;
   const result = await sendMessageAsDiscussion(
     {
       agent: { agentId: "tui-operator", agentName: "operator" },
@@ -251,7 +289,7 @@ boardroom.post("/message", zValidator("json", messageBodySchema), async (c) => {
       recipients: body.recipients,
       ...(body.inReplyTo !== undefined ? { inReplyTo: body.inReplyTo } : {}),
     },
-    toOperationDeps({ ...deps, contributionStore: store }),
+    opDeps,
   );
 
   if (!result.ok) {

@@ -1,0 +1,310 @@
+/**
+ * Watch protocol endpoints (#292).
+ *
+ * GET /api/list?kind=<kind>      — list snapshot with listResourceVersion
+ * GET /api/watch?kind=<kind>&resumeFrom=<rv> — SSE stream
+ *
+ * Both endpoints sit behind the existing /api/* namespaceAuth middleware
+ * (#290), so namespace is always read from `c.get("namespace")` — never
+ * from query or path params.
+ */
+
+import { zValidator } from "@hono/zod-validator";
+import type { Hono as HonoType } from "hono";
+import { Hono } from "hono";
+import { z } from "zod";
+import {
+  StaleResourceVersionError,
+  type WatchEvent,
+  type WatchKind,
+} from "../../core/watch-events.js";
+import { BufferOverflowError, type WatchHub } from "../../core/watch-hub.js";
+import type { ServerDeps, ServerEnv } from "../deps.js";
+
+const KIND_VALUES = ["Contribution", "Claim", "AgentSession"] as const;
+// Subset of KIND_VALUES for which list+watch are actually backed by
+// stores and fan-out hooks. AgentSession remains in KIND_VALUES so the
+// type narrowing stays exhaustive, but watching it returns 501 until
+// the session-orchestrator integration lands (out of scope for #292).
+const SUPPORTED_KINDS: ReadonlySet<(typeof KIND_VALUES)[number]> = new Set([
+  "Contribution",
+  "Claim",
+]);
+
+const listQuerySchema = z.object({
+  kind: z.enum(KIND_VALUES),
+});
+
+const watchQuerySchema = z.object({
+  kind: z.enum(KIND_VALUES),
+  resumeFrom: z.string().regex(/^[0-9]+$/, "resumeFrom must be a non-negative integer"),
+});
+
+const watch: HonoType<ServerEnv> = new Hono<ServerEnv>();
+
+/** GET /api/list?kind=X — list snapshot with listResourceVersion. */
+watch.get("/list", zValidator("query", listQuerySchema), async (c) => {
+  const namespace = c.get("namespace");
+  const { kind } = c.req.valid("query");
+  if (!SUPPORTED_KINDS.has(kind)) {
+    return c.json(
+      {
+        error: {
+          code: "NOT_CONFIGURED",
+          message: `kind '${kind}' is accepted by the schema but not yet backed by a store; list is unavailable`,
+        },
+      },
+      501,
+    );
+  }
+  const deps = c.get("deps");
+  const hub: WatchHub = deps.watchHub;
+
+  // Race-correctness invariant (spec §Critical path): capture RV BEFORE the
+  // list query. Any write that lands during the list has rv > listRv and is
+  // therefore guaranteed to be replayed when the watch resumes.
+  const listRv = hub.currentRv(namespace, kind as WatchKind);
+  // Test-only widening of the handshake window. See watch.race.test.ts (#292).
+  const delayMs = Number(process.env.GROVE_WATCH_LIST_DELAY_MS);
+  if (Number.isFinite(delayMs) && delayMs > 0) {
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+  const items = await listForKind(deps, namespace, kind as WatchKind);
+
+  return c.json({ items, listResourceVersion: String(listRv) });
+});
+
+/** GET /api/watch?kind=X&resumeFrom=Y — SSE stream. */
+watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
+  const namespace = c.get("namespace");
+  const { kind, resumeFrom } = c.req.valid("query");
+  if (!SUPPORTED_KINDS.has(kind)) {
+    return c.json(
+      {
+        error: {
+          code: "NOT_CONFIGURED",
+          message: `kind '${kind}' is accepted by the schema but not yet backed by fan-out hooks; watch would silently miss events`,
+        },
+      },
+      501,
+    );
+  }
+  const lastEventId = c.req.header("last-event-id");
+  // Last-Event-ID overrides resumeFrom on auto-reconnect (browser EventSource).
+  // If present but malformed, fail fast with 400 — silently falling back to
+  // the URL's resumeFrom would let a stale URL rewind the client past
+  // recently-seen events, causing duplicate replay or stale 410.
+  if (lastEventId !== undefined && !/^[0-9]+$/.test(lastEventId)) {
+    return c.json(
+      {
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Last-Event-ID must be a non-negative decimal integer",
+        },
+      },
+      400,
+    );
+  }
+  const fromRv = BigInt(lastEventId ?? resumeFrom);
+  const hub: WatchHub = c.get("deps").watchHub;
+
+  // SSE-route per-connection byte cap. The WatchHub already bounds its
+  // per-subscriber queue, but once a hub event is drained into the route's
+  // ReadableStream, only the stream's own backpressure stops the route from
+  // accumulating bytes for a stalled TCP client. Per-event payload size is
+  // unbounded (large entities), so a chunk-count threshold could still let
+  // tens-to-hundreds of MB queue per client; use ByteLengthQueuingStrategy
+  // so desiredSize is measured in bytes instead of chunks. K8s' watch http2
+  // path uses a similar bounded write window.
+  const ROUTE_BYTE_HIGH_WATER_MARK = 1 * 1024 * 1024; // 1 MiB
+  // desiredSize can go negative when overshooting; cap at -3 MiB so total
+  // queued bytes stay under ~4 MiB per client before we 503.
+  const ROUTE_BYTE_OVERFLOW_THRESHOLD = -3 * 1024 * 1024;
+
+  // Hoisted out of start() so the stream's cancel() handler can fire the
+  // same teardown when the consumer cancels the response body without
+  // routing through the request abort signal (some HTTP/2 proxies and
+  // body.cancel() callers do this).
+  let teardown: (() => void) | undefined;
+
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      start(controller) {
+        const encoder = new TextEncoder();
+        const ac = new AbortController();
+        let bookmarkTimer: ReturnType<typeof setInterval> | null = null;
+        let closed = false;
+
+        const isOverflowed = (): boolean => {
+          const ds = controller.desiredSize;
+          return ds !== null && ds <= ROUTE_BYTE_OVERFLOW_THRESHOLD;
+        };
+
+        // Per-event hard cap. Even within byte budget, a single huge frame
+        // would force the queue into deep-negative desiredSize between
+        // overflow checks. Watch consumers that produce >1 MiB events should
+        // chunk through the entity store, not the watch stream.
+        const ROUTE_MAX_EVENT_BYTES = 1 * 1024 * 1024;
+
+        const send = (event: string, data: unknown, id?: string): boolean => {
+          if (closed) return false;
+          // Only emit `id:` when we have one. A blank `id:` line tells SSE
+          // clients to clear Last-Event-ID, which would silently rewind the
+          // watch on reconnect.
+          const idLine = id ? `id: ${id}\n` : "";
+          const payload = `${idLine}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+          const bytes = encoder.encode(payload);
+          // Reject oversized single events before they overshoot the queue.
+          // The terminal ERROR/cleanup path may still call send() inside this
+          // guard — that path uses small fixed payloads and is not affected.
+          if (bytes.byteLength > ROUTE_MAX_EVENT_BYTES) return false;
+          // If this single event would push the queue into hard-overflow
+          // before the next iteration's check, treat it as overflow now.
+          const ds = controller.desiredSize;
+          if (ds !== null && ds - bytes.byteLength <= ROUTE_BYTE_OVERFLOW_THRESHOLD) {
+            return false;
+          }
+          try {
+            controller.enqueue(bytes);
+          } catch {
+            // Controller already closed — treat as send failure so callers
+            // can run their terminal path (close/cleanup) instead of
+            // silently dropping the frame.
+            return false;
+          }
+          return true;
+        };
+
+        const cleanup = (): void => {
+          if (closed) return;
+          closed = true;
+          if (bookmarkTimer) clearInterval(bookmarkTimer);
+          bookmarkTimer = null;
+          ac.abort();
+          try {
+            controller.close();
+          } catch {
+            /* already closed */
+          }
+        };
+        teardown = cleanup;
+
+        const closeWithError = (code: number, reason: string): void => {
+          send("ERROR", { code, reason });
+          cleanup();
+        };
+
+        let iterable: AsyncIterable<WatchEvent>;
+        try {
+          iterable = hub.subscribe(namespace, kind as WatchKind, fromRv, ac.signal);
+        } catch (err) {
+          if (err instanceof StaleResourceVersionError) {
+            closeWithError(410, "expired");
+            return;
+          }
+          throw err;
+        }
+
+        bookmarkTimer = setInterval(() => {
+          // A stalled reader on a quiescent watch would otherwise let
+          // BOOKMARK frames pile up forever — they don't trip the
+          // data-event overflow check below. Reuse the same threshold so
+          // both code paths cap memory identically.
+          if (isOverflowed()) {
+            closeWithError(503, "buffer_overflow");
+            return;
+          }
+          // Tag the BOOKMARK with the RV as the SSE id so EventSource auto-
+          // reconnect picks up Last-Event-ID = currentRv. Without this, a
+          // BOOKMARK after a real event would not advance the resume cursor.
+          const rv = String(hub.currentRv(namespace, kind as WatchKind));
+          // send() returns false when the queue can't accept another frame
+          // (overflow headroom, oversized payload, controller already closed).
+          // Treat this exactly like a data-path overflow so the watcher is
+          // closed and the hub subscription is released — silently dropping
+          // a bookmark would leave the timer + subscription alive forever
+          // on a stalled idle client.
+          if (!send("BOOKMARK", { rv }, rv)) {
+            closeWithError(503, "buffer_overflow");
+          }
+        }, hub.bookmarkIntervalMs);
+        // Don't hold the event loop open just for this timer.
+        (bookmarkTimer as unknown as { unref?: () => void }).unref?.();
+
+        void (async () => {
+          try {
+            for await (const ev of iterable) {
+              if (isOverflowed()) {
+                closeWithError(503, "buffer_overflow");
+                return;
+              }
+              const rv = String(ev.rv);
+              // Include rv in the JSON body so clients that only parse `data`
+              // (no SSE `lastEventId` access) can still resume. Matches the
+              // BOOKMARK shape and the A5 contract.
+              const sent = send(ev.op, { rv, kind: ev.kind, entity: ev.entity }, rv);
+              // send() refuses oversized events or events that would push the
+              // queue past the overflow threshold. Either case is terminal —
+              // skipping the event silently would let the client miss writes.
+              if (!sent) {
+                closeWithError(503, "buffer_overflow");
+                return;
+              }
+            }
+            cleanup();
+          } catch (err) {
+            if (err instanceof BufferOverflowError) {
+              closeWithError(503, "buffer_overflow");
+            } else {
+              closeWithError(500, "internal_error");
+            }
+          }
+        })();
+
+        // Abort when the client disconnects.
+        c.req.raw.signal.addEventListener("abort", cleanup);
+      },
+      cancel() {
+        // Reader cancel (response body cancelled) — release the hub
+        // subscription and bookmark timer even when the request abort
+        // signal didn't fire.
+        teardown?.();
+      },
+    },
+    new ByteLengthQueuingStrategy({ highWaterMark: ROUTE_BYTE_HIGH_WATER_MARK }),
+  );
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    },
+  });
+});
+
+async function listForKind(
+  deps: ServerDeps,
+  namespace: string,
+  kind: WatchKind,
+): Promise<readonly unknown[]> {
+  void namespace;
+  switch (kind) {
+    case "Contribution":
+      return deps.contributionStore.listEntities();
+    case "Claim":
+      return deps.claimStore.listEntities();
+    case "AgentSession":
+      // AgentSession listing is not yet a Store API. Return empty until the
+      // session-orchestrator integration lands (out of scope for #292).
+      return [];
+    default: {
+      const _exhaustive: never = kind;
+      void _exhaustive;
+      return [];
+    }
+  }
+}
+
+export { watch };

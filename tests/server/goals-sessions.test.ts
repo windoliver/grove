@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Hono } from "hono";
 import { DefaultFrontierCalculator } from "../../src/core/frontier.js";
+import { WatchHub } from "../../src/core/watch-hub.js";
 import { FsCas } from "../../src/local/fs-cas.js";
 import { createSqliteStores } from "../../src/local/sqlite-store.js";
 import { createApp } from "../../src/server/app.js";
@@ -53,6 +54,7 @@ async function createGoalSessionContext(): Promise<GoalSessionTestContext> {
     frontier,
     goalSessionStore: stores.goalSessionStore,
     contract: { contractVersion: 3, name: "test-contract" },
+    watchHub: new WatchHub(),
   };
 
   const app = createApp(deps, GS_TEST_REGISTRY);
@@ -578,6 +580,7 @@ describe("POST /api/sessions (config snapshot)", () => {
       frontier: frontier2,
       goalSessionStore: stores2.goalSessionStore,
       // No contract!
+      watchHub: new WatchHub(),
     };
     const app2 = createApp(deps2, GS_TEST_REGISTRY);
 
@@ -615,6 +618,7 @@ describe("POST /api/sessions (config snapshot)", () => {
       claimStore: stores3.claimStore,
       cas: cas3,
       frontier: frontier3,
+      watchHub: new WatchHub(),
     };
     const app3 = createApp(deps3, GS_TEST_REGISTRY);
 

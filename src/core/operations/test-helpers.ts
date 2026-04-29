@@ -155,6 +155,10 @@ export async function createTestOperationDeps(): Promise<TestOperationDeps> {
     onContributionWritten: () => {
       /* no-op for tests */
     },
+    onEntityWrite: () => {
+      /* no-op for tests */
+    },
+    namespace: "test",
     eventBus: undefined as unknown as NonNullable<OperationDeps["eventBus"]>,
     topologyRouter: undefined as unknown as NonNullable<OperationDeps["topologyRouter"]>,
     hookRunner: undefined as unknown as NonNullable<OperationDeps["hookRunner"]>,

@@ -11,6 +11,7 @@ import type { Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
 import { DEFAULT_LEASE_MS } from "../../core/constants.js";
+import { claimToEntity } from "../../core/entity.js";
 import type { AgentIdentity, Claim, JsonValue } from "../../core/models.js";
 import { listClaimsOperation, releaseOperation } from "../../core/operations/index.js";
 import type { ServerEnv } from "../deps.js";
@@ -55,7 +56,9 @@ const claims: HonoType<ServerEnv> = new Hono<ServerEnv>();
  * agent identity in the request body rather than using resolveAgent().
  */
 claims.post("/", zValidator("json", createBodySchema), async (c) => {
-  const { claimStore } = c.get("deps");
+  const deps = c.get("deps");
+  const { claimStore, watchHub, watchSubscriber } = deps;
+  const namespace = c.get("namespace");
   const body = c.req.valid("json");
   const now = new Date();
   const leaseDurationMs = body.leaseDurationMs ?? DEFAULT_LEASE_MS;
@@ -75,6 +78,31 @@ claims.post("/", zValidator("json", createBodySchema), async (c) => {
   };
 
   const result = await claimStore.claimOrRenew(claim);
+
+  // Watch fan-out (#292). Direct store path bypasses the operations layer
+  // so we record + markSeen here. Derive ADDED vs MODIFIED from the
+  // store's atomic revision counter — pre-reading `existing` outside the
+  // store transaction is racy: two concurrent same-agent renewals can
+  // both observe no existing claim and both emit ADDED for one logical
+  // claim. The store guarantees revision === 1 on first create and
+  // revision > 1 on every renewal, regardless of concurrency.
+  const op: "ADDED" | "MODIFIED" = (result.revision ?? 1) === 1 ? "ADDED" : "MODIFIED";
+  const entity = claimToEntity(result, () => Date.now(), namespace);
+  try {
+    watchHub.recordWrite({ kind: "Claim", namespace, op, entity });
+    watchSubscriber?.markSeen({
+      kind: "Claim",
+      entityId: result.claimId,
+      generation: entity.metadata.generation,
+    });
+  } catch (err) {
+    process.stderr.write(
+      `[grove] Warning: watch fan-out threw after POST /api/claims: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+  }
+
   return c.json(result, 201);
 });
 
@@ -91,7 +119,8 @@ claims.patch("/:id", zValidator("json", patchBodySchema), async (c) => {
   }
 
   // Release / complete via shared operation
-  const deps = toOperationDeps(c.get("deps"));
+  let deps = toOperationDeps(c.get("deps"));
+  deps = { ...deps, namespace: c.get("namespace") };
   const result = await releaseOperation({ claimId, action }, deps);
 
   const { data, status } = toHttpResult(result);

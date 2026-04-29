@@ -12,6 +12,7 @@ import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { z } from "zod";
 
+import { claimToEntity } from "../../core/entity.js";
 import type { ServerEnv } from "../deps.js";
 
 // ---------------------------------------------------------------------------
@@ -41,6 +42,8 @@ agents.post("/spawn", zValidator("json", spawnBodySchema), async (c) => {
   const deps = c.get("deps");
   const claimStore = deps.claimStore;
   const topology = deps.topology;
+  const namespace = c.get("namespace");
+  const { watchHub, watchSubscriber } = deps;
 
   const body = c.req.valid("json");
 
@@ -81,6 +84,25 @@ agents.post("/spawn", zValidator("json", spawnBodySchema), async (c) => {
         }
       : {}),
   });
+
+  // Watch fan-out (#292). Direct store path bypasses the operations layer
+  // and the Nexus same-process publisher is filtered by sourceInstanceId,
+  // so this would otherwise be invisible to /api/watch clients.
+  try {
+    const entity = claimToEntity(claim, () => Date.now(), namespace);
+    watchHub.recordWrite({ kind: "Claim", namespace, op: "ADDED", entity });
+    watchSubscriber?.markSeen({
+      kind: "Claim",
+      entityId: claim.claimId,
+      generation: entity.metadata.generation,
+    });
+  } catch (err) {
+    process.stderr.write(
+      `[grove] Warning: watch fan-out threw after POST /api/agents/spawn: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+  }
 
   return c.json({
     claimId: claim.claimId,
