@@ -38,7 +38,7 @@ function sse(event: string, data: unknown, id?: string): string {
 }
 
 describe("WatchClient happy path", () => {
-  test("emits RELIST for each list item then ADDED for streamed events", async () => {
+  test("emits RELIST_BEGIN, RELIST per item, RELIST_END, then data ops", async () => {
     const seen: WatchClientEvent[] = [];
     const fetchImpl = makeFetch({ items: [ENTITY_A], listResourceVersion: "5" }, [
       sse("ADDED", { rv: "6", kind: "Contribution", entity: ENTITY_B }, "6"),
@@ -53,18 +53,43 @@ describe("WatchClient happy path", () => {
     const running = client.run({
       onEvent: async (e) => {
         seen.push(e);
-        if (seen.length === 2) ac.abort();
+        if (e.op === "ADDED") ac.abort();
       },
       signal: ac.signal,
     });
     await running;
 
-    expect(seen.length).toBe(2);
-    expect(seen[0]?.op).toBe("RELIST");
+    expect(seen.map((e) => e.op)).toEqual(["RELIST_BEGIN", "RELIST", "RELIST_END", "ADDED"]);
+    expect(seen[0]?.entity).toBeNull();
     expect(seen[0]?.rv).toBe(5n);
-    expect((seen[0]?.entity as { envelope: { id: string } }).envelope.id).toBe("cid-a");
-    expect(seen[1]?.op).toBe("ADDED");
-    expect(seen[1]?.rv).toBe(6n);
+    expect((seen[1]?.entity as { envelope: { id: string } }).envelope.id).toBe("cid-a");
+    expect(seen[1]?.rv).toBe(5n);
+    expect(seen[2]?.entity).toBeNull();
+    expect(seen[2]?.rv).toBe(5n);
+    expect(seen[3]?.op).toBe("ADDED");
+    expect(seen[3]?.rv).toBe(6n);
+  });
+
+  test("empty snapshot still emits RELIST_BEGIN + RELIST_END (no items in between)", async () => {
+    const seen: WatchClientEvent[] = [];
+    const fetchImpl = makeFetch({ items: [], listResourceVersion: "5" }, [
+      sse("ADDED", { rv: "6", kind: "Contribution", entity: ENTITY_A }, "6"),
+    ]);
+    const ac = new AbortController();
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+    });
+    await client.run({
+      onEvent: async (e) => {
+        seen.push(e);
+        if (e.op === "ADDED") ac.abort();
+      },
+      signal: ac.signal,
+    });
+    expect(seen.map((e) => e.op)).toEqual(["RELIST_BEGIN", "RELIST_END", "ADDED"]);
   });
 });
 
@@ -251,16 +276,23 @@ describe("WatchClient relist on 410", () => {
     expect(seen.filter((s) => s.op === "RELIST").length).toBe(2);
   });
 
-  test("malformed rv on data event is dropped, run continues", async () => {
+  test("malformed data frame forces relist (BOOKMARK cannot ack past skipped event)", async () => {
     const seen: WatchClientEvent[] = [];
+    // Stream 1: malformed ADDED (no rv) followed by BOOKMARK rv=99. Without
+    // the relist policy, BOOKMARK would silently advance lastRv past the
+    // dropped data event. The expected behavior is to relist immediately.
     const fetchImpl = scriptedFetch([
       { urlPattern: "/api/list", json: { items: [], listResourceVersion: "0" } },
       {
         urlPattern: "/api/watch",
-        body:
-          sse("ADDED", { rv: "not-a-number", kind: "Contribution", entity: ENTITY_A }, "1") +
-          sse("ADDED", { rv: "2", kind: "Contribution", entity: ENTITY_B }, "2"),
+        body: `${sse(
+          "ADDED",
+          { rv: "not-a-number", kind: "Contribution", entity: ENTITY_A },
+          "1",
+        )}${sse("BOOKMARK", { rv: "99" }, "99")}`,
       },
+      // After relist, list returns ENTITY_B at rv=2 → assert this snapshot is delivered.
+      { urlPattern: "/api/list", json: { items: [ENTITY_B], listResourceVersion: "2" } },
       { urlPattern: "/api/watch", body: "" },
     ]);
     const ac = new AbortController();
@@ -274,14 +306,18 @@ describe("WatchClient relist on 410", () => {
     const running = client.run({
       onEvent: async (e) => {
         seen.push(e);
-        if (seen.length >= 1) ac.abort();
+        if (e.op === "RELIST" && (e.entity as { envelope: { id: string } }).envelope.id === "cid-b")
+          ac.abort();
       },
       signal: ac.signal,
     });
     await running;
-    // Only the well-formed event surfaced.
-    expect(seen.length).toBe(1);
-    expect(seen[0]?.rv).toBe(2n);
+    // The malformed ADDED is not delivered; the relist surfaces ENTITY_B.
+    const dataOps = seen.filter((e) => e.op === "ADDED");
+    expect(dataOps.length).toBe(0);
+    const relists = seen.filter((e) => e.op === "RELIST");
+    expect(relists.length).toBe(1);
+    expect((relists[0]?.entity as { envelope: { id: string } }).envelope.id).toBe("cid-b");
   });
 
   test("ERROR{code:410} resets backoff (relist is a clean slate)", async () => {
@@ -441,6 +477,108 @@ describe("WatchClient terminal errors", () => {
       /400|terminal/,
     );
   });
+
+  test("rejects on HTTP 401 from /api/watch (not infinite retry)", async () => {
+    const fetchImpl = scriptedFetch([
+      { urlPattern: "/api/list", json: { items: [], listResourceVersion: "0" } },
+      { urlPattern: "/api/watch", body: "", status: 401 },
+    ]);
+    const ac = new AbortController();
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await expect(client.run({ onEvent: () => undefined, signal: ac.signal })).rejects.toThrow(
+      /401|watch failed/,
+    );
+  });
+
+  test("rejects on HTTP 500 from /api/watch (server bug, not retryable)", async () => {
+    const fetchImpl = scriptedFetch([
+      { urlPattern: "/api/list", json: { items: [], listResourceVersion: "0" } },
+      { urlPattern: "/api/watch", body: "", status: 500 },
+    ]);
+    const ac = new AbortController();
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await expect(client.run({ onEvent: () => undefined, signal: ac.signal })).rejects.toThrow(
+      /500|watch failed/,
+    );
+  });
+});
+
+describe("WatchClient transport errors", () => {
+  test("fetch rejection mid-loop is recoverable (fast resume from lastRv)", async () => {
+    let watchCalls = 0;
+    const ac = new AbortController();
+    const fetchImpl = (async (input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/api/list")) {
+        return new Response(JSON.stringify({ items: [], listResourceVersion: "5" }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      watchCalls += 1;
+      if (watchCalls === 1) throw new Error("ECONNRESET");
+      // Second watch must resume from rv=5, then end. Abort on third call.
+      if (watchCalls >= 3) ac.abort();
+      return new Response("", { headers: { "Content-Type": "text/event-stream" } });
+    }) as typeof fetch;
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    // Should NOT reject — transport error is fast-resumed.
+    await client.run({ onEvent: () => undefined, signal: ac.signal });
+    expect(watchCalls).toBeGreaterThanOrEqual(2);
+  });
+
+  test("mid-stream reader.read rejection is recoverable", async () => {
+    let watchCalls = 0;
+    const ac = new AbortController();
+    const fetchImpl = (async (input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/api/list")) {
+        return new Response(JSON.stringify({ items: [], listResourceVersion: "5" }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      watchCalls += 1;
+      if (watchCalls === 1) {
+        // Stream that errors mid-read.
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("event: BOOKMARK\ndata: {}\n\n"));
+            queueMicrotask(() => controller.error(new Error("RST")));
+          },
+        });
+        return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
+      }
+      if (watchCalls >= 2) ac.abort();
+      return new Response("", { headers: { "Content-Type": "text/event-stream" } });
+    }) as typeof fetch;
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    // Should NOT reject — mid-stream read failure → fast resume.
+    await client.run({ onEvent: () => undefined, signal: ac.signal });
+    expect(watchCalls).toBeGreaterThanOrEqual(2);
+  });
 });
 
 describe("WatchClient onEvent semantics", () => {
@@ -464,6 +602,9 @@ describe("WatchClient onEvent semantics", () => {
     });
     const running = client.run({
       onEvent: async (e) => {
+        // Boundary events fire synchronously around the snapshot; only
+        // assert serialisation of the data ops.
+        if (e.op === "RELIST_BEGIN" || e.op === "RELIST_END") return;
         order.push(`enter:${e.rv}`);
         if (e.rv === 6n) await firstDone;
         order.push(`exit:${e.rv}`);

@@ -157,6 +157,7 @@ describe("WatchClient survives retention gap (issue #293 acceptance #2)", () => 
 function collectSummaries(events: readonly WatchClientEvent[]): Set<string> {
   const out = new Set<string>();
   for (const e of events) {
+    if (!e.entity) continue; // RELIST_BEGIN/END have no entity
     const summary = (e.entity as ContributionEntity).spec?.summary;
     if (summary) out.add(summary);
   }

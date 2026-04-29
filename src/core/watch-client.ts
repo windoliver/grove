@@ -8,13 +8,24 @@
 
 import type { WatchEntity, WatchKind } from "./watch-events.js";
 
-export type WatchClientOp = "ADDED" | "MODIFIED" | "DELETED" | "RELIST";
+export type WatchClientOp =
+  | "ADDED"
+  | "MODIFIED"
+  | "DELETED"
+  | "RELIST"
+  | "RELIST_BEGIN"
+  | "RELIST_END";
 
+/**
+ * Boundary events RELIST_BEGIN/RELIST_END fire even for empty snapshots so
+ * consumers can atomically replace local state after compaction (drop entries
+ * not present between BEGIN and END). Their entity is null.
+ */
 export interface WatchClientEvent {
   readonly op: WatchClientOp;
   readonly rv: bigint;
   readonly kind: WatchKind;
-  readonly entity: WatchEntity;
+  readonly entity: WatchEntity | null;
 }
 
 export interface WatchClientOptions {
@@ -75,16 +86,15 @@ export class WatchClient {
     while (!signal.aborted) {
       if (resumeFrom === null) {
         const list = await this.list(signal);
+        const rv = BigInt(list.listResourceVersion);
+        await onEvent({ op: "RELIST_BEGIN", rv, kind: this.kind, entity: null });
         for (const item of list.items) {
           if (signal.aborted) return;
-          await onEvent({
-            op: "RELIST",
-            rv: BigInt(list.listResourceVersion),
-            kind: this.kind,
-            entity: item,
-          });
+          await onEvent({ op: "RELIST", rv, kind: this.kind, entity: item });
         }
-        resumeFrom = BigInt(list.listResourceVersion);
+        if (signal.aborted) return;
+        await onEvent({ op: "RELIST_END", rv, kind: this.kind, entity: null });
+        resumeFrom = rv;
       }
       const exit = await this.streamWatch(resumeFrom, onEvent, signal);
       if (exit.kind === "abort") return;
@@ -127,23 +137,47 @@ export class WatchClient {
     let lastRv = fromRv;
     let observedData = false;
     const url = `${this.baseUrl}/api/watch?kind=${this.kind}&resumeFrom=${fromRv}`;
-    const res = await this.fetchImpl(url, {
-      headers: { Authorization: this.authHeader, Accept: "text/event-stream" },
-      signal,
-    });
+    let res: Response;
+    try {
+      res = await this.fetchImpl(url, {
+        headers: { Authorization: this.authHeader, Accept: "text/event-stream" },
+        signal,
+      });
+    } catch (err) {
+      // Transport error (connection reset, DNS, TLS). If the caller aborted,
+      // unwind cleanly; otherwise treat as a transient close → fast resume.
+      if (signal.aborted) return { kind: "abort" };
+      console.warn(`watch: fetch failed (${(err as Error)?.message ?? err}); resuming`);
+      return { kind: "ended", lastRv, observedData };
+    }
     if (res.status === 410 || res.status === 503) {
       return { kind: "relist" };
     }
-    if (!res.ok || !res.body) return { kind: "ended", lastRv, observedData };
+    if (!res.ok) {
+      // 4xx/5xx other than 410/503 indicate the server is up and refusing
+      // (auth/config/server bug). Make terminal so the caller surfaces it
+      // instead of looping forever with a stale resumeFrom.
+      throw new Error(`watch failed: ${res.status}`);
+    }
+    if (!res.body) return { kind: "ended", lastRv, observedData };
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
     try {
       while (!signal.aborted) {
-        const { value, done } = await reader.read();
-        if (done) return { kind: "ended", lastRv, observedData };
-        buf += decoder.decode(value, { stream: true });
+        let chunk: ReadableStreamReadResult<Uint8Array>;
+        try {
+          chunk = await reader.read();
+        } catch (err) {
+          // Mid-stream transport failure (RST, stream reset). Same policy as
+          // fetch reject: aborted → unwind, otherwise fast resume from lastRv.
+          if (signal.aborted) return { kind: "abort" };
+          console.warn(`watch: read failed (${(err as Error)?.message ?? err}); resuming`);
+          return { kind: "ended", lastRv, observedData };
+        }
+        if (chunk.done) return { kind: "ended", lastRv, observedData };
+        buf += decoder.decode(chunk.value, { stream: true });
         let idx = buf.indexOf("\n\n");
         while (idx >= 0) {
           const block = buf.slice(0, idx);
@@ -161,11 +195,11 @@ export class WatchClient {
           if (isDataOp(frame.event)) {
             const payload = frame.data as { rv?: string; entity?: WatchEntity };
             if (!payload.rv || !/^[0-9]+$/.test(payload.rv) || !payload.entity) {
-              // Malformed data event — server bug. Drop and continue rather than
-              // crashing the loop; the next BOOKMARK or event will resync the cursor.
-              console.warn(`watch: dropped malformed ${frame.event} frame`);
-              idx = buf.indexOf("\n\n");
-              continue;
+              // Malformed data frame: a subsequent BOOKMARK could otherwise
+              // ack past this rv and silently drop the event. Force a relist
+              // so the consumer atomically replaces state from a fresh snapshot.
+              console.warn(`watch: malformed ${frame.event} frame → forcing relist`);
+              return { kind: "relist" };
             }
             const rv = BigInt(payload.rv);
             lastRv = rv;

@@ -236,7 +236,9 @@ console.log("[watcher] starting");
 client
   .run({
     onEvent(e) {
-      const summary = (e.entity as { spec?: { summary?: string } })?.spec?.summary ?? "";
+      const summary = e.entity
+        ? ((e.entity as { spec?: { summary?: string } }).spec?.summary ?? "")
+        : "";
       console.log(\`[EVENT] op=\${e.op} rv=\${e.rv} summary=\${summary}\`);
     },
     signal: outerAc.signal,
