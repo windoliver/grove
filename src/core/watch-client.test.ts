@@ -6,7 +6,7 @@ function makeFetch(
   list: { items: unknown[]; listResourceVersion: string },
   watchEvents: string[],
 ): typeof fetch {
-  return (async (input, init) => {
+  return (async (input, _init) => {
     const url = typeof input === "string" ? input : (input as Request).url;
     if (url.includes("/api/list")) {
       return new Response(JSON.stringify(list), {
@@ -40,12 +40,9 @@ function sse(event: string, data: unknown, id?: string): string {
 describe("WatchClient happy path", () => {
   test("emits RELIST for each list item then ADDED for streamed events", async () => {
     const seen: WatchClientEvent[] = [];
-    const fetchImpl = makeFetch(
-      { items: [ENTITY_A], listResourceVersion: "5" },
-      [
-        sse("ADDED", { rv: "6", kind: "Contribution", entity: ENTITY_B }, "6"),
-      ],
-    );
+    const fetchImpl = makeFetch({ items: [ENTITY_A], listResourceVersion: "5" }, [
+      sse("ADDED", { rv: "6", kind: "Contribution", entity: ENTITY_B }, "6"),
+    ]);
     const client = new WatchClient({
       baseUrl: "http://t",
       kind: "Contribution",

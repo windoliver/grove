@@ -69,11 +69,7 @@ export class WatchClient {
           entity: item,
         });
       }
-      const resumed = await this.streamWatch(
-        BigInt(list.listResourceVersion),
-        onEvent,
-        signal,
-      );
+      const resumed = await this.streamWatch(BigInt(list.listResourceVersion), onEvent, signal);
       if (resumed === "abort") return;
       // Future tasks: distinguish 410/503 (full relist, restart loop) from
       // TCP close (fast resume). For now any non-abort exit restarts the loop.
@@ -81,10 +77,10 @@ export class WatchClient {
   }
 
   private async list(signal: AbortSignal): Promise<ListResponse> {
-    const res = await this.fetchImpl(
-      `${this.baseUrl}/api/list?kind=${this.kind}`,
-      { headers: { Authorization: this.authHeader }, signal },
-    );
+    const res = await this.fetchImpl(`${this.baseUrl}/api/list?kind=${this.kind}`, {
+      headers: { Authorization: this.authHeader },
+      signal,
+    });
     if (!res.ok) {
       throw new Error(`list failed: ${res.status}`);
     }
