@@ -164,7 +164,11 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
               closeWithError(503, "buffer_overflow");
               return;
             }
-            send(ev.op, { kind: ev.kind, entity: ev.entity }, String(ev.rv));
+            const rv = String(ev.rv);
+            // Include rv in the JSON body so clients that only parse `data`
+            // (no SSE `lastEventId` access) can still resume. Matches the
+            // BOOKMARK shape and the A5 contract.
+            send(ev.op, { rv, kind: ev.kind, entity: ev.entity }, rv);
           }
           cleanup();
         } catch (err) {

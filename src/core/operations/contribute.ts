@@ -1123,6 +1123,15 @@ export async function contributeOperation(
           }
         : undefined;
 
+    // Watch fan-out should only fire for true inserts (#292). The store
+    // uses INSERT OR IGNORE for idempotency, so a duplicate-CID submit is
+    // a no-op in storage — emitting ADDED for it would advance the watch
+    // RV with a phantom event. Pre-checking with `get(cid)` is racy under
+    // concurrent re-submit, but contributions are content-addressed so
+    // any race produces identical content; the worst case is one extra
+    // benign event vs. a stream of phantom events for every retry.
+    const existedBefore = (await deps.contributionStore.get(contribution.cid)) !== undefined;
+
     const handoffIds = await writeContributionWithHandoffs(
       contribution,
       handoffsRoutedTo,
@@ -1207,7 +1216,7 @@ export async function contributeOperation(
     try {
       deps.onContributionWrite?.();
       deps.onContributionWritten?.(contribution.cid);
-      if (deps.onEntityWrite && deps.namespace) {
+      if (deps.onEntityWrite && deps.namespace && !existedBefore) {
         deps.onEntityWrite({
           kind: "Contribution",
           namespace: deps.namespace,
