@@ -309,6 +309,48 @@ describe("WatchClient fast resume on TCP close", () => {
   });
 });
 
+describe("WatchClient terminal errors", () => {
+  test("rejects on HTTP 401 from list", async () => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ code: "UNAUTHENTICATED" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      })) as typeof fetch;
+    const ac = new AbortController();
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await expect(client.run({ onEvent: () => undefined, signal: ac.signal })).rejects.toThrow(
+      /401|UNAUTHENTICATED|list failed/,
+    );
+  });
+
+  test("rejects on watch ERROR with non-410/503 code", async () => {
+    const fetchImpl = scriptedFetch([
+      { urlPattern: "/api/list", json: { items: [], listResourceVersion: "0" } },
+      {
+        urlPattern: "/api/watch",
+        body: sse("ERROR", { code: 400, reason: "validation_error" }, "0"),
+      },
+    ]);
+    const ac = new AbortController();
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await expect(client.run({ onEvent: () => undefined, signal: ac.signal })).rejects.toThrow(
+      /400|terminal/,
+    );
+  });
+});
+
 describe("WatchClient onEvent semantics", () => {
   test("awaits each onEvent before processing the next", async () => {
     const order: string[] = [];
