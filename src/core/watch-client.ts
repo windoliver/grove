@@ -42,7 +42,7 @@ interface SseFrame {
 
 const DEFAULT_BACKOFF = { minMs: 100, maxMs: 30_000, jitter: 0.3 };
 
-type StreamExit = { kind: "abort" } | { kind: "ended" } | { kind: "relist" };
+type StreamExit = { kind: "abort" } | { kind: "ended"; lastRv: bigint } | { kind: "relist" };
 
 export class WatchClient {
   private readonly baseUrl: string;
@@ -67,30 +67,34 @@ export class WatchClient {
   }): Promise<void> {
     const { onEvent, signal } = opts;
     let nextDelay = this.backoffCfg.minMs;
+    let resumeFrom: bigint | null = null; // null → must (re)list
+
     while (!signal.aborted) {
-      const list = await this.list(signal);
-      for (const item of list.items) {
-        if (signal.aborted) return;
-        await onEvent({
-          op: "RELIST",
-          rv: BigInt(list.listResourceVersion),
-          kind: this.kind,
-          entity: item,
-        });
+      if (resumeFrom === null) {
+        const list = await this.list(signal);
+        for (const item of list.items) {
+          if (signal.aborted) return;
+          await onEvent({
+            op: "RELIST",
+            rv: BigInt(list.listResourceVersion),
+            kind: this.kind,
+            entity: item,
+          });
+        }
+        resumeFrom = BigInt(list.listResourceVersion);
       }
-      const exit = await this.streamWatch(BigInt(list.listResourceVersion), onEvent, signal);
+      const exit = await this.streamWatch(resumeFrom, onEvent, signal);
       if (exit.kind === "abort") return;
       if (exit.kind === "relist") {
-        // 410/503 means resumeFrom expired but the server is healthy — relist is
-        // a clean slate, so reset backoff per spec.
+        // Full relist on next iteration. Reset backoff (relist is a clean slate).
+        resumeFrom = null;
         nextDelay = this.backoffCfg.minMs;
         await this.sleep(nextDelay, signal);
         nextDelay = this.advanceBackoff(nextDelay);
         continue;
       }
-      // exit.kind === "ended" — TCP-close without data; keep accumulating backoff
-      // because the server may actually be down. Task 7 will introduce a
-      // data-flowed-then-ended fast-resume path (reset only when data flowed).
+      // exit.kind === "ended" — fast resume from lastRv (no relist).
+      resumeFrom = exit.lastRv;
       await this.sleep(nextDelay, signal);
       nextDelay = this.advanceBackoff(nextDelay);
     }
@@ -112,12 +116,13 @@ export class WatchClient {
     onEvent: (e: WatchClientEvent) => Promise<void> | void,
     signal: AbortSignal,
   ): Promise<StreamExit> {
+    let lastRv = fromRv;
     const url = `${this.baseUrl}/api/watch?kind=${this.kind}&resumeFrom=${fromRv}`;
     const res = await this.fetchImpl(url, {
       headers: { Authorization: this.authHeader, Accept: "text/event-stream" },
       signal,
     });
-    if (!res.ok || !res.body) return { kind: "ended" };
+    if (!res.ok || !res.body) return { kind: "ended", lastRv };
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -125,7 +130,7 @@ export class WatchClient {
     try {
       while (!signal.aborted) {
         const { value, done } = await reader.read();
-        if (done) return { kind: "ended" };
+        if (done) return { kind: "ended", lastRv };
         buf += decoder.decode(value, { stream: true });
         let idx = buf.indexOf("\n\n");
         while (idx >= 0) {
@@ -143,12 +148,18 @@ export class WatchClient {
           }
           if (isDataOp(frame.event)) {
             const payload = frame.data as { rv: string; entity: WatchEntity };
+            const rv = BigInt(payload.rv);
+            lastRv = rv;
             await onEvent({
               op: frame.event as WatchClientOp,
-              rv: BigInt(payload.rv),
+              rv,
               kind: this.kind,
               entity: payload.entity,
             });
+          } else if (frame.event === "BOOKMARK") {
+            // BOOKMARK advances resume cursor without firing onEvent.
+            const rv = (frame.data as { rv?: string })?.rv;
+            if (rv && /^[0-9]+$/.test(rv)) lastRv = BigInt(rv);
           }
           if (signal.aborted) return { kind: "abort" };
           idx = buf.indexOf("\n\n");
