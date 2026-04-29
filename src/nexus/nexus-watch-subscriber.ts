@@ -89,21 +89,35 @@ export class NexusWatchSubscriber {
     if (this.seen.some((s) => s.key === k)) return;
 
     let entity: WatchEntity;
-    try {
-      entity = await this.opts.fetchEntity(env.kind, env.namespace, env.entityId);
-    } catch (err) {
+    if (env.entity !== undefined) {
+      // Producer-supplied snapshot — required for DELETED (the row is gone
+      // from the store at publish time) and an optimization for the rest.
+      entity = env.entity;
+    } else if (env.op === "DELETED") {
+      // No snapshot for a DELETED claim/contribution means the watcher has
+      // no way to learn that the row is gone — fetchEntity would 404. Log
+      // and skip; the producer must be patched to include the snapshot.
       process.stderr.write(
-        `[grove] NexusWatchSubscriber: fetchEntity failed for ${env.kind}/${env.entityId}: ${
-          err instanceof Error ? err.message : String(err)
-        }\n`,
+        `[grove] NexusWatchSubscriber: DELETED envelope without entity snapshot for ${env.kind}/${env.entityId}; dropping\n`,
       );
       return;
-    }
+    } else {
+      try {
+        entity = await this.opts.fetchEntity(env.kind, env.namespace, env.entityId);
+      } catch (err) {
+        process.stderr.write(
+          `[grove] NexusWatchSubscriber: fetchEntity failed for ${env.kind}/${env.entityId}: ${
+            err instanceof Error ? err.message : String(err)
+          }\n`,
+        );
+        return;
+      }
 
-    // Re-check dedup AFTER the fetch — the in-process fast path may have
-    // recorded between our first check and now (the publisher races the
-    // operation post-commit hook).
-    if (this.seen.some((s) => s.key === k)) return;
+      // Re-check dedup AFTER the fetch — the in-process fast path may have
+      // recorded between our first check and now (the publisher races the
+      // operation post-commit hook).
+      if (this.seen.some((s) => s.key === k)) return;
+    }
 
     const e: EntityWriteEvent = {
       kind: env.kind,

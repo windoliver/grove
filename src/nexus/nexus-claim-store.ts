@@ -102,6 +102,10 @@ export class NexusClaimStore implements ClaimStore {
     // claimToEntity to populate metadata.generation, so subscriber dedupe
     // keys agree across processes.
     const generation = claim.revision ?? 1;
+    // Include the entity snapshot for DELETED — the row is removed before
+    // (or alongside) publish, so subscribers can't fetchEntity. Including
+    // it for ADDED/MODIFIED is also a free latency win.
+    const entity: ClaimEntity = claimToEntity(claim, () => Date.now(), this.zoneId);
     void this.watchPublisher.publish({
       kind: "Claim",
       namespace: this.zoneId,
@@ -109,6 +113,7 @@ export class NexusClaimStore implements ClaimStore {
       entityId: claim.claimId,
       generation,
       emittedAt: new Date().toISOString(),
+      entity,
     });
   }
 

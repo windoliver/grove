@@ -9,7 +9,7 @@
 
 import type { EventBus } from "../core/event-bus.js";
 import { getProcessInstanceId } from "../core/process-instance.js";
-import type { WatchKind, WatchOp } from "../core/watch-events.js";
+import type { WatchEntity, WatchKind, WatchOp } from "../core/watch-events.js";
 
 export const ENTITY_CHANGED = "entity.changed";
 
@@ -27,6 +27,13 @@ export interface EntityChangedEnvelope {
    * and accepting both would double-count the RV.
    */
   readonly sourceInstanceId: string;
+  /**
+   * Optional entity snapshot. Required on DELETED so the subscriber can
+   * record the event without fetching a row that has already been removed
+   * from the store. Producers MAY also include it for ADDED/MODIFIED to
+   * skip the subscriber's hydration round-trip.
+   */
+  readonly entity?: WatchEntity;
 }
 
 export class NexusWatchPublisher {

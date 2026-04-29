@@ -61,7 +61,11 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
   const { kind, resumeFrom } = c.req.valid("query");
   const lastEventId = c.req.header("last-event-id");
   // Last-Event-ID overrides resumeFrom on auto-reconnect (browser EventSource).
-  const fromRv = BigInt(lastEventId ?? resumeFrom);
+  // Reject blank/non-decimal values defensively — `BigInt("")` is 0n, which
+  // would silently rewind the watch to genesis and 410 once the ring evicts.
+  const validLastEventId =
+    lastEventId && /^[0-9]+$/.test(lastEventId) ? lastEventId : undefined;
+  const fromRv = BigInt(validLastEventId ?? resumeFrom);
   const hub: WatchHub = c.get("deps").watchHub;
 
   // SSE-route per-connection queue cap. The WatchHub already bounds its
@@ -89,7 +93,11 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
 
       const send = (event: string, data: unknown, id?: string): void => {
         if (closed) return;
-        const payload = `id: ${id ?? ""}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+        // Only emit `id:` when we have one. A blank `id:` line tells SSE
+        // clients to clear Last-Event-ID, which would silently rewind the
+        // watch on reconnect.
+        const idLine = id ? `id: ${id}\n` : "";
+        const payload = `${idLine}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
         try {
           controller.enqueue(encoder.encode(payload));
         } catch {
@@ -127,9 +135,11 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
       }
 
       bookmarkTimer = setInterval(() => {
-        send("BOOKMARK", {
-          rv: String(hub.currentRv(namespace, kind as WatchKind)),
-        });
+        // Tag the BOOKMARK with the RV as the SSE id so EventSource auto-
+        // reconnect picks up Last-Event-ID = currentRv. Without this, a
+        // BOOKMARK after a real event would not advance the resume cursor.
+        const rv = String(hub.currentRv(namespace, kind as WatchKind));
+        send("BOOKMARK", { rv }, rv);
       }, hub.bookmarkIntervalMs);
       // Don't hold the event loop open just for this timer.
       (bookmarkTimer as unknown as { unref?: () => void }).unref?.();
