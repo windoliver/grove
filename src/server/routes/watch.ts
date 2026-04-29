@@ -106,6 +106,12 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
   // queued bytes stay under ~4 MiB per client before we 503.
   const ROUTE_BYTE_OVERFLOW_THRESHOLD = -3 * 1024 * 1024;
 
+  // Hoisted out of start() so the stream's cancel() handler can fire the
+  // same teardown when the consumer cancels the response body without
+  // routing through the request abort signal (some HTTP/2 proxies and
+  // body.cancel() callers do this).
+  let teardown: (() => void) | undefined;
+
   const stream = new ReadableStream<Uint8Array>(
     {
     start(controller) {
@@ -146,7 +152,10 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
         try {
           controller.enqueue(bytes);
         } catch {
-          /* controller already closed */
+          // Controller already closed — treat as send failure so callers
+          // can run their terminal path (close/cleanup) instead of
+          // silently dropping the frame.
+          return false;
         }
         return true;
       };
@@ -163,6 +172,7 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
           /* already closed */
         }
       };
+      teardown = cleanup;
 
       const closeWithError = (code: number, reason: string): void => {
         send("ERROR", { code, reason });
@@ -193,7 +203,15 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
         // reconnect picks up Last-Event-ID = currentRv. Without this, a
         // BOOKMARK after a real event would not advance the resume cursor.
         const rv = String(hub.currentRv(namespace, kind as WatchKind));
-        send("BOOKMARK", { rv }, rv);
+        // send() returns false when the queue can't accept another frame
+        // (overflow headroom, oversized payload, controller already closed).
+        // Treat this exactly like a data-path overflow so the watcher is
+        // closed and the hub subscription is released — silently dropping
+        // a bookmark would leave the timer + subscription alive forever
+        // on a stalled idle client.
+        if (!send("BOOKMARK", { rv }, rv)) {
+          closeWithError(503, "buffer_overflow");
+        }
       }, hub.bookmarkIntervalMs);
       // Don't hold the event loop open just for this timer.
       (bookmarkTimer as unknown as { unref?: () => void }).unref?.();
@@ -230,6 +248,12 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
 
       // Abort when the client disconnects.
       c.req.raw.signal.addEventListener("abort", cleanup);
+    },
+    cancel() {
+      // Reader cancel (response body cancelled) — release the hub
+      // subscription and bookmark timer even when the request abort
+      // signal didn't fire.
+      teardown?.();
     },
   },
     new ByteLengthQueuingStrategy({ highWaterMark: ROUTE_BYTE_HIGH_WATER_MARK }),
