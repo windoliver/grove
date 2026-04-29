@@ -73,15 +73,18 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
   const fromRv = BigInt(lastEventId ?? resumeFrom);
   const hub: WatchHub = c.get("deps").watchHub;
 
-  // SSE-route per-connection queue cap. The WatchHub already bounds its
+  // SSE-route per-connection byte cap. The WatchHub already bounds its
   // per-subscriber queue, but once a hub event is drained into the route's
   // ReadableStream, only the stream's own backpressure stops the route from
-  // accumulating bytes for a stalled TCP client. Setting an explicit
-  // highWaterMark + a hard overflow threshold lets us close the stream with
-  // 503 buffer_overflow before the process holds unbounded bytes for one
-  // client. K8s' watch http2 path uses a similar bounded write window.
-  const ROUTE_HIGH_WATER_MARK = 64;
-  const ROUTE_OVERFLOW_THRESHOLD = -ROUTE_HIGH_WATER_MARK * 4; // ~256 chunks queued
+  // accumulating bytes for a stalled TCP client. Per-event payload size is
+  // unbounded (large entities), so a chunk-count threshold could still let
+  // tens-to-hundreds of MB queue per client; use ByteLengthQueuingStrategy
+  // so desiredSize is measured in bytes instead of chunks. K8s' watch http2
+  // path uses a similar bounded write window.
+  const ROUTE_BYTE_HIGH_WATER_MARK = 1 * 1024 * 1024; // 1 MiB
+  // desiredSize can go negative when overshooting; cap at -3 MiB so total
+  // queued bytes stay under ~4 MiB per client before we 503.
+  const ROUTE_BYTE_OVERFLOW_THRESHOLD = -3 * 1024 * 1024;
 
   const stream = new ReadableStream<Uint8Array>(
     {
@@ -93,7 +96,7 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
 
       const isOverflowed = (): boolean => {
         const ds = controller.desiredSize;
-        return ds !== null && ds <= ROUTE_OVERFLOW_THRESHOLD;
+        return ds !== null && ds <= ROUTE_BYTE_OVERFLOW_THRESHOLD;
       };
 
       const send = (event: string, data: unknown, id?: string): void => {
@@ -184,7 +187,7 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
       c.req.raw.signal.addEventListener("abort", cleanup);
     },
   },
-    new CountQueuingStrategy({ highWaterMark: ROUTE_HIGH_WATER_MARK }),
+    new ByteLengthQueuingStrategy({ highWaterMark: ROUTE_BYTE_HIGH_WATER_MARK }),
   );
 
   return new Response(stream, {
