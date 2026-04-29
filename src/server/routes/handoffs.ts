@@ -10,12 +10,33 @@
  * unauthenticated. See comments below for rationale.
  */
 
+import { zValidator } from "@hono/zod-validator";
 import type { Context, Hono as HonoType } from "hono";
 import { Hono } from "hono";
-import type { HandoffStatus, HandoffStore } from "../../core/handoff.js";
+import { z } from "zod";
+import type { HandoffStore } from "../../core/handoff.js";
+import { HandoffStatus as HandoffStatusValue } from "../../core/handoff.js";
 import type { ServerEnv } from "../deps.js";
 
 const handoffs: HonoType<ServerEnv> = new Hono<ServerEnv>();
+
+const listQuerySchema = z.object({
+  toRole: z.string().optional(),
+  fromRole: z.string().optional(),
+  status: z
+    .enum([
+      HandoffStatusValue.PendingPickup,
+      HandoffStatusValue.Delivered,
+      HandoffStatusValue.Processed,
+      HandoffStatusValue.Replied,
+      HandoffStatusValue.Expired,
+      HandoffStatusValue.DeadLettered,
+    ])
+    .optional(),
+  sourceCid: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  sessionId: z.string().optional(),
+});
 
 /**
  * Middleware: require handoffStore to be configured.
@@ -59,19 +80,14 @@ function resolveStore(c: Context<ServerEnv>): HandoffStore | undefined {
 }
 
 /** GET /api/handoffs — List handoffs with optional filters. */
-handoffs.get("/", async (c) => {
+handoffs.get("/", zValidator("query", listQuerySchema), async (c) => {
   const store = resolveStore(c);
   if (store === undefined) return c.json({ error: "unreachable" }, 500);
 
   // Expire stale handoffs before listing so callers always see fresh status.
   await store.expireStale();
 
-  const toRole = c.req.query("toRole");
-  const fromRole = c.req.query("fromRole");
-  const status = c.req.query("status") as HandoffStatus | undefined;
-  const sourceCid = c.req.query("sourceCid");
-  const limitRaw = c.req.query("limit");
-  const limit = limitRaw !== undefined ? Math.min(parseInt(limitRaw, 10) || 50, 200) : 50;
+  const { toRole, fromRole, status, sourceCid, limit } = c.req.valid("query");
 
   const results = await store.list({
     ...(toRole !== undefined ? { toRole } : {}),
@@ -130,16 +146,12 @@ handoffs.post("/:id/delivered", async (c) => {
     return c.json({ error: { code: "BAD_REQUEST", message: "Missing handoff id" } }, 400);
   }
 
-  try {
-    await store.markDelivered(id);
-    const updated = await store.get(id);
-    if (updated === undefined) {
-      return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
-    }
-    return c.json(updated);
-  } catch {
+  await store.markDelivered(id);
+  const updated = await store.get(id);
+  if (updated === undefined) {
     return c.json({ error: { code: "NOT_FOUND", message: "Handoff not found" } }, 404);
   }
+  return c.json(updated);
 });
 
 export { handoffs };
