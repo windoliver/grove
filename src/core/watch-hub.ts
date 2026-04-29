@@ -73,6 +73,12 @@ export class WatchHub {
     if (fromRv < oldestRv - 1n) {
       throw new StaleResourceVersionError(namespace, kind, fromRv, oldestRv);
     }
+    // Reject future RVs. After a server restart the hub resets to 0; a client
+    // resuming from rv=100 must re-list rather than receive id=1 next and
+    // silently violate watch-RV monotonicity.
+    if (fromRv > s.counter) {
+      throw new StaleResourceVersionError(namespace, kind, fromRv, s.counter);
+    }
 
     const replay: WatchEvent[] = s.ring.filter((e) => e.rv > fromRv);
 

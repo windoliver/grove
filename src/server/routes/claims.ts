@@ -11,6 +11,7 @@ import type { Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
 import { DEFAULT_LEASE_MS } from "../../core/constants.js";
+import { claimToEntity } from "../../core/entity.js";
 import type { AgentIdentity, Claim, JsonValue } from "../../core/models.js";
 import { listClaimsOperation, releaseOperation } from "../../core/operations/index.js";
 import type { ServerEnv } from "../deps.js";
@@ -55,7 +56,9 @@ const claims: HonoType<ServerEnv> = new Hono<ServerEnv>();
  * agent identity in the request body rather than using resolveAgent().
  */
 claims.post("/", zValidator("json", createBodySchema), async (c) => {
-  const { claimStore } = c.get("deps");
+  const deps = c.get("deps");
+  const { claimStore, watchHub, watchSubscriber } = deps;
+  const namespace = c.get("namespace");
   const body = c.req.valid("json");
   const now = new Date();
   const leaseDurationMs = body.leaseDurationMs ?? DEFAULT_LEASE_MS;
@@ -74,7 +77,39 @@ claims.post("/", zValidator("json", createBodySchema), async (c) => {
       : {}),
   };
 
+  // Detect renew vs create so the watch event carries the right op.
+  const prior = await claimStore.activeClaims(body.targetRef);
+  const existing = prior.find((p) => p.agent.agentId === claim.agent.agentId);
+
   const result = await claimStore.claimOrRenew(claim);
+
+  // Watch fan-out (#292). Direct store path bypasses the operations layer
+  // so we record + markSeen here. Phase change is implicit on first create;
+  // renewal that did not change phase is suppressed to avoid heartbeat-noise.
+  const phaseChanged = !existing || existing.status !== result.status;
+  if (phaseChanged) {
+    const entity = claimToEntity(result, () => Date.now(), namespace);
+    try {
+      watchHub.recordWrite({
+        kind: "Claim",
+        namespace,
+        op: existing ? "MODIFIED" : "ADDED",
+        entity,
+      });
+      watchSubscriber?.markSeen({
+        kind: "Claim",
+        entityId: result.claimId,
+        generation: entity.metadata.generation,
+      });
+    } catch (err) {
+      process.stderr.write(
+        `[grove] Warning: watch fan-out threw after POST /api/claims: ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
+    }
+  }
+
   return c.json(result, 201);
 });
 

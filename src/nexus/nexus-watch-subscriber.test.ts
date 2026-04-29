@@ -38,10 +38,10 @@ describe("NexusWatchSubscriber", () => {
       void kind;
       return fakeContributionEntity(id, ns);
     };
-    const sub = new NexusWatchSubscriber({ bus, hub, fetchEntity });
+    const sub = new NexusWatchSubscriber({ bus, hub, fetchEntity, instanceId: "sub-proc" });
     sub.start();
 
-    const pub = new NexusWatchPublisher(bus);
+    const pub = new NexusWatchPublisher(bus, "writer-proc");
     await pub.publish({
       kind: "Contribution",
       namespace: "ns/wt",
@@ -72,6 +72,7 @@ describe("NexusWatchSubscriber", () => {
       hub,
       fetchEntity,
       dedupWindowMs: 1_000,
+      instanceId: "sub-proc",
     });
     sub.start();
 

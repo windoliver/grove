@@ -321,6 +321,11 @@ export function createTestApp(opts: CreateTestAppOptions = {}): TestContext {
   const watchSubscriber = new NexusWatchSubscriber({
     bus: watchEventBus,
     hub: watchHub,
+    // Pin a stable instanceId distinct from the default process id so the
+    // cross-process integration test (#292 T23) can publish with a different
+    // id and exercise the cross-process branch — instead of being filtered
+    // out as a self-emitted envelope.
+    instanceId: "test-server-proc",
     fetchEntity: async (kind, namespace, id) => {
       if (kind === "Contribution") {
         const c = await contributionStore.get(id);

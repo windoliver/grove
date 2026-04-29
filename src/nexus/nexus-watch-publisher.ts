@@ -8,6 +8,7 @@
  */
 
 import type { EventBus } from "../core/event-bus.js";
+import { getProcessInstanceId } from "../core/process-instance.js";
 import type { WatchKind, WatchOp } from "../core/watch-events.js";
 
 export const ENTITY_CHANGED = "entity.changed";
@@ -19,21 +20,36 @@ export interface EntityChangedEnvelope {
   readonly entityId: string;
   readonly generation: number;
   readonly emittedAt: string;
+  /**
+   * Stable per-process identifier of the writer. Subscribers running in the
+   * same process drop envelopes whose `sourceInstanceId` matches their own —
+   * that path is already covered by the in-process onEntityWrite fast path,
+   * and accepting both would double-count the RV.
+   */
+  readonly sourceInstanceId: string;
 }
 
 export class NexusWatchPublisher {
   private readonly bus: EventBus;
+  private readonly instanceId: string;
 
-  constructor(bus: EventBus) {
+  constructor(bus: EventBus, instanceId?: string) {
     this.bus = bus;
+    this.instanceId = instanceId ?? getProcessInstanceId();
   }
 
-  async publish(envelope: EntityChangedEnvelope): Promise<void> {
+  async publish(
+    envelope: Omit<EntityChangedEnvelope, "sourceInstanceId">,
+  ): Promise<void> {
+    const stamped: EntityChangedEnvelope = {
+      ...envelope,
+      sourceInstanceId: this.instanceId,
+    };
     await this.bus.publish({
       type: ENTITY_CHANGED,
       sourceRole: "grove-store",
       targetRole: "*",
-      payload: { ...envelope },
+      payload: { ...stamped },
       timestamp: envelope.emittedAt,
     });
   }

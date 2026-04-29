@@ -9,6 +9,7 @@
  */
 
 import type { EventBus, EventHandler } from "../core/event-bus.js";
+import { getProcessInstanceId } from "../core/process-instance.js";
 import type { EntityWriteEvent, WatchEntity, WatchKind, WatchOp } from "../core/watch-events.js";
 import type { WatchHub } from "../core/watch-hub.js";
 import { ENTITY_CHANGED, type EntityChangedEnvelope } from "./nexus-watch-publisher.js";
@@ -23,6 +24,12 @@ export interface NexusWatchSubscriberOptions {
   readonly fetchEntity: (kind: WatchKind, namespace: string, id: string) => Promise<WatchEntity>;
   /** Dedupe window for in-process fast-path replays. Default 5_000ms. */
   readonly dedupWindowMs?: number;
+  /**
+   * Stable per-process identifier of THIS subscriber. Envelopes carrying a
+   * matching `sourceInstanceId` are dropped — they originated in this process
+   * and the in-process onEntityWrite fast path already advanced the hub.
+   */
+  readonly instanceId?: string;
 }
 
 interface SeenKey {
@@ -32,16 +39,22 @@ interface SeenKey {
 
 export class NexusWatchSubscriber {
   private readonly opts: NexusWatchSubscriberOptions;
+  private readonly instanceId: string;
   private readonly seen: SeenKey[] = [];
   private readonly handler: EventHandler = (event) => {
     if (event.type !== ENTITY_CHANGED) return;
     const env = event.payload as unknown as EntityChangedEnvelope;
+    // Self-emitted envelopes are duplicates of the in-process fast path and
+    // would advance the hub a second time. Drop before the dedup window even
+    // gets a chance to race against fetchEntity latency.
+    if (env.sourceInstanceId && env.sourceInstanceId === this.instanceId) return;
     void this.onEnvelope(env);
   };
   private started = false;
 
   constructor(opts: NexusWatchSubscriberOptions) {
     this.opts = opts;
+    this.instanceId = opts.instanceId ?? getProcessInstanceId();
   }
 
   start(): void {
@@ -86,6 +99,11 @@ export class NexusWatchSubscriber {
       );
       return;
     }
+
+    // Re-check dedup AFTER the fetch — the in-process fast path may have
+    // recorded between our first check and now (the publisher races the
+    // operation post-commit hook).
+    if (this.seen.some((s) => s.key === k)) return;
 
     const e: EntityWriteEvent = {
       kind: env.kind,

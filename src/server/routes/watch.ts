@@ -64,12 +64,28 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
   const fromRv = BigInt(lastEventId ?? resumeFrom);
   const hub: WatchHub = c.get("deps").watchHub;
 
-  const stream = new ReadableStream<Uint8Array>({
+  // SSE-route per-connection queue cap. The WatchHub already bounds its
+  // per-subscriber queue, but once a hub event is drained into the route's
+  // ReadableStream, only the stream's own backpressure stops the route from
+  // accumulating bytes for a stalled TCP client. Setting an explicit
+  // highWaterMark + a hard overflow threshold lets us close the stream with
+  // 503 buffer_overflow before the process holds unbounded bytes for one
+  // client. K8s' watch http2 path uses a similar bounded write window.
+  const ROUTE_HIGH_WATER_MARK = 64;
+  const ROUTE_OVERFLOW_THRESHOLD = -ROUTE_HIGH_WATER_MARK * 4; // ~256 chunks queued
+
+  const stream = new ReadableStream<Uint8Array>(
+    {
     start(controller) {
       const encoder = new TextEncoder();
       const ac = new AbortController();
       let bookmarkTimer: ReturnType<typeof setInterval> | null = null;
       let closed = false;
+
+      const isOverflowed = (): boolean => {
+        const ds = controller.desiredSize;
+        return ds !== null && ds <= ROUTE_OVERFLOW_THRESHOLD;
+      };
 
       const send = (event: string, data: unknown, id?: string): void => {
         if (closed) return;
@@ -121,6 +137,10 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
       void (async () => {
         try {
           for await (const ev of iterable) {
+            if (isOverflowed()) {
+              closeWithError(503, "buffer_overflow");
+              return;
+            }
             send(ev.op, { kind: ev.kind, entity: ev.entity }, String(ev.rv));
           }
           cleanup();
@@ -136,7 +156,9 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
       // Abort when the client disconnects.
       c.req.raw.signal.addEventListener("abort", cleanup);
     },
-  });
+  },
+    new CountQueuingStrategy({ highWaterMark: ROUTE_HIGH_WATER_MARK }),
+  );
 
   return new Response(stream, {
     headers: {
