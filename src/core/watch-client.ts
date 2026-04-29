@@ -42,7 +42,10 @@ interface SseFrame {
 
 const DEFAULT_BACKOFF = { minMs: 100, maxMs: 30_000, jitter: 0.3 };
 
-type StreamExit = { kind: "abort" } | { kind: "ended"; lastRv: bigint } | { kind: "relist" };
+type StreamExit =
+  | { kind: "abort" }
+  | { kind: "ended"; lastRv: bigint; observedData: boolean }
+  | { kind: "relist" };
 
 export class WatchClient {
   private readonly baseUrl: string;
@@ -91,12 +94,17 @@ export class WatchClient {
         nextDelay = this.backoffCfg.minMs;
         await this.sleep(nextDelay, signal);
         nextDelay = this.advanceBackoff(nextDelay);
-        continue;
+      } else {
+        // exit.kind === "ended" — fast resume from lastRv (no relist).
+        resumeFrom = exit.lastRv;
+        // Reset backoff if the stream actually delivered events; otherwise keep
+        // accumulating so a flapping/empty server gets exponentially throttled.
+        if (exit.observedData) {
+          nextDelay = this.backoffCfg.minMs;
+        }
+        await this.sleep(nextDelay, signal);
+        nextDelay = this.advanceBackoff(nextDelay);
       }
-      // exit.kind === "ended" — fast resume from lastRv (no relist).
-      resumeFrom = exit.lastRv;
-      await this.sleep(nextDelay, signal);
-      nextDelay = this.advanceBackoff(nextDelay);
     }
   }
 
@@ -117,12 +125,16 @@ export class WatchClient {
     signal: AbortSignal,
   ): Promise<StreamExit> {
     let lastRv = fromRv;
+    let observedData = false;
     const url = `${this.baseUrl}/api/watch?kind=${this.kind}&resumeFrom=${fromRv}`;
     const res = await this.fetchImpl(url, {
       headers: { Authorization: this.authHeader, Accept: "text/event-stream" },
       signal,
     });
-    if (!res.ok || !res.body) return { kind: "ended", lastRv };
+    if (res.status === 410 || res.status === 503) {
+      return { kind: "relist" };
+    }
+    if (!res.ok || !res.body) return { kind: "ended", lastRv, observedData };
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -130,7 +142,7 @@ export class WatchClient {
     try {
       while (!signal.aborted) {
         const { value, done } = await reader.read();
-        if (done) return { kind: "ended", lastRv };
+        if (done) return { kind: "ended", lastRv, observedData };
         buf += decoder.decode(value, { stream: true });
         let idx = buf.indexOf("\n\n");
         while (idx >= 0) {
@@ -147,9 +159,17 @@ export class WatchClient {
             throw new Error(`watch terminal error: code=${code}`);
           }
           if (isDataOp(frame.event)) {
-            const payload = frame.data as { rv: string; entity: WatchEntity };
+            const payload = frame.data as { rv?: string; entity?: WatchEntity };
+            if (!payload.rv || !/^[0-9]+$/.test(payload.rv) || !payload.entity) {
+              // Malformed data event — server bug. Drop and continue rather than
+              // crashing the loop; the next BOOKMARK or event will resync the cursor.
+              console.warn(`watch: dropped malformed ${frame.event} frame`);
+              idx = buf.indexOf("\n\n");
+              continue;
+            }
             const rv = BigInt(payload.rv);
             lastRv = rv;
+            observedData = true;
             await onEvent({
               op: frame.event as WatchClientOp,
               rv,

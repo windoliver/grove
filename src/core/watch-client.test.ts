@@ -192,6 +192,98 @@ describe("WatchClient relist on 410", () => {
     expect(sleeps).toEqual([10, 20, 40]);
   });
 
+  test("ended after data delivery resets backoff", async () => {
+    const sleeps: number[] = [];
+    // Two empty-watch ended cycles climb to 20ms, then a watch that delivers
+    // one ADDED event before ending must reset backoff to 10ms.
+    const fetchImpl = scriptedFetch([
+      { urlPattern: "/api/list", json: { items: [], listResourceVersion: "0" } },
+      { urlPattern: "/api/watch", body: "" }, // ended (no data) → sleep(10), advance to 20
+      { urlPattern: "/api/watch", body: "" }, // ended (no data) → sleep(20), advance to 40
+      {
+        urlPattern: "/api/watch",
+        body: sse("ADDED", { rv: "1", kind: "Contribution", entity: ENTITY_A }, "1"),
+      }, // ended after delivering data → reset, sleep(10)
+      { urlPattern: "/api/watch", body: "" },
+    ]);
+    const ac = new AbortController();
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 10, maxMs: 100, jitter: 0 },
+    });
+    (client as unknown as { onBackoff?: (ms: number) => void }).onBackoff = (ms: number) => {
+      sleeps.push(ms);
+      if (sleeps.length >= 3) ac.abort();
+    };
+    await client.run({ onEvent: () => undefined, signal: ac.signal });
+    expect(sleeps).toEqual([10, 20, 10]);
+  });
+
+  test("HTTP 503 from watch triggers relist (not fast resume)", async () => {
+    const fetchImpl = scriptedFetch([
+      { urlPattern: "/api/list", json: { items: [ENTITY_A], listResourceVersion: "5" } },
+      { urlPattern: "/api/watch", body: "", status: 503 },
+      { urlPattern: "/api/list", json: { items: [ENTITY_B], listResourceVersion: "9" } },
+      { urlPattern: "/api/watch", body: "" },
+    ]);
+    const seen: WatchClientEvent[] = [];
+    const ac = new AbortController();
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    const running = client.run({
+      onEvent: async (e) => {
+        seen.push(e);
+        const relists = seen.filter((s) => s.op === "RELIST");
+        if (relists.length >= 2) ac.abort();
+      },
+      signal: ac.signal,
+    });
+    await running;
+    // 2 RELIST events: one per list (the second after relist due to 503).
+    expect(seen.filter((s) => s.op === "RELIST").length).toBe(2);
+  });
+
+  test("malformed rv on data event is dropped, run continues", async () => {
+    const seen: WatchClientEvent[] = [];
+    const fetchImpl = scriptedFetch([
+      { urlPattern: "/api/list", json: { items: [], listResourceVersion: "0" } },
+      {
+        urlPattern: "/api/watch",
+        body:
+          sse("ADDED", { rv: "not-a-number", kind: "Contribution", entity: ENTITY_A }, "1") +
+          sse("ADDED", { rv: "2", kind: "Contribution", entity: ENTITY_B }, "2"),
+      },
+      { urlPattern: "/api/watch", body: "" },
+    ]);
+    const ac = new AbortController();
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    const running = client.run({
+      onEvent: async (e) => {
+        seen.push(e);
+        if (seen.length >= 1) ac.abort();
+      },
+      signal: ac.signal,
+    });
+    await running;
+    // Only the well-formed event surfaced.
+    expect(seen.length).toBe(1);
+    expect(seen[0]?.rv).toBe(2n);
+  });
+
   test("ERROR{code:410} resets backoff (relist is a clean slate)", async () => {
     const sleeps: number[] = [];
     // Two TCP-close cycles climb backoff to 20ms, then a 410 should reset to 10ms.
