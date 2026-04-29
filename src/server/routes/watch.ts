@@ -48,7 +48,12 @@ watch.get("/list", zValidator("query", listQuerySchema), async (c) => {
   const { kind } = c.req.valid("query");
   if (!SUPPORTED_KINDS.has(kind)) {
     return c.json(
-      { error: { code: "NOT_CONFIGURED", message: `kind '${kind}' is accepted by the schema but not yet backed by a store; list is unavailable` } },
+      {
+        error: {
+          code: "NOT_CONFIGURED",
+          message: `kind '${kind}' is accepted by the schema but not yet backed by a store; list is unavailable`,
+        },
+      },
       501,
     );
   }
@@ -75,7 +80,12 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
   const { kind, resumeFrom } = c.req.valid("query");
   if (!SUPPORTED_KINDS.has(kind)) {
     return c.json(
-      { error: { code: "NOT_CONFIGURED", message: `kind '${kind}' is accepted by the schema but not yet backed by fan-out hooks; watch would silently miss events` } },
+      {
+        error: {
+          code: "NOT_CONFIGURED",
+          message: `kind '${kind}' is accepted by the schema but not yet backed by fan-out hooks; watch would silently miss events`,
+        },
+      },
       501,
     );
   }
@@ -86,7 +96,12 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
   // recently-seen events, causing duplicate replay or stale 410.
   if (lastEventId !== undefined && !/^[0-9]+$/.test(lastEventId)) {
     return c.json(
-      { error: { code: "VALIDATION_ERROR", message: "Last-Event-ID must be a non-negative decimal integer" } },
+      {
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Last-Event-ID must be a non-negative decimal integer",
+        },
+      },
       400,
     );
   }
@@ -114,148 +129,148 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
 
   const stream = new ReadableStream<Uint8Array>(
     {
-    start(controller) {
-      const encoder = new TextEncoder();
-      const ac = new AbortController();
-      let bookmarkTimer: ReturnType<typeof setInterval> | null = null;
-      let closed = false;
+      start(controller) {
+        const encoder = new TextEncoder();
+        const ac = new AbortController();
+        let bookmarkTimer: ReturnType<typeof setInterval> | null = null;
+        let closed = false;
 
-      const isOverflowed = (): boolean => {
-        const ds = controller.desiredSize;
-        return ds !== null && ds <= ROUTE_BYTE_OVERFLOW_THRESHOLD;
-      };
+        const isOverflowed = (): boolean => {
+          const ds = controller.desiredSize;
+          return ds !== null && ds <= ROUTE_BYTE_OVERFLOW_THRESHOLD;
+        };
 
-      // Per-event hard cap. Even within byte budget, a single huge frame
-      // would force the queue into deep-negative desiredSize between
-      // overflow checks. Watch consumers that produce >1 MiB events should
-      // chunk through the entity store, not the watch stream.
-      const ROUTE_MAX_EVENT_BYTES = 1 * 1024 * 1024;
+        // Per-event hard cap. Even within byte budget, a single huge frame
+        // would force the queue into deep-negative desiredSize between
+        // overflow checks. Watch consumers that produce >1 MiB events should
+        // chunk through the entity store, not the watch stream.
+        const ROUTE_MAX_EVENT_BYTES = 1 * 1024 * 1024;
 
-      const send = (event: string, data: unknown, id?: string): boolean => {
-        if (closed) return false;
-        // Only emit `id:` when we have one. A blank `id:` line tells SSE
-        // clients to clear Last-Event-ID, which would silently rewind the
-        // watch on reconnect.
-        const idLine = id ? `id: ${id}\n` : "";
-        const payload = `${idLine}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-        const bytes = encoder.encode(payload);
-        // Reject oversized single events before they overshoot the queue.
-        // The terminal ERROR/cleanup path may still call send() inside this
-        // guard — that path uses small fixed payloads and is not affected.
-        if (bytes.byteLength > ROUTE_MAX_EVENT_BYTES) return false;
-        // If this single event would push the queue into hard-overflow
-        // before the next iteration's check, treat it as overflow now.
-        const ds = controller.desiredSize;
-        if (ds !== null && ds - bytes.byteLength <= ROUTE_BYTE_OVERFLOW_THRESHOLD) {
-          return false;
-        }
-        try {
-          controller.enqueue(bytes);
-        } catch {
-          // Controller already closed — treat as send failure so callers
-          // can run their terminal path (close/cleanup) instead of
-          // silently dropping the frame.
-          return false;
-        }
-        return true;
-      };
-
-      const cleanup = (): void => {
-        if (closed) return;
-        closed = true;
-        if (bookmarkTimer) clearInterval(bookmarkTimer);
-        bookmarkTimer = null;
-        ac.abort();
-        try {
-          controller.close();
-        } catch {
-          /* already closed */
-        }
-      };
-      teardown = cleanup;
-
-      const closeWithError = (code: number, reason: string): void => {
-        send("ERROR", { code, reason });
-        cleanup();
-      };
-
-      let iterable: AsyncIterable<WatchEvent>;
-      try {
-        iterable = hub.subscribe(namespace, kind as WatchKind, fromRv, ac.signal);
-      } catch (err) {
-        if (err instanceof StaleResourceVersionError) {
-          closeWithError(410, "expired");
-          return;
-        }
-        throw err;
-      }
-
-      bookmarkTimer = setInterval(() => {
-        // A stalled reader on a quiescent watch would otherwise let
-        // BOOKMARK frames pile up forever — they don't trip the
-        // data-event overflow check below. Reuse the same threshold so
-        // both code paths cap memory identically.
-        if (isOverflowed()) {
-          closeWithError(503, "buffer_overflow");
-          return;
-        }
-        // Tag the BOOKMARK with the RV as the SSE id so EventSource auto-
-        // reconnect picks up Last-Event-ID = currentRv. Without this, a
-        // BOOKMARK after a real event would not advance the resume cursor.
-        const rv = String(hub.currentRv(namespace, kind as WatchKind));
-        // send() returns false when the queue can't accept another frame
-        // (overflow headroom, oversized payload, controller already closed).
-        // Treat this exactly like a data-path overflow so the watcher is
-        // closed and the hub subscription is released — silently dropping
-        // a bookmark would leave the timer + subscription alive forever
-        // on a stalled idle client.
-        if (!send("BOOKMARK", { rv }, rv)) {
-          closeWithError(503, "buffer_overflow");
-        }
-      }, hub.bookmarkIntervalMs);
-      // Don't hold the event loop open just for this timer.
-      (bookmarkTimer as unknown as { unref?: () => void }).unref?.();
-
-      void (async () => {
-        try {
-          for await (const ev of iterable) {
-            if (isOverflowed()) {
-              closeWithError(503, "buffer_overflow");
-              return;
-            }
-            const rv = String(ev.rv);
-            // Include rv in the JSON body so clients that only parse `data`
-            // (no SSE `lastEventId` access) can still resume. Matches the
-            // BOOKMARK shape and the A5 contract.
-            const sent = send(ev.op, { rv, kind: ev.kind, entity: ev.entity }, rv);
-            // send() refuses oversized events or events that would push the
-            // queue past the overflow threshold. Either case is terminal —
-            // skipping the event silently would let the client miss writes.
-            if (!sent) {
-              closeWithError(503, "buffer_overflow");
-              return;
-            }
+        const send = (event: string, data: unknown, id?: string): boolean => {
+          if (closed) return false;
+          // Only emit `id:` when we have one. A blank `id:` line tells SSE
+          // clients to clear Last-Event-ID, which would silently rewind the
+          // watch on reconnect.
+          const idLine = id ? `id: ${id}\n` : "";
+          const payload = `${idLine}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+          const bytes = encoder.encode(payload);
+          // Reject oversized single events before they overshoot the queue.
+          // The terminal ERROR/cleanup path may still call send() inside this
+          // guard — that path uses small fixed payloads and is not affected.
+          if (bytes.byteLength > ROUTE_MAX_EVENT_BYTES) return false;
+          // If this single event would push the queue into hard-overflow
+          // before the next iteration's check, treat it as overflow now.
+          const ds = controller.desiredSize;
+          if (ds !== null && ds - bytes.byteLength <= ROUTE_BYTE_OVERFLOW_THRESHOLD) {
+            return false;
           }
+          try {
+            controller.enqueue(bytes);
+          } catch {
+            // Controller already closed — treat as send failure so callers
+            // can run their terminal path (close/cleanup) instead of
+            // silently dropping the frame.
+            return false;
+          }
+          return true;
+        };
+
+        const cleanup = (): void => {
+          if (closed) return;
+          closed = true;
+          if (bookmarkTimer) clearInterval(bookmarkTimer);
+          bookmarkTimer = null;
+          ac.abort();
+          try {
+            controller.close();
+          } catch {
+            /* already closed */
+          }
+        };
+        teardown = cleanup;
+
+        const closeWithError = (code: number, reason: string): void => {
+          send("ERROR", { code, reason });
           cleanup();
-        } catch (err) {
-          if (err instanceof BufferOverflowError) {
-            closeWithError(503, "buffer_overflow");
-          } else {
-            closeWithError(500, "internal_error");
-          }
-        }
-      })();
+        };
 
-      // Abort when the client disconnects.
-      c.req.raw.signal.addEventListener("abort", cleanup);
+        let iterable: AsyncIterable<WatchEvent>;
+        try {
+          iterable = hub.subscribe(namespace, kind as WatchKind, fromRv, ac.signal);
+        } catch (err) {
+          if (err instanceof StaleResourceVersionError) {
+            closeWithError(410, "expired");
+            return;
+          }
+          throw err;
+        }
+
+        bookmarkTimer = setInterval(() => {
+          // A stalled reader on a quiescent watch would otherwise let
+          // BOOKMARK frames pile up forever — they don't trip the
+          // data-event overflow check below. Reuse the same threshold so
+          // both code paths cap memory identically.
+          if (isOverflowed()) {
+            closeWithError(503, "buffer_overflow");
+            return;
+          }
+          // Tag the BOOKMARK with the RV as the SSE id so EventSource auto-
+          // reconnect picks up Last-Event-ID = currentRv. Without this, a
+          // BOOKMARK after a real event would not advance the resume cursor.
+          const rv = String(hub.currentRv(namespace, kind as WatchKind));
+          // send() returns false when the queue can't accept another frame
+          // (overflow headroom, oversized payload, controller already closed).
+          // Treat this exactly like a data-path overflow so the watcher is
+          // closed and the hub subscription is released — silently dropping
+          // a bookmark would leave the timer + subscription alive forever
+          // on a stalled idle client.
+          if (!send("BOOKMARK", { rv }, rv)) {
+            closeWithError(503, "buffer_overflow");
+          }
+        }, hub.bookmarkIntervalMs);
+        // Don't hold the event loop open just for this timer.
+        (bookmarkTimer as unknown as { unref?: () => void }).unref?.();
+
+        void (async () => {
+          try {
+            for await (const ev of iterable) {
+              if (isOverflowed()) {
+                closeWithError(503, "buffer_overflow");
+                return;
+              }
+              const rv = String(ev.rv);
+              // Include rv in the JSON body so clients that only parse `data`
+              // (no SSE `lastEventId` access) can still resume. Matches the
+              // BOOKMARK shape and the A5 contract.
+              const sent = send(ev.op, { rv, kind: ev.kind, entity: ev.entity }, rv);
+              // send() refuses oversized events or events that would push the
+              // queue past the overflow threshold. Either case is terminal —
+              // skipping the event silently would let the client miss writes.
+              if (!sent) {
+                closeWithError(503, "buffer_overflow");
+                return;
+              }
+            }
+            cleanup();
+          } catch (err) {
+            if (err instanceof BufferOverflowError) {
+              closeWithError(503, "buffer_overflow");
+            } else {
+              closeWithError(500, "internal_error");
+            }
+          }
+        })();
+
+        // Abort when the client disconnects.
+        c.req.raw.signal.addEventListener("abort", cleanup);
+      },
+      cancel() {
+        // Reader cancel (response body cancelled) — release the hub
+        // subscription and bookmark timer even when the request abort
+        // signal didn't fire.
+        teardown?.();
+      },
     },
-    cancel() {
-      // Reader cancel (response body cancelled) — release the hub
-      // subscription and bookmark timer even when the request abort
-      // signal didn't fire.
-      teardown?.();
-    },
-  },
     new ByteLengthQueuingStrategy({ highWaterMark: ROUTE_BYTE_HIGH_WATER_MARK }),
   );
 

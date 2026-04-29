@@ -45,9 +45,7 @@ export class NexusWatchPublisher {
     this.instanceId = instanceId ?? getProcessInstanceId();
   }
 
-  async publish(
-    envelope: Omit<EntityChangedEnvelope, "sourceInstanceId">,
-  ): Promise<void> {
+  async publish(envelope: Omit<EntityChangedEnvelope, "sourceInstanceId">): Promise<void> {
     const stamped: EntityChangedEnvelope = {
       ...envelope,
       sourceInstanceId: this.instanceId,

@@ -1149,7 +1149,10 @@ export async function contributeOperation(
       await priorInFlight;
     }
 
-    let resolveInFlight: () => void = () => {};
+    // Promise constructor runs the executor synchronously, so the
+    // definite-assignment assertion is safe and avoids the empty-arrow
+    // dummy initializer (lint/suspicious/noEmptyBlockStatements).
+    let resolveInFlight!: () => void;
     const inFlightPromise = new Promise<void>((r) => {
       resolveInFlight = r;
     });
