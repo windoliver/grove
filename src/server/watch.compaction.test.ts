@@ -32,6 +32,9 @@ describe("GET /api/watch/metrics", () => {
     const body = (await res.json()) as MetricsResponse;
     expect(body.retention.maxAgeMs).toBe(1234);
     expect(body.retention.maxEvents).toBe(56);
+    expect(body.keys).toEqual([]);
+    expect(res.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(res.headers.get("Vary")).toBe("Authorization");
   });
 
   test("reports counters after writes within capacity", async () => {

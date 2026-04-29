@@ -292,13 +292,20 @@ watch.get("/watch/metrics", async (c) => {
   // Filter to caller's namespace so namespaces don't leak each other's
   // traffic shape. The request is already authenticated by namespaceAuth.
   const keys = allStats.filter((s) => s.namespace === namespace);
-  return c.json({
-    retention: {
-      maxAgeMs: hub.maxAgeMsPerKey,
-      maxEvents: hub.maxEventsPerKey,
+  return c.json(
+    {
+      retention: {
+        maxAgeMs: hub.maxAgeMsPerKey,
+        maxEvents: hub.maxEventsPerKey,
+      },
+      keys,
     },
-    keys,
-  });
+    200,
+    {
+      "Cache-Control": "private, no-store",
+      Vary: "Authorization",
+    },
+  );
 });
 
 async function listForKind(
