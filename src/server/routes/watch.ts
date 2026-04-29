@@ -61,11 +61,16 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
   const { kind, resumeFrom } = c.req.valid("query");
   const lastEventId = c.req.header("last-event-id");
   // Last-Event-ID overrides resumeFrom on auto-reconnect (browser EventSource).
-  // Reject blank/non-decimal values defensively — `BigInt("")` is 0n, which
-  // would silently rewind the watch to genesis and 410 once the ring evicts.
-  const validLastEventId =
-    lastEventId && /^[0-9]+$/.test(lastEventId) ? lastEventId : undefined;
-  const fromRv = BigInt(validLastEventId ?? resumeFrom);
+  // If present but malformed, fail fast with 400 — silently falling back to
+  // the URL's resumeFrom would let a stale URL rewind the client past
+  // recently-seen events, causing duplicate replay or stale 410.
+  if (lastEventId !== undefined && !/^[0-9]+$/.test(lastEventId)) {
+    return c.json(
+      { error: { code: "VALIDATION_ERROR", message: "Last-Event-ID must be a non-negative decimal integer" } },
+      400,
+    );
+  }
+  const fromRv = BigInt(lastEventId ?? resumeFrom);
   const hub: WatchHub = c.get("deps").watchHub;
 
   // SSE-route per-connection queue cap. The WatchHub already bounds its
@@ -135,6 +140,14 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
       }
 
       bookmarkTimer = setInterval(() => {
+        // A stalled reader on a quiescent watch would otherwise let
+        // BOOKMARK frames pile up forever — they don't trip the
+        // data-event overflow check below. Reuse the same threshold so
+        // both code paths cap memory identically.
+        if (isOverflowed()) {
+          closeWithError(503, "buffer_overflow");
+          return;
+        }
         // Tag the BOOKMARK with the RV as the SSE id so EventSource auto-
         // reconnect picks up Last-Event-ID = currentRv. Without this, a
         // BOOKMARK after a real event would not advance the resume cursor.
