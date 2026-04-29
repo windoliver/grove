@@ -99,18 +99,36 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
         return ds !== null && ds <= ROUTE_BYTE_OVERFLOW_THRESHOLD;
       };
 
-      const send = (event: string, data: unknown, id?: string): void => {
-        if (closed) return;
+      // Per-event hard cap. Even within byte budget, a single huge frame
+      // would force the queue into deep-negative desiredSize between
+      // overflow checks. Watch consumers that produce >1 MiB events should
+      // chunk through the entity store, not the watch stream.
+      const ROUTE_MAX_EVENT_BYTES = 1 * 1024 * 1024;
+
+      const send = (event: string, data: unknown, id?: string): boolean => {
+        if (closed) return false;
         // Only emit `id:` when we have one. A blank `id:` line tells SSE
         // clients to clear Last-Event-ID, which would silently rewind the
         // watch on reconnect.
         const idLine = id ? `id: ${id}\n` : "";
         const payload = `${idLine}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+        const bytes = encoder.encode(payload);
+        // Reject oversized single events before they overshoot the queue.
+        // The terminal ERROR/cleanup path may still call send() inside this
+        // guard — that path uses small fixed payloads and is not affected.
+        if (bytes.byteLength > ROUTE_MAX_EVENT_BYTES) return false;
+        // If this single event would push the queue into hard-overflow
+        // before the next iteration's check, treat it as overflow now.
+        const ds = controller.desiredSize;
+        if (ds !== null && ds - bytes.byteLength <= ROUTE_BYTE_OVERFLOW_THRESHOLD) {
+          return false;
+        }
         try {
-          controller.enqueue(encoder.encode(payload));
+          controller.enqueue(bytes);
         } catch {
           /* controller already closed */
         }
+        return true;
       };
 
       const cleanup = (): void => {
@@ -171,7 +189,14 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
             // Include rv in the JSON body so clients that only parse `data`
             // (no SSE `lastEventId` access) can still resume. Matches the
             // BOOKMARK shape and the A5 contract.
-            send(ev.op, { rv, kind: ev.kind, entity: ev.entity }, rv);
+            const sent = send(ev.op, { rv, kind: ev.kind, entity: ev.entity }, rv);
+            // send() refuses oversized events or events that would push the
+            // queue past the overflow threshold. Either case is terminal —
+            // skipping the event silently would let the client miss writes.
+            if (!sent) {
+              closeWithError(503, "buffer_overflow");
+              return;
+            }
           }
           cleanup();
         } catch (err) {
