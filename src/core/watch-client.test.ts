@@ -67,3 +67,128 @@ describe("WatchClient happy path", () => {
     expect(seen[1]?.rv).toBe(6n);
   });
 });
+
+/**
+ * Helper: chained fetch that returns scripted responses in order. Each call
+ * matches a (urlPattern, body) pair. Throws if the script runs out.
+ */
+function scriptedFetch(
+  steps: Array<{ urlPattern: string; body?: string; status?: number; json?: unknown }>,
+): typeof fetch {
+  let i = 0;
+  return (async (input) => {
+    const url = typeof input === "string" ? input : (input as Request).url;
+    if (i >= steps.length) {
+      throw new Error(`scripted fetch exhausted at ${url}`);
+    }
+    const step = steps[i] as (typeof steps)[number];
+    i += 1;
+    if (!url.includes(step.urlPattern)) {
+      throw new Error(`expected url to contain ${step.urlPattern}, got ${url}`);
+    }
+    if (step.json !== undefined) {
+      return new Response(JSON.stringify(step.json), {
+        status: step.status ?? 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return new Response(step.body ?? "", {
+      status: step.status ?? 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  }) as typeof fetch;
+}
+
+describe("WatchClient relist on 410", () => {
+  test("ERROR{code:410} triggers relist + new RELIST events", async () => {
+    const seen: WatchClientEvent[] = [];
+    const fetchImpl = scriptedFetch([
+      { urlPattern: "/api/list", json: { items: [ENTITY_A], listResourceVersion: "5" } },
+      { urlPattern: "/api/watch", body: sse("ERROR", { code: 410, reason: "expired" }, "5") },
+      { urlPattern: "/api/list", json: { items: [ENTITY_B], listResourceVersion: "10" } },
+      { urlPattern: "/api/watch", body: "" },
+    ]);
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    const ac = new AbortController();
+    const running = client.run({
+      onEvent: async (e) => {
+        seen.push(e);
+        const relists = seen.filter((s) => s.op === "RELIST");
+        if (relists.length >= 2) ac.abort();
+      },
+      signal: ac.signal,
+    });
+    await running;
+
+    const relists = seen.filter((s) => s.op === "RELIST");
+    expect(relists.length).toBe(2);
+    expect((relists[0]?.entity as { envelope: { id: string } }).envelope.id).toBe("cid-a");
+    expect((relists[1]?.entity as { envelope: { id: string } }).envelope.id).toBe("cid-b");
+    expect(relists[1]?.rv).toBe(10n);
+  });
+
+  test("ERROR{code:503} triggers relist same as 410", async () => {
+    const seen: WatchClientEvent[] = [];
+    const fetchImpl = scriptedFetch([
+      { urlPattern: "/api/list", json: { items: [ENTITY_A], listResourceVersion: "5" } },
+      {
+        urlPattern: "/api/watch",
+        body: sse("ERROR", { code: 503, reason: "buffer_overflow" }, "5"),
+      },
+      { urlPattern: "/api/list", json: { items: [ENTITY_B], listResourceVersion: "9" } },
+      { urlPattern: "/api/watch", body: "" },
+    ]);
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    const ac = new AbortController();
+    const running = client.run({
+      onEvent: async (e) => {
+        seen.push(e);
+        const relists = seen.filter((s) => s.op === "RELIST");
+        if (relists.length >= 2) ac.abort();
+      },
+      signal: ac.signal,
+    });
+    await running;
+    expect(seen.filter((s) => s.op === "RELIST").length).toBe(2);
+  });
+
+  test("backoff sleeps between attempts when minMs > 0", async () => {
+    const sleeps: number[] = [];
+    const fetchImpl = scriptedFetch([
+      { urlPattern: "/api/list", json: { items: [], listResourceVersion: "0" } },
+      { urlPattern: "/api/watch", body: sse("ERROR", { code: 410 }, "0") },
+      { urlPattern: "/api/list", json: { items: [], listResourceVersion: "0" } },
+      { urlPattern: "/api/watch", body: sse("ERROR", { code: 410 }, "0") },
+      { urlPattern: "/api/list", json: { items: [], listResourceVersion: "0" } },
+      { urlPattern: "/api/watch", body: sse("ERROR", { code: 410 }, "0") },
+      { urlPattern: "/api/list", json: { items: [], listResourceVersion: "0" } },
+      { urlPattern: "/api/watch", body: "" },
+    ]);
+    const ac = new AbortController();
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 10, maxMs: 100, jitter: 0 },
+    });
+    (client as unknown as { onBackoff?: (ms: number) => void }).onBackoff = (ms: number) => {
+      sleeps.push(ms);
+      if (sleeps.length >= 3) ac.abort();
+    };
+    await client.run({ onEvent: () => {}, signal: ac.signal });
+    expect(sleeps).toEqual([10, 20, 40]);
+  });
+});

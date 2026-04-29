@@ -40,17 +40,25 @@ interface SseFrame {
   readonly data: unknown;
 }
 
+const DEFAULT_BACKOFF = { minMs: 100, maxMs: 30_000, jitter: 0.3 };
+
+type StreamExit = { kind: "abort" } | { kind: "ended" } | { kind: "relist" };
+
 export class WatchClient {
   private readonly baseUrl: string;
   private readonly kind: WatchKind;
   private readonly authHeader: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly backoffCfg: NonNullable<WatchClientOptions["backoff"]>;
+  /** Test-only hook called whenever the loop sleeps for `ms` after a failure. */
+  onBackoff?: (ms: number) => void;
 
   constructor(opts: WatchClientOptions) {
     this.baseUrl = opts.baseUrl;
     this.kind = opts.kind;
     this.authHeader = opts.authHeader;
     this.fetchImpl = opts.fetch ?? fetch;
+    this.backoffCfg = opts.backoff ?? DEFAULT_BACKOFF;
   }
 
   async run(opts: {
@@ -58,6 +66,7 @@ export class WatchClient {
     signal: AbortSignal;
   }): Promise<void> {
     const { onEvent, signal } = opts;
+    let nextDelay = this.backoffCfg.minMs;
     while (!signal.aborted) {
       const list = await this.list(signal);
       for (const item of list.items) {
@@ -69,10 +78,19 @@ export class WatchClient {
           entity: item,
         });
       }
-      const resumed = await this.streamWatch(BigInt(list.listResourceVersion), onEvent, signal);
-      if (resumed === "abort") return;
-      // Future tasks: distinguish 410/503 (full relist, restart loop) from
-      // TCP close (fast resume). For now any non-abort exit restarts the loop.
+      const exit = await this.streamWatch(BigInt(list.listResourceVersion), onEvent, signal);
+      if (exit.kind === "abort") return;
+      if (exit.kind === "relist") {
+        await this.sleep(nextDelay, signal);
+        nextDelay = this.advanceBackoff(nextDelay);
+        continue;
+      }
+      // exit.kind === "ended" — Task 7 will introduce fast-resume here. For
+      // Task 6, just sleep + restart loop with a fresh list.
+      // Successful stream end: reset backoff.
+      nextDelay = this.backoffCfg.minMs;
+      await this.sleep(nextDelay, signal);
+      nextDelay = this.advanceBackoff(nextDelay);
     }
   }
 
@@ -91,13 +109,13 @@ export class WatchClient {
     fromRv: bigint,
     onEvent: (e: WatchClientEvent) => Promise<void> | void,
     signal: AbortSignal,
-  ): Promise<"abort" | "ended"> {
+  ): Promise<StreamExit> {
     const url = `${this.baseUrl}/api/watch?kind=${this.kind}&resumeFrom=${fromRv}`;
     const res = await this.fetchImpl(url, {
       headers: { Authorization: this.authHeader, Accept: "text/event-stream" },
       signal,
     });
-    if (!res.ok || !res.body) return "ended";
+    if (!res.ok || !res.body) return { kind: "ended" };
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -105,14 +123,23 @@ export class WatchClient {
     try {
       while (!signal.aborted) {
         const { value, done } = await reader.read();
-        if (done) return "ended";
+        if (done) return { kind: "ended" };
         buf += decoder.decode(value, { stream: true });
         let idx = buf.indexOf("\n\n");
         while (idx >= 0) {
           const block = buf.slice(0, idx);
           buf = buf.slice(idx + 2);
           const frame = parseSseFrame(block);
-          if (frame && isDataOp(frame.event)) {
+          if (!frame) {
+            idx = buf.indexOf("\n\n");
+            continue;
+          }
+          if (frame.event === "ERROR") {
+            const code = (frame.data as { code?: number })?.code;
+            if (code === 410 || code === 503) return { kind: "relist" };
+            throw new Error(`watch terminal error: code=${code}`);
+          }
+          if (isDataOp(frame.event)) {
             const payload = frame.data as { rv: string; entity: WatchEntity };
             await onEvent({
               op: frame.event as WatchClientOp,
@@ -121,11 +148,11 @@ export class WatchClient {
               entity: payload.entity,
             });
           }
-          if (signal.aborted) return "abort";
+          if (signal.aborted) return { kind: "abort" };
           idx = buf.indexOf("\n\n");
         }
       }
-      return "abort";
+      return { kind: "abort" };
     } finally {
       try {
         await reader.cancel();
@@ -133,6 +160,25 @@ export class WatchClient {
         /* already cancelled */
       }
     }
+  }
+
+  private advanceBackoff(prev: number): number {
+    return Math.min(this.backoffCfg.maxMs, Math.max(this.backoffCfg.minMs, prev * 2));
+  }
+
+  private async sleep(ms: number, signal: AbortSignal): Promise<void> {
+    this.onBackoff?.(ms);
+    if (ms <= 0 || signal.aborted) return;
+    const jitter = this.backoffCfg.jitter;
+    const actual = jitter > 0 ? ms * (1 + (Math.random() * 2 - 1) * jitter) : ms;
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, actual);
+      const onAbort = (): void => {
+        clearTimeout(t);
+        resolve();
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
   }
 }
 
