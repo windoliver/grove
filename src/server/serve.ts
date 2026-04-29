@@ -36,6 +36,7 @@ import { loadKeyRegistry } from "./middleware/namespace-auth.js";
 import { SessionService } from "./session-service.js";
 import { memoizeContributionStoreForSession } from "./session-store-factory.js";
 import { createWsHandler } from "./ws-handler.js";
+import { resolveWatchHubConfig } from "./watch-hub-config.js";
 
 const GROVE_DIR = process.env.GROVE_DIR ?? join(process.cwd(), ".grove");
 const PORT = parsePort(process.env.PORT, 4515);
@@ -214,7 +215,7 @@ if (seedPeers.length > 0) {
 // envelopes; the publisher lives inside Nexus stores and the subscriber
 // lives here in the server. Even in pure-local mode we instantiate both
 // so the wiring is uniform — the bus is just idle when nothing publishes.
-const watchHub = new WatchHub();
+const watchHub = new WatchHub(resolveWatchHubConfig(process.env));
 const watchEventBus = new LocalEventBus();
 
 if (nexusUrl) {
