@@ -762,6 +762,15 @@ async function writeContributionWithHandoffs(
 // Operations
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-CID in-flight write tracker. Concurrent same-CID submits must serialize
+ * here so the second-arriving call observes the first's commit when it does
+ * its existedBefore check. Without this, two racing identical submits would
+ * both see the row absent, both fire onEntityWrite, and the watch RV would
+ * advance by 2 for a logical single-insert (#292 round 5).
+ */
+const inFlightContributionWrites = new Map<string, Promise<void>>();
+
 /** Create and store a contribution. */
 export async function contributeOperation(
   input: ContributeInput,
@@ -1123,24 +1132,52 @@ export async function contributeOperation(
           }
         : undefined;
 
-    // Watch fan-out should only fire for true inserts (#292). The store
-    // uses INSERT OR IGNORE for idempotency, so a duplicate-CID submit is
-    // a no-op in storage — emitting ADDED for it would advance the watch
-    // RV with a phantom event. Pre-checking with `get(cid)` is racy under
-    // concurrent re-submit, but contributions are content-addressed so
-    // any race produces identical content; the worst case is one extra
-    // benign event vs. a stream of phantom events for every retry.
-    const existedBefore = (await deps.contributionStore.get(contribution.cid)) !== undefined;
+    // Watch fan-out must fire only for true inserts (#292). The store uses
+    // INSERT OR IGNORE for idempotency, so a duplicate-CID submit is a
+    // no-op in storage — emitting ADDED for it would advance the watch RV
+    // with a phantom event.
+    //
+    // Concurrent same-CID submits are serialized through
+    // `inFlightContributionWrites`: the second-arriving caller waits on
+    // the first's write promise, so its `existedBefore` check observes
+    // the prior commit and skips its own ADDED. Without this, two racing
+    // identical submits would both see `existedBefore=false` and the
+    // watch RV would advance by 2 for a logical single insert.
+    const cidKey = contribution.cid;
+    const priorInFlight = inFlightContributionWrites.get(cidKey);
+    if (priorInFlight !== undefined) {
+      await priorInFlight;
+    }
 
-    const handoffIds = await writeContributionWithHandoffs(
-      contribution,
-      handoffsRoutedTo,
-      agentRole,
-      deps.contributionStore,
-      deps.handoffStore,
-      idempotencyOnCommit,
-      replyTimeouts,
-    );
+    let resolveInFlight: () => void = () => {};
+    const inFlightPromise = new Promise<void>((r) => {
+      resolveInFlight = r;
+    });
+    inFlightContributionWrites.set(cidKey, inFlightPromise);
+
+    let existedBefore = false;
+    let handoffIds: readonly string[] = [];
+    try {
+      existedBefore = (await deps.contributionStore.get(cidKey)) !== undefined;
+
+      handoffIds = await writeContributionWithHandoffs(
+        contribution,
+        handoffsRoutedTo,
+        agentRole,
+        deps.contributionStore,
+        deps.handoffStore,
+        idempotencyOnCommit,
+        replyTimeouts,
+      );
+    } finally {
+      // Release the lock as soon as the durable write resolves — the next
+      // waiter must observe the row in `get()`. Post-commit callbacks run
+      // outside the lock; they don't change store visibility.
+      if (inFlightContributionWrites.get(cidKey) === inFlightPromise) {
+        inFlightContributionWrites.delete(cidKey);
+      }
+      resolveInFlight();
+    }
 
     if (process.env.GROVE_DEBUG === "1" && handoffIds.length > 0) {
       process.stderr.write(

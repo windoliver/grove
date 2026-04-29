@@ -84,10 +84,17 @@ claims.post("/", zValidator("json", createBodySchema), async (c) => {
   const result = await claimStore.claimOrRenew(claim);
 
   // Watch fan-out (#292). Direct store path bypasses the operations layer
-  // so we record + markSeen here. Phase change is implicit on first create;
-  // renewal that did not change phase is suppressed to avoid heartbeat-noise.
-  const phaseChanged = !existing || existing.status !== result.status;
-  if (phaseChanged) {
+  // so we record + markSeen here. Emit ADDED on first create, MODIFIED when
+  // any semantic field changed (status, intent, lease, revision). Pure
+  // heartbeat-only renewals (where every observable field is unchanged) are
+  // suppressed to avoid noise on quiet keep-alives.
+  const semanticChange =
+    !existing ||
+    existing.status !== result.status ||
+    existing.intentSummary !== result.intentSummary ||
+    existing.leaseExpiresAt !== result.leaseExpiresAt ||
+    (existing.revision ?? 1) !== (result.revision ?? 1);
+  if (semanticChange) {
     const entity = claimToEntity(result, () => Date.now(), namespace);
     try {
       watchHub.recordWrite({
