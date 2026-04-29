@@ -81,14 +81,16 @@ export class WatchClient {
       const exit = await this.streamWatch(BigInt(list.listResourceVersion), onEvent, signal);
       if (exit.kind === "abort") return;
       if (exit.kind === "relist") {
+        // 410/503 means resumeFrom expired but the server is healthy — relist is
+        // a clean slate, so reset backoff per spec.
+        nextDelay = this.backoffCfg.minMs;
         await this.sleep(nextDelay, signal);
         nextDelay = this.advanceBackoff(nextDelay);
         continue;
       }
-      // exit.kind === "ended" — Task 7 will introduce fast-resume here. For
-      // Task 6, just sleep + restart loop with a fresh list.
-      // Successful stream end: reset backoff.
-      nextDelay = this.backoffCfg.minMs;
+      // exit.kind === "ended" — TCP-close without data; keep accumulating backoff
+      // because the server may actually be down. Task 7 will introduce a
+      // data-flowed-then-ended fast-resume path (reset only when data flowed).
       await this.sleep(nextDelay, signal);
       nextDelay = this.advanceBackoff(nextDelay);
     }
@@ -172,8 +174,12 @@ export class WatchClient {
     const jitter = this.backoffCfg.jitter;
     const actual = jitter > 0 ? ms * (1 + (Math.random() * 2 - 1) * jitter) : ms;
     await new Promise<void>((resolve) => {
-      const t = setTimeout(resolve, actual);
-      const onAbort = (): void => {
+      let onAbort: (() => void) | undefined;
+      const t = setTimeout(() => {
+        if (onAbort) signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, actual);
+      onAbort = (): void => {
         clearTimeout(t);
         resolve();
       };

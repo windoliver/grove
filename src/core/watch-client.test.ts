@@ -166,13 +166,15 @@ describe("WatchClient relist on 410", () => {
 
   test("backoff sleeps between attempts when minMs > 0", async () => {
     const sleeps: number[] = [];
+    // Use TCP-close (empty SSE body, no ERROR frame) to drive the exponential
+    // ladder. The 410 path resets backoff per spec ("relist is a clean slate").
     const fetchImpl = scriptedFetch([
       { urlPattern: "/api/list", json: { items: [], listResourceVersion: "0" } },
-      { urlPattern: "/api/watch", body: sse("ERROR", { code: 410 }, "0") },
+      { urlPattern: "/api/watch", body: "" },
       { urlPattern: "/api/list", json: { items: [], listResourceVersion: "0" } },
-      { urlPattern: "/api/watch", body: sse("ERROR", { code: 410 }, "0") },
+      { urlPattern: "/api/watch", body: "" },
       { urlPattern: "/api/list", json: { items: [], listResourceVersion: "0" } },
-      { urlPattern: "/api/watch", body: sse("ERROR", { code: 410 }, "0") },
+      { urlPattern: "/api/watch", body: "" },
       { urlPattern: "/api/list", json: { items: [], listResourceVersion: "0" } },
       { urlPattern: "/api/watch", body: "" },
     ]);
@@ -190,5 +192,34 @@ describe("WatchClient relist on 410", () => {
     };
     await client.run({ onEvent: () => {}, signal: ac.signal });
     expect(sleeps).toEqual([10, 20, 40]);
+  });
+
+  test("ERROR{code:410} resets backoff (relist is a clean slate)", async () => {
+    const sleeps: number[] = [];
+    // Two TCP-close cycles climb backoff to 20ms, then a 410 should reset to 10ms.
+    const fetchImpl = scriptedFetch([
+      { urlPattern: "/api/list", json: { items: [], listResourceVersion: "0" } },
+      { urlPattern: "/api/watch", body: "" }, // ended → sleep(10), advance to 20
+      { urlPattern: "/api/list", json: { items: [], listResourceVersion: "0" } },
+      { urlPattern: "/api/watch", body: "" }, // ended → sleep(20), advance to 40
+      { urlPattern: "/api/list", json: { items: [], listResourceVersion: "0" } },
+      { urlPattern: "/api/watch", body: sse("ERROR", { code: 410 }, "0") }, // 410 → reset, sleep(10)
+      { urlPattern: "/api/list", json: { items: [], listResourceVersion: "0" } },
+      { urlPattern: "/api/watch", body: "" }, // never reached
+    ]);
+    const ac = new AbortController();
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 10, maxMs: 100, jitter: 0 },
+    });
+    (client as unknown as { onBackoff?: (ms: number) => void }).onBackoff = (ms: number) => {
+      sleeps.push(ms);
+      if (sleeps.length >= 3) ac.abort();
+    };
+    await client.run({ onEvent: () => {}, signal: ac.signal });
+    expect(sleeps).toEqual([10, 20, 10]);
   });
 });
