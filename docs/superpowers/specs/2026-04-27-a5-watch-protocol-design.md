@@ -405,8 +405,8 @@ test("handshake race: writes between list-return and watch-open all replayed", a
 ## Open questions deferred
 
 - Whether to expose watch over WebSocket as a future alternative (SSE-only for A5).
-- Compaction window for ring buffers when a kind sees a sustained burst >
-  cap. A6 (#293) addresses this; A5's behavior is "drop oldest, return 410
-  on stale resume."
+- ~~Compaction window for ring buffers when a kind sees a sustained burst >
+  cap.~~ Addressed by A6 (#293) — see
+  `docs/superpowers/specs/2026-04-28-a6-stale-rv-compaction-design.md`.
 - TUI informer cache shape, including whether informers share a single
   watch per kind across panels. A7 (#294).
