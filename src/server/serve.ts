@@ -367,6 +367,47 @@ if (serverBountyStore) {
 }
 
 // ---------------------------------------------------------------------------
+// Claim expiry sweep — drives lease-derived state changes into the watch log
+// ---------------------------------------------------------------------------
+//
+// expireStale() flips active claims past their lease to `expired` and bumps
+// revision, but it does not on its own emit a watch event in SQLite mode and
+// the Nexus mode publisher can be self-filtered by sourceInstanceId. Without
+// this sweep, /api/watch?kind=Claim clients would never observe a lease-only
+// expiry — they'd see the claim as active until another write touched it.
+const CLAIM_EXPIRY_INTERVAL_MS = 30_000;
+const claimExpiryTimer = setInterval(async () => {
+  try {
+    const expired = await serverClaimStore.expireStale();
+    for (const { claim } of expired) {
+      const entity = claimToEntity(claim, () => Date.now(), zoneId);
+      try {
+        watchHub.recordWrite({ kind: "Claim", namespace: zoneId, op: "MODIFIED", entity });
+        watchSubscriber.markSeen({
+          kind: "Claim",
+          entityId: claim.claimId,
+          generation: entity.metadata.generation,
+        });
+      } catch (err) {
+        process.stderr.write(
+          `[grove] Warning: claim-expiry watch fan-out threw: ${
+            err instanceof Error ? err.message : String(err)
+          }\n`,
+        );
+      }
+    }
+  } catch (err) {
+    process.stderr.write(
+      `[grove] Warning: claim-expiry sweep failed: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+  }
+}, CLAIM_EXPIRY_INTERVAL_MS);
+// Don't hold the event loop open just for this timer.
+(claimExpiryTimer as unknown as { unref?: () => void }).unref?.();
+
+// ---------------------------------------------------------------------------
 // Optional SessionService + WebSocket push
 // ---------------------------------------------------------------------------
 
