@@ -131,6 +131,19 @@ export class RemoteDataProvider
     this.activeSessionId = sessionId;
   }
 
+  private sessionScopedUrl(path: string, params?: URLSearchParams): string {
+    const url = new URL(`${this.baseUrl}${path}`);
+    if (params !== undefined) {
+      for (const [key, value] of params) {
+        url.searchParams.append(key, value);
+      }
+    }
+    if (this.activeSessionId !== undefined && !url.searchParams.has("sessionId")) {
+      url.searchParams.set("sessionId", this.activeSessionId);
+    }
+    return url.toString();
+  }
+
   async getDashboard(): Promise<DashboardData> {
     const [metadata, recentContributions, frontier] = await Promise.all([
       this.fetchGroveMetadata(),
@@ -187,21 +200,24 @@ export class RemoteDataProvider
   }
 
   async getContribution(cid: string): Promise<ContributionDetail | undefined> {
-    const resp = await fetch(`${this.baseUrl}/api/contributions/${encodeURIComponent(cid)}`, {
-      headers: this.authHeaders,
-    });
+    const resp = await fetch(
+      this.sessionScopedUrl(`/api/contributions/${encodeURIComponent(cid)}`),
+      {
+        headers: this.authHeaders,
+      },
+    );
     if (resp.status === 404) return undefined;
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
     const contribution = parseContribution(await resp.json());
 
     const [ancestorsResp, childrenResp, threadResp] = await Promise.all([
-      fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(cid)}/ancestors`, {
+      fetch(this.sessionScopedUrl(`/api/dag/${encodeURIComponent(cid)}/ancestors`), {
         headers: this.authHeaders,
       }),
-      fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(cid)}/children`, {
+      fetch(this.sessionScopedUrl(`/api/dag/${encodeURIComponent(cid)}/children`), {
         headers: this.authHeaders,
       }),
-      fetch(`${this.baseUrl}/api/threads/${encodeURIComponent(cid)}`, {
+      fetch(this.sessionScopedUrl(`/api/threads/${encodeURIComponent(cid)}`), {
         headers: this.authHeaders,
       }),
     ]);
@@ -287,13 +303,13 @@ export class RemoteDataProvider
   async getDag(rootCid?: string): Promise<DagData> {
     if (rootCid) {
       const [ancestorsResp, childrenResp, rootResp] = await Promise.all([
-        fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(rootCid)}/ancestors`, {
+        fetch(this.sessionScopedUrl(`/api/dag/${encodeURIComponent(rootCid)}/ancestors`), {
           headers: this.authHeaders,
         }),
-        fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(rootCid)}/children`, {
+        fetch(this.sessionScopedUrl(`/api/dag/${encodeURIComponent(rootCid)}/children`), {
           headers: this.authHeaders,
         }),
-        fetch(`${this.baseUrl}/api/contributions/${encodeURIComponent(rootCid)}`, {
+        fetch(this.sessionScopedUrl(`/api/contributions/${encodeURIComponent(rootCid)}`), {
           headers: this.authHeaders,
         }),
       ]);
@@ -320,7 +336,7 @@ export class RemoteDataProvider
 
   async getHotThreads(limit = 20): Promise<readonly ThreadSummary[]> {
     const params = new URLSearchParams({ limit: String(limit) });
-    const resp = await fetch(`${this.baseUrl}/api/threads?${params.toString()}`, {
+    const resp = await fetch(this.sessionScopedUrl("/api/threads", params), {
       headers: this.authHeaders,
     });
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
@@ -434,7 +450,9 @@ export class RemoteDataProvider
 
   async getArtifact(cid: string, name: string): Promise<Buffer> {
     const resp = await fetch(
-      `${this.baseUrl}/api/contributions/${encodeURIComponent(cid)}/artifacts/${encodeURIComponent(name)}`,
+      this.sessionScopedUrl(
+        `/api/contributions/${encodeURIComponent(cid)}/artifacts/${encodeURIComponent(name)}`,
+      ),
       { headers: this.authHeaders },
     );
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
@@ -444,7 +462,9 @@ export class RemoteDataProvider
 
   async getArtifactMeta(cid: string, name: string): Promise<ArtifactMeta> {
     const resp = await fetch(
-      `${this.baseUrl}/api/contributions/${encodeURIComponent(cid)}/artifacts/${encodeURIComponent(name)}/meta`,
+      this.sessionScopedUrl(
+        `/api/contributions/${encodeURIComponent(cid)}/artifacts/${encodeURIComponent(name)}/meta`,
+      ),
       { headers: this.authHeaders },
     );
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
@@ -461,7 +481,8 @@ export class RemoteDataProvider
   }
 
   async search(query: string): Promise<readonly Contribution[]> {
-    const resp = await fetch(`${this.baseUrl}/api/search?q=${encodeURIComponent(query)}`, {
+    const params = new URLSearchParams({ q: query });
+    const resp = await fetch(this.sessionScopedUrl("/api/search", params), {
       headers: this.authHeaders,
     });
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);

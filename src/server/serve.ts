@@ -11,6 +11,8 @@
 
 import { join } from "node:path";
 import { claimToEntity, contributionToEntity } from "../core/entity.js";
+import type { FrontierCalculator } from "../core/frontier.js";
+import { DefaultFrontierCalculator } from "../core/frontier.js";
 import type { GossipService } from "../core/gossip/types.js";
 import { LocalEventBus } from "../core/local-event-bus.js";
 import { readProjectId } from "../core/project-id.js";
@@ -98,7 +100,7 @@ let serverOutcomeStore: import("../core/outcome.js").OutcomeStore | undefined =
   runtime.outcomeStore;
 let serverBountyStore: import("../core/bounty-store.js").BountyStore = runtime.bountyStore;
 let serverCas: import("../core/cas.js").ContentStore = runtime.cas;
-const serverFrontier: import("../core/frontier.js").FrontierCalculator = runtime.frontier;
+let serverFrontier: FrontierCalculator = runtime.frontier;
 
 // In Nexus mode, contributions are stored at session-scoped VFS paths
 // (/zones/{zoneId}/sessions/{sessionId}/contributions/). A process-global
@@ -189,23 +191,6 @@ if (registry.size === 0) {
   );
 }
 
-if (seedPeers.length > 0) {
-  const allowPrivateIPs = process.env.GROVE_GOSSIP_ALLOW_PRIVATE_IPS === "true";
-  // Use HMAC (not bearer token) for peer-to-peer auth — namespace API keys must never be sent to peers.
-  const transport = new HttpGossipTransport({ allowPrivateIPs, hmacSecret: gossipHmacSecret });
-  gossipService = new DefaultGossipService({
-    config: {
-      peerId,
-      address: peerAddress,
-      seedPeers: [...seedPeers],
-      hmacSecret: gossipHmacSecret,
-    },
-    transport,
-    frontier: runtime.frontier,
-    getLoad: () => ({ queueDepth: 0 }),
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Watch protocol (#292)
 // ---------------------------------------------------------------------------
@@ -277,6 +262,7 @@ if (nexusUrl) {
   serverBountyStore = new NexusBountyStore({ client: nexusClient, zoneId });
   serverOutcomeStore = new NexusOutcomeStore({ client: nexusClient, zoneId });
   serverCas = new NexusCas({ client: nexusClient, zoneId });
+  serverFrontier = new DefaultFrontierCalculator(serverContributionStore);
   contributionStoreForSessionFactory = memoizeContributionStoreForSession(
     (sessionId: string) =>
       new NexusContributionStore({
@@ -287,6 +273,23 @@ if (nexusUrl) {
       }),
   );
   console.log(`grove-server: using Nexus stores at ${nexusUrl} (zone=${zoneId})`);
+}
+
+if (seedPeers.length > 0) {
+  const allowPrivateIPs = process.env.GROVE_GOSSIP_ALLOW_PRIVATE_IPS === "true";
+  // Use HMAC (not bearer token) for peer-to-peer auth — namespace API keys must never be sent to peers.
+  const transport = new HttpGossipTransport({ allowPrivateIPs, hmacSecret: gossipHmacSecret });
+  gossipService = new DefaultGossipService({
+    config: {
+      peerId,
+      address: peerAddress,
+      seedPeers: [...seedPeers],
+      hmacSecret: gossipHmacSecret,
+    },
+    transport,
+    frontier: serverFrontier,
+    getLoad: () => ({ queueDepth: 0 }),
+  });
 }
 
 // Per-request session-scoped handoff store factory. The HTTP handoff

@@ -127,4 +127,60 @@ describe("RemoteDataProvider specific", () => {
     );
     expect(detail).toBeUndefined();
   });
+
+  test("applies active session scope to detail, graph, artifact, and search reads", async () => {
+    const contribution = { manifestVersion: 1, ...makeContribution({ summary: "Scoped parser" }) };
+    const requestedPaths: string[] = [];
+    const encoder = new TextEncoder();
+    const json = (body: unknown): Response =>
+      new Response(JSON.stringify(body), {
+        headers: { "Content-Type": "application/json" },
+      });
+
+    const server = Bun.serve({
+      port: 0,
+      fetch: (req) => {
+        const url = new URL(req.url);
+        requestedPaths.push(`${url.pathname}${url.search}`);
+
+        if (url.pathname.endsWith("/artifacts/note.txt/meta")) {
+          return json({ sizeBytes: 8, mediaType: "text/plain" });
+        }
+        if (url.pathname.endsWith("/artifacts/note.txt")) {
+          return new Response(encoder.encode("artifact"), {
+            headers: { "Content-Type": "text/plain" },
+          });
+        }
+        if (url.pathname.startsWith("/api/dag/")) {
+          return json([]);
+        }
+        if (url.pathname.startsWith("/api/threads/")) {
+          return json({ nodes: [], count: 0 });
+        }
+        if (url.pathname === "/api/search") {
+          return json({ results: [contribution], count: 1 });
+        }
+        if (url.pathname.startsWith("/api/contributions/")) {
+          return json(contribution);
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+
+    try {
+      const scopedProvider = new RemoteDataProvider(`http://localhost:${server.port}`);
+      scopedProvider.setSessionScope("session-1");
+
+      await scopedProvider.getContribution(contribution.cid);
+      await scopedProvider.getDag(contribution.cid);
+      await scopedProvider.getArtifact(contribution.cid, "note.txt");
+      await scopedProvider.getArtifactMeta(contribution.cid, "note.txt");
+      await scopedProvider.search("parser");
+    } finally {
+      server.stop(true);
+    }
+
+    expect(requestedPaths.length).toBeGreaterThan(0);
+    expect(requestedPaths.every((path) => path.includes("sessionId=session-1"))).toBe(true);
+  });
 });
