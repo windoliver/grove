@@ -77,44 +77,30 @@ claims.post("/", zValidator("json", createBodySchema), async (c) => {
       : {}),
   };
 
-  // Detect renew vs create so the watch event carries the right op.
-  const prior = await claimStore.activeClaims(body.targetRef);
-  const existing = prior.find((p) => p.agent.agentId === claim.agent.agentId);
-
   const result = await claimStore.claimOrRenew(claim);
 
   // Watch fan-out (#292). Direct store path bypasses the operations layer
-  // so we record + markSeen here. Emit ADDED on first create, MODIFIED when
-  // any semantic field changed (status, intent, lease, revision). Pure
-  // heartbeat-only renewals (where every observable field is unchanged) are
-  // suppressed to avoid noise on quiet keep-alives.
-  const semanticChange =
-    !existing ||
-    existing.status !== result.status ||
-    existing.intentSummary !== result.intentSummary ||
-    existing.leaseExpiresAt !== result.leaseExpiresAt ||
-    (existing.revision ?? 1) !== (result.revision ?? 1);
-  if (semanticChange) {
-    const entity = claimToEntity(result, () => Date.now(), namespace);
-    try {
-      watchHub.recordWrite({
-        kind: "Claim",
-        namespace,
-        op: existing ? "MODIFIED" : "ADDED",
-        entity,
-      });
-      watchSubscriber?.markSeen({
-        kind: "Claim",
-        entityId: result.claimId,
-        generation: entity.metadata.generation,
-      });
-    } catch (err) {
-      process.stderr.write(
-        `[grove] Warning: watch fan-out threw after POST /api/claims: ${
-          err instanceof Error ? err.message : String(err)
-        }\n`,
-      );
-    }
+  // so we record + markSeen here. Derive ADDED vs MODIFIED from the
+  // store's atomic revision counter — pre-reading `existing` outside the
+  // store transaction is racy: two concurrent same-agent renewals can
+  // both observe no existing claim and both emit ADDED for one logical
+  // claim. The store guarantees revision === 1 on first create and
+  // revision > 1 on every renewal, regardless of concurrency.
+  const op: "ADDED" | "MODIFIED" = (result.revision ?? 1) === 1 ? "ADDED" : "MODIFIED";
+  const entity = claimToEntity(result, () => Date.now(), namespace);
+  try {
+    watchHub.recordWrite({ kind: "Claim", namespace, op, entity });
+    watchSubscriber?.markSeen({
+      kind: "Claim",
+      entityId: result.claimId,
+      generation: entity.metadata.generation,
+    });
+  } catch (err) {
+    process.stderr.write(
+      `[grove] Warning: watch fan-out threw after POST /api/claims: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
   }
 
   return c.json(result, 201);

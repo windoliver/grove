@@ -22,6 +22,14 @@ import { BufferOverflowError, type WatchHub } from "../../core/watch-hub.js";
 import type { ServerDeps, ServerEnv } from "../deps.js";
 
 const KIND_VALUES = ["Contribution", "Claim", "AgentSession"] as const;
+// Subset of KIND_VALUES for which list+watch are actually backed by
+// stores and fan-out hooks. AgentSession remains in KIND_VALUES so the
+// type narrowing stays exhaustive, but watching it returns 501 until
+// the session-orchestrator integration lands (out of scope for #292).
+const SUPPORTED_KINDS: ReadonlySet<(typeof KIND_VALUES)[number]> = new Set([
+  "Contribution",
+  "Claim",
+]);
 
 const listQuerySchema = z.object({
   kind: z.enum(KIND_VALUES),
@@ -38,6 +46,12 @@ const watch: HonoType<ServerEnv> = new Hono<ServerEnv>();
 watch.get("/list", zValidator("query", listQuerySchema), async (c) => {
   const namespace = c.get("namespace");
   const { kind } = c.req.valid("query");
+  if (!SUPPORTED_KINDS.has(kind)) {
+    return c.json(
+      { error: { code: "NOT_CONFIGURED", message: `kind '${kind}' is accepted by the schema but not yet backed by a store; list is unavailable` } },
+      501,
+    );
+  }
   const deps = c.get("deps");
   const hub: WatchHub = deps.watchHub;
 
@@ -59,6 +73,12 @@ watch.get("/list", zValidator("query", listQuerySchema), async (c) => {
 watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
   const namespace = c.get("namespace");
   const { kind, resumeFrom } = c.req.valid("query");
+  if (!SUPPORTED_KINDS.has(kind)) {
+    return c.json(
+      { error: { code: "NOT_CONFIGURED", message: `kind '${kind}' is accepted by the schema but not yet backed by fan-out hooks; watch would silently miss events` } },
+      501,
+    );
+  }
   const lastEventId = c.req.header("last-event-id");
   // Last-Event-ID overrides resumeFrom on auto-reconnect (browser EventSource).
   // If present but malformed, fail fast with 400 — silently falling back to
