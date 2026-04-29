@@ -112,6 +112,7 @@ describe("compaction triggers Expired (issue #293 acceptance #1)", () => {
     expect(errorEvent).toBeDefined();
     expect((errorEvent?.data as { code: number }).code).toBe(410);
     expect((errorEvent?.data as { reason: string }).reason).toBe("expired");
+    expect(events[0]?.event).toBe("ERROR");
 
     // Metrics endpoint reflects the eviction.
     const metricsRes = await app.request("/api/watch/metrics", {
@@ -127,6 +128,7 @@ describe("compaction triggers Expired (issue #293 acceptance #1)", () => {
       watchHubOptions: { maxAgeMsPerKey: 60_000, maxEventsPerKey: 4 },
     });
     const earlyRv = await listRv(app);
+    expect(earlyRv).toBe("0");
     for (let i = 0; i < 10; i++) {
       const r = await app.request("/api/contributions", {
         method: "POST",
@@ -142,6 +144,7 @@ describe("compaction triggers Expired (issue #293 acceptance #1)", () => {
     const errorEvent = events.find((e) => e.event === "ERROR");
     expect(errorEvent).toBeDefined();
     expect((errorEvent?.data as { code: number }).code).toBe(410);
+    expect(events[0]?.event).toBe("ERROR");
 
     const metricsRes = await app.request("/api/watch/metrics", {
       headers: TEST_AUTH_HEADERS,
