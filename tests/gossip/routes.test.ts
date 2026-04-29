@@ -375,8 +375,9 @@ describe("POST /api/gossip/exchange", () => {
     });
     const app = appWithGossip(service);
     const cid = "blake3:same";
+    const baseTimestamp = Date.now();
 
-    for (const value of [0.03, 0.05]) {
+    for (const [index, value] of [0.03, 0.05].entries()) {
       const res = await app.request("/api/gossip/exchange", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -387,7 +388,7 @@ describe("POST /api/gossip/exchange", () => {
             frontier: [{ metric: "loss", value, cid, direction: "minimize" }],
             load: { queueDepth: 0 },
             capabilities: {},
-            timestamp: new Date().toISOString(),
+            timestamp: new Date(baseTimestamp + index).toISOString(),
           }),
         ),
       });
