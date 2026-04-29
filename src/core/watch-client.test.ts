@@ -308,3 +308,66 @@ describe("WatchClient fast resume on TCP close", () => {
     }
   });
 });
+
+describe("WatchClient onEvent semantics", () => {
+  test("awaits each onEvent before processing the next", async () => {
+    const order: string[] = [];
+    let resolveFirst: (() => void) | undefined;
+    const firstDone = new Promise<void>((r) => {
+      resolveFirst = r;
+    });
+    const fetchImpl = makeFetch({ items: [], listResourceVersion: "5" }, [
+      sse("ADDED", { rv: "6", kind: "Contribution", entity: ENTITY_A }, "6"),
+      sse("ADDED", { rv: "7", kind: "Contribution", entity: ENTITY_B }, "7"),
+    ]);
+    const ac = new AbortController();
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    const running = client.run({
+      onEvent: async (e) => {
+        order.push(`enter:${e.rv}`);
+        if (e.rv === 6n) await firstDone;
+        order.push(`exit:${e.rv}`);
+        if (e.rv === 7n) ac.abort();
+      },
+      signal: ac.signal,
+    });
+    // Give the loop a tick to enter onEvent for rv=6.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(order).toEqual(["enter:6"]);
+    resolveFirst?.();
+    await running;
+    expect(order).toEqual(["enter:6", "exit:6", "enter:7", "exit:7"]);
+  });
+
+  test("abort during in-flight onEvent waits for callback to settle", async () => {
+    let callbackResolved = false;
+    let onEventEntered = false;
+    const fetchImpl = makeFetch({ items: [ENTITY_A], listResourceVersion: "5" }, []);
+    const ac = new AbortController();
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    const running = client.run({
+      onEvent: async () => {
+        onEventEntered = true;
+        ac.abort(); // abort while we are inside onEvent
+        await new Promise((r) => setTimeout(r, 20));
+        callbackResolved = true;
+      },
+      signal: ac.signal,
+    });
+    await running;
+    expect(onEventEntered).toBe(true);
+    expect(callbackResolved).toBe(true);
+  });
+});
