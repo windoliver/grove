@@ -8,11 +8,11 @@
  * REST is used for PRs (simpler, well-supported).
  */
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
-import { validateArtifactName } from "../core/path-safety.js";
+import { assertWithinBoundary, validateArtifactName } from "../core/path-safety.js";
 import { spawnCommand, spawnOrThrow } from "../core/subprocess.js";
 import type {
   CreateDiscussionParams,
@@ -71,6 +71,14 @@ export function validatePushBranchFilePaths(files: ReadonlyMap<string, Uint8Arra
   for (const filePath of files.keys()) {
     validateArtifactName(filePath);
   }
+}
+
+export async function resolvePushBranchFilePath(
+  repoRoot: string,
+  filePath: string,
+): Promise<string> {
+  validateArtifactName(filePath);
+  return assertWithinBoundary(join(repoRoot, filePath), repoRoot);
 }
 
 // ---------------------------------------------------------------------------
@@ -573,10 +581,8 @@ export async function createGhCliClient(): Promise<GitHubClient> {
 
         // Write files
         for (const [filePath, content] of params.files) {
-          const fullPath = join(tmpDir, filePath);
-          const dir = fullPath.slice(0, fullPath.lastIndexOf("/"));
-          // Ensure parent dirs exist before writing
-          await spawnCommand(["mkdir", "-p", dir]);
+          const fullPath = await resolvePushBranchFilePath(tmpDir, filePath);
+          await mkdir(dirname(fullPath), { recursive: true });
           await Bun.write(fullPath, content);
         }
 

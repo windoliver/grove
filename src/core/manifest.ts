@@ -16,7 +16,6 @@
 
 import { hash } from "blake3";
 import { z } from "zod";
-
 import type {
   AgentIdentity,
   Contribution,
@@ -29,6 +28,7 @@ import type {
   Score,
   ScoreDirection,
 } from "./models.js";
+import { validateArtifactName } from "./path-safety.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -162,6 +162,18 @@ const CidSchema = z
   .string()
   .regex(/^blake3:[0-9a-f]{64}$/, "CID must be in format blake3:<64-hex-chars>");
 
+const ArtifactNameSchema = z.string().refine(
+  (name) => {
+    try {
+      validateArtifactName(name);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  { message: "artifact name must be a safe relative path" },
+);
+
 /**
  * Recursive schema for JSON-safe values only.
  * Rejects Date, Map, Set, class instances, functions, etc.
@@ -202,7 +214,7 @@ const ContributionBaseSchema = z
     mode: ContributionModeSchema,
     summary: z.string().min(1),
     description: z.string().optional(),
-    artifacts: z.record(z.string(), z.string()),
+    artifacts: z.record(ArtifactNameSchema, CidSchema),
     commitHash: z.string().optional(),
     relations: z.array(RelationSchema),
     scores: z.record(z.string(), ScoreSchema).optional(),

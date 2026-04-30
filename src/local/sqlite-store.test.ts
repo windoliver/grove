@@ -109,6 +109,34 @@ runClaimStoreTests(async () => {
   };
 });
 
+describe("SqliteContributionStore ordering", () => {
+  test("list supports newest-first ordering for bounded pollers", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-order-"));
+    const dbPath = join(dir, "test.db");
+    const { contributionStore, close } = createSqliteStores(dbPath);
+    try {
+      const older = makeContribution({
+        summary: "older",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      const newer = makeContribution({
+        summary: "newer",
+        createdAt: "2026-01-02T00:00:00.000Z",
+      });
+      await contributionStore.putMany([newer, older]);
+
+      const desc = await contributionStore.list({ limit: 1, order: "created_at_desc" });
+      expect(desc.map((c) => c.cid)).toEqual([newer.cid]);
+
+      const asc = await contributionStore.list({ limit: 1 });
+      expect(asc.map((c) => c.cid)).toEqual([older.cid]);
+    } finally {
+      close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // putMany with rich contributions (relations, tags, artifacts)
 // ---------------------------------------------------------------------------

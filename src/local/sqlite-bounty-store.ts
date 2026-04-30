@@ -20,6 +20,13 @@ function nowUtcIso(): string {
   return new Date().toISOString();
 }
 
+function paginationInteger(value: number, field: "limit" | "offset"): number {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${field} must be a non-negative integer`);
+  }
+  return value;
+}
+
 // ---------------------------------------------------------------------------
 // Schema DDL (created in migration v6)
 // ---------------------------------------------------------------------------
@@ -383,7 +390,8 @@ export class SqliteBountyStore implements BountyStore {
     }
     sql += " ORDER BY created_at DESC";
     if (query?.limit !== undefined) {
-      sql += ` LIMIT ${query.limit}`;
+      sql += " LIMIT ?";
+      params.push(paginationInteger(query.limit, "limit"));
     }
 
     const rows = this.db.prepare(sql).all(...params) as RewardRow[];
@@ -501,13 +509,15 @@ export class SqliteBountyStore implements BountyStore {
 
     sql += " ORDER BY created_at DESC";
     if (query?.limit !== undefined) {
-      sql += ` LIMIT ${query.limit}`;
+      sql += " LIMIT ?";
+      params.push(paginationInteger(query.limit, "limit"));
     } else if (query?.offset !== undefined) {
       // SQLite requires LIMIT before OFFSET; use -1 for unlimited
       sql += " LIMIT -1";
     }
     if (query?.offset !== undefined) {
-      sql += ` OFFSET ${query.offset}`;
+      sql += " OFFSET ?";
+      params.push(paginationInteger(query.offset, "offset"));
     }
 
     return { sql, params };

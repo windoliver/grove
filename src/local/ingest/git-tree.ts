@@ -29,14 +29,13 @@ export async function ingestGitTree(
   const workDir = cwd ?? process.cwd();
 
   const stdout = await spawnOrThrow(
-    ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+    ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
     { cwd: workDir },
     "git ls-files",
   );
 
   const files = stdout
-    .split("\n")
-    .map((f) => f.trim())
+    .split("\0")
     .filter((f) => f.length > 0)
     // Skip .grove directory contents
     .filter((f) => !f.startsWith(".grove/") && !f.startsWith(".grove\\"));

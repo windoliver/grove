@@ -74,7 +74,7 @@ describe("Contribution interface", () => {
       summary: "Vectorized inner loop with numpy",
       description: "Detailed analysis of vectorization opportunities",
       artifacts: {
-        "train.py": "blake3:deed456deed456deed456deed456deed456deed456deed456deed456deed",
+        "train.py": "blake3:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
       },
       relations: [relation],
       scores: { val_bpb: score },

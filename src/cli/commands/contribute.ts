@@ -19,7 +19,7 @@ import type { ContributeInput, OperationDeps } from "../../core/operations/index
 import { contributeOperation } from "../../core/operations/index.js";
 import type { AgentOverrides } from "../agent.js";
 import { outputJson, outputJsonError } from "../format.js";
-import { findGroveDir } from "../utils/grove-dir.js";
+import { findGroveDir, resolveGroveDir } from "../utils/grove-dir.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -71,6 +71,7 @@ export interface ContributeOptions {
 
   // Working directory
   readonly cwd: string;
+  readonly groveOverride?: string | undefined;
 }
 
 /** Validation result — either valid or a list of errors. */
@@ -318,11 +319,19 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
   }
 
   // 2. Find .grove/
-  const grovePath = findGroveDir(options.cwd);
-  if (grovePath === undefined) {
-    throw new Error("No grove found. Run 'grove init' first to create a grove in this directory.");
-  }
-  const groveRoot = resolve(grovePath, "..");
+  const { groveDir, dbPath } =
+    options.groveOverride !== undefined
+      ? resolveGroveDir(options.groveOverride)
+      : (() => {
+          const discovered = findGroveDir(options.cwd);
+          if (discovered === undefined) {
+            throw new Error(
+              "No grove found. Run 'grove init' first to create a grove in this directory.",
+            );
+          }
+          return { groveDir: discovered, dbPath: join(discovered, "grove.db") };
+        })();
+  const groveRoot = resolve(groveDir, "..");
 
   // Dynamic imports for lazy loading
   const { SqliteContributionStore, SqliteClaimStore, SqliteIdempotencyStore, initSqliteDb } =
@@ -331,8 +340,7 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
   const { DefaultFrontierCalculator } = await import("../../core/frontier.js");
   const { EnforcingContributionStore } = await import("../../core/enforcing-store.js");
 
-  const dbPath = join(grovePath, "grove.db");
-  const casPath = join(grovePath, "cas");
+  const casPath = join(groveDir, "cas");
   const db = initSqliteDb(dbPath);
   // Guarantee close() even when bootstrap (contract resolution, schema checks)
   // throws before we reach the main work. Without this, a bad GROVE.md or a
@@ -524,7 +532,10 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
 /**
  * Handle the `grove contribute` CLI command.
  */
-export async function handleContribute(args: readonly string[]): Promise<void> {
+export async function handleContribute(
+  args: readonly string[],
+  groveOverride?: string,
+): Promise<void> {
   const options = parseContributeArgs(args);
-  await executeContribute(options);
+  await executeContribute({ ...options, groveOverride });
 }

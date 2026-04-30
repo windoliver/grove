@@ -722,7 +722,11 @@ function buildFilteredQuery(opts: BuildFilteredQueryOptions): BuiltQuery {
   }
 
   if (orderBy !== undefined) {
-    sql += ` ORDER BY ${orderBy}`;
+    const effectiveOrderBy =
+      query?.order === "created_at_desc" && orderBy === "c.created_at ASC"
+        ? "c.created_at DESC"
+        : orderBy;
+    sql += ` ORDER BY ${effectiveOrderBy}`;
   }
 
   // Pagination

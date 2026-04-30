@@ -125,6 +125,7 @@ function appWithGossip(
     frontier,
     gossip,
     gossipHmacSecret: hmacSecret,
+    watchHub: new WatchHub(),
   };
   return createApp(deps, TEST_REGISTRY);
 }

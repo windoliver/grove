@@ -307,6 +307,71 @@ describe("SessionOrchestrator", () => {
     bus.close();
   });
 
+  test("polling requests newest contributions so large stores do not hide fresh work", async () => {
+    const runtime = new MockRuntime();
+    const bus = new LocalEventBus();
+    const contract = makeContract();
+    const contributions: ReturnType<typeof makeContribution>[] = [];
+    const contributionStore = {
+      list: async (query?: { limit?: number; order?: "created_at_asc" | "created_at_desc" }) => {
+        const sorted = [...contributions].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+        const ordered = query?.order === "created_at_desc" ? sorted.reverse() : sorted;
+        return query?.limit !== undefined ? ordered.slice(0, query.limit) : ordered;
+      },
+    };
+
+    const orchestrator = new SessionOrchestrator({
+      goal: "Build auth module",
+      contract,
+      topology: contract.topology!,
+      runtime,
+      eventBus: bus,
+      projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
+      workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback",
+      contributionStore,
+    });
+    const internals = orchestrator as unknown as {
+      startContributionPolling: () => void;
+      pollContributions: () => Promise<void>;
+    };
+    internals.startContributionPolling = () => undefined;
+
+    const started = await orchestrator.start();
+    const coderSessionId = started.agents.find((a) => a.role === "coder")?.session.id;
+    const coderToken = runtime.spawnCalls.find((c) => c.role === "coder")?.config.env
+      ?.GROVE_ROUTING_TOKEN;
+    expect(coderSessionId).toBeDefined();
+    expect(coderToken).toBeDefined();
+
+    for (let i = 0; i < 200; i++) {
+      contributions.push(
+        makeContribution({
+          summary: `old contribution ${i}`,
+          agent: { agentId: "external-agent", role: "coder" },
+          createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 0, i)).toISOString(),
+        }),
+      );
+    }
+    contributions.push(
+      signContributionForRouting(
+        makeContribution({
+          summary: "fresh local coder contribution",
+          agent: { agentId: coderSessionId ?? "missing", role: "coder" },
+          createdAt: "2026-01-02T00:00:00.000Z",
+        }),
+        coderToken ?? "missing-token",
+      ),
+    );
+
+    await internals.pollContributions();
+
+    expect(runtime.sendCalls).toHaveLength(3);
+    expect(runtime.sendCalls[2]!.message).toContain("fresh local coder contribution");
+    bus.close();
+  });
+
   test("polling ignores contributions with forgeable deterministic agent ids", async () => {
     const runtime = new MockRuntime();
     const bus = new LocalEventBus();

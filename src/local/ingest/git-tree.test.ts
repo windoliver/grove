@@ -117,4 +117,29 @@ describe("ingestGitTree", () => {
       await rm(repoDir, { recursive: true, force: true });
     }
   });
+
+  test("preserves tracked filenames with leading and trailing spaces", async () => {
+    const repoDir = await createTempGitRepo();
+    try {
+      const casDir = join(repoDir, ".cas");
+      const cas = new FsCas(casDir);
+      const spacedName = " leading and trailing .txt ";
+
+      await writeFile(join(repoDir, spacedName), "space-sensitive path");
+
+      const run = async (cmd: string[]) => {
+        const proc = Bun.spawn(cmd, { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
+        const exitCode = await proc.exited;
+        expect(exitCode).toBe(0);
+      };
+      await run(["git", "add", "--", spacedName]);
+      await run(["git", "commit", "-m", "spaced path"]);
+
+      const artifacts = await ingestGitTree(cas, repoDir);
+
+      expect(Object.keys(artifacts)).toContain(spacedName);
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
 });
