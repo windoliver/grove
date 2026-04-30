@@ -554,14 +554,14 @@ describe("Informer run() safety", () => {
   test("concurrent run() calls are rejected with an error", async () => {
     const ac = new AbortController();
     // Fetch that blocks indefinitely until aborted
-    const fetchImpl: typeof fetch = (async (_input, init) => {
+    const fetchImpl = (async (_input: unknown, init?: { signal?: AbortSignal }) => {
       await new Promise<void>((_, reject) => {
-        (init?.signal as AbortSignal | undefined)?.addEventListener("abort", () =>
+        init?.signal?.addEventListener("abort", () =>
           reject(new DOMException("aborted", "AbortError")),
         );
       });
       throw new Error("unreachable");
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     const informer = new Informer({
       baseUrl: "http://t",
       kind: "Contribution",

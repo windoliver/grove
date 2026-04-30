@@ -252,13 +252,17 @@ export class InformerFactory {
   informerFor<K extends WatchKind>(kind: K): Informer<K> {
     let informer = this.informers.get(kind) as Informer<K> | undefined;
     if (!informer) {
-      informer = new Informer<K>({
+      // Build clientOpts conditionally so exactOptionalPropertyTypes doesn't
+      // treat undefined fetch/backoff as explicit-undefined (which violates
+      // WatchClientOptions where the props are optional, not optional|undefined).
+      const clientOpts: WatchClientOptions = {
         baseUrl: this.opts.baseUrl,
         kind,
         authHeader: this.opts.authHeader,
-        fetch: this.opts.fetch,
-        backoff: this.opts.backoff,
-      });
+        ...(this.opts.fetch !== undefined ? { fetch: this.opts.fetch } : {}),
+        ...(this.opts.backoff !== undefined ? { backoff: this.opts.backoff } : {}),
+      };
+      informer = new Informer<K>(clientOpts);
       this.informers.set(kind, informer as Informer);
     }
     return informer;
