@@ -189,8 +189,25 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
         };
         teardown = cleanup;
 
+        // Terminal frames bypass the byte-overflow gate. send() refuses to
+        // enqueue when desiredSize is past ROUTE_BYTE_OVERFLOW_THRESHOLD —
+        // but the entire reason we're closing is overflow, and accepting
+        // one small ERROR frame on an over-budget queue is what the client
+        // depends on to receive the 503 signal (otherwise it sees plain EOF
+        // and fast-resumes into the same overflow loop).
+        const sendTerminal = (event: string, data: unknown): void => {
+          if (closed) return;
+          const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+          const bytes = encoder.encode(payload);
+          try {
+            controller.enqueue(bytes);
+          } catch {
+            /* already closed */
+          }
+        };
+
         const closeWithError = (code: number, reason: string): void => {
-          send("ERROR", { code, reason });
+          sendTerminal("ERROR", { code, reason });
           cleanup();
         };
 

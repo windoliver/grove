@@ -123,6 +123,53 @@ describe("compaction triggers Expired (issue #293 acceptance #1)", () => {
     expect(key?.evictedByAge).toBeGreaterThanOrEqual(1);
   });
 
+  test("idle key past retention window → resume returns 410 (no further writes)", async () => {
+    // Regression: trim() used to run only on recordWrite(), so an idle
+    // (namespace, kind) key kept events past maxAgeMs forever. A client
+    // resuming after the documented retention window would receive
+    // expired replay instead of ERROR 410, defeating the contract.
+    let now = 1_000_000;
+    const { app } = createTestApp({
+      watchHubOptions: {
+        maxAgeMsPerKey: 200,
+        maxEventsPerKey: 100,
+        now: () => now,
+      },
+    });
+
+    const earlyRv = await listRv(app);
+    expect(earlyRv).toBe("0");
+
+    const wr = await app.request("/api/contributions", {
+      method: "POST",
+      headers: { ...TEST_AUTH_HEADERS, "Content-Type": "application/json" },
+      body: JSON.stringify(makeManifestBody({ summary: "alone" })),
+    });
+    expect(wr.status).toBe(201);
+
+    // Advance clock past retention WITHOUT another write. Compaction must
+    // happen at subscribe time even though no write triggers trim().
+    now += 1_000;
+
+    const watchRes = await app.request(`/api/watch?kind=Contribution&resumeFrom=${earlyRv}`, {
+      headers: TEST_AUTH_HEADERS,
+    });
+    const events = await readSseEvents(watchRes, 1, 1_000);
+    const errorEvent = events.find((e) => e.event === "ERROR");
+    expect(errorEvent).toBeDefined();
+    expect((errorEvent?.data as { code: number }).code).toBe(410);
+    expect(events[0]?.event).toBe("ERROR");
+
+    // Metrics also reflect the eviction without a write triggering it.
+    const metricsRes = await app.request("/api/watch/metrics", {
+      headers: TEST_AUTH_HEADERS,
+    });
+    const metrics = (await metricsRes.json()) as MetricsResponse;
+    const key = metrics.keys.find((k) => k.kind === "Contribution");
+    expect(key?.evictedByAge).toBe(1);
+    expect(key?.currentRingSize).toBe(0);
+  });
+
   test("capacity-based eviction also returns 410", async () => {
     const { app } = createTestApp({
       watchHubOptions: { maxAgeMsPerKey: 60_000, maxEventsPerKey: 4 },
@@ -153,6 +200,39 @@ describe("compaction triggers Expired (issue #293 acceptance #1)", () => {
     const key = metrics.keys.find((k) => k.kind === "Contribution");
     expect(key?.evictedByCapacity).toBeGreaterThanOrEqual(1);
   });
+});
+
+describe("watch route overflow path delivers terminal ERROR", () => {
+  test("byte-overflow at route level still emits ERROR{code:503} (regression)", async () => {
+    // Regression: closeWithError() previously routed through send() which
+    // refuses frames whose enqueue would push desiredSize past the route's
+    // overflow threshold. Once isOverflowed() fired, closeWithError(503)
+    // would silently drop the terminal ERROR frame and the client would
+    // see plain EOF → fast-resume → loop. This test forces the route
+    // queue past the threshold and asserts the ERROR frame is delivered.
+    const { app } = createTestApp();
+    const watchRes = await app.request("/api/watch?kind=Contribution&resumeFrom=0", {
+      headers: TEST_AUTH_HEADERS,
+    });
+    // ROUTE_BYTE_OVERFLOW_THRESHOLD = -3 MiB; HWM = +1 MiB. ~600 KiB
+    // events × 8 = ~4.7 MiB, pushing desiredSize to -3.7 MiB. Each event
+    // sits below the 1 MiB per-event cap.
+    const bigSummary = "x".repeat(600 * 1024);
+    for (let i = 0; i < 8; i++) {
+      const r = await app.request("/api/contributions", {
+        method: "POST",
+        headers: { ...TEST_AUTH_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify(makeManifestBody({ summary: bigSummary })),
+      });
+      expect(r.status).toBe(201);
+    }
+    // Drain. Whatever arrives, the terminal ERROR{503} must be among it.
+    const events = await readSseEvents(watchRes, 200, 5_000);
+    const error = events.find((e) => e.event === "ERROR");
+    expect(error).toBeDefined();
+    expect((error?.data as { code: number }).code).toBe(503);
+    expect((error?.data as { reason: string }).reason).toBe("buffer_overflow");
+  }, 10_000);
 });
 
 async function listRv(app: {

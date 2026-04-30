@@ -31,6 +31,13 @@ interface KeyState {
   counter: bigint;
   ring: WatchEvent[];
   insertedAt: number[];
+  /**
+   * Highest rv that has been evicted (by age or capacity). Any client
+   * resuming from `fromRv < floorRv` has missed at least one unrecoverable
+   * event and must relist. Survives full ring eviction so age-compaction
+   * of an idle key still triggers 410.
+   */
+  floorRv: bigint;
   evictedByAge: number;
   evictedByCapacity: number;
 }
@@ -81,10 +88,18 @@ export class WatchHub {
     const key = this.key(namespace, kind);
     const s = this.getOrCreate(namespace, kind);
 
-    const oldestRv = s.ring.length > 0 ? (s.ring[0] as WatchEvent).rv : 0n;
-    // Resume from rv == oldestRv - 1 means "I have everything through oldestRv-1,
-    // give me oldestRv onward." Anything strictly older is unrecoverable → 410.
-    if (fromRv < oldestRv - 1n) {
+    // Apply age compaction at subscribe time. Without this, an idle
+    // (namespace, kind) would keep events past maxAgeMs indefinitely and
+    // a resuming client could be replayed events the retention contract
+    // says are gone.
+    this.trim(s);
+
+    // floorRv is the highest evicted rv. Anything ≤ floorRv is unrecoverable;
+    // resuming from fromRv == floorRv means "I have everything through
+    // floorRv, give me floorRv+1 onward." Survives full ring eviction so
+    // age-compaction of idle keys still triggers 410.
+    if (fromRv < s.floorRv) {
+      const oldestRv = s.ring.length > 0 ? (s.ring[0] as WatchEvent).rv : s.floorRv + 1n;
       throw new StaleResourceVersionError(namespace, kind, fromRv, oldestRv);
     }
     // Reject future RVs. After a server restart the hub resets to 0; a client
@@ -180,7 +195,11 @@ export class WatchHub {
   getCompactionStats(): readonly CompactionStats[] {
     const out: CompactionStats[] = [];
     for (const s of this.state.values()) {
-      const oldestRv = s.ring.length > 0 ? (s.ring[0] as WatchEvent).rv : 0n;
+      // Reflect age compaction in metrics even when no writes have arrived
+      // since the events expired — otherwise the dashboard hides the fact
+      // that the ring is now empty.
+      this.trim(s);
+      const oldestRv = s.ring.length > 0 ? (s.ring[0] as WatchEvent).rv : s.floorRv + 1n;
       out.push({
         namespace: s.namespace,
         kind: s.kind,
@@ -208,6 +227,7 @@ export class WatchHub {
         counter: 0n,
         ring: [],
         insertedAt: [],
+        floorRv: 0n,
         evictedByAge: 0,
         evictedByCapacity: 0,
       };
@@ -218,14 +238,16 @@ export class WatchHub {
 
   private trim(s: KeyState): void {
     while (s.ring.length > this.maxEventsPerKey) {
-      s.ring.shift();
+      const evicted = s.ring.shift() as WatchEvent;
       s.insertedAt.shift();
+      if (evicted.rv > s.floorRv) s.floorRv = evicted.rv;
       s.evictedByCapacity += 1;
     }
     const cutoff = this.now() - this.maxAgeMsPerKey;
     while (s.ring.length > 0 && (s.insertedAt[0] ?? 0) < cutoff) {
-      s.ring.shift();
+      const evicted = s.ring.shift() as WatchEvent;
       s.insertedAt.shift();
+      if (evicted.rv > s.floorRv) s.floorRv = evicted.rv;
       s.evictedByAge += 1;
     }
   }

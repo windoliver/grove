@@ -98,7 +98,7 @@ describe("WatchHub compaction stats", () => {
     expect(hub.getCompactionStats()[0]?.oldestRv).toBe("2");
   });
 
-  test("oldestRv reports '0' for a key with no writes", async () => {
+  test("oldestRv on empty ring reports floorRv+1 (first rv not yet evicted)", async () => {
     const hub = new WatchHub({ maxEventsPerKey: 5, maxAgeMsPerKey: 60_000 });
     const ac = new AbortController();
     // subscribe creates the key via getOrCreate without writing.
@@ -110,7 +110,10 @@ describe("WatchHub compaction stats", () => {
     const stats = hub.getCompactionStats();
     expect(stats.length).toBe(1);
     expect(stats[0]?.currentRingSize).toBe(0);
-    expect(stats[0]?.oldestRv).toBe("0");
+    // No writes ever happened: floorRv=0, so oldestRv reports "1" — the rv
+    // that the next write would receive. This semantic survives idle-key
+    // age compaction (full eviction), where oldestRv = counter + 1.
+    expect(stats[0]?.oldestRv).toBe("1");
     expect(stats[0]?.currentRv).toBe("0");
   });
 
