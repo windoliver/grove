@@ -196,10 +196,6 @@ function freeze<T>(val: T): T {
 
 /**
  * Race a promise against an abort signal. Rejects with AbortError if the
- * signal fires before the promise settles. Pass null to skip the race.
- */
-/**
- * Race a promise against an abort signal. Rejects with AbortError if the
  * signal fires WHILE the promise is still pending. Crucially, does NOT
  * check signal.aborted upfront — AbortSignal event listeners registered
  * on an already-aborted signal do not re-fire, so a sync handler that
