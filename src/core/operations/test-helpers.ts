@@ -90,7 +90,7 @@ export function makeInMemoryContributionStore(items: Contribution[] = []): Contr
       if (query?.mode) result = result.filter((c) => c.mode === query.mode);
       if (query?.agentId) result = result.filter((c) => c.agent.agentId === query.agentId);
       if (query?.limit) result = result.slice(0, query.limit);
-      return result.map(contributionToEntity);
+      return result.map((c) => contributionToEntity(c, "default"));
     },
     close: () => {
       /* expected */
@@ -155,6 +155,10 @@ export async function createTestOperationDeps(): Promise<TestOperationDeps> {
     onContributionWritten: () => {
       /* no-op for tests */
     },
+    onEntityWrite: () => {
+      /* no-op for tests */
+    },
+    namespace: "test",
     eventBus: undefined as unknown as NonNullable<OperationDeps["eventBus"]>,
     topologyRouter: undefined as unknown as NonNullable<OperationDeps["topologyRouter"]>,
     hookRunner: undefined as unknown as NonNullable<OperationDeps["hookRunner"]>,

@@ -6,12 +6,9 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { DefaultFrontierCalculator } from "../core/frontier.js";
 import { computeCid } from "../core/manifest.js";
-import type { Contribution, ContributionInput } from "../core/models.js";
-import { InMemoryContributionStore } from "../core/testing.js";
-import { createApp } from "../server/app.js";
-import { createTestApp, InMemoryClaimStore, InMemoryContentStore } from "../server/test-helpers.js";
+import type { ContributionInput } from "../core/models.js";
+import { createTestApp, TEST_NAMESPACE_KEY } from "../server/test-helpers.js";
 import { runProviderConformanceTests } from "./provider.conformance.js";
 import { RemoteDataProvider } from "./remote-provider.js";
 
@@ -86,7 +83,9 @@ async function createTestProvider(): Promise<{
     fetch: ctx.app.fetch,
   });
 
-  const provider = new RemoteDataProvider(`http://localhost:${server.port}`);
+  const provider = new RemoteDataProvider(`http://localhost:${server.port}`, {
+    apiKey: TEST_NAMESPACE_KEY,
+  });
 
   return {
     provider,
@@ -129,40 +128,59 @@ describe("RemoteDataProvider specific", () => {
     expect(detail).toBeUndefined();
   });
 
-  test("getContribution uses the active session scope for remote detail requests", async () => {
-    const root = makeContribution({ summary: "Scoped remote root" });
-    const child = makeContribution({
-      summary: "Scoped remote child",
-      relations: [{ targetCid: root.cid, relationType: "responds_to" }],
-      createdAt: new Date(Date.now() + 3000).toISOString(),
+  test("applies active session scope to detail, graph, artifact, and search reads", async () => {
+    const contribution = { manifestVersion: 1, ...makeContribution({ summary: "Scoped parser" }) };
+    const requestedPaths: string[] = [];
+    const encoder = new TextEncoder();
+    const json = (body: unknown): Response =>
+      new Response(JSON.stringify(body), {
+        headers: { "Content-Type": "application/json" },
+      });
+
+    const server = Bun.serve({
+      port: 0,
+      fetch: (req) => {
+        const url = new URL(req.url);
+        requestedPaths.push(`${url.pathname}${url.search}`);
+
+        if (url.pathname.endsWith("/artifacts/note.txt/meta")) {
+          return json({ sizeBytes: 8, mediaType: "text/plain" });
+        }
+        if (url.pathname.endsWith("/artifacts/note.txt")) {
+          return new Response(encoder.encode("artifact"), {
+            headers: { "Content-Type": "text/plain" },
+          });
+        }
+        if (url.pathname.startsWith("/api/dag/")) {
+          return json([]);
+        }
+        if (url.pathname.startsWith("/api/threads/")) {
+          return json({ nodes: [], count: 0 });
+        }
+        if (url.pathname === "/api/search") {
+          return json({ results: [contribution], count: 1 });
+        }
+        if (url.pathname.startsWith("/api/contributions/")) {
+          return json(contribution);
+        }
+        return new Response("not found", { status: 404 });
+      },
     });
-    const scopedStore = new InMemoryContributionStore([
-      { manifestVersion: 1, ...root } as Contribution,
-      { manifestVersion: 1, ...child } as Contribution,
-    ]);
-    const globalStore = new InMemoryContributionStore();
-    const cas = new InMemoryContentStore();
-    const app = createApp({
-      contributionStore: globalStore,
-      contributionStoreForSession: (sessionId) =>
-        sessionId === "session-a" ? scopedStore : globalStore,
-      claimStore: new InMemoryClaimStore(),
-      cas,
-      frontier: new DefaultFrontierCalculator(globalStore),
-      frontierForSession: (sessionId) =>
-        new DefaultFrontierCalculator(sessionId === "session-a" ? scopedStore : globalStore),
-    });
-    const server = Bun.serve({ port: 0, fetch: app.fetch });
+
     try {
       const scopedProvider = new RemoteDataProvider(`http://localhost:${server.port}`);
-      scopedProvider.setSessionScope("session-a");
+      scopedProvider.setSessionScope("session-1");
 
-      const detail = await scopedProvider.getContribution(root.cid);
-
-      expect(detail?.contribution.cid).toBe(root.cid);
-      expect(detail?.children.map((c) => c.cid)).toEqual([child.cid]);
+      await scopedProvider.getContribution(contribution.cid);
+      await scopedProvider.getDag(contribution.cid);
+      await scopedProvider.getArtifact(contribution.cid, "note.txt");
+      await scopedProvider.getArtifactMeta(contribution.cid, "note.txt");
+      await scopedProvider.search("parser");
     } finally {
       server.stop(true);
     }
+
+    expect(requestedPaths.length).toBeGreaterThan(0);
+    expect(requestedPaths.every((path) => path.includes("sessionId=session-1"))).toBe(true);
   });
 });

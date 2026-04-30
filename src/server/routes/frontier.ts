@@ -12,7 +12,7 @@ import type { ContributionKind, ContributionMode, JsonValue } from "../../core/m
 import { frontierOperation } from "../../core/operations/index.js";
 import type { ServerEnv } from "../deps.js";
 import { toHttpResult } from "../operation-adapter.js";
-import { operationDepsForSession } from "./session-scope.js";
+import { operationDepsForSession } from "./shared.js";
 
 const querySchema = z.object({
   kind: z.string().optional(),

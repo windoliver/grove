@@ -13,6 +13,8 @@ import type { Contribution, ContributionKind, JsonValue, Score } from "./models.
 import { ContributionMode, RelationType } from "./models.js";
 import type { ContributionQuery, ContributionStore } from "./store.js";
 
+export type FrontierContributionSource = Pick<ContributionStore, "incomingSources" | "list">;
+
 /**
  * A single entry in a frontier ranking.
  *
@@ -130,9 +132,9 @@ function matchesFilters(c: Contribution, query?: FrontierQuery): boolean {
 
 /** Concrete implementation of FrontierCalculator backed by a ContributionStore. */
 export class DefaultFrontierCalculator implements FrontierCalculator {
-  private readonly store: ContributionStore;
+  private readonly store: FrontierContributionSource;
 
-  constructor(store: ContributionStore) {
+  constructor(store: FrontierContributionSource) {
     this.store = store;
   }
 
@@ -389,5 +391,74 @@ export class DefaultFrontierCalculator implements FrontierCalculator {
     const descending = maximizeCount >= minimizeCount;
     entries.sort((a, b) => compareEntries(a, b, descending));
     return entries.slice(0, limit);
+  }
+}
+
+export interface SessionAggregatingFrontierOptions {
+  readonly rootStore: FrontierContributionSource;
+  readonly listSessionIds: () => Promise<readonly string[]>;
+  readonly storeForSession: (sessionId: string) => FrontierContributionSource;
+}
+
+class AggregatedFrontierSource implements FrontierContributionSource {
+  private readonly sources: readonly FrontierContributionSource[];
+
+  constructor(sources: readonly FrontierContributionSource[]) {
+    this.sources = sources;
+  }
+
+  async list(query?: ContributionQuery): Promise<readonly Contribution[]> {
+    const byCid = new Map<string, Contribution>();
+    const sourceResults = await Promise.all(this.sources.map((source) => source.list(query)));
+    for (const contributions of sourceResults) {
+      for (const contribution of contributions) {
+        byCid.set(contribution.cid, contribution);
+      }
+    }
+    return [...byCid.values()];
+  }
+
+  async incomingSources(targetCids: readonly string[]): Promise<readonly Contribution[]> {
+    const byCid = new Map<string, Contribution>();
+    const sourceResults = await Promise.all(
+      this.sources.map((source) => source.incomingSources(targetCids)),
+    );
+    for (const contributions of sourceResults) {
+      for (const contribution of contributions) {
+        byCid.set(contribution.cid, contribution);
+      }
+    }
+    return [...byCid.values()];
+  }
+}
+
+/**
+ * Frontier calculator for backends whose durable data is split by session.
+ *
+ * An unscoped frontier aggregates the root store plus every known session
+ * store. A scoped query delegates directly to that session's store.
+ */
+export class SessionAggregatingFrontierCalculator implements FrontierCalculator {
+  private readonly rootStore: FrontierContributionSource;
+  private readonly listSessionIds: () => Promise<readonly string[]>;
+  private readonly storeForSession: (sessionId: string) => FrontierContributionSource;
+
+  constructor(options: SessionAggregatingFrontierOptions) {
+    this.rootStore = options.rootStore;
+    this.listSessionIds = options.listSessionIds;
+    this.storeForSession = options.storeForSession;
+  }
+
+  async compute(query?: FrontierQuery): Promise<Frontier> {
+    if (query?.sessionId !== undefined) {
+      return new DefaultFrontierCalculator(this.storeForSession(query.sessionId)).compute(query);
+    }
+
+    const sessionIds = [...new Set(await this.listSessionIds())];
+    const source = new AggregatedFrontierSource([
+      this.rootStore,
+      ...sessionIds.map((sessionId) => this.storeForSession(sessionId)),
+    ]);
+    return new DefaultFrontierCalculator(source).compute(query);
   }
 }

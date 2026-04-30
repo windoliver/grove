@@ -13,7 +13,7 @@ import { threadOperation, threadsOperation } from "../../core/operations/index.j
 import type { ServerEnv } from "../deps.js";
 import { toHttpResult } from "../operation-adapter.js";
 import { CID_REGEX } from "../schemas.js";
-import { contributionStoreForSession, operationDepsForSession } from "./session-scope.js";
+import { contributionStoreForSession, operationDepsForSession } from "./shared.js";
 
 const cidParamSchema = z.object({
   cid: z.string().regex(CID_REGEX, "CID must be in format blake3:<64-hex-chars>"),
@@ -44,6 +44,7 @@ threads.get(
 
     // Use operation for validation (e.g., 404 on missing root)
     const serverDeps = c.get("deps");
+    const contributionStore = contributionStoreForSession(serverDeps, sessionId);
     const deps = operationDepsForSession(serverDeps, sessionId);
     const result = await threadOperation({ cid, maxDepth, limit }, deps);
 
@@ -53,7 +54,6 @@ threads.get(
     }
 
     // Return full thread nodes for HTTP consumers (TUI remote provider)
-    const contributionStore = contributionStoreForSession(serverDeps, sessionId);
     const nodes = await contributionStore.thread(cid, { maxDepth, limit });
     return c.json({
       nodes: nodes.map((n) => ({
@@ -74,6 +74,7 @@ threads.get("/", zValidator("query", threadsQuerySchema), async (c) => {
 
   // Use operation for validation
   const serverDeps = c.get("deps");
+  const contributionStore = contributionStoreForSession(serverDeps, raw.sessionId);
   const deps = operationDepsForSession(serverDeps, raw.sessionId);
   const result = await threadsOperation({ tags, limit: raw.limit }, deps);
 
@@ -83,7 +84,6 @@ threads.get("/", zValidator("query", threadsQuerySchema), async (c) => {
   }
 
   // Return full thread summaries for HTTP consumers (TUI remote provider)
-  const contributionStore = contributionStoreForSession(serverDeps, raw.sessionId);
   const threadList = await contributionStore.hotThreads({ tags, limit: raw.limit });
   return c.json({
     threads: threadList.map((t) => ({

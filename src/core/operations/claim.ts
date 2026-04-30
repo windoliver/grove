@@ -6,12 +6,35 @@
  * listClaimsOperation — List claims with filters
  */
 
+import { claimToEntity } from "../entity.js";
 import type { Claim, ClaimStatus, JsonValue } from "../models.js";
+import type { EntityWriteEvent } from "../watch-events.js";
 import type { AgentOverrides } from "./agent.js";
 import { resolveAgent } from "./agent.js";
 import type { OperationDeps } from "./deps.js";
 import type { OperationResult } from "./result.js";
 import { fromGroveError, notFound, ok, validationErr } from "./result.js";
+
+/**
+ * Fire `onEntityWrite` for a claim transition, swallowing any throw so a
+ * watcher hook cannot escape and roll back the commit from the caller's
+ * perspective. Mirrors the post-commit pattern in `contribute.ts`.
+ *
+ * The hook is suppressed when `namespace` is absent — the watch protocol
+ * scopes events per-namespace, so without it the event has no destination.
+ */
+function fireClaimEntityWrite(deps: OperationDeps, event: EntityWriteEvent): void {
+  if (!deps.onEntityWrite || !deps.namespace) return;
+  try {
+    deps.onEntityWrite(event);
+  } catch (err) {
+    process.stderr.write(
+      `[grove] Warning: post-commit callback threw after claim commit: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -118,6 +141,18 @@ export async function claimOperation(
 
     const result = await deps.claimStore.claimOrRenew(claim);
 
+    // Fire watch hook on phase change. Renewal that does not change status
+    // is suppressed — heartbeat-only updates would otherwise flood watchers.
+    const phaseChanged = !existing || existing.status !== result.status;
+    if (phaseChanged && deps.namespace) {
+      fireClaimEntityWrite(deps, {
+        kind: "Claim",
+        namespace: deps.namespace,
+        op: existing ? "MODIFIED" : "ADDED",
+        entity: claimToEntity(result, () => Date.now(), deps.namespace),
+      });
+    }
+
     return ok({
       claimId: result.claimId,
       targetRef: result.targetRef,
@@ -153,6 +188,17 @@ export async function releaseOperation(
       result = await deps.claimStore.release(input.claimId);
     } else {
       result = await deps.claimStore.complete(input.claimId);
+    }
+
+    // Release / complete are by-definition status transitions, so always
+    // fire the watch hook (when namespace + onEntityWrite are wired).
+    if (deps.namespace) {
+      fireClaimEntityWrite(deps, {
+        kind: "Claim",
+        namespace: deps.namespace,
+        op: "MODIFIED",
+        entity: claimToEntity(result, () => Date.now(), deps.namespace),
+      });
     }
 
     return ok({

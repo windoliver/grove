@@ -15,7 +15,9 @@ import type { IdempotencyStore } from "../core/operations/deps.js";
 import type { OutcomeStore } from "../core/outcome.js";
 import type { ClaimStore, ContributionStore } from "../core/store.js";
 import type { AgentTopology } from "../core/topology.js";
+import type { WatchHub } from "../core/watch-hub.js";
 import type { GoalSessionStore } from "../local/sqlite-goal-session-store.js";
+import type { NexusWatchSubscriber } from "../nexus/nexus-watch-subscriber.js";
 
 /** Dependencies injected into the Hono application. */
 export interface ServerDeps {
@@ -42,6 +44,8 @@ export interface ServerDeps {
   readonly frontierForSession?: ((sessionId: string) => FrontierCalculator) | undefined;
   /** Optional gossip service. Routes return 501 when not configured. */
   readonly gossip?: GossipService | undefined;
+  /** HMAC secret for gossip route verification (required when gossip is configured). */
+  readonly gossipHmacSecret?: string | undefined;
   /** Optional outcome store. Routes return 501 when not configured. */
   readonly outcomeStore?: OutcomeStore | undefined;
   /** Optional bounty store. Routes return 501 when not configured. */
@@ -67,11 +71,24 @@ export interface ServerDeps {
   readonly handoffStoreForSession?: (sessionId: string) => HandoffStore | undefined;
   /** Optional idempotency store for cross-process deduplication. */
   readonly idempotencyStore?: IdempotencyStore | undefined;
+  /** Watch hub for list→watch handshake (#292). */
+  readonly watchHub: WatchHub;
+  /**
+   * Optional cross-process watch subscriber (#292). When present, the
+   * operation-adapter calls `markSeen` on it after each in-process write
+   * so that the matching cross-process envelope (published by the same
+   * write through Nexus → NexusWatchPublisher) is suppressed at the
+   * subscriber instead of being replayed back into the WatchHub.
+   *
+   * Optional so test harnesses that build ServerDeps inline can omit it.
+   */
+  readonly watchSubscriber?: NexusWatchSubscriber | undefined;
 }
 
 /** Hono environment type carrying injected dependencies. */
 export interface ServerEnv {
   Variables: {
     deps: ServerDeps;
+    namespace: string;
   };
 }

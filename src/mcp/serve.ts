@@ -16,6 +16,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { findGroveDir } from "../cli/context.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
 import { TopologyRouter } from "../core/topology-router.js";
+import { WatchHub } from "../core/watch-hub.js";
 import { createLocalRuntime } from "../local/runtime.js";
 import type { McpDeps } from "./deps.js";
 import { createMcpServer } from "./server.js";
@@ -194,7 +195,17 @@ try {
   let bountyStore = runtime.bountyStore as import("../core/bounty-store.js").BountyStore;
   let outcomeStore: import("../core/outcome.js").OutcomeStore | undefined;
   let cas = runtime.cas as import("../core/cas.js").ContentStore;
-  const zoneId = process.env.GROVE_ZONE_ID ?? "default";
+  // Prefer the namespace persisted by `grove init` — stable across branch renames.
+  // Fall back to GROVE_ZONE_ID env var, then auto-derive from project-id/branch.
+  const { readNamespace } = await import("../core/project-key.js");
+  const { readProjectId } = await import("../core/project-id.js");
+  let zoneId = readNamespace(groveDir) ?? process.env.GROVE_ZONE_ID;
+  if (!zoneId) {
+    const { detectWorktreeName } = await import("../core/project-key.js");
+    const projectId = readProjectId(groveDir);
+    const worktreeName = await detectWorktreeName();
+    zoneId = projectId ? `${projectId}/${worktreeName}` : "default";
+  }
   let nexusClient: import("../nexus/nexus-http-client.js").NexusHttpClient | undefined;
   let nexusHandoffStore: import("../nexus/nexus-handoff-store.js").NexusHandoffStore | undefined;
 
@@ -526,6 +537,7 @@ try {
     idempotencyStore: runtime.idempotencyStore,
     ...(handoffExpiryManaged ? { handoffExpiryManaged: true } : {}),
     ...(deadlineWatcher ? { deadlineWatcher } : {}),
+    watchHub: new WatchHub(),
   };
   // Derive MCP tool preset from contract mode — #11 MCP Tool Surface + #12 Concept Usage
   const contractMode = loadedContract?.mode ?? "exploration";

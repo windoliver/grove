@@ -11,7 +11,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { ServerEnv } from "../deps.js";
 import { CID_REGEX } from "../schemas.js";
-import { contributionStoreForSession } from "./session-scope.js";
+import { contributionStoreForSession } from "./shared.js";
 
 const cidParamSchema = z.object({
   cid: z.string().regex(CID_REGEX, "CID must be in format blake3:<64-hex-chars>"),
@@ -29,10 +29,9 @@ dag.get(
   zValidator("param", cidParamSchema),
   zValidator("query", sessionQuerySchema),
   async (c) => {
-    const deps = c.get("deps");
-    const { cid } = c.req.valid("param");
     const { sessionId } = c.req.valid("query");
-    const contributionStore = contributionStoreForSession(deps, sessionId);
+    const contributionStore = contributionStoreForSession(c.get("deps"), sessionId);
+    const { cid } = c.req.valid("param");
     const children = await contributionStore.children(cid);
     return c.json(children);
   },
@@ -44,10 +43,9 @@ dag.get(
   zValidator("param", cidParamSchema),
   zValidator("query", sessionQuerySchema),
   async (c) => {
-    const deps = c.get("deps");
-    const { cid } = c.req.valid("param");
     const { sessionId } = c.req.valid("query");
-    const contributionStore = contributionStoreForSession(deps, sessionId);
+    const contributionStore = contributionStoreForSession(c.get("deps"), sessionId);
+    const { cid } = c.req.valid("param");
     const ancestors = await contributionStore.ancestors(cid);
     return c.json(ancestors);
   },

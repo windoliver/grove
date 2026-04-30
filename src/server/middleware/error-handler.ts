@@ -8,6 +8,7 @@
 import type { Context } from "hono";
 import { ZodError } from "zod";
 import { GroveError, RateLimitError } from "../../core/errors.js";
+import { InvalidTransitionError } from "../../core/handoff.js";
 
 // NotFoundError and StateConflictError are resolved via ERROR_MAP by name.
 
@@ -46,6 +47,11 @@ export function handleError(err: Error, c: Context): Response {
   if (err instanceof ZodError) {
     const messages = err.issues.map((i) => `${i.path.join(".")}: ${i.message}`);
     return c.json(errorBody("VALIDATION_ERROR", messages.join("; ")), 400);
+  }
+
+  // Handoff state machine errors are plain Error subclasses, not GroveError.
+  if (err instanceof InvalidTransitionError) {
+    return c.json(errorBody("STATE_CONFLICT", err.message), 409);
   }
 
   // Grove typed errors → mapped status code

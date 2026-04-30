@@ -9,8 +9,19 @@ import {
   formatScore,
   formatTimestamp,
   frontierEntryToRow,
+  stripAnsi,
   truncateCid,
 } from "./format.js";
+
+describe("stripAnsi", () => {
+  test("strips private-mode CSI sequences", () => {
+    expect(stripAnsi("\x1b[?25lhidden\x1b[?25h")).toBe("hidden");
+  });
+
+  test("strips OSC sequences terminated by ST", () => {
+    expect(stripAnsi("\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\")).toBe("link");
+  });
+});
 
 describe("truncateCid", () => {
   test("truncates blake3 CID", () => {

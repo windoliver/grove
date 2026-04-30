@@ -3,8 +3,15 @@ import type { GossipService } from "../../src/core/gossip/types.js";
 import { PeerStatus } from "../../src/core/gossip/types.js";
 import { createApp } from "../../src/server/app.js";
 import type { ServerDeps } from "../../src/server/deps.js";
+import type { KeyRegistry } from "../../src/server/middleware/namespace-auth.js";
 import type { TestContext } from "./helpers.js";
-import { createTestContext, validManifestBody } from "./helpers.js";
+import {
+  createTestContext,
+  TEST_AUTH_HEADERS,
+  TEST_KEY,
+  TEST_NAMESPACE,
+  validManifestBody,
+} from "./helpers.js";
 
 describe("GET /api/grove", () => {
   let ctx: TestContext;
@@ -17,7 +24,7 @@ describe("GET /api/grove", () => {
   });
 
   test("returns grove metadata with gossip disabled", async () => {
-    const res = await ctx.app.request("/api/grove");
+    const res = await ctx.app.request("/api/grove", { headers: TEST_AUTH_HEADERS });
 
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -69,9 +76,14 @@ describe("GET /api/grove", () => {
       },
     };
 
-    const depsWithGossip: ServerDeps = { ...ctx.deps, gossip: mockGossip };
-    const appWithGossip = createApp(depsWithGossip);
-    const res = await appWithGossip.request("/api/grove");
+    const depsWithGossip: ServerDeps = {
+      ...ctx.deps,
+      gossip: mockGossip,
+      gossipHmacSecret: "test-hmac-secret",
+    };
+    const testRegistry: KeyRegistry = new Map([[TEST_KEY, TEST_NAMESPACE]]);
+    const appWithGossip = createApp(depsWithGossip, testRegistry);
+    const res = await appWithGossip.request("/api/grove", { headers: TEST_AUTH_HEADERS });
     const data = await res.json();
 
     expect(data.gossip.enabled).toBe(true);
@@ -84,11 +96,11 @@ describe("GET /api/grove", () => {
   test("stats reflect contributions count", async () => {
     await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(validManifestBody()),
     });
 
-    const res = await ctx.app.request("/api/grove");
+    const res = await ctx.app.request("/api/grove", { headers: TEST_AUTH_HEADERS });
     const data = await res.json();
     expect(data.stats.contributions).toBe(1);
   });
@@ -96,7 +108,7 @@ describe("GET /api/grove", () => {
   test("stats reflect active claims count", async () => {
     await ctx.app.request("/api/claims", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({
         targetRef: "some-target",
         agent: { agentId: "agent-1" },
@@ -104,7 +116,7 @@ describe("GET /api/grove", () => {
       }),
     });
 
-    const res = await ctx.app.request("/api/grove");
+    const res = await ctx.app.request("/api/grove", { headers: TEST_AUTH_HEADERS });
     const data = await res.json();
     expect(data.stats.activeClaims).toBe(1);
   });

@@ -8,9 +8,11 @@
 import type { Hono } from "hono";
 import type { ContentStore, PutOptions } from "../core/cas.js";
 import type { ClaimEntity } from "../core/entity.js";
-import { claimToEntity } from "../core/entity.js";
+import { claimToEntity, contributionToEntity } from "../core/entity.js";
 import { NotFoundError, StateConflictError } from "../core/errors.js";
+import type { EventBus } from "../core/event-bus.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
+import { LocalEventBus } from "../core/local-event-bus.js";
 import type { AgentIdentity, Artifact, Claim, ContributionInput } from "../core/models.js";
 import type {
   ActiveClaimFilter,
@@ -20,8 +22,11 @@ import type {
   ExpireStaleOptions,
 } from "../core/store.js";
 import { InMemoryContributionStore } from "../core/testing.js";
+import { WatchHub, type WatchHubOptions } from "../core/watch-hub.js";
+import { NexusWatchSubscriber } from "../nexus/nexus-watch-subscriber.js";
 import { createApp } from "./app.js";
 import type { ServerDeps, ServerEnv } from "./deps.js";
+import type { KeyRegistry } from "./middleware/namespace-auth.js";
 
 // ---------------------------------------------------------------------------
 // In-memory ContentStore (CAS)
@@ -114,12 +119,16 @@ export class InMemoryClaimStore implements ClaimStore {
     for (const existing of this.claims.values()) {
       if (existing.targetRef === claim.targetRef && existing.status === "active") {
         if (existing.agent.agentId === claim.agent.agentId) {
-          // Renew: update lease
+          // Renew: update lease and bump revision (matches the conformance
+          // contract — SQLite + Nexus stores both increment revision on
+          // every renewal, and watch fan-out depends on it to distinguish
+          // create from renew).
           const renewed: Claim = {
             ...existing,
             heartbeatAt: claim.heartbeatAt,
             leaseExpiresAt: claim.leaseExpiresAt,
             intentSummary: claim.intentSummary,
+            revision: (existing.revision ?? 1) + 1,
           };
           this.claims.set(existing.claimId, renewed);
           return renewed;
@@ -131,8 +140,9 @@ export class InMemoryClaimStore implements ClaimStore {
         });
       }
     }
-    this.claims.set(claim.claimId, claim);
-    return claim;
+    const created: Claim = { ...claim, revision: 1 };
+    this.claims.set(claim.claimId, created);
+    return created;
   }
 
   async getClaim(claimId: string): Promise<Claim | undefined> {
@@ -160,6 +170,7 @@ export class InMemoryClaimStore implements ClaimStore {
       ...claim,
       heartbeatAt: now.toISOString(),
       leaseExpiresAt: new Date(now.getTime() + (leaseDurationMs ?? 300_000)).toISOString(),
+      revision: (claim.revision ?? 1) + 1,
     };
     this.claims.set(claimId, updated);
     return updated;
@@ -273,6 +284,16 @@ export class InMemoryClaimStore implements ClaimStore {
 }
 
 // ---------------------------------------------------------------------------
+// Test auth constants
+// ---------------------------------------------------------------------------
+
+export const TEST_NAMESPACE_KEY: string = `grv_${"b".repeat(64)}`;
+export const TEST_NAMESPACE: string = "test-uuid/test-worktree";
+export const TEST_AUTH_HEADERS: Record<string, string> = {
+  Authorization: `Bearer ${TEST_NAMESPACE_KEY}`,
+};
+
+// ---------------------------------------------------------------------------
 // Test app factory
 // ---------------------------------------------------------------------------
 
@@ -282,19 +303,63 @@ export interface TestContext {
   contributionStore: InMemoryContributionStore;
   claimStore: InMemoryClaimStore;
   cas: InMemoryContentStore;
+  watchHub: WatchHub;
+  watchEventBus: EventBus;
+}
+
+export interface CreateTestAppOptions {
+  readonly watchHubOptions?: WatchHubOptions;
+  readonly eventBus?: EventBus;
 }
 
 /** Create a test app with fresh in-memory stores. */
-export function createTestApp(): TestContext {
+export function createTestApp(opts: CreateTestAppOptions = {}): TestContext {
   const contributionStore = new InMemoryContributionStore();
   const claimStore = new InMemoryClaimStore();
   const cas = new InMemoryContentStore();
   const frontier = new DefaultFrontierCalculator(contributionStore);
+  const watchHub = new WatchHub(opts.watchHubOptions);
 
-  const deps: ServerDeps = { contributionStore, claimStore, cas, frontier };
-  const app = createApp(deps);
+  // Cross-process subscriber that fans `entity.changed` envelopes from the
+  // shared event-bus into the WatchHub. fetchEntity uses the same in-memory
+  // stores so tests can simulate out-of-band writes (#292 T23).
+  const watchEventBus = opts.eventBus ?? new LocalEventBus();
+  const watchSubscriber = new NexusWatchSubscriber({
+    bus: watchEventBus,
+    hub: watchHub,
+    // Pin a stable instanceId distinct from the default process id so the
+    // cross-process integration test (#292 T23) can publish with a different
+    // id and exercise the cross-process branch — instead of being filtered
+    // out as a self-emitted envelope.
+    instanceId: "test-server-proc",
+    fetchEntity: async (kind, namespace, id) => {
+      if (kind === "Contribution") {
+        const c = await contributionStore.get(id);
+        if (!c) throw new Error(`Contribution ${id} not found`);
+        return contributionToEntity(c, namespace);
+      }
+      if (kind === "Claim") {
+        const c = await claimStore.getClaim(id);
+        if (!c) throw new Error(`Claim ${id} not found`);
+        return claimToEntity(c, () => Date.now(), namespace);
+      }
+      throw new Error(`Unsupported kind: ${kind}`);
+    },
+  });
+  watchSubscriber.start();
 
-  return { app, deps, contributionStore, claimStore, cas };
+  const deps: ServerDeps = {
+    contributionStore,
+    claimStore,
+    cas,
+    frontier,
+    watchHub,
+    watchSubscriber,
+  };
+  const registry: KeyRegistry = new Map([[TEST_NAMESPACE_KEY, TEST_NAMESPACE]]);
+  const app = createApp(deps, registry);
+
+  return { app, deps, contributionStore, claimStore, cas, watchHub, watchEventBus };
 }
 
 // ---------------------------------------------------------------------------

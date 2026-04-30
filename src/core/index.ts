@@ -139,10 +139,16 @@ export type { EventBus, EventHandler, GroveEvent, PublishResult } from "./event-
 export type {
   Frontier,
   FrontierCalculator,
+  FrontierContributionSource,
   FrontierEntry,
   FrontierQuery,
+  SessionAggregatingFrontierOptions,
 } from "./frontier.js";
-export { DefaultFrontierCalculator, getScore } from "./frontier.js";
+export {
+  DefaultFrontierCalculator,
+  getScore,
+  SessionAggregatingFrontierCalculator,
+} from "./frontier.js";
 export type { Handoff, HandoffInput, HandoffQuery, HandoffStore } from "./handoff.js";
 export {
   canTransition,

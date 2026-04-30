@@ -1,7 +1,7 @@
 /**
  * Health check endpoint.
  *
- * GET /api/health — Returns server health status.
+ * GET /health — Returns server health status.
  */
 
 import type { Hono as HonoType } from "hono";
@@ -10,7 +10,7 @@ import type { ServerEnv } from "../deps.js";
 
 const health: HonoType<ServerEnv> = new Hono<ServerEnv>();
 
-/** GET /api/health — Health check. */
+/** GET /health — Health check. */
 health.get("/", async (c) => {
   const { contributionStore, claimStore, cas } = c.get("deps");
 

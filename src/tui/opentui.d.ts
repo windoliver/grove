@@ -12,6 +12,7 @@ declare module "@opentui/core" {
     stdout?: NodeJS.WriteStream;
     exitOnCtrlC?: boolean;
     useAlternateScreen?: boolean;
+    useThread?: boolean;
     targetFps?: number;
     maxFps?: number;
     useMouse?: boolean;

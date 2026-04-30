@@ -75,6 +75,22 @@ export interface OperationDeps {
   readonly onContributionWrite?: (() => void) | undefined;
   /** Called after a contribution is written, receiving the CID. Used for session tagging. */
   readonly onContributionWritten?: ((cid: string) => void) | undefined;
+  /**
+   * Called after any Entity (#287) write, with the kind, namespace, op, and
+   * projected envelope. Drives the watch protocol (#292) — grove-server wires
+   * this into WatchHub.recordWrite. Heartbeat-only Claim writes that change
+   * neither status nor the lease-expiry boundary do not fire this hook.
+   */
+  readonly onEntityWrite?:
+    | ((event: import("../watch-events.js").EntityWriteEvent) => void)
+    | undefined;
+  /**
+   * Namespace under which this operation runs. Required to fire
+   * `onEntityWrite` (the watch protocol scopes events per-namespace). When
+   * absent (e.g. legacy callers without auth context), the watch hook is
+   * skipped — operations remain functional.
+   */
+  readonly namespace?: string | undefined;
   /** Optional event bus for agent notifications. */
   readonly eventBus?: EventBus | undefined;
   /** Optional topology router for routing contribution events to downstream agents. */

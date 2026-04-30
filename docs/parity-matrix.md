@@ -54,6 +54,7 @@ and their classification. All `shared` capabilities use the operations layer in
 | artifact download | - | - | Y | Y | transport-only |
 | diff | - | - | Y | Y | transport-only |
 | metadata | - | - | Y | - | transport-only |
+| watch retention | - | - | Y | Y | transport-only |
 
 ## Notes
 
@@ -68,6 +69,7 @@ and their classification. All `shared` capabilities use the operations layer in
   (delegates to the `@grove/ask-user` package). Neither goes through the operations layer;
   each surface implements its own strategy resolution.
 - **gossip**: Peer-to-peer sync, relevant for CLI daemon and HTTP server.
+- **watch retention**: Server-side ring buffer per `(namespace, kind)`. Retention controlled by `GROVE_WATCH_RETENTION_MS` (default 300000 ms) and `GROVE_WATCH_MAX_EVENTS` (default 1024). A stale `resumeFrom` returns SSE `event:ERROR data:{code:410, reason:"expired"}`; clients must re-list via the A5 handshake. Per-`(ns,kind)` compaction stats available at `GET /api/watch/metrics`. See `docs/superpowers/specs/2026-04-28-a6-stale-rv-compaction-design.md`.
 
 ## JSON Output
 

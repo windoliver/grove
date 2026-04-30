@@ -8,12 +8,15 @@
 import type { Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import type { ServerEnv } from "../deps.js";
+import { contributionStoreForSession } from "./shared.js";
 
 const diff: HonoType<ServerEnv> = new Hono<ServerEnv>();
 
 /** GET /api/diff/:parentCid/:childCid/:artifactName */
 diff.get("/:parentCid/:childCid/:artifactName", async (c) => {
-  const { contributionStore, cas } = c.get("deps");
+  const deps = c.get("deps");
+  const contributionStore = contributionStoreForSession(deps, c.req.query("sessionId"));
+  const { cas } = deps;
   const parentCid = c.req.param("parentCid");
   const childCid = c.req.param("childCid");
   const artifactName = c.req.param("artifactName");

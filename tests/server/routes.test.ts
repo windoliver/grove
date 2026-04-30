@@ -19,7 +19,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { createTestContext, postContribution } from "./helpers.js";
+import { createTestContext, postContribution, TEST_AUTH_HEADERS } from "./helpers.js";
 
 // ===================================================================
 // Frontier — byMetric dimension (not covered by frontier.test.ts)
@@ -50,7 +50,7 @@ describe("routes — /api/frontier byMetric", () => {
       createdAt: new Date(Date.now() + 1).toISOString(),
     });
 
-    const res = await ctx.app.request("/api/frontier");
+    const res = await ctx.app.request("/api/frontier", { headers: TEST_AUTH_HEADERS });
     expect(res.status).toBe(200);
     const data = await res.json();
 

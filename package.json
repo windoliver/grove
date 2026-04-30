@@ -52,7 +52,8 @@
     "nexus:up": "docker compose up nexus -d",
     "nexus:down": "docker compose down",
     "check": "biome check .",
-    "postinstall": "bun run --cwd packages/ask-user build && bun ./scripts/install-hooks.mjs"
+    "postinstall": "bun run --cwd packages/ask-user build && bun ./scripts/install-hooks.mjs",
+    "smoke:watch-relist": "bun run tests/e2e/watch-relist-tmux.ts"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "^0.30.0",

@@ -188,6 +188,7 @@ export interface SearchInput {
   readonly agentName?: string | undefined;
   readonly limit?: number | undefined;
   readonly offset?: number | undefined;
+  readonly sessionId?: string | undefined;
 }
 
 /** Input for the log operation. */
@@ -277,6 +278,7 @@ export async function searchOperation(
       agentName: input.agentName,
       limit: input.limit,
       offset: input.offset,
+      ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
     });
 
     const summaries = results.map(toContributionSummary);

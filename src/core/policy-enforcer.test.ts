@@ -116,7 +116,7 @@ function makeStore(contributions: Contribution[] = []): ContributionStore {
       if (query?.mode) result = result.filter((c) => c.mode === query.mode);
       if (query?.agentId) result = result.filter((c) => c.agent.agentId === query.agentId);
       if (query?.limit) result = result.slice(0, query.limit);
-      return result.map(contributionToEntity);
+      return result.map((c) => contributionToEntity(c, "default"));
     },
     close: () => {
       /* noop */

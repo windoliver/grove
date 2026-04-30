@@ -6,10 +6,19 @@ import { DefaultFrontierCalculator } from "../../src/core/frontier.js";
 import { createContribution } from "../../src/core/manifest.js";
 import type { Contribution, ContributionInput } from "../../src/core/models.js";
 import { InMemoryContributionStore } from "../../src/core/testing.js";
+import { WatchHub } from "../../src/core/watch-hub.js";
 import { createSqliteStores } from "../../src/local/sqlite-store.js";
 import { createApp } from "../../src/server/app.js";
 import type { ServerDeps } from "../../src/server/deps.js";
-import { InMemoryClaimStore, InMemoryContentStore } from "../../src/server/test-helpers.js";
+import {
+  InMemoryClaimStore,
+  InMemoryContentStore,
+  TEST_AUTH_HEADERS,
+  TEST_NAMESPACE,
+  TEST_NAMESPACE_KEY,
+} from "../../src/server/test-helpers.js";
+
+const TEST_REGISTRY = new Map([[TEST_NAMESPACE_KEY, TEST_NAMESPACE]]);
 
 function makeContribution(overrides: Partial<ContributionInput> = {}): Contribution {
   return createContribution({
@@ -39,6 +48,7 @@ function makeDeps(
     frontier: new DefaultFrontierCalculator(globalStore),
     frontierForSession: (sessionId) =>
       new DefaultFrontierCalculator(sessionId === "session-a" ? scopedStore : globalStore),
+    watchHub: new WatchHub(),
   };
 }
 
@@ -48,9 +58,14 @@ describe("server session-scoped contribution reads", () => {
     const scopedStore = new InMemoryContributionStore([
       makeContribution({ summary: "Scoped frontier item" }),
     ]);
-    const app = createApp(makeDeps(globalStore, scopedStore, new InMemoryContentStore()));
+    const app = createApp(
+      makeDeps(globalStore, scopedStore, new InMemoryContentStore()),
+      TEST_REGISTRY,
+    );
 
-    const res = await app.request("/api/frontier?sessionId=session-a");
+    const res = await app.request("/api/frontier?sessionId=session-a", {
+      headers: TEST_AUTH_HEADERS,
+    });
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as { byRecency: readonly { summary: string }[] };
@@ -72,25 +87,32 @@ describe("server session-scoped contribution reads", () => {
       createdAt: "2026-01-01T00:00:01.000Z",
     });
     await scopedStore.putMany([root, child]);
-    const app = createApp(makeDeps(globalStore, scopedStore, cas));
+    const app = createApp(makeDeps(globalStore, scopedStore, cas), TEST_REGISTRY);
 
-    const detail = await app.request(`/api/contributions/${root.cid}?sessionId=session-a`);
+    const detail = await app.request(`/api/contributions/${root.cid}?sessionId=session-a`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(detail.status).toBe(200);
     expect(((await detail.json()) as Contribution).summary).toBe("Scoped root");
 
-    const children = await app.request(`/api/dag/${root.cid}/children?sessionId=session-a`);
+    const children = await app.request(`/api/dag/${root.cid}/children?sessionId=session-a`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(children.status).toBe(200);
     expect(((await children.json()) as readonly Contribution[]).map((c) => c.cid)).toEqual([
       child.cid,
     ]);
 
-    const thread = await app.request(`/api/threads/${root.cid}?sessionId=session-a`);
+    const thread = await app.request(`/api/threads/${root.cid}?sessionId=session-a`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(thread.status).toBe(200);
     const threadBody = (await thread.json()) as { nodes: readonly { cid: string }[] };
     expect(threadBody.nodes.map((node) => node.cid)).toEqual([root.cid, child.cid]);
 
     const artifact = await app.request(
       `/api/contributions/${root.cid}/artifacts/notes.txt?sessionId=session-a`,
+      { headers: TEST_AUTH_HEADERS },
     );
     expect(artifact.status).toBe(200);
     expect(await artifact.text()).toBe("scoped artifact");
@@ -123,31 +145,45 @@ describe("server session-scoped contribution reads", () => {
       await stores.goalSessionStore.addContributionToSession(sessionA.id, sessionChild.cid);
       await stores.goalSessionStore.addContributionToSession(sessionB.id, otherSessionChild.cid);
 
-      const app = createApp({
-        contributionStore: stores.contributionStore,
-        claimStore: stores.claimStore,
-        cas,
-        frontier: new DefaultFrontierCalculator(stores.contributionStore),
-      });
+      const app = createApp(
+        {
+          contributionStore: stores.contributionStore,
+          claimStore: stores.claimStore,
+          cas,
+          frontier: new DefaultFrontierCalculator(stores.contributionStore),
+          watchHub: new WatchHub(),
+        },
+        TEST_REGISTRY,
+      );
 
-      const detailA = await app.request(`/api/contributions/${root.cid}?sessionId=${sessionA.id}`);
+      const detailA = await app.request(`/api/contributions/${root.cid}?sessionId=${sessionA.id}`, {
+        headers: TEST_AUTH_HEADERS,
+      });
       expect(detailA.status).toBe(200);
 
-      const detailB = await app.request(`/api/contributions/${root.cid}?sessionId=${sessionB.id}`);
+      const detailB = await app.request(`/api/contributions/${root.cid}?sessionId=${sessionB.id}`, {
+        headers: TEST_AUTH_HEADERS,
+      });
       expect(detailB.status).toBe(404);
 
-      const children = await app.request(`/api/dag/${root.cid}/children?sessionId=${sessionA.id}`);
+      const children = await app.request(`/api/dag/${root.cid}/children?sessionId=${sessionA.id}`, {
+        headers: TEST_AUTH_HEADERS,
+      });
       expect(children.status).toBe(200);
       expect(((await children.json()) as readonly Contribution[]).map((c) => c.cid)).toEqual([
         sessionChild.cid,
       ]);
 
-      const thread = await app.request(`/api/threads/${root.cid}?sessionId=${sessionA.id}`);
+      const thread = await app.request(`/api/threads/${root.cid}?sessionId=${sessionA.id}`, {
+        headers: TEST_AUTH_HEADERS,
+      });
       expect(thread.status).toBe(200);
       const threadBody = (await thread.json()) as { nodes: readonly { cid: string }[] };
       expect(threadBody.nodes.map((node) => node.cid)).toEqual([root.cid, sessionChild.cid]);
 
-      const hotThreads = await app.request(`/api/threads?sessionId=${sessionA.id}`);
+      const hotThreads = await app.request(`/api/threads?sessionId=${sessionA.id}`, {
+        headers: TEST_AUTH_HEADERS,
+      });
       expect(hotThreads.status).toBe(200);
       const hotThreadsBody = (await hotThreads.json()) as {
         threads: readonly { cid: string; replyCount: number }[];
@@ -158,12 +194,14 @@ describe("server session-scoped contribution reads", () => {
 
       const artifactA = await app.request(
         `/api/contributions/${root.cid}/artifacts/notes.txt?sessionId=${sessionA.id}`,
+        { headers: TEST_AUTH_HEADERS },
       );
       expect(artifactA.status).toBe(200);
       expect(await artifactA.text()).toBe("session-a artifact");
 
       const artifactB = await app.request(
         `/api/contributions/${root.cid}/artifacts/notes.txt?sessionId=${sessionB.id}`,
+        { headers: TEST_AUTH_HEADERS },
       );
       expect(artifactB.status).toBe(404);
     } finally {

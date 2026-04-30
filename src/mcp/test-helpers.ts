@@ -11,6 +11,7 @@ import { join } from "node:path";
 import type { ContentStore } from "../core/cas.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
 import { InMemoryCreditsService } from "../core/in-memory-credits.js";
+import { WatchHub } from "../core/watch-hub.js";
 import { FsCas } from "../local/fs-cas.js";
 import { SqliteBountyStore } from "../local/sqlite-bounty-store.js";
 import { initSqliteDb, SqliteClaimStore, SqliteContributionStore } from "../local/sqlite-store.js";
@@ -57,6 +58,7 @@ export async function createTestMcpDeps(): Promise<TestMcpDeps> {
     frontier,
     workspace,
     workspaceBoundary: tempDir,
+    watchHub: new WatchHub(),
   };
 
   return {

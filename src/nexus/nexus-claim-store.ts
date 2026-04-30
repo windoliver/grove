@@ -38,6 +38,7 @@ import { resolveConfig } from "./config.js";
 import { NexusConflictError } from "./errors.js";
 import { listAllPages } from "./list-pages.js";
 import { LruCache } from "./lru-cache.js";
+import type { NexusWatchPublisher } from "./nexus-watch-publisher.js";
 import { withRetry, withSemaphore } from "./retry.js";
 import { Semaphore } from "./semaphore.js";
 import {
@@ -77,6 +78,7 @@ export class NexusClaimStore implements ClaimStore {
   private readonly semaphore: Semaphore;
   private readonly zoneId: string;
   private readonly claimCache: LruCache<Claim>;
+  private readonly watchPublisher: NexusWatchPublisher | undefined;
   /** Cached activeClaims result with TTL. */
   private activeClaimsCache:
     | { readonly claims: readonly Claim[]; readonly expiresAt: number }
@@ -87,9 +89,32 @@ export class NexusClaimStore implements ClaimStore {
     this.config = resolveConfig(config);
     this.client = this.config.client;
     this.zoneId = this.config.zoneId;
+    this.watchPublisher = this.config.watchPublisher;
     this.storeIdentity = `nexus:${this.zoneId}:claims`;
     this.semaphore = new Semaphore(this.config.maxConcurrency);
     this.claimCache = new LruCache(this.config.cacheMaxEntries);
+  }
+
+  /** Publish a watch fan-out envelope (#292). No-op when publisher not configured. */
+  private publishWatch(claim: Claim, op: "ADDED" | "MODIFIED" | "DELETED"): void {
+    if (!this.watchPublisher) return;
+    // Generation tracks per-row revision (1-based). Same field used by
+    // claimToEntity to populate metadata.generation, so subscriber dedupe
+    // keys agree across processes.
+    const generation = claim.revision ?? 1;
+    // Include the entity snapshot for DELETED — the row is removed before
+    // (or alongside) publish, so subscribers can't fetchEntity. Including
+    // it for ADDED/MODIFIED is also a free latency win.
+    const entity: ClaimEntity = claimToEntity(claim, () => Date.now(), this.zoneId);
+    void this.watchPublisher.publish({
+      kind: "Claim",
+      namespace: this.zoneId,
+      op,
+      entityId: claim.claimId,
+      generation,
+      emittedAt: new Date().toISOString(),
+      entity,
+    });
   }
 
   /** Invalidate the activeClaims cache (called on mutations). */
@@ -152,6 +177,7 @@ export class NexusClaimStore implements ClaimStore {
 
     this.claimCache.set(createdClaim.claimId, createdClaim);
     this.invalidateActiveClaimsCache();
+    this.publishWatch(createdClaim, "ADDED");
     return createdClaim;
   }
 
@@ -190,6 +216,11 @@ export class NexusClaimStore implements ClaimStore {
       }
       this.claimCache.set(renewed.claimId, renewed);
       this.invalidateActiveClaimsCache();
+      // Renewals advance heartbeatAt/leaseExpiresAt — fields Claim
+      // watchers depend on to reason about lease state. Emit MODIFIED
+      // even though status stays "active": suppressing would let a
+      // watcher conclude an actively-renewed claim has expired.
+      this.publishWatch(renewed, "MODIFIED");
       return renewed;
     }
 
@@ -231,6 +262,7 @@ export class NexusClaimStore implements ClaimStore {
 
     this.claimCache.set(createdClaim.claimId, createdClaim);
     this.invalidateActiveClaimsCache();
+    this.publishWatch(createdClaim, "ADDED");
     return createdClaim;
   }
 
@@ -261,6 +293,10 @@ export class NexusClaimStore implements ClaimStore {
     await this.writeClaimCas(updated, etag);
     this.claimCache.set(updated.claimId, updated);
     this.invalidateActiveClaimsCache();
+    // Heartbeats advance heartbeatAt/leaseExpiresAt and watchers depend
+    // on those fields for lease-aware decisions. Same rationale as the
+    // renew path — emit MODIFIED rather than risk stale-lease bugs.
+    this.publishWatch(updated, "MODIFIED");
     return updated;
   }
 
@@ -324,6 +360,7 @@ export class NexusClaimStore implements ClaimStore {
         await this.writeClaimCas(expired, etag);
         await this.deleteActiveIndex(expired);
         this.claimCache.set(expired.claimId, expired);
+        this.publishWatch(expired, "MODIFIED");
         results.push({ claim: expired, reason });
       }
     }
@@ -410,6 +447,11 @@ export class NexusClaimStore implements ClaimStore {
             this.config,
           );
           this.claimCache.delete(claim.claimId);
+          // The row is gone — surface DELETED so watchers can drop their
+          // local copy. Subscribers that have not yet seen this claim
+          // will simply ignore the event (their fetchEntity returns
+          // not-found and the subscriber logs + skips).
+          this.publishWatch(claim, "DELETED");
           deleted++;
         }
       }
@@ -446,7 +488,7 @@ export class NexusClaimStore implements ClaimStore {
     const baseQuery: ClaimQuery | undefined =
       query === undefined ? undefined : { ...query, status: undefined };
     const items = await this.listClaims(baseQuery);
-    const entities = items.map((c) => claimToEntity(c));
+    const entities = items.map((c) => claimToEntity(c, () => Date.now(), this.zoneId));
     if (query?.status === undefined) return entities;
     const wanted = Array.isArray(query.status) ? new Set(query.status) : new Set([query.status]);
     return entities.filter((e) => wanted.has(e.status.phase));
@@ -495,6 +537,10 @@ export class NexusClaimStore implements ClaimStore {
     }
     this.claimCache.set(updated.claimId, updated);
     this.invalidateActiveClaimsCache();
+    // release / complete / expire all surface as MODIFIED — the row still
+    // exists, only its phase changed. Subscribers project the new effective
+    // phase via claimToEntity and route accordingly.
+    this.publishWatch(updated, "MODIFIED");
     return updated;
   }
 
