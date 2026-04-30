@@ -493,6 +493,52 @@ describe("WatchClient relist boundary invariant", () => {
     expect(seen.filter((e) => e.op === "RELIST").length).toBeGreaterThanOrEqual(1);
   });
 
+  test("RELIST_END handler failure (no abort, no prior error) propagates", async () => {
+    // RELIST_END is the consumer's commit barrier — a failure there means
+    // the snapshot replace is half-applied. The watcher must NOT silently
+    // advance to delta mode with a partially committed cache.
+    const fetchImpl = makeFetch({ items: [E_X], listResourceVersion: "5" }, []);
+    const ac = new AbortController();
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await expect(
+      client.run({
+        onEvent: async (e) => {
+          if (e.op === "RELIST_END") throw new Error("commit failed");
+        },
+        signal: ac.signal,
+      }),
+    ).rejects.toThrow(/commit failed/);
+  });
+
+  test("RELIST_END handler failure DURING abort is swallowed (teardown)", async () => {
+    // If the consumer is already shutting down (abort in flight), a noisy
+    // RELIST_END must not mask the abort.
+    const fetchImpl = makeFetch({ items: [E_X], listResourceVersion: "5" }, []);
+    const ac = new AbortController();
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    // Should resolve cleanly (not reject) — the END error is suppressed
+    // because abort is in flight.
+    await client.run({
+      onEvent: async (e) => {
+        if (e.op === "RELIST_BEGIN") ac.abort();
+        if (e.op === "RELIST_END") throw new Error("noisy teardown");
+      },
+      signal: ac.signal,
+    });
+  });
+
   test("throw inside RELIST_BEGIN onEvent does NOT emit RELIST_END", async () => {
     // If BEGIN failed to be delivered (handler threw), the consumer never
     // entered replace mode — emitting END would invent a transition that
@@ -765,6 +811,82 @@ describe("WatchClient terminal errors", () => {
     });
     await expect(client.run({ onEvent: () => undefined, signal: ac.signal })).rejects.toThrow(
       /500|watch failed/,
+    );
+  });
+});
+
+describe("WatchClient list-phase transient failures", () => {
+  test("transport reject on /api/list retries with backoff (does not kill loop)", async () => {
+    let listCalls = 0;
+    const ac = new AbortController();
+    const fetchImpl = (async (input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/api/list")) {
+        listCalls += 1;
+        if (listCalls < 3) throw new Error("ECONNRESET");
+        return new Response(JSON.stringify({ items: [], listResourceVersion: "0" }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      // First /api/watch we abort.
+      ac.abort();
+      return new Response("", { headers: { "Content-Type": "text/event-stream" } });
+    }) as typeof fetch;
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    // Should NOT reject — list transport failures are retried.
+    await client.run({ onEvent: () => undefined, signal: ac.signal });
+    expect(listCalls).toBeGreaterThanOrEqual(3);
+  });
+
+  test("HTTP 503 on /api/list retries with backoff", async () => {
+    let listCalls = 0;
+    const ac = new AbortController();
+    const fetchImpl = (async (input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/api/list")) {
+        listCalls += 1;
+        if (listCalls < 3) {
+          return new Response("", { status: 503 });
+        }
+        return new Response(JSON.stringify({ items: [], listResourceVersion: "0" }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      ac.abort();
+      return new Response("", { headers: { "Content-Type": "text/event-stream" } });
+    }) as typeof fetch;
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await client.run({ onEvent: () => undefined, signal: ac.signal });
+    expect(listCalls).toBeGreaterThanOrEqual(3);
+  });
+
+  test("HTTP 4xx on /api/list (other than auth-style) is still terminal", async () => {
+    // 400 is a server contract error — retrying would loop forever.
+    const fetchImpl = scriptedFetch([
+      { urlPattern: "/api/list", body: "", status: 400 },
+    ]);
+    const ac = new AbortController();
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await expect(client.run({ onEvent: () => undefined, signal: ac.signal })).rejects.toThrow(
+      /400|list failed/,
     );
   });
 });

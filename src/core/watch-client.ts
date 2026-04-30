@@ -94,14 +94,33 @@ export class WatchClient {
 
     while (!signal.aborted) {
       if (resumeFrom === null) {
-        const list = await this.list(signal);
+        let list: ListResponse;
+        try {
+          list = await this.list(signal);
+        } catch (err) {
+          if (signal.aborted) return;
+          // Transient errors (network reject, 5xx) retry with backoff so a
+          // brief server restart during compaction recovery doesn't kill
+          // the watcher. HTTP 4xx (auth/config) stays terminal.
+          if (isTransientListError(err)) {
+            console.warn(`watch: list failed (${(err as Error)?.message ?? err}); retrying`);
+            await this.sleep(nextDelay, signal);
+            nextDelay = this.advanceBackoff(nextDelay);
+            continue;
+          }
+          throw err;
+        }
         const rv = BigInt(list.listResourceVersion);
         const newWindow = new Map<string, string>();
         // Boundary invariant: once RELIST_BEGIN has been delivered, the
         // matching RELIST_END must always fire — including on abort or
         // mid-snapshot throw — so consumers using BEGIN/END for atomic
         // replace cannot get stuck in replace mode with a partial snapshot.
+        // Track the primary error separately so a throw inside the END
+        // handler can't mask an earlier failure, but a standalone END
+        // failure (the consumer's commit boundary) propagates.
         let relistOpen = false;
+        let primaryError: unknown = undefined;
         try {
           await onEvent({ op: "RELIST_BEGIN", rv, kind: this.kind, entity: null });
           relistOpen = true;
@@ -110,16 +129,23 @@ export class WatchClient {
             newWindow.set(item.id, item.resourceVersion);
             await onEvent({ op: "RELIST", rv, kind: this.kind, entity: item });
           }
-        } finally {
-          if (relistOpen) {
-            try {
-              await onEvent({ op: "RELIST_END", rv, kind: this.kind, entity: null });
-            } catch {
-              // Best-effort close: a throw inside RELIST_END handling must
-              // not mask the original abort/throw that triggered teardown.
+        } catch (err) {
+          primaryError = err;
+        }
+        if (relistOpen) {
+          try {
+            await onEvent({ op: "RELIST_END", rv, kind: this.kind, entity: null });
+          } catch (err) {
+            // RELIST_END is the consumer's commit barrier for the snapshot.
+            // If it failed without a prior error or abort, the consumer's
+            // replace transaction is half-applied — propagate so the caller
+            // sees the failure instead of silently advancing past it.
+            if (primaryError === undefined && !signal.aborted) {
+              primaryError = err;
             }
           }
         }
+        if (primaryError !== undefined) throw primaryError;
         if (signal.aborted) return;
         // Install the dedup window AFTER RELIST_END so the snapshot itself
         // can't accidentally be deduped against itself by re-entrant code.
@@ -149,12 +175,19 @@ export class WatchClient {
   }
 
   private async list(signal: AbortSignal): Promise<ListResponse> {
-    const res = await this.fetchImpl(`${this.baseUrl}/api/list?kind=${this.kind}`, {
-      headers: { Authorization: this.authHeader },
-      signal,
-    });
+    let res: Response;
+    try {
+      res = await this.fetchImpl(`${this.baseUrl}/api/list?kind=${this.kind}`, {
+        headers: { Authorization: this.authHeader },
+        signal,
+      });
+    } catch (err) {
+      // Transport rejection — surface as transient via a marked error so
+      // run() can distinguish it from HTTP-level failures.
+      throw new TransientListTransportError((err as Error)?.message ?? String(err));
+    }
     if (!res.ok) {
-      throw new Error(`list failed: ${res.status}`);
+      throw new ListHttpError(res.status, `list failed: ${res.status}`);
     }
     return (await res.json()) as ListResponse;
   }
@@ -319,4 +352,34 @@ function parseSseFrame(block: string): SseFrame | null {
 
 function isDataOp(event: string): boolean {
   return event === "ADDED" || event === "MODIFIED" || event === "DELETED";
+}
+
+/**
+ * Marker for /api/list transport rejections (network reset, DNS, TLS).
+ * Always retryable.
+ */
+class TransientListTransportError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TransientListTransportError";
+  }
+}
+
+/**
+ * Marker for /api/list non-OK HTTP responses. 5xx is retryable; 4xx is
+ * terminal (auth/config/server-side validation failure).
+ */
+class ListHttpError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ListHttpError";
+    this.status = status;
+  }
+}
+
+function isTransientListError(err: unknown): boolean {
+  if (err instanceof TransientListTransportError) return true;
+  if (err instanceof ListHttpError) return err.status >= 500;
+  return false;
 }
