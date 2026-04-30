@@ -46,15 +46,6 @@ const BUDGET_MS = Number.parseInt(values.timeout as string, 10);
 
 // ─── tmux helpers ─────────────────────────────────────────────────────────────
 
-function tmux(cmd: string, opts: { check?: boolean } = {}): string {
-  const args = cmd.split(" ").filter(Boolean);
-  const out = spawnSync("tmux", ["-L", SOCKET, ...args], { encoding: "utf-8" });
-  if (opts.check !== false && out.status !== 0) {
-    throw new Error(`tmux ${cmd} failed (${out.status}): ${out.stderr}`);
-  }
-  return out.stdout.trim();
-}
-
 function capturePane(target = SESSION): string {
   const out = spawnSync("tmux", ["-L", SOCKET, "capture-pane", "-t", target, "-p", "-S", "-5000"], {
     encoding: "utf-8",
