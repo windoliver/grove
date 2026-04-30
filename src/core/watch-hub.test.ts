@@ -19,6 +19,39 @@ function fixtureContribution(cid: string): Contribution {
   };
 }
 
+describe("WatchHub.subscribe replay cap", () => {
+  test("replay > perClientOutboxCap fails immediately with BufferOverflowError", async () => {
+    // Without the cap, a slow reconnect from rv=0 against a large ring
+    // could allocate maxEventsPerKey events per subscriber on creation
+    // (configurable up to 1M), risking OOM under reconnect storms. With
+    // the cap, over-budget replay fails fast → 503 → client relists.
+    const hub = new WatchHub({ maxEventsPerKey: 100, perClientOutboxCap: 4 });
+    for (let i = 0; i < 10; i++) {
+      const ent = contributionToEntity(fixtureContribution(`cid-${i}`), "ns");
+      hub.recordWrite({ kind: "Contribution", namespace: "ns", op: "ADDED", entity: ent });
+    }
+    const ac = new AbortController();
+    const iter = hub.subscribe("ns", "Contribution", 0n, ac.signal);
+    // 10 events > cap of 4 → next() throws BufferOverflowError immediately.
+    await expect(iter[Symbol.asyncIterator]().next()).rejects.toBeInstanceOf(BufferOverflowError);
+  });
+
+  test("replay ≤ perClientOutboxCap is delivered normally", async () => {
+    const hub = new WatchHub({ maxEventsPerKey: 100, perClientOutboxCap: 10 });
+    for (let i = 0; i < 5; i++) {
+      const ent = contributionToEntity(fixtureContribution(`cid-${i}`), "ns");
+      hub.recordWrite({ kind: "Contribution", namespace: "ns", op: "ADDED", entity: ent });
+    }
+    const ac = new AbortController();
+    const iter = hub.subscribe("ns", "Contribution", 0n, ac.signal);
+    const it = iter[Symbol.asyncIterator]();
+    const r1 = await it.next();
+    expect(r1.done).toBe(false);
+    expect((r1.value as { rv: bigint }).rv).toBe(1n);
+    ac.abort();
+  });
+});
+
 describe("WatchHub.subscribe + AbortSignal", () => {
   test("pre-aborted signal does not register subscriber (no leak)", async () => {
     const hub = new WatchHub();

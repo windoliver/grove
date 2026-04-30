@@ -708,6 +708,65 @@ describe("WatchClient snapshot dedup (list/watch race)", () => {
     expect(seen.some((e) => e.op === "DELETED")).toBe(true);
   });
 
+  test("multi-update race: stale replay older than snapshot rv is suppressed (high-water mark)", async () => {
+    // Race: snapshot captures listResourceVersion=5, then 3 writes for
+    // entity X land at rv=6,7,8 — entity goes resourceVersion 1→2→3
+    // during the list query. Snapshot returns X at rv=3. Watch replays
+    // ADDED at versions 2 then 3. The version-2 frame must be suppressed
+    // (older than snapshot's 3) and the version-3 frame must also be
+    // suppressed (equal to snapshot). Without the high-water-mark check
+    // the version-2 frame would deliver stale state to the consumer.
+    const seen: WatchClientEvent[] = [];
+    const X_at_3 = { id: "cid-x", resourceVersion: "3", spec: { summary: "x3" } };
+    const X_at_2 = { id: "cid-x", resourceVersion: "2", spec: { summary: "x2" } };
+    const ac = new AbortController();
+    const fetchImpl = singleWatchThenAbort(
+      { items: [X_at_3], listResourceVersion: "5" },
+      `${sse("ADDED", { rv: "6", kind: "Contribution", entity: X_at_2 }, "6")}${sse(
+        "ADDED",
+        { rv: "7", kind: "Contribution", entity: X_at_3 },
+        "7",
+      )}`,
+      ac,
+    );
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await client.run({ onEvent: (e) => seen.push(e), signal: ac.signal });
+    // Only the snapshot RELIST should surface for entity X. No ADDED
+    // events for either the stale version-2 or duplicate version-3 frame.
+    const dataOps = seen.filter((e) => e.op === "ADDED" || e.op === "MODIFIED");
+    expect(dataOps.length).toBe(0);
+  });
+
+  test("strictly-newer version after snapshot is forwarded (window cleared)", async () => {
+    // Snapshot has X at rv=3. Watch delivers MODIFIED at rv=4 — that's
+    // the post-snapshot real update. It MUST surface; the window entry
+    // is then cleared so any further events for X bypass dedup.
+    const seen: WatchClientEvent[] = [];
+    const X_at_3 = { id: "cid-x", resourceVersion: "3", spec: { summary: "x3" } };
+    const X_at_4 = { id: "cid-x", resourceVersion: "4", spec: { summary: "x4" } };
+    const ac = new AbortController();
+    const fetchImpl = singleWatchThenAbort(
+      { items: [X_at_3], listResourceVersion: "5" },
+      sse("MODIFIED", { rv: "6", kind: "Contribution", entity: X_at_4 }, "6"),
+      ac,
+    );
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await client.run({ onEvent: (e) => seen.push(e), signal: ac.signal });
+    expect(seen.some((e) => e.op === "MODIFIED")).toBe(true);
+  });
+
   test("dedup window is reset on every RELIST snapshot", async () => {
     // Round 1: snapshot has A. Round 2 (after relist): snapshot has only B
     // (A no longer present). A subsequent ADDED for A at the SAME

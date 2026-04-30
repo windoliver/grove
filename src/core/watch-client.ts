@@ -279,24 +279,29 @@ export class WatchClient {
             }
             const rv = BigInt(payload.rv);
             const entity = payload.entity;
-            // Snapshot-dedup: an entity that appeared in the just-completed
-            // RELIST with the same resourceVersion must not be redelivered as
-            // ADDED/MODIFIED. The race comes from the server capturing
-            // listResourceVersion *before* querying the store; a write whose
-            // hub-rv lands during the list window appears in BOTH the
-            // snapshot and the watch replay. Suppress the duplicate but
-            // still advance lastRv so the cursor reflects what the server
-            // sent. Only one duplicate is possible per (entity, snapshot),
-            // so consume the entry on first match either way.
+            // Snapshot-dedup with high-water mark. The /api/list handshake
+            // captures listResourceVersion *before* querying the store, so
+            // a write whose hub-rv lands during the list window appears in
+            // BOTH the snapshot and the watch replay. Drop replay frames
+            // whose entity version is ≤ the snapshot's version for that
+            // id; forward strictly newer versions and DELETED. Treat the
+            // window as a high-water mark — never delete on a stale match,
+            // since further stale frames could still arrive in the same
+            // race window.
             const seenRv = this.snapshotWindow.get(entity.id);
-            if (seenRv !== undefined) {
-              this.snapshotWindow.delete(entity.id);
-              if (frame.event !== "DELETED" && seenRv === entity.resourceVersion) {
+            if (seenRv !== undefined && frame.event !== "DELETED") {
+              if (isStaleVersion(entity.resourceVersion, seenRv)) {
                 lastRv = rv;
                 observedData = true;
                 idx = buf.indexOf("\n\n");
                 continue;
               }
+              // Strictly newer real update — clear the entry so subsequent
+              // events for this entity bypass dedup entirely.
+              this.snapshotWindow.delete(entity.id);
+            } else if (seenRv !== undefined) {
+              // DELETED tombstone supersedes any prior snapshot version.
+              this.snapshotWindow.delete(entity.id);
             }
             lastRv = rv;
             observedData = true;
@@ -365,6 +370,28 @@ function parseSseFrame(block: string): SseFrame | null {
 
 function isDataOp(event: string): boolean {
   return event === "ADDED" || event === "MODIFIED" || event === "DELETED";
+}
+
+/**
+ * Compare two `entity.resourceVersion` values. Returns true when `eventRv`
+ * is older-or-equal to `snapshotRv` (i.e. should be treated as a stale
+ * replay during snapshot-dedup). Format is normally `String(rev)` but the
+ * Claim entity also encodes lease state as `${rev}-lease-expired` —
+ * extract the leading numeric prefix on both sides for a robust ordering.
+ * Falls back to exact string equality when no numeric prefix is present.
+ */
+function isStaleVersion(eventRv: string, snapshotRv: string): boolean {
+  const a = parseRvPrefix(snapshotRv);
+  const b = parseRvPrefix(eventRv);
+  if (a !== null && b !== null) return b <= a;
+  return eventRv === snapshotRv;
+}
+
+function parseRvPrefix(s: string): number | null {
+  const m = /^(\d+)/.exec(s);
+  if (!m) return null;
+  const n = Number.parseInt(m[1] ?? "", 10);
+  return Number.isFinite(n) ? n : null;
 }
 
 /**

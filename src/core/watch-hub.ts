@@ -110,11 +110,20 @@ export class WatchHub {
     }
 
     const replay: WatchEvent[] = s.ring.filter((e) => e.rv > fromRv);
+    // Cap replay at perClientOutboxCap. Without this, a slow consumer
+    // reconnecting from an old-but-valid rv could allocate up to
+    // maxEventsPerKey events per subscription on creation, and that cap
+    // can be configured up to 1M — multi-client reconnects would risk OOM
+    // before the route's byte-overflow path could trip. When replay exceeds
+    // the cap, fail closed: the subscriber starts in overflow state so
+    // next() throws BufferOverflowError → 503 → client relists from a
+    // fresh snapshot instead.
+    const replayOverflow = replay.length > this.perClientOutboxCap;
 
     const subscriber: Subscriber = {
       namespace,
       kind,
-      queue: [...replay],
+      queue: replayOverflow ? [] : [...replay],
       pending: null,
       // Pre-aborted signals never fire their listener (AbortSignal does
       // not invoke retroactively), so a subscriber registered against an
@@ -123,7 +132,7 @@ export class WatchHub {
       // `closed` up front so the next() loop terminates immediately and
       // the subscriber is never registered on the live set.
       closed: signal.aborted,
-      overflow: false,
+      overflow: replayOverflow,
     };
     if (!signal.aborted) {
       this.subscribersFor(key).add(subscriber);
