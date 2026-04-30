@@ -437,6 +437,90 @@ describe("WatchClient fast resume on TCP close", () => {
   });
 });
 
+describe("WatchClient relist boundary invariant", () => {
+  const E_X = { id: "cid-x", resourceVersion: "0", spec: { summary: "x" } };
+
+  test("abort during RELIST_BEGIN's onEvent still emits RELIST_END", async () => {
+    const seen: WatchClientEvent[] = [];
+    const ac = new AbortController();
+    const fetchImpl = makeFetch({ items: [E_X], listResourceVersion: "5" }, []);
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await client.run({
+      onEvent: async (e) => {
+        seen.push(e);
+        if (e.op === "RELIST_BEGIN") ac.abort();
+      },
+      signal: ac.signal,
+    });
+    // BEGIN was delivered; END must follow even though the consumer aborted
+    // immediately. No RELIST item is emitted (loop short-circuits on
+    // signal.aborted before processing items).
+    expect(seen.map((e) => e.op)).toEqual(["RELIST_BEGIN", "RELIST_END"]);
+  });
+
+  test("abort during a RELIST item still emits RELIST_END", async () => {
+    const seen: WatchClientEvent[] = [];
+    const ac = new AbortController();
+    const fetchImpl = makeFetch(
+      { items: [E_X, E_X, E_X], listResourceVersion: "5" },
+      [],
+    );
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await client.run({
+      onEvent: async (e) => {
+        seen.push(e);
+        if (e.op === "RELIST") ac.abort();
+      },
+      signal: ac.signal,
+    });
+    // BEGIN, one RELIST item (the one that triggered abort), then END.
+    // The remaining 2 items are skipped.
+    const ops = seen.map((e) => e.op);
+    expect(ops[0]).toBe("RELIST_BEGIN");
+    expect(ops[ops.length - 1]).toBe("RELIST_END");
+    expect(seen.filter((e) => e.op === "RELIST").length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("throw inside RELIST_BEGIN onEvent does NOT emit RELIST_END", async () => {
+    // If BEGIN failed to be delivered (handler threw), the consumer never
+    // entered replace mode — emitting END would invent a transition that
+    // never started.
+    const seen: WatchClientEvent[] = [];
+    const fetchImpl = makeFetch({ items: [E_X], listResourceVersion: "5" }, []);
+    const ac = new AbortController();
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await expect(
+      client.run({
+        onEvent: async (e) => {
+          if (e.op === "RELIST_BEGIN") throw new Error("consumer rejected BEGIN");
+          seen.push(e);
+        },
+        signal: ac.signal,
+      }),
+    ).rejects.toThrow(/consumer rejected BEGIN/);
+    // No END emitted because BEGIN never completed.
+    expect(seen.some((e) => e.op === "RELIST_END")).toBe(false);
+  });
+});
+
 describe("WatchClient snapshot dedup (list/watch race)", () => {
   // The dedup uses entity.id + entity.resourceVersion (per ContributionEntity).
   // Local fixtures shaped like real entities so the dedup keys exist.

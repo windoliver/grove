@@ -97,14 +97,30 @@ export class WatchClient {
         const list = await this.list(signal);
         const rv = BigInt(list.listResourceVersion);
         const newWindow = new Map<string, string>();
-        await onEvent({ op: "RELIST_BEGIN", rv, kind: this.kind, entity: null });
-        for (const item of list.items) {
-          if (signal.aborted) return;
-          newWindow.set(item.id, item.resourceVersion);
-          await onEvent({ op: "RELIST", rv, kind: this.kind, entity: item });
+        // Boundary invariant: once RELIST_BEGIN has been delivered, the
+        // matching RELIST_END must always fire — including on abort or
+        // mid-snapshot throw — so consumers using BEGIN/END for atomic
+        // replace cannot get stuck in replace mode with a partial snapshot.
+        let relistOpen = false;
+        try {
+          await onEvent({ op: "RELIST_BEGIN", rv, kind: this.kind, entity: null });
+          relistOpen = true;
+          for (const item of list.items) {
+            if (signal.aborted) break;
+            newWindow.set(item.id, item.resourceVersion);
+            await onEvent({ op: "RELIST", rv, kind: this.kind, entity: item });
+          }
+        } finally {
+          if (relistOpen) {
+            try {
+              await onEvent({ op: "RELIST_END", rv, kind: this.kind, entity: null });
+            } catch {
+              // Best-effort close: a throw inside RELIST_END handling must
+              // not mask the original abort/throw that triggered teardown.
+            }
+          }
         }
         if (signal.aborted) return;
-        await onEvent({ op: "RELIST_END", rv, kind: this.kind, entity: null });
         // Install the dedup window AFTER RELIST_END so the snapshot itself
         // can't accidentally be deduped against itself by re-entrant code.
         this.snapshotWindow = newWindow;
