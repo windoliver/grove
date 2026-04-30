@@ -719,4 +719,68 @@ describe("Informer handler isolation", () => {
     // h2 must still receive the ADDED:cid-a from the relist
     expect(h2Events).toContain("ADDED:cid-a");
   });
+
+  test("async handler rejection does not become unhandled and does not skip next handler", async () => {
+    const ac = new AbortController();
+    const h2Events: string[] = [];
+    const informer = new Informer({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    // Async handler that rejects — must not propagate as unhandled rejection
+    informer.addEventHandler(async () => {
+      throw new Error("async handler boom");
+    });
+    informer.addEventHandler((op, entity) => {
+      h2Events.push(`${op}:${(entity as { id: string }).id}`);
+    });
+    // Must resolve (not reject), and h2 must still get events
+    await expect(informer.run(ac.signal)).resolves.toBeUndefined();
+    expect(h2Events).toContain("ADDED:cid-a");
+  });
+});
+
+// ─── Cache immutability ───────────────────────────────────────────────────────
+
+describe("Informer cache immutability", () => {
+  test("mutating a returned entity does not corrupt cache (resourceVersion frozen)", async () => {
+    const ac = new AbortController();
+    const informer = new Informer({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await informer.run(ac.signal);
+    const entity = informer.getById("cid-a");
+    expect(entity).toBeDefined();
+    // Attempt to mutate resourceVersion (should silently fail in non-strict mode
+    // or throw in strict mode because the entity is frozen)
+    try {
+      (entity as unknown as Record<string, unknown>)["resourceVersion"] = "999";
+    } catch {
+      // Expected in strict mode
+    }
+    // Cache must still hold the original version
+    expect(informer.getById("cid-a")?.resourceVersion).toBe("1");
+  });
+
+  test("entities returned by list() are frozen", async () => {
+    const ac = new AbortController();
+    const informer = new Informer({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: makeFetch({ items: [E_A, E_B], listResourceVersion: "5" }, "", ac),
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await informer.run(ac.signal);
+    for (const e of informer.list()) {
+      expect(Object.isFrozen(e)).toBe(true);
+    }
+  });
 });

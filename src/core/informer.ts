@@ -26,7 +26,7 @@ export type InformerOp = "ADDED" | "MODIFIED" | "DELETED";
 export type EventHandlerFn<K extends WatchKind = WatchKind> = (
   op: InformerOp,
   entity: EntityForKind<K>,
-) => void;
+) => void | Promise<void>;
 
 export class Informer<K extends WatchKind = WatchKind> {
   private readonly clientOpts: WatchClientOptions;
@@ -89,7 +89,7 @@ export class Informer<K extends WatchKind = WatchKind> {
 
       case "RELIST":
         if (this.staging && e.entity) {
-          this.staging.set(e.entity.id, e.entity as EntityForKind<K>);
+          this.staging.set(e.entity.id, freeze(e.entity as EntityForKind<K>));
         }
         break;
 
@@ -106,7 +106,7 @@ export class Informer<K extends WatchKind = WatchKind> {
 
       case "ADDED":
         if (e.entity) {
-          const entity = e.entity as EntityForKind<K>;
+          const entity = freeze(e.entity as EntityForKind<K>);
           this.store.set(entity.id, entity);
           this.dispatch("ADDED", entity);
         }
@@ -114,7 +114,7 @@ export class Informer<K extends WatchKind = WatchKind> {
 
       case "MODIFIED":
         if (e.entity) {
-          const entity = e.entity as EntityForKind<K>;
+          const entity = freeze(e.entity as EntityForKind<K>);
           this.store.set(entity.id, entity);
           this.dispatch("MODIFIED", entity);
         }
@@ -122,7 +122,7 @@ export class Informer<K extends WatchKind = WatchKind> {
 
       case "DELETED":
         if (e.entity) {
-          const entity = e.entity as EntityForKind<K>;
+          const entity = freeze(e.entity as EntityForKind<K>);
           this.store.delete(entity.id);
           this.dispatch("DELETED", entity);
         }
@@ -164,12 +164,24 @@ export class Informer<K extends WatchKind = WatchKind> {
     // skipped by the iterator advancing past the shifted index.
     for (const handler of [...this.handlers]) {
       try {
-        handler(op, entity);
+        const result = handler(op, entity);
+        if (result instanceof Promise) {
+          // Async handler: catch rejection so it doesn't become an unhandled
+          // promise rejection while still logging the failure for diagnosis.
+          result.catch((err) => {
+            console.error("Informer: async event handler rejected:", err);
+          });
+        }
       } catch (err) {
         console.error("Informer: event handler threw, continuing fanout:", err);
       }
     }
   }
+}
+
+/** Shallow-freeze an entity so cache-critical fields (id, resourceVersion) cannot be mutated externally. */
+function freeze<T extends object>(obj: T): Readonly<T> {
+  return Object.isFrozen(obj) ? obj : Object.freeze(obj);
 }
 
 export interface InformerFactoryOptions {
