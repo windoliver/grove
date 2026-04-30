@@ -14,6 +14,7 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 import { findGroveDir } from "../cli/context.js";
+import { DefaultFrontierCalculator } from "../core/frontier.js";
 import { TopologyRouter } from "../core/topology-router.js";
 import { createLocalRuntime } from "../local/runtime.js";
 import type { McpDeps } from "./deps.js";
@@ -507,7 +508,10 @@ try {
     claimStore,
     bountyStore,
     cas,
-    frontier: runtime.frontier,
+    frontier:
+      nexusClient !== undefined
+        ? new DefaultFrontierCalculator(contributionStore)
+        : runtime.frontier,
     workspace: runtime.workspace,
     contract: loadedContract,
     onContributionWrite: runtime.onContributionWrite,

@@ -113,6 +113,18 @@ export class RemoteDataProvider
     this.activeSessionId = sessionId;
   }
 
+  private applySessionScope(params: URLSearchParams, explicitSessionId?: string): void {
+    const effectiveSessionId = explicitSessionId ?? this.activeSessionId;
+    if (effectiveSessionId) params.set("sessionId", effectiveSessionId);
+  }
+
+  private sessionQuerySuffix(): string {
+    const params = new URLSearchParams();
+    this.applySessionScope(params);
+    const qs = params.toString();
+    return qs ? `?${qs}` : "";
+  }
+
   async getDashboard(): Promise<DashboardData> {
     const [metadata, recentContributions, frontier] = await Promise.all([
       this.fetchGroveMetadata(),
@@ -157,8 +169,7 @@ export class RemoteDataProvider
     if (query?.limit) params.set("limit", String(query.limit));
     if (query?.offset) params.set("offset", String(query.offset));
     // Prefer explicit sessionId on the query, fall back to active scope
-    const effectiveSessionId = query?.sessionId ?? this.activeSessionId;
-    if (effectiveSessionId) params.set("sessionId", effectiveSessionId);
+    this.applySessionScope(params, query?.sessionId);
 
     const qs = params.toString();
     const resp = await fetch(`${this.baseUrl}/api/contributions${qs ? `?${qs}` : ""}`);
@@ -167,15 +178,18 @@ export class RemoteDataProvider
   }
 
   async getContribution(cid: string): Promise<ContributionDetail | undefined> {
-    const resp = await fetch(`${this.baseUrl}/api/contributions/${encodeURIComponent(cid)}`);
+    const scopedQs = this.sessionQuerySuffix();
+    const resp = await fetch(
+      `${this.baseUrl}/api/contributions/${encodeURIComponent(cid)}${scopedQs}`,
+    );
     if (resp.status === 404) return undefined;
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
     const contribution = parseContribution(await resp.json());
 
     const [ancestorsResp, childrenResp, threadResp] = await Promise.all([
-      fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(cid)}/ancestors`),
-      fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(cid)}/children`),
-      fetch(`${this.baseUrl}/api/threads/${encodeURIComponent(cid)}`),
+      fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(cid)}/ancestors${scopedQs}`),
+      fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(cid)}/children${scopedQs}`),
+      fetch(`${this.baseUrl}/api/threads/${encodeURIComponent(cid)}${scopedQs}`),
     ]);
 
     const ancestors = ancestorsResp.ok ? parseContributions(await ancestorsResp.json()) : [];
@@ -233,8 +247,7 @@ export class RemoteDataProvider
     if (query?.kind) params.set("kind", query.kind);
     if (query?.mode) params.set("mode", query.mode);
     // Prefer explicit sessionId on the query, fall back to active scope
-    const effectiveSessionId = query?.sessionId ?? this.activeSessionId;
-    if (effectiveSessionId) params.set("sessionId", effectiveSessionId);
+    this.applySessionScope(params, query?.sessionId);
 
     const qs = params.toString();
     const resp = await fetch(`${this.baseUrl}/api/frontier${qs ? `?${qs}` : ""}`);
@@ -254,10 +267,11 @@ export class RemoteDataProvider
 
   async getDag(rootCid?: string): Promise<DagData> {
     if (rootCid) {
+      const scopedQs = this.sessionQuerySuffix();
       const [ancestorsResp, childrenResp, rootResp] = await Promise.all([
-        fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(rootCid)}/ancestors`),
-        fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(rootCid)}/children`),
-        fetch(`${this.baseUrl}/api/contributions/${encodeURIComponent(rootCid)}`),
+        fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(rootCid)}/ancestors${scopedQs}`),
+        fetch(`${this.baseUrl}/api/dag/${encodeURIComponent(rootCid)}/children${scopedQs}`),
+        fetch(`${this.baseUrl}/api/contributions/${encodeURIComponent(rootCid)}${scopedQs}`),
       ]);
 
       const contributions: Contribution[] = [];
@@ -282,6 +296,7 @@ export class RemoteDataProvider
 
   async getHotThreads(limit = 20): Promise<readonly ThreadSummary[]> {
     const params = new URLSearchParams({ limit: String(limit) });
+    this.applySessionScope(params);
     const resp = await fetch(`${this.baseUrl}/api/threads?${params.toString()}`);
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
     const body = (await resp.json()) as { threads: unknown };
@@ -387,8 +402,9 @@ export class RemoteDataProvider
   // ---------------------------------------------------------------------------
 
   async getArtifact(cid: string, name: string): Promise<Buffer> {
+    const scopedQs = this.sessionQuerySuffix();
     const resp = await fetch(
-      `${this.baseUrl}/api/contributions/${encodeURIComponent(cid)}/artifacts/${encodeURIComponent(name)}`,
+      `${this.baseUrl}/api/contributions/${encodeURIComponent(cid)}/artifacts/${encodeURIComponent(name)}${scopedQs}`,
     );
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
     const arrayBuffer = await resp.arrayBuffer();
@@ -396,8 +412,9 @@ export class RemoteDataProvider
   }
 
   async getArtifactMeta(cid: string, name: string): Promise<ArtifactMeta> {
+    const scopedQs = this.sessionQuerySuffix();
     const resp = await fetch(
-      `${this.baseUrl}/api/contributions/${encodeURIComponent(cid)}/artifacts/${encodeURIComponent(name)}/meta`,
+      `${this.baseUrl}/api/contributions/${encodeURIComponent(cid)}/artifacts/${encodeURIComponent(name)}/meta${scopedQs}`,
     );
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
     // ArtifactMeta is a simple local type — lightweight validation sufficient

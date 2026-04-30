@@ -34,6 +34,12 @@ export interface ServerDeps {
   readonly claimStore: ClaimStore;
   readonly cas: ContentStore;
   readonly frontier: FrontierCalculator;
+  /**
+   * Factory for session-scoped frontier calculators. Optional: when provided,
+   * routes that accept `?sessionId=` compute rankings over the same scoped
+   * contribution store used for session reads.
+   */
+  readonly frontierForSession?: ((sessionId: string) => FrontierCalculator) | undefined;
   /** Optional gossip service. Routes return 501 when not configured. */
   readonly gossip?: GossipService | undefined;
   /** Optional outcome store. Routes return 501 when not configured. */

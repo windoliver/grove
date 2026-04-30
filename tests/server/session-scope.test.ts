@@ -1,0 +1,94 @@
+import { describe, expect, test } from "bun:test";
+import { DefaultFrontierCalculator } from "../../src/core/frontier.js";
+import { createContribution } from "../../src/core/manifest.js";
+import type { Contribution, ContributionInput } from "../../src/core/models.js";
+import { InMemoryContributionStore } from "../../src/core/testing.js";
+import { createApp } from "../../src/server/app.js";
+import type { ServerDeps } from "../../src/server/deps.js";
+import { InMemoryClaimStore, InMemoryContentStore } from "../../src/server/test-helpers.js";
+
+function makeContribution(overrides: Partial<ContributionInput> = {}): Contribution {
+  return createContribution({
+    kind: "work",
+    mode: "evaluation",
+    summary: "Session contribution",
+    artifacts: {},
+    relations: [],
+    tags: ["session"],
+    agent: { agentId: "agent-session" },
+    createdAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  });
+}
+
+function makeDeps(
+  globalStore: InMemoryContributionStore,
+  scopedStore: InMemoryContributionStore,
+  cas: InMemoryContentStore,
+): ServerDeps {
+  return {
+    contributionStore: globalStore,
+    contributionStoreForSession: (sessionId) =>
+      sessionId === "session-a" ? scopedStore : globalStore,
+    claimStore: new InMemoryClaimStore(),
+    cas,
+    frontier: new DefaultFrontierCalculator(globalStore),
+    frontierForSession: (sessionId) =>
+      new DefaultFrontierCalculator(sessionId === "session-a" ? scopedStore : globalStore),
+  };
+}
+
+describe("server session-scoped contribution reads", () => {
+  test("frontier uses the session-scoped contribution store", async () => {
+    const globalStore = new InMemoryContributionStore();
+    const scopedStore = new InMemoryContributionStore([
+      makeContribution({ summary: "Scoped frontier item" }),
+    ]);
+    const app = createApp(makeDeps(globalStore, scopedStore, new InMemoryContentStore()));
+
+    const res = await app.request("/api/frontier?sessionId=session-a");
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { byRecency: readonly { summary: string }[] };
+    expect(body.byRecency.map((entry) => entry.summary)).toEqual(["Scoped frontier item"]);
+  });
+
+  test("detail, dag, thread, and artifact routes use the session-scoped store", async () => {
+    const globalStore = new InMemoryContributionStore();
+    const scopedStore = new InMemoryContributionStore();
+    const cas = new InMemoryContentStore();
+    const artifactHash = await cas.put(new TextEncoder().encode("scoped artifact"));
+    const root = makeContribution({
+      summary: "Scoped root",
+      artifacts: { "notes.txt": artifactHash },
+    });
+    const child = makeContribution({
+      summary: "Scoped reply",
+      relations: [{ targetCid: root.cid, relationType: "responds_to" }],
+      createdAt: "2026-01-01T00:00:01.000Z",
+    });
+    await scopedStore.putMany([root, child]);
+    const app = createApp(makeDeps(globalStore, scopedStore, cas));
+
+    const detail = await app.request(`/api/contributions/${root.cid}?sessionId=session-a`);
+    expect(detail.status).toBe(200);
+    expect(((await detail.json()) as Contribution).summary).toBe("Scoped root");
+
+    const children = await app.request(`/api/dag/${root.cid}/children?sessionId=session-a`);
+    expect(children.status).toBe(200);
+    expect(((await children.json()) as readonly Contribution[]).map((c) => c.cid)).toEqual([
+      child.cid,
+    ]);
+
+    const thread = await app.request(`/api/threads/${root.cid}?sessionId=session-a`);
+    expect(thread.status).toBe(200);
+    const threadBody = (await thread.json()) as { nodes: readonly { cid: string }[] };
+    expect(threadBody.nodes.map((node) => node.cid)).toEqual([root.cid, child.cid]);
+
+    const artifact = await app.request(
+      `/api/contributions/${root.cid}/artifacts/notes.txt?sessionId=session-a`,
+    );
+    expect(artifact.status).toBe(200);
+    expect(await artifact.text()).toBe("scoped artifact");
+  });
+});

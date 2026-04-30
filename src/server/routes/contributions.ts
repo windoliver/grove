@@ -26,6 +26,7 @@ import type { ContributionQuery } from "../../core/store.js";
 import type { ServerEnv } from "../deps.js";
 import { toHttpResult, toOperationDeps } from "../operation-adapter.js";
 import { CID_REGEX, MAX_REQUEST_SIZE } from "../schemas.js";
+import { contributionStoreForSession } from "./session-scope.js";
 
 // ---------------------------------------------------------------------------
 // File-local schemas (not exported — avoids isolatedDeclarations issues)
@@ -45,6 +46,10 @@ const listQuerySchema = z.object({
 
 const cidParamSchema = z.object({
   cid: z.string().regex(CID_REGEX, "CID must be in format blake3:<64-hex-chars>"),
+});
+
+const sessionQuerySchema = z.object({
+  sessionId: z.string().optional(),
 });
 
 const manifestSchema = z
@@ -390,24 +395,37 @@ contributions.get("/", zValidator("query", listQuerySchema), async (c) => {
 });
 
 /** GET /api/contributions/:cid — Get a single contribution by CID. */
-contributions.get("/:cid", zValidator("param", cidParamSchema), async (c) => {
-  const { contributionStore } = c.get("deps");
-  const { cid } = c.req.valid("param");
+contributions.get(
+  "/:cid",
+  zValidator("param", cidParamSchema),
+  zValidator("query", sessionQuerySchema),
+  async (c) => {
+    const deps = c.get("deps");
+    const { cid } = c.req.valid("param");
+    const { sessionId } = c.req.valid("query");
 
-  const contribution = await contributionStore.get(cid);
-  if (!contribution) {
-    return c.json({ error: { code: "NOT_FOUND", message: `Contribution ${cid} not found` } }, 404);
-  }
+    const contributionStore = contributionStoreForSession(deps, sessionId);
+    const contribution = await contributionStore.get(cid);
+    if (!contribution) {
+      return c.json(
+        { error: { code: "NOT_FOUND", message: `Contribution ${cid} not found` } },
+        404,
+      );
+    }
 
-  return c.json(contribution);
-});
+    return c.json(contribution);
+  },
+);
 
 /** GET /api/contributions/:cid/artifacts/:name — Download artifact blob. */
-contributions.get("/:cid/artifacts/:name", async (c) => {
-  const { contributionStore, cas } = c.get("deps");
+contributions.get("/:cid/artifacts/:name", zValidator("query", sessionQuerySchema), async (c) => {
+  const deps = c.get("deps");
+  const { cas } = deps;
   const cid = c.req.param("cid");
   const name = c.req.param("name");
+  const { sessionId } = c.req.valid("query");
 
+  const contributionStore = contributionStoreForSession(deps, sessionId);
   const contribution = await contributionStore.get(cid);
   if (!contribution) {
     return c.json({ error: { code: "NOT_FOUND", message: `Contribution ${cid} not found` } }, 404);
@@ -445,41 +463,51 @@ contributions.get("/:cid/artifacts/:name", async (c) => {
 });
 
 /** GET /api/contributions/:cid/artifacts/:name/meta — Artifact metadata (size + mediaType). */
-contributions.get("/:cid/artifacts/:name/meta", async (c) => {
-  const { contributionStore, cas } = c.get("deps");
-  const cid = c.req.param("cid");
-  const name = c.req.param("name");
+contributions.get(
+  "/:cid/artifacts/:name/meta",
+  zValidator("query", sessionQuerySchema),
+  async (c) => {
+    const deps = c.get("deps");
+    const { cas } = deps;
+    const cid = c.req.param("cid");
+    const name = c.req.param("name");
+    const { sessionId } = c.req.valid("query");
 
-  const contribution = await contributionStore.get(cid);
-  if (!contribution) {
-    return c.json({ error: { code: "NOT_FOUND", message: `Contribution ${cid} not found` } }, 404);
-  }
+    const contributionStore = contributionStoreForSession(deps, sessionId);
+    const contribution = await contributionStore.get(cid);
+    if (!contribution) {
+      return c.json(
+        { error: { code: "NOT_FOUND", message: `Contribution ${cid} not found` } },
+        404,
+      );
+    }
 
-  const contentHash = contribution.artifacts[name];
-  if (!contentHash) {
-    return c.json(
-      { error: { code: "NOT_FOUND", message: `Artifact '${name}' not found in ${cid}` } },
-      404,
-    );
-  }
+    const contentHash = contribution.artifacts[name];
+    if (!contentHash) {
+      return c.json(
+        { error: { code: "NOT_FOUND", message: `Artifact '${name}' not found in ${cid}` } },
+        404,
+      );
+    }
 
-  const meta = await cas.stat(contentHash);
-  if (!meta) {
-    return c.json(
-      {
-        error: {
-          code: "NOT_FOUND",
-          message: `Artifact blob not found for hash ${contentHash}`,
+    const meta = await cas.stat(contentHash);
+    if (!meta) {
+      return c.json(
+        {
+          error: {
+            code: "NOT_FOUND",
+            message: `Artifact blob not found for hash ${contentHash}`,
+          },
         },
-      },
-      404,
-    );
-  }
+        404,
+      );
+    }
 
-  return c.json({
-    sizeBytes: meta.sizeBytes,
-    ...(meta.mediaType !== undefined ? { mediaType: meta.mediaType } : {}),
-  });
-});
+    return c.json({
+      sizeBytes: meta.sizeBytes,
+      ...(meta.mediaType !== undefined ? { mediaType: meta.mediaType } : {}),
+    });
+  },
+);
 
 export { contributions };

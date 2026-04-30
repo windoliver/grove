@@ -10,6 +10,7 @@
 import type { ContentStore } from "../core/cas.js";
 import { createContribution } from "../core/manifest.js";
 import type { AgentIdentity, Contribution } from "../core/models.js";
+import { validateArtifactName } from "../core/path-safety.js";
 import type { ContributionStore } from "../core/store.js";
 import type { GitHubClient } from "./client.js";
 import {
@@ -119,6 +120,7 @@ export function createGitHubAdapter(options: GitHubAdapterOptions) {
       // Collect artifact contents from CAS — fail if any are missing
       const files = new Map<string, Uint8Array>();
       for (const [name, hash] of Object.entries(contribution.artifacts)) {
+        validateArtifactName(name);
         const data = await cas.get(hash);
         if (!data) {
           throw new Error(

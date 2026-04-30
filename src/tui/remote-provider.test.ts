@@ -6,9 +6,12 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { DefaultFrontierCalculator } from "../core/frontier.js";
 import { computeCid } from "../core/manifest.js";
-import type { ContributionInput } from "../core/models.js";
-import { createTestApp } from "../server/test-helpers.js";
+import type { Contribution, ContributionInput } from "../core/models.js";
+import { InMemoryContributionStore } from "../core/testing.js";
+import { createApp } from "../server/app.js";
+import { createTestApp, InMemoryClaimStore, InMemoryContentStore } from "../server/test-helpers.js";
 import { runProviderConformanceTests } from "./provider.conformance.js";
 import { RemoteDataProvider } from "./remote-provider.js";
 
@@ -124,5 +127,42 @@ describe("RemoteDataProvider specific", () => {
       "blake3:0000000000000000000000000000000000000000000000000000000000000000",
     );
     expect(detail).toBeUndefined();
+  });
+
+  test("getContribution uses the active session scope for remote detail requests", async () => {
+    const root = makeContribution({ summary: "Scoped remote root" });
+    const child = makeContribution({
+      summary: "Scoped remote child",
+      relations: [{ targetCid: root.cid, relationType: "responds_to" }],
+      createdAt: new Date(Date.now() + 3000).toISOString(),
+    });
+    const scopedStore = new InMemoryContributionStore([
+      { manifestVersion: 1, ...root } as Contribution,
+      { manifestVersion: 1, ...child } as Contribution,
+    ]);
+    const globalStore = new InMemoryContributionStore();
+    const cas = new InMemoryContentStore();
+    const app = createApp({
+      contributionStore: globalStore,
+      contributionStoreForSession: (sessionId) =>
+        sessionId === "session-a" ? scopedStore : globalStore,
+      claimStore: new InMemoryClaimStore(),
+      cas,
+      frontier: new DefaultFrontierCalculator(globalStore),
+      frontierForSession: (sessionId) =>
+        new DefaultFrontierCalculator(sessionId === "session-a" ? scopedStore : globalStore),
+    });
+    const server = Bun.serve({ port: 0, fetch: app.fetch });
+    try {
+      const scopedProvider = new RemoteDataProvider(`http://localhost:${server.port}`);
+      scopedProvider.setSessionScope("session-a");
+
+      const detail = await scopedProvider.getContribution(root.cid);
+
+      expect(detail?.contribution.cid).toBe(root.cid);
+      expect(detail?.children.map((c) => c.cid)).toEqual([child.cid]);
+    } finally {
+      server.stop(true);
+    }
   });
 });

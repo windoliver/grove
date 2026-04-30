@@ -10,6 +10,7 @@
  */
 
 import { join } from "node:path";
+import { DefaultFrontierCalculator } from "../core/frontier.js";
 import type { GossipService } from "../core/gossip/types.js";
 import { LocalEventBus } from "../core/local-event-bus.js";
 import { TmuxRuntime } from "../core/tmux-runtime.js";
@@ -42,29 +43,6 @@ if (!runtime.contract) {
 }
 
 // ---------------------------------------------------------------------------
-// Optional gossip federation
-// ---------------------------------------------------------------------------
-
-let gossipService: GossipService | undefined;
-
-const gossipSeedsRaw = process.env.GOSSIP_SEEDS; // comma-separated "id@address" pairs
-const peerId = process.env.GOSSIP_PEER_ID ?? `grove-${PORT}`;
-const peerAddress = process.env.GOSSIP_ADDRESS ?? `http://localhost:${PORT}`;
-
-const seedPeers = parseGossipSeeds(gossipSeedsRaw);
-if (seedPeers.length > 0) {
-  const allowPrivateIPs = process.env.GROVE_GOSSIP_ALLOW_PRIVATE_IPS === "true";
-  const hmacSecret = process.env.GROVE_GOSSIP_HMAC_SECRET || undefined;
-  const transport = new HttpGossipTransport({ allowPrivateIPs });
-  gossipService = new DefaultGossipService({
-    config: { peerId, address: peerAddress, seedPeers: [...seedPeers], hmacSecret },
-    transport,
-    frontier: runtime.frontier,
-    getLoad: () => ({ queueDepth: 0 }),
-  });
-}
-
-// ---------------------------------------------------------------------------
 // Start server
 // ---------------------------------------------------------------------------
 
@@ -81,7 +59,7 @@ let serverOutcomeStore: import("../core/outcome.js").OutcomeStore | undefined =
   runtime.outcomeStore;
 let serverBountyStore: import("../core/bounty-store.js").BountyStore = runtime.bountyStore;
 let serverCas: import("../core/cas.js").ContentStore = runtime.cas;
-const serverFrontier: import("../core/frontier.js").FrontierCalculator = runtime.frontier;
+let serverFrontier: import("../core/frontier.js").FrontierCalculator = runtime.frontier;
 
 // In Nexus mode, contributions are stored at session-scoped VFS paths
 // (/zones/{zoneId}/sessions/{sessionId}/contributions/). A process-global
@@ -91,6 +69,9 @@ const serverFrontier: import("../core/frontier.js").FrontierCalculator = runtime
 // it when the query param is present.
 let contributionStoreForSessionFactory:
   | ((sessionId: string) => import("../core/store.js").ContributionStore)
+  | undefined;
+let frontierForSessionFactory:
+  | ((sessionId: string) => import("../core/frontier.js").FrontierCalculator)
   | undefined;
 
 const nexusUrl = process.env.GROVE_NEXUS_URL;
@@ -144,9 +125,37 @@ if (nexusUrl) {
   serverBountyStore = new NexusBountyStore({ client: nexusClient, zoneId });
   serverOutcomeStore = new NexusOutcomeStore({ client: nexusClient, zoneId });
   serverCas = new NexusCas({ client: nexusClient, zoneId });
+  serverFrontier = new DefaultFrontierCalculator(serverContributionStore);
   contributionStoreForSessionFactory = (sessionId: string) =>
     new NexusContributionStore({ client: nexusClient, zoneId, sessionId });
+  frontierForSessionFactory = (sessionId: string) =>
+    new DefaultFrontierCalculator(
+      new NexusContributionStore({ client: nexusClient, zoneId, sessionId }),
+    );
   console.log(`grove-server: using Nexus stores at ${nexusUrl} (zone=${zoneId})`);
+}
+
+// ---------------------------------------------------------------------------
+// Optional gossip federation
+// ---------------------------------------------------------------------------
+
+let gossipService: GossipService | undefined;
+
+const gossipSeedsRaw = process.env.GOSSIP_SEEDS; // comma-separated "id@address" pairs
+const peerId = process.env.GOSSIP_PEER_ID ?? `grove-${PORT}`;
+const peerAddress = process.env.GOSSIP_ADDRESS ?? `http://localhost:${PORT}`;
+
+const seedPeers = parseGossipSeeds(gossipSeedsRaw);
+if (seedPeers.length > 0) {
+  const allowPrivateIPs = process.env.GROVE_GOSSIP_ALLOW_PRIVATE_IPS === "true";
+  const hmacSecret = process.env.GROVE_GOSSIP_HMAC_SECRET || undefined;
+  const transport = new HttpGossipTransport({ allowPrivateIPs });
+  gossipService = new DefaultGossipService({
+    config: { peerId, address: peerAddress, seedPeers: [...seedPeers], hmacSecret },
+    transport,
+    frontier: serverFrontier,
+    getLoad: () => ({ queueDepth: 0 }),
+  });
 }
 
 // Per-request session-scoped handoff store factory. The HTTP handoff
@@ -170,6 +179,7 @@ const deps: ServerDeps = {
   handoffStoreForSession,
   cas: serverCas,
   frontier: serverFrontier,
+  frontierForSession: frontierForSessionFactory,
   gossip: gossipService,
   topology: runtime.contract?.topology,
   contract: runtime.contract,

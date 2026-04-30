@@ -1091,9 +1091,11 @@ export class SqliteContributionStore implements ContributionStore {
 
   countSince = async (query: { agentId?: string; since: string }): Promise<number> => {
     const sql =
-      "SELECT COUNT(*) as cnt FROM contributions WHERE created_at >= ? AND (agent_id = ? OR ? IS NULL)";
-    const agentId = query.agentId ?? null;
-    const row = this.db.prepare(sql).get(query.since, agentId, agentId) as { cnt: number } | null;
+      query.agentId !== undefined
+        ? "SELECT COUNT(*) as cnt FROM contributions WHERE agent_id = ? AND created_at >= ?"
+        : "SELECT COUNT(*) as cnt FROM contributions WHERE created_at >= ?";
+    const params = query.agentId !== undefined ? [query.agentId, query.since] : [query.since];
+    const row = this.db.prepare(sql).get(...params) as { cnt: number } | null;
     return row?.cnt ?? 0;
   };
 
