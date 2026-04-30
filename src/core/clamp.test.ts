@@ -20,7 +20,7 @@ describe("clampInt", () => {
     const warn = mock(() => {});
     expect(clampInt({ raw: "abc", fallback: 9, min: 1, max: 100, name: "Y", warn })).toBe(9);
     expect(warn.mock.calls.length).toBe(1);
-    expect(String(warn.mock.calls[0]?.[0])).toContain("Y");
+    expect(String((warn.mock.calls as unknown as unknown[][])[0]?.[0])).toContain("Y");
   });
 
   test("warns and returns fallback when raw is below min", () => {

@@ -62,7 +62,7 @@ describe("WatchClient happy path", () => {
     expect(seen.map((e) => e.op)).toEqual(["RELIST_BEGIN", "RELIST", "RELIST_END", "ADDED"]);
     expect(seen[0]?.entity).toBeNull();
     expect(seen[0]?.rv).toBe(5n);
-    expect((seen[1]?.entity as { envelope: { id: string } }).envelope.id).toBe("cid-a");
+    expect((seen[1]?.entity as unknown as { envelope: { id: string } }).envelope.id).toBe("cid-a");
     expect(seen[1]?.rv).toBe(5n);
     expect(seen[2]?.entity).toBeNull();
     expect(seen[2]?.rv).toBe(5n);
@@ -153,8 +153,8 @@ describe("WatchClient relist on 410", () => {
 
     const relists = seen.filter((s) => s.op === "RELIST");
     expect(relists.length).toBe(2);
-    expect((relists[0]?.entity as { envelope: { id: string } }).envelope.id).toBe("cid-a");
-    expect((relists[1]?.entity as { envelope: { id: string } }).envelope.id).toBe("cid-b");
+    expect((relists[0]?.entity as unknown as { envelope: { id: string } }).envelope.id).toBe("cid-a");
+    expect((relists[1]?.entity as unknown as { envelope: { id: string } }).envelope.id).toBe("cid-b");
     expect(relists[1]?.rv).toBe(10n);
   });
 
@@ -306,7 +306,7 @@ describe("WatchClient relist on 410", () => {
     const running = client.run({
       onEvent: async (e) => {
         seen.push(e);
-        if (e.op === "RELIST" && (e.entity as { envelope: { id: string } }).envelope.id === "cid-b")
+        if (e.op === "RELIST" && (e.entity as unknown as { envelope: { id: string } }).envelope.id === "cid-b")
           ac.abort();
       },
       signal: ac.signal,
@@ -317,7 +317,7 @@ describe("WatchClient relist on 410", () => {
     expect(dataOps.length).toBe(0);
     const relists = seen.filter((e) => e.op === "RELIST");
     expect(relists.length).toBe(1);
-    expect((relists[0]?.entity as { envelope: { id: string } }).envelope.id).toBe("cid-b");
+    expect((relists[0]?.entity as unknown as { envelope: { id: string } }).envelope.id).toBe("cid-b");
   });
 
   test("ERROR{code:410} resets backoff (relist is a clean slate)", async () => {
@@ -677,7 +677,7 @@ describe("WatchClient snapshot dedup (list/watch race)", () => {
       fetch: fetchImpl,
       backoff: { minMs: 0, maxMs: 0, jitter: 0 },
     });
-    await client.run({ onEvent: (e) => seen.push(e), signal: ac.signal });
+    await client.run({ onEvent: (e) => { seen.push(e); }, signal: ac.signal });
     const modified = seen.find((e) => e.op === "MODIFIED");
     expect(modified).toBeDefined();
     expect((modified?.entity as { resourceVersion: string }).resourceVersion).toBe("1");
@@ -698,7 +698,7 @@ describe("WatchClient snapshot dedup (list/watch race)", () => {
       fetch: fetchImpl,
       backoff: { minMs: 0, maxMs: 0, jitter: 0 },
     });
-    await client.run({ onEvent: (e) => seen.push(e), signal: ac.signal });
+    await client.run({ onEvent: (e) => { seen.push(e); }, signal: ac.signal });
     expect(seen.some((e) => e.op === "DELETED")).toBe(true);
   });
 
@@ -730,7 +730,7 @@ describe("WatchClient snapshot dedup (list/watch race)", () => {
       fetch: fetchImpl,
       backoff: { minMs: 0, maxMs: 0, jitter: 0 },
     });
-    await client.run({ onEvent: (e) => seen.push(e), signal: ac.signal });
+    await client.run({ onEvent: (e) => { seen.push(e); }, signal: ac.signal });
     // Only the snapshot RELIST should surface for entity X. No ADDED
     // events for either the stale version-2 or duplicate version-3 frame.
     const dataOps = seen.filter((e) => e.op === "ADDED" || e.op === "MODIFIED");
@@ -757,7 +757,7 @@ describe("WatchClient snapshot dedup (list/watch race)", () => {
       fetch: fetchImpl,
       backoff: { minMs: 0, maxMs: 0, jitter: 0 },
     });
-    await client.run({ onEvent: (e) => seen.push(e), signal: ac.signal });
+    await client.run({ onEvent: (e) => { seen.push(e); }, signal: ac.signal });
     expect(seen.some((e) => e.op === "MODIFIED")).toBe(true);
   });
 
@@ -808,7 +808,7 @@ describe("WatchClient snapshot dedup (list/watch race)", () => {
       fetch: fetchImpl,
       backoff: { minMs: 0, maxMs: 0, jitter: 0 },
     });
-    await client.run({ onEvent: (e) => seen.push(e), signal: ac.signal });
+    await client.run({ onEvent: (e) => { seen.push(e); }, signal: ac.signal });
     const addedA = seen.find(
       (e) => e.op === "ADDED" && (e.entity as { id: string } | null)?.id === "cid-a",
     );
@@ -822,7 +822,7 @@ describe("WatchClient terminal errors", () => {
       new Response(JSON.stringify({ code: "UNAUTHENTICATED" }), {
         status: 401,
         headers: { "Content-Type": "application/json" },
-      })) as typeof fetch;
+      })) as unknown as typeof fetch;
     const ac = new AbortController();
     const client = new WatchClient({
       baseUrl: "http://t",

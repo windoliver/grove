@@ -242,7 +242,7 @@ export class WatchClient {
     let buf = "";
     try {
       while (!signal.aborted) {
-        let chunk: ReadableStreamReadResult<Uint8Array>;
+        let chunk: { done: boolean; value: Uint8Array | undefined };
         try {
           chunk = await reader.read();
         } catch (err) {

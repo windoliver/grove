@@ -310,7 +310,7 @@ describe("watch route overflow path delivers terminal ERROR", () => {
 });
 
 async function listRv(app: {
-  request: (path: string, init?: RequestInit) => Promise<Response>;
+  request: (path: string, init?: RequestInit) => Response | Promise<Response>;
 }): Promise<string> {
   const res = await app.request("/api/list?kind=Contribution", {
     headers: TEST_AUTH_HEADERS,
