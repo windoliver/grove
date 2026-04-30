@@ -159,7 +159,10 @@ export class Informer<K extends WatchKind = WatchKind> {
   }
 
   private dispatch(op: InformerOp, entity: EntityForKind<K>): void {
-    for (const handler of this.handlers) {
+    // Snapshot before iterating so a handler that calls its own unsubscribe
+    // (which splices the live array) does not cause the next handler to be
+    // skipped by the iterator advancing past the shifted index.
+    for (const handler of [...this.handlers]) {
       try {
         handler(op, entity);
       } catch (err) {

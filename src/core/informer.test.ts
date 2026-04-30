@@ -695,4 +695,28 @@ describe("Informer handler isolation", () => {
     await informer.run(ac.signal);
     expect(afterUnsub).toHaveLength(0);
   });
+
+  test("handler that unsubscribes itself during dispatch does not skip next handler", async () => {
+    // Regression: splice-during-iteration would shift handler[1] into index 0
+    // and the for..of iterator would advance past it.
+    const ac = new AbortController();
+    const h2Events: string[] = [];
+    let unsub: (() => void) | undefined;
+    const informer = new Informer({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    unsub = informer.addEventHandler(() => {
+      unsub?.(); // self-unsubscribe during first dispatch
+    });
+    informer.addEventHandler((op, entity) => {
+      h2Events.push(`${op}:${(entity as { id: string }).id}`);
+    });
+    await informer.run(ac.signal);
+    // h2 must still receive the ADDED:cid-a from the relist
+    expect(h2Events).toContain("ADDED:cid-a");
+  });
 });
