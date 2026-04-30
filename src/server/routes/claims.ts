@@ -114,8 +114,28 @@ claims.patch("/:id", zValidator("json", patchBodySchema), async (c) => {
 
   // Heartbeat stays as direct store call (no matching operation)
   if (action === "heartbeat") {
-    const { claimStore } = c.get("deps");
+    const deps = c.get("deps");
+    const { claimStore, watchHub, watchSubscriber } = deps;
+    const namespace = c.get("namespace");
     const result = await claimStore.heartbeat(claimId, leaseDurationMs);
+    // Heartbeats advance heartbeatAt/leaseExpiresAt — fields Claim watchers
+    // depend on for lease-aware decisions. Emit MODIFIED so a watcher's
+    // cached entity stays in sync with the new lease deadline.
+    const entity = claimToEntity(result, () => Date.now(), namespace);
+    try {
+      watchHub.recordWrite({ kind: "Claim", namespace, op: "MODIFIED", entity });
+      watchSubscriber?.markSeen({
+        kind: "Claim",
+        entityId: result.claimId,
+        generation: entity.metadata.generation,
+      });
+    } catch (err) {
+      process.stderr.write(
+        `[grove] Warning: watch fan-out threw after PATCH heartbeat: ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
+    }
     return c.json(result);
   }
 

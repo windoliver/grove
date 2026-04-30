@@ -202,6 +202,46 @@ describe("compaction triggers Expired (issue #293 acceptance #1)", () => {
   });
 });
 
+describe("PATCH /api/claims/:id heartbeat watch fan-out", () => {
+  test("heartbeat emits MODIFIED with updated lease fields", async () => {
+    // Heartbeats update heartbeatAt + leaseExpiresAt. Watchers must see
+    // these so they don't conclude an actively heartbeated claim has
+    // expired. Regression: heartbeat used to return without recordWrite.
+    const { app } = createTestApp({
+      watchHubOptions: { maxEventsPerKey: 100, maxAgeMsPerKey: 60_000 },
+    });
+    const claimBody = {
+      claimId: "claim-hb-1",
+      targetRef: "task-hb",
+      agent: { agentId: "agent-1" },
+      intentSummary: "heartbeat test",
+    };
+    const post = await app.request("/api/claims", {
+      method: "POST",
+      headers: { ...TEST_AUTH_HEADERS, "Content-Type": "application/json" },
+      body: JSON.stringify(claimBody),
+    });
+    expect(post.status).toBe(201);
+
+    // Open watch from current rv=1 so the heartbeat shows up as the next event.
+    const watchRes = await app.request("/api/watch?kind=Claim&resumeFrom=1", {
+      headers: TEST_AUTH_HEADERS,
+    });
+    const hb = await app.request(`/api/claims/${claimBody.claimId}`, {
+      method: "PATCH",
+      headers: { ...TEST_AUTH_HEADERS, "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "heartbeat" }),
+    });
+    expect(hb.status).toBe(200);
+    const events = await readSseEvents(watchRes, 1, 1_000);
+    const modified = events.find((e) => e.event === "MODIFIED");
+    expect(modified).toBeDefined();
+    expect(
+      (modified?.data as { entity: { id: string } }).entity.id,
+    ).toBe(claimBody.claimId);
+  });
+});
+
 describe("POST /api/claims watch fan-out", () => {
   test("renewals emit MODIFIED so watchers see lease updates", async () => {
     // Lease state (heartbeatAt / leaseExpiresAt) is part of the Claim

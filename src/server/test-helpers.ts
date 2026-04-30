@@ -170,6 +170,7 @@ export class InMemoryClaimStore implements ClaimStore {
       ...claim,
       heartbeatAt: now.toISOString(),
       leaseExpiresAt: new Date(now.getTime() + (leaseDurationMs ?? 300_000)).toISOString(),
+      revision: (claim.revision ?? 1) + 1,
     };
     this.claims.set(claimId, updated);
     return updated;
