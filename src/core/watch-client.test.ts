@@ -437,6 +437,176 @@ describe("WatchClient fast resume on TCP close", () => {
   });
 });
 
+describe("WatchClient snapshot dedup (list/watch race)", () => {
+  // The dedup uses entity.id + entity.resourceVersion (per ContributionEntity).
+  // Local fixtures shaped like real entities so the dedup keys exist.
+  const E_A = { id: "cid-a", resourceVersion: "0", spec: { summary: "a" } };
+  const E_B = { id: "cid-b", resourceVersion: "0", spec: { summary: "b" } };
+
+  /**
+   * Watch fetcher that returns one canned watch body, then aborts the run
+   * on the next watch call. This prevents the loop from spinning when the
+   * scripted fetch is exhausted (which would otherwise hammer the
+   * fast-resume path forever via the transport-error catch).
+   */
+  function singleWatchThenAbort(
+    listJson: unknown,
+    watchBody: string,
+    ac: AbortController,
+  ): typeof fetch {
+    let watchCalls = 0;
+    return (async (input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/api/list")) {
+        return new Response(JSON.stringify(listJson), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.includes("/api/watch")) {
+        watchCalls += 1;
+        if (watchCalls === 1) {
+          return new Response(watchBody, {
+            headers: { "Content-Type": "text/event-stream" },
+          });
+        }
+        // Subsequent watch attempts: signal end, abort the run.
+        ac.abort();
+        return new Response("", { headers: { "Content-Type": "text/event-stream" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as typeof fetch;
+  }
+
+  test("ADDED with same (id, resourceVersion) as a snapshot item is suppressed", async () => {
+    const seen: WatchClientEvent[] = [];
+    // E_A is in the snapshot at listRv=5 with resourceVersion "0".
+    // The watch then replays an ADDED for the same entity at watch-rv=6
+    // (the race-window duplicate). It must not surface as ADDED.
+    const ac = new AbortController();
+    const fetchImpl = singleWatchThenAbort(
+      { items: [E_A], listResourceVersion: "5" },
+      sse("ADDED", { rv: "6", kind: "Contribution", entity: E_A }, "6"),
+      ac,
+    );
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    const running = client.run({
+      onEvent: async (e) => {
+        seen.push(e);
+      },
+      signal: ac.signal,
+    });
+    await running;
+    // RELIST_BEGIN, RELIST(A), RELIST_END — and crucially NO ADDED for A.
+    const ops = seen.map((e) => e.op);
+    expect(ops).toEqual(["RELIST_BEGIN", "RELIST", "RELIST_END"]);
+    expect(seen.some((e) => e.op === "ADDED")).toBe(false);
+  });
+
+  test("MODIFIED with different resourceVersion (real update) is forwarded", async () => {
+    const seen: WatchClientEvent[] = [];
+    // Snapshot has E_A at resourceVersion "0". Watch sends a MODIFIED
+    // with resourceVersion "1" — a real update, NOT a snapshot replay.
+    const updatedA = { ...E_A, resourceVersion: "1" };
+    const ac = new AbortController();
+    const fetchImpl = singleWatchThenAbort(
+      { items: [E_A], listResourceVersion: "5" },
+      sse("MODIFIED", { rv: "6", kind: "Contribution", entity: updatedA }, "6"),
+      ac,
+    );
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await client.run({ onEvent: (e) => seen.push(e), signal: ac.signal });
+    const modified = seen.find((e) => e.op === "MODIFIED");
+    expect(modified).toBeDefined();
+    expect((modified?.entity as { resourceVersion: string }).resourceVersion).toBe("1");
+  });
+
+  test("DELETED for snapshot entity is forwarded (never deduped)", async () => {
+    const seen: WatchClientEvent[] = [];
+    const ac = new AbortController();
+    const fetchImpl = singleWatchThenAbort(
+      { items: [E_A], listResourceVersion: "5" },
+      sse("DELETED", { rv: "6", kind: "Contribution", entity: E_A }, "6"),
+      ac,
+    );
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await client.run({ onEvent: (e) => seen.push(e), signal: ac.signal });
+    expect(seen.some((e) => e.op === "DELETED")).toBe(true);
+  });
+
+  test("dedup window is reset on every RELIST snapshot", async () => {
+    // Round 1: snapshot has A. Round 2 (after relist): snapshot has only B
+    // (A no longer present). A subsequent ADDED for A at the SAME
+    // resourceVersion must NOT be deduped — A is not in the new window.
+    const seen: WatchClientEvent[] = [];
+    const ac = new AbortController();
+    let listCalls = 0;
+    let watchCalls = 0;
+    const fetchImpl: typeof fetch = (async (input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/api/list")) {
+        listCalls += 1;
+        const body =
+          listCalls === 1
+            ? { items: [E_A], listResourceVersion: "5" }
+            : { items: [E_B], listResourceVersion: "10" };
+        return new Response(JSON.stringify(body), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.includes("/api/watch")) {
+        watchCalls += 1;
+        if (watchCalls === 1) {
+          // First watch: 410 → triggers relist for round 2.
+          return new Response(sse("ERROR", { code: 410 }, "5"), {
+            headers: { "Content-Type": "text/event-stream" },
+          });
+        }
+        if (watchCalls === 2) {
+          // Second watch: ADDED for A. After round-2 relist, A is NOT in
+          // the snapshot window, so this must surface (no dedup).
+          return new Response(
+            sse("ADDED", { rv: "11", kind: "Contribution", entity: E_A }, "11"),
+            { headers: { "Content-Type": "text/event-stream" } },
+          );
+        }
+        ac.abort();
+        return new Response("", { headers: { "Content-Type": "text/event-stream" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as typeof fetch;
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await client.run({ onEvent: (e) => seen.push(e), signal: ac.signal });
+    const addedA = seen.find(
+      (e) => e.op === "ADDED" && (e.entity as { id: string } | null)?.id === "cid-a",
+    );
+    expect(addedA).toBeDefined();
+  });
+});
+
 describe("WatchClient terminal errors", () => {
   test("rejects on HTTP 401 from list", async () => {
     const fetchImpl = (async () =>

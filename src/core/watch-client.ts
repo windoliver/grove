@@ -64,6 +64,15 @@ export class WatchClient {
   private readonly authHeader: string;
   private readonly fetchImpl: typeof fetch;
   private readonly backoffCfg: NonNullable<WatchClientOptions["backoff"]>;
+  /**
+   * Snapshot dedup window. The /api/list handshake captures the watch RV
+   * before the store query, so a write that commits between rv-capture and
+   * list-return appears in BOTH the snapshot and the watch replay (rv >
+   * listResourceVersion). Track {entityId → resourceVersion} from the most
+   * recent RELIST so an immediately-following ADDED/MODIFIED with the same
+   * (id, rv) tuple is suppressed instead of double-delivered to the consumer.
+   */
+  private snapshotWindow = new Map<string, string>();
   /** Test-only hook called whenever the loop sleeps for `ms` after a failure. */
   onBackoff?: (ms: number) => void;
 
@@ -87,13 +96,18 @@ export class WatchClient {
       if (resumeFrom === null) {
         const list = await this.list(signal);
         const rv = BigInt(list.listResourceVersion);
+        const newWindow = new Map<string, string>();
         await onEvent({ op: "RELIST_BEGIN", rv, kind: this.kind, entity: null });
         for (const item of list.items) {
           if (signal.aborted) return;
+          newWindow.set(item.id, item.resourceVersion);
           await onEvent({ op: "RELIST", rv, kind: this.kind, entity: item });
         }
         if (signal.aborted) return;
         await onEvent({ op: "RELIST_END", rv, kind: this.kind, entity: null });
+        // Install the dedup window AFTER RELIST_END so the snapshot itself
+        // can't accidentally be deduped against itself by re-entrant code.
+        this.snapshotWindow = newWindow;
         resumeFrom = rv;
       }
       const exit = await this.streamWatch(resumeFrom, onEvent, signal);
@@ -202,13 +216,33 @@ export class WatchClient {
               return { kind: "relist" };
             }
             const rv = BigInt(payload.rv);
+            const entity = payload.entity;
+            // Snapshot-dedup: an entity that appeared in the just-completed
+            // RELIST with the same resourceVersion must not be redelivered as
+            // ADDED/MODIFIED. The race comes from the server capturing
+            // listResourceVersion *before* querying the store; a write whose
+            // hub-rv lands during the list window appears in BOTH the
+            // snapshot and the watch replay. Suppress the duplicate but
+            // still advance lastRv so the cursor reflects what the server
+            // sent. Only one duplicate is possible per (entity, snapshot),
+            // so consume the entry on first match either way.
+            const seenRv = this.snapshotWindow.get(entity.id);
+            if (seenRv !== undefined) {
+              this.snapshotWindow.delete(entity.id);
+              if (frame.event !== "DELETED" && seenRv === entity.resourceVersion) {
+                lastRv = rv;
+                observedData = true;
+                idx = buf.indexOf("\n\n");
+                continue;
+              }
+            }
             lastRv = rv;
             observedData = true;
             await onEvent({
               op: frame.event as WatchClientOp,
               rv,
               kind: this.kind,
-              entity: payload.entity,
+              entity,
             });
           } else if (frame.event === "BOOKMARK") {
             // BOOKMARK advances resume cursor without firing onEvent.
