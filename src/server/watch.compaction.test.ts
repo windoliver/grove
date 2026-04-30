@@ -202,15 +202,13 @@ describe("compaction triggers Expired (issue #293 acceptance #1)", () => {
   });
 });
 
-describe("POST /api/claims watch fan-out (renewal suppression)", () => {
-  test("repeated same-agent renewals do not advance Claim watch RV", async () => {
-    // Regression: route used to emit MODIFIED on every renewal, so a tight
-    // loop of renewals burned the watch ring and forced false 410s for
-    // legitimate watchers. With suppression, only the initial create
-    // advances Claim RV; subsequent renewals are pure lease bumps and
-    // emit no watch event.
+describe("POST /api/claims watch fan-out", () => {
+  test("renewals emit MODIFIED so watchers see lease updates", async () => {
+    // Lease state (heartbeatAt / leaseExpiresAt) is part of the Claim
+    // entity surfaced to watchers. Suppressing renewal events would let
+    // a watcher conclude an actively-renewed claim had expired.
     const { app } = createTestApp({
-      watchHubOptions: { maxEventsPerKey: 2, maxAgeMsPerKey: 60_000 },
+      watchHubOptions: { maxEventsPerKey: 100, maxAgeMsPerKey: 60_000 },
     });
     const claimBody = {
       claimId: "claim-renew-1",
@@ -218,7 +216,6 @@ describe("POST /api/claims watch fan-out (renewal suppression)", () => {
       agent: { agentId: "agent-1" },
       intentSummary: "renewal stress",
     };
-    // Helper to POST and wait for 201.
     const post = async () => {
       const r = await app.request("/api/claims", {
         method: "POST",
@@ -227,22 +224,17 @@ describe("POST /api/claims watch fan-out (renewal suppression)", () => {
       });
       expect(r.status).toBe(201);
     };
-    // First create + 4 renewals.
     await post();
     await post();
     await post();
-    await post();
-    await post();
-    // Watch metrics should show Claim RV advanced exactly once (the create).
     const metricsRes = await app.request("/api/watch/metrics", {
       headers: TEST_AUTH_HEADERS,
     });
     const metrics = (await metricsRes.json()) as MetricsResponse;
     const claimKey = metrics.keys.find((k) => k.kind === "Claim");
     expect(claimKey).toBeDefined();
-    expect(claimKey?.currentRv).toBe("1");
-    // No capacity eviction even though the per-kind cap is 2.
-    expect(claimKey?.evictedByCapacity).toBe(0);
+    // First create (revision=1) → ADDED + 2 renewals → MODIFIED. RV=3.
+    expect(claimKey?.currentRv).toBe("3");
   });
 });
 

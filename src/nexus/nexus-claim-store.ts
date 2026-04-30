@@ -216,11 +216,11 @@ export class NexusClaimStore implements ClaimStore {
       }
       this.claimCache.set(renewed.claimId, renewed);
       this.invalidateActiveClaimsCache();
-      // Renewals do not change phase: status stays "active", and only the
-      // heartbeat/lease/intentSummary fields move. Suppress the watch
-      // event so renewal traffic doesn't burn watch RVs and ring slots.
-      // Status transitions (release / complete / expireStale) emit via
-      // their own paths; lease-bump-only events are not watch-worthy.
+      // Renewals advance heartbeatAt/leaseExpiresAt — fields Claim
+      // watchers depend on to reason about lease state. Emit MODIFIED
+      // even though status stays "active": suppressing would let a
+      // watcher conclude an actively-renewed claim has expired.
+      this.publishWatch(renewed, "MODIFIED");
       return renewed;
     }
 
@@ -293,10 +293,10 @@ export class NexusClaimStore implements ClaimStore {
     await this.writeClaimCas(updated, etag);
     this.claimCache.set(updated.claimId, updated);
     this.invalidateActiveClaimsCache();
-    // Heartbeats are pure lease-bump operations: no phase change, no
-    // user-visible state mutation. Suppress watch fan-out (same rationale
-    // as the renew path); a flooded ring would force false 410s on
-    // legitimate watchers.
+    // Heartbeats advance heartbeatAt/leaseExpiresAt and watchers depend
+    // on those fields for lease-aware decisions. Same rationale as the
+    // renew path — emit MODIFIED rather than risk stale-lease bugs.
+    this.publishWatch(updated, "MODIFIED");
     return updated;
   }
 

@@ -380,6 +380,11 @@ class ListHttpError extends Error {
 
 function isTransientListError(err: unknown): boolean {
   if (err instanceof TransientListTransportError) return true;
-  if (err instanceof ListHttpError) return err.status >= 500;
+  if (err instanceof ListHttpError) {
+    // Only retry on infrastructure-class transients. 500 (generic server
+    // error) and 501 (NOT_CONFIGURED — e.g. AgentSession watcher hits
+    // an unsupported kind) are permanent: retrying would loop forever.
+    return err.status === 502 || err.status === 503 || err.status === 504;
+  }
   return false;
 }

@@ -872,6 +872,40 @@ describe("WatchClient list-phase transient failures", () => {
     expect(listCalls).toBeGreaterThanOrEqual(3);
   });
 
+  test("HTTP 501 NOT_CONFIGURED on /api/list is terminal (not retried forever)", async () => {
+    const fetchImpl = scriptedFetch([
+      { urlPattern: "/api/list", body: "", status: 501 },
+    ]);
+    const ac = new AbortController();
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await expect(client.run({ onEvent: () => undefined, signal: ac.signal })).rejects.toThrow(
+      /501|list failed/,
+    );
+  });
+
+  test("HTTP 500 on /api/list is terminal (configuration/server bug)", async () => {
+    const fetchImpl = scriptedFetch([
+      { urlPattern: "/api/list", body: "", status: 500 },
+    ]);
+    const ac = new AbortController();
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await expect(client.run({ onEvent: () => undefined, signal: ac.signal })).rejects.toThrow(
+      /500|list failed/,
+    );
+  });
+
   test("HTTP 4xx on /api/list (other than auth-style) is still terminal", async () => {
     // 400 is a server contract error — retrying would loop forever.
     const fetchImpl = scriptedFetch([

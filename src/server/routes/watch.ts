@@ -211,6 +211,23 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
           cleanup();
         };
 
+        // Wire up the request-disconnect listener BEFORE subscribing.
+        // AbortSignal listeners are not retroactive — registering after
+        // hub.subscribe() leaves a window where the client can disconnect
+        // and the subscription/timer would leak until later overflow or
+        // process exit.
+        const reqSignal = c.req.raw.signal;
+        if (reqSignal.aborted) {
+          // Already disconnected before we got here. Don't subscribe.
+          cleanup();
+          return;
+        }
+        const onReqAbort = (): void => {
+          reqSignal.removeEventListener("abort", onReqAbort);
+          cleanup();
+        };
+        reqSignal.addEventListener("abort", onReqAbort, { once: true });
+
         let iterable: AsyncIterable<WatchEvent>;
         try {
           iterable = hub.subscribe(namespace, kind as WatchKind, fromRv, ac.signal);
@@ -277,9 +294,6 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
             }
           }
         })();
-
-        // Abort when the client disconnects.
-        c.req.raw.signal.addEventListener("abort", cleanup);
       },
       cancel() {
         // Reader cancel (response body cancelled) — release the hub
