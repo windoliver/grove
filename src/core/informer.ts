@@ -34,6 +34,7 @@ export class Informer<K extends WatchKind = WatchKind> {
   private readonly handlers: Array<EventHandlerFn<K>> = [];
   private _synced = false;
   private staging: Map<string, EntityForKind<K>> | null = null;
+  private _running = false;
 
   constructor(opts: WatchClientOptions) {
     this.clientOpts = opts;
@@ -56,8 +57,18 @@ export class Informer<K extends WatchKind = WatchKind> {
   }
 
   async run(signal: AbortSignal): Promise<void> {
-    const client = new WatchClient(this.clientOpts);
-    await client.run({ onEvent: (e) => this.onEvent(e), signal });
+    if (this._running) {
+      throw new Error(
+        "Informer.run() called while already running; only one concurrent run is allowed",
+      );
+    }
+    this._running = true;
+    try {
+      const client = new WatchClient(this.clientOpts);
+      await client.run({ onEvent: (e) => this.onEvent(e), signal });
+    } finally {
+      this._running = false;
+    }
   }
 
   private onEvent(e: WatchClientEvent): void {
@@ -139,7 +150,11 @@ export class Informer<K extends WatchKind = WatchKind> {
 
   private dispatch(op: InformerOp, entity: EntityForKind<K>): void {
     for (const handler of this.handlers) {
-      handler(op, entity);
+      try {
+        handler(op, entity);
+      } catch (err) {
+        console.error("Informer: event handler threw, continuing fanout:", err);
+      }
     }
   }
 }

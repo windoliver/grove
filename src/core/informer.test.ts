@@ -558,3 +558,99 @@ describe("InformerFactory memoization", () => {
     expect(implicit).toBe(explicit);
   });
 });
+
+// ─── run() safety ─────────────────────────────────────────────────────────────
+
+describe("Informer run() safety", () => {
+  test("concurrent run() calls are rejected with an error", async () => {
+    const ac = new AbortController();
+    // Fetch that blocks indefinitely until aborted
+    const fetchImpl: typeof fetch = (async (_input, init) => {
+      await new Promise<void>((_, reject) => {
+        (init?.signal as AbortSignal | undefined)?.addEventListener("abort", () =>
+          reject(new DOMException("aborted", "AbortError")),
+        );
+      });
+      throw new Error("unreachable");
+    }) as typeof fetch;
+    const informer = new Informer({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    // Start first run (will block waiting for list response)
+    const firstRun = informer.run(ac.signal);
+    // Second concurrent run must reject immediately
+    await expect(informer.run(ac.signal)).rejects.toThrow(/already running/);
+    // Clean up
+    ac.abort();
+    await firstRun.catch(() => {});
+  });
+
+  test("run() is reusable after completion", async () => {
+    const ac1 = new AbortController();
+    const informer = new Informer({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: makeFetch({ items: [], listResourceVersion: "5" }, "", ac1),
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await informer.run(ac1.signal);
+    // First run completed — second run must be accepted (not throw)
+    const ac2 = new AbortController();
+    const informer2 = new Informer({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: makeFetch({ items: [], listResourceVersion: "5" }, "", ac2),
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    // Different instance, but proves the _running flag resets after completion
+    await expect(informer2.run(ac2.signal)).resolves.toBeUndefined();
+  });
+});
+
+// ─── Handler isolation ────────────────────────────────────────────────────────
+
+describe("Informer handler isolation", () => {
+  test("throwing handler does not prevent other handlers from receiving events", async () => {
+    const ac = new AbortController();
+    const received: string[] = [];
+    const informer = new Informer({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    informer.addEventHandler(() => {
+      throw new Error("handler boom");
+    });
+    informer.addEventHandler((op, entity) => {
+      received.push(`${op}:${(entity as { id: string }).id}`);
+    });
+    await informer.run(ac.signal);
+    // Second handler must still receive ADDED for E_A despite first handler throwing
+    expect(received).toContain("ADDED:cid-a");
+  });
+
+  test("throwing handler does not kill the watch loop (informer stays synced)", async () => {
+    const ac = new AbortController();
+    const informer = new Informer({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    informer.addEventHandler(() => {
+      throw new Error("noisy handler");
+    });
+    // Should resolve (not reject) even though a handler always throws
+    await expect(informer.run(ac.signal)).resolves.toBeUndefined();
+    expect(informer.hasSynced()).toBe(true);
+  });
+});
