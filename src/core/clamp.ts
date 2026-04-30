@@ -28,9 +28,7 @@ export function clampInt({
   }
   const n = Number.parseInt(raw, 10);
   if (n < min || n > max) {
-    warn(
-      `${name}=${n} is outside [${min}, ${max}]; using fallback ${fallback}`,
-    );
+    warn(`${name}=${n} is outside [${min}, ${max}]; using fallback ${fallback}`);
     return fallback;
   }
   return n;

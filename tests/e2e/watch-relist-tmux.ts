@@ -17,14 +17,7 @@
  */
 
 import { execSync, spawnSync } from "node:child_process";
-import {
-  existsSync,
-  mkdtempSync,
-  mkdirSync,
-  rmSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -300,12 +293,18 @@ async function main() {
   spawnSync(
     "tmux",
     [
-      "-L", SOCKET,
-      "new-session", "-d",
-      "-s", SESSION,
-      "-x", "220",
-      "-y", "50",
-      "sh", "-c",
+      "-L",
+      SOCKET,
+      "new-session",
+      "-d",
+      "-s",
+      SESSION,
+      "-x",
+      "220",
+      "-y",
+      "50",
+      "sh",
+      "-c",
       // GROVE_WATCH_MAX_EVENTS=2 matches the unit test sizing:
       // after 2 events in the ring, a write evicts the oldest.
       // Writing 5 events while paused guarantees oldestRv > lastSeenRv.
@@ -335,10 +334,14 @@ async function main() {
   spawnSync(
     "tmux",
     [
-      "-L", SOCKET,
-      "split-window", "-t", SESSION,
+      "-L",
+      SOCKET,
+      "split-window",
+      "-t",
+      SESSION,
       "-h",
-      "sh", "-c",
+      "sh",
+      "-c",
       [
         `GROVE_BASE_URL=${baseUrl}`,
         `GROVE_TOKEN=${token}`,
@@ -393,7 +396,9 @@ async function main() {
       throw new Error(`POST /api/contributions failed (${res.status}): ${text}`);
     }
     const json = await res.json();
-    console.log(`[driver] posted ${summary} → cid=${(json as { cid?: string }).cid?.slice(0, 16)}...`);
+    console.log(
+      `[driver] posted ${summary} → cid=${(json as { cid?: string }).cid?.slice(0, 16)}...`,
+    );
   }
 
   // 8. POST m1

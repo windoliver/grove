@@ -35,8 +35,8 @@ import type { ServerDeps } from "./deps.js";
 import { loadKeyRegistry } from "./middleware/namespace-auth.js";
 import { SessionService } from "./session-service.js";
 import { memoizeContributionStoreForSession } from "./session-store-factory.js";
-import { createWsHandler } from "./ws-handler.js";
 import { resolveWatchHubConfig } from "./watch-hub-config.js";
+import { createWsHandler } from "./ws-handler.js";
 
 const GROVE_DIR = process.env.GROVE_DIR ?? join(process.cwd(), ".grove");
 const PORT = parsePort(process.env.PORT, 4515);

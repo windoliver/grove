@@ -467,10 +467,7 @@ describe("WatchClient relist boundary invariant", () => {
   test("abort during a RELIST item emits RELIST_ABORTED (not END)", async () => {
     const seen: WatchClientEvent[] = [];
     const ac = new AbortController();
-    const fetchImpl = makeFetch(
-      { items: [E_X, E_X, E_X], listResourceVersion: "5" },
-      [],
-    );
+    const fetchImpl = makeFetch({ items: [E_X, E_X, E_X], listResourceVersion: "5" }, []);
     const client = new WatchClient({
       baseUrl: "http://t",
       kind: "Contribution",
@@ -494,10 +491,7 @@ describe("WatchClient relist boundary invariant", () => {
 
   test("throw inside a RELIST item emits RELIST_ABORTED", async () => {
     const seen: WatchClientEvent[] = [];
-    const fetchImpl = makeFetch(
-      { items: [E_X, E_X], listResourceVersion: "5" },
-      [],
-    );
+    const fetchImpl = makeFetch({ items: [E_X, E_X], listResourceVersion: "5" }, []);
     const ac = new AbortController();
     const client = new WatchClient({
       baseUrl: "http://t",
@@ -798,10 +792,9 @@ describe("WatchClient snapshot dedup (list/watch race)", () => {
         if (watchCalls === 2) {
           // Second watch: ADDED for A. After round-2 relist, A is NOT in
           // the snapshot window, so this must surface (no dedup).
-          return new Response(
-            sse("ADDED", { rv: "11", kind: "Contribution", entity: E_A }, "11"),
-            { headers: { "Content-Type": "text/event-stream" } },
-          );
+          return new Response(sse("ADDED", { rv: "11", kind: "Contribution", entity: E_A }, "11"), {
+            headers: { "Content-Type": "text/event-stream" },
+          });
         }
         ac.abort();
         return new Response("", { headers: { "Content-Type": "text/event-stream" } });
@@ -959,9 +952,7 @@ describe("WatchClient list-phase transient failures", () => {
   });
 
   test("HTTP 501 NOT_CONFIGURED on /api/list is terminal (not retried forever)", async () => {
-    const fetchImpl = scriptedFetch([
-      { urlPattern: "/api/list", body: "", status: 501 },
-    ]);
+    const fetchImpl = scriptedFetch([{ urlPattern: "/api/list", body: "", status: 501 }]);
     const ac = new AbortController();
     const client = new WatchClient({
       baseUrl: "http://t",
@@ -976,9 +967,7 @@ describe("WatchClient list-phase transient failures", () => {
   });
 
   test("HTTP 500 on /api/list is terminal (configuration/server bug)", async () => {
-    const fetchImpl = scriptedFetch([
-      { urlPattern: "/api/list", body: "", status: 500 },
-    ]);
+    const fetchImpl = scriptedFetch([{ urlPattern: "/api/list", body: "", status: 500 }]);
     const ac = new AbortController();
     const client = new WatchClient({
       baseUrl: "http://t",
@@ -994,9 +983,7 @@ describe("WatchClient list-phase transient failures", () => {
 
   test("HTTP 4xx on /api/list (other than auth-style) is still terminal", async () => {
     // 400 is a server contract error — retrying would loop forever.
-    const fetchImpl = scriptedFetch([
-      { urlPattern: "/api/list", body: "", status: 400 },
-    ]);
+    const fetchImpl = scriptedFetch([{ urlPattern: "/api/list", body: "", status: 400 }]);
     const ac = new AbortController();
     const client = new WatchClient({
       baseUrl: "http://t",

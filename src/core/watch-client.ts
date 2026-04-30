@@ -129,7 +129,7 @@ export class WatchClient {
         // commit on RELIST_END and rollback on RELIST_ABORTED without
         // ambiguity.
         let relistOpen = false;
-        let primaryError: unknown = undefined;
+        let primaryError: unknown;
         try {
           await onEvent({ op: "RELIST_BEGIN", rv, kind: this.kind, entity: null });
           relistOpen = true;

@@ -236,9 +236,7 @@ describe("PATCH /api/claims/:id heartbeat watch fan-out", () => {
     const events = await readSseEvents(watchRes, 1, 1_000);
     const modified = events.find((e) => e.event === "MODIFIED");
     expect(modified).toBeDefined();
-    expect(
-      (modified?.data as { entity: { id: string } }).entity.id,
-    ).toBe(claimBody.claimId);
+    expect((modified?.data as { entity: { id: string } }).entity.id).toBe(claimBody.claimId);
   });
 });
 
