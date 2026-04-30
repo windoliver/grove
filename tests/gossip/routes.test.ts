@@ -8,9 +8,13 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DefaultFrontierCalculator } from "../../src/core/frontier.js";
 import type {
+  FrontierDigestEntry,
+  GossipEventListener,
   GossipMessage,
+  GossipService,
   GossipTransport,
   PeerInfo,
+  PeerLiveness,
   ShuffleRequest,
   ShuffleResponse,
 } from "../../src/core/gossip/types.js";
@@ -50,6 +54,79 @@ class NoOpTransport implements GossipTransport {
   async shuffle(_peer: PeerInfo, _request: ShuffleRequest): Promise<ShuffleResponse> {
     return { offered: [] };
   }
+}
+
+class CapturingGossipService implements GossipService {
+  lastExchange: GossipMessage | undefined;
+  lastShuffle: ShuffleRequest | undefined;
+
+  start(): void {
+    /* expected */
+  }
+
+  async stop(): Promise<void> {
+    /* expected */
+  }
+
+  async handleExchange(message: GossipMessage): Promise<GossipMessage> {
+    this.lastExchange = message;
+    return this.currentMessage();
+  }
+
+  handleShuffle(request: ShuffleRequest): ShuffleResponse {
+    this.lastShuffle = request;
+    return { offered: [] };
+  }
+
+  peers(): readonly PeerInfo[] {
+    return [];
+  }
+
+  liveness(): readonly PeerLiveness[] {
+    return [];
+  }
+
+  async currentMessage(): Promise<GossipMessage> {
+    return {
+      peerId: "capture-server",
+      frontier: [],
+      load: { queueDepth: 0 },
+      capabilities: {},
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  mergedFrontier(): readonly FrontierDigestEntry[] {
+    return [];
+  }
+
+  on(_listener: GossipEventListener): void {
+    /* expected */
+  }
+
+  off(_listener: GossipEventListener): void {
+    /* expected */
+  }
+}
+
+function appWithGossip(
+  gossip: GossipService,
+  hmacSecret = TEST_HMAC_SECRET,
+): ReturnType<typeof createApp> {
+  const contributionStore = new InMemoryContributionStore();
+  const claimStore = new InMemoryClaimStore();
+  const cas = new InMemoryContentStore();
+  const frontier = new DefaultFrontierCalculator(contributionStore);
+
+  const deps: ServerDeps = {
+    contributionStore,
+    claimStore,
+    cas,
+    frontier,
+    gossip,
+    gossipHmacSecret: hmacSecret,
+  };
+  return createApp(deps, TEST_REGISTRY);
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +290,123 @@ describe("POST /api/gossip/exchange", () => {
     });
     expect(res.status).toBe(400);
   });
+
+  it("preserves signed protocol fields before handing exchange to the service", async () => {
+    const capture = new CapturingGossipService();
+    const app = appWithGossip(capture);
+
+    const payload = {
+      peerId: "incoming-peer",
+      address: "http://incoming-peer:4515",
+      frontier: [
+        {
+          metric: "loss",
+          value: 0.03,
+          cid: "blake3:abc123",
+          tags: ["eval"],
+          direction: "minimize",
+        },
+      ],
+      load: { queueDepth: 2 },
+      capabilities: { platform: "H100" },
+      timestamp: new Date().toISOString(),
+      agentCapacity: { totalSlots: 4, usedSlots: 2, freeSlots: 2 },
+    };
+    const signedPayload = signGossipPayload(payload);
+
+    const res = await app.request("/api/gossip/exchange", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(signedPayload),
+    });
+
+    expect(res.status).toBe(200);
+    expect(capture.lastExchange?.hmacSignature).toBe(signedPayload.hmacSignature);
+    expect(capture.lastExchange?.agentCapacity?.freeSlots).toBe(2);
+    expect(capture.lastExchange?.frontier[0]?.direction).toBe("minimize");
+  });
+
+  it("accepts a signed HMAC exchange after route validation", async () => {
+    const secret = "shared-secret";
+    const targetStore = new InMemoryContributionStore();
+    const targetService = new DefaultGossipService({
+      config: {
+        peerId: "target-server",
+        address: "http://target:4515",
+        seedPeers: [],
+        hmacSecret: secret,
+      },
+      transport: new NoOpTransport(),
+      frontier: new DefaultFrontierCalculator(targetStore),
+    });
+    const remoteService = new DefaultGossipService({
+      config: {
+        peerId: "remote-server",
+        address: "http://remote:4515",
+        seedPeers: [],
+        hmacSecret: secret,
+      },
+      transport: new NoOpTransport(),
+      frontier: new DefaultFrontierCalculator(new InMemoryContributionStore()),
+    });
+    const app = appWithGossip(targetService, secret);
+    const signedMessage = await remoteService.currentMessage();
+
+    const res = await app.request("/api/gossip/exchange", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(signedMessage),
+    });
+
+    expect(res.status).toBe(200);
+    expect(targetService.peers().map((p) => p.peerId)).toContain("remote-server");
+  });
+
+  it("preserves minimize direction when merging frontier digests through the route", async () => {
+    const service = new DefaultGossipService({
+      config: {
+        peerId: "target-server",
+        address: "http://target:4515",
+        seedPeers: [],
+        hmacSecret: TEST_HMAC_SECRET,
+      },
+      transport: new NoOpTransport(),
+      frontier: new DefaultFrontierCalculator(new InMemoryContributionStore()),
+    });
+    const app = appWithGossip(service);
+    const cid = "blake3:same";
+    const baseTimestamp = Date.now();
+
+    for (const [index, value] of [0.03, 0.05].entries()) {
+      const res = await app.request("/api/gossip/exchange", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          signGossipPayload({
+            peerId: "incoming-peer",
+            address: "http://incoming-peer:4515",
+            frontier: [{ metric: "loss", value, cid, direction: "minimize" }],
+            load: { queueDepth: 0 },
+            capabilities: {},
+            timestamp: new Date(baseTimestamp + index).toISOString(),
+          }),
+        ),
+      });
+      expect(res.status).toBe(200);
+    }
+
+    const frontierRes = await app.request("/api/gossip/frontier", { headers: TEST_AUTH_HEADERS });
+    expect(frontierRes.status).toBe(200);
+    const data = (await frontierRes.json()) as {
+      entries: readonly { metric: string; cid: string; value: number; direction?: string }[];
+    };
+    expect(data.entries).toContainEqual({
+      metric: "loss",
+      cid,
+      value: 0.03,
+      direction: "minimize",
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -255,6 +449,31 @@ describe("POST /api/gossip/shuffle", () => {
       body: JSON.stringify({ offered: [] }),
     });
     expect(res.status).toBe(400);
+  });
+
+  it("preserves HMAC signatures before handing shuffle to the service", async () => {
+    const capture = new CapturingGossipService();
+    const app = appWithGossip(capture);
+
+    const payload = {
+      sender: {
+        peerId: "shuffle-peer",
+        address: "http://shuffle-peer:4515",
+        age: 0,
+        lastSeen: new Date().toISOString(),
+      },
+      offered: [],
+    };
+    const signedPayload = signGossipPayload(payload);
+
+    const res = await app.request("/api/gossip/shuffle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(signedPayload),
+    });
+
+    expect(res.status).toBe(200);
+    expect(capture.lastShuffle?.hmacSignature).toBe(signedPayload.hmacSignature);
   });
 });
 

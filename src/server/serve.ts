@@ -11,6 +11,8 @@
 
 import { join } from "node:path";
 import { claimToEntity, contributionToEntity } from "../core/entity.js";
+import type { FrontierCalculator } from "../core/frontier.js";
+import { SessionAggregatingFrontierCalculator } from "../core/frontier.js";
 import type { GossipService } from "../core/gossip/types.js";
 import { LocalEventBus } from "../core/local-event-bus.js";
 import { readProjectId } from "../core/project-id.js";
@@ -25,6 +27,7 @@ import {
 import { TmuxRuntime } from "../core/tmux-runtime.js";
 import type { WatchEntity, WatchKind } from "../core/watch-events.js";
 import { WatchHub } from "../core/watch-hub.js";
+import { CachedFrontierCalculator } from "../gossip/cached-frontier.js";
 import { HttpGossipTransport } from "../gossip/http-transport.js";
 import { DefaultGossipService } from "../gossip/protocol.js";
 import { createLocalRuntime } from "../local/runtime.js";
@@ -98,7 +101,7 @@ let serverOutcomeStore: import("../core/outcome.js").OutcomeStore | undefined =
   runtime.outcomeStore;
 let serverBountyStore: import("../core/bounty-store.js").BountyStore = runtime.bountyStore;
 let serverCas: import("../core/cas.js").ContentStore = runtime.cas;
-const serverFrontier: import("../core/frontier.js").FrontierCalculator = runtime.frontier;
+let serverFrontier: FrontierCalculator = runtime.frontier;
 
 // In Nexus mode, contributions are stored at session-scoped VFS paths
 // (/zones/{zoneId}/sessions/{sessionId}/contributions/). A process-global
@@ -189,23 +192,6 @@ if (registry.size === 0) {
   );
 }
 
-if (seedPeers.length > 0) {
-  const allowPrivateIPs = process.env.GROVE_GOSSIP_ALLOW_PRIVATE_IPS === "true";
-  // Use HMAC (not bearer token) for peer-to-peer auth — namespace API keys must never be sent to peers.
-  const transport = new HttpGossipTransport({ allowPrivateIPs, hmacSecret: gossipHmacSecret });
-  gossipService = new DefaultGossipService({
-    config: {
-      peerId,
-      address: peerAddress,
-      seedPeers: [...seedPeers],
-      hmacSecret: gossipHmacSecret,
-    },
-    transport,
-    frontier: runtime.frontier,
-    getLoad: () => ({ queueDepth: 0 }),
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Watch protocol (#292)
 // ---------------------------------------------------------------------------
@@ -224,6 +210,7 @@ if (nexusUrl) {
   const { NexusBountyStore } = await import("../nexus/nexus-bounty-store.js");
   const { NexusOutcomeStore } = await import("../nexus/nexus-outcome-store.js");
   const { NexusCas } = await import("../nexus/nexus-cas.js");
+  const { NexusSessionStore } = await import("../nexus/nexus-session-store.js");
   const { NexusWatchPublisher } = await import("../nexus/nexus-watch-publisher.js");
 
   const nexusClient = new NexusHttpClient({
@@ -277,7 +264,8 @@ if (nexusUrl) {
   serverBountyStore = new NexusBountyStore({ client: nexusClient, zoneId });
   serverOutcomeStore = new NexusOutcomeStore({ client: nexusClient, zoneId });
   serverCas = new NexusCas({ client: nexusClient, zoneId });
-  contributionStoreForSessionFactory = memoizeContributionStoreForSession(
+  const nexusSessionStore = new NexusSessionStore(nexusClient, zoneId);
+  const nexusContributionStoreForSession = memoizeContributionStoreForSession(
     (sessionId: string) =>
       new NexusContributionStore({
         client: nexusClient,
@@ -286,7 +274,35 @@ if (nexusUrl) {
         watchPublisher,
       }),
   );
+  contributionStoreForSessionFactory = nexusContributionStoreForSession;
+  serverFrontier = new CachedFrontierCalculator(
+    new SessionAggregatingFrontierCalculator({
+      rootStore: serverContributionStore,
+      listSessionIds: async () =>
+        (await nexusSessionStore.listSessions({ includeArchived: true })).map(
+          (session) => session.id,
+        ),
+      storeForSession: nexusContributionStoreForSession,
+    }),
+  );
   console.log(`grove-server: using Nexus stores at ${nexusUrl} (zone=${zoneId})`);
+}
+
+if (seedPeers.length > 0) {
+  const allowPrivateIPs = process.env.GROVE_GOSSIP_ALLOW_PRIVATE_IPS === "true";
+  // Use HMAC (not bearer token) for peer-to-peer auth — namespace API keys must never be sent to peers.
+  const transport = new HttpGossipTransport({ allowPrivateIPs, hmacSecret: gossipHmacSecret });
+  gossipService = new DefaultGossipService({
+    config: {
+      peerId,
+      address: peerAddress,
+      seedPeers: [...seedPeers],
+      hmacSecret: gossipHmacSecret,
+    },
+    transport,
+    frontier: serverFrontier,
+    getLoad: () => ({ queueDepth: 0 }),
+  });
 }
 
 // Per-request session-scoped handoff store factory. The HTTP handoff
