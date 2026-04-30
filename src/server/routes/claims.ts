@@ -80,27 +80,29 @@ claims.post("/", zValidator("json", createBodySchema), async (c) => {
   const result = await claimStore.claimOrRenew(claim);
 
   // Watch fan-out (#292). Direct store path bypasses the operations layer
-  // so we record + markSeen here. Derive ADDED vs MODIFIED from the
-  // store's atomic revision counter — pre-reading `existing` outside the
-  // store transaction is racy: two concurrent same-agent renewals can
-  // both observe no existing claim and both emit ADDED for one logical
-  // claim. The store guarantees revision === 1 on first create and
-  // revision > 1 on every renewal, regardless of concurrency.
-  const op: "ADDED" | "MODIFIED" = (result.revision ?? 1) === 1 ? "ADDED" : "MODIFIED";
-  const entity = claimToEntity(result, () => Date.now(), namespace);
-  try {
-    watchHub.recordWrite({ kind: "Claim", namespace, op, entity });
-    watchSubscriber?.markSeen({
-      kind: "Claim",
-      entityId: result.claimId,
-      generation: entity.metadata.generation,
-    });
-  } catch (err) {
-    process.stderr.write(
-      `[grove] Warning: watch fan-out threw after POST /api/claims: ${
-        err instanceof Error ? err.message : String(err)
-      }\n`,
-    );
+  // so we record + markSeen here. Only emit on the first create (revision
+  // === 1). claimOrRenew never changes status via this path — renewals
+  // (revision > 1) keep status "active" and would otherwise burn watch
+  // RVs and ring-buffer slots, forcing false 410s under normal lease
+  // renewal traffic. Status transitions (release/complete/expire) flow
+  // through their own handlers which emit independently.
+  const isCreate = (result.revision ?? 1) === 1;
+  if (isCreate) {
+    const entity = claimToEntity(result, () => Date.now(), namespace);
+    try {
+      watchHub.recordWrite({ kind: "Claim", namespace, op: "ADDED", entity });
+      watchSubscriber?.markSeen({
+        kind: "Claim",
+        entityId: result.claimId,
+        generation: entity.metadata.generation,
+      });
+    } catch (err) {
+      process.stderr.write(
+        `[grove] Warning: watch fan-out threw after POST /api/claims: ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
+    }
   }
 
   return c.json(result, 201);

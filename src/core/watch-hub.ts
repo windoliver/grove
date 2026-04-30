@@ -116,12 +116,23 @@ export class WatchHub {
       kind,
       queue: [...replay],
       pending: null,
-      closed: false,
+      // Pre-aborted signals never fire their listener (AbortSignal does
+      // not invoke retroactively), so a subscriber registered against an
+      // already-aborted signal would be stuck in subscribersByKey forever
+      // and continue to consume fan-out from every future write. Set
+      // `closed` up front so the next() loop terminates immediately and
+      // the subscriber is never registered on the live set.
+      closed: signal.aborted,
       overflow: false,
     };
-    this.subscribersFor(key).add(subscriber);
-
-    signal.addEventListener("abort", () => this.closeSubscriber(key, subscriber));
+    if (!signal.aborted) {
+      this.subscribersFor(key).add(subscriber);
+      const onAbort = (): void => {
+        signal.removeEventListener("abort", onAbort);
+        this.closeSubscriber(key, subscriber);
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
 
     return {
       [Symbol.asyncIterator]: () => ({

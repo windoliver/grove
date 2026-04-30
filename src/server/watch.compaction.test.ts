@@ -202,6 +202,50 @@ describe("compaction triggers Expired (issue #293 acceptance #1)", () => {
   });
 });
 
+describe("POST /api/claims watch fan-out (renewal suppression)", () => {
+  test("repeated same-agent renewals do not advance Claim watch RV", async () => {
+    // Regression: route used to emit MODIFIED on every renewal, so a tight
+    // loop of renewals burned the watch ring and forced false 410s for
+    // legitimate watchers. With suppression, only the initial create
+    // advances Claim RV; subsequent renewals are pure lease bumps and
+    // emit no watch event.
+    const { app } = createTestApp({
+      watchHubOptions: { maxEventsPerKey: 2, maxAgeMsPerKey: 60_000 },
+    });
+    const claimBody = {
+      claimId: "claim-renew-1",
+      targetRef: "task-x",
+      agent: { agentId: "agent-1" },
+      intentSummary: "renewal stress",
+    };
+    // Helper to POST and wait for 201.
+    const post = async () => {
+      const r = await app.request("/api/claims", {
+        method: "POST",
+        headers: { ...TEST_AUTH_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify(claimBody),
+      });
+      expect(r.status).toBe(201);
+    };
+    // First create + 4 renewals.
+    await post();
+    await post();
+    await post();
+    await post();
+    await post();
+    // Watch metrics should show Claim RV advanced exactly once (the create).
+    const metricsRes = await app.request("/api/watch/metrics", {
+      headers: TEST_AUTH_HEADERS,
+    });
+    const metrics = (await metricsRes.json()) as MetricsResponse;
+    const claimKey = metrics.keys.find((k) => k.kind === "Claim");
+    expect(claimKey).toBeDefined();
+    expect(claimKey?.currentRv).toBe("1");
+    // No capacity eviction even though the per-kind cap is 2.
+    expect(claimKey?.evictedByCapacity).toBe(0);
+  });
+});
+
 describe("watch route overflow path delivers terminal ERROR", () => {
   test("byte-overflow at route level still emits ERROR{code:503} (regression)", async () => {
     // Regression: closeWithError() previously routed through send() which
