@@ -741,6 +741,45 @@ describe("Informer handler isolation", () => {
     await expect(informer.run(ac.signal)).resolves.toBeUndefined();
     expect(h2Events).toContain("ADDED:cid-a");
   });
+
+  test("slow async handler delays next event delivery (serialized fanout)", async () => {
+    // WatchClient's per-event ordering guarantee extends through informer fanout:
+    // the second event must not be delivered before the first handler settles.
+    const ac = new AbortController();
+    const order: string[] = [];
+    let resolveFirst: (() => void) | undefined;
+
+    const informer = new Informer({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: makeFetch(
+        { items: [], listResourceVersion: "5" },
+        `${sse("ADDED", { rv: "6", kind: "Contribution", entity: E_A }, "6")}${sse("ADDED", { rv: "7", kind: "Contribution", entity: E_B }, "7")}`,
+        ac,
+      ),
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    informer.addEventHandler(async (op, entity) => {
+      order.push(`enter:${(entity as { id: string }).id}`);
+      if ((entity as { id: string }).id === "cid-a") {
+        await new Promise<void>((r) => {
+          resolveFirst = r;
+        });
+      }
+      order.push(`exit:${(entity as { id: string }).id}`);
+      if ((entity as { id: string }).id === "cid-b") ac.abort();
+    });
+
+    const running = informer.run(ac.signal);
+    // Give the loop a tick to enter handler for cid-a
+    await new Promise((r) => setTimeout(r, 20));
+    // cid-b must not have been entered yet (handler for cid-a still blocking)
+    expect(order).toEqual(["enter:cid-a"]);
+    resolveFirst?.();
+    await running;
+    expect(order).toEqual(["enter:cid-a", "exit:cid-a", "enter:cid-b", "exit:cid-b"]);
+  });
 });
 
 // ─── Cache immutability ───────────────────────────────────────────────────────

@@ -81,7 +81,7 @@ export class Informer<K extends WatchKind = WatchKind> {
     }
   }
 
-  private onEvent(e: WatchClientEvent): void {
+  private async onEvent(e: WatchClientEvent): Promise<void> {
     switch (e.op) {
       case "RELIST_BEGIN":
         this.staging = new Map();
@@ -96,7 +96,7 @@ export class Informer<K extends WatchKind = WatchKind> {
       case "RELIST_END":
         if (!this.staging) break;
         this._synced = true;
-        this.commitReplace(this.staging);
+        await this.commitReplace(this.staging);
         this.staging = null;
         break;
 
@@ -108,7 +108,7 @@ export class Informer<K extends WatchKind = WatchKind> {
         if (e.entity) {
           const entity = freeze(e.entity as EntityForKind<K>);
           this.store.set(entity.id, entity);
-          this.dispatch("ADDED", entity);
+          await this.dispatch("ADDED", entity);
         }
         break;
 
@@ -116,7 +116,7 @@ export class Informer<K extends WatchKind = WatchKind> {
         if (e.entity) {
           const entity = freeze(e.entity as EntityForKind<K>);
           this.store.set(entity.id, entity);
-          this.dispatch("MODIFIED", entity);
+          await this.dispatch("MODIFIED", entity);
         }
         break;
 
@@ -124,13 +124,13 @@ export class Informer<K extends WatchKind = WatchKind> {
         if (e.entity) {
           const entity = freeze(e.entity as EntityForKind<K>);
           this.store.delete(entity.id);
-          this.dispatch("DELETED", entity);
+          await this.dispatch("DELETED", entity);
         }
         break;
     }
   }
 
-  private commitReplace(incoming: Map<string, EntityForKind<K>>): void {
+  private async commitReplace(incoming: Map<string, EntityForKind<K>>): Promise<void> {
     const deleted: Array<EntityForKind<K>> = [];
     const added: Array<EntityForKind<K>> = [];
     const modified: Array<EntityForKind<K>> = [];
@@ -153,27 +153,22 @@ export class Informer<K extends WatchKind = WatchKind> {
       this.store.set(id, entity);
     }
 
-    for (const e of deleted) this.dispatch("DELETED", e);
-    for (const e of added) this.dispatch("ADDED", e);
-    for (const e of modified) this.dispatch("MODIFIED", e);
+    for (const e of deleted) await this.dispatch("DELETED", e);
+    for (const e of added) await this.dispatch("ADDED", e);
+    for (const e of modified) await this.dispatch("MODIFIED", e);
   }
 
-  private dispatch(op: InformerOp, entity: EntityForKind<K>): void {
+  private async dispatch(op: InformerOp, entity: EntityForKind<K>): Promise<void> {
     // Snapshot before iterating so a handler that calls its own unsubscribe
     // (which splices the live array) does not cause the next handler to be
     // skipped by the iterator advancing past the shifted index.
+    // Handlers are awaited sequentially so WatchClient's per-event serialization
+    // extends through the full fanout chain — a slow handler blocks the next event.
     for (const handler of [...this.handlers]) {
       try {
-        const result = handler(op, entity);
-        if (result instanceof Promise) {
-          // Async handler: catch rejection so it doesn't become an unhandled
-          // promise rejection while still logging the failure for diagnosis.
-          result.catch((err) => {
-            console.error("Informer: async event handler rejected:", err);
-          });
-        }
+        await Promise.resolve(handler(op, entity));
       } catch (err) {
-        console.error("Informer: event handler threw, continuing fanout:", err);
+        console.error("Informer: event handler threw or rejected, continuing fanout:", err);
       }
     }
   }
