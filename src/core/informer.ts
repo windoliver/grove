@@ -2,8 +2,8 @@
  * Informer<K> — K8s-informer-style local cache with event fanout (#294).
  *
  * Wraps WatchClient to maintain a Map<id, Entity> that tracks server state
- * via the list→watch handshake. Subscribers share one WatchClient per
- * (kind, namespace) via InformerFactory.
+ * via the list→watch handshake. One Informer per kind is shared across all
+ * subscribers via InformerFactory.
  *
  * HasSynced() returns true only after the first RELIST_END so the TUI can
  * gate first render on a fully-populated cache (no empty-flash).
@@ -40,8 +40,18 @@ export class Informer<K extends WatchKind = WatchKind> {
     this.clientOpts = opts;
   }
 
-  addEventHandler(fn: EventHandlerFn<K>): void {
+  /**
+   * Register an event handler. Returns an unsubscribe function — call it to
+   * stop the handler from receiving further events (e.g. when a TUI panel
+   * unmounts). Stale handlers that throw are isolated but still waste memory
+   * and CPU, so always call the returned cleanup.
+   */
+  addEventHandler(fn: EventHandlerFn<K>): () => void {
     this.handlers.push(fn);
+    return () => {
+      const idx = this.handlers.indexOf(fn);
+      if (idx >= 0) this.handlers.splice(idx, 1);
+    };
   }
 
   hasSynced(): boolean {
@@ -166,18 +176,23 @@ export interface InformerFactoryOptions {
   readonly backoff?: WatchClientOptions["backoff"];
 }
 
+/**
+ * InformerFactory memoizes one Informer per kind for a single namespace
+ * scope (the namespace is encoded in `authHeader` via the server's auth
+ * middleware). For multiple namespaces, create one factory per namespace
+ * with the corresponding auth credentials.
+ */
 export class InformerFactory {
   private readonly opts: InformerFactoryOptions;
-  // key: `${kind}:${namespace}`
+  // key: kind string
   private readonly informers = new Map<string, Informer>();
 
   constructor(opts: InformerFactoryOptions) {
     this.opts = opts;
   }
 
-  informerFor<K extends WatchKind>(kind: K, namespace = "default"): Informer<K> {
-    const key = `${kind}:${namespace}`;
-    let informer = this.informers.get(key) as Informer<K> | undefined;
+  informerFor<K extends WatchKind>(kind: K): Informer<K> {
+    let informer = this.informers.get(kind) as Informer<K> | undefined;
     if (!informer) {
       informer = new Informer<K>({
         baseUrl: this.opts.baseUrl,
@@ -186,7 +201,7 @@ export class InformerFactory {
         fetch: this.opts.fetch,
         backoff: this.opts.backoff,
       });
-      this.informers.set(key, informer as Informer);
+      this.informers.set(kind, informer as Informer);
     }
     return informer;
   }

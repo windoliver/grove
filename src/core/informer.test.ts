@@ -518,7 +518,7 @@ describe("Informer handler sees post-update cache", () => {
 // ─── InformerFactory ─────────────────────────────────────────────────────────
 
 describe("InformerFactory memoization", () => {
-  test("same instance returned for same (kind, namespace)", () => {
+  test("same instance returned for same kind", () => {
     const factory = new InformerFactory({
       baseUrl: "http://t",
       authHeader: "Bearer x",
@@ -538,24 +538,13 @@ describe("InformerFactory memoization", () => {
     expect(contrib).not.toBe(claim);
   });
 
-  test("different instances for different namespaces", () => {
-    const factory = new InformerFactory({
-      baseUrl: "http://t",
-      authHeader: "Bearer x",
-    });
-    const ns1 = factory.informerFor("Contribution", "ns-1");
-    const ns2 = factory.informerFor("Contribution", "ns-2");
-    expect(ns1).not.toBe(ns2);
-  });
-
-  test("default namespace is 'default'", () => {
-    const factory = new InformerFactory({
-      baseUrl: "http://t",
-      authHeader: "Bearer x",
-    });
-    const implicit = factory.informerFor("Contribution");
-    const explicit = factory.informerFor("Contribution", "default");
-    expect(implicit).toBe(explicit);
+  test("separate factories for separate namespaces use distinct instances", () => {
+    // Each namespace gets its own factory (and its own authHeader that encodes
+    // the namespace server-side). Two factories for different namespaces must
+    // produce independent informers with no shared state.
+    const factoryNs1 = new InformerFactory({ baseUrl: "http://t", authHeader: "Bearer ns1-token" });
+    const factoryNs2 = new InformerFactory({ baseUrl: "http://t", authHeader: "Bearer ns2-token" });
+    expect(factoryNs1.informerFor("Contribution")).not.toBe(factoryNs2.informerFor("Contribution"));
   });
 });
 
@@ -652,5 +641,58 @@ describe("Informer handler isolation", () => {
     // Should resolve (not reject) even though a handler always throws
     await expect(informer.run(ac.signal)).resolves.toBeUndefined();
     expect(informer.hasSynced()).toBe(true);
+  });
+
+  test("unsubscribed handler no longer receives events", async () => {
+    const ac = new AbortController();
+    const received: string[] = [];
+    const informer = new Informer({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: makeFetch(
+        { items: [], listResourceVersion: "5" },
+        sse("ADDED", { rv: "6", kind: "Contribution", entity: E_A }, "6"),
+        ac,
+      ),
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    const unsubscribe = informer.addEventHandler((op, entity) => {
+      received.push(`${op}:${(entity as { id: string }).id}`);
+    });
+    // Unsubscribe before run — handler must receive nothing
+    unsubscribe();
+    await informer.run(ac.signal);
+    expect(received).toHaveLength(0);
+  });
+
+  test("addEventHandler returns unsubscribe; calling it mid-session stops delivery", async () => {
+    const ac = new AbortController();
+    const afterUnsub: string[] = [];
+    let unsub: (() => void) | undefined;
+    const informer = new Informer({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: makeFetch(
+        { items: [E_A], listResourceVersion: "5" },
+        sse("ADDED", { rv: "6", kind: "Contribution", entity: E_B }, "6"),
+        ac,
+      ),
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    unsub = informer.addEventHandler((op, entity) => {
+      const id = (entity as { id: string }).id;
+      if (id === "cid-a") {
+        // Unsubscribe after first event (the ADDED:cid-a from relist)
+        unsub?.();
+      } else {
+        // Any subsequent event (ADDED:cid-b from delta) must not arrive
+        afterUnsub.push(`${op}:${id}`);
+        ac.abort();
+      }
+    });
+    await informer.run(ac.signal);
+    expect(afterUnsub).toHaveLength(0);
   });
 });
