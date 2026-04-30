@@ -35,6 +35,8 @@ export class Informer<K extends WatchKind = WatchKind> {
   private _synced = false;
   private staging: Map<string, EntityForKind<K>> | null = null;
   private _running = false;
+  // Set during run() so dispatch can race handlers against the abort signal.
+  private _signal: AbortSignal | null = null;
 
   constructor(opts: WatchClientOptions) {
     this.clientOpts = opts;
@@ -73,10 +75,12 @@ export class Informer<K extends WatchKind = WatchKind> {
       );
     }
     this._running = true;
+    this._signal = signal;
     try {
       const client = new WatchClient(this.clientOpts);
       await client.run({ onEvent: (e) => this.onEvent(e), signal });
     } finally {
+      this._signal = null;
       this._running = false;
     }
   }
@@ -164,10 +168,18 @@ export class Informer<K extends WatchKind = WatchKind> {
     // skipped by the iterator advancing past the shifted index.
     // Handlers are awaited sequentially so WatchClient's per-event serialization
     // extends through the full fanout chain — a slow handler blocks the next event.
+    // Each handler is raced against the run() abort signal so a non-settling
+    // async handler cannot permanently wedge the loop or leave _running = true.
+    // Note: raceAbort only aborts when the signal fires WHILE the handler is
+    // still pending. A sync handler that calls abort() and returns immediately
+    // resolves before the abort listener can fire (per AbortSignal semantics),
+    // so subsequent handlers in the snapshot still receive the same event.
+    const signal = this._signal;
     for (const handler of [...this.handlers]) {
       try {
-        await Promise.resolve(handler(op, entity));
+        await raceAbort(Promise.resolve(handler(op, entity)), signal);
       } catch (err) {
+        if (isAbortError(err)) return;
         console.error("Informer: event handler threw or rejected, continuing fanout:", err);
       }
     }
@@ -180,6 +192,43 @@ function freeze<T>(val: T): T {
   for (const v of Object.values(val as object)) freeze(v);
   Object.freeze(val);
   return val;
+}
+
+/**
+ * Race a promise against an abort signal. Rejects with AbortError if the
+ * signal fires before the promise settles. Pass null to skip the race.
+ */
+/**
+ * Race a promise against an abort signal. Rejects with AbortError if the
+ * signal fires WHILE the promise is still pending. Crucially, does NOT
+ * check signal.aborted upfront — AbortSignal event listeners registered
+ * on an already-aborted signal do not re-fire, so a sync handler that
+ * calls abort() and returns immediately will resolve before the abort can
+ * race it. Pass null signal to skip the race entirely.
+ */
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | null): Promise<T> {
+  if (!signal) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      signal.removeEventListener("abort", onAbort);
+      reject(new DOMException("aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(v);
+      },
+      (err: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === "AbortError";
 }
 
 export interface InformerFactoryOptions {

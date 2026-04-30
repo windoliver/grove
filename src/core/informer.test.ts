@@ -578,6 +578,39 @@ describe("Informer run() safety", () => {
     await firstRun.catch(() => {});
   });
 
+  test("abort unblocks run() even if a handler promise is still pending", async () => {
+    const ac = new AbortController();
+    // Fetch: delivers one ADDED so the non-settling handler starts
+    const fetchAc = new AbortController();
+    const informer = new Informer({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: makeFetch(
+        { items: [], listResourceVersion: "5" },
+        sse("ADDED", { rv: "6", kind: "Contribution", entity: E_A }, "6"),
+        fetchAc,
+      ),
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    informer.addEventHandler(async () => {
+      // Never resolves on its own
+      await new Promise<void>(() => {
+        /* intentionally pending */
+      });
+    });
+    const running = informer.run(ac.signal);
+    // Give the handler time to start
+    await new Promise((r) => setTimeout(r, 20));
+    // Abort — run() must complete despite the pending handler
+    ac.abort();
+    await expect(running).resolves.toBeUndefined();
+    // _running must be reset; a fresh run on a new signal can start
+    const ac2 = new AbortController();
+    ac2.abort(); // abort immediately so it exits quickly
+    await expect(informer.run(ac2.signal)).resolves.toBeUndefined();
+  });
+
   test("run() is reusable after completion", async () => {
     const ac1 = new AbortController();
     const informer = new Informer({
