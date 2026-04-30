@@ -179,9 +179,12 @@ export class Informer<K extends WatchKind = WatchKind> {
   }
 }
 
-/** Shallow-freeze an entity so cache-critical fields (id, resourceVersion) cannot be mutated externally. */
-function freeze<T extends object>(obj: T): Readonly<T> {
-  return Object.isFrozen(obj) ? obj : Object.freeze(obj);
+/** Deep-freeze an entity so no field at any nesting depth can be mutated externally. */
+function freeze<T>(val: T): T {
+  if (val === null || typeof val !== "object" || Object.isFrozen(val)) return val;
+  for (const v of Object.values(val as object)) freeze(v);
+  Object.freeze(val);
+  return val;
 }
 
 export interface InformerFactoryOptions {

@@ -783,4 +783,43 @@ describe("Informer cache immutability", () => {
       expect(Object.isFrozen(e)).toBe(true);
     }
   });
+
+  test("mutating nested spec field does not corrupt cache (deep freeze)", async () => {
+    const ac = new AbortController();
+    const informer = new Informer({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await informer.run(ac.signal);
+    const entity = informer.getById("cid-a");
+    const origSummary = (entity as unknown as { spec: { summary: string } })?.spec?.summary;
+    // Attempt to mutate nested spec.summary (throws in strict mode, silently fails otherwise)
+    try {
+      (entity as unknown as { spec: Record<string, unknown> }).spec["summary"] = "hacked";
+    } catch {
+      // Expected under strict mode / frozen object
+    }
+    // Cache entry must still have the original spec.summary
+    const fromCache = informer.getById("cid-a") as unknown as { spec: { summary: string } };
+    expect(fromCache?.spec?.summary).toBe(origSummary);
+  });
+
+  test("nested objects within entities are frozen (deep freeze)", async () => {
+    const ac = new AbortController();
+    const informer = new Informer({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await informer.run(ac.signal);
+    const entity = informer.getById("cid-a") as unknown as { spec: object; metadata: object };
+    expect(Object.isFrozen(entity)).toBe(true);
+    expect(Object.isFrozen(entity?.spec)).toBe(true);
+    expect(Object.isFrozen(entity?.metadata)).toBe(true);
+  });
 });
