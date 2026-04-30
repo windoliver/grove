@@ -8,12 +8,11 @@ import { zValidator } from "@hono/zod-validator";
 import type { Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
-import { DefaultFrontierCalculator } from "../../core/frontier.js";
 import type { ContributionKind, ContributionMode, JsonValue } from "../../core/models.js";
 import { frontierOperation } from "../../core/operations/index.js";
 import type { ServerEnv } from "../deps.js";
-import { toHttpResult, toOperationDeps } from "../operation-adapter.js";
-import { contributionStoreForSession } from "./shared.js";
+import { toHttpResult } from "../operation-adapter.js";
+import { operationDepsForSession } from "./shared.js";
 
 const querySchema = z.object({
   kind: z.string().optional(),
@@ -50,17 +49,7 @@ frontier.get("/", zValidator("query", querySchema), async (c) => {
     contextFilter = parsed as Record<string, JsonValue>;
   }
 
-  const serverDeps = c.get("deps");
-  const scopedStore = contributionStoreForSession(serverDeps, query.sessionId);
-  const scopedFrontier =
-    scopedStore === serverDeps.contributionStore
-      ? serverDeps.frontier
-      : new DefaultFrontierCalculator(scopedStore);
-  const deps = toOperationDeps({
-    ...serverDeps,
-    contributionStore: scopedStore,
-    frontier: scopedFrontier,
-  });
+  const deps = operationDepsForSession(c.get("deps"), query.sessionId);
   const result = await frontierOperation(
     {
       metric: query.metric,

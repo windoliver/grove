@@ -187,12 +187,9 @@ export class RemoteDataProvider
     if (query?.agentId) params.set("agentId", query.agentId);
     if (query?.limit) params.set("limit", String(query.limit));
     if (query?.offset) params.set("offset", String(query.offset));
-    // Prefer explicit sessionId on the query, fall back to active scope
-    const effectiveSessionId = query?.sessionId ?? this.activeSessionId;
-    if (effectiveSessionId) params.set("sessionId", effectiveSessionId);
+    if (query?.sessionId) params.set("sessionId", query.sessionId);
 
-    const qs = params.toString();
-    const resp = await fetch(`${this.baseUrl}/api/contributions${qs ? `?${qs}` : ""}`, {
+    const resp = await fetch(this.sessionScopedUrl("/api/contributions", params), {
       headers: this.authHeaders,
     });
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);
@@ -278,12 +275,9 @@ export class RemoteDataProvider
     if (query?.tags?.length) params.set("tags", query.tags.join(","));
     if (query?.kind) params.set("kind", query.kind);
     if (query?.mode) params.set("mode", query.mode);
-    // Prefer explicit sessionId on the query, fall back to active scope
-    const effectiveSessionId = query?.sessionId ?? this.activeSessionId;
-    if (effectiveSessionId) params.set("sessionId", effectiveSessionId);
+    if (query?.sessionId) params.set("sessionId", query.sessionId);
 
-    const qs = params.toString();
-    const resp = await fetch(`${this.baseUrl}/api/frontier${qs ? `?${qs}` : ""}`, {
+    const resp = await fetch(this.sessionScopedUrl("/api/frontier", params), {
       headers: this.authHeaders,
     });
     if (!resp.ok) throw new Error(`HTTP ${String(resp.status)}: ${resp.statusText}`);

@@ -259,6 +259,24 @@ describe("exportToPR", () => {
     await expect(adapter.exportToPR(repo, contribution.cid)).rejects.toThrow(/not found in CAS/);
   });
 
+  test("rejects unsafe artifact paths before pushing a branch", async () => {
+    const store = new InMemoryContributionStore();
+    const cas = new InMemoryCas();
+    const client = new InMemoryGitHubClient();
+    const repo = { owner: "test", repo: "repo" };
+    client.seedRepo(repo);
+
+    const hash = await cas.put(new TextEncoder().encode("escape"));
+    const contribution = makeContribution({
+      artifacts: { "src/../escape.txt": hash },
+    });
+    await store.put(contribution);
+
+    const adapter = createGitHubAdapter({ client, store, cas, agent: testAgent });
+    await expect(adapter.exportToPR(repo, contribution.cid)).rejects.toThrow(/artifact name/i);
+    expect(client.getPushedBranches(repo).size).toBe(0);
+  });
+
   test("throws when contribution not found", async () => {
     const store = new InMemoryContributionStore();
     const cas = new InMemoryCas();

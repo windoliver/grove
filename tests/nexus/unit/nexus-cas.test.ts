@@ -8,8 +8,75 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { runContentStoreTests } from "../../../src/core/cas.conformance.js";
+import type {
+  FileMeta,
+  ListOptions,
+  ListResult,
+  MkdirOptions,
+  NexusClient,
+  ReadResult,
+  SearchOptions,
+  SearchResult,
+  WriteOptions,
+  WriteResult,
+} from "../../../src/nexus/client.js";
 import { MockNexusClient } from "../../../src/nexus/mock-client.js";
 import { NexusCas } from "../../../src/nexus/nexus-cas.js";
+
+class EncodedStorageSizeClient implements NexusClient {
+  private readonly files = new Map<
+    string,
+    { readonly raw: Uint8Array; readonly stored: Uint8Array; readonly etag: string }
+  >();
+  private nextVersion = 0;
+
+  async read(path: string): Promise<Uint8Array | undefined> {
+    return this.files.get(path)?.raw;
+  }
+
+  async readWithMeta(path: string): Promise<ReadResult | undefined> {
+    const file = this.files.get(path);
+    if (file === undefined) return undefined;
+    return { content: file.raw, etag: file.etag };
+  }
+
+  async write(path: string, content: Uint8Array, _opts?: WriteOptions): Promise<WriteResult> {
+    const stored = new TextEncoder().encode(Buffer.from(content).toString("base64"));
+    const etag = `etag-${String(++this.nextVersion)}`;
+    this.files.set(path, { raw: new Uint8Array(content), stored, etag });
+    return { bytesWritten: stored.byteLength, etag, version: this.nextVersion };
+  }
+
+  async exists(path: string): Promise<boolean> {
+    return this.files.has(path);
+  }
+
+  async stat(path: string): Promise<FileMeta | undefined> {
+    const file = this.files.get(path);
+    if (file === undefined) return undefined;
+    return { size: file.stored.byteLength, etag: file.etag };
+  }
+
+  async delete(path: string): Promise<boolean> {
+    return this.files.delete(path);
+  }
+
+  async list(_path: string, _opts?: ListOptions): Promise<ListResult> {
+    return { files: [], hasMore: false };
+  }
+
+  async mkdir(_path: string, _opts?: MkdirOptions): Promise<void> {
+    /* no-op */
+  }
+
+  async search(_query: string, _opts?: SearchOptions): Promise<readonly SearchResult[]> {
+    return [];
+  }
+
+  async close(): Promise<void> {
+    this.files.clear();
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Conformance tests
@@ -99,6 +166,19 @@ describe("NexusCas adapter-specific", () => {
     expect(await store.exists(hash)).toBe(true);
 
     store.close();
+  });
+
+  test("stat returns logical byte size when backend storage is base64 encoded", async () => {
+    const encodedClient = new EncodedStorageSizeClient();
+    const store = new NexusCas({ client: encodedClient, zoneId: "test", retryMaxAttempts: 1 });
+    const data = new TextEncoder().encode("hello");
+
+    const hash = await store.put(data);
+    const artifact = await store.stat(hash);
+
+    expect(artifact?.sizeBytes).toBe(data.byteLength);
+    store.close();
+    await encodedClient.close();
   });
 
   describe("existsMany", () => {

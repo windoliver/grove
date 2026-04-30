@@ -12,6 +12,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { validateArtifactName } from "../core/path-safety.js";
 import { spawnCommand, spawnOrThrow } from "../core/subprocess.js";
 import type {
   CreateDiscussionParams,
@@ -64,6 +65,12 @@ function getCached<T>(key: string): T | undefined {
 /** Store data in the cache. */
 function setCached(key: string, data: unknown): void {
   apiCache.set(key, { data, cachedAt: Date.now() });
+}
+
+export function validatePushBranchFilePaths(files: ReadonlyMap<string, Uint8Array>): void {
+  for (const filePath of files.keys()) {
+    validateArtifactName(filePath);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -533,6 +540,8 @@ export async function createGhCliClient(): Promise<GitHubClient> {
     },
 
     pushBranch: async (params: PushBranchParams): Promise<void> => {
+      validatePushBranchFilePaths(params.files);
+
       // Clone the repo to a temp directory, create branch, add files, push
       const tmpDir = await mkdtemp(join(tmpdir(), "grove-github-"));
 

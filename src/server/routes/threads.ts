@@ -11,9 +11,9 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { threadOperation, threadsOperation } from "../../core/operations/index.js";
 import type { ServerEnv } from "../deps.js";
-import { toHttpResult, toOperationDeps } from "../operation-adapter.js";
+import { toHttpResult } from "../operation-adapter.js";
 import { CID_REGEX } from "../schemas.js";
-import { contributionStoreForSession } from "./shared.js";
+import { contributionStoreForSession, operationDepsForSession } from "./shared.js";
 
 const cidParamSchema = z.object({
   cid: z.string().regex(CID_REGEX, "CID must be in format blake3:<64-hex-chars>"),
@@ -45,7 +45,7 @@ threads.get(
     // Use operation for validation (e.g., 404 on missing root)
     const serverDeps = c.get("deps");
     const contributionStore = contributionStoreForSession(serverDeps, sessionId);
-    const deps = toOperationDeps({ ...serverDeps, contributionStore });
+    const deps = operationDepsForSession(serverDeps, sessionId);
     const result = await threadOperation({ cid, maxDepth, limit }, deps);
 
     if (!result.ok) {
@@ -75,7 +75,7 @@ threads.get("/", zValidator("query", threadsQuerySchema), async (c) => {
   // Use operation for validation
   const serverDeps = c.get("deps");
   const contributionStore = contributionStoreForSession(serverDeps, raw.sessionId);
-  const deps = toOperationDeps({ ...serverDeps, contributionStore });
+  const deps = operationDepsForSession(serverDeps, raw.sessionId);
   const result = await threadsOperation({ tags, limit: raw.limit }, deps);
 
   if (!result.ok) {

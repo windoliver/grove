@@ -28,6 +28,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 import { findGroveDir } from "../cli/context.js";
 import { StateConflictError } from "../core/errors.js";
+import { DefaultFrontierCalculator } from "../core/frontier.js";
 import { TopologyRouter } from "../core/topology-router.js";
 import { WatchHub } from "../core/watch-hub.js";
 import { createLocalRuntime } from "../local/runtime.js";
@@ -674,7 +675,10 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     claimStore,
     bountyStore,
     cas,
-    frontier: runtime.frontier,
+    frontier:
+      nexusClient !== undefined
+        ? new DefaultFrontierCalculator(contributionStore)
+        : runtime.frontier,
     workspace,
     contract: loadedContract,
     ...(sessionId !== undefined ? { idempotencyKeyScope: sessionId } : {}),

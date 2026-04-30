@@ -2,7 +2,12 @@ import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { defineConfig } from "tsup";
 
-const CLI_BINS = ["dist/cli/main.js", "dist/server/serve.js"];
+const CLI_BINS = [
+  "dist/cli/main.js",
+  "dist/server/serve.js",
+  "dist/mcp/serve.js",
+  "dist/mcp/serve-http.js",
+];
 
 export default defineConfig({
   entry: [
@@ -21,6 +26,9 @@ export default defineConfig({
     "src/server/index.ts",
     "src/server/app.ts",
     "src/server/serve.ts",
+    "src/mcp/index.ts",
+    "src/mcp/serve.ts",
+    "src/mcp/serve-http.ts",
     "src/nexus/index.ts",
   ],
   format: ["esm"],
