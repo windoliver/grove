@@ -14,12 +14,23 @@ export type WatchClientOp =
   | "DELETED"
   | "RELIST"
   | "RELIST_BEGIN"
-  | "RELIST_END";
+  | "RELIST_END"
+  | "RELIST_ABORTED";
 
 /**
- * Boundary events RELIST_BEGIN/RELIST_END fire even for empty snapshots so
- * consumers can atomically replace local state after compaction (drop entries
- * not present between BEGIN and END). Their entity is null.
+ * Boundary events fire even for empty snapshots so consumers can atomically
+ * replace local state after compaction (drop entries not present between
+ * BEGIN and END). Their entity is null.
+ *
+ * The boundary contract is:
+ * - RELIST_BEGIN: enter replace mode.
+ * - RELIST_END: snapshot fully delivered → commit replace transaction.
+ * - RELIST_ABORTED: snapshot was interrupted (abort or onEvent throw mid-
+ *   snapshot) → roll back; do NOT commit a partial replace.
+ *
+ * Exactly one terminal event (RELIST_END or RELIST_ABORTED) follows every
+ * RELIST_BEGIN. Consumers can rely on receiving one or the other but
+ * never both.
  */
 export interface WatchClientEvent {
   readonly op: WatchClientOp;
@@ -112,13 +123,11 @@ export class WatchClient {
         }
         const rv = BigInt(list.listResourceVersion);
         const newWindow = new Map<string, string>();
-        // Boundary invariant: once RELIST_BEGIN has been delivered, the
-        // matching RELIST_END must always fire — including on abort or
-        // mid-snapshot throw — so consumers using BEGIN/END for atomic
-        // replace cannot get stuck in replace mode with a partial snapshot.
-        // Track the primary error separately so a throw inside the END
-        // handler can't mask an earlier failure, but a standalone END
-        // failure (the consumer's commit boundary) propagates.
+        // Boundary invariant: once RELIST_BEGIN has been delivered, exactly
+        // one terminal — RELIST_END (full snapshot delivered) or
+        // RELIST_ABORTED (interrupted) — always fires. Consumers can
+        // commit on RELIST_END and rollback on RELIST_ABORTED without
+        // ambiguity.
         let relistOpen = false;
         let primaryError: unknown = undefined;
         try {
@@ -133,14 +142,18 @@ export class WatchClient {
           primaryError = err;
         }
         if (relistOpen) {
+          // RELIST_END only when snapshot fully delivered AND no error/abort.
+          // Otherwise RELIST_ABORTED so consumers know to discard staged state
+          // instead of committing a partial replace.
+          const interrupted = primaryError !== undefined || signal.aborted;
+          const closeOp: WatchClientOp = interrupted ? "RELIST_ABORTED" : "RELIST_END";
           try {
-            await onEvent({ op: "RELIST_END", rv, kind: this.kind, entity: null });
+            await onEvent({ op: closeOp, rv, kind: this.kind, entity: null });
           } catch (err) {
-            // RELIST_END is the consumer's commit barrier for the snapshot.
-            // If it failed without a prior error or abort, the consumer's
-            // replace transaction is half-applied — propagate so the caller
-            // sees the failure instead of silently advancing past it.
-            if (primaryError === undefined && !signal.aborted) {
+            // Terminal-event handler failures: only propagate when this is
+            // a clean commit (RELIST_END) and no earlier error/abort
+            // already triggered teardown.
+            if (closeOp === "RELIST_END" && primaryError === undefined && !signal.aborted) {
               primaryError = err;
             }
           }

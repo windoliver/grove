@@ -440,7 +440,7 @@ describe("WatchClient fast resume on TCP close", () => {
 describe("WatchClient relist boundary invariant", () => {
   const E_X = { id: "cid-x", resourceVersion: "0", spec: { summary: "x" } };
 
-  test("abort during RELIST_BEGIN's onEvent still emits RELIST_END", async () => {
+  test("abort during RELIST_BEGIN's onEvent emits RELIST_ABORTED (not END)", async () => {
     const seen: WatchClientEvent[] = [];
     const ac = new AbortController();
     const fetchImpl = makeFetch({ items: [E_X], listResourceVersion: "5" }, []);
@@ -458,13 +458,13 @@ describe("WatchClient relist boundary invariant", () => {
       },
       signal: ac.signal,
     });
-    // BEGIN was delivered; END must follow even though the consumer aborted
-    // immediately. No RELIST item is emitted (loop short-circuits on
-    // signal.aborted before processing items).
-    expect(seen.map((e) => e.op)).toEqual(["RELIST_BEGIN", "RELIST_END"]);
+    // BEGIN delivered; consumer aborted; the snapshot is incomplete so the
+    // boundary closes with RELIST_ABORTED (NOT RELIST_END) — consumers
+    // must roll back staged replace instead of committing.
+    expect(seen.map((e) => e.op)).toEqual(["RELIST_BEGIN", "RELIST_ABORTED"]);
   });
 
-  test("abort during a RELIST item still emits RELIST_END", async () => {
+  test("abort during a RELIST item emits RELIST_ABORTED (not END)", async () => {
     const seen: WatchClientEvent[] = [];
     const ac = new AbortController();
     const fetchImpl = makeFetch(
@@ -485,12 +485,39 @@ describe("WatchClient relist boundary invariant", () => {
       },
       signal: ac.signal,
     });
-    // BEGIN, one RELIST item (the one that triggered abort), then END.
-    // The remaining 2 items are skipped.
     const ops = seen.map((e) => e.op);
     expect(ops[0]).toBe("RELIST_BEGIN");
-    expect(ops[ops.length - 1]).toBe("RELIST_END");
-    expect(seen.filter((e) => e.op === "RELIST").length).toBeGreaterThanOrEqual(1);
+    // Snapshot was interrupted mid-stream → ABORTED, not END.
+    expect(ops[ops.length - 1]).toBe("RELIST_ABORTED");
+    expect(seen.some((e) => e.op === "RELIST_END")).toBe(false);
+  });
+
+  test("throw inside a RELIST item emits RELIST_ABORTED", async () => {
+    const seen: WatchClientEvent[] = [];
+    const fetchImpl = makeFetch(
+      { items: [E_X, E_X], listResourceVersion: "5" },
+      [],
+    );
+    const ac = new AbortController();
+    const client = new WatchClient({
+      baseUrl: "http://t",
+      kind: "Contribution",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    await expect(
+      client.run({
+        onEvent: async (e) => {
+          seen.push(e);
+          if (e.op === "RELIST") throw new Error("staging failed");
+        },
+        signal: ac.signal,
+      }),
+    ).rejects.toThrow(/staging failed/);
+    // Boundary closes with ABORTED before the original error propagates.
+    expect(seen.some((e) => e.op === "RELIST_ABORTED")).toBe(true);
+    expect(seen.some((e) => e.op === "RELIST_END")).toBe(false);
   });
 
   test("RELIST_END handler failure (no abort, no prior error) propagates", async () => {
@@ -516,9 +543,9 @@ describe("WatchClient relist boundary invariant", () => {
     ).rejects.toThrow(/commit failed/);
   });
 
-  test("RELIST_END handler failure DURING abort is swallowed (teardown)", async () => {
-    // If the consumer is already shutting down (abort in flight), a noisy
-    // RELIST_END must not mask the abort.
+  test("RELIST_ABORTED handler failure during abort is swallowed (teardown)", async () => {
+    // After abort, the boundary closes with RELIST_ABORTED. Errors thrown
+    // by that handler must not mask the abort itself.
     const fetchImpl = makeFetch({ items: [E_X], listResourceVersion: "5" }, []);
     const ac = new AbortController();
     const client = new WatchClient({
@@ -528,12 +555,12 @@ describe("WatchClient relist boundary invariant", () => {
       fetch: fetchImpl,
       backoff: { minMs: 0, maxMs: 0, jitter: 0 },
     });
-    // Should resolve cleanly (not reject) — the END error is suppressed
-    // because abort is in flight.
+    // Should resolve cleanly (not reject) — error from ABORTED handler
+    // is suppressed because the abort already triggered teardown.
     await client.run({
       onEvent: async (e) => {
         if (e.op === "RELIST_BEGIN") ac.abort();
-        if (e.op === "RELIST_END") throw new Error("noisy teardown");
+        if (e.op === "RELIST_ABORTED") throw new Error("noisy teardown");
       },
       signal: ac.signal,
     });
