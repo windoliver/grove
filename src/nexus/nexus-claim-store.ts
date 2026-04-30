@@ -216,13 +216,10 @@ export class NexusClaimStore implements ClaimStore {
       }
       this.claimCache.set(renewed.claimId, renewed);
       this.invalidateActiveClaimsCache();
-      // Renew path always emits MODIFIED. Distinguishing pure heartbeat
-      // (no status change) from user-meaningful renews (intentSummary
-      // refresh, lease bump) would require comparing the prior claim
-      // contents — the cost of an extra read on every renew. The
-      // subscriber's (kind, id, generation) dedupe filters back-to-back
-      // duplicates, and the generation is monotonic on every revision
-      // bump above, so each renew is a distinct watch event.
+      // Renewals advance heartbeatAt/leaseExpiresAt — fields Claim
+      // watchers depend on to reason about lease state. Emit MODIFIED
+      // even though status stays "active": suppressing would let a
+      // watcher conclude an actively-renewed claim has expired.
       this.publishWatch(renewed, "MODIFIED");
       return renewed;
     }
@@ -296,7 +293,9 @@ export class NexusClaimStore implements ClaimStore {
     await this.writeClaimCas(updated, etag);
     this.claimCache.set(updated.claimId, updated);
     this.invalidateActiveClaimsCache();
-    // Heartbeats are MODIFIED — same reasoning as the claimOrRenew renew path.
+    // Heartbeats advance heartbeatAt/leaseExpiresAt and watchers depend
+    // on those fields for lease-aware decisions. Same rationale as the
+    // renew path — emit MODIFIED rather than risk stale-lease bugs.
     this.publishWatch(updated, "MODIFIED");
     return updated;
   }

@@ -80,12 +80,13 @@ claims.post("/", zValidator("json", createBodySchema), async (c) => {
   const result = await claimStore.claimOrRenew(claim);
 
   // Watch fan-out (#292). Direct store path bypasses the operations layer
-  // so we record + markSeen here. Derive ADDED vs MODIFIED from the
-  // store's atomic revision counter — pre-reading `existing` outside the
-  // store transaction is racy: two concurrent same-agent renewals can
-  // both observe no existing claim and both emit ADDED for one logical
-  // claim. The store guarantees revision === 1 on first create and
-  // revision > 1 on every renewal, regardless of concurrency.
+  // so we record + markSeen here. Renewals must emit MODIFIED — they
+  // advance heartbeatAt/leaseExpiresAt which Claim watchers use to
+  // reason about lease state; suppressing them would let watchers
+  // declare an actively-renewed claim expired. Ring pressure under
+  // high renewal cadence is mitigated by sizing maxEventsPerKey to the
+  // expected renewal × active-claim load and by the WatchClient's
+  // relist-on-410 recovery path.
   const op: "ADDED" | "MODIFIED" = (result.revision ?? 1) === 1 ? "ADDED" : "MODIFIED";
   const entity = claimToEntity(result, () => Date.now(), namespace);
   try {
@@ -113,8 +114,28 @@ claims.patch("/:id", zValidator("json", patchBodySchema), async (c) => {
 
   // Heartbeat stays as direct store call (no matching operation)
   if (action === "heartbeat") {
-    const { claimStore } = c.get("deps");
+    const deps = c.get("deps");
+    const { claimStore, watchHub, watchSubscriber } = deps;
+    const namespace = c.get("namespace");
     const result = await claimStore.heartbeat(claimId, leaseDurationMs);
+    // Heartbeats advance heartbeatAt/leaseExpiresAt — fields Claim watchers
+    // depend on for lease-aware decisions. Emit MODIFIED so a watcher's
+    // cached entity stays in sync with the new lease deadline.
+    const entity = claimToEntity(result, () => Date.now(), namespace);
+    try {
+      watchHub.recordWrite({ kind: "Claim", namespace, op: "MODIFIED", entity });
+      watchSubscriber?.markSeen({
+        kind: "Claim",
+        entityId: result.claimId,
+        generation: entity.metadata.generation,
+      });
+    } catch (err) {
+      process.stderr.write(
+        `[grove] Warning: watch fan-out threw after PATCH heartbeat: ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
+    }
     return c.json(result);
   }
 

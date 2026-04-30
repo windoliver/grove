@@ -189,10 +189,44 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
         };
         teardown = cleanup;
 
+        // Terminal frames bypass the byte-overflow gate. send() refuses to
+        // enqueue when desiredSize is past ROUTE_BYTE_OVERFLOW_THRESHOLD —
+        // but the entire reason we're closing is overflow, and accepting
+        // one small ERROR frame on an over-budget queue is what the client
+        // depends on to receive the 503 signal (otherwise it sees plain EOF
+        // and fast-resumes into the same overflow loop).
+        const sendTerminal = (event: string, data: unknown): void => {
+          if (closed) return;
+          const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+          const bytes = encoder.encode(payload);
+          try {
+            controller.enqueue(bytes);
+          } catch {
+            /* already closed */
+          }
+        };
+
         const closeWithError = (code: number, reason: string): void => {
-          send("ERROR", { code, reason });
+          sendTerminal("ERROR", { code, reason });
           cleanup();
         };
+
+        // Wire up the request-disconnect listener BEFORE subscribing.
+        // AbortSignal listeners are not retroactive — registering after
+        // hub.subscribe() leaves a window where the client can disconnect
+        // and the subscription/timer would leak until later overflow or
+        // process exit.
+        const reqSignal = c.req.raw.signal;
+        if (reqSignal.aborted) {
+          // Already disconnected before we got here. Don't subscribe.
+          cleanup();
+          return;
+        }
+        const onReqAbort = (): void => {
+          reqSignal.removeEventListener("abort", onReqAbort);
+          cleanup();
+        };
+        reqSignal.addEventListener("abort", onReqAbort, { once: true });
 
         let iterable: AsyncIterable<WatchEvent>;
         try {
@@ -260,9 +294,6 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
             }
           }
         })();
-
-        // Abort when the client disconnects.
-        c.req.raw.signal.addEventListener("abort", cleanup);
       },
       cancel() {
         // Reader cancel (response body cancelled) — release the hub
@@ -282,6 +313,30 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
       "X-Accel-Buffering": "no",
     },
   });
+});
+
+/** GET /api/watch/metrics — retention config + per-(ns,kind) compaction stats. */
+watch.get("/watch/metrics", async (c) => {
+  const namespace = c.get("namespace");
+  const hub: WatchHub = c.get("deps").watchHub;
+  const allStats = hub.getCompactionStats();
+  // Filter to caller's namespace so namespaces don't leak each other's
+  // traffic shape. The request is already authenticated by namespaceAuth.
+  const keys = allStats.filter((s) => s.namespace === namespace);
+  return c.json(
+    {
+      retention: {
+        maxAgeMs: hub.maxAgeMsPerKey,
+        maxEvents: hub.maxEventsPerKey,
+      },
+      keys,
+    },
+    200,
+    {
+      "Cache-Control": "private, no-store",
+      Vary: "Authorization",
+    },
+  );
 });
 
 async function listForKind(

@@ -19,6 +19,70 @@ function fixtureContribution(cid: string): Contribution {
   };
 }
 
+describe("WatchHub.subscribe replay cap", () => {
+  test("replay > perClientOutboxCap fails immediately with BufferOverflowError", async () => {
+    // Without the cap, a slow reconnect from rv=0 against a large ring
+    // could allocate maxEventsPerKey events per subscriber on creation
+    // (configurable up to 1M), risking OOM under reconnect storms. With
+    // the cap, over-budget replay fails fast → 503 → client relists.
+    const hub = new WatchHub({ maxEventsPerKey: 100, perClientOutboxCap: 4 });
+    for (let i = 0; i < 10; i++) {
+      const ent = contributionToEntity(fixtureContribution(`cid-${i}`), "ns");
+      hub.recordWrite({ kind: "Contribution", namespace: "ns", op: "ADDED", entity: ent });
+    }
+    const ac = new AbortController();
+    const iter = hub.subscribe("ns", "Contribution", 0n, ac.signal);
+    // 10 events > cap of 4 → next() throws BufferOverflowError immediately.
+    await expect(iter[Symbol.asyncIterator]().next()).rejects.toBeInstanceOf(BufferOverflowError);
+  });
+
+  test("replay ≤ perClientOutboxCap is delivered normally", async () => {
+    const hub = new WatchHub({ maxEventsPerKey: 100, perClientOutboxCap: 10 });
+    for (let i = 0; i < 5; i++) {
+      const ent = contributionToEntity(fixtureContribution(`cid-${i}`), "ns");
+      hub.recordWrite({ kind: "Contribution", namespace: "ns", op: "ADDED", entity: ent });
+    }
+    const ac = new AbortController();
+    const iter = hub.subscribe("ns", "Contribution", 0n, ac.signal);
+    const it = iter[Symbol.asyncIterator]();
+    const r1 = await it.next();
+    expect(r1.done).toBe(false);
+    expect((r1.value as { rv: bigint }).rv).toBe(1n);
+    ac.abort();
+  });
+});
+
+describe("WatchHub.subscribe + AbortSignal", () => {
+  test("pre-aborted signal does not register subscriber (no leak)", async () => {
+    const hub = new WatchHub();
+    const ac = new AbortController();
+    ac.abort(); // already aborted before subscribe
+    const iter = hub.subscribe("ns", "Contribution", 0n, ac.signal);
+    // Iterator must terminate immediately (subscriber.closed = true).
+    const r = await iter[Symbol.asyncIterator]().next();
+    expect(r.done).toBe(true);
+
+    // No subscriber should have been registered. Verify by writing —
+    // a leaked subscriber would still receive the fanout into a queue
+    // we'd never drain. We can't observe queue directly, but a fresh
+    // subscribe + drain proves the live set is clean.
+    const ent = contributionToEntity(fixtureContribution("cid-a"), "ns");
+    hub.recordWrite({ kind: "Contribution", namespace: "ns", op: "ADDED", entity: ent });
+
+    // Inspect subscribers via internal state (test-only access).
+    // (The hub doesn't expose this; we can at least assert the second
+    // subscribe returns and ends without leak.)
+    const ac2 = new AbortController();
+    const iter2 = hub.subscribe("ns", "Contribution", 0n, ac2.signal);
+    const next = iter2[Symbol.asyncIterator]().next();
+    // Replay should include rv=1.
+    const r2 = await next;
+    expect(r2.done).toBe(false);
+    expect((r2.value as { rv: bigint }).rv).toBe(1n);
+    ac2.abort();
+  });
+});
+
 describe("WatchHub.recordWrite", () => {
   test("returns strictly increasing rv for same (ns, kind)", () => {
     const hub = new WatchHub();

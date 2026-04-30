@@ -38,6 +38,7 @@ import type { ServerDeps } from "./deps.js";
 import { loadKeyRegistry } from "./middleware/namespace-auth.js";
 import { SessionService } from "./session-service.js";
 import { memoizeContributionStoreForSession } from "./session-store-factory.js";
+import { resolveWatchHubConfig } from "./watch-hub-config.js";
 import { createWsHandler } from "./ws-handler.js";
 
 const GROVE_DIR = process.env.GROVE_DIR ?? join(process.cwd(), ".grove");
@@ -200,7 +201,16 @@ if (registry.size === 0) {
 // envelopes; the publisher lives inside Nexus stores and the subscriber
 // lives here in the server. Even in pure-local mode we instantiate both
 // so the wiring is uniform — the bus is just idle when nothing publishes.
-const watchHub = new WatchHub();
+//
+// KNOWN GAP (tracked separately from #293, see #294 informer client):
+// The bus is process-local. MCP/agent processes that share the same Nexus
+// VFS write through Nexus stores, but their `entity.changed` envelopes
+// publish to a *different* in-process bus and never reach this server's
+// watchSubscriber. Today the watch protocol covers writes performed
+// through grove-server's own routes plus the in-process onEntityWrite
+// fast path. Closing the gap requires routing entity.changed through
+// NexusEventBus (cross-process via Nexus IPC) on both sides.
+const watchHub = new WatchHub(resolveWatchHubConfig(process.env));
 const watchEventBus = new LocalEventBus();
 
 if (nexusUrl) {

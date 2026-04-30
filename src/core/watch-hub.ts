@@ -15,10 +15,31 @@ export interface WatchHubOptions {
   readonly now?: () => number;
 }
 
+export interface CompactionStats {
+  readonly namespace: string;
+  readonly kind: WatchKind;
+  readonly evictedByAge: number;
+  readonly evictedByCapacity: number;
+  readonly currentRingSize: number;
+  readonly oldestRv: string;
+  readonly currentRv: string;
+}
+
 interface KeyState {
+  readonly namespace: string;
+  readonly kind: WatchKind;
   counter: bigint;
   ring: WatchEvent[];
   insertedAt: number[];
+  /**
+   * Highest rv that has been evicted (by age or capacity). Any client
+   * resuming from `fromRv < floorRv` has missed at least one unrecoverable
+   * event and must relist. Survives full ring eviction so age-compaction
+   * of an idle key still triggers 410.
+   */
+  floorRv: bigint;
+  evictedByAge: number;
+  evictedByCapacity: number;
 }
 
 const DEFAULT_MAX_EVENTS = 1024;
@@ -28,8 +49,8 @@ const DEFAULT_OUTBOX_CAP = 256;
 
 export class WatchHub {
   private readonly state = new Map<string, KeyState>();
-  private readonly maxEventsPerKey: number;
-  private readonly maxAgeMsPerKey: number;
+  readonly maxEventsPerKey: number;
+  readonly maxAgeMsPerKey: number;
   readonly bookmarkIntervalMs: number;
   readonly perClientOutboxCap: number;
   private readonly now: () => number;
@@ -43,8 +64,8 @@ export class WatchHub {
   }
 
   recordWrite(event: EntityWriteEvent): bigint {
+    const s = this.getOrCreate(event.namespace, event.kind);
     const key = this.key(event.namespace, event.kind);
-    const s = this.getOrCreate(key);
     s.counter += 1n;
     const watchEvent: WatchEvent = { ...event, rv: s.counter };
     s.ring.push(watchEvent);
@@ -65,12 +86,20 @@ export class WatchHub {
     signal: AbortSignal,
   ): AsyncIterable<WatchEvent> {
     const key = this.key(namespace, kind);
-    const s = this.getOrCreate(key);
+    const s = this.getOrCreate(namespace, kind);
 
-    const oldestRv = s.ring.length > 0 ? (s.ring[0] as WatchEvent).rv : 0n;
-    // Resume from rv == oldestRv - 1 means "I have everything through oldestRv-1,
-    // give me oldestRv onward." Anything strictly older is unrecoverable → 410.
-    if (fromRv < oldestRv - 1n) {
+    // Apply age compaction at subscribe time. Without this, an idle
+    // (namespace, kind) would keep events past maxAgeMs indefinitely and
+    // a resuming client could be replayed events the retention contract
+    // says are gone.
+    this.trim(s);
+
+    // floorRv is the highest evicted rv. Anything ≤ floorRv is unrecoverable;
+    // resuming from fromRv == floorRv means "I have everything through
+    // floorRv, give me floorRv+1 onward." Survives full ring eviction so
+    // age-compaction of idle keys still triggers 410.
+    if (fromRv < s.floorRv) {
+      const oldestRv = s.ring.length > 0 ? (s.ring[0] as WatchEvent).rv : s.floorRv + 1n;
       throw new StaleResourceVersionError(namespace, kind, fromRv, oldestRv);
     }
     // Reject future RVs. After a server restart the hub resets to 0; a client
@@ -81,18 +110,38 @@ export class WatchHub {
     }
 
     const replay: WatchEvent[] = s.ring.filter((e) => e.rv > fromRv);
+    // Cap replay at perClientOutboxCap. Without this, a slow consumer
+    // reconnecting from an old-but-valid rv could allocate up to
+    // maxEventsPerKey events per subscription on creation, and that cap
+    // can be configured up to 1M — multi-client reconnects would risk OOM
+    // before the route's byte-overflow path could trip. When replay exceeds
+    // the cap, fail closed: the subscriber starts in overflow state so
+    // next() throws BufferOverflowError → 503 → client relists from a
+    // fresh snapshot instead.
+    const replayOverflow = replay.length > this.perClientOutboxCap;
 
     const subscriber: Subscriber = {
       namespace,
       kind,
-      queue: [...replay],
+      queue: replayOverflow ? [] : [...replay],
       pending: null,
-      closed: false,
-      overflow: false,
+      // Pre-aborted signals never fire their listener (AbortSignal does
+      // not invoke retroactively), so a subscriber registered against an
+      // already-aborted signal would be stuck in subscribersByKey forever
+      // and continue to consume fan-out from every future write. Set
+      // `closed` up front so the next() loop terminates immediately and
+      // the subscriber is never registered on the live set.
+      closed: signal.aborted,
+      overflow: replayOverflow,
     };
-    this.subscribersFor(key).add(subscriber);
-
-    signal.addEventListener("abort", () => this.closeSubscriber(key, subscriber));
+    if (!signal.aborted) {
+      this.subscribersFor(key).add(subscriber);
+      const onAbort = (): void => {
+        signal.removeEventListener("abort", onAbort);
+        this.closeSubscriber(key, subscriber);
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
 
     return {
       [Symbol.asyncIterator]: () => ({
@@ -162,14 +211,46 @@ export class WatchHub {
     return s ? [...s.ring] : [];
   }
 
+  /** Snapshot of compaction counters across all (ns, kind) keys. */
+  getCompactionStats(): readonly CompactionStats[] {
+    const out: CompactionStats[] = [];
+    for (const s of this.state.values()) {
+      // Reflect age compaction in metrics even when no writes have arrived
+      // since the events expired — otherwise the dashboard hides the fact
+      // that the ring is now empty.
+      this.trim(s);
+      const oldestRv = s.ring.length > 0 ? (s.ring[0] as WatchEvent).rv : s.floorRv + 1n;
+      out.push({
+        namespace: s.namespace,
+        kind: s.kind,
+        evictedByAge: s.evictedByAge,
+        evictedByCapacity: s.evictedByCapacity,
+        currentRingSize: s.ring.length,
+        oldestRv: String(oldestRv),
+        currentRv: String(s.counter),
+      });
+    }
+    return out;
+  }
+
   private key(namespace: string, kind: WatchKind): string {
     return `${namespace}\x00${kind}`;
   }
 
-  private getOrCreate(key: string): KeyState {
+  private getOrCreate(namespace: string, kind: WatchKind): KeyState {
+    const key = this.key(namespace, kind);
     let s = this.state.get(key);
     if (!s) {
-      s = { counter: 0n, ring: [], insertedAt: [] };
+      s = {
+        namespace,
+        kind,
+        counter: 0n,
+        ring: [],
+        insertedAt: [],
+        floorRv: 0n,
+        evictedByAge: 0,
+        evictedByCapacity: 0,
+      };
       this.state.set(key, s);
     }
     return s;
@@ -177,13 +258,17 @@ export class WatchHub {
 
   private trim(s: KeyState): void {
     while (s.ring.length > this.maxEventsPerKey) {
-      s.ring.shift();
+      const evicted = s.ring.shift() as WatchEvent;
       s.insertedAt.shift();
+      if (evicted.rv > s.floorRv) s.floorRv = evicted.rv;
+      s.evictedByCapacity += 1;
     }
     const cutoff = this.now() - this.maxAgeMsPerKey;
     while (s.ring.length > 0 && (s.insertedAt[0] ?? 0) < cutoff) {
-      s.ring.shift();
+      const evicted = s.ring.shift() as WatchEvent;
       s.insertedAt.shift();
+      if (evicted.rv > s.floorRv) s.floorRv = evicted.rv;
+      s.evictedByAge += 1;
     }
   }
 }

@@ -119,12 +119,16 @@ export class InMemoryClaimStore implements ClaimStore {
     for (const existing of this.claims.values()) {
       if (existing.targetRef === claim.targetRef && existing.status === "active") {
         if (existing.agent.agentId === claim.agent.agentId) {
-          // Renew: update lease
+          // Renew: update lease and bump revision (matches the conformance
+          // contract — SQLite + Nexus stores both increment revision on
+          // every renewal, and watch fan-out depends on it to distinguish
+          // create from renew).
           const renewed: Claim = {
             ...existing,
             heartbeatAt: claim.heartbeatAt,
             leaseExpiresAt: claim.leaseExpiresAt,
             intentSummary: claim.intentSummary,
+            revision: (existing.revision ?? 1) + 1,
           };
           this.claims.set(existing.claimId, renewed);
           return renewed;
@@ -136,8 +140,9 @@ export class InMemoryClaimStore implements ClaimStore {
         });
       }
     }
-    this.claims.set(claim.claimId, claim);
-    return claim;
+    const created: Claim = { ...claim, revision: 1 };
+    this.claims.set(claim.claimId, created);
+    return created;
   }
 
   async getClaim(claimId: string): Promise<Claim | undefined> {
@@ -165,6 +170,7 @@ export class InMemoryClaimStore implements ClaimStore {
       ...claim,
       heartbeatAt: now.toISOString(),
       leaseExpiresAt: new Date(now.getTime() + (leaseDurationMs ?? 300_000)).toISOString(),
+      revision: (claim.revision ?? 1) + 1,
     };
     this.claims.set(claimId, updated);
     return updated;
