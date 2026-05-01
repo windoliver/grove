@@ -468,12 +468,11 @@ async function buildAppProps(
         listFn: () => [],
       });
     }
-    if (informerFactory) {
-      const f = informerFactory;
-      stopCallbacks.push(() => {
-        void f.stopAll();
-      });
-    }
+    // No stopAll() callback in PR1 — InformerProvider doesn't auto-start
+    // the informers (ships dark). PR2 turns eager-start on; at that point the
+    // provider's own unmount cleanup handles stopAll. Adding a stopCallback
+    // here would call stopAll() on a never-started factory, which is a no-op
+    // but adds noise.
   }
 
   return {
