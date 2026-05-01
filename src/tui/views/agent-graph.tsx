@@ -9,18 +9,38 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef } from "react";
+import type { ClaimEntity } from "../../core/entity.js";
 import type { Claim } from "../../core/models.js";
 import type { AgentTopology } from "../../core/topology.js";
 import { checkSpawn } from "../agents/spawn-validator.js";
 import type { TmuxManager } from "../agents/tmux-manager.js";
 import { agentIdFromSession, tmuxSessionName } from "../agents/tmux-manager.js";
 import { EmptyState } from "../components/empty-state.js";
+import { useInformerFactoryOptional } from "../hooks/informer-context.js";
+import { useEntities } from "../hooks/use-entities.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import { renderGraph } from "../layout/edge-render.js";
 import type { LayoutEdge, LiveAgentStatus } from "../layout/graph-layout.js";
 import { layoutGraph } from "../layout/graph-layout.js";
 import type { TuiDataProvider } from "../provider.js";
 import { agentStatusIcon, theme } from "../theme.js";
+
+const ACTIVE_PREDICATE = (e: ClaimEntity): boolean => e.status.phase === "active";
+
+function entityToClaim(e: ClaimEntity): Claim {
+  return {
+    claimId: e.id,
+    targetRef: e.spec.targetRef,
+    agent: e.spec.agent,
+    status: e.status.phase,
+    intentSummary: e.spec.intentSummary,
+    createdAt: e.metadata.creationTimestamp ?? e.status.heartbeatAt,
+    heartbeatAt: e.status.heartbeatAt,
+    leaseExpiresAt: e.status.leaseExpiresAt,
+    context: e.spec.context,
+    attemptCount: e.status.attemptCount,
+  };
+}
 
 /** Props for the AgentGraphView. */
 export interface AgentGraphProps {
@@ -118,6 +138,10 @@ export const AgentGraphView: React.NamedExoticComponent<AgentGraphProps> = React
     topology,
     onSelectSession,
   }: AgentGraphProps): React.ReactNode {
+    const factory = useInformerFactoryOptional();
+    const useInformerPath = factory?.supportsKind("Claim") === true;
+    const entityResult = useEntities("Claim", ACTIVE_PREDICATE);
+
     const claimFetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
     const tmuxFetcher = useCallback(async () => {
       if (!tmux) return [] as readonly string[];
@@ -126,7 +150,12 @@ export const AgentGraphView: React.NamedExoticComponent<AgentGraphProps> = React
       return tmux.listSessions();
     }, [tmux]);
 
-    const { data: claims } = usePolledData<readonly Claim[]>(claimFetcher, intervalMs, active);
+    const polledClaims = usePolledData<readonly Claim[]>(
+      claimFetcher,
+      intervalMs,
+      active && !useInformerPath,
+    );
+    const claims = useInformerPath ? entityResult.data.map(entityToClaim) : polledClaims.data;
     const { data: sessions } = usePolledData<readonly string[]>(
       tmuxFetcher,
       intervalMs * 2,

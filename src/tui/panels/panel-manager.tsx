@@ -24,6 +24,8 @@ import type { Contribution } from "../../core/models.js";
 import type { AgentTopology } from "../../core/topology.js";
 import type { TmuxManager } from "../agents/tmux-manager.js";
 import { AgentSplitPane } from "../components/agent-split-pane.js";
+import { useInformerFactoryOptional } from "../hooks/informer-context.js";
+import { useEntity } from "../hooks/use-entity.js";
 import type { NavigationActions } from "../hooks/use-navigation.js";
 import type { PanelFocusState } from "../hooks/use-panel-focus.js";
 import { isPanelVisible, PANEL_LABELS, Panel } from "../hooks/use-panel-focus.js";
@@ -196,8 +198,16 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
     // If detail view is active, show it in the Detail panel
     const showDetail = nav.isDetailView && nav.detailCid;
 
-    // Fetch contribution detail to resolve the first artifact name
+    // Fetch contribution detail to resolve the first artifact name.
+    // PR2 (#388): prefer the informer cache via `useEntity("Contribution", id)`
+    // and fall back to `usePolledData(getContribution)` when no factory is
+    // mounted (e.g. backend.mode === "nexus" — no watch routes yet).
     const detailCid = nav.detailCid;
+    const informerFactory = useInformerFactoryOptional();
+    const useInformerPath =
+      informerFactory?.supportsKind("Contribution") === true && detailCid !== undefined;
+    const entityResult = useEntity("Contribution", detailCid);
+
     const detailFetcher = useCallback(
       () => (detailCid ? provider.getContribution(detailCid) : Promise.resolve(undefined)),
       [provider, detailCid],
@@ -205,7 +215,7 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
     const { data: detailData } = usePolledData<ContributionDetail | undefined>(
       detailFetcher,
       intervalMs,
-      isPanelVisible(panelState, Panel.Artifact) && detailCid !== undefined,
+      isPanelVisible(panelState, Panel.Artifact) && detailCid !== undefined && !useInformerPath,
     );
 
     // Pipeline view mode — render PipelineView instead of grid (item 11)
@@ -217,19 +227,22 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
       );
     }
 
-    // Compute artifact names list and select by index
-    const artifactNames = detailData?.contribution.artifacts
-      ? Object.keys(detailData.contribution.artifacts)
-      : [];
+    // Compute artifact names list and select by index. Pull from the
+    // informer entity when available, else from the polled detail.
+    const artifactSource = useInformerPath
+      ? entityResult.data?.spec.artifacts
+      : detailData?.contribution.artifacts;
+    const artifactNames = artifactSource ? Object.keys(artifactSource) : [];
     const selectedArtifactName =
       artifactNames.length > 0
         ? artifactNames[(artifactIndex ?? 0) % artifactNames.length]
         : undefined;
 
-    // Resolve parent CID from derives_from relation for diff support
-    const parentCid = detailData?.contribution.relations.find(
-      (r) => r.relationType === "derives_from",
-    )?.targetCid;
+    // Resolve parent CID from derives_from relation for diff support.
+    const relationsSource = useInformerPath
+      ? entityResult.data?.spec.relations
+      : detailData?.contribution.relations;
+    const parentCid = relationsSource?.find((r) => r.relationType === "derives_from")?.targetCid;
 
     // ------------------------------------------------------------------
     // Panel renderer — maps a Panel enum to the appropriate component

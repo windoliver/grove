@@ -8,14 +8,23 @@
  * Search availability is determined by feature-detecting the search() method
  * (isSearchProvider). When unavailable, a persistent banner informs the user
  * rather than silently falling back to recent items.
+ *
+ * PR2 (#388): the empty-query branch ("showing recent contributions")
+ * reads from the informer cache via `useEntities("Contribution")` when a
+ * factory is mounted. Full-text search (`searchQuery !== ""`) stays on
+ * `usePolledData` until PR4 — the search backend isn't projected through
+ * the watch protocol.
  */
 
 import React, { useCallback, useEffect, useMemo } from "react";
+import type { ContributionEntity } from "../../core/entity.js";
 import type { Contribution } from "../../core/models.js";
 import { formatTimestamp, truncateCid } from "../../shared/format.js";
 import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
+import { useInformerFactoryOptional } from "../hooks/informer-context.js";
+import { useEntities } from "../hooks/use-entities.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import { isSearchProvider, type TuiArtifactProvider, type TuiDataProvider } from "../provider.js";
 import { theme } from "../theme.js";
@@ -47,6 +56,8 @@ const TRANSCRIPT_COLUMNS = [
   { header: "CONTENT", key: "content", width: 50 },
 ] as const;
 
+const RECENT_LIMIT = 20;
+
 /** Search terminal transcripts for a query string. */
 export function searchTranscripts(
   buffers: ReadonlyMap<string, string>,
@@ -74,10 +85,9 @@ export function searchTranscripts(
  * Select the fetcher function to use based on provider capability and query.
  * Exported as a pure function for unit testing.
  *
- * @param hasSearch  Whether the provider supports full-text search.
- * @param getContributions  Fallback fetcher for recent contributions.
- * @param search  Full-text search fetcher (only called when hasSearch=true).
- * @param query   The current search query string.
+ * Used by the polling fallback path. The empty-query branch is now also
+ * served by the informer cache when one is available (see component below);
+ * this helper keeps the existing test contract intact.
  */
 export function selectFetcher(
   hasSearch: boolean,
@@ -88,6 +98,24 @@ export function selectFetcher(
   if (!query) return getContributions;
   if (hasSearch) return () => search(query);
   return getContributions;
+}
+
+function entityToContribution(e: ContributionEntity): Contribution {
+  return {
+    cid: e.id,
+    manifestVersion: 0,
+    kind: e.spec.contributionKind,
+    mode: e.spec.mode,
+    summary: e.spec.summary,
+    description: e.spec.description,
+    artifacts: e.spec.artifacts,
+    relations: e.spec.relations,
+    scores: e.spec.scores,
+    tags: e.spec.tags,
+    context: e.spec.context,
+    agent: e.spec.agent,
+    createdAt: e.metadata.creationTimestamp ?? "",
+  };
 }
 
 /** Search panel showing full-text search results. */
@@ -113,16 +141,37 @@ export const SearchPanelView: React.NamedExoticComponent<SearchPanelProps> = Rea
     // Determine search availability via the proper capability check.
     const hasSearch = isSearchProvider(provider);
 
+    const factory = useInformerFactoryOptional();
+    const useInformerPath = factory?.supportsKind("Contribution") === true && searchQuery === "";
+
+    const entityResult = useEntities("Contribution");
+
     const fetcher = useCallback((): Promise<readonly Contribution[]> => {
-      if (!searchQuery || !hasSearch) return provider.getContributions({ limit: 20 });
+      if (!searchQuery || !hasSearch) return provider.getContributions({ limit: RECENT_LIMIT });
       return (provider as TuiDataProvider & TuiArtifactProvider).search(searchQuery);
     }, [provider, searchQuery, hasSearch]);
 
-    const { data, loading, isStale, error } = usePolledData<readonly Contribution[]>(
+    const polled = usePolledData<readonly Contribution[]>(
       fetcher,
       intervalMs,
-      active,
+      active && !useInformerPath,
     );
+
+    const data = useMemo<readonly Contribution[] | undefined>(() => {
+      if (useInformerPath) {
+        const sorted = [...entityResult.data].sort((a, b) =>
+          (b.metadata.creationTimestamp ?? "").localeCompare(a.metadata.creationTimestamp ?? ""),
+        );
+        return sorted.slice(0, RECENT_LIMIT).map(entityToContribution);
+      }
+      return polled.data ?? undefined;
+    }, [useInformerPath, entityResult.data, polled.data]);
+
+    const loading = useInformerPath
+      ? !entityResult.hasSynced && data === undefined
+      : polled.loading;
+    const isStale = useInformerPath ? false : polled.isStale;
+    const error = useInformerPath ? entityResult.error : polled.error;
 
     useEffect(() => {
       if (data && onRowCountChanged) {
