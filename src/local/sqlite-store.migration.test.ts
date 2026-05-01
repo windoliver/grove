@@ -16,6 +16,11 @@ import { toManifest } from "../core/manifest.js";
 import { makeClaim, makeContribution } from "../core/test-helpers.js";
 import { initSqliteDb, SqliteStore } from "./sqlite-store.js";
 
+const MODEL_HASH = "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const CONFIG_HASH = "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const ARTIFACT_A_HASH = "blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+const ARTIFACT_B_HASH = "blake3:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+
 describe("schema migration", () => {
   test("fresh DB creates schema_migrations with current version", async () => {
     const dir = await mkdtemp(join(tmpdir(), "sqlite-migration-"));
@@ -315,7 +320,7 @@ describe("schema migration", () => {
 
       const c = makeContribution({
         summary: "legacy-artifact",
-        artifacts: { "model.bin": "abc123hash", "config.json": "def456hash" },
+        artifacts: { "model.bin": MODEL_HASH, "config.json": CONFIG_HASH },
       });
       const manifestJson = JSON.stringify(toManifest(c));
       db.run(
@@ -348,9 +353,9 @@ describe("schema migration", () => {
 
       expect(rows.length).toBe(2);
       expect(rows[0]?.name).toBe("config.json");
-      expect(rows[0]?.content_hash).toBe("def456hash");
+      expect(rows[0]?.content_hash).toBe(CONFIG_HASH);
       expect(rows[1]?.name).toBe("model.bin");
-      expect(rows[1]?.content_hash).toBe("abc123hash");
+      expect(rows[1]?.content_hash).toBe(MODEL_HASH);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -402,8 +407,8 @@ describe("schema migration", () => {
         summary: "partial-backfill",
         tags: ["alpha", "beta"],
         artifacts: {
-          "a.txt": "artifact-hash-a",
-          "b.txt": "artifact-hash-b",
+          "a.txt": ARTIFACT_A_HASH,
+          "b.txt": ARTIFACT_B_HASH,
         },
       });
       const manifestJson = JSON.stringify(toManifest(contribution));
@@ -428,7 +433,7 @@ describe("schema migration", () => {
       db.run("INSERT INTO artifacts (contribution_cid, name, content_hash) VALUES (?, ?, ?)", [
         contribution.cid,
         "a.txt",
-        "artifact-hash-a",
+        ARTIFACT_A_HASH,
       ]);
       db.close();
 
@@ -445,8 +450,8 @@ describe("schema migration", () => {
 
       expect(tags.map((row) => row.tag)).toEqual(["alpha", "beta"]);
       expect(artifacts).toEqual([
-        { name: "a.txt", content_hash: "artifact-hash-a" },
-        { name: "b.txt", content_hash: "artifact-hash-b" },
+        { name: "a.txt", content_hash: ARTIFACT_A_HASH },
+        { name: "b.txt", content_hash: ARTIFACT_B_HASH },
       ]);
     } finally {
       await rm(dir, { recursive: true, force: true });

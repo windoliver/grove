@@ -251,7 +251,9 @@ describe("exportToPR", () => {
 
     // Create contribution referencing an artifact hash that doesn't exist in CAS
     const contribution = makeContribution({
-      artifacts: { "src/index.ts": "blake3:does_not_exist_in_cas" },
+      artifacts: {
+        "src/index.ts": "blake3:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      },
     });
     await store.put(contribution);
 
@@ -267,9 +269,10 @@ describe("exportToPR", () => {
     client.seedRepo(repo);
 
     const hash = await cas.put(new TextEncoder().encode("escape"));
-    const contribution = makeContribution({
+    const contribution = {
+      ...makeContribution(),
       artifacts: { "src/../escape.txt": hash },
-    });
+    };
     await store.put(contribution);
 
     const adapter = createGitHubAdapter({ client, store, cas, agent: testAgent });
