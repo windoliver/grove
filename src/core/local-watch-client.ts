@@ -20,14 +20,22 @@ export interface LocalWatchClientOptions {
   readonly hub: WatchHub;
   readonly kind: WatchKind;
   readonly namespace: string;
-  readonly listFn: () => readonly WatchEntity[];
+  /**
+   * Snapshot source for the local store. Returns either a synchronous array
+   * or a Promise resolving to one — the repo's real `ContributionStore` and
+   * `ClaimStore` `listEntities()` methods are async, so the contract supports
+   * both shapes. The promise (if any) is awaited inside `run()` before the
+   * RELIST iteration so an async snapshot can't sneak a Promise into the
+   * synchronous iteration loop.
+   */
+  readonly listFn: () => readonly WatchEntity[] | Promise<readonly WatchEntity[]>;
 }
 
 export class LocalWatchClient implements WatchStream {
   private readonly hub: WatchHub;
   private readonly kind: WatchKind;
   private readonly namespace: string;
-  private readonly listFn: () => readonly WatchEntity[];
+  private readonly listFn: () => readonly WatchEntity[] | Promise<readonly WatchEntity[]>;
 
   constructor(opts: LocalWatchClientOptions) {
     this.hub = opts.hub;
@@ -88,7 +96,11 @@ export class LocalWatchClient implements WatchStream {
       });
       relistOpen = true;
       if (!signal.aborted) {
-        for (const entity of this.listFn()) {
+        // Resolve sync or async list — real stores expose Promise-based
+        // listEntities(). Awaiting before iteration prevents Promise objects
+        // leaking into the snapshot loop and short-circuiting RELIST_END.
+        const list = await this.listFn();
+        for (const entity of list) {
           if (signal.aborted) break;
           snapshotWindow.set(entity.id, entity.resourceVersion);
           await onEvent({

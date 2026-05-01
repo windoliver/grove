@@ -287,7 +287,15 @@ export type InformerFactoryOptions =
       readonly mode: "local";
       readonly hub: WatchHub;
       readonly namespace: string;
-      readonly listFn: (kind: WatchKind) => readonly WatchEntity[];
+      /**
+       * Snapshot source per kind. Sync and async shapes both supported so
+       * Promise-returning local stores (`ContributionStore.listEntities`,
+       * `ClaimStore.listEntities`) can be wired without forcing callers to
+       * pre-await. LocalWatchClient awaits the result before iteration.
+       */
+      readonly listFn: (
+        kind: WatchKind,
+      ) => readonly WatchEntity[] | Promise<readonly WatchEntity[]>;
     };
 
 export type FactoryErrorListener = (kind: WatchKind, err: Error | null) => void;
@@ -309,18 +317,18 @@ interface RunningInformer {
 }
 
 /**
- * Kinds the factory will start eagerly via `startAll()`.
+ * Kinds the factory will start eagerly via `startAll()` AND the only kinds
+ * `informerFor` will accept. AgentSession is intentionally excluded because
+ * the grove-server `/api/list` route currently returns 501 NOT_CONFIGURED
+ * for it (handler exists, list source not wired). Re-add once server
+ * support lands.
  *
- * AgentSession is intentionally excluded: the grove-server `/api/list` route
- * currently returns 501 NOT_CONFIGURED for AgentSession (handler exists, list
- * source not wired). Including it would terminate AgentSession's WatchClient
- * permanently on first list. Re-add once server-side support lands.
- *
- * Per-kind hooks may still call `informerFor("AgentSession")` to construct
- * the informer, but it stays idle until startAll/startKind is invoked
- * explicitly with server support in place.
+ * Asking for an unsupported kind throws — louder than handing back an
+ * informer that would silently never sync.
  */
 const ALL_KINDS: readonly WatchKind[] = ["Contribution", "Claim"];
+
+const SUPPORTED_KINDS = new Set<WatchKind>(ALL_KINDS);
 
 /**
  * InformerFactory memoizes one Informer per kind for a single namespace
@@ -365,8 +373,17 @@ export class InformerFactory {
   /**
    * Returns the Informer for a kind. Lazily constructs it on first call,
    * but does NOT start `run()` — call `startAll()` to start watching.
+   * Throws for kinds the server does not yet support — see SUPPORTED_KINDS
+   * comment for the AgentSession rationale.
    */
   informerFor<K extends WatchKind>(kind: K): Informer<K> {
+    if (!SUPPORTED_KINDS.has(kind)) {
+      throw new Error(
+        `InformerFactory.informerFor(${kind}): kind not yet supported by grove-server watch routes. Supported: ${[
+          ...SUPPORTED_KINDS,
+        ].join(", ")}.`,
+      );
+    }
     const existing = this.running.get(kind);
     if (existing) return existing.informer as Informer<K>;
     const stream = this.makeStream(kind);
