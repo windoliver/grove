@@ -1,14 +1,25 @@
 /**
  * Claims view — shows all active claims with lease countdown.
+ *
+ * PR2 (#388) migrated from `usePolledData(provider.getClaims)` to the
+ * informer-backed `useEntities("Claim", …)` hook. Reads draw from the
+ * shared informer cache (SSE-driven in remote mode, in-process WatchHub
+ * in local mode) instead of polling. The pre-fetched `propClaims` prop
+ * stays as an explicit override for the parent's claim poller during
+ * the dual-path window — once PR3 / PR4 fold those callers in, the
+ * override goes away.
  */
 
-import React, { useCallback, useEffect } from "react";
+import React, { useCallback, useEffect, useMemo } from "react";
+import type { ClaimEntity } from "../../core/entity.js";
 import type { Claim } from "../../core/models.js";
 import { formatDuration } from "../../shared/duration.js";
 import { formatTimestamp } from "../../shared/format.js";
 import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
+import { useInformerFactoryOptional } from "../hooks/informer-context.js";
+import { useEntities } from "../hooks/use-entities.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
 
@@ -33,6 +44,29 @@ const COLUMNS = [
   { header: "INTENT", key: "intent", width: 28 },
 ] as const;
 
+/** Reduce a ClaimEntity to the flat row shape this view already emits. */
+function entityToRow(entity: ClaimEntity): {
+  claimId: string;
+  targetRef: string;
+  agent: { agentName?: string | undefined; agentId: string };
+  status: string;
+  intentSummary: string;
+  heartbeatAt: string;
+  leaseExpiresAt: string;
+} {
+  return {
+    claimId: entity.id,
+    targetRef: entity.spec.targetRef,
+    agent: entity.spec.agent,
+    status: entity.status.phase,
+    intentSummary: entity.spec.intentSummary,
+    heartbeatAt: entity.status.heartbeatAt,
+    leaseExpiresAt: entity.status.leaseExpiresAt,
+  };
+}
+
+const ACTIVE_PREDICATE = (e: ClaimEntity): boolean => e.status.phase === "active";
+
 /** Claims view component. */
 export const ClaimsView: React.NamedExoticComponent<ClaimsProps> = React.memo(function ClaimsView({
   provider,
@@ -42,15 +76,51 @@ export const ClaimsView: React.NamedExoticComponent<ClaimsProps> = React.memo(fu
   onRowCountChanged,
   activeClaims: propClaims,
 }: ClaimsProps): React.ReactNode {
-  // Use parent-provided claims if available, otherwise poll independently
+  const factory = useInformerFactoryOptional();
+  const useInformerPath = factory?.supportsKind("Claim") === true;
+
+  // Informer path: useEntities feeds when the factory is mounted and the
+  // kind is supported. We always invoke both hooks so React's hook order
+  // stays stable across renders; the unused branch's data is discarded.
+  const entityResult = useEntities("Claim", ACTIVE_PREDICATE);
+
+  // Polled fallback: only fetches when the parent didn't pre-fetch AND
+  // the informer path isn't available. Same gating logic as before, plus
+  // the new informer-availability check.
   const fetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
-  const {
-    data: polledData,
-    loading,
-    isStale,
-    error,
-  } = usePolledData<readonly Claim[]>(fetcher, intervalMs, active && propClaims === undefined);
-  const data = propClaims ?? polledData;
+  const polledResult = usePolledData<readonly Claim[]>(
+    fetcher,
+    intervalMs,
+    active && propClaims === undefined && !useInformerPath,
+  );
+
+  const data: readonly Claim[] | undefined = useMemo<readonly Claim[] | undefined>(() => {
+    if (propClaims !== undefined) return propClaims;
+    if (useInformerPath) {
+      // Project entity → row → caller-shaped Claim. The fields the view
+      // reads below are the ones populated from the entity envelope.
+      return entityResult.data.map((e) => {
+        const r = entityToRow(e);
+        return {
+          claimId: r.claimId,
+          targetRef: r.targetRef,
+          agent: r.agent,
+          status: r.status,
+          intentSummary: r.intentSummary,
+          createdAt: r.heartbeatAt,
+          heartbeatAt: r.heartbeatAt,
+          leaseExpiresAt: r.leaseExpiresAt,
+        } as Claim;
+      });
+    }
+    return polledResult.data ?? undefined;
+  }, [propClaims, useInformerPath, entityResult.data, polledResult.data]);
+
+  const loading = useInformerPath
+    ? !entityResult.hasSynced && data === undefined
+    : polledResult.loading;
+  const isStale = useInformerPath ? false : polledResult.isStale;
+  const error = useInformerPath ? entityResult.error : polledResult.error;
 
   useEffect(() => {
     if (data && onRowCountChanged) {

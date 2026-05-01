@@ -57,6 +57,17 @@ export function useInformerFactory(): InformerFactory {
   return factory;
 }
 
+/**
+ * Non-throwing variant of `useInformerFactory`. Returns `null` when no
+ * provider is mounted (e.g. backend mode = "nexus" where the factory
+ * wasn't constructed) OR when the factory's mode doesn't support the
+ * caller's kind. Migrated views that have a `usePolledData` fallback
+ * path can use this to decide which path to take per render.
+ */
+export function useInformerFactoryOptional(): InformerFactory | null {
+  return useContext(InformerContext);
+}
+
 export function useInformer<K extends WatchKind>(kind: K): Informer<K> {
   return useInformerFactory().informerFor(kind);
 }

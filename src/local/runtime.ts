@@ -12,6 +12,7 @@ import type { GroveContract } from "../core/contract.js";
 import { parseGroveContract } from "../core/contract.js";
 import type { FrontierCalculator } from "../core/frontier.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
+import type { WatchHub } from "../core/watch-hub.js";
 import { CachedFrontierCalculator } from "../gossip/cached-frontier.js";
 import { FsCas } from "./fs-cas.js";
 import type { SqliteBountyStore } from "./sqlite-bounty-store.js";
@@ -23,6 +24,7 @@ import type {
   SqliteIdempotencyStore,
 } from "./sqlite-store.js";
 import { createSqliteStores } from "./sqlite-store.js";
+import { createWatchHubRecorder } from "./watch-hub-recorder.js";
 import { LocalWorkspaceManager } from "./workspace.js";
 
 /** Options for creating a local runtime. */
@@ -39,6 +41,22 @@ export interface LocalRuntimeOptions {
   readonly workspace?: boolean;
   /** Whether to parse the GROVE.md contract. Default: `true`. */
   readonly parseContract?: boolean;
+  /**
+   * Optional process-local `WatchHub` to which contribution + claim writes
+   * are republished as `EntityWriteEvent`s. When provided, the runtime
+   * wires `SqliteContributionStore.onContributionWrite` and
+   * `SqliteClaimStore.onClaimWrite` to the recorder shipped in #388 PR2.
+   * When omitted, no hub plumbing is created — existing CLI / server
+   * callers that supply their own `OperationDeps.onEntityWrite` path are
+   * unaffected.
+   */
+  readonly watchHub?: WatchHub | undefined;
+  /**
+   * Namespace under which entity write events are emitted. Required when
+   * `watchHub` is provided. Mirrors the server-side namespace passed to
+   * `OperationDeps.namespace`.
+   */
+  readonly watchNamespace?: string | undefined;
 }
 
 /** All local stores, services, and resources. */
@@ -116,6 +134,22 @@ export function createLocalRuntime(options: LocalRuntimeOptions): LocalRuntime {
   // Wire write-driven cache invalidation: when a contribution is written,
   // the frontier cache is invalidated so the next read recomputes.
   stores.contributionStore.onWrite = onContributionWrite;
+
+  // Wire local-mode WatchHub republish (#388 PR2). The recorder projects
+  // domain types via `contributionToEntity` / `claimToEntity` and calls
+  // `WatchHub.recordWrite`. AgentSession is wired by the TUI main entry
+  // (it owns the AgentRuntime), not here.
+  if (options.watchHub) {
+    if (!options.watchNamespace) {
+      throw new Error("createLocalRuntime: watchNamespace is required when watchHub is provided");
+    }
+    const recorder = createWatchHubRecorder({
+      hub: options.watchHub,
+      namespace: options.watchNamespace,
+    });
+    stores.contributionStore.onContributionWrite = (op, c) => recorder.contribution(op, c);
+    stores.claimStore.onClaimWrite = (op, c) => recorder.claim(op, c);
+  }
 
   let workspace: LocalWorkspaceManager | undefined;
   if (createWorkspace) {
