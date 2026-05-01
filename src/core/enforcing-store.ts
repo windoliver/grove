@@ -28,6 +28,8 @@ import type {
   ActiveClaimFilter,
   ClaimQuery,
   ClaimStore,
+  ContributionPutManyOutcome,
+  ContributionPutOutcome,
   ContributionQuery,
   ContributionStore,
   ExpiredClaim,
@@ -166,7 +168,7 @@ export class EnforcingContributionStore implements ContributionStore {
     this.writeMutex = getMutexForStore(inner);
   }
 
-  put = async (contribution: Contribution): Promise<void> => {
+  put = async (contribution: Contribution): Promise<ContributionPutOutcome> => {
     return this.writeMutex.runExclusive(async () => {
       // Idempotent: if CID already exists, skip enforcement and delegate (no-op)
       const existing = await this.inner.get(contribution.cid);
@@ -208,13 +210,16 @@ export class EnforcingContributionStore implements ContributionStore {
    * cowrite callback itself is sync (runs inside the inner transaction).
    * Callers (`writeContributionWithHandoffs`) must handle the Promise.
    */
-  putWithCowrite = async (contribution: Contribution, cowriteFn: () => void): Promise<void> => {
+  putWithCowrite = async (
+    contribution: Contribution,
+    cowriteFn: () => void,
+  ): Promise<ContributionPutOutcome> => {
     return this.writeMutex.runExclusive(async () => {
       const existing = await this.inner.get(contribution.cid);
       if (existing !== undefined) {
         // Idempotent: contribution already present, skip enforcement and
         // the cowrite (no handoffs to insert for an existing row).
-        return;
+        return { cid: existing.cid, isNew: false, contribution: existing };
       }
 
       await this.enforceContributionLimits(contribution, 0, []);
@@ -226,22 +231,26 @@ export class EnforcingContributionStore implements ContributionStore {
 
       const innerCowrite = (
         this.inner as unknown as {
-          putWithCowrite?: (c: Contribution, fn: () => void) => void;
+          putWithCowrite?: (
+            c: Contribution,
+            fn: () => void,
+          ) => ContributionPutOutcome | Promise<ContributionPutOutcome>;
         }
       ).putWithCowrite;
       if (innerCowrite !== undefined) {
-        innerCowrite.call(this.inner, contribution, cowriteFn);
+        return innerCowrite.call(this.inner, contribution, cowriteFn);
       } else {
         // Defensive fallback — inner store does not support atomic cowrite.
         // Do the best we can: put the contribution, then run the cowrite fn
         // serially. This loses atomicity but matches the serial write path.
-        await this.inner.put(contribution);
-        cowriteFn();
+        const result = await this.inner.put(contribution);
+        if (result === undefined || result.isNew) cowriteFn();
+        return result;
       }
     });
   };
 
-  putMany = async (contributions: readonly Contribution[]): Promise<void> => {
+  putMany = async (contributions: readonly Contribution[]): Promise<ContributionPutManyOutcome> => {
     return this.writeMutex.runExclusive(async () => {
       // Filter out already-existing CIDs and intra-batch duplicates.
       // Idempotent puts should not be rate-limited, and putMany([c, c])
@@ -276,6 +285,8 @@ export class EnforcingContributionStore implements ContributionStore {
 
   // Read operations — direct delegation
   get = (cid: string): Promise<Contribution | undefined> => this.inner.get(cid);
+  getByContentHash = (contentHash: string): Promise<Contribution | undefined> =>
+    this.inner.getByContentHash?.(contentHash) ?? Promise.resolve(undefined);
   getMany = (cids: readonly string[]): Promise<ReadonlyMap<string, Contribution>> =>
     this.inner.getMany(cids);
   list = (query?: ContributionQuery): Promise<readonly Contribution[]> => this.inner.list(query);

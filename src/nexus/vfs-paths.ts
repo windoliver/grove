@@ -86,6 +86,18 @@ export function ftsIndexDir(zoneId: string, sessionId?: string): string {
   return `${base}/indexes/fts`;
 }
 
+/** Path to a contribution content-hash dedup index marker. */
+export function contributionContentHashIndexPath(
+  zoneId: string,
+  contentHash: string,
+  sessionId?: string,
+): string {
+  const base = sessionId
+    ? `/zones/${encodeSegment(zoneId)}/sessions/${encodeSegment(sessionId)}`
+    : `/zones/${encodeSegment(zoneId)}`;
+  return `${base}/indexes/contributions/content-hash/${encodeSegment(contentHash)}`;
+}
+
 /** Path to a relation index entry (from source pointing to target). */
 export function relationIndexPath(zoneId: string, targetCid: string, sourceCid: string): string {
   return `/zones/${encodeSegment(zoneId)}/indexes/relations/${encodeSegment(targetCid)}/${encodeSegment(sourceCid)}.json`;
@@ -155,6 +167,11 @@ export function bountyStatusIndexPath(zoneId: string, status: string, bountyId: 
 /** Directory for a specific bounty status index. */
 export function bountyStatusIndexDir(zoneId: string, status: string): string {
   return `/zones/${encodeSegment(zoneId)}/indexes/bounties/status/${encodeSegment(status)}`;
+}
+
+/** Path to a bounty content-hash dedup index marker. */
+export function bountyContentHashIndexPath(zoneId: string, contentHash: string): string {
+  return `/zones/${encodeSegment(zoneId)}/indexes/bounties/content-hash/${encodeSegment(contentHash)}`;
 }
 
 // ---------------------------------------------------------------------------

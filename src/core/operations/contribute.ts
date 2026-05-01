@@ -9,6 +9,8 @@
 
 import { fireAndForget } from "../../shared/fire-and-forget.js";
 import { pickDefined } from "../../shared/pick-defined.js";
+import { computeContributionContentHash } from "../content-dedup.js";
+import { PolicyViolationError } from "../errors.js";
 import { type HandoffInput, HandoffStatus, type HandoffStore } from "../handoff.js";
 import { createContribution } from "../manifest.js";
 import {
@@ -26,7 +28,7 @@ import {
 import type { PolicyEnforcementResult } from "../policy-enforcer.js";
 import { PolicyEnforcer } from "../policy-enforcer.js";
 import { attachRoutingSignatureToInput } from "../routing-provenance.js";
-import type { ContributionStore } from "../store.js";
+import type { ContributionPutOutcome, ContributionPutResult, ContributionStore } from "../store.js";
 import { toUtcIso } from "../time.js";
 import type { AgentOverrides } from "./agent.js";
 import { resolveAgent } from "./agent.js";
@@ -44,6 +46,8 @@ export interface BaseContributionResult {
   readonly cid: string;
   readonly summary: string;
   readonly createdAt: string;
+  readonly accepted: number;
+  readonly duplicate: number;
 }
 
 /** Result of a contribute operation. */
@@ -545,6 +549,67 @@ export function _resetIdempotencyCacheForTests(): void {
   idempotencyCache.clear();
 }
 
+interface ContributionWriteOutcome {
+  readonly putResult: ContributionPutResult;
+  readonly handoffIds: readonly string[];
+}
+
+function normalizePutResult(
+  contribution: Contribution,
+  result: ContributionPutOutcome,
+): ContributionPutResult {
+  return (
+    result ?? {
+      cid: contribution.cid,
+      isNew: true,
+      contribution,
+    }
+  );
+}
+
+function resultFromContribution(
+  contribution: Contribution,
+  opts: {
+    readonly storedCid?: string | undefined;
+    readonly accepted: number;
+    readonly duplicate: number;
+    readonly routedTo?: readonly string[] | undefined;
+    readonly handoffIds?: readonly string[] | undefined;
+    readonly policy?: PolicyEnforcementResult | undefined;
+  },
+): ContributeResult {
+  return {
+    cid: opts.storedCid ?? contribution.cid,
+    kind: contribution.kind,
+    mode: contribution.mode,
+    summary: contribution.summary,
+    artifactCount: Object.keys(contribution.artifacts).length,
+    relationCount: contribution.relations.length,
+    createdAt: contribution.createdAt,
+    accepted: opts.accepted,
+    duplicate: opts.duplicate,
+    ...(opts.routedTo !== undefined ? { routedTo: opts.routedTo } : {}),
+    ...(opts.handoffIds !== undefined && opts.handoffIds.length > 0
+      ? { handoffIds: opts.handoffIds }
+      : {}),
+    ...(opts.policy !== undefined ? { policy: opts.policy } : {}),
+  };
+}
+
+async function findStoredDuplicateByContentHash(
+  store: ContributionStore,
+  contribution: Contribution,
+): Promise<Contribution | undefined> {
+  if (store.getByContentHash === undefined) return undefined;
+  try {
+    return await store.getByContentHash(computeContributionContentHash(contribution));
+  } catch {
+    // Best-effort fast path. If the lookup fails, continue through the normal
+    // validation/write path so callers receive the original error surface.
+    return undefined;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Contribution write paths
 // ---------------------------------------------------------------------------
@@ -564,11 +629,14 @@ async function writeAtomic(
   contribution: Contribution,
   routedTo: readonly string[],
   agentRole: string,
-  putWithCowrite: (c: Contribution, fn: () => void) => void | Promise<void>,
+  putWithCowrite: (
+    c: Contribution,
+    fn: () => void,
+  ) => ContributionPutOutcome | Promise<ContributionPutOutcome>,
   insertSync: (input: HandoffInput) => string,
   onCommit?: () => void,
   replyTimeouts?: ReadonlyMap<string, number> | undefined,
-): Promise<readonly string[]> {
+): Promise<ContributionWriteOutcome> {
   const handoffIds: string[] = [];
   const maybePromise = putWithCowrite(contribution, () => {
     for (const targetRole of routedTo) {
@@ -590,13 +658,8 @@ async function writeAtomic(
     // record.
     onCommit?.();
   });
-  if (
-    maybePromise !== undefined &&
-    typeof (maybePromise as { then?: unknown }).then === "function"
-  ) {
-    await maybePromise;
-  }
-  return handoffIds;
+  const putResult = await maybePromise;
+  return { putResult: normalizePutResult(contribution, putResult), handoffIds };
 }
 
 /**
@@ -620,8 +683,11 @@ async function writeSerial(
   handoffStore: HandoffStore | undefined,
   onCommit?: () => void,
   replyTimeouts?: ReadonlyMap<string, number> | undefined,
-): Promise<readonly string[]> {
-  await store.put(contribution);
+): Promise<ContributionWriteOutcome> {
+  const putResult = normalizePutResult(contribution, await store.put(contribution));
+  if (!putResult.isNew) {
+    return { putResult, handoffIds: [] };
+  }
   // For non-atomic stores (Nexus, in-memory), write the idempotency row
   // immediately after the contribution commit. Not fully crash-safe (the
   // contribution and idempotency row are separate writes), but the window
@@ -630,7 +696,7 @@ async function writeSerial(
 
   const handoffIds: string[] = [];
   if (handoffStore === undefined || routedTo === undefined || agentRole === undefined) {
-    return handoffIds;
+    return { putResult, handoffIds };
   }
 
   const inputs: HandoffInput[] = routedTo.map((targetRole) => {
@@ -658,7 +724,7 @@ async function writeSerial(
         err,
       );
     }
-    return handoffIds;
+    return { putResult, handoffIds };
   }
 
   // Fallback for stores without createMany: fan out in parallel so N handoffs
@@ -681,7 +747,7 @@ async function writeSerial(
       );
     }
   }
-  return handoffIds;
+  return { putResult, handoffIds };
 }
 
 /**
@@ -697,7 +763,7 @@ async function writeContributionWithHandoffs(
   handoffStore: HandoffStore | undefined,
   onCommit?: () => void,
   replyTimeouts?: ReadonlyMap<string, number> | undefined,
-): Promise<readonly string[]> {
+): Promise<ContributionWriteOutcome> {
   const needsHandoffs =
     handoffStore !== undefined &&
     routedTo !== undefined &&
@@ -705,7 +771,10 @@ async function writeContributionWithHandoffs(
     agentRole !== undefined;
 
   const cowriteStore = store as {
-    putWithCowrite?: (c: Contribution, fn: () => void) => void | Promise<void>;
+    putWithCowrite?: (
+      c: Contribution,
+      fn: () => void,
+    ) => ContributionPutOutcome | Promise<ContributionPutOutcome>;
   };
 
   if (needsHandoffs) {
@@ -965,6 +1034,43 @@ export async function contributeOperation(
       return errResult;
     }
 
+    const returnDuplicate = (
+      storedContribution: Contribution,
+    ): OperationResult<ContributeResult> => {
+      const duplicateResult = resultFromContribution(storedContribution, {
+        storedCid: storedContribution.cid,
+        accepted: 0,
+        duplicate: 1,
+      });
+      const duplicateOk = ok(duplicateResult);
+      idempotencySlot?.resolve(duplicateOk);
+      idempotencySlot = undefined;
+      if (
+        deps.idempotencyStore !== undefined &&
+        idempotencyCacheLookupKey !== undefined &&
+        idempotencyFingerprint !== undefined
+      ) {
+        try {
+          deps.idempotencyStore.store(
+            idempotencyCacheLookupKey,
+            idempotencyFingerprint,
+            JSON.stringify(duplicateResult),
+          );
+        } catch {
+          // Best-effort; the store-level content hash already prevents duplicates.
+        }
+      }
+      return duplicateOk;
+    };
+
+    const existingDuplicate = await findStoredDuplicateByContentHash(
+      deps.contributionStore,
+      contribution,
+    );
+    if (existingDuplicate !== undefined) {
+      return returnDuplicate(existingDuplicate);
+    }
+
     // --- Routing classification ---
     // Plans are coordination metadata (not progress). Done markers
     // (kind=discussion + context.done=true, written by grove_done) signal
@@ -1035,7 +1141,18 @@ export async function contributeOperation(
         // Not the write-mutex hot path that motivated skipExpensiveStopChecks,
         // so keep full evaluation — the post-write recheck is best-effort and
         // should not be the sole detector here.
-        policyResult = await enforcer.enforce(contribution, true, { skipStopConditions });
+        try {
+          policyResult = await enforcer.enforce(contribution, true, { skipStopConditions });
+        } catch (policyErr) {
+          if (policyErr instanceof PolicyViolationError) {
+            const duplicate = await findStoredDuplicateByContentHash(
+              deps.contributionStore,
+              contribution,
+            );
+            if (duplicate !== undefined) return returnDuplicate(duplicate);
+          }
+          throw policyErr;
+        }
       }
     }
 
@@ -1098,15 +1215,10 @@ export async function contributeOperation(
             // Build a minimal result from the contribution (routedTo and
             // handoffIds are populated later, but the CID is the critical
             // dedup signal — retries just need to know the write happened).
-            const earlyResult: ContributeResult = {
-              cid: contribution.cid,
-              kind: contribution.kind,
-              mode: contribution.mode,
-              summary: contribution.summary,
-              artifactCount: Object.keys(contribution.artifacts).length,
-              relationCount: contribution.relations.length,
-              createdAt: contribution.createdAt,
-            };
+            const earlyResult = resultFromContribution(contribution, {
+              accepted: 1,
+              duplicate: 0,
+            });
             // Guarded above by idempotencyCacheLookupKey/idempotencyFingerprint
             // both being defined — non-null assertions here are safe.
             const key = idempotencyCacheLookupKey as string;
@@ -1115,15 +1227,33 @@ export async function contributeOperation(
           }
         : undefined;
 
-    const handoffIds = await writeContributionWithHandoffs(
-      contribution,
-      handoffsRoutedTo,
-      agentRole,
-      deps.contributionStore,
-      deps.handoffStore,
-      idempotencyOnCommit,
-      replyTimeouts,
-    );
+    let writeOutcome: ContributionWriteOutcome;
+    try {
+      writeOutcome = await writeContributionWithHandoffs(
+        contribution,
+        handoffsRoutedTo,
+        agentRole,
+        deps.contributionStore,
+        deps.handoffStore,
+        idempotencyOnCommit,
+        replyTimeouts,
+      );
+    } catch (writeErr) {
+      if (writeErr instanceof PolicyViolationError) {
+        const duplicate = await findStoredDuplicateByContentHash(
+          deps.contributionStore,
+          contribution,
+        );
+        if (duplicate !== undefined) return returnDuplicate(duplicate);
+      }
+      throw writeErr;
+    }
+    const { handoffIds, putResult } = writeOutcome;
+
+    if (!putResult.isNew) {
+      const storedContribution = putResult.contribution ?? contribution;
+      return returnDuplicate({ ...storedContribution, cid: putResult.cid });
+    }
 
     if (process.env.GROVE_DEBUG === "1" && handoffIds.length > 0) {
       process.stderr.write(
@@ -1152,18 +1282,13 @@ export async function contributeOperation(
     // │ snapshot, which is still correct (the contribution is the      │
     // │ same, only the advisory stop signal differs).                  │
     // └──────────────────────────────────────────────────────────────────┘
-    const committedResult: ContributeResult = {
-      cid: contribution.cid,
-      kind: contribution.kind,
-      mode: contribution.mode,
-      summary: contribution.summary,
-      artifactCount: Object.keys(contribution.artifacts).length,
-      relationCount: contribution.relations.length,
-      createdAt: contribution.createdAt,
-      ...(routedTo !== undefined ? { routedTo } : {}),
-      ...(handoffIds.length > 0 ? { handoffIds } : {}),
-      ...(policyResult !== undefined ? { policy: policyResult } : {}),
-    };
+    const committedResult = resultFromContribution(contribution, {
+      accepted: 1,
+      duplicate: 0,
+      routedTo,
+      handoffIds,
+      policy: policyResult,
+    });
 
     if (idempotencySlot !== undefined) {
       idempotencySlot.resolve(ok(committedResult));
@@ -1507,18 +1632,13 @@ export async function contributeOperation(
     // Build the final result returned to the DIRECT caller. This includes
     // any post-write updates to policyResult (e.g., stop-condition recheck
     // detecting a threshold crossing).
-    const result: ContributeResult = {
-      cid: contribution.cid,
-      kind: contribution.kind,
-      mode: contribution.mode,
-      summary: contribution.summary,
-      artifactCount: Object.keys(contribution.artifacts).length,
-      relationCount: contribution.relations.length,
-      createdAt: contribution.createdAt,
-      ...(routedTo !== undefined ? { routedTo } : {}),
-      ...(handoffIds.length > 0 ? { handoffIds } : {}),
-      ...(policyResult !== undefined ? { policy: policyResult } : {}),
-    };
+    const result = resultFromContribution(contribution, {
+      accepted: 1,
+      duplicate: 0,
+      routedTo,
+      handoffIds,
+      policy: policyResult,
+    });
 
     // Refresh BOTH the in-memory idempotency cache AND the durable row with
     // the final result so same-process retries and cross-process lookups
@@ -1656,6 +1776,8 @@ export async function reviewOperation(
     targetCid: input.targetCid,
     summary: result.value.summary,
     createdAt: result.value.createdAt,
+    accepted: result.value.accepted,
+    duplicate: result.value.duplicate,
   });
 }
 
@@ -1706,6 +1828,8 @@ export async function reproduceOperation(
     result: reproResult,
     summary: result.value.summary,
     createdAt: result.value.createdAt,
+    accepted: result.value.accepted,
+    duplicate: result.value.duplicate,
   });
 }
 
@@ -1746,6 +1870,8 @@ export async function discussOperation(
     ...(input.targetCid !== undefined ? { targetCid: input.targetCid } : {}),
     summary: result.value.summary,
     createdAt: result.value.createdAt,
+    accepted: result.value.accepted,
+    duplicate: result.value.duplicate,
   });
 }
 
@@ -1785,5 +1911,7 @@ export async function adoptOperation(
     targetCid: input.targetCid,
     summary: result.value.summary,
     createdAt: result.value.createdAt,
+    accepted: result.value.accepted,
+    duplicate: result.value.duplicate,
   });
 }

@@ -67,8 +67,14 @@ export async function setOutcomeOperation(
       ...(input.reason !== undefined ? { reason: input.reason } : {}),
       ...(input.baselineCid !== undefined ? { baselineCid: input.baselineCid } : {}),
     });
+    const writeMeta = record as OutcomeRecord & { readonly isNew?: boolean | undefined };
+    const isNew = writeMeta.isNew !== false;
 
-    return ok(record);
+    return ok({
+      ...record,
+      accepted: isNew ? 1 : 0,
+      duplicate: isNew ? 0 : 1,
+    });
   } catch (error) {
     return fromGroveError(error);
   }

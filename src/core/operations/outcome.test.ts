@@ -98,6 +98,32 @@ describe("setOutcomeOperation", () => {
     expect(result.value.baselineCid).toBe("blake3:baseline000");
   });
 
+  test("dedups repeated identical outcome sets by content hash", async () => {
+    const input = {
+      cid: "blake3:duplicate-outcome",
+      status: "accepted" as const,
+      reason: "Same evaluator decision",
+      agent: { agentId: "evaluator-1" },
+    };
+
+    const first = await setOutcomeOperation(input, deps);
+    const second = await setOutcomeOperation(input, deps);
+    const third = await setOutcomeOperation(input, deps);
+
+    expect(first.ok && second.ok && third.ok).toBe(true);
+    if (!first.ok || !second.ok || !third.ok) return;
+    expect(first.value.accepted).toBe(1);
+    expect(first.value.duplicate).toBe(0);
+    expect(second.value.accepted).toBe(0);
+    expect(second.value.duplicate).toBe(1);
+    expect(third.value.accepted).toBe(0);
+    expect(third.value.duplicate).toBe(1);
+
+    const listed = await listOutcomesOperation({}, deps);
+    expect(listed.ok).toBe(true);
+    if (listed.ok) expect(listed.value).toHaveLength(1);
+  });
+
   test("returns VALIDATION_ERROR when outcomeStore not configured", async () => {
     const depsNoOutcome: OperationDeps = {
       contributionStore: deps.contributionStore,

@@ -9,6 +9,7 @@
  * - Status index:   /zones/{zoneId}/indexes/outcomes/status/{status}/{cid}
  */
 
+import { computeOutcomeContentHash } from "../core/content-dedup.js";
 import type {
   OutcomeInput,
   OutcomeQuery,
@@ -67,6 +68,12 @@ export class NexusOutcomeStore implements OutcomeStore {
   async set(cid: string, input: OutcomeInput): Promise<OutcomeRecord> {
     // Read existing record to detect status change for index cleanup
     const existing = await this.get(cid);
+    if (
+      existing !== undefined &&
+      computeOutcomeContentHash(existing.cid, existing) === computeOutcomeContentHash(cid, input)
+    ) {
+      return { ...existing, isNew: false } as OutcomeRecord & { readonly isNew: false };
+    }
 
     const record: OutcomeRecord = {
       cid,
@@ -111,7 +118,7 @@ export class NexusOutcomeStore implements OutcomeStore {
       this.config,
     );
 
-    return record;
+    return { ...record, isNew: true } as OutcomeRecord & { readonly isNew: true };
   }
 
   async get(cid: string): Promise<OutcomeRecord | undefined> {

@@ -12,6 +12,7 @@ import { BountyStatus } from "../core/bounty.js";
 import { BountyStateError } from "../core/bounty-errors.js";
 import { validateBountyTransition } from "../core/bounty-logic.js";
 import type { BountyQuery, BountyStore, RewardQuery } from "../core/bounty-store.js";
+import { computeBountyStorageContentHash } from "../core/content-dedup.js";
 import { StateConflictError } from "../core/errors.js";
 import type { AgentIdentity, JsonValue } from "../core/models.js";
 
@@ -41,6 +42,7 @@ export const BOUNTY_DDL = `
     fulfilled_by_cid TEXT,
     reservation_id TEXT,
     context_json TEXT,
+    content_hash TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -152,6 +154,46 @@ function rowToReward(row: RewardRow): RewardRecord {
   };
 }
 
+export function migrateBountyContentHash(db: Database): void {
+  const cols = db.prepare("PRAGMA table_info(bounties)").all() as readonly { name: string }[];
+  if (cols.length === 0) return;
+  const colNames = new Set(cols.map((c) => c.name));
+  if (!colNames.has("content_hash")) {
+    db.run("ALTER TABLE bounties ADD COLUMN content_hash TEXT");
+  }
+
+  const rows = db
+    .prepare("SELECT * FROM bounties WHERE content_hash IS NULL OR content_hash = ''")
+    .all() as BountyRow[];
+  const updateHash = db.prepare("UPDATE bounties SET content_hash = ? WHERE bounty_id = ?");
+  for (const row of rows) {
+    const bounty = rowToBounty(row);
+    updateHash.run(computeBountyStorageContentHash(bounty), bounty.bountyId);
+  }
+
+  const duplicateRows = db
+    .prepare(
+      `
+      WITH ranked AS (
+        SELECT bounty_id,
+               ROW_NUMBER() OVER (
+                 PARTITION BY content_hash
+                 ORDER BY created_at ASC, rowid ASC
+               ) AS rn
+        FROM bounties
+        WHERE content_hash IS NOT NULL AND content_hash <> ''
+      )
+      SELECT bounty_id FROM ranked WHERE rn > 1
+    `,
+    )
+    .all() as readonly { bounty_id: string }[];
+  for (const row of duplicateRows) {
+    db.run("DELETE FROM bounties WHERE bounty_id = ?", [row.bounty_id]);
+  }
+
+  db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_bounties_content_hash ON bounties(content_hash)");
+}
+
 // ---------------------------------------------------------------------------
 // SqliteBountyStore
 // ---------------------------------------------------------------------------
@@ -169,6 +211,7 @@ export class SqliteBountyStore implements BountyStore {
   constructor(db: Database) {
     this.db = db;
     this.storeIdentity = (db as { filename?: string }).filename;
+    migrateBountyContentHash(db);
   }
 
   // -----------------------------------------------------------------------
@@ -177,15 +220,16 @@ export class SqliteBountyStore implements BountyStore {
 
   createBounty = async (bounty: Bounty): Promise<Bounty> => {
     this.stmtInsertBounty ??= this.db.prepare(`
-      INSERT INTO bounties (
+      INSERT OR IGNORE INTO bounties (
         bounty_id, title, description, status, creator_agent_id, creator_json,
         amount, criteria_json, zone_id, deadline, claimed_by_json, claim_id,
-        fulfilled_by_cid, reservation_id, context_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        fulfilled_by_cid, reservation_id, context_json, content_hash, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
+    const contentHash = computeBountyStorageContentHash(bounty);
     try {
-      this.stmtInsertBounty.run(
+      const result = this.stmtInsertBounty.run(
         bounty.bountyId,
         bounty.title,
         bounty.description,
@@ -201,9 +245,28 @@ export class SqliteBountyStore implements BountyStore {
         bounty.fulfilledByCid ?? null,
         bounty.reservationId ?? null,
         bounty.context !== undefined ? JSON.stringify(bounty.context) : null,
+        contentHash,
         bounty.createdAt,
         bounty.updatedAt,
       );
+      if (result.changes === 0) {
+        const idConflict = this.db
+          .prepare("SELECT bounty_id FROM bounties WHERE bounty_id = ?")
+          .get(bounty.bountyId) as { bounty_id: string } | null;
+        if (idConflict !== null) {
+          throw new StateConflictError({
+            resource: "Bounty",
+            reason: "already exists",
+            message: `Bounty '${bounty.bountyId}' already exists`,
+          });
+        }
+        const duplicate = this.db
+          .prepare("SELECT * FROM bounties WHERE content_hash = ?")
+          .get(contentHash) as BountyRow | null;
+        if (duplicate !== null) {
+          return { ...rowToBounty(duplicate), isNew: false } as Bounty & { readonly isNew: false };
+        }
+      }
     } catch (err) {
       if (err instanceof Error && err.message.includes("UNIQUE constraint")) {
         throw new StateConflictError({
@@ -215,7 +278,7 @@ export class SqliteBountyStore implements BountyStore {
       throw err;
     }
 
-    return bounty;
+    return { ...bounty, isNew: true } as Bounty & { readonly isNew: true };
   };
 
   getBounty = async (bountyId: string): Promise<Bounty | undefined> => {

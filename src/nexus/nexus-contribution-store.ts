@@ -11,6 +11,7 @@
  * - FTS:        /zones/{zoneId}/indexes/fts/{cid}.json
  */
 
+import { computeContributionContentHash } from "../core/content-dedup.js";
 import type { ContributionEntity } from "../core/entity.js";
 import { contributionToEntity } from "../core/entity.js";
 import { fromManifest, toManifest, verifyCid } from "../core/manifest.js";
@@ -22,6 +23,7 @@ import type {
   RelationType,
 } from "../core/models.js";
 import type {
+  ContributionPutResult,
   ContributionQuery,
   ContributionStore,
   HotThreadsOptions,
@@ -34,11 +36,13 @@ import { batchParallel } from "./batch.js";
 import type { NexusClient } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
+import { NexusConflictError } from "./errors.js";
 import { listAllPages } from "./list-pages.js";
 import { LruCache } from "./lru-cache.js";
 import { withRetry, withSemaphore } from "./retry.js";
 import { Semaphore } from "./semaphore.js";
 import {
+  contributionContentHashIndexPath,
   contributionPath,
   ftsIndexDir,
   ftsIndexPath,
@@ -134,7 +138,7 @@ export class NexusContributionStore implements ContributionStore {
     this.cache = new LruCache(this.config.cacheMaxEntries);
   }
 
-  async put(contribution: Contribution): Promise<void> {
+  async put(contribution: Contribution): Promise<ContributionPutResult> {
     if (!verifyCid(contribution)) {
       throw new Error(
         `CID integrity check failed for '${contribution.cid}': CID does not match manifest content`,
@@ -142,6 +146,58 @@ export class NexusContributionStore implements ContributionStore {
     }
 
     const manifestPath = contributionPath(this.zoneId, contribution.cid, this.sessionId);
+    const contentHash = computeContributionContentHash(contribution);
+    const contentHashPath = contributionContentHashIndexPath(
+      this.zoneId,
+      contentHash,
+      this.sessionId,
+    );
+
+    const existingCidData = await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.read(contentHashPath)),
+      "put:contentHashLookup",
+      this.config,
+    );
+    if (existingCidData !== undefined) {
+      const existingCid = decoder.decode(existingCidData);
+      const existing = await this.get(existingCid);
+      return {
+        cid: existingCid,
+        isNew: false,
+        ...(existing !== undefined ? { contribution: existing } : {}),
+      };
+    }
+
+    try {
+      await withRetry(
+        () =>
+          withSemaphore(this.semaphore, () =>
+            this.client.write(contentHashPath, encoder.encode(contribution.cid), {
+              ifNoneMatch: "*",
+            }),
+          ),
+        "put:contentHashReserve",
+        this.config,
+      );
+    } catch (err) {
+      if (err instanceof NexusConflictError) {
+        const existing = await withRetry(
+          () => withSemaphore(this.semaphore, () => this.client.read(contentHashPath)),
+          "put:contentHashConflictLookup",
+          this.config,
+        );
+        if (existing !== undefined) {
+          const existingCid = decoder.decode(existing);
+          const existingContribution = await this.get(existingCid);
+          return {
+            cid: existingCid,
+            isNew: false,
+            ...(existingContribution !== undefined ? { contribution: existingContribution } : {}),
+          };
+        }
+      }
+      throw err;
+    }
 
     await withRetry(
       async () => {
@@ -198,14 +254,15 @@ export class NexusContributionStore implements ContributionStore {
       "store.put",
       `cid=${contribution.cid.slice(0, 16)} sessionId=${this.sessionId ?? "none"} path=${manifestPath}`,
     );
+    return { cid: contribution.cid, isNew: true, contribution };
   }
 
-  async putMany(contributions: readonly Contribution[]): Promise<void> {
+  async putMany(contributions: readonly Contribution[]): Promise<readonly ContributionPutResult[]> {
     const unique = new Map<string, Contribution>();
     for (const c of contributions) {
       unique.set(c.cid, c);
     }
-    await batchParallel([...unique.values()], (c) => this.put(c));
+    return batchParallel([...unique.values()], (c) => this.put(c));
   }
 
   async getMany(cids: readonly string[]): Promise<ReadonlyMap<string, Contribution>> {
@@ -236,6 +293,21 @@ export class NexusContributionStore implements ContributionStore {
     const contribution = fromManifest(manifest, { verify: false });
     this.cache.set(cid, contribution);
     return contribution;
+  }
+
+  async getByContentHash(contentHash: string): Promise<Contribution | undefined> {
+    const contentHashPath = contributionContentHashIndexPath(
+      this.zoneId,
+      contentHash,
+      this.sessionId,
+    );
+    const existingCidData = await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.read(contentHashPath)),
+      "getByContentHash",
+      this.config,
+    );
+    if (existingCidData === undefined) return undefined;
+    return this.get(decoder.decode(existingCidData));
   }
 
   async list(query?: ContributionQuery): Promise<readonly Contribution[]> {

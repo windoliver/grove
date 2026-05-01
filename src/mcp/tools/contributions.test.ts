@@ -135,6 +135,37 @@ describe("grove_submit_work", () => {
     expect(data.artifactCount).toBe(1);
   });
 
+  test("reports accepted and duplicate counts for repeated identical work payloads", async () => {
+    const payload = {
+      summary: "Retry-safe upload",
+      artifacts: {},
+      agent: { agentId: "coder-1", role: "coder" },
+    };
+
+    const first = await callTool(server, "grove_submit_work", payload);
+    const second = await callTool(server, "grove_submit_work", payload);
+    const third = await callTool(server, "grove_submit_work", payload);
+
+    expect(first.isError).toBeUndefined();
+    expect(second.isError).toBeUndefined();
+    expect(third.isError).toBeUndefined();
+    const firstData = JSON.parse(first.text);
+    const secondData = JSON.parse(second.text);
+    const thirdData = JSON.parse(third.text);
+    expect(firstData.accepted).toBe(1);
+    expect(firstData.duplicate).toBe(0);
+    expect(secondData.accepted).toBe(0);
+    expect(secondData.duplicate).toBe(1);
+    expect(thirdData.accepted).toBe(0);
+    expect(thirdData.duplicate).toBe(1);
+    expect(secondData.cid).toBe(firstData.cid);
+    expect(thirdData.cid).toBe(firstData.cid);
+
+    const stored = await deps.contributionStore.list({ limit: 20 });
+    const matching = stored.filter((c) => c.summary === "Retry-safe upload");
+    expect(matching).toHaveLength(1);
+  });
+
   test("accepts empty artifacts with warning", async () => {
     const result = await callTool(server, "grove_submit_work", {
       summary: "Configured CI pipeline",

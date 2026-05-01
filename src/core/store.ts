@@ -59,6 +59,24 @@ export interface ContributionQuery {
   readonly sessionId?: string | undefined;
 }
 
+/** Result of a store-boundary contribution insert attempt. */
+export interface ContributionPutResult {
+  /** CID of the stored row. For duplicates this is the existing row CID. */
+  readonly cid: string;
+  /** True when this call inserted a new row; false when it matched existing content. */
+  readonly isNew: boolean;
+  /** Stored contribution snapshot, when the backend can return it without extra cost. */
+  readonly contribution?: Contribution | undefined;
+}
+
+// Existing in-memory and test stores historically return Promise<void>. Backends
+// that can detect content-hash duplicates return metadata instead.
+// biome-ignore lint/suspicious/noConfusingVoidType: preserves ContributionStore compatibility.
+export type ContributionPutOutcome = void | ContributionPutResult;
+
+// biome-ignore lint/suspicious/noConfusingVoidType: preserves ContributionStore compatibility.
+export type ContributionPutManyOutcome = void | readonly ContributionPutResult[];
+
 /** Store for immutable contributions and their typed relations. */
 export interface ContributionStore {
   /**
@@ -75,13 +93,16 @@ export interface ContributionStore {
    */
   readonly storeIdentity?: string | undefined;
   /** Store a contribution (idempotent — same CID is a no-op). */
-  put(contribution: Contribution): Promise<void>;
+  put(contribution: Contribution): Promise<ContributionPutOutcome>;
 
   /** Store multiple contributions in a single transaction. Idempotent per CID. */
-  putMany(contributions: readonly Contribution[]): Promise<void>;
+  putMany(contributions: readonly Contribution[]): Promise<ContributionPutManyOutcome>;
 
   /** Retrieve a contribution by CID. */
   get(cid: string): Promise<Contribution | undefined>;
+
+  /** Retrieve a contribution by its logical content hash, when the backend indexes it. */
+  getByContentHash?(contentHash: string): Promise<Contribution | undefined>;
 
   /** Retrieve multiple contributions by CID. Returns a map of CID → Contribution for found CIDs. */
   getMany(cids: readonly string[]): Promise<ReadonlyMap<string, Contribution>>;
