@@ -1,7 +1,7 @@
 /**
  * Informer<K> — K8s-informer-style local cache with event fanout (#294).
  *
- * Wraps WatchClient to maintain a Map<id, Entity> that tracks server state
+ * Consumes a WatchStream to maintain a Map<id, Entity> that tracks server state
  * via the list→watch handshake. One Informer per kind is shared across all
  * subscribers via InformerFactory.
  *
@@ -10,8 +10,11 @@
  */
 
 import type { AgentSessionEntity, ClaimEntity, ContributionEntity } from "./entity.js";
-import { WatchClient, type WatchClientEvent, type WatchClientOptions } from "./watch-client.js";
-import type { WatchKind } from "./watch-events.js";
+import { LocalWatchClient } from "./local-watch-client.js";
+import { WatchClient, type WatchClientOptions } from "./watch-client.js";
+import type { WatchEntity, WatchKind } from "./watch-events.js";
+import type { WatchHub } from "./watch-hub.js";
+import type { WatchClientEvent, WatchStream } from "./watch-stream.js";
 
 type EntityForKind<K extends WatchKind> = K extends "Contribution"
   ? ContributionEntity
@@ -28,18 +31,21 @@ export type EventHandlerFn<K extends WatchKind = WatchKind> = (
   entity: EntityForKind<K>,
 ) => void | Promise<void>;
 
+export type SyncHandlerFn = () => void;
+
 export class Informer<K extends WatchKind = WatchKind> {
-  private readonly clientOpts: WatchClientOptions;
+  private readonly stream: WatchStream;
   private readonly store = new Map<string, EntityForKind<K>>();
   private readonly handlers: Array<EventHandlerFn<K>> = [];
+  private readonly syncHandlers: Array<SyncHandlerFn> = [];
   private _synced = false;
   private staging: Map<string, EntityForKind<K>> | null = null;
   private _running = false;
   // Set during run() so dispatch can race handlers against the abort signal.
   private _signal: AbortSignal | null = null;
 
-  constructor(opts: WatchClientOptions) {
-    this.clientOpts = opts;
+  constructor(stream: WatchStream) {
+    this.stream = stream;
   }
 
   /**
@@ -53,6 +59,34 @@ export class Informer<K extends WatchKind = WatchKind> {
     return () => {
       const idx = this.handlers.indexOf(fn);
       if (idx >= 0) this.handlers.splice(idx, 1);
+    };
+  }
+
+  /**
+   * Register a sync handler that fires on every RELIST_END, including empty
+   * snapshots and snapshots that produce no per-entity deltas. Required so
+   * hooks can flip hasSynced and recompute filtered views even when the
+   * snapshot is identical to the prior cache state.
+   *
+   * @param fireIfSynced when true (default) and the informer is already
+   *   synced at registration time, fire `fn` immediately so newly-mounted
+   *   consumers don't have to wait for the next RELIST_END to learn the
+   *   cache is populated. Pass false to subscribe only to FUTURE RELIST_END
+   *   events — used by the factory's recovery handler so a stale `_synced
+   *   === true` from a prior run can't clear an error owned by the new run.
+   */
+  addSyncHandler(fn: SyncHandlerFn, fireIfSynced = true): () => void {
+    this.syncHandlers.push(fn);
+    if (fireIfSynced && this._synced) {
+      try {
+        fn();
+      } catch (err) {
+        console.error("Informer: sync handler threw, continuing fanout:", err);
+      }
+    }
+    return () => {
+      const idx = this.syncHandlers.indexOf(fn);
+      if (idx >= 0) this.syncHandlers.splice(idx, 1);
     };
   }
 
@@ -77,8 +111,7 @@ export class Informer<K extends WatchKind = WatchKind> {
     this._running = true;
     this._signal = signal;
     try {
-      const client = new WatchClient(this.clientOpts);
-      await client.run({ onEvent: (e) => this.onEvent(e), signal });
+      await this.stream.run({ onEvent: (e) => this.onEvent(e), signal });
     } finally {
       this._signal = null;
       this._running = false;
@@ -102,6 +135,7 @@ export class Informer<K extends WatchKind = WatchKind> {
         this._synced = true;
         await this.commitReplace(this.staging);
         this.staging = null;
+        this.fireSync();
         break;
 
       case "RELIST_ABORTED":
@@ -160,6 +194,18 @@ export class Informer<K extends WatchKind = WatchKind> {
     for (const e of deleted) await this.dispatch("DELETED", e);
     for (const e of added) await this.dispatch("ADDED", e);
     for (const e of modified) await this.dispatch("MODIFIED", e);
+  }
+
+  private fireSync(): void {
+    // Snapshot before iterating so a handler that calls its own unsubscribe
+    // mid-iteration does not skip the next handler.
+    for (const handler of [...this.syncHandlers]) {
+      try {
+        handler();
+      } catch (err) {
+        console.error("Informer: sync handler threw, continuing fanout:", err);
+      }
+    }
   }
 
   private async dispatch(op: InformerOp, entity: EntityForKind<K>): Promise<void> {
@@ -227,12 +273,62 @@ function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === "AbortError";
 }
 
-export interface InformerFactoryOptions {
-  readonly baseUrl: string;
-  readonly authHeader: string;
-  readonly fetch?: typeof fetch;
-  readonly backoff?: WatchClientOptions["backoff"];
+export type Backoff = NonNullable<WatchClientOptions["backoff"]>;
+
+export type InformerFactoryOptions =
+  | {
+      readonly mode: "remote";
+      readonly baseUrl: string;
+      readonly authHeader: string;
+      readonly fetch?: typeof fetch;
+      readonly backoff?: Backoff;
+    }
+  | {
+      readonly mode: "local";
+      readonly hub: WatchHub;
+      readonly namespace: string;
+      /**
+       * Snapshot source per kind. Sync and async shapes both supported so
+       * Promise-returning local stores (`ContributionStore.listEntities`,
+       * `ClaimStore.listEntities`) can be wired without forcing callers to
+       * pre-await. LocalWatchClient awaits the result before iteration.
+       */
+      readonly listFn: (
+        kind: WatchKind,
+      ) => readonly WatchEntity[] | Promise<readonly WatchEntity[]>;
+    };
+
+export type FactoryErrorListener = (kind: WatchKind, err: Error | null) => void;
+
+interface RunningInformer {
+  readonly informer: Informer;
+  controller: AbortController;
+  runPromise: Promise<void> | null;
+  /** Generation token: incremented every (re)start. Lets a settling run
+   * identify whether the runPromise it owns is still the live one before
+   * clearing factory state, so a concurrent restart can't be undone by a
+   * late `runPromise = null` from a previous generation. */
+  generation: number;
+  /** Last terminal error from `informer.run()`, if any. Cleared on next start. */
+  lastError: Error | null;
+  /** Serialization lock: relist/startKind operations chain on this so two
+   * overlapping calls don't race on controller/runPromise state. */
+  lifecycleLock: Promise<void>;
 }
+
+/**
+ * Kinds the factory will start eagerly via `startAll()` AND the only kinds
+ * `informerFor` will accept. AgentSession is intentionally excluded because
+ * the grove-server `/api/list` route currently returns 501 NOT_CONFIGURED
+ * for it (handler exists, list source not wired). Re-add once server
+ * support lands.
+ *
+ * Asking for an unsupported kind throws — louder than handing back an
+ * informer that would silently never sync.
+ */
+const ALL_KINDS: readonly WatchKind[] = ["Contribution", "Claim"];
+
+const SUPPORTED_KINDS = new Set<WatchKind>(ALL_KINDS);
 
 /**
  * InformerFactory memoizes one Informer per kind for a single namespace
@@ -242,29 +338,241 @@ export interface InformerFactoryOptions {
  */
 export class InformerFactory {
   private readonly opts: InformerFactoryOptions;
-  // key: kind string
-  private readonly informers = new Map<string, Informer>();
+  private readonly running = new Map<string, RunningInformer>();
+  private readonly errorListeners: Array<FactoryErrorListener> = [];
 
   constructor(opts: InformerFactoryOptions) {
     this.opts = opts;
   }
 
-  informerFor<K extends WatchKind>(kind: K): Informer<K> {
-    let informer = this.informers.get(kind) as Informer<K> | undefined;
-    if (!informer) {
-      // Build clientOpts conditionally so exactOptionalPropertyTypes doesn't
-      // treat undefined fetch/backoff as explicit-undefined (which violates
-      // WatchClientOptions where the props are optional, not optional|undefined).
-      const clientOpts: WatchClientOptions = {
-        baseUrl: this.opts.baseUrl,
-        kind,
-        authHeader: this.opts.authHeader,
-        ...(this.opts.fetch !== undefined ? { fetch: this.opts.fetch } : {}),
-        ...(this.opts.backoff !== undefined ? { backoff: this.opts.backoff } : {}),
-      };
-      informer = new Informer<K>(clientOpts);
-      this.informers.set(kind, informer as Informer);
+  /**
+   * Subscribe to terminal `informer.run()` rejections. Fires with the
+   * captured Error after a kind's run loop rejects, and again with `null`
+   * when a subsequent restart succeeds (i.e. clears the error). Hooks use
+   * this to surface auth/config/server failures instead of leaving
+   * consumers stuck at `hasSynced=false` with no error.
+   */
+  addErrorListener(fn: FactoryErrorListener): () => void {
+    this.errorListeners.push(fn);
+    return () => {
+      const idx = this.errorListeners.indexOf(fn);
+      if (idx >= 0) this.errorListeners.splice(idx, 1);
+    };
+  }
+
+  private fireError(kind: WatchKind, err: Error | null): void {
+    for (const fn of [...this.errorListeners]) {
+      try {
+        fn(kind, err);
+      } catch (e) {
+        console.error("InformerFactory: error listener threw, continuing fanout:", e);
+      }
     }
+  }
+
+  /**
+   * Returns the Informer for a kind. Lazily constructs it on first call,
+   * but does NOT start `run()` — call `startAll()` to start watching.
+   * Throws for kinds the server does not yet support — see SUPPORTED_KINDS
+   * comment for the AgentSession rationale.
+   */
+  informerFor<K extends WatchKind>(kind: K): Informer<K> {
+    if (!SUPPORTED_KINDS.has(kind)) {
+      throw new Error(
+        `InformerFactory.informerFor(${kind}): kind not yet supported by grove-server watch routes. Supported: ${[
+          ...SUPPORTED_KINDS,
+        ].join(", ")}.`,
+      );
+    }
+    const existing = this.running.get(kind);
+    if (existing) return existing.informer as Informer<K>;
+    const stream = this.makeStream(kind);
+    const informer = new Informer<K>(stream);
+    this.running.set(kind, {
+      informer: informer as Informer,
+      controller: new AbortController(),
+      runPromise: null,
+      generation: 0,
+      lastError: null,
+      lifecycleLock: Promise.resolve(),
+    });
     return informer;
+  }
+
+  /**
+   * Start `run()` on all known kinds. Idempotent — already-started kinds
+   * are skipped. Caller is responsible for `stopAll()` (or aborting the
+   * parent signal) on shutdown.
+   */
+  startAll(): void {
+    for (const kind of ALL_KINDS) {
+      this.startKind(kind);
+    }
+  }
+
+  /**
+   * Abort all running informers. After this returns, the run() promises
+   * have settled and the factory is reusable.
+   */
+  async stopAll(): Promise<void> {
+    // Serialize against in-flight relist/startKind so a concurrent restart
+    // can't replace the controller after we've aborted but before we await.
+    const stops = [...this.running.values()].map((r) => this.withLock(r, () => this.stopOne(r)));
+    await Promise.all(stops);
+  }
+
+  /**
+   * Force a relist on a single kind (or all kinds when undefined). Aborts
+   * the current run, awaits its settlement, then starts a new run with a
+   * fresh AbortController. Per-kind serialized so two overlapping callers
+   * don't lose track of the live controller or runPromise.
+   */
+  async relist(kind?: WatchKind): Promise<void> {
+    const kinds: WatchKind[] = kind ? [kind] : [...ALL_KINDS];
+    const targets = kinds
+      .map((k) => this.running.get(k))
+      .filter((r): r is RunningInformer => r !== undefined);
+
+    await Promise.all(
+      kinds.map((k) => {
+        const r = this.running.get(k);
+        if (!r) return Promise.resolve();
+        return this.withLock(r, async () => {
+          await this.stopOne(r);
+          r.controller = new AbortController();
+          this.startOne(k, r);
+        });
+      }),
+    );
+    // Reference targets so unused-var lints don't trip — this is the
+    // pre-filtered list used to avoid creating informers for unknown kinds.
+    void targets;
+  }
+
+  /** Last terminal error captured from a kind's `run()`, if any. */
+  getLastError(kind: WatchKind): Error | null {
+    return this.running.get(kind)?.lastError ?? null;
+  }
+
+  private startKind(kind: WatchKind): void {
+    let r = this.running.get(kind);
+    if (!r) {
+      this.informerFor(kind);
+      r = this.running.get(kind);
+      if (!r) throw new Error(`unreachable: informerFor(${kind}) did not register a running entry`);
+    }
+    const entry = r;
+    void this.withLock(entry, async () => {
+      this.startOne(kind, entry);
+    });
+  }
+
+  /**
+   * Relist a single kind via internal lock — used by the in-process
+   * `RefreshContext` button (and PR2 hook bindings).
+   */
+
+  /**
+   * Start a fresh `run()` if not already running. Wraps the run promise so
+   * terminal errors clear `runPromise` (allowing future restart), record
+   * `lastError`, fire the factory's error listeners, and never bubble as
+   * unhandled rejections. The generation token guards against a settling
+   * run from a prior generation clearing state owned by the current one.
+   */
+  private startOne(kind: WatchKind, r: RunningInformer): void {
+    if (r.runPromise) return;
+    if (r.controller.signal.aborted) {
+      r.controller = new AbortController();
+    }
+    r.generation += 1;
+    const generation = r.generation;
+    // Do NOT clear lastError on start — clearing here would fire `null` to
+    // listeners while the new run is still pending or backing off, making
+    // hooks drop their visible error even though sync has not been re-proven.
+    // Wait for a concrete recovery signal: first successful RELIST_END after
+    // this start. The sync handler below clears + fires null exactly once.
+    // Subscribe with fireIfSynced=false so a stale `_synced === true` from
+    // the prior run doesn't trigger us synchronously and clear the error
+    // before the new run has actually re-proven sync.
+    const recovery = r.informer.addSyncHandler(() => {
+      // Stale-generation handlers must not clear errors owned by a newer run.
+      if (r.generation !== generation) {
+        recovery();
+        return;
+      }
+      if (r.lastError !== null) {
+        r.lastError = null;
+        this.fireError(kind, null);
+      }
+      // One-shot: detach after firing once. Subsequent syncs are healthy
+      // by definition and don't need to fire null again.
+      recovery();
+    }, false);
+    const signal = r.controller.signal;
+    const informer = r.informer;
+    r.runPromise = informer.run(signal).then(
+      () => {
+        if (r.generation === generation) {
+          r.runPromise = null;
+          recovery();
+        }
+      },
+      (err: unknown) => {
+        if (r.generation === generation) {
+          r.runPromise = null;
+          recovery();
+          const errorObj = err instanceof Error ? err : new Error(String(err));
+          r.lastError = errorObj;
+          // Log so terminal failures (auth/config/permanent server errors)
+          // aren't silently swallowed when no error listener is registered.
+          console.warn(`Informer[${kind}]: run() failed: ${errorObj.message}`);
+          this.fireError(kind, errorObj);
+        }
+      },
+    );
+  }
+
+  /**
+   * Abort the current run (if any) and await settlement. Safe to call when
+   * no run is active — resolves immediately. Caller must hold lifecycleLock.
+   */
+  private async stopOne(r: RunningInformer): Promise<void> {
+    r.controller.abort();
+    if (r.runPromise) await r.runPromise;
+  }
+
+  /**
+   * Chain `op` onto the running entry's lifecycle lock so concurrent
+   * relist/start/stop calls execute one-at-a-time per kind. Errors in `op`
+   * are preserved on the lock chain — but never block subsequent operations
+   * since the lock is reset to a resolved state regardless of outcome.
+   */
+  private withLock<T>(r: RunningInformer, op: () => Promise<T>): Promise<T> {
+    const next = r.lifecycleLock.then(op, op);
+    r.lifecycleLock = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
+  private makeStream(kind: WatchKind): WatchStream {
+    const opts = this.opts;
+    if (opts.mode === "remote") {
+      const clientOpts: WatchClientOptions = {
+        baseUrl: opts.baseUrl,
+        kind,
+        authHeader: opts.authHeader,
+        ...(opts.fetch !== undefined ? { fetch: opts.fetch } : {}),
+        ...(opts.backoff !== undefined ? { backoff: opts.backoff } : {}),
+      };
+      return new WatchClient(clientOpts);
+    }
+    return new LocalWatchClient({
+      hub: opts.hub,
+      kind,
+      namespace: opts.namespace,
+      listFn: () => opts.listFn(kind),
+    });
   }
 }

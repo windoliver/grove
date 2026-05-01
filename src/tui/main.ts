@@ -210,6 +210,7 @@ async function buildAppProps(
   appProps: import("./app.js").AppProps;
   provider: TuiDataProvider;
   stopGc?: (() => void) | undefined;
+  informerFactory?: import("../core/informer.js").InformerFactory | undefined;
 }> {
   let backend = await resolveBackend({
     url: opts.url,
@@ -243,18 +244,24 @@ async function buildAppProps(
   const label = backendLabel(backend);
 
   // For remote backends, attach the local API key for topology/contract probes
-  // only when the user explicitly provided --grove (opting into credential scope).
-  // Without --grove, omit credentials to avoid leaking tokens to arbitrary --url targets.
+  // when the user explicitly provided --grove (opting into credential scope)
+  // OR the URL targets a trusted loopback (mirrors createProvider — common
+  // dev pattern: `grove tui --url http://localhost:4515`). Without either,
+  // omit credentials to avoid leaking tokens to arbitrary --url targets.
   let remoteAuthHeaders: Record<string, string> | undefined;
-  if (backend.mode === "remote" && backend.groveOverride) {
-    const { resolveGroveDir } = await import("../cli/utils/grove-dir.js");
-    const { readClientKey } = await import("../core/project-key.js");
-    try {
-      const { groveDir } = resolveGroveDir(backend.groveOverride);
-      const apiKey = readClientKey(groveDir);
-      if (apiKey) remoteAuthHeaders = { Authorization: `Bearer ${apiKey}` };
-    } catch {
-      /* no key available */
+  if (backend.mode === "remote") {
+    const { isLoopbackUrl } = await import("../shared/provider-factory.js");
+    const isLoopback = isLoopbackUrl(backend.url);
+    if (backend.groveOverride || isLoopback) {
+      const { resolveGroveDir } = await import("../cli/utils/grove-dir.js");
+      const { readClientKey } = await import("../core/project-key.js");
+      try {
+        const { groveDir } = resolveGroveDir(backend.groveOverride);
+        const apiKey = readClientKey(groveDir);
+        if (apiKey) remoteAuthHeaders = { Authorization: `Bearer ${apiKey}` };
+      } catch {
+        /* no key available */
+      }
     }
   }
 
@@ -443,6 +450,50 @@ async function buildAppProps(
     }
   }
 
+  // Construct InformerFactory for the new SSE-driven cache (#295). Ships dark
+  // in PR1 — no view consumes the factory yet. The factory targets the
+  // grove-server watch routes (`/api/list`, `/api/watch`), which means it's
+  // only usable in `mode: "remote"` (grove-server). `mode: "nexus"` talks to
+  // Nexus VFS endpoints which do not host these routes; PR2 either adds a
+  // Nexus-backed WatchStream or routes through grove-server. Local mode uses
+  // an in-process WatchHub; PR2 wires real local store snapshots and
+  // recordWrite publishers.
+  let informerFactory: import("../core/informer.js").InformerFactory | undefined;
+  {
+    const { InformerFactory } = await import("../core/informer.js");
+    if (backend.mode === "remote") {
+      const authHeader = remoteAuthHeaders?.Authorization;
+      // Grove-server watch routes require auth; without a credential we can't
+      // construct a usable factory. Better to omit it than to start watching
+      // anonymously and surface 401 noise — hooks throw on factory absence
+      // when called outside a provider, which makes the gap obvious.
+      if (authHeader) {
+        informerFactory = new InformerFactory({
+          mode: "remote",
+          baseUrl: backend.url,
+          authHeader,
+        });
+      }
+    }
+    // backend.mode === "local" / "nexus" intentionally NOT wired in PR1:
+    // - "local": LocalWatchClient with listFn=() => [] would synthesize a
+    //   "synced empty cache" since RELIST_END would fire on the empty
+    //   snapshot, and the unconnected WatchHub would never receive
+    //   recordWrite from the existing local stores. PR2 wires real
+    //   listEntities() + recordWrite producers before exposing this.
+    // - "nexus": WatchClient targets grove-server `/api/list` + `/api/watch`,
+    //   which Nexus does not host. PR2 either adds a Nexus-backed WatchStream
+    //   or routes through grove-server.
+    // In both cases, hook consumers throw on a missing provider — a louder
+    // signal than a silent watch failure.
+    //
+    // No stopAll() callback in PR1 — InformerProvider doesn't auto-start
+    // the informers (ships dark). PR2 turns eager-start on; at that point the
+    // provider's own unmount cleanup handles stopAll. Adding a stopCallback
+    // here would call stopAll() on a never-started factory, which is a no-op
+    // but adds noise.
+  }
+
   return {
     appProps: {
       provider,
@@ -459,6 +510,7 @@ async function buildAppProps(
     },
     provider,
     stopGc,
+    informerFactory,
   };
 }
 
@@ -724,15 +776,31 @@ export async function handleTui(
           );
         }
       }
+      // PR1 (#295): wrap App in InformerProvider/RefreshProvider when the
+      // informer factory was constructed. Ships dark — no view consumes the
+      // hooks yet; this primes the runtime so PR2 migrations don't have to
+      // re-thread plumbing through main.ts.
+      const { InformerProvider } = await import("./hooks/informer-context.js");
+      const { RefreshProvider } = await import("./hooks/refresh-context.js");
+      const appElement = React.createElement(
+        SpawnManagerContext,
+        { value: spawnManager },
+        React.createElement(App, result.appProps),
+      );
+      const wrappedApp = result.informerFactory
+        ? React.createElement(InformerProvider, {
+            value: result.informerFactory,
+            children: React.createElement(RefreshProvider, {
+              factory: result.informerFactory,
+              children: appElement,
+            }),
+          })
+        : appElement;
       root.render(
         React.createElement(
           DialogProvider,
           null,
-          React.createElement(
-            SpawnManagerContext,
-            { value: spawnManager },
-            React.createElement(App, result.appProps),
-          ),
+          wrappedApp,
           React.createElement(Toaster, { position: "bottom-right" }),
         ),
       );
@@ -754,6 +822,14 @@ export async function handleTui(
     // Falls through to the TuiApp below which handles the full flow.
 
     const presets = await loadPresetList();
+
+    // PR1 (#295): factory holder threaded into both lifecycle callbacks AND
+    // the React tree. Callbacks call `set()` after `buildAppProps` resolves;
+    // <InformerProviderHolder> re-renders the tree with the live factory in
+    // scope. Until the first set, useInformer*() throws — guard hooks with
+    // a runtime-presence check until PR2 has migrated views.
+    const { createInformerHolder } = await import("./hooks/informer-context.js");
+    const informerHolder = createInformerHolder();
 
     // onInit: handles "New session" in an existing grove, or full init for a new grove.
     // When GROVE_DIR/groveExists — skip executeInit entirely (don't touch Nexus or GROVE.md).
@@ -825,6 +901,11 @@ export async function handleTui(
       const result = await buildAppProps(newGroveDir, opts, presetName);
       activeProvider = result.provider;
       activeStopGc = result.stopGc;
+      // PR1 (#295): expose the factory to <InformerProviderHolder> so any
+      // hook consumer mounted after this callback resolves sees the live
+      // factory. Ships dark — no current view consumes hooks; this primes
+      // the runtime so PR2 migrations don't have to re-thread plumbing.
+      if (result.informerFactory) informerHolder.set(result.informerFactory);
 
       // Post-startup: update agent skill SKILL.md (non-blocking)
       updateSkillAfterStartup();
@@ -854,6 +935,7 @@ export async function handleTui(
       const result = await buildAppProps(effectiveGrove, opts, groveInfo?.preset);
       activeProvider = result.provider;
       activeStopGc = result.stopGc;
+      if (result.informerFactory) informerHolder.set(result.informerFactory);
 
       // Post-startup: update agent skill SKILL.md (non-blocking)
       updateSkillAfterStartup();
@@ -877,26 +959,38 @@ export async function handleTui(
       const result = await buildAppProps(effectiveGrove, { ...opts, nexus: nexusUrl });
       activeProvider = result.provider;
       activeStopGc = result.stopGc;
+      if (result.informerFactory) informerHolder.set(result.informerFactory);
       return result.appProps;
     };
 
     const { TuiApp } = await import("./tui-app.js");
+    const { InformerProviderHolder } = await import("./hooks/informer-context.js");
+    const { RefreshProviderHolder } = await import("./hooks/refresh-context.js");
 
+    const tuiAppEl = React.createElement(TuiApp, {
+      groveExists,
+      groveInfo,
+      presets,
+      sessions,
+      onInit,
+      onStart,
+      onConnect,
+      onNewSession,
+      autoConnectNexus: opts.nexus,
+    });
+    const refreshHolderEl = React.createElement(RefreshProviderHolder, {
+      holder: informerHolder,
+      children: tuiAppEl,
+    });
+    const informerHolderEl = React.createElement(InformerProviderHolder, {
+      holder: informerHolder,
+      children: refreshHolderEl,
+    });
     root.render(
       React.createElement(
         DialogProvider,
         null,
-        React.createElement(TuiApp, {
-          groveExists,
-          groveInfo,
-          presets,
-          sessions,
-          onInit,
-          onStart,
-          onConnect,
-          onNewSession,
-          autoConnectNexus: opts.nexus,
-        }),
+        informerHolderEl,
         React.createElement(Toaster, { position: "bottom-right" }),
       ),
     );

@@ -7,6 +7,7 @@
  */
 
 import type { WatchEntity, WatchKind } from "./watch-events.js";
+import type { WatchStream } from "./watch-stream.js";
 
 export type WatchClientOp =
   | "ADDED"
@@ -69,7 +70,7 @@ type StreamExit =
   | { kind: "ended"; lastRv: bigint; observedData: boolean }
   | { kind: "relist" };
 
-export class WatchClient {
+export class WatchClient implements WatchStream {
   private readonly baseUrl: string;
   private readonly kind: WatchKind;
   private readonly authHeader: string;
@@ -380,7 +381,7 @@ function isDataOp(event: string): boolean {
  * extract the leading numeric prefix on both sides for a robust ordering.
  * Falls back to exact string equality when no numeric prefix is present.
  */
-function isStaleVersion(eventRv: string, snapshotRv: string): boolean {
+export function isStaleVersion(eventRv: string, snapshotRv: string): boolean {
   const a = parseRvPrefix(snapshotRv);
   const b = parseRvPrefix(eventRv);
   if (a !== null && b !== null) return b <= a;
