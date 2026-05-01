@@ -5,7 +5,15 @@
  * during the migration; PR5 deletes it.
  */
 
-import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import type { InformerFactory } from "../../core/informer.js";
 import type { WatchKind } from "../../core/watch-events.js";
 import type { InformerHolder } from "./informer-context.js";

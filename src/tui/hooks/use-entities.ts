@@ -9,7 +9,7 @@
  * thin wrapper around them.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Informer } from "../../core/informer.js";
 import type { WatchKind } from "../../core/watch-events.js";
 import { useInformer, useInformerFactory } from "./informer-context.js";
@@ -63,9 +63,7 @@ export function useEntities<K extends WatchKind>(
   // Stream errors come from the factory's error listener — owned by the
   // watch lifecycle (4xx, listFn throw, etc). Cleared only when the factory
   // fires `null` (proven recovery: first RELIST_END after restart).
-  const [streamError, setStreamError] = useState<Error | null>(() =>
-    factory.getLastError(kind),
-  );
+  const [streamError, setStreamError] = useState<Error | null>(() => factory.getLastError(kind));
   // Compute errors come from the predicate function throwing during a
   // recompute. Cleared on the next successful recompute. Kept separate so
   // recompute-after-stale-sync can't erase a stream error owned by the
@@ -74,7 +72,11 @@ export function useEntities<K extends WatchKind>(
   const dataRef = useRef<readonly EntityFor<K>[]>(initial);
   dataRef.current = data;
 
-  const recompute = (): void => {
+  // Stable recompute via ref so the effect's dependency list stays tight —
+  // closure captures latest informer + predicate via ref, so the effect
+  // doesn't need to re-subscribe on every render to see fresh values.
+  const recomputeRef = useRef<() => void>(() => {});
+  recomputeRef.current = (): void => {
     try {
       const next = computeFilteredEntities(
         informer.list() as readonly EntityFor<K>[],
@@ -89,6 +91,7 @@ export function useEntities<K extends WatchKind>(
       setComputeError(err instanceof Error ? err : new Error(String(err)));
     }
   };
+  const recompute = useCallback((): void => recomputeRef.current(), []);
 
   // Recompute synchronously when the predicate identity changes — without
   // this, callers who pass a fresh closure every render would see stale
@@ -96,10 +99,7 @@ export function useEntities<K extends WatchKind>(
   if (predicateRef.current !== predicate) {
     predicateRef.current = predicate;
     try {
-      const next = computeFilteredEntities(
-        informer.list() as readonly EntityFor<K>[],
-        predicate,
-      );
+      const next = computeFilteredEntities(informer.list() as readonly EntityFor<K>[], predicate);
       if (!shallowArraysEqual(dataRef.current, next)) {
         // Defer to a microtask so the setState happens after this render
         // completes — React forbids setState during render of the same
@@ -107,9 +107,7 @@ export function useEntities<K extends WatchKind>(
         queueMicrotask(() => setData(next));
       }
     } catch (err) {
-      queueMicrotask(() =>
-        setComputeError(err instanceof Error ? err : new Error(String(err))),
-      );
+      queueMicrotask(() => setComputeError(err instanceof Error ? err : new Error(String(err))));
     }
   }
 
@@ -136,8 +134,7 @@ export function useEntities<K extends WatchKind>(
       unsubSync();
       unsubError();
     };
-    // biome-ignore lint/correctness/useExhaustiveDependencies: recompute closes over hasSynced via setState callback semantics
-  }, [informer, factory, kind, hasSynced]);
+  }, [informer, factory, kind, recompute]);
 
   // Stream errors take precedence — they signal the watch lifecycle is
   // unhealthy, which is more actionable than a transient predicate failure.

@@ -55,9 +55,8 @@ export function isLoopbackUrl(url: string): boolean {
     // Strip brackets from IPv6 forms: Bun's URL parser returns "[::1]" for
     // `http://[::1]:4515` but Node's whatwg-URL returns "::1". Normalize
     // both so trusted IPv6 loopback URLs aren't treated as remote.
-    const normalized = hostname.startsWith("[") && hostname.endsWith("]")
-      ? hostname.slice(1, -1)
-      : hostname;
+    const normalized =
+      hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
     return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
   } catch {
     return false;

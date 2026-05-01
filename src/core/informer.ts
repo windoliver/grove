@@ -484,7 +484,8 @@ export class InformerFactory {
     if (r.controller.signal.aborted) {
       r.controller = new AbortController();
     }
-    const generation = (r.generation = r.generation + 1);
+    r.generation += 1;
+    const generation = r.generation;
     // Do NOT clear lastError on start — clearing here would fire `null` to
     // listeners while the new run is still pending or backing off, making
     // hooks drop their visible error even though sync has not been re-proven.
