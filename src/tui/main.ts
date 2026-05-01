@@ -445,20 +445,33 @@ async function buildAppProps(
   }
 
   // Construct InformerFactory for the new SSE-driven cache (#295). Ships dark
-  // in PR1 — no view consumes the factory yet, so empty listFn / unwired
-  // local hub is intentional. PR2 wires real store snapshots and hub
-  // publishers; PR2-PR4 migrate views from usePolledData to useEntities/etc.
+  // in PR1 — no view consumes the factory yet. The factory is built from the
+  // resolved backend (post-health-fallback) so the watch source matches what
+  // the rest of the TUI is reading from. PR2 wires real local hub publishers
+  // and listFns when the first view migrates.
   let informerFactory: import("../core/informer.js").InformerFactory | undefined;
   {
-    const nexusUrl = process.env.GROVE_NEXUS_URL;
-    const apiKey = process.env.NEXUS_API_KEY;
     const { InformerFactory } = await import("../core/informer.js");
-    if (nexusUrl && apiKey) {
-      informerFactory = new InformerFactory({
-        mode: "remote",
-        baseUrl: nexusUrl,
-        authHeader: `Bearer ${apiKey}`,
-      });
+    if (backend.mode === "nexus" || backend.mode === "remote") {
+      // For remote backends, prefer the credential resolved earlier in this
+      // function (remoteAuthHeaders) — it follows the same provider scope
+      // gate so we don't leak project keys into arbitrary --url targets.
+      // Falls back to env vars used by the legacy SSE bridge.
+      let authHeader = remoteAuthHeaders?.Authorization;
+      if (!authHeader) {
+        const apiKey = process.env.NEXUS_API_KEY;
+        if (apiKey) authHeader = `Bearer ${apiKey}`;
+      }
+      if (authHeader) {
+        informerFactory = new InformerFactory({
+          mode: "remote",
+          baseUrl: backend.url,
+          authHeader,
+        });
+      }
+      // No credential → no factory. Better to throw on hook use later than
+      // to silently watch with anonymous credentials and collide with
+      // permission rules.
     } else if (groveDir) {
       const { WatchHub } = await import("../core/watch-hub.js");
       informerFactory = new InformerFactory({
