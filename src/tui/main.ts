@@ -804,6 +804,14 @@ export async function handleTui(
 
     const presets = await loadPresetList();
 
+    // PR1 (#295): factory holder threaded into both lifecycle callbacks AND
+    // the React tree. Callbacks call `set()` after `buildAppProps` resolves;
+    // <InformerProviderHolder> re-renders the tree with the live factory in
+    // scope. Until the first set, useInformer*() throws — guard hooks with
+    // a runtime-presence check until PR2 has migrated views.
+    const { createInformerHolder } = await import("./hooks/informer-context.js");
+    const informerHolder = createInformerHolder();
+
     // onInit: handles "New session" in an existing grove, or full init for a new grove.
     // When GROVE_DIR/groveExists — skip executeInit entirely (don't touch Nexus or GROVE.md).
     // Only run executeInit when truly creating a new grove from scratch.
@@ -874,6 +882,11 @@ export async function handleTui(
       const result = await buildAppProps(newGroveDir, opts, presetName);
       activeProvider = result.provider;
       activeStopGc = result.stopGc;
+      // PR1 (#295): expose the factory to <InformerProviderHolder> so any
+      // hook consumer mounted after this callback resolves sees the live
+      // factory. Ships dark — no current view consumes hooks; this primes
+      // the runtime so PR2 migrations don't have to re-thread plumbing.
+      if (result.informerFactory) informerHolder.set(result.informerFactory);
 
       // Post-startup: update agent skill SKILL.md (non-blocking)
       updateSkillAfterStartup();
@@ -903,6 +916,7 @@ export async function handleTui(
       const result = await buildAppProps(effectiveGrove, opts, groveInfo?.preset);
       activeProvider = result.provider;
       activeStopGc = result.stopGc;
+      if (result.informerFactory) informerHolder.set(result.informerFactory);
 
       // Post-startup: update agent skill SKILL.md (non-blocking)
       updateSkillAfterStartup();
@@ -926,26 +940,38 @@ export async function handleTui(
       const result = await buildAppProps(effectiveGrove, { ...opts, nexus: nexusUrl });
       activeProvider = result.provider;
       activeStopGc = result.stopGc;
+      if (result.informerFactory) informerHolder.set(result.informerFactory);
       return result.appProps;
     };
 
     const { TuiApp } = await import("./tui-app.js");
+    const { InformerProviderHolder } = await import("./hooks/informer-context.js");
+    const { RefreshProviderHolder } = await import("./hooks/refresh-context.js");
 
+    const tuiAppEl = React.createElement(TuiApp, {
+      groveExists,
+      groveInfo,
+      presets,
+      sessions,
+      onInit,
+      onStart,
+      onConnect,
+      onNewSession,
+      autoConnectNexus: opts.nexus,
+    });
+    const refreshHolderEl = React.createElement(RefreshProviderHolder, {
+      holder: informerHolder,
+      children: tuiAppEl,
+    });
+    const informerHolderEl = React.createElement(InformerProviderHolder, {
+      holder: informerHolder,
+      children: refreshHolderEl,
+    });
     root.render(
       React.createElement(
         DialogProvider,
         null,
-        React.createElement(TuiApp, {
-          groveExists,
-          groveInfo,
-          presets,
-          sessions,
-          onInit,
-          onStart,
-          onConnect,
-          onNewSession,
-          autoConnectNexus: opts.nexus,
-        }),
+        informerHolderEl,
         React.createElement(Toaster, { position: "bottom-right" }),
       ),
     );

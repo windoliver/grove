@@ -69,6 +69,15 @@ export function useDerived<T>(
 
   const informers = kinds.map((k) => factory.informerFor(k));
   const [hasSynced, setHasSynced] = useState<boolean>(() => informers.every((i) => i.hasSynced()));
+  // First non-null factory error across all watched kinds; mirrors useEntities'
+  // separation so a recompute can't mask a terminal stream failure.
+  const [streamError, setStreamError] = useState<Error | null>(() => {
+    for (const k of kinds) {
+      const e = factory.getLastError(k);
+      if (e) return e;
+    }
+    return null;
+  });
 
   const kindsKey = kinds.join(",");
   // biome-ignore lint/correctness/useExhaustiveDependencies: kinds compared by joined string identity
@@ -85,10 +94,35 @@ export function useDerived<T>(
       unsubs.push(i.addEventHandler(tick));
       unsubs.push(i.addSyncHandler(tick));
     }
+    // Stream error subscription: surface terminal informer.run() failures
+    // for any of the watched kinds. Resolved (null) when the kind hits its
+    // first RELIST_END after restart — see InformerFactory.startOne.
+    const watched = new Set<WatchKind>(kinds);
+    unsubs.push(
+      factory.addErrorListener((kind, err) => {
+        if (!watched.has(kind)) return;
+        if (err) {
+          setStreamError(err);
+          return;
+        }
+        // Recovery for one kind — only clear if no other watched kind is
+        // still in error; otherwise show whichever one is still failing.
+        for (const k of kinds) {
+          const remaining = factory.getLastError(k);
+          if (remaining) {
+            setStreamError(remaining);
+            return;
+          }
+        }
+        setStreamError(null);
+      }),
+    );
     return () => {
       for (const u of unsubs) u();
     };
   }, [factory, kindsKey, hasSynced]);
 
-  return { data: state.data, hasSynced, error: state.error };
+  // Stream errors take precedence over compute errors — the watch lifecycle
+  // is the more actionable signal.
+  return { data: state.data, hasSynced, error: streamError ?? state.error };
 }
