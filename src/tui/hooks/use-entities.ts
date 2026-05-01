@@ -45,7 +45,6 @@ export function useEntities<K extends WatchKind>(
 ): UseEntitiesResult<EntityFor<K>> {
   const informer = useInformer(kind);
   const predicateRef = useRef(predicate);
-  predicateRef.current = predicate;
 
   const initial = useMemo<readonly EntityFor<K>[]>(() => {
     try {
@@ -64,23 +63,57 @@ export function useEntities<K extends WatchKind>(
   const dataRef = useRef<readonly EntityFor<K>[]>(initial);
   dataRef.current = data;
 
-  useEffect(() => {
-    const unsub = informer.addEventHandler(() => {
-      try {
-        const next = computeFilteredEntities(
-          informer.list() as readonly EntityFor<K>[],
-          predicateRef.current,
-        );
-        if (!shallowArraysEqual(dataRef.current, next)) {
-          setData(next);
-        }
-        if (!hasSynced && informer.hasSynced()) setHasSynced(true);
-        if (error) setError(null);
-      } catch (err) {
-        setError(err instanceof Error ? err : new Error(String(err)));
+  const recompute = (): void => {
+    try {
+      const next = computeFilteredEntities(
+        informer.list() as readonly EntityFor<K>[],
+        predicateRef.current,
+      );
+      if (!shallowArraysEqual(dataRef.current, next)) {
+        setData(next);
       }
-    });
-    return unsub;
+      if (!hasSynced && informer.hasSynced()) setHasSynced(true);
+      if (error) setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error(String(err)));
+    }
+  };
+
+  // Recompute synchronously when the predicate identity changes — without
+  // this, callers who pass a fresh closure every render would see stale
+  // filtered output until the next watch event arrived.
+  if (predicateRef.current !== predicate) {
+    predicateRef.current = predicate;
+    try {
+      const next = computeFilteredEntities(
+        informer.list() as readonly EntityFor<K>[],
+        predicate,
+      );
+      if (!shallowArraysEqual(dataRef.current, next)) {
+        // Defer to a microtask so the setState happens after this render
+        // completes — React forbids setState during render of the same
+        // component but allows it before commit.
+        queueMicrotask(() => setData(next));
+      }
+    } catch (err) {
+      queueMicrotask(() => setError(err instanceof Error ? err : new Error(String(err))));
+    }
+  }
+
+  useEffect(() => {
+    const unsubEvent = informer.addEventHandler(recompute);
+    // Subscribe to RELIST_END so empty/unchanged snapshots still flip
+    // hasSynced and trigger a recompute. Without this, a consumer mounted
+    // before the first sync of an empty store stays hasSynced=false.
+    const unsubSync = informer.addSyncHandler(recompute);
+    return () => {
+      unsubEvent();
+      unsubSync();
+    };
+    // recompute closes over informer, hasSynced, error — re-subscribe when
+    // any change. Predicate captured via ref so identity changes don't
+    // remount the subscription.
+    // biome-ignore lint/correctness/useExhaustiveDependencies: recompute is the effect body itself
   }, [informer, hasSynced, error]);
 
   return { data, hasSynced, error };

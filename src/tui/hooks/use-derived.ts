@@ -78,7 +78,13 @@ export function useDerived<T>(
       if (next.committed) setState({ data: next.data, error: next.error });
       if (!hasSynced && informers.every((i) => i.hasSynced())) setHasSynced(true);
     };
-    const unsubs = informers.map((i) => i.addEventHandler(tick));
+    // Subscribe to per-entity events AND RELIST_END so empty/unchanged
+    // snapshots still flip hasSynced when every kind has synced.
+    const unsubs: Array<() => void> = [];
+    for (const i of informers) {
+      unsubs.push(i.addEventHandler(tick));
+      unsubs.push(i.addSyncHandler(tick));
+    }
     return () => {
       for (const u of unsubs) u();
     };

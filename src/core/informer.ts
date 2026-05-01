@@ -31,10 +31,13 @@ export type EventHandlerFn<K extends WatchKind = WatchKind> = (
   entity: EntityForKind<K>,
 ) => void | Promise<void>;
 
+export type SyncHandlerFn = () => void;
+
 export class Informer<K extends WatchKind = WatchKind> {
   private readonly stream: WatchStream;
   private readonly store = new Map<string, EntityForKind<K>>();
   private readonly handlers: Array<EventHandlerFn<K>> = [];
+  private readonly syncHandlers: Array<SyncHandlerFn> = [];
   private _synced = false;
   private staging: Map<string, EntityForKind<K>> | null = null;
   private _running = false;
@@ -56,6 +59,28 @@ export class Informer<K extends WatchKind = WatchKind> {
     return () => {
       const idx = this.handlers.indexOf(fn);
       if (idx >= 0) this.handlers.splice(idx, 1);
+    };
+  }
+
+  /**
+   * Register a sync handler that fires on every RELIST_END, including empty
+   * snapshots and snapshots that produce no per-entity deltas. Required so
+   * hooks can flip hasSynced and recompute filtered views even when the
+   * snapshot is identical to the prior cache state. Fires immediately if
+   * the informer is already synced when the handler is registered.
+   */
+  addSyncHandler(fn: SyncHandlerFn): () => void {
+    this.syncHandlers.push(fn);
+    if (this._synced) {
+      try {
+        fn();
+      } catch (err) {
+        console.error("Informer: sync handler threw, continuing fanout:", err);
+      }
+    }
+    return () => {
+      const idx = this.syncHandlers.indexOf(fn);
+      if (idx >= 0) this.syncHandlers.splice(idx, 1);
     };
   }
 
@@ -104,6 +129,7 @@ export class Informer<K extends WatchKind = WatchKind> {
         this._synced = true;
         await this.commitReplace(this.staging);
         this.staging = null;
+        this.fireSync();
         break;
 
       case "RELIST_ABORTED":
@@ -162,6 +188,18 @@ export class Informer<K extends WatchKind = WatchKind> {
     for (const e of deleted) await this.dispatch("DELETED", e);
     for (const e of added) await this.dispatch("ADDED", e);
     for (const e of modified) await this.dispatch("MODIFIED", e);
+  }
+
+  private fireSync(): void {
+    // Snapshot before iterating so a handler that calls its own unsubscribe
+    // mid-iteration does not skip the next handler.
+    for (const handler of [...this.syncHandlers]) {
+      try {
+        handler();
+      } catch (err) {
+        console.error("Informer: sync handler threw, continuing fanout:", err);
+      }
+    }
   }
 
   private async dispatch(op: InformerOp, entity: EntityForKind<K>): Promise<void> {
@@ -250,6 +288,16 @@ interface RunningInformer {
   readonly informer: Informer;
   controller: AbortController;
   runPromise: Promise<void> | null;
+  /** Generation token: incremented every (re)start. Lets a settling run
+   * identify whether the runPromise it owns is still the live one before
+   * clearing factory state, so a concurrent restart can't be undone by a
+   * late `runPromise = null` from a previous generation. */
+  generation: number;
+  /** Last terminal error from `informer.run()`, if any. Cleared on next start. */
+  lastError: Error | null;
+  /** Serialization lock: relist/startKind operations chain on this so two
+   * overlapping calls don't race on controller/runPromise state. */
+  lifecycleLock: Promise<void>;
 }
 
 const ALL_KINDS: readonly WatchKind[] = ["Contribution", "Claim", "AgentSession"];
@@ -281,6 +329,9 @@ export class InformerFactory {
       informer: informer as Informer,
       controller: new AbortController(),
       runPromise: null,
+      generation: 0,
+      lastError: null,
+      lifecycleLock: Promise.resolve(),
     });
     return informer;
   }
@@ -301,18 +352,17 @@ export class InformerFactory {
    * have settled and the factory is reusable.
    */
   async stopAll(): Promise<void> {
-    const promises: Promise<void>[] = [];
-    for (const r of this.running.values()) {
-      r.controller.abort();
-      if (r.runPromise) promises.push(r.runPromise.catch(() => undefined));
-    }
-    await Promise.all(promises);
+    // Serialize against in-flight relist/startKind so a concurrent restart
+    // can't replace the controller after we've aborted but before we await.
+    const stops = [...this.running.values()].map((r) => this.withLock(r, () => this.stopOne(r)));
+    await Promise.all(stops);
   }
 
   /**
    * Force a relist on a single kind (or all kinds when undefined). Aborts
    * the current run, awaits its settlement, then starts a new run with a
-   * fresh AbortController.
+   * fresh AbortController. Per-kind serialized so two overlapping callers
+   * don't lose track of the live controller or runPromise.
    */
   async relist(kind?: WatchKind): Promise<void> {
     const kinds: WatchKind[] = kind ? [kind] : [...ALL_KINDS];
@@ -320,21 +370,20 @@ export class InformerFactory {
       .map((k) => this.running.get(k))
       .filter((r): r is RunningInformer => r !== undefined);
 
-    // Phase 1: abort all in parallel.
-    for (const r of targets) r.controller.abort();
-    // Phase 2: await all settlements in parallel.
     await Promise.all(
-      targets.map((r) => (r.runPromise ? r.runPromise.catch(() => undefined) : Promise.resolve())),
+      targets.map((r) =>
+        this.withLock(r, async () => {
+          await this.stopOne(r);
+          r.controller = new AbortController();
+          this.startOne(r);
+        }),
+      ),
     );
-    // Phase 3: reset each controller.
-    for (const r of targets) {
-      r.controller = new AbortController();
-      r.runPromise = null;
-    }
-    // Phase 4: restart each kind.
-    for (const k of kinds) {
-      if (this.running.has(k)) this.startKind(k);
-    }
+  }
+
+  /** Last terminal error captured from a kind's `run()`, if any. */
+  getLastError(kind: WatchKind): Error | null {
+    return this.running.get(kind)?.lastError ?? null;
   }
 
   private startKind(kind: WatchKind): void {
@@ -344,8 +393,62 @@ export class InformerFactory {
       r = this.running.get(kind);
       if (!r) throw new Error(`unreachable: informerFor(${kind}) did not register a running entry`);
     }
+    void this.withLock(r, async () => {
+      this.startOne(r);
+    });
+  }
+
+  /**
+   * Start a fresh `run()` if not already running. Wraps the run promise so
+   * terminal errors clear `runPromise` (allowing future restart), record
+   * `lastError`, and never bubble as unhandled rejections. The generation
+   * token guards against a settling run from a prior generation clearing
+   * state owned by the current one.
+   */
+  private startOne(r: RunningInformer): void {
     if (r.runPromise) return;
-    r.runPromise = r.informer.run(r.controller.signal);
+    if (r.controller.signal.aborted) {
+      r.controller = new AbortController();
+    }
+    const generation = (r.generation = r.generation + 1);
+    r.lastError = null;
+    const signal = r.controller.signal;
+    const informer = r.informer;
+    r.runPromise = informer.run(signal).then(
+      () => {
+        if (r.generation === generation) r.runPromise = null;
+      },
+      (err: unknown) => {
+        if (r.generation === generation) {
+          r.runPromise = null;
+          r.lastError = err instanceof Error ? err : new Error(String(err));
+        }
+      },
+    );
+  }
+
+  /**
+   * Abort the current run (if any) and await settlement. Safe to call when
+   * no run is active — resolves immediately. Caller must hold lifecycleLock.
+   */
+  private async stopOne(r: RunningInformer): Promise<void> {
+    r.controller.abort();
+    if (r.runPromise) await r.runPromise;
+  }
+
+  /**
+   * Chain `op` onto the running entry's lifecycle lock so concurrent
+   * relist/start/stop calls execute one-at-a-time per kind. Errors in `op`
+   * are preserved on the lock chain — but never block subsequent operations
+   * since the lock is reset to a resolved state regardless of outcome.
+   */
+  private withLock<T>(r: RunningInformer, op: () => Promise<T>): Promise<T> {
+    const next = r.lifecycleLock.then(op, op);
+    r.lifecycleLock = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
   }
 
   private makeStream(kind: WatchKind): WatchStream {

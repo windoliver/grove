@@ -381,7 +381,7 @@ function isDataOp(event: string): boolean {
  * extract the leading numeric prefix on both sides for a robust ordering.
  * Falls back to exact string equality when no numeric prefix is present.
  */
-function isStaleVersion(eventRv: string, snapshotRv: string): boolean {
+export function isStaleVersion(eventRv: string, snapshotRv: string): boolean {
   const a = parseRvPrefix(snapshotRv);
   const b = parseRvPrefix(eventRv);
   if (a !== null && b !== null) return b <= a;

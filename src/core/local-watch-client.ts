@@ -11,7 +11,7 @@
  * the HTTP-based WatchClient.
  */
 
-import type { WatchClientEvent } from "./watch-client.js";
+import { isStaleVersion, type WatchClientEvent } from "./watch-client.js";
 import type { WatchEntity, WatchKind } from "./watch-events.js";
 import type { WatchHub } from "./watch-hub.js";
 import type { WatchStream } from "./watch-stream.js";
@@ -53,6 +53,14 @@ export class LocalWatchClient implements WatchStream {
     // until the consumer iterates.
     const stream = this.hub.subscribe(this.namespace, this.kind, snapshotRv, signal);
 
+    // Snapshot dedup window. A write committed after currentRv() but before
+    // listFn() reads the store is included in BOTH the snapshot and the
+    // subscription replay (rv > snapshotRv). Track {entity.id →
+    // resourceVersion} during RELIST so an immediately-following live event
+    // with the same (id, rv) tuple is suppressed instead of double-delivered,
+    // mirroring WatchClient.snapshotWindow.
+    const snapshotWindow = new Map<string, string>();
+
     // Emit the snapshot.
     await onEvent({
       op: "RELIST_BEGIN",
@@ -63,6 +71,7 @@ export class LocalWatchClient implements WatchStream {
     if (signal.aborted) return;
 
     for (const entity of this.listFn()) {
+      snapshotWindow.set(entity.id, entity.resourceVersion);
       await onEvent({
         op: "RELIST",
         rv: snapshotRv,
@@ -84,6 +93,20 @@ export class LocalWatchClient implements WatchStream {
     try {
       for await (const event of stream) {
         if (signal.aborted) return;
+        // Snapshot-dedup with high-water mark. Drop replay frames whose
+        // entity version is ≤ the snapshot's version for that id; forward
+        // strictly newer versions and DELETED. Treat the window as a
+        // high-water mark — never delete on a stale match, since further
+        // stale frames could still arrive in the same race window.
+        const seenRv = snapshotWindow.get(event.entity.id);
+        if (seenRv !== undefined) {
+          if (event.op !== "DELETED" && isStaleVersion(event.entity.resourceVersion, seenRv)) {
+            continue;
+          }
+          // Strictly newer real update or DELETED tombstone — clear the
+          // entry so subsequent events for this entity bypass dedup.
+          snapshotWindow.delete(event.entity.id);
+        }
         // Re-emit as WatchClientEvent — namespace is dropped (implicit in the subscription).
         await onEvent({
           op: event.op,

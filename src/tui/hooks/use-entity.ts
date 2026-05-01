@@ -41,12 +41,21 @@ export function useEntity<K extends WatchKind>(
       return;
     }
     setData(selectEntityById(informer, id) as EntityFor<K> | undefined);
-    const unsub = informer.addEventHandler((_op, entity) => {
+    const unsubEvent = informer.addEventHandler((_op, entity) => {
       if (entity.id !== id) return;
       setData(selectEntityById(informer, id) as EntityFor<K> | undefined);
       if (!hasSynced && informer.hasSynced()) setHasSynced(true);
     });
-    return unsub;
+    // Subscribe to RELIST_END so empty/unchanged snapshots still flip
+    // hasSynced and refresh data, even when no per-entity event fires.
+    const unsubSync = informer.addSyncHandler(() => {
+      setData(selectEntityById(informer, id) as EntityFor<K> | undefined);
+      if (!hasSynced && informer.hasSynced()) setHasSynced(true);
+    });
+    return () => {
+      unsubEvent();
+      unsubSync();
+    };
   }, [informer, id, hasSynced]);
 
   return { data, hasSynced };
