@@ -6,6 +6,7 @@
  */
 
 import type { Database, Statement } from "bun:sqlite";
+import { computeOutcomeContentHash } from "../core/content-dedup.js";
 import type {
   OutcomeInput,
   OutcomeQuery,
@@ -21,6 +22,7 @@ export const OUTCOME_DDL = `
     status TEXT NOT NULL,
     reason TEXT,
     baseline_cid TEXT,
+    content_hash TEXT,
     evaluated_at TEXT NOT NULL,
     evaluated_by TEXT NOT NULL
   );
@@ -36,24 +38,28 @@ export class SqliteOutcomeStore implements OutcomeStore {
   private readonly db: Database;
   private readonly stmtUpsert: Statement;
   private readonly stmtGet: Statement;
+  private readonly stmtGetByContentHash: Statement;
   private readonly stmtStats: Statement;
 
   constructor(db: Database) {
     this.db = db;
     db.exec(OUTCOME_DDL);
+    this.migrateContentHash();
 
     this.stmtUpsert = db.prepare(`
-      INSERT INTO outcomes (cid, status, reason, baseline_cid, evaluated_at, evaluated_by)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO outcomes (cid, status, reason, baseline_cid, content_hash, evaluated_at, evaluated_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(cid) DO UPDATE SET
         status = excluded.status,
         reason = excluded.reason,
         baseline_cid = excluded.baseline_cid,
+        content_hash = excluded.content_hash,
         evaluated_at = excluded.evaluated_at,
         evaluated_by = excluded.evaluated_by
     `);
 
     this.stmtGet = db.prepare("SELECT * FROM outcomes WHERE cid = ?");
+    this.stmtGetByContentHash = db.prepare("SELECT * FROM outcomes WHERE content_hash = ?");
 
     this.stmtStats = db.prepare(`
       SELECT
@@ -66,13 +72,45 @@ export class SqliteOutcomeStore implements OutcomeStore {
     `);
   }
 
+  private migrateContentHash(): void {
+    const cols = this.db.prepare("PRAGMA table_info(outcomes)").all() as readonly {
+      name: string;
+    }[];
+    const colNames = new Set(cols.map((c) => c.name));
+    if (!colNames.has("content_hash")) {
+      this.db.run("ALTER TABLE outcomes ADD COLUMN content_hash TEXT");
+    }
+
+    const rows = this.db
+      .prepare("SELECT * FROM outcomes WHERE content_hash IS NULL OR content_hash = ''")
+      .all() as OutcomeRow[];
+    const updateHash = this.db.prepare("UPDATE outcomes SET content_hash = ? WHERE cid = ?");
+    for (const row of rows) {
+      const record = rowToRecord(row);
+      updateHash.run(computeOutcomeContentHash(record.cid, record), record.cid);
+    }
+
+    this.db.run(
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_outcomes_content_hash ON outcomes(content_hash)",
+    );
+  }
+
   async set(cid: string, input: OutcomeInput): Promise<OutcomeRecord> {
+    const contentHash = computeOutcomeContentHash(cid, input);
+    const duplicate = this.stmtGetByContentHash.get(contentHash) as OutcomeRow | null;
+    if (duplicate !== null) {
+      return { ...rowToRecord(duplicate), isNew: false } as OutcomeRecord & {
+        readonly isNew: false;
+      };
+    }
+
     const evaluatedAt = new Date().toISOString();
     this.stmtUpsert.run(
       cid,
       input.status,
       input.reason ?? null,
       input.baselineCid ?? null,
+      contentHash,
       evaluatedAt,
       input.evaluatedBy,
     );
@@ -84,7 +122,8 @@ export class SqliteOutcomeStore implements OutcomeStore {
       baselineCid: input.baselineCid,
       evaluatedAt,
       evaluatedBy: input.evaluatedBy,
-    };
+      isNew: true,
+    } as OutcomeRecord & { readonly isNew: true };
   }
 
   async get(cid: string): Promise<OutcomeRecord | undefined> {

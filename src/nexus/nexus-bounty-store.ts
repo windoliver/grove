@@ -12,6 +12,7 @@
 import type { Bounty, BountyStatus, RewardRecord } from "../core/bounty.js";
 import { validateBountyTransition } from "../core/bounty-logic.js";
 import type { BountyQuery, BountyStore, RewardQuery } from "../core/bounty-store.js";
+import { computeBountyStorageContentHash } from "../core/content-dedup.js";
 import { NotFoundError, StateConflictError } from "../core/errors.js";
 import type { AgentIdentity } from "../core/models.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
@@ -25,6 +26,7 @@ import { withRetry, withSemaphore } from "./retry.js";
 import { Semaphore } from "./semaphore.js";
 import {
   bountiesDir,
+  bountyContentHashIndexPath,
   bountyPath,
   bountyStatusIndexDir,
   bountyStatusIndexPath,
@@ -71,14 +73,66 @@ export class NexusBountyStore implements BountyStore {
   }
 
   async createBounty(bounty: Bounty): Promise<Bounty> {
+    const idConflict = await this.getBounty(bounty.bountyId);
+    if (idConflict !== undefined) {
+      throw new StateConflictError({
+        resource: "Bounty",
+        reason: "already exists",
+        message: `Bounty with id '${bounty.bountyId}' already exists`,
+      });
+    }
+
     const now = new Date().toISOString();
     const created: Bounty = {
       ...bounty,
       createdAt: bounty.createdAt || now,
       updatedAt: now,
     };
+    const contentHash = computeBountyStorageContentHash(bounty);
+    const contentHashPath = bountyContentHashIndexPath(this.zoneId, contentHash);
+    const existingIdData = await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.read(contentHashPath)),
+      "createBounty:contentHashLookup",
+      this.config,
+    );
+    if (existingIdData !== undefined) {
+      const existingId = decoder.decode(existingIdData);
+      const existing = await this.getBounty(existingId);
+      if (existing !== undefined) {
+        return { ...existing, isNew: false } as Bounty & { readonly isNew: false };
+      }
+    }
 
     try {
+      try {
+        await withRetry(
+          () =>
+            withSemaphore(this.semaphore, () =>
+              this.client.write(contentHashPath, encoder.encode(created.bountyId), {
+                ifNoneMatch: "*",
+              }),
+            ),
+          "createBounty:contentHashReserve",
+          this.config,
+        );
+      } catch (err) {
+        if (err instanceof NexusConflictError) {
+          const existing = await withRetry(
+            () => withSemaphore(this.semaphore, () => this.client.read(contentHashPath)),
+            "createBounty:contentHashConflictLookup",
+            this.config,
+          );
+          if (existing !== undefined) {
+            const existingId = decoder.decode(existing);
+            const existingBounty = await this.getBounty(existingId);
+            if (existingBounty !== undefined) {
+              return { ...existingBounty, isNew: false } as Bounty & { readonly isNew: false };
+            }
+          }
+        }
+        throw err;
+      }
+
       await withRetry(
         () =>
           withSemaphore(this.semaphore, () =>
@@ -101,7 +155,7 @@ export class NexusBountyStore implements BountyStore {
     }
 
     await this.writeStatusIndex(created);
-    return created;
+    return { ...created, isNew: true } as Bounty & { readonly isNew: true };
   }
 
   async getBounty(bountyId: string): Promise<Bounty | undefined> {

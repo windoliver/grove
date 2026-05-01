@@ -6,13 +6,17 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import type { Bounty } from "../core/bounty.js";
+import { withBountyContentHash } from "../core/content-dedup.js";
 import type { Contribution } from "../core/models.js";
 import { type ClaimStatus, ContributionKind, RelationType } from "../core/models.js";
 import { makeClaim, makeContribution } from "../core/test-helpers.js";
 import { MockNexusClient } from "./mock-client.js";
+import { NexusBountyStore } from "./nexus-bounty-store.js";
 import { NexusCas } from "./nexus-cas.js";
 import { NexusClaimStore } from "./nexus-claim-store.js";
 import { NexusContributionStore } from "./nexus-contribution-store.js";
+import { NexusOutcomeStore } from "./nexus-outcome-store.js";
 
 // ---------------------------------------------------------------------------
 // NexusContributionStore tests
@@ -60,6 +64,27 @@ describe("NexusContributionStore", () => {
       const retrieved = await store.get(c.cid);
       expect(retrieved).toBeDefined();
       expect(retrieved?.summary).toBe("idempotent put");
+    });
+
+    test("same logical payload with different timestamps dedups by content hash", async () => {
+      const first = makeContribution({
+        summary: "content dedup",
+        agent: { agentId: "agent-1" },
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      const second = makeContribution({
+        summary: "content dedup",
+        agent: { agentId: "agent-1" },
+        createdAt: "2026-01-01T00:00:01Z",
+      });
+
+      const firstResult = await store.put(first);
+      const secondResult = await store.put(second);
+
+      expect(firstResult.isNew).toBe(true);
+      expect(secondResult.isNew).toBe(false);
+      expect(secondResult.cid).toBe(first.cid);
+      expect(await store.count()).toBe(1);
     });
 
     test("put with invalid CID throws", async () => {
@@ -205,6 +230,95 @@ describe("NexusContributionStore", () => {
       await store.put(c2);
       expect(await store.count()).toBe(2);
     });
+  });
+});
+
+describe("NexusBountyStore", () => {
+  let client: MockNexusClient;
+  let store: NexusBountyStore;
+
+  beforeEach(() => {
+    client = new MockNexusClient();
+    store = new NexusBountyStore({
+      client,
+      zoneId: "test-zone",
+      retryMaxAttempts: 1,
+    });
+  });
+
+  afterEach(async () => {
+    store.close();
+    await client.close();
+  });
+
+  function bounty(overrides?: Partial<Bounty>): Bounty {
+    return {
+      bountyId: overrides?.bountyId ?? crypto.randomUUID(),
+      title: overrides?.title ?? "Retry-safe bounty",
+      description: overrides?.description ?? "Retry-safe bounty",
+      status: overrides?.status ?? "open",
+      creator: overrides?.creator ?? { agentId: "agent-1" },
+      amount: overrides?.amount ?? 10,
+      criteria: overrides?.criteria ?? { description: "Do one thing" },
+      deadline: overrides?.deadline ?? "2026-02-01T00:00:00Z",
+      createdAt: overrides?.createdAt ?? "2026-01-01T00:00:00Z",
+      updatedAt: overrides?.updatedAt ?? "2026-01-01T00:00:00Z",
+      ...(overrides?.zoneId !== undefined ? { zoneId: overrides.zoneId } : {}),
+      ...(overrides?.context !== undefined ? { context: overrides.context } : {}),
+    };
+  }
+
+  test("same logical create payload dedups by content hash", async () => {
+    const first = bounty({ bountyId: "bounty-1", createdAt: "2026-01-01T00:00:00Z" });
+    const second = bounty({ bountyId: "bounty-2", createdAt: "2026-01-01T00:00:01Z" });
+
+    const firstResult = (await store.createBounty(withBountyContentHash(first))) as Bounty & {
+      readonly isNew?: boolean;
+    };
+    const secondResult = (await store.createBounty(withBountyContentHash(second))) as Bounty & {
+      readonly isNew?: boolean;
+    };
+
+    expect(firstResult.isNew).toBe(true);
+    expect(secondResult.isNew).toBe(false);
+    expect(secondResult.bountyId).toBe(first.bountyId);
+    expect(await store.countBounties()).toBe(1);
+  });
+});
+
+describe("NexusOutcomeStore", () => {
+  let client: MockNexusClient;
+  let store: NexusOutcomeStore;
+
+  beforeEach(() => {
+    client = new MockNexusClient();
+    store = new NexusOutcomeStore({
+      client,
+      zoneId: "test-zone",
+      retryMaxAttempts: 1,
+    });
+  });
+
+  afterEach(async () => {
+    store.close();
+    await client.close();
+  });
+
+  test("same logical outcome set reports duplicate", async () => {
+    const first = await store.set("cid-1", {
+      status: "accepted",
+      reason: "Looks good",
+      evaluatedBy: "agent-1",
+    });
+    const second = (await store.set("cid-1", {
+      status: "accepted",
+      reason: "Looks good",
+      evaluatedBy: "agent-1",
+    })) as typeof first & { readonly isNew?: boolean };
+
+    expect((first as typeof first & { readonly isNew?: boolean }).isNew).toBe(true);
+    expect(second.isNew).toBe(false);
+    expect(await store.getStats()).toMatchObject({ total: 1, accepted: 1 });
   });
 });
 

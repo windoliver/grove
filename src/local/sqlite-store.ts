@@ -27,6 +27,7 @@ import type {
   ActiveClaimFilter,
   ClaimQuery,
   ClaimStore,
+  ContributionPutResult,
   ContributionQuery,
   ContributionStore,
   ExpiredClaim,
@@ -46,12 +47,13 @@ import { SqliteOutcomeStore } from "./sqlite-outcome-store.js";
 // ---------------------------------------------------------------------------
 
 import { DEFAULT_LEASE_DURATION_MS } from "../core/claim-logic.js";
+import { computeContributionContentHash } from "../core/content-dedup.js";
 import type { ClaimEntity, ContributionEntity } from "../core/entity.js";
 import { claimToEntity, contributionToEntity } from "../core/entity.js";
 import { ClaimConflictError, NotFoundError, StateConflictError } from "../core/errors.js";
 import { toUtcIso } from "../core/time.js";
 
-const CURRENT_SCHEMA_VERSION = 11;
+export const CURRENT_SCHEMA_VERSION = 12;
 const SQLITE_BIND_LIMIT = 900;
 
 // ---------------------------------------------------------------------------
@@ -76,6 +78,7 @@ const SCHEMA_DDL = `
     agent_name TEXT,
     created_at TEXT NOT NULL,
     tags_json TEXT NOT NULL DEFAULT '[]',
+    content_hash TEXT NOT NULL,
     manifest_json TEXT NOT NULL
   );
 
@@ -310,6 +313,60 @@ export function initSqliteDb(dbPath: string): Database {
     db.run(
       "CREATE INDEX IF NOT EXISTS idx_contributions_agent_created ON contributions(agent_id, created_at)",
     );
+
+    // Migration → v12: add implicit content-hash dedup for contributions.
+    // Existing duplicate rows are pruned before the UNIQUE index is created,
+    // keeping the earliest created_at row for each logical payload.
+    {
+      const contributionCols = db.prepare("PRAGMA table_info(contributions)").all() as readonly {
+        name: string;
+      }[];
+      const contributionColNames = new Set(contributionCols.map((c) => c.name));
+      if (!contributionColNames.has("content_hash")) {
+        db.run("ALTER TABLE contributions ADD COLUMN content_hash TEXT");
+      }
+
+      const rows = db
+        .prepare(
+          "SELECT cid, manifest_json FROM contributions WHERE content_hash IS NULL OR content_hash = ''",
+        )
+        .all() as readonly { cid: string; manifest_json: string }[];
+      const updateContentHash = db.prepare(
+        "UPDATE contributions SET content_hash = ? WHERE cid = ?",
+      );
+      for (const row of rows) {
+        const contribution = rowToContribution(row);
+        updateContentHash.run(computeContributionContentHash(contribution), row.cid);
+      }
+
+      const duplicateRows = db
+        .prepare(
+          `
+          WITH ranked AS (
+            SELECT cid,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY content_hash
+                     ORDER BY created_at ASC, rowid ASC
+                   ) AS rn
+            FROM contributions
+            WHERE content_hash IS NOT NULL AND content_hash <> ''
+          )
+          SELECT cid FROM ranked WHERE rn > 1
+        `,
+        )
+        .all() as readonly { cid: string }[];
+      for (const row of duplicateRows) {
+        db.run("DELETE FROM contributions_fts WHERE cid = ?", [row.cid]);
+        db.run("DELETE FROM contribution_tags WHERE cid = ?", [row.cid]);
+        db.run("DELETE FROM artifacts WHERE contribution_cid = ?", [row.cid]);
+        db.run("DELETE FROM relations WHERE source_cid = ?", [row.cid]);
+        db.run("DELETE FROM contributions WHERE cid = ?", [row.cid]);
+      }
+
+      db.run(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_contributions_content_hash ON contributions(content_hash)",
+      );
+    }
 
     // Version-gated destructive migration: recreate workspaces with per-agent PK
     if (currentVersion !== null && currentVersion < 4 && currentVersion >= 3) {
@@ -806,6 +863,7 @@ export class SqliteContributionStore implements ContributionStore {
 
   // Cached prepared statements for fixed queries
   private readonly stmtGetByCid: Statement;
+  private readonly stmtGetByContentHash: Statement;
   private readonly stmtInsertContribution: Statement;
   private readonly stmtInsertRelation: Statement;
   private readonly stmtInsertFts: Statement;
@@ -819,10 +877,13 @@ export class SqliteContributionStore implements ContributionStore {
     this.storeIdentity = db.filename;
 
     this.stmtGetByCid = db.query("SELECT manifest_json FROM contributions WHERE cid = ?");
+    this.stmtGetByContentHash = db.query(
+      "SELECT cid, manifest_json FROM contributions WHERE content_hash = ?",
+    );
     this.stmtInsertContribution = db.query(
       `INSERT OR IGNORE INTO contributions (cid, kind, mode, summary, description,
-       agent_id, agent_name, created_at, tags_json, manifest_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       agent_id, agent_name, created_at, tags_json, content_hash, manifest_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     this.stmtInsertRelation = db.query(
       `INSERT INTO relations (source_cid, target_cid, relation_type, metadata_json)
@@ -847,9 +908,10 @@ export class SqliteContributionStore implements ContributionStore {
     `);
   }
 
-  put = async (contribution: Contribution): Promise<void> => {
-    this.putSync(contribution);
-    this.onWrite?.();
+  put = async (contribution: Contribution): Promise<ContributionPutResult> => {
+    const result = this.putSync(contribution);
+    if (result.isNew) this.onWrite?.();
+    return result;
   };
 
   /**
@@ -866,98 +928,35 @@ export class SqliteContributionStore implements ContributionStore {
    * handoffs). Implementing stores must not add this method unless they can actually
    * satisfy the synchronous-cowrite contract.
    */
-  putWithCowrite(contribution: Contribution, cowriteFn: () => void): void {
-    this.putSync(contribution, cowriteFn);
-    this.onWrite?.();
+  putWithCowrite(contribution: Contribution, cowriteFn: () => void): ContributionPutResult {
+    const result = this.putSync(contribution, cowriteFn);
+    if (result.isNew) this.onWrite?.();
+    return result;
   }
 
-  putMany = async (contributions: readonly Contribution[]): Promise<void> => {
-    if (contributions.length === 0) return;
-    // Small batches use the single-put path (cached statements are optimal).
-    if (contributions.length <= 3) {
-      const tx = this.db.transaction(() => {
-        for (const c of contributions) {
-          this.putSync(c);
-        }
-      });
-      tx();
-      this.onWrite?.();
-      return;
-    }
-
-    // Larger batches: insert contributions individually (need per-row duplicate
-    // detection), then batch junction-table rows with multi-row INSERTs.
+  putMany = async (
+    contributions: readonly Contribution[],
+  ): Promise<readonly ContributionPutResult[]> => {
+    if (contributions.length === 0) return [];
+    const results: ContributionPutResult[] = [];
     const tx = this.db.transaction(() => {
-      const pendingRelations: SQLQueryBindings[][] = [];
-      const pendingTags: SQLQueryBindings[][] = [];
-      const pendingArtifacts: SQLQueryBindings[][] = [];
-      const pendingFts: SQLQueryBindings[][] = [];
-
       for (const c of contributions) {
-        if (!verifyCid(c)) {
-          throw new Error(
-            `CID integrity check failed for '${c.cid}': CID does not match manifest content`,
-          );
-        }
-        const manifestJson = JSON.stringify(toManifest(c));
-        const tagsJson = JSON.stringify(c.tags);
-        const createdAtUtc = toUtcIso(c.createdAt);
-
-        const result = this.stmtInsertContribution.run(
-          c.cid,
-          c.kind,
-          c.mode,
-          c.summary,
-          c.description ?? null,
-          c.agent.agentId,
-          c.agent.agentName ?? null,
-          createdAtUtc,
-          tagsJson,
-          manifestJson,
-        );
-        if (result.changes === 0) continue;
-
-        for (const rel of c.relations) {
-          pendingRelations.push([
-            c.cid,
-            rel.targetCid,
-            rel.relationType,
-            rel.metadata !== undefined ? JSON.stringify(rel.metadata) : null,
-          ]);
-        }
-        pendingFts.push([c.cid, c.summary, c.description ?? ""]);
-        for (const tag of c.tags) {
-          pendingTags.push([c.cid, tag]);
-        }
-        for (const [name, contentHash] of Object.entries(c.artifacts)) {
-          pendingArtifacts.push([c.cid, name, contentHash]);
-        }
+        results.push(this.insertContributionInCurrentTransaction(c));
       }
-
-      // Batch junction-table inserts (chunk to stay under SQLITE_MAX_VARIABLE_NUMBER=999)
-      this.batchInsert(
-        "INSERT INTO relations (source_cid, target_cid, relation_type, metadata_json) VALUES",
-        4,
-        pendingRelations,
-      );
-      this.batchInsert(
-        "INSERT INTO contributions_fts (cid, summary, description) VALUES",
-        3,
-        pendingFts,
-      );
-      this.batchInsert("INSERT INTO contribution_tags (cid, tag) VALUES", 2, pendingTags);
-      this.batchInsert(
-        "INSERT INTO artifacts (contribution_cid, name, content_hash) VALUES",
-        3,
-        pendingArtifacts,
-      );
     });
     tx();
-    this.onWrite?.();
+    if (results.some((result) => result.isNew)) this.onWrite?.();
+    return results;
   };
 
   get = async (cid: string): Promise<Contribution | undefined> => {
     const row = this.stmtGetByCid.get(cid) as { manifest_json: string } | null;
+    if (row === null) return undefined;
+    return rowToContribution(row);
+  };
+
+  getByContentHash = async (contentHash: string): Promise<Contribution | undefined> => {
+    const row = this.stmtGetByContentHash.get(contentHash) as { manifest_json: string } | null;
     if (row === null) return undefined;
     return rowToContribution(row);
   };
@@ -1297,7 +1296,17 @@ export class SqliteContributionStore implements ContributionStore {
   /** Synchronous put — uses INSERT OR IGNORE for atomic idempotency.
    *  @param cowrite — optional function run inside the same SQLite transaction after the insert.
    */
-  public putSync(contribution: Contribution, cowrite?: () => void): void {
+  public putSync(contribution: Contribution, cowrite?: () => void): ContributionPutResult {
+    const tx = this.db.transaction(() =>
+      this.insertContributionInCurrentTransaction(contribution, cowrite),
+    );
+    return tx();
+  }
+
+  private insertContributionInCurrentTransaction(
+    contribution: Contribution,
+    cowrite?: () => void,
+  ): ContributionPutResult {
     // Verify CID integrity before persisting
     if (!verifyCid(contribution)) {
       throw new Error(
@@ -1310,69 +1319,65 @@ export class SqliteContributionStore implements ContributionStore {
     // Normalize to UTC for reliable lexicographic ORDER BY on the indexed column.
     // The manifest_json keeps the original value for CID integrity.
     const createdAtUtc = toUtcIso(contribution.createdAt);
+    const contentHash = computeContributionContentHash(contribution);
 
-    const tx = this.db.transaction(() => {
-      // INSERT OR IGNORE: if CID already exists, this is a no-op
-      const result = this.stmtInsertContribution.run(
-        contribution.cid,
-        contribution.kind,
-        contribution.mode,
-        contribution.summary,
-        contribution.description ?? null,
-        contribution.agent.agentId,
-        contribution.agent.agentName ?? null,
-        createdAtUtc,
-        tagsJson,
-        manifestJson,
-      );
+    // INSERT OR IGNORE: if CID or content_hash already exists, this is a no-op.
+    const result = this.stmtInsertContribution.run(
+      contribution.cid,
+      contribution.kind,
+      contribution.mode,
+      contribution.summary,
+      contribution.description ?? null,
+      contribution.agent.agentId,
+      contribution.agent.agentName ?? null,
+      createdAtUtc,
+      tagsJson,
+      contentHash,
+      manifestJson,
+    );
 
-      // If no row was inserted (duplicate CID), skip relations/FTS/tags/artifacts
-      if (result.changes === 0) return;
-
-      // Insert relations
-      for (const rel of contribution.relations) {
-        this.stmtInsertRelation.run(
-          contribution.cid,
-          rel.targetCid,
-          rel.relationType,
-          rel.metadata !== undefined ? JSON.stringify(rel.metadata) : null,
-        );
+    // If no row was inserted, return the existing row selected by content hash.
+    if (result.changes === 0) {
+      const existing = this.stmtGetByContentHash.get(contentHash) as {
+        cid: string;
+        manifest_json: string;
+      } | null;
+      if (existing !== null) {
+        return {
+          cid: existing.cid,
+          isNew: false,
+          contribution: rowToContribution(existing),
+        };
       }
-
-      // Insert into FTS index
-      this.stmtInsertFts.run(
-        contribution.cid,
-        contribution.summary,
-        contribution.description ?? "",
-      );
-
-      // Insert tags into junction table
-      for (const tag of contribution.tags) {
-        this.stmtInsertTag.run(contribution.cid, tag);
-      }
-
-      // Insert artifact references into junction table
-      for (const [name, contentHash] of Object.entries(contribution.artifacts)) {
-        this.stmtInsertArtifact.run(contribution.cid, name, contentHash);
-      }
-
-      // Optional cowrite: runs inside the same transaction (used for atomic handoff creation)
-      cowrite?.();
-    });
-    tx();
-  }
-
-  /** Multi-row INSERT helper. Chunks rows to stay under SQLITE_MAX_VARIABLE_NUMBER (999). */
-  private batchInsert(prefix: string, cols: number, rows: SQLQueryBindings[][]): void {
-    if (rows.length === 0) return;
-    const chunkSize = Math.floor(SQLITE_BIND_LIMIT / cols);
-    for (let i = 0; i < rows.length; i += chunkSize) {
-      const chunk = rows.slice(i, i + chunkSize);
-      const placeholderRow = `(${Array(cols).fill("?").join(", ")})`;
-      const sql = `${prefix} ${chunk.map(() => placeholderRow).join(", ")}`;
-      const params = chunk.flat();
-      this.db.prepare(sql).run(...params);
+      return { cid: contribution.cid, isNew: false };
     }
+
+    // Insert relations
+    for (const rel of contribution.relations) {
+      this.stmtInsertRelation.run(
+        contribution.cid,
+        rel.targetCid,
+        rel.relationType,
+        rel.metadata !== undefined ? JSON.stringify(rel.metadata) : null,
+      );
+    }
+
+    // Insert into FTS index
+    this.stmtInsertFts.run(contribution.cid, contribution.summary, contribution.description ?? "");
+
+    // Insert tags into junction table
+    for (const tag of contribution.tags) {
+      this.stmtInsertTag.run(contribution.cid, tag);
+    }
+
+    // Insert artifact references into junction table
+    for (const [name, artifactContentHash] of Object.entries(contribution.artifacts)) {
+      this.stmtInsertArtifact.run(contribution.cid, name, artifactContentHash);
+    }
+
+    // Optional cowrite: runs inside the same transaction (used for atomic handoff creation)
+    cowrite?.();
+    return { cid: contribution.cid, isNew: true, contribution };
   }
 
   /**
@@ -1912,10 +1917,13 @@ export class SqliteStore implements ContributionStore {
   }
 
   // ContributionStore delegation
-  put = (contribution: Contribution): Promise<void> => this.contributions.put(contribution);
-  putMany = (contributions: readonly Contribution[]): Promise<void> =>
+  put = (contribution: Contribution): Promise<ContributionPutResult> =>
+    this.contributions.put(contribution);
+  putMany = (contributions: readonly Contribution[]): Promise<readonly ContributionPutResult[]> =>
     this.contributions.putMany(contributions);
   get = (cid: string): Promise<Contribution | undefined> => this.contributions.get(cid);
+  getByContentHash = (contentHash: string): Promise<Contribution | undefined> =>
+    this.contributions.getByContentHash(contentHash);
   getMany = (cids: readonly string[]): Promise<ReadonlyMap<string, Contribution>> =>
     this.contributions.getMany(cids);
   list = (query?: ContributionQuery): Promise<readonly Contribution[]> =>

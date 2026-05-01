@@ -798,7 +798,7 @@ describe("contributeOperation: idempotencyKey", () => {
     expect(result.ok).toBe(true);
   });
 
-  test("no idempotencyKey means no dedup", async () => {
+  test("identical payloads without idempotencyKey dedup by content hash", async () => {
     const first = await contributeOperation(
       { kind: "work", summary: "duplicate", agent: { agentId: "a1" } },
       deps,
@@ -807,13 +807,55 @@ describe("contributeOperation: idempotencyKey", () => {
       { kind: "work", summary: "duplicate", agent: { agentId: "a1" } },
       deps,
     );
+    const third = await contributeOperation(
+      { kind: "work", summary: "duplicate", agent: { agentId: "a1" } },
+      deps,
+    );
+    expect(first.ok && second.ok && third.ok).toBe(true);
+    if (!first.ok || !second.ok || !third.ok) return;
+
+    expect(first.value.accepted).toBe(1);
+    expect(first.value.duplicate).toBe(0);
+    expect(second.value.accepted).toBe(0);
+    expect(second.value.duplicate).toBe(1);
+    expect(third.value.accepted).toBe(0);
+    expect(third.value.duplicate).toBe(1);
+    expect(second.value.cid).toBe(first.value.cid);
+    expect(third.value.cid).toBe(first.value.cid);
+
+    const stored = await deps.contributionStore.list({ limit: 20 });
+    const matching = stored.filter((c) => c.summary === "duplicate");
+    expect(matching).toHaveLength(1);
+  });
+
+  test("identical gated payloads dedup before metric gate rejection", async () => {
+    const gatedDeps: OperationDeps = {
+      ...deps,
+      contract: {
+        contractVersion: 3,
+        name: "gated",
+        mode: "evaluation",
+        metrics: { val_bpb: { direction: "minimize" } },
+        gates: [{ type: "metric_improves", metric: "val_bpb" }],
+      },
+    };
+    const input = {
+      kind: "work" as const,
+      summary: "gated duplicate",
+      scores: { val_bpb: { value: 0.99, direction: "minimize" as const } },
+      agent: { agentId: "a1" },
+    };
+
+    const first = await contributeOperation(input, gatedDeps);
+    const second = await contributeOperation(input, gatedDeps);
+
     expect(first.ok && second.ok).toBe(true);
     if (!first.ok || !second.ok) return;
-    // Without an idempotency key, two identical contributions are produced.
-    // (CIDs may collide if the timestamps round to the same millisecond,
-    // but conceptually each call is a separate contribution.)
-    expect(first.value.cid).toBeTruthy();
-    expect(second.value.cid).toBeTruthy();
+    expect(first.value.accepted).toBe(1);
+    expect(first.value.duplicate).toBe(0);
+    expect(second.value.accepted).toBe(0);
+    expect(second.value.duplicate).toBe(1);
+    expect(second.value.cid).toBe(first.value.cid);
   });
 });
 

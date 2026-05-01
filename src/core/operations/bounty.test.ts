@@ -78,6 +78,66 @@ describe("createBountyOperation", () => {
     expect(result.value.reservationId).toBeUndefined();
   });
 
+  test("dedups repeated identical bounty creates by content hash", async () => {
+    const depsNoCredits: OperationDeps = {
+      contributionStore: deps.contributionStore,
+      claimStore: deps.claimStore,
+      cas: deps.cas,
+      frontier: deps.frontier,
+      bountyStore: deps.bountyStore,
+    };
+
+    const input = {
+      title: "Retry-safe bounty",
+      amount: 50,
+      criteria: { description: "Do one specific task" },
+      agent: { agentId: "agent-1" },
+    };
+
+    const first = await createBountyOperation(input, depsNoCredits);
+    const second = await createBountyOperation(input, depsNoCredits);
+    const third = await createBountyOperation(input, depsNoCredits);
+
+    expect(first.ok && second.ok && third.ok).toBe(true);
+    if (!first.ok || !second.ok || !third.ok) return;
+    expect(first.value.accepted).toBe(1);
+    expect(first.value.duplicate).toBe(0);
+    expect(second.value.accepted).toBe(0);
+    expect(second.value.duplicate).toBe(1);
+    expect(third.value.accepted).toBe(0);
+    expect(third.value.duplicate).toBe(1);
+    expect(second.value.bountyId).toBe(first.value.bountyId);
+    expect(third.value.bountyId).toBe(first.value.bountyId);
+
+    const listed = await listBountiesOperation({}, depsNoCredits);
+    expect(listed.ok).toBe(true);
+    if (listed.ok) expect(listed.value.count).toBe(1);
+  });
+
+  test("voids fresh credit reservations for duplicate bounty creates", async () => {
+    (deps.creditsService as InMemoryCreditsService).seed("agent-1", 1000);
+
+    const input = {
+      title: "Retry-safe funded bounty",
+      amount: 100,
+      criteria: { description: "Do one funded task" },
+      agent: { agentId: "agent-1" },
+    };
+
+    const first = await createBountyOperation(input, deps);
+    const second = await createBountyOperation(input, deps);
+
+    expect(first.ok && second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    expect(second.value.accepted).toBe(0);
+    expect(second.value.duplicate).toBe(1);
+    expect(second.value.bountyId).toBe(first.value.bountyId);
+
+    const balance = await (deps.creditsService as InMemoryCreditsService).balance("agent-1");
+    expect(balance.available).toBe(900);
+    expect(balance.reserved).toBe(100);
+  });
+
   test("returns VALIDATION_ERROR when bountyStore not configured", async () => {
     const depsNoBounty: OperationDeps = {
       contributionStore: deps.contributionStore,

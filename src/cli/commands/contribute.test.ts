@@ -841,15 +841,13 @@ describe("executeContribute", () => {
         cwd: dir,
       });
 
-      // The CID will differ because createdAt changes, but if we fix it...
-      // For true idempotency, we'd need the same createdAt. Let's just
-      // verify two contributions with different timestamps don't error.
+      // Identical logical payloads dedup at the store boundary even though
+      // executeContribute generates a fresh timestamp on each call.
       const r1 = await executeContribute(opts);
       const r2 = await executeContribute(opts);
 
-      // Different CIDs (different createdAt) but both succeed
       expect(r1.cid).toMatch(/^blake3:[0-9a-f]{64}$/);
-      expect(r2.cid).toMatch(/^blake3:[0-9a-f]{64}$/);
+      expect(r2.cid).toBe(r1.cid);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -1369,7 +1367,7 @@ describe("executeContribute: idempotencyKey", () => {
     }
   });
 
-  test("no idempotency key produces distinct contributions", async () => {
+  test("no idempotency key dedups identical logical contributions", async () => {
     const dir = await createTempDir();
     try {
       await executeInit(makeInitOptions(dir));
@@ -1383,8 +1381,7 @@ describe("executeContribute: idempotencyKey", () => {
       const second = await executeContribute(opts);
 
       expect(first.cid).toMatch(/^blake3:/);
-      expect(second.cid).toMatch(/^blake3:/);
-      expect(second.cid).not.toBe(first.cid);
+      expect(second.cid).toBe(first.cid);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

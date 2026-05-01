@@ -2,7 +2,7 @@
  * Schema migration smoke tests for SQLite store.
  *
  * Validates that:
- * - Fresh DB creates schema v1
+ * - Fresh DB records the current schema version
  * - Re-opening existing DB doesn't corrupt data
  * - Schema migrations table is correctly populated
  */
@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { toManifest } from "../core/manifest.js";
 import { makeClaim, makeContribution } from "../core/test-helpers.js";
-import { initSqliteDb, SqliteStore } from "./sqlite-store.js";
+import { CURRENT_SCHEMA_VERSION, initSqliteDb, SqliteStore } from "./sqlite-store.js";
 
 describe("schema migration", () => {
   test("fresh DB creates schema_migrations with current version", async () => {
@@ -32,7 +32,7 @@ describe("schema migration", () => {
       db.close();
 
       expect(row).toBeDefined();
-      expect(row?.version).toBe(11);
+      expect(row?.version).toBe(CURRENT_SCHEMA_VERSION);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -173,7 +173,7 @@ describe("schema migration", () => {
       db.close();
 
       expect(rows.length).toBe(1);
-      expect(rows[0]?.version).toBe(11);
+      expect(rows[0]?.version).toBe(CURRENT_SCHEMA_VERSION);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -191,7 +191,7 @@ describe("schema migration", () => {
         .get() as {
         version: number;
       } | null;
-      expect(row?.version).toBe(11);
+      expect(row?.version).toBe(CURRENT_SCHEMA_VERSION);
 
       db.close();
     } finally {
@@ -534,7 +534,7 @@ describe("schema migration", () => {
           v: number | null;
         }
       ).v;
-      expect(version).toBe(11);
+      expect(version).toBe(CURRENT_SCHEMA_VERSION);
 
       db2.close();
     } finally {

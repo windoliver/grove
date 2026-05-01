@@ -123,6 +123,32 @@ describe("grove_bounty_create", () => {
     expect(data.reservationId).toBeDefined();
   });
 
+  test("reports accepted and duplicate counts for repeated identical bounties", async () => {
+    const args = {
+      title: "Retry-safe MCP bounty",
+      amount: 100,
+      criteria: { description: "Do one MCP task" },
+      agent: { agentId: "agent-1" },
+    };
+
+    const first = await callTool(server, "grove_bounty_create", args);
+    const second = await callTool(server, "grove_bounty_create", args);
+
+    expect(first.isError).toBeUndefined();
+    expect(second.isError).toBeUndefined();
+    const firstData = JSON.parse(first.text);
+    const secondData = JSON.parse(second.text);
+    expect(firstData.accepted).toBe(1);
+    expect(firstData.duplicate).toBe(0);
+    expect(secondData.accepted).toBe(0);
+    expect(secondData.duplicate).toBe(1);
+    expect(secondData.bountyId).toBe(firstData.bountyId);
+
+    const balance = await (deps.creditsService as InMemoryCreditsService).balance("agent-1");
+    expect(balance.available).toBe(900);
+    expect(balance.reserved).toBe(100);
+  });
+
   test("returns error when bountyStore is missing", async () => {
     const noBountyDeps = { ...deps, bountyStore: undefined } as unknown as McpDeps;
     const s = new McpServer({ name: "test", version: "0.0.1" }, { capabilities: { tools: {} } });

@@ -10,6 +10,7 @@
 import type { Bounty, BountyCriteria, BountyStatus } from "../bounty.js";
 import { BountyStatus as BS } from "../bounty.js";
 import { evaluateBountyCriteria } from "../bounty-logic.js";
+import { withBountyContentHash } from "../content-dedup.js";
 import type { JsonValue } from "../models.js";
 import type { AgentOverrides } from "./agent.js";
 import { resolveAgent } from "./agent.js";
@@ -29,6 +30,8 @@ export interface CreateBountyResult {
   readonly status: BountyStatus;
   readonly deadline: string;
   readonly reservationId?: string | undefined;
+  readonly accepted: number;
+  readonly duplicate: number;
 }
 
 /** Summary for list responses. */
@@ -166,7 +169,12 @@ export async function createBountyOperation(
       ...(input.context !== undefined ? { context: input.context } : {}),
     };
 
-    const result = await deps.bountyStore.createBounty(bounty);
+    const result = await deps.bountyStore.createBounty(withBountyContentHash(bounty));
+    const writeMeta = result as Bounty & { readonly isNew?: boolean | undefined };
+    const isNew = writeMeta.isNew !== false;
+    if (!isNew && reservationId !== undefined && deps.creditsService !== undefined) {
+      await deps.creditsService.void(reservationId);
+    }
 
     return ok({
       bountyId: result.bountyId,
@@ -175,6 +183,8 @@ export async function createBountyOperation(
       status: result.status,
       deadline: result.deadline,
       reservationId: result.reservationId,
+      accepted: isNew ? 1 : 0,
+      duplicate: isNew ? 0 : 1,
     });
   } catch (error) {
     return fromGroveError(error);

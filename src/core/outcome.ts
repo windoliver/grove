@@ -34,6 +34,8 @@ export interface OutcomeRecord {
   readonly baselineCid?: string | undefined;
   readonly evaluatedAt: string;
   readonly evaluatedBy: string;
+  readonly accepted?: number | undefined;
+  readonly duplicate?: number | undefined;
 }
 
 /** Input for creating/updating an outcome (cid is separate). */
