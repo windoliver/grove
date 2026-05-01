@@ -7,6 +7,7 @@
  */
 
 import type { WatchEntity, WatchKind } from "./watch-events.js";
+import type { WatchStream } from "./watch-stream.js";
 
 export type WatchClientOp =
   | "ADDED"
@@ -69,7 +70,7 @@ type StreamExit =
   | { kind: "ended"; lastRv: bigint; observedData: boolean }
   | { kind: "relist" };
 
-export class WatchClient {
+export class WatchClient implements WatchStream {
   private readonly baseUrl: string;
   private readonly kind: WatchKind;
   private readonly authHeader: string;
