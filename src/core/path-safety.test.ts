@@ -201,7 +201,7 @@ describe("assertWithinBoundary", () => {
 // ---------------------------------------------------------------------------
 
 describe("validateArtifactName", () => {
-  // Valid names (per spec: [a-zA-Z0-9][a-zA-Z0-9._/ -]*)
+  // Valid names (per spec: [a-zA-Z0-9._/ -]+)
   test("accepts simple alphanumeric name", () => {
     expect(validateArtifactName("report.json")).toBe("report.json");
   });
@@ -227,6 +227,15 @@ describe("validateArtifactName", () => {
     expect(validateArtifactName("my report v2.pdf")).toBe("my report v2.pdf");
   });
 
+  test("accepts dotfiles emitted by git-tree ingestion", () => {
+    expect(validateArtifactName(".gitignore")).toBe(".gitignore");
+    expect(validateArtifactName(".github/workflows/ci.yml")).toBe(".github/workflows/ci.yml");
+  });
+
+  test("accepts names with leading and trailing spaces", () => {
+    expect(validateArtifactName(" leading and trailing .txt ")).toBe(" leading and trailing .txt ");
+  });
+
   // Traversal attacks
   test("rejects .. path component in middle", () => {
     expect(() => validateArtifactName("src/../secret.txt")).toThrow(ArtifactNameError);
@@ -240,17 +249,17 @@ describe("validateArtifactName", () => {
     expect(() => validateArtifactName("a/../../etc/passwd")).toThrow(ArtifactNameError);
   });
 
-  // Must start with alphanumeric
-  test("rejects name starting with dot", () => {
-    expect(() => validateArtifactName(".gitignore")).toThrow(ArtifactNameError);
+  test("rejects single-dot path component", () => {
+    expect(() => validateArtifactName(".")).toThrow(ArtifactNameError);
+    expect(() => validateArtifactName("src/./main.ts")).toThrow(ArtifactNameError);
+  });
+
+  test("rejects empty path component", () => {
+    expect(() => validateArtifactName("src//main.ts")).toThrow(ArtifactNameError);
   });
 
   test("rejects name starting with slash", () => {
     expect(() => validateArtifactName("/etc/passwd")).toThrow(ArtifactNameError);
-  });
-
-  test("rejects name starting with space", () => {
-    expect(() => validateArtifactName(" file.txt")).toThrow(ArtifactNameError);
   });
 
   // Null byte injection

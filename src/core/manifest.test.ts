@@ -194,6 +194,21 @@ describe("computeCid", () => {
   });
 
   describe("input validation", () => {
+    test("accepts safe artifact names emitted by git-tree ingestion", () => {
+      const input: ContributionInput = {
+        ...MINIMAL_INPUT,
+        artifacts: {
+          ".gitignore": "blake3:1111111111111111111111111111111111111111111111111111111111111111",
+          ".github/workflows/ci.yml":
+            "blake3:2222222222222222222222222222222222222222222222222222222222222222",
+          " leading and trailing .txt ":
+            "blake3:3333333333333333333333333333333333333333333333333333333333333333",
+        },
+      };
+
+      expect(() => createContribution(input)).not.toThrow();
+    });
+
     test("rejects artifact names with traversal components", () => {
       const input: ContributionInput = {
         ...MINIMAL_INPUT,
