@@ -117,18 +117,21 @@ export function useDerived<T>(
         setStreamError(null);
       }),
     );
-    // Re-read after subscribing to close the gap between render-time
-    // initialization and effect-time subscription: an error fired in that
-    // window would otherwise be lost since addErrorListener only delivers
-    // future events. This reconciliation is safe — getLastError reflects
-    // the durable state, and setStreamError dedups identical values.
+    // Re-read after subscribing to close BOTH directions of the gap between
+    // render-time initialization and effect-time subscription: an error
+    // appearing OR being cleared in that window would otherwise be lost,
+    // since addErrorListener only delivers future events. Walk every
+    // watched kind and set unconditionally — null when all kinds are
+    // healthy, otherwise the first non-null error.
+    let firstErr: Error | null = null;
     for (const k of kinds) {
       const e = factory.getLastError(k);
       if (e) {
-        setStreamError(e);
+        firstErr = e;
         break;
       }
     }
+    setStreamError(firstErr);
     return () => {
       for (const u of unsubs) u();
     };

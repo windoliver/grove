@@ -244,18 +244,24 @@ async function buildAppProps(
   const label = backendLabel(backend);
 
   // For remote backends, attach the local API key for topology/contract probes
-  // only when the user explicitly provided --grove (opting into credential scope).
-  // Without --grove, omit credentials to avoid leaking tokens to arbitrary --url targets.
+  // when the user explicitly provided --grove (opting into credential scope)
+  // OR the URL targets a trusted loopback (mirrors createProvider — common
+  // dev pattern: `grove tui --url http://localhost:4515`). Without either,
+  // omit credentials to avoid leaking tokens to arbitrary --url targets.
   let remoteAuthHeaders: Record<string, string> | undefined;
-  if (backend.mode === "remote" && backend.groveOverride) {
-    const { resolveGroveDir } = await import("../cli/utils/grove-dir.js");
-    const { readClientKey } = await import("../core/project-key.js");
-    try {
-      const { groveDir } = resolveGroveDir(backend.groveOverride);
-      const apiKey = readClientKey(groveDir);
-      if (apiKey) remoteAuthHeaders = { Authorization: `Bearer ${apiKey}` };
-    } catch {
-      /* no key available */
+  if (backend.mode === "remote") {
+    const { isLoopbackUrl } = await import("../shared/provider-factory.js");
+    const isLoopback = isLoopbackUrl(backend.url);
+    if (backend.groveOverride || isLoopback) {
+      const { resolveGroveDir } = await import("../cli/utils/grove-dir.js");
+      const { readClientKey } = await import("../core/project-key.js");
+      try {
+        const { groveDir } = resolveGroveDir(backend.groveOverride);
+        const apiKey = readClientKey(groveDir);
+        if (apiKey) remoteAuthHeaders = { Authorization: `Bearer ${apiKey}` };
+      } catch {
+        /* no key available */
+      }
     }
   }
 
@@ -445,23 +451,22 @@ async function buildAppProps(
   }
 
   // Construct InformerFactory for the new SSE-driven cache (#295). Ships dark
-  // in PR1 — no view consumes the factory yet. The factory is built from the
-  // resolved backend (post-health-fallback) so the watch source matches what
-  // the rest of the TUI is reading from. PR2 wires real local hub publishers
-  // and listFns when the first view migrates.
+  // in PR1 — no view consumes the factory yet. The factory targets the
+  // grove-server watch routes (`/api/list`, `/api/watch`), which means it's
+  // only usable in `mode: "remote"` (grove-server). `mode: "nexus"` talks to
+  // Nexus VFS endpoints which do not host these routes; PR2 either adds a
+  // Nexus-backed WatchStream or routes through grove-server. Local mode uses
+  // an in-process WatchHub; PR2 wires real local store snapshots and
+  // recordWrite publishers.
   let informerFactory: import("../core/informer.js").InformerFactory | undefined;
   {
     const { InformerFactory } = await import("../core/informer.js");
-    if (backend.mode === "nexus" || backend.mode === "remote") {
-      // For remote backends, prefer the credential resolved earlier in this
-      // function (remoteAuthHeaders) — it follows the same provider scope
-      // gate so we don't leak project keys into arbitrary --url targets.
-      // Falls back to env vars used by the legacy SSE bridge.
-      let authHeader = remoteAuthHeaders?.Authorization;
-      if (!authHeader) {
-        const apiKey = process.env.NEXUS_API_KEY;
-        if (apiKey) authHeader = `Bearer ${apiKey}`;
-      }
+    if (backend.mode === "remote") {
+      const authHeader = remoteAuthHeaders?.Authorization;
+      // Grove-server watch routes require auth; without a credential we can't
+      // construct a usable factory. Better to omit it than to start watching
+      // anonymously and surface 401 noise — hooks throw on factory absence
+      // when called outside a provider, which makes the gap obvious.
       if (authHeader) {
         informerFactory = new InformerFactory({
           mode: "remote",
@@ -469,10 +474,7 @@ async function buildAppProps(
           authHeader,
         });
       }
-      // No credential → no factory. Better to throw on hook use later than
-      // to silently watch with anonymous credentials and collide with
-      // permission rules.
-    } else if (groveDir) {
+    } else if (backend.mode === "local" && groveDir) {
       const { WatchHub } = await import("../core/watch-hub.js");
       informerFactory = new InformerFactory({
         mode: "local",
@@ -481,6 +483,10 @@ async function buildAppProps(
         listFn: () => [],
       });
     }
+    // backend.mode === "nexus" intentionally NOT wired in PR1: WatchClient
+    // targets grove-server endpoints, not Nexus. Hooks called against a
+    // missing factory throw — a louder signal than a silent watch failure.
+    //
     // No stopAll() callback in PR1 — InformerProvider doesn't auto-start
     // the informers (ships dark). PR2 turns eager-start on; at that point the
     // provider's own unmount cleanup handles stopAll. Adding a stopCallback

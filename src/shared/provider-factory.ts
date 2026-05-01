@@ -49,7 +49,7 @@ export function createStubContributionStore(identity?: string): ContributionStor
   };
 }
 
-function isLoopbackUrl(url: string): boolean {
+export function isLoopbackUrl(url: string): boolean {
   try {
     const { hostname } = new URL(url);
     return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";

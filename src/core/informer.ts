@@ -308,7 +308,19 @@ interface RunningInformer {
   lifecycleLock: Promise<void>;
 }
 
-const ALL_KINDS: readonly WatchKind[] = ["Contribution", "Claim", "AgentSession"];
+/**
+ * Kinds the factory will start eagerly via `startAll()`.
+ *
+ * AgentSession is intentionally excluded: the grove-server `/api/list` route
+ * currently returns 501 NOT_CONFIGURED for AgentSession (handler exists, list
+ * source not wired). Including it would terminate AgentSession's WatchClient
+ * permanently on first list. Re-add once server-side support lands.
+ *
+ * Per-kind hooks may still call `informerFor("AgentSession")` to construct
+ * the informer, but it stays idle until startAll/startKind is invoked
+ * explicitly with server support in place.
+ */
+const ALL_KINDS: readonly WatchKind[] = ["Contribution", "Claim"];
 
 /**
  * InformerFactory memoizes one Informer per kind for a single namespace

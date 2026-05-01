@@ -125,12 +125,12 @@ export function useEntities<K extends WatchKind>(
       if (errKind !== kind) return;
       setStreamError(err);
     });
-    // Re-read after subscribing to close the gap between render-time
-    // initialization and effect-time subscription: an error fired in that
-    // window would otherwise be lost since addErrorListener only delivers
-    // future events. setStreamError dedups identical values.
-    const currentErr = factory.getLastError(kind);
-    if (currentErr) setStreamError(currentErr);
+    // Re-read after subscribing to close BOTH directions of the gap between
+    // render-time initialization and effect-time subscription: an error
+    // appearing OR being cleared in that window would otherwise be lost,
+    // since addErrorListener only delivers future events. Set
+    // unconditionally to reconcile both error-appears and error-clears.
+    setStreamError(factory.getLastError(kind));
     return () => {
       unsubEvent();
       unsubSync();
