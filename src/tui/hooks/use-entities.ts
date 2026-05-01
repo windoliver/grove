@@ -60,7 +60,17 @@ export function useEntities<K extends WatchKind>(
 
   const [data, setData] = useState<readonly EntityFor<K>[]>(initial);
   const [hasSynced, setHasSynced] = useState<boolean>(informer.hasSynced());
-  const [error, setError] = useState<Error | null>(() => factory.getLastError(kind));
+  // Stream errors come from the factory's error listener — owned by the
+  // watch lifecycle (4xx, listFn throw, etc). Cleared only when the factory
+  // fires `null` (proven recovery: first RELIST_END after restart).
+  const [streamError, setStreamError] = useState<Error | null>(() =>
+    factory.getLastError(kind),
+  );
+  // Compute errors come from the predicate function throwing during a
+  // recompute. Cleared on the next successful recompute. Kept separate so
+  // recompute-after-stale-sync can't erase a stream error owned by the
+  // watch lifecycle.
+  const [computeError, setComputeError] = useState<Error | null>(null);
   const dataRef = useRef<readonly EntityFor<K>[]>(initial);
   dataRef.current = data;
 
@@ -74,9 +84,9 @@ export function useEntities<K extends WatchKind>(
         setData(next);
       }
       if (!hasSynced && informer.hasSynced()) setHasSynced(true);
-      if (error) setError(null);
+      setComputeError((prev) => (prev === null ? prev : null));
     } catch (err) {
-      setError(err instanceof Error ? err : new Error(String(err)));
+      setComputeError(err instanceof Error ? err : new Error(String(err)));
     }
   };
 
@@ -97,7 +107,9 @@ export function useEntities<K extends WatchKind>(
         queueMicrotask(() => setData(next));
       }
     } catch (err) {
-      queueMicrotask(() => setError(err instanceof Error ? err : new Error(String(err))));
+      queueMicrotask(() =>
+        setComputeError(err instanceof Error ? err : new Error(String(err))),
+      );
     }
   }
 
@@ -111,18 +123,17 @@ export function useEntities<K extends WatchKind>(
     // so consumers don't sit at hasSynced=false with no diagnostic.
     const unsubError = factory.addErrorListener((errKind, err) => {
       if (errKind !== kind) return;
-      setError(err);
+      setStreamError(err);
     });
     return () => {
       unsubEvent();
       unsubSync();
       unsubError();
     };
-    // recompute closes over informer, hasSynced, error — re-subscribe when
-    // any change. Predicate captured via ref so identity changes don't
-    // remount the subscription.
-    // biome-ignore lint/correctness/useExhaustiveDependencies: recompute is the effect body itself
-  }, [informer, factory, kind, hasSynced, error]);
+    // biome-ignore lint/correctness/useExhaustiveDependencies: recompute closes over hasSynced via setState callback semantics
+  }, [informer, factory, kind, hasSynced]);
 
-  return { data, hasSynced, error };
+  // Stream errors take precedence — they signal the watch lifecycle is
+  // unhealthy, which is more actionable than a transient predicate failure.
+  return { data, hasSynced, error: streamError ?? computeError };
 }
