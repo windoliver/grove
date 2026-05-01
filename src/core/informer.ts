@@ -1,7 +1,7 @@
 /**
  * Informer<K> — K8s-informer-style local cache with event fanout (#294).
  *
- * Wraps WatchClient to maintain a Map<id, Entity> that tracks server state
+ * Consumes a WatchStream to maintain a Map<id, Entity> that tracks server state
  * via the list→watch handshake. One Informer per kind is shared across all
  * subscribers via InformerFactory.
  *
@@ -11,10 +11,10 @@
 
 import type { AgentSessionEntity, ClaimEntity, ContributionEntity } from "./entity.js";
 import { LocalWatchClient } from "./local-watch-client.js";
-import { WatchClient, type WatchClientEvent, type WatchClientOptions } from "./watch-client.js";
+import { WatchClient, type WatchClientOptions } from "./watch-client.js";
 import type { WatchEntity, WatchKind } from "./watch-events.js";
 import type { WatchHub } from "./watch-hub.js";
-import type { WatchStream } from "./watch-stream.js";
+import type { WatchClientEvent, WatchStream } from "./watch-stream.js";
 
 type EntityForKind<K extends WatchKind> = K extends "Contribution"
   ? ContributionEntity
@@ -244,7 +244,6 @@ export type InformerFactoryOptions =
       readonly hub: WatchHub;
       readonly namespace: string;
       readonly listFn: (kind: WatchKind) => readonly WatchEntity[];
-      readonly backoff?: Backoff;
     };
 
 interface RunningInformer {
@@ -317,14 +316,24 @@ export class InformerFactory {
    */
   async relist(kind?: WatchKind): Promise<void> {
     const kinds: WatchKind[] = kind ? [kind] : [...ALL_KINDS];
-    for (const k of kinds) {
-      const r = this.running.get(k);
-      if (!r) continue;
-      r.controller.abort();
-      if (r.runPromise) await r.runPromise.catch(() => undefined);
+    const targets = kinds
+      .map((k) => this.running.get(k))
+      .filter((r): r is RunningInformer => r !== undefined);
+
+    // Phase 1: abort all in parallel.
+    for (const r of targets) r.controller.abort();
+    // Phase 2: await all settlements in parallel.
+    await Promise.all(
+      targets.map((r) => (r.runPromise ? r.runPromise.catch(() => undefined) : Promise.resolve())),
+    );
+    // Phase 3: reset each controller.
+    for (const r of targets) {
       r.controller = new AbortController();
       r.runPromise = null;
-      this.startKind(k);
+    }
+    // Phase 4: restart each kind.
+    for (const k of kinds) {
+      if (this.running.has(k)) this.startKind(k);
     }
   }
 

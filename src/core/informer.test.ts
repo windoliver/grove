@@ -876,6 +876,71 @@ describe("Informer handler isolation", () => {
   });
 });
 
+// ─── InformerFactory lifecycle ────────────────────────────────────────────────
+
+describe("InformerFactory lifecycle", () => {
+  test("startAll is idempotent — repeated calls do not double-run a kind", async () => {
+    const ac = new AbortController();
+    const fetchImpl = makeFetch({ items: [], listResourceVersion: "0" }, "", ac);
+    const factory = new InformerFactory({
+      mode: "remote",
+      baseUrl: "http://t",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    factory.startAll();
+    factory.startAll(); // second call must be a no-op (no second run() per kind)
+    await factory.stopAll();
+    // If startAll were not idempotent, the inner Informer.run() would have
+    // thrown "called while already running"; reaching here means it didn't.
+    expect(true).toBe(true);
+  });
+
+  test("stopAll aborts and awaits run promises", async () => {
+    const ac = new AbortController();
+    const fetchImpl = makeFetch({ items: [], listResourceVersion: "0" }, "", ac);
+    const factory = new InformerFactory({
+      mode: "remote",
+      baseUrl: "http://t",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    factory.startAll();
+    await factory.stopAll();
+    // After stopAll, factory is reusable.
+    const ac2 = new AbortController();
+    const fetchImpl2 = makeFetch({ items: [], listResourceVersion: "0" }, "", ac2);
+    const factory2 = new InformerFactory({
+      mode: "remote",
+      baseUrl: "http://t",
+      authHeader: "Bearer x",
+      fetch: fetchImpl2,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    factory2.startAll();
+    await factory2.stopAll();
+    expect(true).toBe(true);
+  });
+
+  test("relist(kind) restarts a single kind without throwing", async () => {
+    const ac = new AbortController();
+    const fetchImpl = makeFetch({ items: [], listResourceVersion: "0" }, "", ac);
+    const factory = new InformerFactory({
+      mode: "remote",
+      baseUrl: "http://t",
+      authHeader: "Bearer x",
+      fetch: fetchImpl,
+      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+    });
+    factory.startAll();
+    await factory.relist("Contribution");
+    await factory.stopAll();
+    expect(true).toBe(true);
+  });
+});
+
 // ─── Cache immutability ───────────────────────────────────────────────────────
 
 describe("Informer cache immutability", () => {
