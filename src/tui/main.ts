@@ -210,6 +210,7 @@ async function buildAppProps(
   appProps: import("./app.js").AppProps;
   provider: TuiDataProvider;
   stopGc?: (() => void) | undefined;
+  informerFactory?: import("../core/informer.js").InformerFactory | undefined;
 }> {
   let backend = await resolveBackend({
     url: opts.url,
@@ -443,6 +444,38 @@ async function buildAppProps(
     }
   }
 
+  // Construct InformerFactory for the new SSE-driven cache (#295). Ships dark
+  // in PR1 — no view consumes the factory yet, so empty listFn / unwired
+  // local hub is intentional. PR2 wires real store snapshots and hub
+  // publishers; PR2-PR4 migrate views from usePolledData to useEntities/etc.
+  let informerFactory: import("../core/informer.js").InformerFactory | undefined;
+  {
+    const nexusUrl = process.env.GROVE_NEXUS_URL;
+    const apiKey = process.env.NEXUS_API_KEY;
+    const { InformerFactory } = await import("../core/informer.js");
+    if (nexusUrl && apiKey) {
+      informerFactory = new InformerFactory({
+        mode: "remote",
+        baseUrl: nexusUrl,
+        authHeader: `Bearer ${apiKey}`,
+      });
+    } else if (groveDir) {
+      const { WatchHub } = await import("../core/watch-hub.js");
+      informerFactory = new InformerFactory({
+        mode: "local",
+        hub: new WatchHub(),
+        namespace: "default",
+        listFn: () => [],
+      });
+    }
+    if (informerFactory) {
+      const f = informerFactory;
+      stopCallbacks.push(() => {
+        void f.stopAll();
+      });
+    }
+  }
+
   return {
     appProps: {
       provider,
@@ -459,6 +492,7 @@ async function buildAppProps(
     },
     provider,
     stopGc,
+    informerFactory,
   };
 }
 
@@ -724,15 +758,31 @@ export async function handleTui(
           );
         }
       }
+      // PR1 (#295): wrap App in InformerProvider/RefreshProvider when the
+      // informer factory was constructed. Ships dark — no view consumes the
+      // hooks yet; this primes the runtime so PR2 migrations don't have to
+      // re-thread plumbing through main.ts.
+      const { InformerProvider } = await import("./hooks/informer-context.js");
+      const { RefreshProvider } = await import("./hooks/refresh-context.js");
+      const appElement = React.createElement(
+        SpawnManagerContext,
+        { value: spawnManager },
+        React.createElement(App, result.appProps),
+      );
+      const wrappedApp = result.informerFactory
+        ? React.createElement(InformerProvider, {
+            value: result.informerFactory,
+            children: React.createElement(RefreshProvider, {
+              factory: result.informerFactory,
+              children: appElement,
+            }),
+          })
+        : appElement;
       root.render(
         React.createElement(
           DialogProvider,
           null,
-          React.createElement(
-            SpawnManagerContext,
-            { value: spawnManager },
-            React.createElement(App, result.appProps),
-          ),
+          wrappedApp,
           React.createElement(Toaster, { position: "bottom-right" }),
         ),
       );
