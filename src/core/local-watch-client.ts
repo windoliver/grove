@@ -84,6 +84,7 @@ export class LocalWatchClient implements WatchStream {
     try {
       for await (const event of stream) {
         if (signal.aborted) return;
+        // Re-emit as WatchClientEvent — namespace is dropped (implicit in the subscription).
         await onEvent({
           op: event.op,
           rv: event.rv,
@@ -92,9 +93,9 @@ export class LocalWatchClient implements WatchStream {
         });
       }
     } catch (err) {
-      // Hub buffer overflow (unlikely in-process) — surface as RELIST_ABORTED so
-      // the Informer can drop the snapshot in flight; not relevant here since
-      // we're already past RELIST_END, so just rethrow for the caller's run loop.
+      // Buffer overflow or other hub errors during live-delta iteration. Boundary
+      // events are already emitted by this point, so the Informer won't see a
+      // RELIST_ABORTED — just rethrow so the caller's run loop handles it.
       if (!signal.aborted) throw err;
     }
   }
