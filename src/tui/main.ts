@@ -474,18 +474,18 @@ async function buildAppProps(
           authHeader,
         });
       }
-    } else if (backend.mode === "local" && groveDir) {
-      const { WatchHub } = await import("../core/watch-hub.js");
-      informerFactory = new InformerFactory({
-        mode: "local",
-        hub: new WatchHub(),
-        namespace: "default",
-        listFn: () => [],
-      });
     }
-    // backend.mode === "nexus" intentionally NOT wired in PR1: WatchClient
-    // targets grove-server endpoints, not Nexus. Hooks called against a
-    // missing factory throw — a louder signal than a silent watch failure.
+    // backend.mode === "local" / "nexus" intentionally NOT wired in PR1:
+    // - "local": LocalWatchClient with listFn=() => [] would synthesize a
+    //   "synced empty cache" since RELIST_END would fire on the empty
+    //   snapshot, and the unconnected WatchHub would never receive
+    //   recordWrite from the existing local stores. PR2 wires real
+    //   listEntities() + recordWrite producers before exposing this.
+    // - "nexus": WatchClient targets grove-server `/api/list` + `/api/watch`,
+    //   which Nexus does not host. PR2 either adds a Nexus-backed WatchStream
+    //   or routes through grove-server.
+    // In both cases, hook consumers throw on a missing provider — a louder
+    // signal than a silent watch failure.
     //
     // No stopAll() callback in PR1 — InformerProvider doesn't auto-start
     // the informers (ships dark). PR2 turns eager-start on; at that point the
