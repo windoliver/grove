@@ -8,6 +8,7 @@ import { LocalEventBus } from "../local-event-bus.js";
 import { ROUTING_SIGNATURE_CONTEXT_KEY } from "../routing-provenance.js";
 import type { AgentTopology } from "../topology.js";
 import { TopologyRouter } from "../topology-router.js";
+import type { EntityWriteEvent } from "../watch-events.js";
 import {
   _resetIdempotencyCacheForTests,
   contributeOperation,
@@ -704,6 +705,60 @@ describe("contributeOperation: idempotencyKey", () => {
     const stored = await deps.contributionStore.list({ limit: 20 });
     const matching = stored.filter((c) => c.summary === "post-commit-failure");
     expect(matching).toHaveLength(1);
+  });
+
+  test("serial idempotency commit failure after put does not turn committed write into error", async () => {
+    // biome-ignore lint/suspicious/noEmptyBlockStatements: spy suppresses output intentionally
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    let storeCalls = 0;
+    const flakyIdempotencyStore: FullOperationDeps["idempotencyStore"] = {
+      lookup: deps.idempotencyStore.lookup.bind(deps.idempotencyStore),
+      reserve: deps.idempotencyStore.reserve.bind(deps.idempotencyStore),
+      rollback: deps.idempotencyStore.rollback.bind(deps.idempotencyStore),
+      store: (cacheKey, fingerprint, resultJson) => {
+        storeCalls++;
+        if (storeCalls === 1) {
+          throw new Error("simulated idempotency commit failure");
+        }
+        deps.idempotencyStore.store(cacheKey, fingerprint, resultJson);
+      },
+      clear: deps.idempotencyStore.clear.bind(deps.idempotencyStore),
+    };
+
+    // Object spread copies the store's arrow-method implementation but not
+    // the prototype putWithCowrite() capability, forcing writeSerial().
+    const serialContributionStore = {
+      ...deps.contributionStore,
+    };
+
+    const serialDeps: FullOperationDeps = {
+      ...deps,
+      contributionStore: serialContributionStore,
+      idempotencyStore: flakyIdempotencyStore,
+    };
+
+    const input = {
+      kind: "work" as const,
+      summary: "serial-idempotency-store-failure",
+      agent: { agentId: "a1" },
+      idempotencyKey: "serial-idempotency-store-failure-key",
+    };
+
+    const first = await contributeOperation(input, serialDeps);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const second = await contributeOperation(input, serialDeps);
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.cid).toBe(first.value.cid);
+
+    const stored = await deps.contributionStore.list({ limit: 20 });
+    const matching = stored.filter((c) => c.summary === "serial-idempotency-store-failure");
+    expect(matching).toHaveLength(1);
+    expect(warnSpy).toHaveBeenCalled();
+
+    warnSpy.mockRestore();
   });
 
   test("ephemeral flag on non-discussion kind is rejected", async () => {
@@ -1483,5 +1538,73 @@ describe("writeSerial: best-effort handoff failure paths", () => {
     expect(warnedAboutCreate).toBe(true);
 
     warnSpy.mockRestore();
+  });
+});
+
+describe("contribute → onEntityWrite", () => {
+  let testDeps: TestOperationDeps;
+
+  beforeEach(async () => {
+    testDeps = await createTestOperationDeps();
+  });
+
+  afterEach(async () => {
+    await testDeps.cleanup();
+  });
+
+  test("fires onEntityWrite with the projected ContributionEntity", async () => {
+    const events: EntityWriteEvent[] = [];
+    const deps: OperationDeps = {
+      ...testDeps.deps,
+      onEntityWrite: (e: EntityWriteEvent) => {
+        events.push(e);
+      },
+      namespace: "ns/wt",
+    };
+
+    const result = await contributeOperation(
+      {
+        kind: "work",
+        summary: "watch-fire test",
+        agent: { agentId: "a1" },
+      },
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(events).toHaveLength(1);
+    const ev = events[0];
+    expect(ev?.kind).toBe("Contribution");
+    expect(ev?.op).toBe("ADDED");
+    expect(ev?.namespace).toBe("ns/wt");
+    expect(ev?.entity.namespace).toBe("ns/wt");
+    expect(ev?.entity.id).toBe(result.value.cid);
+    expect(ev?.entity.id).toMatch(/^blake3:/);
+  });
+
+  test("skips onEntityWrite when namespace is missing", async () => {
+    const events: EntityWriteEvent[] = [];
+    // Override the helper-supplied namespace with undefined so the gate trips.
+    const deps: OperationDeps = {
+      ...testDeps.deps,
+      onEntityWrite: (e: EntityWriteEvent) => {
+        events.push(e);
+      },
+      namespace: undefined,
+    };
+
+    const result = await contributeOperation(
+      {
+        kind: "work",
+        summary: "no-namespace test",
+        agent: { agentId: "a1" },
+      },
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(events).toHaveLength(0);
   });
 });

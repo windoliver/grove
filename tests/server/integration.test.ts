@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { createTestContext, validManifestBody } from "./helpers.js";
+import { createTestContext, TEST_AUTH_HEADERS, validManifestBody } from "./helpers.js";
 
 describe("multi-endpoint integration", () => {
   let ctx: TestContext;
@@ -26,13 +26,16 @@ describe("multi-endpoint integration", () => {
 
     const submitRes = await ctx.app.request("/api/contributions", {
       method: "POST",
+      headers: TEST_AUTH_HEADERS,
       body: formData,
     });
     expect(submitRes.status).toBe(201);
     const contribution = await submitRes.json();
 
     // 2. Query it back via GET
-    const getRes = await ctx.app.request(`/api/contributions/${contribution.cid}`);
+    const getRes = await ctx.app.request(`/api/contributions/${contribution.cid}`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(getRes.status).toBe(200);
     const queried = await getRes.json();
     expect(queried.cid).toBe(contribution.cid);
@@ -41,6 +44,7 @@ describe("multi-endpoint integration", () => {
     // 3. Download the artifact
     const dlRes = await ctx.app.request(
       `/api/contributions/${contribution.cid}/artifacts/model.bin`,
+      { headers: TEST_AUTH_HEADERS },
     );
     expect(dlRes.status).toBe(200);
     expect(dlRes.headers.get("content-type")).toBe("application/octet-stream");
@@ -48,17 +52,19 @@ describe("multi-endpoint integration", () => {
     expect(body).toEqual(new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
 
     // 4. It appears in list
-    const listRes = await ctx.app.request("/api/contributions");
+    const listRes = await ctx.app.request("/api/contributions", { headers: TEST_AUTH_HEADERS });
     const list = await listRes.json();
     expect(list).toHaveLength(1);
 
     // 5. It appears in frontier
-    const frontierRes = await ctx.app.request("/api/frontier");
+    const frontierRes = await ctx.app.request("/api/frontier", { headers: TEST_AUTH_HEADERS });
     const frontier = await frontierRes.json();
     expect(frontier.byRecency).toHaveLength(1);
 
     // 6. Searchable
-    const searchRes = await ctx.app.request("/api/search?q=ML+model");
+    const searchRes = await ctx.app.request("/api/search?q=ML+model", {
+      headers: TEST_AUTH_HEADERS,
+    });
     const searchResults = await searchRes.json();
     expect(searchResults.results).toHaveLength(1);
   });
@@ -67,7 +73,7 @@ describe("multi-endpoint integration", () => {
     // Create parent
     const p = await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(validManifestBody({ summary: "Root" })),
     });
     const parent = await p.json();
@@ -75,7 +81,7 @@ describe("multi-endpoint integration", () => {
     // Create child
     const c = await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(
         validManifestBody({
           summary: "Child",
@@ -89,7 +95,7 @@ describe("multi-endpoint integration", () => {
     // Create grandchild
     await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(
         validManifestBody({
           summary: "Grandchild",
@@ -100,13 +106,17 @@ describe("multi-endpoint integration", () => {
     });
 
     // Parent's children = [child]
-    const childrenRes = await ctx.app.request(`/api/dag/${parent.cid}/children`);
+    const childrenRes = await ctx.app.request(`/api/dag/${parent.cid}/children`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     const children = await childrenRes.json();
     expect(children).toHaveLength(1);
     expect(children[0].summary).toBe("Child");
 
     // Child's ancestors = [parent]
-    const ancestorsRes = await ctx.app.request(`/api/dag/${child.cid}/ancestors`);
+    const ancestorsRes = await ctx.app.request(`/api/dag/${child.cid}/ancestors`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     const ancestors = await ancestorsRes.json();
     expect(ancestors).toHaveLength(1);
     expect(ancestors[0].summary).toBe("Root");
@@ -116,7 +126,7 @@ describe("multi-endpoint integration", () => {
     // Create claim
     const createRes = await ctx.app.request("/api/claims", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({
         targetRef: "optimize-parser",
         agent: { agentId: "agent-1" },
@@ -127,14 +137,14 @@ describe("multi-endpoint integration", () => {
     const claim = await createRes.json();
 
     // Verify it shows in grove stats
-    const groveRes = await ctx.app.request("/api/grove");
+    const groveRes = await ctx.app.request("/api/grove", { headers: TEST_AUTH_HEADERS });
     const grove = await groveRes.json();
     expect(grove.stats.activeClaims).toBe(1);
 
     // Heartbeat
     const hbRes = await ctx.app.request(`/api/claims/${claim.claimId}`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({ action: "heartbeat" }),
     });
     expect(hbRes.status).toBe(200);
@@ -142,13 +152,13 @@ describe("multi-endpoint integration", () => {
     // Complete
     const completeRes = await ctx.app.request(`/api/claims/${claim.claimId}`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({ action: "complete" }),
     });
     expect(completeRes.status).toBe(200);
 
     // Active claims now zero
-    const groveRes2 = await ctx.app.request("/api/grove");
+    const groveRes2 = await ctx.app.request("/api/grove", { headers: TEST_AUTH_HEADERS });
     const grove2 = await groveRes2.json();
     expect(grove2.stats.activeClaims).toBe(0);
   });

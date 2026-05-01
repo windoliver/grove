@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { createTestContext, outcomeBody } from "./helpers.js";
+import { createTestContext, outcomeBody, TEST_AUTH_HEADERS } from "./helpers.js";
 
 const VALID_CID = `blake3:${"a".repeat(64)}`;
 const VALID_CID_2 = `blake3:${"b".repeat(64)}`;
@@ -17,7 +17,7 @@ describe("GET /api/outcomes/stats", () => {
   });
 
   test("returns empty stats initially", async () => {
-    const res = await ctx.app.request("/api/outcomes/stats");
+    const res = await ctx.app.request("/api/outcomes/stats", { headers: TEST_AUTH_HEADERS });
 
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -35,21 +35,21 @@ describe("GET /api/outcomes/stats", () => {
     // Set several outcomes with different statuses
     await ctx.app.request(`/api/outcomes/${VALID_CID}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(outcomeBody({ status: "accepted" })),
     });
     await ctx.app.request(`/api/outcomes/${VALID_CID_2}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(outcomeBody({ status: "rejected" })),
     });
     await ctx.app.request(`/api/outcomes/${VALID_CID_3}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(outcomeBody({ status: "crashed" })),
     });
 
-    const res = await ctx.app.request("/api/outcomes/stats");
+    const res = await ctx.app.request("/api/outcomes/stats", { headers: TEST_AUTH_HEADERS });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.total).toBe(3);
@@ -75,7 +75,7 @@ describe("POST /api/outcomes/:cid", () => {
   test("sets outcome and returns 201", async () => {
     const res = await ctx.app.request(`/api/outcomes/${VALID_CID}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(outcomeBody()),
     });
 
@@ -91,7 +91,7 @@ describe("POST /api/outcomes/:cid", () => {
   test("returns 400 for invalid body", async () => {
     const res = await ctx.app.request(`/api/outcomes/${VALID_CID}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({ status: "not-a-valid-status" }),
     });
 
@@ -101,25 +101,37 @@ describe("POST /api/outcomes/:cid", () => {
   test("returns 400 for invalid CID format", async () => {
     const res = await ctx.app.request("/api/outcomes/not-a-valid-cid", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(outcomeBody()),
     });
 
     expect(res.status).toBe(400);
   });
 
+  test("returns 400 for malformed JSON body", async () => {
+    const res = await ctx.app.request(`/api/outcomes/${VALID_CID}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: "not-json{{{",
+    });
+
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as { error: { code: string } };
+    expect(data.error.code).toBe("VALIDATION_ERROR");
+  });
+
   test("overwrites existing outcome", async () => {
     // Create initial outcome
     await ctx.app.request(`/api/outcomes/${VALID_CID}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(outcomeBody({ status: "accepted", reason: "First review" })),
     });
 
     // Overwrite with a different status
     const res = await ctx.app.request(`/api/outcomes/${VALID_CID}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(outcomeBody({ status: "rejected", reason: "Second review" })),
     });
 
@@ -130,7 +142,9 @@ describe("POST /api/outcomes/:cid", () => {
     expect(data.reason).toBe("Second review");
 
     // Verify via GET that the overwrite persisted
-    const getRes = await ctx.app.request(`/api/outcomes/${VALID_CID}`);
+    const getRes = await ctx.app.request(`/api/outcomes/${VALID_CID}`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(getRes.status).toBe(200);
     const record = await getRes.json();
     expect(record.status).toBe("rejected");
@@ -152,11 +166,11 @@ describe("GET /api/outcomes/:cid", () => {
     // Create an outcome first
     await ctx.app.request(`/api/outcomes/${VALID_CID}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(outcomeBody()),
     });
 
-    const res = await ctx.app.request(`/api/outcomes/${VALID_CID}`);
+    const res = await ctx.app.request(`/api/outcomes/${VALID_CID}`, { headers: TEST_AUTH_HEADERS });
 
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -168,7 +182,7 @@ describe("GET /api/outcomes/:cid", () => {
   });
 
   test("returns 404 for unknown CID", async () => {
-    const res = await ctx.app.request(`/api/outcomes/${VALID_CID}`);
+    const res = await ctx.app.request(`/api/outcomes/${VALID_CID}`, { headers: TEST_AUTH_HEADERS });
 
     expect(res.status).toBe(404);
     const data = await res.json();
@@ -190,16 +204,16 @@ describe("GET /api/outcomes", () => {
     // Create two outcomes
     await ctx.app.request(`/api/outcomes/${VALID_CID}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(outcomeBody({ status: "accepted" })),
     });
     await ctx.app.request(`/api/outcomes/${VALID_CID_2}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(outcomeBody({ status: "rejected" })),
     });
 
-    const res = await ctx.app.request("/api/outcomes");
+    const res = await ctx.app.request("/api/outcomes", { headers: TEST_AUTH_HEADERS });
 
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -209,16 +223,18 @@ describe("GET /api/outcomes", () => {
   test("filters by status", async () => {
     await ctx.app.request(`/api/outcomes/${VALID_CID}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(outcomeBody({ status: "accepted" })),
     });
     await ctx.app.request(`/api/outcomes/${VALID_CID_2}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(outcomeBody({ status: "rejected" })),
     });
 
-    const res = await ctx.app.request("/api/outcomes?status=accepted");
+    const res = await ctx.app.request("/api/outcomes?status=accepted", {
+      headers: TEST_AUTH_HEADERS,
+    });
 
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -231,17 +247,18 @@ describe("GET /api/outcomes", () => {
     // Create two outcomes
     await ctx.app.request(`/api/outcomes/${VALID_CID}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(outcomeBody({ status: "accepted" })),
     });
     await ctx.app.request(`/api/outcomes/${VALID_CID_2}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(outcomeBody({ status: "rejected" })),
     });
 
     const res = await ctx.app.request(
       `/api/outcomes?cids=${encodeURIComponent(`${VALID_CID},${VALID_CID_2}`)}`,
+      { headers: TEST_AUTH_HEADERS },
     );
 
     expect(res.status).toBe(200);
@@ -252,7 +269,7 @@ describe("GET /api/outcomes", () => {
   });
 
   test("GET /api/outcomes?cids= (empty) returns empty array", async () => {
-    const res = await ctx.app.request("/api/outcomes?cids=");
+    const res = await ctx.app.request("/api/outcomes?cids=", { headers: TEST_AUTH_HEADERS });
 
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -260,7 +277,9 @@ describe("GET /api/outcomes", () => {
   });
 
   test("GET /api/outcomes?cids=nonexistent returns empty for unknown CIDs", async () => {
-    const res = await ctx.app.request(`/api/outcomes?cids=${VALID_CID_3}`);
+    const res = await ctx.app.request(`/api/outcomes?cids=${VALID_CID_3}`, {
+      headers: TEST_AUTH_HEADERS,
+    });
 
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -270,6 +289,7 @@ describe("GET /api/outcomes", () => {
   test("GET /api/outcomes?cids=a,b&status=accepted returns 400", async () => {
     const res = await ctx.app.request(
       `/api/outcomes?cids=${VALID_CID},${VALID_CID_2}&status=accepted`,
+      { headers: TEST_AUTH_HEADERS },
     );
 
     expect(res.status).toBe(400);
@@ -280,6 +300,7 @@ describe("GET /api/outcomes", () => {
   test("GET /api/outcomes?cids=a,b&evaluatedBy=x returns 400", async () => {
     const res = await ctx.app.request(
       `/api/outcomes?cids=${VALID_CID},${VALID_CID_2}&evaluatedBy=reviewer-1`,
+      { headers: TEST_AUTH_HEADERS },
     );
 
     expect(res.status).toBe(400);
@@ -288,7 +309,9 @@ describe("GET /api/outcomes", () => {
   });
 
   test("GET /api/outcomes?cids=a,b&limit=5 returns 400", async () => {
-    const res = await ctx.app.request(`/api/outcomes?cids=${VALID_CID},${VALID_CID_2}&limit=5`);
+    const res = await ctx.app.request(`/api/outcomes?cids=${VALID_CID},${VALID_CID_2}&limit=5`, {
+      headers: TEST_AUTH_HEADERS,
+    });
 
     expect(res.status).toBe(400);
     const data = await res.json();
@@ -296,7 +319,9 @@ describe("GET /api/outcomes", () => {
   });
 
   test("GET /api/outcomes?cids=a,b&offset=1 returns 400", async () => {
-    const res = await ctx.app.request(`/api/outcomes?cids=${VALID_CID},${VALID_CID_2}&offset=1`);
+    const res = await ctx.app.request(`/api/outcomes?cids=${VALID_CID},${VALID_CID_2}&offset=1`, {
+      headers: TEST_AUTH_HEADERS,
+    });
 
     expect(res.status).toBe(400);
     const data = await res.json();

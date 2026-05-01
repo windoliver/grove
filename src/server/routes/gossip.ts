@@ -12,6 +12,7 @@ import type { Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
 import { MAX_GOSSIP_FRONTIER_ENTRIES, MAX_GOSSIP_OFFERED_PEERS } from "../../core/constants.js";
+import { GossipAuthError, verifyPayload } from "../../gossip/protocol.js";
 import type { ServerEnv } from "../deps.js";
 
 // ---------------------------------------------------------------------------
@@ -23,6 +24,7 @@ const frontierDigestEntrySchema = z.object({
   value: z.number(),
   cid: z.string(),
   tags: z.array(z.string()).optional(),
+  direction: z.enum(["minimize", "maximize"]).optional(),
 });
 
 const capabilitiesSchema = z.record(
@@ -30,14 +32,17 @@ const capabilitiesSchema = z.record(
   z.union([z.string(), z.number(), z.boolean(), z.null(), z.undefined()]).optional(),
 );
 
-const gossipMessageSchema = z.object({
-  peerId: z.string().min(1),
-  address: z.string().optional(),
-  frontier: z.array(frontierDigestEntrySchema).max(MAX_GOSSIP_FRONTIER_ENTRIES),
-  load: z.object({ queueDepth: z.number().int().min(0) }),
-  capabilities: capabilitiesSchema,
-  timestamp: z.string(),
-});
+const gossipMessageSchema = z
+  .object({
+    peerId: z.string().min(1),
+    address: z.string().optional(),
+    frontier: z.array(frontierDigestEntrySchema).max(MAX_GOSSIP_FRONTIER_ENTRIES),
+    load: z.object({ queueDepth: z.number().int().min(0) }),
+    capabilities: capabilitiesSchema,
+    timestamp: z.string(),
+    // Preserve all signed fields (hmacSignature, etc.) so verifyPayload can check them.
+  })
+  .passthrough();
 
 const peerInfoSchema = z.object({
   peerId: z.string().min(1),
@@ -46,10 +51,13 @@ const peerInfoSchema = z.object({
   lastSeen: z.string(),
 });
 
-const shuffleRequestSchema = z.object({
-  sender: peerInfoSchema,
-  offered: z.array(peerInfoSchema).max(MAX_GOSSIP_OFFERED_PEERS),
-});
+const shuffleRequestSchema = z
+  .object({
+    sender: peerInfoSchema,
+    offered: z.array(peerInfoSchema).max(MAX_GOSSIP_OFFERED_PEERS),
+    // Preserve signed fields (hmacSignature, etc.) for verifyPayload.
+  })
+  .passthrough();
 
 // ---------------------------------------------------------------------------
 // Routes
@@ -59,24 +67,49 @@ const gossip: HonoType<ServerEnv> = new Hono<ServerEnv>();
 
 /** POST /api/gossip/exchange — Handle incoming gossip exchange. */
 gossip.post("/exchange", zValidator("json", gossipMessageSchema), async (c) => {
-  const { gossip: gossipService } = c.get("deps");
+  const { gossip: gossipService, gossipHmacSecret } = c.get("deps");
   if (!gossipService) {
     return c.json({ error: { code: "NOT_CONFIGURED", message: "Gossip is not enabled" } }, 501);
   }
 
   const message = c.req.valid("json");
-  const response = await gossipService.handleExchange(message);
-  return c.json(response);
+  if (
+    gossipHmacSecret &&
+    !verifyPayload(message as unknown as Record<string, unknown>, gossipHmacSecret)
+  ) {
+    return c.json(
+      { error: { code: "GOSSIP_AUTH_FAILED", message: "Invalid or missing HMAC signature" } },
+      401,
+    );
+  }
+  try {
+    const response = await gossipService.handleExchange(message);
+    return c.json(response);
+  } catch (err) {
+    if (err instanceof GossipAuthError) {
+      return c.json({ error: { code: "GOSSIP_AUTH_FAILED", message: err.message } }, 401);
+    }
+    throw err;
+  }
 });
 
 /** POST /api/gossip/shuffle — Handle incoming CYCLON shuffle. */
 gossip.post("/shuffle", zValidator("json", shuffleRequestSchema), async (c) => {
-  const { gossip: gossipService } = c.get("deps");
+  const { gossip: gossipService, gossipHmacSecret } = c.get("deps");
   if (!gossipService) {
     return c.json({ error: { code: "NOT_CONFIGURED", message: "Gossip is not enabled" } }, 501);
   }
 
   const request = c.req.valid("json");
+  if (
+    gossipHmacSecret &&
+    !verifyPayload(request as unknown as Record<string, unknown>, gossipHmacSecret)
+  ) {
+    return c.json(
+      { error: { code: "GOSSIP_AUTH_FAILED", message: "Invalid or missing HMAC signature" } },
+      401,
+    );
+  }
   const response = gossipService.handleShuffle(request);
   return c.json(response);
 });

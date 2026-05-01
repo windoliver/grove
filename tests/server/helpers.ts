@@ -14,10 +14,12 @@ import type { FrontierCalculator } from "../../src/core/frontier.js";
 import { DefaultFrontierCalculator } from "../../src/core/frontier.js";
 import type { OutcomeStore } from "../../src/core/outcome.js";
 import type { ClaimStore, ContributionStore } from "../../src/core/store.js";
+import { WatchHub } from "../../src/core/watch-hub.js";
 import { FsCas } from "../../src/local/fs-cas.js";
 import { createSqliteStores } from "../../src/local/sqlite-store.js";
 import { createApp } from "../../src/server/app.js";
 import type { ServerDeps, ServerEnv } from "../../src/server/deps.js";
+import type { KeyRegistry } from "../../src/server/middleware/namespace-auth.js";
 
 export interface TestContext {
   readonly app: Hono<ServerEnv>;
@@ -30,6 +32,11 @@ export interface TestContext {
   readonly tempDir: string;
   readonly cleanup: () => Promise<void>;
 }
+
+export const TEST_KEY = `grv_${"c".repeat(64)}`;
+export const TEST_NAMESPACE = "test-project/main";
+export const TEST_AUTH_HEADERS = { Authorization: `Bearer ${TEST_KEY}` };
+const TEST_REGISTRY: KeyRegistry = new Map([[TEST_KEY, TEST_NAMESPACE]]);
 
 /** Create a fully wired test context with real stores in a temp directory. */
 export async function createTestContext(): Promise<TestContext> {
@@ -47,9 +54,10 @@ export async function createTestContext(): Promise<TestContext> {
     outcomeStore: stores.outcomeStore,
     cas,
     frontier,
+    watchHub: new WatchHub(),
   };
 
-  const app = createApp(deps);
+  const app = createApp(deps, TEST_REGISTRY);
 
   return {
     app,
@@ -109,7 +117,7 @@ export async function postContribution(
 ): Promise<Record<string, unknown>> {
   const res = await ctx.app.request("/api/contributions", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
     body: JSON.stringify(validManifestBody(overrides)),
   });
   return (await res.json()) as Record<string, unknown>;
@@ -122,7 +130,7 @@ export async function postClaim(
 ): Promise<Record<string, unknown>> {
   const res = await ctx.app.request("/api/claims", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
     body: JSON.stringify(claimBody(overrides)),
   });
   return (await res.json()) as Record<string, unknown>;

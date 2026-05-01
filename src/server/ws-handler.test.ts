@@ -99,7 +99,7 @@ describe("createWsHandler", () => {
     bus.close();
   });
 
-  test("message: get_state returns state snapshot", () => {
+  test("message: get_state returns state snapshot", async () => {
     const { service, bus } = makeService();
     const handler = createWsHandler(service);
     const ws = new MockWs();
@@ -107,31 +107,25 @@ describe("createWsHandler", () => {
     handler.open(ws);
     const countAfterOpen = ws.sent.length;
 
-    handler.message(ws, JSON.stringify({ type: "command", command: "get_state" }));
+    await handler.message(ws, JSON.stringify({ type: "command", command: "get_state" }));
 
-    // Allow the async handler to settle
-    // The handler is fire-and-forget async, so we give it a tick
-    return new Promise<void>((resolve) => {
-      setTimeout(() => {
-        expect(ws.sent.length).toBeGreaterThan(countAfterOpen);
-        const lastMsg = JSON.parse(ws.sent[ws.sent.length - 1]!) as Record<string, unknown>;
-        expect(lastMsg.type).toBe("state");
-        handler.close(ws);
-        service.destroy();
-        bus.close();
-        resolve();
-      }, 50);
-    });
+    expect(ws.sent.length).toBeGreaterThan(countAfterOpen);
+    const lastMsg = JSON.parse(ws.sent[ws.sent.length - 1]!) as Record<string, unknown>;
+    expect(lastMsg.type).toBe("state");
+
+    handler.close(ws);
+    service.destroy();
+    bus.close();
   });
 
-  test("message: start_session spawns agents", () => {
+  test("message: start_session spawns agents", async () => {
     const { service, runtime, bus } = makeService();
     const handler = createWsHandler(service);
     const ws = new MockWs();
 
     handler.open(ws);
 
-    handler.message(
+    await handler.message(
       ws,
       JSON.stringify({
         type: "command",
@@ -140,60 +134,48 @@ describe("createWsHandler", () => {
       }),
     );
 
-    return new Promise<void>((resolve) => {
-      setTimeout(() => {
-        expect(runtime.spawnCalls.length).toBeGreaterThan(0);
-        // Should have received a state message with running status
-        const stateMessages = ws.sent
-          .map((s) => JSON.parse(s) as Record<string, unknown>)
-          .filter((m) => m.type === "state");
-        const lastState = stateMessages[stateMessages.length - 1];
-        expect(lastState?.status).toBe("running");
-        expect(lastState?.goal).toBe("Build auth");
+    expect(runtime.spawnCalls.length).toBeGreaterThan(0);
+    // Should have received a state message with running status
+    const stateMessages = ws.sent
+      .map((s) => JSON.parse(s) as Record<string, unknown>)
+      .filter((m) => m.type === "state");
+    const lastState = stateMessages[stateMessages.length - 1];
+    expect(lastState?.status).toBe("running");
+    expect(lastState?.goal).toBe("Build auth");
 
-        handler.close(ws);
-        service.destroy();
-        bus.close();
-        resolve();
-      }, 50);
-    });
+    handler.close(ws);
+    service.destroy();
+    bus.close();
   });
 
-  test("message: stop_session stops the session", () => {
+  test("message: stop_session stops the session", async () => {
     const { service, bus } = makeService();
     const handler = createWsHandler(service);
     const ws = new MockWs();
 
     handler.open(ws);
 
-    return new Promise<void>((resolve) => {
-      // Start first, then stop
-      void service.startSession("Test").then(() => {
-        handler.message(
-          ws,
-          JSON.stringify({
-            type: "command",
-            command: "stop_session",
-            payload: { reason: "Done" },
-          }),
-        );
+    await service.startSession("Test");
+    await handler.message(
+      ws,
+      JSON.stringify({
+        type: "command",
+        command: "stop_session",
+        payload: { reason: "Done" },
+      }),
+    );
 
-        setTimeout(() => {
-          const events = ws.sent
-            .map((s) => JSON.parse(s) as Record<string, unknown>)
-            .filter((m) => m.type === "session_complete");
-          expect(events.length).toBeGreaterThanOrEqual(1);
+    const events = ws.sent
+      .map((s) => JSON.parse(s) as Record<string, unknown>)
+      .filter((m) => m.type === "session_complete");
+    expect(events.length).toBeGreaterThanOrEqual(1);
 
-          handler.close(ws);
-          service.destroy();
-          bus.close();
-          resolve();
-        }, 50);
-      });
-    });
+    handler.close(ws);
+    service.destroy();
+    bus.close();
   });
 
-  test("message: invalid JSON sends error", () => {
+  test("message: invalid JSON sends error", async () => {
     const { service, bus } = makeService();
     const handler = createWsHandler(service);
     const ws = new MockWs();
@@ -201,21 +183,16 @@ describe("createWsHandler", () => {
     handler.open(ws);
     const countAfterOpen = ws.sent.length;
 
-    handler.message(ws, "not-json{{{");
+    await handler.message(ws, "not-json{{{");
 
-    return new Promise<void>((resolve) => {
-      setTimeout(() => {
-        const errorMessages = ws.sent
-          .slice(countAfterOpen)
-          .map((s) => JSON.parse(s) as Record<string, unknown>)
-          .filter((m) => m.type === "error");
-        expect(errorMessages.length).toBeGreaterThanOrEqual(1);
+    const errorMessages = ws.sent
+      .slice(countAfterOpen)
+      .map((s) => JSON.parse(s) as Record<string, unknown>)
+      .filter((m) => m.type === "error");
+    expect(errorMessages.length).toBeGreaterThanOrEqual(1);
 
-        handler.close(ws);
-        service.destroy();
-        bus.close();
-        resolve();
-      }, 50);
-    });
+    handler.close(ws);
+    service.destroy();
+    bus.close();
   });
 });

@@ -346,7 +346,7 @@ export class InMemoryContributionStore implements ContributionStore {
 
   async listEntities(query?: ContributionQuery): Promise<readonly ContributionEntity[]> {
     const items = await this.list(query);
-    return items.map(contributionToEntity);
+    return items.map((c) => contributionToEntity(c, "default"));
   }
 
   close(): void {

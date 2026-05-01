@@ -64,7 +64,7 @@ interface WsSocketInternal extends WsSocket {
  */
 export function createWsHandler(service: SessionService): {
   open(ws: WsSocket): void;
-  message(ws: WsSocket, message: string): void;
+  message(ws: WsSocket, message: string): Promise<void>;
   close(ws: WsSocket): void;
 } {
   return {
@@ -87,7 +87,7 @@ export function createWsHandler(service: SessionService): {
     },
 
     message(ws: WsSocket, message: string) {
-      void handleMessage(ws, message, service);
+      return handleMessage(ws, message, service);
     },
 
     close(ws: WsSocket) {

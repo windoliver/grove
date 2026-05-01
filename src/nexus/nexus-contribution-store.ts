@@ -39,6 +39,7 @@ import { resolveConfig } from "./config.js";
 import { NexusConflictError } from "./errors.js";
 import { listAllPages } from "./list-pages.js";
 import { LruCache } from "./lru-cache.js";
+import type { NexusWatchPublisher } from "./nexus-watch-publisher.js";
 import { withRetry, withSemaphore } from "./retry.js";
 import { Semaphore } from "./semaphore.js";
 import {
@@ -73,6 +74,7 @@ export class NexusContributionStore implements ContributionStore {
   private readonly cache: LruCache<Contribution>;
   private readonly zoneId: string;
   private readonly sessionId: string | undefined;
+  private readonly watchPublisher: NexusWatchPublisher | undefined;
   // TTL cache for list() — avoids the N+1 VFS read storm (1 list + N FTS + N manifest)
   // that exhausts Nexus's 300/min rate limit when multiple callers poll independently.
   // TTL is short (2s) so SSE-triggered refreshes (running-view bumps refreshSignal
@@ -133,6 +135,7 @@ export class NexusContributionStore implements ContributionStore {
     this.client = this.config.client;
     this.zoneId = this.config.zoneId;
     this.sessionId = this.config.sessionId;
+    this.watchPublisher = this.config.watchPublisher;
     this.storeIdentity = `nexus:${this.zoneId}:contributions`;
     this.semaphore = new Semaphore(this.config.maxConcurrency);
     this.cache = new LruCache(this.config.cacheMaxEntries);
@@ -254,6 +257,20 @@ export class NexusContributionStore implements ContributionStore {
       "store.put",
       `cid=${contribution.cid.slice(0, 16)} sessionId=${this.sessionId ?? "none"} path=${manifestPath}`,
     );
+    // Cross-process watch fan-out (#292). Contributions are content-addressed
+    // and immutable, so every successful put is logically an ADDED event.
+    // Errors are swallowed by `void` — losing a fan-out envelope must never
+    // fail the underlying write.
+    if (this.watchPublisher) {
+      void this.watchPublisher.publish({
+        kind: "Contribution",
+        namespace: this.zoneId,
+        op: "ADDED",
+        entityId: contribution.cid,
+        generation: 1,
+        emittedAt: new Date().toISOString(),
+      });
+    }
     return { cid: contribution.cid, isNew: true, contribution };
   }
 
@@ -755,7 +772,7 @@ export class NexusContributionStore implements ContributionStore {
 
   async listEntities(query?: ContributionQuery): Promise<readonly ContributionEntity[]> {
     const items = await this.list(query);
-    return items.map(contributionToEntity);
+    return items.map((c) => contributionToEntity(c, this.zoneId));
   }
 
   close(): void {

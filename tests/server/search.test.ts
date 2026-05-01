@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { createTestContext, validManifestBody } from "./helpers.js";
+import { createTestContext, TEST_AUTH_HEADERS, validManifestBody } from "./helpers.js";
 
 describe("GET /api/search", () => {
   let ctx: TestContext;
@@ -13,7 +13,7 @@ describe("GET /api/search", () => {
   });
 
   test("returns empty results for query with no matches", async () => {
-    const res = await ctx.app.request("/api/search?q=nonexistent");
+    const res = await ctx.app.request("/api/search?q=nonexistent", { headers: TEST_AUTH_HEADERS });
 
     expect(res.status).toBe(200);
     const data = await res.json();
@@ -23,12 +23,12 @@ describe("GET /api/search", () => {
   test("finds contributions by summary text", async () => {
     await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(validManifestBody({ summary: "Optimize the parser" })),
     });
     await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(
         validManifestBody({
           summary: "Fix the renderer",
@@ -37,7 +37,7 @@ describe("GET /api/search", () => {
       ),
     });
 
-    const res = await ctx.app.request("/api/search?q=parser");
+    const res = await ctx.app.request("/api/search?q=parser", { headers: TEST_AUTH_HEADERS });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.results).toHaveLength(1);
@@ -45,7 +45,7 @@ describe("GET /api/search", () => {
   });
 
   test("requires search query parameter", async () => {
-    const res = await ctx.app.request("/api/search");
+    const res = await ctx.app.request("/api/search", { headers: TEST_AUTH_HEADERS });
     expect(res.status).toBe(400);
   });
 
@@ -53,7 +53,7 @@ describe("GET /api/search", () => {
     for (let i = 0; i < 5; i++) {
       await ctx.app.request("/api/contributions", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
         body: JSON.stringify(
           validManifestBody({
             summary: `Parser optimization ${i}`,
@@ -63,7 +63,9 @@ describe("GET /api/search", () => {
       });
     }
 
-    const res = await ctx.app.request("/api/search?q=parser&limit=2");
+    const res = await ctx.app.request("/api/search?q=parser&limit=2", {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.results.length).toBeLessThanOrEqual(2);
@@ -72,14 +74,14 @@ describe("GET /api/search", () => {
   test("filters by tags", async () => {
     await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(
         validManifestBody({ summary: "Parser with tag", tags: ["optimization"] }),
       ),
     });
     await ctx.app.request("/api/contributions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify(
         validManifestBody({
           summary: "Parser no tag",
@@ -88,7 +90,9 @@ describe("GET /api/search", () => {
       ),
     });
 
-    const res = await ctx.app.request("/api/search?q=parser&tags=optimization");
+    const res = await ctx.app.request("/api/search?q=parser&tags=optimization", {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.results).toHaveLength(1);

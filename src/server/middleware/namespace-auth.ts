@@ -2,10 +2,9 @@ import { readFileSync } from "node:fs";
 import type { MiddlewareHandler } from "hono";
 import { parse as parseYaml } from "yaml";
 import { NamespaceMissingError, NamespaceUnauthorizedError } from "../../core/errors.js";
+import type { ServerEnv } from "../deps.js";
 
 export type KeyRegistry = Map<string, string>; // key → namespace
-
-type NamespaceEnv = { Variables: { namespace: string } };
 
 interface ServerKeysFile {
   version: 1;
@@ -39,9 +38,19 @@ export function loadKeyRegistry(serverKeysPath: string): KeyRegistry {
  *
  * On success: sets `c.get("namespace")` to the resolved namespace string.
  * On failure: throws NamespaceMissingError (→ 400) or NamespaceUnauthorizedError (→ 401).
+ *
+ * @param exempt - Predicate returning true for requests that bypass bearer-token auth.
+ *   Use this for routes with their own auth mechanism (e.g. POST gossip uses HMAC).
  */
-export function namespaceAuth(registry: KeyRegistry): MiddlewareHandler<NamespaceEnv> {
+export function namespaceAuth(
+  registry: KeyRegistry,
+  { exempt }: { exempt?: (c: { req: { path: string; method: string } }) => boolean } = {},
+): MiddlewareHandler<ServerEnv> {
   return async (c, next) => {
+    if (exempt?.(c)) {
+      await next();
+      return;
+    }
     const auth = c.req.header("Authorization");
     if (!auth?.startsWith("Bearer ")) {
       throw new NamespaceMissingError();

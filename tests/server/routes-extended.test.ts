@@ -21,8 +21,17 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { HandoffStatus } from "../../src/core/handoff.js";
+import { InMemoryHandoffStore } from "../../src/core/in-memory-handoff-store.js";
+import { createApp } from "../../src/server/app.js";
 import type { TestContext } from "./helpers.js";
-import { createTestContext, postContribution } from "./helpers.js";
+import {
+  createTestContext,
+  postContribution,
+  TEST_AUTH_HEADERS,
+  TEST_KEY,
+  TEST_NAMESPACE,
+} from "./helpers.js";
 
 const FAKE_CID = `blake3:${"0".repeat(64)}`;
 
@@ -59,7 +68,9 @@ describe("routes — /api/diff", () => {
       createdAt: new Date(Date.now() + 1).toISOString(),
     });
 
-    const res = await ctx.app.request(`/api/diff/${parent.cid}/${child.cid}/file.txt`);
+    const res = await ctx.app.request(`/api/diff/${parent.cid}/${child.cid}/file.txt`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(200);
     const data = (await res.json()) as { parent: string; child: string };
     expect(data.parent).toBe("version 1");
@@ -69,7 +80,9 @@ describe("routes — /api/diff", () => {
   test("GET /:parentCid/:childCid/:artifactName returns 404 for non-existent parent", async () => {
     const child = await postContribution(ctx, { summary: "Orphan child" });
 
-    const res = await ctx.app.request(`/api/diff/${FAKE_CID}/${child.cid}/file.txt`);
+    const res = await ctx.app.request(`/api/diff/${FAKE_CID}/${child.cid}/file.txt`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(404);
     const data = (await res.json()) as { error: { code: string; message: string } };
     expect(data.error.code).toBe("NOT_FOUND");
@@ -79,7 +92,9 @@ describe("routes — /api/diff", () => {
   test("GET /:parentCid/:childCid/:artifactName returns 404 for non-existent child", async () => {
     const parent = await postContribution(ctx, { summary: "Lonely parent" });
 
-    const res = await ctx.app.request(`/api/diff/${parent.cid}/${FAKE_CID}/file.txt`);
+    const res = await ctx.app.request(`/api/diff/${parent.cid}/${FAKE_CID}/file.txt`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(404);
     const data = (await res.json()) as { error: { code: string; message: string } };
     expect(data.error.code).toBe("NOT_FOUND");
@@ -93,7 +108,9 @@ describe("routes — /api/diff", () => {
       createdAt: new Date(Date.now() + 1).toISOString(),
     });
 
-    const res = await ctx.app.request(`/api/diff/${parent.cid}/${child.cid}/missing.txt`);
+    const res = await ctx.app.request(`/api/diff/${parent.cid}/${child.cid}/missing.txt`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(404);
     const data = (await res.json()) as { error: { code: string; message: string } };
     expect(data.error.code).toBe("NOT_FOUND");
@@ -113,7 +130,9 @@ describe("routes — /api/diff", () => {
       createdAt: new Date(Date.now() + 1).toISOString(),
     });
 
-    const res = await ctx.app.request(`/api/diff/${parent.cid}/${child.cid}/file.txt`);
+    const res = await ctx.app.request(`/api/diff/${parent.cid}/${child.cid}/file.txt`, {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(404);
     const data = (await res.json()) as { error: { code: string; message: string } };
     expect(data.error.code).toBe("NOT_FOUND");
@@ -136,7 +155,7 @@ describe("routes — /api/gossip", () => {
   });
 
   test("GET /peers returns 501 when gossip is not configured", async () => {
-    const res = await ctx.app.request("/api/gossip/peers");
+    const res = await ctx.app.request("/api/gossip/peers", { headers: TEST_AUTH_HEADERS });
     expect(res.status).toBe(501);
     const data = (await res.json()) as { error: { code: string; message: string } };
     expect(data.error.code).toBe("NOT_CONFIGURED");
@@ -144,7 +163,7 @@ describe("routes — /api/gossip", () => {
   });
 
   test("GET /frontier returns 501 when gossip is not configured", async () => {
-    const res = await ctx.app.request("/api/gossip/frontier");
+    const res = await ctx.app.request("/api/gossip/frontier", { headers: TEST_AUTH_HEADERS });
     expect(res.status).toBe(501);
     const data = (await res.json()) as { error: { code: string; message: string } };
     expect(data.error.code).toBe("NOT_CONFIGURED");
@@ -153,7 +172,7 @@ describe("routes — /api/gossip", () => {
   test("POST /exchange returns 501 when gossip is not configured", async () => {
     const res = await ctx.app.request("/api/gossip/exchange", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({
         peerId: "peer-x",
         frontier: [],
@@ -170,7 +189,7 @@ describe("routes — /api/gossip", () => {
   test("POST /shuffle returns 501 when gossip is not configured", async () => {
     const res = await ctx.app.request("/api/gossip/shuffle", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
       body: JSON.stringify({
         sender: {
           peerId: "peer-y",
@@ -202,7 +221,7 @@ describe("routes — /api/grove/topology", () => {
   });
 
   test("GET /topology returns 404 when topology is not configured", async () => {
-    const res = await ctx.app.request("/api/grove/topology");
+    const res = await ctx.app.request("/api/grove/topology", { headers: TEST_AUTH_HEADERS });
     expect(res.status).toBe(404);
     const data = (await res.json()) as { error: { code: string; message: string } };
     expect(data.error.code).toBe("NOT_FOUND");
@@ -225,7 +244,7 @@ describe("routes — /api/bounties", () => {
   });
 
   test("GET / returns 501 when bountyStore is not configured", async () => {
-    const res = await ctx.app.request("/api/bounties");
+    const res = await ctx.app.request("/api/bounties", { headers: TEST_AUTH_HEADERS });
     expect(res.status).toBe(501);
     const data = (await res.json()) as { error: { code: string; message: string } };
     expect(data.error.code).toBe("NOT_CONFIGURED");
@@ -233,7 +252,9 @@ describe("routes — /api/bounties", () => {
   });
 
   test("GET /:id returns 501 when bountyStore is not configured", async () => {
-    const res = await ctx.app.request("/api/bounties/some-bounty-id");
+    const res = await ctx.app.request("/api/bounties/some-bounty-id", {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(501);
     const data = (await res.json()) as { error: { code: string; message: string } };
     expect(data.error.code).toBe("NOT_CONFIGURED");
@@ -241,9 +262,65 @@ describe("routes — /api/bounties", () => {
   });
 
   test("GET / with query params still returns 501 when not configured", async () => {
-    const res = await ctx.app.request("/api/bounties?status=open&creatorAgentId=agent-1&limit=10");
+    const res = await ctx.app.request("/api/bounties?status=open&creatorAgentId=agent-1&limit=10", {
+      headers: TEST_AUTH_HEADERS,
+    });
     expect(res.status).toBe(501);
     const data = (await res.json()) as { error: { code: string } };
     expect(data.error.code).toBe("NOT_CONFIGURED");
+  });
+
+  test("GET / rejects invalid limit before hitting storage", async () => {
+    const res = await ctx.app.request("/api/bounties?limit=-1", {
+      headers: TEST_AUTH_HEADERS,
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
+// ===================================================================
+// 5. Handoffs route (/api/handoffs)
+// ===================================================================
+
+describe("routes — /api/handoffs", () => {
+  let ctx: TestContext;
+  let handoffStore: InMemoryHandoffStore;
+  let app: ReturnType<typeof createApp>;
+
+  beforeEach(async () => {
+    ctx = await createTestContext();
+    handoffStore = new InMemoryHandoffStore();
+    app = createApp({ ...ctx.deps, handoffStore }, new Map([[TEST_KEY, TEST_NAMESPACE]]));
+  });
+  afterEach(async () => {
+    await ctx.cleanup();
+  });
+
+  test("GET / rejects negative limit", async () => {
+    const res = await app.request("/api/handoffs?limit=-1", {
+      headers: TEST_AUTH_HEADERS,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test("POST /:id/delivered returns 409 when the handoff cannot transition", async () => {
+    const handoff = await handoffStore.create({
+      sourceCid: FAKE_CID,
+      fromRole: "coder",
+      toRole: "reviewer",
+      requiresReply: true,
+    });
+    await handoffStore.markDelivered(handoff.handoffId);
+    await handoffStore.markReplied(handoff.handoffId, FAKE_CID);
+
+    const res = await app.request(`/api/handoffs/${handoff.handoffId}/delivered`, {
+      method: "POST",
+      headers: TEST_AUTH_HEADERS,
+    });
+
+    expect(res.status).toBe(409);
+    const data = (await res.json()) as { error: { code: string; message: string } };
+    expect(data.error.code).toBe("STATE_CONFLICT");
+    expect(data.error.message).toContain(HandoffStatus.Replied);
   });
 });

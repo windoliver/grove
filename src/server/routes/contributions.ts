@@ -26,6 +26,7 @@ import type { ContributionQuery } from "../../core/store.js";
 import type { ServerEnv } from "../deps.js";
 import { toHttpResult, toOperationDeps } from "../operation-adapter.js";
 import { CID_REGEX, MAX_REQUEST_SIZE } from "../schemas.js";
+import { contributionStoreForSession } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // File-local schemas (not exported — avoids isolatedDeclarations issues)
@@ -260,6 +261,14 @@ contributions.post("/", async (c) => {
   };
 
   let opDeps = toOperationDeps(serverDeps);
+  // Inject namespace only for non-session writes (#292). When sessionId
+  // is set, the write lands in the session-scoped store but /api/list
+  // reads the process-global store, so emitting a watch event the lister
+  // can't mirror would violate the list→watch RV invariant. Session-scoped
+  // watch is tracked as a follow-up.
+  if (parsed.sessionId === undefined) {
+    opDeps = { ...opDeps, namespace: c.get("namespace") };
+  }
 
   // Session-scoped store: when sessionId is present and a factory is wired
   // (Nexus mode), swap the contribution store so writes land at the
@@ -267,8 +276,8 @@ contributions.post("/", async (c) => {
   // the HTTP submit path would write to the zone root while MCP writes go to
   // sessions/{sessionId}/, splitting the data across two directories.
   const scopedContributionStore =
-    parsed.sessionId && serverDeps.contributionStoreForSession
-      ? serverDeps.contributionStoreForSession(parsed.sessionId)
+    parsed.sessionId !== undefined
+      ? contributionStoreForSession(serverDeps, parsed.sessionId)
       : serverDeps.contributionStore;
 
   // Session-scoped enforcement: override contract with session config
@@ -338,10 +347,7 @@ contributions.get("/", zValidator("query", listQuerySchema), async (c) => {
   // (Nexus mode), build a per-request store so list()/count() hit the
   // session-scoped FTS index instead of the zone root. Falls back to the
   // process-global store when no factory is wired (tests, local-only mode).
-  const listStore =
-    raw.sessionId !== undefined && deps.contributionStoreForSession !== undefined
-      ? deps.contributionStoreForSession(raw.sessionId)
-      : deps.contributionStore;
+  const listStore = contributionStoreForSession(deps, raw.sessionId);
 
   // When outcome filter is specified, we must fetch ALL matching contributions
   // (without limit/offset), filter by outcome status, then paginate manually.
@@ -391,7 +397,7 @@ contributions.get("/", zValidator("query", listQuerySchema), async (c) => {
 
 /** GET /api/contributions/:cid — Get a single contribution by CID. */
 contributions.get("/:cid", zValidator("param", cidParamSchema), async (c) => {
-  const { contributionStore } = c.get("deps");
+  const contributionStore = contributionStoreForSession(c.get("deps"), c.req.query("sessionId"));
   const { cid } = c.req.valid("param");
 
   const contribution = await contributionStore.get(cid);
@@ -404,7 +410,9 @@ contributions.get("/:cid", zValidator("param", cidParamSchema), async (c) => {
 
 /** GET /api/contributions/:cid/artifacts/:name — Download artifact blob. */
 contributions.get("/:cid/artifacts/:name", async (c) => {
-  const { contributionStore, cas } = c.get("deps");
+  const deps = c.get("deps");
+  const contributionStore = contributionStoreForSession(deps, c.req.query("sessionId"));
+  const { cas } = deps;
   const cid = c.req.param("cid");
   const name = c.req.param("name");
 
@@ -446,7 +454,9 @@ contributions.get("/:cid/artifacts/:name", async (c) => {
 
 /** GET /api/contributions/:cid/artifacts/:name/meta — Artifact metadata (size + mediaType). */
 contributions.get("/:cid/artifacts/:name/meta", async (c) => {
-  const { contributionStore, cas } = c.get("deps");
+  const deps = c.get("deps");
+  const contributionStore = contributionStoreForSession(deps, c.req.query("sessionId"));
+  const { cas } = deps;
   const cid = c.req.param("cid");
   const name = c.req.param("name");
 

@@ -53,7 +53,7 @@ import { claimToEntity, contributionToEntity } from "../core/entity.js";
 import { ClaimConflictError, NotFoundError, StateConflictError } from "../core/errors.js";
 import { toUtcIso } from "../core/time.js";
 
-export const CURRENT_SCHEMA_VERSION = 11;
+export const CURRENT_SCHEMA_VERSION = 12;
 const SQLITE_BIND_LIMIT = 900;
 
 // ---------------------------------------------------------------------------
@@ -172,6 +172,12 @@ const SCHEMA_DDL = `
     result_json TEXT NOT NULL DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'pending',
     stored_at INTEGER NOT NULL
+  );
+
+  -- Key-value store for per-grove settings (e.g. migrated namespace).
+  CREATE TABLE IF NOT EXISTS project_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
   );
 `;
 
@@ -308,7 +314,7 @@ export function initSqliteDb(dbPath: string): Database {
       "CREATE INDEX IF NOT EXISTS idx_contributions_agent_created ON contributions(agent_id, created_at)",
     );
 
-    // Migration → v11: add implicit content-hash dedup for contributions.
+    // Migration → v12: add implicit content-hash dedup for contributions.
     // Existing duplicate rows are pruned before the UNIQUE index is created,
     // keeping the earliest created_at row for each logical payload.
     {
@@ -504,6 +510,10 @@ export function initSqliteDb(dbPath: string): Database {
       }
     }
 
+    // Migration → v11: create project_settings table (key-value store for
+    // per-grove settings like the migrated namespace from `grove migrate`).
+    // Handled by SCHEMA_DDL CREATE TABLE IF NOT EXISTS — no ALTER needed.
+
     db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [
       CURRENT_SCHEMA_VERSION,
       new Date().toISOString(),
@@ -535,6 +545,37 @@ export function initSqliteDb(dbPath: string): Database {
   initSchema.immediate();
 
   return db;
+}
+
+/**
+ * Read the effective namespace for this grove's SQLite store.
+ *
+ * Written by `grove migrate` when upgrading a legacy installation.
+ * Returns `"default"` if no migration has been applied yet.
+ */
+export function readStoreNamespace(db: Database): string {
+  // Tolerate missing table so callers (e.g. `grove migrate --dry-run` opening
+  // a legacy DB read-only) do not crash before schema migrations have run.
+  try {
+    const row = db.prepare("SELECT value FROM project_settings WHERE key = 'namespace'").get() as {
+      value: string;
+    } | null;
+    return row?.value ?? "default";
+  } catch (err) {
+    if ((err as Error).message?.includes("no such table")) return "default";
+    throw err;
+  }
+}
+
+/**
+ * Persist the store namespace in project_settings (upsert).
+ * Used by `grove migrate` and `grove init` to wire the local store to
+ * the project's canonical `{uuid}/{worktree}` namespace.
+ */
+export function writeStoreNamespace(db: Database, namespace: string): void {
+  db.run("INSERT OR REPLACE INTO project_settings (key, value) VALUES ('namespace', ?)", [
+    namespace,
+  ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1090,9 +1131,11 @@ export class SqliteContributionStore implements ContributionStore {
 
   countSince = async (query: { agentId?: string; since: string }): Promise<number> => {
     const sql =
-      "SELECT COUNT(*) as cnt FROM contributions WHERE created_at >= ? AND (agent_id = ? OR ? IS NULL)";
-    const agentId = query.agentId ?? null;
-    const row = this.db.prepare(sql).get(query.since, agentId, agentId) as { cnt: number } | null;
+      query.agentId !== undefined
+        ? "SELECT COUNT(*) as cnt FROM contributions WHERE agent_id = ? AND created_at >= ?"
+        : "SELECT COUNT(*) as cnt FROM contributions WHERE created_at >= ?";
+    const params = query.agentId !== undefined ? [query.agentId, query.since] : [query.since];
+    const row = this.db.prepare(sql).get(...params) as { cnt: number } | null;
     return row?.cnt ?? 0;
   };
 
@@ -1234,7 +1277,8 @@ export class SqliteContributionStore implements ContributionStore {
 
   async listEntities(query?: ContributionQuery): Promise<readonly ContributionEntity[]> {
     const items = await this.list(query);
-    return items.map(contributionToEntity);
+    const namespace = readStoreNamespace(this.db);
+    return items.map((c) => contributionToEntity(c, namespace));
   }
 
   /**
@@ -1713,7 +1757,8 @@ export class SqliteClaimStore implements ClaimStore {
     const baseQuery: ClaimQuery | undefined =
       query === undefined ? undefined : { ...query, status: undefined };
     const items = await this.listClaims(baseQuery);
-    const entities = items.map((c) => claimToEntity(c));
+    const namespace = readStoreNamespace(this.db);
+    const entities = items.map((c) => claimToEntity(c, () => Date.now(), namespace));
     if (query?.status === undefined) return entities;
     const wanted = Array.isArray(query.status) ? new Set(query.status) : new Set([query.status]);
     return entities.filter((e) => wanted.has(e.status.phase));

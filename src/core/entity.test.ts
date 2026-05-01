@@ -75,24 +75,24 @@ function makeContribution(overrides: Partial<Contribution> = {}): Contribution {
 
 describe("contributionToEntity", () => {
   test("wraps cid as id, namespace=default", () => {
-    const e: ContributionEntity = contributionToEntity(makeContribution());
+    const e: ContributionEntity = contributionToEntity(makeContribution(), "default");
     expect(e.kind).toBe("Contribution");
     expect(e.id).toBe("cid-1");
     expect(e.namespace).toBe("default");
   });
 
   test("projects domain kind into spec.contributionKind", () => {
-    const e = contributionToEntity(makeContribution({ kind: ContributionKind.Review }));
+    const e = contributionToEntity(makeContribution({ kind: ContributionKind.Review }), "default");
     expect(e.spec.contributionKind).toBe("review");
   });
 
   test("status is empty object (immutable kind)", () => {
-    const e = contributionToEntity(makeContribution());
+    const e = contributionToEntity(makeContribution(), "default");
     expect(e.status).toEqual({});
   });
 
   test("resourceVersion=0, observedGeneration=0, metadata.generation=1", () => {
-    const e = contributionToEntity(makeContribution());
+    const e = contributionToEntity(makeContribution(), "default");
     expect(e.resourceVersion).toBe("0");
     expect(e.observedGeneration).toBe(0);
     expect(e.metadata.generation).toBe(1);
@@ -100,7 +100,7 @@ describe("contributionToEntity", () => {
   });
 
   test("Published condition is always True with reason=Created", () => {
-    const e = contributionToEntity(makeContribution());
+    const e = contributionToEntity(makeContribution(), "default");
     expect(e.conditions).toHaveLength(1);
     const published = e.conditions[0];
     expect(published?.type).toBe("Published");
@@ -118,7 +118,7 @@ describe("contributionToEntity", () => {
       tags: ["a", "b"],
       commitHash: "abc123",
     });
-    const e = contributionToEntity(c);
+    const e = contributionToEntity(c, "default");
     expect(e.spec.summary).toBe("hello");
     expect(e.spec.description).toBe("full");
     expect(e.spec.tags).toEqual(["a", "b"]);

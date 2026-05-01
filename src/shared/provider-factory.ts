@@ -49,6 +49,15 @@ export function createStubContributionStore(identity?: string): ContributionStor
   };
 }
 
+function isLoopbackUrl(url: string): boolean {
+  try {
+    const { hostname } = new URL(url);
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Create a TuiDataProvider from a resolved backend.
  *
@@ -60,7 +69,25 @@ export async function createProvider(
 ): Promise<TuiDataProvider> {
   if (backend.mode === "remote") {
     const { RemoteDataProvider } = await import("../tui/remote-provider.js");
-    return new RemoteDataProvider(backend.url, label);
+    let apiKey: string | undefined;
+    // Forward the local API key when the user explicitly provided --grove OR
+    // when the URL targets a trusted loopback address (common dev/CI pattern:
+    // `grove tui --url http://localhost:4515` should authenticate normally).
+    const isLoopback = isLoopbackUrl(backend.url);
+    if (backend.groveOverride || isLoopback) {
+      try {
+        const { resolveGroveDir } = await import("../cli/utils/grove-dir.js");
+        const { readClientKey } = await import("../core/project-key.js");
+        const { groveDir } = resolveGroveDir(backend.groveOverride);
+        apiKey = readClientKey(groveDir);
+      } catch {
+        // No .grove/api-key found — requests will proceed unauthenticated
+      }
+    }
+    return new RemoteDataProvider(backend.url, {
+      ...(apiKey !== undefined ? { apiKey } : {}),
+      backendLabel: label,
+    });
   }
 
   if (backend.mode === "nexus") {
@@ -154,11 +181,36 @@ async function createNexusProvider(
     // Best-effort — grove.db may not exist yet
   }
 
+  // Resolve zone identifier and server API key from the local .grove directory.
+  let nexusZoneId = "default";
+  let serverApiKey: string | undefined;
+  try {
+    const { resolveGroveDir } = await import("../cli/utils/grove-dir.js");
+    const { readClientKey, readNamespace, detectWorktreeName } = await import(
+      "../core/project-key.js"
+    );
+    const { readProjectId } = await import("../core/project-id.js");
+    const { groveDir } = resolveGroveDir(backend.groveOverride);
+    // Use the same namespace derivation as serve.ts and mcp/serve.ts.
+    const ns = readNamespace(groveDir) ?? process.env.GROVE_ZONE_ID;
+    if (ns) {
+      nexusZoneId = ns;
+    } else {
+      const projectId = readProjectId(groveDir);
+      const worktreeName = await detectWorktreeName();
+      if (projectId) nexusZoneId = `${projectId}/${worktreeName}`;
+    }
+    serverApiKey = readClientKey(groveDir);
+  } catch {
+    // .grove not found — use default zone and no auth key
+  }
+
   return new NexusDataProvider({
-    nexusConfig: { client, zoneId: "default" },
+    nexusConfig: { client, zoneId: nexusZoneId },
     workspaceManager,
     backendLabel: label,
     serverUrl,
+    serverApiKey,
     goalSessionStore,
     handoffStore,
   });

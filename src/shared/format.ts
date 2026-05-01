@@ -9,13 +9,13 @@ import type { FrontierEntry } from "../core/frontier.js";
 import type { Contribution, Score } from "../core/models.js";
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional ANSI escape stripping
-const ANSI_CSI_RE = /\x1b\[[0-9;]*[a-zA-Z]/g;
+const ANSI_CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional ANSI escape stripping
-const ANSI_OSC_RE = /\x1b\][^\x07]*\x07/g;
+const ANSI_OSC_RE = /\x1b\][\s\S]*?(?:\x07|\x1b\\)/g;
 
 /** Strip ANSI escape codes (CSI sequences and OSC sequences) from a string. */
 export function stripAnsi(s: string): string {
-  return s.replace(ANSI_CSI_RE, "").replace(ANSI_OSC_RE, "");
+  return s.replace(ANSI_OSC_RE, "").replace(ANSI_CSI_RE, "");
 }
 
 /** Truncate a CID to a short display form: "blake3:abc123...". */

@@ -11,7 +11,7 @@
  */
 
 import { access } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import type { ContributionMode } from "../../core/models.js";
@@ -19,6 +19,7 @@ import type { ContributeInput, OperationDeps } from "../../core/operations/index
 import { contributeOperation } from "../../core/operations/index.js";
 import type { AgentOverrides } from "../agent.js";
 import { outputJson, outputJsonError } from "../format.js";
+import { findGroveDir } from "../utils/grove-dir.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -317,12 +318,11 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
   }
 
   // 2. Find .grove/
-  const grovePath = join(options.cwd, ".grove");
-  try {
-    await access(grovePath);
-  } catch {
+  const grovePath = findGroveDir(options.cwd);
+  if (grovePath === undefined) {
     throw new Error("No grove found. Run 'grove init' first to create a grove in this directory.");
   }
+  const groveRoot = resolve(grovePath, "..");
 
   // Dynamic imports for lazy loading
   const { SqliteContributionStore, SqliteClaimStore, SqliteIdempotencyStore, initSqliteDb } =
@@ -351,7 +351,7 @@ export async function executeContribute(options: ContributeOptions): Promise<{ c
     const { resolveContract } = await import("../utils/resolve-contract.js");
     const contract = await resolveContract({
       goalSessionStore: new SqliteGoalSessionStore(db),
-      groveRoot: options.cwd,
+      groveRoot,
       envSessionId: process.env.GROVE_SESSION_ID,
     });
 

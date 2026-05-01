@@ -28,7 +28,9 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 import { findGroveDir } from "../cli/context.js";
 import { StateConflictError } from "../core/errors.js";
+import { DefaultFrontierCalculator } from "../core/frontier.js";
 import { TopologyRouter } from "../core/topology-router.js";
+import { WatchHub } from "../core/watch-hub.js";
 import { createLocalRuntime } from "../local/runtime.js";
 import { parsePort } from "../shared/env.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
@@ -86,7 +88,19 @@ try {
   }
 
   nexusApiKey = process.env.NEXUS_API_KEY;
-  zoneId = process.env.GROVE_ZONE_ID ?? "default";
+  // Prefer the namespace persisted by `grove init` — stable across branch renames.
+  // Fall back to GROVE_ZONE_ID env var, then auto-derive from project-id/worktree-name.
+  const { readNamespace } = await import("../core/project-key.js");
+  const { readProjectId } = await import("../core/project-id.js");
+  const resolvedNs = readNamespace(groveDir) ?? process.env.GROVE_ZONE_ID;
+  if (resolvedNs) {
+    zoneId = resolvedNs;
+  } else {
+    const { detectWorktreeName } = await import("../core/project-key.js");
+    const projectId = readProjectId(groveDir);
+    const worktreeName = await detectWorktreeName();
+    zoneId = projectId ? `${projectId}/${worktreeName}` : "default";
+  }
 
   if (nexusUrl) {
     try {
@@ -661,7 +675,10 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     claimStore,
     bountyStore,
     cas,
-    frontier: runtime.frontier,
+    frontier:
+      nexusClient !== undefined
+        ? new DefaultFrontierCalculator(contributionStore)
+        : runtime.frontier,
     workspace,
     contract: loadedContract,
     ...(sessionId !== undefined ? { idempotencyKeyScope: sessionId } : {}),
@@ -675,6 +692,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     idempotencyStore,
     ...(handoffExpiryManaged ? { handoffExpiryManaged: true } : {}),
     ...(deadlineWatcher ? { deadlineWatcher } : {}),
+    watchHub: new WatchHub(),
   };
   const deactivate = () => {
     mutationGuard.deactivate();

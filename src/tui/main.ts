@@ -242,11 +242,36 @@ async function buildAppProps(
 
   const label = backendLabel(backend);
 
+  // For remote backends, attach the local API key for topology/contract probes
+  // only when the user explicitly provided --grove (opting into credential scope).
+  // Without --grove, omit credentials to avoid leaking tokens to arbitrary --url targets.
+  let remoteAuthHeaders: Record<string, string> | undefined;
+  if (backend.mode === "remote" && backend.groveOverride) {
+    const { resolveGroveDir } = await import("../cli/utils/grove-dir.js");
+    const { readClientKey } = await import("../core/project-key.js");
+    try {
+      const { groveDir } = resolveGroveDir(backend.groveOverride);
+      const apiKey = readClientKey(groveDir);
+      if (apiKey) remoteAuthHeaders = { Authorization: `Bearer ${apiKey}` };
+    } catch {
+      /* no key available */
+    }
+  }
+
   const [provider, topology, contract] = await Promise.all([
     createProviderForTui(backend, label),
-    loadTopology(backend),
-    loadContract(backend),
+    loadTopology(backend, remoteAuthHeaders),
+    loadContract(backend, remoteAuthHeaders),
   ]);
+
+  // Pre-fetch dashboard data before the renderer starts so the first render
+  // has content even when usePolledData hooks can't fire (e.g. Zig render loop).
+  let initialDashboard: import("./provider.js").DashboardData | undefined;
+  try {
+    initialDashboard = await provider.getDashboard();
+  } catch {
+    // Non-fatal — TUI renders with empty dashboard and polls on next cycle.
+  }
 
   // Create TmuxManager for agent management
   let tmux: import("./agents/tmux-manager.js").TmuxManager | undefined;
@@ -430,6 +455,7 @@ async function buildAppProps(
       agentRuntime,
       contract,
       userConfig,
+      initialDashboard,
     },
     provider,
     stopGc,
@@ -560,6 +586,11 @@ export async function handleTui(
   const renderer = await createCliRenderer({
     exitOnCtrlC: true,
     useAlternateScreen: !process.env.GROVE_NO_ALT_SCREEN,
+    // In tmux, force stdout-based I/O (useThread=false) so capture-pane can see
+    // the rendered output. By default on macOS, useThread=true routes writes
+    // through a Zig FFI background thread, bypassing Node stdout and tmux's
+    // cell-grid tracking. Linux already forces useThread=false.
+    ...(process.env.TMUX ? { useThread: false } : {}),
   });
 
   const root = createRoot(renderer);

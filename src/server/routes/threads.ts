@@ -11,8 +11,9 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { threadOperation, threadsOperation } from "../../core/operations/index.js";
 import type { ServerEnv } from "../deps.js";
-import { toHttpResult, toOperationDeps } from "../operation-adapter.js";
+import { toHttpResult } from "../operation-adapter.js";
 import { CID_REGEX } from "../schemas.js";
+import { contributionStoreForSession, operationDepsForSession } from "./shared.js";
 
 const cidParamSchema = z.object({
   cid: z.string().regex(CID_REGEX, "CID must be in format blake3:<64-hex-chars>"),
@@ -21,11 +22,13 @@ const cidParamSchema = z.object({
 const threadQuerySchema = z.object({
   maxDepth: z.coerce.number().int().min(0).max(100).default(50),
   limit: z.coerce.number().int().min(1).max(500).default(100),
+  sessionId: z.string().optional(),
 });
 
 const threadsQuerySchema = z.object({
   tags: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(20),
+  sessionId: z.string().optional(),
 });
 
 const threads: HonoType<ServerEnv> = new Hono<ServerEnv>();
@@ -37,10 +40,12 @@ threads.get(
   zValidator("query", threadQuerySchema),
   async (c) => {
     const { cid } = c.req.valid("param");
-    const { maxDepth, limit } = c.req.valid("query");
+    const { maxDepth, limit, sessionId } = c.req.valid("query");
 
     // Use operation for validation (e.g., 404 on missing root)
-    const deps = toOperationDeps(c.get("deps"));
+    const serverDeps = c.get("deps");
+    const contributionStore = contributionStoreForSession(serverDeps, sessionId);
+    const deps = operationDepsForSession(serverDeps, sessionId);
     const result = await threadOperation({ cid, maxDepth, limit }, deps);
 
     if (!result.ok) {
@@ -49,7 +54,6 @@ threads.get(
     }
 
     // Return full thread nodes for HTTP consumers (TUI remote provider)
-    const { contributionStore } = c.get("deps");
     const nodes = await contributionStore.thread(cid, { maxDepth, limit });
     return c.json({
       nodes: nodes.map((n) => ({
@@ -69,7 +73,9 @@ threads.get("/", zValidator("query", threadsQuerySchema), async (c) => {
   const tags = raw.tags ? raw.tags.split(",").filter((t) => t.length > 0) : undefined;
 
   // Use operation for validation
-  const deps = toOperationDeps(c.get("deps"));
+  const serverDeps = c.get("deps");
+  const contributionStore = contributionStoreForSession(serverDeps, raw.sessionId);
+  const deps = operationDepsForSession(serverDeps, raw.sessionId);
   const result = await threadsOperation({ tags, limit: raw.limit }, deps);
 
   if (!result.ok) {
@@ -78,7 +84,6 @@ threads.get("/", zValidator("query", threadsQuerySchema), async (c) => {
   }
 
   // Return full thread summaries for HTTP consumers (TUI remote provider)
-  const { contributionStore } = c.get("deps");
   const threadList = await contributionStore.hotThreads({ tags, limit: raw.limit });
   return c.json({
     threads: threadList.map((t) => ({

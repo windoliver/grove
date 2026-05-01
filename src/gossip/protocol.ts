@@ -46,6 +46,21 @@ import {
 } from "../core/gossip/types.js";
 import { CyclonPeerSampler } from "./cyclon.js";
 
+/** Maximum age of a signed gossip message before it is rejected as a potential replay. */
+const GOSSIP_MAX_MESSAGE_AGE_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Thrown by handleExchange/handleShuffle when HMAC verification or freshness
+ * checks fail. Callers (HTTP routes, daemon handlers) must catch this and
+ * return 401/403 — never leak gossip state to an unauthenticated peer.
+ */
+export class GossipAuthError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = "GossipAuthError";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Direction-aware helpers
 // ---------------------------------------------------------------------------
@@ -92,7 +107,7 @@ interface LivenessState {
 // ---------------------------------------------------------------------------
 
 /** Compute HMAC-SHA256 over a payload (excluding the hmacSignature field). */
-function signPayload(payload: Record<string, unknown>, secret: string): string {
+export function signPayload(payload: Record<string, unknown>, secret: string): string {
   const { hmacSignature: _, ...data } = payload;
   const hmac = createHmac("sha256", secret);
   hmac.update(JSON.stringify(data));
@@ -100,14 +115,18 @@ function signPayload(payload: Record<string, unknown>, secret: string): string {
 }
 
 /** Verify HMAC-SHA256 signature on a payload using timing-safe comparison. */
-function verifyPayload(
+export function verifyPayload(
   payload: Record<string, unknown> & { hmacSignature?: string },
   secret: string,
 ): boolean {
-  if (!payload.hmacSignature) return false;
+  const sig = payload.hmacSignature;
+  if (!sig) return false;
+  // Reject non-hex or wrong-length signatures before calling timingSafeEqual.
+  // timingSafeEqual throws RangeError when buffer byte lengths differ, which
+  // happens when non-ASCII characters make a 64-char string longer than 64 bytes.
+  if (!/^[0-9a-f]{64}$/i.test(sig)) return false;
   const expected = signPayload(payload, secret);
-  if (payload.hmacSignature.length !== expected.length) return false;
-  return timingSafeEqual(Buffer.from(payload.hmacSignature), Buffer.from(expected));
+  return timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expected, "hex"));
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +166,8 @@ export class DefaultGossipService implements GossipService {
   private running = false;
   private consecutiveFailures = 0;
   private readonly now: () => number;
+  /** Per-peer monotonic timestamp (ms) for replay detection. */
+  private readonly peerLastTimestamp = new Map<string, number>();
 
   constructor(opts: {
     config: GossipConfig;
@@ -239,9 +260,22 @@ export class DefaultGossipService implements GossipService {
     // Verify HMAC if configured
     if (this.config.hmacSecret) {
       if (!verifyPayload(message as unknown as Record<string, unknown>, this.config.hmacSecret)) {
-        console.warn(`Gossip: rejecting exchange from ${message.peerId} — invalid or missing HMAC`);
-        return this.currentMessage();
+        throw new GossipAuthError(`invalid or missing HMAC from peer ${message.peerId}`);
       }
+      // Reject messages outside the 5-minute clock-skew window to prevent replay attacks.
+      const msgTimestampMs = new Date(message.timestamp).getTime();
+      const age = Math.abs(this.now() - msgTimestampMs);
+      if (age > GOSSIP_MAX_MESSAGE_AGE_MS) {
+        throw new GossipAuthError(`message too old (${age}ms) from peer ${message.peerId}`);
+      }
+      // Monotonic timestamp guard: reject replays within the valid window.
+      const lastSeen = this.peerLastTimestamp.get(message.peerId);
+      if (lastSeen !== undefined && msgTimestampMs <= lastSeen) {
+        throw new GossipAuthError(
+          `replay detected from peer ${message.peerId} (ts=${msgTimestampMs} <= last=${lastSeen})`,
+        );
+      }
+      this.peerLastTimestamp.set(message.peerId, msgTimestampMs);
     }
 
     // Update liveness for sender
@@ -274,10 +308,44 @@ export class DefaultGossipService implements GossipService {
         );
         return { offered: [] };
       }
+      // Reject replayed messages outside the 5-minute clock-skew window.
+      const ts = request.sender.lastSeen;
+      const senderTs = new Date(ts).getTime();
+      const age = Math.abs(this.now() - senderTs);
+      if (age > GOSSIP_MAX_MESSAGE_AGE_MS) {
+        console.warn(
+          `Gossip: rejecting shuffle from ${request.sender.peerId} — message too old (${age}ms)`,
+        );
+        return { offered: [] };
+      }
+      // Monotonic guard: use our clock to bound how often a peer can shuffle
+      // with us. We can't rely on sender-provided timestamps being monotonic
+      // (peers may reuse the same lastSeen if they don't refresh it per round).
+      // Rate-limiting by our own receive time ensures forward progress without
+      // depending on sender clock accuracy.
+      const shuffleKey = `shuffle:${request.sender.peerId}`;
+      const nowMs = this.now();
+      const lastReceived = this.peerLastTimestamp.get(shuffleKey);
+      if (lastReceived !== undefined && nowMs - lastReceived < 1000) {
+        // Reject if the same peer shuffles again within 1 s (likely a replay).
+        console.warn(`Gossip: rejecting rapid-fire shuffle from ${request.sender.peerId}`);
+        return { offered: [] };
+      }
+      this.peerLastTimestamp.set(shuffleKey, nowMs);
     }
 
     this.markAlive(request.sender.peerId);
-    return this.sampler.handleShuffleRequest(request);
+    const response = this.sampler.handleShuffleRequest(request);
+    if (this.config.hmacSecret) {
+      return {
+        ...response,
+        hmacSignature: signPayload(
+          response as unknown as Record<string, unknown>,
+          this.config.hmacSecret,
+        ),
+      };
+    }
+    return response;
   }
 
   // -------------------------------------------------------------------------

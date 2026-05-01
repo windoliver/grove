@@ -67,7 +67,7 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
   }
 
   const { contribution: c, ancestors, children, thread } = data;
-  const entity = contributionToEntity(c);
+  const entity = contributionToEntity(c, "default");
 
   return (
     <box flexDirection="column">

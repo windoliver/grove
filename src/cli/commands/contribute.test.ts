@@ -640,6 +640,26 @@ describe("executeContribute", () => {
     }
   });
 
+  test("discovers the grove when run from a project subdirectory", async () => {
+    const dir = await createTempDir();
+    try {
+      await executeInit(makeInitOptions(dir));
+      const subdir = join(dir, "packages", "worker");
+      await mkdir(subdir, { recursive: true });
+
+      const result = await executeContribute(
+        makeContributeOptions({
+          summary: "Subdirectory contribution",
+          cwd: subdir,
+        }),
+      );
+
+      expect(result.cid).toMatch(/^blake3:[0-9a-f]{64}$/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("ingests report via --from-report", async () => {
     const dir = await createTempDir();
     try {

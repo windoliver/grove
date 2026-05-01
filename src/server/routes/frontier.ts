@@ -11,7 +11,8 @@ import { z } from "zod";
 import type { ContributionKind, ContributionMode, JsonValue } from "../../core/models.js";
 import { frontierOperation } from "../../core/operations/index.js";
 import type { ServerEnv } from "../deps.js";
-import { toHttpResult, toOperationDeps } from "../operation-adapter.js";
+import { toHttpResult } from "../operation-adapter.js";
+import { operationDepsForSession } from "./shared.js";
 
 const querySchema = z.object({
   kind: z.string().optional(),
@@ -48,7 +49,7 @@ frontier.get("/", zValidator("query", querySchema), async (c) => {
     contextFilter = parsed as Record<string, JsonValue>;
   }
 
-  const deps = toOperationDeps(c.get("deps"));
+  const deps = operationDepsForSession(c.get("deps"), query.sessionId);
   const result = await frontierOperation(
     {
       metric: query.metric,

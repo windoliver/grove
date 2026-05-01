@@ -58,18 +58,36 @@ function validateHash(contentHash: string): void {
 
 const encoder = new TextEncoder();
 
+interface CasMetadata {
+  readonly mediaType?: string | undefined;
+  readonly sizeBytes?: number | undefined;
+}
+
 /** Encode metadata sidecar as JSON bytes. */
-function encodeMetadata(mediaType: string): Uint8Array {
-  return encoder.encode(JSON.stringify({ mediaType }));
+function encodeMetadata(metadata: CasMetadata): Uint8Array {
+  return encoder.encode(JSON.stringify(metadata));
 }
 
 /** Decode metadata sidecar from JSON bytes. */
-function decodeMetadata(data: Uint8Array): { mediaType?: string } {
+function decodeMetadata(data: Uint8Array): CasMetadata {
   try {
-    return JSON.parse(new TextDecoder().decode(data));
+    const parsed = JSON.parse(new TextDecoder().decode(data)) as Record<string, unknown>;
+    return {
+      ...(typeof parsed.mediaType === "string" ? { mediaType: parsed.mediaType } : {}),
+      ...(typeof parsed.sizeBytes === "number" && Number.isFinite(parsed.sizeBytes)
+        ? { sizeBytes: parsed.sizeBytes }
+        : {}),
+    };
   } catch {
     return {};
   }
+}
+
+function metadataFor(data: Uint8Array, mediaType: string | undefined): CasMetadata {
+  return {
+    sizeBytes: data.byteLength,
+    ...(mediaType ? { mediaType } : {}),
+  };
 }
 
 /**
@@ -107,17 +125,15 @@ export class NexusCas implements ContentStore {
         this.config,
       );
       if (fileExists) {
-        if (mediaType) {
-          const metaPath = casMetaPath(this.zoneId, contentHash);
-          await withRetry(
-            () =>
-              withSemaphore(this.semaphore, () =>
-                this.client.write(metaPath, encodeMetadata(mediaType)),
-              ),
-            "put.meta",
-            this.config,
-          );
-        }
+        const metaPath = casMetaPath(this.zoneId, contentHash);
+        await withRetry(
+          () =>
+            withSemaphore(this.semaphore, () =>
+              this.client.write(metaPath, encodeMetadata(metadataFor(data, mediaType))),
+            ),
+          "put.meta",
+          this.config,
+        );
         this.existsCache.set(contentHash, true);
         // Invalidate statCache — mediaType may have changed
         this.statCache.delete(contentHash);
@@ -131,17 +147,15 @@ export class NexusCas implements ContentStore {
       this.config,
     );
 
-    if (mediaType) {
-      const metaPath = casMetaPath(this.zoneId, contentHash);
-      await withRetry(
-        () =>
-          withSemaphore(this.semaphore, () =>
-            this.client.write(metaPath, encodeMetadata(mediaType)),
-          ),
-        "put.meta",
-        this.config,
-      );
-    }
+    const metaPath = casMetaPath(this.zoneId, contentHash);
+    await withRetry(
+      () =>
+        withSemaphore(this.semaphore, () =>
+          this.client.write(metaPath, encodeMetadata(metadataFor(data, mediaType))),
+        ),
+      "put.meta",
+      this.config,
+    );
 
     this.existsCache.set(contentHash, true);
     this.statCache.delete(contentHash);
@@ -226,17 +240,15 @@ export class NexusCas implements ContentStore {
       this.config,
     );
     if (fileExists) {
-      if (mediaType) {
-        const metaP = casMetaPath(this.zoneId, contentHash);
-        await withRetry(
-          () =>
-            withSemaphore(this.semaphore, () =>
-              this.client.write(metaP, encodeMetadata(mediaType)),
-            ),
-          "putFile.meta",
-          this.config,
-        );
-      }
+      const metaP = casMetaPath(this.zoneId, contentHash);
+      await withRetry(
+        () =>
+          withSemaphore(this.semaphore, () =>
+            this.client.write(metaP, encodeMetadata(metadataFor(fileData, mediaType))),
+          ),
+        "putFile.meta",
+        this.config,
+      );
       this.existsCache.set(contentHash, true);
       // Invalidate statCache — mediaType may have changed
       this.statCache.delete(contentHash);
@@ -249,15 +261,15 @@ export class NexusCas implements ContentStore {
       this.config,
     );
 
-    if (mediaType) {
-      const metaP = casMetaPath(this.zoneId, contentHash);
-      await withRetry(
-        () =>
-          withSemaphore(this.semaphore, () => this.client.write(metaP, encodeMetadata(mediaType))),
-        "putFile.meta",
-        this.config,
-      );
-    }
+    const metaP = casMetaPath(this.zoneId, contentHash);
+    await withRetry(
+      () =>
+        withSemaphore(this.semaphore, () =>
+          this.client.write(metaP, encodeMetadata(metadataFor(fileData, mediaType))),
+        ),
+      "putFile.meta",
+      this.config,
+    );
 
     this.existsCache.set(contentHash, true);
     this.statCache.delete(contentHash);
@@ -291,8 +303,10 @@ export class NexusCas implements ContentStore {
     );
     if (fileMeta === undefined) return undefined;
 
-    // Read metadata sidecar for mediaType
+    // Read metadata sidecar for logical size/mediaType. The real HTTP Nexus
+    // backend stores base64 text, so fileMeta.size can reflect encoded bytes.
     let mediaType: string | undefined;
+    let sizeBytes: number | undefined;
     const metaPath = casMetaPath(this.zoneId, contentHash);
     let metaData: Uint8Array | undefined;
     try {
@@ -308,11 +322,20 @@ export class NexusCas implements ContentStore {
     if (metaData !== undefined) {
       const meta = decodeMetadata(metaData);
       mediaType = meta.mediaType || undefined;
+      sizeBytes = meta.sizeBytes;
+    }
+    if (sizeBytes === undefined) {
+      const data = await withRetry(
+        () => withSemaphore(this.semaphore, () => this.client.read(blobPath)),
+        "stat.content",
+        this.config,
+      );
+      sizeBytes = data?.byteLength ?? fileMeta.size;
     }
 
     const artifact: Artifact = {
       contentHash,
-      sizeBytes: fileMeta.size,
+      sizeBytes,
       ...(mediaType ? { mediaType } : {}),
     };
     this.statCache.set(contentHash, artifact);
