@@ -52,6 +52,18 @@ export class LocalWatchClient implements WatchStream {
     // race the snapshot. The hub buffers events into the subscriber's queue
     // until the consumer iterates.
     const stream = this.hub.subscribe(this.namespace, this.kind, snapshotRv, signal);
+    // Cache the iterator so we can call return() on it during cleanup. Without
+    // this, an exception thrown between RELIST_BEGIN and the for-await loop
+    // would leave the hub subscriber alive (no abort, no iterator return),
+    // accumulating fanout until buffer overflow.
+    const iterator = stream[Symbol.asyncIterator]();
+    const closeStream = async (): Promise<void> => {
+      try {
+        await iterator.return?.();
+      } catch {
+        /* iterator already closed */
+      }
+    };
 
     // Snapshot dedup window. A write committed after currentRv() but before
     // listFn() reads the store is included in BOTH the snapshot and the
@@ -61,37 +73,68 @@ export class LocalWatchClient implements WatchStream {
     // mirroring WatchClient.snapshotWindow.
     const snapshotWindow = new Map<string, string>();
 
-    // Emit the snapshot.
-    await onEvent({
-      op: "RELIST_BEGIN",
-      rv: snapshotRv,
-      kind: this.kind,
-      entity: null,
-    });
-    if (signal.aborted) return;
-
-    for (const entity of this.listFn()) {
-      snapshotWindow.set(entity.id, entity.resourceVersion);
+    // Boundary invariant: once RELIST_BEGIN fires, exactly one of RELIST_END
+    // or RELIST_ABORTED follows. Track delivery so a snapshot-phase failure
+    // (listFn throw, onEvent throw) emits RELIST_ABORTED before rethrowing
+    // and the consumer can roll back staged state.
+    let relistOpen = false;
+    let primaryError: unknown;
+    try {
       await onEvent({
-        op: "RELIST",
+        op: "RELIST_BEGIN",
         rv: snapshotRv,
         kind: this.kind,
-        entity,
+        entity: null,
       });
-      if (signal.aborted) return;
+      relistOpen = true;
+      if (!signal.aborted) {
+        for (const entity of this.listFn()) {
+          if (signal.aborted) break;
+          snapshotWindow.set(entity.id, entity.resourceVersion);
+          await onEvent({
+            op: "RELIST",
+            rv: snapshotRv,
+            kind: this.kind,
+            entity,
+          });
+        }
+      }
+    } catch (err) {
+      primaryError = err;
     }
 
-    await onEvent({
-      op: "RELIST_END",
-      rv: snapshotRv,
-      kind: this.kind,
-      entity: null,
-    });
-    if (signal.aborted) return;
+    if (relistOpen) {
+      const interrupted = primaryError !== undefined || signal.aborted;
+      const closeOp = interrupted ? "RELIST_ABORTED" : "RELIST_END";
+      try {
+        await onEvent({
+          op: closeOp,
+          rv: snapshotRv,
+          kind: this.kind,
+          entity: null,
+        });
+      } catch (err) {
+        if (closeOp === "RELIST_END" && primaryError === undefined && !signal.aborted) {
+          primaryError = err;
+        }
+      }
+    }
+
+    if (primaryError !== undefined) {
+      await closeStream();
+      throw primaryError;
+    }
+    if (signal.aborted) {
+      await closeStream();
+      return;
+    }
 
     // Drain live deltas. The async iterator returns when the abort signal fires.
     try {
-      for await (const event of stream) {
+      while (!signal.aborted) {
+        const next = await iterator.next();
+        if (next.done) break;
+        const event = next.value;
         if (signal.aborted) return;
         // Snapshot-dedup with high-water mark. Drop replay frames whose
         // entity version is ≤ the snapshot's version for that id; forward
@@ -117,9 +160,11 @@ export class LocalWatchClient implements WatchStream {
       }
     } catch (err) {
       // Buffer overflow or other hub errors during live-delta iteration. Boundary
-      // events are already emitted by this point, so the Informer won't see a
-      // RELIST_ABORTED — just rethrow so the caller's run loop handles it.
+      // events were already emitted, so the Informer won't see a RELIST_ABORTED —
+      // just rethrow so the caller's run loop handles it.
       if (!signal.aborted) throw err;
+    } finally {
+      await closeStream();
     }
   }
 }

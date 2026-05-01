@@ -284,6 +284,8 @@ export type InformerFactoryOptions =
       readonly listFn: (kind: WatchKind) => readonly WatchEntity[];
     };
 
+export type FactoryErrorListener = (kind: WatchKind, err: Error | null) => void;
+
 interface RunningInformer {
   readonly informer: Informer;
   controller: AbortController;
@@ -311,9 +313,35 @@ const ALL_KINDS: readonly WatchKind[] = ["Contribution", "Claim", "AgentSession"
 export class InformerFactory {
   private readonly opts: InformerFactoryOptions;
   private readonly running = new Map<string, RunningInformer>();
+  private readonly errorListeners: Array<FactoryErrorListener> = [];
 
   constructor(opts: InformerFactoryOptions) {
     this.opts = opts;
+  }
+
+  /**
+   * Subscribe to terminal `informer.run()` rejections. Fires with the
+   * captured Error after a kind's run loop rejects, and again with `null`
+   * when a subsequent restart succeeds (i.e. clears the error). Hooks use
+   * this to surface auth/config/server failures instead of leaving
+   * consumers stuck at `hasSynced=false` with no error.
+   */
+  addErrorListener(fn: FactoryErrorListener): () => void {
+    this.errorListeners.push(fn);
+    return () => {
+      const idx = this.errorListeners.indexOf(fn);
+      if (idx >= 0) this.errorListeners.splice(idx, 1);
+    };
+  }
+
+  private fireError(kind: WatchKind, err: Error | null): void {
+    for (const fn of [...this.errorListeners]) {
+      try {
+        fn(kind, err);
+      } catch (e) {
+        console.error("InformerFactory: error listener threw, continuing fanout:", e);
+      }
+    }
   }
 
   /**
@@ -371,14 +399,19 @@ export class InformerFactory {
       .filter((r): r is RunningInformer => r !== undefined);
 
     await Promise.all(
-      targets.map((r) =>
-        this.withLock(r, async () => {
+      kinds.map((k) => {
+        const r = this.running.get(k);
+        if (!r) return Promise.resolve();
+        return this.withLock(r, async () => {
           await this.stopOne(r);
           r.controller = new AbortController();
-          this.startOne(r);
-        }),
-      ),
+          this.startOne(k, r);
+        });
+      }),
     );
+    // Reference targets so unused-var lints don't trip — this is the
+    // pre-filtered list used to avoid creating informers for unknown kinds.
+    void targets;
   }
 
   /** Last terminal error captured from a kind's `run()`, if any. */
@@ -393,25 +426,33 @@ export class InformerFactory {
       r = this.running.get(kind);
       if (!r) throw new Error(`unreachable: informerFor(${kind}) did not register a running entry`);
     }
-    void this.withLock(r, async () => {
-      this.startOne(r);
+    const entry = r;
+    void this.withLock(entry, async () => {
+      this.startOne(kind, entry);
     });
   }
 
   /**
+   * Relist a single kind via internal lock — used by the in-process
+   * `RefreshContext` button (and PR2 hook bindings).
+   */
+
+  /**
    * Start a fresh `run()` if not already running. Wraps the run promise so
    * terminal errors clear `runPromise` (allowing future restart), record
-   * `lastError`, and never bubble as unhandled rejections. The generation
-   * token guards against a settling run from a prior generation clearing
-   * state owned by the current one.
+   * `lastError`, fire the factory's error listeners, and never bubble as
+   * unhandled rejections. The generation token guards against a settling
+   * run from a prior generation clearing state owned by the current one.
    */
-  private startOne(r: RunningInformer): void {
+  private startOne(kind: WatchKind, r: RunningInformer): void {
     if (r.runPromise) return;
     if (r.controller.signal.aborted) {
       r.controller = new AbortController();
     }
     const generation = (r.generation = r.generation + 1);
+    const hadError = r.lastError !== null;
     r.lastError = null;
+    if (hadError) this.fireError(kind, null);
     const signal = r.controller.signal;
     const informer = r.informer;
     r.runPromise = informer.run(signal).then(
@@ -421,7 +462,12 @@ export class InformerFactory {
       (err: unknown) => {
         if (r.generation === generation) {
           r.runPromise = null;
-          r.lastError = err instanceof Error ? err : new Error(String(err));
+          const errorObj = err instanceof Error ? err : new Error(String(err));
+          r.lastError = errorObj;
+          // Log so terminal failures (auth/config/permanent server errors)
+          // aren't silently swallowed when no error listener is registered.
+          console.warn(`Informer[${kind}]: run() failed: ${errorObj.message}`);
+          this.fireError(kind, errorObj);
         }
       },
     );

@@ -12,7 +12,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Informer } from "../../core/informer.js";
 import type { WatchKind } from "../../core/watch-events.js";
-import { useInformer } from "./informer-context.js";
+import { useInformer, useInformerFactory } from "./informer-context.js";
 
 export function shallowArraysEqual<T>(a: readonly T[], b: readonly T[]): boolean {
   if (a === b) return true;
@@ -44,6 +44,7 @@ export function useEntities<K extends WatchKind>(
   predicate?: (e: EntityFor<K>) => boolean,
 ): UseEntitiesResult<EntityFor<K>> {
   const informer = useInformer(kind);
+  const factory = useInformerFactory();
   const predicateRef = useRef(predicate);
 
   const initial = useMemo<readonly EntityFor<K>[]>(() => {
@@ -59,7 +60,7 @@ export function useEntities<K extends WatchKind>(
 
   const [data, setData] = useState<readonly EntityFor<K>[]>(initial);
   const [hasSynced, setHasSynced] = useState<boolean>(informer.hasSynced());
-  const [error, setError] = useState<Error | null>(null);
+  const [error, setError] = useState<Error | null>(() => factory.getLastError(kind));
   const dataRef = useRef<readonly EntityFor<K>[]>(initial);
   dataRef.current = data;
 
@@ -106,15 +107,22 @@ export function useEntities<K extends WatchKind>(
     // hasSynced and trigger a recompute. Without this, a consumer mounted
     // before the first sync of an empty store stays hasSynced=false.
     const unsubSync = informer.addSyncHandler(recompute);
+    // Surface terminal informer.run() failures (remote 4xx, listFn throw)
+    // so consumers don't sit at hasSynced=false with no diagnostic.
+    const unsubError = factory.addErrorListener((errKind, err) => {
+      if (errKind !== kind) return;
+      setError(err);
+    });
     return () => {
       unsubEvent();
       unsubSync();
+      unsubError();
     };
     // recompute closes over informer, hasSynced, error — re-subscribe when
     // any change. Predicate captured via ref so identity changes don't
     // remount the subscription.
     // biome-ignore lint/correctness/useExhaustiveDependencies: recompute is the effect body itself
-  }, [informer, hasSynced, error]);
+  }, [informer, factory, kind, hasSynced, error]);
 
   return { data, hasSynced, error };
 }
