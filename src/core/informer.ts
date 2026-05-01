@@ -66,12 +66,18 @@ export class Informer<K extends WatchKind = WatchKind> {
    * Register a sync handler that fires on every RELIST_END, including empty
    * snapshots and snapshots that produce no per-entity deltas. Required so
    * hooks can flip hasSynced and recompute filtered views even when the
-   * snapshot is identical to the prior cache state. Fires immediately if
-   * the informer is already synced when the handler is registered.
+   * snapshot is identical to the prior cache state.
+   *
+   * @param fireIfSynced when true (default) and the informer is already
+   *   synced at registration time, fire `fn` immediately so newly-mounted
+   *   consumers don't have to wait for the next RELIST_END to learn the
+   *   cache is populated. Pass false to subscribe only to FUTURE RELIST_END
+   *   events — used by the factory's recovery handler so a stale `_synced
+   *   === true` from a prior run can't clear an error owned by the new run.
    */
-  addSyncHandler(fn: SyncHandlerFn): () => void {
+  addSyncHandler(fn: SyncHandlerFn, fireIfSynced = true): () => void {
     this.syncHandlers.push(fn);
-    if (this._synced) {
+    if (fireIfSynced && this._synced) {
       try {
         fn();
       } catch (err) {
@@ -450,18 +456,41 @@ export class InformerFactory {
       r.controller = new AbortController();
     }
     const generation = (r.generation = r.generation + 1);
-    const hadError = r.lastError !== null;
-    r.lastError = null;
-    if (hadError) this.fireError(kind, null);
+    // Do NOT clear lastError on start — clearing here would fire `null` to
+    // listeners while the new run is still pending or backing off, making
+    // hooks drop their visible error even though sync has not been re-proven.
+    // Wait for a concrete recovery signal: first successful RELIST_END after
+    // this start. The sync handler below clears + fires null exactly once.
+    // Subscribe with fireIfSynced=false so a stale `_synced === true` from
+    // the prior run doesn't trigger us synchronously and clear the error
+    // before the new run has actually re-proven sync.
+    const recovery = r.informer.addSyncHandler(() => {
+      // Stale-generation handlers must not clear errors owned by a newer run.
+      if (r.generation !== generation) {
+        recovery();
+        return;
+      }
+      if (r.lastError !== null) {
+        r.lastError = null;
+        this.fireError(kind, null);
+      }
+      // One-shot: detach after firing once. Subsequent syncs are healthy
+      // by definition and don't need to fire null again.
+      recovery();
+    }, false);
     const signal = r.controller.signal;
     const informer = r.informer;
     r.runPromise = informer.run(signal).then(
       () => {
-        if (r.generation === generation) r.runPromise = null;
+        if (r.generation === generation) {
+          r.runPromise = null;
+          recovery();
+        }
       },
       (err: unknown) => {
         if (r.generation === generation) {
           r.runPromise = null;
+          recovery();
           const errorObj = err instanceof Error ? err : new Error(String(err));
           r.lastError = errorObj;
           // Log so terminal failures (auth/config/permanent server errors)
