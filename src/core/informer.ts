@@ -10,8 +10,11 @@
  */
 
 import type { AgentSessionEntity, ClaimEntity, ContributionEntity } from "./entity.js";
+import { LocalWatchClient } from "./local-watch-client.js";
 import { WatchClient, type WatchClientEvent, type WatchClientOptions } from "./watch-client.js";
-import type { WatchKind } from "./watch-events.js";
+import type { WatchEntity, WatchKind } from "./watch-events.js";
+import type { WatchHub } from "./watch-hub.js";
+import type { WatchStream } from "./watch-stream.js";
 
 type EntityForKind<K extends WatchKind> = K extends "Contribution"
   ? ContributionEntity
@@ -29,7 +32,7 @@ export type EventHandlerFn<K extends WatchKind = WatchKind> = (
 ) => void | Promise<void>;
 
 export class Informer<K extends WatchKind = WatchKind> {
-  private readonly clientOpts: WatchClientOptions;
+  private readonly stream: WatchStream;
   private readonly store = new Map<string, EntityForKind<K>>();
   private readonly handlers: Array<EventHandlerFn<K>> = [];
   private _synced = false;
@@ -38,8 +41,8 @@ export class Informer<K extends WatchKind = WatchKind> {
   // Set during run() so dispatch can race handlers against the abort signal.
   private _signal: AbortSignal | null = null;
 
-  constructor(opts: WatchClientOptions) {
-    this.clientOpts = opts;
+  constructor(stream: WatchStream) {
+    this.stream = stream;
   }
 
   /**
@@ -77,8 +80,7 @@ export class Informer<K extends WatchKind = WatchKind> {
     this._running = true;
     this._signal = signal;
     try {
-      const client = new WatchClient(this.clientOpts);
-      await client.run({ onEvent: (e) => this.onEvent(e), signal });
+      await this.stream.run({ onEvent: (e) => this.onEvent(e), signal });
     } finally {
       this._signal = null;
       this._running = false;
@@ -227,12 +229,31 @@ function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === "AbortError";
 }
 
-export interface InformerFactoryOptions {
-  readonly baseUrl: string;
-  readonly authHeader: string;
-  readonly fetch?: typeof fetch;
-  readonly backoff?: WatchClientOptions["backoff"];
+export type Backoff = NonNullable<WatchClientOptions["backoff"]>;
+
+export type InformerFactoryOptions =
+  | {
+      readonly mode: "remote";
+      readonly baseUrl: string;
+      readonly authHeader: string;
+      readonly fetch?: typeof fetch;
+      readonly backoff?: Backoff;
+    }
+  | {
+      readonly mode: "local";
+      readonly hub: WatchHub;
+      readonly namespace: string;
+      readonly listFn: (kind: WatchKind) => readonly WatchEntity[];
+      readonly backoff?: Backoff;
+    };
+
+interface RunningInformer {
+  readonly informer: Informer;
+  controller: AbortController;
+  runPromise: Promise<void> | null;
 }
+
+const ALL_KINDS: readonly WatchKind[] = ["Contribution", "Claim", "AgentSession"];
 
 /**
  * InformerFactory memoizes one Informer per kind for a single namespace
@@ -242,29 +263,99 @@ export interface InformerFactoryOptions {
  */
 export class InformerFactory {
   private readonly opts: InformerFactoryOptions;
-  // key: kind string
-  private readonly informers = new Map<string, Informer>();
+  private readonly running = new Map<string, RunningInformer>();
 
   constructor(opts: InformerFactoryOptions) {
     this.opts = opts;
   }
 
+  /**
+   * Returns the Informer for a kind. Lazily constructs it on first call,
+   * but does NOT start `run()` — call `startAll()` to start watching.
+   */
   informerFor<K extends WatchKind>(kind: K): Informer<K> {
-    let informer = this.informers.get(kind) as Informer<K> | undefined;
-    if (!informer) {
-      // Build clientOpts conditionally so exactOptionalPropertyTypes doesn't
-      // treat undefined fetch/backoff as explicit-undefined (which violates
-      // WatchClientOptions where the props are optional, not optional|undefined).
-      const clientOpts: WatchClientOptions = {
-        baseUrl: this.opts.baseUrl,
-        kind,
-        authHeader: this.opts.authHeader,
-        ...(this.opts.fetch !== undefined ? { fetch: this.opts.fetch } : {}),
-        ...(this.opts.backoff !== undefined ? { backoff: this.opts.backoff } : {}),
-      };
-      informer = new Informer<K>(clientOpts);
-      this.informers.set(kind, informer as Informer);
-    }
+    const existing = this.running.get(kind);
+    if (existing) return existing.informer as Informer<K>;
+    const stream = this.makeStream(kind);
+    const informer = new Informer<K>(stream);
+    this.running.set(kind, {
+      informer: informer as Informer,
+      controller: new AbortController(),
+      runPromise: null,
+    });
     return informer;
+  }
+
+  /**
+   * Start `run()` on all known kinds. Idempotent — already-started kinds
+   * are skipped. Caller is responsible for `stopAll()` (or aborting the
+   * parent signal) on shutdown.
+   */
+  startAll(): void {
+    for (const kind of ALL_KINDS) {
+      this.startKind(kind);
+    }
+  }
+
+  /**
+   * Abort all running informers. After this returns, the run() promises
+   * have settled and the factory is reusable.
+   */
+  async stopAll(): Promise<void> {
+    const promises: Promise<void>[] = [];
+    for (const r of this.running.values()) {
+      r.controller.abort();
+      if (r.runPromise) promises.push(r.runPromise.catch(() => undefined));
+    }
+    await Promise.all(promises);
+  }
+
+  /**
+   * Force a relist on a single kind (or all kinds when undefined). Aborts
+   * the current run, awaits its settlement, then starts a new run with a
+   * fresh AbortController.
+   */
+  async relist(kind?: WatchKind): Promise<void> {
+    const kinds: WatchKind[] = kind ? [kind] : [...ALL_KINDS];
+    for (const k of kinds) {
+      const r = this.running.get(k);
+      if (!r) continue;
+      r.controller.abort();
+      if (r.runPromise) await r.runPromise.catch(() => undefined);
+      r.controller = new AbortController();
+      r.runPromise = null;
+      this.startKind(k);
+    }
+  }
+
+  private startKind(kind: WatchKind): void {
+    let r = this.running.get(kind);
+    if (!r) {
+      this.informerFor(kind);
+      r = this.running.get(kind);
+      if (!r) throw new Error(`unreachable: informerFor(${kind}) did not register a running entry`);
+    }
+    if (r.runPromise) return;
+    r.runPromise = r.informer.run(r.controller.signal);
+  }
+
+  private makeStream(kind: WatchKind): WatchStream {
+    const opts = this.opts;
+    if (opts.mode === "remote") {
+      const clientOpts: WatchClientOptions = {
+        baseUrl: opts.baseUrl,
+        kind,
+        authHeader: opts.authHeader,
+        ...(opts.fetch !== undefined ? { fetch: opts.fetch } : {}),
+        ...(opts.backoff !== undefined ? { backoff: opts.backoff } : {}),
+      };
+      return new WatchClient(clientOpts);
+    }
+    return new LocalWatchClient({
+      hub: opts.hub,
+      kind,
+      namespace: opts.namespace,
+      listFn: () => opts.listFn(kind),
+    });
   }
 }

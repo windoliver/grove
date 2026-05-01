@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Informer, InformerFactory } from "./informer.js";
+import { WatchClient } from "./watch-client.js";
 import type { WatchEntity } from "./watch-events.js";
 
 // Minimal entity shapes (WatchClient passes them through as-is)
@@ -69,13 +70,15 @@ describe("Informer hasSynced", () => {
     const ac = new AbortController();
     let syncedDuringBegin = true; // assume true, set false when we see it
     const fetchImpl = makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac);
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: fetchImpl,
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: fetchImpl,
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     informer.addEventHandler((_op, _entity) => {
       // Only called after RELIST_END; check synced at first delta
       syncedDuringBegin = informer.hasSynced();
@@ -90,13 +93,15 @@ describe("Informer hasSynced", () => {
 
   test("hasSynced false until first RELIST_END even on empty list", async () => {
     const ac = new AbortController();
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: makeFetch({ items: [], listResourceVersion: "5" }, "", ac),
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: makeFetch({ items: [], listResourceVersion: "5" }, "", ac),
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     expect(informer.hasSynced()).toBe(false);
     await informer.run(ac.signal);
     expect(informer.hasSynced()).toBe(true);
@@ -108,13 +113,15 @@ describe("Informer hasSynced", () => {
 describe("Informer cache after initial sync", () => {
   test("list() returns all items from snapshot", async () => {
     const ac = new AbortController();
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: makeFetch({ items: [E_A, E_B], listResourceVersion: "5" }, "", ac),
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: makeFetch({ items: [E_A, E_B], listResourceVersion: "5" }, "", ac),
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     await informer.run(ac.signal);
     const items = informer.list();
     expect(items).toHaveLength(2);
@@ -124,13 +131,15 @@ describe("Informer cache after initial sync", () => {
 
   test("getById returns entity by id (O(1) lookup)", async () => {
     const ac = new AbortController();
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: makeFetch({ items: [E_A, E_B], listResourceVersion: "5" }, "", ac),
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: makeFetch({ items: [E_A, E_B], listResourceVersion: "5" }, "", ac),
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     await informer.run(ac.signal);
     expect((informer.getById("cid-a") as { id: string } | undefined)?.id).toBe("cid-a");
     expect(informer.getById("nonexistent")).toBeUndefined();
@@ -143,17 +152,19 @@ describe("Informer delta events", () => {
   test("ADDED delta: adds to cache, fires handler", async () => {
     const ac = new AbortController();
     const events: Array<{ op: string; id: string }> = [];
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: makeFetch(
-        { items: [], listResourceVersion: "5" },
-        sse("ADDED", { rv: "6", kind: "Contribution", entity: E_A }, "6"),
-        ac,
-      ),
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: makeFetch(
+          { items: [], listResourceVersion: "5" },
+          sse("ADDED", { rv: "6", kind: "Contribution", entity: E_A }, "6"),
+          ac,
+        ),
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     informer.addEventHandler((op, entity) => {
       events.push({ op, id: (entity as { id: string }).id });
       if (op === "ADDED") ac.abort();
@@ -166,17 +177,19 @@ describe("Informer delta events", () => {
   test("MODIFIED delta: updates cache, fires handler", async () => {
     const ac = new AbortController();
     const events: Array<{ op: string; id: string; rv: string }> = [];
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: makeFetch(
-        { items: [E_A], listResourceVersion: "5" },
-        sse("MODIFIED", { rv: "6", kind: "Contribution", entity: E_A_v2 }, "6"),
-        ac,
-      ),
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: makeFetch(
+          { items: [E_A], listResourceVersion: "5" },
+          sse("MODIFIED", { rv: "6", kind: "Contribution", entity: E_A_v2 }, "6"),
+          ac,
+        ),
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     informer.addEventHandler((op, entity) => {
       events.push({
         op,
@@ -195,17 +208,19 @@ describe("Informer delta events", () => {
   test("DELETED delta: removes from cache, fires handler", async () => {
     const ac = new AbortController();
     const events: Array<{ op: string; id: string }> = [];
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: makeFetch(
-        { items: [E_A], listResourceVersion: "5" },
-        sse("DELETED", { rv: "6", kind: "Contribution", entity: E_A }, "6"),
-        ac,
-      ),
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: makeFetch(
+          { items: [E_A], listResourceVersion: "5" },
+          sse("DELETED", { rv: "6", kind: "Contribution", entity: E_A }, "6"),
+          ac,
+        ),
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     informer.addEventHandler((op, entity) => {
       events.push({ op, id: (entity as { id: string }).id });
       if (op === "DELETED") ac.abort();
@@ -248,13 +263,15 @@ describe("Informer Replace reconciliation on relist", () => {
       throw new Error(`unexpected fetch ${url}`);
     }) as typeof fetch;
 
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: fetchImpl,
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: fetchImpl,
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     informer.addEventHandler((op, entity) => {
       events.push({ op, id: (entity as { id: string }).id });
     });
@@ -289,13 +306,15 @@ describe("Informer Replace reconciliation on relist", () => {
       return new Response("", { headers: { "Content-Type": "text/event-stream" } });
     }) as typeof fetch;
 
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: fetchImpl,
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: fetchImpl,
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     informer.addEventHandler((op, entity) => {
       events.push({ op, id: (entity as { id: string }).id });
     });
@@ -330,13 +349,15 @@ describe("Informer Replace reconciliation on relist", () => {
       return new Response("", { headers: { "Content-Type": "text/event-stream" } });
     }) as typeof fetch;
 
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: fetchImpl,
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: fetchImpl,
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     informer.addEventHandler((op, entity) => {
       events.push({
         op,
@@ -376,13 +397,15 @@ describe("Informer Replace reconciliation on relist", () => {
       return new Response("", { headers: { "Content-Type": "text/event-stream" } });
     }) as typeof fetch;
 
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: fetchImpl,
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: fetchImpl,
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     informer.addEventHandler((op, entity) => {
       events.push({ op, id: (entity as { id: string }).id });
     });
@@ -426,13 +449,15 @@ describe("Informer RELIST_ABORTED", () => {
       return new Response("", { headers: { "Content-Type": "text/event-stream" } });
     }) as typeof fetch;
 
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: fetchImpl,
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: fetchImpl,
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     await informer.run(ac.signal);
 
     // After abort mid-relist, cache still holds first synced state (E_A only)
@@ -451,17 +476,19 @@ describe("Informer multiple handlers", () => {
     const ac = new AbortController();
     const h1Events: string[] = [];
     const h2Events: string[] = [];
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: makeFetch(
-        { items: [E_A], listResourceVersion: "5" },
-        sse("ADDED", { rv: "6", kind: "Contribution", entity: E_B }, "6"),
-        ac,
-      ),
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: makeFetch(
+          { items: [E_A], listResourceVersion: "5" },
+          sse("ADDED", { rv: "6", kind: "Contribution", entity: E_B }, "6"),
+          ac,
+        ),
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     informer.addEventHandler((op, entity) => {
       h1Events.push(`${op}:${(entity as { id: string }).id}`);
       if (op === "ADDED" && (entity as { id: string }).id === "cid-b") ac.abort();
@@ -485,17 +512,19 @@ describe("Informer handler sees post-update cache", () => {
   test("handler called after cache update (getById returns new state)", async () => {
     const ac = new AbortController();
     let seenInHandler: { id: string; rv: string } | undefined;
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: makeFetch(
-        { items: [], listResourceVersion: "5" },
-        sse("ADDED", { rv: "6", kind: "Contribution", entity: E_A }, "6"),
-        ac,
-      ),
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: makeFetch(
+          { items: [], listResourceVersion: "5" },
+          sse("ADDED", { rv: "6", kind: "Contribution", entity: E_A }, "6"),
+          ac,
+        ),
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     informer.addEventHandler((op, entity) => {
       if (op === "ADDED") {
         const fromCache = informer.getById((entity as { id: string }).id);
@@ -520,6 +549,7 @@ describe("Informer handler sees post-update cache", () => {
 describe("InformerFactory memoization", () => {
   test("same instance returned for same kind", () => {
     const factory = new InformerFactory({
+      mode: "remote",
       baseUrl: "http://t",
       authHeader: "Bearer x",
     });
@@ -530,6 +560,7 @@ describe("InformerFactory memoization", () => {
 
   test("different instances for different kinds", () => {
     const factory = new InformerFactory({
+      mode: "remote",
       baseUrl: "http://t",
       authHeader: "Bearer x",
     });
@@ -542,8 +573,16 @@ describe("InformerFactory memoization", () => {
     // Each namespace gets its own factory (and its own authHeader that encodes
     // the namespace server-side). Two factories for different namespaces must
     // produce independent informers with no shared state.
-    const factoryNs1 = new InformerFactory({ baseUrl: "http://t", authHeader: "Bearer ns1-token" });
-    const factoryNs2 = new InformerFactory({ baseUrl: "http://t", authHeader: "Bearer ns2-token" });
+    const factoryNs1 = new InformerFactory({
+      mode: "remote",
+      baseUrl: "http://t",
+      authHeader: "Bearer ns1-token",
+    });
+    const factoryNs2 = new InformerFactory({
+      mode: "remote",
+      baseUrl: "http://t",
+      authHeader: "Bearer ns2-token",
+    });
     expect(factoryNs1.informerFor("Contribution")).not.toBe(factoryNs2.informerFor("Contribution"));
   });
 });
@@ -562,13 +601,15 @@ describe("Informer run() safety", () => {
       });
       throw new Error("unreachable");
     }) as unknown as typeof fetch;
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: fetchImpl,
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: fetchImpl,
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     // Start first run (will block waiting for list response)
     const firstRun = informer.run(ac.signal);
     // Second concurrent run must reject immediately
@@ -582,17 +623,19 @@ describe("Informer run() safety", () => {
     const ac = new AbortController();
     // Fetch: delivers one ADDED so the non-settling handler starts
     const fetchAc = new AbortController();
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: makeFetch(
-        { items: [], listResourceVersion: "5" },
-        sse("ADDED", { rv: "6", kind: "Contribution", entity: E_A }, "6"),
-        fetchAc,
-      ),
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: makeFetch(
+          { items: [], listResourceVersion: "5" },
+          sse("ADDED", { rv: "6", kind: "Contribution", entity: E_A }, "6"),
+          fetchAc,
+        ),
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     informer.addEventHandler(async () => {
       // Never resolves on its own
       await new Promise<void>(() => {
@@ -613,23 +656,27 @@ describe("Informer run() safety", () => {
 
   test("run() is reusable after completion", async () => {
     const ac1 = new AbortController();
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: makeFetch({ items: [], listResourceVersion: "5" }, "", ac1),
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: makeFetch({ items: [], listResourceVersion: "5" }, "", ac1),
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     await informer.run(ac1.signal);
     // First run completed — second run must be accepted (not throw)
     const ac2 = new AbortController();
-    const informer2 = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: makeFetch({ items: [], listResourceVersion: "5" }, "", ac2),
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer2 = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: makeFetch({ items: [], listResourceVersion: "5" }, "", ac2),
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     // Different instance, but proves the _running flag resets after completion
     await expect(informer2.run(ac2.signal)).resolves.toBeUndefined();
   });
@@ -641,13 +688,15 @@ describe("Informer handler isolation", () => {
   test("throwing handler does not prevent other handlers from receiving events", async () => {
     const ac = new AbortController();
     const received: string[] = [];
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     informer.addEventHandler(() => {
       throw new Error("handler boom");
     });
@@ -661,13 +710,15 @@ describe("Informer handler isolation", () => {
 
   test("throwing handler does not kill the watch loop (informer stays synced)", async () => {
     const ac = new AbortController();
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     informer.addEventHandler(() => {
       throw new Error("noisy handler");
     });
@@ -679,17 +730,19 @@ describe("Informer handler isolation", () => {
   test("unsubscribed handler no longer receives events", async () => {
     const ac = new AbortController();
     const received: string[] = [];
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: makeFetch(
-        { items: [], listResourceVersion: "5" },
-        sse("ADDED", { rv: "6", kind: "Contribution", entity: E_A }, "6"),
-        ac,
-      ),
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: makeFetch(
+          { items: [], listResourceVersion: "5" },
+          sse("ADDED", { rv: "6", kind: "Contribution", entity: E_A }, "6"),
+          ac,
+        ),
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     const unsubscribe = informer.addEventHandler((op, entity) => {
       received.push(`${op}:${(entity as { id: string }).id}`);
     });
@@ -703,17 +756,19 @@ describe("Informer handler isolation", () => {
     const ac = new AbortController();
     const afterUnsub: string[] = [];
     let unsub: (() => void) | undefined;
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: makeFetch(
-        { items: [E_A], listResourceVersion: "5" },
-        sse("ADDED", { rv: "6", kind: "Contribution", entity: E_B }, "6"),
-        ac,
-      ),
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: makeFetch(
+          { items: [E_A], listResourceVersion: "5" },
+          sse("ADDED", { rv: "6", kind: "Contribution", entity: E_B }, "6"),
+          ac,
+        ),
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     unsub = informer.addEventHandler((op, entity) => {
       const id = (entity as { id: string }).id;
       if (id === "cid-a") {
@@ -735,13 +790,15 @@ describe("Informer handler isolation", () => {
     const ac = new AbortController();
     const h2Events: string[] = [];
     let unsub: (() => void) | undefined;
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     unsub = informer.addEventHandler(() => {
       unsub?.(); // self-unsubscribe during first dispatch
     });
@@ -756,13 +813,15 @@ describe("Informer handler isolation", () => {
   test("async handler rejection does not become unhandled and does not skip next handler", async () => {
     const ac = new AbortController();
     const h2Events: string[] = [];
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     // Async handler that rejects — must not propagate as unhandled rejection
     informer.addEventHandler(async () => {
       throw new Error("async handler boom");
@@ -782,17 +841,19 @@ describe("Informer handler isolation", () => {
     const order: string[] = [];
     let resolveFirst: (() => void) | undefined;
 
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: makeFetch(
-        { items: [], listResourceVersion: "5" },
-        `${sse("ADDED", { rv: "6", kind: "Contribution", entity: E_A }, "6")}${sse("ADDED", { rv: "7", kind: "Contribution", entity: E_B }, "7")}`,
-        ac,
-      ),
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: makeFetch(
+          { items: [], listResourceVersion: "5" },
+          `${sse("ADDED", { rv: "6", kind: "Contribution", entity: E_A }, "6")}${sse("ADDED", { rv: "7", kind: "Contribution", entity: E_B }, "7")}`,
+          ac,
+        ),
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     informer.addEventHandler(async (op, entity) => {
       order.push(`enter:${(entity as { id: string }).id}`);
       if ((entity as { id: string }).id === "cid-a") {
@@ -820,13 +881,15 @@ describe("Informer handler isolation", () => {
 describe("Informer cache immutability", () => {
   test("mutating a returned entity does not corrupt cache (resourceVersion frozen)", async () => {
     const ac = new AbortController();
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     await informer.run(ac.signal);
     const entity = informer.getById("cid-a");
     expect(entity).toBeDefined();
@@ -843,13 +906,15 @@ describe("Informer cache immutability", () => {
 
   test("entities returned by list() are frozen", async () => {
     const ac = new AbortController();
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: makeFetch({ items: [E_A, E_B], listResourceVersion: "5" }, "", ac),
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: makeFetch({ items: [E_A, E_B], listResourceVersion: "5" }, "", ac),
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     await informer.run(ac.signal);
     for (const e of informer.list()) {
       expect(Object.isFrozen(e)).toBe(true);
@@ -858,13 +923,15 @@ describe("Informer cache immutability", () => {
 
   test("mutating nested spec field does not corrupt cache (deep freeze)", async () => {
     const ac = new AbortController();
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     await informer.run(ac.signal);
     const entity = informer.getById("cid-a");
     const origSummary = (entity as unknown as { spec: { summary: string } })?.spec?.summary;
@@ -881,13 +948,15 @@ describe("Informer cache immutability", () => {
 
   test("nested objects within entities are frozen (deep freeze)", async () => {
     const ac = new AbortController();
-    const informer = new Informer({
-      baseUrl: "http://t",
-      kind: "Contribution",
-      authHeader: "Bearer x",
-      fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
-      backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-    });
+    const informer = new Informer(
+      new WatchClient({
+        baseUrl: "http://t",
+        kind: "Contribution",
+        authHeader: "Bearer x",
+        fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
+        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+      }),
+    );
     await informer.run(ac.signal);
     const entity = informer.getById("cid-a") as unknown as { spec: object; metadata: object };
     expect(Object.isFrozen(entity)).toBe(true);
