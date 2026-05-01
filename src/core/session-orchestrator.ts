@@ -30,6 +30,8 @@ import {
 
 export type { WorkspaceIsolationPolicy, WorkspaceMode };
 
+const CONTRIBUTION_POLL_LIMIT = 200;
+
 /** Configuration for starting a session. */
 export interface SessionConfig {
   /** The session goal (what agents should accomplish). */
@@ -80,7 +82,12 @@ export interface SessionConfig {
    * with separate EventBus instances — in-process events don't cross.
    */
   readonly contributionStore?:
-    | { list(query?: { limit?: number }): Promise<readonly import("./models.js").Contribution[]> }
+    | {
+        list(query?: {
+          limit?: number;
+          order?: "created_at_asc" | "created_at_desc";
+        }): Promise<readonly import("./models.js").Contribution[]>;
+      }
     | undefined;
   /** Optional agent profiles — overlay role defaults with per-agent runtime config. */
   readonly profiles?: readonly AgentProfile[] | undefined;
@@ -298,13 +305,14 @@ export class SessionOrchestrator {
     const POLL_MS = 3_000;
     const INITIAL_DELAY_MS = 15_000; // wait for agents to go idle first
 
-    // Seed seenCids with ALL contributions that existed before session started.
-    // Use same limit as poll to ensure no gap between seed and first poll.
-    void this.config.contributionStore?.list({ limit: 1000 }).then((existing) => {
-      for (const c of existing) {
-        this.seenCids.add(c.cid);
-      }
-    });
+    // Seed seenCids with recent contributions that existed before session start.
+    void this.config.contributionStore
+      ?.list({ limit: CONTRIBUTION_POLL_LIMIT, order: "created_at_desc" })
+      .then((existing) => {
+        for (const c of existing) {
+          this.seenCids.add(c.cid);
+        }
+      });
 
     // Start polling after initial delay
     this.contributionPollStartTimer = setTimeout(() => {
@@ -322,10 +330,13 @@ export class SessionOrchestrator {
     if (this.stopped || !this.config.contributionStore) return;
 
     try {
-      // Fetch recent contributions (newest first via DESC, then reverse for processing order).
+      // Fetch recent contributions newest-first, then process oldest-to-newest.
       // Using a large limit ensures we don't miss contributions in active sessions.
-      const contributions = await this.config.contributionStore.list({ limit: 200 });
-      for (const c of contributions) {
+      const contributions = await this.config.contributionStore.list({
+        limit: CONTRIBUTION_POLL_LIMIT,
+        order: "created_at_desc",
+      });
+      for (const c of [...contributions].reverse()) {
         if (this.seenCids.has(c.cid)) continue;
 
         const sourceRole = c.agent.role;

@@ -24,6 +24,7 @@ import { createContribution } from "../core/manifest.js";
 import type { ContributionInput } from "../core/models.js";
 import { ContributionKind, ContributionMode } from "../core/models.js";
 import { makeAgent } from "../core/test-helpers.js";
+import { InMemoryContributionStore } from "../core/testing.js";
 import type { WorkspaceTestContext } from "../core/workspace.conformance.js";
 import { runWorkspaceManagerTests } from "../core/workspace.conformance.js";
 import { WorkspaceStatus } from "../core/workspace.js";
@@ -273,7 +274,7 @@ describe("LocalWorkspaceManager implementation", () => {
     await mkdir(groveRoot, { recursive: true });
 
     const db = initSqliteDb(dbPath);
-    const contributionStore = new SqliteContributionStore(db);
+    const contributionStore = new InMemoryContributionStore();
     const cas = new FsCas(casRoot);
 
     const manager = new LocalWorkspaceManager({
@@ -297,7 +298,10 @@ describe("LocalWorkspaceManager implementation", () => {
         agent: makeAgent(),
         createdAt: new Date().toISOString(),
       };
-      const contribution = createContribution(input);
+      const contribution = {
+        ...createContribution({ ...input, artifacts: {} }),
+        artifacts: input.artifacts,
+      };
       await contributionStore.put(contribution);
 
       // Checkout should reject the malicious hash format

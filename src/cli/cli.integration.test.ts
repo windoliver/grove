@@ -50,6 +50,27 @@ describe("grove CLI integration", () => {
     return { stdout, stderr, exitCode };
   }
 
+  async function runGroveFrom(
+    args: string[],
+    cwd: string,
+  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+    const proc = Bun.spawn(
+      ["bun", join(import.meta.dir, "main.ts"), "--grove", groveDir, ...args],
+      {
+        cwd,
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { ...process.env, GROVE_AGENT_ID: "test-agent" },
+      },
+    );
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    const exitCode = await proc.exited;
+    return { stdout, stderr, exitCode };
+  }
+
   test("grove --help shows usage", async () => {
     const { stdout, exitCode } = await runGrove(["--help"]);
     expect(exitCode).toBe(0);
@@ -93,6 +114,22 @@ describe("grove CLI integration", () => {
     const expiredResult = await runGrove(["claims", "--expired"]);
     expect(expiredResult.exitCode).toBe(0);
     expect(expiredResult.stdout).toContain("my-target");
+  });
+
+  test("grove contribute honors global --grove when cwd has no .grove", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "grove-cli-outside-"));
+    try {
+      const result = await runGroveFrom(
+        ["contribute", "--summary", "global override contribution", "--json"],
+        outside,
+      );
+
+      expect(result.exitCode).toBe(0);
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.cid).toMatch(/^blake3:[0-9a-f]{64}$/);
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 
   test("grove release --completed marks claim as completed", async () => {

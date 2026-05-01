@@ -114,7 +114,7 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       needsStore: false,
       handler: async (args) => {
         const { handleContribute } = await import("./commands/contribute.js");
-        await handleContribute(args);
+        await handleContribute(args, groveOverride);
       },
     },
     {

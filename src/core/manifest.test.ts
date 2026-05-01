@@ -31,7 +31,9 @@ const FULL_INPUT: ContributionInput = {
   mode: ContributionMode.Evaluation,
   summary: "Vectorized inner loop with numpy",
   description: "Replaced naive Python loop with vectorized numpy operations",
-  artifacts: { "train.py": "blake3:deed456deed456deed456deed456deed456deed456deed456deed456deed" },
+  artifacts: {
+    "train.py": "blake3:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  },
   relations: [
     {
       targetCid: "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -80,7 +82,7 @@ describe("computeCid", () => {
 
     test("full contribution produces expected CID", () => {
       const cid = computeCid(FULL_INPUT);
-      expect(cid).toBe("blake3:6fca516148f194a547c81939baf6d4c77a56267374c2fbc90d7bc63cf22e79cb");
+      expect(cid).toBe("blake3:444e12b01db536d1a8a72f336c46ec4620ed71981c1a6e1e4ce0c351fe512536");
     });
 
     test("exploration contribution produces expected CID", () => {
@@ -192,6 +194,44 @@ describe("computeCid", () => {
   });
 
   describe("input validation", () => {
+    test("accepts safe artifact names emitted by git-tree ingestion", () => {
+      const input: ContributionInput = {
+        ...MINIMAL_INPUT,
+        artifacts: {
+          ".gitignore": "blake3:1111111111111111111111111111111111111111111111111111111111111111",
+          ".github/workflows/ci.yml":
+            "blake3:2222222222222222222222222222222222222222222222222222222222222222",
+          " leading and trailing .txt ":
+            "blake3:3333333333333333333333333333333333333333333333333333333333333333",
+        },
+      };
+
+      expect(() => createContribution(input)).not.toThrow();
+    });
+
+    test("rejects artifact names with traversal components", () => {
+      const input: ContributionInput = {
+        ...MINIMAL_INPUT,
+        artifacts: {
+          "../outside.txt":
+            "blake3:1111111111111111111111111111111111111111111111111111111111111111",
+        },
+      };
+
+      expect(() => createContribution(input)).toThrow();
+    });
+
+    test("rejects artifact hashes that are not canonical CIDs", () => {
+      const input: ContributionInput = {
+        ...MINIMAL_INPUT,
+        artifacts: {
+          "safe.txt": "not-a-cid",
+        },
+      };
+
+      expect(() => createContribution(input)).toThrow();
+    });
+
     test("rejects Date in context", () => {
       const input = {
         ...MINIMAL_INPUT,

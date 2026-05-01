@@ -113,10 +113,9 @@ export async function assertWithinBoundary(
  * Validate an artifact name/path for safe filesystem use.
  *
  * Per the Grove spec (PROTOCOL.md §Artifact Name Constraints):
- * - Keys must start with an alphanumeric character
  * - Contain only `a-zA-Z0-9._/ -` (forward slashes allowed for relative paths)
  * - Be 1-256 characters long
- * - MUST NOT contain `..` path components
+ * - MUST NOT contain `.` or `..` path components
  *
  * Backslashes, colons, null bytes, and other reserved characters are rejected.
  *
@@ -141,20 +140,23 @@ export function validateArtifactName(name: string): string {
     throw new ArtifactNameError(name, "artifact name must not contain null bytes");
   }
 
-  // Must start with alphanumeric (per spec pattern)
-  if (!/^[a-zA-Z0-9]/.test(name)) {
-    throw new ArtifactNameError(name, "artifact name must start with an alphanumeric character");
-  }
-
   // Only allow spec-permitted characters: a-zA-Z0-9._/ - (space)
   // Reject backslashes, colons, and other reserved characters
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9._/ -]*$/.test(name)) {
+  if (!/^[a-zA-Z0-9._/ -]+$/.test(name)) {
     throw new ArtifactNameError(name, "artifact name may only contain a-zA-Z0-9._/ - (per spec)");
   }
 
   // Reject `..` path components (path traversal)
   if (TRAVERSAL_COMPONENT.test(name)) {
     throw new ArtifactNameError(name, "artifact name must not contain '..' path components");
+  }
+
+  const components = name.split("/");
+  if (components.some((component) => component.length === 0)) {
+    throw new ArtifactNameError(name, "artifact name must not contain empty path components");
+  }
+  if (components.some((component) => component === ".")) {
+    throw new ArtifactNameError(name, "artifact name must not contain '.' path components");
   }
 
   // Absolute path injection

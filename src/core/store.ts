@@ -55,6 +55,7 @@ export interface ContributionQuery {
   readonly platform?: string | undefined;
   readonly limit?: number | undefined;
   readonly offset?: number | undefined;
+  readonly order?: "created_at_asc" | "created_at_desc" | undefined;
   /** When set, only return contributions linked to this session. */
   readonly sessionId?: string | undefined;
 }

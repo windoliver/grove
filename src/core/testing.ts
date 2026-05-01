@@ -75,6 +75,10 @@ export class InMemoryContributionStore implements ContributionStore {
     if (query?.platform !== undefined) {
       results = results.filter((c) => c.agent.platform === query.platform);
     }
+    results.sort((a, b) => {
+      const comparison = a.createdAt.localeCompare(b.createdAt);
+      return query?.order === "created_at_desc" ? -comparison : comparison;
+    });
     if (query?.offset !== undefined) {
       results = results.slice(query.offset);
     }
