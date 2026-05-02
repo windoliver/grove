@@ -73,6 +73,54 @@ export function useInformer<K extends WatchKind>(kind: K): Informer<K> {
 }
 
 /**
+ * No-op informer used when no `<InformerProvider>` is mounted (e.g. backend
+ * mode = "nexus" where the factory wasn't constructed). Returns empty list,
+ * `hasSynced=false`, and no-op event subscribers — so callers reading from
+ * the cache get nothing and the dual-path views fall back to `usePolledData`.
+ *
+ * `useInformerOptional` returns this stub when the context is null, which
+ * keeps React hook order stable in views that mount under both wrapped and
+ * unwrapped trees (the migrated PR2 views).
+ */
+function createNullInformer<K extends WatchKind>(): Informer<K> {
+  // The stub is mounted only when no provider is in scope; subscribers
+  // never fire so the unsubscribe is a no-op.
+  const unsubNoop = (): void => undefined;
+  const noop = (): (() => void) => unsubNoop;
+  return {
+    addEventHandler: noop,
+    addSyncHandler: noop,
+    hasSynced: () => false,
+    getById: () => undefined,
+    list: () => [],
+  } as unknown as Informer<K>;
+}
+
+const NULL_INFORMER_CACHE = new Map<WatchKind, Informer<WatchKind>>();
+function nullInformerFor<K extends WatchKind>(kind: K): Informer<K> {
+  let stub = NULL_INFORMER_CACHE.get(kind);
+  if (!stub) {
+    stub = createNullInformer<K>() as Informer<WatchKind>;
+    NULL_INFORMER_CACHE.set(kind, stub);
+  }
+  return stub as Informer<K>;
+}
+
+/**
+ * Non-throwing variant of `useInformer`. Returns a no-op informer when no
+ * provider is mounted OR when the factory's mode doesn't support the kind.
+ * Use this in views with a `usePolledData` fallback so React hook order
+ * stays stable across both code paths.
+ */
+export function useInformerOptional<K extends WatchKind>(kind: K): Informer<K> {
+  const factory = useContext(InformerContext);
+  if (!factory || !factory.supportsKind(kind)) {
+    return nullInformerFor(kind);
+  }
+  return factory.informerFor(kind);
+}
+
+/**
  * Holder for a factory that's not yet known at provider mount time —
  * needed by the interactive TUI flow (TuiApp) where the factory is
  * created inside async onInit/onStart/onConnect callbacks AFTER the

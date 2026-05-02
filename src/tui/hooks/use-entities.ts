@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Informer } from "../../core/informer.js";
 import type { WatchKind } from "../../core/watch-events.js";
-import { useInformer, useInformerFactory } from "./informer-context.js";
+import { useInformerFactoryOptional, useInformerOptional } from "./informer-context.js";
 
 export function shallowArraysEqual<T>(a: readonly T[], b: readonly T[]): boolean {
   if (a === b) return true;
@@ -43,8 +43,8 @@ export function useEntities<K extends WatchKind>(
   kind: K,
   predicate?: (e: EntityFor<K>) => boolean,
 ): UseEntitiesResult<EntityFor<K>> {
-  const informer = useInformer(kind);
-  const factory = useInformerFactory();
+  const informer = useInformerOptional(kind);
+  const factory = useInformerFactoryOptional();
   const predicateRef = useRef(predicate);
 
   const initial = useMemo<readonly EntityFor<K>[]>(() => {
@@ -63,7 +63,9 @@ export function useEntities<K extends WatchKind>(
   // Stream errors come from the factory's error listener — owned by the
   // watch lifecycle (4xx, listFn throw, etc). Cleared only when the factory
   // fires `null` (proven recovery: first RELIST_END after restart).
-  const [streamError, setStreamError] = useState<Error | null>(() => factory.getLastError(kind));
+  const [streamError, setStreamError] = useState<Error | null>(() =>
+    factory ? factory.getLastError(kind) : null,
+  );
   // Compute errors come from the predicate function throwing during a
   // recompute. Cleared on the next successful recompute. Kept separate so
   // recompute-after-stale-sync can't erase a stream error owned by the
@@ -119,6 +121,14 @@ export function useEntities<K extends WatchKind>(
     const unsubSync = informer.addSyncHandler(recompute);
     // Surface terminal informer.run() failures (remote 4xx, listFn throw)
     // so consumers don't sit at hasSynced=false with no diagnostic.
+    // When no provider is mounted, the informer is the null stub — there
+    // are no real errors to subscribe to, so skip the error wiring.
+    if (!factory) {
+      return () => {
+        unsubEvent();
+        unsubSync();
+      };
+    }
     const unsubError = factory.addErrorListener((errKind, err) => {
       if (errKind !== kind) return;
       setStreamError(err);
