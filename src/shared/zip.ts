@@ -61,7 +61,7 @@ export function createStoredZip(entries: readonly ZipEntryInput[]): Uint8Array {
       throw new Error(`zip entry path is too long: ${entry.path}`);
     }
     if (entry.bytes.length > MAX_ZIP32) {
-      throw new Error(`zip entry exceeds ZIP32 size limit: ${entry.path}`);
+      throw new Error(`zip entry exceeds ZIP32 size limit: ${entry.path}; retry with --exclude-db`);
     }
     if (offset > MAX_ZIP32) {
       throw new Error("zip archive exceeds ZIP32 offset limit; retry with --exclude-db");
@@ -146,6 +146,8 @@ function validateEntryPath(path: string): void {
     path.length === 0 ||
     path.startsWith("/") ||
     path.startsWith("\\") ||
+    /^[A-Za-z]:\//.test(path) ||
+    path.endsWith("/") ||
     path.includes("..") ||
     path.includes("\\")
   ) {

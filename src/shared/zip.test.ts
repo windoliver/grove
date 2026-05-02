@@ -75,8 +75,25 @@ describe("createStoredZip", () => {
     expect(() => createStoredZip([{ path: "/abs.txt", bytes: new Uint8Array() }])).toThrow(
       /unsafe zip entry/i,
     );
+    expect(() => createStoredZip([{ path: "C:/abs.txt", bytes: new Uint8Array() }])).toThrow(
+      /unsafe zip entry/i,
+    );
     expect(() => createStoredZip([{ path: "../up.txt", bytes: new Uint8Array() }])).toThrow(
       /unsafe zip entry/i,
+    );
+  });
+
+  test("rejects directory entries", () => {
+    expect(() => createStoredZip([{ path: "dir/", bytes: new Uint8Array() }])).toThrow(
+      /unsafe zip entry/i,
+    );
+  });
+
+  test("recommends excluding the database when an entry exceeds ZIP32 limits", () => {
+    const oversizedBytes = { length: 0x100000000 } as unknown as Uint8Array;
+
+    expect(() => createStoredZip([{ path: "db.sqlite", bytes: oversizedBytes }])).toThrow(
+      /--exclude-db/,
     );
   });
 });
