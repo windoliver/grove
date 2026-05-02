@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -87,11 +87,12 @@ export async function runDiagnostics(
   const projectRoot = resolve(groveDir, "..");
   const generatedAt = deps.generatedAt ?? new Date().toISOString();
   const outPath = resolveOutputPath(deps.cwd, options.out, generatedAt);
+  const packageVersion = await readPackageVersion();
 
   const result = await buildDiagnosticsEntries({
     projectRoot,
     groveDir,
-    packageVersion: FALLBACK_PACKAGE_VERSION,
+    packageVersion,
     generatedAt,
     scrubMode: options.scrubMode,
     excludeDb: options.excludeDb,
@@ -113,7 +114,7 @@ export async function runDiagnostics(
 
 function resolveDiagnosticsGroveDir(cwd: string, groveOverride: string | undefined): string {
   if (groveOverride !== undefined) {
-    return resolveGroveDir(groveOverride).groveDir;
+    return resolveGroveDir(resolve(cwd, groveOverride)).groveDir;
   }
 
   const groveDir = findGroveDir(cwd);
@@ -136,4 +137,26 @@ function formatTimestamp(generatedAt: string): string {
 
 function isScrubMode(value: string): value is ScrubMode {
   return SCRUB_MODES.includes(value as ScrubMode);
+}
+
+async function readPackageVersion(): Promise<string> {
+  try {
+    const pkgPath = join(import.meta.dir, "../../../package.json");
+    const parsed: unknown = JSON.parse(await readFile(pkgPath, "utf8"));
+    if (isPackageJsonWithVersion(parsed)) {
+      return parsed.version;
+    }
+  } catch {
+    return FALLBACK_PACKAGE_VERSION;
+  }
+  return FALLBACK_PACKAGE_VERSION;
+}
+
+function isPackageJsonWithVersion(value: unknown): value is { readonly version: string } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "version" in value &&
+    typeof value.version === "string"
+  );
 }

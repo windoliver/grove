@@ -108,18 +108,49 @@ describe("runDiagnostics", () => {
     expect(existsSync(expectedOut)).toBe(true);
     expect(lines).toContain(`Diagnostics bundle written: ${expectedOut}`);
   });
+
+  it("resolves relative grove override from injected cwd", async () => {
+    const cwd = makeTempDir("override-parent");
+    const projectRoot = join(cwd, "child");
+    const groveDir = join(projectRoot, ".grove");
+    mkdirSync(groveDir, { recursive: true });
+    initSqliteDb(join(groveDir, "grove.db")).close();
+    const out = join(cwd, "bundle.zip");
+
+    await runDiagnostics(
+      {
+        excludeDb: false,
+        scrubMode: "standard",
+        out,
+      },
+      {
+        cwd,
+        groveOverride: "child",
+        env: {},
+        generatedAt: "2026-05-02T12:30:00.000Z",
+        systemRunner: fakeSystemRunner,
+      },
+    );
+
+    expect(existsSync(out)).toBe(true);
+  });
 });
 
 function createTempGrove(name: string): TestGrove {
+  const projectRoot = makeTempDir(name);
+  const groveDir = join(projectRoot, ".grove");
+  mkdirSync(groveDir, { recursive: true });
+  initSqliteDb(join(groveDir, "grove.db")).close();
+  return { projectRoot, groveDir };
+}
+
+function makeTempDir(name: string): string {
   const projectRoot = join(
     tmpdir(),
     `grove-diagnostics-${name}-${Date.now().toString()}-${Math.random().toString(36).slice(2)}`,
   );
   tempRoots.push(projectRoot);
-  const groveDir = join(projectRoot, ".grove");
-  mkdirSync(groveDir, { recursive: true });
-  initSqliteDb(join(groveDir, "grove.db")).close();
-  return { projectRoot, groveDir };
+  return projectRoot;
 }
 
 const fakeSystemRunner: ProbeRunner = async (command) => ({
