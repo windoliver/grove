@@ -39,6 +39,15 @@ export interface PublishResult {
 /** Callback for event subscriptions. */
 export type EventHandler = (event: GroveEvent) => void;
 
+/**
+ * Pseudo-role used by producer events that target the TUI fan-out path.
+ *
+ * Producers (file watcher, ACP listener, GitHub poller) publish with
+ * `targetRole: TUI_REFRESH_ROLE` so the App-level subscription bumps the
+ * global RefreshContext signal, which re-fetches every event-driven panel.
+ */
+export const TUI_REFRESH_ROLE = "tui";
+
 /** Event bus for ephemeral agent notifications. */
 export interface EventBus {
   /** Publish an event. Returns delivery result with optional IPC message ID. */

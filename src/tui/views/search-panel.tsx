@@ -11,9 +11,11 @@
  *
  * PR2 (#388): the empty-query branch ("showing recent contributions")
  * reads from the informer cache via `useEntities("Contribution")` when a
- * factory is mounted. Full-text search (`searchQuery !== ""`) stays on
- * `usePolledData` until PR4 — the search backend isn't projected through
- * the watch protocol.
+ * factory is mounted.
+ * PR4 (#390): full-text search (`searchQuery !== ""`) migrates from
+ * `usePolledData` to `useEventDrivenData` — the search backend isn't
+ * projected through the watch protocol but re-runs on the global refresh
+ * fan-out (any contribution event invalidates the result set).
  */
 
 import React, { useCallback, useEffect, useMemo } from "react";
@@ -25,14 +27,15 @@ import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
 import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useEntities } from "../hooks/use-entities.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import { isSearchProvider, type TuiArtifactProvider, type TuiDataProvider } from "../provider.js";
 import { theme } from "../theme.js";
 
 /** Props for the SearchPanel view. */
 export interface SearchPanelProps {
   readonly provider: TuiDataProvider;
-  readonly intervalMs: number;
+  /** Unused after A8.4 migration to useEventDrivenData; kept for caller-stability. */
+  readonly intervalMs?: number;
   readonly active: boolean;
   readonly cursor: number;
   readonly searchQuery: string;
@@ -122,7 +125,6 @@ function entityToContribution(e: ContributionEntity): Contribution {
 export const SearchPanelView: React.NamedExoticComponent<SearchPanelProps> = React.memo(
   function SearchPanelView({
     provider,
-    intervalMs,
     active,
     cursor,
     searchQuery,
@@ -150,9 +152,10 @@ export const SearchPanelView: React.NamedExoticComponent<SearchPanelProps> = Rea
       return (provider as TuiDataProvider & TuiArtifactProvider).search(searchQuery);
     }, [provider, searchQuery, hasSearch]);
 
-    const polled = usePolledData<readonly Contribution[]>(
+    const driven = useEventDrivenData<readonly Contribution[]>(
       fetcher,
-      intervalMs,
+      undefined,
+      undefined,
       active && !useInformerPath,
     );
 
@@ -163,14 +166,14 @@ export const SearchPanelView: React.NamedExoticComponent<SearchPanelProps> = Rea
         );
         return sorted.slice(0, RECENT_LIMIT).map(entityToContribution);
       }
-      return polled.data ?? undefined;
-    }, [useInformerPath, entityResult.data, polled.data]);
+      return driven.data ?? undefined;
+    }, [useInformerPath, entityResult.data, driven.data]);
 
     const loading = useInformerPath
       ? !entityResult.hasSynced && data === undefined
-      : polled.loading;
-    const isStale = useInformerPath ? false : polled.isStale;
-    const error = useInformerPath ? entityResult.error : polled.error;
+      : driven.loading;
+    const isStale = useInformerPath ? false : driven.isStale;
+    const error = useInformerPath ? entityResult.error : driven.error;
 
     useEffect(() => {
       if (data && onRowCountChanged) {

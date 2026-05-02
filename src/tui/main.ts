@@ -483,6 +483,44 @@ async function buildAppProps(
     }
   }
 
+  // A8.4 (#390): when an EventBus exists and we have a local groveDir,
+  // start the producer-side VFS watcher. It publishes coarse `vfs.changed`
+  // events into the bus, which the App-level subscription forwards to the
+  // global RefreshContext — vfs-browser and artifact-preview re-fetch
+  // without their own setInterval.
+  if (eventBus && groveDir) {
+    const { startVfsEventPublisher } = await import("../local/vfs-event-publisher.js");
+    const handle = startVfsEventPublisher({ eventBus, groveDir });
+    stopCallbacks.push(handle.stop);
+  }
+
+  // A8.4 (#390): producer-side `agent.output` publisher for tmux-managed
+  // sessions. ACPX-streamed sessions already publish `acp.message` events
+  // via `nexus-agent-publisher`; this watcher covers the tmux fan-out so
+  // terminal/agent-list panels stop polling.
+  if (eventBus && tmux) {
+    const { startAgentOutputPublisher } = await import("../local/agent-output-publisher.js");
+    const handle = startAgentOutputPublisher({ eventBus, tmux });
+    stopCallbacks.push(handle.stop);
+  }
+
+  // A8.4 (#390): producer-side `github.pr.changed` publisher for the
+  // github-panel. Polls the GitHub API at the producer level so the panel
+  // doesn't need its own setInterval. Real deployments should swap this
+  // for webhook ingest; the bus contract stays identical.
+  if (eventBus) {
+    const { isGitHubProvider } = await import("./provider.js");
+    if (isGitHubProvider(provider)) {
+      const ghProvider = provider;
+      const { startGitHubPrPublisher } = await import("../local/github-pr-publisher.js");
+      const handle = startGitHubPrPublisher({
+        eventBus,
+        getActivePR: () => ghProvider.getActivePR(),
+      });
+      stopCallbacks.push(handle.stop);
+    }
+  }
+
   // Construct InformerFactory for the SSE-driven cache (#295).
   //
   // Remote mode targets the grove-server watch routes (`/api/list`,

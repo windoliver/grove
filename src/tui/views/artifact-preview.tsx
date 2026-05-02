@@ -10,7 +10,7 @@
 
 import React, { createElement, useCallback, useMemo } from "react";
 import { DataStatus } from "../components/data-status.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { ArtifactMeta, TuiArtifactProvider, TuiDataProvider } from "../provider.js";
 import { theme } from "../theme.js";
 
@@ -246,7 +246,8 @@ export interface ArtifactPreviewProps {
   readonly parentCid?: string | undefined;
   /** Whether to show diff view instead of content view. */
   readonly showDiff?: boolean | undefined;
-  readonly intervalMs: number;
+  /** Unused after A8.4 migration to useEventDrivenData; kept for caller-stability. */
+  readonly intervalMs?: number;
   readonly active: boolean;
 }
 
@@ -264,7 +265,6 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
     artifactIndex,
     parentCid,
     showDiff,
-    intervalMs,
     active,
   }: ArtifactPreviewProps): React.ReactNode {
     const artifactProvider = provider.capabilities.artifacts
@@ -283,9 +283,10 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
       return { meta, content };
     }, [artifactProvider, cid, artifactName]);
 
-    const { data, loading, error, isStale } = usePolledData<ArtifactData | undefined>(
+    const { data, loading, error, isStale } = useEventDrivenData<ArtifactData | undefined>(
       fetcher,
-      intervalMs,
+      undefined,
+      undefined,
       active,
     );
 
@@ -300,10 +301,11 @@ export const ArtifactPreviewView: React.NamedExoticComponent<ArtifactPreviewProp
       data: diffData,
       loading: diffLoading,
       error: diffError,
-    } = usePolledData<DiffData | undefined>(
+    } = useEventDrivenData<DiffData | undefined>(
       diffFetcher,
-      intervalMs,
-      active && showDiff && parentCid !== undefined,
+      undefined,
+      undefined,
+      active && showDiff === true && parentCid !== undefined,
     );
 
     // Build artifact selector header

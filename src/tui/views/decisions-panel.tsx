@@ -11,13 +11,14 @@ import { formatTimestamp } from "../../shared/format.js";
 import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { PendingQuestion, TuiAskUserProvider, TuiDataProvider } from "../provider.js";
 
 /** Props for the DecisionsPanel view. */
 export interface DecisionsPanelProps {
   readonly provider: TuiDataProvider;
-  readonly intervalMs: number;
+  /** Unused after A8.4 migration to useEventDrivenData; kept for caller-stability. */
+  readonly intervalMs?: number;
   readonly active: boolean;
   readonly cursor: number;
   readonly onRowCountChanged?: ((count: number) => void) | undefined;
@@ -50,7 +51,6 @@ function hasAskUser(provider: TuiDataProvider): provider is TuiDataProvider & Tu
 export const DecisionsPanelView: React.NamedExoticComponent<DecisionsPanelProps> = React.memo(
   function DecisionsPanelView({
     provider,
-    intervalMs,
     active,
     cursor,
     onRowCountChanged,
@@ -75,9 +75,10 @@ export const DecisionsPanelView: React.NamedExoticComponent<DecisionsPanelProps>
       }));
     }, [provider, supportsAskUser]);
 
-    const { data, loading, isStale, error } = usePolledData<readonly DecisionRow[]>(
+    const { data, loading, isStale, error } = useEventDrivenData<readonly DecisionRow[]>(
       fetcher,
-      intervalMs,
+      undefined,
+      undefined,
       active,
     );
 
