@@ -25,6 +25,64 @@ export function truncateCid(cid: string, length = 12): string {
   return `${prefix}${cid.slice(prefix.length, prefix.length + length)}..`;
 }
 
+/** Compare two ISO timestamps chronologically (parses to ms epoch).
+ *
+ *  Lexicographic comparison only works for normalized UTC strings; manifest
+ *  entries can carry timezone offsets like `+05:00` that would otherwise
+ *  sort wrong (e.g. `2026-01-02T00:00:00+05:00` is chronologically
+ *  EARLIER than `2026-01-01T20:00:00Z` despite sorting after as a string).
+ *  Returns negative when `a` is older, positive when `a` is newer, 0 when
+ *  equal (or both unparseable). Invalid/missing inputs sort LAST in
+ *  ascending order so bad timestamps don't displace real data from a
+ *  "newest" or "oldest" cap.
+ */
+export function compareTimestamps(a: string | undefined, b: string | undefined): number {
+  const ta = a ? Date.parse(a) : Number.NaN;
+  const tb = b ? Date.parse(b) : Number.NaN;
+  const aBad = Number.isNaN(ta);
+  const bBad = Number.isNaN(tb);
+  if (aBad && bBad) return 0;
+  if (aBad) return 1;
+  if (bBad) return -1;
+  return ta - tb;
+}
+
+/** Descending chronological compare (newest first). Critically, invalid /
+ *  missing timestamps still sort LAST — naively passing args reversed to
+ *  `compareTimestamps` would invert the NaN policy and let bad-timestamp
+ *  rows displace real recent contributions in a slice(0, N) cap.
+ */
+export function compareTimestampsDesc(a: string | undefined, b: string | undefined): number {
+  const ta = a ? Date.parse(a) : Number.NaN;
+  const tb = b ? Date.parse(b) : Number.NaN;
+  const aBad = Number.isNaN(ta);
+  const bBad = Number.isNaN(tb);
+  if (aBad && bBad) return 0;
+  if (aBad) return 1;
+  if (bBad) return -1;
+  return tb - ta;
+}
+
+/** Ascending chronological compare with invalid-FIRST semantics — for
+ *  callers like the running feed where the TAIL has special meaning
+ *  (auto-follow targets `arr.length - 1` as "newest"). The default
+ *  `compareTimestamps` puts invalids last in ASC, which would let a
+ *  malformed-timestamp row steal the cursor's "newest" focus.
+ */
+export function compareTimestampsAscNewestLast(
+  a: string | undefined,
+  b: string | undefined,
+): number {
+  const ta = a ? Date.parse(a) : Number.NaN;
+  const tb = b ? Date.parse(b) : Number.NaN;
+  const aBad = Number.isNaN(ta);
+  const bBad = Number.isNaN(tb);
+  if (aBad && bBad) return 0;
+  if (aBad) return -1;
+  if (bBad) return 1;
+  return ta - tb;
+}
+
 /** Format an ISO timestamp as a short relative or absolute string. */
 export function formatTimestamp(iso: string): string {
   const date = new Date(iso);

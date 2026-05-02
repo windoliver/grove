@@ -3,6 +3,14 @@
  *
  * Shows frontier entries from all dimensions (byMetric, byAdoption,
  * byRecency, byReviewScore, byReproduction) as a flat ranked table.
+ *
+ * PR3 (#389): Frontier itself is server-computed (scoring + ranking) and
+ * does not flow through the watch protocol, so the data source remains
+ * `usePolledData(getFrontier)`. We layer `useDerived` over the projection
+ * step so the flattened ranking memoizes against the Contribution informer
+ * — recomputes happen only on Contribution events and equality is
+ * structural. We also kick a polled refresh on Contribution events so the
+ * underlying Frontier doesn't lag the cache by an interval.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef } from "react";
@@ -11,6 +19,8 @@ import { truncateCid } from "../../shared/format.js";
 import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
+import { useEntityWatchEnabled, useInformerOptional } from "../hooks/informer-context.js";
+import { useDerived } from "../hooks/use-derived.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
 import { theme } from "../theme.js";
@@ -95,6 +105,29 @@ function flattenFrontier(frontier: Frontier): readonly FrontierRow[] {
   return rows;
 }
 
+/** Structural equality across the flattened-frontier projection. Used as the
+ *  `equals` for `useDerived` so a recompute that produces the same ranks +
+ *  values + summaries doesn't trigger a re-render. */
+export function flatRowsEqual(a: readonly FrontierRow[], b: readonly FrontierRow[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const ra = a[i] as FrontierRow;
+    const rb = b[i] as FrontierRow;
+    if (
+      ra.rank !== rb.rank ||
+      ra.cid !== rb.cid ||
+      ra.metric !== rb.metric ||
+      ra.dimensionKey !== rb.dimensionKey ||
+      ra.value !== rb.value ||
+      ra.summary !== rb.summary
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /** Format a numeric value for display (handles large timestamps, decimals, etc.). */
 function formatValue(value: number): string {
   if (Number.isInteger(value) && value > 1_000_000_000_000) {
@@ -130,11 +163,91 @@ export const FrontierView: React.NamedExoticComponent<FrontierViewProps> = React
     // Enter-key handling that calls it lives in app.tsx.
     void onCompareSelect;
 
-    const fetcher = useCallback(() => provider.getFrontier(), [provider]);
-    const { data, loading, isStale, error } = usePolledData<Frontier>(fetcher, intervalMs, active);
+    // Race guard for getFrontier(): on a relist or burst, multiple refresh()
+    // calls fan out concurrent fetches. Without sequencing, a slower-older
+    // response can land after a newer one and overwrite fresh data with
+    // stale. Track the latest in-flight promise; older fetches (success OR
+    // rejection) defer to the newer's eventual outcome so dispatch order
+    // doesn't matter.
+    const latestFetchRef = useRef<Promise<Frontier> | null>(null);
+    const fetcher = useCallback(async (): Promise<Frontier> => {
+      const p = provider.getFrontier();
+      latestFetchRef.current = p;
+      try {
+        const result = await p;
+        const newest = latestFetchRef.current;
+        if (newest !== p && newest !== null) {
+          // A newer fetch superseded ours — return its eventual value so we
+          // never dispatch stale data over fresh state.
+          return await newest;
+        }
+        return result;
+      } catch (err) {
+        const newest = latestFetchRef.current;
+        if (newest !== p && newest !== null) {
+          // Stale rejection; the newer request is authoritative. Returning
+          // the newer's value (or rethrowing its rejection) keeps the dispatch
+          // path consistent with the latest known result.
+          return await newest;
+        }
+        throw err;
+      }
+    }, [provider]);
+    const { data, loading, isStale, error, refresh } = usePolledData<Frontier>(
+      fetcher,
+      intervalMs,
+      active,
+    );
 
-    // Cap total rows to avoid O(dimensions × table-limit) explosion when many score metrics exist.
-    const flatRows = useMemo(() => (data ? flattenFrontier(data).slice(0, 200) : []), [data]);
+    // Coalesce Contribution-driven refreshes. During an initial relist the
+    // informer dispatches one ADDED per entity, which without debounce would
+    // produce N+1 frontier fetches and hammer the server-computed endpoint.
+    // We subscribe only to event (not sync): events already fire for every
+    // entity, and the polled cadence covers the rare empty-relist case.
+    const useInformerPath = useEntityWatchEnabled(provider, "Contribution");
+    const contribInformer = useInformerOptional("Contribution");
+    const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    useEffect(() => {
+      if (!useInformerPath) return;
+      const handler = (): void => {
+        if (refreshTimerRef.current !== null) return;
+        refreshTimerRef.current = setTimeout(() => {
+          refreshTimerRef.current = null;
+          const p = provider as { invalidateCaches?: () => void };
+          p.invalidateCaches?.();
+          refresh();
+        }, 100);
+      };
+      const unsubEvent = contribInformer.addEventHandler(handler);
+      return () => {
+        unsubEvent();
+        if (refreshTimerRef.current !== null) {
+          clearTimeout(refreshTimerRef.current);
+          refreshTimerRef.current = null;
+        }
+      };
+    }, [useInformerPath, contribInformer, provider, refresh]);
+
+    // Project the Frontier to flat rows via useDerived so the flattening
+    // memoizes against the Contribution kind. compute() reads `data` via
+    // closure; the kind subscription drives recompute on contribution
+    // events; flatRowsEqual() collapses no-op recomputes.
+    const dataRef = useRef<Frontier | null>(data);
+    dataRef.current = data;
+    const derivedRows = useDerived<readonly FrontierRow[]>(
+      () => (dataRef.current ? flattenFrontier(dataRef.current).slice(0, 200) : []),
+      ["Contribution"],
+      flatRowsEqual,
+    );
+    // The polled snapshot can change without a contribution event firing
+    // (interval tick), so we re-derive against `data` directly too — the
+    // memoized result is stable as long as the rows match.
+    const flatRows = useMemo<readonly FrontierRow[]>(() => {
+      if (!data) return derivedRows.data ?? [];
+      const fresh = flattenFrontier(data).slice(0, 200);
+      const cached = derivedRows.data;
+      return cached && flatRowsEqual(cached, fresh) ? cached : fresh;
+    }, [data, derivedRows.data]);
 
     // Track selected CIDs set for efficient lookup
     const selectedSet = useMemo(() => new Set(compareCids ?? []), [compareCids]);

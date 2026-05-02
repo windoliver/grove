@@ -12,7 +12,7 @@
 import React, { useCallback, useEffect, useMemo } from "react";
 import type { ContributionEntity } from "../../core/entity.js";
 import type { Contribution } from "../../core/models.js";
-import { formatTimestamp, truncateCid } from "../../shared/format.js";
+import { compareTimestampsDesc, formatTimestamp, truncateCid } from "../../shared/format.js";
 import { Table } from "../components/table.js";
 import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useEntities } from "../hooks/use-entities.js";
@@ -89,10 +89,11 @@ export const ActivityView: React.NamedExoticComponent<ActivityProps> = React.mem
     const data = useMemo<readonly Contribution[] | undefined>(() => {
       if (useInformerPath) {
         const all = entityResult.data;
-        // Sort newest-first by creationTimestamp; entities without a
-        // timestamp sort last (they're typically synthetic / pre-#287).
+        // Sort newest-first chronologically; entities without a timestamp
+        // sort last (they're typically synthetic / pre-#287). String
+        // localeCompare misorders timezone-offset timestamps.
         const sorted = [...all].sort((a, b) =>
-          (b.metadata.creationTimestamp ?? "").localeCompare(a.metadata.creationTimestamp ?? ""),
+          compareTimestampsDesc(a.metadata.creationTimestamp, b.metadata.creationTimestamp),
         );
         return sorted.slice(pageOffset, pageOffset + pageSize).map(entityToContribution);
       }

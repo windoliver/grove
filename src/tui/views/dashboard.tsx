@@ -2,17 +2,93 @@
  * Dashboard view — the default TUI view.
  *
  * Shows grove metadata, active claims, frontier summary, and recent contributions.
+ *
+ * PR3 (#389) migrates the cross-kind aggregates (activeClaims +
+ * recentContributions + counts) from `usePolledData(getDashboard)` to
+ * `useDerived(...)` over the `Claim` + `Contribution` informers. The
+ * remaining polled call still supplies `metadata` (name/backendLabel) and
+ * `frontierSummary` — both require server compute that does not flow
+ * through the watch protocol — at the same cadence as before.
  */
 
-import React, { useCallback, useEffect } from "react";
+import React, { useCallback, useEffect, useMemo } from "react";
+import type { ContributionEntity } from "../../core/entity.js";
 import type { Contribution } from "../../core/models.js";
 import { formatDuration } from "../../shared/duration.js";
-import { formatTimestamp, truncateCid } from "../../shared/format.js";
+import { compareTimestampsDesc, formatTimestamp, truncateCid } from "../../shared/format.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
+import { useEntityWatchEnabled, useInformerOptional } from "../hooks/informer-context.js";
+import { useDerived } from "../hooks/use-derived.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { DashboardData, TuiDataProvider } from "../provider.js";
 import { theme } from "../theme.js";
+
+/** Limit the recent-contribution slice projected from the informer cache. */
+const RECENT_CONTRIBUTIONS_LIMIT = 50;
+
+/** Cross-cut snapshot derived from the Contribution informer. Active claims
+ *  are NOT migrated here: their "active" status is lease-aware (a claim ages
+ *  out when wall-clock time crosses `leaseExpiresAt`) and the watch protocol
+ *  emits no event for that transition. The polled `getDashboard()` path
+ *  computes it correctly via the lease-aware store query, so we keep claim
+ *  list/count on that path and only swap contributions to the informer. */
+interface DashboardCrossCut {
+  readonly recentContributions: readonly Contribution[];
+  readonly contributionCount: number;
+}
+
+const EMPTY_CROSS_CUT: DashboardCrossCut = {
+  recentContributions: [],
+  contributionCount: 0,
+};
+
+function entityToContribution(e: ContributionEntity): Contribution {
+  return {
+    cid: e.id,
+    manifestVersion: 0,
+    kind: e.spec.contributionKind,
+    mode: e.spec.mode,
+    summary: e.spec.summary,
+    description: e.spec.description,
+    artifacts: e.spec.artifacts,
+    relations: e.spec.relations,
+    scores: e.spec.scores,
+    tags: e.spec.tags,
+    context: e.spec.context,
+    agent: e.spec.agent,
+    createdAt: e.metadata.creationTimestamp ?? "",
+  };
+}
+
+/** Compare every visible column the contribution table renders: cid, kind,
+ *  summary, agent display identity, createdAt. Even though contributions are
+ *  conceptually append-only, the watch protocol carries MODIFIED events and
+ *  late agent-name backfills can change the rendered row for a stable cid. */
+function contributionsEqual(a: Contribution, b: Contribution): boolean {
+  if (a === b) return true;
+  return (
+    a.cid === b.cid &&
+    a.kind === b.kind &&
+    a.summary === b.summary &&
+    a.createdAt === b.createdAt &&
+    a.agent.agentId === b.agent.agentId &&
+    a.agent.agentName === b.agent.agentName
+  );
+}
+
+/** Structural cross-cut compare — fields, then per-row projected compare. */
+export function crossCutEquals(a: DashboardCrossCut, b: DashboardCrossCut): boolean {
+  if (a === b) return true;
+  if (a.contributionCount !== b.contributionCount) return false;
+  if (a.recentContributions.length !== b.recentContributions.length) return false;
+  for (let i = 0; i < a.recentContributions.length; i++) {
+    const ai = a.recentContributions[i];
+    const bi = b.recentContributions[i];
+    if (!ai || !bi || !contributionsEqual(ai, bi)) return false;
+  }
+  return true;
+}
 
 /** Props for the Dashboard view. */
 export interface DashboardProps {
@@ -47,8 +123,62 @@ export const DashboardView: React.NamedExoticComponent<DashboardProps> = React.m
     cursor,
     onContributionsLoaded,
   }: DashboardProps): React.ReactNode {
+    const useInformerPath = useEntityWatchEnabled(provider, "Contribution");
+    const contribInformer = useInformerOptional("Contribution");
+
+    // Contribution-only derived snapshot. Claims stay on the polled
+    // (lease-aware) path because lease expiry is wall-clock-driven and
+    // emits no watch event — see DashboardCrossCut docstring.
+    const derived = useDerived<DashboardCrossCut>(
+      () => {
+        const allContribs = contribInformer.list() as readonly ContributionEntity[];
+        // DESC chronological compare — invalid-last so missing/malformed
+        // timestamps can't displace real recent contributions in the slice.
+        const recent = [...allContribs]
+          .sort((a, b) =>
+            compareTimestampsDesc(a.metadata.creationTimestamp, b.metadata.creationTimestamp),
+          )
+          .slice(0, RECENT_CONTRIBUTIONS_LIMIT)
+          .map(entityToContribution);
+        return {
+          recentContributions: recent,
+          contributionCount: allContribs.length,
+        };
+      },
+      ["Contribution"],
+      crossCutEquals,
+    );
+
     const fetcher = useCallback(() => provider.getDashboard(), [provider]);
-    const { data, loading, error } = usePolledData<DashboardData>(fetcher, intervalMs, active);
+    const {
+      data: polledData,
+      loading,
+      error,
+    } = usePolledData<DashboardData>(fetcher, intervalMs, active);
+
+    // Compose the rendered DashboardData: prefer informer-derived
+    // contributions when the path is active AND has synced without error;
+    // claims, metadata, and frontierSummary always come from the polled
+    // call (claims because they're lease-aware, the others because they
+    // require server compute outside the watch protocol).
+    //
+    // Why hasSynced gating: without it, cold start (informer up but no
+    // RELIST_END yet) or terminal watch failure would inject EMPTY_CROSS_CUT
+    // — fabricating a zeroed dashboard over real polled data.
+    const informerReady = useInformerPath && derived.hasSynced && !derived.error;
+    const data: DashboardData | undefined = useMemo(() => {
+      if (!polledData) return undefined;
+      if (!informerReady) return polledData;
+      const cross = derived.data ?? EMPTY_CROSS_CUT;
+      return {
+        ...polledData,
+        metadata: {
+          ...polledData.metadata,
+          contributionCount: cross.contributionCount,
+        },
+        recentContributions: cross.recentContributions,
+      };
+    }, [polledData, informerReady, derived.data]);
 
     useEffect(() => {
       if (data && onContributionsLoaded) {

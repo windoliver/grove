@@ -8,6 +8,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Frontier, FrontierEntry } from "../../core/frontier.js";
+import { flatRowsEqual } from "./frontier-view.js";
 
 // ---------------------------------------------------------------------------
 // Import the module-scoped functions.
@@ -201,6 +202,60 @@ describe("flattenFrontier", () => {
 // ---------------------------------------------------------------------------
 // formatValue
 // ---------------------------------------------------------------------------
+
+describe("flatRowsEqual (PR3 #389 useDerived equals)", () => {
+  type Row = {
+    rank: number;
+    cid: string;
+    metric: string;
+    dimensionKey: string;
+    value: number;
+    summary: string;
+  };
+
+  const r = (overrides: Partial<Row> = {}): Row => ({
+    rank: 1,
+    cid: "blake3:aaa",
+    metric: "accuracy",
+    dimensionKey: "score:accuracy",
+    value: 0.9,
+    summary: "best",
+    ...overrides,
+  });
+
+  test("same array reference → true", () => {
+    const rows = [r()];
+    expect(flatRowsEqual(rows, rows)).toBe(true);
+  });
+
+  test("same shape, different references → true", () => {
+    expect(flatRowsEqual([r()], [r()])).toBe(true);
+  });
+
+  test("different lengths → false", () => {
+    expect(flatRowsEqual([r()], [r(), r({ rank: 2, cid: "blake3:bbb" })])).toBe(false);
+  });
+
+  test("rank changes → false", () => {
+    expect(flatRowsEqual([r()], [r({ rank: 2 })])).toBe(false);
+  });
+
+  test("value changes → false", () => {
+    expect(flatRowsEqual([r()], [r({ value: 0.91 })])).toBe(false);
+  });
+
+  test("cid changes → false", () => {
+    expect(flatRowsEqual([r()], [r({ cid: "blake3:bbb" })])).toBe(false);
+  });
+
+  test("dimensionKey changes → false (collision detection)", () => {
+    expect(flatRowsEqual([r()], [r({ dimensionKey: "scalar:accuracy" })])).toBe(false);
+  });
+
+  test("summary changes → false", () => {
+    expect(flatRowsEqual([r()], [r({ summary: "second" })])).toBe(false);
+  });
+});
 
 describe("formatValue", () => {
   test("integer that is not a timestamp is returned as-is", () => {

@@ -19,7 +19,7 @@
 import React, { useCallback, useEffect, useMemo } from "react";
 import type { ContributionEntity } from "../../core/entity.js";
 import type { Contribution } from "../../core/models.js";
-import { formatTimestamp, truncateCid } from "../../shared/format.js";
+import { compareTimestampsDesc, formatTimestamp, truncateCid } from "../../shared/format.js";
 import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
@@ -159,7 +159,7 @@ export const SearchPanelView: React.NamedExoticComponent<SearchPanelProps> = Rea
     const data = useMemo<readonly Contribution[] | undefined>(() => {
       if (useInformerPath) {
         const sorted = [...entityResult.data].sort((a, b) =>
-          (b.metadata.creationTimestamp ?? "").localeCompare(a.metadata.creationTimestamp ?? ""),
+          compareTimestampsDesc(a.metadata.creationTimestamp, b.metadata.creationTimestamp),
         );
         return sorted.slice(0, RECENT_LIMIT).map(entityToContribution);
       }
