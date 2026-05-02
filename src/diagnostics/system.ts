@@ -23,6 +23,7 @@ interface ProbeDefinition {
 
 const execFileAsync = promisify(execFile);
 const MAX_BUFFER_BYTES = 1024 * 1024;
+const DEFAULT_PROBE_TIMEOUT_MS = 5_000;
 
 export async function collectSystemSnapshots(
   options: SystemSnapshotOptions,
@@ -49,6 +50,7 @@ async function defaultProbeRunner(command: string): Promise<ProbeResult> {
     const result = await execFileAsync("/bin/sh", ["-lc", command], {
       encoding: "utf8",
       maxBuffer: MAX_BUFFER_BYTES,
+      timeout: DEFAULT_PROBE_TIMEOUT_MS,
     });
     return {
       ok: true,
@@ -59,7 +61,7 @@ async function defaultProbeRunner(command: string): Promise<ProbeResult> {
     return {
       ok: false,
       stdout: stdoutFromError(error),
-      stderr: stderrFromError(error),
+      stderr: stderrFromError(error, command),
     };
   }
 }
@@ -100,9 +102,12 @@ function stdoutFromError(error: unknown): string {
   return "";
 }
 
-function stderrFromError(error: unknown): string {
+function stderrFromError(error: unknown, command: string): string {
   if (hasStringProperty(error, "stderr")) {
     return error.stderr;
+  }
+  if (isTimeoutError(error)) {
+    return `Command timed out after ${DEFAULT_PROBE_TIMEOUT_MS.toString()}ms: ${command}`;
   }
   if (error instanceof Error && error.message.length > 0) {
     return error.message;
@@ -123,6 +128,25 @@ function hasStringProperty<Value extends string>(
     value !== null &&
     property in value &&
     typeof value[property as keyof typeof value] === "string"
+  );
+}
+
+function hasBooleanProperty<Value extends string>(
+  value: unknown,
+  property: Value,
+): value is Readonly<Record<Value, boolean>> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    property in value &&
+    typeof value[property as keyof typeof value] === "boolean"
+  );
+}
+
+function isTimeoutError(error: unknown): boolean {
+  return (
+    (hasStringProperty(error, "signal") && error.signal === "SIGTERM") ||
+    (hasBooleanProperty(error, "killed") && error.killed)
   );
 }
 
