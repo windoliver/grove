@@ -153,6 +153,32 @@ describe("exportSqliteSummaries", () => {
     });
   });
 
+  test("records warning when present contributions table cannot export recent manifests", async () => {
+    const ctx = await createExportContext();
+    const db = new Database(ctx.dbPath);
+    try {
+      db.run("CREATE TABLE contributions (cid TEXT PRIMARY KEY)");
+      db.run("INSERT INTO contributions (cid) VALUES (?)", ["legacy-cid"]);
+    } finally {
+      db.close();
+    }
+
+    const result = exportSqliteSummaries(ctx.dbPath, {
+      recentContributionLimit: 10,
+    });
+
+    expect(decodeEntry(getEntry(result.entries, "db/contributions-recent.jsonl"))).toBe("");
+    expect(result.entries.map((entry) => entry.path)).toContain("db/table-manifest.json");
+    expect(result.manifest.tables.contributions?.present).toBe(true);
+    expect(result.manifest.tables.contributions?.rowCount).toBe(1);
+    expect(result.manifest.tables.contributions?.exportedPath).toBe(
+      "db/contributions-recent.jsonl",
+    );
+    expect(result.manifest.tables.contributions?.warning).toContain(
+      "Failed to export recent contributions",
+    );
+  });
+
   test("records optional table query failures without aborting export", async () => {
     const ctx = await createExportContext();
     const db = initSqliteDb(ctx.dbPath);
