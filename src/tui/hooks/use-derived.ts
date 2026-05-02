@@ -137,7 +137,20 @@ export function useDerived<T>(
     // sync notification on this subscription. Setting via setter is
     // idempotent when the value matches.
     setHasSynced(liveInformers.every((i) => i.hasSynced()));
-    const tick = (): void => {
+    // Burst coalescing: an initial relist dispatches one ADDED event per
+    // cached entity before RELIST_END. Without coalescing, callers like
+    // Dashboard/DAG that sort/map the full Contribution cache would
+    // perform N full-cache projections per relist, freezing the TUI on
+    // large Groves.
+    //
+    // We use setTimeout(0), not queueMicrotask: informer.dispatch awaits
+    // each handler via `await raceAbort(Promise.resolve(handler(...)), ...)`,
+    // so the microtask queue drains BETWEEN dispatches and queueMicrotask
+    // would still fire once per event. A macrotask defers past the entire
+    // awaited chain, collapsing the whole burst into one recompute.
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const runTick = (): void => {
+      timer = null;
       if (cancelled) return;
       const next = stepDerived<T>(stateRef.current, () => computeRef.current(), equalsRef.current);
       if (next.committed) setState({ data: next.data, error: next.error });
@@ -146,6 +159,10 @@ export function useDerived<T>(
       // tracking hasSynced as an effect dep.
       const allSynced = liveInformers.every((i) => i.hasSynced());
       setHasSynced((prev) => (prev === allSynced ? prev : allSynced));
+    };
+    const tick = (): void => {
+      if (cancelled || timer !== null) return;
+      timer = setTimeout(runTick, 0);
     };
     const unsubs: Array<() => void> = [];
     for (const i of liveInformers) {
@@ -181,6 +198,10 @@ export function useDerived<T>(
     setStreamError(firstErr);
     return () => {
       cancelled = true;
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
       for (const u of unsubs) u();
     };
   }, [factory, kindsKey]);

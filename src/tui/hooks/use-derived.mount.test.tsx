@@ -205,6 +205,73 @@ describe("useDerived mount + publish (PR3 #389)", () => {
     await factory.stopAll();
   });
 
+  test("microtask coalescing — N synchronous events trigger ≤1 compute (regression for codex round-10)", async () => {
+    // An initial relist dispatches one ADDED per cached entity. Without
+    // coalescing, callers like Dashboard/DAG that sort/map the full
+    // Contribution cache would perform N full-cache projections per
+    // relist, freezing the TUI on large Groves.
+    const hub = new WatchHub();
+    const snapshot: WatchEntity[] = [];
+    const factory = new InformerFactory({
+      mode: "local",
+      hub,
+      namespace: NS,
+      listFn: () => snapshot,
+    });
+    factory.startAll();
+
+    let computeCount = 0;
+    function CountingProbe({ factory: f }: { factory: InformerFactory }): React.ReactNode {
+      useDerived(
+        () => {
+          computeCount++;
+          return (f.informerFor("Contribution").list() as readonly WatchEntity[]).length;
+        },
+        ["Contribution"],
+        Object.is,
+      );
+      return null;
+    }
+
+    let renderer: TestRenderer.ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        (
+          <InformerProvider value={factory}>
+            <CountingProbe factory={factory} />
+          </InformerProvider>
+        ) as React.ReactElement,
+      );
+      await flushMicrotasks();
+    });
+
+    const baselineComputes = computeCount;
+
+    // Burst: synchronously dispatch 50 ADDED events in the same stack.
+    await act(async () => {
+      for (let i = 0; i < 50; i++) {
+        snapshot.push(mkContribution(`burst-${i}`));
+        hub.recordWrite({
+          op: "ADDED",
+          kind: "Contribution",
+          namespace: NS,
+          entity: mkContribution(`burst-${i}`),
+        });
+      }
+      await flushMicrotasks(50);
+    });
+
+    // Without coalescing: 50 events → 50 computes. With coalescing: synchronous
+    // burst collapses to 1 microtask-deferred recompute. Allow up to a few
+    // (test renderer / scheduler ticks may schedule extra microtasks).
+    const burstComputes = computeCount - baselineComputes;
+    expect(burstComputes).toBeLessThanOrEqual(3);
+    expect(burstComputes).toBeGreaterThanOrEqual(1);
+
+    renderer?.unmount();
+    await factory.stopAll();
+  });
+
   test("equals collapses no-op recomputes (no extra commit)", async () => {
     const hub = new WatchHub();
     let snapshot: WatchEntity[] = [mkContribution("c1")];
