@@ -1,7 +1,7 @@
 import { type Dirent, existsSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { arch, cpus, freemem, homedir, platform, release, totalmem } from "node:os";
-import { basename, join, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { isTextEntryPath, redactText, type ScrubMode } from "./redaction.js";
 import {
   type DiagnosticEntry,
@@ -37,6 +37,7 @@ interface LogManifest {
 }
 
 interface OperatorAvailability {
+  readonly [key: string]: unknown;
   readonly name: string;
   readonly status: "partial" | "unavailable";
   readonly sources: readonly string[];
@@ -81,9 +82,15 @@ export async function buildDiagnosticsEntries(
 
   let sqliteManifest: SqliteExportManifest;
   if (existsSync(dbPath)) {
-    const sqliteResult = exportSqliteSummaries(dbPath, { recentContributionLimit: 500 });
-    sqliteManifest = sqliteResult.manifest;
-    entries.push(...sqliteResult.entries);
+    try {
+      const sqliteResult = exportSqliteSummaries(dbPath, { recentContributionLimit: 500 });
+      sqliteManifest = sqliteResult.manifest;
+      entries.push(...sqliteResult.entries);
+    } catch (error) {
+      const warning = `Failed to export SQLite summaries: ${errorMessage(error)}`;
+      warnings.push(warning);
+      sqliteManifest = failedSqliteManifest(warning);
+    }
     if (!options.excludeDb) {
       entries.push({
         path: "db/grove.db",
@@ -166,24 +173,32 @@ async function collectLogEntries(
   const skipped: string[] = [];
   const missing: string[] = [];
   const warnings: string[] = [];
-  const agentLogsDir = join(groveDir, "agent-logs");
+  const agentLogsDir = resolve(groveDir, "agent-logs");
 
   if (!existsSync(agentLogsDir)) {
     missing.push("logs/agent-logs");
     return {
       entries,
-      manifest: { included, skipped, missing, warnings } satisfies LogManifest,
+      manifest: logManifest(included, skipped, missing, warnings),
     };
   }
 
   if (slot !== undefined) {
     await recordSkippedSlots(agentLogsDir, slot, skipped, warnings);
-    const slotDir = join(agentLogsDir, slot);
+    const slotDir = resolve(agentLogsDir, slot);
+    if (!isWithinDirectory(agentLogsDir, slotDir)) {
+      missing.push(`logs/agent-logs/${slot}`);
+      warnings.push(`Invalid log slot '${slot}': path traversal is not allowed`);
+      return {
+        entries,
+        manifest: logManifest(included, skipped, missing, warnings),
+      };
+    }
     if (!existsSync(slotDir)) {
       missing.push(`logs/agent-logs/${slot}`);
       return {
         entries,
-        manifest: { included, skipped, missing, warnings } satisfies LogManifest,
+        manifest: logManifest(included, skipped, missing, warnings),
       };
     }
     await collectFiles(slotDir, agentLogsDir, entries, included, warnings);
@@ -193,7 +208,7 @@ async function collectLogEntries(
 
   return {
     entries,
-    manifest: { included, skipped, missing, warnings } satisfies LogManifest,
+    manifest: logManifest(included, skipped, missing, warnings),
   };
 }
 
@@ -293,6 +308,19 @@ function emptySqliteManifest(): SqliteExportManifest {
   };
 }
 
+function failedSqliteManifest(warning: string): SqliteExportManifest {
+  return {
+    tables: {
+      contributions: {
+        present: false,
+        rowCount: 0,
+        exportedPath: "db/contributions-recent.jsonl",
+        warning,
+      },
+    },
+  };
+}
+
 async function recordSkippedSlots(
   agentLogsDir: string,
   slot: string,
@@ -300,7 +328,7 @@ async function recordSkippedSlots(
   warnings: string[],
 ): Promise<void> {
   try {
-    const children = await readdir(agentLogsDir, { withFileTypes: true });
+    const children = sortDirents(await readdir(agentLogsDir, { withFileTypes: true }));
     for (const child of children) {
       if (child.name !== slot) {
         skipped.push(`logs/agent-logs/${child.name}`);
@@ -318,9 +346,9 @@ async function collectFiles(
   included: string[],
   warnings: string[],
 ): Promise<void> {
-  let children: Dirent[];
+  let children: readonly Dirent[];
   try {
-    children = await readdir(currentDir, { withFileTypes: true });
+    children = sortDirents(await readdir(currentDir, { withFileTypes: true }));
   } catch (error) {
     warnings.push(
       `Failed to list logs under ${relative(rootDir, currentDir)}: ${errorMessage(error)}`,
@@ -396,4 +424,31 @@ function compareEntryPaths(left: DiagnosticEntry, right: DiagnosticEntry): numbe
   if (left.path < right.path) return -1;
   if (left.path > right.path) return 1;
   return 0;
+}
+
+function logManifest(
+  included: readonly string[],
+  skipped: readonly string[],
+  missing: readonly string[],
+  warnings: readonly string[],
+): LogManifest {
+  return {
+    included: sortStrings(included),
+    skipped: sortStrings(skipped),
+    missing: sortStrings(missing),
+    warnings: sortStrings(warnings),
+  };
+}
+
+function sortDirents(dirents: readonly Dirent[]): readonly Dirent[] {
+  return [...dirents].sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function sortStrings(values: readonly string[]): readonly string[] {
+  return [...values].sort();
+}
+
+function isWithinDirectory(parentDir: string, candidatePath: string): boolean {
+  const relativePath = relative(parentDir, candidatePath);
+  return relativePath.length === 0 || (!relativePath.startsWith("..") && !isAbsolute(relativePath));
 }

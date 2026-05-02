@@ -149,6 +149,96 @@ describe("buildDiagnosticsEntries", () => {
     expect(result.entries.map((entry) => entry.path)).toContain("db/grove.db");
     expect(getEntry(result.entries, "db/grove.db").bytes.length).toBeGreaterThan(0);
   });
+
+  test("rejects traversal slots without reading outside agent logs", async () => {
+    const ctx = await createBundleContext();
+    await writeFile(join(ctx.projectRoot, "project-secret.log"), "outside agent logs\n", "utf8");
+
+    const result = await buildDiagnosticsEntries({
+      projectRoot: ctx.projectRoot,
+      groveDir: ctx.groveDir,
+      packageVersion: "1.2.3-test",
+      generatedAt: "2026-05-02T12:34:56.000Z",
+      scrubMode: "standard",
+      excludeDb: true,
+      slot: "../..",
+      env: {},
+      homeDir: "/Users/tafeng",
+      systemRunner: fakeSystemRunner,
+    });
+
+    const paths = result.entries.map((entry) => entry.path);
+    expect(paths).not.toContain("logs/agent-logs/../../project-secret.log");
+    expect(paths.every((path) => !path.includes(".."))).toBe(true);
+    expect(paths).not.toContain("logs/agent-logs/sess-1/coder.jsonl");
+
+    const manifest = readJson<LogManifest>(getEntry(result.entries, "logs/manifest.json"));
+    expect(manifest.included).toEqual([]);
+    expect(manifest.skipped).toEqual(["logs/agent-logs/sess-1"]);
+    expect(manifest.missing).toEqual(["logs/agent-logs/../.."]);
+    expect(manifest.warnings).toEqual(["Invalid log slot '../..': path traversal is not allowed"]);
+  });
+
+  test("continues with warning when sqlite database is corrupt and raw db is excluded", async () => {
+    const ctx = await createBundleContext({ initializeDb: false });
+    await writeFile(join(ctx.groveDir, "grove.db"), "not sqlite", "utf8");
+
+    const result = await buildDiagnosticsEntries({
+      projectRoot: ctx.projectRoot,
+      groveDir: ctx.groveDir,
+      packageVersion: "1.2.3-test",
+      generatedAt: "2026-05-02T12:34:56.000Z",
+      scrubMode: "standard",
+      excludeDb: true,
+      env: {},
+      homeDir: "/Users/tafeng",
+      systemRunner: fakeSystemRunner,
+    });
+
+    expect(result.entries.map((entry) => entry.path)).not.toContain("db/grove.db");
+    expect(result.warnings.some((warning) => warning.includes("Failed to export SQLite"))).toBe(
+      true,
+    );
+    expect(result.sqliteManifest.tables.contributions).toMatchObject({
+      present: false,
+      rowCount: 0,
+      exportedPath: "db/contributions-recent.jsonl",
+    });
+    expect(result.sqliteManifest.tables.contributions?.warning).toContain(
+      "Failed to export SQLite",
+    );
+  });
+
+  test("sorts log traversal and manifest arrays deterministically", async () => {
+    const ctx = await createBundleContext({ initializeDb: false, includeDefaultLog: false });
+    await mkdir(join(ctx.groveDir, "agent-logs", "z-slot"), { recursive: true });
+    await mkdir(join(ctx.groveDir, "agent-logs", "a-slot"), { recursive: true });
+    await writeFile(join(ctx.groveDir, "agent-logs", "z-slot", "z.log"), "z\n", "utf8");
+    await writeFile(join(ctx.groveDir, "agent-logs", "z-slot", "a.log"), "a\n", "utf8");
+    await writeFile(join(ctx.groveDir, "agent-logs", "a-slot", "b.log"), "b\n", "utf8");
+
+    const result = await buildDiagnosticsEntries({
+      projectRoot: ctx.projectRoot,
+      groveDir: ctx.groveDir,
+      packageVersion: "1.2.3-test",
+      generatedAt: "2026-05-02T12:34:56.000Z",
+      scrubMode: "standard",
+      excludeDb: true,
+      slot: "z-slot",
+      env: {},
+      homeDir: "/Users/tafeng",
+      systemRunner: fakeSystemRunner,
+    });
+
+    const manifest = readJson<LogManifest>(getEntry(result.entries, "logs/manifest.json"));
+    expect(manifest.included).toEqual([
+      "logs/agent-logs/z-slot/a.log",
+      "logs/agent-logs/z-slot/z.log",
+    ]);
+    expect(manifest.skipped).toEqual(["logs/agent-logs/a-slot"]);
+    expect(manifest.missing).toEqual([]);
+    expect(manifest.warnings).toEqual([]);
+  });
 });
 
 interface BundleContext {
@@ -163,29 +253,46 @@ interface OperatorAvailabilityEntry {
   readonly notes: string;
 }
 
-async function createBundleContext(): Promise<BundleContext> {
+interface LogManifest {
+  readonly included: readonly string[];
+  readonly skipped: readonly string[];
+  readonly missing: readonly string[];
+  readonly warnings: readonly string[];
+}
+
+interface BundleContextOptions {
+  readonly initializeDb?: boolean | undefined;
+  readonly includeDefaultLog?: boolean | undefined;
+}
+
+async function createBundleContext(options: BundleContextOptions = {}): Promise<BundleContext> {
   const projectRoot = await mkdtemp(join(tmpdir(), "grove-bundle-"));
   tempDirs.push(projectRoot);
   const groveDir = join(projectRoot, ".grove");
-  await mkdir(join(groveDir, "agent-logs", "sess-1"), { recursive: true });
-  await writeFile(
-    join(groveDir, "agent-logs", "sess-1", "coder.jsonl"),
-    `${JSON.stringify({ level: "info", msg: "contact user@example.com" })}\n`,
-    "utf8",
-  );
+  await mkdir(join(groveDir, "agent-logs"), { recursive: true });
+  if (options.includeDefaultLog !== false) {
+    await mkdir(join(groveDir, "agent-logs", "sess-1"), { recursive: true });
+    await writeFile(
+      join(groveDir, "agent-logs", "sess-1", "coder.jsonl"),
+      `${JSON.stringify({ level: "info", msg: "contact user@example.com" })}\n`,
+      "utf8",
+    );
+  }
   await writeFile(join(projectRoot, "GROVE.md"), "# Project Grove\n", "utf8");
 
-  const db = initSqliteDb(join(groveDir, "grove.db"));
-  try {
-    const store = new SqliteContributionStore(db);
-    await store.put(
-      makeContribution({
-        summary: "diagnostic contribution",
-        createdAt: "2026-05-02T00:00:00Z",
-      }),
-    );
-  } finally {
-    db.close();
+  if (options.initializeDb !== false) {
+    const db = initSqliteDb(join(groveDir, "grove.db"));
+    try {
+      const store = new SqliteContributionStore(db);
+      await store.put(
+        makeContribution({
+          summary: "diagnostic contribution",
+          createdAt: "2026-05-02T00:00:00Z",
+        }),
+      );
+    } finally {
+      db.close();
+    }
   }
 
   return {
