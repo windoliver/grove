@@ -36,6 +36,13 @@ interface LogManifest {
   readonly warnings: readonly string[];
 }
 
+interface OperatorAvailability {
+  readonly name: string;
+  readonly status: "partial" | "unavailable";
+  readonly sources: readonly string[];
+  readonly notes: string;
+}
+
 const SECRET_ENV_KEY_PATTERN = /(TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|PRIVATE_KEY)/i;
 const ALLOWED_ENV_KEYS = new Set([
   "PATH",
@@ -193,37 +200,49 @@ async function collectLogEntries(
 function operatorAvailability(): readonly Record<string, unknown>[] {
   return [
     availability(
-      "ask-user",
-      "not-exported",
-      "Prompt state is not persisted in diagnostics bundles.",
+      "session_timeline",
+      "partial",
+      ["sessions", "session_contributions", "agent-logs", "contribution timestamps"],
+      "Session timeline can be assembled from persisted session and contribution records plus agent logs when present.",
     ),
-    availability("agents", "not-exported", "Agent registry snapshots are not yet persisted."),
-    availability("task-inbox", "not-exported", "Task inbox data is not yet persisted."),
-    availability("sessions", "conditional", "Exported when the SQLite sessions table is present."),
+    availability("work_blocks", "unavailable", [], "Pending #375."),
     availability(
-      "snapshots-checkpoints",
-      "not-exported",
-      "Checkpoint artifacts are not yet persisted.",
+      "run_health",
+      "partial",
+      [
+        "session status",
+        "stop reasons",
+        "claims",
+        "handoffs",
+        "watch/backpressure metadata when available",
+      ],
+      "Run health can be inferred from persisted coordination records; richer watch and backpressure metadata is included only if future code writes it.",
+    ),
+    availability("autonomy_profile", "unavailable", [], "Pending #378."),
+    availability(
+      "permission_decisions",
+      "partial",
+      ["ACP trace lines", "typed permission request log messages when present"],
+      "Permission decisions are represented only when trace or typed request log lines exist in included logs.",
+    ),
+    availability("agent_tasks", "unavailable", [], "Pending #297 and #379."),
+    availability(
+      "watch_compaction",
+      "partial",
+      ["persisted config", "local watch metrics snapshots if future code writes them"],
+      "Watch compaction diagnostics are limited to persisted configuration and optional future metrics snapshots.",
     ),
     availability(
-      "worktree-mappings",
-      "conditional",
-      "Exported when the SQLite workspaces table is present.",
+      "degraded_stop_conditions",
+      "partial",
+      ["session stop_reason", "contract stop conditions", "contribution warnings"],
+      "Degraded stop condition signals can be inferred from persisted session, contract, and contribution warning data.",
     ),
     availability(
-      "transcript-pointers",
-      "not-exported",
-      "Transcript pointers are not yet persisted.",
-    ),
-    availability(
-      "stdout-stderr-captures",
-      "not-exported",
-      "Process output capture is not yet persisted.",
-    ),
-    availability(
-      "approvals-human-decisions",
-      "not-exported",
-      "Approval and human decision records are not yet persisted.",
+      "bounded_queue_backpressure",
+      "partial",
+      ["log lines", "persisted channel stats if future code writes them"],
+      "Backpressure data is limited to included log lines and optional future persisted channel statistics.",
     ),
   ];
 }
@@ -336,11 +355,17 @@ async function collectFiles(
   }
 }
 
-function availability(name: string, status: string, note: string): Record<string, unknown> {
+function availability(
+  name: string,
+  status: "partial" | "unavailable",
+  sources: readonly string[],
+  notes: string,
+): OperatorAvailability {
   return {
-    primitive: name,
+    name,
     status,
-    note,
+    sources,
+    notes,
   };
 }
 

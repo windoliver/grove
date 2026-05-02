@@ -61,6 +61,71 @@ describe("buildDiagnosticsEntries", () => {
 
     const contributionText = decodeEntry(getEntry(result.entries, "db/contributions-recent.jsonl"));
     expect(contributionText).toContain("diagnostic contribution");
+
+    const availability = readJson<readonly OperatorAvailabilityEntry[]>(
+      getEntry(result.entries, "operator-primitives/availability.json"),
+    );
+    expect(availability).toHaveLength(9);
+    expect(availability.map((entry) => entry.name)).toEqual([
+      "session_timeline",
+      "work_blocks",
+      "run_health",
+      "autonomy_profile",
+      "permission_decisions",
+      "agent_tasks",
+      "watch_compaction",
+      "degraded_stop_conditions",
+      "bounded_queue_backpressure",
+    ]);
+    expect(getAvailability(availability, "session_timeline")).toMatchObject({
+      status: "partial",
+      sources: ["sessions", "session_contributions", "agent-logs", "contribution timestamps"],
+    });
+    expect(getAvailability(availability, "work_blocks")).toMatchObject({
+      status: "unavailable",
+      sources: [],
+      notes: "Pending #375.",
+    });
+    expect(getAvailability(availability, "run_health")).toMatchObject({
+      status: "partial",
+      sources: [
+        "session status",
+        "stop reasons",
+        "claims",
+        "handoffs",
+        "watch/backpressure metadata when available",
+      ],
+    });
+    expect(getAvailability(availability, "autonomy_profile")).toMatchObject({
+      status: "unavailable",
+      sources: [],
+      notes: "Pending #378.",
+    });
+    expect(getAvailability(availability, "permission_decisions")).toMatchObject({
+      status: "partial",
+      sources: ["ACP trace lines", "typed permission request log messages when present"],
+    });
+    expect(getAvailability(availability, "agent_tasks")).toMatchObject({
+      status: "unavailable",
+      sources: [],
+      notes: "Pending #297 and #379.",
+    });
+    expect(getAvailability(availability, "watch_compaction")).toMatchObject({
+      status: "partial",
+      sources: ["persisted config", "local watch metrics snapshots if future code writes them"],
+    });
+    expect(getAvailability(availability, "degraded_stop_conditions")).toMatchObject({
+      status: "partial",
+      sources: ["session stop_reason", "contract stop conditions", "contribution warnings"],
+    });
+    expect(getAvailability(availability, "bounded_queue_backpressure")).toMatchObject({
+      status: "partial",
+      sources: ["log lines", "persisted channel stats if future code writes them"],
+    });
+    for (const entry of availability) {
+      expect(Array.isArray(entry.sources)).toBe(true);
+      expect(typeof entry.notes).toBe("string");
+    }
   });
 
   test("includes raw database bytes when database export is allowed", async () => {
@@ -89,6 +154,13 @@ describe("buildDiagnosticsEntries", () => {
 interface BundleContext {
   readonly projectRoot: string;
   readonly groveDir: string;
+}
+
+interface OperatorAvailabilityEntry {
+  readonly name: string;
+  readonly status: string;
+  readonly sources: readonly string[];
+  readonly notes: string;
 }
 
 async function createBundleContext(): Promise<BundleContext> {
@@ -142,4 +214,15 @@ function decodeEntry(entry: DiagnosticEntry): string {
 
 function readJson<T>(entry: DiagnosticEntry): T {
   return JSON.parse(decodeEntry(entry)) as T;
+}
+
+function getAvailability(
+  entries: readonly OperatorAvailabilityEntry[],
+  name: string,
+): OperatorAvailabilityEntry {
+  const entry = entries.find((candidate) => candidate.name === name);
+  if (entry === undefined) {
+    throw new Error(`Expected operator availability entry for ${name}`);
+  }
+  return entry;
 }
