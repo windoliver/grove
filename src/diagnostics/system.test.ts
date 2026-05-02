@@ -53,6 +53,25 @@ describe("collectSystemSnapshots", () => {
     expect(processTree).toContain("Probe failed");
     expect(processTree).toContain("permission denied");
   });
+
+  test("records unknown error when a failed probe has empty stderr", async () => {
+    const runner: ProbeRunner = async () => ({
+      ok: false,
+      stdout: "",
+      stderr: "",
+    });
+
+    const entries = await collectSystemSnapshots({
+      projectRoot: "/tmp/project",
+      groveDir: "/tmp/project/.grove",
+      runner,
+    });
+
+    const processTree = decodeEntry(getEntry(entries, "system/process-tree.txt"));
+    expect(processTree).toContain("Probe failed");
+    expect(processTree).toContain("Command: ps -axo pid,ppid,comm,args");
+    expect(processTree).toContain("unknown error");
+  });
 });
 
 function getEntry(entries: readonly DiagnosticEntry[], path: string): DiagnosticEntry {
