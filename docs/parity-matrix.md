@@ -44,7 +44,7 @@ and their classification. All `shared` capabilities use the operations layer in
 | init | Y | - | - | - | operator-only |
 | up | Y | - | - | - | operator-only |
 | down | Y | - | - | - | operator-only |
-| diagnostics | Y | N | N | N | local CLI snapshot bundle |
+| diagnostics | Y | - | - | - | operator-only |
 | ask (CLI) / ask_user (MCP) | Y | Y | - | - | transport-only |
 | tui | Y | - | - | - | operator-only |
 | import/export | Y | - | - | - | deferred |
