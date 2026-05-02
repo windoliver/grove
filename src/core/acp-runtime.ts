@@ -99,6 +99,15 @@ export class AcpRuntime implements AgentRuntime {
   private readonly sessions: Map<string, AcpSessionEntry> = new Map();
   private nextId = 0;
 
+  /**
+   * Optional callback invoked after a session lifecycle transition that
+   * matters for the local-mode WatchHub (#388 PR2). Fires on spawn (ADDED),
+   * status change (MODIFIED), and close (DELETED). The `LocalRuntime`
+   * adapter projects via `agentSessionToEntity` and calls
+   * `WatchHub.recordWrite`.
+   */
+  onSessionWrite?: (op: "ADDED" | "MODIFIED" | "DELETED", s: AgentSession) => void;
+
   constructor(options: AcpRuntimeOptions = {}) {
     this.resolver = options.permissionResolver ?? DENY_ALL_RESOLVER;
     this.fsAuditor = options.fsAuditor;
@@ -197,6 +206,7 @@ export class AcpRuntime implements AgentRuntime {
       sendChainTail: Promise.resolve(),
       closed: false,
     });
+    this.fireSessionWrite("ADDED", session);
 
     const initialMessage = config.goal ?? config.prompt;
     if (!config.waitForPush && initialMessage && initialMessage.trim().length > 0) {
@@ -224,6 +234,7 @@ export class AcpRuntime implements AgentRuntime {
             ...current.session,
             status: "crashed",
           };
+          this.fireSessionWrite("MODIFIED", current.session);
           for (const cb of current.idleCallbacks) {
             try {
               cb();
@@ -329,6 +340,17 @@ export class AcpRuntime implements AgentRuntime {
       /* ignore */
     }
     this.sessions.delete(session.id);
+    this.fireSessionWrite("DELETED", entry.session);
+  }
+
+  private fireSessionWrite(op: "ADDED" | "MODIFIED" | "DELETED", s: AgentSession): void {
+    if (!this.onSessionWrite) return;
+    try {
+      this.onSessionWrite(op, s);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[acp-runtime] onSessionWrite(${op}) threw: ${detail}\n`);
+    }
   }
 
   onIdle(session: AgentSession, callback: () => void): void {

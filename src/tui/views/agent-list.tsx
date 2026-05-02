@@ -5,16 +5,37 @@
  * In local mode, shows session status and allows spawn/kill via command palette.
  */
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ClaimEntity } from "../../core/entity.js";
 import type { Claim } from "../../core/models.js";
 import type { TmuxManager } from "../agents/tmux-manager.js";
 import { agentIdFromSession } from "../agents/tmux-manager.js";
 import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
+import { useEntityWatchEnabled } from "../hooks/informer-context.js";
+import { useEntities } from "../hooks/use-entities.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
 import { agentStatusIcon, BRAILLE_SPINNER, timing } from "../theme.js";
+
+const ACTIVE_PREDICATE = (e: ClaimEntity): boolean => e.status.phase === "active";
+
+/** Flatten a ClaimEntity to the legacy Claim shape this view consumes. */
+function entityToClaim(e: ClaimEntity): Claim {
+  return {
+    claimId: e.id,
+    targetRef: e.spec.targetRef,
+    agent: e.spec.agent,
+    status: e.status.phase,
+    intentSummary: e.spec.intentSummary,
+    createdAt: e.metadata.creationTimestamp ?? e.status.heartbeatAt,
+    heartbeatAt: e.status.heartbeatAt,
+    leaseExpiresAt: e.status.leaseExpiresAt,
+    context: e.spec.context,
+    attemptCount: e.status.attemptCount,
+  };
+}
 
 /** Props for the AgentList view. */
 export interface AgentListProps {
@@ -143,6 +164,10 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
       return () => clearInterval(timer);
     }, [active]);
 
+    const useInformerPath = useEntityWatchEnabled(provider, "Claim");
+
+    const entityResult = useEntities("Claim", ACTIVE_PREDICATE);
+
     const claimFetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
     const tmuxFetcher = useCallback(async () => {
       if (!tmux) return [] as readonly string[];
@@ -151,12 +176,22 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
       return tmux.listSessions();
     }, [tmux]);
 
-    const {
-      data: claims,
-      loading: claimsLoading,
-      isStale,
-      error,
-    } = usePolledData<readonly Claim[]>(claimFetcher, intervalMs, active);
+    const polledClaims = usePolledData<readonly Claim[]>(
+      claimFetcher,
+      intervalMs,
+      active && !useInformerPath,
+    );
+
+    const claims = useMemo<readonly Claim[] | undefined>(
+      () =>
+        useInformerPath ? entityResult.data.map(entityToClaim) : (polledClaims.data ?? undefined),
+      [useInformerPath, entityResult.data, polledClaims.data],
+    );
+    const claimsLoading = useInformerPath
+      ? !entityResult.hasSynced && claims === undefined
+      : polledClaims.loading;
+    const isStale = useInformerPath ? false : polledClaims.isStale;
+    const error = useInformerPath ? entityResult.error : polledClaims.error;
     const {
       data: sessions,
       isStale: tmuxStale,

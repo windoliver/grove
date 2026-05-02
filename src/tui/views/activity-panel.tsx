@@ -1,16 +1,21 @@
 /**
  * Activity panel — recent contributions filtered by kind/agent/tags.
  *
- * Distinct from the existing ActivityView tab: this is a dedicated
- * operator panel (toggled via key 9) with compact formatting.
+ * PR2 (#388) migrated from `usePolledData(provider.getActivity({limit:30}))`
+ * to `useEntities("Contribution", …)` + `.slice(0, 30)`. Distinct from the
+ * full ActivityView tab: this is a dedicated operator panel (toggled via
+ * key 9) with compact formatting.
  */
 
-import React, { useCallback, useEffect } from "react";
+import React, { useCallback, useEffect, useMemo } from "react";
+import type { ContributionEntity } from "../../core/entity.js";
 import type { Contribution } from "../../core/models.js";
 import { formatTimestamp, truncateCid } from "../../shared/format.js";
 import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
+import { useEntityWatchEnabled } from "../hooks/informer-context.js";
+import { useEntities } from "../hooks/use-entities.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
 
@@ -32,6 +37,26 @@ const COLUMNS = [
   { header: "TIME", key: "time", width: 10 },
 ] as const;
 
+const PANEL_LIMIT = 30;
+
+function entityToContribution(e: ContributionEntity): Contribution {
+  return {
+    cid: e.id,
+    manifestVersion: 0,
+    kind: e.spec.contributionKind,
+    mode: e.spec.mode,
+    summary: e.spec.summary,
+    description: e.spec.description,
+    artifacts: e.spec.artifacts,
+    relations: e.spec.relations,
+    scores: e.spec.scores,
+    tags: e.spec.tags,
+    context: e.spec.context,
+    agent: e.spec.agent,
+    createdAt: e.metadata.creationTimestamp ?? "",
+  };
+}
+
 /** Activity panel showing recent contributions. */
 export const ActivityPanelView: React.NamedExoticComponent<ActivityPanelProps> = React.memo(
   function ActivityPanelView({
@@ -41,12 +66,32 @@ export const ActivityPanelView: React.NamedExoticComponent<ActivityPanelProps> =
     cursor,
     onRowCountChanged,
   }: ActivityPanelProps): React.ReactNode {
-    const fetcher = useCallback(() => provider.getActivity({ limit: 30 }), [provider]);
-    const { data, loading, isStale, error } = usePolledData<readonly Contribution[]>(
+    const useInformerPath = useEntityWatchEnabled(provider, "Contribution");
+
+    const entityResult = useEntities("Contribution");
+
+    const fetcher = useCallback(() => provider.getActivity({ limit: PANEL_LIMIT }), [provider]);
+    const polled = usePolledData<readonly Contribution[]>(
       fetcher,
       intervalMs,
-      active,
+      active && !useInformerPath,
     );
+
+    const data = useMemo<readonly Contribution[] | undefined>(() => {
+      if (useInformerPath) {
+        const sorted = [...entityResult.data].sort((a, b) =>
+          (b.metadata.creationTimestamp ?? "").localeCompare(a.metadata.creationTimestamp ?? ""),
+        );
+        return sorted.slice(0, PANEL_LIMIT).map(entityToContribution);
+      }
+      return polled.data ?? undefined;
+    }, [useInformerPath, entityResult.data, polled.data]);
+
+    const loading = useInformerPath
+      ? !entityResult.hasSynced && data === undefined
+      : polled.loading;
+    const isStale = useInformerPath ? false : polled.isStale;
+    const error = useInformerPath ? entityResult.error : polled.error;
 
     useEffect(() => {
       if (data && onRowCountChanged) {

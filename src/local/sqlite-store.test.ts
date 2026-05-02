@@ -16,8 +16,7 @@ import { join } from "node:path";
 import { runClaimStoreTests } from "../core/claim-store.conformance.js";
 import { ContributionKind, RelationType } from "../core/models.js";
 import { runContributionStoreTests } from "../core/store.conformance.js";
-import type { ContributionStore } from "../core/store.js";
-import { makeContribution } from "../core/test-helpers.js";
+import { makeClaim, makeContribution } from "../core/test-helpers.js";
 import { createSqliteStores, SqliteStore } from "./sqlite-store.js";
 
 function sqliteBindLimit(db: Database): number {
@@ -142,7 +141,7 @@ describe("SqliteContributionStore ordering", () => {
 // ---------------------------------------------------------------------------
 
 describe("putMany with rich contributions", () => {
-  let store: ContributionStore;
+  let store: import("./sqlite-store.js").SqliteContributionStore;
   let dir: string;
   let closeStore: () => void;
   let db: Database;
@@ -588,5 +587,119 @@ describe("putMany with rich contributions", () => {
       (_, index) => `tag-${index}`,
     );
     await expect(store.list({ tags: tooManyTags })).rejects.toThrow("Too many tag filters");
+  });
+
+  test("onContributionWrite fires ADDED on new put, skips re-put of same cid", async () => {
+    const events: Array<{ op: string; cid: string }> = [];
+    store.onContributionWrite = (op, c) => events.push({ op, cid: c.cid });
+    const c = makeContribution({ summary: "watch-event-1" });
+    await store.put(c);
+    await store.put(c);
+    expect(events).toEqual([{ op: "ADDED", cid: c.cid }]);
+  });
+
+  test("onContributionWrite fires once per new contribution in putMany", async () => {
+    const events: Array<{ op: string; cid: string }> = [];
+    store.onContributionWrite = (op, c) => events.push({ op, cid: c.cid });
+    const c1 = makeContribution({ summary: "many-1" });
+    const c2 = makeContribution({ summary: "many-2" });
+    await store.putMany([c1, c2]);
+    expect(events).toHaveLength(2);
+    expect(events.every((e) => e.op === "ADDED")).toBe(true);
+  });
+});
+
+describe("SqliteClaimStore onClaimWrite hook", () => {
+  let dir: string;
+  let claimStore: import("./sqlite-store.js").SqliteClaimStore;
+  let closeStore: () => void;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "sqlite-claim-watch-"));
+    const dbPath = join(dir, "test.db");
+    const stores = createSqliteStores(dbPath);
+    claimStore = stores.claimStore;
+    closeStore = stores.close;
+  });
+
+  afterEach(async () => {
+    closeStore();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("createClaim fires ADDED", async () => {
+    const events: Array<{ op: string; id: string }> = [];
+    claimStore.onClaimWrite = (op, c) => events.push({ op, id: c.claimId });
+    const claim = makeClaim({ targetRef: "watch-create" });
+    await claimStore.createClaim(claim);
+    expect(events).toEqual([{ op: "ADDED", id: claim.claimId }]);
+  });
+
+  test("heartbeat fires MODIFIED so cached lease fields stay fresh", async () => {
+    const claim = makeClaim({ targetRef: "watch-heartbeat" });
+    await claimStore.createClaim(claim);
+    const events: Array<{ op: string; id: string; leaseExpiresAt: string }> = [];
+    claimStore.onClaimWrite = (op, c) =>
+      events.push({ op, id: c.claimId, leaseExpiresAt: c.leaseExpiresAt });
+    const renewed = await claimStore.heartbeat(claim.claimId);
+    expect(events.length).toBe(1);
+    expect(events[0]?.op).toBe("MODIFIED");
+    expect(events[0]?.id).toBe(claim.claimId);
+    // The fired claim's leaseExpiresAt must reflect the renewed value so
+    // consumers re-render with the new deadline (Codex round 1, finding 3).
+    expect(events[0]?.leaseExpiresAt).toBe(renewed.leaseExpiresAt);
+  });
+
+  test("complete fires MODIFIED", async () => {
+    const claim = makeClaim({ targetRef: "watch-complete" });
+    await claimStore.createClaim(claim);
+    const events: Array<{ op: string; id: string }> = [];
+    claimStore.onClaimWrite = (op, c) => events.push({ op, id: c.claimId });
+    await claimStore.complete(claim.claimId);
+    expect(events).toEqual([{ op: "MODIFIED", id: claim.claimId }]);
+  });
+
+  test("release fires MODIFIED", async () => {
+    const claim = makeClaim({ targetRef: "watch-release" });
+    await claimStore.createClaim(claim);
+    const events: Array<{ op: string; id: string }> = [];
+    claimStore.onClaimWrite = (op, c) => events.push({ op, id: c.claimId });
+    await claimStore.release(claim.claimId);
+    expect(events).toEqual([{ op: "MODIFIED", id: claim.claimId }]);
+  });
+
+  test("expireStale fires MODIFIED for each expired claim", async () => {
+    // Claim with already-expired lease so expireStale picks it up.
+    const expired = makeClaim({
+      targetRef: "watch-expire",
+      leaseExpiresAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    await claimStore.createClaim(expired);
+    const events: Array<{ op: string; id: string }> = [];
+    claimStore.onClaimWrite = (op, c) => events.push({ op, id: c.claimId });
+    const expired_results = await claimStore.expireStale();
+    expect(expired_results.length).toBeGreaterThan(0);
+    expect(events.length).toBe(expired_results.length);
+    expect(events.every((e) => e.op === "MODIFIED")).toBe(true);
+  });
+
+  test("claimOrRenew fires ADDED for new insert, MODIFIED for renew", async () => {
+    const events: Array<{ op: string; id: string }> = [];
+    claimStore.onClaimWrite = (op, c) => events.push({ op, id: c.claimId });
+    const claim = makeClaim({ targetRef: "watch-renew" });
+    await claimStore.claimOrRenew(claim);
+    // Same agent, same target → renew path
+    const renewed = makeClaim({
+      claimId: `${claim.claimId}-attempt2`,
+      targetRef: claim.targetRef,
+      agent: claim.agent,
+      createdAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await claimStore.claimOrRenew(renewed);
+    expect(events.length).toBe(2);
+    expect(events[0]?.op).toBe("ADDED");
+    expect(events[1]?.op).toBe("MODIFIED");
   });
 });

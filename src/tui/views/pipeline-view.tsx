@@ -7,12 +7,32 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import type { ClaimEntity } from "../../core/entity.js";
 import type { Claim } from "../../core/models.js";
 import type { TmuxManager } from "../agents/tmux-manager.js";
 import { agentIdFromSession } from "../agents/tmux-manager.js";
+import { useEntityWatchEnabled } from "../hooks/informer-context.js";
+import { useEntities } from "../hooks/use-entities.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
 import { BRAILLE_SPINNER, PLATFORM_COLORS, theme } from "../theme.js";
+
+const ACTIVE_PREDICATE = (e: ClaimEntity): boolean => e.status.phase === "active";
+
+function entityToClaim(e: ClaimEntity): Claim {
+  return {
+    claimId: e.id,
+    targetRef: e.spec.targetRef,
+    agent: e.spec.agent,
+    status: e.status.phase,
+    intentSummary: e.spec.intentSummary,
+    createdAt: e.metadata.creationTimestamp ?? e.status.heartbeatAt,
+    heartbeatAt: e.status.heartbeatAt,
+    leaseExpiresAt: e.status.leaseExpiresAt,
+    context: e.spec.context,
+    attemptCount: e.status.attemptCount,
+  };
+}
 
 /** Props for the PipelineView. */
 export interface PipelineViewProps {
@@ -157,8 +177,16 @@ export const PipelineView: React.NamedExoticComponent<PipelineViewProps> = React
       return () => clearInterval(timer);
     }, [active]);
 
+    const useInformerPath = useEntityWatchEnabled(provider, "Claim");
+
+    const entityResult = useEntities("Claim", ACTIVE_PREDICATE);
     const claimsFetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
-    const { data: claims } = usePolledData<readonly Claim[]>(claimsFetcher, intervalMs, active);
+    const polledClaims = usePolledData<readonly Claim[]>(
+      claimsFetcher,
+      intervalMs,
+      active && !useInformerPath,
+    );
+    const claims = useInformerPath ? entityResult.data.map(entityToClaim) : polledClaims.data;
 
     const sessionsFetcher = useCallback(async () => {
       if (!tmux) return [] as readonly string[];

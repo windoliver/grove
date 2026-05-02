@@ -8,7 +8,7 @@
 import { useEffect, useState } from "react";
 import type { Informer } from "../../core/informer.js";
 import type { WatchKind } from "../../core/watch-events.js";
-import { useInformer } from "./informer-context.js";
+import { useInformerOptional } from "./informer-context.js";
 
 export function selectEntityById<I extends Informer>(
   informer: I,
@@ -29,7 +29,7 @@ export function useEntity<K extends WatchKind>(
   kind: K,
   id: string | undefined,
 ): UseEntityResult<EntityFor<K>> {
-  const informer = useInformer(kind);
+  const informer = useInformerOptional(kind);
   const [data, setData] = useState<EntityFor<K> | undefined>(
     () => selectEntityById(informer, id) as EntityFor<K> | undefined,
   );

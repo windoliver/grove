@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Informer, InformerFactory } from "./informer.js";
 import { WatchClient } from "./watch-client.js";
 import type { WatchEntity } from "./watch-events.js";
+import { WatchHub } from "./watch-hub.js";
 
 // Minimal entity shapes (WatchClient passes them through as-is)
 const E_A: WatchEntity = {
@@ -569,6 +570,34 @@ describe("InformerFactory memoization", () => {
     expect(contrib).not.toBe(claim);
   });
 
+  test("AgentSession unsupported in remote mode — informerFor throws, supportsKind=false", () => {
+    const factory = new InformerFactory({
+      mode: "remote",
+      baseUrl: "http://t",
+      authHeader: "Bearer x",
+    });
+    expect(factory.mode).toBe("remote");
+    expect(factory.supportsKind("Contribution")).toBe(true);
+    expect(factory.supportsKind("Claim")).toBe(true);
+    expect(factory.supportsKind("AgentSession")).toBe(false);
+    expect(() => factory.informerFor("AgentSession")).toThrow(/mode=remote/);
+  });
+
+  test("AgentSession supported in local mode — informerFor returns informer, supportsKind=true", () => {
+    const factory = new InformerFactory({
+      mode: "local",
+      hub: new WatchHub(),
+      namespace: "default",
+      listFn: () => [],
+    });
+    expect(factory.mode).toBe("local");
+    expect(factory.supportsKind("Contribution")).toBe(true);
+    expect(factory.supportsKind("Claim")).toBe(true);
+    expect(factory.supportsKind("AgentSession")).toBe(true);
+    const informer = factory.informerFor("AgentSession");
+    expect(informer).toBeDefined();
+  });
+
   test("separate factories for separate namespaces use distinct instances", () => {
     // Each namespace gets its own factory (and its own authHeader that encodes
     // the namespace server-side). Two factories for different namespaces must
@@ -854,7 +883,7 @@ describe("Informer handler isolation", () => {
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
     );
-    informer.addEventHandler(async (op, entity) => {
+    informer.addEventHandler(async (_op, entity) => {
       order.push(`enter:${(entity as { id: string }).id}`);
       if ((entity as { id: string }).id === "cid-a") {
         await new Promise<void>((r) => {
@@ -961,7 +990,7 @@ describe("Informer cache immutability", () => {
     // Attempt to mutate resourceVersion (should silently fail in non-strict mode
     // or throw in strict mode because the entity is frozen)
     try {
-      (entity as unknown as Record<string, unknown>)["resourceVersion"] = "999";
+      (entity as unknown as Record<string, unknown>).resourceVersion = "999";
     } catch {
       // Expected in strict mode
     }
@@ -1002,7 +1031,7 @@ describe("Informer cache immutability", () => {
     const origSummary = (entity as unknown as { spec: { summary: string } })?.spec?.summary;
     // Attempt to mutate nested spec.summary (throws in strict mode, silently fails otherwise)
     try {
-      (entity as unknown as { spec: Record<string, unknown> }).spec["summary"] = "hacked";
+      (entity as unknown as { spec: Record<string, unknown> }).spec.summary = "hacked";
     } catch {
       // Expected under strict mode / frozen object
     }

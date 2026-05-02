@@ -865,6 +865,15 @@ export class SqliteContributionStore implements ContributionStore {
   /** Optional callback invoked after a successful write (put/putMany). */
   onWrite?: () => void;
 
+  /**
+   * Optional callback invoked after a successful Contribution write — the
+   * domain-typed feed for the local-mode `WatchHub` (#388 PR2). The
+   * `LocalRuntime` adapter projects via `contributionToEntity` and calls
+   * `WatchHub.recordWrite`. Only fires for newly-inserted contributions
+   * (idempotent re-puts of the same CID do not re-fire).
+   */
+  onContributionWrite?: (op: "ADDED" | "MODIFIED" | "DELETED", c: Contribution) => void;
+
   // Cached prepared statements for fixed queries
   private readonly stmtGetByCid: Statement;
   private readonly stmtGetByContentHash: Statement;
@@ -914,7 +923,10 @@ export class SqliteContributionStore implements ContributionStore {
 
   put = async (contribution: Contribution): Promise<ContributionPutResult> => {
     const result = this.putSync(contribution);
-    if (result.isNew) this.onWrite?.();
+    if (result.isNew) {
+      this.onWrite?.();
+      this.onContributionWrite?.("ADDED", contribution);
+    }
     return result;
   };
 
@@ -934,7 +946,10 @@ export class SqliteContributionStore implements ContributionStore {
    */
   putWithCowrite(contribution: Contribution, cowriteFn: () => void): ContributionPutResult {
     const result = this.putSync(contribution, cowriteFn);
-    if (result.isNew) this.onWrite?.();
+    if (result.isNew) {
+      this.onWrite?.();
+      this.onContributionWrite?.("ADDED", contribution);
+    }
     return result;
   }
 
@@ -950,6 +965,13 @@ export class SqliteContributionStore implements ContributionStore {
     });
     tx();
     if (results.some((result) => result.isNew)) this.onWrite?.();
+    if (this.onContributionWrite) {
+      for (let i = 0; i < contributions.length; i += 1) {
+        if (results[i]?.isNew) {
+          this.onContributionWrite("ADDED", contributions[i] as Contribution);
+        }
+      }
+    }
     return results;
   };
 
@@ -1415,6 +1437,14 @@ export class SqliteClaimStore implements ClaimStore {
   readonly storeIdentity: string;
   private readonly db: Database;
 
+  /**
+   * Optional callback invoked after a successful Claim transition that
+   * matters for the local-mode WatchHub (#388 PR2). Pure heartbeat-only
+   * updates that don't change status or the lease boundary are NOT fired —
+   * matches the rule documented on `OperationDeps.onEntityWrite`.
+   */
+  onClaimWrite?: (op: "ADDED" | "MODIFIED" | "DELETED", c: Claim) => void;
+
   // Cached prepared statements
   private readonly stmtGetClaim: Statement;
 
@@ -1477,6 +1507,7 @@ export class SqliteClaimStore implements ClaimStore {
 
     const created = this.readClaim(claim.claimId);
     if (created === null) throw new Error(`Failed to read back claim '${claim.claimId}'`);
+    this.onClaimWrite?.("ADDED", created);
     return created;
   };
 
@@ -1488,6 +1519,7 @@ export class SqliteClaimStore implements ClaimStore {
     const leaseExpiresUtc = toUtcIso(claim.leaseExpiresAt);
 
     let resultClaimId: string = claim.claimId;
+    let didRenew = false;
 
     const tx = this.db.transaction(() => {
       const now = new Date();
@@ -1502,6 +1534,7 @@ export class SqliteClaimStore implements ClaimStore {
       if (activeOnTarget !== null) {
         // Same agent → renew the existing claim from current time
         if (activeOnTarget.agent_id === claim.agent.agentId) {
+          didRenew = true;
           // Use the requested lease duration (derived from the claim payload),
           // but anchor it to now so retries always extend the lease forward.
           const requestedDurationMs =
@@ -1554,6 +1587,10 @@ export class SqliteClaimStore implements ClaimStore {
 
     const result = this.readClaim(resultClaimId);
     if (result === null) throw new Error(`Failed to read back claim '${resultClaimId}'`);
+    // Renew anchors the lease forward — that IS the lease boundary moving,
+    // which the watch protocol cares about, so fire MODIFIED. New insert
+    // path fires ADDED.
+    this.onClaimWrite?.(didRenew ? "MODIFIED" : "ADDED", result);
     return result;
   };
 
@@ -1582,7 +1619,17 @@ export class SqliteClaimStore implements ClaimStore {
       ) as readonly ClaimRow[];
 
     if (rows.length > 0 && rows[0] !== undefined) {
-      return rowToClaim(rows[0]);
+      const claim = rowToClaim(rows[0]);
+      // Heartbeat advances heartbeat_at + lease_expires_at + revision; views
+      // render the lease deadline from the cached entity, so without firing
+      // a MODIFIED write the cache would still show the prior lease and the
+      // view would render the claim as expired/stale even though the store
+      // is fresh. PR2 (#388) earlier excluded heartbeat to suppress no-op
+      // ticks, but the lease fields ARE state changes that consumers depend
+      // on — see Codex round-1 finding "Claim heartbeats never update the
+      // local watch cache".
+      this.onClaimWrite?.("MODIFIED", claim);
+      return claim;
     }
 
     // UPDATE matched nothing — determine why for a specific error message
@@ -1659,7 +1706,11 @@ export class SqliteClaimStore implements ClaimStore {
       return results;
     });
 
-    return expireTx.immediate();
+    const results = expireTx.immediate();
+    if (this.onClaimWrite) {
+      for (const r of results) this.onClaimWrite("MODIFIED", r.claim);
+    }
+    return results;
   };
 
   activeClaims = async (targetRef?: string): Promise<readonly Claim[]> => {
@@ -1838,7 +1889,9 @@ export class SqliteClaimStore implements ClaimStore {
       .all(newStatus, claimId, nowIso) as readonly ClaimRow[];
 
     if (rows.length > 0 && rows[0] !== undefined) {
-      return rowToClaim(rows[0]);
+      const claim = rowToClaim(rows[0]);
+      this.onClaimWrite?.("MODIFIED", claim);
+      return claim;
     }
 
     // UPDATE matched nothing — determine why

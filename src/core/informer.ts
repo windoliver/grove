@@ -318,17 +318,24 @@ interface RunningInformer {
 
 /**
  * Kinds the factory will start eagerly via `startAll()` AND the only kinds
- * `informerFor` will accept. AgentSession is intentionally excluded because
- * the grove-server `/api/list` route currently returns 501 NOT_CONFIGURED
- * for it (handler exists, list source not wired). Re-add once server
- * support lands.
+ * `informerFor` will accept — split per-mode.
+ *
+ * Remote: AgentSession is excluded because the grove-server `/api/list`
+ * route currently returns 501 NOT_CONFIGURED for it (handler exists, list
+ * source not wired). Re-add once server support lands.
+ *
+ * Local: AgentSession is supported — the in-process `WatchHub` plus
+ * `agentRuntime.listSessions()` snapshot covers it without any server
+ * route. PR2 (#388) wires this in via `LocalRuntime` + `tui/main.ts`.
  *
  * Asking for an unsupported kind throws — louder than handing back an
  * informer that would silently never sync.
  */
-const ALL_KINDS: readonly WatchKind[] = ["Contribution", "Claim"];
+const REMOTE_KINDS: readonly WatchKind[] = ["Contribution", "Claim"];
+const LOCAL_KINDS: readonly WatchKind[] = ["Contribution", "Claim", "AgentSession"];
 
-const SUPPORTED_KINDS = new Set<WatchKind>(ALL_KINDS);
+const REMOTE_SUPPORTED = new Set<WatchKind>(REMOTE_KINDS);
+const LOCAL_SUPPORTED = new Set<WatchKind>(LOCAL_KINDS);
 
 /**
  * InformerFactory memoizes one Informer per kind for a single namespace
@@ -343,6 +350,29 @@ export class InformerFactory {
 
   constructor(opts: InformerFactoryOptions) {
     this.opts = opts;
+  }
+
+  get mode(): "remote" | "local" {
+    return this.opts.mode;
+  }
+
+  /**
+   * Whether the constructed mode supports the given kind. Used by hook
+   * call sites that gate AgentSession migrations: in remote mode the
+   * factory does not yet support AgentSession (server returns 501), so
+   * views must fall back to a non-reactive path (e.g. tmux poller). In
+   * local mode all three kinds are supported.
+   */
+  supportsKind(kind: WatchKind): boolean {
+    return this.supportedKinds().has(kind);
+  }
+
+  private supportedKinds(): ReadonlySet<WatchKind> {
+    return this.opts.mode === "remote" ? REMOTE_SUPPORTED : LOCAL_SUPPORTED;
+  }
+
+  private allKinds(): readonly WatchKind[] {
+    return this.opts.mode === "remote" ? REMOTE_KINDS : LOCAL_KINDS;
   }
 
   /**
@@ -377,10 +407,11 @@ export class InformerFactory {
    * comment for the AgentSession rationale.
    */
   informerFor<K extends WatchKind>(kind: K): Informer<K> {
-    if (!SUPPORTED_KINDS.has(kind)) {
+    const supported = this.supportedKinds();
+    if (!supported.has(kind)) {
       throw new Error(
-        `InformerFactory.informerFor(${kind}): kind not yet supported by grove-server watch routes. Supported: ${[
-          ...SUPPORTED_KINDS,
+        `InformerFactory.informerFor(${kind}): kind not supported in mode=${this.opts.mode}. Supported: ${[
+          ...supported,
         ].join(", ")}.`,
       );
     }
@@ -405,7 +436,7 @@ export class InformerFactory {
    * parent signal) on shutdown.
    */
   startAll(): void {
-    for (const kind of ALL_KINDS) {
+    for (const kind of this.allKinds()) {
       this.startKind(kind);
     }
   }
@@ -428,7 +459,7 @@ export class InformerFactory {
    * don't lose track of the live controller or runPromise.
    */
   async relist(kind?: WatchKind): Promise<void> {
-    const kinds: WatchKind[] = kind ? [kind] : [...ALL_KINDS];
+    const kinds: WatchKind[] = kind ? [kind] : [...this.allKinds()];
     const targets = kinds
       .map((k) => this.running.get(k))
       .filter((r): r is RunningInformer => r !== undefined);

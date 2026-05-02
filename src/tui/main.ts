@@ -366,19 +366,52 @@ async function buildAppProps(
 
   // Use groveDir for workspace management (agent spawning, file sync).
   // Always resolved — even in "remote" mode, agents need workspace paths.
+  // Constructed before the InformerFactory block so its stores can drive
+  // the local-mode listFn / onContributionWrite path (#388 PR2).
+  let watchHub: import("../core/watch-hub.js").WatchHub | undefined;
+  let cleanupRuntime: import("../local/runtime.js").LocalRuntime | undefined;
+  const WATCH_NAMESPACE = "default";
   if (groveDir) {
     const { createLocalRuntime } = await import("../local/runtime.js");
     const { runCleanup, runArtifactGc, runSessionGc } = await import("../local/cleanup.js");
-    const cleanupRuntime = createLocalRuntime({
+    // Local-mode WatchHub: only constructed when we have a groveDir (i.e. the
+    // local runtime exists). Remote mode keeps using the server-side hub via
+    // WatchClient over SSE.
+    if (backend.mode === "local") {
+      const { WatchHub } = await import("../core/watch-hub.js");
+      watchHub = new WatchHub();
+    }
+    cleanupRuntime = createLocalRuntime({
       groveDir,
       frontierCacheTtlMs: 0,
       workspace: false,
       parseContract: false,
+      ...(watchHub ? { watchHub, watchNamespace: WATCH_NAMESPACE } : {}),
     });
+    // Wire AgentRuntime → WatchHub (#388 PR2) when both are present and the
+    // runtime exposes the hook. Other runtimes (Tmux, Subprocess, Mock)
+    // don't fire it; AgentSession entities then snapshot via listFn but
+    // don't update on transitions until those runtimes adopt the hook.
+    if (watchHub && agentRuntime) {
+      const ar = agentRuntime as { onSessionWrite?: (op: string, s: unknown) => void };
+      if ("onSessionWrite" in ar || ar.onSessionWrite !== undefined) {
+        const { createWatchHubRecorder } = await import("../local/watch-hub-recorder.js");
+        const recorder = createWatchHubRecorder({ hub: watchHub, namespace: WATCH_NAMESPACE });
+        (
+          agentRuntime as unknown as {
+            onSessionWrite?: (
+              op: "ADDED" | "MODIFIED" | "DELETED",
+              s: import("../core/agent-runtime.js").AgentSession,
+            ) => void;
+          }
+        ).onSessionWrite = (op, s) => recorder.agentSession(op, s);
+      }
+    }
 
+    const localRuntime = cleanupRuntime;
     const claimTimer = setInterval(async () => {
       try {
-        const result = await runCleanup({ claimStore: cleanupRuntime.claimStore });
+        const result = await runCleanup({ claimStore: localRuntime.claimStore });
         if (result.expiredClaims > 0 || result.cleanedClaims > 0) {
           process.stderr.write(
             `[cleanup] expired ${result.expiredClaims} stale claim(s), cleaned ${result.cleanedClaims} old claim(s)\n`,
@@ -392,8 +425,8 @@ async function buildAppProps(
     const gcTimer = setInterval(async () => {
       try {
         const result = await runArtifactGc({
-          contributionStore: cleanupRuntime.contributionStore,
-          cas: cleanupRuntime.cas,
+          contributionStore: localRuntime.contributionStore,
+          cas: localRuntime.cas,
         });
         if (result.deletedBlobs > 0) {
           process.stderr.write(
@@ -409,7 +442,7 @@ async function buildAppProps(
     // Run once eagerly on startup so the session picker is clean immediately.
     const runSessionGcOnce = () => {
       try {
-        const result = runSessionGc({ goalSessionStore: cleanupRuntime.goalSessionStore });
+        const result = runSessionGc({ goalSessionStore: localRuntime.goalSessionStore });
         if (result.archivedSessions > 0) {
           process.stderr.write(`[cleanup] archived ${result.archivedSessions} stale session(s)\n`);
         }
@@ -424,7 +457,7 @@ async function buildAppProps(
       clearInterval(claimTimer);
       clearInterval(gcTimer);
       clearInterval(sessionGcTimer);
-      cleanupRuntime.close();
+      localRuntime.close();
     });
   }
 
@@ -450,14 +483,19 @@ async function buildAppProps(
     }
   }
 
-  // Construct InformerFactory for the new SSE-driven cache (#295). Ships dark
-  // in PR1 — no view consumes the factory yet. The factory targets the
-  // grove-server watch routes (`/api/list`, `/api/watch`), which means it's
-  // only usable in `mode: "remote"` (grove-server). `mode: "nexus"` talks to
-  // Nexus VFS endpoints which do not host these routes; PR2 either adds a
-  // Nexus-backed WatchStream or routes through grove-server. Local mode uses
-  // an in-process WatchHub; PR2 wires real local store snapshots and
-  // recordWrite publishers.
+  // Construct InformerFactory for the SSE-driven cache (#295).
+  //
+  // Remote mode targets the grove-server watch routes (`/api/list`,
+  // `/api/watch`) over HTTP/SSE. `mode: "nexus"` talks to Nexus VFS
+  // endpoints which do not host these routes; for now those sessions
+  // skip the factory and views fall back to `usePolledData` until a
+  // Nexus-backed WatchStream lands.
+  //
+  // Local mode (PR2 #388) uses an in-process `WatchHub` plus the
+  // SqliteContributionStore / SqliteClaimStore + AgentRuntime as the
+  // listFn snapshot source. Producer-side recordWrite is wired by
+  // `createLocalRuntime` (contribution / claim stores) and by the
+  // `onSessionWrite` hook on AgentRuntime above.
   let informerFactory: import("../core/informer.js").InformerFactory | undefined;
   {
     const { InformerFactory } = await import("../core/informer.js");
@@ -474,24 +512,36 @@ async function buildAppProps(
           authHeader,
         });
       }
+    } else if (backend.mode === "local" && watchHub && cleanupRuntime) {
+      const localCleanupRuntime = cleanupRuntime;
+      const localAgentRuntime = agentRuntime;
+      informerFactory = new InformerFactory({
+        mode: "local",
+        hub: watchHub,
+        namespace: WATCH_NAMESPACE,
+        listFn: async (kind) => {
+          switch (kind) {
+            case "Contribution":
+              return localCleanupRuntime.contributionStore.listEntities();
+            case "Claim":
+              return localCleanupRuntime.claimStore.listEntities();
+            case "AgentSession":
+              if (!localAgentRuntime) return [];
+              try {
+                return await localAgentRuntime.listSessionEntities();
+              } catch {
+                return [];
+              }
+            default:
+              return [];
+          }
+        },
+      });
     }
-    // backend.mode === "local" / "nexus" intentionally NOT wired in PR1:
-    // - "local": LocalWatchClient with listFn=() => [] would synthesize a
-    //   "synced empty cache" since RELIST_END would fire on the empty
-    //   snapshot, and the unconnected WatchHub would never receive
-    //   recordWrite from the existing local stores. PR2 wires real
-    //   listEntities() + recordWrite producers before exposing this.
-    // - "nexus": WatchClient targets grove-server `/api/list` + `/api/watch`,
-    //   which Nexus does not host. PR2 either adds a Nexus-backed WatchStream
-    //   or routes through grove-server.
-    // In both cases, hook consumers throw on a missing provider — a louder
-    // signal than a silent watch failure.
-    //
-    // No stopAll() callback in PR1 — InformerProvider doesn't auto-start
-    // the informers (ships dark). PR2 turns eager-start on; at that point the
-    // provider's own unmount cleanup handles stopAll. Adding a stopCallback
-    // here would call stopAll() on a never-started factory, which is a no-op
-    // but adds noise.
+    // No stopAll() callback here — the InformerProvider's eager-start
+    // effect runs `stopAll()` on unmount. Adding a callback here would
+    // either double-stop (provider handles it) or stop without the
+    // provider knowing the factory is dead.
   }
 
   return {
@@ -776,10 +826,10 @@ export async function handleTui(
           );
         }
       }
-      // PR1 (#295): wrap App in InformerProvider/RefreshProvider when the
-      // informer factory was constructed. Ships dark — no view consumes the
-      // hooks yet; this primes the runtime so PR2 migrations don't have to
-      // re-thread plumbing through main.ts.
+      // PR2 (#388): wrap App in InformerProvider/RefreshProvider with
+      // eager-start enabled. PR1 shipped dark (eager=false) since no view
+      // consumed the hooks; PR2 migrates Entity-backed views, so we now
+      // need the watch loops running by the time those views mount.
       const { InformerProvider } = await import("./hooks/informer-context.js");
       const { RefreshProvider } = await import("./hooks/refresh-context.js");
       const appElement = React.createElement(
@@ -790,6 +840,13 @@ export async function handleTui(
       const wrappedApp = result.informerFactory
         ? React.createElement(InformerProvider, {
             value: result.informerFactory,
+            eager: true,
+            // Suspends the watch loop while a session scope is active —
+            // `/api/watch` does not filter by sessionId yet, so an eager
+            // factory would fan in cross-session events even though the
+            // migrated views ignore them. PR3+ removes this gate when
+            // sessionId plumbing lands.
+            scopeAwareProvider: result.appProps.provider,
             children: React.createElement(RefreshProvider, {
               factory: result.informerFactory,
               children: appElement,
@@ -906,6 +963,10 @@ export async function handleTui(
       // factory. Ships dark — no current view consumes hooks; this primes
       // the runtime so PR2 migrations don't have to re-thread plumbing.
       if (result.informerFactory) informerHolder.set(result.informerFactory);
+      // PR2 (#388) Codex round 2: bind the provider so the holder's
+      // wrapping <InformerProvider> can suspend the watch loop while a
+      // session scope is active.
+      informerHolder.setProvider(result.provider);
 
       // Post-startup: update agent skill SKILL.md (non-blocking)
       updateSkillAfterStartup();
@@ -935,7 +996,23 @@ export async function handleTui(
       const result = await buildAppProps(effectiveGrove, opts, groveInfo?.preset);
       activeProvider = result.provider;
       activeStopGc = result.stopGc;
+      // PR2 (#388) Codex round 3: pre-set the session scope on the
+      // provider BEFORE handing it to the InformerProvider. Otherwise
+      // the eager effect would call factory.startAll() while the scope
+      // is still undefined — `/api/watch` opens without a sessionId,
+      // populates the cache with cross-session data, and the scope
+      // change later (from screen-manager.tsx) only stops new fetches.
+      if (
+        sessionId !== undefined &&
+        typeof result.provider === "object" &&
+        result.provider !== null
+      ) {
+        const setScope = (result.provider as { setSessionScope?: (id: string) => void })
+          .setSessionScope;
+        if (typeof setScope === "function") setScope.call(result.provider, sessionId);
+      }
       if (result.informerFactory) informerHolder.set(result.informerFactory);
+      informerHolder.setProvider(result.provider);
 
       // Post-startup: update agent skill SKILL.md (non-blocking)
       updateSkillAfterStartup();
@@ -960,6 +1037,10 @@ export async function handleTui(
       activeProvider = result.provider;
       activeStopGc = result.stopGc;
       if (result.informerFactory) informerHolder.set(result.informerFactory);
+      // PR2 (#388) Codex round 2: bind the provider so the holder's
+      // wrapping <InformerProvider> can suspend the watch loop while a
+      // session scope is active.
+      informerHolder.setProvider(result.provider);
       return result.appProps;
     };
 
@@ -984,6 +1065,7 @@ export async function handleTui(
     });
     const informerHolderEl = React.createElement(InformerProviderHolder, {
       holder: informerHolder,
+      eager: true,
       children: refreshHolderEl,
     });
     root.render(

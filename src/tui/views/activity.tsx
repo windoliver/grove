@@ -1,11 +1,21 @@
 /**
  * Activity stream view — live feed of contributions.
+ *
+ * PR2 (#388) migrated from `usePolledData(provider.getActivity)` to
+ * `useEntities("Contribution", …)`. Pagination is applied to the
+ * informer cache snapshot (sorted by createdAt desc + sliced by
+ * pageOffset/pageSize). The cache is bounded by the listFn snapshot;
+ * "load more" beyond that window will see the same set until a relist
+ * pulls a fresh snapshot.
  */
 
-import React, { useCallback, useEffect } from "react";
+import React, { useCallback, useEffect, useMemo } from "react";
+import type { ContributionEntity } from "../../core/entity.js";
 import type { Contribution } from "../../core/models.js";
 import { formatTimestamp, truncateCid } from "../../shared/format.js";
 import { Table } from "../components/table.js";
+import { useEntityWatchEnabled } from "../hooks/informer-context.js";
+import { useEntities } from "../hooks/use-entities.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
 
@@ -30,6 +40,27 @@ const COLUMNS = [
   { header: "CREATED", key: "created", width: 12 },
 ] as const;
 
+/** Project a ContributionEntity back to the flat Contribution shape this view's
+ * row formatter expects. The fields the table reads are: cid, kind, mode,
+ * summary, agent, tags, createdAt. */
+function entityToContribution(e: ContributionEntity): Contribution {
+  return {
+    cid: e.id,
+    manifestVersion: 0,
+    kind: e.spec.contributionKind,
+    mode: e.spec.mode,
+    summary: e.spec.summary,
+    description: e.spec.description,
+    artifacts: e.spec.artifacts,
+    relations: e.spec.relations,
+    scores: e.spec.scores,
+    tags: e.spec.tags,
+    context: e.spec.context,
+    agent: e.spec.agent,
+    createdAt: e.metadata.creationTimestamp ?? "",
+  };
+}
+
 /** Activity stream view component. */
 export const ActivityView: React.NamedExoticComponent<ActivityProps> = React.memo(
   function ActivityView({
@@ -41,11 +72,36 @@ export const ActivityView: React.NamedExoticComponent<ActivityProps> = React.mem
     pageSize,
     onContributionsLoaded,
   }: ActivityProps): React.ReactNode {
+    const useInformerPath = useEntityWatchEnabled(provider, "Contribution");
+
+    const entityResult = useEntities("Contribution");
+
     const fetcher = useCallback(
       () => provider.getActivity({ limit: pageSize, offset: pageOffset }),
       [provider, pageSize, pageOffset],
     );
-    const { data, loading } = usePolledData<readonly Contribution[]>(fetcher, intervalMs, active);
+    const polled = usePolledData<readonly Contribution[]>(
+      fetcher,
+      intervalMs,
+      active && !useInformerPath,
+    );
+
+    const data = useMemo<readonly Contribution[] | undefined>(() => {
+      if (useInformerPath) {
+        const all = entityResult.data;
+        // Sort newest-first by creationTimestamp; entities without a
+        // timestamp sort last (they're typically synthetic / pre-#287).
+        const sorted = [...all].sort((a, b) =>
+          (b.metadata.creationTimestamp ?? "").localeCompare(a.metadata.creationTimestamp ?? ""),
+        );
+        return sorted.slice(pageOffset, pageOffset + pageSize).map(entityToContribution);
+      }
+      return polled.data ?? undefined;
+    }, [useInformerPath, entityResult.data, polled.data, pageOffset, pageSize]);
+
+    const loading = useInformerPath
+      ? !entityResult.hasSynced && data === undefined
+      : polled.loading;
 
     useEffect(() => {
       if (data && onContributionsLoaded) {

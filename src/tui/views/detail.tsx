@@ -2,6 +2,13 @@
  * Contribution detail view — full manifest, relations, artifacts, thread.
  *
  * Includes outcome annotation when available (Phase 5).
+ *
+ * PR2 (#388): the contribution body subscription migrates to
+ * `useEntity("Contribution", cid)` when a factory is mounted. Ancestors,
+ * children, thread, and outcome remain on `usePolledData` — those fields
+ * aren't on the Entity envelope (they're a relation graph the server
+ * computes on demand). PR3/PR4 may lift the relation graph into
+ * `useDerived`.
  */
 
 import React, { useCallback } from "react";
@@ -11,6 +18,8 @@ import { formatScore, formatTimestamp, truncateCid } from "../../shared/format.j
 import { ConditionChips } from "../components/condition-chips.js";
 import { DataStatus } from "../components/data-status.js";
 import { OutcomeBadge } from "../components/outcome-badge.js";
+import { useEntityWatchEnabled } from "../hooks/informer-context.js";
+import { useEntity } from "../hooks/use-entity.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { ContributionDetail, TuiDataProvider, TuiOutcomeProvider } from "../provider.js";
 import { theme } from "../theme.js";
@@ -28,12 +37,19 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
   cid,
   intervalMs,
 }: DetailProps): React.ReactNode {
+  const useInformerPath = useEntityWatchEnabled(provider, "Contribution");
+
+  // useEntity for the body — fast subscribe to the cache. The relation
+  // graph still needs the full ContributionDetail fetch below.
+  const entityResult = useEntity("Contribution", cid);
+
   const fetcher = useCallback(() => provider.getContribution(cid), [provider, cid]);
-  const { data, loading, isStale, error } = usePolledData<ContributionDetail | undefined>(
-    fetcher,
-    intervalMs,
-    true,
-  );
+  const {
+    data: detail,
+    loading,
+    isStale,
+    error,
+  } = usePolledData<ContributionDetail | undefined>(fetcher, intervalMs, true);
 
   // Fetch outcome for this CID if available
   const outcomeProvider = provider.capabilities.outcomes
@@ -50,7 +66,16 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
     true,
   );
 
-  if (loading && !data) {
+  // Body source: prefer the informer-cached entity when available, else
+  // project from the polled detail.
+  const bodyEntity =
+    useInformerPath && entityResult.data
+      ? entityResult.data
+      : detail
+        ? contributionToEntity(detail.contribution, "default")
+        : undefined;
+
+  if (loading && !detail && !bodyEntity) {
     return (
       <box>
         <text opacity={0.5}>Loading {truncateCid(cid)}...</text>
@@ -58,7 +83,7 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
     );
   }
 
-  if (!data) {
+  if (!detail && !bodyEntity) {
     return (
       <box>
         <text color={theme.error}>Contribution not found: {cid}</text>
@@ -66,15 +91,33 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
     );
   }
 
-  const { contribution: c, ancestors, children, thread } = data;
-  const entity = contributionToEntity(c, "default");
+  const ancestors = detail?.ancestors ?? [];
+  const children = detail?.children ?? [];
+  const thread = detail?.thread ?? [];
+  // Narrowed: the early return above ensures bodyEntity is defined when
+  // we reach this point. Use a runtime-asserted alias to satisfy strict
+  // null checks without a non-null assertion (biome-disallowed).
+  if (!bodyEntity) return null;
+  const entity = bodyEntity;
+  const cidStr = entity.id;
+  const kind = entity.spec.contributionKind;
+  const mode = entity.spec.mode;
+  const summary = entity.spec.summary;
+  const description = entity.spec.description;
+  const tags = entity.spec.tags;
+  const scores = entity.spec.scores;
+  const relations = entity.spec.relations;
+  const artifacts = entity.spec.artifacts;
+  const context = entity.spec.context;
+  const agent = entity.spec.agent;
+  const createdAt = entity.metadata.creationTimestamp ?? "";
 
   return (
     <box flexDirection="column">
       <ConditionChips conditions={entity.conditions} />
       <box marginBottom={1} flexDirection="row">
-        <text color={theme.focus}>{c.cid}</text>
-        <DataStatus loading={loading && !data} isStale={isStale} error={error?.message} />
+        <text color={theme.focus}>{cidStr}</text>
+        <DataStatus loading={loading && !detail} isStale={isStale} error={error?.message} />
         {outcome && (
           <>
             <text> </text>
@@ -85,14 +128,14 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
 
       <box flexDirection="column" marginBottom={1}>
         <text>
-          Kind: {c.kind} Mode: {c.mode} Created: {formatTimestamp(c.createdAt)}
+          Kind: {kind} Mode: {mode} Created: {formatTimestamp(createdAt)}
         </text>
         <text>
-          Agent: {c.agent?.agentName ?? c.agent?.agentId ?? "unknown"}
-          {c.agent?.model ? ` (${c.agent.model})` : ""}
-          {c.agent?.platform ? ` on ${c.agent.platform}` : ""}
+          Agent: {agent?.agentName ?? agent?.agentId ?? "unknown"}
+          {agent?.model ? ` (${agent.model})` : ""}
+          {agent?.platform ? ` on ${agent.platform}` : ""}
         </text>
-        {(c.tags ?? []).length > 0 && <text>Tags: {(c.tags ?? []).join(", ")}</text>}
+        {(tags ?? []).length > 0 && <text>Tags: {(tags ?? []).join(", ")}</text>}
       </box>
 
       {/* Outcome annotation */}
@@ -112,18 +155,18 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
 
       <box flexDirection="column" marginBottom={1}>
         <text>Summary</text>
-        <markdown>{c.summary}</markdown>
-        {c.description && (
+        <markdown>{summary}</markdown>
+        {description && (
           <box marginTop={1}>
-            <markdown>{c.description.slice(0, 500)}</markdown>
+            <markdown>{description.slice(0, 500)}</markdown>
           </box>
         )}
       </box>
 
-      {c.scores && Object.keys(c.scores).length > 0 && (
+      {scores && Object.keys(scores).length > 0 && (
         <box flexDirection="column" marginBottom={1}>
           <text>Scores</text>
-          {Object.entries(c.scores).map(([name, score]) => (
+          {Object.entries(scores).map(([name, score]) => (
             <text key={name}>
               {name}: {formatScore(score)} ({score.direction})
             </text>
@@ -131,10 +174,10 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
         </box>
       )}
 
-      {(c.relations ?? []).length > 0 && (
+      {(relations ?? []).length > 0 && (
         <box flexDirection="column" marginBottom={1}>
-          <text>{`Relations (${(c.relations ?? []).length})`}</text>
-          {(c.relations ?? []).map((r, i) => (
+          <text>{`Relations (${(relations ?? []).length})`}</text>
+          {(relations ?? []).map((r, i) => (
             <text key={`rel-${String(i)}`}>
               {r.relationType} → {truncateCid(r.targetCid)}
             </text>
@@ -142,10 +185,10 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
         </box>
       )}
 
-      {Object.keys(c.artifacts).length > 0 && (
+      {Object.keys(artifacts).length > 0 && (
         <box flexDirection="column" marginBottom={1}>
-          <text>{`Artifacts (${Object.keys(c.artifacts).length})`}</text>
-          {Object.entries(c.artifacts).map(([name, hash]) => (
+          <text>{`Artifacts (${Object.keys(artifacts).length})`}</text>
+          {Object.entries(artifacts).map(([name, hash]) => (
             <text key={name}>
               {name}: {truncateCid(hash)}
             </text>
@@ -189,10 +232,10 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
         </box>
       )}
 
-      {c.context && Object.keys(c.context).length > 0 && (
+      {context && Object.keys(context).length > 0 && (
         <box flexDirection="column" marginTop={1}>
           <text>Context</text>
-          <text opacity={0.5}>{JSON.stringify(c.context, null, 2).slice(0, 300)}</text>
+          <text opacity={0.5}>{JSON.stringify(context, null, 2).slice(0, 300)}</text>
         </box>
       )}
     </box>
