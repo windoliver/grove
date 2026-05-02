@@ -138,6 +138,28 @@ describe("redactText", () => {
     expect(redacted).toBe("path=<redacted-path>");
   });
 
+  test("aggressive mode scrubs absolute paths in spaced, yaml, and JSON assignments", () => {
+    const input = [
+      "config = /etc/grove/config.json",
+      "config: /etc/grove/config.json",
+      '{"path":"/etc/grove/config.json"}',
+    ].join("\n");
+
+    const redacted = redactText(input, {
+      mode: "aggressive",
+      homeDir: "/Users/tafeng",
+      secretEnvKeys: [],
+    });
+
+    expect(redacted).toBe(
+      [
+        "config = <redacted-path>",
+        "config: <redacted-path>",
+        '{"path":"<redacted-path>"}',
+      ].join("\n"),
+    );
+  });
+
   test("off mode preserves text", () => {
     const input = "EMAIL=user@example.com\nTOKEN=secret";
     expect(redactText(input, { mode: "off", homeDir: "/Users/tafeng", secretEnvKeys: [] })).toBe(

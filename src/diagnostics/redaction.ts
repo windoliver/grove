@@ -78,9 +78,17 @@ function redactAssignmentValues(input: string, keyPattern: string, flags: string
 }
 
 function redactAssignedAbsolutePaths(input: string): string {
-  return input.replace(/(?<==)\/[^\s"']+/g, (path) =>
-    isRouteLikePathValue(path) ? path : "<redacted-path>",
-  );
+  const quoted = /((?:^|[{\s,])"?[A-Za-z0-9_.-]+"?\s*[=:]\s*)(["'])(\/(?:\\.|(?!\2)[^\r\n])*?)\2/g;
+  const unquoted = /((?:^|[{\s,])"?[A-Za-z0-9_.-]+"?\s*[=:]\s*)\/[^\s"']+/g;
+
+  return input
+    .replace(quoted, (match, prefix: string, quote: string, path: string) =>
+      isRouteLikePathValue(path) ? match : `${prefix}${quote}<redacted-path>${quote}`,
+    )
+    .replace(unquoted, (match, prefix: string) => {
+      const path = match.slice(prefix.length);
+      return isRouteLikePathValue(path) ? match : `${prefix}<redacted-path>`;
+    });
 }
 
 function isRouteLikePathValue(path: string): boolean {
