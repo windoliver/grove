@@ -296,14 +296,7 @@ export class NexusContributionStore implements ContributionStore {
     const existingCid = marker.cid;
     const existing = await this.get(existingCid);
     if (existing !== undefined) {
-      if (!(await this.isContributionRecordComplete(existing.cid))) {
-        await withRetry(
-          () => this.writeContributionRecord(existing),
-          "put:repairExistingIndexes",
-          this.config,
-        );
-        this.invalidateListCache();
-      }
+      await this.repairContributionRecordIfIncomplete(existing, "put:repairExistingIndexes");
       return { cid: existingCid, isNew: false, contribution: existing };
     }
 
@@ -319,14 +312,7 @@ export class NexusContributionStore implements ContributionStore {
   ): Promise<ContributionPutResult> {
     const existing = await this.get(marker.cid);
     if (existing !== undefined) {
-      if (!(await this.isContributionRecordComplete(existing.cid))) {
-        await withRetry(
-          () => this.writeContributionRecord(existing),
-          "put:repairExistingIndexes",
-          this.config,
-        );
-        this.invalidateListCache();
-      }
+      await this.repairContributionRecordIfIncomplete(existing, "put:repairExistingIndexes");
       try {
         await withRetry(
           () =>
@@ -463,6 +449,15 @@ export class NexusContributionStore implements ContributionStore {
     return data !== undefined;
   }
 
+  private async repairContributionRecordIfIncomplete(
+    contribution: Contribution,
+    context: string,
+  ): Promise<void> {
+    if (await this.isContributionRecordComplete(contribution.cid)) return;
+    await withRetry(() => this.writeContributionRecord(contribution), context, this.config);
+    this.invalidateListCache();
+  }
+
   private async writeContributionRecord(contribution: Contribution): Promise<void> {
     await this.writeContributionManifest(contribution);
     await this.writeContributionIndexes(contribution);
@@ -571,8 +566,13 @@ export class NexusContributionStore implements ContributionStore {
     );
     if (markerResult === undefined) return undefined;
     const marker = decodeContentHashMarker(markerResult.content);
-    const cid = marker.kind === "committed" ? marker.cid : marker.marker.cid;
-    return this.get(cid);
+    if (marker.kind === "repairing") return undefined;
+
+    const existing = await this.get(marker.cid);
+    if (existing === undefined) return undefined;
+
+    await this.repairContributionRecordIfIncomplete(existing, "getByContentHash:repairIndexes");
+    return existing;
   }
 
   async list(query?: ContributionQuery): Promise<readonly Contribution[]> {

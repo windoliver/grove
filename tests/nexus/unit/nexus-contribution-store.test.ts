@@ -277,6 +277,50 @@ describe("NexusContributionStore adapter-specific", () => {
     expect((await store.search("secondary")).map((entry) => entry.cid)).toContain(c.cid);
   });
 
+  test("getByContentHash repairs committed incomplete manifest records", async () => {
+    const c = makeContribution({ summary: "repair content hash lookup", tags: ["lookup"] });
+    const contentHash = computeContributionContentHash(c);
+    await client.write(
+      contributionPath("test-zone", c.cid),
+      new TextEncoder().encode(JSON.stringify(toManifest(c))),
+    );
+    await client.write(
+      contributionContentHashIndexPath("test-zone", contentHash),
+      new TextEncoder().encode(c.cid),
+    );
+
+    const found = await store.getByContentHash(contentHash);
+
+    expect(found?.cid).toBe(c.cid);
+    expect((await store.list()).map((entry) => entry.cid)).toContain(c.cid);
+    expect((await store.search("lookup")).map((entry) => entry.cid)).toContain(c.cid);
+  });
+
+  test("getByContentHash ignores repairing incomplete manifest records", async () => {
+    const c = makeContribution({ summary: "skip repairing content hash lookup" });
+    const contentHash = computeContributionContentHash(c);
+    await client.write(
+      contributionPath("test-zone", c.cid),
+      new TextEncoder().encode(JSON.stringify(toManifest(c))),
+    );
+    await client.write(
+      contributionContentHashIndexPath("test-zone", contentHash),
+      new TextEncoder().encode(
+        JSON.stringify({
+          state: "repairing",
+          cid: c.cid,
+          token: "interrupted",
+          startedAt: new Date().toISOString(),
+        }),
+      ),
+    );
+
+    const found = await store.getByContentHash(contentHash);
+
+    expect(found).toBeUndefined();
+    expect(await store.list()).toEqual([]);
+  });
+
   // -----------------------------------------------------------------------
   // storeIdentity
   // -----------------------------------------------------------------------
