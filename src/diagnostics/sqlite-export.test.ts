@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -132,6 +133,46 @@ describe("exportSqliteSummaries", () => {
     expect(rawExport).not.toContain("result_json");
     expect(rawExport).not.toContain("secret-fingerprint");
     expect(rawExport).not.toContain("secret-payload");
+  });
+
+  test("continues when contributions table is missing", async () => {
+    const ctx = await createExportContext();
+    new Database(ctx.dbPath).close();
+
+    const result = exportSqliteSummaries(ctx.dbPath, {
+      recentContributionLimit: 10,
+    });
+
+    expect(decodeEntry(getEntry(result.entries, "db/contributions-recent.jsonl"))).toBe("");
+    expect(result.entries.map((entry) => entry.path)).toContain("db/table-manifest.json");
+    expect(result.manifest.tables.contributions).toEqual({
+      present: false,
+      rowCount: 0,
+      exportedPath: "db/contributions-recent.jsonl",
+      warning: "Table not present in SQLite database",
+    });
+  });
+
+  test("records optional table query failures without aborting export", async () => {
+    const ctx = await createExportContext();
+    const db = initSqliteDb(ctx.dbPath);
+    try {
+      db.run("DROP TABLE idempotency_keys");
+      db.run("CREATE TABLE idempotency_keys (cache_key TEXT PRIMARY KEY)");
+      db.run("INSERT INTO idempotency_keys (cache_key) VALUES (?)", ["legacy-key"]);
+    } finally {
+      db.close();
+    }
+
+    const result = exportSqliteSummaries(ctx.dbPath, {
+      recentContributionLimit: 10,
+    });
+
+    expect(result.entries.map((entry) => entry.path)).toContain("db/table-manifest.json");
+    expect(result.entries.map((entry) => entry.path)).not.toContain("db/idempotency.json");
+    expect(result.manifest.tables.idempotency_keys?.present).toBe(true);
+    expect(result.manifest.tables.idempotency_keys?.rowCount).toBe(1);
+    expect(result.manifest.tables.idempotency_keys?.warning).toContain("Failed to export table");
   });
 });
 
