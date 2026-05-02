@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createStoredZip, crc32 } from "./zip.js";
+import { crc32, createStoredZip } from "./zip.js";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -21,11 +21,12 @@ interface ParsedCentralDirectoryEntry {
 
 function readUInt32(bytes: Uint8Array, offset: number): number {
   return (
-    (bytes[offset] ?? 0) |
-    ((bytes[offset + 1] ?? 0) << 8) |
-    ((bytes[offset + 2] ?? 0) << 16) |
-    ((bytes[offset + 3] ?? 0) << 24)
-  ) >>> 0;
+    ((bytes[offset] ?? 0) |
+      ((bytes[offset + 1] ?? 0) << 8) |
+      ((bytes[offset + 2] ?? 0) << 16) |
+      ((bytes[offset + 3] ?? 0) << 24)) >>>
+    0
+  );
 }
 
 function readUInt16(bytes: Uint8Array, offset: number): number {
@@ -106,7 +107,8 @@ describe("createStoredZip", () => {
     const eocdOffset = zip.length - 22;
     const centralStart = readUInt32(zip, eocdOffset + 16);
     const centralSize = readUInt32(zip, eocdOffset + 12);
-    const expectedSecondLocalOffset = 30 + textEncoder.encode("meta.json").length + firstBytes.length;
+    const expectedSecondLocalOffset =
+      30 + textEncoder.encode("meta.json").length + firstBytes.length;
 
     expect(readUInt32(zip, eocdOffset)).toBe(0x06054b50);
     expect(readUInt16(zip, eocdOffset + 8)).toBe(2);
@@ -117,7 +119,10 @@ describe("createStoredZip", () => {
     const centralEntries = parseCentralDirectory(zip);
     expect(centralEntries.map((entry) => entry.name)).toEqual(["meta.json", "logs/runtime.log"]);
     expect(centralEntries.map((entry) => entry.compressionMethod)).toEqual([0, 0]);
-    expect(centralEntries.map((entry) => entry.crc)).toEqual([crc32(firstBytes), crc32(secondBytes)]);
+    expect(centralEntries.map((entry) => entry.crc)).toEqual([
+      crc32(firstBytes),
+      crc32(secondBytes),
+    ]);
     expect(centralEntries.map((entry) => entry.compressedSize)).toEqual([
       firstBytes.length,
       secondBytes.length,
@@ -126,7 +131,10 @@ describe("createStoredZip", () => {
       firstBytes.length,
       secondBytes.length,
     ]);
-    expect(centralEntries.map((entry) => entry.localOffset)).toEqual([0, expectedSecondLocalOffset]);
+    expect(centralEntries.map((entry) => entry.localOffset)).toEqual([
+      0,
+      expectedSecondLocalOffset,
+    ]);
   });
 
   test("rejects duplicate paths", () => {

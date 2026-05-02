@@ -149,7 +149,7 @@ function validateEntryPath(path: string): void {
     /^[A-Za-z]:/.test(path) ||
     path.endsWith("/") ||
     path.includes("\\") ||
-    /[\u0000-\u001f\u007f]/.test(path)
+    hasControlCharacter(path)
   ) {
     throw new Error(`unsafe zip entry path: ${path}`);
   }
@@ -159,4 +159,14 @@ function validateEntryPath(path: string): void {
       throw new Error(`unsafe zip entry path: ${path}`);
     }
   }
+}
+
+function hasControlCharacter(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const codePoint = value.charCodeAt(i);
+    if (codePoint <= 0x1f || codePoint === 0x7f) {
+      return true;
+    }
+  }
+  return false;
 }

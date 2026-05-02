@@ -7,7 +7,7 @@ export interface RedactOptions {
 }
 
 const TEXT_EXTENSIONS = new Set([".json", ".jsonl", ".md", ".txt", ".log", ".yaml", ".yml"]);
-const SECRET_ASSIGNMENT_KEYS = String.raw`"?(?:API[_-]?KEY|ACCESS[_-]?TOKEN|SECRET|PASSWORD|TOKEN)"?`;
+const SECRET_ASSIGNMENT_KEYS = `"?(?:API[_-]?KEY|ACCESS[_-]?TOKEN|SECRET|PASSWORD|TOKEN)"?`;
 
 export function isTextEntryPath(path: string): boolean {
   if (path === "README.md") return true;
@@ -92,7 +92,7 @@ function redactAssignedAbsolutePaths(input: string): string {
 }
 
 function isRouteLikePathValue(path: string): boolean {
-  const pathOnly = path.split(/[?&]/, 1)[0];
+  const pathOnly = path.split(/[?&]/, 1)[0] ?? "";
   return pathOnly === "/api" || pathOnly.startsWith("/api/");
 }
 

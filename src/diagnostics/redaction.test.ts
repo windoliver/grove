@@ -152,11 +152,9 @@ describe("redactText", () => {
     });
 
     expect(redacted).toBe(
-      [
-        "config = <redacted-path>",
-        "config: <redacted-path>",
-        '{"path":"<redacted-path>"}',
-      ].join("\n"),
+      ["config = <redacted-path>", "config: <redacted-path>", '{"path":"<redacted-path>"}'].join(
+        "\n",
+      ),
     );
   });
 
