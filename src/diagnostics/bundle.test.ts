@@ -179,6 +179,37 @@ describe("buildDiagnosticsEntries", () => {
     expect(manifest.warnings).toEqual(["Invalid log slot '../..': path traversal is not allowed"]);
   });
 
+  test("rejects normalized root slots without including all slot logs", async () => {
+    const ctx = await createBundleContext({ initializeDb: false, includeDefaultLog: false });
+    await mkdir(join(ctx.groveDir, "agent-logs", "slot-a"), { recursive: true });
+    await mkdir(join(ctx.groveDir, "agent-logs", "slot-b"), { recursive: true });
+    await writeFile(join(ctx.groveDir, "agent-logs", "slot-a", "a.log"), "a\n", "utf8");
+    await writeFile(join(ctx.groveDir, "agent-logs", "slot-b", "b.log"), "b\n", "utf8");
+
+    const result = await buildDiagnosticsEntries({
+      projectRoot: ctx.projectRoot,
+      groveDir: ctx.groveDir,
+      packageVersion: "1.2.3-test",
+      generatedAt: "2026-05-02T12:34:56.000Z",
+      scrubMode: "standard",
+      excludeDb: true,
+      slot: ".",
+      env: {},
+      homeDir: "/Users/tafeng",
+      systemRunner: fakeSystemRunner,
+    });
+
+    const paths = result.entries.map((entry) => entry.path);
+    expect(paths).not.toContain("logs/agent-logs/slot-a/a.log");
+    expect(paths).not.toContain("logs/agent-logs/slot-b/b.log");
+
+    const manifest = readJson<LogManifest>(getEntry(result.entries, "logs/manifest.json"));
+    expect(manifest.included).toEqual([]);
+    expect(manifest.skipped).toEqual(["logs/agent-logs/slot-a", "logs/agent-logs/slot-b"]);
+    expect(manifest.missing).toEqual(["logs/agent-logs/."]);
+    expect(manifest.warnings).toEqual(["Invalid log slot '.': slot must be a single path segment"]);
+  });
+
   test("continues with warning when sqlite database is corrupt and raw db is excluded", async () => {
     const ctx = await createBundleContext({ initializeDb: false });
     await writeFile(join(ctx.groveDir, "grove.db"), "not sqlite", "utf8");

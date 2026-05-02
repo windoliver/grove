@@ -185,6 +185,15 @@ async function collectLogEntries(
 
   if (slot !== undefined) {
     await recordSkippedSlots(agentLogsDir, slot, skipped, warnings);
+    const slotValidation = validateLogSlot(slot);
+    if (!slotValidation.valid) {
+      missing.push(`logs/agent-logs/${slot}`);
+      warnings.push(`Invalid log slot '${slot}': ${slotValidation.reason}`);
+      return {
+        entries,
+        manifest: logManifest(included, skipped, missing, warnings),
+      };
+    }
     const slotDir = resolve(agentLogsDir, slot);
     if (!isWithinDirectory(agentLogsDir, slotDir)) {
       missing.push(`logs/agent-logs/${slot}`);
@@ -446,6 +455,30 @@ function sortDirents(dirents: readonly Dirent[]): readonly Dirent[] {
 
 function sortStrings(values: readonly string[]): readonly string[] {
   return [...values].sort();
+}
+
+function validateLogSlot(
+  slot: string,
+): { readonly valid: true } | { readonly valid: false; readonly reason: string } {
+  if (slot.trim().length === 0) {
+    return {
+      valid: false,
+      reason: "slot must not be empty",
+    };
+  }
+  if (slot === ".." || slot.includes("../") || slot.includes("..\\") || slot.endsWith("/..")) {
+    return {
+      valid: false,
+      reason: "path traversal is not allowed",
+    };
+  }
+  if (slot === "." || slot.includes("/") || slot.includes("\\")) {
+    return {
+      valid: false,
+      reason: "slot must be a single path segment",
+    };
+  }
+  return { valid: true };
 }
 
 function isWithinDirectory(parentDir: string, candidatePath: string): boolean {
