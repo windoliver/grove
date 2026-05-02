@@ -1,26 +1,22 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 
 export interface DiagnosticEntry {
   readonly path: string;
-  readonly bytes: number;
+  readonly bytes: Uint8Array;
 }
 
 export interface TableManifestEntry {
   readonly present: boolean;
   readonly rowCount: number;
-  readonly exportedPath?: string;
-  readonly warnings?: readonly string[];
+  readonly exportedPath?: string | undefined;
+  readonly warning?: string | undefined;
 }
 
 export interface SqliteExportManifest {
-  readonly contributions: TableManifestEntry;
   readonly tables: Readonly<Record<string, TableManifestEntry>>;
 }
 
 export interface SqliteExportOptions {
-  readonly outputDir: string;
   readonly recentContributionLimit: number;
 }
 
@@ -79,22 +75,28 @@ export function exportSqliteSummaries(
       .all(options.recentContributionLimit) as readonly ContributionManifestRow[];
 
     entries.push(
-      writeEntry(
-        options.outputDir,
+      makeEntry(
         CONTRIBUTIONS_RECENT_PATH,
         contributionRows.map((row) => row.manifest_json).join("\n") +
           (contributionRows.length > 0 ? "\n" : ""),
       ),
     );
 
-    const tableManifest: Record<string, TableManifestEntry> = {};
+    const tableManifest: Record<string, TableManifestEntry> = {
+      contributions: {
+        present: true,
+        rowCount: contributionCount,
+        exportedPath: CONTRIBUTIONS_RECENT_PATH,
+      },
+    };
+
     for (const [tableName, columns] of Object.entries(TABLE_EXPORTS)) {
       const present = tableExists(db, tableName);
       if (!present) {
         tableManifest[tableName] = {
           present: false,
           rowCount: 0,
-          warnings: ["Table not present in SQLite database"],
+          warning: "Table not present in SQLite database",
         };
         continue;
       }
@@ -108,24 +110,15 @@ export function exportSqliteSummaries(
       };
 
       if (exportedPath !== undefined) {
-        entries.push(
-          writeEntry(options.outputDir, exportedPath, `${JSON.stringify(rows, null, 2)}\n`),
-        );
+        entries.push(makeEntry(exportedPath, `${JSON.stringify(rows, null, 2)}\n`));
       }
     }
 
     const manifest: SqliteExportManifest = {
-      contributions: {
-        present: true,
-        rowCount: contributionCount,
-        exportedPath: CONTRIBUTIONS_RECENT_PATH,
-      },
       tables: tableManifest,
     };
 
-    entries.push(
-      writeEntry(options.outputDir, TABLE_MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`),
-    );
+    entries.push(makeEntry(TABLE_MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`));
 
     return { manifest, entries };
   } finally {
@@ -157,12 +150,9 @@ function exportTableRows(
   >[];
 }
 
-function writeEntry(outputDir: string, relativePath: string, content: string): DiagnosticEntry {
-  const outputPath = join(outputDir, relativePath);
-  mkdirSync(dirname(outputPath), { recursive: true });
-  writeFileSync(outputPath, content, "utf8");
+function makeEntry(relativePath: string, content: string): DiagnosticEntry {
   return {
     path: relativePath,
-    bytes: new TextEncoder().encode(content).byteLength,
+    bytes: new TextEncoder().encode(content),
   };
 }
