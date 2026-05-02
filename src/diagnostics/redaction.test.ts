@@ -57,6 +57,30 @@ describe("redactText", () => {
     expect(redacted).toContain("-----END OPENSSH PRIVATE KEY-----");
   });
 
+  test("aggressive mode scrubs bearer tokens outside authorization headers", () => {
+    const input = "cmd=Bearer abcdef1234567890abcdef1234567890";
+
+    const redacted = redactText(input, {
+      mode: "aggressive",
+      homeDir: "/Users/tafeng",
+      secretEnvKeys: [],
+    });
+
+    expect(redacted).toBe("cmd=Bearer <redacted>");
+  });
+
+  test("aggressive mode scrubs non-home absolute paths after assignments", () => {
+    const input = "config=/etc/grove/config.json";
+
+    const redacted = redactText(input, {
+      mode: "aggressive",
+      homeDir: "/Users/tafeng",
+      secretEnvKeys: [],
+    });
+
+    expect(redacted).toBe("config=<redacted-path>");
+  });
+
   test("off mode preserves text", () => {
     const input = "EMAIL=user@example.com\nTOKEN=secret";
     expect(redactText(input, { mode: "off", homeDir: "/Users/tafeng", secretEnvKeys: [] })).toBe(

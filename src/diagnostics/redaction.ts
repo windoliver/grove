@@ -27,8 +27,8 @@ export function redactText(input: string, options: RedactOptions): string {
 
   if (options.mode === "aggressive") {
     out = redactPrivateKeys(out);
-    out = out.replace(/(Authorization:\s*Bearer\s+)[A-Za-z0-9._~+/=-]{16,}/gi, "$1<redacted>");
-    out = out.replace(/(?<==)\/(?:private|tmp|var|opt|Users)\/[^\s"']+/g, "<redacted-path>");
+    out = out.replace(/\b(Bearer\s+)[A-Za-z0-9._~+/=-]{16,}/gi, "$1<redacted>");
+    out = out.replace(/(?<==)\/[^\s"']+/g, "<redacted-path>");
   }
 
   return out;
