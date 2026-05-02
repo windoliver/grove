@@ -69,7 +69,10 @@ function redactPrivateKeys(input: string): string {
 }
 
 function redactAssignmentValues(input: string, keyPattern: string, flags: string): string {
-  const quoted = new RegExp(`(${keyPattern}\\s*[=:]\\s*)(["'])[^\\r\\n]*?\\2`, flags);
+  const quoted = new RegExp(
+    `(${keyPattern}\\s*[=:]\\s*)(["'])(?:\\\\.|(?!\\2)[^\\r\\n])*?\\2`,
+    flags,
+  );
   const unquoted = new RegExp(`(${keyPattern}\\s*[=:]\\s*)[^&#\\s,}"']+`, flags);
   return input.replace(quoted, "$1$2<redacted>$2").replace(unquoted, "$1<redacted>");
 }
@@ -81,7 +84,8 @@ function redactAssignedAbsolutePaths(input: string): string {
 }
 
 function isRouteLikePathValue(path: string): boolean {
-  return path.includes("?") || path.includes("&") || path === "/api" || path.startsWith("/api/");
+  const pathOnly = path.split(/[?&]/, 1)[0];
+  return pathOnly === "/api" || pathOnly.startsWith("/api/");
 }
 
 function escapeRegExp(input: string): string {

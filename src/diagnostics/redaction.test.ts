@@ -55,6 +55,19 @@ describe("redactText", () => {
     expect(redacted).toContain('"ok":1');
   });
 
+  test("standard mode scrubs quoted secret values with escaped quotes", () => {
+    const input = ['TOKEN="abc\\"def"', '{"token":"abc\\"def","ok":1}'].join("\n");
+
+    const redacted = redactText(input, {
+      mode: "standard",
+      homeDir: "/Users/tafeng",
+      secretEnvKeys: ["TOKEN"],
+    });
+
+    expect(redacted).toBe(['TOKEN="<redacted>"', '{"token":"<redacted>","ok":1}'].join("\n"));
+    expect(redacted).not.toContain("def");
+  });
+
   test("aggressive mode scrubs bearer-like tokens, non-home paths, and private key blocks", () => {
     const input = [
       "Authorization: Bearer abcdef1234567890abcdef1234567890",
@@ -111,6 +124,18 @@ describe("redactText", () => {
     });
 
     expect(redacted).toBe("redirect=/api/health&ok=1");
+  });
+
+  test("aggressive mode scrubs filesystem paths with query suffixes", () => {
+    const input = "path=/tmp/grove?debug=1";
+
+    const redacted = redactText(input, {
+      mode: "aggressive",
+      homeDir: "/Users/tafeng",
+      secretEnvKeys: [],
+    });
+
+    expect(redacted).toBe("path=<redacted-path>");
   });
 
   test("off mode preserves text", () => {
