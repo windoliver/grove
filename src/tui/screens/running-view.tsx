@@ -18,14 +18,18 @@ import { useKeyboard } from "@opentui/react";
 import { useDialog } from "@opentui-ui/dialog/react";
 import { toast } from "@opentui-ui/toast/react";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ContributionEntity } from "../../core/entity.js";
 import type { EventBus } from "../../core/event-bus.js";
 import type { Contribution } from "../../core/models.js";
 import type { AgentTopology } from "../../core/topology.js";
+import { compareTimestampsAscNewestLast, compareTimestampsDesc } from "../../shared/format.js";
 import { EmptyState } from "../components/empty-state.js";
 import { ProgressBar } from "../components/progress-bar.js";
 import type { AgentLogBuffer } from "../data/agent-log-buffer.js";
 import { debugLog } from "../debug-log.js";
+import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useAgentMonitor } from "../hooks/use-agent-monitor.js";
+import { useEntities } from "../hooks/use-entities.js";
 import { InputMode } from "../hooks/use-panel-focus.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import { useTuiStatePersistence } from "../hooks/use-session-persistence.js";
@@ -93,6 +97,33 @@ export interface RunningViewProps {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Cap on the contribution projection from the informer cache for the feed.
+ *  The visible window is much smaller, but a large cache would sort + map
+ *  every entity on each recompute and freeze the TUI. 500 leaves comfortable
+ *  headroom for scrollback while bounding worst-case work. */
+const FEED_PROJECTION_CAP = 500;
+
+/** Project a ContributionEntity to the flat shape running-view's feed and
+ *  toast routing read. Mirrors entityToContribution helpers in the
+ *  PR2-migrated views. */
+function entityToContribution(e: ContributionEntity): Contribution {
+  return {
+    cid: e.id,
+    manifestVersion: 0,
+    kind: e.spec.contributionKind,
+    mode: e.spec.mode,
+    summary: e.spec.summary,
+    description: e.spec.description,
+    artifacts: e.spec.artifacts,
+    relations: e.spec.relations,
+    scores: e.spec.scores,
+    tags: e.spec.tags,
+    context: e.spec.context,
+    agent: e.spec.agent,
+    createdAt: e.metadata.creationTimestamp ?? "",
+  };
+}
 
 /** Format a timestamp for display. */
 function formatTime(iso: string): string {
@@ -219,6 +250,14 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     }, [monitor.pendingPermissions]);
 
     // ─── Data fetching ───
+    // PR3 (#389): the contribution feed migrates to the Contribution
+    // informer when available. The dashboard itself (metadata, claims with
+    // lease-aware expiry, frontierSummary) remains polled — claim activity
+    // expires on wall-clock and frontier needs server compute, neither of
+    // which the watch protocol covers.
+    const useContribInformer = useEntityWatchEnabled(provider, "Contribution");
+    const contribEntities = useEntities("Contribution");
+
     const dashboardFetcher = useCallback(() => provider.getDashboard(), [provider]);
     const fetchCountRef = React.useRef(0);
     const contributionsFetcher = useCallback(async () => {
@@ -237,11 +276,17 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     // Gate polling: pause contributions when panel is fullscreen and not showing feed
     const feedActive =
       zoomLevel !== "full" || expandedPanel === RunningPanel.Feed || expandedPanel === null;
+    // Only switch to informer data after it has synced and is healthy. Cold
+    // start or terminal watch failure must keep the polled fallback alive,
+    // otherwise the feed renders empty even though `getContributions()` would
+    // still return data.
+    const contribInformerReady =
+      useContribInformer && contribEntities.hasSynced && !contribEntities.error;
     const dashboardPoll = usePolledData<DashboardData>(dashboardFetcher, intervalMs, true);
     const contributionsPoll = usePolledData<readonly Contribution[]>(
       contributionsFetcher,
       intervalMs,
-      feedActive,
+      feedActive && !contribInformerReady,
     );
 
     // usePolledData is only used for UI refresh of the contributions feed display;
@@ -279,16 +324,51 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     }, [eventBus, topology, provider, dashboardPoll.refresh, contributionsPoll.refresh]);
 
     const dashboard = dashboardPoll.data ?? undefined;
-    const contributions = contributionsPoll.data;
+    const contributions = useMemo<readonly Contribution[] | undefined>(() => {
+      if (!contribInformerReady) return contributionsPoll.data ?? undefined;
+      // Cap the projection BEFORE sort/map. A large informer cache (e.g.
+      // after a relist on a long-running Grove) would otherwise sort + map
+      // every entity on each recompute, freezing the TUI even though the
+      // visible feed only shows a window. Take the newest FEED_PROJECTION_CAP
+      // by createdAt, then re-sort ASCENDING so the feed's auto-follow
+      // (`feed.length - 1`) lands on the newest row, matching the polled
+      // `getContributions()` order.
+      // DESC chronological for the cap (invalid-last so bad timestamps
+      // don't displace real recent contributions); ASC for the final feed
+      // order so auto-follow lands on the newest tail.
+      const all = contribEntities.data;
+      let pool: readonly ContributionEntity[] = all;
+      if (all.length > FEED_PROJECTION_CAP) {
+        pool = [...all]
+          .sort((a, b) =>
+            compareTimestampsDesc(a.metadata.creationTimestamp, b.metadata.creationTimestamp),
+          )
+          .slice(0, FEED_PROJECTION_CAP);
+      }
+      // Final ASC for the feed: invalid sorts FIRST so the tail is always
+      // the newest VALID timestamp (auto-follow targets feed.length - 1).
+      const sorted = [...pool].sort((a, b) =>
+        compareTimestampsAscNewestLast(a.metadata.creationTimestamp, b.metadata.creationTimestamp),
+      );
+      return sorted.map(entityToContribution);
+    }, [contribInformerReady, contribEntities.data, contributionsPoll.data]);
 
-    // Aggregate poll health for the status bar: show stale/error when either poll fails.
+    // Aggregate poll health for the status bar: show stale/error when either
+    // path is unhealthy. Informer error always surfaces (even when we're still
+    // polling as fallback) so operators see watch-pipeline failures.
     const pollHealth = useMemo(() => {
-      const isStale = dashboardPoll.isStale || contributionsPoll.isStale;
-      const error = dashboardPoll.error?.message ?? contributionsPoll.error?.message ?? undefined;
+      const contribStale = contribInformerReady ? false : contributionsPoll.isStale;
+      const contribError =
+        contribEntities.error?.message ??
+        (contribInformerReady ? undefined : contributionsPoll.error?.message);
+      const isStale = dashboardPoll.isStale || contribStale;
+      const error = dashboardPoll.error?.message ?? contribError ?? undefined;
       return { isStale, error };
     }, [
       dashboardPoll.isStale,
       dashboardPoll.error?.message,
+      contribInformerReady,
+      contribEntities.error?.message,
       contributionsPoll.isStale,
       contributionsPoll.error?.message,
     ]);
@@ -623,6 +703,11 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     );
 
     // ─── Derived data ───
+    // Active-claim count stays on the polled (lease-aware) path. Claims age
+    // out when wall-clock time crosses `leaseExpiresAt`, which emits no
+    // watch event — informer-cached claim entities would never expire. The
+    // polled dashboard fetches via the lease-aware store query, so its
+    // count reflects expiry correctly.
     const claimCount = dashboard?.activeClaims.length ?? 0;
     // Session-scoped frontier: when session is active, compute from session feed
     const sessionFrontier: DashboardData["frontierSummary"] | undefined = useMemo(() => {
