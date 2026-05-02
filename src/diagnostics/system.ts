@@ -104,7 +104,12 @@ function stdoutFromError(error: unknown): string {
 
 function stderrFromError(error: unknown, command: string): string {
   if (hasStringProperty(error, "stderr")) {
-    return error.stderr;
+    if (error.stderr.length > 0) {
+      return error.stderr;
+    }
+    if (!isTimeoutError(error)) {
+      return error.stderr;
+    }
   }
   if (isTimeoutError(error)) {
     return `Command timed out after ${DEFAULT_PROBE_TIMEOUT_MS.toString()}ms: ${command}`;

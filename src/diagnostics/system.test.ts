@@ -136,6 +136,11 @@ describe("collectSystemSnapshots", () => {
       ): Promise<MockExecFileOutput> => {
         observedTimeout = options.timeout;
         const error = new Error("Command timed out after probe timeout");
+        Object.assign(error, {
+          stderr: "",
+          killed: true,
+          signal: "SIGTERM",
+        });
         throw error;
       },
     });
@@ -154,6 +159,7 @@ describe("collectSystemSnapshots", () => {
     expect(processTree).toContain("Probe failed");
     expect(processTree).toContain("Command: ps -axo pid,ppid,comm,args");
     expect(processTree).toContain("timed out");
+    expect(processTree).not.toContain("unknown error");
   });
 });
 
