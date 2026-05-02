@@ -49,6 +49,14 @@ describe("parseDiagnosticsArgs", () => {
   it("rejects invalid scrub mode", () => {
     expect(() => parseDiagnosticsArgs(["--scrub", "maximum"])).toThrow(/Invalid scrub mode/);
   });
+
+  it("shows help for --help", () => {
+    expect(() => parseDiagnosticsArgs(["--help"])).toThrow(/grove diagnostics[\s\S]*Usage:/);
+  });
+
+  it("shows help for -h", () => {
+    expect(() => parseDiagnosticsArgs(["-h"])).toThrow(/grove diagnostics[\s\S]*Usage:/);
+  });
 });
 
 describe("runDiagnostics", () => {
