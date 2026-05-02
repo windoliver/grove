@@ -607,13 +607,19 @@ describe("SqliteClaimStore onClaimWrite hook", () => {
     expect(events).toEqual([{ op: "ADDED", id: claim.claimId }]);
   });
 
-  test("heartbeat does NOT fire (pure heartbeat is not a watch event)", async () => {
+  test("heartbeat fires MODIFIED so cached lease fields stay fresh", async () => {
     const claim = makeClaim({ targetRef: "watch-heartbeat" });
     await claimStore.createClaim(claim);
-    const events: Array<{ op: string; id: string }> = [];
-    claimStore.onClaimWrite = (op, c) => events.push({ op, id: c.claimId });
-    await claimStore.heartbeat(claim.claimId);
-    expect(events).toEqual([]);
+    const events: Array<{ op: string; id: string; leaseExpiresAt: string }> = [];
+    claimStore.onClaimWrite = (op, c) =>
+      events.push({ op, id: c.claimId, leaseExpiresAt: c.leaseExpiresAt });
+    const renewed = await claimStore.heartbeat(claim.claimId);
+    expect(events.length).toBe(1);
+    expect(events[0]?.op).toBe("MODIFIED");
+    expect(events[0]?.id).toBe(claim.claimId);
+    // The fired claim's leaseExpiresAt must reflect the renewed value so
+    // consumers re-render with the new deadline (Codex round 1, finding 3).
+    expect(events[0]?.leaseExpiresAt).toBe(renewed.leaseExpiresAt);
   });
 
   test("complete fires MODIFIED", async () => {

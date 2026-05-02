@@ -18,7 +18,7 @@ import { formatTimestamp } from "../../shared/format.js";
 import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
-import { useInformerFactoryOptional } from "../hooks/informer-context.js";
+import { useEntityWatchEnabled, useProviderScoped } from "../hooks/informer-context.js";
 import { useEntities } from "../hooks/use-entities.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
@@ -76,8 +76,13 @@ export const ClaimsView: React.NamedExoticComponent<ClaimsProps> = React.memo(fu
   onRowCountChanged,
   activeClaims: propClaims,
 }: ClaimsProps): React.ReactNode {
-  const factory = useInformerFactoryOptional();
-  const useInformerPath = factory?.supportsKind("Claim") === true;
+  const useInformerPath = useEntityWatchEnabled(provider, "Claim");
+  // Suppress claim polling under a scoped session: `provider.getClaims`
+  // does not filter by sessionId yet, so polling would surface claims
+  // from other sessions in the namespace (Codex round 2, finding 2).
+  // Mirrors the dashboard's existing behavior (RemoteDataProvider's
+  // getDashboard returns `[]` for activeClaims when scoped).
+  const isScoped = useProviderScoped(provider);
 
   // Informer path: useEntities feeds when the factory is mounted and the
   // kind is supported. We always invoke both hooks so React's hook order
@@ -85,16 +90,23 @@ export const ClaimsView: React.NamedExoticComponent<ClaimsProps> = React.memo(fu
   const entityResult = useEntities("Claim", ACTIVE_PREDICATE);
 
   // Polled fallback: only fetches when the parent didn't pre-fetch AND
-  // the informer path isn't available. Same gating logic as before, plus
-  // the new informer-availability check.
+  // the informer path isn't available AND we're not in a scoped session
+  // whose claim API isn't filterable by sessionId.
   const fetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
   const polledResult = usePolledData<readonly Claim[]>(
     fetcher,
     intervalMs,
-    active && propClaims === undefined && !useInformerPath,
+    active && propClaims === undefined && !useInformerPath && !isScoped,
   );
 
   const data: readonly Claim[] | undefined = useMemo<readonly Claim[] | undefined>(() => {
+    // Scoped sessions render an empty list rather than risk leaking
+    // claims from other sessions while the watch + claim APIs lack
+    // sessionId filtering. The scope check runs BEFORE the propClaims
+    // shortcut because the parent App still polls `getClaims` (used by
+    // the command palette and spawn dedup); accepting that unscoped
+    // result here would re-expose the leak (Codex round 4, finding 1).
+    if (isScoped) return [];
     if (propClaims !== undefined) return propClaims;
     if (useInformerPath) {
       // Project entity → row → caller-shaped Claim. The fields the view
@@ -114,7 +126,7 @@ export const ClaimsView: React.NamedExoticComponent<ClaimsProps> = React.memo(fu
       });
     }
     return polledResult.data ?? undefined;
-  }, [propClaims, useInformerPath, entityResult.data, polledResult.data]);
+  }, [propClaims, useInformerPath, isScoped, entityResult.data, polledResult.data]);
 
   const loading = useInformerPath
     ? !entityResult.hasSynced && data === undefined

@@ -18,7 +18,7 @@ import { formatScore, formatTimestamp, truncateCid } from "../../shared/format.j
 import { ConditionChips } from "../components/condition-chips.js";
 import { DataStatus } from "../components/data-status.js";
 import { OutcomeBadge } from "../components/outcome-badge.js";
-import { useInformerFactoryOptional } from "../hooks/informer-context.js";
+import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useEntity } from "../hooks/use-entity.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { ContributionDetail, TuiDataProvider, TuiOutcomeProvider } from "../provider.js";
@@ -37,8 +37,7 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
   cid,
   intervalMs,
 }: DetailProps): React.ReactNode {
-  const factory = useInformerFactoryOptional();
-  const useInformerPath = factory?.supportsKind("Contribution") === true;
+  const useInformerPath = useEntityWatchEnabled(provider, "Contribution");
 
   // useEntity for the body — fast subscribe to the cache. The relation
   // graph still needs the full ContributionDetail fetch below.

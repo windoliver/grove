@@ -14,7 +14,7 @@ import { formatTimestamp, truncateCid } from "../../shared/format.js";
 import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
-import { useInformerFactoryOptional } from "../hooks/informer-context.js";
+import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useEntities } from "../hooks/use-entities.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
@@ -66,8 +66,7 @@ export const ActivityPanelView: React.NamedExoticComponent<ActivityPanelProps> =
     cursor,
     onRowCountChanged,
   }: ActivityPanelProps): React.ReactNode {
-    const factory = useInformerFactoryOptional();
-    const useInformerPath = factory?.supportsKind("Contribution") === true;
+    const useInformerPath = useEntityWatchEnabled(provider, "Contribution");
 
     const entityResult = useEntities("Contribution");
 

@@ -11,7 +11,7 @@ import type { ClaimEntity } from "../../core/entity.js";
 import type { Claim } from "../../core/models.js";
 import type { TmuxManager } from "../agents/tmux-manager.js";
 import { agentIdFromSession } from "../agents/tmux-manager.js";
-import { useInformerFactoryOptional } from "../hooks/informer-context.js";
+import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useEntities } from "../hooks/use-entities.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
@@ -177,8 +177,7 @@ export const PipelineView: React.NamedExoticComponent<PipelineViewProps> = React
       return () => clearInterval(timer);
     }, [active]);
 
-    const factory = useInformerFactoryOptional();
-    const useInformerPath = factory?.supportsKind("Claim") === true;
+    const useInformerPath = useEntityWatchEnabled(provider, "Claim");
 
     const entityResult = useEntities("Claim", ACTIVE_PREDICATE);
     const claimsFetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);

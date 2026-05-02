@@ -841,6 +841,12 @@ export async function handleTui(
         ? React.createElement(InformerProvider, {
             value: result.informerFactory,
             eager: true,
+            // Suspends the watch loop while a session scope is active —
+            // `/api/watch` does not filter by sessionId yet, so an eager
+            // factory would fan in cross-session events even though the
+            // migrated views ignore them. PR3+ removes this gate when
+            // sessionId plumbing lands.
+            scopeAwareProvider: result.appProps.provider,
             children: React.createElement(RefreshProvider, {
               factory: result.informerFactory,
               children: appElement,
@@ -957,6 +963,10 @@ export async function handleTui(
       // factory. Ships dark — no current view consumes hooks; this primes
       // the runtime so PR2 migrations don't have to re-thread plumbing.
       if (result.informerFactory) informerHolder.set(result.informerFactory);
+      // PR2 (#388) Codex round 2: bind the provider so the holder's
+      // wrapping <InformerProvider> can suspend the watch loop while a
+      // session scope is active.
+      informerHolder.setProvider(result.provider);
 
       // Post-startup: update agent skill SKILL.md (non-blocking)
       updateSkillAfterStartup();
@@ -986,7 +996,23 @@ export async function handleTui(
       const result = await buildAppProps(effectiveGrove, opts, groveInfo?.preset);
       activeProvider = result.provider;
       activeStopGc = result.stopGc;
+      // PR2 (#388) Codex round 3: pre-set the session scope on the
+      // provider BEFORE handing it to the InformerProvider. Otherwise
+      // the eager effect would call factory.startAll() while the scope
+      // is still undefined — `/api/watch` opens without a sessionId,
+      // populates the cache with cross-session data, and the scope
+      // change later (from screen-manager.tsx) only stops new fetches.
+      if (
+        sessionId !== undefined &&
+        typeof result.provider === "object" &&
+        result.provider !== null
+      ) {
+        const setScope = (result.provider as { setSessionScope?: (id: string) => void })
+          .setSessionScope;
+        if (typeof setScope === "function") setScope.call(result.provider, sessionId);
+      }
       if (result.informerFactory) informerHolder.set(result.informerFactory);
+      informerHolder.setProvider(result.provider);
 
       // Post-startup: update agent skill SKILL.md (non-blocking)
       updateSkillAfterStartup();
@@ -1011,6 +1037,10 @@ export async function handleTui(
       activeProvider = result.provider;
       activeStopGc = result.stopGc;
       if (result.informerFactory) informerHolder.set(result.informerFactory);
+      // PR2 (#388) Codex round 2: bind the provider so the holder's
+      // wrapping <InformerProvider> can suspend the watch loop while a
+      // session scope is active.
+      informerHolder.setProvider(result.provider);
       return result.appProps;
     };
 

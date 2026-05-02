@@ -23,7 +23,7 @@ import { formatTimestamp, truncateCid } from "../../shared/format.js";
 import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
-import { useInformerFactoryOptional } from "../hooks/informer-context.js";
+import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useEntities } from "../hooks/use-entities.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import { isSearchProvider, type TuiArtifactProvider, type TuiDataProvider } from "../provider.js";
@@ -141,8 +141,7 @@ export const SearchPanelView: React.NamedExoticComponent<SearchPanelProps> = Rea
     // Determine search availability via the proper capability check.
     const hasSearch = isSearchProvider(provider);
 
-    const factory = useInformerFactoryOptional();
-    const useInformerPath = factory?.supportsKind("Contribution") === true && searchQuery === "";
+    const useInformerPath = useEntityWatchEnabled(provider, "Contribution") && searchQuery === "";
 
     const entityResult = useEntities("Contribution");
 

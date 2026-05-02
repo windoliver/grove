@@ -16,7 +16,7 @@ import { checkSpawn } from "../agents/spawn-validator.js";
 import type { TmuxManager } from "../agents/tmux-manager.js";
 import { agentIdFromSession, tmuxSessionName } from "../agents/tmux-manager.js";
 import { EmptyState } from "../components/empty-state.js";
-import { useInformerFactoryOptional } from "../hooks/informer-context.js";
+import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useEntities } from "../hooks/use-entities.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import { renderGraph } from "../layout/edge-render.js";
@@ -138,8 +138,7 @@ export const AgentGraphView: React.NamedExoticComponent<AgentGraphProps> = React
     topology,
     onSelectSession,
   }: AgentGraphProps): React.ReactNode {
-    const factory = useInformerFactoryOptional();
-    const useInformerPath = factory?.supportsKind("Claim") === true;
+    const useInformerPath = useEntityWatchEnabled(provider, "Claim");
     const entityResult = useEntities("Claim", ACTIVE_PREDICATE);
 
     const claimFetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);

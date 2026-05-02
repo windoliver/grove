@@ -13,7 +13,7 @@ import { agentIdFromSession } from "../agents/tmux-manager.js";
 import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
-import { useInformerFactoryOptional } from "../hooks/informer-context.js";
+import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useEntities } from "../hooks/use-entities.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
@@ -164,8 +164,7 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
       return () => clearInterval(timer);
     }, [active]);
 
-    const factory = useInformerFactoryOptional();
-    const useInformerPath = factory?.supportsKind("Claim") === true;
+    const useInformerPath = useEntityWatchEnabled(provider, "Claim");
 
     const entityResult = useEntities("Claim", ACTIVE_PREDICATE);
 

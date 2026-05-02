@@ -24,7 +24,7 @@ import type { Contribution } from "../../core/models.js";
 import type { AgentTopology } from "../../core/topology.js";
 import type { TmuxManager } from "../agents/tmux-manager.js";
 import { AgentSplitPane } from "../components/agent-split-pane.js";
-import { useInformerFactoryOptional } from "../hooks/informer-context.js";
+import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useEntity } from "../hooks/use-entity.js";
 import type { NavigationActions } from "../hooks/use-navigation.js";
 import type { PanelFocusState } from "../hooks/use-panel-focus.js";
@@ -203,9 +203,8 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
     // and fall back to `usePolledData(getContribution)` when no factory is
     // mounted (e.g. backend.mode === "nexus" — no watch routes yet).
     const detailCid = nav.detailCid;
-    const informerFactory = useInformerFactoryOptional();
     const useInformerPath =
-      informerFactory?.supportsKind("Contribution") === true && detailCid !== undefined;
+      useEntityWatchEnabled(provider, "Contribution") && detailCid !== undefined;
     const entityResult = useEntity("Contribution", detailCid);
 
     const detailFetcher = useCallback(

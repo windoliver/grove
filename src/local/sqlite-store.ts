@@ -1615,7 +1615,17 @@ export class SqliteClaimStore implements ClaimStore {
       ) as readonly ClaimRow[];
 
     if (rows.length > 0 && rows[0] !== undefined) {
-      return rowToClaim(rows[0]);
+      const claim = rowToClaim(rows[0]);
+      // Heartbeat advances heartbeat_at + lease_expires_at + revision; views
+      // render the lease deadline from the cached entity, so without firing
+      // a MODIFIED write the cache would still show the prior lease and the
+      // view would render the claim as expired/stale even though the store
+      // is fresh. PR2 (#388) earlier excluded heartbeat to suppress no-op
+      // ticks, but the lease fields ARE state changes that consumers depend
+      // on — see Codex round-1 finding "Claim heartbeats never update the
+      // local watch cache".
+      this.onClaimWrite?.("MODIFIED", claim);
+      return claim;
     }
 
     // UPDATE matched nothing — determine why for a specific error message

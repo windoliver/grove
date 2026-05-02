@@ -128,8 +128,46 @@ export class RemoteDataProvider
    * Called by screen-manager.tsx when a session is started or resumed.
    */
   setSessionScope(sessionId: string): void {
+    const prev = this.activeSessionId;
     this.activeSessionId = sessionId;
+    if (prev === undefined) {
+      for (const fn of [...this.scopeListeners]) {
+        try {
+          fn(true);
+        } catch (err) {
+          process.stderr.write(`[remote-provider] scope listener threw: ${String(err)}\n`);
+        }
+      }
+    }
   }
+
+  /**
+   * Whether a session scope is currently active. Migrated views (PR2 #388)
+   * gate the informer hook path on this — the watch protocol does not
+   * forward sessionId, so a scoped view would otherwise observe the full
+   * namespace stream and leak cross-session contributions. Until PR3+
+   * extends `/api/watch` with sessionId, scoped views stay on polling.
+   */
+  hasSessionScope(): boolean {
+    return this.activeSessionId !== undefined;
+  }
+
+  /**
+   * Subscribe to scope on/off transitions. Returns an unsubscribe.
+   * The InformerProvider hooks this so the remote watch factory can
+   * stop streaming as soon as the user enters a scoped session — the
+   * watch route does not filter by sessionId, so a running factory
+   * would otherwise keep pulling cross-session data. PR2 (#388),
+   * Codex round 2 finding 1.
+   */
+  onSessionScopeChange(listener: (scoped: boolean) => void): () => void {
+    this.scopeListeners.add(listener);
+    return () => {
+      this.scopeListeners.delete(listener);
+    };
+  }
+
+  private readonly scopeListeners = new Set<(scoped: boolean) => void>();
 
   private sessionScopedUrl(path: string, params?: URLSearchParams): string {
     const url = new URL(`${this.baseUrl}${path}`);

@@ -146,6 +146,16 @@ export abstract class StoreBackedProvider
   /** Set by {@link setSessionScope} — scopes all contribution queries to this session. */
   protected activeSessionId: string | undefined;
 
+  /**
+   * Listeners that fire when {@link setSessionScope} flips the scope on/off.
+   * The boolean argument is `true` when a scope is now active, `false` when
+   * cleared. PR2 (#388) uses this to stop unscoped watch streams as soon
+   * as a session is selected — until `/api/watch` accepts a `sessionId`,
+   * a running factory would otherwise keep pulling cross-session data
+   * (Codex round 2, finding 1).
+   */
+  private readonly scopeListeners = new Set<(scoped: boolean) => void>();
+
   constructor(deps: StoreBackedProviderDeps) {
     this.store = deps.contributionStore;
     this.claims = deps.claimStore;
@@ -168,7 +178,41 @@ export abstract class StoreBackedProvider
    * NexusDataProvider overrides this to also swap the store instance.
    */
   setSessionScope(sessionId: string): void {
+    const prev = this.activeSessionId;
     this.activeSessionId = sessionId;
+    if (prev === undefined) {
+      for (const fn of [...this.scopeListeners]) {
+        try {
+          fn(true);
+        } catch (err) {
+          process.stderr.write(`[provider] scope listener threw: ${String(err)}\n`);
+        }
+      }
+    }
+  }
+
+  /**
+   * Whether a session scope is currently active. Migrated views (PR2 #388)
+   * use this to gate the informer hook path: the watch protocol does not
+   * yet support sessionId filtering, so when scoped, a global watch cache
+   * would leak contributions from other sessions. Scoped views fall back
+   * to provider polling (which honors sessionId) until PR3+ extends the
+   * watch protocol.
+   */
+  hasSessionScope(): boolean {
+    return this.activeSessionId !== undefined;
+  }
+
+  /**
+   * Subscribe to scope on/off transitions. Returns an unsubscribe.
+   * PR2 (#388) hooks the InformerProvider into this so it can stop the
+   * remote watch streams as soon as the user enters a scoped session.
+   */
+  onSessionScopeChange(listener: (scoped: boolean) => void): () => void {
+    this.scopeListeners.add(listener);
+    return () => {
+      this.scopeListeners.delete(listener);
+    };
   }
 
   // ---------------------------------------------------------------------------

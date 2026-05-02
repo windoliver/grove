@@ -14,7 +14,7 @@ import type { ContributionEntity } from "../../core/entity.js";
 import type { Contribution } from "../../core/models.js";
 import { formatTimestamp, truncateCid } from "../../shared/format.js";
 import { Table } from "../components/table.js";
-import { useInformerFactoryOptional } from "../hooks/informer-context.js";
+import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useEntities } from "../hooks/use-entities.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
@@ -72,8 +72,7 @@ export const ActivityView: React.NamedExoticComponent<ActivityProps> = React.mem
     pageSize,
     onContributionsLoaded,
   }: ActivityProps): React.ReactNode {
-    const factory = useInformerFactoryOptional();
-    const useInformerPath = factory?.supportsKind("Contribution") === true;
+    const useInformerPath = useEntityWatchEnabled(provider, "Contribution");
 
     const entityResult = useEntities("Contribution");
 
