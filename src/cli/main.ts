@@ -434,6 +434,15 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
       },
     },
     {
+      name: "diagnostics",
+      description: "Create a diagnostics ZIP for bug reports",
+      needsStore: false,
+      handler: async (args) => {
+        const { handleDiagnostics } = await import("./commands/diagnostics.js");
+        await handleDiagnostics(args, groveOverride);
+      },
+    },
+    {
       name: "completions",
       description: "Generate shell completion scripts",
       needsStore: false,
@@ -588,6 +597,7 @@ Collaboration:
 Advanced:
   grove gossip <subcommand>            P2P federation (peers, sync, daemon, ...)
   grove skill install                  Install AI assistant skill files
+  grove diagnostics [--out <path>]    Create a diagnostics ZIP for bug reports
   grove completions bash|zsh|fish      Generate shell completion scripts
   grove tui [--nexus <url>]            Operator TUI dashboard
 
