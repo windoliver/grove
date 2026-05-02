@@ -134,6 +134,38 @@ describe("runDiagnostics", () => {
 
     expect(existsSync(out)).toBe(true);
   });
+
+  it("written zip contains expected diagnostics entries", async () => {
+    const grove = createTempGrove("zip-content");
+    const out = join(grove.projectRoot, "diag-full.zip");
+
+    await runDiagnostics(
+      {
+        excludeDb: false,
+        scrubMode: "standard",
+        out,
+      },
+      {
+        cwd: grove.projectRoot,
+        env: {
+          HOME: "/Users/tester",
+          GROVE_AGENT_ID: "agent-test",
+        },
+        generatedAt: "2026-05-02T12:30:00.000Z",
+        systemRunner: fakeSystemRunner,
+      },
+    );
+
+    const bytes = new Uint8Array(await Bun.file(out).arrayBuffer());
+    const names = zipEntryNames(bytes);
+
+    expect(names).toContain("meta.json");
+    expect(names).toContain("README.md");
+    expect(names).toContain("db/grove.db");
+    expect(names).toContain("db/contributions-recent.jsonl");
+    expect(names).toContain("operator-primitives/availability.json");
+    expect(names).toContain("system/process-tree.txt");
+  });
 });
 
 function createTempGrove(name: string): TestGrove {
@@ -158,3 +190,39 @@ const fakeSystemRunner: ProbeRunner = async (command) => ({
   stdout: `ok: ${command}\n`,
   stderr: "",
 });
+
+function readUInt32(bytes: Uint8Array, offset: number): number {
+  return (
+    (byteAt(bytes, offset) |
+      (byteAt(bytes, offset + 1) << 8) |
+      (byteAt(bytes, offset + 2) << 16) |
+      (byteAt(bytes, offset + 3) << 24)) >>>
+    0
+  );
+}
+
+function readUInt16(bytes: Uint8Array, offset: number): number {
+  return byteAt(bytes, offset) | (byteAt(bytes, offset + 1) << 8);
+}
+
+function byteAt(bytes: Uint8Array, offset: number): number {
+  return bytes[offset] ?? 0;
+}
+
+function zipEntryNames(bytes: Uint8Array): readonly string[] {
+  const names: string[] = [];
+  let offset = 0;
+
+  while (offset + 30 <= bytes.length && readUInt32(bytes, offset) === 0x04034b50) {
+    const size = readUInt32(bytes, offset + 18);
+    const nameLength = readUInt16(bytes, offset + 26);
+    const extraLength = readUInt16(bytes, offset + 28);
+    const nameStart = offset + 30;
+    const nameEnd = nameStart + nameLength;
+
+    names.push(new TextDecoder().decode(bytes.slice(nameStart, nameEnd)));
+    offset = nameStart + nameLength + extraLength + size;
+  }
+
+  return names;
+}
