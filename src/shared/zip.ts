@@ -146,11 +146,17 @@ function validateEntryPath(path: string): void {
     path.length === 0 ||
     path.startsWith("/") ||
     path.startsWith("\\") ||
-    /^[A-Za-z]:\//.test(path) ||
+    /^[A-Za-z]:/.test(path) ||
     path.endsWith("/") ||
-    path.includes("..") ||
-    path.includes("\\")
+    path.includes("\\") ||
+    /[\u0000-\u001f\u007f]/.test(path)
   ) {
     throw new Error(`unsafe zip entry path: ${path}`);
+  }
+
+  for (const segment of path.split("/")) {
+    if (segment.length === 0 || segment === "." || segment === "..") {
+      throw new Error(`unsafe zip entry path: ${path}`);
+    }
   }
 }
