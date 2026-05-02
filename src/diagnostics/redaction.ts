@@ -7,6 +7,7 @@ export interface RedactOptions {
 }
 
 const TEXT_EXTENSIONS = new Set([".json", ".jsonl", ".md", ".txt", ".log", ".yaml", ".yml"]);
+const SECRET_ASSIGNMENT_KEYS = String.raw`"?(?:API[_-]?KEY|ACCESS[_-]?TOKEN|SECRET|PASSWORD|TOKEN)"?`;
 
 export function isTextEntryPath(path: string): boolean {
   if (path === "README.md") return true;
@@ -28,7 +29,7 @@ export function redactText(input: string, options: RedactOptions): string {
   if (options.mode === "aggressive") {
     out = redactPrivateKeys(out);
     out = out.replace(/\b(Bearer\s+)[A-Za-z0-9._~+/=-]{16,}/gi, "$1<redacted>");
-    out = out.replace(/(?<==)\/[^\s"']+/g, "<redacted-path>");
+    out = redactAssignedAbsolutePaths(out);
   }
 
   return out;
@@ -38,16 +39,13 @@ function redactSecretAssignments(input: string, keys: readonly string[]): string
   let out = input;
   for (const key of keys) {
     const escaped = escapeRegExp(key);
-    out = out.replace(new RegExp(`(${escaped}\\s*[=:]\\s*)[^\\s,}"']+`, "g"), "$1<redacted>");
+    out = redactAssignmentValues(out, `"?(?:${escaped})"?`, "g");
   }
   return out;
 }
 
 function redactApiKeyAssignments(input: string): string {
-  return input.replace(
-    /((?:API[_-]?KEY|ACCESS[_-]?TOKEN|SECRET|PASSWORD|TOKEN)\s*[=:]\s*)[^&#\s,}"']+/gi,
-    "$1<redacted>",
-  );
+  return redactAssignmentValues(input, SECRET_ASSIGNMENT_KEYS, "gi");
 }
 
 function redactHomeDir(input: string, homeDir: string): string {
@@ -68,6 +66,22 @@ function redactPrivateKeys(input: string): string {
     /(-----BEGIN [A-Z ]*PRIVATE KEY-----)[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----)/g,
     "$1\n<redacted-private-key>\n$2",
   );
+}
+
+function redactAssignmentValues(input: string, keyPattern: string, flags: string): string {
+  const quoted = new RegExp(`(${keyPattern}\\s*[=:]\\s*)(["'])[^\\r\\n]*?\\2`, flags);
+  const unquoted = new RegExp(`(${keyPattern}\\s*[=:]\\s*)[^&#\\s,}"']+`, flags);
+  return input.replace(quoted, "$1$2<redacted>$2").replace(unquoted, "$1<redacted>");
+}
+
+function redactAssignedAbsolutePaths(input: string): string {
+  return input.replace(/(?<==)\/[^\s"']+/g, (path) =>
+    isRouteLikePathValue(path) ? path : "<redacted-path>",
+  );
+}
+
+function isRouteLikePathValue(path: string): boolean {
+  return path.includes("?") || path.includes("&") || path === "/api" || path.startsWith("/api/");
 }
 
 function escapeRegExp(input: string): string {
