@@ -135,6 +135,30 @@ describe("runDiagnostics", () => {
     expect(existsSync(out)).toBe(true);
   });
 
+  it("honors GROVE_DIR when no explicit grove override is provided", async () => {
+    const grove = createTempGrove("env-grove-dir");
+    const cwd = makeTempDir("outside-grove");
+    const out = join(cwd, "bundle.zip");
+
+    await runDiagnostics(
+      {
+        excludeDb: false,
+        scrubMode: "standard",
+        out,
+      },
+      {
+        cwd,
+        env: {
+          GROVE_DIR: grove.groveDir,
+        },
+        generatedAt: "2026-05-02T12:30:00.000Z",
+        systemRunner: fakeSystemRunner,
+      },
+    );
+
+    expect(existsSync(out)).toBe(true);
+  });
+
   it("written zip contains expected diagnostics entries", async () => {
     const grove = createTempGrove("zip-content");
     const out = join(grove.projectRoot, "diag-full.zip");

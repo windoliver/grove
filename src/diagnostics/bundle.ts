@@ -66,10 +66,13 @@ export async function buildDiagnosticsEntries(
   const effectiveHomeDir = options.homeDir ?? homedir();
   const dbPath = join(groveDir, "grove.db");
 
-  if (existsSync(join(projectRoot, "GROVE.md"))) {
-    entries.push(
-      textEntry("config/GROVE.md", await readFile(join(projectRoot, "GROVE.md"), "utf8")),
-    );
+  const groveConfigPath = join(projectRoot, "GROVE.md");
+  if (existsSync(groveConfigPath)) {
+    try {
+      entries.push(textEntry("config/GROVE.md", await readFile(groveConfigPath, "utf8")));
+    } catch (error) {
+      warnings.push(`Failed to read GROVE.md: ${errorMessage(error)}`);
+    }
   } else {
     warnings.push("GROVE.md not found; config/GROVE.md omitted");
   }

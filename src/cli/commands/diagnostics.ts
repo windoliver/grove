@@ -83,7 +83,8 @@ export async function runDiagnostics(
   options: DiagnosticsOptions,
   deps: RunDiagnosticsDeps,
 ): Promise<void> {
-  const groveDir = resolveDiagnosticsGroveDir(deps.cwd, deps.groveOverride);
+  const env = deps.env ?? process.env;
+  const groveDir = resolveDiagnosticsGroveDir(deps.cwd, deps.groveOverride, env);
   const projectRoot = resolve(groveDir, "..");
   const generatedAt = deps.generatedAt ?? new Date().toISOString();
   const outPath = resolveOutputPath(deps.cwd, options.out, generatedAt);
@@ -97,7 +98,7 @@ export async function runDiagnostics(
     scrubMode: options.scrubMode,
     excludeDb: options.excludeDb,
     slot: options.slot,
-    env: deps.env ?? {},
+    env,
     homeDir: homedir(),
     systemRunner: deps.systemRunner,
   });
@@ -112,9 +113,18 @@ export async function runDiagnostics(
   }
 }
 
-function resolveDiagnosticsGroveDir(cwd: string, groveOverride: string | undefined): string {
+function resolveDiagnosticsGroveDir(
+  cwd: string,
+  groveOverride: string | undefined,
+  env: Readonly<Record<string, string | undefined>>,
+): string {
   if (groveOverride !== undefined) {
     return resolveGroveDir(resolve(cwd, groveOverride)).groveDir;
+  }
+
+  const envGroveDir = env.GROVE_DIR;
+  if (envGroveDir !== undefined && envGroveDir !== "") {
+    return resolveGroveDir(resolve(cwd, envGroveDir)).groveDir;
   }
 
   const groveDir = findGroveDir(cwd);

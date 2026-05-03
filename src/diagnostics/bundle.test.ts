@@ -240,6 +240,29 @@ describe("buildDiagnosticsEntries", () => {
     );
   });
 
+  test("continues with warning when GROVE.md cannot be read", async () => {
+    const ctx = await createBundleContext({ initializeDb: false });
+    await rm(join(ctx.projectRoot, "GROVE.md"), { force: true });
+    await mkdir(join(ctx.projectRoot, "GROVE.md"));
+
+    const result = await buildDiagnosticsEntries({
+      projectRoot: ctx.projectRoot,
+      groveDir: ctx.groveDir,
+      packageVersion: "1.2.3-test",
+      generatedAt: "2026-05-02T12:34:56.000Z",
+      scrubMode: "standard",
+      excludeDb: true,
+      env: {},
+      homeDir: "/Users/tafeng",
+      systemRunner: fakeSystemRunner,
+    });
+
+    expect(result.entries.map((entry) => entry.path)).not.toContain("config/GROVE.md");
+    expect(result.warnings.some((warning) => warning.includes("Failed to read GROVE.md"))).toBe(
+      true,
+    );
+  });
+
   test("sorts log traversal and manifest arrays deterministically", async () => {
     const ctx = await createBundleContext({ initializeDb: false, includeDefaultLog: false });
     await mkdir(join(ctx.groveDir, "agent-logs", "z-slot"), { recursive: true });
