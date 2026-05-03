@@ -275,17 +275,15 @@ describe("backendLabel", () => {
 // ---------------------------------------------------------------------------
 
 describe("checkNexusHealth", () => {
-  test("returns 'ok' on 200 JSON-RPC response", async () => {
+  test("returns 'ok' on 200 REST exists response", async () => {
     const server = Bun.serve({
       port: 0,
       fetch(req) {
-        // Verify it hits the correct Nexus JSON-RPC endpoint
         const url = new URL(req.url);
-        expect(url.pathname).toBe("/api/nfs/exists");
-        expect(req.method).toBe("POST");
-        return new Response(JSON.stringify({ jsonrpc: "2.0", result: { exists: true }, id: 1 }), {
-          status: 200,
-        });
+        expect(url.pathname).toBe("/api/v2/files/exists");
+        expect(url.searchParams.get("path")).toBe("/");
+        expect(req.method).toBe("GET");
+        return new Response(JSON.stringify({ exists: true }), { status: 200 });
       },
     });
     try {

@@ -151,14 +151,10 @@ describe("NexusWsBridge", () => {
     globalThis.fetch = (async () =>
       new Response(
         JSON.stringify({
-          result: {
-            data: Buffer.from(
-              JSON.stringify({
+          content: JSON.stringify({
                 sender: "coder",
                 payload: { cid: "blake3:abc", kind: "work", summary: "test contribution" },
               }),
-            ).toString("base64"),
-          },
         }),
         { status: 200 },
       )) as unknown as typeof fetch;
@@ -210,11 +206,7 @@ describe("NexusWsBridge", () => {
     globalThis.fetch = (async () =>
       new Response(
         JSON.stringify({
-          result: {
-            data: Buffer.from(
-              JSON.stringify({ sender: "coder", payload: { summary: "plain notice" } }),
-            ).toString("base64"),
-          },
+          content: JSON.stringify({ sender: "coder", payload: { summary: "plain notice" } }),
         }),
         { status: 200 },
       )) as unknown as typeof fetch;
@@ -277,11 +269,7 @@ describe("NexusWsBridge", () => {
     globalThis.fetch = (async () =>
       new Response(
         JSON.stringify({
-          result: {
-            data: Buffer.from(
-              JSON.stringify({ sender: "coder", payload: { summary: "test" } }),
-            ).toString("base64"),
-          },
+          content: JSON.stringify({ sender: "coder", payload: { summary: "test" } }),
         }),
         { status: 200 },
       )) as unknown as typeof fetch;
@@ -338,14 +326,10 @@ describe("NexusWsBridge", () => {
     globalThis.fetch = (async () =>
       new Response(
         JSON.stringify({
-          result: {
-            data: Buffer.from(
-              JSON.stringify({
+          content: JSON.stringify({
                 sender: "coder",
                 payload: { summary: "implement auth module" },
               }),
-            ).toString("base64"),
-          },
         }),
         { status: 200 },
       )) as unknown as typeof fetch;
@@ -385,9 +369,7 @@ describe("NexusWsBridge", () => {
     globalThis.fetch = (async () =>
       new Response(
         JSON.stringify({
-          result: {
-            data: Buffer.from(
-              JSON.stringify({
+          content: JSON.stringify({
                 sender: "coder",
                 payload: {
                   cid: "blake3:abc123",
@@ -396,8 +378,6 @@ describe("NexusWsBridge", () => {
                   agentId: "coder-1",
                 },
               }),
-            ).toString("base64"),
-          },
         }),
         { status: 200 },
       )) as unknown as typeof fetch;
@@ -439,9 +419,7 @@ describe("NexusWsBridge", () => {
     globalThis.fetch = (async () =>
       new Response(
         JSON.stringify({
-          result: {
-            data: Buffer.from(
-              JSON.stringify({
+          content: JSON.stringify({
                 sender: "reviewer",
                 payload: {
                   cid: "blake3:review1",
@@ -450,8 +428,6 @@ describe("NexusWsBridge", () => {
                   agentId: "reviewer-1",
                 },
               }),
-            ).toString("base64"),
-          },
         }),
         { status: 200 },
       )) as unknown as typeof fetch;
@@ -515,11 +491,11 @@ describe("NexusWsBridge", () => {
     bridge.close();
   });
 
-  test("readAndPush handles missing data field gracefully", async () => {
+  test("readAndPush handles missing content field gracefully", async () => {
     const runtime = makeMockRuntime();
 
     globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ result: {} }), { status: 200 })) as unknown as typeof fetch;
+      new Response(JSON.stringify({}), { status: 200 })) as unknown as typeof fetch;
 
     const bridge = new TestableNexusWsBridge(makeBridgeOpts({ runtime }));
     const session = makeSession("reviewer");
@@ -861,19 +837,15 @@ describe("NexusWsBridge", () => {
     globalThis.fetch = (async () =>
       new Response(
         JSON.stringify({
-          result: {
-            data: Buffer.from(
-              JSON.stringify({
-                sender: "coder",
-                payload: {
-                  type: "acp.message",
-                  sessionId: "s1",
-                  turnId: "t1",
-                  message: { kind: "text", turnId: "t1", text: "hi", chunk: true },
-                },
-              }),
-            ).toString("base64"),
-          },
+          content: JSON.stringify({
+            sender: "coder",
+            payload: {
+              type: "acp.message",
+              sessionId: "s1",
+              turnId: "t1",
+              message: { kind: "text", turnId: "t1", text: "hi", chunk: true },
+            },
+          }),
         }),
         { status: 200 },
       )) as unknown as typeof fetch;

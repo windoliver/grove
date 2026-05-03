@@ -1379,20 +1379,17 @@ export class NexusWsBridge {
       // failure is silently lost. Exit early.
       if (this.draining || this.closed) return;
       // Retry on 429 (rate limit) — the inbox read is critical for IPC delivery.
+      // Migrated from `POST /api/nfs/sys_read` (JSON-RPC, dropped in recent
+      // Nexus images) to `GET /api/v2/files/read` (REST). Send path writes
+      // the message envelope with `encoding: "base64"`, so the server stores
+      // the raw JSON bytes; REST read returns that JSON as `content` text.
       let resp: Response | undefined;
+      const readUrl = `${this.opts.nexusUrl}/api/v2/files/read?path=${encodeURIComponent(path)}`;
       for (let attempt = 0; attempt < 5; attempt++) {
-        resp = await fetch(`${this.opts.nexusUrl}/api/nfs/sys_read`, {
-          method: "POST",
+        resp = await fetch(readUrl, {
           headers: {
-            "Content-Type": "application/json",
             Authorization: `Bearer ${this.opts.apiKey}`,
           },
-          body: JSON.stringify({
-            jsonrpc: "2.0",
-            method: "sys_read",
-            params: { path },
-            id: 1,
-          }),
         });
         if (resp.status !== 429) break;
         // Backoff: 2s, 4s, 8s, 16s, 32s
@@ -1407,17 +1404,14 @@ export class NexusWsBridge {
         return;
       }
 
-      const result = (await resp.json()) as { result?: { data?: string }; error?: unknown };
-      if (!result.result?.data) {
-        debugLog(
-          "wsBridge.readAndPush",
-          `NO DATA path=${path} error=${JSON.stringify(result.error ?? "none").slice(0, 100)}`,
-        );
+      const result = (await resp.json()) as { content?: string };
+      if (!result.content) {
+        debugLog("wsBridge.readAndPush", `NO DATA path=${path}`);
         this.publishInvalidation(_targetRole, ipcMessageId);
         return;
       }
 
-      const raw = Buffer.from(result.result.data, "base64").toString();
+      const raw = result.content;
       const msg = JSON.parse(raw) as {
         from?: string;
         sender?: string;
