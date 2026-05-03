@@ -16,8 +16,7 @@
  * - Retry with exponential backoff for transient errors
  */
 
-import { readFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 
 import { hash } from "blake3";
 
@@ -228,8 +227,7 @@ export class NexusCas implements ContentStore {
     const mediaType = options?.mediaType || undefined;
     if (mediaType) validateMediaType(mediaType);
 
-    // Read file and compute hash
-    const fileData = new Uint8Array(readFileSync(filePath));
+    const fileData = new Uint8Array(await readFile(filePath));
     const contentHash = computeHash(fileData);
     const blobPath = casPath(this.zoneId, contentHash);
 

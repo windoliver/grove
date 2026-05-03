@@ -68,6 +68,29 @@ export function getScore(contribution: Contribution, metricName: string): Score 
 // ---------------------------------------------------------------------------
 
 const DEFAULT_LIMIT = 10;
+const DEFAULT_MAX_CONCURRENT_FRONTIER_SOURCES = 8;
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  maxConcurrency: number,
+  fn: (item: T) => Promise<R>,
+): Promise<readonly R[]> {
+  if (items.length === 0) return [];
+  const results: R[] = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, maxConcurrency), items.length);
+
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index] as T);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
 
 /** Create a FrontierEntry from a contribution and a value. */
 function toEntry(contribution: Contribution, value: number): FrontierEntry {
@@ -398,18 +421,25 @@ export interface SessionAggregatingFrontierOptions {
   readonly rootStore: FrontierContributionSource;
   readonly listSessionIds: () => Promise<readonly string[]>;
   readonly storeForSession: (sessionId: string) => FrontierContributionSource;
+  readonly maxConcurrentSources?: number | undefined;
 }
 
 class AggregatedFrontierSource implements FrontierContributionSource {
   private readonly sources: readonly FrontierContributionSource[];
+  private readonly maxConcurrentSources: number;
 
-  constructor(sources: readonly FrontierContributionSource[]) {
+  constructor(sources: readonly FrontierContributionSource[], maxConcurrentSources: number) {
     this.sources = sources;
+    this.maxConcurrentSources = maxConcurrentSources;
   }
 
   async list(query?: ContributionQuery): Promise<readonly Contribution[]> {
     const byCid = new Map<string, Contribution>();
-    const sourceResults = await Promise.all(this.sources.map((source) => source.list(query)));
+    const sourceResults = await mapWithConcurrency(
+      this.sources,
+      this.maxConcurrentSources,
+      (source) => source.list(query),
+    );
     for (const contributions of sourceResults) {
       for (const contribution of contributions) {
         byCid.set(contribution.cid, contribution);
@@ -420,8 +450,10 @@ class AggregatedFrontierSource implements FrontierContributionSource {
 
   async incomingSources(targetCids: readonly string[]): Promise<readonly Contribution[]> {
     const byCid = new Map<string, Contribution>();
-    const sourceResults = await Promise.all(
-      this.sources.map((source) => source.incomingSources(targetCids)),
+    const sourceResults = await mapWithConcurrency(
+      this.sources,
+      this.maxConcurrentSources,
+      (source) => source.incomingSources(targetCids),
     );
     for (const contributions of sourceResults) {
       for (const contribution of contributions) {
@@ -442,11 +474,14 @@ export class SessionAggregatingFrontierCalculator implements FrontierCalculator 
   private readonly rootStore: FrontierContributionSource;
   private readonly listSessionIds: () => Promise<readonly string[]>;
   private readonly storeForSession: (sessionId: string) => FrontierContributionSource;
+  private readonly maxConcurrentSources: number;
 
   constructor(options: SessionAggregatingFrontierOptions) {
     this.rootStore = options.rootStore;
     this.listSessionIds = options.listSessionIds;
     this.storeForSession = options.storeForSession;
+    this.maxConcurrentSources =
+      options.maxConcurrentSources ?? DEFAULT_MAX_CONCURRENT_FRONTIER_SOURCES;
   }
 
   async compute(query?: FrontierQuery): Promise<Frontier> {
@@ -455,10 +490,10 @@ export class SessionAggregatingFrontierCalculator implements FrontierCalculator 
     }
 
     const sessionIds = [...new Set(await this.listSessionIds())];
-    const source = new AggregatedFrontierSource([
-      this.rootStore,
-      ...sessionIds.map((sessionId) => this.storeForSession(sessionId)),
-    ]);
+    const source = new AggregatedFrontierSource(
+      [this.rootStore, ...sessionIds.map((sessionId) => this.storeForSession(sessionId))],
+      this.maxConcurrentSources,
+    );
     return new DefaultFrontierCalculator(source).compute(query);
   }
 }

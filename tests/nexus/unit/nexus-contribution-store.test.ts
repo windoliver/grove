@@ -8,10 +8,16 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
+import { computeContributionContentHash } from "../../../src/core/content-dedup.js";
+import { toManifest } from "../../../src/core/manifest.js";
 import { runContributionStoreTests } from "../../../src/core/store.conformance.js";
 import { makeContribution } from "../../../src/core/test-helpers.js";
 import { MockNexusClient } from "../../../src/nexus/mock-client.js";
 import { NexusContributionStore } from "../../../src/nexus/nexus-contribution-store.js";
+import {
+  contributionContentHashIndexPath,
+  contributionPath,
+} from "../../../src/nexus/vfs-paths.js";
 
 // ---------------------------------------------------------------------------
 // Conformance tests
@@ -183,6 +189,162 @@ describe("NexusContributionStore adapter-specific", () => {
 
     freshStore.close();
     await retryClient.close();
+  });
+
+  test("put repairs orphaned content-hash marker before returning", async () => {
+    const c = makeContribution({ summary: "repair orphan marker" });
+    const contentHash = computeContributionContentHash(c);
+    await client.write(
+      contributionContentHashIndexPath("test-zone", contentHash),
+      new TextEncoder().encode(c.cid),
+    );
+
+    const result = await store.put(c);
+
+    expect(result.isNew).toBe(true);
+    expect(result.contribution?.cid).toBe(c.cid);
+    expect(await store.get(c.cid)).toBeDefined();
+    expect((await store.list()).map((entry) => entry.cid)).toContain(c.cid);
+  });
+
+  test("put serializes concurrent orphan marker repairs to one visible contribution", async () => {
+    const c1 = makeContribution({
+      summary: "concurrent orphan repair",
+      createdAt: "2026-01-01T00:00:00Z",
+    });
+    const c2 = makeContribution({
+      summary: "concurrent orphan repair",
+      createdAt: "2026-01-01T00:00:01Z",
+    });
+    const contentHash = computeContributionContentHash(c1);
+    expect(c2.cid).not.toBe(c1.cid);
+    expect(computeContributionContentHash(c2)).toBe(contentHash);
+    await client.write(
+      contributionContentHashIndexPath("test-zone", contentHash),
+      new TextEncoder().encode(`blake3:${"0".repeat(64)}`),
+    );
+
+    const results = await Promise.all([store.put(c1), store.put(c2)]);
+
+    expect(new Set(results.map((result) => result.cid)).size).toBe(1);
+    const visibleCids = (await store.list())
+      .filter((entry) => entry.summary === "concurrent orphan repair")
+      .map((entry) => entry.cid);
+    expect(new Set(visibleCids).size).toBe(1);
+  });
+
+  test("put resumes an abandoned repair marker for the same contribution", async () => {
+    const c = makeContribution({ summary: "resume repair marker" });
+    const contentHash = computeContributionContentHash(c);
+    await client.write(
+      contributionContentHashIndexPath("test-zone", contentHash),
+      new TextEncoder().encode(
+        JSON.stringify({
+          state: "repairing",
+          cid: c.cid,
+          token: "abandoned",
+          startedAt: new Date().toISOString(),
+        }),
+      ),
+    );
+
+    const result = await store.put(c);
+
+    expect(result.isNew).toBe(true);
+    expect(await store.get(c.cid)).toBeDefined();
+    expect((await store.list()).map((entry) => entry.cid)).toContain(c.cid);
+  });
+
+  test("put reports new when repairing committed incomplete manifest records", async () => {
+    const c = makeContribution({ summary: "repair secondary indexes", tags: ["repair"] });
+    const contentHash = computeContributionContentHash(c);
+    await client.write(
+      contributionPath("test-zone", c.cid),
+      new TextEncoder().encode(JSON.stringify(toManifest(c))),
+    );
+    await client.write(
+      contributionContentHashIndexPath("test-zone", contentHash),
+      new TextEncoder().encode(c.cid),
+    );
+
+    expect(await store.list()).toEqual([]);
+
+    const result = await store.put(c);
+
+    expect(result.isNew).toBe(true);
+    expect(result.contribution?.cid).toBe(c.cid);
+    expect((await store.list()).map((entry) => entry.cid)).toContain(c.cid);
+    expect((await store.search("secondary")).map((entry) => entry.cid)).toContain(c.cid);
+  });
+
+  test("put reports new when finishing same-cid repair marker with manifest", async () => {
+    const c = makeContribution({ summary: "finish repair marker", tags: ["finish"] });
+    const contentHash = computeContributionContentHash(c);
+    await client.write(
+      contributionPath("test-zone", c.cid),
+      new TextEncoder().encode(JSON.stringify(toManifest(c))),
+    );
+    await client.write(
+      contributionContentHashIndexPath("test-zone", contentHash),
+      new TextEncoder().encode(
+        JSON.stringify({
+          state: "repairing",
+          cid: c.cid,
+          token: "interrupted",
+          startedAt: new Date().toISOString(),
+        }),
+      ),
+    );
+
+    const result = await store.put(c);
+
+    expect(result.isNew).toBe(true);
+    expect(result.contribution?.cid).toBe(c.cid);
+    expect((await store.list()).map((entry) => entry.cid)).toContain(c.cid);
+    expect((await store.search("finish")).map((entry) => entry.cid)).toContain(c.cid);
+  });
+
+  test("getByContentHash ignores committed incomplete manifest records", async () => {
+    const c = makeContribution({ summary: "repair content hash lookup", tags: ["lookup"] });
+    const contentHash = computeContributionContentHash(c);
+    await client.write(
+      contributionPath("test-zone", c.cid),
+      new TextEncoder().encode(JSON.stringify(toManifest(c))),
+    );
+    await client.write(
+      contributionContentHashIndexPath("test-zone", contentHash),
+      new TextEncoder().encode(c.cid),
+    );
+
+    const found = await store.getByContentHash(contentHash);
+
+    expect(found).toBeUndefined();
+    expect(await store.list()).toEqual([]);
+  });
+
+  test("getByContentHash ignores repairing incomplete manifest records", async () => {
+    const c = makeContribution({ summary: "skip repairing content hash lookup" });
+    const contentHash = computeContributionContentHash(c);
+    await client.write(
+      contributionPath("test-zone", c.cid),
+      new TextEncoder().encode(JSON.stringify(toManifest(c))),
+    );
+    await client.write(
+      contributionContentHashIndexPath("test-zone", contentHash),
+      new TextEncoder().encode(
+        JSON.stringify({
+          state: "repairing",
+          cid: c.cid,
+          token: "interrupted",
+          startedAt: new Date().toISOString(),
+        }),
+      ),
+    );
+
+    const found = await store.getByContentHash(contentHash);
+
+    expect(found).toBeUndefined();
+    expect(await store.list()).toEqual([]);
   });
 
   // -----------------------------------------------------------------------

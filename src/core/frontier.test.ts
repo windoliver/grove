@@ -120,4 +120,37 @@ describe("SessionAggregatingFrontierCalculator", () => {
       sessionOne.cid,
     ]);
   });
+
+  test("bounds concurrent unscoped session source reads", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const makeSource = (): InMemoryContributionStore => {
+      const store = new InMemoryContributionStore();
+      store.list = async () => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        active -= 1;
+        return [];
+      };
+      return store;
+    };
+    const stores = new Map([
+      ["s1", makeSource()],
+      ["s2", makeSource()],
+      ["s3", makeSource()],
+      ["s4", makeSource()],
+    ]);
+
+    const calculator = new SessionAggregatingFrontierCalculator({
+      rootStore: makeSource(),
+      listSessionIds: async () => ["s1", "s2", "s3", "s4"],
+      storeForSession: (sessionId) => stores.get(sessionId) ?? makeSource(),
+      maxConcurrentSources: 2,
+    });
+
+    await calculator.compute();
+
+    expect(maxActive).toBeLessThanOrEqual(2);
+  });
 });
