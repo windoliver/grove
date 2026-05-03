@@ -317,6 +317,11 @@ export const COMMANDS: readonly CommandMeta[] = [
     flags: ["json"],
   },
   {
+    name: "diagnostics",
+    description: "Create a diagnostics ZIP for bug reports",
+    flags: ["exclude-db", "scrub", "slot", "out", "help"],
+  },
+  {
     name: "completions",
     description: "Generate shell completion scripts",
     flags: [],
