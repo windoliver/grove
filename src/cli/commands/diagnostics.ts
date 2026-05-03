@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -8,6 +8,7 @@ import type { ProbeRunner } from "../../diagnostics/system.js";
 import { createStoredZip } from "../../shared/zip.js";
 import { UsageError } from "../errors.js";
 import { findGroveDir, resolveGroveDir } from "../utils/grove-dir.js";
+import { readGrovePackageVersion } from "../utils/package-version.js";
 
 export interface DiagnosticsOptions {
   readonly excludeDb: boolean;
@@ -31,8 +32,6 @@ Usage:
   grove diagnostics [--exclude-db] [--scrub standard|aggressive|off] [--slot <id>] [--out <path>]`;
 
 const SCRUB_MODES: readonly ScrubMode[] = ["standard", "aggressive", "off"];
-const FALLBACK_PACKAGE_VERSION = "unknown";
-
 export function parseDiagnosticsArgs(argv: readonly string[]): DiagnosticsOptions {
   const { values } = parseArgs({
     args: [...argv],
@@ -88,7 +87,7 @@ export async function runDiagnostics(
   const projectRoot = resolve(groveDir, "..");
   const generatedAt = deps.generatedAt ?? new Date().toISOString();
   const outPath = resolveOutputPath(deps.cwd, options.out, generatedAt);
-  const packageVersion = await readPackageVersion();
+  const packageVersion = readGrovePackageVersion();
 
   const result = await buildDiagnosticsEntries({
     projectRoot,
@@ -147,26 +146,4 @@ function formatTimestamp(generatedAt: string): string {
 
 function isScrubMode(value: string): value is ScrubMode {
   return SCRUB_MODES.includes(value as ScrubMode);
-}
-
-async function readPackageVersion(): Promise<string> {
-  try {
-    const pkgPath = join(import.meta.dir, "../../../package.json");
-    const parsed: unknown = JSON.parse(await readFile(pkgPath, "utf8"));
-    if (isPackageJsonWithVersion(parsed)) {
-      return parsed.version;
-    }
-  } catch {
-    return FALLBACK_PACKAGE_VERSION;
-  }
-  return FALLBACK_PACKAGE_VERSION;
-}
-
-function isPackageJsonWithVersion(value: unknown): value is { readonly version: string } {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "version" in value &&
-    typeof value.version === "string"
-  );
 }
