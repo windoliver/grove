@@ -8,7 +8,8 @@ import { formatTimestamp } from "../../shared/format.js";
 import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
-import { usePanelState } from "../hooks/use-panel-state.js";
+import { mapPollResult } from "../hooks/panel-state.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { TuiDataProvider } from "../provider.js";
 
 /** Props for the PlanPanel view. */
@@ -53,7 +54,9 @@ export const PlanPanelView: React.NamedExoticComponent<PlanPanelProps> = React.m
       () => provider.getActivity({ kind: "plan" as Contribution["kind"] }),
       [provider],
     );
-    const { state } = usePanelState<readonly Contribution[]>(fetcher, intervalMs, active);
+    const state = mapPollResult(
+      useEventDrivenData<readonly Contribution[]>(fetcher, undefined, undefined, active),
+    );
 
     if (state.status === "loading") {
       return (

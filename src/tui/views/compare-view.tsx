@@ -9,7 +9,8 @@
 import React, { useCallback } from "react";
 import { formatScore } from "../../shared/format.js";
 import { SplitDiff } from "../components/split-diff.js";
-import { usePanelState } from "../hooks/use-panel-state.js";
+import { mapPollResult } from "../hooks/panel-state.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { ContributionDetail, TuiDataProvider } from "../provider.js";
 
 /** Props for the CompareView component. */
@@ -48,15 +49,11 @@ export const CompareView: React.NamedExoticComponent<CompareViewProps> = React.m
       [provider, rightCid],
     );
 
-    const { state: leftState } = usePanelState<ContributionDetail | undefined>(
-      leftFetcher,
-      intervalMs,
-      true,
+    const leftState = mapPollResult(
+      useEventDrivenData<ContributionDetail | undefined>(leftFetcher, undefined, undefined, true),
     );
-    const { state: rightState } = usePanelState<ContributionDetail | undefined>(
-      rightFetcher,
-      intervalMs,
-      true,
+    const rightState = mapPollResult(
+      useEventDrivenData<ContributionDetail | undefined>(rightFetcher, undefined, undefined, true),
     );
 
     // Show loading until at least one side has data or an error.
