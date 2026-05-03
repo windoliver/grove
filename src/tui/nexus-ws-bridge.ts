@@ -2,15 +2,13 @@
  * Nexus IPC bridge — real-time push via Nexus SSE + RPC.
  *
  * Endpoints used (post-2026-04-27 — Nexus PR #3912 deleted the legacy
- * `/api/v2/ipc/*` router; IPC is now kernel-VFS-as-IPC over the RPC
- * surface and the events_replay SSE stream):
+ * `/api/v2/ipc/*` router; IPC is now kernel-VFS-as-IPC over the events
+ * stream + REST file surface):
  *   GET  /api/v2/events/stream         — SSE stream of file-write events
  *                                        filtered by `path_pattern` to the
  *                                        per-role inbox prefix
- *   POST /api/nfs/sys_write            — RPC: write a message file into
+ *   POST /api/v2/files/write           — REST: write a message file into
  *                                        the recipient's inbox directory
- *   POST /api/nfs/sys_read             — RPC: read the message file when
- *                                        an SSE event references it
  *   POST /api/v2/agents/register       — register agent (auto-provisions
  *                                        the `/ipc/{agent_id}/inbox/` dir
  *                                        per agent_registration.py:236+)
@@ -18,8 +16,8 @@
  * Flow: SSE delivers `event` records (shape from `EventReplayService`) for
  * any `write` to a path matching the per-role inbox glob (any-zone-prefix +
  * `/ipc/{role}/inbox/`) → bridge translates to the legacy `SseEvent` shape
- * internally → reads message via sys_read → pushes to target agent via
- * runtime.send().
+ * internally → reads message via the REST file API → pushes to target
+ * agent via runtime.send().
  *
  * No process.stderr.write — all logging goes through the TUI's log system
  * to avoid corrupting the alternate screen.
@@ -72,6 +70,15 @@ export interface NexusWsBridgeOptions {
    * TUI kept accepting work.
    */
   onRoleUnhealthy?: ((role: string, consecutiveFailures: number) => void) | undefined;
+  /**
+   * Called when a role's SSE stream completes a healthy cycle after
+   * having previously fired `onRoleUnhealthy`. Lets the caller flip
+   * a degraded session back to live delivery without requiring a TUI
+   * restart. Without this, a transient Nexus restart that exceeds the
+   * unhealthy threshold leaves the session permanently degraded even
+   * after the channel recovers.
+   */
+  onRoleRecovered?: ((role: string) => void) | undefined;
   /** Default: 3. */
   unhealthyThreshold?: number | undefined;
 }
@@ -391,9 +398,11 @@ export class NexusWsBridge {
       const result = await this.opts.ipcClient.send(sender, recipient, payload);
       return result.ok;
     }
-    // Fallback: direct write to the recipient's inbox via Nexus RPC
-    // (`sys_write`). The legacy `/api/v2/ipc/send` route was removed when
-    // Nexus migrated IPC to the kernel-VFS surface.
+    // Fallback: direct write to the recipient's inbox via the v2 REST
+    // endpoint. The legacy `/api/v2/ipc/send` route and the JSON-RPC
+    // `sys_write` method were both removed in subsequent Nexus releases;
+    // `POST /api/v2/files/write` is the durable REST surface that
+    // materializes a kernel-VFS file the inbox SSE stream observes.
     try {
       const messageId = (globalThis.crypto?.randomUUID?.() ?? String(Date.now()));
       const envelope = JSON.stringify({
@@ -404,18 +413,17 @@ export class NexusWsBridge {
         payload,
         timestamp: new Date().toISOString(),
       });
-      const buf = Buffer.from(envelope, "utf8").toString("base64");
-      const resp = await fetch(`${this.opts.nexusUrl}/api/nfs/sys_write`, {
+      const content = Buffer.from(envelope, "utf8").toString("base64");
+      const resp = await fetch(`${this.opts.nexusUrl}/api/v2/files/write`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${this.opts.apiKey}`,
         },
         body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "sys_write",
-          params: { path: inboxFilePath(recipient, messageId), buf },
-          id: 1,
+          path: inboxFilePath(recipient, messageId),
+          content,
+          encoding: "base64",
         }),
       });
       return resp.ok;
@@ -482,6 +490,11 @@ export class NexusWsBridge {
     // recurrence) would never re-trigger onRoleUnhealthy because the
     // flag stayed latched from the first breach.
     let firedUnhealthy = false;
+    // Reconnect backoff schedule (ms). Exponential so a single Nexus
+    // restart cycle (typically 20–30s) does not burn through the full
+    // failure threshold before the channel comes back. Capped to 60s
+    // so a sustained outage still escalates within a couple of minutes.
+    const backoffSchedule = [5000, 10000, 20000, 40000, 60000];
     while (!this.closed && !signal.aborted) {
       let streamOk = false;
       try {
@@ -491,8 +504,19 @@ export class NexusWsBridge {
       }
       if (signal.aborted) return;
       if (streamOk) {
+        const wasUnhealthy = firedUnhealthy;
         consecutiveFailures = 0;
         firedUnhealthy = false;
+        // If the role had previously been declared unhealthy, surface the
+        // recovery so the SpawnManager can flip delivery back to ready
+        // instead of staying in the disabled trap state.
+        if (wasUnhealthy) {
+          try {
+            this.opts.onRoleRecovered?.(role);
+          } catch {
+            // callback errors shouldn't kill the reconnect loop
+          }
+        }
       } else {
         consecutiveFailures += 1;
         // Gate escalation on the role still being live. A stale loop that
@@ -510,6 +534,8 @@ export class NexusWsBridge {
         }
       }
       if (!this.closed && !signal.aborted) {
+        const idx = Math.min(consecutiveFailures, backoffSchedule.length - 1);
+        const delayMs = streamOk ? (backoffSchedule[0] ?? 5000) : (backoffSchedule[idx] ?? 5000);
         await new Promise<void>((resolve) => {
           // Wake early on abort so torn-down roles don't linger in the
           // reconnect backoff. When the timer fires the normal way, we
@@ -519,7 +545,7 @@ export class NexusWsBridge {
           const timer = setTimeout(() => {
             if (onAbort) signal.removeEventListener("abort", onAbort);
             resolve();
-          }, 5000);
+          }, delayMs);
           onAbort = () => {
             clearTimeout(timer);
             resolve();

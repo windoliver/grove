@@ -977,3 +977,36 @@ describe("SpawnManager — reconciliation", () => {
     expect(registered[0]!.sessionId).toBe("grove-code-reviewer-0--mo3i3zh6");
   });
 });
+
+describe("SpawnManager — delivery state recovery", () => {
+  const makeManager = () => {
+    const provider = makeMockProvider();
+    const tmux = new MockTmuxManager();
+    return new SpawnManager(provider, tmux, () => {}, [{ kind: "local" as const, path: "/tmp" }]);
+  };
+
+  test("markDeliveryRecovered flips disabled → ready", () => {
+    const manager = makeManager();
+    manager.markDeliveryDisabled("transient outage");
+    expect(manager.getDeliveryState()).toBe("disabled");
+
+    manager.markDeliveryRecovered();
+    expect(manager.getDeliveryState()).toBe("ready");
+    expect(manager.getDeliveryDisabledReason()).toBeUndefined();
+  });
+
+  test("markDeliveryRecovered is a no-op when already ready", () => {
+    const manager = makeManager();
+    manager.markDeliveryReady();
+    expect(manager.getDeliveryState()).toBe("ready");
+    manager.markDeliveryRecovered();
+    expect(manager.getDeliveryState()).toBe("ready");
+  });
+
+  test("markDeliveryRecovered resolves pending waiters", async () => {
+    const manager = makeManager();
+    manager.markDeliveryDisabled("outage");
+    manager.markDeliveryRecovered();
+    await expect(manager.testWaitForDelivery(100)).resolves.toBeUndefined();
+  });
+});

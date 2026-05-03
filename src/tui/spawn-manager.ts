@@ -193,6 +193,41 @@ export class SpawnManager {
   }
 
   /**
+   * Recover from a `disabled` delivery state once the bridge reports a
+   * role's SSE channel has resumed. Without this transition, a transient
+   * Nexus restart that briefly exceeded the unhealthy threshold leaves
+   * the session permanently fail-closed even after the channel is
+   * delivering events again.
+   *
+   * Distinct from `markDeliveryReady()` so callers must opt in: only the
+   * bridge's per-role `onRoleRecovered` should re-arm delivery, never the
+   * normal startup path.
+   */
+  markDeliveryRecovered(): void {
+    if (this.deliveryState !== "disabled") return;
+    this.deliveryState = "ready";
+    this.deliveryDisabledReason = undefined;
+    const waiters = this.deliveryReadyWaiters;
+    this.deliveryReadyWaiters = [];
+    for (const w of waiters) w.resolve();
+  }
+
+  /** @internal — test surface for delivery state assertions */
+  getDeliveryState(): "pending" | "ready" | "disabled" {
+    return this.deliveryState;
+  }
+
+  /** @internal — test surface for delivery state assertions */
+  getDeliveryDisabledReason(): string | undefined {
+    return this.deliveryDisabledReason;
+  }
+
+  /** @internal — test surface for waitForDelivery() (private). */
+  testWaitForDelivery(timeoutMs: number): Promise<void> {
+    return this.waitForDelivery(timeoutMs);
+  }
+
+  /**
    * Wait until the bridge transitions to "ready" or "disabled". Default
    * timeout (120s) covers the full bridge init retry budget plus margin.
    * One connect() attempt = provisionAgents(10s) + probeStreams(10s) =

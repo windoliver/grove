@@ -561,16 +561,15 @@ describe("NexusWsBridge", () => {
 
     expect(ok).toBe(true);
     expect(fetchCalls).toHaveLength(1);
-    expect(fetchCalls[0]!.url).toBe("http://localhost:9999/api/nfs/sys_write");
+    expect(fetchCalls[0]!.url).toBe("http://localhost:9999/api/v2/files/write");
     const body = fetchCalls[0]!.body as {
-      jsonrpc: string;
-      method: string;
-      params: { path: string; buf: string };
+      path: string;
+      content: string;
+      encoding: string;
     };
-    expect(body.jsonrpc).toBe("2.0");
-    expect(body.method).toBe("sys_write");
-    expect(body.params.path).toMatch(/^\/ipc\/reviewer\/inbox\/.+\.json$/);
-    const decoded = JSON.parse(Buffer.from(body.params.buf, "base64").toString("utf8")) as {
+    expect(body.path).toMatch(/^\/ipc\/reviewer\/inbox\/.+\.json$/);
+    expect(body.encoding).toBe("base64");
+    const decoded = JSON.parse(Buffer.from(body.content, "base64").toString("utf8")) as {
       sender: string;
       recipient: string;
       type: string;

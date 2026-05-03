@@ -1,7 +1,7 @@
 /**
  * Nexus-backed EventBus — publish via Nexus IPC API.
  *
- * On publish: sends via NexusIpcClient (POST /api/nfs/sys_write into the
+ * On publish: sends via NexusIpcClient (POST /api/v2/files/write into the
  * recipient's kernel-VFS inbox). Returns structured PublishResult with IPC
  * message ID.
  *

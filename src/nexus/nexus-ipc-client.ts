@@ -1,11 +1,12 @@
 /**
- * Shared Nexus IPC client for sending messages via the Nexus kernel-VFS RPC.
+ * Shared Nexus IPC client for sending messages via the Nexus kernel-VFS.
  *
- * Migrated from the removed `/api/v2/ipc/send` route to the post-PR-#3912
- * RPC surface: messages are written into the recipient's inbox at
- * `/ipc/{recipient}/inbox/{message_id}.json` via `POST /api/nfs/sys_write`.
- * Subscribers consume those writes through `/api/v2/events/stream` with a
- * matching path pattern (handled by NexusWsBridge).
+ * Migrated from the removed `/api/v2/ipc/send` route to the v2 REST file
+ * surface: messages are written into the recipient's inbox at
+ * `/ipc/{recipient}/inbox/{message_id}.json` via `POST /api/v2/files/write`
+ * with a base64-encoded JSON envelope. Subscribers consume those writes
+ * through `/api/v2/events/stream` with a matching path pattern (handled
+ * by NexusWsBridge).
  *
  * Returns structured results with IPC message IDs for handoff tracking.
  */
@@ -95,18 +96,17 @@ export class NexusIpcClient {
         payload,
         timestamp: new Date().toISOString(),
       });
-      const buf = Buffer.from(envelope, "utf8").toString("base64");
-      const resp = await fetch(`${this.nexusUrl}/api/nfs/sys_write`, {
+      const content = Buffer.from(envelope, "utf8").toString("base64");
+      const resp = await fetch(`${this.nexusUrl}/api/v2/files/write`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "sys_write",
-          params: { path: `/ipc/${recipient}/inbox/${messageId}.json`, buf },
-          id: 1,
+          path: `/ipc/${recipient}/inbox/${messageId}.json`,
+          content,
+          encoding: "base64",
         }),
       });
 
