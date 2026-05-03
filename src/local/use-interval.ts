@@ -27,8 +27,24 @@ export function useInterval(
   }, [active, intervalMs]);
 }
 
+export interface StartIntervalOptions {
+  /**
+   * When true, calls `.unref()` on the timer handle so the Node event loop is
+   * not kept alive by this interval alone. No-op on platforms where the timer
+   * does not expose `.unref` (e.g., browser-like environments).
+   */
+  readonly unref?: boolean;
+}
+
 /** Imperative variant for non-React modules (returns a stop function). */
-export function startInterval(callback: () => void, intervalMs: number): () => void {
+export function startInterval(
+  callback: () => void,
+  intervalMs: number,
+  opts?: StartIntervalOptions,
+): () => void {
   const id = setInterval(callback, intervalMs);
+  if (opts?.unref) {
+    (id as unknown as { unref?: () => void }).unref?.();
+  }
   return () => clearInterval(id);
 }

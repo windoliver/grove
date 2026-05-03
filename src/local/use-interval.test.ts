@@ -159,4 +159,55 @@ describe("startInterval", () => {
     await sleep(80);
     expect(cb.mock.calls.length).toBe(callsAtStop);
   });
+
+  test("startInterval calls unref when opts.unref=true", () => {
+    // Stub setInterval to return a fake handle whose unref we can observe.
+    const realSetInterval = globalThis.setInterval;
+    const realClearInterval = globalThis.clearInterval;
+    let unrefCalled = false;
+    const fakeHandle = {
+      unref: () => {
+        unrefCalled = true;
+      },
+    } as unknown as ReturnType<typeof realSetInterval>;
+    (globalThis as unknown as { setInterval: typeof realSetInterval }).setInterval = (() =>
+      fakeHandle) as unknown as typeof realSetInterval;
+    (globalThis as unknown as { clearInterval: typeof realClearInterval }).clearInterval = (() =>
+      undefined) as unknown as typeof realClearInterval;
+    try {
+      const stop = startInterval(() => undefined, 1000, { unref: true });
+      expect(unrefCalled).toBe(true);
+      stop();
+    } finally {
+      (globalThis as unknown as { setInterval: typeof realSetInterval }).setInterval =
+        realSetInterval;
+      (globalThis as unknown as { clearInterval: typeof realClearInterval }).clearInterval =
+        realClearInterval;
+    }
+  });
+
+  test("startInterval omits unref when opts.unref is absent", () => {
+    const realSetInterval = globalThis.setInterval;
+    const realClearInterval = globalThis.clearInterval;
+    let unrefCalled = false;
+    const fakeHandle = {
+      unref: () => {
+        unrefCalled = true;
+      },
+    } as unknown as ReturnType<typeof realSetInterval>;
+    (globalThis as unknown as { setInterval: typeof realSetInterval }).setInterval = (() =>
+      fakeHandle) as unknown as typeof realSetInterval;
+    (globalThis as unknown as { clearInterval: typeof realClearInterval }).clearInterval = (() =>
+      undefined) as unknown as typeof realClearInterval;
+    try {
+      const stop = startInterval(() => undefined, 1000);
+      expect(unrefCalled).toBe(false);
+      stop();
+    } finally {
+      (globalThis as unknown as { setInterval: typeof realSetInterval }).setInterval =
+        realSetInterval;
+      (globalThis as unknown as { clearInterval: typeof realClearInterval }).clearInterval =
+        realClearInterval;
+    }
+  });
 });
