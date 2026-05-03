@@ -404,7 +404,7 @@ export class NexusWsBridge {
     // `POST /api/v2/files/write` is the durable REST surface that
     // materializes a kernel-VFS file the inbox SSE stream observes.
     try {
-      const messageId = (globalThis.crypto?.randomUUID?.() ?? String(Date.now()));
+      const messageId = globalThis.crypto?.randomUUID?.() ?? String(Date.now());
       const envelope = JSON.stringify({
         message_id: messageId,
         sender,

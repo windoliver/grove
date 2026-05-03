@@ -152,9 +152,9 @@ describe("NexusWsBridge", () => {
       new Response(
         JSON.stringify({
           content: JSON.stringify({
-                sender: "coder",
-                payload: { cid: "blake3:abc", kind: "work", summary: "test contribution" },
-              }),
+            sender: "coder",
+            payload: { cid: "blake3:abc", kind: "work", summary: "test contribution" },
+          }),
         }),
         { status: 200 },
       )) as unknown as typeof fetch;
@@ -327,9 +327,9 @@ describe("NexusWsBridge", () => {
       new Response(
         JSON.stringify({
           content: JSON.stringify({
-                sender: "coder",
-                payload: { summary: "implement auth module" },
-              }),
+            sender: "coder",
+            payload: { summary: "implement auth module" },
+          }),
         }),
         { status: 200 },
       )) as unknown as typeof fetch;
@@ -370,14 +370,14 @@ describe("NexusWsBridge", () => {
       new Response(
         JSON.stringify({
           content: JSON.stringify({
-                sender: "coder",
-                payload: {
-                  cid: "blake3:abc123",
-                  kind: "work",
-                  summary: "implement auth module",
-                  agentId: "coder-1",
-                },
-              }),
+            sender: "coder",
+            payload: {
+              cid: "blake3:abc123",
+              kind: "work",
+              summary: "implement auth module",
+              agentId: "coder-1",
+            },
+          }),
         }),
         { status: 200 },
       )) as unknown as typeof fetch;
@@ -420,14 +420,14 @@ describe("NexusWsBridge", () => {
       new Response(
         JSON.stringify({
           content: JSON.stringify({
-                sender: "reviewer",
-                payload: {
-                  cid: "blake3:review1",
-                  kind: "review",
-                  summary: "fix the race condition in handler.ts",
-                  agentId: "reviewer-1",
-                },
-              }),
+            sender: "reviewer",
+            payload: {
+              cid: "blake3:review1",
+              kind: "review",
+              summary: "fix the race condition in handler.ts",
+              agentId: "reviewer-1",
+            },
+          }),
         }),
         { status: 200 },
       )) as unknown as typeof fetch;
