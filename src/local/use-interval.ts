@@ -15,6 +15,9 @@ export function useInterval(
   active: boolean = true,
 ): void {
   const cbRef = useRef(callback);
+  // Refresh on every render so the timer always invokes the latest callback
+  // without restarting the interval (which would happen if `callback` were a
+  // dep of the useEffect below). Must stay outside useEffect.
   cbRef.current = callback;
 
   useEffect(() => {
