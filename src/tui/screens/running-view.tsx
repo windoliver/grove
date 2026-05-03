@@ -376,8 +376,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       contributionsPoll.error?.message,
     ]);
 
-    // Fetch handoffs alongside dashboard (usePolledData's setInterval doesn't
-    // survive OpenTUI remounts, so we fetch manually in the parent).
+    // Fetch handoffs once on mount; subsequent updates ride the eventBus
+    // subscription below (handoff.overdue / handoff.seen / handoff.acked).
     const [handoffs, setHandoffs] = useState<readonly import("../../core/handoff.js").Handoff[]>(
       [],
     );
@@ -391,27 +391,22 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       const p = provider as {
         getHandoffs: (q?: unknown) => Promise<readonly import("../../core/handoff.js").Handoff[]>;
       };
-      const doFetch = () => {
-        void p
-          .getHandoffs({ limit: 200 })
-          .then((all) => {
-            const cutoff =
-              sessionStartedAt ?? new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-            const filtered = all.filter((h) => h.createdAt >= cutoff);
-            debugLog(
-              "handoffs",
-              `total=${all.length} afterFilter=${filtered.length} cutoff=${cutoff}`,
-            );
-            setHandoffs(filtered);
-          })
-          .catch((err: unknown) => {
-            debugLog("handoffs", `ERROR: ${err instanceof Error ? err.message : String(err)}`);
-          });
-      };
-      doFetch(); // immediate
-      const id = setInterval(doFetch, intervalMs);
-      return () => clearInterval(id);
-    }, [provider, sessionStartedAt, intervalMs]);
+      void p
+        .getHandoffs({ limit: 200 })
+        .then((all) => {
+          const cutoff =
+            sessionStartedAt ?? new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+          const filtered = all.filter((h) => h.createdAt >= cutoff);
+          debugLog(
+            "handoffs",
+            `total=${all.length} afterFilter=${filtered.length} cutoff=${cutoff}`,
+          );
+          setHandoffs(filtered);
+        })
+        .catch((err: unknown) => {
+          debugLog("handoffs", `ERROR: ${err instanceof Error ? err.message : String(err)}`);
+        });
+    }, [provider, sessionStartedAt]);
 
     // Subscribe to handoff lifecycle events (handoff.overdue, handoff.seen,
     // handoff.acked) for real-time panel updates. When any handoff event
