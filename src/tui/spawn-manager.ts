@@ -193,6 +193,41 @@ export class SpawnManager {
   }
 
   /**
+   * Recover from a `disabled` delivery state once the bridge reports a
+   * role's SSE channel has resumed. Without this transition, a transient
+   * Nexus restart that briefly exceeded the unhealthy threshold leaves
+   * the session permanently fail-closed even after the channel is
+   * delivering events again.
+   *
+   * Distinct from `markDeliveryReady()` so callers must opt in: only the
+   * bridge's per-role `onRoleRecovered` should re-arm delivery, never the
+   * normal startup path.
+   */
+  markDeliveryRecovered(): void {
+    if (this.deliveryState !== "disabled") return;
+    this.deliveryState = "ready";
+    this.deliveryDisabledReason = undefined;
+    const waiters = this.deliveryReadyWaiters;
+    this.deliveryReadyWaiters = [];
+    for (const w of waiters) w.resolve();
+  }
+
+  /** @internal — test surface for delivery state assertions */
+  getDeliveryState(): "pending" | "ready" | "disabled" {
+    return this.deliveryState;
+  }
+
+  /** @internal — test surface for delivery state assertions */
+  getDeliveryDisabledReason(): string | undefined {
+    return this.deliveryDisabledReason;
+  }
+
+  /** @internal — test surface for waitForDelivery() (private). */
+  testWaitForDelivery(timeoutMs: number): Promise<void> {
+    return this.waitForDelivery(timeoutMs);
+  }
+
+  /**
    * Wait until the bridge transitions to "ready" or "disabled". Default
    * timeout (120s) covers the full bridge init retry budget plus margin.
    * One connect() attempt = provisionAgents(10s) + probeStreams(10s) =
@@ -706,17 +741,11 @@ export class SpawnManager {
       throw spawnErr;
     }
 
-    // Step 3b: Provision IPC inbox in Nexus for this role.
-    const nexusUrl = process.env.GROVE_NEXUS_URL;
-    const nexusKey = process.env.NEXUS_API_KEY;
-    if (nexusUrl && nexusKey) {
-      void fetch(`${nexusUrl}/api/v2/ipc/provision/${encodeURIComponent(roleId)}`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${nexusKey}` },
-      }).catch(() => {
-        /* best-effort */
-      });
-    }
+    // Step 3b: Inbox provisioning is handled by Nexus during agent
+    // registration (see nexus/system_services/agent_registration.py — the
+    // post-#3912 code path materializes `/ipc/{role}/inbox/` on first
+    // touch). The legacy `/api/v2/ipc/provision/{role}` route was removed,
+    // so no explicit call is needed here.
 
     // Step 4: Record spawn + register for IPC push + create log buffer.
     // No claims, no heartbeats — agents create claims themselves via grove_claim

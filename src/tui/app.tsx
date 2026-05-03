@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { useKeyboard, useRenderer } from "@opentui/react";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { TUI_REFRESH_ROLE } from "../core/event-bus.js";
 import type { Claim, Contribution } from "../core/models.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import { checkSpawn, checkSpawnDepth } from "./agents/spawn-validator.js";
@@ -551,8 +552,11 @@ export function App({
   // depth and is not removed here.
   useEffect(() => {
     if (!eventBus) return;
-    const roles = topology?.roles.map((r) => r.name) ?? [];
-    if (roles.length === 0) return;
+    const topologyRoles = topology?.roles.map((r) => r.name) ?? [];
+    // TUI_REFRESH_ROLE catches producer events (vfs.changed, agent.output,
+    // github.pr.changed) that don't target an agent role. Always subscribe
+    // so the fan-out works even before topology resolves.
+    const roles = [...topologyRoles, TUI_REFRESH_ROLE];
     const handler = () => {
       // Invalidate provider TTL caches BEFORE bumping the refresh signal.
       // The store-backed provider hands back its last full scan inside

@@ -435,6 +435,13 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
                 manager.markDeliveryDisabled(reason);
               }
             },
+            // Recovery: when the SSE channel comes back after a degraded
+            // window, flip delivery back to ready so the session resumes
+            // accepting work instead of staying fail-closed forever.
+            onRoleRecovered: (role) => {
+              process.stderr.write(`[grove] RECOVERED: SSE stream for role=${role}\n`);
+              manager.markDeliveryRecovered();
+            },
           });
           // Bridge readiness is a startup invariant: connect() resolves only
           // after every role passes registration + SSE stream handshake.

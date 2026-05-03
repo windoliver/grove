@@ -9,14 +9,15 @@
 import React, { useCallback } from "react";
 import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { GitHubPRSummary, TuiDataProvider, TuiGitHubProvider } from "../provider.js";
 import { theme } from "../theme.js";
 
 /** Props for the GitHubPanel view. */
 export interface GitHubPanelProps {
   readonly provider: TuiDataProvider;
-  readonly intervalMs: number;
+  /** Unused after A8.4 migration; producer-side `github.pr.changed` drives re-fetch. */
+  readonly intervalMs?: number;
   readonly active: boolean;
   readonly cursor: number;
   readonly onRowCountChanged?: ((count: number) => void) | undefined;
@@ -34,7 +35,6 @@ function hasGitHub(provider: TuiDataProvider): provider is TuiDataProvider & Tui
 export const GitHubPanelView: React.NamedExoticComponent<GitHubPanelProps> = React.memo(
   function GitHubPanelView({
     provider,
-    intervalMs,
     active,
     cursor,
     onRowCountChanged,
@@ -51,9 +51,10 @@ export const GitHubPanelView: React.NamedExoticComponent<GitHubPanelProps> = Rea
       return (provider as unknown as TuiGitHubProvider).getActivePR();
     }, [provider, supportsGitHub]);
 
-    const { data, loading, isStale, error } = usePolledData<GitHubPRSummary | undefined>(
+    const { data, loading, isStale, error } = useEventDrivenData<GitHubPRSummary | undefined>(
       fetcher,
-      intervalMs,
+      undefined,
+      undefined,
       active,
     );
 

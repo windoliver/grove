@@ -7,7 +7,7 @@
 
 import React, { useCallback } from "react";
 import type { TmuxManager } from "../agents/tmux-manager.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import { agentStatusIcon, theme } from "../theme.js";
 
 /** Maximum visible agent panes. Overflow agents are listed but not rendered. */
@@ -19,9 +19,9 @@ export interface AgentSplitPaneProps {
   readonly sessions: readonly string[];
   /** TmuxManager for pane capture. */
   readonly tmux: TmuxManager;
-  /** Polling interval in milliseconds. */
-  readonly intervalMs: number;
-  /** Whether this view is actively polling. */
+  /** Unused after A8.4 migration; producer-side `agent.output` events drive re-fetch. */
+  readonly intervalMs?: number;
+  /** Whether this view is actively rendering. */
   readonly active: boolean;
   /** Index of the focused pane (for highlight). */
   readonly focusedIndex?: number | undefined;
@@ -37,13 +37,11 @@ function agentSymbol(_sessionName: string, _sessions: readonly string[]): string
 const AgentPane = React.memo(function AgentPane({
   sessionName,
   tmux,
-  intervalMs,
   active,
   focused,
 }: {
   readonly sessionName: string;
   readonly tmux: TmuxManager;
-  readonly intervalMs: number;
   readonly active: boolean;
   readonly focused: boolean;
 }) {
@@ -51,8 +49,7 @@ const AgentPane = React.memo(function AgentPane({
     return tmux.capturePanes(sessionName);
   }, [tmux, sessionName]);
 
-  const captureMs = Math.max(intervalMs, 200);
-  const { data: output } = usePolledData<string>(fetcher, captureMs, active);
+  const { data: output } = useEventDrivenData<string>(fetcher, undefined, undefined, active);
 
   const rawOutput = output ?? "";
   const lines = rawOutput.trimEnd().split("\n").slice(-15);
@@ -90,7 +87,6 @@ export const AgentSplitPane: React.NamedExoticComponent<AgentSplitPaneProps> = R
   function AgentSplitPane({
     sessions,
     tmux,
-    intervalMs,
     active,
     focusedIndex,
   }: AgentSplitPaneProps): React.ReactNode {
@@ -113,7 +109,6 @@ export const AgentSplitPane: React.NamedExoticComponent<AgentSplitPaneProps> = R
               key={session}
               sessionName={session}
               tmux={tmux}
-              intervalMs={intervalMs}
               active={active}
               focused={focusedIndex === i}
             />

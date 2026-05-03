@@ -1,15 +1,19 @@
 /**
- * Event-driven data hook for Nexus mode.
+ * Event-driven data hook — drop-in replacement for usePolledData.
  *
- * Replaces usePolledData when EventBus is available:
- * 1. Fetches once on mount
- * 2. Subscribes to EventBus — re-fetches when events arrive
+ * Re-fetches on three triggers:
+ *   1. Initial mount (one fetch)
+ *   2. Direct EventBus events (when `eventBus` + `role` provided)
+ *   3. Global RefreshContext signal (r-key + app-level event fan-out)
  *
- * NO polling. EventBus is the single source of truth.
+ * NO setInterval. App-level `useEffect` already subscribes to every topology
+ * role and bumps RefreshContext on event — so panels typically pass
+ * `undefined` for `eventBus`/`role` and ride the existing fan-out.
  */
 
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import type { EventBus, EventHandler, GroveEvent } from "../../core/event-bus.js";
+import { useRefreshSignal } from "./use-refresh-context.js";
 
 /** Result — same interface as usePolledData for drop-in replacement. */
 export interface EventDrivenResult<T> {
@@ -102,7 +106,11 @@ export function useEventDrivenData<T>(
     };
   }, [active, eventBus, role, doFetch]);
 
-  // No polling. EventBus is the single update path.
+  // App-level RefreshContext — covers r-key + app's topology-role event fan-out.
+  // Lets panels migrate without prop-drilling eventBus/role.
+  useRefreshSignal(doFetch);
+
+  // No polling. EventBus + RefreshContext are the only update paths.
 
   return {
     data: state.data,

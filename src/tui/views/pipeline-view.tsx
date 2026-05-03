@@ -13,6 +13,7 @@ import type { TmuxManager } from "../agents/tmux-manager.js";
 import { agentIdFromSession } from "../agents/tmux-manager.js";
 import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useEntities } from "../hooks/use-entities.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
 import { BRAILLE_SPINNER, PLATFORM_COLORS, theme } from "../theme.js";
@@ -194,9 +195,12 @@ export const PipelineView: React.NamedExoticComponent<PipelineViewProps> = React
       if (!available) return [] as readonly string[];
       return tmux.listSessions();
     }, [tmux]);
-    const { data: sessions } = usePolledData<readonly string[]>(
+    // A8.4 (#390): tmux session list re-fetches on producer-side `agent.output`
+    // events via the global RefreshContext fan-out — no setInterval here.
+    const { data: sessions } = useEventDrivenData<readonly string[]>(
       sessionsFetcher,
-      intervalMs * 2,
+      undefined,
+      undefined,
       active && !!tmux,
     );
 
@@ -215,9 +219,11 @@ export const PipelineView: React.NamedExoticComponent<PipelineViewProps> = React
       );
       return new Map(entries);
     }, [tmux, sessions]);
-    const { data: outputs } = usePolledData<Map<string, string>>(
+    // A8.4 (#390): per-session pane capture is event-driven (agent.output).
+    const { data: outputs } = useEventDrivenData<Map<string, string>>(
       outputsFetcher,
-      intervalMs * 2,
+      undefined,
+      undefined,
       active && !!tmux && (sessions?.length ?? 0) > 0,
     );
 

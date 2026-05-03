@@ -8,14 +8,15 @@
 import React, { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { FsEntry, TuiDataProvider, TuiVfsProvider } from "../provider.js";
 import { theme } from "../theme.js";
 
 /** Props for the VFS browser view. */
 export interface VfsBrowserProps {
   readonly provider: TuiDataProvider;
-  readonly intervalMs: number;
+  /** Unused after A8.4 migration to useEventDrivenData; kept for caller-stability. */
+  readonly intervalMs?: number;
   readonly active: boolean;
   readonly cursor: number;
   /** Incremented by parent when Enter is pressed; triggers navigation into directories. */
@@ -216,7 +217,6 @@ function FilePreview({ name, content, loading, error }: FilePreviewProps): React
 export const VfsBrowserView: React.NamedExoticComponent<VfsBrowserProps> = React.memo(
   function VfsBrowserView({
     provider,
-    intervalMs,
     active,
     cursor,
     navigateTrigger,
@@ -232,9 +232,10 @@ export const VfsBrowserView: React.NamedExoticComponent<VfsBrowserProps> = React
       return vfsProvider.listPath(currentPath);
     }, [vfsProvider, currentPath]);
 
-    const { data: entries, loading } = usePolledData<readonly FsEntry[]>(
+    const { data: entries, loading } = useEventDrivenData<readonly FsEntry[]>(
       fetcher,
-      intervalMs,
+      undefined,
+      undefined,
       active && isVfsProvider(provider),
     );
 

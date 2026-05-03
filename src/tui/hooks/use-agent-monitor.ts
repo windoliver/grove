@@ -159,8 +159,9 @@ export function useAgentMonitor(options: AgentMonitorOptions): AgentMonitorState
   }, []);
 
   // Subscribe to EventBus for IPC message log.
-  // Deduplicate: MCP TopologyRouter AND TUI wsBridge.send BOTH fire events
-  // through Nexus /api/v2/ipc/send → SSE → same handler fires twice per routing.
+  // Deduplicate: MCP TopologyRouter AND TUI wsBridge.send BOTH write into
+  // the kernel-VFS inbox via /api/v2/files/write → SSE → same handler
+  // fires twice per routing.
   // Use source→target with a time window to collapse duplicates.
   useEffect(() => {
     if (!eventBus || !topology) return;

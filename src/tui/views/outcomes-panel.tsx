@@ -11,13 +11,14 @@ import { formatTimestamp, truncateCid } from "../../shared/format.js";
 import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { TuiDataProvider, TuiOutcomeProvider } from "../provider.js";
 
 /** Props for the OutcomesPanel view. */
 export interface OutcomesPanelProps {
   readonly provider: TuiDataProvider;
-  readonly intervalMs: number;
+  /** Unused after A8.4 migration to useEventDrivenData; kept for caller-stability. */
+  readonly intervalMs?: number;
   readonly active: boolean;
   readonly cursor: number;
   readonly onRowCountChanged?: ((count: number) => void) | undefined;
@@ -51,7 +52,6 @@ function hasOutcomes(provider: TuiDataProvider): provider is TuiDataProvider & T
 export const OutcomesPanelView: React.NamedExoticComponent<OutcomesPanelProps> = React.memo(
   function OutcomesPanelView({
     provider,
-    intervalMs,
     active,
     cursor,
     onRowCountChanged,
@@ -75,9 +75,10 @@ export const OutcomesPanelView: React.NamedExoticComponent<OutcomesPanelProps> =
       }));
     }, [provider, supportsOutcomes]);
 
-    const { data, loading, isStale, error } = usePolledData<readonly OutcomeRow[]>(
+    const { data, loading, isStale, error } = useEventDrivenData<readonly OutcomeRow[]>(
       fetcher,
-      intervalMs,
+      undefined,
+      undefined,
       active,
     );
 

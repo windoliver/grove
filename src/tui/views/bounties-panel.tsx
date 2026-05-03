@@ -13,13 +13,14 @@ import { formatTimestamp, truncateCid } from "../../shared/format.js";
 import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import { isBountyProvider, type TuiDataProvider } from "../provider.js";
 
 /** Props for the BountiesPanel view. */
 export interface BountiesPanelProps {
   readonly provider: TuiDataProvider;
-  readonly intervalMs: number;
+  /** Unused after A8.4 migration to useEventDrivenData; kept for caller-stability. */
+  readonly intervalMs?: number;
   readonly active: boolean;
   readonly cursor: number;
   readonly onRowCountChanged?: ((count: number) => void) | undefined;
@@ -47,7 +48,6 @@ const COLUMNS = [
 export const BountiesPanelView: React.NamedExoticComponent<BountiesPanelProps> = React.memo(
   function BountiesPanelView({
     provider,
-    intervalMs,
     active,
     cursor,
     onRowCountChanged,
@@ -69,9 +69,10 @@ export const BountiesPanelView: React.NamedExoticComponent<BountiesPanelProps> =
       }));
     }, [provider]);
 
-    const { data, loading, isStale, error } = usePolledData<readonly BountyRow[]>(
+    const { data, loading, isStale, error } = useEventDrivenData<readonly BountyRow[]>(
       fetcher,
-      intervalMs,
+      undefined,
+      undefined,
       active,
     );
 

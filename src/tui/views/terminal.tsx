@@ -17,8 +17,8 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import type { TmuxManager } from "../agents/tmux-manager.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { InputMode } from "../hooks/use-panel-focus.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
 import { theme } from "../theme.js";
 
 // ---------------------------------------------------------------------------
@@ -306,7 +306,8 @@ const VIEWPORT_LINES = 30;
 export interface TerminalProps {
   readonly sessionName?: string | undefined;
   readonly tmux?: TmuxManager | undefined;
-  readonly intervalMs: number;
+  /** Unused after A8.4 migration; producer-side `agent.output` events drive re-fetch. */
+  readonly intervalMs?: number;
   readonly active: boolean;
   readonly mode: InputMode;
   /** Scroll offset from the bottom (0 = auto-scroll, >0 = pinned). */
@@ -319,14 +320,12 @@ export const TerminalView: React.NamedExoticComponent<TerminalProps> = React.mem
   function TerminalView({
     sessionName,
     tmux,
-    intervalMs,
     active,
     mode,
     scrollOffset,
     onScrollChange: _onScrollChange,
   }: TerminalProps): React.ReactNode {
     void _onScrollChange; // available for parent scroll tracking
-    const captureMs = Math.max(intervalMs, 200);
     const [xtermReady, setXtermReady] = useState(xtermModule !== null);
 
     useEffect(() => {
@@ -359,9 +358,10 @@ export const TerminalView: React.NamedExoticComponent<TerminalProps> = React.mem
       return tmux.capturePanes(sessionName);
     }, [tmux, sessionName]);
 
-    const { data: output } = usePolledData<string>(
+    const { data: output } = useEventDrivenData<string>(
       fetcher,
-      captureMs,
+      undefined,
+      undefined,
       active && !!sessionName && !!tmux,
     );
 
