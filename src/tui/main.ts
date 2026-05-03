@@ -450,7 +450,7 @@ async function buildAppProps(
   // start the producer-side VFS watcher. It publishes coarse `vfs.changed`
   // events into the bus, which the App-level subscription forwards to the
   // global RefreshContext — vfs-browser and artifact-preview re-fetch
-  // without their own setInterval.
+  // without their own polling timer.
   if (eventBus && groveDir) {
     const { startVfsEventPublisher } = await import("../local/vfs-event-publisher.js");
     const handle = startVfsEventPublisher({ eventBus, groveDir });
@@ -469,7 +469,7 @@ async function buildAppProps(
 
   // A8.4 (#390): producer-side `github.pr.changed` publisher for the
   // github-panel. Polls the GitHub API at the producer level so the panel
-  // doesn't need its own setInterval. Real deployments should swap this
+  // doesn't need its own polling timer. Real deployments should swap this
   // for webhook ingest; the bus contract stays identical.
   if (eventBus) {
     const { isGitHubProvider } = await import("./provider.js");
