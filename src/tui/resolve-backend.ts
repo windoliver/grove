@@ -240,9 +240,9 @@ export type NexusHealthStatus =
 /**
  * Lightweight health check against a Nexus server.
  *
- * Sends a minimal JSON-RPC `exists` call to `POST /api/nfs/exists`,
- * which matches the Nexus wire protocol (all VFS ops go through
- * `POST /api/nfs/{method}` as JSON-RPC).
+ * Sends a `GET /api/v2/files/exists?path=/` probe — the v2 file router is
+ * the durable surface across recent Nexus images (PR #3912 dropped the
+ * legacy `/api/nfs/*` JSON-RPC methods).
  */
 export async function checkNexusHealth(
   url: string,
