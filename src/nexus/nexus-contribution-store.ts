@@ -296,8 +296,15 @@ export class NexusContributionStore implements ContributionStore {
     const existingCid = marker.cid;
     const existing = await this.get(existingCid);
     if (existing !== undefined) {
-      await this.repairContributionRecordIfIncomplete(existing, "put:repairExistingIndexes");
-      return { cid: existingCid, isNew: false, contribution: existing };
+      const repaired = await this.repairContributionRecordIfIncomplete(
+        existing,
+        "put:repairExistingIndexes",
+      );
+      return {
+        cid: existingCid,
+        isNew: repaired && existing.cid === contribution.cid,
+        contribution: existing,
+      };
     }
 
     return this.claimContentHashRepair(contribution, contentHashPath, markerResult, waitUntilMs);
@@ -327,7 +334,7 @@ export class NexusContributionStore implements ContributionStore {
       } catch (err) {
         if (!(err instanceof NexusConflictError)) throw err;
       }
-      return { cid: existing.cid, isNew: false, contribution: existing };
+      return { cid: existing.cid, isNew: marker.cid === contribution.cid, contribution: existing };
     }
 
     if (marker.cid === contribution.cid || isStaleRepairMarker(marker)) {
@@ -452,10 +459,11 @@ export class NexusContributionStore implements ContributionStore {
   private async repairContributionRecordIfIncomplete(
     contribution: Contribution,
     context: string,
-  ): Promise<void> {
-    if (await this.isContributionRecordComplete(contribution.cid)) return;
+  ): Promise<boolean> {
+    if (await this.isContributionRecordComplete(contribution.cid)) return false;
     await withRetry(() => this.writeContributionRecord(contribution), context, this.config);
     this.invalidateListCache();
+    return true;
   }
 
   private async writeContributionRecord(contribution: Contribution): Promise<void> {
@@ -570,8 +578,8 @@ export class NexusContributionStore implements ContributionStore {
 
     const existing = await this.get(marker.cid);
     if (existing === undefined) return undefined;
+    if (!(await this.isContributionRecordComplete(existing.cid))) return undefined;
 
-    await this.repairContributionRecordIfIncomplete(existing, "getByContentHash:repairIndexes");
     return existing;
   }
 

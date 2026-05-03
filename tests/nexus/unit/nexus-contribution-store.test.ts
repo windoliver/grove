@@ -255,7 +255,7 @@ describe("NexusContributionStore adapter-specific", () => {
     expect((await store.list()).map((entry) => entry.cid)).toContain(c.cid);
   });
 
-  test("put repairs missing secondary indexes for existing manifest", async () => {
+  test("put reports new when repairing committed incomplete manifest records", async () => {
     const c = makeContribution({ summary: "repair secondary indexes", tags: ["repair"] });
     const contentHash = computeContributionContentHash(c);
     await client.write(
@@ -271,13 +271,40 @@ describe("NexusContributionStore adapter-specific", () => {
 
     const result = await store.put(c);
 
-    expect(result.isNew).toBe(false);
+    expect(result.isNew).toBe(true);
     expect(result.contribution?.cid).toBe(c.cid);
     expect((await store.list()).map((entry) => entry.cid)).toContain(c.cid);
     expect((await store.search("secondary")).map((entry) => entry.cid)).toContain(c.cid);
   });
 
-  test("getByContentHash repairs committed incomplete manifest records", async () => {
+  test("put reports new when finishing same-cid repair marker with manifest", async () => {
+    const c = makeContribution({ summary: "finish repair marker", tags: ["finish"] });
+    const contentHash = computeContributionContentHash(c);
+    await client.write(
+      contributionPath("test-zone", c.cid),
+      new TextEncoder().encode(JSON.stringify(toManifest(c))),
+    );
+    await client.write(
+      contributionContentHashIndexPath("test-zone", contentHash),
+      new TextEncoder().encode(
+        JSON.stringify({
+          state: "repairing",
+          cid: c.cid,
+          token: "interrupted",
+          startedAt: new Date().toISOString(),
+        }),
+      ),
+    );
+
+    const result = await store.put(c);
+
+    expect(result.isNew).toBe(true);
+    expect(result.contribution?.cid).toBe(c.cid);
+    expect((await store.list()).map((entry) => entry.cid)).toContain(c.cid);
+    expect((await store.search("finish")).map((entry) => entry.cid)).toContain(c.cid);
+  });
+
+  test("getByContentHash ignores committed incomplete manifest records", async () => {
     const c = makeContribution({ summary: "repair content hash lookup", tags: ["lookup"] });
     const contentHash = computeContributionContentHash(c);
     await client.write(
@@ -291,9 +318,8 @@ describe("NexusContributionStore adapter-specific", () => {
 
     const found = await store.getByContentHash(contentHash);
 
-    expect(found?.cid).toBe(c.cid);
-    expect((await store.list()).map((entry) => entry.cid)).toContain(c.cid);
-    expect((await store.search("lookup")).map((entry) => entry.cid)).toContain(c.cid);
+    expect(found).toBeUndefined();
+    expect(await store.list()).toEqual([]);
   });
 
   test("getByContentHash ignores repairing incomplete manifest records", async () => {
