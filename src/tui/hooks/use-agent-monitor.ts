@@ -5,7 +5,7 @@
  * a thin composition layer. All I/O is async to avoid blocking the render thread.
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { EventBus, GroveEvent } from "../../core/event-bus.js";
 import { parseSessionId } from "../../core/session-id.js";
 import type { AgentTopology } from "../../core/topology.js";
@@ -151,6 +151,14 @@ export function useAgentMonitor(options: AgentMonitorOptions): AgentMonitorState
   const [ipcMessages, setIpcMessages] = useState<readonly IpcMessage[]>([]);
   const [spinnerFrame, setSpinnerFrame] = useState(0);
 
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   // Braille spinner animation
   useInterval(() => setSpinnerFrame((f) => (f + 1) % BRAILLE_SPINNER.length), SPINNER_INTERVAL_MS);
 
@@ -191,100 +199,95 @@ export function useAgentMonitor(options: AgentMonitorOptions): AgentMonitorState
   }, [eventBus, topology]);
 
   // Poll agent log files for live output (async to avoid blocking render thread)
-  useEffect(() => {
+  const logPoll = useCallback(async () => {
     if (!groveDir) return;
     const logDir = `${groveDir}/agent-logs`;
-    let mounted = true;
+    try {
+      const fs = await import("node:fs/promises");
+      const { existsSync } = await import("node:fs");
+      if (!existsSync(logDir)) return;
 
-    const poll = async () => {
-      try {
-        const fs = await import("node:fs/promises");
-        const { existsSync } = await import("node:fs");
-        if (!existsSync(logDir)) return;
+      const entries = await fs.readdir(logDir);
+      const files = entries.filter((f: string) => f.endsWith(".log"));
 
-        const entries = await fs.readdir(logDir);
-        const files = entries.filter((f: string) => f.endsWith(".log"));
-
-        // Accumulate lines across all log files for each role
-        const accumulated = new Map<string, string[]>();
-        for (const file of files) {
-          const role = roleFromLogFilename(file);
-          try {
-            const content = await fs.readFile(`${logDir}/${file}`, "utf-8");
-            const lines = content.split("\n").filter(isLogLineKept).map(stripAnsi);
-            const existing = accumulated.get(role) ?? [];
-            accumulated.set(role, [...existing, ...lines]);
-          } catch {
-            // File might be being written to
-          }
+      const accumulated = new Map<string, string[]>();
+      for (const file of files) {
+        const role = roleFromLogFilename(file);
+        try {
+          const content = await fs.readFile(`${logDir}/${file}`, "utf-8");
+          const lines = content.split("\n").filter(isLogLineKept).map(stripAnsi);
+          const existing = accumulated.get(role) ?? [];
+          accumulated.set(role, [...existing, ...lines]);
+        } catch {
+          // File might be being written to
         }
-
-        // Take last N lines per role
-        const outputs = new Map<string, string[]>();
-        for (const [role, lines] of accumulated) {
-          outputs.set(role, lines.slice(-maxOutputLines));
-        }
-        if (mounted && outputs.size > 0) {
-          setAgentOutputs(outputs);
-        }
-      } catch {
-        // Non-fatal
       }
-    };
 
-    void poll(); // Initial read
-    const timer = setInterval(() => void poll(), POLL_INTERVAL_MS);
-    return () => {
-      mounted = false;
-      clearInterval(timer);
-    };
+      const outputs = new Map<string, string[]>();
+      for (const [role, lines] of accumulated) {
+        outputs.set(role, lines.slice(-maxOutputLines));
+      }
+      if (mountedRef.current && outputs.size > 0) {
+        setAgentOutputs(outputs);
+      }
+    } catch {
+      // Non-fatal
+    }
   }, [groveDir, maxOutputLines]);
 
-  // Poll agent tmux panes for live output (fallback when no log files)
   useEffect(() => {
-    if (!tmux || groveDir) return; // Skip if log files are available
-    const timer = setInterval(async () => {
-      try {
-        const sessions = await tmux.listSessions();
-        const outputs = new Map<string, string[]>();
-        for (const sess of sessions) {
-          if (!sess.startsWith("grove-")) continue;
-          const pane = await tmux.capturePanes(sess);
-          const lines = pane.split("\n").filter((l) => l.trim().length > 0);
-          const role = roleFromSessionName(sess);
-          outputs.set(role, lines.slice(-maxOutputLines).map(stripAnsi));
-        }
-        setAgentOutputs(outputs);
-      } catch {
-        // Non-fatal
+    void logPoll();
+  }, [logPoll]);
+
+  useInterval(() => void logPoll(), POLL_INTERVAL_MS, Boolean(groveDir));
+
+  // Poll agent tmux panes for live output (fallback when no log files)
+  const tmuxPoll = useCallback(async () => {
+    if (!tmux || groveDir) return;
+    try {
+      const sessions = await tmux.listSessions();
+      const outputs = new Map<string, string[]>();
+      for (const sess of sessions) {
+        if (!sess.startsWith("grove-")) continue;
+        const pane = await tmux.capturePanes(sess);
+        const lines = pane.split("\n").filter((l) => l.trim().length > 0);
+        const role = roleFromSessionName(sess);
+        outputs.set(role, lines.slice(-maxOutputLines).map(stripAnsi));
       }
-    }, POLL_INTERVAL_MS);
-    return () => clearInterval(timer);
+      if (mountedRef.current) {
+        setAgentOutputs(outputs);
+      }
+    } catch {
+      // Non-fatal
+    }
   }, [tmux, groveDir, maxOutputLines]);
 
+  useInterval(() => void tmuxPoll(), POLL_INTERVAL_MS, Boolean(tmux) && !groveDir);
+
   // Poll agent tmux panes for permission prompts
-  useEffect(() => {
+  const permissionPoll = useCallback(async () => {
     if (!tmux) return;
-    const timer = setInterval(async () => {
-      try {
-        const sessions = await tmux.listSessions();
-        const prompts: PermissionPrompt[] = [];
-        for (const sess of sessions) {
-          if (!sess.startsWith("grove-")) continue;
-          const pane = await tmux.capturePanes(sess);
-          const cmd = parsePermissionPrompt(pane);
-          if (cmd !== null) {
-            const role = roleFromSessionName(sess);
-            prompts.push({ sessionName: sess, agentRole: role, command: cmd });
-          }
+    try {
+      const sessions = await tmux.listSessions();
+      const prompts: PermissionPrompt[] = [];
+      for (const sess of sessions) {
+        if (!sess.startsWith("grove-")) continue;
+        const pane = await tmux.capturePanes(sess);
+        const cmd = parsePermissionPrompt(pane);
+        if (cmd !== null) {
+          const role = roleFromSessionName(sess);
+          prompts.push({ sessionName: sess, agentRole: role, command: cmd });
         }
-        setPendingPermissions(prompts);
-      } catch {
-        // Polling errors are non-fatal
       }
-    }, POLL_INTERVAL_MS);
-    return () => clearInterval(timer);
+      if (mountedRef.current) {
+        setPendingPermissions(prompts);
+      }
+    } catch {
+      // Polling errors are non-fatal
+    }
   }, [tmux]);
+
+  useInterval(() => void permissionPoll(), POLL_INTERVAL_MS, Boolean(tmux));
 
   return { agentOutputs, pendingPermissions, ipcMessages, spinnerFrame };
 }
