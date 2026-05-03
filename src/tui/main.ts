@@ -373,7 +373,6 @@ async function buildAppProps(
   const WATCH_NAMESPACE = "default";
   if (groveDir) {
     const { createLocalRuntime } = await import("../local/runtime.js");
-    const { runCleanup, runArtifactGc, runSessionGc } = await import("../local/cleanup.js");
     // Local-mode WatchHub: only constructed when we have a groveDir (i.e. the
     // local runtime exists). Remote mode keeps using the server-side hub via
     // WatchClient over SSE.
@@ -409,54 +408,18 @@ async function buildAppProps(
     }
 
     const localRuntime = cleanupRuntime;
-    const claimTimer = setInterval(async () => {
-      try {
-        const result = await runCleanup({ claimStore: localRuntime.claimStore });
-        if (result.expiredClaims > 0 || result.cleanedClaims > 0) {
-          process.stderr.write(
-            `[cleanup] expired ${result.expiredClaims} stale claim(s), cleaned ${result.cleanedClaims} old claim(s)\n`,
-          );
-        }
-      } catch {
-        // Cleanup errors are non-fatal
-      }
-    }, 60_000);
-
-    const gcTimer = setInterval(async () => {
-      try {
-        const result = await runArtifactGc({
-          contributionStore: localRuntime.contributionStore,
-          cas: localRuntime.cas,
-        });
-        if (result.deletedBlobs > 0) {
-          process.stderr.write(
-            `[cleanup] garbage-collected ${result.deletedBlobs} unreferenced blob(s)\n`,
-          );
-        }
-      } catch {
-        // GC errors are non-fatal
-      }
-    }, 10 * 60_000);
-
-    // Archive stale sessions (not active/pending, older than 24h) every 5 minutes.
-    // Run once eagerly on startup so the session picker is clean immediately.
-    const runSessionGcOnce = () => {
-      try {
-        const result = runSessionGc({ goalSessionStore: localRuntime.goalSessionStore });
-        if (result.archivedSessions > 0) {
-          process.stderr.write(`[cleanup] archived ${result.archivedSessions} stale session(s)\n`);
-        }
-      } catch {
-        // GC errors are non-fatal
-      }
-    };
-    runSessionGcOnce();
-    const sessionGcTimer = setInterval(runSessionGcOnce, 5 * 60_000);
-
+    const { startCleanupScheduler } = await import("../local/cleanup-scheduler.js");
+    const stopCleanup = startCleanupScheduler({
+      runtime: {
+        claimStore: localRuntime.claimStore,
+        contributionStore: localRuntime.contributionStore,
+        cas: localRuntime.cas,
+        goalSessionStore: localRuntime.goalSessionStore,
+      },
+      onLog: (line) => process.stderr.write(`[cleanup] ${line}\n`),
+    });
     stopCallbacks.push(() => {
-      clearInterval(claimTimer);
-      clearInterval(gcTimer);
-      clearInterval(sessionGcTimer);
+      stopCleanup();
       localRuntime.close();
     });
   }
