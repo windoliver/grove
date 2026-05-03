@@ -8,6 +8,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ClaimEntity } from "../../core/entity.js";
 import type { Claim } from "../../core/models.js";
+import { useInterval } from "../../local/use-interval.js";
 import type { TmuxManager } from "../agents/tmux-manager.js";
 import { agentIdFromSession } from "../agents/tmux-manager.js";
 import { DataStatus } from "../components/data-status.js";
@@ -157,13 +158,11 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
   }: AgentListProps): React.ReactNode {
     // Animated spinner for running agents — uses timing.spinner (80ms) for consistency
     const [spinnerFrame, setSpinnerFrame] = useState(0);
-    useEffect(() => {
-      if (!active) return;
-      const timer = setInterval(() => {
-        setSpinnerFrame((f) => (f + 1) % BRAILLE_SPINNER.length);
-      }, timing.spinner);
-      return () => clearInterval(timer);
-    }, [active]);
+    useInterval(
+      () => setSpinnerFrame((f) => (f + 1) % BRAILLE_SPINNER.length),
+      timing.spinner,
+      active,
+    );
 
     const useInformerPath = useEntityWatchEnabled(provider, "Claim");
 
@@ -194,7 +193,7 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
     const isStale = useInformerPath ? false : polledClaims.isStale;
     const error = useInformerPath ? entityResult.error : polledClaims.error;
     // A8.4 (#390): tmux session list re-fetches on producer-side `agent.output`
-    // events (and the global RefreshContext fan-out), no setInterval.
+    // events (and the global RefreshContext fan-out), no polling timer.
     const {
       data: sessions,
       isStale: tmuxStale,

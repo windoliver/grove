@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import type { EventBus, GroveEvent } from "../../core/event-bus.js";
 import { parseSessionId } from "../../core/session-id.js";
 import type { AgentTopology } from "../../core/topology.js";
+import { useInterval } from "../../local/use-interval.js";
 import { stripAnsi } from "../../shared/format.js";
 import { BRAILLE_SPINNER } from "../theme.js";
 
@@ -151,12 +152,7 @@ export function useAgentMonitor(options: AgentMonitorOptions): AgentMonitorState
   const [spinnerFrame, setSpinnerFrame] = useState(0);
 
   // Braille spinner animation
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setSpinnerFrame((f) => (f + 1) % BRAILLE_SPINNER.length);
-    }, SPINNER_INTERVAL_MS);
-    return () => clearInterval(timer);
-  }, []);
+  useInterval(() => setSpinnerFrame((f) => (f + 1) % BRAILLE_SPINNER.length), SPINNER_INTERVAL_MS);
 
   // Subscribe to EventBus for IPC message log.
   // Deduplicate: MCP TopologyRouter AND TUI wsBridge.send BOTH write into

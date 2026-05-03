@@ -22,6 +22,7 @@ import type { ContributionEntity } from "../../core/entity.js";
 import type { EventBus } from "../../core/event-bus.js";
 import type { Contribution } from "../../core/models.js";
 import type { AgentTopology } from "../../core/topology.js";
+import { useInterval } from "../../local/use-interval.js";
 import { compareTimestampsAscNewestLast, compareTimestampsDesc } from "../../shared/format.js";
 import { EmptyState } from "../components/empty-state.js";
 import { ProgressBar } from "../components/progress-bar.js";
@@ -220,18 +221,20 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
 
     // ─── Elapsed timer ───
     const [elapsed, setElapsed] = useState("0s");
+    const start = useMemo(
+      () => (sessionStartedAt ? new Date(sessionStartedAt).getTime() : Date.now()),
+      [sessionStartedAt],
+    );
+    const tickElapsed = useCallback(() => {
+      const ms = Date.now() - start;
+      const m = Math.floor(ms / 60_000);
+      const s = Math.floor((ms % 60_000) / 1_000);
+      setElapsed(m > 0 ? `${m}m${s}s` : `${s}s`);
+    }, [start]);
     useEffect(() => {
-      const start = sessionStartedAt ? new Date(sessionStartedAt).getTime() : Date.now();
-      const tick = () => {
-        const ms = Date.now() - start;
-        const m = Math.floor(ms / 60_000);
-        const s = Math.floor((ms % 60_000) / 1_000);
-        setElapsed(m > 0 ? `${m}m${s}s` : `${s}s`);
-      };
-      tick();
-      const id = setInterval(tick, 1000);
-      return () => clearInterval(id);
-    }, [sessionStartedAt]);
+      tickElapsed();
+    }, [tickElapsed]);
+    useInterval(tickElapsed, 1000);
 
     // ─── Agent monitoring (extracted hook) ───
     const monitor = useAgentMonitor({ groveDir, tmux, eventBus, topology });
