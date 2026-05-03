@@ -10,6 +10,23 @@ export interface ProbeResult {
 
 export type ProbeRunner = (command: string) => Promise<ProbeResult>;
 
+export interface ProbeExecFileOptions {
+  readonly encoding: "utf8";
+  readonly maxBuffer: number;
+  readonly timeout: number;
+}
+
+export interface ProbeExecFileOutput {
+  readonly stdout: string | Buffer;
+  readonly stderr: string | Buffer;
+}
+
+export type ProbeExecFile = (
+  file: string,
+  args: readonly string[],
+  options: ProbeExecFileOptions,
+) => Promise<ProbeExecFileOutput>;
+
 export interface SystemSnapshotOptions {
   readonly projectRoot: string;
   readonly groveDir: string;
@@ -21,9 +38,10 @@ interface ProbeDefinition {
   readonly command: string;
 }
 
-const execFileAsync = promisify(execFile);
+const execFileAsync = promisify(execFile) as ProbeExecFile;
 const MAX_BUFFER_BYTES = 1024 * 1024;
 const DEFAULT_PROBE_TIMEOUT_MS = 5_000;
+const defaultProbeRunner = createProbeRunner(execFileAsync);
 
 export async function collectSystemSnapshots(
   options: SystemSnapshotOptions,
@@ -45,25 +63,27 @@ export async function collectSystemSnapshots(
   return entries;
 }
 
-async function defaultProbeRunner(command: string): Promise<ProbeResult> {
-  try {
-    const result = await execFileAsync("/bin/sh", ["-lc", command], {
-      encoding: "utf8",
-      maxBuffer: MAX_BUFFER_BYTES,
-      timeout: DEFAULT_PROBE_TIMEOUT_MS,
-    });
-    return {
-      ok: true,
-      stdout: stringOutput(result.stdout),
-      stderr: stringOutput(result.stderr),
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      stdout: stdoutFromError(error),
-      stderr: stderrFromError(error, command),
-    };
-  }
+export function createProbeRunner(execFileAsync: ProbeExecFile): ProbeRunner {
+  return async (command: string): Promise<ProbeResult> => {
+    try {
+      const result = await execFileAsync("/bin/sh", ["-lc", command], {
+        encoding: "utf8",
+        maxBuffer: MAX_BUFFER_BYTES,
+        timeout: DEFAULT_PROBE_TIMEOUT_MS,
+      });
+      return {
+        ok: true,
+        stdout: stringOutput(result.stdout),
+        stderr: stringOutput(result.stderr),
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        stdout: stdoutFromError(error),
+        stderr: stderrFromError(error, command),
+      };
+    }
+  };
 }
 
 function buildProbeDefinitions(options: SystemSnapshotOptions): readonly ProbeDefinition[] {

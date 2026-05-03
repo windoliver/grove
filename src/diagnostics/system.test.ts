@@ -1,11 +1,6 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
-import { promisify } from "node:util";
+import { describe, expect, test } from "bun:test";
 import type { DiagnosticEntry } from "./sqlite-export.js";
-import type { ProbeRunner } from "./system.js";
-
-afterEach(async () => {
-  mock.restore();
-});
+import type { ProbeExecFile, ProbeRunner } from "./system.js";
 
 describe("collectSystemSnapshots", () => {
   test("collects system probes in a stable order", async () => {
@@ -81,31 +76,20 @@ describe("collectSystemSnapshots", () => {
   });
 
   test("default runner collects snapshots from successful child process probes", async () => {
+    const { collectSystemSnapshots, createProbeRunner } =
+      await importSystemModule("default-success");
     const commands: string[] = [];
-    const execFileMock = mock((): void => {
-      throw new Error("Expected promisified execFile path");
-    });
-    Object.defineProperty(execFileMock, promisify.custom, {
-      value: async (
-        file: string,
-        args: readonly string[],
-        _options: MockExecFileOptions,
-      ): Promise<MockExecFileOutput> => {
-        commands.push(`${file} ${args.join(" ")}`);
-        return {
-          stdout: `stdout for ${args.join(" ")}`,
-          stderr: "",
-        };
-      },
-    });
-    mock.module("node:child_process", () => ({
-      execFile: execFileMock,
-    }));
-
-    const { collectSystemSnapshots } = await importSystemModule("default-success");
+    const execFileMock: ProbeExecFile = async (file, args) => {
+      commands.push(`${file} ${args.join(" ")}`);
+      return {
+        stdout: `stdout for ${args.join(" ")}`,
+        stderr: "",
+      };
+    };
     const entries = await collectSystemSnapshots({
       projectRoot: "/tmp/project",
       groveDir: "/tmp/project/.grove",
+      runner: createProbeRunner(execFileMock),
     });
 
     expect(commands).toEqual([
@@ -124,34 +108,23 @@ describe("collectSystemSnapshots", () => {
   });
 
   test("default runner configures a timeout and records timeout failures", async () => {
+    const { collectSystemSnapshots, createProbeRunner } =
+      await importSystemModule("default-timeout");
     let observedTimeout: number | undefined;
-    const execFileMock = mock((): void => {
-      throw new Error("Expected promisified execFile path");
-    });
-    Object.defineProperty(execFileMock, promisify.custom, {
-      value: async (
-        _file: string,
-        _args: readonly string[],
-        options: MockExecFileOptions,
-      ): Promise<MockExecFileOutput> => {
-        observedTimeout = options.timeout;
-        const error = new Error("Command timed out after probe timeout");
-        Object.assign(error, {
-          stderr: "",
-          killed: true,
-          signal: "SIGTERM",
-        });
-        throw error;
-      },
-    });
-    mock.module("node:child_process", () => ({
-      execFile: execFileMock,
-    }));
-
-    const { collectSystemSnapshots } = await importSystemModule("default-timeout");
+    const execFileMock: ProbeExecFile = async (_file, _args, options) => {
+      observedTimeout = options.timeout;
+      const error = new Error("Command timed out after probe timeout");
+      Object.assign(error, {
+        stderr: "",
+        killed: true,
+        signal: "SIGTERM",
+      });
+      throw error;
+    };
     const entries = await collectSystemSnapshots({
       projectRoot: "/tmp/project",
       groveDir: "/tmp/project/.grove",
+      runner: createProbeRunner(execFileMock),
     });
 
     expectTimeoutConfigured(observedTimeout);
@@ -167,15 +140,7 @@ interface SystemModule {
   readonly collectSystemSnapshots: (
     options: import("./system.js").SystemSnapshotOptions,
   ) => Promise<readonly DiagnosticEntry[]>;
-}
-
-interface MockExecFileOptions {
-  readonly timeout?: number | undefined;
-}
-
-interface MockExecFileOutput {
-  readonly stdout: string;
-  readonly stderr: string;
+  readonly createProbeRunner: (execFileAsync: ProbeExecFile) => ProbeRunner;
 }
 
 async function importSystemModule(label: string): Promise<SystemModule> {
