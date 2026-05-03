@@ -1,9 +1,18 @@
 /**
- * Production NexusClient using JSON-RPC over HTTP.
+ * Production NexusClient using the Nexus REST file API.
  *
- * Connects to a real nexi-lab/nexus instance at the given URL.
- * All VFS operations are dispatched as JSON-RPC calls to POST /api/nfs/{method}.
- * Binary content is base64-encoded for JSON transport.
+ * Connects to a real nexi-lab/nexus instance at the given URL. All VFS
+ * operations dispatch as REST calls under `/api/v2/files/*`. Latest
+ * Nexus images dropped the `sys_*` JSON-RPC methods that the original
+ * client used; the REST file router is the durable surface that
+ * survives image rolls.
+ *
+ * Binary safety: content is base64-encoded into a UTF-8 text wrapper
+ * before write, so the server's lossy UTF-8 read decode round-trips
+ * arbitrary binary (including non-UTF-8 bytes like 0xFF). Write uses
+ * `encoding: "utf8"` (default) so the server stores the base64 chars
+ * verbatim; read returns those base64 chars as `content`, and the
+ * client decodes once to recover the original bytes.
  */
 
 import { z } from "zod";
@@ -22,8 +31,6 @@ import type {
   WriteResult,
 } from "./client.js";
 import {
-  type JsonRpcError,
-  mapJsonRpcError,
   NexusAuthError,
   NexusConnectionError,
   NexusNotFoundError,
@@ -57,77 +64,97 @@ function fromBase64(b64: string): Uint8Array {
 }
 
 // ---------------------------------------------------------------------------
-// RPC response schemas — validate Nexus JSON-RPC responses at runtime
+// REST response schemas
 // ---------------------------------------------------------------------------
 
-// Nexus returns bytes as { __type__: "bytes", data: "base64..." }
-const BytesResultSchema = z.object({ __type__: z.literal("bytes"), data: z.string() });
-// Also accept the legacy { content, encoding } shape for forward compat
-const LegacyReadResultSchema = z.object({ content: z.string(), encoding: z.string() });
-const ReadResultSchema = z.union([BytesResultSchema, LegacyReadResultSchema]);
-const WriteResultSchema = z
+const WriteResponseSchema = z
   .object({
-    bytes_written: z.number(),
-    etag: z.string().optional(),
-    version: z.number().optional(),
+    content_id: z.string().nullable().optional(),
+    version: z.number().nullable().optional(),
+    size: z.number().nullable().optional(),
+    modified_at: z.string().nullable().optional(),
   })
   .passthrough();
-const ExistsResultSchema = z.object({ exists: z.boolean() });
-const StatResultSchema = z.object({
-  metadata: z
-    .object({
-      size: z.number().optional(),
-      etag: z.string().optional(),
-      content_type: z.string().optional().nullable(),
-      mime_type: z.string().optional().nullable(),
-      created_at: z.string().optional().nullable(),
-      modified_at: z.string().optional().nullable(),
-    })
-    .passthrough()
-    .nullable(),
-});
-const DeleteResultSchema = z.object({ deleted: z.boolean() });
-// Nexus list returns either flat strings or objects depending on details flag.
-// - Without details: ["path/to/file", ...]
-// - With details: [{ path, size, etag, is_directory, ... }, ...]
-const ListEntrySchema = z.union([
-  z.string(),
-  z.object({
-    name: z.string().optional(),
+
+const ReadResponseSchema = z
+  .object({
+    content: z.string(),
+    content_id: z.string().nullable().optional(),
+    version: z.number().nullable().optional(),
+    size: z.number().nullable().optional(),
+    modified_at: z.string().nullable().optional(),
+  })
+  .passthrough();
+
+const ExistsResponseSchema = z.object({ exists: z.boolean() });
+
+const MetadataResponseSchema = z
+  .object({
+    path: z.string(),
+    size: z.number(),
+    content_id: z.string().nullable().optional(),
+    version: z.number(),
+    is_directory: z.boolean(),
+    created_at: z.string().nullable().optional(),
+    modified_at: z.string().nullable().optional(),
+    mime_type: z.string().nullable().optional(),
+    content_type: z.string().nullable().optional(),
+  })
+  .passthrough();
+
+const DeleteResponseSchema = z.object({ deleted: z.boolean(), path: z.string() });
+
+// Both serialized aliases (camelCase) and the underlying snake_case fields
+// can appear depending on the FastAPI response_model_by_alias toggle. Accept
+// either to insulate the client from server-side serialization changes.
+const FileItemSchema = z
+  .object({
+    name: z.string(),
     path: z.string(),
     size: z.number().optional(),
-    etag: z.string().optional(),
+    isDirectory: z.boolean().optional(),
     is_directory: z.boolean().optional(),
-  }),
-]);
-const ListResultSchema = z.object({
-  files: z.array(ListEntrySchema),
-  has_more: z.boolean(),
-  next_cursor: z.string().optional().nullable(),
+    contentId: z.string().nullable().optional(),
+    content_id: z.string().nullable().optional(),
+    modifiedAt: z.string().nullable().optional(),
+    modified_at: z.string().nullable().optional(),
+  })
+  .passthrough();
+
+const ListResponseSchema = z.object({
+  items: z.array(FileItemSchema),
+  has_more: z.boolean().optional(),
+  hasMore: z.boolean().optional(),
+  next_cursor: z.string().nullable().optional(),
+  nextCursor: z.string().nullable().optional(),
 });
-const MkdirResultSchema = z.object({ created: z.boolean() });
-const SearchResultSchema = z.object({
-  results: z.array(
-    z.object({
-      path: z.string(),
-      snippet: z.string().optional(),
-      score: z.number().optional(),
-    }),
-  ),
+
+const GrepMatchSchema = z.object({
+  file: z.string(),
+  line: z.number(),
+  content: z.string(),
+  match: z.string(),
+});
+
+const GrepResponseSchema = z.object({
+  matches: z.array(GrepMatchSchema),
+  total: z.number(),
+  truncated: z.boolean().optional(),
+  pattern: z.string().optional(),
+  base_path: z.string().optional(),
 });
 
 // ---------------------------------------------------------------------------
 // NexusHttpClient
 // ---------------------------------------------------------------------------
 
-/**
- * JSON-RPC HTTP client for nexi-lab/nexus.
- */
+type RestMethod = "GET" | "POST" | "DELETE";
+
+/** REST HTTP client for nexi-lab/nexus v2 file API. */
 export class NexusHttpClient implements NexusClient {
   private readonly baseUrl: string;
   private readonly apiKey: string | undefined;
   private readonly timeoutMs: number;
-  private requestId = 0;
   private closed = false;
 
   constructor(config: NexusHttpConfig) {
@@ -137,28 +164,33 @@ export class NexusHttpClient implements NexusClient {
   }
 
   // -----------------------------------------------------------------------
-  // JSON-RPC transport
+  // REST transport
   // -----------------------------------------------------------------------
 
-  private async rpc<T>(
-    method: string,
-    params: Record<string, unknown>,
+  private async request<T>(
+    method: RestMethod,
+    path: string,
     schema: z.ZodType<T>,
+    opts?: { query?: Record<string, string | number | boolean | undefined>; body?: unknown },
   ): Promise<T> {
     if (this.closed) throw new NexusConnectionError("Client is closed");
 
-    const id = ++this.requestId;
-    const body = JSON.stringify({ jsonrpc: "2.0", method, params, id });
+    const url = new URL(`${this.baseUrl}${path}`);
+    if (opts?.query) {
+      for (const [k, v] of Object.entries(opts.query)) {
+        if (v !== undefined) url.searchParams.set(k, String(v));
+      }
+    }
 
     let response: Response;
     try {
-      response = await fetch(`${this.baseUrl}/api/nfs/${method}`, {
-        method: "POST",
+      response = await fetch(url.toString(), {
+        method,
         headers: {
-          "Content-Type": "application/json",
+          ...(opts?.body !== undefined ? { "Content-Type": "application/json" } : {}),
           ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
         },
-        body,
+        ...(opts?.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (err) {
@@ -174,6 +206,15 @@ export class NexusHttpClient implements NexusClient {
     if (response.status === 401 || response.status === 403) {
       throw new NexusAuthError(`Auth failed: HTTP ${response.status}`);
     }
+    if (response.status === 404) {
+      throw new NexusNotFoundError(path);
+    }
+    if (response.status === 412 || response.status === 409) {
+      // Optimistic-concurrency mismatch (if_match / if_none_match). Surface
+      // as a structured error so callers (claim store CAS path) can retry.
+      const detail = await response.text().catch(() => "");
+      throw new NexusConnectionError(`Precondition failed: ${detail || response.status}`);
+    }
     if (response.status === 429) {
       const retryAfter = response.headers.get("retry-after");
       throw new NexusConnectionError(
@@ -183,29 +224,13 @@ export class NexusHttpClient implements NexusClient {
     if (response.status >= 500) {
       throw new NexusConnectionError(`Nexus server error: HTTP ${response.status}`);
     }
-
-    const envelope = (await response.json()) as {
-      result?: unknown;
-      error?: JsonRpcError | string;
-      detail?: string;
-      retry_after?: number;
-    };
-
-    // Handle non-JSON-RPC error responses (e.g., rate limit responses
-    // returned as plain JSON instead of JSON-RPC envelope)
-    if (typeof envelope.error === "string") {
-      if (envelope.error.toLowerCase().includes("rate limit")) {
-        throw new NexusConnectionError(
-          `Nexus rate limit: ${envelope.error} (retry after ${envelope.retry_after ?? "?"}s)`,
-        );
-      }
-      throw new NexusConnectionError(`Nexus error: ${envelope.error}`);
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new NexusConnectionError(`Nexus HTTP ${response.status}: ${detail}`);
     }
 
-    if (envelope.error) {
-      throw mapJsonRpcError(envelope.error);
-    }
-    return schema.parse(envelope.result);
+    const json = (await response.json()) as unknown;
+    return schema.parse(json);
   }
 
   // -----------------------------------------------------------------------
@@ -214,12 +239,12 @@ export class NexusHttpClient implements NexusClient {
 
   async read(path: string): Promise<Uint8Array | undefined> {
     try {
-      const result = await this.rpc("sys_read", { path }, ReadResultSchema);
-      // Nexus returns stored bytes base64-encoded for JSON transport.
-      // We also base64-encode on write (for binary safety), so we need
-      // to decode twice: once for transport, once for our storage encoding.
-      const transportDecoded = this.decodeReadResult(result);
-      return fromBase64(new TextDecoder().decode(transportDecoded));
+      const result = await this.request("GET", "/api/v2/files/read", ReadResponseSchema, {
+        query: { path },
+      });
+      // Server returns the stored UTF-8 text directly. We base64-encoded
+      // on write for binary safety, so decode once to recover original bytes.
+      return fromBase64(result.content);
     } catch (err) {
       if (err instanceof NexusNotFoundError) return undefined;
       throw err;
@@ -228,20 +253,16 @@ export class NexusHttpClient implements NexusClient {
 
   async readWithMeta(path: string): Promise<ReadResult | undefined> {
     try {
-      // Nexus sys_read doesn't return etag inline. We stat FIRST to get
-      // the etag, then read. This ordering is safe for CAS: if a concurrent
-      // writer updates between stat and read, we get a stale etag with newer
-      // content. A subsequent ifMatch write will fail (etag mismatch),
-      // forcing a correct retry. The unsafe direction (read-then-stat) could
-      // pair old content with a new etag, allowing a write to succeed when
-      // it shouldn't.
-      const meta = await this.stat(path);
-      if (meta === undefined) return undefined;
-
-      const result = await this.rpc("sys_read", { path }, ReadResultSchema);
-      const transportDecoded = this.decodeReadResult(result);
-      const content = fromBase64(new TextDecoder().decode(transportDecoded));
-      return { content, etag: meta.etag };
+      // Combined read + metadata. The REST /read endpoint returns
+      // content_id (the etag) inline, so a single round-trip suffices —
+      // no need for the stat-then-read CAS dance the JSON-RPC client used.
+      const result = await this.request("GET", "/api/v2/files/read", ReadResponseSchema, {
+        query: { path, include_metadata: true },
+      });
+      return {
+        content: fromBase64(result.content),
+        etag: result.content_id ?? "",
+      };
     } catch (err) {
       if (err instanceof NexusNotFoundError) return undefined;
       throw err;
@@ -249,55 +270,46 @@ export class NexusHttpClient implements NexusClient {
   }
 
   async write(path: string, content: Uint8Array, opts?: WriteOptions): Promise<WriteResult> {
-    // Nexus sys_write treats `content` as a raw string stored verbatim.
-    // We base64-encode content so arbitrary binary (including non-UTF-8
-    // bytes like 0xFF) survives the JSON transport and storage round-trip.
-    // The corresponding read() double-decodes (transport base64 → our base64).
-    const params: Record<string, unknown> = {
+    // We base64-encode arbitrary bytes into a UTF-8 text wrapper so binary
+    // (e.g. CAS blobs) round-trips through the server's lossy UTF-8 read
+    // decode. Server stores the base64 chars verbatim; read decodes once
+    // to recover the original bytes.
+    const body: Record<string, unknown> = {
       path,
       content: toBase64(content),
+      encoding: "utf8",
     };
-    if (opts?.ifMatch !== undefined) params.if_match = opts.ifMatch;
-    if (opts?.ifNoneMatch !== undefined) params.if_none_match = opts.ifNoneMatch;
-    if (opts?.force !== undefined) params.force = opts.force;
+    if (opts?.ifMatch !== undefined) body.if_match = opts.ifMatch;
+    if (opts?.ifNoneMatch !== undefined) body.if_none_match = opts.ifNoneMatch;
 
-    const result = await this.rpc("sys_write", params, WriteResultSchema);
+    const result = await this.request("POST", "/api/v2/files/write", WriteResponseSchema, {
+      body,
+    });
     return {
-      bytesWritten: result.bytes_written,
-      etag: result.etag ?? "",
-      version: result.version,
+      bytesWritten: result.size ?? content.byteLength,
+      etag: result.content_id ?? "",
+      version: result.version ?? undefined,
     };
-  }
-
-  /** Decode a sys_read response into raw stored bytes (before our base64 layer). */
-  private decodeReadResult(
-    result: { __type__: "bytes"; data: string } | { content: string; encoding: string },
-  ): Uint8Array {
-    if ("__type__" in result && result.__type__ === "bytes") {
-      return fromBase64(result.data);
-    }
-    if ("encoding" in result && result.encoding === "base64") {
-      return fromBase64(result.content);
-    }
-    return new TextEncoder().encode("content" in result ? result.content : "");
   }
 
   async exists(path: string): Promise<boolean> {
-    const result = await this.rpc("exists", { path }, ExistsResultSchema);
+    const result = await this.request("GET", "/api/v2/files/exists", ExistsResponseSchema, {
+      query: { path },
+    });
     return result.exists;
   }
 
   async stat(path: string): Promise<FileMeta | undefined> {
     try {
-      const result = await this.rpc("sys_stat", { path }, StatResultSchema);
-      const m = result.metadata;
-      if (!m) return { size: 0, etag: "" };
+      const result = await this.request("GET", "/api/v2/files/metadata", MetadataResponseSchema, {
+        query: { path },
+      });
       return {
-        size: m.size ?? 0,
-        etag: m.etag ?? "",
-        contentType: m.content_type ?? m.mime_type ?? undefined,
-        createdAt: m.created_at ?? undefined,
-        modifiedAt: m.modified_at ?? undefined,
+        size: result.size,
+        etag: result.content_id ?? "",
+        contentType: result.content_type ?? result.mime_type ?? undefined,
+        createdAt: result.created_at ?? undefined,
+        modifiedAt: result.modified_at ?? undefined,
       };
     } catch (err) {
       if (err instanceof NexusNotFoundError) return undefined;
@@ -307,8 +319,10 @@ export class NexusHttpClient implements NexusClient {
 
   async delete(path: string): Promise<boolean> {
     try {
-      await this.rpc("delete", { path }, DeleteResultSchema);
-      return true;
+      const result = await this.request("DELETE", "/api/v2/files/delete", DeleteResponseSchema, {
+        query: { path },
+      });
+      return result.deleted;
     } catch (err) {
       if (err instanceof NexusNotFoundError) return false;
       throw err;
@@ -316,55 +330,56 @@ export class NexusHttpClient implements NexusClient {
   }
 
   async list(path: string, opts?: ListOptions): Promise<ListResult> {
-    const params: Record<string, unknown> = { path };
-    if (opts?.recursive !== undefined) params.recursive = opts.recursive;
-    if (opts?.details !== undefined) params.details = opts.details;
-    if (opts?.limit !== undefined) params.limit = opts.limit;
-    if (opts?.cursor !== undefined) params.cursor = opts.cursor;
-
-    const result = await this.rpc("list", params, ListResultSchema);
-
+    const result = await this.request("GET", "/api/v2/files/list", ListResponseSchema, {
+      query: {
+        path,
+        ...(opts?.limit !== undefined ? { limit: opts.limit } : {}),
+        ...(opts?.cursor !== undefined ? { cursor: opts.cursor } : {}),
+      },
+    });
     return {
-      files: result.files.map((f): ListEntry => {
-        if (typeof f === "string") {
-          // Flat string path — extract name and infer isDirectory from trailing /
-          const isDir = f.endsWith("/");
-          const cleanPath = isDir ? f.slice(0, -1) : f;
-          const name = cleanPath.split("/").pop() ?? cleanPath;
-          return { name, path: cleanPath, isDirectory: isDir };
-        }
-        // Object entry (details=true)
-        return {
-          name: f.name ?? f.path.split("/").pop() ?? f.path,
+      files: result.items.map(
+        (f): ListEntry => ({
+          name: f.name,
           path: f.path,
           size: f.size,
-          etag: f.etag,
-          isDirectory: f.is_directory,
-        };
-      }),
-      hasMore: result.has_more,
-      nextCursor: result.next_cursor ?? undefined,
+          isDirectory: f.isDirectory ?? f.is_directory,
+          etag: f.contentId ?? f.content_id ?? undefined,
+        }),
+      ),
+      hasMore: result.has_more ?? result.hasMore ?? false,
+      nextCursor: result.next_cursor ?? result.nextCursor ?? undefined,
     };
   }
 
   async mkdir(path: string, opts?: MkdirOptions): Promise<void> {
-    const params: Record<string, unknown> = { path };
-    if (opts?.parents !== undefined) params.parents = opts.parents;
-    await this.rpc("mkdir", params, MkdirResultSchema);
+    await this.request("POST", "/api/v2/files/mkdir", z.unknown(), {
+      body: {
+        path,
+        ...(opts?.parents !== undefined ? { parents: opts.parents } : {}),
+      },
+    });
   }
 
   async search(query: string, opts?: SearchOptions): Promise<readonly SearchResult[]> {
-    const params: Record<string, unknown> = { query };
-    if (opts?.path !== undefined) params.path = opts.path;
-    if (opts?.limit !== undefined) params.limit = opts.limit;
-
-    const result = await this.rpc("search", params, SearchResultSchema);
-
-    return result.results.map(
-      (r): SearchResult => ({
-        path: r.path,
-        snippet: r.snippet,
-        score: r.score,
+    // The legacy `search` JSON-RPC method was full-text/semantic. The REST
+    // file API exposes regex grep, which is a strict subset. Treat the
+    // user query as a literal pattern (escaped) so word-style searches
+    // still work; semantic ranking is no longer available, so we report
+    // a constant score.
+    const literal = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const result = await this.request("GET", "/api/v2/files/grep", GrepResponseSchema, {
+      query: {
+        pattern: literal,
+        path: opts?.path ?? "/",
+        ...(opts?.limit !== undefined ? { limit: opts.limit } : {}),
+      },
+    });
+    return result.matches.map(
+      (m): SearchResult => ({
+        path: m.file,
+        snippet: m.content,
+        score: 1,
       }),
     );
   }
