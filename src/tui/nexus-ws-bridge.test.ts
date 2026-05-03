@@ -561,13 +561,25 @@ describe("NexusWsBridge", () => {
 
     expect(ok).toBe(true);
     expect(fetchCalls).toHaveLength(1);
-    expect(fetchCalls[0]!.url).toBe("http://localhost:9999/api/v2/ipc/send");
-    expect(fetchCalls[0]!.body).toEqual({
-      sender: "coder",
-      recipient: "reviewer",
-      type: "event",
-      payload: { summary: "test" },
-    });
+    expect(fetchCalls[0]!.url).toBe("http://localhost:9999/api/nfs/sys_write");
+    const body = fetchCalls[0]!.body as {
+      jsonrpc: string;
+      method: string;
+      params: { path: string; buf: string };
+    };
+    expect(body.jsonrpc).toBe("2.0");
+    expect(body.method).toBe("sys_write");
+    expect(body.params.path).toMatch(/^\/ipc\/reviewer\/inbox\/.+\.json$/);
+    const decoded = JSON.parse(Buffer.from(body.params.buf, "base64").toString("utf8")) as {
+      sender: string;
+      recipient: string;
+      type: string;
+      payload: Record<string, unknown>;
+    };
+    expect(decoded.sender).toBe("coder");
+    expect(decoded.recipient).toBe("reviewer");
+    expect(decoded.type).toBe("event");
+    expect(decoded.payload).toEqual({ summary: "test" });
 
     bridge.close();
   });
@@ -892,7 +904,7 @@ describe("NexusWsBridge", () => {
     // Registration accepts any 2xx; stream probe also requires real
     // text/event-stream content-type to count as ready.
     globalThis.fetch = ((url: string) => {
-      if (url.includes("/api/v2/ipc/stream/")) {
+      if (url.includes("/api/v2/events/stream")) {
         return Promise.resolve(
           new Response("", { status: 200, headers: { "content-type": "text/event-stream" } }),
         );
@@ -913,7 +925,7 @@ describe("NexusWsBridge", () => {
         regCalls += 1;
         return Promise.resolve(new Response("", { status: regCalls === 1 ? 200 : 409 }));
       }
-      if (url.includes("/api/v2/ipc/stream/")) {
+      if (url.includes("/api/v2/events/stream")) {
         return Promise.resolve(
           new Response("", { status: 200, headers: { "content-type": "text/event-stream" } }),
         );
@@ -928,7 +940,7 @@ describe("NexusWsBridge", () => {
 
   test("connect rejects when probe returns 2xx without event-stream content-type", async () => {
     globalThis.fetch = ((url: string) => {
-      if (url.includes("/api/v2/ipc/stream/")) {
+      if (url.includes("/api/v2/events/stream")) {
         // 2xx but plain text/html — a misconfigured proxy scenario.
         return Promise.resolve(
           new Response("not a stream", {
@@ -979,7 +991,7 @@ describe("NexusWsBridge", () => {
     // stream probe (GET /ipc/stream/<role>) returns 403 — simulating a
     // deployment where registration is permissive but stream auth is not.
     globalThis.fetch = ((url: string) => {
-      if (url.includes("/api/v2/ipc/stream/")) {
+      if (url.includes("/api/v2/events/stream")) {
         return Promise.resolve(new Response("", { status: 403 }));
       }
       return Promise.resolve(new Response("{}", { status: 200 }));

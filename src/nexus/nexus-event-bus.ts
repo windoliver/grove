@@ -1,8 +1,9 @@
 /**
  * Nexus-backed EventBus — publish via Nexus IPC API.
  *
- * On publish: sends via NexusIpcClient (POST /api/v2/ipc/send).
- * Returns structured PublishResult with IPC message ID.
+ * On publish: sends via NexusIpcClient (POST /api/nfs/sys_write into the
+ * recipient's kernel-VFS inbox). Returns structured PublishResult with IPC
+ * message ID.
  *
  * On subscribe: registers in-process handlers only (no polling).
  * Cross-process push is handled by NexusWsBridge via Nexus SSE stream.
