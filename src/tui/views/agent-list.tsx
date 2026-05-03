@@ -17,7 +17,6 @@ import { Table } from "../components/table.js";
 import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useEntities } from "../hooks/use-entities.js";
 import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
 import { agentStatusIcon, BRAILLE_SPINNER, timing } from "../theme.js";
 
@@ -176,9 +175,10 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
       return tmux.listSessions();
     }, [tmux]);
 
-    const polledClaims = usePolledData<readonly Claim[]>(
+    const polledClaims = useEventDrivenData<readonly Claim[]>(
       claimFetcher,
-      intervalMs,
+      undefined,
+      undefined,
       active && !useInformerPath,
     );
 

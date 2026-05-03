@@ -31,8 +31,8 @@ import { debugLog } from "../debug-log.js";
 import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useAgentMonitor } from "../hooks/use-agent-monitor.js";
 import { useEntities } from "../hooks/use-entities.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import { InputMode } from "../hooks/use-panel-focus.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
 import { useTuiStatePersistence } from "../hooks/use-session-persistence.js";
 import type { DashboardData, TuiDataProvider } from "../provider.js";
 import { isVfsProvider } from "../provider.js";
@@ -285,14 +285,20 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     // still return data.
     const contribInformerReady =
       useContribInformer && contribEntities.hasSynced && !contribEntities.error;
-    const dashboardPoll = usePolledData<DashboardData>(dashboardFetcher, intervalMs, true);
-    const contributionsPoll = usePolledData<readonly Contribution[]>(
+    const dashboardPoll = useEventDrivenData<DashboardData>(
+      dashboardFetcher,
+      undefined,
+      undefined,
+      true,
+    );
+    const contributionsPoll = useEventDrivenData<readonly Contribution[]>(
       contributionsFetcher,
-      intervalMs,
+      undefined,
+      undefined,
       feedActive && !contribInformerReady,
     );
 
-    // usePolledData is only used for UI refresh of the contributions feed display;
+    // The polled fetcher is only used for UI refresh of the contributions feed display;
     // agent-to-agent contribution delivery is done via NexusWsBridge SSE push,
     // not via polling. The eventBus handler below drives immediate UI refresh
     // when a push arrives.

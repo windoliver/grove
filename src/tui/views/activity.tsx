@@ -16,7 +16,7 @@ import { compareTimestampsDesc, formatTimestamp, truncateCid } from "../../share
 import { Table } from "../components/table.js";
 import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useEntities } from "../hooks/use-entities.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { TuiDataProvider } from "../provider.js";
 
 /** Props for the Activity view. */
@@ -80,9 +80,10 @@ export const ActivityView: React.NamedExoticComponent<ActivityProps> = React.mem
       () => provider.getActivity({ limit: pageSize, offset: pageOffset }),
       [provider, pageSize, pageOffset],
     );
-    const polled = usePolledData<readonly Contribution[]>(
+    const polled = useEventDrivenData<readonly Contribution[]>(
       fetcher,
-      intervalMs,
+      undefined,
+      undefined,
       active && !useInformerPath,
     );
 

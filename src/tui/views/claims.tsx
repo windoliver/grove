@@ -20,7 +20,7 @@ import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
 import { useEntityWatchEnabled, useProviderScoped } from "../hooks/informer-context.js";
 import { useEntities } from "../hooks/use-entities.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { TuiDataProvider } from "../provider.js";
 
 /** Props for the Claims view. */
@@ -93,9 +93,10 @@ export const ClaimsView: React.NamedExoticComponent<ClaimsProps> = React.memo(fu
   // the informer path isn't available AND we're not in a scoped session
   // whose claim API isn't filterable by sessionId.
   const fetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
-  const polledResult = usePolledData<readonly Claim[]>(
+  const polledResult = useEventDrivenData<readonly Claim[]>(
     fetcher,
-    intervalMs,
+    undefined,
+    undefined,
     active && propClaims === undefined && !useInformerPath && !isScoped,
   );
 

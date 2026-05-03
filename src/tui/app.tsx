@@ -24,12 +24,12 @@ import { StatusBar } from "./components/status-bar.js";
 import { PanelBar } from "./components/tab-bar.js";
 import { TooltipOverlay, useFirstLaunchTooltips } from "./components/tooltip-overlay.js";
 import type { GroveUserConfig } from "./config-loader.js";
+import { useEventDrivenData } from "./hooks/use-event-driven-data.js";
 import { buildKeyActionMap, useKeybindingOverrides } from "./hooks/use-keybinding-overrides.js";
 import type { KeyboardActions } from "./hooks/use-keyboard-handler.js";
 import { nextZoom, routeKey } from "./hooks/use-keyboard-handler.js";
 import { useNavigation } from "./hooks/use-navigation.js";
 import { InputMode, usePanelFocus } from "./hooks/use-panel-focus.js";
-import { usePolledData } from "./hooks/use-polled-data.js";
 import { RefreshContext } from "./hooks/use-refresh-context.js";
 import { useTuiStatePersistence } from "./hooks/use-session-persistence.js";
 import type { ZoomLevel } from "./panels/panel-manager.js";
@@ -250,7 +250,6 @@ export function App({
   groveDir,
   userConfig,
   eventBus,
-  initialDashboard,
 }: AppProps): React.ReactNode {
   const renderer = useRenderer();
   const nav = useNavigation();
@@ -351,9 +350,10 @@ export function App({
 
   // Poll active claims for topology-aware command palette
   const claimsFetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
-  const { data: activeClaims, refresh: refreshClaims } = usePolledData<readonly Claim[]>(
+  const { data: activeClaims, refresh: refreshClaims } = useEventDrivenData<readonly Claim[]>(
     claimsFetcher,
-    intervalMs,
+    undefined,
+    undefined,
     topology !== undefined,
   );
 
@@ -366,9 +366,10 @@ export function App({
     if (!available) return [] as readonly string[];
     return tmux.listSessions();
   }, [tmux]);
-  const { data: paletteSessions, refresh: refreshSessions } = usePolledData<readonly string[]>(
+  const { data: paletteSessions, refresh: refreshSessions } = useEventDrivenData<readonly string[]>(
     sessionsFetcher,
-    paletteVisible ? intervalMs * 2 : intervalMs * 4,
+    undefined,
+    undefined,
     tmux !== undefined,
   );
 
@@ -382,12 +383,13 @@ export function App({
       }
     ).getSessionCosts();
   }, [provider, hasCosts]);
-  const { data: sessionCosts, refresh: refreshCosts } = usePolledData<
+  const { data: sessionCosts, refresh: refreshCosts } = useEventDrivenData<
     { totalCostUsd: number; totalTokens: number } | undefined
   >(
     costFetcher,
-    intervalMs * 3,
-    hasCosts, // Only poll when provider actually supports costs
+    undefined,
+    undefined,
+    hasCosts, // Only fetch when provider actually supports costs
   );
 
   // Poll active PR and set context on SpawnManager so agents get env vars
@@ -398,19 +400,20 @@ export function App({
       provider as TuiDataProvider & { getActivePR: () => Promise<GitHubPRSummary | undefined> }
     ).getActivePR();
   }, [provider, hasGitHub]);
-  const { data: activePR, refresh: refreshPR } = usePolledData<GitHubPRSummary | undefined>(
+  const { data: activePR, refresh: refreshPR } = useEventDrivenData<GitHubPRSummary | undefined>(
     prFetcher,
-    intervalMs * 4,
+    undefined,
+    undefined,
     hasGitHub,
   );
 
   // Poll dashboard for goal metadata (shown in status bar)
   const dashboardFetcher = useCallback(() => provider.getDashboard(), [provider]);
-  const { data: dashboardData, refresh: refreshDashboard } = usePolledData<DashboardData>(
+  const { data: dashboardData, refresh: refreshDashboard } = useEventDrivenData<DashboardData>(
     dashboardFetcher,
-    intervalMs * 3,
+    undefined,
+    undefined,
     true,
-    initialDashboard,
   );
 
   // Sync PR context to SpawnManager whenever it changes
@@ -442,9 +445,10 @@ export function App({
       )
       .map((p) => ({ peerId: p.peerId, address: p.address, freeSlots: p.freeSlots }));
   }, [provider]);
-  const { data: gossipPeers, refresh: refreshGossip } = usePolledData(
+  const { data: gossipPeers, refresh: refreshGossip } = useEventDrivenData(
     gossipFetcher,
-    intervalMs * 4,
+    undefined,
+    undefined,
     paletteVisible,
   );
 
@@ -485,9 +489,10 @@ export function App({
       return undefined;
     }
   }, []);
-  const { data: agentProfiles, refresh: refreshProfiles } = usePolledData(
+  const { data: agentProfiles, refresh: refreshProfiles } = useEventDrivenData(
     profilesFetcher,
-    intervalMs * 10,
+    undefined,
+    undefined,
     true,
   );
 
@@ -509,16 +514,12 @@ export function App({
     }
     return map;
   }, [tmux, activeGroveSessions]);
-  const { data: terminalBuffers, refresh: refreshTerminalBuffers } = usePolledData<
+  const { data: terminalBuffers, refresh: refreshTerminalBuffers } = useEventDrivenData<
     Map<string, string>
-  >(
-    terminalBuffersFetcher,
-    intervalMs * 5, // cold tier — transcript search is infrequent
-    activeGroveSessions.length > 0,
-  );
+  >(terminalBuffersFetcher, undefined, undefined, activeGroveSessions.length > 0);
 
   // Increments on every manual refresh — consumed by RefreshContext so panel-level
-  // usePolledData subscribers (via useRefreshSignal) trigger immediately.
+  // useEventDrivenData subscribers (via useRefreshSignal) trigger immediately.
   const [refreshSignal, setRefreshSignal] = useState(0);
 
   // Fan-out refresh: triggers App-level pollers and increments the signal so
@@ -545,8 +546,8 @@ export function App({
   ]);
 
   // SSE push → global refresh fan-out. Bumping refreshSignal here makes
-  // every panel-level usePolledData (DAG, Frontier, Dashboard …) re-fetch
-  // immediately instead of waiting up to `intervalMs` for the next poll.
+  // every panel-level useEventDrivenData (DAG, Frontier, Dashboard …) re-fetch
+  // immediately instead of waiting for the next event.
   // The Feed view also subscribes directly inside running-view for fast-path
   // refresh without a full app re-render — that path stays as defense in
   // depth and is not removed here.

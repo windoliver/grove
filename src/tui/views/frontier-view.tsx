@@ -21,7 +21,7 @@ import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
 import { useEntityWatchEnabled, useInformerOptional } from "../hooks/informer-context.js";
 import { useDerived } from "../hooks/use-derived.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { TuiDataProvider } from "../provider.js";
 import { theme } from "../theme.js";
 
@@ -193,9 +193,10 @@ export const FrontierView: React.NamedExoticComponent<FrontierViewProps> = React
         throw err;
       }
     }, [provider]);
-    const { data, loading, isStale, error, refresh } = usePolledData<Frontier>(
+    const { data, loading, isStale, error, refresh } = useEventDrivenData<Frontier>(
       fetcher,
-      intervalMs,
+      undefined,
+      undefined,
       active,
     );
 

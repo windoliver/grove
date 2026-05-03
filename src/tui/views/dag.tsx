@@ -23,7 +23,7 @@ import { OutcomeBadge } from "../components/outcome-badge.js";
 import { useEntityWatchEnabled, useInformerOptional } from "../hooks/informer-context.js";
 import { useDerived } from "../hooks/use-derived.js";
 import { shallowArraysEqual } from "../hooks/use-entities.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { DagData, TuiDataProvider, TuiOutcomeProvider } from "../provider.js";
 import { theme } from "../theme.js";
 
@@ -148,7 +148,12 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
   // Polled fallback retained for backends that don't mount an InformerProvider
   // AND for cold start / terminal watch failure on the informer path.
   const fetcher = useCallback(() => provider.getDag(), [provider]);
-  const polled = usePolledData<DagData>(fetcher, intervalMs, active && !informerReady);
+  const polled = useEventDrivenData<DagData>(
+    fetcher,
+    undefined,
+    undefined,
+    active && !informerReady,
+  );
 
   const contributions: readonly Contribution[] = useMemo(() => {
     if (informerReady) return derived.data ?? [];
@@ -173,9 +178,10 @@ export const DagView: React.NamedExoticComponent<DagProps> = React.memo(function
     () => outcomeProvider?.getOutcomes(cids) ?? Promise.resolve(new Map()),
     [outcomeProvider, cids],
   );
-  const { data: outcomes } = usePolledData<ReadonlyMap<string, OutcomeRecord>>(
+  const { data: outcomes } = useEventDrivenData<ReadonlyMap<string, OutcomeRecord>>(
     outcomeFetcher,
-    intervalMs,
+    undefined,
+    undefined,
     active && cids.length > 0,
   );
 

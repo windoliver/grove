@@ -20,7 +20,7 @@ import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
 import { useEntityWatchEnabled, useInformerOptional } from "../hooks/informer-context.js";
 import { useDerived } from "../hooks/use-derived.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { DashboardData, TuiDataProvider } from "../provider.js";
 import { theme } from "../theme.js";
 
@@ -154,7 +154,7 @@ export const DashboardView: React.NamedExoticComponent<DashboardProps> = React.m
       data: polledData,
       loading,
       error,
-    } = usePolledData<DashboardData>(fetcher, intervalMs, active);
+    } = useEventDrivenData<DashboardData>(fetcher, undefined, undefined, active);
 
     // Compose the rendered DashboardData: prefer informer-derived
     // contributions when the path is active AND has synced without error;

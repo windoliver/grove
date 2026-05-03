@@ -15,7 +15,6 @@ import { agentIdFromSession } from "../agents/tmux-manager.js";
 import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useEntities } from "../hooks/use-entities.js";
 import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
 import { BRAILLE_SPINNER, PLATFORM_COLORS, theme } from "../theme.js";
 
@@ -177,9 +176,10 @@ export const PipelineView: React.NamedExoticComponent<PipelineViewProps> = React
 
     const entityResult = useEntities("Claim", ACTIVE_PREDICATE);
     const claimsFetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
-    const polledClaims = usePolledData<readonly Claim[]>(
+    const polledClaims = useEventDrivenData<readonly Claim[]>(
       claimsFetcher,
-      intervalMs,
+      undefined,
+      undefined,
       active && !useInformerPath,
     );
     const claims = useInformerPath ? entityResult.data.map(entityToClaim) : polledClaims.data;
