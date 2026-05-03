@@ -360,7 +360,7 @@ async function buildAppProps(
   // Start workspace GC for modes that have lifecycle support
   const stopCallbacks: Array<() => void> = [];
   if (provider.cleanWorkspace) {
-    const { startWorkspaceGc } = await import("./workspace-gc.js");
+    const { startWorkspaceGc } = await import("../local/workspace-gc.js");
     stopCallbacks.push(startWorkspaceGc(provider));
   }
 
