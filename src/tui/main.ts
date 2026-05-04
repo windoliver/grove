@@ -272,7 +272,8 @@ async function buildAppProps(
   ]);
 
   // Pre-fetch dashboard data before the renderer starts so the first render
-  // has content even when usePolledData hooks can't fire (e.g. Zig render loop).
+  // has content even when the data hook hasn't yet completed its first fetch
+  // (e.g. Zig render loop).
   let initialDashboard: import("./provider.js").DashboardData | undefined;
   try {
     initialDashboard = await provider.getDashboard();
@@ -433,8 +434,8 @@ async function buildAppProps(
 
   // Create EventBus when Nexus is available. NexusWsBridge (in screen-manager.tsx)
   // connects SSE and publishes events into this bus, which triggers re-fetches
-  // in RunningView via useEventDrivenData. Without bridge connection, the
-  // usePolledData fallback (30s interval) handles updates.
+  // in RunningView via useEventDrivenData. Without a bridge connection, panels
+  // refresh on the global RefreshContext signal (r-key + app-level fan-out).
   let eventBus: import("../core/event-bus.js").EventBus | undefined;
   {
     const nexusUrl = process.env.GROVE_NEXUS_URL;
@@ -489,8 +490,8 @@ async function buildAppProps(
   // Remote mode targets the grove-server watch routes (`/api/list`,
   // `/api/watch`) over HTTP/SSE. `mode: "nexus"` talks to Nexus VFS
   // endpoints which do not host these routes; for now those sessions
-  // skip the factory and views fall back to `usePolledData` until a
-  // Nexus-backed WatchStream lands.
+  // skip the factory and views fall back to event-driven fetches plus
+  // RefreshContext fan-out until a Nexus-backed WatchStream lands.
   //
   // Local mode (PR2 #388) uses an in-process `WatchHub` plus the
   // SqliteContributionStore / SqliteClaimStore + AgentRuntime as the

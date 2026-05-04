@@ -1,13 +1,13 @@
 /**
- * Event-driven data hook — drop-in replacement for usePolledData.
+ * Event-driven data hook for non-Entity sources.
  *
  * Re-fetches on three triggers:
  *   1. Initial mount (one fetch)
  *   2. Direct EventBus events (when `eventBus` + `role` provided)
  *   3. Global RefreshContext signal (r-key + app-level event fan-out)
  *
- * NO setInterval. App-level `useEffect` already subscribes to every topology
- * role and bumps RefreshContext on event — so panels typically pass
+ * No periodic timer — App-level `useEffect` already subscribes to every
+ * topology role and bumps RefreshContext on event, so panels typically pass
  * `undefined` for `eventBus`/`role` and ride the existing fan-out.
  */
 
@@ -15,7 +15,7 @@ import { useCallback, useEffect, useReducer, useRef } from "react";
 import type { EventBus, EventHandler, GroveEvent } from "../../core/event-bus.js";
 import { useRefreshSignal } from "./refresh-context.js";
 
-/** Result — same interface as usePolledData for drop-in replacement. */
+/** Result shape: data, loading, error, isStale flag, lastSuccessAt, manual refresh. */
 export interface EventDrivenResult<T> {
   readonly data: T | null;
   readonly loading: boolean;

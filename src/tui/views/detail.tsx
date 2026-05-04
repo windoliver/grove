@@ -5,10 +5,10 @@
  *
  * PR2 (#388): the contribution body subscription migrates to
  * `useEntity("Contribution", cid)` when a factory is mounted. Ancestors,
- * children, thread, and outcome remain on `usePolledData` — those fields
- * aren't on the Entity envelope (they're a relation graph the server
- * computes on demand). PR3/PR4 may lift the relation graph into
- * `useDerived`.
+ * children, thread, and outcome read via `useEventDrivenData` — those
+ * fields aren't on the Entity envelope (they're a relation graph the
+ * server computes on demand). A future PR may lift the relation graph
+ * into `useDerived`.
  */
 
 import React, { useCallback } from "react";

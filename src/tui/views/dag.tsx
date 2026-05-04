@@ -4,11 +4,10 @@
  * Reuses the existing git-style DAG renderer from the CLI.
  * Outcome badges are displayed alongside each node when available.
  *
- * PR3 (#389) migrates the contribution source from `usePolledData(getDag)`
- * to `useDerived(() => contribInformer.list(), ["Contribution"])` when the
- * informer path is enabled. Outcomes still flow through `usePolledData` —
- * PR4 will swap that to an event-driven hook once the outcome producer
- * exposes a coarse change event.
+ * PR3 (#389) migrates the contribution source to
+ * `useDerived(() => contribInformer.list(), ["Contribution"])` when the
+ * informer path is enabled. Outcomes flow through `useEventDrivenData`
+ * (A8.5 #391) — re-fetch on EventBus + RefreshContext, no polling timer.
  */
 
 import React, { useCallback, useEffect, useMemo } from "react";
