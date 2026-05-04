@@ -5,6 +5,7 @@
  * plus graceful shutdown of all spawned processes.
  */
 
+import type { ChildProcess as NodeChildProcess } from "node:child_process";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { parsePort } from "./env.js";
@@ -13,7 +14,7 @@ import { parsePort } from "./env.js";
 // Types
 // ---------------------------------------------------------------------------
 
-interface ChildProcess {
+interface ManagedChildProcess {
   readonly name: string;
   readonly pid: number;
   readonly proc: ReturnType<typeof Bun.spawn>;
@@ -35,7 +36,7 @@ export interface ServiceStartOptions {
 
 /** Running service state — returned by startServices, passed to stopServices. */
 export interface RunningServices {
-  readonly children: ChildProcess[];
+  readonly children: ManagedChildProcess[];
   readonly nexusManaged: boolean;
   readonly projectRoot: string;
   readonly pidFilePath: string;
@@ -96,7 +97,7 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
   const configPath = join(groveDir, "grove.json");
   const projectRoot = join(groveDir, "..");
   const pidFilePath = join(groveDir, "grove.pid");
-  const children: ChildProcess[] = [];
+  const children: ManagedChildProcess[] = [];
   let nexusManaged = false;
   let resolvedNexusUrl: string | undefined;
 
@@ -169,7 +170,7 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
   }
 
   // Spawn services in parallel
-  const spawnPromises: Promise<ChildProcess | null>[] = [];
+  const spawnPromises: Promise<ManagedChildProcess | null>[] = [];
 
   const { dirname } = await import("node:path");
   const entryPoint = process.argv[1] ?? "";
@@ -321,11 +322,24 @@ async function waitForServiceHealth(url: string, timeoutMs: number): Promise<voi
   // Timeout — caller will check process.kill(pid, 0) to determine liveness
 }
 
+function waitForChildExit(child: NodeChildProcess): Promise<number> {
+  return new Promise<number>((resolve) => {
+    let settled = false;
+    const finish = (code: number): void => {
+      if (settled) return;
+      settled = true;
+      resolve(code);
+    };
+    child.once("exit", (code) => finish(code ?? 0));
+    child.once("error", () => finish(1));
+  });
+}
+
 async function spawnService(
   name: string,
   entryPoint: string,
   groveDir: string,
-): Promise<ChildProcess | null> {
+): Promise<ManagedChildProcess | null> {
   const port = resolveServicePort(name);
   if (port) {
     try {
@@ -350,6 +364,7 @@ async function spawnService(
       detached: true,
     });
     const pid = child.pid ?? 0;
+    const exited = waitForChildExit(child);
     child.unref();
 
     // Wait for the service to pass its health check instead of sleeping blindly.
@@ -373,9 +388,7 @@ async function spawnService(
           /* already dead */
         }
       },
-      exited: new Promise<number>(() => {
-        /* detached — never resolves from parent */
-      }),
+      exited,
     } as unknown as ReturnType<typeof Bun.spawn>;
 
     return { name, pid, proc };

@@ -114,6 +114,7 @@ describe("COMMANDS registry", () => {
       export: ["to-discussion", "to-pr", "category"],
       "export-dag": ["kind", "mode", "agent", "tag", "from", "depth", "n", "output"],
       tui: ["interval", "url", "nexus", "grove", "help"],
+      diagnostics: ["exclude-db", "scrub", "slot", "out", "help"],
     };
 
     for (const [commandName, expected] of Object.entries(expectedFlags)) {

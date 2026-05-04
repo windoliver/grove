@@ -33,7 +33,7 @@ import type {
 import { toUtcIso } from "../core/time.js";
 import { debugLog } from "../tui/debug-log.js";
 import { batchParallel } from "./batch.js";
-import type { NexusClient } from "./client.js";
+import type { NexusClient, ReadResult, WriteResult } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
 import { NexusConflictError } from "./errors.js";
@@ -54,6 +54,21 @@ import {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const CONTENT_HASH_REPAIR_STATE = "repairing";
+const CONTENT_HASH_REPAIR_STALE_MS = 5 * 60_000;
+const CONTENT_HASH_REPAIR_WAIT_MS = 2_000;
+const CONTENT_HASH_REPAIR_POLL_MS = 10;
+
+interface ContentHashRepairMarker {
+  readonly state: typeof CONTENT_HASH_REPAIR_STATE;
+  readonly cid: string;
+  readonly token: string;
+  readonly startedAt: string;
+}
+
+type ContentHashMarker =
+  | { readonly kind: "committed"; readonly cid: string }
+  | { readonly kind: "repairing"; readonly marker: ContentHashRepairMarker };
 
 function encode(obj: unknown): Uint8Array {
   return encoder.encode(JSON.stringify(obj));
@@ -61,6 +76,48 @@ function encode(obj: unknown): Uint8Array {
 
 function decode<T>(data: Uint8Array): T {
   return JSON.parse(decoder.decode(data)) as T;
+}
+
+function isContentHashRepairMarker(value: unknown): value is ContentHashRepairMarker {
+  if (value === null || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return (
+    record.state === CONTENT_HASH_REPAIR_STATE &&
+    typeof record.cid === "string" &&
+    typeof record.token === "string" &&
+    typeof record.startedAt === "string"
+  );
+}
+
+function decodeContentHashMarker(data: Uint8Array): ContentHashMarker {
+  const text = decoder.decode(data);
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (isContentHashRepairMarker(parsed)) {
+      return { kind: "repairing", marker: parsed };
+    }
+  } catch {
+    // Legacy committed markers are plain CID strings, not JSON.
+  }
+  return { kind: "committed", cid: text };
+}
+
+function createContentHashRepairMarker(cid: string): ContentHashRepairMarker {
+  return {
+    state: CONTENT_HASH_REPAIR_STATE,
+    cid,
+    token: crypto.randomUUID(),
+    startedAt: new Date().toISOString(),
+  };
+}
+
+function isStaleRepairMarker(marker: ContentHashRepairMarker): boolean {
+  const startedAt = Date.parse(marker.startedAt);
+  return !Number.isFinite(startedAt) || Date.now() - startedAt > CONTENT_HASH_REPAIR_STALE_MS;
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -156,26 +213,26 @@ export class NexusContributionStore implements ContributionStore {
       this.sessionId,
     );
 
-    const existingCidData = await withRetry(
-      () => withSemaphore(this.semaphore, () => this.client.read(contentHashPath)),
+    const existingMarker = await this.readContentHashMarker(
+      contentHashPath,
       "put:contentHashLookup",
-      this.config,
     );
-    if (existingCidData !== undefined) {
-      const existingCid = decoder.decode(existingCidData);
-      const existing = await this.get(existingCid);
-      return {
-        cid: existingCid,
-        isNew: false,
-        ...(existing !== undefined ? { contribution: existing } : {}),
-      };
+    if (existingMarker !== undefined) {
+      return this.resolveExistingContentHash(
+        contribution,
+        contentHashPath,
+        existingMarker,
+        Date.now() + CONTENT_HASH_REPAIR_WAIT_MS,
+      );
     }
 
+    let reserveResult: WriteResult;
     try {
-      await withRetry(
+      const repairMarker = createContentHashRepairMarker(contribution.cid);
+      reserveResult = await withRetry(
         () =>
           withSemaphore(this.semaphore, () =>
-            this.client.write(contentHashPath, encoder.encode(contribution.cid), {
+            this.client.write(contentHashPath, encode(repairMarker), {
               ifNoneMatch: "*",
             }),
           ),
@@ -184,94 +241,286 @@ export class NexusContributionStore implements ContributionStore {
       );
     } catch (err) {
       if (err instanceof NexusConflictError) {
-        const existing = await withRetry(
-          () => withSemaphore(this.semaphore, () => this.client.read(contentHashPath)),
+        const existing = await this.readContentHashMarker(
+          contentHashPath,
           "put:contentHashConflictLookup",
-          this.config,
         );
         if (existing !== undefined) {
-          const existingCid = decoder.decode(existing);
-          const existingContribution = await this.get(existingCid);
-          return {
-            cid: existingCid,
-            isNew: false,
-            ...(existingContribution !== undefined ? { contribution: existingContribution } : {}),
-          };
+          return this.resolveExistingContentHash(
+            contribution,
+            contentHashPath,
+            existing,
+            Date.now() + CONTENT_HASH_REPAIR_WAIT_MS,
+          );
         }
       }
       throw err;
     }
 
-    await withRetry(
-      async () => {
-        // Store manifest (idempotent — overwrites are safe since CID is content-addressed)
-        const manifest = toManifest(contribution);
-        await withSemaphore(this.semaphore, () =>
-          this.client.write(manifestPath, encode(manifest)),
-        );
-
-        // Write relation index entries (idempotent writes)
-        for (const rel of contribution.relations) {
-          const relPath = relationIndexPath(this.zoneId, rel.targetCid, contribution.cid);
-          const relData = encode({
-            relationType: rel.relationType,
-            ...(rel.metadata !== undefined ? { metadata: rel.metadata } : {}),
-          });
-          await withSemaphore(this.semaphore, () => this.client.write(relPath, relData));
-        }
-
-        // Write tag index markers (idempotent writes)
-        for (const tag of contribution.tags) {
-          const tp = tagIndexPath(this.zoneId, tag, contribution.cid);
-          await withSemaphore(this.semaphore, () => this.client.write(tp, new Uint8Array(0)));
-        }
-
-        // Write FTS index entry (idempotent write)
-        const ftsPath = ftsIndexPath(this.zoneId, contribution.cid, this.sessionId);
-        await withSemaphore(this.semaphore, () =>
-          this.client.write(
-            ftsPath,
-            encode({
-              cid: contribution.cid,
-              summary: contribution.summary,
-              description: contribution.description ?? "",
-              kind: contribution.kind,
-              mode: contribution.mode,
-              agentId: contribution.agent.agentId,
-              agentName: contribution.agent.agentName ?? null,
-              createdAt: toUtcIso(contribution.createdAt),
-              tags: contribution.tags,
-            }),
-          ),
-        );
-      },
-      "put",
-      this.config,
-    );
-
-    this.cache.set(contribution.cid, contribution);
-    // Bump epoch on every write so any concurrent in-flight list() scan
-    // will discard its result and the next read re-scans the VFS.
-    this.invalidateListCache();
+    const result = await this.finishContentHashRepair(contribution, contentHashPath, reserveResult);
     debugLog(
       "store.put",
       `cid=${contribution.cid.slice(0, 16)} sessionId=${this.sessionId ?? "none"} path=${manifestPath}`,
     );
-    // Cross-process watch fan-out (#292). Contributions are content-addressed
-    // and immutable, so every successful put is logically an ADDED event.
-    // Errors are swallowed by `void` — losing a fan-out envelope must never
-    // fail the underlying write.
-    if (this.watchPublisher) {
-      void this.watchPublisher.publish({
-        kind: "Contribution",
-        namespace: this.zoneId,
-        op: "ADDED",
-        entityId: contribution.cid,
-        generation: 1,
-        emittedAt: new Date().toISOString(),
-      });
+    return result;
+  }
+
+  private async readContentHashMarker(
+    contentHashPath: string,
+    context: string,
+  ): Promise<ReadResult | undefined> {
+    return withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.readWithMeta(contentHashPath)),
+      context,
+      this.config,
+    );
+  }
+
+  private async resolveExistingContentHash(
+    contribution: Contribution,
+    contentHashPath: string,
+    markerResult: ReadResult,
+    waitUntilMs: number,
+  ): Promise<ContributionPutResult> {
+    const marker = decodeContentHashMarker(markerResult.content);
+    if (marker.kind === "repairing") {
+      return this.resolveRepairingContentHash(
+        contribution,
+        contentHashPath,
+        markerResult,
+        marker.marker,
+        waitUntilMs,
+      );
     }
+
+    const existingCid = marker.cid;
+    const existing = await this.get(existingCid);
+    if (existing !== undefined) {
+      const repaired = await this.repairContributionRecordIfIncomplete(
+        existing,
+        "put:repairExistingIndexes",
+      );
+      return {
+        cid: existingCid,
+        isNew: repaired && existing.cid === contribution.cid,
+        contribution: existing,
+      };
+    }
+
+    return this.claimContentHashRepair(contribution, contentHashPath, markerResult, waitUntilMs);
+  }
+
+  private async resolveRepairingContentHash(
+    contribution: Contribution,
+    contentHashPath: string,
+    markerResult: ReadResult,
+    marker: ContentHashRepairMarker,
+    waitUntilMs: number,
+  ): Promise<ContributionPutResult> {
+    const existing = await this.get(marker.cid);
+    if (existing !== undefined) {
+      await this.repairContributionRecordIfIncomplete(existing, "put:repairExistingIndexes");
+      try {
+        await withRetry(
+          () =>
+            withSemaphore(this.semaphore, () =>
+              this.client.write(contentHashPath, encoder.encode(existing.cid), {
+                ifMatch: markerResult.etag,
+              }),
+            ),
+          "put:finalizeExistingRepairMarker",
+          this.config,
+        );
+      } catch (err) {
+        if (!(err instanceof NexusConflictError)) throw err;
+      }
+      return { cid: existing.cid, isNew: marker.cid === contribution.cid, contribution: existing };
+    }
+
+    if (marker.cid === contribution.cid || isStaleRepairMarker(marker)) {
+      return this.claimContentHashRepair(contribution, contentHashPath, markerResult, waitUntilMs);
+    }
+
+    if (Date.now() < waitUntilMs) {
+      await sleep(CONTENT_HASH_REPAIR_POLL_MS);
+      const latest = await this.readContentHashMarker(
+        contentHashPath,
+        "put:waitForContentHashRepair",
+      );
+      if (latest === undefined) return this.put(contribution);
+      return this.resolveExistingContentHash(contribution, contentHashPath, latest, waitUntilMs);
+    }
+
+    throw new NexusConflictError({
+      message: `Content-hash repair is in progress for ${contentHashPath}`,
+      actualEtag: markerResult.etag,
+    });
+  }
+
+  private async claimContentHashRepair(
+    contribution: Contribution,
+    contentHashPath: string,
+    markerResult: ReadResult,
+    waitUntilMs: number,
+  ): Promise<ContributionPutResult> {
+    let repairClaim: WriteResult;
+    try {
+      const repairMarker = createContentHashRepairMarker(contribution.cid);
+      repairClaim = await withRetry(
+        () =>
+          withSemaphore(this.semaphore, () =>
+            this.client.write(contentHashPath, encode(repairMarker), {
+              ifMatch: markerResult.etag,
+            }),
+          ),
+        "put:claimContentHashRepair",
+        this.config,
+      );
+    } catch (err) {
+      if (err instanceof NexusConflictError) {
+        const latest = await this.readContentHashMarker(
+          contentHashPath,
+          "put:contentHashRepairConflictLookup",
+        );
+        if (latest !== undefined) {
+          return this.resolveExistingContentHash(
+            contribution,
+            contentHashPath,
+            latest,
+            waitUntilMs,
+          );
+        }
+      }
+      throw err;
+    }
+
+    return this.finishContentHashRepair(contribution, contentHashPath, repairClaim);
+  }
+
+  private async finishContentHashRepair(
+    contribution: Contribution,
+    contentHashPath: string,
+    repairClaim: WriteResult,
+  ): Promise<ContributionPutResult> {
+    await withRetry(
+      () => this.writeContributionManifest(contribution),
+      "put:writeContributionManifest",
+      this.config,
+    );
+    try {
+      await withRetry(
+        () =>
+          withSemaphore(this.semaphore, () =>
+            this.client.write(contentHashPath, encoder.encode(contribution.cid), {
+              ifMatch: repairClaim.etag,
+            }),
+          ),
+        "put:commitContentHashRepair",
+        this.config,
+      );
+    } catch (err) {
+      if (err instanceof NexusConflictError) {
+        const latest = await this.readContentHashMarker(
+          contentHashPath,
+          "put:commitContentHashRepairConflictLookup",
+        );
+        if (latest !== undefined) {
+          return this.resolveExistingContentHash(
+            contribution,
+            contentHashPath,
+            latest,
+            Date.now() + CONTENT_HASH_REPAIR_WAIT_MS,
+          );
+        }
+      }
+      throw err;
+    }
+    await withRetry(
+      () => this.writeContributionIndexes(contribution),
+      "put:writeContributionIndexes",
+      this.config,
+    );
+    this.cache.set(contribution.cid, contribution);
+    this.invalidateListCache();
+    this.publishContributionAdded(contribution);
     return { cid: contribution.cid, isNew: true, contribution };
+  }
+
+  private async isContributionRecordComplete(cid: string): Promise<boolean> {
+    const ftsPath = ftsIndexPath(this.zoneId, cid, this.sessionId);
+    const data = await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.read(ftsPath)),
+      "put:repairCompletionCheck",
+      this.config,
+    );
+    return data !== undefined;
+  }
+
+  private async repairContributionRecordIfIncomplete(
+    contribution: Contribution,
+    context: string,
+  ): Promise<boolean> {
+    if (await this.isContributionRecordComplete(contribution.cid)) return false;
+    await withRetry(() => this.writeContributionRecord(contribution), context, this.config);
+    this.invalidateListCache();
+    return true;
+  }
+
+  private async writeContributionRecord(contribution: Contribution): Promise<void> {
+    await this.writeContributionManifest(contribution);
+    await this.writeContributionIndexes(contribution);
+  }
+
+  private async writeContributionManifest(contribution: Contribution): Promise<void> {
+    const manifestPath = contributionPath(this.zoneId, contribution.cid, this.sessionId);
+    const manifest = toManifest(contribution);
+    await withSemaphore(this.semaphore, () => this.client.write(manifestPath, encode(manifest)));
+  }
+
+  private async writeContributionIndexes(contribution: Contribution): Promise<void> {
+    for (const rel of contribution.relations) {
+      const relPath = relationIndexPath(this.zoneId, rel.targetCid, contribution.cid);
+      const relData = encode({
+        relationType: rel.relationType,
+        ...(rel.metadata !== undefined ? { metadata: rel.metadata } : {}),
+      });
+      await withSemaphore(this.semaphore, () => this.client.write(relPath, relData));
+    }
+
+    for (const tag of contribution.tags) {
+      const tp = tagIndexPath(this.zoneId, tag, contribution.cid);
+      await withSemaphore(this.semaphore, () => this.client.write(tp, new Uint8Array(0)));
+    }
+
+    const ftsPath = ftsIndexPath(this.zoneId, contribution.cid, this.sessionId);
+    await withSemaphore(this.semaphore, () =>
+      this.client.write(
+        ftsPath,
+        encode({
+          cid: contribution.cid,
+          summary: contribution.summary,
+          description: contribution.description ?? "",
+          kind: contribution.kind,
+          mode: contribution.mode,
+          agentId: contribution.agent.agentId,
+          agentName: contribution.agent.agentName ?? null,
+          createdAt: toUtcIso(contribution.createdAt),
+          tags: contribution.tags,
+        }),
+      ),
+    );
+  }
+
+  private publishContributionAdded(contribution: Contribution): void {
+    if (!this.watchPublisher) return;
+    void this.watchPublisher.publish({
+      kind: "Contribution",
+      namespace: this.zoneId,
+      op: "ADDED",
+      entityId: contribution.cid,
+      generation: 1,
+      emittedAt: new Date().toISOString(),
+    });
   }
 
   async putMany(contributions: readonly Contribution[]): Promise<readonly ContributionPutResult[]> {
@@ -318,13 +567,20 @@ export class NexusContributionStore implements ContributionStore {
       contentHash,
       this.sessionId,
     );
-    const existingCidData = await withRetry(
-      () => withSemaphore(this.semaphore, () => this.client.read(contentHashPath)),
+    const markerResult = await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.readWithMeta(contentHashPath)),
       "getByContentHash",
       this.config,
     );
-    if (existingCidData === undefined) return undefined;
-    return this.get(decoder.decode(existingCidData));
+    if (markerResult === undefined) return undefined;
+    const marker = decodeContentHashMarker(markerResult.content);
+    if (marker.kind === "repairing") return undefined;
+
+    const existing = await this.get(marker.cid);
+    if (existing === undefined) return undefined;
+    if (!(await this.isContributionRecordComplete(existing.cid))) return undefined;
+
+    return existing;
   }
 
   async list(query?: ContributionQuery): Promise<readonly Contribution[]> {

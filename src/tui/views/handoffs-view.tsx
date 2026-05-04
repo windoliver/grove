@@ -13,7 +13,7 @@ import type { HandoffQuery } from "../../core/handoff.js";
 import { type Handoff, HandoffStatus } from "../../core/handoff.js";
 import { truncateCid } from "../../shared/format.js";
 import { Table } from "../components/table.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { TuiDataProvider } from "../provider.js";
 import { isHandoffProvider } from "../provider.js";
 import { theme } from "../theme.js";
@@ -88,7 +88,8 @@ function isOverdue(h: Handoff): boolean {
 
 export interface HandoffsViewProps {
   readonly provider: TuiDataProvider;
-  readonly intervalMs: number;
+  /** Unused after A8.4 migration to useEventDrivenData; kept for caller-stability. */
+  readonly intervalMs?: number;
   readonly active: boolean;
   readonly cursor: number;
   /** Filter by status. Omit to show all. */
@@ -97,8 +98,7 @@ export interface HandoffsViewProps {
   readonly toRoleFilter?: string | undefined;
   /** ISO timestamp — only show handoffs created at or after this time (current session). */
   readonly sessionStartedAt?: string | undefined;
-  /** Pre-fetched handoffs from parent. When provided, skips internal usePolledData
-   *  (which doesn't work in OpenTUI due to component unmount/remount cycles). */
+  /** Pre-fetched handoffs from parent. When provided, skips the internal fetch. */
   readonly handoffs?: readonly Handoff[] | undefined;
 }
 
@@ -106,7 +106,6 @@ export interface HandoffsViewProps {
 export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React.memo(
   function HandoffsView({
     provider,
-    intervalMs,
     active,
     cursor,
     statusFilter,
@@ -114,7 +113,6 @@ export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React
     sessionStartedAt,
     handoffs: prefetched,
   }: HandoffsViewProps): React.ReactNode {
-    // usePolledData's setInterval doesn't survive OpenTUI's component unmount/remount.
     // When parent provides pre-fetched handoffs, use those directly.
     const fetcher = useCallback(async () => {
       if (!isHandoffProvider(provider)) return [] as readonly Handoff[];
@@ -128,9 +126,14 @@ export const HandoffsView: React.NamedExoticComponent<HandoffsViewProps> = React
       return all.filter((h) => h.createdAt >= cutoff);
     }, [provider, statusFilter, toRoleFilter, sessionStartedAt]);
 
-    const polled = usePolledData<readonly Handoff[]>(fetcher, intervalMs, active && !prefetched);
-    const data = prefetched ?? polled.data;
-    const loading = prefetched ? false : polled.loading;
+    const driven = useEventDrivenData<readonly Handoff[]>(
+      fetcher,
+      undefined,
+      undefined,
+      active && !prefetched,
+    );
+    const data = prefetched ?? driven.data;
+    const loading = prefetched ? false : driven.loading;
 
     if (!isHandoffProvider(provider)) {
       return (

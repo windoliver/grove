@@ -1,13 +1,23 @@
 /**
- * Nexus IPC bridge — real-time push via Nexus SSE + IPC API (v0.9.14+).
+ * Nexus IPC bridge — real-time push via Nexus SSE + RPC.
  *
- * Endpoints used:
- *   POST /api/v2/ipc/send              — send message to agent inbox
- *   GET  /api/v2/ipc/stream/{agent_id} — SSE stream for inbox notifications
- *   POST /api/v2/agents/register       — provision agent (creates inbox)
+ * Endpoints used (post-2026-04-27 — Nexus PR #3912 deleted the legacy
+ * `/api/v2/ipc/*` router; IPC is now kernel-VFS-as-IPC over the events
+ * stream + REST file surface):
+ *   GET  /api/v2/events/stream         — SSE stream of file-write events
+ *                                        filtered by `path_pattern` to the
+ *                                        per-role inbox prefix
+ *   POST /api/v2/files/write           — REST: write a message file into
+ *                                        the recipient's inbox directory
+ *   POST /api/v2/agents/register       — register agent (auto-provisions
+ *                                        the `/ipc/{agent_id}/inbox/` dir
+ *                                        per agent_registration.py:236+)
  *
- * Flow: SSE delivers message_delivered events → reads message via VFS →
- * pushes to target agent via runtime.send().
+ * Flow: SSE delivers `event` records (shape from `EventReplayService`) for
+ * any `write` to a path matching the per-role inbox glob (any-zone-prefix +
+ * `/ipc/{role}/inbox/`) → bridge translates to the legacy `SseEvent` shape
+ * internally → reads message via the REST file API → pushes to target
+ * agent via runtime.send().
  *
  * No process.stderr.write — all logging goes through the TUI's log system
  * to avoid corrupting the alternate screen.
@@ -60,6 +70,15 @@ export interface NexusWsBridgeOptions {
    * TUI kept accepting work.
    */
   onRoleUnhealthy?: ((role: string, consecutiveFailures: number) => void) | undefined;
+  /**
+   * Called when a role's SSE stream completes a healthy cycle after
+   * having previously fired `onRoleUnhealthy`. Lets the caller flip
+   * a degraded session back to live delivery without requiring a TUI
+   * restart. Without this, a transient Nexus restart that exceeds the
+   * unhealthy threshold leaves the session permanently degraded even
+   * after the channel recovers.
+   */
+  onRoleRecovered?: ((role: string) => void) | undefined;
   /** Default: 3. */
   unhealthyThreshold?: number | undefined;
 }
@@ -71,6 +90,52 @@ interface SseEvent {
   recipient: string;
   type: string;
   path: string;
+}
+
+/**
+ * Shape returned by Nexus' EventReplayService over `/api/v2/events/stream`
+ * (see `src/nexus/services/event_log/replay.py` `EventRecord.to_dict`).
+ * The bridge translates this into the legacy `SseEvent` shape its handler
+ * already expects.
+ */
+interface EventRecordPayload {
+  event_id: string;
+  type: string;
+  path: string;
+  agent_id?: string | undefined;
+  zone_id?: string | undefined;
+  timestamp?: string | undefined;
+  sequence_number?: number | undefined;
+}
+
+/** URL builder for the per-role inbox subscription on the new events SSE. */
+function inboxStreamUrl(nexusUrl: string, role: string): string {
+  // path_pattern is matched (SQL LIKE) against the stored zone-prefixed path.
+  // `*/ipc/{role}/inbox/*` → `%/ipc/{role}/inbox/%` covers any zone.
+  const pattern = `*/ipc/${role}/inbox/*`;
+  const params = new URLSearchParams({
+    path_pattern: pattern,
+    event_types: "write",
+  });
+  return `${nexusUrl}/api/v2/events/stream?${params.toString()}`;
+}
+
+/**
+ * Strip a leading `/zone/{zone_id}/` prefix from a stored event path so the
+ * remaining path can be passed to `sys_read` (which re-applies zone scoping
+ * via the RPC dispatcher). Returns the original path when no prefix matches.
+ */
+function stripZonePrefix(path: string): string {
+  // `/zone/<id>/<rest>` → `/<rest>`. The id is opaque (uuid/string), so we
+  // only strip when the path starts with `/zone/` and has at least one more
+  // segment before the rest of the path.
+  const match = path.match(/^\/zone\/[^/]+(\/.*)$/);
+  return match ? (match[1] ?? path) : path;
+}
+
+/** Build the inbox file path for a recipient role. */
+function inboxFilePath(recipient: string, messageId: string): string {
+  return `/ipc/${recipient}/inbox/${messageId}.json`;
 }
 
 export class NexusWsBridge {
@@ -243,16 +308,13 @@ export class NexusWsBridge {
         const onAbort = () => ac.abort();
         deadline.addEventListener("abort", onAbort, { once: true });
         try {
-          const resp = await fetch(
-            `${this.opts.nexusUrl}/api/v2/ipc/stream/${encodeURIComponent(role.name)}`,
-            {
-              headers: {
-                Authorization: `Bearer ${this.opts.apiKey}`,
-                Accept: "text/event-stream",
-              },
-              signal: ac.signal,
+          const resp = await fetch(inboxStreamUrl(this.opts.nexusUrl, role.name), {
+            headers: {
+              Authorization: `Bearer ${this.opts.apiKey}`,
+              Accept: "text/event-stream",
             },
-          );
+            signal: ac.signal,
+          });
           if (!resp.ok) return { role: role.name, reason: `HTTP ${resp.status}` };
           // 2xx is necessary but not sufficient — a misconfigured proxy can
           // serve a success status without an actual event stream. Verify
@@ -336,15 +398,33 @@ export class NexusWsBridge {
       const result = await this.opts.ipcClient.send(sender, recipient, payload);
       return result.ok;
     }
-    // Fallback: direct fetch (backward compat when ipcClient not injected)
+    // Fallback: direct write to the recipient's inbox via the v2 REST
+    // endpoint. The legacy `/api/v2/ipc/send` route and the JSON-RPC
+    // `sys_write` method were both removed in subsequent Nexus releases;
+    // `POST /api/v2/files/write` is the durable REST surface that
+    // materializes a kernel-VFS file the inbox SSE stream observes.
     try {
-      const resp = await fetch(`${this.opts.nexusUrl}/api/v2/ipc/send`, {
+      const messageId = globalThis.crypto?.randomUUID?.() ?? String(Date.now());
+      const envelope = JSON.stringify({
+        message_id: messageId,
+        sender,
+        recipient,
+        type: "event",
+        payload,
+        timestamp: new Date().toISOString(),
+      });
+      const content = Buffer.from(envelope, "utf8").toString("base64");
+      const resp = await fetch(`${this.opts.nexusUrl}/api/v2/files/write`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${this.opts.apiKey}`,
         },
-        body: JSON.stringify({ sender, recipient, type: "event", payload }),
+        body: JSON.stringify({
+          path: inboxFilePath(recipient, messageId),
+          content,
+          encoding: "base64",
+        }),
       });
       return resp.ok;
     } catch {
@@ -410,6 +490,11 @@ export class NexusWsBridge {
     // recurrence) would never re-trigger onRoleUnhealthy because the
     // flag stayed latched from the first breach.
     let firedUnhealthy = false;
+    // Reconnect backoff schedule (ms). Exponential so a single Nexus
+    // restart cycle (typically 20–30s) does not burn through the full
+    // failure threshold before the channel comes back. Capped to 60s
+    // so a sustained outage still escalates within a couple of minutes.
+    const backoffSchedule = [5000, 10000, 20000, 40000, 60000];
     while (!this.closed && !signal.aborted) {
       let streamOk = false;
       try {
@@ -419,8 +504,19 @@ export class NexusWsBridge {
       }
       if (signal.aborted) return;
       if (streamOk) {
+        const wasUnhealthy = firedUnhealthy;
         consecutiveFailures = 0;
         firedUnhealthy = false;
+        // If the role had previously been declared unhealthy, surface the
+        // recovery so the SpawnManager can flip delivery back to ready
+        // instead of staying in the disabled trap state.
+        if (wasUnhealthy) {
+          try {
+            this.opts.onRoleRecovered?.(role);
+          } catch {
+            // callback errors shouldn't kill the reconnect loop
+          }
+        }
       } else {
         consecutiveFailures += 1;
         // Gate escalation on the role still being live. A stale loop that
@@ -438,6 +534,8 @@ export class NexusWsBridge {
         }
       }
       if (!this.closed && !signal.aborted) {
+        const idx = Math.min(consecutiveFailures, backoffSchedule.length - 1);
+        const delayMs = streamOk ? (backoffSchedule[0] ?? 5000) : (backoffSchedule[idx] ?? 5000);
         await new Promise<void>((resolve) => {
           // Wake early on abort so torn-down roles don't linger in the
           // reconnect backoff. When the timer fires the normal way, we
@@ -447,7 +545,7 @@ export class NexusWsBridge {
           const timer = setTimeout(() => {
             if (onAbort) signal.removeEventListener("abort", onAbort);
             resolve();
-          }, 5000);
+          }, delayMs);
           onAbort = () => {
             clearTimeout(timer);
             resolve();
@@ -493,7 +591,7 @@ export class NexusWsBridge {
       // and prevent onRoleUnhealthy from ever firing.
       const openMs = 15000;
       const openTimer = setTimeout(() => ac.abort(), openMs);
-      const url = `${this.opts.nexusUrl}/api/v2/ipc/stream/${encodeURIComponent(role)}`;
+      const url = inboxStreamUrl(this.opts.nexusUrl, role);
 
       let resp: Response;
       try {
@@ -549,9 +647,9 @@ export class NexusWsBridge {
       // proxies stuck mid-stream that hold the TCP pipe open without
       // delivering data.
       //
-      // Set to 5 min because Nexus's `/api/v2/ipc/stream` does NOT emit
-      // keep-alive comments — it sends a single `connected` event then
-      // stays silent until an inbox message lands. A shorter watchdog
+      // Set to 5 min because Nexus's `/api/v2/events/stream` does NOT
+      // emit keep-alive comments — it sends a single `connected` event
+      // then stays silent until an inbox-matching write lands. A shorter watchdog
       // (60 s) would treat every quiet stretch as an outage, escalate
       // through 3 reconnect cycles, and fire onRoleUnhealthy → flip
       // delivery to disabled even though the channel is healthy. 5 min
@@ -601,7 +699,11 @@ export class NexusWsBridge {
           } else if (line.startsWith("data: ")) {
             eventData = line.slice(6);
           } else if (line === "" && eventData) {
-            if (eventType === "message_delivered") sawDelivery = true;
+            // Post-PR-#3912 events_replay emits `event: event` for every
+            // matched write. The legacy ipc-stream emitted
+            // `event: message_delivered`. Treat both as delivery signals
+            // so cycle-health accounting works against either backend.
+            if (eventType === "event" || eventType === "message_delivered") sawDelivery = true;
             this.handleEvent(role, eventType, eventData);
             eventType = null;
             eventData = null;
@@ -625,9 +727,33 @@ export class NexusWsBridge {
 
   private handleEvent(role: string, eventType: string | null, raw: string): void {
     try {
-      if (eventType !== "message_delivered") return;
+      // Accept both the legacy `message_delivered` envelope and the new
+      // events_replay `event` envelope (post-PR-#3912). The new payload is
+      // an EventRecord describing a file write — translate it to the
+      // SseEvent shape the rest of the pipeline already speaks.
+      let event: SseEvent;
+      if (eventType === "message_delivered") {
+        event = JSON.parse(raw) as SseEvent;
+      } else if (eventType === "event") {
+        const rec = JSON.parse(raw) as EventRecordPayload;
+        // Filter to file-write ops on inbox files. The path_pattern query
+        // param already constrains the SSE feed to writes against the
+        // role's inbox prefix; this is belt-and-suspenders against future
+        // pattern drift or shared streams.
+        if (rec.type !== "write") return;
+        const relPath = stripZonePrefix(rec.path);
+        event = {
+          event: "message_delivered",
+          message_id: rec.event_id,
+          sender: rec.agent_id ?? "",
+          recipient: role,
+          type: "event",
+          path: relPath,
+        };
+      } else {
+        return;
+      }
 
-      const event = JSON.parse(raw) as SseEvent;
       debugLog(
         "wsBridge.handleEvent",
         `role=${role} sender=${event.sender} path=${event.path} registeredSessions=[${[...this.sessions.keys()].join(",")}]`,
@@ -1253,20 +1379,17 @@ export class NexusWsBridge {
       // failure is silently lost. Exit early.
       if (this.draining || this.closed) return;
       // Retry on 429 (rate limit) — the inbox read is critical for IPC delivery.
+      // Migrated from `POST /api/nfs/sys_read` (JSON-RPC, dropped in recent
+      // Nexus images) to `GET /api/v2/files/read` (REST). Send path writes
+      // the message envelope with `encoding: "base64"`, so the server stores
+      // the raw JSON bytes; REST read returns that JSON as `content` text.
       let resp: Response | undefined;
+      const readUrl = `${this.opts.nexusUrl}/api/v2/files/read?path=${encodeURIComponent(path)}`;
       for (let attempt = 0; attempt < 5; attempt++) {
-        resp = await fetch(`${this.opts.nexusUrl}/api/nfs/sys_read`, {
-          method: "POST",
+        resp = await fetch(readUrl, {
           headers: {
-            "Content-Type": "application/json",
             Authorization: `Bearer ${this.opts.apiKey}`,
           },
-          body: JSON.stringify({
-            jsonrpc: "2.0",
-            method: "sys_read",
-            params: { path },
-            id: 1,
-          }),
         });
         if (resp.status !== 429) break;
         // Backoff: 2s, 4s, 8s, 16s, 32s
@@ -1281,17 +1404,14 @@ export class NexusWsBridge {
         return;
       }
 
-      const result = (await resp.json()) as { result?: { data?: string }; error?: unknown };
-      if (!result.result?.data) {
-        debugLog(
-          "wsBridge.readAndPush",
-          `NO DATA path=${path} error=${JSON.stringify(result.error ?? "none").slice(0, 100)}`,
-        );
+      const result = (await resp.json()) as { content?: string };
+      if (!result.content) {
+        debugLog("wsBridge.readAndPush", `NO DATA path=${path}`);
         this.publishInvalidation(_targetRole, ipcMessageId);
         return;
       }
 
-      const raw = Buffer.from(result.result.data, "base64").toString();
+      const raw = result.content;
       const msg = JSON.parse(raw) as {
         from?: string;
         sender?: string;

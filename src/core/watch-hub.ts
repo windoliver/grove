@@ -31,6 +31,7 @@ interface KeyState {
   counter: bigint;
   ring: WatchEvent[];
   insertedAt: number[];
+  ringHead: number;
   /**
    * Highest rv that has been evicted (by age or capacity). Any client
    * resuming from `fromRv < floorRv` has missed at least one unrecoverable
@@ -99,7 +100,7 @@ export class WatchHub {
     // floorRv, give me floorRv+1 onward." Survives full ring eviction so
     // age-compaction of idle keys still triggers 410.
     if (fromRv < s.floorRv) {
-      const oldestRv = s.ring.length > 0 ? (s.ring[0] as WatchEvent).rv : s.floorRv + 1n;
+      const oldestRv = this.firstEvent(s)?.rv ?? s.floorRv + 1n;
       throw new StaleResourceVersionError(namespace, kind, fromRv, oldestRv);
     }
     // Reject future RVs. After a server restart the hub resets to 0; a client
@@ -109,7 +110,7 @@ export class WatchHub {
       throw new StaleResourceVersionError(namespace, kind, fromRv, s.counter);
     }
 
-    const replay: WatchEvent[] = s.ring.filter((e) => e.rv > fromRv);
+    const replay: WatchEvent[] = s.ring.slice(s.ringHead).filter((e) => e.rv > fromRv);
     // Cap replay at perClientOutboxCap. Without this, a slow consumer
     // reconnecting from an old-but-valid rv could allocate up to
     // maxEventsPerKey events per subscription on creation, and that cap
@@ -208,7 +209,7 @@ export class WatchHub {
   /** Test-only inspector. Returns a copy. */
   snapshotRing(namespace: string, kind: WatchKind): readonly WatchEvent[] {
     const s = this.state.get(this.key(namespace, kind));
-    return s ? [...s.ring] : [];
+    return s ? s.ring.slice(s.ringHead) : [];
   }
 
   /** Snapshot of compaction counters across all (ns, kind) keys. */
@@ -219,13 +220,13 @@ export class WatchHub {
       // since the events expired — otherwise the dashboard hides the fact
       // that the ring is now empty.
       this.trim(s);
-      const oldestRv = s.ring.length > 0 ? (s.ring[0] as WatchEvent).rv : s.floorRv + 1n;
+      const oldestRv = this.firstEvent(s)?.rv ?? s.floorRv + 1n;
       out.push({
         namespace: s.namespace,
         kind: s.kind,
         evictedByAge: s.evictedByAge,
         evictedByCapacity: s.evictedByCapacity,
-        currentRingSize: s.ring.length,
+        currentRingSize: this.activeRingLength(s),
         oldestRv: String(oldestRv),
         currentRv: String(s.counter),
       });
@@ -247,6 +248,7 @@ export class WatchHub {
         counter: 0n,
         ring: [],
         insertedAt: [],
+        ringHead: 0,
         floorRv: 0n,
         evictedByAge: 0,
         evictedByCapacity: 0,
@@ -257,19 +259,42 @@ export class WatchHub {
   }
 
   private trim(s: KeyState): void {
-    while (s.ring.length > this.maxEventsPerKey) {
-      const evicted = s.ring.shift() as WatchEvent;
-      s.insertedAt.shift();
+    while (this.activeRingLength(s) > this.maxEventsPerKey) {
+      const evicted = this.evictOldest(s);
+      if (evicted === undefined) break;
       if (evicted.rv > s.floorRv) s.floorRv = evicted.rv;
       s.evictedByCapacity += 1;
     }
     const cutoff = this.now() - this.maxAgeMsPerKey;
-    while (s.ring.length > 0 && (s.insertedAt[0] ?? 0) < cutoff) {
-      const evicted = s.ring.shift() as WatchEvent;
-      s.insertedAt.shift();
+    while (this.activeRingLength(s) > 0 && (s.insertedAt[s.ringHead] ?? 0) < cutoff) {
+      const evicted = this.evictOldest(s);
+      if (evicted === undefined) break;
       if (evicted.rv > s.floorRv) s.floorRv = evicted.rv;
       s.evictedByAge += 1;
     }
+    this.compactRingIfNeeded(s);
+  }
+
+  private activeRingLength(s: KeyState): number {
+    return s.ring.length - s.ringHead;
+  }
+
+  private firstEvent(s: KeyState): WatchEvent | undefined {
+    return s.ring[s.ringHead];
+  }
+
+  private evictOldest(s: KeyState): WatchEvent | undefined {
+    const evicted = this.firstEvent(s);
+    if (evicted === undefined) return undefined;
+    s.ringHead += 1;
+    return evicted;
+  }
+
+  private compactRingIfNeeded(s: KeyState): void {
+    if (s.ringHead < 1024 || s.ringHead * 2 < s.ring.length) return;
+    s.ring = s.ring.slice(s.ringHead);
+    s.insertedAt = s.insertedAt.slice(s.ringHead);
+    s.ringHead = 0;
   }
 }
 

@@ -15,6 +15,7 @@ import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
 import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useEntities } from "../hooks/use-entities.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
 import { agentStatusIcon, BRAILLE_SPINNER, timing } from "../theme.js";
@@ -192,11 +193,13 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
       : polledClaims.loading;
     const isStale = useInformerPath ? false : polledClaims.isStale;
     const error = useInformerPath ? entityResult.error : polledClaims.error;
+    // A8.4 (#390): tmux session list re-fetches on producer-side `agent.output`
+    // events (and the global RefreshContext fan-out), no setInterval.
     const {
       data: sessions,
       isStale: tmuxStale,
       error: tmuxError,
-    } = usePolledData<readonly string[]>(tmuxFetcher, intervalMs * 2, active && !!tmux);
+    } = useEventDrivenData<readonly string[]>(tmuxFetcher, undefined, undefined, active && !!tmux);
 
     const costFetcher = useCallback(async () => {
       const cp = provider as unknown as {
@@ -223,7 +226,9 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
       }
       return map;
     }, [provider]);
-    const { data: agentCosts } = usePolledData(costFetcher, intervalMs * 2, active);
+    // A8.4 (#390): cost rollups re-fetch on EventBus events via the global
+    // RefreshContext fan-out (any agent.output / contribution event).
+    const { data: agentCosts } = useEventDrivenData(costFetcher, undefined, undefined, active);
 
     // Combine staleness from both data sources
     const combinedStale = isStale || tmuxStale;

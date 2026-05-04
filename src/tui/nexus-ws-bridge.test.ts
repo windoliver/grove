@@ -151,14 +151,10 @@ describe("NexusWsBridge", () => {
     globalThis.fetch = (async () =>
       new Response(
         JSON.stringify({
-          result: {
-            data: Buffer.from(
-              JSON.stringify({
-                sender: "coder",
-                payload: { cid: "blake3:abc", kind: "work", summary: "test contribution" },
-              }),
-            ).toString("base64"),
-          },
+          content: JSON.stringify({
+            sender: "coder",
+            payload: { cid: "blake3:abc", kind: "work", summary: "test contribution" },
+          }),
         }),
         { status: 200 },
       )) as unknown as typeof fetch;
@@ -210,11 +206,7 @@ describe("NexusWsBridge", () => {
     globalThis.fetch = (async () =>
       new Response(
         JSON.stringify({
-          result: {
-            data: Buffer.from(
-              JSON.stringify({ sender: "coder", payload: { summary: "plain notice" } }),
-            ).toString("base64"),
-          },
+          content: JSON.stringify({ sender: "coder", payload: { summary: "plain notice" } }),
         }),
         { status: 200 },
       )) as unknown as typeof fetch;
@@ -277,11 +269,7 @@ describe("NexusWsBridge", () => {
     globalThis.fetch = (async () =>
       new Response(
         JSON.stringify({
-          result: {
-            data: Buffer.from(
-              JSON.stringify({ sender: "coder", payload: { summary: "test" } }),
-            ).toString("base64"),
-          },
+          content: JSON.stringify({ sender: "coder", payload: { summary: "test" } }),
         }),
         { status: 200 },
       )) as unknown as typeof fetch;
@@ -338,14 +326,10 @@ describe("NexusWsBridge", () => {
     globalThis.fetch = (async () =>
       new Response(
         JSON.stringify({
-          result: {
-            data: Buffer.from(
-              JSON.stringify({
-                sender: "coder",
-                payload: { summary: "implement auth module" },
-              }),
-            ).toString("base64"),
-          },
+          content: JSON.stringify({
+            sender: "coder",
+            payload: { summary: "implement auth module" },
+          }),
         }),
         { status: 200 },
       )) as unknown as typeof fetch;
@@ -385,19 +369,15 @@ describe("NexusWsBridge", () => {
     globalThis.fetch = (async () =>
       new Response(
         JSON.stringify({
-          result: {
-            data: Buffer.from(
-              JSON.stringify({
-                sender: "coder",
-                payload: {
-                  cid: "blake3:abc123",
-                  kind: "work",
-                  summary: "implement auth module",
-                  agentId: "coder-1",
-                },
-              }),
-            ).toString("base64"),
-          },
+          content: JSON.stringify({
+            sender: "coder",
+            payload: {
+              cid: "blake3:abc123",
+              kind: "work",
+              summary: "implement auth module",
+              agentId: "coder-1",
+            },
+          }),
         }),
         { status: 200 },
       )) as unknown as typeof fetch;
@@ -439,19 +419,15 @@ describe("NexusWsBridge", () => {
     globalThis.fetch = (async () =>
       new Response(
         JSON.stringify({
-          result: {
-            data: Buffer.from(
-              JSON.stringify({
-                sender: "reviewer",
-                payload: {
-                  cid: "blake3:review1",
-                  kind: "review",
-                  summary: "fix the race condition in handler.ts",
-                  agentId: "reviewer-1",
-                },
-              }),
-            ).toString("base64"),
-          },
+          content: JSON.stringify({
+            sender: "reviewer",
+            payload: {
+              cid: "blake3:review1",
+              kind: "review",
+              summary: "fix the race condition in handler.ts",
+              agentId: "reviewer-1",
+            },
+          }),
         }),
         { status: 200 },
       )) as unknown as typeof fetch;
@@ -515,11 +491,11 @@ describe("NexusWsBridge", () => {
     bridge.close();
   });
 
-  test("readAndPush handles missing data field gracefully", async () => {
+  test("readAndPush handles missing content field gracefully", async () => {
     const runtime = makeMockRuntime();
 
     globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ result: {} }), { status: 200 })) as unknown as typeof fetch;
+      new Response(JSON.stringify({}), { status: 200 })) as unknown as typeof fetch;
 
     const bridge = new TestableNexusWsBridge(makeBridgeOpts({ runtime }));
     const session = makeSession("reviewer");
@@ -561,13 +537,24 @@ describe("NexusWsBridge", () => {
 
     expect(ok).toBe(true);
     expect(fetchCalls).toHaveLength(1);
-    expect(fetchCalls[0]!.url).toBe("http://localhost:9999/api/v2/ipc/send");
-    expect(fetchCalls[0]!.body).toEqual({
-      sender: "coder",
-      recipient: "reviewer",
-      type: "event",
-      payload: { summary: "test" },
-    });
+    expect(fetchCalls[0]!.url).toBe("http://localhost:9999/api/v2/files/write");
+    const body = fetchCalls[0]!.body as {
+      path: string;
+      content: string;
+      encoding: string;
+    };
+    expect(body.path).toMatch(/^\/ipc\/reviewer\/inbox\/.+\.json$/);
+    expect(body.encoding).toBe("base64");
+    const decoded = JSON.parse(Buffer.from(body.content, "base64").toString("utf8")) as {
+      sender: string;
+      recipient: string;
+      type: string;
+      payload: Record<string, unknown>;
+    };
+    expect(decoded.sender).toBe("coder");
+    expect(decoded.recipient).toBe("reviewer");
+    expect(decoded.type).toBe("event");
+    expect(decoded.payload).toEqual({ summary: "test" });
 
     bridge.close();
   });
@@ -850,19 +837,15 @@ describe("NexusWsBridge", () => {
     globalThis.fetch = (async () =>
       new Response(
         JSON.stringify({
-          result: {
-            data: Buffer.from(
-              JSON.stringify({
-                sender: "coder",
-                payload: {
-                  type: "acp.message",
-                  sessionId: "s1",
-                  turnId: "t1",
-                  message: { kind: "text", turnId: "t1", text: "hi", chunk: true },
-                },
-              }),
-            ).toString("base64"),
-          },
+          content: JSON.stringify({
+            sender: "coder",
+            payload: {
+              type: "acp.message",
+              sessionId: "s1",
+              turnId: "t1",
+              message: { kind: "text", turnId: "t1", text: "hi", chunk: true },
+            },
+          }),
         }),
         { status: 200 },
       )) as unknown as typeof fetch;
@@ -892,7 +875,7 @@ describe("NexusWsBridge", () => {
     // Registration accepts any 2xx; stream probe also requires real
     // text/event-stream content-type to count as ready.
     globalThis.fetch = ((url: string) => {
-      if (url.includes("/api/v2/ipc/stream/")) {
+      if (url.includes("/api/v2/events/stream")) {
         return Promise.resolve(
           new Response("", { status: 200, headers: { "content-type": "text/event-stream" } }),
         );
@@ -913,7 +896,7 @@ describe("NexusWsBridge", () => {
         regCalls += 1;
         return Promise.resolve(new Response("", { status: regCalls === 1 ? 200 : 409 }));
       }
-      if (url.includes("/api/v2/ipc/stream/")) {
+      if (url.includes("/api/v2/events/stream")) {
         return Promise.resolve(
           new Response("", { status: 200, headers: { "content-type": "text/event-stream" } }),
         );
@@ -928,7 +911,7 @@ describe("NexusWsBridge", () => {
 
   test("connect rejects when probe returns 2xx without event-stream content-type", async () => {
     globalThis.fetch = ((url: string) => {
-      if (url.includes("/api/v2/ipc/stream/")) {
+      if (url.includes("/api/v2/events/stream")) {
         // 2xx but plain text/html — a misconfigured proxy scenario.
         return Promise.resolve(
           new Response("not a stream", {
@@ -979,7 +962,7 @@ describe("NexusWsBridge", () => {
     // stream probe (GET /ipc/stream/<role>) returns 403 — simulating a
     // deployment where registration is permissive but stream auth is not.
     globalThis.fetch = ((url: string) => {
-      if (url.includes("/api/v2/ipc/stream/")) {
+      if (url.includes("/api/v2/events/stream")) {
         return Promise.resolve(new Response("", { status: 403 }));
       }
       return Promise.resolve(new Response("{}", { status: 200 }));

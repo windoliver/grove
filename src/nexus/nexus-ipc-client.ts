@@ -1,8 +1,12 @@
 /**
- * Shared Nexus IPC client for sending messages via the Nexus IPC API.
+ * Shared Nexus IPC client for sending messages via the Nexus kernel-VFS.
  *
- * Consolidates the duplicate POST /api/v2/ipc/send calls that previously
- * existed in both NexusEventBus and NexusWsBridge (Issue #165 / 5A).
+ * Migrated from the removed `/api/v2/ipc/send` route to the v2 REST file
+ * surface: messages are written into the recipient's inbox at
+ * `/ipc/{recipient}/inbox/{message_id}.json` via `POST /api/v2/files/write`
+ * with a base64-encoded JSON envelope. Subscribers consume those writes
+ * through `/api/v2/events/stream` with a matching path pattern (handled
+ * by NexusWsBridge).
  *
  * Returns structured results with IPC message IDs for handoff tracking.
  */
@@ -83,13 +87,27 @@ export class NexusIpcClient {
     }
 
     try {
-      const resp = await fetch(`${this.nexusUrl}/api/v2/ipc/send`, {
+      const messageId = globalThis.crypto?.randomUUID?.() ?? `msg-${Date.now()}`;
+      const envelope = JSON.stringify({
+        message_id: messageId,
+        sender,
+        recipient,
+        type: "event",
+        payload,
+        timestamp: new Date().toISOString(),
+      });
+      const content = Buffer.from(envelope, "utf8").toString("base64");
+      const resp = await fetch(`${this.nexusUrl}/api/v2/files/write`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${this.apiKey}`,
         },
-        body: JSON.stringify({ sender, recipient, type: "event", payload }),
+        body: JSON.stringify({
+          path: `/ipc/${recipient}/inbox/${messageId}.json`,
+          content,
+          encoding: "base64",
+        }),
       });
 
       if (!resp.ok) {
@@ -117,18 +135,9 @@ export class NexusIpcClient {
       this.endpointAvailable = true;
       this.transientFailureAt = undefined; // clear backoff on success
 
-      // Try to extract message_id from response
-      let messageId: string | undefined;
-      try {
-        const body = (await resp.json()) as { message_id?: string };
-        messageId = body.message_id;
-      } catch {
-        // Response may not be JSON — still a success
-      }
-
       debugLog(
         "nexus-ipc",
-        `SEND OK sender=${sender} recipient=${recipient} messageId=${messageId ?? "(none)"}`,
+        `SEND OK sender=${sender} recipient=${recipient} messageId=${messageId}`,
       );
       return { ok: true, messageId };
     } catch (err) {

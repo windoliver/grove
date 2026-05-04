@@ -12,13 +12,14 @@ import { formatTimestamp } from "../../shared/format.js";
 import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import { isGossipProvider, type TuiDataProvider } from "../provider.js";
 
 /** Props for the GossipPanel view. */
 export interface GossipPanelProps {
   readonly provider: TuiDataProvider;
-  readonly intervalMs: number;
+  /** Unused after A8.4 migration to useEventDrivenData; kept for caller-stability. */
+  readonly intervalMs?: number;
   readonly active: boolean;
   readonly cursor: number;
   readonly onRowCountChanged?: ((count: number) => void) | undefined;
@@ -44,7 +45,6 @@ const COLUMNS = [
 export const GossipPanelView: React.NamedExoticComponent<GossipPanelProps> = React.memo(
   function GossipPanelView({
     provider,
-    intervalMs,
     active,
     cursor,
     onRowCountChanged,
@@ -67,9 +67,10 @@ export const GossipPanelView: React.NamedExoticComponent<GossipPanelProps> = Rea
       }));
     }, [provider]);
 
-    const { data, loading, isStale, error } = usePolledData<readonly PeerRow[]>(
+    const { data, loading, isStale, error } = useEventDrivenData<readonly PeerRow[]>(
       fetcher,
-      intervalMs,
+      undefined,
+      undefined,
       active,
     );
 

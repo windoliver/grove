@@ -11,13 +11,14 @@ import { formatTimestamp } from "../../shared/format.js";
 import { DataStatus } from "../components/data-status.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { InboxMessage, TuiDataProvider, TuiMessagingProvider } from "../provider.js";
 
 /** Props for the InboxPanel view. */
 export interface InboxPanelProps {
   readonly provider: TuiDataProvider;
-  readonly intervalMs: number;
+  /** Unused after A8.4 migration to useEventDrivenData; kept for caller-stability. */
+  readonly intervalMs?: number;
   readonly active: boolean;
   readonly cursor: number;
   readonly onRowCountChanged?: ((count: number) => void) | undefined;
@@ -52,7 +53,6 @@ function hasMessaging(
 export const InboxPanelView: React.NamedExoticComponent<InboxPanelProps> = React.memo(
   function InboxPanelView({
     provider,
-    intervalMs,
     active,
     cursor,
     onRowCountChanged,
@@ -80,9 +80,10 @@ export const InboxPanelView: React.NamedExoticComponent<InboxPanelProps> = React
       }));
     }, [provider, supportsMessaging]);
 
-    const { data, loading, isStale, error } = usePolledData<readonly MessageRow[]>(
+    const { data, loading, isStale, error } = useEventDrivenData<readonly MessageRow[]>(
       fetcher,
-      intervalMs,
+      undefined,
+      undefined,
       active,
     );
 

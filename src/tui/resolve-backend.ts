@@ -240,9 +240,9 @@ export type NexusHealthStatus =
 /**
  * Lightweight health check against a Nexus server.
  *
- * Sends a minimal JSON-RPC `exists` call to `POST /api/nfs/exists`,
- * which matches the Nexus wire protocol (all VFS ops go through
- * `POST /api/nfs/{method}` as JSON-RPC).
+ * Sends a `GET /api/v2/files/exists?path=/` probe — the v2 file router is
+ * the durable surface across recent Nexus images (PR #3912 dropped the
+ * legacy `/api/nfs/*` JSON-RPC methods).
  */
 export async function checkNexusHealth(
   url: string,
@@ -250,13 +250,16 @@ export async function checkNexusHealth(
 ): Promise<NexusHealthStatus> {
   try {
     const apiKey = process.env.NEXUS_API_KEY;
-    const resp = await fetch(`${url.replace(/\/+$/, "")}/api/nfs/exists`, {
-      method: "POST",
+    // Use the REST file-exists probe — the legacy `/api/nfs/exists` JSON-RPC
+    // method was dropped in recent Nexus images (see NexusHttpClient
+    // migration). The v2 file router is the durable surface; a 200 with
+    // `{exists: …}` proves the server is up and routing through to the
+    // metadata layer.
+    const base = url.replace(/\/+$/, "");
+    const resp = await fetch(`${base}/api/v2/files/exists?path=${encodeURIComponent("/")}`, {
       headers: {
-        "Content-Type": "application/json",
         ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
       },
-      body: JSON.stringify({ jsonrpc: "2.0", method: "exists", params: { path: "/" }, id: 1 }),
       signal: AbortSignal.timeout(timeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS),
     });
     if (resp.ok) return "ok";
