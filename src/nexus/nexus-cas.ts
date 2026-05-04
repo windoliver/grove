@@ -16,7 +16,7 @@
  * - Retry with exponential backoff for transient errors
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 
 import { hash } from "blake3";
@@ -227,6 +227,13 @@ export class NexusCas implements ContentStore {
   async putFile(filePath: string, options?: PutOptions): Promise<string> {
     const mediaType = options?.mediaType || undefined;
     if (mediaType) validateMediaType(mediaType);
+
+    const fileSizeBytes = statSync(filePath).size;
+    if (fileSizeBytes > this.config.maxPutFileBytes) {
+      throw new Error(
+        `File '${filePath}' is ${fileSizeBytes} bytes, exceeds Nexus CAS putFile limit of ${this.config.maxPutFileBytes} bytes`,
+      );
+    }
 
     // Read file and compute hash
     const fileData = new Uint8Array(readFileSync(filePath));

@@ -40,6 +40,15 @@ export interface NexusConfig {
    */
   readonly existsThresholdBytes?: number | undefined;
 
+  /**
+   * Maximum file size accepted by NexusCas.putFile().
+   *
+   * Nexus currently uploads blobs through a JSON/base64 transport, so putFile()
+   * must reject very large files before reading them into memory. Defaults to
+   * 67,108,864 bytes (64 MiB).
+   */
+  readonly maxPutFileBytes?: number | undefined;
+
   /** Maximum entries in the LRU cache for immutable data. Defaults to 1000. */
   readonly cacheMaxEntries?: number | undefined;
 
@@ -60,6 +69,7 @@ export interface ResolvedNexusConfig {
   readonly sessionId: string | undefined;
   readonly maxConcurrency: number;
   readonly existsThresholdBytes: number;
+  readonly maxPutFileBytes: number;
   readonly cacheMaxEntries: number;
   readonly retryMaxAttempts: number;
   readonly retryBaseDelayMs: number;
@@ -75,6 +85,7 @@ export function resolveConfig(config: NexusConfig): ResolvedNexusConfig {
     sessionId: config.sessionId,
     maxConcurrency: config.maxConcurrency ?? 20,
     existsThresholdBytes: config.existsThresholdBytes ?? 65_536,
+    maxPutFileBytes: config.maxPutFileBytes ?? 67_108_864,
     cacheMaxEntries: config.cacheMaxEntries ?? 1_000,
     retryMaxAttempts: config.retryMaxAttempts ?? 3,
     retryBaseDelayMs: config.retryBaseDelayMs ?? 100,

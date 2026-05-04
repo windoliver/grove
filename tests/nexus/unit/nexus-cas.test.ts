@@ -6,6 +6,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { runContentStoreTests } from "../../../src/core/cas.conformance.js";
 import type {
@@ -179,6 +182,24 @@ describe("NexusCas adapter-specific", () => {
     expect(artifact?.sizeBytes).toBe(data.byteLength);
     store.close();
     await encodedClient.close();
+  });
+
+  test("putFile rejects files above configured maxPutFileBytes before upload", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "nexus-cas-putfile-limit-"));
+    const filePath = join(dir, "artifact.bin");
+    await writeFile(filePath, new Uint8Array([1, 2, 3, 4]));
+    const store = new NexusCas({
+      client,
+      zoneId: "test",
+      maxPutFileBytes: 3,
+      retryMaxAttempts: 1,
+    });
+    try {
+      await expect(store.putFile(filePath)).rejects.toThrow("exceeds Nexus CAS putFile limit");
+    } finally {
+      store.close();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   describe("existsMany", () => {
