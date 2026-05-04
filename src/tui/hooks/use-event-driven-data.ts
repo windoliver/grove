@@ -13,7 +13,7 @@
 
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import type { EventBus, EventHandler, GroveEvent } from "../../core/event-bus.js";
-import { useRefreshSignal } from "./use-refresh-context.js";
+import { useRefreshSignal } from "./refresh-context.js";
 
 /** Result — same interface as usePolledData for drop-in replacement. */
 export interface EventDrivenResult<T> {
