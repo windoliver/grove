@@ -16,7 +16,7 @@
  * - Retry with exponential backoff for transient errors
  */
 
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 
 import { hash } from "blake3";
 
@@ -227,6 +227,14 @@ export class NexusCas implements ContentStore {
     const mediaType = options?.mediaType || undefined;
     if (mediaType) validateMediaType(mediaType);
 
+    const fileSizeBytes = (await stat(filePath)).size;
+    if (fileSizeBytes > this.config.maxPutFileBytes) {
+      throw new Error(
+        `File '${filePath}' is ${fileSizeBytes} bytes, exceeds Nexus CAS putFile limit of ${this.config.maxPutFileBytes} bytes`,
+      );
+    }
+
+    // Read file and compute hash
     const fileData = new Uint8Array(await readFile(filePath));
     const contentHash = computeHash(fileData);
     const blobPath = casPath(this.zoneId, contentHash);

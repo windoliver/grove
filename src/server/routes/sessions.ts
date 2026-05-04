@@ -18,6 +18,7 @@ import type { AgentTopology } from "../../core/topology.js";
 import { AgentTopologySchema, wireToTopology } from "../../core/topology.js";
 import { resolveTopology } from "../../core/topology-resolver.js";
 import type { ServerEnv } from "../deps.js";
+import { CID_REGEX } from "../schemas.js";
 import { contributionStoreForSession, notConfigured, readJsonBody } from "./shared.js";
 
 // ---------------------------------------------------------------------------
@@ -35,7 +36,7 @@ const createSessionSchema = z.object({
 });
 
 const addContributionSchema = z.object({
-  cid: z.string().min(1),
+  cid: z.string().regex(CID_REGEX, "CID must be in format blake3:<64-hex-chars>"),
 });
 
 // ---------------------------------------------------------------------------
@@ -264,27 +265,37 @@ sessions.post("/:id/contributions", async (c) => {
     return c.json({ error: { code: "VALIDATION_ERROR", details: parsed.error.issues } }, 400);
   }
 
-  // Verify contribution exists and run policy enforcement when possible
   const contributionStore = contributionStoreForSession(deps, sessionId);
-  const contribution = await contributionStore.get(parsed.data.cid);
-  if (contribution) {
-    // Policy enforcement against session config (only when contribution is available)
-    const sessionConfig = await goalSessionStore.getSessionConfig(sessionId);
-    if (sessionConfig) {
-      const { PolicyEnforcer } = await import("../../core/policy-enforcer.js");
-      const enforcer = new PolicyEnforcer(sessionConfig, contributionStore);
-      const result = await enforcer.enforce(contribution, false);
-      if (result.violations && result.violations.length > 0) {
-        return c.json(
-          {
-            error: {
-              code: "VALIDATION_ERROR",
-              message: `Contribution violates session policy: ${result.violations.map((v: { message: string }) => v.message).join(", ")}`,
-            },
+  const authoritativeStore =
+    deps.contributionStoreForSession !== undefined ? contributionStore : deps.contributionStore;
+  const contribution = await authoritativeStore.get(parsed.data.cid);
+  if (contribution === undefined) {
+    return c.json(
+      {
+        error: {
+          code: "NOT_FOUND",
+          message: `Contribution not found: ${parsed.data.cid}`,
+        },
+      },
+      404,
+    );
+  }
+
+  const sessionConfig = await goalSessionStore.getSessionConfig(sessionId);
+  if (sessionConfig) {
+    const { PolicyEnforcer } = await import("../../core/policy-enforcer.js");
+    const enforcer = new PolicyEnforcer(sessionConfig, contributionStore);
+    const result = await enforcer.enforce(contribution, false);
+    if (result.violations && result.violations.length > 0) {
+      return c.json(
+        {
+          error: {
+            code: "VALIDATION_ERROR",
+            message: `Contribution violates session policy: ${result.violations.map((v: { message: string }) => v.message).join(", ")}`,
           },
-          400,
-        );
-      }
+        },
+        400,
+      );
     }
   }
 
