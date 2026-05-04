@@ -280,6 +280,24 @@ describe("POST /api/contributions", () => {
     const data = await res.json();
     expect(data.artifacts["main.py"]).toBe(hash);
   });
+
+  test("accepts commitHash and agent role on JSON body", async () => {
+    const body = validManifestBody({
+      commitHash: "955da4e077c08e281a01eed942efc0a2f0837a34",
+      agent: { agentId: "test-agent", role: "coder" },
+    });
+
+    const res = await ctx.app.request("/api/contributions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(201);
+    const data = await res.json();
+    expect(data.commitHash).toBe("955da4e077c08e281a01eed942efc0a2f0837a34");
+    expect(data.agent.role).toBe("coder");
+  });
 });
 
 describe("GET /api/contributions", () => {

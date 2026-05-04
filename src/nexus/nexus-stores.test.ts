@@ -194,6 +194,38 @@ describe("NexusContributionStore", () => {
       );
       expect(result).toEqual([]);
     });
+
+    test("session-scoped replyCounts ignores replies from other sessions", async () => {
+      const sessionAStore = new NexusContributionStore({
+        client,
+        zoneId: "test-zone",
+        sessionId: "session-a",
+        retryMaxAttempts: 1,
+      });
+      const sessionBStore = new NexusContributionStore({
+        client,
+        zoneId: "test-zone",
+        sessionId: "session-b",
+        retryMaxAttempts: 1,
+      });
+      try {
+        const parent = makeContribution({ summary: "shared parent" });
+        await sessionAStore.put(parent);
+        await sessionBStore.put(parent);
+
+        const sessionBReply = makeContribution({
+          summary: "session b reply",
+          relations: [{ targetCid: parent.cid, relationType: RelationType.RespondsTo }],
+        });
+        await sessionBStore.put(sessionBReply);
+
+        const counts = await sessionAStore.replyCounts([parent.cid]);
+        expect(counts.get(parent.cid)).toBe(0);
+      } finally {
+        sessionAStore.close();
+        sessionBStore.close();
+      }
+    });
   });
 
   describe("search", () => {

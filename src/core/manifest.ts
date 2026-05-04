@@ -367,7 +367,7 @@ export function createContribution(input: ContributionInput): Contribution {
     kind: input.kind,
     mode: input.mode,
     summary: input.summary,
-    ...stripUndefined({ description: input.description, commitHash: input.commitHash }),
+    ...stripUndefined({ description: input.description }),
     artifacts: { ...input.artifacts },
     ...stripUndefined({ commitHash: input.commitHash }),
     relations: input.relations.map((r) =>
@@ -467,7 +467,7 @@ export function fromManifest(data: unknown, options?: FromManifestOptions): Cont
     kind: parsed.kind as ContributionKind,
     mode: parsed.mode as ContributionMode,
     summary: parsed.summary,
-    ...stripUndefined({ description: parsed.description }),
+    ...stripUndefined({ description: parsed.description, commitHash: parsed.commitHash }),
     artifacts: parsed.artifacts,
     relations,
     ...stripUndefined({

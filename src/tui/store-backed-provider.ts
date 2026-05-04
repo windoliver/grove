@@ -8,7 +8,6 @@
  * (e.g. artifacts, VFS, search).
  */
 
-import { appendFileSync as _afs } from "node:fs";
 import type { Frontier, FrontierCalculator, FrontierQuery } from "../core/frontier.js";
 import type { Handoff, HandoffQuery, HandoffStore } from "../core/handoff.js";
 import { computeCid } from "../core/manifest.js";
@@ -29,6 +28,7 @@ import type {
 import type { WorkspaceManager } from "../core/workspace.js";
 import { getActivePR } from "../github/active-pr.js";
 import type { GoalSessionStore } from "../local/sqlite-goal-session-store.js";
+import { debugLog } from "./debug-log.js";
 import type {
   ActivityQuery,
   ArtifactMeta,
@@ -267,14 +267,10 @@ export abstract class StoreBackedProvider
     const effectiveQuery =
       this.activeSessionId !== undefined ? { ...query, sessionId: this.activeSessionId } : query;
     const result = await this.store.list(effectiveQuery);
-    try {
-      _afs(
-        "/tmp/grove-debug.log",
-        `[${new Date().toISOString()}] [provider.getContributions] count=${result.length} query=${JSON.stringify(effectiveQuery ?? {})}\n`,
-      );
-    } catch {
-      /* ignore */
-    }
+    debugLog(
+      "provider.getContributions",
+      `count=${result.length} query=${JSON.stringify(effectiveQuery ?? {})}`,
+    );
     return result;
   }
 

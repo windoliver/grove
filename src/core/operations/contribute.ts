@@ -859,6 +859,20 @@ export async function contributeOperation(
   // row is in the store, including one another process reserved in the
   // meantime — erasing its single-flight protection and enabling dup writes.
   let ownsDurableReservation = false;
+  const rollbackOwnedDurableReservation = (): void => {
+    if (
+      ownsDurableReservation &&
+      idempotencyCacheLookupKey !== undefined &&
+      deps.idempotencyStore !== undefined
+    ) {
+      try {
+        deps.idempotencyStore.rollback(idempotencyCacheLookupKey);
+      } catch {
+        // Best-effort — don't mask the original error.
+      }
+      ownsDurableReservation = false;
+    }
+  };
 
   try {
     if (deps.contributionStore === undefined) {
@@ -1047,6 +1061,7 @@ export async function contributeOperation(
       );
       // Resolve the idempotency slot with this permanent error so any
       // concurrent retry with the same key gets the same response.
+      rollbackOwnedDurableReservation();
       idempotencySlot?.resolve(errResult);
       return errResult;
     }
@@ -1779,17 +1794,7 @@ export async function contributeOperation(
     // the pending row. Otherwise a pre-commit throw here would delete a
     // row another process (or a concurrent same-process retry) just
     // reserved, defeating cross-process single-flight.
-    if (
-      ownsDurableReservation &&
-      idempotencyCacheLookupKey !== undefined &&
-      deps.idempotencyStore !== undefined
-    ) {
-      try {
-        deps.idempotencyStore.rollback(idempotencyCacheLookupKey);
-      } catch {
-        // Best-effort — don't mask the original error.
-      }
-    }
+    rollbackOwnedDurableReservation();
     return errResult;
   }
 }

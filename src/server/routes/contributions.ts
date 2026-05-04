@@ -63,6 +63,7 @@ const manifestSchema = z
     mode: z.enum(["evaluation", "exploration"]),
     summary: z.string().min(1),
     description: z.string().optional(),
+    commitHash: z.string().optional(),
     artifacts: z
       .record(z.string(), z.string().regex(CID_REGEX, "artifact hash must be blake3:<64-hex>"))
       .optional(),
@@ -107,6 +108,7 @@ const manifestSchema = z
         version: z.string().optional(),
         toolchain: z.string().optional(),
         runtime: z.string().optional(),
+        role: z.string().optional(),
       })
       .strict(),
     createdAt: z.string().datetime({ offset: true }).optional(),
@@ -237,6 +239,7 @@ contributions.post("/", async (c) => {
     mode: parsed.mode,
     summary: parsed.summary,
     ...(parsed.description !== undefined ? { description: parsed.description } : {}),
+    ...(parsed.commitHash !== undefined ? { commitHash: parsed.commitHash } : {}),
     artifacts,
     relations: parsed.relations as readonly Relation[],
     ...(parsed.scores !== undefined
