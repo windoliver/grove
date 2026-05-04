@@ -5,10 +5,10 @@
  *
  * PR2 (#388): the contribution body subscription migrates to
  * `useEntity("Contribution", cid)` when a factory is mounted. Ancestors,
- * children, thread, and outcome remain on `usePolledData` — those fields
- * aren't on the Entity envelope (they're a relation graph the server
- * computes on demand). PR3/PR4 may lift the relation graph into
- * `useDerived`.
+ * children, thread, and outcome read via `useEventDrivenData` — those
+ * fields aren't on the Entity envelope (they're a relation graph the
+ * server computes on demand). A future PR may lift the relation graph
+ * into `useDerived`.
  */
 
 import React, { useCallback } from "react";
@@ -20,7 +20,7 @@ import { DataStatus } from "../components/data-status.js";
 import { OutcomeBadge } from "../components/outcome-badge.js";
 import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useEntity } from "../hooks/use-entity.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { ContributionDetail, TuiDataProvider, TuiOutcomeProvider } from "../provider.js";
 import { theme } from "../theme.js";
 
@@ -49,7 +49,7 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
     loading,
     isStale,
     error,
-  } = usePolledData<ContributionDetail | undefined>(fetcher, intervalMs, true);
+  } = useEventDrivenData<ContributionDetail | undefined>(fetcher, undefined, undefined, true);
 
   // Fetch outcome for this CID if available
   const outcomeProvider = provider.capabilities.outcomes
@@ -60,9 +60,10 @@ export const DetailView: React.NamedExoticComponent<DetailProps> = React.memo(fu
     () => outcomeProvider?.getOutcome(cid) ?? Promise.resolve(undefined),
     [outcomeProvider, cid],
   );
-  const { data: outcome } = usePolledData<OutcomeRecord | undefined>(
+  const { data: outcome } = useEventDrivenData<OutcomeRecord | undefined>(
     outcomeFetcher,
-    intervalMs,
+    undefined,
+    undefined,
     true,
   );
 

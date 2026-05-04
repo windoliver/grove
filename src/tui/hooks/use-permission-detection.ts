@@ -5,8 +5,9 @@
  */
 
 import { useKeyboard } from "@opentui/react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { parseSessionId } from "../../core/session-id.js";
+import { useInterval } from "../../local/use-interval.js";
 import type { TmuxManager } from "../agents/tmux-manager.js";
 
 /** A detected permission prompt from a tmux agent session. */
@@ -34,44 +35,43 @@ export function usePermissionDetection(
 ): readonly PendingPermission[] {
   const [pendingPermissions, setPendingPermissions] = useState<PendingPermission[]>([]);
 
-  useEffect(() => {
+  const poll = useCallback(async () => {
     if (!tmux) return;
-    const timer = setInterval(async () => {
-      try {
-        const sessions = await tmux.listSessions();
-        const prompts: PendingPermission[] = [];
-        for (const sess of sessions) {
-          if (!sess.startsWith("grove-")) continue;
-          const pane = await tmux.capturePanes(sess);
-          if (containsPermissionPrompt(pane)) {
-            const lines = pane.split("\n");
-            let cmd = "";
-            for (const line of lines) {
-              const t = line.trim();
-              if (
-                t &&
-                !PROMPT_PATTERNS.some((p) => t.startsWith(p.slice(0, 10))) &&
-                !t.startsWith("❯") &&
-                !t.startsWith("Esc") &&
-                !t.startsWith("1.") &&
-                !t.startsWith("2.") &&
-                !t.startsWith("Permission")
-              ) {
-                cmd = t;
-              }
+    try {
+      const sessions = await tmux.listSessions();
+      const prompts: PendingPermission[] = [];
+      for (const sess of sessions) {
+        if (!sess.startsWith("grove-")) continue;
+        const pane = await tmux.capturePanes(sess);
+        if (containsPermissionPrompt(pane)) {
+          const lines = pane.split("\n");
+          let cmd = "";
+          for (const line of lines) {
+            const t = line.trim();
+            if (
+              t &&
+              !PROMPT_PATTERNS.some((p) => t.startsWith(p.slice(0, 10))) &&
+              !t.startsWith("❯") &&
+              !t.startsWith("Esc") &&
+              !t.startsWith("1.") &&
+              !t.startsWith("2.") &&
+              !t.startsWith("Permission")
+            ) {
+              cmd = t;
             }
-            const parsed = parseSessionId(sess);
-            const role = parsed?.role ?? sess.replace("grove-", "").replace(/-[a-z0-9]+$/i, "");
-            prompts.push({ sessionName: sess, agentRole: role, command: cmd.slice(0, 80) });
           }
+          const parsed = parseSessionId(sess);
+          const role = parsed?.role ?? sess.replace("grove-", "").replace(/-[a-z0-9]+$/i, "");
+          prompts.push({ sessionName: sess, agentRole: role, command: cmd.slice(0, 80) });
         }
-        setPendingPermissions(prompts);
-      } catch {
-        // Non-fatal
       }
-    }, 2000);
-    return () => clearInterval(timer);
+      setPendingPermissions(prompts);
+    } catch {
+      // Non-fatal
+    }
   }, [tmux]);
+
+  useInterval(() => void poll(), 2000, Boolean(tmux));
 
   // y/n keybinding for approval — sends keys to the first pending prompt
   useKeyboard(

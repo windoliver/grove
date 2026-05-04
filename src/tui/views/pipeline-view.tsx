@@ -6,15 +6,15 @@
  * and token count. Toggled via V key cycle (item 11).
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import type { ClaimEntity } from "../../core/entity.js";
 import type { Claim } from "../../core/models.js";
+import { useInterval } from "../../local/use-interval.js";
 import type { TmuxManager } from "../agents/tmux-manager.js";
 import { agentIdFromSession } from "../agents/tmux-manager.js";
 import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useEntities } from "../hooks/use-entities.js";
 import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
 import type { TuiDataProvider } from "../provider.js";
 import { BRAILLE_SPINNER, PLATFORM_COLORS, theme } from "../theme.js";
 
@@ -170,21 +170,16 @@ export const PipelineView: React.NamedExoticComponent<PipelineViewProps> = React
   }: PipelineViewProps): React.ReactNode {
     // One shared spinner timer for all cards — avoids O(n) intervals for n running agents.
     const [spinnerFrame, setSpinnerFrame] = useState(0);
-    useEffect(() => {
-      if (!active) return;
-      const timer = setInterval(() => {
-        setSpinnerFrame((f) => (f + 1) % BRAILLE_SPINNER.length);
-      }, 100);
-      return () => clearInterval(timer);
-    }, [active]);
+    useInterval(() => setSpinnerFrame((f) => (f + 1) % BRAILLE_SPINNER.length), 100, active);
 
     const useInformerPath = useEntityWatchEnabled(provider, "Claim");
 
     const entityResult = useEntities("Claim", ACTIVE_PREDICATE);
     const claimsFetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
-    const polledClaims = usePolledData<readonly Claim[]>(
+    const polledClaims = useEventDrivenData<readonly Claim[]>(
       claimsFetcher,
-      intervalMs,
+      undefined,
+      undefined,
       active && !useInformerPath,
     );
     const claims = useInformerPath ? entityResult.data.map(entityToClaim) : polledClaims.data;
@@ -196,7 +191,7 @@ export const PipelineView: React.NamedExoticComponent<PipelineViewProps> = React
       return tmux.listSessions();
     }, [tmux]);
     // A8.4 (#390): tmux session list re-fetches on producer-side `agent.output`
-    // events via the global RefreshContext fan-out — no setInterval here.
+    // events via the global RefreshContext fan-out — no polling timer here.
     const { data: sessions } = useEventDrivenData<readonly string[]>(
       sessionsFetcher,
       undefined,

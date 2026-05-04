@@ -272,7 +272,8 @@ async function buildAppProps(
   ]);
 
   // Pre-fetch dashboard data before the renderer starts so the first render
-  // has content even when usePolledData hooks can't fire (e.g. Zig render loop).
+  // has content even when the data hook hasn't yet completed its first fetch
+  // (e.g. Zig render loop).
   let initialDashboard: import("./provider.js").DashboardData | undefined;
   try {
     initialDashboard = await provider.getDashboard();
@@ -360,7 +361,7 @@ async function buildAppProps(
   // Start workspace GC for modes that have lifecycle support
   const stopCallbacks: Array<() => void> = [];
   if (provider.cleanWorkspace) {
-    const { startWorkspaceGc } = await import("./workspace-gc.js");
+    const { startWorkspaceGc } = await import("../local/workspace-gc.js");
     stopCallbacks.push(startWorkspaceGc(provider));
   }
 
@@ -373,7 +374,6 @@ async function buildAppProps(
   const WATCH_NAMESPACE = "default";
   if (groveDir) {
     const { createLocalRuntime } = await import("../local/runtime.js");
-    const { runCleanup, runArtifactGc, runSessionGc } = await import("../local/cleanup.js");
     // Local-mode WatchHub: only constructed when we have a groveDir (i.e. the
     // local runtime exists). Remote mode keeps using the server-side hub via
     // WatchClient over SSE.
@@ -409,54 +409,18 @@ async function buildAppProps(
     }
 
     const localRuntime = cleanupRuntime;
-    const claimTimer = setInterval(async () => {
-      try {
-        const result = await runCleanup({ claimStore: localRuntime.claimStore });
-        if (result.expiredClaims > 0 || result.cleanedClaims > 0) {
-          process.stderr.write(
-            `[cleanup] expired ${result.expiredClaims} stale claim(s), cleaned ${result.cleanedClaims} old claim(s)\n`,
-          );
-        }
-      } catch {
-        // Cleanup errors are non-fatal
-      }
-    }, 60_000);
-
-    const gcTimer = setInterval(async () => {
-      try {
-        const result = await runArtifactGc({
-          contributionStore: localRuntime.contributionStore,
-          cas: localRuntime.cas,
-        });
-        if (result.deletedBlobs > 0) {
-          process.stderr.write(
-            `[cleanup] garbage-collected ${result.deletedBlobs} unreferenced blob(s)\n`,
-          );
-        }
-      } catch {
-        // GC errors are non-fatal
-      }
-    }, 10 * 60_000);
-
-    // Archive stale sessions (not active/pending, older than 24h) every 5 minutes.
-    // Run once eagerly on startup so the session picker is clean immediately.
-    const runSessionGcOnce = () => {
-      try {
-        const result = runSessionGc({ goalSessionStore: localRuntime.goalSessionStore });
-        if (result.archivedSessions > 0) {
-          process.stderr.write(`[cleanup] archived ${result.archivedSessions} stale session(s)\n`);
-        }
-      } catch {
-        // GC errors are non-fatal
-      }
-    };
-    runSessionGcOnce();
-    const sessionGcTimer = setInterval(runSessionGcOnce, 5 * 60_000);
-
+    const { startCleanupScheduler } = await import("../local/cleanup-scheduler.js");
+    const stopCleanup = startCleanupScheduler({
+      runtime: {
+        claimStore: localRuntime.claimStore,
+        contributionStore: localRuntime.contributionStore,
+        cas: localRuntime.cas,
+        goalSessionStore: localRuntime.goalSessionStore,
+      },
+      onLog: (line) => process.stderr.write(`[cleanup] ${line}\n`),
+    });
     stopCallbacks.push(() => {
-      clearInterval(claimTimer);
-      clearInterval(gcTimer);
-      clearInterval(sessionGcTimer);
+      stopCleanup();
       localRuntime.close();
     });
   }
@@ -470,8 +434,8 @@ async function buildAppProps(
 
   // Create EventBus when Nexus is available. NexusWsBridge (in screen-manager.tsx)
   // connects SSE and publishes events into this bus, which triggers re-fetches
-  // in RunningView via useEventDrivenData. Without bridge connection, the
-  // usePolledData fallback (30s interval) handles updates.
+  // in RunningView via useEventDrivenData. Without a bridge connection, panels
+  // refresh on the global RefreshContext signal (r-key + app-level fan-out).
   let eventBus: import("../core/event-bus.js").EventBus | undefined;
   {
     const nexusUrl = process.env.GROVE_NEXUS_URL;
@@ -487,7 +451,7 @@ async function buildAppProps(
   // start the producer-side VFS watcher. It publishes coarse `vfs.changed`
   // events into the bus, which the App-level subscription forwards to the
   // global RefreshContext — vfs-browser and artifact-preview re-fetch
-  // without their own setInterval.
+  // without their own polling timer.
   if (eventBus && groveDir) {
     const { startVfsEventPublisher } = await import("../local/vfs-event-publisher.js");
     const handle = startVfsEventPublisher({ eventBus, groveDir });
@@ -506,7 +470,7 @@ async function buildAppProps(
 
   // A8.4 (#390): producer-side `github.pr.changed` publisher for the
   // github-panel. Polls the GitHub API at the producer level so the panel
-  // doesn't need its own setInterval. Real deployments should swap this
+  // doesn't need its own polling timer. Real deployments should swap this
   // for webhook ingest; the bus contract stays identical.
   if (eventBus) {
     const { isGitHubProvider } = await import("./provider.js");
@@ -526,8 +490,8 @@ async function buildAppProps(
   // Remote mode targets the grove-server watch routes (`/api/list`,
   // `/api/watch`) over HTTP/SSE. `mode: "nexus"` talks to Nexus VFS
   // endpoints which do not host these routes; for now those sessions
-  // skip the factory and views fall back to `usePolledData` until a
-  // Nexus-backed WatchStream lands.
+  // skip the factory and views fall back to event-driven fetches plus
+  // RefreshContext fan-out until a Nexus-backed WatchStream lands.
   //
   // Local mode (PR2 #388) uses an in-process `WatchHub` plus the
   // SqliteContributionStore / SqliteClaimStore + AgentRuntime as the

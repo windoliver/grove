@@ -18,7 +18,7 @@ import { agentIdFromSession, tmuxSessionName } from "../agents/tmux-manager.js";
 import { EmptyState } from "../components/empty-state.js";
 import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useEntities } from "../hooks/use-entities.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import { renderGraph } from "../layout/edge-render.js";
 import type { LayoutEdge, LiveAgentStatus } from "../layout/graph-layout.js";
 import { layoutGraph } from "../layout/graph-layout.js";
@@ -149,15 +149,17 @@ export const AgentGraphView: React.NamedExoticComponent<AgentGraphProps> = React
       return tmux.listSessions();
     }, [tmux]);
 
-    const polledClaims = usePolledData<readonly Claim[]>(
+    const polledClaims = useEventDrivenData<readonly Claim[]>(
       claimFetcher,
-      intervalMs,
+      undefined,
+      undefined,
       active && !useInformerPath,
     );
     const claims = useInformerPath ? entityResult.data.map(entityToClaim) : polledClaims.data;
-    const { data: sessions } = usePolledData<readonly string[]>(
+    const { data: sessions } = useEventDrivenData<readonly string[]>(
       tmuxFetcher,
-      intervalMs * 2,
+      undefined,
+      undefined,
       active && !!tmux,
     );
 

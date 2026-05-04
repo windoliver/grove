@@ -16,7 +16,7 @@ import { EmptyState } from "../components/empty-state.js";
 import { Table } from "../components/table.js";
 import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useEntities } from "../hooks/use-entities.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { TuiDataProvider } from "../provider.js";
 
 /** Props for the ActivityPanel view. */
@@ -71,9 +71,10 @@ export const ActivityPanelView: React.NamedExoticComponent<ActivityPanelProps> =
     const entityResult = useEntities("Contribution");
 
     const fetcher = useCallback(() => provider.getActivity({ limit: PANEL_LIMIT }), [provider]);
-    const polled = usePolledData<readonly Contribution[]>(
+    const polled = useEventDrivenData<readonly Contribution[]>(
       fetcher,
-      intervalMs,
+      undefined,
+      undefined,
       active && !useInformerPath,
     );
 
