@@ -38,6 +38,8 @@ export interface WatchClientEvent {
   readonly rv: bigint;
   readonly kind: WatchKind;
   readonly entity: WatchEntity | null;
+  /** Server-stamped ISO-8601 wall-clock; see `WatchEvent.emittedAt`. */
+  readonly emittedAt?: string;
 }
 
 export interface WatchClientOptions {
