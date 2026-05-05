@@ -28,6 +28,7 @@ export class EntityStore<K extends WatchKind> {
   private readonly subscribers = new Set<() => void>();
   private readonly unsubscribeFromInformer: Array<() => void> = [];
   private version = 0;
+  private writeCounter = 0;
   private flushScheduled = false;
   private snapshotCache: readonly EntityFor<K>[] | null = null;
   private snapshotVersion = -1;
@@ -71,6 +72,18 @@ export class EntityStore<K extends WatchKind> {
     return this.informer.hasSynced();
   }
 
+  getStats(): {
+    readonly writes: number;
+    readonly version: number;
+    readonly lagSamples: readonly number[];
+  } {
+    return {
+      writes: this.writeCounter,
+      version: this.version,
+      lagSamples: [],
+    };
+  }
+
   dispose(): void {
     for (const u of this.unsubscribeFromInformer) {
       try {
@@ -84,6 +97,7 @@ export class EntityStore<K extends WatchKind> {
   }
 
   private onEvent = (_op: InformerOp, _entity: EntityFor<K>): void => {
+    this.writeCounter += 1;
     this.bumpAndNotify();
   };
 

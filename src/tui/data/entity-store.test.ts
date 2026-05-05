@@ -200,3 +200,31 @@ describe("EntityStore — snapshot stability", () => {
     expect(() => (arr as unknown as AnyEntity[]).push(entity("b"))).toThrow();
   });
 });
+
+describe("EntityStore — getStats / writeCounter", () => {
+  test("writeCounter increments per applied informer event; sync does not bump it", async () => {
+    const fake = makeFakeInformer();
+    const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
+
+    expect(store.getStats().writes).toBe(0);
+
+    await fake.emit("ADDED", entity("a"));
+    await fake.emit("MODIFIED", entity("a", "2"));
+    await fake.emit("DELETED", entity("a", "2"));
+    await drainMicrotasks();
+
+    expect(store.getStats().writes).toBe(3);
+
+    fake.emitSync(); // sync without per-row events
+    await drainMicrotasks();
+    expect(store.getStats().writes).toBe(3);
+  });
+
+  test("getStats().version matches getVersion()", async () => {
+    const fake = makeFakeInformer();
+    const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
+    await fake.emit("ADDED", entity("a"));
+    await drainMicrotasks();
+    expect(store.getStats().version).toBe(store.getVersion());
+  });
+});
