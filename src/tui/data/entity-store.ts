@@ -17,7 +17,7 @@
  * tasks of the B1 plan.
  */
 
-import type { Informer, InformerOp } from "../../core/informer.js";
+import type { Informer, InformerFactory, InformerOp } from "../../core/informer.js";
 import type { WatchKind } from "../../core/watch-events.js";
 
 type EntityFor<K extends WatchKind> = ReturnType<Informer<K>["list"]>[number];
@@ -141,5 +141,56 @@ export class EntityStore<K extends WatchKind> {
         console.error(`EntityStore[${this.kind}]: subscriber threw, continuing fanout:`, err);
       }
     }
+  }
+}
+
+export interface EntityStoreStats {
+  readonly writes: number;
+  readonly version: number;
+  readonly lagSamples: readonly number[];
+}
+
+export class EntityStoreFactory {
+  private readonly informerFactory: InformerFactory;
+  private readonly stores = new Map<WatchKind, EntityStore<WatchKind>>();
+
+  constructor(informerFactory: InformerFactory) {
+    this.informerFactory = informerFactory;
+  }
+
+  get mode(): "remote" | "local" {
+    return this.informerFactory.mode;
+  }
+
+  supportsKind(kind: WatchKind): boolean {
+    return this.informerFactory.supportsKind(kind);
+  }
+
+  storeFor<K extends WatchKind>(kind: K): EntityStore<K> {
+    const existing = this.stores.get(kind);
+    if (existing) return existing as EntityStore<K>;
+    const informer = this.informerFactory.informerFor(kind);
+    const store = new EntityStore<K>(informer, kind);
+    this.stores.set(kind, store as EntityStore<WatchKind>);
+    return store;
+  }
+
+  getAllStats(): Record<string, EntityStoreStats> {
+    const out: Record<string, EntityStoreStats> = {};
+    for (const [kind, store] of this.stores) {
+      out[kind] = store.getStats();
+    }
+    return out;
+  }
+
+  dispose(): void {
+    for (const store of this.stores.values()) {
+      try {
+        store.dispose();
+      } catch {
+        /* idempotent */
+      }
+    }
+    this.stores.clear();
   }
 }

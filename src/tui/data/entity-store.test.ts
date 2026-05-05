@@ -7,9 +7,11 @@
 
 import { describe, expect, test } from "bun:test";
 import type { EventHandlerFn, Informer, InformerOp, SyncHandlerFn } from "../../core/informer.js";
+import { InformerFactory } from "../../core/informer.js";
 import type { WatchEntity } from "../../core/watch-events.js";
+import { WatchHub } from "../../core/watch-hub.js";
 
-import { EntityStore } from "./entity-store.js";
+import { EntityStore, EntityStoreFactory } from "./entity-store.js";
 
 function makeFakeInformer(): {
   informer: Informer<"Contribution">;
@@ -349,5 +351,47 @@ describe("EntityStore — edge cases", () => {
     });
     await fake.emit("ADDED", entity("a"));
     expect(inFanoutResult?.id).toBe("a");
+  });
+});
+
+describe("EntityStoreFactory", () => {
+  function makeInformerFactory(): InformerFactory {
+    return new InformerFactory({
+      mode: "local",
+      hub: new WatchHub(),
+      namespace: "default",
+      listFn: () => [],
+    });
+  }
+
+  test("storeFor returns a stable EntityStore per kind (memoized)", () => {
+    const factory = new EntityStoreFactory(makeInformerFactory());
+    const a = factory.storeFor("Contribution");
+    const b = factory.storeFor("Contribution");
+    expect(a).toBe(b);
+  });
+
+  test("mode and supportsKind delegate to the underlying InformerFactory", () => {
+    const informerFactory = makeInformerFactory();
+    const factory = new EntityStoreFactory(informerFactory);
+    expect(factory.mode).toBe(informerFactory.mode);
+    expect(factory.supportsKind("Contribution")).toBe(true);
+  });
+
+  test("getAllStats returns stats for every constructed store", () => {
+    const factory = new EntityStoreFactory(makeInformerFactory());
+    factory.storeFor("Contribution");
+    factory.storeFor("Claim");
+    const all = factory.getAllStats();
+    expect(Object.keys(all)).toContain("Contribution");
+    expect(Object.keys(all)).toContain("Claim");
+    expect(all.Contribution.writes).toBe(0);
+  });
+
+  test("dispose disposes every store; idempotent", () => {
+    const factory = new EntityStoreFactory(makeInformerFactory());
+    factory.storeFor("Contribution");
+    factory.dispose();
+    factory.dispose(); // no throw
   });
 });
