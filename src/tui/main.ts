@@ -834,6 +834,8 @@ export async function handleTui(
       // need the watch loops running by the time those views mount.
       const { InformerProvider } = await import("./hooks/informer-context.js");
       const { RefreshProvider } = await import("./hooks/refresh-context.js");
+      const { EntityStoreProvider } = await import("./hooks/entity-store-context.js");
+      const { EntityStoreFactory } = await import("./data/entity-store.js");
       const appElement = React.createElement(
         SpawnManagerContext,
         { value: spawnManager },
@@ -849,9 +851,12 @@ export async function handleTui(
             // migrated views ignore them. PR3+ removes this gate when
             // sessionId plumbing lands.
             scopeAwareProvider: result.appProps.provider,
-            children: React.createElement(RefreshProvider, {
-              factory: result.informerFactory,
-              children: appElement,
+            children: React.createElement(EntityStoreProvider, {
+              value: new EntityStoreFactory(result.informerFactory),
+              children: React.createElement(RefreshProvider, {
+                factory: result.informerFactory,
+                children: appElement,
+              }),
             }),
           })
         : appElement;
@@ -1049,6 +1054,7 @@ export async function handleTui(
     const { TuiApp } = await import("./tui-app.js");
     const { InformerProviderHolder } = await import("./hooks/informer-context.js");
     const { RefreshProviderHolder } = await import("./hooks/refresh-context.js");
+    const { EntityStoreProviderHolder } = await import("./hooks/entity-store-context.js");
 
     const tuiAppEl = React.createElement(TuiApp, {
       groveExists,
@@ -1065,10 +1071,14 @@ export async function handleTui(
       holder: informerHolder,
       children: tuiAppEl,
     });
+    const storeHolderEl = React.createElement(EntityStoreProviderHolder, {
+      holder: informerHolder,
+      children: refreshHolderEl,
+    });
     const informerHolderEl = React.createElement(InformerProviderHolder, {
       holder: informerHolder,
       eager: true,
-      children: refreshHolderEl,
+      children: storeHolderEl,
     });
     root.render(
       React.createElement(

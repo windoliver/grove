@@ -11,9 +11,11 @@
  * `EntityStoreProvider` is mounted INSIDE `InformerProvider`.
  */
 
-import { createContext, type ReactNode, useContext } from "react";
+import { createContext, type ReactNode, useContext, useEffect, useState } from "react";
 import type { WatchKind } from "../../core/watch-events.js";
-import type { EntityStore, EntityStoreFactory } from "../data/entity-store.js";
+import type { EntityStore } from "../data/entity-store.js";
+import { EntityStoreFactory } from "../data/entity-store.js";
+import type { InformerHolder } from "./informer-context.js";
 
 const EntityStoreContext = createContext<EntityStoreFactory | null>(null);
 EntityStoreContext.displayName = "EntityStoreContext";
@@ -69,4 +71,50 @@ export function useEntityStoreOptional<K extends WatchKind>(kind: K): EntityStor
     return nullStoreFor(kind);
   }
   return factory.storeFor(kind);
+}
+
+export interface EntityStoreProviderHolderProps {
+  readonly holder: InformerHolder;
+  readonly children: ReactNode;
+}
+
+/**
+ * Provider variant for the interactive flow where the `InformerFactory` is
+ * set on a holder asynchronously. Subscribes to the holder; when the
+ * informer factory becomes non-null, lazily constructs a paired
+ * `EntityStoreFactory` and re-renders to mount `<EntityStoreProvider>`.
+ * On informer-factory swap, disposes the prior store factory before
+ * constructing a new one. While the holder has no factory, children
+ * render without an `<EntityStoreContext>` — matches the no-provider
+ * fallback path of `useEntityStoreOptional`.
+ */
+export function EntityStoreProviderHolder(props: EntityStoreProviderHolderProps): ReactNode {
+  const { holder, children } = props;
+  const [storeFactory, setStoreFactory] = useState<EntityStoreFactory | null>(() => {
+    const f = holder.current();
+    return f ? new EntityStoreFactory(f) : null;
+  });
+
+  useEffect(() => {
+    let lastInformer = holder.current();
+    let live: EntityStoreFactory | null = lastInformer
+      ? new EntityStoreFactory(lastInformer)
+      : null;
+    setStoreFactory(live);
+    const detach = holder.attach(() => {
+      const next = holder.current();
+      if (next === lastInformer) return;
+      lastInformer = next;
+      if (live) live.dispose();
+      live = next ? new EntityStoreFactory(next) : null;
+      setStoreFactory(live);
+    });
+    return () => {
+      detach();
+      if (live) live.dispose();
+    };
+  }, [holder]);
+
+  if (!storeFactory) return <>{children}</>;
+  return <EntityStoreProvider value={storeFactory}>{children}</EntityStoreProvider>;
 }
