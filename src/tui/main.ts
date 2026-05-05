@@ -851,6 +851,11 @@ export async function handleTui(
             // migrated views ignore them. PR3+ removes this gate when
             // sessionId plumbing lands.
             scopeAwareProvider: result.appProps.provider,
+            // The `--url` path is a single-connect lifecycle (no factory
+            // swap), so the EntityStoreFactory is constructed once and lives
+            // for the process lifetime. No dispose() path is needed; the
+            // interactive flow uses EntityStoreProviderHolder for swap
+            // safety.
             children: React.createElement(EntityStoreProvider, {
               value: new EntityStoreFactory(result.informerFactory),
               children: React.createElement(RefreshProvider, {
