@@ -6,7 +6,15 @@
  * responses back to the ask-user server.
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  statSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { AnswerStrategy, AskUserInput } from "../strategy.js";
 
@@ -77,6 +85,8 @@ export function createTuiStrategy(config?: TuiStrategyConfig): AnswerStrategy {
 
       // Write question to queue
       appendFileSync(queuePath, `${JSON.stringify(entry)}\n`);
+      let readOffset = statSync(queuePath).size;
+      let partialLine = "";
 
       // Poll for answer
       const deadline = Date.now() + timeoutMs;
@@ -84,9 +94,30 @@ export function createTuiStrategy(config?: TuiStrategyConfig): AnswerStrategy {
         await new Promise((r) => setTimeout(r, pollIntervalMs));
 
         if (!existsSync(queuePath)) continue;
-        const lines = readFileSync(queuePath, "utf-8").split("\n").filter(Boolean);
+        const currentSize = statSync(queuePath).size;
+        if (currentSize < readOffset) {
+          readOffset = 0;
+          partialLine = "";
+        }
+        if (currentSize === readOffset) continue;
+
+        const bytesToRead = currentSize - readOffset;
+        const buffer = Buffer.allocUnsafe(bytesToRead);
+        const fd = openSync(queuePath, "r");
+        let bytesRead = 0;
+        try {
+          bytesRead = readSync(fd, buffer, 0, bytesToRead, readOffset);
+        } finally {
+          closeSync(fd);
+        }
+        readOffset += bytesRead;
+        partialLine += buffer.subarray(0, bytesRead).toString("utf-8");
+
+        const lines = partialLine.split("\n");
+        partialLine = lines.pop() ?? "";
 
         for (const line of lines) {
+          if (!line) continue;
           try {
             const parsed = JSON.parse(line) as AnswerEntry;
             if (parsed.type === "answer" && parsed.id === id && parsed.answer) {

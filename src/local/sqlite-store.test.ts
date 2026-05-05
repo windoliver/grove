@@ -136,6 +136,21 @@ describe("SqliteContributionStore ordering", () => {
   });
 });
 
+describe("SqliteIdempotencyStore", () => {
+  test("reserve returns false when the key is already pending with the same fingerprint", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-idempotency-"));
+    const dbPath = join(dir, "test.db");
+    const { idempotencyStore, close } = createSqliteStores(dbPath);
+    try {
+      expect(idempotencyStore.reserve("cache-key", "fingerprint")).toBe(true);
+      expect(idempotencyStore.reserve("cache-key", "fingerprint")).toBe(false);
+    } finally {
+      close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("SqliteStore session filtering", () => {
   test("fresh legacy store returns empty results for a session filter", async () => {
     const dir = await mkdtemp(join(tmpdir(), "sqlite-session-filter-"));

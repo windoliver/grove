@@ -784,6 +784,27 @@ describe("contributeOperation: idempotencyKey", () => {
     }
   });
 
+  test("durable idempotency reservation is released after ephemeral validation failure", async () => {
+    const input = {
+      kind: "work" as const,
+      summary: "invalid ephemeral with idempotency",
+      context: { ephemeral: true },
+      agent: { agentId: "a1" },
+      idempotencyKey: `invalid-ephemeral-${crypto.randomUUID()}`,
+    };
+
+    const first = await contributeOperation(input, deps);
+    expect(first.ok).toBe(false);
+    if (first.ok) return;
+    expect(first.error.code).toBe("VALIDATION_ERROR");
+
+    const second = await contributeOperation(input, deps);
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.error.code).toBe("VALIDATION_ERROR");
+    expect(second.error.message).toMatch(/ephemeral.*only valid on kind=discussion/i);
+  });
+
   test("ephemeral flag on discussion is allowed (normal path)", async () => {
     const result = await contributeOperation(
       {
