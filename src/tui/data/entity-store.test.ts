@@ -1,0 +1,128 @@
+/**
+ * EntityStore<K> unit tests (B1 #296).
+ *
+ * Tests use a minimal fake Informer that mirrors the public surface used
+ * by EntityStore: addEventHandler, addSyncHandler, hasSynced, list, getById.
+ */
+
+import { describe, expect, test } from "bun:test";
+import type { EventHandlerFn, Informer, InformerOp, SyncHandlerFn } from "../../core/informer.js";
+import type { WatchEntity } from "../../core/watch-events.js";
+
+import { EntityStore } from "./entity-store.js";
+
+function makeFakeInformer(): {
+  informer: Informer<"Contribution">;
+  emit: (op: InformerOp, entity: WatchEntity) => Promise<void>;
+  emitSync: () => void;
+  setSynced: (v: boolean) => void;
+  store: Map<string, WatchEntity>;
+} {
+  const store = new Map<string, WatchEntity>();
+  const handlers: EventHandlerFn<"Contribution">[] = [];
+  const syncs: SyncHandlerFn[] = [];
+  let synced = false;
+  const informer = {
+    addEventHandler: (fn: EventHandlerFn<"Contribution">) => {
+      handlers.push(fn);
+      return () => {
+        const i = handlers.indexOf(fn);
+        if (i >= 0) handlers.splice(i, 1);
+      };
+    },
+    addSyncHandler: (fn: SyncHandlerFn) => {
+      syncs.push(fn);
+      return () => {
+        const i = syncs.indexOf(fn);
+        if (i >= 0) syncs.splice(i, 1);
+      };
+    },
+    hasSynced: () => synced,
+    getById: (id: string) => store.get(id) as never,
+    list: () => Array.from(store.values()) as never,
+  } as unknown as Informer<"Contribution">;
+  return {
+    informer,
+    emit: async (op, entity) => {
+      if (op === "ADDED" || op === "MODIFIED") store.set(entity.id, entity);
+      if (op === "DELETED") store.delete(entity.id);
+      for (const h of [...handlers]) await h(op, entity as WatchEntity as never);
+    },
+    emitSync: () => {
+      for (const s of [...syncs]) s();
+    },
+    setSynced: (v) => {
+      synced = v;
+    },
+    store,
+  };
+}
+
+function entity(id: string, rv = "1"): WatchEntity {
+  return {
+    kind: "Contribution",
+    namespace: "default",
+    id,
+    spec: {
+      contributionKind: "code",
+      mode: "direct",
+      summary: id,
+      artifacts: {},
+      relations: [],
+      tags: [],
+    } as never,
+    status: {},
+    conditions: [],
+    observedGeneration: 0,
+    resourceVersion: rv,
+    metadata: { generation: 1 },
+  };
+}
+
+async function drainMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+describe("EntityStore — minimal shape", () => {
+  test("getVersion starts at 0; getById/list reflect informer cache", () => {
+    const fake = makeFakeInformer();
+    fake.store.set("c1", entity("c1"));
+    const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
+    expect(store.getVersion()).toBe(0);
+    expect(store.getById("c1")?.id).toBe("c1");
+    expect(store.list().length).toBe(1);
+  });
+
+  test("hasSynced delegates to informer", () => {
+    const fake = makeFakeInformer();
+    fake.setSynced(false);
+    const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
+    expect(store.hasSynced()).toBe(false);
+    fake.setSynced(true);
+    expect(store.hasSynced()).toBe(true);
+  });
+
+  test("subscribe returns an unsubscribe function", () => {
+    const fake = makeFakeInformer();
+    const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
+    const unsub = store.subscribe(() => {
+      // intentionally empty
+    });
+    expect(typeof unsub).toBe("function");
+    unsub();
+  });
+
+  test("an event after subscribe bumps version", async () => {
+    const fake = makeFakeInformer();
+    const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
+    let calls = 0;
+    store.subscribe(() => {
+      calls += 1;
+    });
+    await fake.emit("ADDED", entity("c1"));
+    await drainMicrotasks();
+    expect(calls).toBe(1);
+    expect(store.getVersion()).toBe(1);
+  });
+});
