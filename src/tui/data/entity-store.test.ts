@@ -167,3 +167,36 @@ describe("EntityStore — microtask coalescing", () => {
     expect(calls).toBe(3);
   });
 });
+
+type AnyEntity = WatchEntity & Record<string, unknown>;
+
+describe("EntityStore — snapshot stability", () => {
+  test("list() returns the same ref while version is unchanged", () => {
+    const fake = makeFakeInformer();
+    fake.store.set("a", entity("a"));
+    const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
+
+    const a = store.list();
+    const b = store.list();
+    expect(a).toBe(b);
+  });
+
+  test("list() returns a NEW ref after a version bump", async () => {
+    const fake = makeFakeInformer();
+    const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
+    const before = store.list();
+    await fake.emit("ADDED", entity("a"));
+    await drainMicrotasks();
+    const after = store.list();
+    expect(after).not.toBe(before);
+    expect(after.length).toBe(1);
+  });
+
+  test("list() ref is frozen — push() throws", () => {
+    const fake = makeFakeInformer();
+    fake.store.set("a", entity("a"));
+    const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
+    const arr = store.list();
+    expect(() => (arr as unknown as AnyEntity[]).push(entity("b"))).toThrow();
+  });
+});

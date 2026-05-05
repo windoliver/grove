@@ -29,6 +29,8 @@ export class EntityStore<K extends WatchKind> {
   private readonly unsubscribeFromInformer: Array<() => void> = [];
   private version = 0;
   private flushScheduled = false;
+  private snapshotCache: readonly EntityFor<K>[] | null = null;
+  private snapshotVersion = -1;
 
   constructor(informer: Informer<K>, kind: K) {
     this.informer = informer;
@@ -51,7 +53,14 @@ export class EntityStore<K extends WatchKind> {
   }
 
   list(): readonly EntityFor<K>[] {
-    return this.informer.list() as readonly EntityFor<K>[];
+    if (this.snapshotCache !== null && this.snapshotVersion === this.version) {
+      return this.snapshotCache;
+    }
+    this.snapshotCache = Object.freeze(
+      Array.from(this.informer.list()) as EntityFor<K>[],
+    ) as readonly EntityFor<K>[];
+    this.snapshotVersion = this.version;
+    return this.snapshotCache;
   }
 
   getById(id: string): EntityFor<K> | undefined {
@@ -84,6 +93,7 @@ export class EntityStore<K extends WatchKind> {
 
   private bumpAndNotify(): void {
     this.version += 1;
+    this.snapshotCache = null;
     if (this.flushScheduled) return;
     this.flushScheduled = true;
     queueMicrotask(() => this.flush());
