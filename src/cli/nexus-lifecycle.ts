@@ -1012,6 +1012,25 @@ export async function ensureNexusRunning(
   }
 
   // -----------------------------------------------------------------------
+  // 1b. Container is running but the 3s parallel probe didn't catch it.
+  //     If `discoverRunningNexus` found our container, wait up to 15s for
+  //     it to respond before restarting. The restart in section 3 kills
+  //     in-flight grove-server connections; avoid it when the container
+  //     is just slow to answer (Raft re-election, cold cache, etc.).
+  // -----------------------------------------------------------------------
+  if (containerUrl) {
+    report(`[ensureNexus] container running, waiting up to 15s for health at ${containerUrl}...`);
+    try {
+      await waitForNexusHealth(containerUrl, 15_000);
+      const apiKey = readNexusApiKey(projectRoot);
+      report("Nexus is ready (already running, slow response)");
+      return { url: containerUrl, apiKey };
+    } catch {
+      report("[ensureNexus] container unresponsive after 15s, falling through to restart...");
+    }
+  }
+
+  // -----------------------------------------------------------------------
   // 2. No running Nexus found — need CLI to start one.
   //    YAML generation is in-process (no CLI dependency); `nexus up` still
   //    shells out to start Docker Compose.
