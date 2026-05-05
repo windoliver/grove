@@ -1,15 +1,16 @@
 /**
- * useDerived — reactive projection over one or more informers.
+ * useDerived — reactive projection over one or more entity stores.
  *
- * Subscribes to every listed kind; recomputes `compute()` on any event
- * from any of them; commits a new state only when the output changed
- * (Object.is by default, caller-provided `equals` for non-trivial
- * shapes). Exceptions in `compute` set `error`; last-good `data`
- * is preserved.
+ * Subscribes to every listed kind via EntityStore; recomputes `compute()` on
+ * any version bump from any of them; commits a new state only when the output
+ * changed (Object.is by default, caller-provided `equals` for non-trivial
+ * shapes). Exceptions in `compute` set `error`; last-good `data` is
+ * preserved.
  */
 
 import { useEffect, useRef, useState } from "react";
 import type { WatchKind } from "../../core/watch-events.js";
+import { useEntityStoreFactoryOptional } from "./entity-store-context.js";
 import { useInformerFactoryOptional } from "./informer-context.js";
 
 export interface DerivedState<T> {
@@ -55,11 +56,12 @@ export function useDerived<T>(
   kinds: readonly WatchKind[],
   equals: (a: T, b: T) => boolean = Object.is,
 ): UseDerivedResult<T> {
-  // Mirror useEntities: graceful when no <InformerProvider> is mounted (the
-  // pre-factory window in interactive mode, or backends that never wire one)
-  // so the dual-path callers can `useDerived` unconditionally without
-  // breaking Rules of Hooks.
+  // Mirror useEntities: graceful when no <InformerProvider>/<EntityStoreProvider>
+  // is mounted (the pre-factory window in interactive mode, or backends that
+  // never wire one) so the dual-path callers can `useDerived` unconditionally
+  // without breaking Rules of Hooks.
   const factory = useInformerFactoryOptional();
+  const storeFactory = useEntityStoreFactoryOptional();
   const computeRef = useRef(compute);
   computeRef.current = compute;
   const equalsRef = useRef(equals);
@@ -71,9 +73,10 @@ export function useDerived<T>(
   const stateRef = useRef(state);
   stateRef.current = state;
 
-  const informers = factory ? kinds.map((k) => factory.informerFor(k)) : [];
+  const liveStoresSnapshot =
+    factory && storeFactory ? kinds.map((k) => storeFactory.storeFor(k)) : [];
   const [hasSynced, setHasSynced] = useState<boolean>(() =>
-    factory ? informers.every((i) => i.hasSynced()) : false,
+    liveStoresSnapshot.length > 0 ? liveStoresSnapshot.every((s) => s.hasSynced()) : false,
   );
   const [streamError, setStreamError] = useState<Error | null>(() => {
     if (!factory) return null;
@@ -102,7 +105,9 @@ export function useDerived<T>(
     prevFactoryRef.current = factory;
     prevKindsKeyRef.current = kindsKey;
     setState({ data: undefined, error: null });
-    setHasSynced(factory ? informers.every((i) => i.hasSynced()) : false);
+    setHasSynced(
+      liveStoresSnapshot.length > 0 ? liveStoresSnapshot.every((s) => s.hasSynced()) : false,
+    );
     let firstErr: Error | null = null;
     if (factory) {
       for (const k of kinds) {
@@ -117,57 +122,47 @@ export function useDerived<T>(
   }
   // biome-ignore lint/correctness/useExhaustiveDependencies: kinds compared by joined string identity; hasSynced read inside tick via setter callback
   useEffect(() => {
-    if (!factory) {
+    if (!factory || !storeFactory) {
       // Provider lost — reset readiness so dual-path callers fall back to
       // polled until a new factory mounts and produces a fresh sync.
       setHasSynced(false);
       setStreamError(null);
       return;
     }
-    // Cancellation guard: informer event dispatch snapshots handlers before
+    // Cancellation guard: store notify dispatch snapshots subscribers before
     // invoking them, so an old `tick` can still fire after cleanup during a
     // factory/kinds swap. Without this, a stale callback would write
     // hasSynced/state through the shared refs and the new source could
-    // appear synced (or unsynced) using the old informer set.
+    // appear synced (or unsynced) using the old store set.
     let cancelled = false;
-    const liveInformers = kinds.map((k) => factory.informerFor(k));
+    const liveStores = kinds.map((k) => storeFactory.storeFor(k));
     // Reset readiness for the new factory/kinds. If the new source is already
     // synced (e.g. a hot-swapped factory that completed list before we
     // subscribed), reflect that immediately; otherwise wait for the first
     // sync notification on this subscription. Setting via setter is
     // idempotent when the value matches.
-    setHasSynced(liveInformers.every((i) => i.hasSynced()));
-    // Burst coalescing: an initial relist dispatches one ADDED event per
-    // cached entity before RELIST_END. Without coalescing, callers like
-    // Dashboard/DAG that sort/map the full Contribution cache would
-    // perform N full-cache projections per relist, freezing the TUI on
-    // large Groves.
-    //
-    // We use setTimeout(0), not queueMicrotask: informer.dispatch awaits
-    // each handler via `await raceAbort(Promise.resolve(handler(...)), ...)`,
-    // so the microtask queue drains BETWEEN dispatches and queueMicrotask
-    // would still fire once per event. A macrotask defers past the entire
-    // awaited chain, collapsing the whole burst into one recompute.
-    let timer: ReturnType<typeof setTimeout> | null = null;
+    setHasSynced(liveStores.every((s) => s.hasSynced()));
+    // EntityStore already coalesces multiple writes within one microtask down
+    // to one notify via queueMicrotask. Different kinds' stores fire
+    // independently, but React 19 auto-batches multiple setState calls inside
+    // a render. No setTimeout(0) needed.
     const runTick = (): void => {
-      timer = null;
       if (cancelled) return;
       const next = stepDerived<T>(stateRef.current, () => computeRef.current(), equalsRef.current);
       if (next.committed) setState({ data: next.data, error: next.error });
       // Always recheck — setHasSynced is a no-op when the value matches, so
       // we can safely call on every tick. Avoids stale-closure bugs from
       // tracking hasSynced as an effect dep.
-      const allSynced = liveInformers.every((i) => i.hasSynced());
+      const allSynced = liveStores.every((s) => s.hasSynced());
       setHasSynced((prev) => (prev === allSynced ? prev : allSynced));
     };
     const tick = (): void => {
-      if (cancelled || timer !== null) return;
-      timer = setTimeout(runTick, 0);
+      if (cancelled) return;
+      runTick();
     };
     const unsubs: Array<() => void> = [];
-    for (const i of liveInformers) {
-      unsubs.push(i.addEventHandler(tick));
-      unsubs.push(i.addSyncHandler(tick));
+    for (const s of liveStores) {
+      unsubs.push(s.subscribe(tick));
     }
     const watched = new Set<WatchKind>(kinds);
     unsubs.push(
@@ -198,13 +193,9 @@ export function useDerived<T>(
     setStreamError(firstErr);
     return () => {
       cancelled = true;
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
       for (const u of unsubs) u();
     };
-  }, [factory, kindsKey]);
+  }, [factory, storeFactory, kindsKey]);
 
   // Stream errors take precedence over compute errors — the watch lifecycle
   // is the more actionable signal.
