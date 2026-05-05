@@ -276,7 +276,11 @@ watch.get("/watch", zValidator("query", watchQuerySchema), (c) => {
               // Include rv in the JSON body so clients that only parse `data`
               // (no SSE `lastEventId` access) can still resume. Matches the
               // BOOKMARK shape and the A5 contract.
-              const sent = send(ev.op, { rv, kind: ev.kind, entity: ev.entity }, rv);
+              const sent = send(
+                ev.op,
+                { rv, kind: ev.kind, entity: ev.entity, emittedAt: new Date().toISOString() },
+                rv,
+              );
               // send() refuses oversized events or events that would push the
               // queue past the overflow threshold. Either case is terminal —
               // skipping the event silently would let the client miss writes.
