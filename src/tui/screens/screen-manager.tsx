@@ -104,8 +104,13 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     const renderer = useRenderer();
     const { provider, topology: initialTopology, contract } = appProps;
 
-    // Resolved topology — starts from GROVE.md default, overridden when user picks a preset.
-    const [topology, setTopology] = useState(initialTopology);
+    // Resolved topology — starts from GROVE.md default, or from a preset
+    // supplied by TuiApp's existing-grove "new session" shortcut.
+    const [topology, setTopology] = useState<AgentTopology | undefined>(() => {
+      if (initialTopology) return initialTopology;
+      const presetName = initialState?.selectedPreset ?? appProps.presetName;
+      return presetName ? lookupPresetTopology(presetName) : undefined;
+    });
 
     // Capture the resume session ID for setSessionScope — written in the useState
     // initializer (runs synchronously before effects) and read in the mount effect below.

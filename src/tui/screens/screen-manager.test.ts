@@ -542,6 +542,18 @@ describe("ScreenManager transition flow", () => {
     expect(renderedText(renderer)).toContain("2 agents will be configured");
   });
 
+  test("new-session initial state resolves the selected preset topology", () => {
+    const { renderer } = renderScreenManager({
+      initialState: {
+        screen: "goal-input",
+        selectedPreset: "review-loop",
+      },
+    });
+
+    expectGoalInput(renderer);
+    expect(renderedText(renderer)).toContain("2 agents will be configured");
+  });
+
   test("goal-input -> launch-preview preserves the submitted goal", async () => {
     renderScreenManager({ topology: TEST_TOPOLOGY });
 
