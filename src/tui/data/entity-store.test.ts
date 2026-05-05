@@ -126,3 +126,44 @@ describe("EntityStore — minimal shape", () => {
     expect(store.getVersion()).toBe(1);
   });
 });
+
+describe("EntityStore — microtask coalescing", () => {
+  test("N writes in one microtask → version bumps N, subscribers fire ONCE", async () => {
+    const fake = makeFakeInformer();
+    const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
+    let calls = 0;
+    store.subscribe(() => {
+      calls += 1;
+    });
+
+    // Synchronously emit 3 events without yielding.
+    const promises = [
+      fake.emit("ADDED", entity("a")),
+      fake.emit("ADDED", entity("b")),
+      fake.emit("ADDED", entity("c")),
+    ];
+    await Promise.all(promises);
+    await drainMicrotasks();
+
+    expect(store.getVersion()).toBe(3);
+    expect(calls).toBe(1);
+  });
+
+  test("N writes across N awaited microtasks → subscribers fire N times", async () => {
+    const fake = makeFakeInformer();
+    const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
+    let calls = 0;
+    store.subscribe(() => {
+      calls += 1;
+    });
+
+    await fake.emit("ADDED", entity("a"));
+    await drainMicrotasks();
+    await fake.emit("ADDED", entity("b"));
+    await drainMicrotasks();
+    await fake.emit("ADDED", entity("c"));
+    await drainMicrotasks();
+
+    expect(calls).toBe(3);
+  });
+});

@@ -28,6 +28,7 @@ export class EntityStore<K extends WatchKind> {
   private readonly subscribers = new Set<() => void>();
   private readonly unsubscribeFromInformer: Array<() => void> = [];
   private version = 0;
+  private flushScheduled = false;
 
   constructor(informer: Informer<K>, kind: K) {
     this.informer = informer;
@@ -83,6 +84,16 @@ export class EntityStore<K extends WatchKind> {
 
   private bumpAndNotify(): void {
     this.version += 1;
+    if (this.flushScheduled) return;
+    this.flushScheduled = true;
+    queueMicrotask(() => this.flush());
+  }
+
+  private flush(): void {
+    this.flushScheduled = false;
+    // Snapshot before iterating so a subscriber that calls its own
+    // unsubscribe (which mutates `subscribers`) doesn't skip the next
+    // subscriber by shifting the iterator past it.
     for (const sub of [...this.subscribers]) {
       try {
         sub();
