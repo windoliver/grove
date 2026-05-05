@@ -162,12 +162,16 @@ export class LocalWatchClient implements WatchStream {
           // entry so subsequent events for this entity bypass dedup.
           snapshotWindow.delete(event.entity.id);
         }
-        // Re-emit as WatchClientEvent — namespace is dropped (implicit in the subscription).
+        // Re-emit as WatchClientEvent — namespace is dropped (implicit in
+        // the subscription). Stamp emittedAt at the fan-out boundary so it
+        // reflects when this process delivered the event to its subscriber,
+        // matching the server-side semantics in remote mode (B1 #296).
         await onEvent({
           op: event.op,
           rv: event.rv,
           kind: event.kind,
           entity: event.entity,
+          emittedAt: new Date().toISOString(),
         });
       }
     } catch (err) {
