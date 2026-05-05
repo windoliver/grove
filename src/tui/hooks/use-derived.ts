@@ -142,11 +142,18 @@ export function useDerived<T>(
     // sync notification on this subscription. Setting via setter is
     // idempotent when the value matches.
     setHasSynced(liveStores.every((s) => s.hasSynced()));
-    // EntityStore already coalesces multiple writes within one microtask down
-    // to one notify via queueMicrotask. Different kinds' stores fire
-    // independently, but React 19 auto-batches multiple setState calls inside
-    // a render. No setTimeout(0) needed.
+    // Burst coalescing across kinds. EntityStore already coalesces N writes
+    // within ONE microtask down to one notify, but Informer.dispatch awaits
+    // each handler so events from a single relist arrive across multiple
+    // microtasks — and useDerived may subscribe to multiple kinds, each
+    // firing its own notify. Without the macrotask gate, callers like
+    // Dashboard/DAG that recompute over the full Contribution cache do
+    // O(N) projections per relist instead of one. setTimeout(0) defers
+    // past the entire awaited dispatch chain so the whole burst collapses
+    // into one recompute.
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const runTick = (): void => {
+      timer = null;
       if (cancelled) return;
       const next = stepDerived<T>(stateRef.current, () => computeRef.current(), equalsRef.current);
       if (next.committed) setState({ data: next.data, error: next.error });
@@ -157,8 +164,8 @@ export function useDerived<T>(
       setHasSynced((prev) => (prev === allSynced ? prev : allSynced));
     };
     const tick = (): void => {
-      if (cancelled) return;
-      runTick();
+      if (cancelled || timer !== null) return;
+      timer = setTimeout(runTick, 0);
     };
     const unsubs: Array<() => void> = [];
     for (const s of liveStores) {
@@ -193,6 +200,10 @@ export function useDerived<T>(
     setStreamError(firstErr);
     return () => {
       cancelled = true;
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
       for (const u of unsubs) u();
     };
   }, [factory, storeFactory, kindsKey]);

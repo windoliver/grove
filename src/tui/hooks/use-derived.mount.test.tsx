@@ -269,12 +269,12 @@ describe("useDerived mount + publish (PR3 #389)", () => {
       await flushMicrotasks(50);
     });
 
-    // EntityStore coalesces events within one synchronous turn into a single
-    // microtask-deferred notify. Informer's async dispatch chain delivers each
-    // event in its own microtask, so the coalescing window is per-event.
-    // Each of the 50 events produces at most 1 compute; total bounded by 50.
+    // useDerived's setTimeout(0) macrotask gate collapses the entire burst
+    // (across multiple Informer-dispatch microtasks AND across multiple kinds)
+    // into a single recompute. Without it, callers like Dashboard/DAG would
+    // pay O(N) full-cache projections per relist on large Groves.
     const burstComputes = computeCount - baselineComputes;
-    expect(burstComputes).toBeLessThanOrEqual(50);
+    expect(burstComputes).toBeLessThanOrEqual(3);
     expect(burstComputes).toBeGreaterThanOrEqual(1);
 
     renderer?.unmount();
