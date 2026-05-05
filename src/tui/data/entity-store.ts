@@ -32,6 +32,8 @@ export class EntityStore<K extends WatchKind> {
   private flushScheduled = false;
   private snapshotCache: readonly EntityFor<K>[] | null = null;
   private snapshotVersion = -1;
+  private static readonly LAG_RING_SIZE = 1024;
+  private readonly lagRing: number[] = [];
 
   constructor(informer: Informer<K>, kind: K) {
     this.informer = informer;
@@ -80,7 +82,7 @@ export class EntityStore<K extends WatchKind> {
     return {
       writes: this.writeCounter,
       version: this.version,
-      lagSamples: [],
+      lagSamples: [...this.lagRing],
     };
   }
 
@@ -96,8 +98,22 @@ export class EntityStore<K extends WatchKind> {
     this.subscribers.clear();
   }
 
-  private onEvent = (_op: InformerOp, _entity: EntityFor<K>): void => {
+  private onEvent = (
+    _op: InformerOp,
+    _entity: EntityFor<K>,
+    meta?: { readonly emittedAt?: string },
+  ): void => {
     this.writeCounter += 1;
+    if (meta?.emittedAt !== undefined) {
+      const t = Date.parse(meta.emittedAt);
+      if (Number.isFinite(t)) {
+        const lag = Date.now() - t;
+        this.lagRing.push(lag);
+        if (this.lagRing.length > EntityStore.LAG_RING_SIZE) {
+          this.lagRing.shift();
+        }
+      }
+    }
     this.bumpAndNotify();
   };
 

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Informer, InformerFactory } from "./informer.js";
+import type { WatchClientEvent } from "./watch-client.js";
 import { WatchClient } from "./watch-client.js";
 import type { WatchEntity } from "./watch-events.js";
 import { WatchHub } from "./watch-hub.js";
@@ -1075,4 +1076,26 @@ describe("Informer cache immutability", () => {
     expect(Object.isFrozen(entity?.spec)).toBe(true);
     expect(Object.isFrozen(entity?.metadata)).toBe(true);
   });
+});
+
+test("Informer.addEventHandler forwards emittedAt via optional meta arg", async () => {
+  const seenMeta: Array<{ emittedAt?: string } | undefined> = [];
+  const stream = {
+    run: async ({ onEvent }: { onEvent: (e: WatchClientEvent) => Promise<void> | void }) => {
+      await onEvent({
+        op: "ADDED",
+        rv: 1n,
+        kind: "Contribution",
+        entity: E_A,
+        emittedAt: "2026-05-04T12:00:00.000Z",
+      });
+    },
+  };
+  const informer = new Informer<"Contribution">(stream as never);
+  informer.addEventHandler((_op, _entity, meta) => {
+    seenMeta.push(meta);
+  });
+  await informer.run(new AbortController().signal);
+  expect(seenMeta.length).toBe(1);
+  expect(seenMeta[0]?.emittedAt).toBe("2026-05-04T12:00:00.000Z");
 });

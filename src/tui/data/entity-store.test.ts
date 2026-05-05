@@ -13,12 +13,13 @@ import { EntityStore } from "./entity-store.js";
 
 function makeFakeInformer(): {
   informer: Informer<"Contribution">;
-  emit: (op: InformerOp, entity: WatchEntity) => Promise<void>;
+  emit: (op: InformerOp, entity: AnyEntity) => Promise<void>;
+  emitWithMeta: (op: InformerOp, entity: AnyEntity, meta: { emittedAt?: string }) => Promise<void>;
   emitSync: () => void;
   setSynced: (v: boolean) => void;
-  store: Map<string, WatchEntity>;
+  store: Map<string, AnyEntity>;
 } {
-  const store = new Map<string, WatchEntity>();
+  const store = new Map<string, AnyEntity>();
   const handlers: EventHandlerFn<"Contribution">[] = [];
   const syncs: SyncHandlerFn[] = [];
   let synced = false;
@@ -46,7 +47,12 @@ function makeFakeInformer(): {
     emit: async (op, entity) => {
       if (op === "ADDED" || op === "MODIFIED") store.set(entity.id, entity);
       if (op === "DELETED") store.delete(entity.id);
-      for (const h of [...handlers]) await h(op, entity as WatchEntity as never);
+      for (const h of [...handlers]) await h(op, entity as never);
+    },
+    emitWithMeta: async (op, entity, meta) => {
+      if (op === "ADDED" || op === "MODIFIED") store.set(entity.id, entity);
+      if (op === "DELETED") store.delete(entity.id);
+      for (const h of [...handlers]) await h(op, entity as never, meta);
     },
     emitSync: () => {
       for (const s of [...syncs]) s();
@@ -226,5 +232,45 @@ describe("EntityStore — getStats / writeCounter", () => {
     await fake.emit("ADDED", entity("a"));
     await drainMicrotasks();
     expect(store.getStats().version).toBe(store.getVersion());
+  });
+});
+
+describe("EntityStore — lag ring", () => {
+  test("pushes a positive sample when emittedAt is well-formed", async () => {
+    const fake = makeFakeInformer();
+    const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
+    const past = new Date(Date.now() - 50).toISOString();
+    await fake.emitWithMeta("ADDED", entity("a"), { emittedAt: past });
+    await drainMicrotasks();
+    const samples = store.getStats().lagSamples;
+    expect(samples.length).toBe(1);
+    expect(samples[0]).toBeGreaterThanOrEqual(50);
+    expect(samples[0]).toBeLessThan(5000);
+  });
+
+  test("skips sample when emittedAt is missing", async () => {
+    const fake = makeFakeInformer();
+    const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
+    await fake.emit("ADDED", entity("a"));
+    await drainMicrotasks();
+    expect(store.getStats().lagSamples.length).toBe(0);
+  });
+
+  test("skips sample when emittedAt is unparseable", async () => {
+    const fake = makeFakeInformer();
+    const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
+    await fake.emitWithMeta("ADDED", entity("a"), { emittedAt: "not-a-date" });
+    await drainMicrotasks();
+    expect(store.getStats().lagSamples.length).toBe(0);
+  });
+
+  test("ring buffer caps at 1024 (drop-oldest)", async () => {
+    const fake = makeFakeInformer();
+    const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
+    for (let i = 0; i < 1100; i += 1) {
+      await fake.emitWithMeta("ADDED", entity(`e${i}`), { emittedAt: new Date().toISOString() });
+    }
+    await drainMicrotasks();
+    expect(store.getStats().lagSamples.length).toBe(1024);
   });
 });
