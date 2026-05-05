@@ -17,6 +17,7 @@ import {
 } from "../../../src/nexus/errors.js";
 import { LruCache } from "../../../src/nexus/lru-cache.js";
 import { MockNexusClient } from "../../../src/nexus/mock-client.js";
+import { NexusHttpClient } from "../../../src/nexus/nexus-http-client.js";
 
 // ---------------------------------------------------------------------------
 // LruCache — delete and size
@@ -75,6 +76,24 @@ describe("mapJsonRpcError", () => {
   test("INVALID_PATH maps to GroveError", () => {
     const err = mapJsonRpcError({ code: NEXUS_ERROR_CODES.INVALID_PATH, message: "bad path" });
     expect(err).toBeInstanceOf(GroveError);
+  });
+});
+
+describe("NexusHttpClient", () => {
+  test("maps HTTP precondition failures to NexusConflictError", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response("precondition failed", { status: 412 })) as typeof fetch;
+    try {
+      const client = new NexusHttpClient({ url: "http://nexus.test" });
+      await expect(
+        client.write("/zones/z/contributions/c.json", new TextEncoder().encode("{}"), {
+          ifNoneMatch: "*",
+        }),
+      ).rejects.toBeInstanceOf(NexusConflictError);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 
