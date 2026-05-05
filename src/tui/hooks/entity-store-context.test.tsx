@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { ReactNode } from "react";
+import type { ReactElement, ReactNode } from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import { InformerFactory } from "../../core/informer.js";
 import { WatchHub } from "../../core/watch-hub.js";
@@ -41,14 +41,16 @@ describe("EntityStoreProvider", () => {
     let store: unknown;
     await act(async () => {
       TestRenderer.create(
-        <EntityStoreProvider value={factory}>
-          <Probe
-            onStore={(s) => {
-              store = s;
-            }}
-            kind="Contribution"
-          />
-        </EntityStoreProvider>,
+        (
+          <EntityStoreProvider value={factory}>
+            <Probe
+              onStore={(s) => {
+                store = s;
+              }}
+              kind="Contribution"
+            />
+          </EntityStoreProvider>
+        ) as ReactElement,
       );
     });
     expect(store).toBeDefined();
@@ -59,12 +61,14 @@ describe("EntityStoreProvider", () => {
     let store: unknown;
     await act(async () => {
       TestRenderer.create(
-        <Probe
-          onStore={(s) => {
-            store = s;
-          }}
-          kind="Contribution"
-        />,
+        (
+          <Probe
+            onStore={(s) => {
+              store = s;
+            }}
+            kind="Contribution"
+          />
+        ) as ReactElement,
       );
     });
     const s = store as {

@@ -77,7 +77,7 @@ describe("EntityStore — selector memoization (B1 AC #2)", () => {
     fake.emit("ADDED", entity("keep", "keep"));
     const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
     const select = (list: readonly WatchEntity[]): readonly WatchEntity[] =>
-      list.filter((e) => e.spec.summary === "keep");
+      list.filter((e) => (e.spec as { summary?: string }).summary === "keep");
     const prev = select(store.list());
     for (let i = 0; i < 100; i += 1) {
       fake.emit("ADDED", entity(`drop${i}`, "drop"));
@@ -94,7 +94,7 @@ describe("EntityStore — selector memoization (B1 AC #2)", () => {
     fake.emit("ADDED", entity("b", "y", "1"));
     const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
     const select = (list: readonly WatchEntity[]): readonly WatchEntity[] =>
-      list.filter((e) => e.spec.summary === "x");
+      list.filter((e) => (e.spec as { summary?: string }).summary === "x");
     const prev = select(store.list());
     fake.emit("MODIFIED", entity("b", "y", "2"));
     await Promise.resolve();

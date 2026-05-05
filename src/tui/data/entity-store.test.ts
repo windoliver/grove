@@ -176,7 +176,7 @@ describe("EntityStore — microtask coalescing", () => {
   });
 });
 
-type AnyEntity = WatchEntity & Record<string, unknown>;
+type AnyEntity = WatchEntity;
 
 describe("EntityStore — snapshot stability", () => {
   test("list() returns the same ref while version is unchanged", () => {
@@ -385,7 +385,7 @@ describe("EntityStoreFactory", () => {
     const all = factory.getAllStats();
     expect(Object.keys(all)).toContain("Contribution");
     expect(Object.keys(all)).toContain("Claim");
-    expect(all.Contribution.writes).toBe(0);
+    expect(all.Contribution?.writes).toBe(0);
   });
 
   test("dispose disposes every store; idempotent", () => {
