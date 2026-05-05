@@ -274,3 +274,80 @@ describe("EntityStore — lag ring", () => {
     expect(store.getStats().lagSamples.length).toBe(1024);
   });
 });
+
+describe("EntityStore — edge cases", () => {
+  test("subscriber that calls its own unsubscribe inside flush does not skip the next subscriber", async () => {
+    const fake = makeFakeInformer();
+    const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
+    let secondCalled = false;
+    let unsubFirst!: () => void;
+    unsubFirst = store.subscribe(() => {
+      unsubFirst();
+    });
+    store.subscribe(() => {
+      secondCalled = true;
+    });
+    await fake.emit("ADDED", entity("a"));
+    await drainMicrotasks();
+    expect(secondCalled).toBe(true);
+  });
+
+  test("subscriber that throws is isolated; remaining subscribers still fire", async () => {
+    const fake = makeFakeInformer();
+    const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
+    let secondCalled = false;
+    store.subscribe(() => {
+      throw new Error("boom");
+    });
+    store.subscribe(() => {
+      secondCalled = true;
+    });
+    await fake.emit("ADDED", entity("a"));
+    await drainMicrotasks();
+    expect(secondCalled).toBe(true);
+  });
+
+  test("dispose() unsubscribes from informer and clears subscribers", async () => {
+    const fake = makeFakeInformer();
+    const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
+    let calls = 0;
+    store.subscribe(() => {
+      calls += 1;
+    });
+    store.dispose();
+    await fake.emit("ADDED", entity("a"));
+    await drainMicrotasks();
+    expect(calls).toBe(0);
+    expect(store.getVersion()).toBe(0);
+  });
+
+  test("DELETE then ADD same id within one microtask: final state correct, writes += 2", async () => {
+    const fake = makeFakeInformer();
+    fake.store.set("a", entity("a", "1"));
+    const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
+    await Promise.all([
+      fake.emit("DELETED", entity("a", "1")),
+      fake.emit("ADDED", entity("a", "2")),
+    ]);
+    await drainMicrotasks();
+    expect(store.getStats().writes).toBe(2);
+    expect(store.getById("a")?.resourceVersion).toBe("2");
+  });
+
+  test("getById sees post-write state from inside an Informer event handler", async () => {
+    // The Informer commits the data write synchronously before fanning out
+    // events (see #294 contract). This means a sibling event handler sees
+    // the post-write state via getById without waiting for the flush
+    // microtask. We don't assert ordering between EntityStore subscribers
+    // and sibling handlers — that depends on microtask scheduling around
+    // the `await` between iterations of the fanout loop.
+    const fake = makeFakeInformer();
+    const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
+    let inFanoutResult: WatchEntity | undefined;
+    fake.informer.addEventHandler(() => {
+      inFanoutResult = store.getById("a");
+    });
+    await fake.emit("ADDED", entity("a"));
+    expect(inFanoutResult?.id).toBe("a");
+  });
+});
