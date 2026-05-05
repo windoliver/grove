@@ -1,18 +1,20 @@
 /**
- * useEntities — reactive filtered list view over the informer cache.
+ * useEntities — reactive filtered list view over the EntityStore (B1 #296).
  *
- * Subscribes to the named kind's informer once per consumer; recomputes
- * the filtered list on every event; commits a new array reference only
- * when the filtered slice actually changed (shallow equality).
+ * Subscribes to the named kind's EntityStore once per consumer via
+ * useSyncExternalStore; recomputes the filtered list on every version
+ * bump; commits a new array reference only when the filtered slice
+ * actually changed (shallow equality).
  *
- * Pure helpers below are exported for unit tests; the React hook is a
- * thin wrapper around them.
+ * Pure helpers (`shallowArraysEqual`, `computeFilteredEntities`) are
+ * exported for unit tests and selector tests.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Informer } from "../../core/informer.js";
 import type { WatchKind } from "../../core/watch-events.js";
-import { useInformerFactoryOptional, useInformerOptional } from "./informer-context.js";
+import { useEntityStoreOptional } from "./entity-store-context.js";
+import { useInformerFactoryOptional } from "./informer-context.js";
 
 export function shallowArraysEqual<T>(a: readonly T[], b: readonly T[]): boolean {
   if (a === b) return true;
@@ -43,110 +45,84 @@ export function useEntities<K extends WatchKind>(
   kind: K,
   predicate?: (e: EntityFor<K>) => boolean,
 ): UseEntitiesResult<EntityFor<K>> {
-  const informer = useInformerOptional(kind);
+  const store = useEntityStoreOptional(kind);
   const factory = useInformerFactoryOptional();
   const predicateRef = useRef(predicate);
 
-  const initial = useMemo<readonly EntityFor<K>[]>(() => {
-    try {
-      return computeFilteredEntities(
-        informer.list() as readonly EntityFor<K>[],
-        predicateRef.current,
-      );
-    } catch {
-      return [];
-    }
-  }, [informer]);
+  const subscribe = useCallback((onChange: () => void) => store.subscribe(onChange), [store]);
+  const getVersion = useCallback(() => store.getVersion(), [store]);
+  // The version return value is unused — uSES exists only to register the
+  // subscription and re-render on each store version bump.
+  useSyncExternalStore(subscribe, getVersion);
 
-  const [data, setData] = useState<readonly EntityFor<K>[]>(initial);
-  const [hasSynced, setHasSynced] = useState<boolean>(informer.hasSynced());
-  // Stream errors come from the factory's error listener — owned by the
-  // watch lifecycle (4xx, listFn throw, etc). Cleared only when the factory
-  // fires `null` (proven recovery: first RELIST_END after restart).
-  const [streamError, setStreamError] = useState<Error | null>(() =>
-    factory ? factory.getLastError(kind) : null,
-  );
-  // Compute errors come from the predicate function throwing during a
-  // recompute. Cleared on the next successful recompute. Kept separate so
-  // recompute-after-stale-sync can't erase a stream error owned by the
-  // watch lifecycle.
+  const dataRef = useRef<readonly EntityFor<K>[] | null>(null);
   const [computeError, setComputeError] = useState<Error | null>(null);
-  const dataRef = useRef<readonly EntityFor<K>[]>(initial);
-  dataRef.current = data;
 
-  // Stable recompute via ref so the effect's dependency list stays tight —
-  // closure captures latest informer + predicate via ref, so the effect
-  // doesn't need to re-subscribe on every render to see fresh values.
-  const recomputeRef = useRef<() => void>(() => {});
-  recomputeRef.current = (): void => {
-    try {
-      const next = computeFilteredEntities(
-        informer.list() as readonly EntityFor<K>[],
-        predicateRef.current,
-      );
-      if (!shallowArraysEqual(dataRef.current, next)) {
-        setData(next);
-      }
-      if (!hasSynced && informer.hasSynced()) setHasSynced(true);
-      setComputeError((prev) => (prev === null ? prev : null));
-    } catch (err) {
-      setComputeError(err instanceof Error ? err : new Error(String(err)));
+  // Compute the current filtered slice from the version-stable snapshot.
+  let nextData: readonly EntityFor<K>[] | null;
+  try {
+    nextData = computeFilteredEntities(
+      store.list() as readonly EntityFor<K>[],
+      predicateRef.current,
+    );
+    if (computeError !== null) {
+      setComputeError(null);
     }
-  };
-  const recompute = useCallback((): void => recomputeRef.current(), []);
-
-  // Recompute synchronously when the predicate identity changes — without
-  // this, callers who pass a fresh closure every render would see stale
-  // filtered output until the next watch event arrived.
-  if (predicateRef.current !== predicate) {
-    predicateRef.current = predicate;
-    try {
-      const next = computeFilteredEntities(informer.list() as readonly EntityFor<K>[], predicate);
-      if (!shallowArraysEqual(dataRef.current, next)) {
-        // Defer to a microtask so the setState happens after this render
-        // completes — React forbids setState during render of the same
-        // component but allows it before commit.
-        queueMicrotask(() => setData(next));
-      }
-    } catch (err) {
-      queueMicrotask(() => setComputeError(err instanceof Error ? err : new Error(String(err))));
+  } catch (err) {
+    nextData = null;
+    const e = err instanceof Error ? err : new Error(String(err));
+    if (computeError === null || computeError.message !== e.message) {
+      setComputeError(e);
     }
   }
 
-  useEffect(() => {
-    const unsubEvent = informer.addEventHandler(recompute);
-    // Subscribe to RELIST_END so empty/unchanged snapshots still flip
-    // hasSynced and trigger a recompute. Without this, a consumer mounted
-    // before the first sync of an empty store stays hasSynced=false.
-    const unsubSync = informer.addSyncHandler(recompute);
-    // Surface terminal informer.run() failures (remote 4xx, listFn throw)
-    // so consumers don't sit at hasSynced=false with no diagnostic.
-    // When no provider is mounted, the informer is the null stub — there
-    // are no real errors to subscribe to, so skip the error wiring.
-    if (!factory) {
-      return () => {
-        unsubEvent();
-        unsubSync();
-      };
+  let data: readonly EntityFor<K>[];
+  if (nextData === null) {
+    data = dataRef.current ?? ([] as readonly EntityFor<K>[]);
+  } else if (dataRef.current && shallowArraysEqual(dataRef.current, nextData)) {
+    data = dataRef.current;
+  } else {
+    dataRef.current = nextData;
+    data = nextData;
+  }
+
+  // Predicate-identity change → recompute synchronously without waiting
+  // for the next watch event. Keep the same shallow-equal short-circuit
+  // so a no-op predicate change doesn't churn the data ref.
+  if (predicateRef.current !== predicate) {
+    predicateRef.current = predicate;
+    try {
+      const fresh = computeFilteredEntities(store.list() as readonly EntityFor<K>[], predicate);
+      if (!dataRef.current || !shallowArraysEqual(dataRef.current, fresh)) {
+        dataRef.current = fresh;
+        data = fresh;
+      }
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err));
+      if (computeError === null || computeError.message !== e.message) {
+        setComputeError(e);
+      }
     }
-    const unsubError = factory.addErrorListener((errKind, err) => {
+  }
+
+  // Stream errors come from the InformerFactory's error listener — owned
+  // by the watch lifecycle, kept separate from compute errors.
+  const [streamError, setStreamError] = useState<Error | null>(() =>
+    factory ? factory.getLastError(kind) : null,
+  );
+  useEffect(() => {
+    if (!factory) return;
+    const unsub = factory.addErrorListener((errKind, err) => {
       if (errKind !== kind) return;
       setStreamError(err);
     });
-    // Re-read after subscribing to close BOTH directions of the gap between
-    // render-time initialization and effect-time subscription: an error
-    // appearing OR being cleared in that window would otherwise be lost,
-    // since addErrorListener only delivers future events. Set
-    // unconditionally to reconcile both error-appears and error-clears.
     setStreamError(factory.getLastError(kind));
-    return () => {
-      unsubEvent();
-      unsubSync();
-      unsubError();
-    };
-  }, [informer, factory, kind, recompute]);
+    return unsub;
+  }, [factory, kind]);
 
-  // Stream errors take precedence — they signal the watch lifecycle is
-  // unhealthy, which is more actionable than a transient predicate failure.
-  return { data, hasSynced, error: streamError ?? computeError };
+  return {
+    data,
+    hasSynced: store.hasSynced(),
+    error: streamError ?? computeError,
+  };
 }
