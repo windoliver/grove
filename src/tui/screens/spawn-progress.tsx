@@ -11,6 +11,7 @@ import { useTimeline } from "@opentui/react";
 import { toast } from "@opentui-ui/toast/react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { WorkspaceMode } from "../../core/workspace-provisioner.js";
+import { useInterval } from "../../local/use-interval.js";
 import { BreadcrumbBar } from "../components/breadcrumb-bar.js";
 import { BRAILLE_SPINNER, PLATFORM_COLORS, theme } from "../theme.js";
 
@@ -55,18 +56,9 @@ export const SpawnProgress: React.NamedExoticComponent<SpawnProgressProps> = Rea
     presetName,
     onAllResolved,
   }: SpawnProgressProps): React.ReactNode {
-    // Braille spinner animation (setInterval is the right pattern for discrete frame cycling)
+    // Braille spinner animation — discrete frame cycling at 80ms.
     const [spinnerFrame, setSpinnerFrame] = useState(0);
-    const timerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
-
-    useEffect(() => {
-      timerRef.current = setInterval(() => {
-        setSpinnerFrame((f) => (f + 1) % BRAILLE_SPINNER.length);
-      }, 80);
-      return () => {
-        if (timerRef.current) clearInterval(timerRef.current);
-      };
-    }, []);
+    useInterval(() => setSpinnerFrame((f) => (f + 1) % BRAILLE_SPINNER.length), 80);
 
     // Smooth opacity pulse for spawning agents via useTimeline tween
     const [spawnOpacity, setSpawnOpacity] = useState(1);

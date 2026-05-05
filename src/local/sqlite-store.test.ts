@@ -151,6 +151,21 @@ describe("SqliteIdempotencyStore", () => {
   });
 });
 
+describe("SqliteStore session filtering", () => {
+  test("fresh legacy store returns empty results for a session filter", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-session-filter-"));
+    const dbPath = join(dir, "test.db");
+    const store = new SqliteStore(dbPath);
+    try {
+      expect(await store.list({ sessionId: "missing-session" })).toEqual([]);
+      expect(await store.count({ sessionId: "missing-session" })).toBe(0);
+    } finally {
+      store.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // putMany with rich contributions (relations, tags, artifacts)
 // ---------------------------------------------------------------------------

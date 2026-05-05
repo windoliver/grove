@@ -255,6 +255,13 @@ export class NexusCas implements ContentStore {
     const mediaType = options?.mediaType || undefined;
     if (mediaType) validateMediaType(mediaType);
 
+    const fileSizeBytes = (await fsStat(filePath)).size;
+    if (fileSizeBytes > this.config.maxPutFileBytes) {
+      throw new Error(
+        `File '${filePath}' is ${fileSizeBytes} bytes, exceeds Nexus CAS putFile limit of ${this.config.maxPutFileBytes} bytes`,
+      );
+    }
+
     const stagingFile = join(
       tmpdir(),
       `grove-nexus-cas.${Date.now()}.${randomBytes(4).toString("hex")}`,

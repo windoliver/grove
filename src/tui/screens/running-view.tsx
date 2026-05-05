@@ -22,6 +22,7 @@ import type { ContributionEntity } from "../../core/entity.js";
 import type { EventBus } from "../../core/event-bus.js";
 import type { Contribution } from "../../core/models.js";
 import type { AgentTopology } from "../../core/topology.js";
+import { useInterval } from "../../local/use-interval.js";
 import { compareTimestampsAscNewestLast, compareTimestampsDesc } from "../../shared/format.js";
 import { EmptyState } from "../components/empty-state.js";
 import { ProgressBar } from "../components/progress-bar.js";
@@ -30,8 +31,8 @@ import { debugLog } from "../debug-log.js";
 import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useAgentMonitor } from "../hooks/use-agent-monitor.js";
 import { useEntities } from "../hooks/use-entities.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import { InputMode } from "../hooks/use-panel-focus.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
 import { useTuiStatePersistence } from "../hooks/use-session-persistence.js";
 import type { DashboardData, TuiDataProvider } from "../provider.js";
 import { isVfsProvider } from "../provider.js";
@@ -220,18 +221,20 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
 
     // ─── Elapsed timer ───
     const [elapsed, setElapsed] = useState("0s");
+    const start = useMemo(
+      () => (sessionStartedAt ? new Date(sessionStartedAt).getTime() : Date.now()),
+      [sessionStartedAt],
+    );
+    const tickElapsed = useCallback(() => {
+      const ms = Date.now() - start;
+      const m = Math.floor(ms / 60_000);
+      const s = Math.floor((ms % 60_000) / 1_000);
+      setElapsed(m > 0 ? `${m}m${s}s` : `${s}s`);
+    }, [start]);
     useEffect(() => {
-      const start = sessionStartedAt ? new Date(sessionStartedAt).getTime() : Date.now();
-      const tick = () => {
-        const ms = Date.now() - start;
-        const m = Math.floor(ms / 60_000);
-        const s = Math.floor((ms % 60_000) / 1_000);
-        setElapsed(m > 0 ? `${m}m${s}s` : `${s}s`);
-      };
-      tick();
-      const id = setInterval(tick, 1000);
-      return () => clearInterval(id);
-    }, [sessionStartedAt]);
+      tickElapsed();
+    }, [tickElapsed]);
+    useInterval(tickElapsed, 1000);
 
     // ─── Agent monitoring (extracted hook) ───
     const monitor = useAgentMonitor({ groveDir, tmux, eventBus, topology });
@@ -282,14 +285,20 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     // still return data.
     const contribInformerReady =
       useContribInformer && contribEntities.hasSynced && !contribEntities.error;
-    const dashboardPoll = usePolledData<DashboardData>(dashboardFetcher, intervalMs, true);
-    const contributionsPoll = usePolledData<readonly Contribution[]>(
+    const dashboardPoll = useEventDrivenData<DashboardData>(
+      dashboardFetcher,
+      undefined,
+      undefined,
+      true,
+    );
+    const contributionsPoll = useEventDrivenData<readonly Contribution[]>(
       contributionsFetcher,
-      intervalMs,
+      undefined,
+      undefined,
       feedActive && !contribInformerReady,
     );
 
-    // usePolledData is only used for UI refresh of the contributions feed display;
+    // The polled fetcher is only used for UI refresh of the contributions feed display;
     // agent-to-agent contribution delivery is done via NexusWsBridge SSE push,
     // not via polling. The eventBus handler below drives immediate UI refresh
     // when a push arrives.
@@ -373,8 +382,8 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       contributionsPoll.error?.message,
     ]);
 
-    // Fetch handoffs alongside dashboard (usePolledData's setInterval doesn't
-    // survive OpenTUI remounts, so we fetch manually in the parent).
+    // Fetch handoffs once on mount; subsequent updates ride the eventBus
+    // subscription below (handoff.overdue / handoff.seen / handoff.acked).
     const [handoffs, setHandoffs] = useState<readonly import("../../core/handoff.js").Handoff[]>(
       [],
     );
@@ -388,27 +397,22 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       const p = provider as {
         getHandoffs: (q?: unknown) => Promise<readonly import("../../core/handoff.js").Handoff[]>;
       };
-      const doFetch = () => {
-        void p
-          .getHandoffs({ limit: 200 })
-          .then((all) => {
-            const cutoff =
-              sessionStartedAt ?? new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-            const filtered = all.filter((h) => h.createdAt >= cutoff);
-            debugLog(
-              "handoffs",
-              `total=${all.length} afterFilter=${filtered.length} cutoff=${cutoff}`,
-            );
-            setHandoffs(filtered);
-          })
-          .catch((err: unknown) => {
-            debugLog("handoffs", `ERROR: ${err instanceof Error ? err.message : String(err)}`);
-          });
-      };
-      doFetch(); // immediate
-      const id = setInterval(doFetch, intervalMs);
-      return () => clearInterval(id);
-    }, [provider, sessionStartedAt, intervalMs]);
+      void p
+        .getHandoffs({ limit: 200 })
+        .then((all) => {
+          const cutoff =
+            sessionStartedAt ?? new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+          const filtered = all.filter((h) => h.createdAt >= cutoff);
+          debugLog(
+            "handoffs",
+            `total=${all.length} afterFilter=${filtered.length} cutoff=${cutoff}`,
+          );
+          setHandoffs(filtered);
+        })
+        .catch((err: unknown) => {
+          debugLog("handoffs", `ERROR: ${err instanceof Error ? err.message : String(err)}`);
+        });
+    }, [provider, sessionStartedAt]);
 
     // Subscribe to handoff lifecycle events (handoff.overdue, handoff.seen,
     // handoff.acked) for real-time panel updates. When any handoff event
