@@ -1,0 +1,27 @@
+name: common
+rules:
+  - id: no-permission-denials
+    kind: must_not_exist
+    match:
+      event: PERMISSION_DENIED
+
+  - id: has-agent-or-message
+    kind: must_exist
+    match:
+      event: ASSISTANT_MESSAGE|AGENT_START
+
+  - id: tool-calls-have-tool
+    kind: field_constraint
+    match:
+      event: TOOL_CALL
+    field: tool
+    exists: true
+
+  - id: tool-results-have-span
+    kind: field_constraint
+    match:
+      event: TOOL_RESULT
+    field: spanId
+    exists: true
+
+goals: []
