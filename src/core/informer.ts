@@ -29,6 +29,7 @@ export type InformerOp = "ADDED" | "MODIFIED" | "DELETED";
 export type EventHandlerFn<K extends WatchKind = WatchKind> = (
   op: InformerOp,
   entity: EntityForKind<K>,
+  meta?: { readonly emittedAt?: string },
 ) => void | Promise<void>;
 
 export type SyncHandlerFn = () => void;
@@ -146,7 +147,11 @@ export class Informer<K extends WatchKind = WatchKind> {
         if (e.entity) {
           const entity = freeze(e.entity as EntityForKind<K>);
           this.store.set(entity.id, entity);
-          await this.dispatch("ADDED", entity);
+          await this.dispatch(
+            "ADDED",
+            entity,
+            e.emittedAt !== undefined ? { emittedAt: e.emittedAt } : undefined,
+          );
         }
         break;
 
@@ -154,7 +159,11 @@ export class Informer<K extends WatchKind = WatchKind> {
         if (e.entity) {
           const entity = freeze(e.entity as EntityForKind<K>);
           this.store.set(entity.id, entity);
-          await this.dispatch("MODIFIED", entity);
+          await this.dispatch(
+            "MODIFIED",
+            entity,
+            e.emittedAt !== undefined ? { emittedAt: e.emittedAt } : undefined,
+          );
         }
         break;
 
@@ -162,7 +171,11 @@ export class Informer<K extends WatchKind = WatchKind> {
         if (e.entity) {
           const entity = freeze(e.entity as EntityForKind<K>);
           this.store.delete(entity.id);
-          await this.dispatch("DELETED", entity);
+          await this.dispatch(
+            "DELETED",
+            entity,
+            e.emittedAt !== undefined ? { emittedAt: e.emittedAt } : undefined,
+          );
         }
         break;
     }
@@ -191,9 +204,9 @@ export class Informer<K extends WatchKind = WatchKind> {
       this.store.set(id, entity);
     }
 
-    for (const e of deleted) await this.dispatch("DELETED", e);
-    for (const e of added) await this.dispatch("ADDED", e);
-    for (const e of modified) await this.dispatch("MODIFIED", e);
+    for (const e of deleted) await this.dispatch("DELETED", e, undefined);
+    for (const e of added) await this.dispatch("ADDED", e, undefined);
+    for (const e of modified) await this.dispatch("MODIFIED", e, undefined);
   }
 
   private fireSync(): void {
@@ -208,7 +221,11 @@ export class Informer<K extends WatchKind = WatchKind> {
     }
   }
 
-  private async dispatch(op: InformerOp, entity: EntityForKind<K>): Promise<void> {
+  private async dispatch(
+    op: InformerOp,
+    entity: EntityForKind<K>,
+    meta?: { readonly emittedAt?: string },
+  ): Promise<void> {
     // Snapshot before iterating so a handler that calls its own unsubscribe
     // (which splices the live array) does not cause the next handler to be
     // skipped by the iterator advancing past the shifted index.
@@ -223,7 +240,7 @@ export class Informer<K extends WatchKind = WatchKind> {
     const signal = this._signal;
     for (const handler of [...this.handlers]) {
       try {
-        await raceAbort(Promise.resolve(handler(op, entity)), signal);
+        await raceAbort(Promise.resolve(handler(op, entity, meta)), signal);
       } catch (err) {
         if (isAbortError(err)) return;
         console.error("Informer: event handler threw or rejected, continuing fanout:", err);

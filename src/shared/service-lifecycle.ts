@@ -101,8 +101,17 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
   let nexusManaged = false;
   let resolvedNexusUrl: string | undefined;
 
+  // Make GROVE_SERVER_PORT visible to this process so the cross-process
+  // bridge in stdio MCPs (spawned later via AcpRuntime — they inherit
+  // parent env, not serviceEnv) can target the right port. Without this,
+  // stdio MCPs for agents fall back to the 4515 default and miss any
+  // non-default deployment.
+  if (!process.env.GROVE_SERVER_PORT) {
+    process.env.GROVE_SERVER_PORT = String(resolveServicePort("server"));
+  }
+
   report(
-    `[startServices] groveDir=${groveDir} configExists=${existsSync(configPath)} GROVE_NEXUS_URL=${process.env.GROVE_NEXUS_URL ?? "unset"}`,
+    `[startServices] groveDir=${groveDir} configExists=${existsSync(configPath)} GROVE_NEXUS_URL=${process.env.GROVE_NEXUS_URL ?? "unset"} GROVE_SERVER_PORT=${process.env.GROVE_SERVER_PORT}`,
   );
 
   if (!existsSync(configPath)) {
@@ -113,11 +122,102 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
   const { parseGroveConfig } = await import("../core/config.js");
   const config = parseGroveConfig(raw);
 
+  // Reuse path: if grove.pid exists and EITHER the parent is the current
+  // process (we already spawned children in this same TUI flow) OR an
+  // external parent is still alive, services are already running for this
+  // groveDir. Without this, a session-start callback inside a `grove up`
+  // flow re-spawns the HTTP/MCP servers and fails on EADDRINUSE — leaving
+  // the TUI hung at "Starting session...".
+  //
+  // We return an empty `children` array because we do NOT take ownership
+  // of the existing processes — stopServices on this RunningServices is a
+  // no-op, leaving teardown to whoever holds the original handles.
+  if (existsSync(pidFilePath)) {
+    try {
+      const pidRaw = readFileSync(pidFilePath, "utf-8");
+      const pidData = JSON.parse(pidRaw) as {
+        parentPid?: number;
+        children?: ReadonlyArray<{ name?: string; pid?: number }>;
+        nexusManaged?: boolean;
+      };
+      const parentPid = pidData.parentPid;
+      const parentAlive = (() => {
+        if (!parentPid) return false;
+        if (parentPid === process.pid) return true;
+        try {
+          process.kill(parentPid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      })();
+      // Verify at least one configured child is also live — guards against
+      // a stale pidfile where the parent survived but the spawned services
+      // exited (e.g. crashed grove-server). Treat that as "no reuse" so
+      // the spawn path runs.
+      const someChildAlive = (pidData.children ?? []).some((c) => {
+        if (!c.pid) return false;
+        try {
+          process.kill(c.pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      if (parentAlive && someChildAlive) {
+        report(
+          `[startServices] reusing services already running under PID ${parentPid} (pidfile present, alive)`,
+        );
+        if (!process.env.GROVE_NEXUS_URL && config.nexusUrl) {
+          process.env.GROVE_NEXUS_URL = config.nexusUrl;
+        }
+        if (!process.env.NEXUS_API_KEY) {
+          try {
+            const { readNexusApiKey } = await import("../cli/nexus-lifecycle.js");
+            const apiKey = readNexusApiKey(projectRoot);
+            if (apiKey) process.env.NEXUS_API_KEY = apiKey;
+          } catch {
+            // best-effort
+          }
+        }
+        return {
+          children,
+          nexusManaged: pidData.nexusManaged ?? false,
+          projectRoot,
+          pidFilePath,
+          ...(config.nexusUrl !== undefined ? { resolvedNexusUrl: config.nexusUrl } : {}),
+        };
+      }
+      if (parentPid && !parentAlive) {
+        report(`[startServices] pidfile points to dead PID ${parentPid}; ignoring`);
+      }
+    } catch {
+      // Malformed pidfile — fall through and start fresh.
+    }
+  }
+
+  // Always read API key from .grove/api-key when nexus.yaml-derived
+  // credentials are present, so downstream code (checkNexusHealth,
+  // NexusDataProvider) can authenticate even when the env was not pre-set.
+  // Best-effort: when there's no .grove/api-key, env stays unset.
+  if (!process.env.NEXUS_API_KEY) {
+    try {
+      const { readNexusApiKey } = await import("../cli/nexus-lifecycle.js");
+      const apiKey = readNexusApiKey(projectRoot);
+      if (apiKey) process.env.NEXUS_API_KEY = apiKey;
+    } catch {
+      // best-effort
+    }
+  }
+
   // Start managed Nexus if configured — skip if GROVE_NEXUS_URL already set (reuse existing)
-  if (
-    !process.env.GROVE_NEXUS_URL &&
-    (config.nexusManaged || (config.mode === "nexus" && !config.nexusUrl))
-  ) {
+  // Fire when:
+  //   • config has nexusManaged=true (explicit lifecycle ownership), OR
+  //   • config.mode === "nexus" (whether or not nexusUrl is set — a stale
+  //     URL pointing at a stopped container needs to be brought back up).
+  // This ensures `grove init` configs that record nexusUrl from a previous
+  // session still trigger Nexus startup on subsequent `grove up` calls.
+  if (!process.env.GROVE_NEXUS_URL && (config.nexusManaged || config.mode === "nexus")) {
     // Fast path: if grove.json has nexusUrl, check health before running ensureNexusRunning.
     if (config.nexusUrl) {
       try {
@@ -297,7 +397,18 @@ export function resolveBunExecutable(execPath: string = process.execPath): strin
 
 function serviceEnv(name: string, groveDir: string): NodeJS.ProcessEnv {
   const port = resolveServicePort(name);
-  return { ...process.env, GROVE_DIR: groveDir, PORT: String(port) };
+  // Propagate the server's bound port (as resolved by the parent — the same
+  // value the server child receives via PORT) so siblings like the MCP
+  // child can target grove-server even on non-default deployments. Without
+  // this the cross-process WatchHub bridge in mcp/serve*.ts hard-codes the
+  // 4515 default and silently misses any custom-port server.
+  const serverPort = resolveServicePort("server");
+  return {
+    ...process.env,
+    GROVE_DIR: groveDir,
+    PORT: String(port),
+    GROVE_SERVER_PORT: String(serverPort),
+  };
 }
 
 /**
@@ -357,9 +468,12 @@ async function spawnService(
 
   try {
     const { spawn: nodeSpawn } = await import("node:child_process");
+    const { openSync } = await import("node:fs");
+    const logPath = join(groveDir, `${name}.log`);
+    const logFd = openSync(logPath, "a");
     const child = nodeSpawn(resolveBunExecutable(), [entryPoint], {
       cwd: join(groveDir, ".."),
-      stdio: "ignore",
+      stdio: ["ignore", logFd, logFd],
       env: serviceEnv(name, groveDir),
       detached: true,
     });

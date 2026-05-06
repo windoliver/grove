@@ -38,6 +38,8 @@ export interface WatchClientEvent {
   readonly rv: bigint;
   readonly kind: WatchKind;
   readonly entity: WatchEntity | null;
+  /** Server-stamped ISO-8601 wall-clock; see `WatchEvent.emittedAt`. */
+  readonly emittedAt?: string;
 }
 
 export interface WatchClientOptions {
@@ -270,7 +272,11 @@ export class WatchClient implements WatchStream {
             throw new Error(`watch terminal error: code=${code}`);
           }
           if (isDataOp(frame.event)) {
-            const payload = frame.data as { rv?: string; entity?: WatchEntity };
+            const payload = frame.data as {
+              rv?: string;
+              entity?: WatchEntity;
+              emittedAt?: string;
+            };
             if (!payload.rv || !/^[0-9]+$/.test(payload.rv) || !payload.entity) {
               // Malformed data frame: a subsequent BOOKMARK could otherwise
               // ack past this rv and silently drop the event. Force a relist
@@ -311,6 +317,7 @@ export class WatchClient implements WatchStream {
               rv,
               kind: this.kind,
               entity,
+              ...(payload.emittedAt !== undefined ? { emittedAt: payload.emittedAt } : {}),
             });
           } else if (frame.event === "BOOKMARK") {
             // BOOKMARK advances resume cursor without firing onEvent.
