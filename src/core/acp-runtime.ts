@@ -103,6 +103,19 @@ async function launchSubprocess(
   const stdoutWebReadable = NodeReadable.toWeb(child.stdout) as ReadableStream<Uint8Array>;
   const clientStream = ndJsonStream(stdinWebWritable, stdoutWebReadable);
 
+  // Tee child stderr to our stderr with an [acp:agent:pid] prefix so launch
+  // failures (auth errors, missing CLI, ACP shim crashes) are observable
+  // instead of silently dropped — these surface as "Internal error" in the
+  // bootstrap reply and were previously undebuggable.
+  const pid = child.pid ?? 0;
+  const prefix = `[acp:${agent}:${pid}] `;
+  child.stderr.on("data", (chunk: Buffer) => {
+    const text = chunk.toString("utf-8");
+    for (const line of text.split("\n")) {
+      if (line.length > 0) process.stderr.write(`${prefix}${line}\n`);
+    }
+  });
+
   const dispose = async () => {
     try {
       child.kill("SIGTERM");
