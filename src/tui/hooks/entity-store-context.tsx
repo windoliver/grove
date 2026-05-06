@@ -115,6 +115,10 @@ export function EntityStoreProviderHolder(props: EntityStoreProviderHolderProps)
     };
   }, [holder]);
 
-  if (!storeFactory) return <>{children}</>;
-  return <EntityStoreProvider value={storeFactory}>{children}</EntityStoreProvider>;
+  // Render the same element type on every transition so React preserves
+  // the subtree identity. A `<>{children}</>` ↔ `<EntityStoreProvider>...`
+  // swap would unmount and remount every descendant the moment the holder
+  // hands a factory through — which would erase TuiApp's mode/appProps
+  // state mid-session-start.
+  return <EntityStoreContext.Provider value={storeFactory}>{children}</EntityStoreContext.Provider>;
 }

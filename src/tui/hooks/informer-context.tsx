@@ -325,6 +325,12 @@ export function InformerProviderHolder(props: InformerProviderHolderProps): Reac
     return detach;
   }, [resolvedProvider]);
 
+  // Eager-start when a factory is present, eager mode is on, and we're not
+  // inside a scoped provider. Render the same Context.Provider element on
+  // every transition (factory may be null briefly between mount and the
+  // holder's first set()) — a `<>{children}</>` ↔ `<InformerProvider>` swap
+  // would unmount and remount every descendant the moment the factory
+  // arrives, erasing TuiApp's mode/appProps state mid-session-start.
   useEffect(() => {
     if (!factory || !eager || scoped) return;
     factory.startAll();
@@ -332,9 +338,5 @@ export function InformerProviderHolder(props: InformerProviderHolderProps): Reac
       void factory.stopAll();
     };
   }, [factory, eager, scoped]);
-
-  // Keep a stable provider wrapper mounted even before the async factory is
-  // available. Switching from a fragment to a provider remounts children,
-  // which resets TuiApp during the welcome -> boardroom handoff.
   return <InformerContext.Provider value={factory}>{children}</InformerContext.Provider>;
 }
