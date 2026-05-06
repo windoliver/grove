@@ -13,6 +13,7 @@ import type { Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
 import type {
+  Contribution,
   ContributionKind,
   ContributionMode,
   JsonValue,
@@ -21,7 +22,7 @@ import type {
 } from "../../core/models.js";
 import type { ContributeInput } from "../../core/operations/index.js";
 import { contributeOperation } from "../../core/operations/index.js";
-import type { OutcomeStatus } from "../../core/outcome.js";
+import type { OutcomeStats, OutcomeStatus } from "../../core/outcome.js";
 import type { ContributionQuery } from "../../core/store.js";
 import type { ServerEnv } from "../deps.js";
 import { toHttpResult, toOperationDeps } from "../operation-adapter.js";
@@ -137,6 +138,59 @@ function toContributionQuery(raw: {
     offset: raw.offset,
     ...(raw.sessionId !== undefined ? { sessionId: raw.sessionId } : {}),
   };
+}
+
+function hasContributionFilters(raw: {
+  kind?: string | undefined;
+  mode?: string | undefined;
+  tags?: string | undefined;
+  agentId?: string | undefined;
+  agentName?: string | undefined;
+  sessionId?: string | undefined;
+}): boolean {
+  return (
+    raw.kind !== undefined ||
+    raw.mode !== undefined ||
+    raw.tags !== undefined ||
+    raw.agentId !== undefined ||
+    raw.agentName !== undefined ||
+    raw.sessionId !== undefined
+  );
+}
+
+function matchesContributionFilters(contribution: Contribution, query: ContributionQuery): boolean {
+  if (query.kind !== undefined && contribution.kind !== query.kind) return false;
+  if (query.mode !== undefined && contribution.mode !== query.mode) return false;
+  if (query.agentId !== undefined && contribution.agent.agentId !== query.agentId) return false;
+  if (query.agentName !== undefined && contribution.agent.agentName !== query.agentName) {
+    return false;
+  }
+  if (
+    query.tags !== undefined &&
+    query.tags.length > 0 &&
+    !query.tags.every((tag) => contribution.tags.includes(tag))
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function compareByRecencyDesc(a: Contribution, b: Contribution): number {
+  const byDate = Date.parse(b.createdAt) - Date.parse(a.createdAt);
+  return byDate !== 0 ? byDate : b.cid.localeCompare(a.cid);
+}
+
+function totalForOutcomeStatus(stats: OutcomeStats, status: OutcomeStatus): number {
+  switch (status) {
+    case "accepted":
+      return stats.accepted;
+    case "rejected":
+      return stats.rejected;
+    case "crashed":
+      return stats.crashed;
+    case "invalidated":
+      return stats.invalidated;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -352,9 +406,6 @@ contributions.get("/", zValidator("query", listQuerySchema), async (c) => {
   // process-global store when no factory is wired (tests, local-only mode).
   const listStore = contributionStoreForSession(deps, raw.sessionId);
 
-  // When outcome filter is specified, we must fetch ALL matching contributions
-  // (without limit/offset), filter by outcome status, then paginate manually.
-  // Otherwise the page may be underfilled and X-Total-Count would be wrong.
   if (raw.outcome !== undefined) {
     if (outcomeStore === undefined) {
       return c.json(
@@ -363,19 +414,37 @@ contributions.get("/", zValidator("query", listQuerySchema), async (c) => {
       );
     }
 
-    const baseQuery = toContributionQuery({ ...raw, limit: undefined, offset: undefined });
-    const allResults = await listStore.list(baseQuery);
-
-    const cids = allResults.map((r) => r.cid);
-    const outcomes = await outcomeStore.getBatch(cids);
     const targetStatus = raw.outcome as OutcomeStatus;
-    const filtered = allResults.filter((r) => {
-      const record = outcomes.get(r.cid);
-      return record !== undefined && record.status === targetStatus;
-    });
-
     const limit = raw.limit ?? 20;
     const offset = raw.offset ?? 0;
+
+    if (!hasContributionFilters(raw)) {
+      const outcomes = await outcomeStore.list({ status: targetStatus, limit, offset });
+      const contributions = await listStore.getMany(outcomes.map((outcome) => outcome.cid));
+      const page: Contribution[] = [];
+      for (const outcome of outcomes) {
+        const contribution = contributions.get(outcome.cid);
+        if (contribution !== undefined) page.push(contribution);
+      }
+      const stats = await outcomeStore.getStats();
+      c.header("X-Total-Count", String(totalForOutcomeStatus(stats, targetStatus)));
+      return c.json(page);
+    }
+
+    const filterQuery = toContributionQuery({ ...raw, limit: undefined, offset: undefined });
+    const outcomes = await outcomeStore.list({ status: targetStatus });
+    const contributions = await listStore.getMany(outcomes.map((outcome) => outcome.cid));
+    const filtered: Contribution[] = [];
+    const seen = new Set<string>();
+    for (const outcome of outcomes) {
+      if (seen.has(outcome.cid)) continue;
+      seen.add(outcome.cid);
+      const contribution = contributions.get(outcome.cid);
+      if (contribution !== undefined && matchesContributionFilters(contribution, filterQuery)) {
+        filtered.push(contribution);
+      }
+    }
+    filtered.sort(compareByRecencyDesc);
     const page = filtered.slice(offset, offset + limit);
 
     c.header("X-Total-Count", String(filtered.length));
@@ -411,8 +480,48 @@ contributions.get("/:cid", zValidator("param", cidParamSchema), async (c) => {
   return c.json(contribution);
 });
 
+/** GET /api/contributions/:cid/artifacts/:name/meta — Artifact metadata (size + mediaType). */
+contributions.get("/:cid/artifacts/:name{.+}/meta", async (c) => {
+  const deps = c.get("deps");
+  const contributionStore = contributionStoreForSession(deps, c.req.query("sessionId"));
+  const { cas } = deps;
+  const cid = c.req.param("cid");
+  const name = c.req.param("name");
+
+  const contribution = await contributionStore.get(cid);
+  if (!contribution) {
+    return c.json({ error: { code: "NOT_FOUND", message: `Contribution ${cid} not found` } }, 404);
+  }
+
+  const contentHash = contribution.artifacts[name];
+  if (!contentHash) {
+    return c.json(
+      { error: { code: "NOT_FOUND", message: `Artifact '${name}' not found in ${cid}` } },
+      404,
+    );
+  }
+
+  const meta = await cas.stat(contentHash);
+  if (!meta) {
+    return c.json(
+      {
+        error: {
+          code: "NOT_FOUND",
+          message: `Artifact blob not found for hash ${contentHash}`,
+        },
+      },
+      404,
+    );
+  }
+
+  return c.json({
+    sizeBytes: meta.sizeBytes,
+    ...(meta.mediaType !== undefined ? { mediaType: meta.mediaType } : {}),
+  });
+});
+
 /** GET /api/contributions/:cid/artifacts/:name — Download artifact blob. */
-contributions.get("/:cid/artifacts/:name", async (c) => {
+contributions.get("/:cid/artifacts/:name{.+}", async (c) => {
   const deps = c.get("deps");
   const contributionStore = contributionStoreForSession(deps, c.req.query("sessionId"));
   const { cas } = deps;
@@ -452,46 +561,6 @@ contributions.get("/:cid/artifacts/:name", async (c) => {
       "Content-Type": meta?.mediaType ?? "application/octet-stream",
       "Content-Length": String(data.byteLength),
     },
-  });
-});
-
-/** GET /api/contributions/:cid/artifacts/:name/meta — Artifact metadata (size + mediaType). */
-contributions.get("/:cid/artifacts/:name/meta", async (c) => {
-  const deps = c.get("deps");
-  const contributionStore = contributionStoreForSession(deps, c.req.query("sessionId"));
-  const { cas } = deps;
-  const cid = c.req.param("cid");
-  const name = c.req.param("name");
-
-  const contribution = await contributionStore.get(cid);
-  if (!contribution) {
-    return c.json({ error: { code: "NOT_FOUND", message: `Contribution ${cid} not found` } }, 404);
-  }
-
-  const contentHash = contribution.artifacts[name];
-  if (!contentHash) {
-    return c.json(
-      { error: { code: "NOT_FOUND", message: `Artifact '${name}' not found in ${cid}` } },
-      404,
-    );
-  }
-
-  const meta = await cas.stat(contentHash);
-  if (!meta) {
-    return c.json(
-      {
-        error: {
-          code: "NOT_FOUND",
-          message: `Artifact blob not found for hash ${contentHash}`,
-        },
-      },
-      404,
-    );
-  }
-
-  return c.json({
-    sizeBytes: meta.sizeBytes,
-    ...(meta.mediaType !== undefined ? { mediaType: meta.mediaType } : {}),
   });
 });
 

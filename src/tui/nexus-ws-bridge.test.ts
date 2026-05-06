@@ -66,6 +66,15 @@ function makeBridgeOpts(overrides?: Partial<NexusWsBridgeOptions>): NexusWsBridg
   };
 }
 
+async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("timed out waiting for condition");
+}
+
 // ---------------------------------------------------------------------------
 // Helpers to invoke private methods via the bridge
 // ---------------------------------------------------------------------------
@@ -670,6 +679,74 @@ describe("NexusWsBridge", () => {
     bridge.close();
   });
 
+  test("send() scopes the inbox path when a session id is active", async () => {
+    const fetchCalls: { body: unknown }[] = [];
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({
+        body: JSON.parse(init?.body as string),
+      });
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const bridge = new NexusWsBridge(makeBridgeOpts({ getSessionId: () => "sess-123" }));
+    const ok = await bridge.send("coder", "reviewer", { summary: "test" });
+
+    expect(ok).toBe(true);
+    const body = fetchCalls[0]!.body as {
+      path: string;
+      content: string;
+    };
+    expect(body.path).toMatch(/^\/sessions\/sess-123\/ipc\/reviewer\/inbox\/.+\.json$/);
+    const decoded = JSON.parse(Buffer.from(body.content, "base64").toString("utf8")) as {
+      session_id: string;
+    };
+    expect(decoded.session_id).toBe("sess-123");
+    bridge.close();
+  });
+
+  test("readAndPush skips legacy global inbox messages during a scoped session", async () => {
+    const runtime = makeMockRuntime();
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/api/v2/files/read")) {
+        return new Response(
+          JSON.stringify({
+            content: JSON.stringify({
+              sender: "coder",
+              payload: { cid: "blake3:old", kind: "work", summary: "old work" },
+            }),
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }) as unknown as typeof fetch;
+
+    const bridge = new TestableNexusWsBridge(
+      makeBridgeOpts({ runtime, getSessionId: () => "sess-current" }),
+    );
+    bridge.registerSession("reviewer", makeSession("reviewer"));
+    bridge.testHandleEvent(
+      "reviewer",
+      "message_delivered",
+      JSON.stringify({
+        event: "message_delivered",
+        message_id: "old-msg",
+        sender: "coder",
+        recipient: "reviewer",
+        type: "event",
+        path: "/ipc/reviewer/inbox/old-msg.json",
+      }),
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(runtime.send).not.toHaveBeenCalled();
+    bridge.close();
+  });
+
   test("send() returns false on network error", async () => {
     globalThis.fetch = (async () => {
       throw new Error("network error");
@@ -1017,6 +1094,161 @@ describe("NexusWsBridge", () => {
 
     const bridge = new NexusWsBridge(makeBridgeOpts());
     await expect(bridge.connect(1000)).resolves.toBeUndefined();
+    bridge.close();
+  });
+
+  test("SSE stream parser delivers events split across read chunks", async () => {
+    const runtime = makeMockRuntime();
+    const encoder = new TextEncoder();
+    const eventRecord = JSON.stringify({
+      event_id: "event-split-1",
+      type: "write",
+      path: "/ipc/reviewer/inbox/msg-split.json",
+      agent_id: "coder",
+    });
+
+    globalThis.fetch = ((input: Parameters<typeof fetch>[0]) => {
+      const url = String(input);
+      if (url.includes("/api/v2/events/stream")) {
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode("retry: 5000\n\nid: 1\nevent: event\n"));
+            setTimeout(() => {
+              controller.enqueue(encoder.encode(`data: ${eventRecord}\n\n`));
+              controller.close();
+            }, 0);
+          },
+        });
+        return Promise.resolve(
+          new Response(stream, {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+        );
+      }
+      if (url.includes("/api/v2/files/read")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              content: JSON.stringify({
+                sender: "coder",
+                payload: { cid: "blake3:split", kind: "work", summary: "split event" },
+              }),
+            }),
+            { status: 200 },
+          ),
+        );
+      }
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    const bridge = new NexusWsBridge(makeBridgeOpts({ runtime }));
+    bridge.registerSession("reviewer", makeSession("reviewer"));
+
+    await waitFor(
+      () =>
+        (runtime.send as unknown as { mock: { calls: readonly unknown[] } }).mock.calls.length ===
+        1,
+    );
+    expect(runtime.send).toHaveBeenCalledTimes(1);
+    bridge.close();
+  });
+
+  test("session stream drains existing inbox files and dedupes SSE replay", async () => {
+    const runtime = makeMockRuntime();
+    const encoder = new TextEncoder();
+    const inboxPath = "/sessions/sess-123/ipc/reviewer/inbox/msg-1.json";
+    const markDelivered = mock(() => Promise.resolve());
+    const handoffStore = {
+      list: mock(() =>
+        Promise.resolve([
+          {
+            handoffId: "handoff-1",
+            fromRole: "coder",
+            toRole: "reviewer",
+            sourceCid: "blake3:catchup",
+            status: "pending_pickup" as const,
+            ipcMessageId: "msg-1",
+            createdAt: new Date().toISOString(),
+          },
+        ]),
+      ),
+      markDelivered,
+      markDeadLettered: mock(() => Promise.resolve()),
+    };
+
+    globalThis.fetch = ((input: Parameters<typeof fetch>[0]) => {
+      const url = String(input);
+      if (url.includes("/api/v2/events/stream")) {
+        const eventRecord = JSON.stringify({
+          event_id: "event-1",
+          type: "write",
+          path: inboxPath,
+          agent_id: "coder",
+        });
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            setTimeout(() => {
+              controller.enqueue(encoder.encode(`id: 1\nevent: event\ndata: ${eventRecord}\n\n`));
+              controller.close();
+            }, 0);
+          },
+        });
+        return Promise.resolve(
+          new Response(stream, {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+        );
+      }
+      if (url.includes("/api/v2/files/list")) {
+        expect(decodeURIComponent(url)).toContain(
+          "/api/v2/files/list?path=/sessions/sess-123/ipc/reviewer/inbox",
+        );
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              items: [{ path: inboxPath, isDirectory: false, modifiedAt: "2026-05-06T00:00:00Z" }],
+            }),
+            { status: 200 },
+          ),
+        );
+      }
+      if (url.includes("/api/v2/files/read")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              content: JSON.stringify({
+                message_id: "msg-1",
+                sender: "coder",
+                session_id: "sess-123",
+                payload: { cid: "blake3:catchup", kind: "work", summary: "catch-up work" },
+              }),
+            }),
+            { status: 200 },
+          ),
+        );
+      }
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    const bridge = new NexusWsBridge(
+      makeBridgeOpts({
+        runtime,
+        getSessionId: () => "sess-123",
+        handoffStore: handoffStore as unknown as NexusWsBridgeOptions["handoffStore"],
+      }),
+    );
+    bridge.registerSession("reviewer", makeSession("reviewer"));
+
+    await waitFor(
+      () =>
+        (runtime.send as unknown as { mock: { calls: readonly unknown[] } }).mock.calls.length ===
+        1,
+    );
+    await waitFor(() => markDelivered.mock.calls.length === 1);
+    expect(runtime.send).toHaveBeenCalledTimes(1);
+    expect(markDelivered).toHaveBeenCalledWith("handoff-1");
     bridge.close();
   });
 

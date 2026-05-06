@@ -7,12 +7,13 @@
  * On tmux failure: roll back claim + workspace.
  */
 
-import { execSync, spawnSync } from "node:child_process";
+import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 import { watchTurnError } from "../acp/watch-turn.js";
+import type { AcpRuntimeEvent, AcpRuntimeEventSink } from "../core/acp-runtime.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { AgentIdentity } from "../core/models.js";
 import { type ResolvedRepo, type ResolveRepoOptions, resolveRepo } from "../core/repo-cache.js";
@@ -50,12 +51,17 @@ interface SpawnRecord {
   readonly claimId: string;
   readonly targetRef: string;
   readonly agentId: string;
+  readonly workspacePath?: string | undefined;
   /**
    * Role name this spawn was registered under. Distinct from `agentId`
    * (which is the spawnId `role-timestamp`) — the bridge is role-keyed,
    * so kill() needs the role name to cancel the right SSE loop.
    */
   readonly role?: string;
+}
+
+interface AcpEventSinkRuntime {
+  setAcpEventSink(eventSink: AcpRuntimeEventSink | undefined): void;
 }
 
 /** Result of a spawn attempt. */
@@ -132,6 +138,7 @@ export class SpawnManager {
     this.sessionStore = sessionStore;
     this.groveDir = groveDir;
     this.acpSessionStore = acpSessionStore;
+    this.configureAcpEventSink();
   }
 
   /**
@@ -141,6 +148,16 @@ export class SpawnManager {
    */
   getAcpSessionStore(): AcpSessionStore | undefined {
     return this.acpSessionStore;
+  }
+
+  private configureAcpEventSink(): void {
+    if (!this.agentRuntime || !this.acpSessionStore) return;
+    const runtime = this.agentRuntime as Partial<AcpEventSinkRuntime>;
+    if (typeof runtime.setAcpEventSink !== "function") return;
+    runtime.setAcpEventSink((event: AcpRuntimeEvent) => {
+      this.acpSessionStore?.register(event.sessionId);
+      this.acpSessionStore?.ingest(event);
+    });
   }
 
   /**
@@ -542,11 +559,12 @@ export class SpawnManager {
         : "HEAD";
 
       let provisioned: import("../core/workspace-provisioner.js").ProvisionedWorkspace | undefined;
+      let fallbackReason: string | undefined;
       try {
         await this.ensureReposResolved();
         const primaryRepo = this.resolvedRepos[0];
-        if (primaryRepo === undefined) {
-          throw new Error("No repository resolved for workspace provisioning");
+        if (!primaryRepo) {
+          throw new Error("SpawnManager: resolved repo list is empty after repository resolution.");
         }
         // Use wsSessionId (stable session-level ID) so branch names are predictable
         // and match what resolveRoleWorkspaceStrategies() computes for dependents.
@@ -560,12 +578,14 @@ export class SpawnManager {
         workspacePath = provisioned.path;
       } catch (provisionErr) {
         const reason = provisionErr instanceof Error ? provisionErr.message : String(provisionErr);
+        debugLog("spawn", `workspace provisioning failed for role=${roleId}: ${reason}`);
         if (this.workspaceIsolationPolicy === "strict") {
           throw new Error(`Workspace provisioning failed for '${roleId}': ${reason}`);
         }
         // allow-fallback: try provider.checkoutWorkspace
         if (this.provider.checkoutWorkspace) {
           workspacePath = await this.provider.checkoutWorkspace(spawnId, agent);
+          fallbackReason = reason;
           workspaceMode = { status: "fallback_workspace", path: workspacePath, reason };
         } else {
           throw new Error(`Failed to create git worktree and no fallback available: ${reason}`);
@@ -575,53 +595,69 @@ export class SpawnManager {
       // Step 2: Write config files.
       // Claims are NOT auto-created on spawn — agents create claims explicitly
       // via grove_claim MCP tool when they need swarm coordination.
-      if (provisioned !== undefined) {
-        try {
-          await this.writeMcpConfig(workspacePath);
-          await this.writeAgentInstructions(workspacePath, roleId, context);
-          if (context?.rolePrompt || context?.roleDescription) {
-            await this.writeAgentContext(workspacePath, roleId, context);
-          }
-          // Inject skills declared by the role. SpawnManager does not use the shared
-          // bootstrapWorkspace; the parallel path performs the same injection to land
-          // `.claude/skills/{name}/` and `.codex/skills/{name}/` in the workspace.
-          const roleSkills = Array.isArray(context?.skills)
-            ? (context.skills as readonly string[])
-            : [];
-          if (roleSkills.length > 0 && this.groveDir) {
-            await injectSkills({
-              workspacePath,
-              skills: roleSkills,
-              bundledSkillsRoot: resolveBundledSkillsRoot(dirname(this.groveDir)),
-              workspaceOverrideRoot: join(this.groveDir, "skills"),
-            });
-          }
-          // Protect config files from agent mutation (#7 Workspace Mutation Constraints)
-          const { chmod } = await import("node:fs/promises");
-          for (const protectedFile of [
-            ".mcp.json",
-            ".acpxrc.json",
-            "CLAUDE.md",
-            "CODEX.md",
-            ".grove-role",
-          ]) {
-            const filePath = join(workspacePath, protectedFile);
-            await chmod(filePath, 0o444).catch(() => {
-              // File may not exist — non-fatal
-            });
-          }
+      try {
+        await mkdir(workspacePath, { recursive: true });
+        await this.writeMcpConfig(workspacePath);
+        await this.writeAgentInstructions(workspacePath, roleId, context);
+        if (context?.rolePrompt || context?.roleDescription) {
+          await this.writeAgentContext(workspacePath, roleId, context);
+        }
+        // Inject skills declared by the role. SpawnManager does not use the shared
+        // bootstrapWorkspace; the parallel path performs the same injection to land
+        // `.claude/skills/{name}/` and `.codex/skills/{name}/` in the workspace.
+        const roleSkills = Array.isArray(context?.skills)
+          ? (context.skills as readonly string[])
+          : [];
+        if (roleSkills.length > 0 && this.groveDir) {
+          await injectSkills({
+            workspacePath,
+            skills: roleSkills,
+            bundledSkillsRoot: resolveBundledSkillsRoot(dirname(this.groveDir)),
+            workspaceOverrideRoot: join(this.groveDir, "skills"),
+          });
+        }
+        // Protect config files from agent mutation (#7 Workspace Mutation Constraints)
+        const { chmod } = await import("node:fs/promises");
+        for (const protectedFile of [
+          ".mcp.json",
+          ".acpxrc.json",
+          "CLAUDE.md",
+          "CODEX.md",
+          ".grove-role",
+        ]) {
+          const filePath = join(workspacePath, protectedFile);
+          await chmod(filePath, 0o444).catch(() => {
+            // File may not exist — non-fatal
+          });
+        }
+        await this.hideBootstrapFilesFromGit(workspacePath);
+        if (provisioned !== undefined) {
           workspaceMode = {
             status: "isolated_worktree",
             path: provisioned.path,
             branch: provisioned.branch,
           };
-        } catch (configErr) {
-          const reason = configErr instanceof Error ? configErr.message : String(configErr);
-          if (this.workspaceIsolationPolicy === "strict") {
-            throw new Error(`Bootstrap failed for '${roleId}': ${reason}`);
-          }
-          this.onError(`Config write failed: ${reason}`);
+        } else {
+          workspaceMode = {
+            status: "fallback_workspace",
+            path: workspacePath,
+            reason: fallbackReason ?? "git worktree provisioning failed",
+          };
+        }
+      } catch (configErr) {
+        const reason = configErr instanceof Error ? configErr.message : String(configErr);
+        if (this.workspaceIsolationPolicy === "strict") {
+          throw new Error(`Bootstrap failed for '${roleId}': ${reason}`);
+        }
+        this.onError(`Config write failed: ${reason}`);
+        if (provisioned !== undefined) {
           workspaceMode = { status: "bootstrap_failed", path: provisioned.path, reason };
+        } else {
+          workspaceMode = {
+            status: "fallback_workspace",
+            path: workspacePath,
+            reason: `${fallbackReason ?? "git worktree provisioning failed"}; bootstrap failed: ${reason}`,
+          };
         }
       }
     }
@@ -663,28 +699,6 @@ export class SpawnManager {
         agentCommand = `${command} --full-auto`;
       }
 
-      // For codex roles, require successful codex MCP registration before
-      // spawning. writeMcpConfig above runs ensureCodexMcpRegistered in a
-      // soft-catch so claude roles can proceed when codex isn't installed
-      // or registration fails, but a codex role without grove_* tools is
-      // useless — it would start successfully yet be unable to contribute.
-      // Re-invoke here to await the serialized promise and re-throw on
-      // failure, giving the caller a clear error instead of a dead spawn.
-      if (baseCmd === "codex") {
-        const codexMcpEnv: Record<string, string> = {
-          GROVE_DIR: this.groveDir ?? process.cwd(),
-        };
-        if (process.env.GROVE_NEXUS_URL) codexMcpEnv.GROVE_NEXUS_URL = process.env.GROVE_NEXUS_URL;
-        if (process.env.NEXUS_API_KEY) codexMcpEnv.NEXUS_API_KEY = process.env.NEXUS_API_KEY;
-        if (this.sessionId) codexMcpEnv.GROVE_SESSION_ID = this.sessionId;
-        const servePath = resolveMcpServePath();
-        await this.ensureCodexMcpRegistered(
-          codexMcpEnv,
-          servePath,
-          codexMcpEnv.GROVE_DIR ?? process.cwd(),
-        ); // throws on real registration failure (not "codex not installed")
-      }
-
       if (this.agentRuntime) {
         // Use AgentRuntime interface — works with acpx, subprocess, or any runtime
         // Only an explicit launch context can suppress the initial prompt.
@@ -713,10 +727,9 @@ export class SpawnManager {
           model,
           // Forward grove's MCP server so AcpRuntime hands grove_submit_work /
           // grove_submit_review / grove_done to the agent via ACP's session/new.
-          // Workspace-local .mcp.json / codex registry are still written (see
-          // writeMcpConfig) for CLIs that discover MCP from disk, but adapters
-          // that rely on ACP's mcpServers parameter (e.g. future gemini --acp)
-          // need it on the protocol level.
+          // Workspace-local .mcp.json is still written (see writeMcpConfig)
+          // for CLIs that discover MCP from disk, but adapters that rely on
+          // ACP's mcpServers parameter need it on the protocol level.
           ...(this.groveMcpServer ? { mcpServers: [this.groveMcpServer] } : {}),
         };
         const session = await this.agentRuntime.spawn(roleId, agentConfig);
@@ -761,6 +774,7 @@ export class SpawnManager {
       claimId: "",
       targetRef: spawnId,
       agentId: spawnId,
+      workspacePath,
       role: roleId,
     });
     // Store the actual runtime session ID so reconcile() can correctly
@@ -937,6 +951,7 @@ export class SpawnManager {
           claimId: record.claimId,
           targetRef: record.targetRef,
           agentId: record.agentId,
+          workspacePath: record.workspacePath,
         });
         // Also restore agent session so sendToAgent/getActiveRoles work
         const liveSession = liveSessionMap.get(lookupId);
@@ -1002,7 +1017,13 @@ export class SpawnManager {
             if (session) {
               this.agentSessions.set(role, session);
               this.routableSessions.add(role); // mark as routable — first (newest) match per role
-              this.spawnRecords.set(role, { claimId: "", targetRef: role, agentId: role });
+              this.spawnRecords.set(role, {
+                claimId: "",
+                targetRef: role,
+                agentId: role,
+                workspacePath: cwd,
+                role,
+              });
               reattached++;
               debugLog("reconcile", `fallback reattached role=${role} acpxId=${name}`);
             }
@@ -1086,6 +1107,10 @@ export class SpawnManager {
    * live session topology rather than a stale appProps capture. */
   getTopology(): AgentTopology | undefined {
     return this.topology;
+  }
+
+  getSessionId(): string | undefined {
+    return this.sessionId;
   }
 
   getLogBuffers(): ReadonlyMap<string, AgentLogBuffer> {
@@ -1253,16 +1278,8 @@ export class SpawnManager {
    */
   syncWorkspaces(senderRole: string, recipientRole: string): void {
     if (!this.groveDir) return;
-    let sourceWs: string | undefined;
-    let targetWs: string | undefined;
-    for (const spawnId of this.spawnRecords.keys()) {
-      if (spawnId.startsWith(senderRole) && !sourceWs) {
-        sourceWs = join(this.groveDir, "workspaces", spawnId);
-      }
-      if (spawnId.startsWith(recipientRole) && !targetWs) {
-        targetWs = join(this.groveDir, "workspaces", spawnId);
-      }
-    }
+    const sourceWs = this.workspacePathForRole(senderRole);
+    const targetWs = this.workspacePathForRole(recipientRole);
     if (!sourceWs || !targetWs) return;
     try {
       execSync(
@@ -1276,6 +1293,22 @@ export class SpawnManager {
         `${senderRole}→${recipientRole} FAIL: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
+
+  private workspacePathForRole(role: string): string | undefined {
+    if (!this.groveDir) return undefined;
+    for (const [spawnId, record] of this.spawnRecords) {
+      const recordRole = record.role ?? spawnId.replace(/-[a-z0-9]+$/i, "");
+      if (recordRole !== role) continue;
+      if (record.workspacePath && existsSync(record.workspacePath)) {
+        return record.workspacePath;
+      }
+      // Legacy records from before workspacePath was tracked used the
+      // spawnId as the workspace directory name.
+      const legacyPath = join(this.groveDir, "workspaces", spawnId);
+      if (existsSync(legacyPath)) return legacyPath;
+    }
+    return undefined;
   }
 
   /**
@@ -1313,6 +1346,8 @@ export class SpawnManager {
     }
     // Close all agent sessions via runtime to prevent accumulation
     if (this.agentRuntime) {
+      const runtime = this.agentRuntime as Partial<AcpEventSinkRuntime>;
+      runtime.setAcpEventSink?.(undefined);
       for (const session of this.agentSessions.values()) {
         void this.agentRuntime.close(session).catch(() => {
           /* best-effort — session may already be gone */
@@ -1338,9 +1373,11 @@ export class SpawnManager {
    * discovers grove MCP tools automatically.
    */
   private async writeMcpConfig(workspacePath: string): Promise<void> {
-    // Resolve the .grove directory — workspaces live under .grove/workspaces/
-    const groveDir = join(workspacePath, "..", "..");
-    // Resolve the project root (parent of .grove) for finding src/mcp/serve.ts
+    // Prefer the active session's .grove directory. Fallback workspaces for
+    // Nexus-backed providers can live outside `.grove/workspaces`, so deriving
+    // the Grove root from `workspacePath` can point MCP at the wrong project.
+    const groveDir = this.groveDir ?? join(workspacePath, "..", "..");
+    // Resolve the project root (parent of .grove) for finding src/mcp/serve.ts.
     const projectRoot = join(groveDir, "..");
 
     // Resolve Nexus URL: env var takes precedence (explicit override), then
@@ -1396,6 +1433,7 @@ export class SpawnManager {
 
     // Find the grove MCP server: check dist/ first (installed), then src/ (dev)
     const mcpServePath = resolveMcpServePath(projectRoot);
+    const mcpCommand = process.execPath;
     debugLog("mcpConfig", `selected mcpServePath=${mcpServePath}`);
 
     // Cache the grove MCP server definition so AgentConfig.mcpServers can
@@ -1404,7 +1442,7 @@ export class SpawnManager {
     // discovering .mcp.json locally) have no grove_* tools available.
     this.groveMcpServer = {
       name: "grove",
-      command: "bun",
+      command: mcpCommand,
       args: ["run", mcpServePath],
       env: { ...mcpEnv },
     };
@@ -1412,7 +1450,7 @@ export class SpawnManager {
     const mcpConfig = {
       mcpServers: {
         grove: {
-          command: "bun",
+          command: mcpCommand,
           args: ["run", mcpServePath],
           env: mcpEnv,
         },
@@ -1435,7 +1473,7 @@ export class SpawnManager {
         {
           name: "grove",
           type: "stdio",
-          command: "bun",
+          command: mcpCommand,
           args: ["run", mcpServePath],
           env: Object.entries(mcpEnv).map(([name, value]) => ({ name, value })),
         },
@@ -1447,162 +1485,44 @@ export class SpawnManager {
       "utf-8",
     );
     debugLog("mcpConfig", `wrote .acpxrc.json for acpx mcpServers forwarding`);
+  }
 
-    // Register MCP with codex globally (codex uses ~/.codex/config.toml, not .mcp.json).
-    //
-    // Codex stores MCP servers in a single global config keyed by name.
-    // Parallel role spawns in the same session all share identical env
-    // (GROVE_DIR / GROVE_NEXUS_URL / GROVE_SESSION_ID come from the
-    // SpawnManager, not the individual role), so we only need ONE entry
-    // per session. `ensureCodexMcpRegistered` serializes concurrent calls
-    // through a per-session promise stored on the SpawnManager instance.
-    //
-    // This is best-effort from writeMcpConfig's perspective: a claude
-    // role doesn't need codex registration, and failing the claude spawn
-    // because codex isn't installed or mis-registered would be an
-    // over-reaction. If a codex role is spawned and registration failed,
-    // the caller (see spawn() codex branch below) re-calls this and the
-    // thrown error propagates up to the spawn caller.
+  private async hideBootstrapFilesFromGit(workspacePath: string): Promise<void> {
+    let excludePath: string;
     try {
-      await this.ensureCodexMcpRegistered(mcpEnv, mcpServePath, groveDir);
-    } catch (err) {
-      debugLog(
-        "mcpConfig",
-        `codex mcp registration failed in writeMcpConfig (claude roles unaffected): ${err instanceof Error ? err.message : String(err)}`,
-      );
+      excludePath = execSync("git rev-parse --git-path info/exclude", {
+        cwd: workspacePath,
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+    } catch {
+      return;
     }
+    if (excludePath.length === 0) return;
+
+    const patterns = [
+      ".mcp.json",
+      ".acpxrc.json",
+      "CLAUDE.md",
+      "CODEX.md",
+      ".grove-role",
+      ".grove/",
+      ".claude/",
+      ".codex/",
+    ];
+    let existing = "";
+    try {
+      existing = await readFile(excludePath, "utf-8");
+    } catch {
+      await mkdir(dirname(excludePath), { recursive: true });
+    }
+
+    const existingLines = new Set(existing.split(/\r?\n/));
+    const missing = patterns.filter((pattern) => !existingLines.has(pattern));
+    if (missing.length === 0) return;
+    const prefix = existing.length === 0 || existing.endsWith("\n") ? "" : "\n";
+    await appendFile(excludePath, `${prefix}# Grove runtime files\n${missing.join("\n")}\n`);
   }
-
-  /**
-   * Per-SpawnManager state: a promise chain that serializes codex MCP
-   * registration across parallel spawn() calls. Keyed by GROVE_SESSION_ID
-   * so a new session retries registration instead of reusing a stale one.
-   */
-  private codexRegistration: { sessionId: string | undefined; promise: Promise<void> } | undefined;
-
-  private ensureCodexMcpRegistered(
-    mcpEnv: Record<string, string>,
-    mcpServePath: string,
-    groveDir: string,
-  ): Promise<void> {
-    const sessionId = mcpEnv.GROVE_SESSION_ID;
-
-    // Short-circuit when codex is not installed at all — there is nothing
-    // to configure, and the claude path reads .acpxrc.json directly. Use
-    // spawnSync for a cheap `codex --version` probe, cached on the instance
-    // so we only pay it once.
-    if (this.codexAvailable === undefined) {
-      try {
-        const result = spawnSync("codex", ["--version"], {
-          stdio: "pipe",
-          timeout: 5000,
-        });
-        this.codexAvailable = result.status === 0;
-      } catch {
-        this.codexAvailable = false;
-      }
-    }
-    if (!this.codexAvailable) {
-      return Promise.resolve();
-    }
-
-    // Return an already-successful registration for this session. We only
-    // cache on success — a failure clears the cache so the next caller
-    // retries, guarding against one slow/transient `codex mcp add`
-    // poisoning every subsequent spawn in the same session.
-    if (this.codexRegistration && this.codexRegistration.sessionId === sessionId) {
-      return this.codexRegistration.promise;
-    }
-
-    // Use a stable name `grove` (not `grove-<sessionId>`) so we don't
-    // accumulate stale entries with persisted secrets (NEXUS_API_KEY,
-    // GROVE_SESSION_ID) in ~/.codex/config.toml over time. Each new
-    // session replaces the single entry in place. The serialized promise
-    // chain on `this.codexRegistration` plus the `spawn()` mutex
-    // guarantees that concurrent role spawns in the same session share
-    // one registration call rather than racing the remove/add cycle.
-    //
-    // We still sweep any `grove-*` entries left over from earlier code
-    // paths (or from crashed prior runs) so the global config stays clean.
-    const codexMcpName = "grove";
-
-    // Use argv-based spawnSync rather than a shell string so that paths
-    // containing spaces / quotes / shell metacharacters in mcpServePath,
-    // groveDir, NEXUS_API_KEY, etc. cannot break the command or inject
-    // extra arguments.
-    const addArgs: string[] = ["mcp", "add", codexMcpName];
-    addArgs.push("--env", `GROVE_DIR=${groveDir}`);
-    if (mcpEnv.GROVE_NEXUS_URL) addArgs.push("--env", `GROVE_NEXUS_URL=${mcpEnv.GROVE_NEXUS_URL}`);
-    if (mcpEnv.NEXUS_API_KEY) addArgs.push("--env", `NEXUS_API_KEY=${mcpEnv.NEXUS_API_KEY}`);
-    if (sessionId) addArgs.push("--env", `GROVE_SESSION_ID=${sessionId}`);
-    if (mcpEnv.GROVE_DEBUG) addArgs.push("--env", `GROVE_DEBUG=${mcpEnv.GROVE_DEBUG}`);
-    addArgs.push("--", "bun", "run", mcpServePath);
-
-    const promise = (async () => {
-      // Sweep any stale `grove-*` entries left by earlier code paths that
-      // used per-session names. Best-effort — list output is parsed loosely.
-      try {
-        const list = spawnSync("codex", ["mcp", "list"], {
-          stdio: "pipe",
-          timeout: 5000,
-        });
-        if (list.status === 0) {
-          const stdout = list.stdout?.toString("utf-8") ?? "";
-          for (const line of stdout.split("\n")) {
-            const match = /^\s*(grove-\S+)\b/.exec(line);
-            if (match?.[1]) {
-              spawnSync("codex", ["mcp", "remove", match[1]], {
-                stdio: "pipe",
-                timeout: 5000,
-              });
-            }
-          }
-        }
-      } catch {
-        /* best-effort cleanup */
-      }
-
-      // Remove the current stable name (noop on first registration) and
-      // re-add with the fresh session env.
-      spawnSync("codex", ["mcp", "remove", codexMcpName], {
-        stdio: "pipe",
-        timeout: 5000,
-      });
-      const result = spawnSync("codex", addArgs, {
-        stdio: "pipe",
-        timeout: 10000,
-      });
-      if (result.status !== 0) {
-        const stderr = result.stderr?.toString("utf-8") ?? "";
-        const stdout = result.stdout?.toString("utf-8") ?? "";
-        throw new Error(
-          `codex mcp add ${codexMcpName} failed (exit=${result.status ?? "signal"}): ${stderr || stdout || "no output"}`,
-        );
-      }
-      debugLog("mcpConfig", `codex mcp registered as ${codexMcpName}`);
-    })();
-
-    // Install the cache entry before awaiting so concurrent callers share
-    // the same in-flight promise. On failure we clear it so the next spawn
-    // can retry, and we RE-THROW so the caller (writeMcpConfig → spawn) can
-    // surface the failure when a codex role actually needs these tools.
-    // Note: writeMcpConfig is called for every role, even claude ones. We
-    // don't want claude spawns to fail because codex registration raced,
-    // so writeMcpConfig wraps this in a soft catch before returning.
-    this.codexRegistration = { sessionId, promise };
-    return promise.catch((err) => {
-      if (this.codexRegistration?.promise === promise) {
-        this.codexRegistration = undefined;
-      }
-      debugLog(
-        "mcpConfig",
-        `codex mcp registration failed (will retry next spawn): ${err instanceof Error ? err.message : String(err)}`,
-      );
-      throw err;
-    });
-  }
-
-  private codexAvailable: boolean | undefined;
 
   /**
    * Write CLAUDE.md (agent instructions) into the workspace.
@@ -1641,24 +1561,30 @@ You will receive push notifications from the system when other agents produce wo
 
 Each tool has specific required fields. Do NOT skip them.
 
+Call Grove through the MCP tool-call interface only. In Codex these tools may
+appear with the \`mcp__grove__\` prefix, for example
+\`mcp__grove__grove_submit_work\`, \`mcp__grove__grove_submit_review\`, and
+\`mcp__grove__grove_done\`. Use those tool calls when present; do not write
+custom MCP clients, do not run \`bun --eval\` to call MCP, and do not read or
+print \`.mcp.json\` / \`.acpxrc.json\` because those files can contain runtime
+credentials.
+
 ### Submitting work (coder)
 
-**Step 1: Store files in CAS** — call \`grove_cas_put\` with raw file content:
+**Preferred path: submit the git commit hash.** After editing files, commit your workspace and call \`grove_submit_work\` with \`commitHash\`:
 \`\`\`
-grove_cas_put({ content: "Hello World", agent: { role: "${roleId}" } })
-→ returns { hash: "blake3:a1b2c3..." }
+git add -A && git commit -m "description"
+git rev-parse HEAD
 \`\`\`
-
-**Step 2: Submit work with hashes** — call \`grove_submit_work\`:
 \`\`\`
 grove_submit_work({
   summary: "Created hello.txt",
-  artifacts: { "hello.txt": "blake3:a1b2c3..." },
+  commitHash: "<hash from git rev-parse HEAD>",
   agent: { role: "${roleId}" }
 })
 \`\`\`
 
-Do NOT skip step 1. If you pass a hash that doesn't exist in CAS, the tool returns VALIDATION_ERROR.
+Use CAS artifacts only when there is no git commit. If Grove MCP tools are not visible, stop and report that the MCP tools are unavailable instead of shelling out to the MCP server or HTTP endpoint.
 
 ### Submitting reviews (reviewer)
 
@@ -1700,7 +1626,7 @@ You MUST include at least one score. Without scores the frontier cannot rank wor
 ## Workflow
 
 ### Coder workflow:
-1. Write code and call \`grove_submit_work\` (with artifacts).
+1. Write code, commit it, and call \`grove_submit_work\` with \`commitHash\`.
 2. **STOP. Wait for review.** Do NOT call grove_done.
 3. When review arrives, fix issues and \`grove_submit_work\` again.
 4. Repeat until reviewer approves.
@@ -1715,9 +1641,8 @@ You MUST include at least one score. Without scores the frontier cannot rank wor
     await writeFile(join(workspacePath, "CLAUDE.md"), instructions, "utf-8");
     // Also write CODEX.md for codex agents (codex reads CODEX.md, not CLAUDE.md)
     await writeFile(join(workspacePath, "CODEX.md"), instructions, "utf-8");
-    // Write .grove-role so MCP server can discover GROVE_AGENT_ROLE even when
-    // registered globally (codex mcp add doesn't support per-session env vars).
-    // serve.ts reads this file at startup if GROVE_AGENT_ROLE env is not set.
+    // Write .grove-role so serve.ts can discover GROVE_AGENT_ROLE at startup
+    // if the runtime does not propagate the role environment.
     await writeFile(join(workspacePath, ".grove-role"), roleId, "utf-8");
   }
 
@@ -1742,7 +1667,9 @@ You MUST include at least one score. Without scores the frontier cannot rank wor
     lines.push(
       `## Available MCP Tools`,
       "",
-      "- grove_submit_work — submit work with file artifacts (required: summary, artifacts)",
+      "Use MCP tool calls directly. In Codex, these may be exposed as `mcp__grove__<tool>` names. Do not create ad hoc MCP clients or print MCP config files.",
+      "",
+      "- grove_submit_work — submit work with a git commit hash (preferred) or CAS artifacts",
       "- grove_submit_review — submit a code review with scores (required: targetCid, summary, scores)",
       "- grove_discuss — post a discussion or reply",
       "- grove_reproduce — submit a reproduction attempt",

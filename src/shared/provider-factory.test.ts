@@ -4,7 +4,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TuiDataProvider } from "../tui/provider.js";
@@ -219,6 +219,112 @@ describe("createProvider — config edge cases", () => {
       provider.close();
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("createProvider — nexus mode", () => {
+  test("creates a local session store even when grove.db is absent", async () => {
+    const tempHome = mkdtempSync(join(tmpdir(), "grove-factory-home-"));
+    const tempGrove = makeTempGrove();
+
+    const oldHome = process.env.HOME;
+    const oldFetch = globalThis.fetch;
+    try {
+      process.env.HOME = tempHome;
+      globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/api/v2/files/write" && init?.method === "POST") {
+          return Promise.resolve(
+            new Response(JSON.stringify({ content_id: "etag-1", size: 1 }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            }),
+          );
+        }
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }) as unknown as typeof fetch;
+
+      const backend: ResolvedBackend = {
+        mode: "nexus",
+        url: "http://nexus.test",
+        source: "flag",
+        groveOverride: tempGrove.groveDir,
+      };
+
+      expect(existsSync(join(tempGrove.groveDir, "grove.db"))).toBe(false);
+
+      const provider = await createProvider(backend, "nexus");
+      const session = await (
+        provider as TuiDataProvider & {
+          createSession(input: { readonly goal: string }): Promise<{ readonly id: string }>;
+        }
+      ).createSession({ goal: "launch agents" });
+
+      expect(session.id).toBeString();
+      expect(existsSync(join(tempGrove.groveDir, "grove.db"))).toBe(true);
+      provider.close();
+    } finally {
+      if (oldHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = oldHome;
+      }
+      globalThis.fetch = oldFetch;
+      rmSync(tempHome, { recursive: true, force: true });
+      rmSync(tempGrove.root, { recursive: true, force: true });
+    }
+  });
+
+  test("scopes the handoff store to the resolved namespace", async () => {
+    const tempHome = mkdtempSync(join(tmpdir(), "grove-factory-home-"));
+    const tempGrove = makeTempGrove();
+    writeFileSync(join(tempGrove.groveDir, "namespace"), "project-123/worktree-a\n", "utf-8");
+
+    const oldHome = process.env.HOME;
+    const oldFetch = globalThis.fetch;
+    const requestedPaths: string[] = [];
+    try {
+      process.env.HOME = tempHome;
+      globalThis.fetch = ((input: Parameters<typeof fetch>[0]) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/api/v2/files/list") {
+          requestedPaths.push(url.searchParams.get("path") ?? "");
+          return Promise.resolve(
+            new Response(JSON.stringify({ items: [], has_more: false, next_cursor: null }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            }),
+          );
+        }
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }) as unknown as typeof fetch;
+
+      const backend: ResolvedBackend = {
+        mode: "nexus",
+        url: "http://nexus.test",
+        source: "flag",
+        groveOverride: tempGrove.groveDir,
+      };
+      const provider = await createProvider(backend, "nexus");
+      await (
+        provider as TuiDataProvider & {
+          getHandoffs(query?: unknown): Promise<readonly unknown[]>;
+        }
+      ).getHandoffs({ limit: 10 });
+
+      expect(requestedPaths).toContain("/zones/project-123/worktree-a/handoffs");
+      expect(requestedPaths).not.toContain("/zones/default/handoffs");
+      provider.close();
+    } finally {
+      if (oldHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = oldHome;
+      }
+      globalThis.fetch = oldFetch;
+      rmSync(tempHome, { recursive: true, force: true });
+      rmSync(tempGrove.root, { recursive: true, force: true });
     }
   });
 });

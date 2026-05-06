@@ -13,6 +13,7 @@ describe("normalizeUrl", () => {
     ["ssh://git@gitlab.com/group/sub/p.git", { host: "gitlab.com", path: "group/sub/p" }],
     ["file:///abs/path/to/repo", { host: "local", path: "abs/path/to/repo" }],
     ["/abs/path/to/repo", { host: "local", path: "abs/path/to/repo" }],
+    ["/Users/me/.codex/worktrees/repo", { host: "local", path: "Users/me/.codex/worktrees/repo" }],
     ["/abs/path/to/repo.git", { host: "local", path: "abs/path/to/repo" }],
   ];
 
