@@ -63,25 +63,45 @@ describe("buildTranscriptIndex", () => {
     expect(index.childrenByParentSpanId.get("session-1")?.[0]?.spanId).toBe("tool-1");
   });
 
-  test("auto-detects runtime and routes known runtimes through subprocess parsing", async () => {
+  test("auto-detects runtime and routes known runtimes through dedicated parsers", async () => {
     const acpTranscript = await tempFile(
       "acp.jsonl",
-      ['{"jsonrpc":"2.0","method":"session/new"}', '{"event":"AGENT_START"}'].join("\n"),
+      [
+        '{"jsonrpc":"2.0","method":"session/new"}',
+        '{"jsonrpc":"2.0","id":1,"result":{"sessionId":"sess-1"}}',
+      ].join("\n"),
     );
-    const codexTranscript = await tempFile("codex.jsonl", '{"source":"codex"}\n');
+    const codexTranscript = await tempFile(
+      "codex.jsonl",
+      '{"source":"codex","type":"tool_call","call_id":"call-1","tool_name":"apply_patch"}\n',
+    );
+    const claudeTranscript = await tempFile(
+      "claude.jsonl",
+      [
+        '{"type":"assistant","message":[]}',
+        '{"type":"tool_use","id":"tool-parent","name":"Task"}',
+      ].join("\n"),
+    );
     const unknownTranscript = await tempFile("unknown.jsonl", '{"event":"AGENT_START"}\n');
 
     const acp = await buildTranscriptIndex({ transcriptPath: acpTranscript, runtime: "auto" });
     const codex = await buildTranscriptIndex({ transcriptPath: codexTranscript, runtime: "auto" });
+    const claude = await buildTranscriptIndex({
+      transcriptPath: claudeTranscript,
+      runtime: "auto",
+    });
     const unknown = await buildTranscriptIndex({
       transcriptPath: unknownTranscript,
       runtime: "unknown",
     });
 
     expect(acp.runtime).toBe("acpx");
-    expect(acp.events[1]?.type).toBe(TrajectoryEventType.AgentStart);
+    expect(acp.events[0]?.type).toBe(TrajectoryEventType.AgentStart);
     expect(codex.runtime).toBe("codex");
-    expect(codex.events[0]?.type).toBe(TrajectoryEventType.Raw);
+    expect(codex.events[0]?.type).toBe(TrajectoryEventType.ToolCall);
+    expect(codex.events[0]?.tool).toBe("apply_patch");
+    expect(claude.runtime).toBe("claude-stream-json");
+    expect(claude.events[1]?.type).toBe(TrajectoryEventType.Delegation);
     expect(unknown.runtime).toBe("unknown");
     expect(unknown.events[0]?.type).toBe(TrajectoryEventType.AgentStart);
   });

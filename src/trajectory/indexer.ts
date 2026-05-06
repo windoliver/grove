@@ -1,4 +1,7 @@
 import { readFile } from "node:fs/promises";
+import { parseAcpxLine } from "./parsers/acpx.js";
+import { parseClaudeStreamJsonLine } from "./parsers/claude-stream-json.js";
+import { parseCodexLine } from "./parsers/codex.js";
 import { parseSubprocessLine } from "./parsers/subprocess.js";
 import type {
   ParsedTrajectoryEvent,
@@ -78,8 +81,11 @@ function parseLine(
 ): { readonly events: readonly ParsedTrajectoryEvent[]; readonly warnings: readonly string[] } {
   switch (runtime) {
     case TrajectoryRuntime.Acpx:
+      return parseAcpxLine(line, path, lineNumber, runtime);
     case TrajectoryRuntime.Codex:
+      return parseCodexLine(line, path, lineNumber);
     case TrajectoryRuntime.ClaudeStreamJson:
+      return parseClaudeStreamJsonLine(line, path, lineNumber);
     case TrajectoryRuntime.Subprocess:
     case TrajectoryRuntime.Unknown:
       return parseSubprocessLine(line, path, lineNumber);
