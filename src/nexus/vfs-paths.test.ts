@@ -26,6 +26,8 @@ import {
   relationIndexPath,
   tagIndexPath,
   targetLockPath,
+  workflowPath,
+  workflowsDir,
 } from "./vfs-paths.js";
 
 // ---------------------------------------------------------------------------
@@ -191,6 +193,7 @@ describe("path construction correctness", () => {
   const sourceCid = "blake3source";
   const status = "open";
   const targetRef = "ref-abc";
+  const workflowId = "workflow-001";
 
   test("casPath returns /zones/{zone}/cas/{hash}", () => {
     expect(casPath(zone, hash)).toBe(`/zones/${zone}/cas/${hash}`);
@@ -252,6 +255,14 @@ describe("path construction correctness", () => {
     expect(targetLockPath(zone, targetRef)).toBe(
       `/zones/${zone}/indexes/claims/target-lock/${targetRef}`,
     );
+  });
+
+  test("workflowPath returns /zones/{zone}/workflows/{workflowId}.json", () => {
+    expect(workflowPath(zone, workflowId)).toBe(`/zones/${zone}/workflows/${workflowId}.json`);
+  });
+
+  test("workflowsDir returns /zones/{zone}/workflows", () => {
+    expect(workflowsDir(zone)).toBe(`/zones/${zone}/workflows`);
   });
 });
 

@@ -66,6 +66,12 @@ export interface AgentSession {
 /** Runtime for managing agent lifecycle. */
 export interface AgentRuntime {
   /**
+   * True when spawn(config.goal/config.prompt) starts the first turn itself.
+   * Runtimes without this capability rely on SessionOrchestrator to send the
+   * initial role goal after spawn.
+   */
+  readonly sendsInitialPromptOnSpawn?: boolean | undefined;
+  /**
    * Spawn a new agent session.
    *
    * The returned `session.id` MUST be produced via `buildSessionId(role, n)`

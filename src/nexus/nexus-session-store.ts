@@ -74,7 +74,7 @@ export class NexusSessionStore implements SessionStore {
 
   async updateSession(
     id: string,
-    updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason">>,
+    updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason" | "stopStatus">>,
   ): Promise<void> {
     const existing = await this.getSession(id);
     if (!existing) return;

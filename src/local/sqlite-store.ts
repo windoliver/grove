@@ -53,7 +53,7 @@ import { claimToEntity, contributionToEntity } from "../core/entity.js";
 import { ClaimConflictError, NotFoundError, StateConflictError } from "../core/errors.js";
 import { toUtcIso } from "../core/time.js";
 
-export const CURRENT_SCHEMA_VERSION = 12;
+export const CURRENT_SCHEMA_VERSION = 13;
 const SQLITE_BIND_LIMIT = 900;
 
 // ---------------------------------------------------------------------------
@@ -430,6 +430,9 @@ export function initSqliteDb(dbPath: string): Database {
         if (!sessionColNames.has("stop_reason")) {
           db.run("ALTER TABLE sessions ADD COLUMN stop_reason TEXT");
         }
+        if (!sessionColNames.has("stop_status")) {
+          db.run("ALTER TABLE sessions ADD COLUMN stop_status TEXT");
+        }
       }
     }
 
@@ -514,6 +517,23 @@ export function initSqliteDb(dbPath: string): Database {
     // Migration → v11: create project_settings table (key-value store for
     // per-grove settings like the migrated namespace from `grove migrate`).
     // Handled by SCHEMA_DDL CREATE TABLE IF NOT EXISTS — no ALTER needed.
+
+    // Migration → v13: add stop_status to sessions for semantic loop results.
+    {
+      const sessionTableExists =
+        (db
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'")
+          .get() as { name: string } | null) !== null;
+      if (sessionTableExists) {
+        const sessionCols = db.prepare("PRAGMA table_info(sessions)").all() as readonly {
+          name: string;
+        }[];
+        const sessionColNames = new Set(sessionCols.map((c) => c.name));
+        if (!sessionColNames.has("stop_status")) {
+          db.run("ALTER TABLE sessions ADD COLUMN stop_status TEXT");
+        }
+      }
+    }
 
     db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [
       CURRENT_SCHEMA_VERSION,

@@ -39,6 +39,8 @@ function serialiseState(state: SessionState): string {
     agents: state.agents,
     contributions: state.contributions,
     status: state.status,
+    stopReason: state.stopReason,
+    stopStatus: state.stopStatus,
   });
 }
 

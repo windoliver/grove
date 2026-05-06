@@ -20,6 +20,7 @@
 import type { AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { GroveContract } from "../core/contract.js";
 import type { EventBus, EventHandler, GroveEvent } from "../core/event-bus.js";
+import { LoopStopStatus, type LoopStopStatus as LoopStopStatusValue } from "../core/loop-runner.js";
 import { SessionOrchestrator } from "../core/session-orchestrator.js";
 import type { AgentTopology } from "../core/topology.js";
 import type { WorkspaceIsolationPolicy } from "../core/workspace-provisioner.js";
@@ -57,6 +58,8 @@ export interface SessionState {
   readonly agents: readonly AgentInfo[];
   readonly contributions: number;
   readonly status: "pending" | "running" | "complete";
+  readonly stopReason?: string | undefined;
+  readonly stopStatus?: LoopStopStatusValue | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -74,7 +77,11 @@ export type SessionEvent =
       readonly role: string;
     }
   | { readonly type: "agent_done"; readonly role: string; readonly reason: string }
-  | { readonly type: "session_complete"; readonly reason: string }
+  | {
+      readonly type: "session_complete";
+      readonly reason: string;
+      readonly stopStatus: LoopStopStatusValue;
+    }
   | { readonly type: "error"; readonly message: string };
 
 /** Callback type for event listeners. */
@@ -93,6 +100,8 @@ export class SessionService {
   private goal = "";
   private sessionId = "";
   private sessionStatus: "pending" | "running" | "complete" = "pending";
+  private stopReason: string | undefined;
+  private stopStatus: LoopStopStatusValue | undefined;
   private contributionCount = 0;
   private readonly doneRoles: Set<string> = new Set();
   private readonly eventHandlers: Array<{ role: string; handler: EventHandler }> = [];
@@ -135,6 +144,8 @@ export class SessionService {
     this.goal = goal;
     this.sessionId = sessionId ?? `session-${Date.now()}`;
     this.sessionStatus = "running";
+    this.stopReason = undefined;
+    this.stopStatus = undefined;
     this.contributionCount = 0;
     this.doneRoles.clear();
 
@@ -170,11 +181,16 @@ export class SessionService {
   }
 
   /** Stop the session. */
-  async stopSession(reason: string): Promise<void> {
+  async stopSession(
+    reason: string,
+    stopStatus: LoopStopStatusValue = LoopStopStatus.Interrupted,
+  ): Promise<void> {
     if (this.orchestrator === undefined) return;
     this.sessionStatus = "complete";
-    await this.orchestrator.stop(reason);
-    this.emit({ type: "session_complete", reason });
+    this.stopReason = reason;
+    this.stopStatus = stopStatus;
+    await this.orchestrator.stop(reason, stopStatus);
+    this.emit({ type: "session_complete", reason, stopStatus });
   }
 
   /** Get current session state (serialisable snapshot). */
@@ -190,6 +206,8 @@ export class SessionService {
       agents,
       contributions: this.contributionCount,
       status: this.sessionStatus,
+      stopReason: this.stopReason,
+      stopStatus: this.stopStatus,
     };
   }
 
@@ -229,7 +247,13 @@ export class SessionService {
       const allDone = this.topology.roles.every((r) => this.doneRoles.has(r.name));
       if (allDone && this.sessionStatus === "running") {
         this.sessionStatus = "complete";
-        this.emit({ type: "session_complete", reason: "All agents done" });
+        this.stopReason = "All agents done";
+        this.stopStatus = LoopStopStatus.Achieved;
+        this.emit({
+          type: "session_complete",
+          reason: "All agents done",
+          stopStatus: LoopStopStatus.Achieved,
+        });
       }
     }
   }

@@ -32,7 +32,7 @@ export class InMemorySessionStore implements SessionStore {
 
   async updateSession(
     id: string,
-    updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason">>,
+    updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason" | "stopStatus">>,
   ): Promise<void> {
     const idx = this.sessions.findIndex((s) => s.id === id);
     if (idx === -1) return;

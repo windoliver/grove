@@ -655,6 +655,76 @@ describe("nexusUp fallback (--timeout not supported)", () => {
     expect(calls[1]).not.toContain("--timeout");
   });
 
+  test("passes nexus.yaml port bindings through compose environment", async () => {
+    const dir = makeTempDir();
+    const calls: Array<{ args: string[]; env: Record<string, string> | undefined }> = [];
+    const originalPath = process.env.PATH;
+    process.env.PATH = "/usr/bin:/bin";
+    writeFileSync(
+      join(dir, "nexus.yaml"),
+      [
+        "auth: static",
+        "api_key: sk-test",
+        `data_dir: ${join(dir, "nexus-data")}`,
+        "ports:",
+        "  http: 46000",
+        "  grpc: 46001",
+        "  postgres: 46002",
+        "  dragonfly: 46003",
+        "  zoekt: 46004",
+        "",
+      ].join("\n"),
+    );
+    try {
+      // @ts-expect-error -- mock
+      Bun.spawn = (args: string[], opts?: { env?: Record<string, string> }) => {
+        calls.push({ args, env: opts?.env });
+        return fakeProc(0, "nexus  http://localhost:46000\n", "");
+      };
+      const { nexusUp } = await import("./nexus-lifecycle.js");
+      await nexusUp(dir);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.env?.NEXUS_PORT).toBe("46000");
+      expect(calls[0]!.env?.NEXUS_GRPC_PORT).toBe("46001");
+      expect(calls[0]!.env?.POSTGRES_PORT).toBe("46002");
+      expect(calls[0]!.env?.DRAGONFLY_PORT).toBe("46003");
+      expect(calls[0]!.env?.ZOEKT_PORT).toBe("46004");
+      expect(calls[0]!.env?.NEXUS_API_KEY).toBe("sk-test");
+      expect(calls[0]!.env?.NEXUS_AUTH_TYPE).toBe("static");
+      expect(calls[0]!.env?.NEXUS_HOST_DATA_DIR).toBe(join(dir, "nexus-data"));
+      expect(calls[0]!.env?.PATH).toContain("/Applications/OrbStack.app/Contents/MacOS/xbin");
+    } finally {
+      if (originalPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = originalPath;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("uses NEXUS_CLI override when inherited PATH cannot find nexus", async () => {
+    const originalNexusCli = process.env.NEXUS_CLI;
+    const calls: string[][] = [];
+    process.env.NEXUS_CLI = "/custom/bin/nexus";
+    try {
+      // @ts-expect-error -- mock
+      Bun.spawn = (args: string[], _opts?: unknown) => {
+        calls.push(args);
+        return fakeProc(0, "nexus  http://localhost:2026\n", "");
+      };
+      const { nexusUp } = await import("./nexus-lifecycle.js");
+      await nexusUp("/tmp/test-proj");
+      expect(calls[0]?.[0]).toBe("/custom/bin/nexus");
+    } finally {
+      if (originalNexusCli === undefined) {
+        delete process.env.NEXUS_CLI;
+      } else {
+        process.env.NEXUS_CLI = originalNexusCli;
+      }
+    }
+  });
+
   test("throws immediately for unrelated errors — no fallback attempted", async () => {
     const calls: string[][] = [];
     // @ts-expect-error -- mock

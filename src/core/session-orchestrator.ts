@@ -13,6 +13,7 @@ import type { AgentProfile } from "./agent-profile.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 import type { GroveContract } from "./contract.js";
 import type { EventBus, GroveEvent } from "./event-bus.js";
+import { LoopStopStatus, type LoopStopStatus as LoopStopStatusValue } from "./loop-runner.js";
 import { type ResolvedRepo, type ResolveRepoOptions, resolveRepo } from "./repo-cache.js";
 import type { RepoRef } from "./repo-ref.js";
 import { resolveBundledSkillsRoot, resolveMcpServePath } from "./resolve-mcp-serve-path.js";
@@ -101,6 +102,7 @@ export interface SessionStatus {
   readonly started: boolean;
   readonly stopped: boolean;
   readonly stopReason?: string | undefined;
+  readonly stopStatus?: LoopStopStatusValue | undefined;
 }
 
 /** Info about a single agent in the session. */
@@ -138,7 +140,9 @@ export class SessionOrchestrator {
   private eventHandlers?: Map<string, import("./event-bus.js").EventHandler>;
   private stopped = false;
   private stopReason: string | undefined;
+  private stopStatus: LoopStopStatusValue | undefined;
   private contributionCount = 0;
+  private readonly doneRoles = new Set<string>();
   private startedAt = 0;
   private readonly seenCids = new Set<string>();
   private contributionPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -228,12 +232,10 @@ export class SessionOrchestrator {
 
     this.startedAt = Date.now();
 
-    // AcpxRuntime sends the initial goal during spawn(). MockRuntime does not.
-    // Send goals only to agents whose runtime status is still "running" but
-    // haven't received a prompt yet (i.e., non-acpx runtimes).
-    // We detect this by checking if the runtime exposes AcpxRuntime's
-    // `startTurn` internal helper.
-    if (!("startTurn" in this.config.runtime)) {
+    // Some runtimes start config.goal/config.prompt as part of spawn().
+    // Lightweight test/runtime adapters do not, so the orchestrator sends the
+    // initial role goal for them.
+    if (this.config.runtime.sendsInitialPromptOnSpawn !== true) {
       for (const agent of this.agents) {
         const turn = await this.config.runtime.send(agent.session, agent.goal);
         this.watchTurn(agent.role, turn);
@@ -269,9 +271,14 @@ export class SessionOrchestrator {
   }
 
   /** Stop the session gracefully. */
-  async stop(reason: string): Promise<void> {
+  async stop(
+    reason: string,
+    stopStatus: LoopStopStatusValue = LoopStopStatus.Achieved,
+  ): Promise<void> {
+    if (this.stopped) return;
     this.stopped = true;
     this.stopReason = reason;
+    this.stopStatus = stopStatus;
 
     // Stop contribution polling
     if (this.contributionPollStartTimer) {
@@ -390,19 +397,37 @@ export class SessionOrchestrator {
           }
         }
 
-        // Detect [DONE] signal — stop the session when any agent signals done.
-        // This mirrors what use-done-detection.ts does in the TUI layer.
+        // Detect [DONE] signal. A single role being done is not enough to end
+        // a multi-agent session; the runner stops only after all spawned roles
+        // have signaled done.
         if (
           c.summary.startsWith("[DONE]") ||
           (c.context && (c.context as Record<string, unknown>).done === true)
         ) {
-          void this.stop(`Agent ${sourceRole} signaled done: ${c.summary}`);
-          return;
+          this.doneRoles.add(sourceRole);
+          const requiredDoneRoles = this.doneRequiredRoleNames();
+          const requiredDone =
+            requiredDoneRoles.length > 0 &&
+            requiredDoneRoles.every((role) => this.doneRoles.has(role));
+          if (requiredDone) {
+            void this.stop("Required agents signaled done", LoopStopStatus.Achieved);
+            return;
+          }
         }
       }
-    } catch {
-      // Best effort — don't crash on poll errors
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[SessionOrchestrator] contribution poll failed: ${message}\n`);
     }
+  }
+
+  private doneRequiredRoleNames(): readonly string[] {
+    const spawnedRoleNames = new Set(this.agents.map((agent) => agent.role));
+    const terminalRoles = this.config.topology.roles
+      .filter((role) => spawnedRoleNames.has(role.name) && (role.edges?.length ?? 0) === 0)
+      .map((role) => role.name);
+    if (terminalRoles.length > 0) return terminalRoles;
+    return [...spawnedRoleNames];
   }
 
   /** Get current session status. */
@@ -414,6 +439,7 @@ export class SessionOrchestrator {
       started: this.agents.length > 0,
       stopped: this.stopped,
       stopReason: this.stopReason,
+      stopStatus: this.stopStatus,
     };
   }
 
@@ -449,6 +475,7 @@ export class SessionOrchestrator {
       model: resolved.model,
       cwd,
       goal: fullGoal,
+      mcpServers: [this.groveMcpServer(role.name)],
       env: {
         GROVE_SESSION_ID: this.sessionId,
         GROVE_ROLE: role.name,
@@ -466,6 +493,22 @@ export class SessionOrchestrator {
       session,
       goal: fullGoal,
       workspaceMode,
+    };
+  }
+
+  private groveMcpServer(roleName: string): NonNullable<AgentConfig["mcpServers"]>[number] {
+    const env: Record<string, string> = {
+      GROVE_DIR: join(this.config.projectRoot, ".grove"),
+      GROVE_AGENT_ROLE: roleName,
+      GROVE_SESSION_ID: this.sessionId,
+    };
+    if (process.env.GROVE_NEXUS_URL) env.GROVE_NEXUS_URL = process.env.GROVE_NEXUS_URL;
+    if (process.env.NEXUS_API_KEY) env.NEXUS_API_KEY = process.env.NEXUS_API_KEY;
+    return {
+      name: "grove",
+      command: "bun",
+      args: ["run", resolveMcpServePath(this.config.projectRoot)],
+      env,
     };
   }
 
@@ -570,7 +613,7 @@ export class SessionOrchestrator {
       if (!this.stopped) {
         const reason =
           typeof event.payload.reason === "string" ? event.payload.reason : "Stop condition met";
-        void this.stop(reason);
+        void this.stop(reason, LoopStopStatus.Achieved);
       }
       return;
     }
@@ -618,7 +661,7 @@ export class SessionOrchestrator {
       if (this.contributionCount === 0 && elapsed < GRACE_PERIOD_MS) {
         return; // Too early — wait for at least one contribution or grace period
       }
-      await this.stop("All agents idle — session complete");
+      await this.stop("All agents idle — session complete", LoopStopStatus.Achieved);
     }
   }
 
@@ -644,7 +687,7 @@ export class SessionOrchestrator {
         if (this.stopped || Date.now() >= deadline) {
           clearInterval(poll);
           if (!this.stopped) {
-            void this.stop("Session timed out");
+            void this.stop("Session timed out", LoopStopStatus.MaxIterations);
           }
           resolve(this.stopReason ?? "Timed out");
         }

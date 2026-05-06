@@ -16,6 +16,14 @@ import { parseArgs } from "node:util";
 import type { GroveContract } from "../../core/contract.js";
 import { parseGroveContract } from "../../core/contract.js";
 import { LocalEventBus } from "../../core/local-event-bus.js";
+import {
+  createFallbackRoadmap,
+  GroveLoopRunner,
+  installProcessInterruptHandlers,
+  LoopStopStatus,
+  type SessionAssessment,
+  type WorkflowStateStore,
+} from "../../core/loop-runner.js";
 import { MockRuntime } from "../../core/mock-runtime.js";
 import { lookupPresetTopology } from "../../core/presets.js";
 import { SessionOrchestrator } from "../../core/session-orchestrator.js";
@@ -161,9 +169,29 @@ async function sessionStart(args: readonly string[]): Promise<void> {
 
   // Create runtime via selectRuntime (honors GROVE_RUNTIME env), fall back to mock
   const { selectRuntime } = await import("../../core/select-runtime.js");
+  const { ALLOW_ALL_RESOLVER, ChainResolver, DENY_ALL_RESOLVER } = await import(
+    "../../core/permission-resolver.js"
+  );
+  const { RulesResolver } = await import("../../core/permission-rules.js");
+  const allowAllPermissions = process.env.GROVE_ALLOW_ALL_PERMISSIONS === "1";
+  const permissionResolver = allowAllPermissions
+    ? ALLOW_ALL_RESOLVER
+    : new ChainResolver([
+        new RulesResolver({
+          allowKinds: ["read", "search", "think"],
+          denyTitleSubstrings: ["rm -rf", "sudo", "shutdown"],
+        }),
+        DENY_ALL_RESOLVER,
+      ]);
+  if (allowAllPermissions) {
+    process.stderr.write(
+      "[grove] permission-resolver: ALLOW_ALL (GROVE_ALLOW_ALL_PERMISSIONS=1). " +
+        "Destructive tool calls are auto-approved.\n",
+    );
+  }
   const picked = selectRuntime({
     acpx: { logDir: join(groveDir, "agent-logs") },
-    acp: { logDir: join(groveDir, "agent-logs") },
+    acp: { logDir: join(groveDir, "agent-logs"), permissionResolver },
   });
   const runtime = (await picked.isAvailable()) ? picked : new MockRuntime();
   const eventBus = new LocalEventBus();
@@ -175,42 +203,32 @@ async function sessionStart(args: readonly string[]): Promise<void> {
   // Everything below must run under try/finally so db.close() always fires.
   // Signal handlers are installed early (before orchestrator.start) so a
   // Ctrl-C during startup still records a stopReason.
-  let shuttingDown = false;
-  const sigintHandler = () => void handleSignal(130, "User interrupted (SIGINT)");
-  const sigtermHandler = () => void handleSignal(143, "Terminated (SIGTERM)");
   let sessionId: string | undefined;
+  let orchestrator: SessionOrchestrator | undefined;
+  let workflowStore: WorkflowStateStore | undefined;
   const goalSessionStore = new SqliteGoalSessionStore(db);
 
-  const markDone = async (reason: string): Promise<void> => {
+  const markDone = async (reason: string, stopStatus: LoopStopStatus): Promise<void> => {
     if (sessionId === undefined) return;
     try {
       await goalSessionStore.updateSession(sessionId, {
-        status: "completed",
+        status: terminalSessionStatus(stopStatus),
         completedAt: new Date().toISOString(),
         stopReason: reason,
+        stopStatus,
       });
     } catch {
       // Best-effort — DB may already be closed or session archived.
     }
   };
 
-  const handleSignal = async (exitCode: number, reason: string): Promise<void> => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    try {
-      await markDone(reason);
-    } finally {
-      try {
-        db.close();
-      } catch {
-        /* already closed */
-      }
-      process.exit(exitCode);
-    }
-  };
-
-  process.on("SIGINT", sigintHandler);
-  process.on("SIGTERM", sigtermHandler);
+  const interruptHandlers = installProcessInterruptHandlers(process, {
+    forceExit: (code) => process.exit(code),
+    onInterrupt: (reason) => {
+      void orchestrator?.stop(reason, LoopStopStatus.Interrupted);
+      void markDone(reason, LoopStopStatus.Interrupted);
+    },
+  });
 
   try {
     const session = await goalSessionStore.createSession({
@@ -232,12 +250,14 @@ async function sessionStart(args: readonly string[]): Promise<void> {
     if (nexusUrl) {
       const { NexusHttpClient } = await import("../../nexus/nexus-http-client.js");
       const { NexusSessionStore } = await import("../../nexus/nexus-session-store.js");
+      const { NexusWorkflowStore } = await import("../../nexus/nexus-workflow-store.js");
       const nexusClient = new NexusHttpClient({
         url: nexusUrl,
         ...(nexusApiKey ? { apiKey: nexusApiKey } : {}),
       });
       const zoneId = process.env.GROVE_ZONE_ID ?? "default";
       const nexusSessionStore = new NexusSessionStore(nexusClient, zoneId);
+      workflowStore = new NexusWorkflowStore({ client: nexusClient, zoneId });
 
       const retryDelaysMs = [0, 200, 500, 1000];
       let lastErr: unknown;
@@ -265,7 +285,7 @@ async function sessionStart(args: readonly string[]): Promise<void> {
     const { SqliteContributionStore } = await import("../../local/sqlite-store.js");
     const contributionStore = new SqliteContributionStore(db);
 
-    const orchestrator = new SessionOrchestrator({
+    orchestrator = new SessionOrchestrator({
       goal,
       contract: contract ?? { contractVersion: 3, name: presetName ?? "default" },
       topology: resolution.topology,
@@ -301,20 +321,59 @@ async function sessionStart(args: readonly string[]): Promise<void> {
       message: `Session started with ${status.agents.length} agents`,
     });
 
-    // Wait for session to complete — agents need time to work, submit, review, and call grove_done.
-    // Without this, the CLI exits immediately and the reviewer never gets routed events.
+    // Wait for session completion through the deterministic external loop.
+    // The session orchestrator owns agent routing; the loop owns final status,
+    // interrupt observation, and durable workflow state.
     const SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-    const stopReason = await orchestrator.waitForCompletion(SESSION_TIMEOUT_MS);
-    await markDone(stopReason);
+    const assessment = sessionAssessment(goal, resolution.topology);
+    const loop = new GroveLoopRunner({
+      workflowId: `workflow-${session.id}`,
+      sessionId: session.id,
+      assessment,
+      roadmap: createFallbackRoadmap(assessment),
+      maxIterations: 1,
+      interrupt: interruptHandlers.interrupt,
+      workflowStore,
+      executeIteration: async () => {
+        const stopReason = await orchestrator?.waitForCompletion(SESSION_TIMEOUT_MS);
+        const current = orchestrator?.getStatus();
+        return {
+          stopStatus:
+            current?.stopStatus ??
+            (interruptHandlers.interrupt.interruptRequested
+              ? LoopStopStatus.Interrupted
+              : LoopStopStatus.Achieved),
+          summary: stopReason ?? current?.stopReason ?? "Session complete",
+        };
+      },
+    });
+    const finalState = await loop.run();
+    const finalStopStatus =
+      finalState.status === "running" ? LoopStopStatus.Error : finalState.status;
+    await markDone(finalState.reason ?? "Session complete", finalStopStatus);
   } finally {
-    process.removeListener("SIGINT", sigintHandler);
-    process.removeListener("SIGTERM", sigtermHandler);
+    interruptHandlers.dispose();
     try {
       db.close();
     } catch {
       /* already closed */
     }
   }
+}
+
+function terminalSessionStatus(stopStatus: LoopStopStatus): "completed" | "cancelled" {
+  return stopStatus === LoopStopStatus.Interrupted || stopStatus === LoopStopStatus.Error
+    ? "cancelled"
+    : "completed";
+}
+
+function sessionAssessment(goal: string, topology: AgentTopology): SessionAssessment {
+  return {
+    goal,
+    roles: topology.roles.map((role) => role.name),
+    successCriteria: ["session reaches a deterministic terminal status"],
+    constraints: ["stop decisions are made by GroveLoopRunner, not by agent prose"],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -378,6 +437,8 @@ async function sessionStatus(): Promise<void> {
       goal: latest.goal,
       startedAt: latest.createdAt,
       completedAt: latest.completedAt,
+      stopReason: latest.stopReason,
+      stopStatus: latest.stopStatus,
       contributionCount: latest.contributionCount,
     });
   } catch (err) {
@@ -428,9 +489,10 @@ async function sessionStop(args: readonly string[]): Promise<void> {
     }
     const reason = (values.reason as string | undefined) ?? "User stopped";
     await store.updateSession(latest.id, {
-      status: "completed",
+      status: terminalSessionStatus(LoopStopStatus.Interrupted),
       completedAt: new Date().toISOString(),
       stopReason: reason,
+      stopStatus: LoopStopStatus.Interrupted,
     });
 
     // Best-effort: kill agent processes associated with this session.
@@ -450,8 +512,9 @@ async function sessionStop(args: readonly string[]): Promise<void> {
 
     outputJson({
       sessionId: latest.id,
-      status: "completed",
+      status: terminalSessionStatus(LoopStopStatus.Interrupted),
       reason,
+      stopStatus: LoopStopStatus.Interrupted,
       message: `Session ${latest.id} stopped`,
       warning:
         "Agent processes may still be running if they don't respond to signals. Use 'ps aux | grep grove' to check.",
