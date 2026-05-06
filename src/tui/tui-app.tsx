@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { useKeyboard, useRenderer } from "@opentui/react";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AppProps } from "./app.js";
+import { connectBridgeWithRetry } from "./bridge-retry.js";
 import { createAcpMessageSink } from "./data/acp-message-sink.js";
 import { AcpSessionStore } from "./data/acp-session-store.js";
 import { debugLog } from "./debug-log.js";
@@ -411,6 +412,7 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
             runtime: agentRuntime,
             nexusUrl,
             apiKey,
+            getSessionId: () => manager.getSessionId(),
             eventBus: appProps.eventBus,
             handoffStore,
             onAcpEvent: (ev) => acpSink.handleGroveEvent(ev),
@@ -449,24 +451,11 @@ export const TuiApp: React.NamedExoticComponent<TuiAppProps> = React.memo(functi
           // or a "connected" log that outruns reality. Transient startup
           // faults (a brief Nexus blip, DNS flake) shouldn't kill a session
           // permanently, so retry with exponential backoff before giving up.
-          const attempts = 4;
-          let lastErr: unknown;
-          for (let attempt = 1; attempt <= attempts; attempt += 1) {
-            try {
-              await bridge.connect();
-              lastErr = undefined;
-              break;
-            } catch (err) {
-              lastErr = err;
-              const detail = err instanceof Error ? err.message : String(err);
+          await connectBridgeWithRetry(bridge, {
+            onAttemptFailure: (attempt, attempts, detail) => {
               debugLog("wsBridge", `attempt ${attempt}/${attempts} failed: ${detail}`);
-              if (attempt < attempts) {
-                const backoffMs = 500 * 2 ** (attempt - 1);
-                await new Promise((r) => setTimeout(r, backoffMs));
-              }
-            }
-          }
-          if (lastErr) throw lastErr;
+            },
+          });
           manager.setWsBridge(bridge);
           debugLog("wsBridge", "connected");
         })

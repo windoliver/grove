@@ -520,16 +520,15 @@ export class NexusHandoffStore implements HandoffStore {
   // ---------------------------------------------------------------------------
 
   private async updateHandoff(handoffId: string, fn: (h: Handoff) => Handoff): Promise<void> {
-    let found = false;
-    await this.readModifyWrite(this.filePath(), (handoffs) =>
-      handoffs.map((h) => {
-        if (h.handoffId === handoffId) {
-          found = true;
-          return fn(h);
-        }
-        return h;
-      }),
-    );
+    if (this.sessionId === undefined) {
+      for (const path of await this.listHandoffFilePaths()) {
+        if (await this.updateHandoffInFile(path, handoffId, fn)) return;
+      }
+      const { NotFoundError } = await import("../core/errors.js");
+      throw new NotFoundError({ resource: "Handoff", identifier: handoffId });
+    }
+
+    let found = await this.updateHandoffInFile(this.filePath(), handoffId, fn);
 
     if (!found && this.sessionId !== undefined) {
       // Migration shim with claim-on-move: pre-#164 rows in _global.json
@@ -594,6 +593,33 @@ export class NexusHandoffStore implements HandoffStore {
       // a NotFoundError, not a silent no-op.
       const { NotFoundError } = await import("../core/errors.js");
       throw new NotFoundError({ resource: "Handoff", identifier: handoffId });
+    }
+  }
+
+  private async updateHandoffInFile(
+    path: string,
+    handoffId: string,
+    fn: (h: Handoff) => Handoff,
+  ): Promise<boolean> {
+    let found = false;
+    await this.readModifyWrite(path, (handoffs) =>
+      handoffs.map((h) => {
+        if (h.handoffId === handoffId) {
+          found = true;
+          return fn(h);
+        }
+        return h;
+      }),
+    );
+    return found;
+  }
+
+  private async listHandoffFilePaths(): Promise<readonly string[]> {
+    try {
+      const listing = await this.client.list(handoffsDir(this.zoneId));
+      return listing.files.filter((f) => !f.isDirectory).map((f) => f.path);
+    } catch {
+      return [];
     }
   }
 

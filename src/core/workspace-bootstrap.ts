@@ -44,6 +44,7 @@ export async function bootstrapWorkspace(opts: BootstrapOptions): Promise<void> 
 
   // Write .mcp.json
   if (opts.mcpServePath && opts.groveDir) {
+    const mcpCommand = process.execPath;
     const mcpEnv: Record<string, string> = { GROVE_DIR: opts.groveDir };
     if (opts.nexusUrl) mcpEnv.GROVE_NEXUS_URL = opts.nexusUrl;
     if (opts.nexusApiKey) mcpEnv.NEXUS_API_KEY = opts.nexusApiKey;
@@ -52,7 +53,7 @@ export async function bootstrapWorkspace(opts: BootstrapOptions): Promise<void> 
     const mcpConfig = {
       mcpServers: {
         grove: {
-          command: "bun",
+          command: mcpCommand,
           args: ["run", opts.mcpServePath],
           env: mcpEnv,
         },
@@ -68,7 +69,7 @@ export async function bootstrapWorkspace(opts: BootstrapOptions): Promise<void> 
         {
           name: "grove",
           type: "stdio",
-          command: "bun",
+          command: mcpCommand,
           args: ["run", opts.mcpServePath],
           env: Object.entries(mcpEnv).map(([name, value]) => ({ name, value })),
         },
@@ -104,7 +105,16 @@ When you receive a notification with a source branch, run \`git merge <branch>\`
 
 ## MCP Tools
 
-- \`grove_submit_work\` — submit your work. Pass commitHash (git commit SHA) so others can see your files.
+Call Grove through the MCP tool-call interface only. In Codex these tools may
+appear with the \`mcp__grove__\` prefix, for example
+\`mcp__grove__grove_submit_work\`, \`mcp__grove__grove_submit_review\`, and
+\`mcp__grove__grove_done\`. Use those tool calls when present; do not write
+custom MCP clients, do not run \`bun --eval\` to call MCP, and do not read or
+print \`.mcp.json\` / \`.acpxrc.json\` because those files can contain runtime
+credentials. If Grove MCP tools are not visible, stop and report that the MCP
+tools are unavailable.
+
+- \`grove_submit_work\` — submit your work by passing commitHash (git commit SHA) so others can see your files. Call this MCP tool directly.
 - \`grove_submit_review\` — review another agent's work. Requires targetCid from the notification.
 - \`grove_done\` — signal session complete. Only call when work is approved.
 

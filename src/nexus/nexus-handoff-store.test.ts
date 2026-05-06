@@ -126,6 +126,29 @@ describe("NexusHandoffStore: Nexus-specific behavior", () => {
     }
   });
 
+  test("unscoped mutations update session-scoped handoff files", async () => {
+    const client = new MockNexusClient();
+    const scoped = new NexusHandoffStore(client, "sess-1", "default");
+    const admin = new NexusHandoffStore(client, undefined, "default");
+    try {
+      const h = await scoped.create({
+        sourceCid: "blake3:a",
+        fromRole: "coder",
+        toRole: "reviewer",
+      });
+
+      await admin.markAcked(h.handoffId);
+
+      const updated = await scoped.get(h.handoffId);
+      expect(updated?.ackedAt).toBeDefined();
+      const global = await client.readWithMeta("/zones/default/handoffs/_global.json");
+      expect(global).toBeUndefined();
+    } finally {
+      scoped.close();
+      admin.close();
+    }
+  });
+
   test("scoped list includes pre-#164 _global migration rows", async () => {
     const client = new MockNexusClient();
     const legacy = new NexusHandoffStore(client, undefined, "default");

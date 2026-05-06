@@ -34,6 +34,9 @@ describe("bootstrapWorkspace", () => {
 
     const codexMd = readFileSync(join(workspaceDir, "CODEX.md"), "utf-8");
     expect(codexMd).toContain("coder");
+    expect(codexMd).toContain("mcp__grove__grove_submit_work");
+    expect(codexMd).toContain("do not run `bun --eval`");
+    expect(codexMd).toContain("do not read or");
   });
 
   test("writes .mcp.json when mcpServePath and groveDir are provided", async () => {
@@ -49,9 +52,12 @@ describe("bootstrapWorkspace", () => {
     expect(existsSync(mcpPath)).toBe(true);
 
     const mcp = JSON.parse(readFileSync(mcpPath, "utf-8"));
-    expect(mcp.mcpServers.grove.command).toBe("bun");
+    expect(mcp.mcpServers.grove.command).toBe(process.execPath);
     expect(mcp.mcpServers.grove.env.GROVE_AGENT_ROLE).toBe("reviewer");
     expect(mcp.mcpServers.grove.env.GROVE_DIR).toBe("/path/to/.grove");
+
+    const acpx = JSON.parse(readFileSync(join(workspaceDir, ".acpxrc.json"), "utf-8"));
+    expect(acpx.mcpServers[0].command).toBe(process.execPath);
   });
 
   test("skips .mcp.json when mcpServePath is absent", async () => {

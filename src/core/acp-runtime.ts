@@ -11,7 +11,7 @@ import {
 import { sessionUpdateToMessage } from "../acp/session-update-mapper.js";
 import { AcpTurnImpl } from "../acp/turn-direct.js";
 import type { AcpxTurn, Message, Result } from "../acp/types.js";
-import { resolveAcpLaunch } from "./acp-launch.js";
+import { type AcpLaunch, resolveAcpLaunch } from "./acp-launch.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 import type { AgentSessionEntity } from "./entity.js";
 import { agentSessionToEntity } from "./entity.js";
@@ -69,9 +69,10 @@ async function launchSubprocess(
   agent: string,
   cwd: string,
   env: NodeJS.ProcessEnv,
+  opts: { readonly model?: string | undefined; readonly command?: string | undefined } = {},
 ): Promise<LaunchResult> {
   const launch = resolveAcpLaunch(agent);
-  const child = nodeSpawn(launch.command, [...launch.args], {
+  const child = nodeSpawn(launch.command, buildAcpLaunchArgs(launch, opts, env), {
     cwd,
     env,
     stdio: ["pipe", "pipe", "pipe"],
@@ -89,6 +90,34 @@ async function launchSubprocess(
     }
   };
   return { clientStream, dispose };
+}
+
+/**
+ * Build ACP adapter argv from the resolved launch target plus role/runtime
+ * overrides. Codex ACP reads model selection from Codex config, not from ACP
+ * session metadata, so pass model explicitly when Grove has one.
+ */
+export function buildAcpLaunchArgs(
+  launch: AcpLaunch,
+  opts: { readonly model?: string | undefined; readonly command?: string | undefined } = {},
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const args = [...launch.args];
+  if (launch.agent !== "codex") return args;
+
+  const model = (opts.model ?? env.GROVE_CODEX_MODEL)?.trim();
+  if (model) {
+    args.push("-c", `model=${JSON.stringify(model)}`);
+  }
+
+  const allowAll =
+    env.GROVE_ALLOW_ALL_PERMISSIONS === "1" ||
+    opts.command?.includes("--full-auto") === true ||
+    opts.command?.includes("--dangerously-bypass-approvals-and-sandbox") === true;
+  if (allowAll) {
+    args.push("-c", 'sandbox_mode="danger-full-access"', "-c", 'approval_policy="never"');
+  }
+  return args;
 }
 
 export class AcpRuntime implements AgentRuntime {
@@ -154,7 +183,10 @@ export class AcpRuntime implements AgentRuntime {
 
     const launched = this.launchOverride
       ? await this.launchOverride(agent, config.cwd, mergedEnv)
-      : await launchSubprocess(agent, config.cwd, mergedEnv);
+      : await launchSubprocess(agent, config.cwd, mergedEnv, {
+          model: config.model,
+          command: config.command,
+        });
 
     const client = this.buildClient(id);
     const connection = new ClientSideConnection(() => client, launched.clientStream);
@@ -257,7 +289,7 @@ export class AcpRuntime implements AgentRuntime {
     if (entry.closed) throw new Error(`AcpRuntime.send: session ${session.id} is closed`);
 
     const turnId = `${session.id}-${Date.now().toString(36)}-${this.nextId++}`;
-    let resolveResult: (r: Result) => void = () => {};
+    let resolveResult: (r: Result) => void = () => undefined;
     const resultPromise = new Promise<Result>((r) => {
       resolveResult = r;
     });
