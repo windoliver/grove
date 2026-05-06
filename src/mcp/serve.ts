@@ -517,6 +517,42 @@ try {
     }
   }
 
+  // Cross-process WatchHub bridge: when grove-server is reachable on its
+  // standard service port and we hold a namespace key, fire entity-changed
+  // events as POSTs to /api/watch/notify. Without this, agent-driven
+  // contributions land in Nexus VFS but the TUI's grove-server-mediated
+  // EntityStore feed never sees them — handoff still routes through
+  // Nexus IPC, but the TUI-side feed stays empty.
+  let onEntityWrite:
+    | ((event: import("../core/watch-events.js").EntityWriteEvent) => void)
+    | undefined;
+  try {
+    const { resolveServicePort } = await import("../shared/service-lifecycle.js");
+    const { readClientKey } = await import("../core/project-key.js");
+    const groveDir = process.env.GROVE_DIR ?? groveOverride;
+    const apiKey = groveDir ? readClientKey(groveDir) : undefined;
+    if (apiKey) {
+      const port = resolveServicePort("server");
+      const url = `http://localhost:${port}/api/watch/notify`;
+      onEntityWrite = (event) => {
+        // Fire-and-forget: do not block the contribute path on the bridge.
+        void fetch(url, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ kind: event.kind, op: event.op, entity: event.entity }),
+          signal: AbortSignal.timeout(2_000),
+        }).catch(() => undefined);
+      };
+    }
+  } catch {
+    // Best-effort: when groveDir/apiKey/port can't be resolved, the cross-
+    // process bridge stays disabled. Agents still write to Nexus, but the
+    // TUI feed will only update via polling.
+  }
+
   deps = {
     contributionStore,
     claimStore,
@@ -530,6 +566,7 @@ try {
     contract: loadedContract,
     onContributionWrite: runtime.onContributionWrite,
     ...(onContributionWritten ? { onContributionWritten } : {}),
+    ...(onEntityWrite ? { onEntityWrite, namespace: zoneId } : {}),
     workspaceBoundary: runtime.groveRoot,
     goalSessionStore: runtime.goalSessionStore,
     ...(outcomeStore ? { outcomeStore } : {}),

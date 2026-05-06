@@ -343,6 +343,37 @@ watch.get("/watch/metrics", async (c) => {
   );
 });
 
+// ---------------------------------------------------------------------------
+// POST /api/watch/notify — cross-process WatchHub event injection.
+//
+// MCP / agent processes write contributions/claims directly to Nexus VFS.
+// grove-server's WatchHub only fires for writes performed through grove-
+// server's own Nexus*Store wrappers (see NexusWatchPublisher), so without
+// a bridge those out-of-process writes are invisible to /api/watch
+// subscribers.
+//
+// This endpoint is the bridge: MCP POSTs the just-written entity to
+// grove-server, which fires watchHub.recordWrite. SSE consumers see the
+// event the same way they would for an in-process write.
+//
+// Auth: same namespaceAuth middleware as the rest of /api/* — the caller
+// must hold a key for this server's namespace.
+// ---------------------------------------------------------------------------
+
+const watchNotifySchema = z.object({
+  kind: z.enum(KIND_VALUES),
+  op: z.enum(["ADDED", "MODIFIED", "DELETED"]),
+  entity: z.unknown(),
+});
+
+watch.post("/watch/notify", zValidator("json", watchNotifySchema), async (c) => {
+  const namespace = c.get("namespace");
+  const { kind, op, entity } = c.req.valid("json");
+  const hub: WatchHub = c.get("deps").watchHub;
+  hub.recordWrite({ kind: kind as WatchKind, namespace, op, entity: entity as never });
+  return c.json({ ok: true });
+});
+
 async function listForKind(
   deps: ServerDeps,
   namespace: string,
