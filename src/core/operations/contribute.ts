@@ -805,7 +805,7 @@ async function writeContributionWithHandoffs(
   // Even without handoffs, use the atomic path when onCommit is provided
   // and the store supports cowrite — this ensures the idempotency row is
   // written inside the same SQLite transaction as the contribution.
-  if (onCommit !== undefined && cowriteStore.putWithCowrite !== undefined) {
+  if (!needsHandoffs && onCommit !== undefined && cowriteStore.putWithCowrite !== undefined) {
     return writeAtomic(
       contribution,
       [],

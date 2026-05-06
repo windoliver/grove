@@ -30,8 +30,11 @@ export function normalizeUrl(raw: string): NormalizedRepo {
   let rawPath: string;
 
   if (scpMatch) {
-    host = scpMatch[2]!;
-    rawPath = scpMatch[3]!;
+    const matchedHost = scpMatch[2];
+    const matchedPath = scpMatch[3];
+    if (!matchedHost || !matchedPath) throw new Error(`invalid SCP-like repo reference: ${raw}`);
+    host = matchedHost;
+    rawPath = matchedPath;
   } else if (SCHEME_RE.test(trimmed)) {
     // Reject empty-authority URLs (e.g. "https:///foo/bar") before URL() normalizes them.
     if (/^[a-z][a-z0-9+.-]*:\/\/\//i.test(trimmed) && !/^file:/i.test(trimmed)) {
@@ -77,7 +80,7 @@ export function normalizeUrl(raw: string): NormalizedRepo {
   // Validate raw path BEFORE cleaning, so traversal segments (e.g. `..`) that
   // URL() would silently normalize away are still caught.
   const rawCleaned = rawPath.replace(/\.git$/, "").replace(/\/+$/, "");
-  validatePathSegments(rawCleaned);
+  validatePathSegments(rawCleaned, { allowLeadingDot: host === "local" });
 
   const cleaned = rawCleaned;
 
@@ -86,7 +89,10 @@ export function normalizeUrl(raw: string): NormalizedRepo {
   return { host: host.toLowerCase(), path: cleaned };
 }
 
-function validatePathSegments(path: string): void {
+function validatePathSegments(
+  path: string,
+  opts: { readonly allowLeadingDot?: boolean } = {},
+): void {
   if (path.includes("\x00")) throw new Error(`invalid path (null byte): ${path}`);
   if (path.includes("\\")) throw new Error(`invalid path (backslash): ${path}`);
   for (const seg of path.split("/")) {
@@ -94,7 +100,7 @@ function validatePathSegments(path: string): void {
     if (seg === ".." || seg === ".") {
       throw new Error(`invalid path (traversal '${seg}'): ${path}`);
     }
-    if (seg.startsWith(".")) {
+    if (!opts.allowLeadingDot && seg.startsWith(".")) {
       throw new Error(`invalid path (leading dot in segment '${seg}'): ${path}`);
     }
     if (seg.includes(":")) {

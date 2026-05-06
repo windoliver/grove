@@ -283,7 +283,7 @@ export class NexusHttpClient implements NexusClient {
       encoding: "utf8",
     };
     if (opts?.ifMatch !== undefined) body.if_match = opts.ifMatch;
-    if (opts?.ifNoneMatch !== undefined) body.if_none_match = opts.ifNoneMatch;
+    if (opts?.ifNoneMatch !== undefined) body.if_none_match = opts.ifNoneMatch === "*";
 
     const result = await this.request("POST", "/api/v2/files/write", WriteResponseSchema, {
       body,

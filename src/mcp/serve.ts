@@ -402,7 +402,10 @@ try {
       const { NexusEventBus } = await import("../nexus/nexus-event-bus.js");
       const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
       const apiKey = process.env.NEXUS_API_KEY;
-      const ipcClient = nexusUrl && apiKey ? new NexusIpcClient({ nexusUrl, apiKey }) : undefined;
+      const ipcClient =
+        nexusUrl && apiKey
+          ? new NexusIpcClient({ nexusUrl, apiKey, sessionId: process.env.GROVE_SESSION_ID })
+          : undefined;
       eventBus = new NexusEventBus(ipcClient);
       process.stderr.write(`grove-mcp: IPC via Nexus EventBus at ${nexusUrl}\n`);
     } else {

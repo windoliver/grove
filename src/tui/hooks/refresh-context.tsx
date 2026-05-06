@@ -40,7 +40,7 @@ SignalContext.displayName = "RefreshSignalContext";
 
 export interface RefreshProviderProps {
   readonly factory: InformerFactory;
-  readonly children: ReactNode;
+  readonly children?: ReactNode | undefined;
 }
 
 export function RefreshProvider(props: RefreshProviderProps): ReactNode {
@@ -85,17 +85,18 @@ export function useRefreshSignal(onRefresh: () => void): void {
 
 export interface RefreshProviderHolderProps {
   readonly holder: InformerHolder;
-  readonly children: ReactNode;
+  readonly children?: ReactNode | undefined;
 }
 
 /**
- * Holder variant for the interactive TUI flow — same async-arrival
- * semantics as `<InformerProviderHolder>` (children render bare until the
- * factory is set; once set, `<RefreshProvider>` mounts).
+ * Holder variant for the interactive TUI flow. It keeps provider wrappers
+ * mounted across async factory arrival so child state is not reset during
+ * setup -> boardroom transitions.
  */
 export function RefreshProviderHolder(props: RefreshProviderHolderProps): ReactNode {
   const { holder, children } = props;
   const [factory, setFactory] = useState<InformerFactory | null>(() => holder.current());
+  const [signal, setSignal] = useState(0);
   const lastSeen = useRef(factory);
   lastSeen.current = factory;
   const sync = useCallback(() => {
@@ -107,6 +108,21 @@ export function RefreshProviderHolder(props: RefreshProviderHolderProps): ReactN
     sync();
     return detach;
   }, [holder, sync]);
-  if (!factory) return <>{children}</>;
-  return <RefreshProvider factory={factory}>{children}</RefreshProvider>;
+  const refresh = useCallback<RefreshFn>(
+    (kind) => {
+      if (!factory) return;
+      setSignal((s) => s + 1);
+      void factory.relist(kind);
+    },
+    [factory],
+  );
+
+  // Keep the context provider mounted while the async factory is still null.
+  // Changing from a fragment to a provider remounts children and resets the
+  // interactive TUI state during the setup -> boardroom transition.
+  return (
+    <RefreshFnContext.Provider value={factory ? refresh : null}>
+      <SignalContext.Provider value={{ signal }}>{children}</SignalContext.Provider>
+    </RefreshFnContext.Provider>
+  );
 }

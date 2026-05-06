@@ -19,6 +19,7 @@ import { EmptyState } from "../components/empty-state.js";
 import { renderGraph } from "../layout/edge-render.js";
 import { layoutGraph } from "../layout/graph-layout.js";
 import { PLATFORM_COLORS, theme } from "../theme.js";
+import { detectCli } from "./agent-cli-detect.js";
 
 /** Known CLI tools and their platform identifiers. */
 const AGENT_CLIS: readonly { cli: string; platform: string; label: string }[] = [
@@ -39,11 +40,6 @@ export interface AgentDetectProps {
     edgeTimeouts: Map<string, number>,
   ) => void;
   readonly onBack: () => void;
-}
-
-/** Check if a CLI tool is installed. */
-function detectCli(name: string): boolean {
-  return Bun.which(name) !== null;
 }
 
 /** Screen 3: Launch preview — agent detection + role prompt configuration. */

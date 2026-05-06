@@ -64,6 +64,18 @@ function makeFetch(
   }) as typeof fetch;
 }
 
+async function withSilencedConsoleError<T>(fn: () => Promise<T>): Promise<T> {
+  const originalConsoleError = console.error;
+  console.error = () => {
+    /* expected */
+  };
+  try {
+    return await fn();
+  } finally {
+    console.error = originalConsoleError;
+  }
+}
+
 // ─── hasSynced ────────────────────────────────────────────────────────────────
 
 describe("Informer hasSynced", () => {
@@ -715,45 +727,49 @@ describe("Informer run() safety", () => {
 
 describe("Informer handler isolation", () => {
   test("throwing handler does not prevent other handlers from receiving events", async () => {
-    const ac = new AbortController();
-    const received: string[] = [];
-    const informer = new Informer(
-      new WatchClient({
-        baseUrl: "http://t",
-        kind: "Contribution",
-        authHeader: "Bearer x",
-        fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
-        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-      }),
-    );
-    informer.addEventHandler(() => {
-      throw new Error("handler boom");
+    await withSilencedConsoleError(async () => {
+      const ac = new AbortController();
+      const received: string[] = [];
+      const informer = new Informer(
+        new WatchClient({
+          baseUrl: "http://t",
+          kind: "Contribution",
+          authHeader: "Bearer x",
+          fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
+          backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+        }),
+      );
+      informer.addEventHandler(() => {
+        throw new Error("handler boom");
+      });
+      informer.addEventHandler((op, entity) => {
+        received.push(`${op}:${(entity as { id: string }).id}`);
+      });
+      await informer.run(ac.signal);
+      // Second handler must still receive ADDED for E_A despite first handler throwing
+      expect(received).toContain("ADDED:cid-a");
     });
-    informer.addEventHandler((op, entity) => {
-      received.push(`${op}:${(entity as { id: string }).id}`);
-    });
-    await informer.run(ac.signal);
-    // Second handler must still receive ADDED for E_A despite first handler throwing
-    expect(received).toContain("ADDED:cid-a");
   });
 
   test("throwing handler does not kill the watch loop (informer stays synced)", async () => {
-    const ac = new AbortController();
-    const informer = new Informer(
-      new WatchClient({
-        baseUrl: "http://t",
-        kind: "Contribution",
-        authHeader: "Bearer x",
-        fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
-        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-      }),
-    );
-    informer.addEventHandler(() => {
-      throw new Error("noisy handler");
+    await withSilencedConsoleError(async () => {
+      const ac = new AbortController();
+      const informer = new Informer(
+        new WatchClient({
+          baseUrl: "http://t",
+          kind: "Contribution",
+          authHeader: "Bearer x",
+          fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
+          backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+        }),
+      );
+      informer.addEventHandler(() => {
+        throw new Error("noisy handler");
+      });
+      // Should resolve (not reject) even though a handler always throws
+      await expect(informer.run(ac.signal)).resolves.toBeUndefined();
+      expect(informer.hasSynced()).toBe(true);
     });
-    // Should resolve (not reject) even though a handler always throws
-    await expect(informer.run(ac.signal)).resolves.toBeUndefined();
-    expect(informer.hasSynced()).toBe(true);
   });
 
   test("unsubscribed handler no longer receives events", async () => {
@@ -840,27 +856,29 @@ describe("Informer handler isolation", () => {
   });
 
   test("async handler rejection does not become unhandled and does not skip next handler", async () => {
-    const ac = new AbortController();
-    const h2Events: string[] = [];
-    const informer = new Informer(
-      new WatchClient({
-        baseUrl: "http://t",
-        kind: "Contribution",
-        authHeader: "Bearer x",
-        fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
-        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
-      }),
-    );
-    // Async handler that rejects — must not propagate as unhandled rejection
-    informer.addEventHandler(async () => {
-      throw new Error("async handler boom");
+    await withSilencedConsoleError(async () => {
+      const ac = new AbortController();
+      const h2Events: string[] = [];
+      const informer = new Informer(
+        new WatchClient({
+          baseUrl: "http://t",
+          kind: "Contribution",
+          authHeader: "Bearer x",
+          fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
+          backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+        }),
+      );
+      // Async handler that rejects — must not propagate as unhandled rejection
+      informer.addEventHandler(async () => {
+        throw new Error("async handler boom");
+      });
+      informer.addEventHandler((op, entity) => {
+        h2Events.push(`${op}:${(entity as { id: string }).id}`);
+      });
+      // Must resolve (not reject), and h2 must still get events
+      await expect(informer.run(ac.signal)).resolves.toBeUndefined();
+      expect(h2Events).toContain("ADDED:cid-a");
     });
-    informer.addEventHandler((op, entity) => {
-      h2Events.push(`${op}:${(entity as { id: string }).id}`);
-    });
-    // Must resolve (not reject), and h2 must still get events
-    await expect(informer.run(ac.signal)).resolves.toBeUndefined();
-    expect(h2Events).toContain("ADDED:cid-a");
   });
 
   test("slow async handler delays next event delivery (serialized fanout)", async () => {
