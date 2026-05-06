@@ -215,7 +215,10 @@ export function generateNexusYaml(projectRoot: string, opts: GenerateNexusYamlOp
  */
 export async function ensureNexusComposeFile(projectRoot: string): Promise<void> {
   const destCompose = join(projectRoot, "nexus-stack.yml");
-  if (existsSync(destCompose)) return;
+  if (existsSync(destCompose)) {
+    patchNexusComposeFile(destCompose);
+    return;
+  }
 
   // 1. Try the nexus Python package bundled data directory.
   let sourceDir: string | undefined;
@@ -256,6 +259,7 @@ export async function ensureNexusComposeFile(projectRoot: string): Promise<void>
   }
 
   copyFileSync(join(sourceDir, "nexus-stack.yml"), destCompose);
+  patchNexusComposeFile(destCompose);
 
   // Also copy the pgvector init SQL if present (postgres init script).
   const sqlFile = "001-enable-pgvector.sql";
@@ -263,6 +267,23 @@ export async function ensureNexusComposeFile(projectRoot: string): Promise<void>
   if (existsSync(srcSql)) {
     const destSql = join(projectRoot, sqlFile);
     if (!existsSync(destSql)) copyFileSync(srcSql, destSql);
+  }
+}
+
+export function normalizeNexusComposeForGrove(content: string): string {
+  return content.replace(
+    /NEXUS_SEARCH_DAEMON:\s*"true"/g,
+    `NEXUS_SEARCH_DAEMON: "\${NEXUS_SEARCH_DAEMON:-true}"`,
+  );
+}
+
+function patchNexusComposeFile(path: string): void {
+  try {
+    const current = readFileSync(path, "utf-8");
+    const next = normalizeNexusComposeForGrove(current);
+    if (next !== current) writeFileSync(path, next, "utf-8");
+  } catch {
+    // Best-effort: nexus up will surface real compose errors.
   }
 }
 
@@ -334,6 +355,31 @@ function buildNexusUpArgs(opts: {
   return args;
 }
 
+function readConfiguredHttpPort(projectRoot: string): number | undefined {
+  try {
+    const yamlPath = join(projectRoot, "nexus.yaml");
+    if (!existsSync(yamlPath)) return undefined;
+    const parsed = yamlParse(readFileSync(yamlPath, "utf-8")) as Record<string, unknown> | null;
+    const http = (parsed?.ports as Record<string, unknown> | undefined)?.http;
+    if (typeof http === "number" && http > 0 && http <= 65530) return http;
+  } catch {
+    // Fall through to derived port.
+  }
+  return undefined;
+}
+
+function buildNexusUpEnv(projectRoot: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  if (!env.NEXUS_SEARCH_DAEMON) {
+    env.NEXUS_SEARCH_DAEMON = "false";
+  }
+  if (!env.NEXUS_APPROVALS_GRPC_PORT) {
+    const httpPort = readConfiguredHttpPort(projectRoot) ?? derivePort(projectRoot);
+    env.NEXUS_APPROVALS_GRPC_PORT = String(httpPort + 5);
+  }
+  return env;
+}
+
 /**
  * Run `nexus up` in the project root.
  *
@@ -379,9 +425,11 @@ export async function nexusUp(_projectRoot: string, opts: NexusUpOptions = {}): 
   }
 
   const args = buildNexusUpArgs({ wantsBuild, sourceDir, timeout });
+  const env = buildNexusUpEnv(projectRoot);
 
   const proc = Bun.spawn(args, {
     cwd: projectRoot,
+    env,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -443,6 +491,7 @@ export async function nexusUp(_projectRoot: string, opts: NexusUpOptions = {}): 
       const fallbackArgs = buildNexusUpArgs({ wantsBuild, sourceDir, timeout: undefined });
       const fallback = Bun.spawn(fallbackArgs, {
         cwd: projectRoot,
+        env,
         stdout: "pipe",
         stderr: "pipe",
       });

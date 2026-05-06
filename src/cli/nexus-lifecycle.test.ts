@@ -16,6 +16,7 @@ import {
   generateNexusYaml,
   inferNexusPreset,
   type NexusState,
+  normalizeNexusComposeForGrove,
   parseNexusPortFromDockerPs,
   readNexusApiKey,
   readNexusState,
@@ -304,6 +305,16 @@ describe("generateNexusYaml", () => {
       unknown
     >;
     expect(parsed.data_dir).toBe("/custom/data");
+  });
+});
+
+describe("normalizeNexusComposeForGrove", () => {
+  test("makes packaged search daemon setting environment-configurable", () => {
+    const input = ["environment:", '  NEXUS_SEARCH_DAEMON: "true"', "  OTHER: value"].join("\n");
+
+    expect(normalizeNexusComposeForGrove(input)).toContain(
+      `NEXUS_SEARCH_DAEMON: "\${NEXUS_SEARCH_DAEMON:-true}"`,
+    );
   });
 });
 
@@ -654,5 +665,35 @@ describe("nexusUp fallback (--timeout not supported)", () => {
     const { nexusUp } = await import("./nexus-lifecycle.js");
     await expect(nexusUp("/tmp/test-proj")).rejects.toThrow("nexus up failed");
     expect(calls.length).toBe(1);
+  });
+
+  test("passes an isolated approvals gRPC port to nexus up", async () => {
+    const originalApprovalsPort = process.env.NEXUS_APPROVALS_GRPC_PORT;
+    const originalSearchDaemon = process.env.NEXUS_SEARCH_DAEMON;
+    delete process.env.NEXUS_APPROVALS_GRPC_PORT;
+    delete process.env.NEXUS_SEARCH_DAEMON;
+    const envs: Array<Record<string, string | undefined> | undefined> = [];
+    // @ts-expect-error -- mock
+    Bun.spawn = (_args: string[], opts?: { env?: Record<string, string | undefined> }) => {
+      envs.push(opts?.env);
+      return fakeProc(0, "nexus  http://localhost:2026\n", "");
+    };
+    const { nexusUp } = await import("./nexus-lifecycle.js");
+    try {
+      await nexusUp("/tmp/test-proj");
+      expect(envs[0]?.NEXUS_APPROVALS_GRPC_PORT).toBe(String(derivePort("/tmp/test-proj") + 5));
+      expect(envs[0]?.NEXUS_SEARCH_DAEMON).toBe("false");
+    } finally {
+      if (originalApprovalsPort === undefined) {
+        delete process.env.NEXUS_APPROVALS_GRPC_PORT;
+      } else {
+        process.env.NEXUS_APPROVALS_GRPC_PORT = originalApprovalsPort;
+      }
+      if (originalSearchDaemon === undefined) {
+        delete process.env.NEXUS_SEARCH_DAEMON;
+      } else {
+        process.env.NEXUS_SEARCH_DAEMON = originalSearchDaemon;
+      }
+    }
   });
 });

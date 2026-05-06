@@ -90,11 +90,54 @@ describe("buildAcpLaunchArgs", () => {
     ]);
   });
 
+  test("passes process-local MCP config to codex-acp without secret env values", () => {
+    expect(
+      buildAcpLaunchArgs(codexLaunch, {
+        mcpServers: [
+          {
+            name: "grove",
+            command: "/Users/example/.bun/bin/bun",
+            args: ["run", "/tmp/grove/dist/mcp/serve.js"],
+            env: {
+              GROVE_DIR: "/tmp/grove/.grove",
+              GROVE_NEXUS_URL: "http://localhost:10120",
+              NEXUS_API_KEY: "example-secret",
+              GROVE_SESSION_ID: "session-1",
+            },
+          },
+        ],
+      }),
+    ).toEqual([
+      "codex-acp.js",
+      "-c",
+      'mcp_servers.grove.command="/Users/example/.bun/bin/bun"',
+      "-c",
+      'mcp_servers.grove.args=["run", "/tmp/grove/dist/mcp/serve.js"]',
+      "-c",
+      'mcp_servers.grove.env.GROVE_DIR="/tmp/grove/.grove"',
+      "-c",
+      'mcp_servers.grove.env.GROVE_NEXUS_URL="http://localhost:10120"',
+      "-c",
+      'mcp_servers.grove.env.GROVE_SESSION_ID="session-1"',
+    ]);
+  });
+
   test("does not pass codex config flags to non-codex adapters", () => {
     expect(
       buildAcpLaunchArgs(
         claudeLaunch,
-        { model: "gpt-5.4-mini", command: "codex --full-auto" },
+        {
+          model: "gpt-5.4-mini",
+          command: "codex --full-auto",
+          mcpServers: [
+            {
+              name: "grove",
+              command: "/Users/example/.bun/bin/bun",
+              args: ["run", "/tmp/grove/dist/mcp/serve.js"],
+              env: { GROVE_DIR: "/tmp/grove/.grove" },
+            },
+          ],
+        },
         { GROVE_ALLOW_ALL_PERMISSIONS: "1" },
       ),
     ).toEqual(["claude-agent-acp.js"]);

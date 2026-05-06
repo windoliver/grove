@@ -5,7 +5,7 @@ import {
   ndJsonStream,
   type RequestPermissionRequest,
 } from "@agentclientprotocol/sdk";
-import { AcpRuntime, type LaunchOverride } from "./acp-runtime.js";
+import { AcpRuntime, type AcpRuntimeEvent, type LaunchOverride } from "./acp-runtime.js";
 
 interface AgentStubHandlers {
   onPrompt?: (p: {
@@ -144,6 +144,38 @@ describe("AcpRuntime.send", () => {
     await turn.result;
     await collect;
     expect(chunks.join("")).toBe("hello world");
+    await rt.close(session);
+  });
+
+  test("emits direct ACP messages and results to the event sink", async () => {
+    const { launchOverride } = makeInProcessAgent({
+      async onPrompt({ sessionId, agentSide }) {
+        await agentSide.sessionUpdate({
+          sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "visible" },
+          },
+        });
+        return { stopReason: "end_turn" };
+      },
+    });
+    const events: AcpRuntimeEvent[] = [];
+    const rt = new AcpRuntime({ launchOverride, eventSink: (event) => events.push(event) });
+    const session = await rt.spawn("coder", {
+      role: "coder",
+      command: "codex",
+      cwd: process.cwd(),
+    });
+    const turn = await rt.send(session, "hi");
+    await turn.result;
+
+    expect(events.map((event) => event.kind)).toEqual(["message", "result"]);
+    expect(events.every((event) => event.sessionId === session.id)).toBe(true);
+    expect(events[0]?.turnId).toBe(turn.turnId);
+    if (events[0]?.kind === "message") {
+      expect(events[0].message.kind).toBe("text");
+    }
     await rt.close(session);
   });
 });

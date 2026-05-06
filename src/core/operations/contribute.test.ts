@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 
 import { LocalEventBus } from "../local-event-bus.js";
+import type { Contribution } from "../models.js";
 import { ROUTING_SIGNATURE_CONTEXT_KEY } from "../routing-provenance.js";
 import type { AgentTopology } from "../topology.js";
 import { TopologyRouter } from "../topology-router.js";
@@ -1456,6 +1457,62 @@ describe("writeSerial: best-effort handoff failure paths", () => {
     const stored = await deps.contributionStore?.get(result.value.cid);
     expect(stored).toBeDefined();
     expect(stored!.cid).toBe(result.value.cid);
+  });
+
+  test("creates handoffs when cowrite store has non-atomic handoff store and idempotency", async () => {
+    const testDeps = await createTestOperationDeps();
+    const bus = new LocalEventBus();
+    const baseStore = makeInMemoryContributionStore();
+    const cowriteStore = {
+      ...baseStore,
+      putWithCowrite: async (contribution: Contribution, fn: () => void) => {
+        fn();
+        return baseStore.put(contribution);
+      },
+    };
+    const createdInputs: unknown[] = [];
+    const handoffStore = createMockHandoffStore({
+      createMany: async (inputs) => {
+        createdInputs.push(...inputs);
+        return inputs.map((input, index) => ({
+          handoffId: `handoff-${index}`,
+          sourceCid: input.sourceCid,
+          fromRole: input.fromRole,
+          toRole: input.toRole,
+          status: "pending_pickup" as const,
+          requiresReply: input.requiresReply ?? false,
+          ...(input.replyDueAt !== undefined ? { replyDueAt: input.replyDueAt } : {}),
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }));
+      },
+    });
+    const deps: OperationDeps = {
+      ...testDeps.deps,
+      contributionStore: cowriteStore,
+      topologyRouter: new TopologyRouter(twoRoleTopology, bus),
+      eventBus: bus,
+      handoffStore,
+    };
+
+    try {
+      const result = await contributeOperation(
+        {
+          kind: "work",
+          summary: "Handoff with idempotency and cowrite store",
+          agent: { agentId: "worker", role: "coder" },
+          idempotencyKey: "cowrite-non-atomic-handoff",
+        },
+        deps,
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(createdInputs).toHaveLength(1);
+      expect(result.value.handoffIds).toEqual(["handoff-0"]);
+    } finally {
+      bus.close();
+      await testDeps.cleanup();
+    }
   });
 
   test("emits console.warn when handoffStore.createMany throws", async () => {
