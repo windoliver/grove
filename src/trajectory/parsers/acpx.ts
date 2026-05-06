@@ -103,6 +103,11 @@ function parseSessionUpdate(
   }
 
   if (sessionUpdate === "tool_call_update") {
+    const output = update.rawOutput ?? claudeToolOutput(update);
+    if (!isTerminalStatus(stringField(update, "status")) && output === undefined) {
+      return { events: [], warnings: [] };
+    }
+
     return {
       events: [
         baseEvent(TrajectoryEventType.ToolResult, runtime, path, lineNumber, {
@@ -111,7 +116,7 @@ function parseSessionUpdate(
           tool: toolName(update),
           status: stringField(update, "status"),
           input: update.rawInput,
-          output: update.rawOutput ?? claudeToolOutput(update),
+          output,
           raw: record,
         }),
       ],
@@ -219,6 +224,16 @@ function claudeToolOutput(update: Readonly<Record<string, unknown>>): unknown {
     return response;
   }
   return undefined;
+}
+
+function isTerminalStatus(status: string | undefined): boolean {
+  return (
+    status === "completed" ||
+    status === "failed" ||
+    status === "cancelled" ||
+    status === "canceled" ||
+    status === "error"
+  );
 }
 
 function errorMessage(error: unknown): string | undefined {

@@ -52,6 +52,17 @@ describe("parseClaudeStreamJsonLine", () => {
     expect(call.events[0]?.spanId).toBe("call-1");
   });
 
+  test("maps plain Claude tool results without parents to tool results", () => {
+    const result = parseClaudeStreamJsonLine(
+      '{"type":"tool_result","tool_use_id":"read-1","content":"done"}',
+      "claude.jsonl",
+      7,
+    );
+
+    expect(result.events[0]?.type).toBe("TOOL_RESULT");
+    expect(result.events[0]?.spanId).toBe("read-1");
+  });
+
   test("keeps invalid and non-object stream-json records as RAW warnings", () => {
     const invalid = parseClaudeStreamJsonLine("not-json", "claude.jsonl", 4);
     const nonObject = parseClaudeStreamJsonLine("false", "claude.jsonl", 5);

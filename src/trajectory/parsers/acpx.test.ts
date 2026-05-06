@@ -68,6 +68,17 @@ describe("parseAcpxLine", () => {
     expect(permission.events[0]?.input).toEqual({ cmd: "ls" });
   });
 
+  test("does not emit tool results for progress-only ACP tool updates", () => {
+    const progress = parseAcpxLine(
+      '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess","update":{"sessionUpdate":"tool_call_update","toolCallId":"tool-1","rawInput":{"file_path":"src/index.ts"}}}}',
+      "acp.ndjson",
+      8,
+      TrajectoryRuntime.Acpx,
+    );
+
+    expect(progress.events.some((event) => event.type === "TOOL_RESULT")).toBe(false);
+  });
+
   test("keeps invalid and non-object ACP records as RAW warnings", () => {
     const invalid = parseAcpxLine("not-json", "acp.ndjson", 4, TrajectoryRuntime.Acpx);
     const nonObject = parseAcpxLine("true", "acp.ndjson", 5, TrajectoryRuntime.Acpx);

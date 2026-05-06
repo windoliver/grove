@@ -52,7 +52,7 @@ function eventFromRecord(
     stringField(record, "name") ?? stringField(record, "tool") ?? stringField(record, "tool_name");
 
   return {
-    type: inferType(type, tool, parentSpanId),
+    type: inferType(record, type, tool, parentSpanId),
     runtime: TrajectoryRuntime.ClaudeStreamJson,
     timestamp: stringField(record, "timestamp"),
     spanId,
@@ -69,6 +69,7 @@ function eventFromRecord(
 }
 
 function inferType(
+  record: Readonly<Record<string, unknown>>,
   type: string | undefined,
   tool: string | undefined,
   parentSpanId: string | undefined,
@@ -82,7 +83,7 @@ function inferType(
   }
 
   if (type === "tool_result") {
-    return parentSpanId === undefined
+    return parentSpanId === undefined && hasDelegationReturnEvidence(record)
       ? TrajectoryEventType.DelegationReturn
       : TrajectoryEventType.ToolResult;
   }
@@ -145,6 +146,37 @@ function isDelegationTool(tool: string | undefined): boolean {
   }
   const normalized = tool.toLowerCase();
   return normalized === "task" || normalized.includes("subagent");
+}
+
+function hasDelegationReturnEvidence(record: Readonly<Record<string, unknown>>): boolean {
+  return (
+    hasDelegationText(record.content) ||
+    hasDelegationText(record.message) ||
+    hasDelegationText(record.tool) ||
+    hasDelegationText(record.name) ||
+    hasDelegationText(record.id)
+  );
+}
+
+function hasDelegationText(value: unknown): boolean {
+  if (typeof value === "string") {
+    const normalized = value.toLowerCase();
+    return (
+      normalized.includes("delegation") ||
+      normalized.includes("subagent") ||
+      normalized.includes("task")
+    );
+  }
+
+  if (Array.isArray(value)) {
+    return value.some(hasDelegationText);
+  }
+
+  if (typeof value === "object" && value !== null) {
+    return Object.values(value).some(hasDelegationText);
+  }
+
+  return false;
 }
 
 function stringField(record: Readonly<Record<string, unknown>>, key: string): string | undefined {
