@@ -695,12 +695,12 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
         ? Number.parseInt(process.env.GROVE_SERVER_PORT, 10)
         : resolveServicePort("server", { ...process.env, PORT: undefined } as NodeJS.ProcessEnv);
       const url = `http://localhost:${port}/api/watch/notify`;
-      // Serialize bridge POSTs through a per-process tail so two
-      // back-to-back mutations of the same entity arrive at grove-server
-      // in commit order. Without this the second event can race ahead of
-      // the first inside the WatchHub ring and downstream consumers see
-      // an older snapshot as authoritative until the next relist.
-      let bridgeTail: Promise<unknown> = Promise.resolve();
+      // Per-(kind, entityId) ordering: same-entity events serialize via
+      // their own promise chain, unrelated entities don't block each
+      // other. Without this, one retrying notify (~5s under backoff)
+      // would head-of-line-block every other bridge event from this
+      // process — including unrelated contributions and claims.
+      const bridgeTails: Map<string, Promise<unknown>> = new Map();
       // sessionId here is the scope of this McpDeps instance — agent
       // contributions/claims land under /zones/{zone}/sessions/{sessionId}/.
       // Forward it so /api/watch/notify can hydrate from the matching
@@ -746,7 +746,9 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
             return { ok: false, err: e instanceof Error ? e.message : String(e) };
           }
         };
-        bridgeTail = bridgeTail
+        const tailKey = `${event.kind}:${eid}`;
+        const prior = bridgeTails.get(tailKey) ?? Promise.resolve();
+        const next = prior
           .catch(() => undefined)
           .then(async () => {
             for (let attempt = 0; attempt <= RETRIES; attempt++) {
@@ -761,13 +763,18 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
               if (attempt === RETRIES) {
                 const reason = res.err ?? `transient HTTP ${res.status}`;
                 process.stderr.write(
-                  `[mcp-http.bridge] POST ${url} kind=${event.kind} op=${event.op} id=${eid} → ${reason}; giving up after ${attempt + 1} attempts\n`,
+                  `[mcp-http.bridge] POST ${url} kind=${event.kind} op=${event.op} id=${eid} → ${reason}; giving up after ${attempt + 1} attempts. ` +
+                    `WARN: subscribers may be stale until next ${event.kind} write or relist.\n`,
                 );
                 return;
               }
               await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt] ?? 1500));
             }
           });
+        bridgeTails.set(tailKey, next);
+        void next.finally(() => {
+          if (bridgeTails.get(tailKey) === next) bridgeTails.delete(tailKey);
+        });
       };
     }
   } catch {

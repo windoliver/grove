@@ -540,9 +540,14 @@ try {
         ? Number.parseInt(process.env.GROVE_SERVER_PORT, 10)
         : resolveServicePort("server", { ...process.env, PORT: undefined } as NodeJS.ProcessEnv);
       const url = `http://localhost:${port}/api/watch/notify`;
-      // Serialize bridge POSTs through a per-process tail to preserve
-      // commit order across back-to-back mutations of the same entity.
-      let bridgeTail: Promise<unknown> = Promise.resolve();
+      // Per-(kind, entityId) ordering: each entity's events serialize
+      // through their own promise chain, but unrelated entities are
+      // independent. Without this, one retrying notify (up to ~5s under
+      // backoff) would head-of-line-block every other bridge event from
+      // this process — including unrelated contributions and claims for
+      // a different agent. Tails are removed once they settle so the
+      // map doesn't accumulate state for one-shot entities.
+      const bridgeTails: Map<string, Promise<unknown>> = new Map();
       // GROVE_SESSION_ID is set by the parent (TUI / acpx) when the agent
       // is bound to a Grove session — its writes land in the session-
       // scoped VFS tree. The watch route needs this id to hydrate from the
@@ -593,7 +598,9 @@ try {
             return { ok: false, err: e instanceof Error ? e.message : String(e) };
           }
         };
-        bridgeTail = bridgeTail
+        const tailKey = `${event.kind}:${eid}`;
+        const prior = bridgeTails.get(tailKey) ?? Promise.resolve();
+        const next = prior
           .catch(() => undefined)
           .then(async () => {
             for (let attempt = 0; attempt <= RETRIES; attempt++) {
@@ -608,13 +615,19 @@ try {
               if (attempt === RETRIES) {
                 const reason = res.err ?? `transient HTTP ${res.status}`;
                 process.stderr.write(
-                  `[mcp.bridge] POST ${url} kind=${event.kind} op=${event.op} id=${eid} → ${reason}; giving up after ${attempt + 1} attempts\n`,
+                  `[mcp.bridge] POST ${url} kind=${event.kind} op=${event.op} id=${eid} → ${reason}; giving up after ${attempt + 1} attempts. ` +
+                    `WARN: subscribers may be stale until next ${event.kind} write or relist.\n`,
                 );
                 return;
               }
               await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt] ?? 1500));
             }
           });
+        bridgeTails.set(tailKey, next);
+        // Drop the tail once settled so one-shot entities don't pin map state.
+        void next.finally(() => {
+          if (bridgeTails.get(tailKey) === next) bridgeTails.delete(tailKey);
+        });
       };
     }
   } catch {
