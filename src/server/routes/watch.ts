@@ -436,10 +436,12 @@ async function hydrateEntity(
     return undefined;
   }
   if (kind === "Claim") {
-    // Claims aren't session-scoped today, but the API surface allows it.
-    const flat = await deps.claimStore.get(entityId);
+    // Claims are not content-addressed: a single claimId can transition
+    // active → released → expired across processes. Bypass the per-id
+    // cache so a previously-read snapshot doesn't shadow the new state.
+    const flat = await deps.claimStore.getClaim(entityId, { bypassCache: true });
     if (flat !== undefined) {
-      return claimToEntity(flat, namespace) as MaybeVersioned;
+      return claimToEntity(flat, () => Date.now(), namespace) as MaybeVersioned;
     }
     return undefined;
   }

@@ -1610,7 +1610,11 @@ export class SqliteClaimStore implements ClaimStore {
     return result;
   };
 
-  getClaim = async (claimId: string): Promise<Claim | undefined> => {
+  getClaim = async (
+    claimId: string,
+    _opts?: { bypassCache?: boolean },
+  ): Promise<Claim | undefined> => {
+    // SQLite reads directly from disk — no per-id cache, so bypassCache is a no-op.
     return this.readClaim(claimId) ?? undefined;
   };
 
@@ -2033,7 +2037,8 @@ export class SqliteStore implements ContributionStore {
   // ClaimStore delegation
   createClaim = (claim: Claim): Promise<Claim> => this.claims.createClaim(claim);
   claimOrRenew = (claim: Claim): Promise<Claim> => this.claims.claimOrRenew(claim);
-  getClaim = (claimId: string): Promise<Claim | undefined> => this.claims.getClaim(claimId);
+  getClaim = (claimId: string, opts?: { bypassCache?: boolean }): Promise<Claim | undefined> =>
+    this.claims.getClaim(claimId, opts);
   heartbeat = (claimId: string, leaseDurationMs?: number): Promise<Claim> =>
     this.claims.heartbeat(claimId, leaseDurationMs);
   release = (claimId: string): Promise<Claim> => this.claims.release(claimId);
