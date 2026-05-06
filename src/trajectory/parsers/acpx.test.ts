@@ -54,6 +54,20 @@ describe("parseAcpxLine", () => {
     expect(denied.events[0]?.error).toBe("denied");
   });
 
+  test("maps canonical ACP permission requests", () => {
+    const permission = parseAcpxLine(
+      '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess","update":{"sessionUpdate":"permission_request","id":"p1","tool":"Bash","input":{"cmd":"ls"}}}}',
+      "acp.ndjson",
+      7,
+      TrajectoryRuntime.Acpx,
+    );
+
+    expect(permission.events[0]?.type).toBe("PERMISSION_WAIT");
+    expect(permission.events[0]?.spanId).toBe("p1");
+    expect(permission.events[0]?.tool).toBe("Bash");
+    expect(permission.events[0]?.input).toEqual({ cmd: "ls" });
+  });
+
   test("keeps invalid and non-object ACP records as RAW warnings", () => {
     const invalid = parseAcpxLine("not-json", "acp.ndjson", 4, TrajectoryRuntime.Acpx);
     const nonObject = parseAcpxLine("true", "acp.ndjson", 5, TrajectoryRuntime.Acpx);

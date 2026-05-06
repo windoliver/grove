@@ -124,9 +124,12 @@ function parseSessionUpdate(
       events: [
         baseEvent(TrajectoryEventType.PermissionWait, runtime, path, lineNumber, {
           sessionId,
-          spanId: stringField(update, "toolCallId") ?? stringField(update, "permissionRequestId"),
-          tool: toolName(update),
-          input: update,
+          spanId:
+            stringField(update, "toolCallId") ??
+            stringField(update, "permissionRequestId") ??
+            stringField(update, "id"),
+          tool: toolName(update) ?? stringField(update, "tool"),
+          input: update.input ?? update,
           raw: record,
         }),
       ],

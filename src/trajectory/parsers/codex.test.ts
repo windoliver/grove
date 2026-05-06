@@ -40,6 +40,17 @@ describe("parseCodexLine", () => {
     expect(unknown.events[0]?.type).toBe("RAW");
   });
 
+  test("maps native Codex id and parent_call_id span fields", () => {
+    const result = parseCodexLine(
+      '{"type":"tool_call","id":"child","parent_call_id":"parent","tool_name":"Read"}',
+      "codex.jsonl",
+      5,
+    );
+
+    expect(result.events[0]?.spanId).toBe("child");
+    expect(result.events[0]?.parentSpanId).toBe("parent");
+  });
+
   test("covers matcher helpers loaded by trajectory parsers", () => {
     const event = {
       seq: 1,

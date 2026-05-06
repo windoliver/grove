@@ -31,9 +31,12 @@ export function parseCodexLine(
             stringField(record, "spanId") ??
             stringField(record, "span_id") ??
             stringField(record, "call_id") ??
-            stringField(record, "callId"),
+            stringField(record, "callId") ??
+            stringField(record, "id"),
           parentSpanId:
-            stringField(record, "parentSpanId") ?? stringField(record, "parent_span_id"),
+            stringField(record, "parent_call_id") ??
+            stringField(record, "parentSpanId") ??
+            stringField(record, "parent_span_id"),
           tool: stringField(record, "tool") ?? stringField(record, "tool_name"),
           status: stringField(record, "status"),
           input: record.input,
