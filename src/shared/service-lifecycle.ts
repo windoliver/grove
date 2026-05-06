@@ -388,7 +388,18 @@ export function resolveBunExecutable(execPath: string = process.execPath): strin
 
 function serviceEnv(name: string, groveDir: string): NodeJS.ProcessEnv {
   const port = resolveServicePort(name);
-  return { ...process.env, GROVE_DIR: groveDir, PORT: String(port) };
+  // Propagate the server's bound port (as resolved by the parent — the same
+  // value the server child receives via PORT) so siblings like the MCP
+  // child can target grove-server even on non-default deployments. Without
+  // this the cross-process WatchHub bridge in mcp/serve*.ts hard-codes the
+  // 4515 default and silently misses any custom-port server.
+  const serverPort = resolveServicePort("server");
+  return {
+    ...process.env,
+    GROVE_DIR: groveDir,
+    PORT: String(port),
+    GROVE_SERVER_PORT: String(serverPort),
+  };
 }
 
 /**

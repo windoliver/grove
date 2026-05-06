@@ -540,21 +540,39 @@ try {
         ? Number.parseInt(process.env.GROVE_SERVER_PORT, 10)
         : resolveServicePort("server", { ...process.env, PORT: undefined } as NodeJS.ProcessEnv);
       const url = `http://localhost:${port}/api/watch/notify`;
+      // Serialize bridge POSTs through a per-process tail to preserve
+      // commit order across back-to-back mutations of the same entity.
+      let bridgeTail: Promise<unknown> = Promise.resolve();
       onEntityWrite = (event) => {
-        // Fire-and-forget: do not block the contribute path on the bridge.
-        void fetch(url, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ kind: event.kind, op: event.op, entity: event.entity }),
-          signal: AbortSignal.timeout(2_000),
-        }).catch((e) => {
-          process.stderr.write(
-            `[mcp.bridge] POST ${url} failed: ${e instanceof Error ? e.message : String(e)}\n`,
-          );
-        });
+        const eid = (event.entity as { id?: string } | null)?.id;
+        if (!eid) {
+          process.stderr.write(`[mcp.bridge] missing entity.id, skipping\n`);
+          return;
+        }
+        bridgeTail = bridgeTail
+          .catch(() => undefined)
+          .then(async () => {
+            try {
+              const r = await fetch(url, {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${apiKey}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ kind: event.kind, op: event.op, entityId: eid }),
+                signal: AbortSignal.timeout(2_000),
+              });
+              if (!r.ok) {
+                process.stderr.write(
+                  `[mcp.bridge] POST ${url} kind=${event.kind} op=${event.op} id=${eid} → HTTP ${r.status}\n`,
+                );
+              }
+            } catch (e) {
+              process.stderr.write(
+                `[mcp.bridge] POST ${url} failed: ${e instanceof Error ? e.message : String(e)}\n`,
+              );
+            }
+          });
       };
     }
   } catch {

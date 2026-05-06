@@ -103,16 +103,41 @@ async function launchSubprocess(
   const stdoutWebReadable = NodeReadable.toWeb(child.stdout) as ReadableStream<Uint8Array>;
   const clientStream = ndJsonStream(stdinWebWritable, stdoutWebReadable);
 
-  // Tee child stderr to our stderr with an [acp:agent:pid] prefix so launch
-  // failures (auth errors, missing CLI, ACP shim crashes) are observable
-  // instead of silently dropped — these surface as "Internal error" in the
-  // bootstrap reply and were previously undebuggable.
+  // Optionally tee child stderr to our stderr with an [acp:agent:pid] prefix
+  // so launch failures (auth errors, missing CLI, ACP shim crashes) are
+  // observable instead of silently dropped. Gated behind GROVE_DEBUG_ACP=1
+  // because: (a) parent stderr is persisted to managed-service log files,
+  // so verbose or looping children can grow logs without bound; (b) child
+  // stderr can carry repository content or credentials that should not be
+  // captured by default. Always read from the pipe (drain) to avoid the
+  // OS pipe buffer back-pressuring the child.
   const pid = child.pid ?? 0;
+  const teeEnabled = process.env.GROVE_DEBUG_ACP === "1";
   const prefix = `[acp:${agent}:${pid}] `;
+  const MAX_BYTES = 1_048_576; // 1 MiB cap per session — defensive against runaway children.
+  let bytesWritten = 0;
+  let truncationLogged = false;
   child.stderr.on("data", (chunk: Buffer) => {
+    if (!teeEnabled) return;
+    if (bytesWritten >= MAX_BYTES) {
+      if (!truncationLogged) {
+        process.stderr.write(`${prefix}[truncated after ${MAX_BYTES} bytes]\n`);
+        truncationLogged = true;
+      }
+      return;
+    }
     const text = chunk.toString("utf-8");
     for (const line of text.split("\n")) {
-      if (line.length > 0) process.stderr.write(`${prefix}${line}\n`);
+      if (line.length === 0) continue;
+      const out = `${prefix}${line}\n`;
+      const remaining = MAX_BYTES - bytesWritten;
+      if (out.length > remaining) {
+        process.stderr.write(out.slice(0, remaining));
+        bytesWritten = MAX_BYTES;
+        break;
+      }
+      process.stderr.write(out);
+      bytesWritten += out.length;
     }
   });
 

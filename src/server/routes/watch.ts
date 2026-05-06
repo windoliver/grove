@@ -352,25 +352,58 @@ watch.get("/watch/metrics", async (c) => {
 // a bridge those out-of-process writes are invisible to /api/watch
 // subscribers.
 //
-// This endpoint is the bridge: MCP POSTs the just-written entity to
-// grove-server, which fires watchHub.recordWrite. SSE consumers see the
-// event the same way they would for an in-process write.
+// This endpoint is the bridge: MCP POSTs an entity identifier to
+// grove-server, which re-reads the canonical entity from its own store
+// and fires watchHub.recordWrite. SSE consumers see the event the same
+// way they would for an in-process write.
 //
 // Auth: same namespaceAuth middleware as the rest of /api/* — the caller
 // must hold a key for this server's namespace.
+//
+// Trust boundary: the request payload is NOT trusted as the entity body.
+// We accept only `kind`, `op`, and `entityId`; the server hydrates the
+// authoritative entity from its own store before broadcasting. Without
+// this, any namespace-key holder could forge a watch event with an
+// arbitrary body and inject ghost rows into clients' Informer caches
+// (the watch stream drives EntityStore — there is no second-source
+// reconciliation until the next relist).
 // ---------------------------------------------------------------------------
 
 const watchNotifySchema = z.object({
   kind: z.enum(KIND_VALUES),
   op: z.enum(["ADDED", "MODIFIED", "DELETED"]),
-  entity: z.unknown(),
+  entityId: z.string().min(1),
 });
 
 watch.post("/watch/notify", zValidator("json", watchNotifySchema), async (c) => {
   const namespace = c.get("namespace");
-  const { kind, op, entity } = c.req.valid("json");
-  const hub: WatchHub = c.get("deps").watchHub;
-  hub.recordWrite({ kind: kind as WatchKind, namespace, op, entity: entity as never });
+  const { kind, op, entityId } = c.req.valid("json");
+  const deps = c.get("deps") as ServerDeps;
+  const hub: WatchHub = deps.watchHub;
+
+  // DELETED: the entity is gone from the store, so we cannot hydrate.
+  // Forward a minimal event with just the id; subscribers reconcile by
+  // refetching their list at the new RV and treating the missing id as
+  // a real delete.
+  if (op === "DELETED") {
+    hub.recordWrite({
+      kind: kind as WatchKind,
+      namespace,
+      op,
+      entity: { id: entityId } as never,
+    });
+    return c.json({ ok: true });
+  }
+
+  // ADDED / MODIFIED: hydrate from the authoritative store. Reject when
+  // the store doesn't know about the id — the caller is either lying
+  // or racing against a delete; either way we won't emit a ghost row.
+  const list = await listForKind(deps, namespace, kind as WatchKind);
+  const found = (list as ReadonlyArray<{ id?: string }>).find((e) => e?.id === entityId);
+  if (!found) {
+    return c.json({ ok: false, error: "entity_not_found" }, 404);
+  }
+  hub.recordWrite({ kind: kind as WatchKind, namespace, op, entity: found as never });
   return c.json({ ok: true });
 });
 
