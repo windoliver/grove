@@ -101,8 +101,17 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
   let nexusManaged = false;
   let resolvedNexusUrl: string | undefined;
 
+  // Make GROVE_SERVER_PORT visible to this process so the cross-process
+  // bridge in stdio MCPs (spawned later via AcpRuntime — they inherit
+  // parent env, not serviceEnv) can target the right port. Without this,
+  // stdio MCPs for agents fall back to the 4515 default and miss any
+  // non-default deployment.
+  if (!process.env.GROVE_SERVER_PORT) {
+    process.env.GROVE_SERVER_PORT = String(resolveServicePort("server"));
+  }
+
   report(
-    `[startServices] groveDir=${groveDir} configExists=${existsSync(configPath)} GROVE_NEXUS_URL=${process.env.GROVE_NEXUS_URL ?? "unset"}`,
+    `[startServices] groveDir=${groveDir} configExists=${existsSync(configPath)} GROVE_NEXUS_URL=${process.env.GROVE_NEXUS_URL ?? "unset"} GROVE_SERVER_PORT=${process.env.GROVE_SERVER_PORT}`,
   );
 
   if (!existsSync(configPath)) {

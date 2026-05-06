@@ -702,11 +702,13 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
       // an older snapshot as authoritative until the next relist.
       let bridgeTail: Promise<unknown> = Promise.resolve();
       onEntityWrite = (event) => {
-        const eid = (event.entity as { id?: string } | null)?.id;
+        const ent = event.entity as { id?: string; metadata?: { generation?: number } } | null;
+        const eid = ent?.id;
         if (!eid) {
           process.stderr.write(`[mcp-http.bridge] missing entity.id, skipping\n`);
           return;
         }
+        const generation = ent?.metadata?.generation;
         bridgeTail = bridgeTail
           .catch(() => undefined)
           .then(async () => {
@@ -717,7 +719,12 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
                   Authorization: `Bearer ${apiKey}`,
                   "Content-Type": "application/json",
                 },
-                body: JSON.stringify({ kind: event.kind, op: event.op, entityId: eid }),
+                body: JSON.stringify({
+                  kind: event.kind,
+                  op: event.op,
+                  entityId: eid,
+                  ...(generation !== undefined ? { generation } : {}),
+                }),
                 signal: AbortSignal.timeout(2_000),
               });
               if (!r.ok) {

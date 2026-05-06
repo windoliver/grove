@@ -1117,10 +1117,10 @@ describe("WatchClient emittedAt propagation", () => {
     const fetchStub = (async (url: string | URL) => {
       const u = String(url);
       if (u.includes("/api/list")) {
-        return new Response(
-          JSON.stringify({ items: [], listResourceVersion: "0" }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
+        return new Response(JSON.stringify({ items: [], listResourceVersion: "0" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
       }
       return new Response(sseBody, {
         status: 200,
