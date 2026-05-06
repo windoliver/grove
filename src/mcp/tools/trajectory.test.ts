@@ -44,7 +44,7 @@ describe("grove_check_trajectory", () => {
   });
 
   test("returns trajectory report JSON", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "trajectory-mcp-"));
+    const dir = await mkdtemp(join(testDeps.tempDir, "trajectory-mcp-"));
     const transcriptPath = join(dir, "transcript.jsonl");
     const specPath = join(dir, "spec.yaml");
     await writeFile(transcriptPath, '{"event":"ASSISTANT_MESSAGE","message":"done"}\n', "utf8");
@@ -60,5 +60,65 @@ describe("grove_check_trajectory", () => {
     expect(result.isError).toBeUndefined();
     const data = JSON.parse(result.text);
     expect(data.report.eventCount).toBe(1);
+  });
+
+  test("uses bundled default spec when specPaths is omitted", async () => {
+    const transcriptPath = join(testDeps.tempDir, "transcript.jsonl");
+    await writeFile(transcriptPath, '{"event":"ASSISTANT_MESSAGE","message":"done"}\n', "utf8");
+
+    const result = await callTool(server, "grove_check_trajectory", {
+      transcriptPath,
+      runtime: "subprocess",
+      format: "json",
+    });
+
+    expect(result.isError).toBeUndefined();
+    const data = JSON.parse(result.text);
+    expect(data.report.name).toBe("common");
+    expect(data.report.specPaths[0]).toEndWith(join("spec", "trajectory", "common.yaml"));
+  });
+
+  test("rejects transcript paths outside the workspace boundary", async () => {
+    const result = await callTool(server, "grove_check_trajectory", {
+      transcriptPath: join(tmpdir(), "trajectory-outside-transcript.jsonl"),
+      runtime: "subprocess",
+      format: "json",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("Path containment violation");
+  });
+
+  test("rejects spec paths outside the workspace boundary", async () => {
+    const transcriptPath = join(testDeps.tempDir, "transcript.jsonl");
+    await writeFile(transcriptPath, '{"event":"ASSISTANT_MESSAGE","message":"done"}\n', "utf8");
+
+    const result = await callTool(server, "grove_check_trajectory", {
+      transcriptPath,
+      specPaths: [join(tmpdir(), "trajectory-outside-spec.yaml")],
+      runtime: "subprocess",
+      format: "json",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("Path containment violation");
+  });
+
+  test("rejects annotated log paths outside the workspace boundary", async () => {
+    const transcriptPath = join(testDeps.tempDir, "transcript.jsonl");
+    const specPath = join(testDeps.tempDir, "spec.yaml");
+    await writeFile(transcriptPath, '{"event":"ASSISTANT_MESSAGE","message":"done"}\n', "utf8");
+    await writeFile(specPath, "name: local\nrules: []\n", "utf8");
+
+    const result = await callTool(server, "grove_check_trajectory", {
+      transcriptPath,
+      specPaths: [specPath],
+      runtime: "subprocess",
+      format: "json",
+      annotatedLogPath: join(tmpdir(), "trajectory-outside.log"),
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("Path containment violation");
   });
 });
