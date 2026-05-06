@@ -29,6 +29,16 @@ describe("parseSubprocessLine", () => {
     expect(result.warnings[0]).toContain("non-object JSONL record");
   });
 
+  test("keeps array JSON as RAW with a warning", () => {
+    const result = parseSubprocessLine("[1]", "subprocess.log", 12);
+
+    expect(result.events[0]?.type).toBe("RAW");
+    expect(result.events[0]?.message).toBe("[1]");
+    expect(result.events[0]?.raw).toBe("[1]");
+    expect(result.warnings[0]).toContain("line 12");
+    expect(result.warnings[0]).toContain("non-object JSONL record");
+  });
+
   test("infers assistant messages from stdout and stderr streams", () => {
     const stdout = parseSubprocessLine('{"stream":"stdout","text":"hello"}', "subprocess.log", 5);
     const stderr = parseSubprocessLine('{"stream":"stderr","text":"warning"}', "subprocess.log", 6);

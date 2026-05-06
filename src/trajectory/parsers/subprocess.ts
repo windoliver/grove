@@ -9,7 +9,7 @@ export function parseSubprocessLine(
 ): { readonly events: readonly ParsedTrajectoryEvent[]; readonly warnings: readonly string[] } {
   try {
     const parsed = JSON.parse(line) as unknown;
-    if (typeof parsed !== "object" || parsed === null) {
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
       return raw(line, path, lineNumber, `line ${lineNumber}: non-object JSONL record kept as RAW`);
     }
 
