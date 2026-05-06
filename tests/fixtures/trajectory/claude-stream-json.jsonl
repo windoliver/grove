@@ -1,0 +1,5 @@
+{"type":"assistant","message":[{"type":"text","text":"I will inspect the repo."}],"timestamp":"2026-05-05T00:00:00Z"}
+{"type":"tool_use","id":"tool-parent","name":"Task","input":{"description":"review"}}
+{"type":"tool_use","id":"tool-child","parent_tool_use_id":"tool-parent","name":"Read","input":{"file_path":"src/index.ts"}}
+{"type":"tool_result","tool_use_id":"tool-child","parent_tool_use_id":"tool-parent","content":"done"}
+{"type":"tool_result","tool_use_id":"tool-parent","content":"subagent returned"}
