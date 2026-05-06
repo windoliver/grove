@@ -532,7 +532,13 @@ try {
     const groveDir = process.env.GROVE_DIR ?? groveOverride;
     const apiKey = groveDir ? readClientKey(groveDir) : undefined;
     if (apiKey) {
-      const port = resolveServicePort("server");
+      // resolveServicePort("server") reads PORT which inside this MCP
+      // process is 4015 (MCP's own port), so the bridge URL would point
+      // at MCP itself. Strip PORT so resolveServicePort returns the
+      // grove-server default (4515).
+      const port = process.env.GROVE_SERVER_PORT
+        ? Number.parseInt(process.env.GROVE_SERVER_PORT, 10)
+        : resolveServicePort("server", { ...process.env, PORT: undefined } as NodeJS.ProcessEnv);
       const url = `http://localhost:${port}/api/watch/notify`;
       onEntityWrite = (event) => {
         // Fire-and-forget: do not block the contribute path on the bridge.
@@ -544,7 +550,11 @@ try {
           },
           body: JSON.stringify({ kind: event.kind, op: event.op, entity: event.entity }),
           signal: AbortSignal.timeout(2_000),
-        }).catch(() => undefined);
+        }).catch((e) => {
+          process.stderr.write(
+            `[mcp.bridge] POST ${url} failed: ${e instanceof Error ? e.message : String(e)}\n`,
+          );
+        });
       };
     }
   } catch {

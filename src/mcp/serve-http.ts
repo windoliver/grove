@@ -673,6 +673,51 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     ]);
   }
 
+  // Cross-process WatchHub bridge: when grove-server is reachable and
+  // we hold a namespace key, fire entity-changed events as POSTs to
+  // /api/watch/notify. Mirrors src/mcp/serve.ts (stdio MCP).
+  let onEntityWrite:
+    | ((event: import("../core/watch-events.js").EntityWriteEvent) => void)
+    | undefined;
+  try {
+    const { resolveServicePort } = await import("../shared/service-lifecycle.js");
+    const { readClientKey } = await import("../core/project-key.js");
+    const apiKey = readClientKey(groveDir);
+    if (apiKey) {
+      // Use GROVE_SERVER_PORT env when set, else fall back to default 4515.
+      // resolveServicePort("server") reads PORT which would echo this MCP
+      // process's own port (4015), pointing the bridge at MCP itself.
+      // resolveServicePort("server") reads PORT which inside this MCP
+      // process is 4015 (MCP's own port), so the bridge URL would point
+      // at MCP itself. Strip PORT so resolveServicePort returns the
+      // grove-server default (4515).
+      const port = process.env.GROVE_SERVER_PORT
+        ? Number.parseInt(process.env.GROVE_SERVER_PORT, 10)
+        : resolveServicePort("server", { ...process.env, PORT: undefined } as NodeJS.ProcessEnv);
+      const url = `http://localhost:${port}/api/watch/notify`;
+      onEntityWrite = (event) => {
+        // Fire-and-forget: do not block the contribute path on the bridge.
+        void fetch(url, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ kind: event.kind, op: event.op, entity: event.entity }),
+          signal: AbortSignal.timeout(2_000),
+        }).catch((e) => {
+          process.stderr.write(
+            `[mcp-http.bridge] POST ${url} failed: ${e instanceof Error ? e.message : String(e)}\n`,
+          );
+        });
+      };
+    }
+  } catch {
+    // Best-effort: when grove-server port or api-key can't be resolved,
+    // the cross-process bridge stays disabled. The TUI feed will fall
+    // back to its polling refresh interval.
+  }
+
   const deps: McpDeps = {
     contributionStore,
     claimStore,
@@ -695,6 +740,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     idempotencyStore,
     ...(handoffExpiryManaged ? { handoffExpiryManaged: true } : {}),
     ...(deadlineWatcher ? { deadlineWatcher } : {}),
+    ...(onEntityWrite ? { onEntityWrite, namespace: zoneId } : {}),
     watchHub: new WatchHub(),
   };
   const deactivate = () => {

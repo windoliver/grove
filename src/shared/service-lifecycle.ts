@@ -448,9 +448,12 @@ async function spawnService(
 
   try {
     const { spawn: nodeSpawn } = await import("node:child_process");
+    const { openSync } = await import("node:fs");
+    const logPath = join(groveDir, `${name}.log`);
+    const logFd = openSync(logPath, "a");
     const child = nodeSpawn(resolveBunExecutable(), [entryPoint], {
       cwd: join(groveDir, ".."),
-      stdio: "ignore",
+      stdio: ["ignore", logFd, logFd],
       env: serviceEnv(name, groveDir),
       detached: true,
     });
