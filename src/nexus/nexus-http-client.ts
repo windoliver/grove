@@ -32,6 +32,7 @@ import type {
 } from "./client.js";
 import {
   NexusAuthError,
+  NexusConflictError,
   NexusConnectionError,
   NexusNotFoundError,
   NexusTimeoutError,
@@ -211,9 +212,13 @@ export class NexusHttpClient implements NexusClient {
     }
     if (response.status === 412 || response.status === 409) {
       // Optimistic-concurrency mismatch (if_match / if_none_match). Surface
-      // as a structured error so callers (claim store CAS path) can retry.
+      // as a structured conflict so store-level repair paths can run.
       const detail = await response.text().catch(() => "");
-      throw new NexusConnectionError(`Precondition failed: ${detail || response.status}`);
+      const actualEtag = response.headers.get("etag") ?? undefined;
+      throw new NexusConflictError({
+        message: `Precondition failed: ${detail || response.status}`,
+        ...(actualEtag !== undefined ? { actualEtag } : {}),
+      });
     }
     if (response.status === 429) {
       const retryAfter = response.headers.get("retry-after");

@@ -13,6 +13,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { toManifest } from "../core/manifest.js";
+import { RelationType } from "../core/models.js";
 import { makeClaim, makeContribution } from "../core/test-helpers.js";
 import { CURRENT_SCHEMA_VERSION, initSqliteDb, SqliteStore } from "./sqlite-store.js";
 
@@ -572,6 +573,121 @@ describe("schema migration", () => {
       db.close();
       expect(row.cnt).toBe(2); // exactly 2 tags, not 4
       store2.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("content-hash dedup rewires incoming relation indexes to canonical contribution", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-migration-"));
+    const dbPath = join(dir, "test.db");
+    try {
+      const db = new Database(dbPath);
+      db.run("PRAGMA journal_mode = WAL");
+      db.run("PRAGMA foreign_keys = ON");
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS contributions (
+          cid TEXT PRIMARY KEY, kind TEXT NOT NULL, mode TEXT NOT NULL,
+          summary TEXT NOT NULL, description TEXT, agent_id TEXT NOT NULL,
+          agent_name TEXT, created_at TEXT NOT NULL,
+          tags_json TEXT NOT NULL DEFAULT '[]', manifest_json TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS contribution_tags (
+          cid TEXT NOT NULL,
+          tag TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS artifacts (
+          contribution_cid TEXT NOT NULL,
+          name TEXT NOT NULL,
+          content_hash TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS relations (
+          source_cid TEXT NOT NULL,
+          target_cid TEXT NOT NULL,
+          relation_type TEXT NOT NULL,
+          metadata_json TEXT,
+          FOREIGN KEY (source_cid) REFERENCES contributions(cid)
+        );
+        CREATE TABLE IF NOT EXISTS claims (
+          claim_id TEXT PRIMARY KEY, target_ref TEXT NOT NULL,
+          agent_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+          heartbeat_at TEXT NOT NULL, lease_expires_at TEXT NOT NULL,
+          intent_summary TEXT NOT NULL, agent_json TEXT NOT NULL
+        );
+        CREATE VIRTUAL TABLE IF NOT EXISTS contributions_fts USING fts5(cid, summary, description);
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (11, '2026-01-01T00:00:00Z');
+      `);
+
+      const canonical = makeContribution({
+        summary: "dedup target",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      const duplicate = makeContribution({
+        summary: "dedup target",
+        createdAt: "2026-01-01T00:01:00.000Z",
+      });
+      const child = makeContribution({
+        summary: "child of duplicate",
+        relations: [
+          {
+            targetCid: duplicate.cid,
+            relationType: RelationType.RespondsTo,
+          },
+        ],
+      });
+
+      for (const contribution of [canonical, duplicate, child]) {
+        db.run(
+          `INSERT INTO contributions (cid, kind, mode, summary, description,
+           agent_id, agent_name, created_at, tags_json, manifest_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            contribution.cid,
+            contribution.kind,
+            contribution.mode,
+            contribution.summary,
+            contribution.description ?? null,
+            contribution.agent.agentId,
+            contribution.agent.agentName ?? null,
+            contribution.createdAt,
+            JSON.stringify(contribution.tags),
+            JSON.stringify(toManifest(contribution)),
+          ],
+        );
+        db.run("INSERT INTO contributions_fts (cid, summary, description) VALUES (?, ?, ?)", [
+          contribution.cid,
+          contribution.summary,
+          contribution.description ?? "",
+        ]);
+      }
+      db.run(
+        "INSERT INTO relations (source_cid, target_cid, relation_type, metadata_json) VALUES (?, ?, ?, ?)",
+        [child.cid, duplicate.cid, RelationType.RespondsTo, null],
+      );
+      db.close();
+
+      const store = new SqliteStore(dbPath);
+
+      expect(await store.get(duplicate.cid)).toBeUndefined();
+      expect(
+        (await store.relatedTo(canonical.cid, RelationType.RespondsTo)).map((c) => c.cid),
+      ).toEqual([child.cid]);
+      expect(
+        (await store.relationsOf(child.cid, RelationType.RespondsTo)).map((r) => r.targetCid),
+      ).toEqual([canonical.cid]);
+
+      const db2 = new Database(dbPath, { readonly: true });
+      const dangling = db2
+        .prepare("SELECT COUNT(*) as cnt FROM relations WHERE target_cid = ?")
+        .get(duplicate.cid) as { cnt: number };
+      db2.close();
+      expect(dangling.cnt).toBe(0);
+
+      store.close();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
