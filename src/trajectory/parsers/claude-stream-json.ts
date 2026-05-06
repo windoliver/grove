@@ -48,6 +48,8 @@ function eventFromRecord(
     stringField(record, "parent_tool_use_id") ??
     stringField(record, "parentSpanId") ??
     stringField(record, "parent_span_id");
+  const resolvedSpanId =
+    spanId ?? (parentSpanId === undefined ? undefined : `generated:${lineNumber}`);
   const tool =
     stringField(record, "name") ?? stringField(record, "tool") ?? stringField(record, "tool_name");
 
@@ -55,7 +57,7 @@ function eventFromRecord(
     type: inferType(record, type, tool, parentSpanId),
     runtime: TrajectoryRuntime.ClaudeStreamJson,
     timestamp: stringField(record, "timestamp"),
-    spanId,
+    spanId: resolvedSpanId,
     parentSpanId,
     tool,
     status: stringField(record, "status"),
@@ -152,20 +154,16 @@ function hasDelegationReturnEvidence(record: Readonly<Record<string, unknown>>):
   return (
     hasDelegationText(record.content) ||
     hasDelegationText(record.message) ||
-    hasDelegationText(record.tool) ||
-    hasDelegationText(record.name) ||
-    hasDelegationText(record.id)
+    hasDelegationIdentifier(record.tool) ||
+    hasDelegationIdentifier(record.name) ||
+    hasDelegationIdentifier(record.id)
   );
 }
 
 function hasDelegationText(value: unknown): boolean {
   if (typeof value === "string") {
     const normalized = value.toLowerCase();
-    return (
-      normalized.includes("delegation") ||
-      normalized.includes("subagent") ||
-      normalized.includes("task")
-    );
+    return normalized.includes("delegation") || normalized.includes("subagent");
   }
 
   if (Array.isArray(value)) {
@@ -177,6 +175,20 @@ function hasDelegationText(value: unknown): boolean {
   }
 
   return false;
+}
+
+function hasDelegationIdentifier(value: unknown): boolean {
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  const normalized = value.toLowerCase();
+  return (
+    normalized === "task" ||
+    normalized.includes("task") ||
+    normalized.includes("delegation") ||
+    normalized.includes("subagent")
+  );
 }
 
 function stringField(record: Readonly<Record<string, unknown>>, key: string): string | undefined {

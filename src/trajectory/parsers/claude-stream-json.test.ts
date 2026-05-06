@@ -19,6 +19,7 @@ describe("parseClaudeStreamJsonLine", () => {
       "DELEGATION_RETURN",
     ]);
     expect(events[2]?.parentSpanId).toBe("tool-parent");
+    expect(events[4]?.type).toBe("DELEGATION_RETURN");
   });
 
   test("maps permission denial and non-array assistant text", () => {
@@ -61,6 +62,28 @@ describe("parseClaudeStreamJsonLine", () => {
 
     expect(result.events[0]?.type).toBe("TOOL_RESULT");
     expect(result.events[0]?.spanId).toBe("read-1");
+  });
+
+  test("generates deterministic span ids for parented records without child ids", () => {
+    const result = parseClaudeStreamJsonLine(
+      '{"type":"tool_result","parent_tool_use_id":"tool-parent","content":"done"}',
+      "claude.jsonl",
+      8,
+    );
+
+    expect(result.events[0]?.type).toBe("TOOL_RESULT");
+    expect(result.events[0]?.parentSpanId).toBe("tool-parent");
+    expect(result.events[0]?.spanId).toBe("generated:8");
+  });
+
+  test("does not treat arbitrary task prose as delegation return evidence", () => {
+    const result = parseClaudeStreamJsonLine(
+      '{"type":"tool_result","tool_use_id":"read-1","content":"task completed"}',
+      "claude.jsonl",
+      9,
+    );
+
+    expect(result.events[0]?.type).toBe("TOOL_RESULT");
   });
 
   test("keeps invalid and non-object stream-json records as RAW warnings", () => {
