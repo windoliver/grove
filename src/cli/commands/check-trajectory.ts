@@ -22,6 +22,16 @@ const VALID_FORMATS = ["markdown", "json"] as const;
 
 type Writer = (line: string) => void;
 
+interface CheckTrajectoryRawArgs {
+  readonly values: {
+    readonly transcript?: string | undefined;
+    readonly spec?: readonly string[] | undefined;
+    readonly runtime: string;
+    readonly format: string;
+    readonly "annotated-log"?: string | undefined;
+  };
+}
+
 export function parseCheckTrajectoryArgs(argv: readonly string[]): CheckTrajectoryInput {
   const { values } = parseCheckTrajectoryRawArgs(argv);
 
@@ -65,9 +75,10 @@ function isReportFormat(value: string | undefined): value is ReportFormat {
   return value !== undefined && VALID_FORMATS.includes(value as ReportFormat);
 }
 
-function parseCheckTrajectoryRawArgs(argv: readonly string[]): ReturnType<typeof parseArgs> {
+function parseCheckTrajectoryRawArgs(argv: readonly string[]): CheckTrajectoryRawArgs {
+  let parsed: ReturnType<typeof parseArgs>;
   try {
-    return parseArgs({
+    parsed = parseArgs({
       args: [...argv],
       options: {
         transcript: { type: "string" },
@@ -82,8 +93,31 @@ function parseCheckTrajectoryRawArgs(argv: readonly string[]): ReturnType<typeof
   } catch (error) {
     throw new UsageError(errorMessage(error));
   }
+
+  return {
+    values: {
+      transcript: optionalString(parsed.values.transcript, "--transcript"),
+      spec: optionalStringArray(parsed.values.spec, "--spec"),
+      runtime: optionalString(parsed.values.runtime, "--runtime") ?? "auto",
+      format: optionalString(parsed.values.format, "--format") ?? "markdown",
+      "annotated-log": optionalString(parsed.values["annotated-log"], "--annotated-log"),
+    },
+  };
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function optionalString(value: unknown, option: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string") return value;
+  throw new UsageError(`${option} must be a string`);
+}
+
+function optionalStringArray(value: unknown, option: string): readonly string[] | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value) && value.every((item) => typeof item === "string")) return value;
+  throw new UsageError(`${option} must be a string`);
 }
