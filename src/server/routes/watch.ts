@@ -411,27 +411,15 @@ async function hydrateEntity(
   namespace: string,
   kind: WatchKind,
   entityId: string,
-  sessionId: string | undefined,
 ): Promise<MaybeVersioned | undefined> {
+  // Bridge fan-out path: only the zone-root view is broadcast. Session-
+  // scoped lookups happen at the route, *before* this function is
+  // called, so we can short-circuit on a real scoped hit. Any caller
+  // that reaches here is asking the zone-root store directly.
   if (kind === "Contribution") {
-    // Session-scoped writes land under /zones/{zone}/sessions/{sessionId}/...
-    // so route to the matching scoped store when sessionId is supplied.
-    const store =
-      sessionId && deps.contributionStoreForSession
-        ? deps.contributionStoreForSession(sessionId)
-        : deps.contributionStore;
-    const flat = await store.get(entityId);
+    const flat = await deps.contributionStore.get(entityId);
     if (flat !== undefined) {
       return contributionToEntity(flat, namespace) as MaybeVersioned;
-    }
-    // Session miss with sessionId stamped: fall back to the zone-root
-    // store. Covers cases where the caller stamped a session but the
-    // row was actually committed at the zone level.
-    if (sessionId) {
-      const fallback = await deps.contributionStore.get(entityId);
-      if (fallback !== undefined) {
-        return contributionToEntity(fallback, namespace) as MaybeVersioned;
-      }
     }
     return undefined;
   }
@@ -445,10 +433,9 @@ async function hydrateEntity(
     }
     return undefined;
   }
-  // AgentSession and any other kinds fall through to the legacy list
-  // path — they don't have a point-lookup yet.
-  const list = (await listForKind(deps, namespace, kind)) as ReadonlyArray<MaybeVersioned>;
-  return list.find((e) => e?.id === entityId);
+  // Unsupported kinds are rejected at the route entry; this path is
+  // unreachable but kept for type exhaustiveness.
+  return undefined;
 }
 
 watch.post("/watch/notify", zValidator("json", watchNotifySchema), async (c) => {
@@ -471,26 +458,33 @@ watch.post("/watch/notify", zValidator("json", watchNotifySchema), async (c) => 
     );
   }
 
+  const deps = c.get("deps") as ServerDeps;
+  const hub: WatchHub = deps.watchHub;
+
   // Session-scoped contribution writes cannot be safely fanned out to
   // the namespace-global watch stream: the watch hub keys on
   // (namespace, kind) and `/api/list` reads only the unscoped store, so
   // an unscoped subscriber would ingest a row that the next relist must
-  // delete. The HTTP contribute route already suppresses watch fan-out
-  // for session writes; the bridge has to do the same. Scoped feeds
-  // run on the polled path until /api/list and /api/watch carry
-  // sessionId end-to-end.
-  if (kind === "Contribution" && sessionId !== undefined) {
-    return c.json({
-      ok: true,
-      op: "skipped",
-      reason: "session_scoped_not_broadcast",
-    });
+  // delete. Decide skip vs fan-out from the AUTHORITATIVE store lookup
+  // — not from request.sessionId alone — because callers may stamp a
+  // sessionId on a contribution that actually committed at zone scope.
+  if (kind === "Contribution" && sessionId !== undefined && deps.contributionStoreForSession) {
+    const scoped = deps.contributionStoreForSession(sessionId);
+    const scopedHit = await scoped.get(entityId);
+    if (scopedHit !== undefined) {
+      // Row really lives in the session tree → skip global fan-out.
+      // Scoped feeds run on the polled path until /api/list and
+      // /api/watch carry sessionId end-to-end.
+      return c.json({
+        ok: true,
+        op: "skipped",
+        reason: "session_scoped_not_broadcast",
+      });
+    }
+    // Fall through: not in the scoped store, try the zone-root path.
   }
 
-  const deps = c.get("deps") as ServerDeps;
-  const hub: WatchHub = deps.watchHub;
-
-  const found = await hydrateEntity(deps, namespace, kind as WatchKind, entityId, sessionId);
+  const found = await hydrateEntity(deps, namespace, kind as WatchKind, entityId);
 
   if (found === undefined) {
     // Server's view: row is absent, so this is a delete. Caller cannot
