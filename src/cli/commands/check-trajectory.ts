@@ -1,9 +1,15 @@
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import type { CheckTrajectoryInput } from "../../core/operations/index.js";
 import { checkTrajectoryOperation } from "../../core/operations/index.js";
 import type { ReportFormat, TrajectoryRuntimeInput } from "../../trajectory/types.js";
+import { UsageError } from "../errors.js";
 
-const DEFAULT_SPEC_PATH = "spec/trajectory/common.yaml";
+const DEFAULT_SPEC_PATH = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../spec/trajectory/common.yaml",
+);
 const VALID_RUNTIMES = [
   "auto",
   "acpx",
@@ -17,27 +23,16 @@ const VALID_FORMATS = ["markdown", "json"] as const;
 type Writer = (line: string) => void;
 
 export function parseCheckTrajectoryArgs(argv: readonly string[]): CheckTrajectoryInput {
-  const { values } = parseArgs({
-    args: [...argv],
-    options: {
-      transcript: { type: "string" },
-      spec: { type: "string", multiple: true },
-      runtime: { type: "string", default: "auto" },
-      format: { type: "string", default: "markdown" },
-      "annotated-log": { type: "string" },
-    },
-    strict: true,
-    allowPositionals: false,
-  });
+  const { values } = parseCheckTrajectoryRawArgs(argv);
 
   if (values.transcript === undefined) {
-    throw new Error("--transcript is required");
+    throw new UsageError("--transcript is required");
   }
   if (!isTrajectoryRuntimeInput(values.runtime)) {
-    throw new Error(`Invalid --runtime: ${values.runtime}`);
+    throw new UsageError(`Invalid --runtime: ${values.runtime}`);
   }
   if (!isReportFormat(values.format)) {
-    throw new Error(`Invalid --format: ${values.format}`);
+    throw new UsageError(`Invalid --format: ${values.format}`);
   }
 
   return {
@@ -68,4 +63,27 @@ function isTrajectoryRuntimeInput(value: string | undefined): value is Trajector
 
 function isReportFormat(value: string | undefined): value is ReportFormat {
   return value !== undefined && VALID_FORMATS.includes(value as ReportFormat);
+}
+
+function parseCheckTrajectoryRawArgs(argv: readonly string[]): ReturnType<typeof parseArgs> {
+  try {
+    return parseArgs({
+      args: [...argv],
+      options: {
+        transcript: { type: "string" },
+        spec: { type: "string", multiple: true },
+        runtime: { type: "string", default: "auto" },
+        format: { type: "string", default: "markdown" },
+        "annotated-log": { type: "string" },
+      },
+      strict: true,
+      allowPositionals: false,
+    });
+  } catch (error) {
+    throw new UsageError(errorMessage(error));
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

@@ -453,7 +453,7 @@ Usage:
       helpText: `grove check-trajectory — check a local agent transcript
 
 Usage:
-  grove check-trajectory --transcript <path> [--spec <path>] [--runtime auto|acpx|codex|claude-stream-json|subprocess] [--format markdown|json] [--annotated-log <path>]`,
+  grove check-trajectory --transcript <path> [--spec <path>] [--runtime auto|acpx|codex|claude-stream-json|subprocess|unknown] [--format markdown|json] [--annotated-log <path>]`,
       handler: async (args) => {
         const { parseCheckTrajectoryArgs, runCheckTrajectory } = await import(
           "./commands/check-trajectory.js"
