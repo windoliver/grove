@@ -543,6 +543,12 @@ try {
       // Serialize bridge POSTs through a per-process tail to preserve
       // commit order across back-to-back mutations of the same entity.
       let bridgeTail: Promise<unknown> = Promise.resolve();
+      // GROVE_SESSION_ID is set by the parent (TUI / acpx) when the agent
+      // is bound to a Grove session — its writes land in the session-
+      // scoped VFS tree. The watch route needs this id to hydrate from the
+      // matching scoped store; without it the unscoped listEntities scan
+      // returns [] and the route emits DELETED for a brand-new row.
+      const bridgeSessionId = process.env.GROVE_SESSION_ID;
       onEntityWrite = (event) => {
         const ent = event.entity as { id?: string; metadata?: { generation?: number } } | null;
         const eid = ent?.id;
@@ -565,6 +571,7 @@ try {
                   kind: event.kind,
                   op: event.op,
                   entityId: eid,
+                  ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
                   ...(generation !== undefined ? { generation } : {}),
                 }),
                 signal: AbortSignal.timeout(2_000),

@@ -701,6 +701,12 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
       // the first inside the WatchHub ring and downstream consumers see
       // an older snapshot as authoritative until the next relist.
       let bridgeTail: Promise<unknown> = Promise.resolve();
+      // sessionId here is the scope of this McpDeps instance — agent
+      // contributions/claims land under /zones/{zone}/sessions/{sessionId}/.
+      // Forward it so /api/watch/notify can hydrate from the matching
+      // session-scoped store; without it the unscoped lookup returns []
+      // and the route emits DELETED for a brand-new row.
+      const bridgeSessionId = sessionId;
       onEntityWrite = (event) => {
         const ent = event.entity as { id?: string; metadata?: { generation?: number } } | null;
         const eid = ent?.id;
@@ -723,6 +729,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
                   kind: event.kind,
                   op: event.op,
                   entityId: eid,
+                  ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
                   ...(generation !== undefined ? { generation } : {}),
                 }),
                 signal: AbortSignal.timeout(2_000),

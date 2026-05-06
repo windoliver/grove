@@ -361,29 +361,29 @@ watch.get("/watch/metrics", async (c) => {
 // must hold a key for this server's namespace.
 //
 // Trust boundary: the request payload is NOT trusted as the entity body
-// nor as the operation type. We accept only `kind` and `entityId`, plus
-// an optional `generation` for freshness gating. The server then probes
-// its authoritative store and decides ADDED/MODIFIED (entity present)
-// vs. DELETED (absent). Without this:
+// nor as the operation type. We accept only `kind`, `entityId`, and an
+// optional `sessionId` (so we can route to the session-scoped store
+// where MCP agents actually write). The server probes its authoritative
+// store and decides ADDED/MODIFIED (row present) vs. DELETED (absent).
+// Without this:
 //
 //   - A namespace-key holder could forge an ADDED with arbitrary body
 //     and inject ghost rows into clients' Informer caches.
 //   - A namespace-key holder could forge a DELETED for any known id and
 //     evict the row from every connected watcher until next relist.
 //
-// `generation` is advisory: when supplied and the store row's generation
-// is strictly newer, we skip broadcast — a later commit will already
-// emit the newer state, and re-broadcasting a stale snapshot would let
-// a slow notify shadow the fresh one.
+// We always emit the hydrated current row when found — even if the
+// caller's `generation` is older than the store's. By the time we land
+// here, the store is the authoritative view; broadcasting current state
+// is correct under any race because subscribers reconcile by id+rv. The
+// generation field is accepted only for diagnostic logging.
 // ---------------------------------------------------------------------------
 
 const watchNotifySchema = z.object({
   kind: z.enum(KIND_VALUES),
-  // op is accepted as an advisory hint but server hydrates authoritatively.
   op: z.enum(["ADDED", "MODIFIED", "DELETED"]).optional(),
   entityId: z.string().min(1),
-  // Caller's view of the row's generation at write time. If the store's
-  // current generation is strictly newer, skip broadcast.
+  sessionId: z.string().min(1).optional(),
   generation: z.number().int().nonnegative().optional(),
 });
 
@@ -392,20 +392,39 @@ interface MaybeVersioned {
   readonly metadata?: { readonly generation?: number };
 }
 
+async function hydrateEntity(
+  deps: ServerDeps,
+  namespace: string,
+  kind: WatchKind,
+  entityId: string,
+  sessionId: string | undefined,
+): Promise<MaybeVersioned | undefined> {
+  // Session-scoped lookup for Contribution: agents write under
+  // /zones/{zone}/sessions/{sessionId}/contributions/, so the unscoped
+  // listEntities() returns []. Use the per-session factory when present.
+  if (kind === "Contribution" && sessionId && deps.contributionStoreForSession) {
+    const scoped = deps.contributionStoreForSession(sessionId);
+    const list = (await scoped.listEntities()) as ReadonlyArray<MaybeVersioned>;
+    const hit = list.find((e) => e?.id === entityId);
+    if (hit) return hit;
+    // Fall through to unscoped lookup — covers the case where a caller
+    // stamps a sessionId but the row actually lives at the zone root.
+  }
+  const list = (await listForKind(deps, namespace, kind)) as ReadonlyArray<MaybeVersioned>;
+  return list.find((e) => e?.id === entityId);
+}
+
 watch.post("/watch/notify", zValidator("json", watchNotifySchema), async (c) => {
   const namespace = c.get("namespace");
-  const { kind, entityId, generation } = c.req.valid("json");
+  const { kind, entityId, sessionId } = c.req.valid("json");
   const deps = c.get("deps") as ServerDeps;
   const hub: WatchHub = deps.watchHub;
 
-  const list = await listForKind(deps, namespace, kind as WatchKind);
-  const found = (list as ReadonlyArray<MaybeVersioned>).find((e) => e?.id === entityId);
+  const found = await hydrateEntity(deps, namespace, kind as WatchKind, entityId, sessionId);
 
   if (found === undefined) {
-    // Server's view: row is absent, so this was a delete. Caller cannot
-    // forge a delete because we re-checked the store; if a writer raced
-    // a re-add between commit and notify the next ADDED notify will
-    // immediately follow with the live snapshot.
+    // Server's view: row is absent, so this is a delete. Caller cannot
+    // forge a delete for a live row because we just re-checked the store.
     hub.recordWrite({
       kind: kind as WatchKind,
       namespace,
@@ -415,18 +434,8 @@ watch.post("/watch/notify", zValidator("json", watchNotifySchema), async (c) => 
     return c.json({ ok: true, op: "DELETED" });
   }
 
-  // Freshness gate: when the caller stamps its observed generation, only
-  // emit if the store's current generation is at least that fresh. Skip
-  // (200 with op=skipped) when the store is strictly ahead — the newer
-  // commit's own notify will broadcast the right snapshot, and emitting
-  // the older one here would let a slow POST shadow the live state.
-  const storeGen = found.metadata?.generation ?? 0;
-  if (generation !== undefined && storeGen > generation) {
-    return c.json({ ok: true, op: "skipped", reason: "store_ahead" });
-  }
-
   // ADDED vs MODIFIED is a hint to subscribers, not a security boundary;
-  // pass the caller's hint through (default to MODIFIED on missing op).
+  // honor caller's hint (default MODIFIED). Forbid DELETED when found.
   const hintOp = c.req.valid("json").op ?? "MODIFIED";
   const op = hintOp === "DELETED" ? "MODIFIED" : hintOp;
   hub.recordWrite({ kind: kind as WatchKind, namespace, op, entity: found as never });
