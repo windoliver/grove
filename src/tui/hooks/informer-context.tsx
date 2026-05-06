@@ -98,7 +98,7 @@ export function useInformerFactory(): InformerFactory {
  * Non-throwing variant of `useInformerFactory`. Returns `null` when no
  * provider is mounted (e.g. backend mode = "nexus" where the factory
  * wasn't constructed) OR when the factory's mode doesn't support the
- * caller's kind. Migrated views that have a `usePolledData` fallback
+ * caller's kind. Migrated views that have a `useEventDrivenData` fallback
  * path can use this to decide which path to take per render.
  */
 export function useInformerFactoryOptional(): InformerFactory | null {
@@ -113,7 +113,7 @@ export function useInformer<K extends WatchKind>(kind: K): Informer<K> {
  * No-op informer used when no `<InformerProvider>` is mounted (e.g. backend
  * mode = "nexus" where the factory wasn't constructed). Returns empty list,
  * `hasSynced=false`, and no-op event subscribers — so callers reading from
- * the cache get nothing and the dual-path views fall back to `usePolledData`.
+ * the cache get nothing and the dual-path views fall back to `useEventDrivenData`.
  *
  * `useInformerOptional` returns this stub when the context is null, which
  * keeps React hook order stable in views that mount under both wrapped and
@@ -146,7 +146,7 @@ function nullInformerFor<K extends WatchKind>(kind: K): Informer<K> {
 /**
  * Non-throwing variant of `useInformer`. Returns a no-op informer when no
  * provider is mounted OR when the factory's mode doesn't support the kind.
- * Use this in views with a `usePolledData` fallback so React hook order
+ * Use this in views with a `useEventDrivenData` fallback so React hook order
  * stays stable across both code paths.
  */
 export function useInformerOptional<K extends WatchKind>(kind: K): Informer<K> {
@@ -159,7 +159,7 @@ export function useInformerOptional<K extends WatchKind>(kind: K): Informer<K> {
 
 /**
  * Decide whether a migrated view should pull from the informer cache or
- * fall back to its `usePolledData` path. Returns `true` only when:
+ * fall back to its `useEventDrivenData` path. Returns `true` only when:
  *
  *   1. A provider is mounted that supports the kind.
  *   2. The factory mode is "remote" — the in-process local-mode hub

@@ -968,7 +968,13 @@ export class NexusContributionStore implements ContributionStore {
         const relData = await withSemaphore(this.semaphore, () => this.client.read(entry.path));
         if (relData === undefined) continue;
         const rel = decode<{ relationType: string }>(relData);
-        if (rel.relationType === "responds_to") count++;
+        if (rel.relationType !== "responds_to") continue;
+        if (this.sessionId !== undefined) {
+          const sourceCid = entry.name.replace(/\.json$/, "");
+          const source = await this.get(sourceCid);
+          if (source === undefined) continue;
+        }
+        count++;
       }
       result.set(cid, count);
     }

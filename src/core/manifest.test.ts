@@ -496,6 +496,16 @@ describe("fromManifest", () => {
       expect(verifyCid(restored)).toBe(true);
     });
 
+    test("commitHash survives round-trip and remains verifiable", () => {
+      const original = createContribution({
+        ...MINIMAL_INPUT,
+        commitHash: "955da4e077c08e281a01eed942efc0a2f0837a34",
+      });
+      const restored = fromManifest(toManifest(original));
+      expect(restored.commitHash).toBe(original.commitHash);
+      expect(verifyCid(restored)).toBe(true);
+    });
+
     test("round-trip through JSON.stringify/parse preserves CID", () => {
       const original = createContribution(FULL_INPUT);
       const json = JSON.stringify(toManifest(original));

@@ -859,6 +859,20 @@ export async function contributeOperation(
   // row is in the store, including one another process reserved in the
   // meantime — erasing its single-flight protection and enabling dup writes.
   let ownsDurableReservation = false;
+  const rollbackOwnedDurableReservation = (): void => {
+    if (
+      ownsDurableReservation &&
+      idempotencyCacheLookupKey !== undefined &&
+      deps.idempotencyStore !== undefined
+    ) {
+      try {
+        deps.idempotencyStore.rollback(idempotencyCacheLookupKey);
+      } catch {
+        // Best-effort — don't mask the original error.
+      }
+      ownsDurableReservation = false;
+    }
+  };
 
   try {
     if (deps.contributionStore === undefined) {
@@ -986,6 +1000,23 @@ export async function contributeOperation(
       }
     }
 
+    // --- Ephemeral flag is reserved for discussions ---
+    // context.ephemeral=true is a routing/frontier skip signal intended for
+    // chat messages and grove_done session terminators, both of which are
+    // kind=discussion. Reject this before durable idempotency reservation so
+    // corrected retries can reuse the key after this permanent validation error.
+    if (input.kind !== CK.Discussion && input.context?.ephemeral === true) {
+      const errResult = validationErr(
+        `context.ephemeral=true is only valid on kind=discussion contributions ` +
+          `(chat messages and session terminators). Got kind='${input.kind}'. ` +
+          `The ephemeral flag suppresses topology routing, handoff creation, and ` +
+          `frontier inclusion — setting it on progress contributions would make them invisible.`,
+      );
+      idempotencySlot?.resolve(errResult);
+      idempotencySlot = undefined;
+      return errResult;
+    }
+
     // Cross-process durable reserve — losing the race means another
     // process already started the write; return retryable conflict.
     if (
@@ -1029,27 +1060,6 @@ export async function contributeOperation(
     const contributionInput = withRuntimeRoutingSignature(unsignedContributionInput);
 
     const contribution = createContribution(contributionInput);
-
-    // --- Ephemeral flag is reserved for discussions ---
-    // context.ephemeral=true is a routing/frontier skip signal intended for
-    // chat messages and grove_done session terminators, both of which are
-    // kind=discussion. Allowing it on work/review/reproduction/adoption would
-    // make real progress invisible to the topology router, handoff store,
-    // stop-condition evaluator, AND the frontier calculator (which filters
-    // out ephemeral contributions). Reject the combination explicitly so
-    // caller bugs surface instead of silently dropping work.
-    if (contribution.kind !== CK.Discussion && contribution.context?.ephemeral === true) {
-      const errResult = validationErr(
-        `context.ephemeral=true is only valid on kind=discussion contributions ` +
-          `(chat messages and session terminators). Got kind='${contribution.kind}'. ` +
-          `The ephemeral flag suppresses topology routing, handoff creation, and ` +
-          `frontier inclusion — setting it on progress contributions would make them invisible.`,
-      );
-      // Resolve the idempotency slot with this permanent error so any
-      // concurrent retry with the same key gets the same response.
-      idempotencySlot?.resolve(errResult);
-      return errResult;
-    }
 
     const returnDuplicate = (
       storedContribution: Contribution,
@@ -1779,17 +1789,7 @@ export async function contributeOperation(
     // the pending row. Otherwise a pre-commit throw here would delete a
     // row another process (or a concurrent same-process retry) just
     // reserved, defeating cross-process single-flight.
-    if (
-      ownsDurableReservation &&
-      idempotencyCacheLookupKey !== undefined &&
-      deps.idempotencyStore !== undefined
-    ) {
-      try {
-        deps.idempotencyStore.rollback(idempotencyCacheLookupKey);
-      } catch {
-        // Best-effort — don't mask the original error.
-      }
-    }
+    rollbackOwnedDurableReservation();
     return errResult;
   }
 }

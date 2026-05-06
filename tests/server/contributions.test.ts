@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import type { ContributionQuery, ContributionStore } from "../../src/core/store.js";
+import { createApp } from "../../src/server/app.js";
 import type { TestContext } from "./helpers.js";
-import { createTestContext, TEST_AUTH_HEADERS, validManifestBody } from "./helpers.js";
+import {
+  createTestContext,
+  TEST_AUTH_HEADERS,
+  TEST_KEY,
+  TEST_NAMESPACE,
+  validManifestBody,
+} from "./helpers.js";
 
 describe("POST /api/contributions", () => {
   let ctx: TestContext;
@@ -280,6 +288,24 @@ describe("POST /api/contributions", () => {
     const data = await res.json();
     expect(data.artifacts["main.py"]).toBe(hash);
   });
+
+  test("accepts commitHash and agent role on JSON body", async () => {
+    const body = validManifestBody({
+      commitHash: "955da4e077c08e281a01eed942efc0a2f0837a34",
+      agent: { agentId: "test-agent", role: "coder" },
+    });
+
+    const res = await ctx.app.request("/api/contributions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(201);
+    const data = await res.json();
+    expect(data.commitHash).toBe("955da4e077c08e281a01eed942efc0a2f0837a34");
+    expect(data.agent.role).toBe("coder");
+  });
 });
 
 describe("GET /api/contributions", () => {
@@ -401,6 +427,58 @@ describe("GET /api/contributions", () => {
     });
     expect(res.status).toBe(400);
   });
+
+  test("outcome filter does not issue an unbounded contribution list", async () => {
+    const created: { cid: string }[] = [];
+    for (let i = 0; i < 3; i++) {
+      const res = await ctx.app.request("/api/contributions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+        body: JSON.stringify(
+          validManifestBody({
+            summary: `Outcome-filtered ${i}`,
+            createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(),
+          }),
+        ),
+      });
+      expect(res.status).toBe(201);
+      created.push((await res.json()) as { cid: string });
+    }
+
+    await ctx.outcomeStore.set(created[0].cid, { status: "accepted", evaluatedBy: "reviewer" });
+    await ctx.outcomeStore.set(created[1].cid, { status: "accepted", evaluatedBy: "reviewer" });
+    await ctx.outcomeStore.set(created[2].cid, { status: "rejected", evaluatedBy: "reviewer" });
+
+    let unboundedListCalls = 0;
+    const guardedStore = new Proxy(ctx.contributionStore, {
+      get(target, prop, receiver) {
+        if (prop === "list") {
+          return (query?: ContributionQuery) => {
+            if (query?.limit === undefined) unboundedListCalls++;
+            return target.list(query);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        if (typeof value === "function") return value.bind(target);
+        return value;
+      },
+    }) as ContributionStore;
+
+    const app = createApp(
+      { ...ctx.deps, contributionStore: guardedStore },
+      new Map([[TEST_KEY, TEST_NAMESPACE]]),
+    );
+
+    const res = await app.request("/api/contributions?outcome=accepted&limit=1", {
+      headers: TEST_AUTH_HEADERS,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("X-Total-Count")).toBe("2");
+    const data = (await res.json()) as readonly unknown[];
+    expect(data).toHaveLength(1);
+    expect(unboundedListCalls).toBe(0);
+  });
 });
 
 describe("GET /api/contributions/:cid", () => {
@@ -505,6 +583,36 @@ describe("GET /api/contributions/:cid/artifacts/:name", () => {
 
     const downloaded = new Uint8Array(await res.arrayBuffer());
     expect(new TextDecoder().decode(downloaded)).toBe("print('hello')");
+  });
+
+  test("downloads nested artifact paths and metadata", async () => {
+    const content = new TextEncoder().encode("export const answer = 42;\n");
+    const hash = await ctx.cas.put(content, { mediaType: "text/typescript" });
+
+    const createRes = await ctx.app.request("/api/contributions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify(validManifestBody({ artifacts: { "src/main.ts": hash } })),
+    });
+    const created = (await createRes.json()) as { cid: string };
+
+    const downloadRes = await ctx.app.request(
+      `/api/contributions/${created.cid}/artifacts/src/main.ts`,
+      { headers: TEST_AUTH_HEADERS },
+    );
+    expect(downloadRes.status).toBe(200);
+    expect(new TextDecoder().decode(await downloadRes.arrayBuffer())).toBe(
+      "export const answer = 42;\n",
+    );
+
+    const metaRes = await ctx.app.request(
+      `/api/contributions/${created.cid}/artifacts/src/main.ts/meta`,
+      { headers: TEST_AUTH_HEADERS },
+    );
+    expect(metaRes.status).toBe(200);
+    const meta = (await metaRes.json()) as { sizeBytes: number; mediaType?: string };
+    expect(meta.sizeBytes).toBe(content.byteLength);
+    expect(meta.mediaType).toBe("text/typescript");
   });
 
   test("returns 404 for non-existent artifact name", async () => {

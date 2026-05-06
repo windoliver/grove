@@ -322,7 +322,7 @@ export const ScreenManager: React.NamedExoticComponent<ScreenManagerProps> = Rea
     const handleDone = useCallback(() => {
       void snapshotAndComplete("All roles signaled done");
     }, [snapshotAndComplete]);
-    useDoneDetection(provider, topology, state.screen, appProps.eventBus, handleDone);
+    useDoneDetection(topology, state.screen, appProps.eventBus, handleDone);
 
     // ---------------------------------------------------------------------------
     // Permission prompt detection — extracted to custom hook

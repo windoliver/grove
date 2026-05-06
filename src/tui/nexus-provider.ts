@@ -6,7 +6,6 @@
  * Used when running `grove tui --nexus <url>`.
  */
 
-import { appendFileSync as _afs } from "node:fs";
 import type { Bounty } from "../core/bounty.js";
 import type { BountyQuery } from "../core/bounty-store.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
@@ -23,6 +22,7 @@ import { NexusContributionStore } from "../nexus/nexus-contribution-store.js";
 import { NexusOutcomeStore } from "../nexus/nexus-outcome-store.js";
 import { NexusSessionStore } from "../nexus/nexus-session-store.js";
 import { casMetaPath, casPath } from "../nexus/vfs-paths.js";
+import { debugLog } from "./debug-log.js";
 import type {
   ArtifactMeta,
   FsEntry,
@@ -152,14 +152,10 @@ export class NexusDataProvider
       sessionId,
     });
     const newId = scopedStore.storeIdentity;
-    try {
-      _afs(
-        "/tmp/grove-debug.log",
-        `[${new Date().toISOString()}] [provider.setSessionScope] sessionId=${sessionId} oldStoreId=${oldId} newStoreId=${newId}\n`,
-      );
-    } catch {
-      /* ignore */
-    }
+    debugLog(
+      "provider.setSessionScope",
+      `sessionId=${sessionId} oldStoreId=${oldId} newStoreId=${newId}`,
+    );
     // Replace the inherited store (StoreBackedProvider.store)
     (this as unknown as { store: NexusContributionStore }).store = scopedStore;
     // Also update the frontier calculator to use the scoped store

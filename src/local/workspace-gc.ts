@@ -6,7 +6,7 @@
  */
 
 import { safeCleanup } from "../shared/safe-cleanup.js";
-import type { TuiDataProvider } from "./provider.js";
+import type { TuiDataProvider } from "../tui/provider.js";
 
 /** Default GC interval: 5 minutes. */
 const GC_INTERVAL_MS = 5 * 60 * 1_000;

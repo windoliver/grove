@@ -16,9 +16,13 @@
  * - Retry with exponential backoff for transient errors
  */
 
-import { readFile, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { copyFile, stat as fsStat, readFile, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { hash } from "blake3";
+import { createHash as createBlake3, hash } from "blake3";
 
 import type { ContentStore, PutOptions } from "../core/cas.js";
 import { validateMediaType } from "../core/cas.js";
@@ -86,6 +90,30 @@ function metadataFor(data: Uint8Array, mediaType: string | undefined): CasMetada
   return {
     sizeBytes: data.byteLength,
     ...(mediaType ? { mediaType } : {}),
+  };
+}
+
+function metadataForSize(sizeBytes: number, mediaType: string | undefined): CasMetadata {
+  return {
+    sizeBytes,
+    ...(mediaType ? { mediaType } : {}),
+  };
+}
+
+async function hashFile(filePath: string): Promise<{ contentHash: string; sizeBytes: number }> {
+  const stats = await fsStat(filePath);
+  const hasher = createBlake3();
+  try {
+    for await (const chunk of createReadStream(filePath)) {
+      hasher.update(chunk);
+    }
+  } catch (err) {
+    hasher.dispose();
+    throw err;
+  }
+  return {
+    contentHash: `${HASH_PREFIX}${hasher.digest("hex")}`,
+    sizeBytes: stats.size,
   };
 }
 
@@ -227,51 +255,67 @@ export class NexusCas implements ContentStore {
     const mediaType = options?.mediaType || undefined;
     if (mediaType) validateMediaType(mediaType);
 
-    const fileData = new Uint8Array(await readFile(filePath));
-    const contentHash = computeHash(fileData);
-    const blobPath = casPath(this.zoneId, contentHash);
+    const fileSizeBytes = (await fsStat(filePath)).size;
+    if (fileSizeBytes > this.config.maxPutFileBytes) {
+      throw new Error(
+        `File '${filePath}' is ${fileSizeBytes} bytes, exceeds Nexus CAS putFile limit of ${this.config.maxPutFileBytes} bytes`,
+      );
+    }
 
-    // Exists-before-put — file-based puts are always "large"
-    const fileExists = await withRetry(
-      () => withSemaphore(this.semaphore, () => this.client.exists(blobPath)),
-      "putFile.exists",
-      this.config,
+    const stagingFile = join(
+      tmpdir(),
+      `grove-nexus-cas.${Date.now()}.${randomBytes(4).toString("hex")}`,
     );
-    if (fileExists) {
+    await copyFile(filePath, stagingFile);
+    try {
+      const { contentHash, sizeBytes } = await hashFile(stagingFile);
+      const blobPath = casPath(this.zoneId, contentHash);
+
+      // Exists-before-put — file-based puts are always "large"
+      const fileExists = await withRetry(
+        () => withSemaphore(this.semaphore, () => this.client.exists(blobPath)),
+        "putFile.exists",
+        this.config,
+      );
+      if (fileExists) {
+        const metaP = casMetaPath(this.zoneId, contentHash);
+        await withRetry(
+          () =>
+            withSemaphore(this.semaphore, () =>
+              this.client.write(metaP, encodeMetadata(metadataForSize(sizeBytes, mediaType))),
+            ),
+          "putFile.meta",
+          this.config,
+        );
+        this.existsCache.set(contentHash, true);
+        // Invalidate statCache — mediaType may have changed
+        this.statCache.delete(contentHash);
+        return contentHash;
+      }
+
+      const fileData = new Uint8Array(await readFile(stagingFile));
+      await withRetry(
+        () => withSemaphore(this.semaphore, () => this.client.write(blobPath, fileData)),
+        "putFile",
+        this.config,
+      );
+
       const metaP = casMetaPath(this.zoneId, contentHash);
       await withRetry(
         () =>
           withSemaphore(this.semaphore, () =>
-            this.client.write(metaP, encodeMetadata(metadataFor(fileData, mediaType))),
+            this.client.write(metaP, encodeMetadata(metadataForSize(sizeBytes, mediaType))),
           ),
         "putFile.meta",
         this.config,
       );
+
       this.existsCache.set(contentHash, true);
-      // Invalidate statCache — mediaType may have changed
       this.statCache.delete(contentHash);
       return contentHash;
+    } finally {
+      await safeCleanup(unlink(stagingFile), "remove Nexus CAS staging file", { silent: true });
     }
-
-    await withRetry(
-      () => withSemaphore(this.semaphore, () => this.client.write(blobPath, fileData)),
-      "putFile",
-      this.config,
-    );
-
-    const metaP = casMetaPath(this.zoneId, contentHash);
-    await withRetry(
-      () =>
-        withSemaphore(this.semaphore, () =>
-          this.client.write(metaP, encodeMetadata(metadataFor(fileData, mediaType))),
-        ),
-      "putFile.meta",
-      this.config,
-    );
-
-    this.existsCache.set(contentHash, true);
-    this.statCache.delete(contentHash);
-    return contentHash;
   }
 
   async getToFile(contentHash: string, destPath: string): Promise<boolean> {

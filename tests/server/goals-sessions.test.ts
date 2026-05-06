@@ -10,7 +10,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Hono } from "hono";
+import type { GroveContract } from "../../src/core/contract.js";
 import { DefaultFrontierCalculator } from "../../src/core/frontier.js";
+import { makeContribution } from "../../src/core/test-helpers.js";
 import { WatchHub } from "../../src/core/watch-hub.js";
 import { FsCas } from "../../src/local/fs-cas.js";
 import { createSqliteStores } from "../../src/local/sqlite-store.js";
@@ -33,11 +35,14 @@ const GS_TEST_REGISTRY: KeyRegistry = new Map([[GS_TEST_KEY, GS_TEST_NAMESPACE]]
 
 interface GoalSessionTestContext {
   readonly app: Hono<ServerEnv>;
+  readonly stores: ReturnType<typeof createSqliteStores>;
   readonly tempDir: string;
   readonly cleanup: () => Promise<void>;
 }
 
-async function createGoalSessionContext(): Promise<GoalSessionTestContext> {
+async function createGoalSessionContext(options?: {
+  readonly contract?: GroveContract | undefined;
+}): Promise<GoalSessionTestContext> {
   const tempDir = await mkdtemp(join(tmpdir(), "grove-goals-test-"));
   const dbPath = join(tempDir, "test.db");
   const casDir = join(tempDir, "cas");
@@ -53,7 +58,7 @@ async function createGoalSessionContext(): Promise<GoalSessionTestContext> {
     cas,
     frontier,
     goalSessionStore: stores.goalSessionStore,
-    contract: { contractVersion: 3, name: "test-contract" },
+    contract: options?.contract ?? { contractVersion: 3, name: "test-contract" },
     watchHub: new WatchHub(),
   };
 
@@ -61,6 +66,7 @@ async function createGoalSessionContext(): Promise<GoalSessionTestContext> {
 
   return {
     app,
+    stores,
     tempDir,
     cleanup: async () => {
       stores.close();
@@ -351,7 +357,32 @@ describe("PUT /api/sessions/:id/archive", () => {
 });
 
 describe("POST /api/sessions/:id/contributions", () => {
-  test("adds contribution to session", async () => {
+  test("adds an existing contribution to session", async () => {
+    const createRes = await ctx.app.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
+      body: JSON.stringify({}),
+    });
+    const created = await createRes.json();
+    const contribution = makeContribution({ summary: "stored contribution" });
+    await ctx.stores.contributionStore.put(contribution);
+
+    const res = await ctx.app.request(`/api/sessions/${created.sessionId}/contributions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
+      body: JSON.stringify({ cid: contribution.cid }),
+    });
+    expect(res.status).toBe(204);
+
+    // Verify contribution count increased
+    const getRes = await ctx.app.request(`/api/sessions/${created.sessionId}`, {
+      headers: GS_TEST_AUTH_HEADERS,
+    });
+    const data = await getRes.json();
+    expect(data.contributionCount).toBe(1);
+  });
+
+  test("rejects malformed CIDs", async () => {
     const createRes = await ctx.app.request("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
@@ -364,14 +395,71 @@ describe("POST /api/sessions/:id/contributions", () => {
       headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
       body: JSON.stringify({ cid: "blake3:abc123" }),
     });
-    expect(res.status).toBe(204);
+    expect(res.status).toBe(400);
 
-    // Verify contribution count increased
     const getRes = await ctx.app.request(`/api/sessions/${created.sessionId}`, {
       headers: GS_TEST_AUTH_HEADERS,
     });
     const data = await getRes.json();
-    expect(data.contributionCount).toBe(1);
+    expect(data.contributionCount).toBe(0);
+  });
+
+  test("rejects well-formed CIDs that are not stored contributions", async () => {
+    const createRes = await ctx.app.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
+      body: JSON.stringify({}),
+    });
+    const created = await createRes.json();
+    const missingCid = `blake3:${"0".repeat(64)}`;
+
+    const res = await ctx.app.request(`/api/sessions/${created.sessionId}/contributions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
+      body: JSON.stringify({ cid: missingCid }),
+    });
+    expect(res.status).toBe(404);
+
+    const getRes = await ctx.app.request(`/api/sessions/${created.sessionId}`, {
+      headers: GS_TEST_AUTH_HEADERS,
+    });
+    const data = await getRes.json();
+    expect(data.contributionCount).toBe(0);
+  });
+
+  test("enforces session policy before attaching a stored contribution", async () => {
+    const policyCtx = await createGoalSessionContext({
+      contract: {
+        contractVersion: 3,
+        name: "policy-test",
+        gates: [{ type: "min_score", metric: "quality", threshold: 0.7 }],
+      },
+    });
+    try {
+      const createRes = await policyCtx.app.request("/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
+        body: JSON.stringify({}),
+      });
+      const created = await createRes.json();
+      const contribution = makeContribution({ summary: "missing quality score" });
+      await policyCtx.stores.contributionStore.put(contribution);
+
+      const res = await policyCtx.app.request(`/api/sessions/${created.sessionId}/contributions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...GS_TEST_AUTH_HEADERS },
+        body: JSON.stringify({ cid: contribution.cid }),
+      });
+      expect(res.status).toBe(400);
+
+      const getRes = await policyCtx.app.request(`/api/sessions/${created.sessionId}`, {
+        headers: GS_TEST_AUTH_HEADERS,
+      });
+      const data = await getRes.json();
+      expect(data.contributionCount).toBe(0);
+    } finally {
+      await policyCtx.cleanup();
+    }
   });
 
   test("returns 404 for missing session", async () => {

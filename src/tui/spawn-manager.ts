@@ -25,6 +25,7 @@ import type { AgentTopology } from "../core/topology.js";
 import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
 import type { WorkspaceIsolationPolicy, WorkspaceMode } from "../core/workspace-provisioner.js";
 import { provisionWorkspace } from "../core/workspace-provisioner.js";
+import { startInterval } from "../local/use-interval.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
@@ -97,7 +98,7 @@ export class SpawnManager {
   private groveDir: string | undefined;
   private workspaceIsolationPolicy: WorkspaceIsolationPolicy = "allow-fallback";
   private topology: AgentTopology | undefined;
-  private logPollTimer: ReturnType<typeof setInterval> | null = null;
+  private logPollTimer: (() => void) | null = null;
   // spawnIds that should receive IPC routing — populated when agents are spawned
   // or explicitly reattached for the CURRENT session. Prevents routing to stale
   // sessions from previous sessions that reconcile() found still alive in acpx.
@@ -1228,7 +1229,7 @@ export class SpawnManager {
       }
     };
 
-    this.logPollTimer = setInterval(pollAll, intervalMs);
+    this.logPollTimer = startInterval(pollAll, intervalMs);
     if (!seekToEnd) {
       pollAll(); // Also poll immediately (skip initial sync poll when seekToEnd — async seek must complete first)
     }
@@ -1237,7 +1238,7 @@ export class SpawnManager {
   /** Stop the log polling timer. */
   stopLogPolling(): void {
     if (this.logPollTimer !== null) {
-      clearInterval(this.logPollTimer);
+      this.logPollTimer();
       this.logPollTimer = null;
     }
     // NOTE: do NOT clear routableSessions here — spawn() populates it before the session runs.

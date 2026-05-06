@@ -38,7 +38,7 @@ import type {
 } from "../core/store.js";
 import { ExpiryReason } from "../core/store.js";
 import { BOUNTY_DDL, SqliteBountyStore } from "./sqlite-bounty-store.js";
-import { SqliteGoalSessionStore } from "./sqlite-goal-session-store.js";
+import { GOAL_SESSION_DDL, SqliteGoalSessionStore } from "./sqlite-goal-session-store.js";
 import { HANDOFF_DDL, SqliteHandoffStore } from "./sqlite-handoff-store.js";
 import { SqliteOutcomeStore } from "./sqlite-outcome-store.js";
 
@@ -234,6 +234,7 @@ export function initSqliteDb(dbPath: string): Database {
   const initSchema = db.transaction(() => {
     db.exec(SCHEMA_DDL);
     db.exec(FTS_DDL);
+    db.exec(GOAL_SESSION_DDL);
 
     // Pre-HANDOFF_DDL column-safe migration: legacy handoffs tables (pre-#164)
     // lack session_id/seen_at/acked_at/ipc_message_id. HANDOFF_DDL now includes
@@ -598,7 +599,6 @@ export class SqliteIdempotencyStore {
 
   constructor(db: Database) {
     this.db = db;
-    // Only return committed rows — pending rows are in-flight in another process.
     this.lookupStmt = db.prepare(
       "SELECT fingerprint, result_json, status FROM idempotency_keys WHERE cache_key = ? AND stored_at > ?",
     );
@@ -638,12 +638,8 @@ export class SqliteIdempotencyStore {
       "DELETE FROM idempotency_keys WHERE cache_key = ? AND status = 'committed' AND stored_at <= ?",
       [cacheKey, Date.now() - 5 * 60 * 1000],
     );
-    this.reserveStmt.run(cacheKey, fingerprint, Date.now());
-    // Check if our reservation landed (fingerprint matches).
-    const row = this.lookupStmt.get(cacheKey, 0) as {
-      fingerprint: string;
-    } | null;
-    return row !== null && row.fingerprint === fingerprint;
+    const result = this.reserveStmt.run(cacheKey, fingerprint, Date.now());
+    return result.changes === 1;
   }
 
   /** Remove a pending reservation on failure (pre-commit rollback). */

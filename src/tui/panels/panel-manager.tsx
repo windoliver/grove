@@ -26,10 +26,10 @@ import type { TmuxManager } from "../agents/tmux-manager.js";
 import { AgentSplitPane } from "../components/agent-split-pane.js";
 import { useEntityWatchEnabled } from "../hooks/informer-context.js";
 import { useEntity } from "../hooks/use-entity.js";
+import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { NavigationActions } from "../hooks/use-navigation.js";
 import type { PanelFocusState } from "../hooks/use-panel-focus.js";
 import { isPanelVisible, PANEL_LABELS, Panel } from "../hooks/use-panel-focus.js";
-import { usePolledData } from "../hooks/use-polled-data.js";
 import type { ContributionDetail, TuiDataProvider } from "../provider.js";
 import { theme } from "../theme.js";
 import { ActivityPanelView } from "../views/activity-panel.js";
@@ -200,7 +200,7 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
 
     // Fetch contribution detail to resolve the first artifact name.
     // PR2 (#388): prefer the informer cache via `useEntity("Contribution", id)`
-    // and fall back to `usePolledData(getContribution)` when no factory is
+    // and fall back to `useEventDrivenData(getContribution)` when no factory is
     // mounted (e.g. backend.mode === "nexus" — no watch routes yet).
     const detailCid = nav.detailCid;
     const useInformerPath =
@@ -211,9 +211,10 @@ export const PanelManager: React.NamedExoticComponent<PanelManagerProps> = React
       () => (detailCid ? provider.getContribution(detailCid) : Promise.resolve(undefined)),
       [provider, detailCid],
     );
-    const { data: detailData } = usePolledData<ContributionDetail | undefined>(
+    const { data: detailData } = useEventDrivenData<ContributionDetail | undefined>(
       detailFetcher,
-      intervalMs,
+      undefined,
+      undefined,
       isPanelVisible(panelState, Panel.Artifact) && detailCid !== undefined && !useInformerPath,
     );
 

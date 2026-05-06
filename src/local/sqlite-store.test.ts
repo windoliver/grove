@@ -108,6 +108,23 @@ runClaimStoreTests(async () => {
   };
 });
 
+describe("SqliteIdempotencyStore", () => {
+  test("reserve returns false when a peer already owns the same pending key", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-idempotency-reserve-"));
+    const dbPath = join(dir, "test.db");
+    const first = createSqliteStores(dbPath);
+    const second = createSqliteStores(dbPath);
+    try {
+      expect(first.idempotencyStore.reserve("agent:key", "fingerprint-1")).toBe(true);
+      expect(second.idempotencyStore.reserve("agent:key", "fingerprint-1")).toBe(false);
+    } finally {
+      first.close();
+      second.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("SqliteContributionStore ordering", () => {
   test("list supports newest-first ordering for bounded pollers", async () => {
     const dir = await mkdtemp(join(tmpdir(), "sqlite-order-"));
@@ -131,6 +148,36 @@ describe("SqliteContributionStore ordering", () => {
       expect(asc.map((c) => c.cid)).toEqual([older.cid]);
     } finally {
       close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("SqliteIdempotencyStore", () => {
+  test("reserve returns false when the key is already pending with the same fingerprint", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-idempotency-"));
+    const dbPath = join(dir, "test.db");
+    const { idempotencyStore, close } = createSqliteStores(dbPath);
+    try {
+      expect(idempotencyStore.reserve("cache-key", "fingerprint")).toBe(true);
+      expect(idempotencyStore.reserve("cache-key", "fingerprint")).toBe(false);
+    } finally {
+      close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("SqliteStore session filtering", () => {
+  test("fresh legacy store returns empty results for a session filter", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-session-filter-"));
+    const dbPath = join(dir, "test.db");
+    const store = new SqliteStore(dbPath);
+    try {
+      expect(await store.list({ sessionId: "missing-session" })).toEqual([]);
+      expect(await store.count({ sessionId: "missing-session" })).toBe(0);
+    } finally {
+      store.close();
       await rm(dir, { recursive: true, force: true });
     }
   });

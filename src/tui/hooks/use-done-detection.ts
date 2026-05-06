@@ -10,7 +10,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import type { EventBus, GroveEvent } from "../../core/event-bus.js";
 import type { AgentTopology } from "../../core/topology.js";
-import type { TuiDataProvider } from "../provider.js";
 import type { Screen } from "../screens/screen-manager.js";
 
 function isDoneContribution(c: { summary: string; context?: unknown }): boolean {
@@ -26,18 +25,17 @@ function isDoneContribution(c: { summary: string; context?: unknown }): boolean 
 /**
  * Watch for session completion via contribution done signals.
  *
- * Supports two modes:
- * - **Event-driven** (preferred): subscribes to EventBus for real-time notifications
- * - **Polling fallback**: polls provider every 5s when no EventBus is available
+ * Subscribes to EventBus for real-time done detection. When `eventBus` is
+ * undefined the hook is a no-op — callers must wire EventBus to detect
+ * completion. (A8.5 #391: dropped the polling fallback so `src/tui` no
+ * longer owns a periodic timer for this path.)
  *
- * @param provider - Data provider for fetching contributions
  * @param topology - Agent topology with role definitions
  * @param screen - Current screen state (only active on "running" or "advanced")
- * @param eventBus - Optional event bus for real-time done detection
+ * @param eventBus - Event bus for real-time done detection; without it the hook is inert
  * @param onDone - Callback when all roles have signaled done
  */
 export function useDoneDetection(
-  provider: TuiDataProvider,
   topology: AgentTopology | undefined,
   screen: Screen,
   eventBus: EventBus | undefined,
@@ -89,33 +87,4 @@ export function useDoneDetection(
       }
     };
   }, [screen, topology, eventBus, checkDone]);
-
-  // Polling fallback: check contributions every 5s when no EventBus available
-  useEffect(() => {
-    if (screen !== "running" && screen !== "advanced") return;
-    if (!topology || eventBus) return; // Skip if event-driven mode is active
-
-    const roleNames = new Set(topology.roles.map((r) => r.name));
-    const timer = setInterval(async () => {
-      try {
-        const contributions = await provider.getContributions({ limit: 50 });
-        if (!contributions) return;
-
-        for (const c of contributions) {
-          if (isDoneContribution(c)) {
-            const role = c.agent.role;
-            if (role) doneRolesRef.current.add(role);
-          }
-        }
-
-        const allDone = [...roleNames].every((r) => doneRolesRef.current.has(r));
-        if (allDone && roleNames.size > 0) {
-          onDone();
-        }
-      } catch {
-        // Non-fatal
-      }
-    }, 5000);
-    return () => clearInterval(timer);
-  }, [screen, topology, provider, eventBus, onDone]);
 }

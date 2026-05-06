@@ -28,6 +28,7 @@ import type { EventBus, GroveEvent } from "../core/event-bus.js";
 import type { HandoffStore } from "../core/handoff.js";
 import { getProcessInstanceId } from "../core/process-instance.js";
 import type { AgentTopology } from "../core/topology.js";
+import { startInterval } from "../local/use-interval.js";
 import type { NexusIpcClient } from "../nexus/nexus-ipc-client.js";
 import { debugLog } from "./debug-log.js";
 
@@ -199,7 +200,7 @@ export class NexusWsBridge {
   private static readonly PENDING_DLQ_CAP = 1024;
   private static readonly PENDING_DLQ_MAX_ATTEMPTS = 20;
   private static readonly PENDING_DLQ_INTERVAL_MS = 30000;
-  private pendingDlqTimer: ReturnType<typeof setInterval> | null = null;
+  private pendingDlqTimer: (() => void) | null = null;
   // Single-flight drain lock: prevents overlapping drain runs from
   // double-incrementing entry.attempts and racing removals. Timer ticks
   // that fire while a drain is already in progress become no-ops.
@@ -231,12 +232,14 @@ export class NexusWsBridge {
     // necessarily differ, and pure role-name fallback is only active in
     // tests that explicitly opt out by constructing with no localInstanceId.
     this.localInstanceId = opts.localInstanceId ?? getProcessInstanceId();
-    this.pendingDlqTimer = setInterval(() => {
-      void this.drainPendingDeadLetters();
-    }, NexusWsBridge.PENDING_DLQ_INTERVAL_MS);
-    // Don't hold the event loop open for this timer alone.
-    const timer = this.pendingDlqTimer as unknown as { unref?: () => void };
-    timer.unref?.();
+    // Don't hold the event loop open for this timer alone (unref: true).
+    this.pendingDlqTimer = startInterval(
+      () => {
+        void this.drainPendingDeadLetters();
+      },
+      NexusWsBridge.PENDING_DLQ_INTERVAL_MS,
+      { unref: true },
+    );
   }
 
   private currentSessionId(): string | undefined {
@@ -378,7 +381,7 @@ export class NexusWsBridge {
     const shutdownOwnsQueue = this.shutdownPromise !== null;
     this.closed = true;
     if (this.pendingDlqTimer !== null) {
-      clearInterval(this.pendingDlqTimer);
+      this.pendingDlqTimer();
       this.pendingDlqTimer = null;
     }
     // Queue handling:
@@ -1236,7 +1239,7 @@ export class NexusWsBridge {
   private async doShutdown(shutdownTimeoutMs: number): Promise<void> {
     const overallDeadline = Date.now() + shutdownTimeoutMs;
     if (this.pendingDlqTimer !== null) {
-      clearInterval(this.pendingDlqTimer);
+      this.pendingDlqTimer();
       this.pendingDlqTimer = null;
     }
     // Quiesce ingress BEFORE flushing: set draining to block new
