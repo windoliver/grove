@@ -465,23 +465,30 @@ watch.post("/watch/notify", zValidator("json", watchNotifySchema), async (c) => 
   // the namespace-global watch stream: the watch hub keys on
   // (namespace, kind) and `/api/list` reads only the unscoped store, so
   // an unscoped subscriber would ingest a row that the next relist must
-  // delete. Decide skip vs fan-out from the AUTHORITATIVE store lookup
-  // — not from request.sessionId alone — because callers may stamp a
-  // sessionId on a contribution that actually committed at zone scope.
+  // delete. Decide skip vs fan-out from BOTH stores: skip only when
+  // the row lives in the session tree AND not also at zone root.
+  // Same content-addressed CID can legitimately exist in both trees,
+  // and a root write coming from a session-bound process must still
+  // fan out globally.
   if (kind === "Contribution" && sessionId !== undefined && deps.contributionStoreForSession) {
     const scoped = deps.contributionStoreForSession(sessionId);
-    const scopedHit = await scoped.get(entityId);
-    if (scopedHit !== undefined) {
-      // Row really lives in the session tree → skip global fan-out.
-      // Scoped feeds run on the polled path until /api/list and
-      // /api/watch carry sessionId end-to-end.
+    const [scopedHit, rootHit] = await Promise.all([
+      scoped.get(entityId),
+      deps.contributionStore.get(entityId),
+    ]);
+    if (scopedHit !== undefined && rootHit === undefined) {
+      // Truly session-only: skip global fan-out. Scoped feeds run on
+      // the polled path until /api/list and /api/watch carry sessionId
+      // end-to-end.
       return c.json({
         ok: true,
         op: "skipped",
         reason: "session_scoped_not_broadcast",
       });
     }
-    // Fall through: not in the scoped store, try the zone-root path.
+    // Either the row is also in the root tree (legitimate global event)
+    // or only in the root tree (caller stamped sessionId for context).
+    // Either way: fall through and let the zone-root hydration emit it.
   }
 
   const found = await hydrateEntity(deps, namespace, kind as WatchKind, entityId);

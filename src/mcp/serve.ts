@@ -549,6 +549,19 @@ try {
       // matching scoped store; without it the unscoped listEntities scan
       // returns [] and the route emits DELETED for a brand-new row.
       const bridgeSessionId = process.env.GROVE_SESSION_ID;
+      // Bounded retry with backoff: a single timeout/5xx leaves
+      // informer-backed Nexus views stale (those views disable their
+      // poller while the watch path is enabled), so deliver-once-best-
+      // effort is not enough for UI correctness. We retry transient
+      // failures (network errors, 5xx) up to RETRIES times with
+      // exponential backoff. Permanent failures (4xx that aren't 408,
+      // 429) and final exhaustion log and surrender — at that point
+      // the next contribute → notify either repairs the gap, or the
+      // user-visible relist on reconnect does.
+      const RETRIES = 3;
+      const BACKOFF_MS = [200, 600, 1500];
+      const isTransient = (status: number): boolean =>
+        status >= 500 || status === 408 || status === 429;
       onEntityWrite = (event) => {
         const ent = event.entity as { id?: string; metadata?: { generation?: number } } | null;
         const eid = ent?.id;
@@ -557,34 +570,49 @@ try {
           return;
         }
         const generation = ent?.metadata?.generation;
+        const body = JSON.stringify({
+          kind: event.kind,
+          op: event.op,
+          entityId: eid,
+          ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
+          ...(generation !== undefined ? { generation } : {}),
+        });
+        const tryPost = async (): Promise<{ ok: boolean; status?: number; err?: string }> => {
+          try {
+            const r = await fetch(url, {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${apiKey}`,
+                "Content-Type": "application/json",
+              },
+              body,
+              signal: AbortSignal.timeout(2_000),
+            });
+            return { ok: r.ok, status: r.status };
+          } catch (e) {
+            return { ok: false, err: e instanceof Error ? e.message : String(e) };
+          }
+        };
         bridgeTail = bridgeTail
           .catch(() => undefined)
           .then(async () => {
-            try {
-              const r = await fetch(url, {
-                method: "POST",
-                headers: {
-                  Authorization: `Bearer ${apiKey}`,
-                  "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                  kind: event.kind,
-                  op: event.op,
-                  entityId: eid,
-                  ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
-                  ...(generation !== undefined ? { generation } : {}),
-                }),
-                signal: AbortSignal.timeout(2_000),
-              });
-              if (!r.ok) {
+            for (let attempt = 0; attempt <= RETRIES; attempt++) {
+              const res = await tryPost();
+              if (res.ok) return;
+              if (res.status !== undefined && !isTransient(res.status)) {
                 process.stderr.write(
-                  `[mcp.bridge] POST ${url} kind=${event.kind} op=${event.op} id=${eid} → HTTP ${r.status}\n`,
+                  `[mcp.bridge] POST ${url} kind=${event.kind} op=${event.op} id=${eid} → permanent HTTP ${res.status}; not retrying\n`,
                 );
+                return;
               }
-            } catch (e) {
-              process.stderr.write(
-                `[mcp.bridge] POST ${url} failed: ${e instanceof Error ? e.message : String(e)}\n`,
-              );
+              if (attempt === RETRIES) {
+                const reason = res.err ?? `transient HTTP ${res.status}`;
+                process.stderr.write(
+                  `[mcp.bridge] POST ${url} kind=${event.kind} op=${event.op} id=${eid} → ${reason}; giving up after ${attempt + 1} attempts\n`,
+                );
+                return;
+              }
+              await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt] ?? 1500));
             }
           });
       };

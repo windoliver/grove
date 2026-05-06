@@ -707,6 +707,14 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
       // session-scoped store; without it the unscoped lookup returns []
       // and the route emits DELETED for a brand-new row.
       const bridgeSessionId = sessionId;
+      // Bounded retry with backoff (mirrors src/mcp/serve.ts). Best-
+      // effort delivery is not enough — informer-backed Nexus views
+      // disable polling while the watch path is on, so a single
+      // 5xx/timeout would leave the UI stale.
+      const RETRIES = 3;
+      const BACKOFF_MS = [200, 600, 1500];
+      const isTransient = (status: number): boolean =>
+        status >= 500 || status === 408 || status === 429;
       onEntityWrite = (event) => {
         const ent = event.entity as { id?: string; metadata?: { generation?: number } } | null;
         const eid = ent?.id;
@@ -715,34 +723,49 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
           return;
         }
         const generation = ent?.metadata?.generation;
+        const body = JSON.stringify({
+          kind: event.kind,
+          op: event.op,
+          entityId: eid,
+          ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
+          ...(generation !== undefined ? { generation } : {}),
+        });
+        const tryPost = async (): Promise<{ ok: boolean; status?: number; err?: string }> => {
+          try {
+            const r = await fetch(url, {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${apiKey}`,
+                "Content-Type": "application/json",
+              },
+              body,
+              signal: AbortSignal.timeout(2_000),
+            });
+            return { ok: r.ok, status: r.status };
+          } catch (e) {
+            return { ok: false, err: e instanceof Error ? e.message : String(e) };
+          }
+        };
         bridgeTail = bridgeTail
           .catch(() => undefined)
           .then(async () => {
-            try {
-              const r = await fetch(url, {
-                method: "POST",
-                headers: {
-                  Authorization: `Bearer ${apiKey}`,
-                  "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                  kind: event.kind,
-                  op: event.op,
-                  entityId: eid,
-                  ...(bridgeSessionId ? { sessionId: bridgeSessionId } : {}),
-                  ...(generation !== undefined ? { generation } : {}),
-                }),
-                signal: AbortSignal.timeout(2_000),
-              });
-              if (!r.ok) {
+            for (let attempt = 0; attempt <= RETRIES; attempt++) {
+              const res = await tryPost();
+              if (res.ok) return;
+              if (res.status !== undefined && !isTransient(res.status)) {
                 process.stderr.write(
-                  `[mcp-http.bridge] POST ${url} kind=${event.kind} op=${event.op} id=${eid} → HTTP ${r.status}\n`,
+                  `[mcp-http.bridge] POST ${url} kind=${event.kind} op=${event.op} id=${eid} → permanent HTTP ${res.status}; not retrying\n`,
                 );
+                return;
               }
-            } catch (e) {
-              process.stderr.write(
-                `[mcp-http.bridge] POST ${url} failed: ${e instanceof Error ? e.message : String(e)}\n`,
-              );
+              if (attempt === RETRIES) {
+                const reason = res.err ?? `transient HTTP ${res.status}`;
+                process.stderr.write(
+                  `[mcp-http.bridge] POST ${url} kind=${event.kind} op=${event.op} id=${eid} → ${reason}; giving up after ${attempt + 1} attempts\n`,
+                );
+                return;
+              }
+              await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt] ?? 1500));
             }
           });
       };
