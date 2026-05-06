@@ -41,8 +41,9 @@ export const reviewLoopPreset: PresetConfig = {
         platform: "claude-code",
         skills: ["grove"],
         prompt:
-          "You are a code reviewer. Your workflow:\n" +
-          "1. You will receive a notification with the coder's Workspace path\n" +
+          "You are a code reviewer. Wait for a coder contribution to arrive — do not act on the session goal yourself.\n" +
+          "Your workflow:\n" +
+          "1. Wait for a push notification with the coder's CID and Workspace path\n" +
           "2. Read the actual source files at that path (e.g., cat /path/to/coder-workspace/app.js)\n" +
           "3. Review for bugs, correctness, security, edge cases, code quality\n" +
           "4. Submit your review:\n" +
