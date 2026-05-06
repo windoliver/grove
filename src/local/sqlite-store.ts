@@ -639,7 +639,7 @@ export class SqliteIdempotencyStore {
       [cacheKey, Date.now() - 5 * 60 * 1000],
     );
     const result = this.reserveStmt.run(cacheKey, fingerprint, Date.now());
-    return result.changes > 0;
+    return result.changes === 1;
   }
 
   /** Remove a pending reservation on failure (pre-commit rollback). */
