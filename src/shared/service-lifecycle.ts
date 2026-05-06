@@ -113,6 +113,80 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
   const { parseGroveConfig } = await import("../core/config.js");
   const config = parseGroveConfig(raw);
 
+  // Reuse path: if grove.pid exists and EITHER the parent is the current
+  // process (we already spawned children in this same TUI flow) OR an
+  // external parent is still alive, services are already running for this
+  // groveDir. Without this, a session-start callback inside a `grove up`
+  // flow re-spawns the HTTP/MCP servers and fails on EADDRINUSE — leaving
+  // the TUI hung at "Starting session...".
+  //
+  // We return an empty `children` array because we do NOT take ownership
+  // of the existing processes — stopServices on this RunningServices is a
+  // no-op, leaving teardown to whoever holds the original handles.
+  if (existsSync(pidFilePath)) {
+    try {
+      const pidRaw = readFileSync(pidFilePath, "utf-8");
+      const pidData = JSON.parse(pidRaw) as {
+        parentPid?: number;
+        children?: ReadonlyArray<{ name?: string; pid?: number }>;
+        nexusManaged?: boolean;
+      };
+      const parentPid = pidData.parentPid;
+      const parentAlive = (() => {
+        if (!parentPid) return false;
+        if (parentPid === process.pid) return true;
+        try {
+          process.kill(parentPid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      })();
+      // Verify at least one configured child is also live — guards against
+      // a stale pidfile where the parent survived but the spawned services
+      // exited (e.g. crashed grove-server). Treat that as "no reuse" so
+      // the spawn path runs.
+      const someChildAlive = (pidData.children ?? []).some((c) => {
+        if (!c.pid) return false;
+        try {
+          process.kill(c.pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      if (parentAlive && someChildAlive) {
+        report(
+          `[startServices] reusing services already running under PID ${parentPid} (pidfile present, alive)`,
+        );
+        if (!process.env.GROVE_NEXUS_URL && config.nexusUrl) {
+          process.env.GROVE_NEXUS_URL = config.nexusUrl;
+        }
+        if (!process.env.NEXUS_API_KEY) {
+          try {
+            const { readNexusApiKey } = await import("../cli/nexus-lifecycle.js");
+            const apiKey = readNexusApiKey(projectRoot);
+            if (apiKey) process.env.NEXUS_API_KEY = apiKey;
+          } catch {
+            // best-effort
+          }
+        }
+        return {
+          children,
+          nexusManaged: pidData.nexusManaged ?? false,
+          projectRoot,
+          pidFilePath,
+          ...(config.nexusUrl !== undefined ? { resolvedNexusUrl: config.nexusUrl } : {}),
+        };
+      }
+      if (parentPid && !parentAlive) {
+        report(`[startServices] pidfile points to dead PID ${parentPid}; ignoring`);
+      }
+    } catch {
+      // Malformed pidfile — fall through and start fresh.
+    }
+  }
+
   // Start managed Nexus if configured — skip if GROVE_NEXUS_URL already set (reuse existing)
   if (
     !process.env.GROVE_NEXUS_URL &&
