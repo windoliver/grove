@@ -13,13 +13,13 @@
 
 import { useKeyboard } from "@opentui/react";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { resolveAcpLaunch } from "../../core/acp-launch.js";
 import type { AgentTopology } from "../../core/topology.js";
 import { BreadcrumbBar } from "../components/breadcrumb-bar.js";
 import { EmptyState } from "../components/empty-state.js";
 import { renderGraph } from "../layout/edge-render.js";
 import { layoutGraph } from "../layout/graph-layout.js";
 import { PLATFORM_COLORS, theme } from "../theme.js";
+import { detectCli } from "./agent-cli-detect.js";
 
 /** Known CLI tools and their platform identifiers. */
 const AGENT_CLIS: readonly { cli: string; platform: string; label: string }[] = [
@@ -40,20 +40,6 @@ export interface AgentDetectProps {
     edgeTimeouts: Map<string, number>,
   ) => void;
   readonly onBack: () => void;
-}
-
-/** Check if a CLI tool is installed. */
-export function detectCli(name: string): boolean {
-  if (Bun.which(name) !== null) return true;
-  if (name === "claude" || name === "codex") {
-    try {
-      resolveAcpLaunch(name);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  return false;
 }
 
 /** Screen 3: Launch preview — agent detection + role prompt configuration. */

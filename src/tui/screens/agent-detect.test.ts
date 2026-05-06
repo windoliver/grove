@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { detectCli } from "./agent-detect.js";
+import { detectCli } from "./agent-cli-detect.js";
 
 describe("AgentDetect CLI availability", () => {
   test("detects bundled ACP adapters even without shell shims", () => {
