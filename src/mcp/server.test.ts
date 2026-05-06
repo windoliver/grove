@@ -65,6 +65,7 @@ describe("createMcpServer preset scoping", () => {
     "grove_bounty_settle",
     "grove_cas_put",
     "grove_check_stop",
+    "grove_check_trajectory",
     "grove_checkout",
     "grove_claim",
     "grove_create_plan",
@@ -187,6 +188,7 @@ describe("createMcpServer preset scoping", () => {
       "grove_tree",
       "grove_thread",
       "grove_threads",
+      "grove_check_trajectory",
     ];
     for (const t of queryTools) {
       expect(names).not.toContain(t);
