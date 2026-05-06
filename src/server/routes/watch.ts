@@ -454,6 +454,39 @@ async function hydrateEntity(
 watch.post("/watch/notify", zValidator("json", watchNotifySchema), async (c) => {
   const namespace = c.get("namespace");
   const { kind, entityId, sessionId } = c.req.valid("json");
+
+  // Fail-fast: only kinds with both a list endpoint and a watch fan-out
+  // are accepted. AgentSession passes the schema but has no point-lookup
+  // and no list-store backing, so silently emitting DELETED for it would
+  // mask miswiring as "data loss" rather than surface it.
+  if (!SUPPORTED_KINDS.has(kind)) {
+    return c.json(
+      {
+        error: {
+          code: "NOT_CONFIGURED",
+          message: `kind '${kind}' is accepted by the schema but not yet backed by a store; notify is unavailable`,
+        },
+      },
+      501,
+    );
+  }
+
+  // Session-scoped contribution writes cannot be safely fanned out to
+  // the namespace-global watch stream: the watch hub keys on
+  // (namespace, kind) and `/api/list` reads only the unscoped store, so
+  // an unscoped subscriber would ingest a row that the next relist must
+  // delete. The HTTP contribute route already suppresses watch fan-out
+  // for session writes; the bridge has to do the same. Scoped feeds
+  // run on the polled path until /api/list and /api/watch carry
+  // sessionId end-to-end.
+  if (kind === "Contribution" && sessionId !== undefined) {
+    return c.json({
+      ok: true,
+      op: "skipped",
+      reason: "session_scoped_not_broadcast",
+    });
+  }
+
   const deps = c.get("deps") as ServerDeps;
   const hub: WatchHub = deps.watchHub;
 
