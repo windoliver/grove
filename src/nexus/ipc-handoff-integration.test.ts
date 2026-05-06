@@ -330,4 +330,33 @@ describe("IPC handoff integration", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  test("NexusIpcClient writes IPC messages under the active session", async () => {
+    const { NexusIpcClient: RealIpcClient } = await import("./nexus-ipc-client.js");
+    const originalFetch = globalThis.fetch;
+    const bodies: unknown[] = [];
+    globalThis.fetch = (async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      bodies.push(JSON.parse(init?.body as string));
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    try {
+      const client = new RealIpcClient({
+        nexusUrl: "http://localhost:9999",
+        apiKey: "test",
+        sessionId: "sess-123",
+      });
+
+      const result = await client.send("coder", "reviewer", { kind: "work" });
+      expect(result.ok).toBe(true);
+      const body = bodies[0] as { path: string; content: string };
+      expect(body.path).toMatch(/^\/sessions\/sess-123\/ipc\/reviewer\/inbox\/.+\.json$/);
+      const envelope = JSON.parse(Buffer.from(body.content, "base64").toString("utf8")) as {
+        session_id: string;
+      };
+      expect(envelope.session_id).toBe("sess-123");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

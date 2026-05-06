@@ -10,6 +10,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { LoopStopStatus } from "../../core/loop-runner.js";
 
 // ---------------------------------------------------------------------------
 // Types mirroring the server protocol (keep in sync with session-service.ts)
@@ -29,6 +30,8 @@ export interface WsSessionState {
   readonly agents: readonly WsAgentInfo[];
   readonly contributions: number;
   readonly status: "pending" | "running" | "complete";
+  readonly stopReason?: string | undefined;
+  readonly stopStatus?: LoopStopStatus | undefined;
 }
 
 /** Events pushed from the server. */
@@ -40,6 +43,8 @@ export type WsSessionEvent =
       readonly agents: readonly WsAgentInfo[];
       readonly contributions: number;
       readonly status: string;
+      readonly stopReason?: string | undefined;
+      readonly stopStatus?: LoopStopStatus | undefined;
     }
   | { readonly type: "agent_spawned"; readonly role: string; readonly agent: WsAgentInfo }
   | {
@@ -50,7 +55,11 @@ export type WsSessionEvent =
       readonly role: string;
     }
   | { readonly type: "agent_done"; readonly role: string; readonly reason: string }
-  | { readonly type: "session_complete"; readonly reason: string }
+  | {
+      readonly type: "session_complete";
+      readonly reason: string;
+      readonly stopStatus: LoopStopStatus;
+    }
   | { readonly type: "error"; readonly message: string };
 
 // ---------------------------------------------------------------------------
@@ -110,6 +119,8 @@ export function useSessionWs(serverUrl: string, active = true): UseSessionWsResu
               agents: stateMsg.agents,
               contributions: stateMsg.contributions,
               status: stateMsg.status as WsSessionState["status"],
+              stopReason: stateMsg.stopReason,
+              stopStatus: stateMsg.stopStatus,
             });
           }
 

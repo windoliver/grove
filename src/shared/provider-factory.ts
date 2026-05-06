@@ -162,13 +162,6 @@ async function createNexusProvider(
     // Config read failed — skip server URL
   }
 
-  // Goal/session state flows through the co-located server's HTTP API
-  // (when serverUrl is available) so that all agents share the same state.
-  // Handoffs are stored in Nexus VFS so all agents on all machines can see them.
-  const { NexusHandoffStore } = await import("../nexus/nexus-handoff-store.js");
-  // TUI reads all sessions — no sessionId filter so it scans all session files
-  const handoffStore = new NexusHandoffStore(client);
-
   // Local SQLite for goal/session store (still machine-local)
   let goalSessionStore:
     | import("../local/sqlite-goal-session-store.js").SqliteGoalSessionStore
@@ -177,13 +170,11 @@ async function createNexusProvider(
     const { resolveGroveDir } = await import("../cli/utils/grove-dir.js");
     const { groveDir } = resolveGroveDir(backend.groveOverride);
     const groveSqlitePath = join(groveDir, "grove.db");
-    if (existsSync(groveSqlitePath)) {
-      const { createSqliteStores: createGroveStores } = await import("../local/sqlite-store.js");
-      const groveStores = createGroveStores(groveSqlitePath);
-      goalSessionStore = groveStores.goalSessionStore;
-    }
+    const { createSqliteStores: createGroveStores } = await import("../local/sqlite-store.js");
+    const groveStores = createGroveStores(groveSqlitePath);
+    goalSessionStore = groveStores.goalSessionStore;
   } catch {
-    // Best-effort — grove.db may not exist yet
+    // Best-effort — .grove may not be resolvable for remote Nexus connections.
   }
 
   // Resolve zone identifier and server API key from the local .grove directory.
@@ -209,6 +200,15 @@ async function createNexusProvider(
   } catch {
     // .grove not found — use default zone and no auth key
   }
+
+  // Goal/session state flows through the co-located server's HTTP API
+  // (when serverUrl is available) so that all agents share the same state.
+  // Handoffs are stored in Nexus VFS so all agents on all machines can see them.
+  const { NexusHandoffStore } = await import("../nexus/nexus-handoff-store.js");
+  // TUI reads all sessions — no sessionId filter so it scans all session files.
+  // Use the resolved project namespace so the TUI/bridge read the same files
+  // that agent MCP servers write.
+  const handoffStore = new NexusHandoffStore(client, undefined, nexusZoneId);
 
   return new NexusDataProvider({
     nexusConfig: { client, zoneId: nexusZoneId },

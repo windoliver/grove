@@ -71,6 +71,8 @@ interface TmuxSessionEntry {
 }
 
 export class TmuxRuntime implements AgentRuntime {
+  readonly sendsInitialPromptOnSpawn = true;
+
   private sessions: Map<string, TmuxSessionEntry> = new Map();
   private nextId = 0;
 

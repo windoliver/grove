@@ -178,6 +178,30 @@ export {
   LifecycleState,
 } from "./lifecycle.js";
 export { LocalEventBus } from "./local-event-bus.js";
+export type {
+  GroveLoopRunnerOptions,
+  ImprovementDirection,
+  InstalledInterruptHandlers,
+  InterruptController,
+  IterationRoadmap,
+  IterationStage,
+  LoopIterationContext,
+  LoopIterationRecord,
+  LoopIterationResult,
+  SessionAssessment,
+  WorkflowRunStatus,
+  WorkflowState,
+  WorkflowStateStore,
+} from "./loop-runner.js";
+export {
+  createFallbackRoadmap,
+  createInterruptController,
+  findFirstBalancedBraces,
+  GroveLoopRunner,
+  installProcessInterruptHandlers,
+  LoopStopStatus,
+  parseIterationRoadmap,
+} from "./loop-runner.js";
 export {
   CID_PATTERN,
   ContextSchema,

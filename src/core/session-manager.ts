@@ -9,6 +9,7 @@
  *   next time: grove up              -> SessionManager.createSession(newGoal)
  */
 
+import type { LoopStopStatus } from "./loop-runner.js";
 import type {
   CreateSessionInput,
   Session,
@@ -47,18 +48,20 @@ export class SessionManager {
   }
 
   /** Mark a session as completed. */
-  async completeSession(id: string, reason?: string): Promise<void> {
+  async completeSession(id: string, reason?: string, stopStatus?: LoopStopStatus): Promise<void> {
     await this.transitionState(id, "completed", {
       completedAt: new Date().toISOString(),
       ...(reason !== undefined ? { stopReason: reason } : {}),
+      ...(stopStatus !== undefined ? { stopStatus } : {}),
     });
   }
 
   /** Cancel a session. */
-  async cancelSession(id: string, reason?: string): Promise<void> {
+  async cancelSession(id: string, reason?: string, stopStatus?: LoopStopStatus): Promise<void> {
     await this.transitionState(id, "cancelled", {
       completedAt: new Date().toISOString(),
       stopReason: reason ?? "User cancelled",
+      ...(stopStatus !== undefined ? { stopStatus } : {}),
     });
   }
 

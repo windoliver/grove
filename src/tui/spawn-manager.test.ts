@@ -14,6 +14,8 @@ import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 // that spawn multiple agents. Bump to 30s so CI and local runs are stable.
 setDefaultTimeout(30_000);
 
+import type { AcpxTurn } from "../acp/types.js";
+import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { Claim } from "../core/models.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
 import { MockTmuxManager } from "./agents/tmux-manager.js";
@@ -190,6 +192,38 @@ function makeMockTmux(shouldFail = false): TmuxManager & {
   };
 }
 
+function makeMockRuntime(): AgentRuntime & { readonly configs: AgentConfig[] } {
+  const configs: AgentConfig[] = [];
+  return {
+    sendsInitialPromptOnSpawn: true,
+    configs,
+    async spawn(role: string, config: AgentConfig): Promise<AgentSession> {
+      configs.push(config);
+      return { id: `session-${role}`, role, status: "running", agent: "mock" };
+    },
+    async send(): Promise<AcpxTurn> {
+      throw new Error("mock runtime send should not be called by SpawnManager.spawn");
+    },
+    async close(): Promise<void> {
+      // No-op for test mock.
+    },
+    onIdle(): void {
+      // No-op for test mock.
+    },
+    async listSessions(): Promise<readonly AgentSession[]> {
+      return [];
+    },
+    async listSessionEntities(): Promise<
+      readonly import("../core/entity.js").AgentSessionEntity[]
+    > {
+      return [];
+    },
+    async isAvailable(): Promise<boolean> {
+      return true;
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -202,6 +236,31 @@ afterEach(() => {
 });
 
 describe("SpawnManager", () => {
+  test("does not suppress initial prompt just because role prompt says wait for feedback", async () => {
+    const provider = makeMockProvider();
+    const runtime = makeMockRuntime();
+    manager = new SpawnManager(
+      provider,
+      undefined,
+      () => {
+        // No-op for test mock.
+      },
+      [{ kind: "local" as const, path: "/tmp" }],
+      undefined,
+      "/tmp/no-grove",
+      runtime,
+    );
+
+    await manager.spawn("coder", "claude", undefined, 0, {
+      rolePrompt:
+        "Submit work immediately. After submitting work, wait for reviewer feedback and do nothing else.",
+    });
+
+    expect(runtime.configs).toHaveLength(1);
+    expect(runtime.configs[0]?.waitForPush).toBe(false);
+    expect(runtime.configs[0]?.prompt).toContain("Submit work immediately");
+  });
+
   test("spawn creates workspace and tmux session (no auto-claims)", async () => {
     const provider = makeMockProvider();
     const tmux = makeMockTmux();
@@ -456,16 +515,33 @@ describe("SpawnManager — per-role skill injection", () => {
 
     const claudeSkill = join(result.workspacePath, ".claude", "skills", "grove", "SKILL.md");
     const codexSkill = join(result.workspacePath, ".codex", "skills", "grove", "SKILL.md");
+    const mcpJsonPath = join(result.workspacePath, ".mcp.json");
+    const acpxRcPath = join(result.workspacePath, ".acpxrc.json");
 
     expect(existsSync(claudeSkill)).toBe(true);
     expect(existsSync(codexSkill)).toBe(true);
     // Both copies must be real and reference the grove skill (frontmatter).
     expect(readFileSync(claudeSkill, "utf-8")).toContain("name: grove");
     expect(readFileSync(codexSkill, "utf-8")).toContain("name: grove");
+    const codexMd = readFileSync(join(result.workspacePath, "CODEX.md"), "utf-8");
+    expect(codexMd).toContain("mcp__grove__grove_submit_work");
+    expect(codexMd).toContain("do not run `bun --eval`");
+    expect(codexMd).toContain("MCP tools are unavailable");
+    const mcpJson = JSON.parse(readFileSync(mcpJsonPath, "utf-8")) as {
+      mcpServers: { grove: { command: string } };
+    };
+    const acpxRc = JSON.parse(readFileSync(acpxRcPath, "utf-8")) as {
+      mcpServers: Array<{ name: string; command: string }>;
+    };
+    expect(mcpJson.mcpServers.grove.command).toBe(process.execPath);
+    expect(acpxRc.mcpServers.find((s) => s.name === "grove")?.command).toBe(process.execPath);
 
     // "Config write failed" is the exact symptom when injectSkills throws
     // and gets swallowed. Must not appear.
     expect(errors.filter((e) => e.includes("Config write failed"))).toEqual([]);
+    expect(execSync("git status --short", { cwd: result.workspacePath, encoding: "utf-8" })).toBe(
+      "",
+    );
   });
 
   test("two roles in the same session each get their own skill-injected workspace", async () => {
@@ -696,6 +772,71 @@ describe("SpawnManager — session persistence", () => {
     expect(result.workspaceMode).toBeDefined();
   });
 
+  test("syncWorkspaces uses provisioned workspace paths, not spawn ids", async () => {
+    const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } =
+      await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    const projectRoot = mkdtempSync(join(tmpdir(), "grove-sync-workspaces-"));
+    try {
+      const groveDir = join(projectRoot, ".grove");
+      const coderWorkspace = join(groveDir, "workspaces", "coder-2d079fe9");
+      const reviewerWorkspace = join(groveDir, "workspaces", "reviewer-2d079fe9");
+      mkdirSync(coderWorkspace, { recursive: true });
+      mkdirSync(reviewerWorkspace, { recursive: true });
+      writeFileSync(join(coderWorkspace, "handoff-smoke.txt"), "handoff-ok", "utf-8");
+
+      const provider = makeMockProvider();
+      const tmux = makeMockTmux();
+      manager = new SpawnManager(
+        provider,
+        tmux,
+        () => undefined,
+        [{ kind: "local" as const, path: projectRoot }],
+        undefined,
+        groveDir,
+      );
+      const records = (
+        manager as unknown as {
+          spawnRecords: Map<
+            string,
+            {
+              claimId: string;
+              targetRef: string;
+              agentId: string;
+              workspacePath: string;
+              role: string;
+            }
+          >;
+        }
+      ).spawnRecords;
+      records.set("coder-motibvk5", {
+        claimId: "",
+        targetRef: "coder-motibvk5",
+        agentId: "coder-motibvk5",
+        workspacePath: coderWorkspace,
+        role: "coder",
+      });
+      records.set("reviewer-motibyy6", {
+        claimId: "",
+        targetRef: "reviewer-motibyy6",
+        agentId: "reviewer-motibyy6",
+        workspacePath: reviewerWorkspace,
+        role: "reviewer",
+      });
+
+      manager.syncWorkspaces("coder", "reviewer");
+
+      expect(existsSync(join(reviewerWorkspace, "handoff-smoke.txt"))).toBe(true);
+      expect(readFileSync(join(reviewerWorkspace, "handoff-smoke.txt"), "utf-8")).toBe(
+        "handoff-ok",
+      );
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   test("kill removes record from session store", async () => {
     const provider = makeMockProvider();
     const tmux = makeMockTmux();
@@ -742,6 +883,42 @@ describe("SpawnManager — session persistence", () => {
     expect(result.spawnId).toBeDefined();
     expect(result.claimId).toBe("");
     expect(result.workspaceMode.status).toBe("fallback_workspace");
+  });
+
+  test("fallback workspace still receives Grove MCP config", async () => {
+    const { existsSync, mkdirSync, mkdtempSync, readFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    const projectRoot = mkdtempSync(join(tmpdir(), "grove-fallback-bootstrap-"));
+    const groveDir = join(projectRoot, ".grove");
+    const fallbackRoot = join(projectRoot, "fallback-workspaces");
+    mkdirSync(groveDir, { recursive: true });
+
+    const provider = makeMockProvider();
+    provider.checkoutWorkspace = async (targetRef: string): Promise<string> =>
+      join(fallbackRoot, targetRef);
+    const tmux = makeMockTmux();
+    manager = new SpawnManager(
+      provider,
+      tmux,
+      () => undefined,
+      [{ kind: "local" as const, path: "/tmp" }],
+      undefined,
+      groveDir,
+    );
+
+    const result = await manager.spawn("coder", "bash");
+
+    expect(result.workspaceMode.status).toBe("fallback_workspace");
+    expect(existsSync(join(result.workspacePath, ".mcp.json"))).toBe(true);
+    expect(existsSync(join(result.workspacePath, ".acpxrc.json"))).toBe(true);
+    expect(existsSync(join(result.workspacePath, "CODEX.md"))).toBe(true);
+
+    const mcpJson = JSON.parse(readFileSync(join(result.workspacePath, ".mcp.json"), "utf-8")) as {
+      mcpServers: { grove: { env: { GROVE_DIR: string } } };
+    };
+    expect(mcpJson.mcpServers.grove.env.GROVE_DIR).toBe(groveDir);
   });
 
   test("destroy does not clear session store", async () => {
@@ -982,7 +1159,9 @@ describe("SpawnManager — delivery state recovery", () => {
   const makeManager = () => {
     const provider = makeMockProvider();
     const tmux = new MockTmuxManager();
-    return new SpawnManager(provider, tmux, () => {}, [{ kind: "local" as const, path: "/tmp" }]);
+    return new SpawnManager(provider, tmux, () => undefined, [
+      { kind: "local" as const, path: "/tmp" },
+    ]);
   };
 
   test("markDeliveryRecovered flips disabled → ready", () => {

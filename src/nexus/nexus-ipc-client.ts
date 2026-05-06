@@ -31,6 +31,7 @@ export interface IpcSendResult {
 export interface NexusIpcClientOptions {
   readonly nexusUrl: string;
   readonly apiKey: string;
+  readonly sessionId?: string | undefined;
 }
 
 /** How long to cache a transient IPC failure before retrying (ms). */
@@ -39,6 +40,7 @@ const TRANSIENT_BACKOFF_MS = 30_000;
 export class NexusIpcClient {
   private readonly nexusUrl: string;
   private readonly apiKey: string;
+  private readonly sessionId: string | undefined;
   /**
    * Endpoint availability state:
    * - undefined: unknown (first call)
@@ -52,6 +54,7 @@ export class NexusIpcClient {
   constructor(opts: NexusIpcClientOptions) {
     this.nexusUrl = opts.nexusUrl;
     this.apiKey = opts.apiKey;
+    this.sessionId = opts.sessionId;
   }
 
   /**
@@ -93,6 +96,7 @@ export class NexusIpcClient {
         sender,
         recipient,
         type: "event",
+        ...(this.sessionId ? { session_id: this.sessionId } : {}),
         payload,
         timestamp: new Date().toISOString(),
       });
@@ -104,7 +108,9 @@ export class NexusIpcClient {
           Authorization: `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify({
-          path: `/ipc/${recipient}/inbox/${messageId}.json`,
+          path: this.sessionId
+            ? `/sessions/${this.sessionId}/ipc/${recipient}/inbox/${messageId}.json`
+            : `/ipc/${recipient}/inbox/${messageId}.json`,
           content,
           encoding: "base64",
         }),

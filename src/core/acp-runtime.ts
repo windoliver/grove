@@ -11,7 +11,7 @@ import {
 import { sessionUpdateToMessage } from "../acp/session-update-mapper.js";
 import { AcpTurnImpl } from "../acp/turn-direct.js";
 import type { AcpxTurn, Message, Result } from "../acp/types.js";
-import { resolveAcpLaunch } from "./acp-launch.js";
+import { type AcpLaunch, resolveAcpLaunch } from "./acp-launch.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
 import type { AgentSessionEntity } from "./entity.js";
 import { agentSessionToEntity } from "./entity.js";
@@ -34,7 +34,24 @@ export interface AcpRuntimeOptions {
   readonly fsAuditor?: (op: "read" | "write", path: string, sessionId: string) => void;
   readonly logDir?: string;
   readonly launchOverride?: LaunchOverride;
+  readonly eventSink?: AcpRuntimeEventSink;
 }
+
+export type AcpRuntimeEvent =
+  | {
+      readonly kind: "message";
+      readonly sessionId: string;
+      readonly turnId: string;
+      readonly message: Message;
+    }
+  | {
+      readonly kind: "result";
+      readonly sessionId: string;
+      readonly turnId: string;
+      readonly result: Result;
+    };
+
+export type AcpRuntimeEventSink = (event: AcpRuntimeEvent) => void;
 
 interface AcpSessionEntry {
   session: AgentSession;
@@ -69,9 +86,14 @@ async function launchSubprocess(
   agent: string,
   cwd: string,
   env: NodeJS.ProcessEnv,
+  opts: {
+    readonly model?: string | undefined;
+    readonly command?: string | undefined;
+    readonly mcpServers?: AgentConfig["mcpServers"] | undefined;
+  } = {},
 ): Promise<LaunchResult> {
   const launch = resolveAcpLaunch(agent);
-  const child = nodeSpawn(launch.command, [...launch.args], {
+  const child = nodeSpawn(launch.command, buildAcpLaunchArgs(launch, opts, env), {
     cwd,
     env,
     stdio: ["pipe", "pipe", "pipe"],
@@ -91,11 +113,88 @@ async function launchSubprocess(
   return { clientStream, dispose };
 }
 
+/**
+ * Build ACP adapter argv from the resolved launch target plus role/runtime
+ * overrides. Codex ACP reads model selection from Codex config, not from ACP
+ * session metadata, so pass model explicitly when Grove has one.
+ */
+export function buildAcpLaunchArgs(
+  launch: AcpLaunch,
+  opts: {
+    readonly model?: string | undefined;
+    readonly command?: string | undefined;
+    readonly mcpServers?: AgentConfig["mcpServers"] | undefined;
+  } = {},
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const args = [...launch.args];
+  if (launch.agent !== "codex") return args;
+
+  const model = (opts.model ?? env.GROVE_CODEX_MODEL)?.trim();
+  if (model) {
+    args.push("-c", `model=${JSON.stringify(model)}`);
+  }
+
+  const allowAll =
+    env.GROVE_ALLOW_ALL_PERMISSIONS === "1" ||
+    opts.command?.includes("--full-auto") === true ||
+    opts.command?.includes("--dangerously-bypass-approvals-and-sandbox") === true;
+  if (allowAll) {
+    args.push("-c", 'sandbox_mode="danger-full-access"', "-c", 'approval_policy="never"');
+  }
+  appendCodexMcpServerOverrides(args, opts.mcpServers);
+  return args;
+}
+
+const SAFE_TOML_BARE_KEY = /^[A-Za-z0-9_-]+$/;
+const SENSITIVE_ENV_NAME =
+  /(?:^|_)(?:API_?KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS?|AUTH(?:ORIZATION)?)(?:_|$)/i;
+const SENSITIVE_ENV_VALUE = /\b(?:sk-[A-Za-z0-9_-]+|sk_[A-Za-z0-9_-]+|grv_[A-Za-z0-9_-]+)\b/;
+
+function tomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+function tomlStringArray(values: readonly string[]): string {
+  return `[${values.map(tomlString).join(", ")}]`;
+}
+
+function tomlKeySegment(segment: string): string {
+  return SAFE_TOML_BARE_KEY.test(segment) ? segment : tomlString(segment);
+}
+
+function shouldPassMcpEnvViaCodexConfig(name: string, value: string): boolean {
+  return !SENSITIVE_ENV_NAME.test(name) && !SENSITIVE_ENV_VALUE.test(value);
+}
+
+function appendCodexMcpServerOverrides(
+  args: string[],
+  mcpServers: AgentConfig["mcpServers"] | undefined,
+): void {
+  for (const server of mcpServers ?? []) {
+    const name = server.name.trim();
+    const command = server.command.trim();
+    if (!name || !command) continue;
+
+    const serverKey = `mcp_servers.${tomlKeySegment(name)}`;
+    args.push("-c", `${serverKey}.command=${tomlString(command)}`);
+    args.push("-c", `${serverKey}.args=${tomlStringArray(server.args ?? [])}`);
+
+    for (const [envName, envValue] of Object.entries(server.env ?? {})) {
+      if (!shouldPassMcpEnvViaCodexConfig(envName, envValue)) continue;
+      args.push("-c", `${serverKey}.env.${tomlKeySegment(envName)}=${tomlString(envValue)}`);
+    }
+  }
+}
+
 export class AcpRuntime implements AgentRuntime {
+  readonly sendsInitialPromptOnSpawn = true;
+
   private resolver: PermissionResolver;
   private readonly fsAuditor: AcpRuntimeOptions["fsAuditor"];
   private readonly logDir: string | undefined;
   private readonly launchOverride: LaunchOverride | undefined;
+  private eventSink: AcpRuntimeEventSink | undefined;
   private readonly sessions: Map<string, AcpSessionEntry> = new Map();
   private nextId = 0;
 
@@ -113,6 +212,7 @@ export class AcpRuntime implements AgentRuntime {
     this.fsAuditor = options.fsAuditor;
     this.logDir = options.logDir;
     this.launchOverride = options.launchOverride;
+    this.eventSink = options.eventSink;
   }
 
   get currentResolver(): PermissionResolver {
@@ -121,6 +221,10 @@ export class AcpRuntime implements AgentRuntime {
 
   setPermissionResolver(resolver: PermissionResolver): void {
     this.resolver = resolver;
+  }
+
+  setAcpEventSink(eventSink: AcpRuntimeEventSink | undefined): void {
+    this.eventSink = eventSink;
   }
 
   async isAvailable(): Promise<boolean> {
@@ -154,7 +258,11 @@ export class AcpRuntime implements AgentRuntime {
 
     const launched = this.launchOverride
       ? await this.launchOverride(agent, config.cwd, mergedEnv)
-      : await launchSubprocess(agent, config.cwd, mergedEnv);
+      : await launchSubprocess(agent, config.cwd, mergedEnv, {
+          model: config.model,
+          command: config.command,
+          mcpServers: config.mcpServers,
+        });
 
     const client = this.buildClient(id);
     const connection = new ClientSideConnection(() => client, launched.clientStream);
@@ -171,12 +279,21 @@ export class AcpRuntime implements AgentRuntime {
           terminal: false,
         },
       });
-      const mcpServers = (config.mcpServers ?? []).map((s) => ({
-        name: s.name,
-        command: s.command,
-        args: [...(s.args ?? [])],
-        env: s.env ? Object.entries(s.env).map(([name, value]) => ({ name, value })) : [],
-      }));
+      const groveMcpEnv = Object.fromEntries(
+        Object.entries(mergedEnv).filter(
+          ([key]) => key.startsWith("GROVE_") || key === "NEXUS_API_KEY",
+        ),
+      ) as Record<string, string>;
+      const mcpServers = (config.mcpServers ?? []).map((s) => {
+        const inheritedEnv = s.name === "grove" ? groveMcpEnv : {};
+        const env = { ...inheritedEnv, ...(s.env ?? {}) };
+        return {
+          name: s.name,
+          command: s.command,
+          args: [...(s.args ?? [])],
+          env: Object.entries(env).map(([name, value]) => ({ name, value })),
+        };
+      });
       created = await connection.newSession({ cwd: config.cwd, mcpServers });
     } catch (err) {
       try {
@@ -257,10 +374,19 @@ export class AcpRuntime implements AgentRuntime {
     if (entry.closed) throw new Error(`AcpRuntime.send: session ${session.id} is closed`);
 
     const turnId = `${session.id}-${Date.now().toString(36)}-${this.nextId++}`;
-    let resolveResult: (r: Result) => void = () => {};
+    let resolveResult: (r: Result) => void = () => undefined;
     const resultPromise = new Promise<Result>((r) => {
       resolveResult = r;
     });
+    const finishTurn = (result: Result): void => {
+      resolveResult(result);
+      this.emitAcpEvent({
+        kind: "result",
+        sessionId: entry.session.id,
+        turnId,
+        result,
+      });
+    };
 
     const turn = new AcpTurnImpl({
       sessionId: entry.wireSessionId,
@@ -285,7 +411,7 @@ export class AcpRuntime implements AgentRuntime {
     const mine = (async () => {
       await predecessor;
       if (entry.closed) {
-        resolveResult({
+        finishTurn({
           turnId,
           stopReason: "error",
           error: { code: "session_closed", message: "session closed before turn started" },
@@ -298,9 +424,9 @@ export class AcpRuntime implements AgentRuntime {
           sessionId: entry.wireSessionId,
           prompt: [{ type: "text", text: message }],
         });
-        resolveResult({ turnId, stopReason: ok.stopReason });
+        finishTurn({ turnId, stopReason: ok.stopReason });
       } catch (err) {
-        resolveResult({
+        finishTurn({
           turnId,
           stopReason: "error",
           error: {
@@ -324,10 +450,25 @@ export class AcpRuntime implements AgentRuntime {
     return turn;
   }
 
+  private emitAcpEvent(event: AcpRuntimeEvent): void {
+    if (!this.eventSink) return;
+    try {
+      this.eventSink(event);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[acp-runtime] eventSink(${event.kind}) threw: ${detail}\n`);
+    }
+  }
+
   async close(session: AgentSession): Promise<void> {
     const entry = this.sessions.get(session.id);
     if (!entry) return;
     entry.closed = true;
+    try {
+      await entry.currentTurn?.cancel();
+    } catch {
+      /* best effort */
+    }
     // Drain any pending sends so we don't leak prompt() promises past dispose.
     try {
       await entry.sendChainTail;
@@ -395,6 +536,12 @@ export class AcpRuntime implements AgentRuntime {
               },
             };
             turn.ingest(msg);
+            runtime.emitAcpEvent({
+              kind: "message",
+              sessionId: entry.session.id,
+              turnId: turn.turnId,
+              message: msg,
+            });
           }
           return await runtime.resolver.resolve(params);
         } catch (err) {
@@ -408,7 +555,14 @@ export class AcpRuntime implements AgentRuntime {
         const entry = runtime.findEntryByWireSession(params.sessionId);
         const turn = entry?.currentTurn;
         if (!turn) return;
-        turn.ingest(sessionUpdateToMessage(params, turn.turnId));
+        const msg = sessionUpdateToMessage(params, turn.turnId);
+        turn.ingest(msg);
+        runtime.emitAcpEvent({
+          kind: "message",
+          sessionId: entry.session.id,
+          turnId: turn.turnId,
+          message: msg,
+        });
       },
       async readTextFile() {
         throw new Error("[acp-runtime] fs.readTextFile not supported; agents use local fs");

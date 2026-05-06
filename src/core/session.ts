@@ -6,6 +6,7 @@
  */
 
 import type { GroveContract } from "./contract.js";
+import type { LoopStopStatus } from "./loop-runner.js";
 import type { AgentTopology } from "./topology.js";
 
 // ---------------------------------------------------------------------------
@@ -36,6 +37,8 @@ export interface Session {
   readonly createdAt: string;
   readonly completedAt?: string | undefined;
   readonly stopReason?: string | undefined;
+  /** Machine-readable final loop status for operator UI and automation. */
+  readonly stopStatus?: LoopStopStatus | undefined;
   /** Resolved topology at session creation time (immutable once set). */
   readonly topology?: AgentTopology | undefined;
   /** Number of contributions linked to this session. */
@@ -93,10 +96,10 @@ export interface SessionStore {
   /** Get a session by ID. Returns undefined if not found. */
   getSession(id: string): Promise<Session | undefined>;
 
-  /** Update mutable session fields (status, completedAt, stopReason). */
+  /** Update mutable session fields (status, completedAt, stopReason, stopStatus). */
   updateSession(
     id: string,
-    updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason">>,
+    updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason" | "stopStatus">>,
   ): Promise<void>;
 
   /** List sessions with optional filters, ordered by creation time descending. */

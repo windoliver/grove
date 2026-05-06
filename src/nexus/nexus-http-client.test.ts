@@ -3,34 +3,64 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { NexusConflictError } from "./errors.js";
 import { NexusHttpClient } from "./nexus-http-client.js";
 
-describe("NexusHttpClient", () => {
-  const servers: { stop(force?: boolean): void }[] = [];
+const originalFetch = globalThis.fetch;
 
-  afterEach(() => {
-    for (const server of servers.splice(0)) {
-      server.stop(true);
-    }
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+});
+
+function parseRequestBody(init: RequestInit | undefined): unknown {
+  const body = init?.body;
+  if (typeof body !== "string") {
+    throw new Error("Expected JSON request body");
+  }
+  return JSON.parse(body) as unknown;
+}
+
+function setMockFetch(
+  impl: (input: Parameters<typeof fetch>[0], init?: RequestInit) => Promise<Response>,
+): void {
+  globalThis.fetch = impl as unknown as typeof fetch;
+}
+
+describe("NexusHttpClient", () => {
+  test("serializes ifNoneMatch create-only writes as REST boolean", async () => {
+    const bodies: unknown[] = [];
+    setMockFetch(async (_input, init) => {
+      bodies.push(parseRequestBody(init));
+      return new Response(
+        JSON.stringify({
+          content_id: "etag-1",
+          version: 1,
+          size: 4,
+        }),
+        { status: 200 },
+      );
+    });
+
+    const client = new NexusHttpClient({ url: "http://nexus.local" });
+    await client.write("/path/file", new TextEncoder().encode("data"), { ifNoneMatch: "*" });
+
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toMatchObject({ if_none_match: true });
   });
 
   test.each([
     409, 412,
   ])("maps HTTP %i write preconditions to NexusConflictError", async (status) => {
-    const server = Bun.serve({
-      port: 0,
-      fetch() {
-        return new Response("etag mismatch", {
+    setMockFetch(
+      async () =>
+        new Response("etag mismatch", {
           status,
           headers: { etag: "actual-etag" },
-        });
-      },
-    });
-    servers.push(server);
+        }),
+    );
 
-    const client = new NexusHttpClient({ url: `http://127.0.0.1:${server.port}` });
+    const client = new NexusHttpClient({ url: "http://nexus.local" });
 
     let caught: unknown;
     try {
-      await client.write("/conflict", new TextEncoder().encode("payload"), { ifNoneMatch: "*" });
+      await client.write("/path/file", new TextEncoder().encode("data"), { ifNoneMatch: "*" });
     } catch (error: unknown) {
       caught = error;
     }

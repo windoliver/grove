@@ -5,9 +5,11 @@ import {
   ndJsonStream,
   type RequestPermissionRequest,
 } from "@agentclientprotocol/sdk";
-import { AcpRuntime, type LaunchOverride } from "./acp-runtime.js";
+import { AcpRuntime, type AcpRuntimeEvent, type LaunchOverride } from "./acp-runtime.js";
 
 interface AgentStubHandlers {
+  onNewSession?: (p: Parameters<Agent["newSession"]>[0]) => void;
+  onCancel?: () => Promise<void> | void;
   onPrompt?: (p: {
     sessionId: string;
     agentSide: AgentSideConnection;
@@ -34,7 +36,8 @@ function makeInProcessAgent(handlers: AgentStubHandlers = {}): {
           authMethods: [],
         };
       },
-      async newSession() {
+      async newSession(p) {
+        handlers.onNewSession?.(p);
         return { sessionId: `wire-${Date.now()}` };
       },
       async prompt(p) {
@@ -43,7 +46,9 @@ function makeInProcessAgent(handlers: AgentStubHandlers = {}): {
         }
         return { stopReason: "end_turn" };
       },
-      async cancel() {},
+      async cancel() {
+        await handlers.onCancel?.();
+      },
       async authenticate() {
         return {};
       },
@@ -54,10 +59,23 @@ function makeInProcessAgent(handlers: AgentStubHandlers = {}): {
 
     return {
       clientStream,
-      dispose: async () => {},
+      dispose: async () => undefined,
     };
   };
   return { launchOverride, ref };
+}
+
+function deferred<T = void>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve: (value: T | PromiseLike<T>) => void = () => {
+    /* assigned synchronously by Promise constructor */
+  };
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
 }
 
 describe("AcpRuntime.spawn", () => {
@@ -86,6 +104,78 @@ describe("AcpRuntime.spawn", () => {
     expect((await rt.listSessions()).length).toBe(1);
     await rt.close(session);
     expect(await rt.listSessions()).toEqual([]);
+  });
+
+  test("forwards Grove identity env to MCP servers", async () => {
+    let captured: Parameters<Agent["newSession"]>[0] | undefined;
+    const { launchOverride } = makeInProcessAgent({
+      onNewSession(p) {
+        captured = p;
+      },
+    });
+    const rt = new AcpRuntime({ launchOverride });
+    const session = await rt.spawn("coder", {
+      role: "coder",
+      command: "codex",
+      cwd: process.cwd(),
+      env: {
+        GROVE_SESSION_ID: "session-1",
+        GROVE_ROUTING_TOKEN: "token-1",
+      },
+      mcpServers: [
+        {
+          name: "grove",
+          command: "bun",
+          args: ["run", "dist/mcp/serve.js"],
+          env: { GROVE_DIR: "/tmp/project/.grove" },
+        },
+      ],
+    });
+
+    const server = captured?.mcpServers?.[0];
+    expect(server?.name).toBe("grove");
+    expect(server?.env).toContainEqual({ name: "GROVE_DIR", value: "/tmp/project/.grove" });
+    expect(server?.env).toContainEqual({ name: "GROVE_SESSION_ID", value: "session-1" });
+    expect(server?.env).toContainEqual({ name: "GROVE_ROUTING_TOKEN", value: "token-1" });
+    expect(server?.env).toContainEqual({ name: "GROVE_AGENT_ID", value: session.id });
+    expect(server?.env).toContainEqual({ name: "GROVE_AGENT_ROLE", value: "coder" });
+    await rt.close(session);
+  });
+
+  test("does not forward Grove secrets to non-Grove MCP servers", async () => {
+    let captured: Parameters<Agent["newSession"]>[0] | undefined;
+    const { launchOverride } = makeInProcessAgent({
+      onNewSession(p) {
+        captured = p;
+      },
+    });
+    const rt = new AcpRuntime({ launchOverride });
+    const session = await rt.spawn("coder", {
+      role: "coder",
+      command: "codex",
+      cwd: process.cwd(),
+      env: {
+        GROVE_SESSION_ID: "session-1",
+        GROVE_ROUTING_TOKEN: "token-1",
+        NEXUS_API_KEY: "sk-test",
+      },
+      mcpServers: [
+        {
+          name: "third-party",
+          command: "third-party-mcp",
+          env: { SAFE_VALUE: "ok" },
+        },
+      ],
+    });
+
+    const server = captured?.mcpServers?.[0];
+    expect(server?.name).toBe("third-party");
+    expect(server?.env).toContainEqual({ name: "SAFE_VALUE", value: "ok" });
+    expect(server?.env).not.toContainEqual({ name: "GROVE_SESSION_ID", value: "session-1" });
+    expect(server?.env).not.toContainEqual({ name: "GROVE_ROUTING_TOKEN", value: "token-1" });
+    expect(server?.env).not.toContainEqual({ name: "NEXUS_API_KEY", value: "sk-test" });
+    expect(server?.env).not.toContainEqual({ name: "GROVE_AGENT_ID", value: session.id });
+    await rt.close(session);
   });
 });
 
@@ -144,6 +234,67 @@ describe("AcpRuntime.send", () => {
     await turn.result;
     await collect;
     expect(chunks.join("")).toBe("hello world");
+    await rt.close(session);
+  });
+
+  test("close cancels an in-flight prompt", async () => {
+    const promptStarted = deferred();
+    const cancelled = deferred();
+    const { launchOverride } = makeInProcessAgent({
+      async onPrompt() {
+        promptStarted.resolve();
+        await cancelled.promise;
+        return { stopReason: "cancelled" };
+      },
+      onCancel() {
+        cancelled.resolve();
+      },
+    });
+    const rt = new AcpRuntime({ launchOverride });
+
+    const session = await rt.spawn("coder", {
+      role: "coder",
+      command: "codex",
+      cwd: process.cwd(),
+    });
+
+    const turn = await rt.send(session, "slow task");
+    await promptStarted.promise;
+    await rt.close(session);
+
+    const result = await turn.result;
+    expect(result.stopReason).toBe("cancelled");
+  });
+
+  test("emits direct ACP messages and results to the event sink", async () => {
+    const { launchOverride } = makeInProcessAgent({
+      async onPrompt({ sessionId, agentSide }) {
+        await agentSide.sessionUpdate({
+          sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "visible" },
+          },
+        });
+        return { stopReason: "end_turn" };
+      },
+    });
+    const events: AcpRuntimeEvent[] = [];
+    const rt = new AcpRuntime({ launchOverride, eventSink: (event) => events.push(event) });
+    const session = await rt.spawn("coder", {
+      role: "coder",
+      command: "codex",
+      cwd: process.cwd(),
+    });
+    const turn = await rt.send(session, "hi");
+    await turn.result;
+
+    expect(events.map((event) => event.kind)).toEqual(["message", "result"]);
+    expect(events.every((event) => event.sessionId === session.id)).toBe(true);
+    expect(events[0]?.turnId).toBe(turn.turnId);
+    if (events[0]?.kind === "message") {
+      expect(events[0].message.kind).toBe("text");
+    }
     await rt.close(session);
   });
 });

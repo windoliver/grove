@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { AcpRuntime } from "./acp-runtime.js";
+import type { AcpLaunch } from "./acp-launch.js";
+import { AcpRuntime, buildAcpLaunchArgs } from "./acp-runtime.js";
 import { DENY_ALL_RESOLVER } from "./permission-resolver.js";
 
 describe("AcpRuntime construction", () => {
@@ -38,5 +39,107 @@ describe("AcpRuntime construction", () => {
   test("isAvailable returns true when SDK importable", async () => {
     const rt = new AcpRuntime();
     expect(await rt.isAvailable()).toBe(true);
+  });
+});
+
+describe("buildAcpLaunchArgs", () => {
+  const codexLaunch: AcpLaunch = {
+    agent: "codex",
+    command: "bun",
+    args: ["codex-acp.js"],
+  };
+  const claudeLaunch: AcpLaunch = {
+    agent: "claude",
+    command: "bun",
+    args: ["claude-agent-acp.js"],
+  };
+
+  test("passes explicit model overrides through to codex-acp", () => {
+    expect(buildAcpLaunchArgs(codexLaunch, { model: "gpt-5.4-mini" })).toEqual([
+      "codex-acp.js",
+      "-c",
+      'model="gpt-5.4-mini"',
+    ]);
+  });
+
+  test("uses GROVE_CODEX_MODEL as codex fallback when role model is absent", () => {
+    expect(buildAcpLaunchArgs(codexLaunch, {}, { GROVE_CODEX_MODEL: "gpt-5.4-mini" })).toEqual([
+      "codex-acp.js",
+      "-c",
+      'model="gpt-5.4-mini"',
+    ]);
+  });
+
+  test("passes full-auto policy overrides through to codex-acp", () => {
+    expect(buildAcpLaunchArgs(codexLaunch, { command: "codex --full-auto" })).toEqual([
+      "codex-acp.js",
+      "-c",
+      'sandbox_mode="danger-full-access"',
+      "-c",
+      'approval_policy="never"',
+    ]);
+  });
+
+  test("uses GROVE_ALLOW_ALL_PERMISSIONS as codex full-auto fallback", () => {
+    expect(buildAcpLaunchArgs(codexLaunch, {}, { GROVE_ALLOW_ALL_PERMISSIONS: "1" })).toEqual([
+      "codex-acp.js",
+      "-c",
+      'sandbox_mode="danger-full-access"',
+      "-c",
+      'approval_policy="never"',
+    ]);
+  });
+
+  test("passes process-local MCP config to codex-acp without secret env values", () => {
+    expect(
+      buildAcpLaunchArgs(codexLaunch, {
+        mcpServers: [
+          {
+            name: "grove",
+            command: "/Users/example/.bun/bin/bun",
+            args: ["run", "/tmp/grove/dist/mcp/serve.js"],
+            env: {
+              GROVE_DIR: "/tmp/grove/.grove",
+              GROVE_NEXUS_URL: "http://localhost:10120",
+              NEXUS_API_KEY: "example-secret",
+              GROVE_SESSION_ID: "session-1",
+            },
+          },
+        ],
+      }),
+    ).toEqual([
+      "codex-acp.js",
+      "-c",
+      'mcp_servers.grove.command="/Users/example/.bun/bin/bun"',
+      "-c",
+      'mcp_servers.grove.args=["run", "/tmp/grove/dist/mcp/serve.js"]',
+      "-c",
+      'mcp_servers.grove.env.GROVE_DIR="/tmp/grove/.grove"',
+      "-c",
+      'mcp_servers.grove.env.GROVE_NEXUS_URL="http://localhost:10120"',
+      "-c",
+      'mcp_servers.grove.env.GROVE_SESSION_ID="session-1"',
+    ]);
+  });
+
+  test("does not pass codex config flags to non-codex adapters", () => {
+    expect(
+      buildAcpLaunchArgs(
+        claudeLaunch,
+        {
+          model: "gpt-5.4-mini",
+          command: "codex --full-auto",
+          mcpServers: [
+            {
+              name: "grove",
+              command: "/Users/example/.bun/bin/bun",
+              args: ["run", "/tmp/grove/dist/mcp/serve.js"],
+              env: { GROVE_DIR: "/tmp/grove/.grove" },
+            },
+          ],
+        },
+        { GROVE_ALLOW_ALL_PERMISSIONS: "1" },
+      ),
+    ).toEqual(["claude-agent-acp.js"]);
   });
 });

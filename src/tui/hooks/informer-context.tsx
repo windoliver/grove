@@ -43,7 +43,7 @@ export interface InformerProviderProps {
    * delivered via the optional `onSessionScopeChange` listener.
    */
   readonly scopeAwareProvider?: unknown;
-  readonly children: ReactNode;
+  readonly children?: ReactNode | undefined;
 }
 
 function readScopeFlag(provider: unknown): boolean {
@@ -283,7 +283,7 @@ export interface InformerProviderHolderProps {
   readonly eager?: boolean | undefined;
   /** See `InformerProviderProps.scopeAwareProvider`. */
   readonly scopeAwareProvider?: unknown;
-  readonly children: ReactNode;
+  readonly children?: ReactNode | undefined;
 }
 
 /**
@@ -297,6 +297,8 @@ export function InformerProviderHolder(props: InformerProviderHolderProps): Reac
   const { holder, eager, scopeAwareProvider, children } = props;
   const [factory, setFactory] = useState<InformerFactory | null>(() => holder.current());
   const [provider, setProvider] = useState<unknown>(() => holder.currentProvider());
+  const resolvedProvider = scopeAwareProvider ?? provider;
+  const [scoped, setScoped] = useState<boolean>(() => readScopeFlag(resolvedProvider));
   const lastFactory = useRef(factory);
   const lastProvider = useRef<unknown>(provider);
   lastFactory.current = factory;
@@ -317,15 +319,22 @@ export function InformerProviderHolder(props: InformerProviderHolderProps): Reac
     return detach;
   }, [holder, sync]);
 
-  if (!factory) return <>{children}</>;
-  // Prefer the externally-passed `scopeAwareProvider` prop (used by the
-  // --url path where the provider is known synchronously); fall back to
-  // the holder-supplied provider used by the interactive flow where the
-  // provider is set asynchronously alongside the factory.
-  const resolvedProvider = scopeAwareProvider ?? provider;
-  return (
-    <InformerProvider value={factory} eager={eager} scopeAwareProvider={resolvedProvider}>
-      {children}
-    </InformerProvider>
-  );
+  useEffect(() => {
+    setScoped(readScopeFlag(resolvedProvider));
+    const detach = attachScopeListener(resolvedProvider, setScoped);
+    return detach;
+  }, [resolvedProvider]);
+
+  useEffect(() => {
+    if (!factory || !eager || scoped) return;
+    factory.startAll();
+    return () => {
+      void factory.stopAll();
+    };
+  }, [factory, eager, scoped]);
+
+  // Keep a stable provider wrapper mounted even before the async factory is
+  // available. Switching from a fragment to a provider remounts children,
+  // which resets TuiApp during the welcome -> boardroom handoff.
+  return <InformerContext.Provider value={factory}>{children}</InformerContext.Provider>;
 }
