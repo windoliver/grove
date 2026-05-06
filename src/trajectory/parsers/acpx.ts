@@ -20,7 +20,7 @@ export function parseAcpxLine(
     }
 
     const record = parsed as Record<string, unknown>;
-    if (typeof record.error === "object" && record.error !== null) {
+    if (record.error !== undefined) {
       return {
         events: [
           baseEvent(TrajectoryEventType.PermissionDenied, runtime, path, lineNumber, {

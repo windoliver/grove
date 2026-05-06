@@ -41,6 +41,7 @@ function eventFromRecord(
   const spanId =
     stringField(record, "id") ??
     stringField(record, "tool_use_id") ??
+    stringField(record, "tool_call_id") ??
     stringField(record, "spanId") ??
     stringField(record, "span_id");
   const parentSpanId =

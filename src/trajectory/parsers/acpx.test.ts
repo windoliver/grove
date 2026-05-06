@@ -46,6 +46,14 @@ describe("parseAcpxLine", () => {
     expect(unknown.events[0]?.error).toBe(unknown.warnings[0]);
   });
 
+  test("maps string-valued ACP errors to permission denial events", () => {
+    const denied = parseAcpxLine('{"error":"denied"}', "acp.ndjson", 6, TrajectoryRuntime.Acpx);
+
+    expect(denied.events).toHaveLength(1);
+    expect(denied.events[0]?.type).toBe("PERMISSION_DENIED");
+    expect(denied.events[0]?.error).toBe("denied");
+  });
+
   test("keeps invalid and non-object ACP records as RAW warnings", () => {
     const invalid = parseAcpxLine("not-json", "acp.ndjson", 4, TrajectoryRuntime.Acpx);
     const nonObject = parseAcpxLine("true", "acp.ndjson", 5, TrajectoryRuntime.Acpx);

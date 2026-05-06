@@ -41,6 +41,17 @@ describe("parseClaudeStreamJsonLine", () => {
     expect(unknown.events[0]?.type).toBe("RAW");
   });
 
+  test("maps tool_call_id to Claude stream-json span ids", () => {
+    const call = parseClaudeStreamJsonLine(
+      '{"type":"tool_call","tool_call_id":"call-1","name":"Read"}',
+      "claude.jsonl",
+      6,
+    );
+
+    expect(call.events[0]?.type).toBe("TOOL_CALL");
+    expect(call.events[0]?.spanId).toBe("call-1");
+  });
+
   test("keeps invalid and non-object stream-json records as RAW warnings", () => {
     const invalid = parseClaudeStreamJsonLine("not-json", "claude.jsonl", 4);
     const nonObject = parseClaudeStreamJsonLine("false", "claude.jsonl", 5);
