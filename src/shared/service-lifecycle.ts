@@ -187,11 +187,28 @@ export async function startServices(options: ServiceStartOptions): Promise<Runni
     }
   }
 
+  // Always read API key from .grove/api-key when nexus.yaml-derived
+  // credentials are present, so downstream code (checkNexusHealth,
+  // NexusDataProvider) can authenticate even when the env was not pre-set.
+  // Best-effort: when there's no .grove/api-key, env stays unset.
+  if (!process.env.NEXUS_API_KEY) {
+    try {
+      const { readNexusApiKey } = await import("../cli/nexus-lifecycle.js");
+      const apiKey = readNexusApiKey(projectRoot);
+      if (apiKey) process.env.NEXUS_API_KEY = apiKey;
+    } catch {
+      // best-effort
+    }
+  }
+
   // Start managed Nexus if configured — skip if GROVE_NEXUS_URL already set (reuse existing)
-  if (
-    !process.env.GROVE_NEXUS_URL &&
-    (config.nexusManaged || (config.mode === "nexus" && !config.nexusUrl))
-  ) {
+  // Fire when:
+  //   • config has nexusManaged=true (explicit lifecycle ownership), OR
+  //   • config.mode === "nexus" (whether or not nexusUrl is set — a stale
+  //     URL pointing at a stopped container needs to be brought back up).
+  // This ensures `grove init` configs that record nexusUrl from a previous
+  // session still trigger Nexus startup on subsequent `grove up` calls.
+  if (!process.env.GROVE_NEXUS_URL && (config.nexusManaged || config.mode === "nexus")) {
     // Fast path: if grove.json has nexusUrl, check health before running ensureNexusRunning.
     if (config.nexusUrl) {
       try {
