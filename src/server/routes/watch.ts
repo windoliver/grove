@@ -13,6 +13,7 @@ import { zValidator } from "@hono/zod-validator";
 import type { Hono as HonoType } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
+import { claimToEntity, contributionToEntity } from "../../core/entity.js";
 import {
   StaleResourceVersionError,
   type WatchEvent,
@@ -392,6 +393,19 @@ interface MaybeVersioned {
   readonly metadata?: { readonly generation?: number };
 }
 
+/**
+ * Hydrate the canonical entity for a notify event.
+ *
+ * Uses point lookups (`store.get(id)`) instead of list scans because
+ * `listEntities()` is TTL-cached (~2s) and is invalidated only by
+ * writes performed in *this* process. A cross-process MCP write that
+ * triggers `/api/watch/notify` would otherwise hit a warm list cache,
+ * miss the brand-new row, and force the route to synthesize DELETED.
+ *
+ * `store.get()` has its own per-cid cache, but a miss falls through to
+ * a direct Nexus read — so a freshly-committed cid that was never read
+ * before always returns live data.
+ */
 async function hydrateEntity(
   deps: ServerDeps,
   namespace: string,
@@ -399,17 +413,38 @@ async function hydrateEntity(
   entityId: string,
   sessionId: string | undefined,
 ): Promise<MaybeVersioned | undefined> {
-  // Session-scoped lookup for Contribution: agents write under
-  // /zones/{zone}/sessions/{sessionId}/contributions/, so the unscoped
-  // listEntities() returns []. Use the per-session factory when present.
-  if (kind === "Contribution" && sessionId && deps.contributionStoreForSession) {
-    const scoped = deps.contributionStoreForSession(sessionId);
-    const list = (await scoped.listEntities()) as ReadonlyArray<MaybeVersioned>;
-    const hit = list.find((e) => e?.id === entityId);
-    if (hit) return hit;
-    // Fall through to unscoped lookup — covers the case where a caller
-    // stamps a sessionId but the row actually lives at the zone root.
+  if (kind === "Contribution") {
+    // Session-scoped writes land under /zones/{zone}/sessions/{sessionId}/...
+    // so route to the matching scoped store when sessionId is supplied.
+    const store =
+      sessionId && deps.contributionStoreForSession
+        ? deps.contributionStoreForSession(sessionId)
+        : deps.contributionStore;
+    const flat = await store.get(entityId);
+    if (flat !== undefined) {
+      return contributionToEntity(flat, namespace) as MaybeVersioned;
+    }
+    // Session miss with sessionId stamped: fall back to the zone-root
+    // store. Covers cases where the caller stamped a session but the
+    // row was actually committed at the zone level.
+    if (sessionId) {
+      const fallback = await deps.contributionStore.get(entityId);
+      if (fallback !== undefined) {
+        return contributionToEntity(fallback, namespace) as MaybeVersioned;
+      }
+    }
+    return undefined;
   }
+  if (kind === "Claim") {
+    // Claims aren't session-scoped today, but the API surface allows it.
+    const flat = await deps.claimStore.get(entityId);
+    if (flat !== undefined) {
+      return claimToEntity(flat, namespace) as MaybeVersioned;
+    }
+    return undefined;
+  }
+  // AgentSession and any other kinds fall through to the legacy list
+  // path — they don't have a point-lookup yet.
   const list = (await listForKind(deps, namespace, kind)) as ReadonlyArray<MaybeVersioned>;
   return list.find((e) => e?.id === entityId);
 }

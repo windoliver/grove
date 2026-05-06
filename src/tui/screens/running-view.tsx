@@ -258,13 +258,16 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
     // lease-aware expiry, frontierSummary) remains polled — claim activity
     // expires on wall-clock and frontier needs server compute, neither of
     // which the watch protocol covers.
-    // Bypass the scope gate: the contributions selector below applies a
-    // session-time filter (`creationTimestamp >= sessionStartedAt`) so the
-    // EntityStore path is safe to use in scoped sessions even though the
-    // watch protocol doesn't yet filter by sessionId server-side.
-    const useContribInformer = useEntityWatchEnabled(provider, "Contribution", {
-      bypassSessionScopeGate: true,
-    });
+    //
+    // Honor the session scope gate: in scoped sessions we keep the polled
+    // path because /api/list and /api/watch are still namespace-global —
+    // the EntityStore would seed with all sessions' rows on init and admit
+    // foreign-session writes via the watch fan-out. The session-time
+    // creationTimestamp filter is not equivalent to real session membership
+    // (it drops pre-existing rows from the same session and lets in
+    // parallel-session rows committed after start). Revisit when the watch
+    // protocol carries sessionId end-to-end.
+    const useContribInformer = useEntityWatchEnabled(provider, "Contribution");
     const contribEntities = useEntities("Contribution");
 
     const dashboardFetcher = useCallback(() => provider.getDashboard(), [provider]);
