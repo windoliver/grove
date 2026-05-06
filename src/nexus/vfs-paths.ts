@@ -197,3 +197,17 @@ export function outcomeStatusIndexPath(zoneId: string, status: string, cid: stri
 export function outcomeStatusIndexDir(zoneId: string, status: string): string {
   return `/zones/${encodeSegment(zoneId)}/indexes/outcomes/status/${encodeSegment(status)}`;
 }
+
+// ---------------------------------------------------------------------------
+// Workflow paths
+// ---------------------------------------------------------------------------
+
+/** Path to a durable workflow state JSON file. */
+export function workflowPath(zoneId: string, workflowId: string): string {
+  return `/zones/${encodeSegment(zoneId)}/workflows/${encodeSegment(workflowId)}.json`;
+}
+
+/** Directory containing durable workflow state files. */
+export function workflowsDir(zoneId: string): string {
+  return `/zones/${encodeSegment(zoneId)}/workflows`;
+}

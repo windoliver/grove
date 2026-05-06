@@ -89,6 +89,13 @@ class TestableNexusWsBridge extends NexusWsBridge {
       this as unknown as { handleEvent: (r: string, e: string | null, d: string) => void }
     ).handleEvent(role, eventType, raw);
   }
+
+  /** Expose inbox drain for missed-SSE regression tests. */
+  async testDrainRoleInbox(role: string): Promise<void> {
+    await (
+      this as unknown as { drainRoleInbox: (r: string, reason: string) => Promise<void> }
+    ).drainRoleInbox(role, "test");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +192,47 @@ describe("NexusWsBridge", () => {
       cid: "blake3:abc",
       kind: "work",
     });
+
+    bridge.close();
+    bus.close();
+  });
+
+  test("handleEvent derives Nexus EventRecord message_id from inbox filename", async () => {
+    const runtime = makeMockRuntime();
+    const bus = new LocalEventBus();
+    const received: GroveEvent[] = [];
+    bus.subscribe("reviewer", (e) => received.push(e));
+
+    const bridge = new TestableNexusWsBridge(makeBridgeOpts({ runtime, eventBus: bus }));
+    const session = makeSession("reviewer");
+    bridge.registerSession("reviewer", session);
+
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          content: JSON.stringify({
+            sender: "coder",
+            payload: { cid: "blake3:eventrecord", kind: "work", summary: "from event record" },
+          }),
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+
+    bridge.testHandleEvent(
+      "reviewer",
+      "event",
+      JSON.stringify({
+        event_id: "nexus-event-id",
+        type: "write",
+        path: "/zone/test-zone/ipc/reviewer/inbox/message-file-id.json",
+        agent_id: "coder",
+      }),
+    );
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(received).toHaveLength(1);
+    expect(received[0]!.payload.message_id).toBe("message-file-id");
 
     bridge.close();
     bus.close();
@@ -517,6 +565,69 @@ describe("NexusWsBridge", () => {
     await new Promise((r) => setTimeout(r, 50));
 
     expect(runtime.send).not.toHaveBeenCalled();
+    bridge.close();
+  });
+
+  test("drainRoleInbox delivers missed inbox file for registered session", async () => {
+    const runtime = makeMockRuntime();
+    const modifiedAt = new Date(Date.now() + 1000).toISOString();
+
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/api/v2/events/stream")) {
+        return new Response("", {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      }
+      if (url.includes("/api/v2/files/list")) {
+        return new Response(
+          JSON.stringify({
+            items: [
+              {
+                name: "missed-message.json",
+                path: "/ipc/reviewer/inbox/missed-message.json",
+                is_directory: false,
+                modified_at: modifiedAt,
+              },
+            ],
+            has_more: false,
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.includes("/api/v2/files/read")) {
+        return new Response(
+          JSON.stringify({
+            content: JSON.stringify({
+              sender: "coder",
+              recipient: "reviewer",
+              timestamp: modifiedAt,
+              payload: {
+                cid: "blake3:missed",
+                kind: "work",
+                summary: "missed SSE contribution",
+              },
+            }),
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const bridge = new TestableNexusWsBridge(makeBridgeOpts({ runtime }));
+    const session = makeSession("reviewer");
+    bridge.registerSession("reviewer", session);
+
+    await bridge.testDrainRoleInbox("reviewer");
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(runtime.send).toHaveBeenCalledTimes(1);
+    const notification = (runtime.send as ReturnType<typeof mock>).mock.calls[0]![1] as string;
+    expect(notification).toContain("blake3:missed");
+    expect(notification).toContain("missed SSE contribution");
+
     bridge.close();
   });
 

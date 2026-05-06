@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { GroveContract } from "../core/contract.js";
 import { LocalEventBus } from "../core/local-event-bus.js";
+import { LoopStopStatus } from "../core/loop-runner.js";
 import { MockRuntime } from "../core/mock-runtime.js";
 import type { SessionEvent } from "./session-service.js";
 import { SessionService } from "./session-service.js";
@@ -238,7 +239,11 @@ describe("SessionService", () => {
 
     const completeEvents = events.filter((e) => e.type === "session_complete");
     expect(completeEvents.length).toBeGreaterThanOrEqual(1);
+    expect((completeEvents.at(-1) as { stopStatus: string } | undefined)?.stopStatus).toBe(
+      LoopStopStatus.Achieved,
+    );
     expect(service.getState().status).toBe("complete");
+    expect(service.getState().stopStatus).toBe(LoopStopStatus.Achieved);
 
     service.destroy();
     bus.close();
@@ -265,7 +270,11 @@ describe("SessionService", () => {
     const completeEvents = events.filter((e) => e.type === "session_complete");
     expect(completeEvents).toHaveLength(1);
     expect((completeEvents[0] as { reason: string }).reason).toBe("Budget exceeded");
+    expect((completeEvents[0] as { stopStatus: string }).stopStatus).toBe(
+      LoopStopStatus.Interrupted,
+    );
     expect(service.getState().status).toBe("complete");
+    expect(service.getState().stopStatus).toBe(LoopStopStatus.Interrupted);
     expect(runtime.closeCalls).toHaveLength(2);
 
     service.destroy();

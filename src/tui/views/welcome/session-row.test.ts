@@ -67,4 +67,16 @@ describe("computeSessionRowFields", () => {
     });
     expect(r.dot).toBe("○");
   });
+
+  test("completed session includes semantic stop status when present", () => {
+    const r = computeSessionRowFields(
+      session({ status: "completed", stopStatus: "plateau", stopReason: "No improvement" }),
+      {
+        focused: false,
+        now: NOW,
+      },
+    );
+
+    expect(r.primary).toContain("plateau");
+  });
 });

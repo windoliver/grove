@@ -14,6 +14,8 @@ import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 // that spawn multiple agents. Bump to 30s so CI and local runs are stable.
 setDefaultTimeout(30_000);
 
+import type { AcpxTurn } from "../acp/types.js";
+import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
 import type { Claim } from "../core/models.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
 import { MockTmuxManager } from "./agents/tmux-manager.js";
@@ -190,6 +192,38 @@ function makeMockTmux(shouldFail = false): TmuxManager & {
   };
 }
 
+function makeMockRuntime(): AgentRuntime & { readonly configs: AgentConfig[] } {
+  const configs: AgentConfig[] = [];
+  return {
+    sendsInitialPromptOnSpawn: true,
+    configs,
+    async spawn(role: string, config: AgentConfig): Promise<AgentSession> {
+      configs.push(config);
+      return { id: `session-${role}`, role, status: "running", agent: "mock" };
+    },
+    async send(): Promise<AcpxTurn> {
+      throw new Error("mock runtime send should not be called by SpawnManager.spawn");
+    },
+    async close(): Promise<void> {
+      // No-op for test mock.
+    },
+    onIdle(): void {
+      // No-op for test mock.
+    },
+    async listSessions(): Promise<readonly AgentSession[]> {
+      return [];
+    },
+    async listSessionEntities(): Promise<
+      readonly import("../core/entity.js").AgentSessionEntity[]
+    > {
+      return [];
+    },
+    async isAvailable(): Promise<boolean> {
+      return true;
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -202,6 +236,31 @@ afterEach(() => {
 });
 
 describe("SpawnManager", () => {
+  test("does not suppress initial prompt just because role prompt says wait for feedback", async () => {
+    const provider = makeMockProvider();
+    const runtime = makeMockRuntime();
+    manager = new SpawnManager(
+      provider,
+      undefined,
+      () => {
+        // No-op for test mock.
+      },
+      [{ kind: "local" as const, path: "/tmp" }],
+      undefined,
+      "/tmp/no-grove",
+      runtime,
+    );
+
+    await manager.spawn("coder", "claude", undefined, 0, {
+      rolePrompt:
+        "Submit work immediately. After submitting work, wait for reviewer feedback and do nothing else.",
+    });
+
+    expect(runtime.configs).toHaveLength(1);
+    expect(runtime.configs[0]?.waitForPush).toBe(false);
+    expect(runtime.configs[0]?.prompt).toContain("Submit work immediately");
+  });
+
   test("spawn creates workspace and tmux session (no auto-claims)", async () => {
     const provider = makeMockProvider();
     const tmux = makeMockTmux();
@@ -982,7 +1041,9 @@ describe("SpawnManager — delivery state recovery", () => {
   const makeManager = () => {
     const provider = makeMockProvider();
     const tmux = new MockTmuxManager();
-    return new SpawnManager(provider, tmux, () => {}, [{ kind: "local" as const, path: "/tmp" }]);
+    return new SpawnManager(provider, tmux, () => undefined, [
+      { kind: "local" as const, path: "/tmp" },
+    ]);
   };
 
   test("markDeliveryRecovered flips disabled → ready", () => {

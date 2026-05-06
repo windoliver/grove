@@ -39,9 +39,11 @@ export function computeSessionRowFields(
   const goal = (session.goal ?? "untitled").slice(0, GOAL_MAX);
   const when = formatRelativeTime(session.createdAt, opts.now);
   const count = `${session.contributionCount}c`;
+  const outcome = sessionOutcome(session);
+  const suffix = outcome ? ` · ${outcome}` : "";
 
   if (opts.focused) {
-    const primary = `${dot} "${goal}"  ${count} · ${when}`;
+    const primary = `${dot} "${goal}"  ${count} · ${when}${suffix}`;
     const secondary = session.presetName ? session.presetName : undefined;
     return { dot, rich: true, primary, secondary };
   }
@@ -49,9 +51,16 @@ export function computeSessionRowFields(
   return {
     dot,
     rich: false,
-    primary: `${dot} "${goal}"  ${count} · ${when}`,
+    primary: `${dot} "${goal}"  ${count} · ${when}${suffix}`,
     secondary: undefined,
   };
+}
+
+function sessionOutcome(session: SessionRecord): string | undefined {
+  if (session.status === "active") return undefined;
+  if (session.stopStatus !== undefined) return session.stopStatus;
+  if (session.status === "completed" || session.status === "cancelled") return session.status;
+  return undefined;
 }
 
 /** Render a single session row. */

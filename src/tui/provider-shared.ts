@@ -250,6 +250,8 @@ interface ApiSessionResponse {
   readonly createdAt?: string;
   readonly endedAt?: string;
   readonly completedAt?: string;
+  readonly stopReason?: string;
+  readonly stopStatus?: import("../core/loop-runner.js").LoopStopStatus;
   readonly topology?: import("../core/topology.js").AgentTopology;
   readonly config?: import("../core/contract.js").GroveContract;
   readonly contributionCount?: number;
@@ -263,6 +265,8 @@ function mapApiSession(raw: ApiSessionResponse): SessionRecord {
     status: raw.status as SessionRecord["status"],
     createdAt: (raw.startedAt ?? raw.createdAt) as string,
     completedAt: raw.endedAt ?? raw.completedAt,
+    stopReason: raw.stopReason,
+    stopStatus: raw.stopStatus,
     topology: raw.topology,
     config: raw.config,
     contributionCount: raw.contributionCount ?? 0,

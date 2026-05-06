@@ -92,6 +92,8 @@ async function launchSubprocess(
 }
 
 export class AcpRuntime implements AgentRuntime {
+  readonly sendsInitialPromptOnSpawn = true;
+
   private resolver: PermissionResolver;
   private readonly fsAuditor: AcpRuntimeOptions["fsAuditor"];
   private readonly logDir: string | undefined;
@@ -171,12 +173,21 @@ export class AcpRuntime implements AgentRuntime {
           terminal: false,
         },
       });
-      const mcpServers = (config.mcpServers ?? []).map((s) => ({
-        name: s.name,
-        command: s.command,
-        args: [...(s.args ?? [])],
-        env: s.env ? Object.entries(s.env).map(([name, value]) => ({ name, value })) : [],
-      }));
+      const groveMcpEnv = Object.fromEntries(
+        Object.entries(mergedEnv).filter(
+          ([key]) => key.startsWith("GROVE_") || key === "NEXUS_API_KEY",
+        ),
+      ) as Record<string, string>;
+      const mcpServers = (config.mcpServers ?? []).map((s) => {
+        const inheritedEnv = s.name === "grove" ? groveMcpEnv : {};
+        const env = { ...inheritedEnv, ...(s.env ?? {}) };
+        return {
+          name: s.name,
+          command: s.command,
+          args: [...(s.args ?? [])],
+          env: Object.entries(env).map(([name, value]) => ({ name, value })),
+        };
+      });
       created = await connection.newSession({ cwd: config.cwd, mcpServers });
     } catch (err) {
       try {
@@ -257,7 +268,7 @@ export class AcpRuntime implements AgentRuntime {
     if (entry.closed) throw new Error(`AcpRuntime.send: session ${session.id} is closed`);
 
     const turnId = `${session.id}-${Date.now().toString(36)}-${this.nextId++}`;
-    let resolveResult: (r: Result) => void = () => {};
+    let resolveResult: (r: Result) => void = () => undefined;
     const resultPromise = new Promise<Result>((r) => {
       resolveResult = r;
     });
@@ -328,6 +339,11 @@ export class AcpRuntime implements AgentRuntime {
     const entry = this.sessions.get(session.id);
     if (!entry) return;
     entry.closed = true;
+    try {
+      await entry.currentTurn?.cancel();
+    } catch {
+      /* best effort */
+    }
     // Drain any pending sends so we don't leak prompt() promises past dispose.
     try {
       await entry.sendChainTail;

@@ -544,13 +544,17 @@ export class SpawnManager {
       let provisioned: import("../core/workspace-provisioner.js").ProvisionedWorkspace | undefined;
       try {
         await this.ensureReposResolved();
+        const primaryRepo = this.resolvedRepos[0];
+        if (primaryRepo === undefined) {
+          throw new Error("No repository resolved for workspace provisioning");
+        }
         // Use wsSessionId (stable session-level ID) so branch names are predictable
         // and match what resolveRoleWorkspaceStrategies() computes for dependents.
         provisioned = await provisionWorkspace({
           role: roleId,
           sessionId: wsSessionId,
           baseDir,
-          bareClonePath: this.resolvedRepos[0]!.bareClonePath,
+          bareClonePath: primaryRepo.bareClonePath,
           baseBranch,
         });
         workspacePath = provisioned.path;
@@ -683,10 +687,11 @@ export class SpawnManager {
 
       if (this.agentRuntime) {
         // Use AgentRuntime interface — works with acpx, subprocess, or any runtime
-        // Determine if this role should wait for IPC push instead of starting immediately.
-        // Detected from prompt content: "wait for" signals a reactive role.
-        const rolePromptText = String(context?.rolePrompt ?? "").toLowerCase();
-        const waitForPush = context?.waitForPush === true || rolePromptText.includes("wait for");
+        // Only an explicit launch context can suppress the initial prompt.
+        // Role prompts often say "wait for feedback" after the first action;
+        // treating that as passive mode prevents starter roles from ever
+        // receiving their first instruction.
+        const waitForPush = context?.waitForPush === true;
 
         // Extract platform/model from context (set by topology role or profile overlay)
         const platform = context?.platform as

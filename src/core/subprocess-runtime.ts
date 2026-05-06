@@ -157,6 +157,8 @@ function splitCommand(command: string): string[] {
 }
 
 export class SubprocessRuntime implements AgentRuntime {
+  readonly sendsInitialPromptOnSpawn = true;
+
   private sessions = new Map<string, SessionEntry>();
   private nextId = 0;
 
