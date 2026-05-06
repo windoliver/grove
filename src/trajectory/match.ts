@@ -7,6 +7,11 @@ export function normalizeEventTypeName(value: string): TrajectoryEventType | und
   return isTrajectoryEventType(upper) ? upper : undefined;
 }
 
+function matchesEventType(value: TrajectoryEventType, pattern: string): boolean {
+  const normalized = pattern.split("|").map((part) => normalizeEventTypeName(part));
+  return normalized.every((part) => part !== undefined) && normalized.includes(value);
+}
+
 export function fieldValue(source: unknown, path: string): unknown {
   if (path.length === 0) return undefined;
   const parts = path.split(".");
@@ -29,9 +34,8 @@ export function valuesEqual(left: unknown, right: unknown): boolean {
 }
 
 export function matchesEvent(event: TrajectoryEvent, matcher: EventMatcher): boolean {
-  if (matcher.event !== undefined) {
-    const normalized = normalizeEventTypeName(matcher.event);
-    if (normalized === undefined || event.type !== normalized) return false;
+  if (matcher.event !== undefined && !matchesEventType(event.type, matcher.event)) {
+    return false;
   }
 
   if (matcher.tool !== undefined && !patternMatches(event.tool, matcher.tool)) {
