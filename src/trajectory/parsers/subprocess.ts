@@ -58,6 +58,7 @@ function raw(
         type: TrajectoryEventType.Raw,
         runtime: TrajectoryRuntime.Subprocess,
         message: line,
+        error: warning,
         raw: line,
         source: { path, line: lineNumber },
       },

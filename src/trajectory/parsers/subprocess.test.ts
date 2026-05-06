@@ -17,6 +17,7 @@ describe("parseSubprocessLine", () => {
     expect(second.events[0]?.type).toBe("RAW");
     expect(second.events[0]?.message).toBe("plain stdout line");
     expect(second.warnings[0]).toContain("line 2");
+    expect(second.events[0]?.error).toBe(second.warnings[0]);
     expect(third.events[0]?.type).toBe("PERMISSION_DENIED");
   });
 
