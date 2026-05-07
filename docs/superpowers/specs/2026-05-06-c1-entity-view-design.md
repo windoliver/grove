@@ -17,7 +17,7 @@ Land one generic `<EntityView kind columns … />` component that replaces the d
 
 ## Migration scope
 
-Five concrete view files port to EntityView in this epic:
+Four concrete view files port to EntityView in this epic:
 
 | File | Kind | Notes |
 |------|------|------|
@@ -25,9 +25,10 @@ Five concrete view files port to EntityView in this epic:
 | `activity-panel.tsx` | `Contribution` | Subset of Activity columns; `limit=30` |
 | `activity.tsx` | `Contribution` | Paged list; sort+slice via EntityView props |
 | `agent-list.tsx` | `Claim` | Multi-source join (claims × tmux × cost) — wrapper retains the join, EntityView handles list scaffold |
-| `search-panel.tsx` | `Contribution` × 2 | Two result tables become two EntityView instances; search input + state machine stay in the wrapper |
 
-The acceptance criterion "≥4 screens share one component" is met by claims, activity-panel, activity, agent-list (4 clean fits) plus the two search-panel instances (5 conceptually, 6 instantiations).
+`search-panel.tsx` was an initial candidate but is deferred. Its contribution result table needs server-side full-text search via `provider.getContributions({ search })` when the user has a query, which the EntityStore-predicate path can't model. Migrating only the no-query branch would split the view's logic awkwardly. Search-panel can revisit when a watch-side search filter lands.
+
+The acceptance criterion "≥4 screens share one component" is met by the four migrations above.
 
 ## Architecture
 
@@ -159,9 +160,8 @@ EntityView is a passive consumer. It does not own informer/store lifecycle (thos
 3. Migrate `activity-panel.tsx`.
 4. Migrate `activity.tsx`.
 5. Migrate `agent-list.tsx` — wrapper retains the claims × tmux × cost join; passes derived columns to EntityView via factory functions that close over the join context.
-6. Migrate `search-panel.tsx` — two EntityView instances for transcript + semantic result tables; search input + state machine stay in wrapper.
 
-Each step keeps existing view-level tests green. Net deletion: ~600 lines of duplicated dual-path / row-mapping / loading-state code across the 5 files, replaced by ~250 lines of EntityView + columns library.
+Each step keeps existing view-level tests green. Net deletion: ~500 lines of duplicated dual-path / row-mapping / loading-state code across the 4 files, replaced by ~250 lines of EntityView + columns library.
 
 ## Testing
 
@@ -193,8 +193,8 @@ Each step keeps existing view-level tests green. Net deletion: ~600 lines of dup
 
 | Criterion (issue #301) | How met |
 |------|------|
-| ≥4 screens share one component | 5 view files, 6 EntityView instantiations |
-| Adding new kind = config file + renderer fn, no new component | Demonstrated by `claim-columns.ts`/`contribution-columns.ts` lib + the `<EntityView kind="X" columns={X_COLUMNS} />` migration pattern |
+| ≥4 screens share one component | 4 view files (claims, activity, activity-panel, agent-list) |
+| Adding new kind = config file + renderer fn, no new component | Demonstrated by `claim-columns.ts`/`contribution-columns.ts`/`agent-columns.ts` lib + the `<EntityView kind="X" columns={X_COLUMNS} />` migration pattern |
 | 500-row list scrolls at 60fps | `MAX_ROWS=500` window + perf test asserting <16ms p95 cursor-move cost |
 
 ## Open questions / follow-ups
