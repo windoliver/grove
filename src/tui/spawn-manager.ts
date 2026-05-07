@@ -15,6 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { watchTurnError } from "../acp/watch-turn.js";
 import type { AcpRuntimeEvent, AcpRuntimeEventSink } from "../core/acp-runtime.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "../core/agent-runtime.js";
+import { parseGroveConfig } from "../core/config.js";
 import type { AgentIdentity } from "../core/models.js";
 import { type ResolvedRepo, type ResolveRepoOptions, resolveRepo } from "../core/repo-cache.js";
 import type { RepoRef } from "../core/repo-ref.js";
@@ -26,6 +27,8 @@ import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
 import type { WorkspaceIsolationPolicy, WorkspaceMode } from "../core/workspace-provisioner.js";
 import { provisionWorkspace } from "../core/workspace-provisioner.js";
 import { startInterval } from "../local/use-interval.js";
+import { NexusHttpClient } from "../nexus/nexus-http-client.js";
+import { resolveNexusSkillCatalogRoot } from "../nexus/nexus-skill-catalog.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
@@ -408,6 +411,35 @@ export class SpawnManager {
     );
   }
 
+  private async resolveSkillRootForSpawn(
+    roleSkills: readonly string[],
+  ): Promise<string | undefined> {
+    if (roleSkills.length === 0 || !this.groveDir) return undefined;
+    const configPath = join(this.groveDir, "grove.json");
+    if (!existsSync(configPath)) return undefined;
+    const raw = await readFile(configPath, "utf-8");
+    const config = parseGroveConfig(raw);
+    if (config.mode !== "nexus" || config.skillCatalog === undefined) return undefined;
+
+    const nexusUrl = process.env.GROVE_NEXUS_URL ?? config.nexusUrl;
+    if (!nexusUrl) return undefined;
+    const client = new NexusHttpClient({
+      url: nexusUrl,
+      apiKey: process.env.NEXUS_API_KEY || undefined,
+    });
+    const projectRoot = dirname(this.groveDir);
+    const result = await resolveNexusSkillCatalogRoot({
+      client,
+      zoneId: process.env.GROVE_ZONE_ID ?? "default",
+      cacheRoot: join(this.groveDir, "cache", "skills"),
+      skills: roleSkills,
+      policy: config.skillCatalog.policy,
+      trustedKeys: config.skillCatalog.trustedKeys,
+      localFallbackRoots: [join(this.groveDir, "skills"), resolveBundledSkillsRoot(projectRoot)],
+    });
+    return result.root;
+  }
+
   /**
    * Set the session topology so spawn() can resolve edge-type-aware base branches.
    * Call before spawning when the topology is known (e.g. after preset selection).
@@ -609,11 +641,13 @@ export class SpawnManager {
           ? (context.skills as readonly string[])
           : [];
         if (roleSkills.length > 0 && this.groveDir) {
+          const resolvedSkillRoot = await this.resolveSkillRootForSpawn(roleSkills);
           await injectSkills({
             workspacePath,
             skills: roleSkills,
-            bundledSkillsRoot: resolveBundledSkillsRoot(dirname(this.groveDir)),
-            workspaceOverrideRoot: join(this.groveDir, "skills"),
+            bundledSkillsRoot:
+              resolvedSkillRoot ?? resolveBundledSkillsRoot(dirname(this.groveDir)),
+            workspaceOverrideRoot: resolvedSkillRoot ? undefined : join(this.groveDir, "skills"),
           });
         }
         // Protect config files from agent mutation (#7 Workspace Mutation Constraints)

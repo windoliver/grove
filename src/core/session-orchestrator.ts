@@ -6,11 +6,15 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AcpxTurn } from "../acp/types.js";
 import { watchTurnError } from "../acp/watch-turn.js";
+import { NexusHttpClient } from "../nexus/nexus-http-client.js";
+import { resolveNexusSkillCatalogRoot } from "../nexus/nexus-skill-catalog.js";
 import type { AgentProfile } from "./agent-profile.js";
 import type { AgentConfig, AgentRuntime, AgentSession } from "./agent-runtime.js";
+import { parseGroveConfig } from "./config.js";
 import type { GroveContract } from "./contract.js";
 import type { EventBus, GroveEvent } from "./event-bus.js";
 import { type ResolvedRepo, type ResolveRepoOptions, resolveRepo } from "./repo-cache.js";
@@ -20,7 +24,7 @@ import { hasValidRoutingSignature } from "./routing-provenance.js";
 import type { AgentPlatformType, AgentRole, AgentTopology } from "./topology.js";
 import { resolveRoleWorkspaceStrategies, topologicalSortRoles } from "./topology.js";
 import { TopologyRouter } from "./topology-router.js";
-import { bootstrapWorkspace } from "./workspace-bootstrap.js";
+import { bootstrapWorkspace, type SkillCatalogResolver } from "./workspace-bootstrap.js";
 import {
   type ProvisionedWorkspace,
   provisionWorkspace,
@@ -164,6 +168,39 @@ export class SessionOrchestrator {
    */
   private watchTurn(role: string, turn: AcpxTurn): void {
     watchTurnError(turn, `SessionOrchestrator agent='${role}'`);
+  }
+
+  private createSkillCatalogResolver(): SkillCatalogResolver | undefined {
+    const nexusUrl = process.env.GROVE_NEXUS_URL;
+    if (!nexusUrl) return undefined;
+    const groveDir = join(this.config.projectRoot, ".grove");
+    const configPath = join(groveDir, "grove.json");
+    if (!existsSync(configPath)) return undefined;
+    const config = parseGroveConfig(readFileSync(configPath, "utf-8"));
+    const skillCatalog = config.skillCatalog;
+    if (config.mode !== "nexus" || skillCatalog === undefined) return undefined;
+
+    const client = new NexusHttpClient({
+      url: nexusUrl,
+      apiKey: process.env.NEXUS_API_KEY || undefined,
+    });
+    const zoneId = process.env.GROVE_ZONE_ID ?? "default";
+    const cacheRoot = join(groveDir, "cache", "skills");
+    const bundledRoot = resolveBundledSkillsRoot(this.config.projectRoot);
+    const overrideRoot = join(groveDir, "skills");
+
+    return async (skills) => {
+      const result = await resolveNexusSkillCatalogRoot({
+        client,
+        zoneId,
+        cacheRoot,
+        skills,
+        policy: skillCatalog.policy,
+        trustedKeys: skillCatalog.trustedKeys,
+        localFallbackRoots: [overrideRoot, bundledRoot],
+      });
+      return { root: result.root, warnings: result.warnings };
+    };
   }
 
   /** Start the session: spawn all agents and send goals. */
@@ -529,6 +566,7 @@ export class SessionOrchestrator {
 
     // Step 2: Bootstrap (write .mcp.json + CLAUDE.md)
     try {
+      const skillCatalogResolver = this.createSkillCatalogResolver();
       await bootstrapWorkspace({
         workspacePath: provisioned.path,
         roleId: role.name,
@@ -542,6 +580,7 @@ export class SessionOrchestrator {
         skills: role.skills,
         bundledSkillsRoot: resolveBundledSkillsRoot(this.config.projectRoot),
         workspaceOverrideRoot: join(this.config.projectRoot, ".grove", "skills"),
+        skillCatalogResolver,
       });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
