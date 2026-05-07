@@ -12,6 +12,7 @@ import { claimToEntity, contributionToEntity } from "../core/entity.js";
 import { NotFoundError, StateConflictError } from "../core/errors.js";
 import type { EventBus } from "../core/event-bus.js";
 import { DefaultFrontierCalculator } from "../core/frontier.js";
+import { type OwnerRef, ownerRefsEqual } from "../core/lifecycle-metadata.js";
 import { LocalEventBus } from "../core/local-event-bus.js";
 import type { AgentIdentity, Artifact, Claim, ContributionInput } from "../core/models.js";
 import type {
@@ -197,6 +198,22 @@ export class InMemoryClaimStore implements ClaimStore {
     return updated;
   }
 
+  async releaseOwnedBy(ownerRef: OwnerRef): Promise<number> {
+    let count = 0;
+    for (const claim of this.claims.values()) {
+      if (claim.status === "active" && ownerRefsEqual(claim.ownerRef, ownerRef)) {
+        this.claims.set(claim.claimId, {
+          ...claim,
+          status: "released",
+          heartbeatAt: new Date().toISOString(),
+          revision: (claim.revision ?? 1) + 1,
+        });
+        count++;
+      }
+    }
+    return count;
+  }
+
   async complete(claimId: string): Promise<Claim> {
     const claim = this.claims.get(claimId);
     if (!claim) {
@@ -216,6 +233,17 @@ export class InMemoryClaimStore implements ClaimStore {
     const updated: Claim = { ...claim, status: "completed" };
     this.claims.set(claimId, updated);
     return updated;
+  }
+
+  async deleteTerminalOwnedBy(ownerRef: OwnerRef): Promise<number> {
+    let count = 0;
+    for (const claim of this.claims.values()) {
+      if (claim.status !== "active" && ownerRefsEqual(claim.ownerRef, ownerRef)) {
+        this.claims.delete(claim.claimId);
+        count++;
+      }
+    }
+    return count;
   }
 
   async expireStale(_options?: ExpireStaleOptions): Promise<readonly ExpiredClaim[]> {
@@ -249,6 +277,9 @@ export class InMemoryClaimStore implements ClaimStore {
     if (query?.targetRef) {
       results = results.filter((c) => c.targetRef === query.targetRef);
     }
+    if (query?.ownerRef !== undefined) {
+      results = results.filter((c) => ownerRefsEqual(c.ownerRef, query.ownerRef));
+    }
     return results;
   }
 
@@ -271,6 +302,9 @@ export class InMemoryClaimStore implements ClaimStore {
     let results = [...this.claims.values()];
     if (query?.agentId) results = results.filter((c) => c.agent.agentId === query.agentId);
     if (query?.targetRef) results = results.filter((c) => c.targetRef === query.targetRef);
+    if (query?.ownerRef !== undefined) {
+      results = results.filter((c) => ownerRefsEqual(c.ownerRef, query.ownerRef));
+    }
     // Filter on effective (lease-aware) phase after projection.
     const entities = results.map((c) => claimToEntity(c));
     if (query?.status === undefined) return entities;

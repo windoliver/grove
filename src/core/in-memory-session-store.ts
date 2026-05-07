@@ -1,6 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { DEFAULT_SESSION_FINALIZERS } from "./lifecycle-metadata.js";
-import type { CreateSessionInput, Session, SessionQuery, SessionStore } from "./session.js";
+import {
+  appendDeletionAudit,
+  DEFAULT_SESSION_FINALIZERS,
+  Finalizer,
+} from "./lifecycle-metadata.js";
+import type {
+  CreateSessionInput,
+  Session,
+  SessionDeleteBlocker,
+  SessionDeleteOptions,
+  SessionDeleteResult,
+  SessionQuery,
+  SessionStore,
+} from "./session.js";
 
 /**
  * In-memory session store. Suitable for testing and single-process CLI usage.
@@ -62,6 +74,52 @@ export class InMemorySessionStore implements SessionStore {
       const cids = this.contributions.get(s.id) ?? [];
       return { ...s, contributionCount: cids.length };
     });
+  }
+
+  async listSessionDeleteBlockers(id: string): Promise<readonly SessionDeleteBlocker[]> {
+    const session = this.sessions.find((s) => s.id === id);
+    if (!session) return [{ finalizer: Finalizer.ReleaseSlots, message: "session not found" }];
+    return [];
+  }
+
+  async deleteSession(id: string, options?: SessionDeleteOptions): Promise<SessionDeleteResult> {
+    const idx = this.sessions.findIndex((s) => s.id === id);
+    if (idx === -1) {
+      return {
+        sessionId: id,
+        deleted: false,
+        forced: false,
+        blockers: [{ finalizer: Finalizer.ReleaseSlots, message: "session not found" }],
+      };
+    }
+    const existing = this.sessions[idx];
+    if (!existing) {
+      return { sessionId: id, deleted: false, forced: false, blockers: [] };
+    }
+    const warning =
+      options?.force === true
+        ? `force delete skipped finalizer waits for session ${id}`
+        : undefined;
+    if (warning !== undefined) {
+      this.sessions[idx] = {
+        ...existing,
+        deletionTimestamp: existing.deletionTimestamp ?? new Date().toISOString(),
+        deletionAudit: appendDeletionAudit(existing.deletionAudit, {
+          at: new Date().toISOString(),
+          actor: options?.actor ?? "unknown",
+          warning,
+        }),
+      };
+    }
+    this.sessions.splice(idx, 1);
+    this.contributions.delete(id);
+    return {
+      sessionId: id,
+      deleted: true,
+      forced: options?.force === true,
+      blockers: [],
+      ...(warning !== undefined ? { warning } : {}),
+    };
   }
 
   async archiveSession(id: string): Promise<void> {

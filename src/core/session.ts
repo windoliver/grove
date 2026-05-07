@@ -89,6 +89,25 @@ export interface SessionQuery {
   readonly includeArchived?: boolean | undefined;
 }
 
+export interface SessionDeleteOptions {
+  readonly force?: boolean | undefined;
+  readonly actor?: string | undefined;
+}
+
+export interface SessionDeleteBlocker {
+  readonly finalizer: Finalizer;
+  readonly message: string;
+}
+
+export interface SessionDeleteResult {
+  readonly sessionId: string;
+  readonly deleted: boolean;
+  readonly forced: boolean;
+  readonly blockers: readonly SessionDeleteBlocker[];
+  readonly warning?: string | undefined;
+  readonly cleanupErrors?: readonly string[] | undefined;
+}
+
 /**
  * Session store interface — persists session metadata.
  *
@@ -109,6 +128,10 @@ export interface SessionStore {
 
   /** List sessions with optional filters, ordered by creation time descending. */
   listSessions(query?: SessionQuery): Promise<readonly Session[]>;
+
+  deleteSession(id: string, options?: SessionDeleteOptions): Promise<SessionDeleteResult>;
+
+  listSessionDeleteBlockers(id: string): Promise<readonly SessionDeleteBlocker[]>;
 
   /** Archive a session, setting its completedAt timestamp. */
   archiveSession(id: string): Promise<void>;
