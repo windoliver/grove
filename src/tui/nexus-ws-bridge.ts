@@ -1267,17 +1267,29 @@ export class NexusWsBridge {
       // replacement's SSE loop to redeliver because dispatchInboxDelivery's
       // dedupe cache (role/message_id/path) is shared across sessions and
       // the prior attempt may have marked this entry as seen. So when the
-      // session flips, retarget the live send to the replacement session
-      // instead of bailing. When the role is gone entirely, dead-letter.
+      // session flips, retarget the live send to the replacement session.
+      //
+      // Treat a momentarily missing role binding as ANOTHER transient state
+      // within the existing backoff budget — the unregister→reregister gap
+      // for codex/claude restarts is exactly the case this retry is trying
+      // to recover from. Only dead-letter once retries are exhausted.
       const currentSession = this.sessions.get(targetRole);
       if (!currentSession) {
+        if (attempt < backoffsMs.length) {
+          process.stderr.write(
+            `[NexusWsBridge] role=${targetRole} unregistered during retry attempt=${attempt + 1} — waiting for re-register\n`,
+          );
+          lastDetail = "role temporarily unregistered (waiting for re-register)";
+          await new Promise((r) => setTimeout(r, backoffsMs[attempt] ?? 1000));
+          continue;
+        }
         process.stderr.write(
-          `[NexusWsBridge] role=${targetRole} unregistered during retry — dead-lettering\n`,
+          `[NexusWsBridge] role=${targetRole} unregistered through retry budget — dead-lettering\n`,
         );
         await this.markHandoffDeadLettered(
           resolvedHandoffId,
           targetRole,
-          `role unregistered during retry: ${lastDetail || "no prior attempt"}`,
+          `role unregistered through retry budget: ${lastDetail || "no prior attempt"}`,
           retryContext,
         );
         return;

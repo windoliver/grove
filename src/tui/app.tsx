@@ -24,6 +24,7 @@ import { StatusBar } from "./components/status-bar.js";
 import { PanelBar } from "./components/tab-bar.js";
 import { TooltipOverlay, useFirstLaunchTooltips } from "./components/tooltip-overlay.js";
 import type { GroveUserConfig } from "./config-loader.js";
+import { useProviderScoped } from "./hooks/informer-context.js";
 import { useRelistTrigger } from "./hooks/refresh-context.js";
 import { useEventDrivenData } from "./hooks/use-event-driven-data.js";
 import { buildKeyActionMap, useKeybindingOverrides } from "./hooks/use-keybinding-overrides.js";
@@ -348,13 +349,19 @@ export function App({
     };
   }, []);
 
-  // Poll active claims for topology-aware command palette
+  // Poll active claims for topology-aware command palette.
+  // In scoped sessions, `provider.getClaims` is namespace-global (no session
+  // filter) and would surface claims from other sessions — corrupting spawn-
+  // capacity checks and parent-depth calculations. Suppress until provider
+  // gains session-aware claim filtering. Mirrors the ClaimsView/AgentList
+  // scoped short-circuit.
+  const isScopedForClaims = useProviderScoped(provider);
   const claimsFetcher = useCallback(() => provider.getClaims({ status: "active" }), [provider]);
   const { data: activeClaims, refresh: refreshClaims } = useEventDrivenData<readonly Claim[]>(
     claimsFetcher,
     undefined,
     undefined,
-    topology !== undefined,
+    topology !== undefined && !isScopedForClaims,
   );
 
   // Poll tmux sessions — used by command palette, agent count, split pane,

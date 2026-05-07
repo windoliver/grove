@@ -5,7 +5,7 @@
  * column factories.
  */
 
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { claimToEntity, type ClaimEntity } from "../../core/entity.js";
 import { useInterval } from "../../local/use-interval.js";
 
@@ -141,6 +141,15 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
     // the fallback would render claims from OTHER sessions. Render an empty
     // state instead until session-scoped claim filtering lands. Mirrors the
     // ClaimsView short-circuit.
+    //
+    // Clear any latched selection so the terminal/input panel doesn't keep
+    // targeting an agent from the previous (un-scoped) view. Without this,
+    // selectedSession survives the transition into scoped mode and the
+    // operator's keystrokes would still hit the prior session.
+    useEffect(() => {
+      if (isScoped && onSelectSession) onSelectSession(undefined);
+    }, [isScoped, onSelectSession]);
+
     if (isScoped) {
       return (
         <box flexDirection="column">
