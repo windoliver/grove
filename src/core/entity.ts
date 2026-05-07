@@ -115,6 +115,13 @@ export interface ClaimSpec {
   readonly agent: AgentIdentity;
   readonly intentSummary: string;
   readonly context?: Readonly<Record<string, JsonValue>> | undefined;
+  readonly roleName?: string | undefined;
+  readonly platform?: string | undefined;
+  readonly blueprint?: string | undefined;
+  readonly assignee?: AgentIdentity | undefined;
+  readonly leaseDeadlineSec?: number | undefined;
+  readonly priority?: number | undefined;
+  readonly maxIterations?: number | undefined;
 }
 
 export interface ClaimStatusBody {
@@ -135,7 +142,11 @@ export interface ClaimStatusBody {
    */
   readonly persistedPhase: ClaimPhase;
   readonly heartbeatAt: string;
+  readonly lastHeartbeatAt: string;
   readonly leaseExpiresAt: string;
+  readonly observedGeneration: number;
+  readonly currentContributionCid?: string | undefined;
+  readonly agentSessionId?: string | undefined;
   readonly attemptCount: number;
 }
 
@@ -161,10 +172,17 @@ export function claimToEntity(
   const rev = c.revision ?? 0;
   const metaGen = c.revision ?? 1;
   const persistedPhase = c.status;
+  const createdAtMs = Date.parse(c.createdAt);
+  const leaseExpiresAtMs = Date.parse(c.leaseExpiresAt);
+  const leaseDeadlineSec =
+    Number.isFinite(createdAtMs) &&
+    Number.isFinite(leaseExpiresAtMs) &&
+    leaseExpiresAtMs > createdAtMs
+      ? Math.floor((leaseExpiresAtMs - createdAtMs) / 1000)
+      : undefined;
 
-  const leaseExpiredAt = Date.parse(c.leaseExpiresAt);
   const leaseIsExpired =
-    Number.isFinite(leaseExpiredAt) && leaseExpiredAt <= now() && persistedPhase === "active";
+    Number.isFinite(leaseExpiresAtMs) && leaseExpiresAtMs <= now() && persistedPhase === "active";
 
   // Effective view: if persisted phase is `active` but lease is past,
   // act as if phase transitioned to `expired` for Entity consumers.
@@ -213,6 +231,10 @@ export function claimToEntity(
       agent: c.agent,
       intentSummary: c.intentSummary,
       context: c.context,
+      roleName: c.agent.role,
+      platform: c.agent.platform,
+      assignee: c.agent,
+      leaseDeadlineSec,
     },
     status: {
       // phase = effective, lease-aware view so consumers that filter
@@ -222,7 +244,9 @@ export function claimToEntity(
       phase: effectivePhase,
       persistedPhase,
       heartbeatAt: c.heartbeatAt,
+      lastHeartbeatAt: c.heartbeatAt,
       leaseExpiresAt: c.leaseExpiresAt,
+      observedGeneration: metaGen,
       attemptCount: c.attemptCount ?? 0,
     },
     conditions,

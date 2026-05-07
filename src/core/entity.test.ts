@@ -10,8 +10,15 @@ import type {
   EntityMetadata,
 } from "./entity.js";
 import { agentSessionToEntity, claimToEntity, contributionToEntity } from "./entity.js";
-import type { Claim, Contribution } from "./models.js";
-import { ClaimStatus, ContributionKind, ContributionMode } from "./models.js";
+import type { Claim, ClaimView, Contribution } from "./models.js";
+import {
+  ClaimStatus,
+  ContributionKind,
+  ContributionMode,
+  claimToSpecRecord,
+  claimToStatusRecord,
+  claimViewToClaim,
+} from "./models.js";
 
 describe("Entity envelope types", () => {
   test("Condition has six required fields", () => {
@@ -143,6 +150,104 @@ function makeClaim(overrides: Partial<Claim> = {}): Claim {
   };
 }
 
+describe("claim split conversion helpers", () => {
+  test("claimToSpecRecord projects desired-state fields from flat claim", () => {
+    const claim = makeClaim({
+      claimId: "claim-rich",
+      agent: { agentId: "agent-rich", platform: "codex", role: "coder" },
+      context: { issue: 270 },
+      createdAt: "2026-01-01T00:00:00.000Z",
+      leaseExpiresAt: "2026-01-01T00:06:00.000Z",
+      revision: 4,
+    });
+
+    const spec = claimToSpecRecord(claim);
+
+    expect(spec.id).toBe("claim-rich");
+    expect(spec.roleName).toBe("coder");
+    expect(spec.platform).toBe("codex");
+    expect(spec.assignee).toEqual(claim.agent);
+    expect(spec.leaseDeadlineSec).toBe(360);
+    expect(spec.generation).toBe(4);
+    expect(spec.targetRef).toBe(claim.targetRef);
+    expect(spec.context).toEqual({ issue: 270 });
+  });
+
+  test("claimToSpecRecord omits leaseDeadlineSec for invalid or non-forward leases", () => {
+    const invalid = claimToSpecRecord(
+      makeClaim({
+        createdAt: "not-a-date",
+        leaseExpiresAt: "2026-01-01T00:06:00.000Z",
+      }),
+    );
+    expect(invalid.leaseDeadlineSec).toBeUndefined();
+
+    const nonForward = claimToSpecRecord(
+      makeClaim({
+        createdAt: "2026-01-01T00:06:00.000Z",
+        leaseExpiresAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    expect(nonForward.leaseDeadlineSec).toBeUndefined();
+  });
+
+  test("claimToStatusRecord projects observed state and supplied conditions", () => {
+    const claim = makeClaim({
+      claimId: "claim-status",
+      heartbeatAt: "2026-01-01T00:01:00.000Z",
+      leaseExpiresAt: "2026-01-01T00:06:00.000Z",
+      attemptCount: 3,
+      revision: 4,
+    });
+    const condition: Condition = {
+      type: "Active",
+      status: "True",
+      observedGeneration: 4,
+      lastTransitionTime: "2026-01-01T00:01:00.000Z",
+      reason: "active",
+      message: "",
+    };
+
+    const status = claimToStatusRecord(claim, [condition]);
+
+    expect(status.id).toBe("claim-status");
+    expect(status.phase).toBe("active");
+    expect(status.observedGeneration).toBe(4);
+    expect(status.lastHeartbeatAt).toBe("2026-01-01T00:01:00.000Z");
+    expect(status.leaseExpiresAt).toBe("2026-01-01T00:06:00.000Z");
+    expect(status.conditions).toEqual([condition]);
+    expect(status.lastTransitionAt).toBe("2026-01-01T00:01:00.000Z");
+    expect(status.attemptCount).toBe(3);
+    expect(status.revision).toBe(4);
+  });
+
+  test("claimViewToClaim merges split records and only preserves optional fields when set", () => {
+    const claim = makeClaim({
+      claimId: "claim-view",
+      context: { issue: 270 },
+      attemptCount: 2,
+      revision: 5,
+    });
+    const view: ClaimView = {
+      spec: claimToSpecRecord(claim),
+      status: claimToStatusRecord(claim),
+    };
+
+    expect(claimViewToClaim(view)).toEqual(claim);
+
+    const minimalClaim = makeClaim({ context: undefined, attemptCount: undefined });
+    const minimalView: ClaimView = {
+      spec: claimToSpecRecord(minimalClaim),
+      status: claimToStatusRecord(minimalClaim),
+    };
+    const merged = claimViewToClaim(minimalView);
+
+    expect("context" in merged).toBe(false);
+    expect("attemptCount" in merged).toBe(false);
+    expect(merged.revision).toBe(1);
+  });
+});
+
 // Fixed clock a minute before the default leaseExpiresAt — keeps legacy
 // tests deterministic without relying on the wall clock.
 const claimClock = (): number => Date.parse("2026-04-23T00:04:00Z");
@@ -162,6 +267,35 @@ describe("claimToEntity", () => {
     expect(e.spec.targetRef).toBe("target-x");
     expect(e.spec.intentSummary).toBe("do x");
     expect(e.spec.context).toEqual({ k: "v" });
+  });
+
+  test("claimToEntity projects split-compatible spec and status fields", () => {
+    const claim = makeClaim({
+      claimId: "claim-rich",
+      targetRef: "target-rich",
+      agent: {
+        agentId: "agent-rich",
+        platform: "codex",
+        role: "coder",
+      },
+      intentSummary: "rich claim",
+      context: { issue: 270 },
+      createdAt: "2026-01-01T00:00:00.000Z",
+      heartbeatAt: "2026-01-01T00:01:00.000Z",
+      leaseExpiresAt: "2026-01-01T00:06:00.000Z",
+      revision: 4,
+    });
+
+    const entity = claimToEntity(claim, () => Date.parse("2026-01-01T00:02:00.000Z"), "ns/test");
+
+    expect(entity.spec.roleName).toBe("coder");
+    expect(entity.spec.platform).toBe("codex");
+    expect(entity.spec.assignee).toEqual(claim.agent);
+    expect(entity.spec.leaseDeadlineSec).toBe(360);
+    expect(entity.status.observedGeneration).toBe(4);
+    expect(entity.status.lastHeartbeatAt).toBe("2026-01-01T00:01:00.000Z");
+    expect(entity.status.leaseExpiresAt).toBe("2026-01-01T00:06:00.000Z");
+    expect(entity.metadata.generation).toBe(4);
   });
 
   test("status carries phase/heartbeatAt/leaseExpiresAt/attemptCount", () => {
