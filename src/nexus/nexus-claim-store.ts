@@ -19,11 +19,21 @@ import {
 } from "../core/claim-logic.js";
 import type { ClaimEntity } from "../core/entity.js";
 import { claimToEntity } from "../core/entity.js";
-import { StateConflictError } from "../core/errors.js";
-import type { Claim, ClaimStatus } from "../core/models.js";
+import { NotFoundError, StateConflictError } from "../core/errors.js";
+import {
+  type Claim,
+  type ClaimSpecRecord,
+  type ClaimStatus,
+  type ClaimStatusRecord,
+  type ClaimView,
+  claimToSpecRecord,
+  claimToStatusRecord,
+  claimViewToClaim,
+} from "../core/models.js";
 import type {
   ActiveClaimFilter,
   ClaimQuery,
+  ClaimStatusPatch,
   ClaimStore,
   ExpiredClaim,
   ExpireStaleOptions,
@@ -54,17 +64,88 @@ import {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-function encodeClaim(claim: Claim): Uint8Array {
-  return encoder.encode(JSON.stringify(claim));
+interface ClaimDocument {
+  readonly spec: ClaimSpecRecord;
+  readonly status: ClaimStatusRecord;
 }
 
-function decodeClaim(data: Uint8Array): Claim {
-  return JSON.parse(decoder.decode(data)) as Claim;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
-/** A claim bundled with its VFS ETag for CAS writes. */
-interface ClaimWithEtag {
-  readonly claim: Claim;
+function isClaimDocument(value: unknown): value is ClaimDocument {
+  return (
+    isRecord(value) &&
+    isRecord(value.spec) &&
+    isRecord(value.status) &&
+    typeof value.spec.id === "string" &&
+    typeof value.status.id === "string"
+  );
+}
+
+function claimToDocument(claim: Claim): ClaimDocument {
+  return {
+    spec: claimToSpecRecord(claim),
+    status: claimToStatusRecord(claim),
+  };
+}
+
+function claimToDocumentPreservingSplitFields(
+  claim: Claim,
+  existingDocument: ClaimDocument | undefined,
+): ClaimDocument {
+  if (existingDocument === undefined) return claimToDocument(claim);
+
+  const specWithContext: ClaimSpecRecord = {
+    ...existingDocument.spec,
+    id: claim.claimId,
+    targetRef: claim.targetRef,
+    agent: claim.agent,
+    intentSummary: claim.intentSummary,
+    createdAt: claim.createdAt,
+    ...(claim.context === undefined ? {} : { context: claim.context }),
+  };
+  const spec =
+    claim.context === undefined
+      ? (({ context: _context, ...rest }) => rest)(specWithContext)
+      : specWithContext;
+
+  return {
+    spec,
+    status: {
+      ...existingDocument.status,
+      id: claim.claimId,
+      phase: claim.status,
+      lastHeartbeatAt: claim.heartbeatAt,
+      leaseExpiresAt: claim.leaseExpiresAt,
+      attemptCount: claim.attemptCount ?? existingDocument.status.attemptCount,
+      revision: claim.revision ?? existingDocument.status.revision,
+    },
+  };
+}
+
+function decodeClaimDocument(data: Uint8Array): ClaimDocument {
+  const parsed = JSON.parse(decoder.decode(data)) as unknown;
+  if (isClaimDocument(parsed)) return parsed;
+  return claimToDocument(parsed as Claim);
+}
+
+function encodeClaimDocument(document: ClaimDocument): Uint8Array {
+  return encoder.encode(JSON.stringify(document));
+}
+
+function targetRefFromActiveIndexPath(zoneId: string, path: string): string | undefined {
+  const prefix = `${activeClaimsDir(zoneId)}/`;
+  if (!path.startsWith(prefix)) return undefined;
+  const relative = path.slice(prefix.length);
+  const slashIndex = relative.lastIndexOf("/");
+  if (slashIndex < 0) return undefined;
+  return decodeSegment(relative.slice(0, slashIndex));
+}
+
+/** A claim document bundled with its VFS ETag for CAS writes. */
+interface ClaimDocumentWithEtag {
+  readonly document: ClaimDocument;
   readonly etag: string;
 }
 
@@ -122,11 +203,219 @@ export class NexusClaimStore implements ClaimStore {
     this.activeClaimsCache = undefined;
   }
 
+  async putClaimSpec(spec: ClaimSpecRecord): Promise<ClaimView> {
+    const existing = await this.readClaimWithEtag(spec.id);
+
+    if (existing === undefined) {
+      const now = new Date();
+      const nowIso = now.toISOString();
+      const createdAt = toUtcIso(spec.createdAt);
+      const createdAtMs = new Date(createdAt).getTime();
+      const leaseDeadlineSec = spec.leaseDeadlineSec ?? DEFAULT_LEASE_DURATION_MS / 1000;
+      const document: ClaimDocument = {
+        spec: { ...spec, generation: 1, createdAt },
+        status: {
+          id: spec.id,
+          phase: "active" as ClaimStatus,
+          observedGeneration: 0,
+          lastHeartbeatAt: nowIso,
+          leaseExpiresAt: new Date(createdAtMs + leaseDeadlineSec * 1000).toISOString(),
+          conditions: [],
+          lastTransitionAt: nowIso,
+          attemptCount: 0,
+          revision: 1,
+        },
+      };
+      const flatClaim = claimViewToClaim(document);
+      validateClaimContext(flatClaim);
+
+      try {
+        await this.writeActiveIndexExclusive(flatClaim);
+      } catch (err) {
+        if (err instanceof NexusConflictError) {
+          const activeOnTarget = await this.findActiveOnTarget(spec.targetRef, new Date());
+          const existingId = activeOnTarget?.claimId ?? "(unknown)";
+          throw new StateConflictError({
+            resource: "Claim",
+            reason: "target already has an active claim",
+            message: `Target '${spec.targetRef}' already has an active claim '${existingId}'`,
+          });
+        }
+        throw err;
+      }
+
+      try {
+        await this.writeClaimDocumentConditional(spec.id, document, {
+          ifNoneMatch: "*",
+        });
+      } catch (err) {
+        await safeCleanup(
+          this.deleteActiveIndexUnlessCurrentClaimOwns(flatClaim),
+          "rollback active index after split spec write failure",
+          { silent: true },
+        );
+        if (err instanceof NexusConflictError) {
+          throw new StateConflictError({
+            resource: "Claim",
+            reason: "already exists",
+            message: `Claim with id '${spec.id}' already exists`,
+          });
+        }
+        throw err;
+      }
+
+      this.claimCache.set(flatClaim.claimId, flatClaim);
+      this.invalidateActiveClaimsCache();
+      this.publishWatch(flatClaim, "ADDED");
+      return document;
+    }
+
+    const existingDocument = existing.document;
+    const updatedDocument: ClaimDocument = {
+      spec: {
+        ...spec,
+        createdAt: existingDocument.spec.createdAt,
+        generation: existingDocument.spec.generation + 1,
+      },
+      status: existingDocument.status,
+    };
+    const existingClaim = claimViewToClaim(existingDocument);
+    const updatedClaim = claimViewToClaim(updatedDocument);
+    validateClaimContext(updatedClaim);
+
+    const now = new Date();
+    const existingIsActive =
+      existingClaim.status === "active" &&
+      new Date(existingClaim.leaseExpiresAt).getTime() >= now.getTime();
+    const activeTargetChanged =
+      existingIsActive && existingClaim.targetRef !== updatedClaim.targetRef;
+
+    if (activeTargetChanged) {
+      const activeOnNewTarget = await this.findActiveOnTarget(updatedClaim.targetRef, now);
+      if (activeOnNewTarget !== undefined && activeOnNewTarget.claimId !== updatedClaim.claimId) {
+        throw new StateConflictError({
+          resource: "Claim",
+          reason: "target already has an active claim",
+          message: `Target '${updatedClaim.targetRef}' already has an active claim '${activeOnNewTarget.claimId}'`,
+        });
+      }
+      await this.assertLockOwned(existingClaim.targetRef, existingClaim.claimId);
+      await this.writeActiveIndexExclusive(updatedClaim);
+    }
+
+    try {
+      await this.writeClaimDocumentCas(spec.id, updatedDocument, existing.etag);
+    } catch (err) {
+      if (activeTargetChanged) {
+        await safeCleanup(
+          this.deleteActiveIndexUnlessCurrentClaimOwns(updatedClaim),
+          "rollback moved active index",
+          {
+            silent: true,
+          },
+        );
+      }
+      throw err;
+    }
+
+    if (activeTargetChanged) {
+      await this.deleteActiveIndex(existingClaim);
+    }
+
+    this.claimCache.set(updatedClaim.claimId, updatedClaim);
+    this.invalidateActiveClaimsCache();
+    this.publishWatch(updatedClaim, "MODIFIED");
+    return updatedDocument;
+  }
+
+  async getClaimView(claimId: string): Promise<ClaimView | undefined> {
+    const result = await this.readClaimWithEtag(claimId);
+    return result?.document;
+  }
+
+  async patchClaimStatus(claimId: string, patch: ClaimStatusPatch): Promise<ClaimView> {
+    const existing = await this.readClaimWithEtag(claimId);
+    if (existing === undefined) {
+      throw new NotFoundError({
+        resource: "Claim",
+        identifier: claimId,
+        message: `Claim '${claimId}' not found`,
+      });
+    }
+
+    const updatedDocument: ClaimDocument = {
+      spec: existing.document.spec,
+      status: {
+        ...existing.document.status,
+        phase: patch.phase ?? existing.document.status.phase,
+        observedGeneration: patch.observedGeneration ?? existing.document.status.observedGeneration,
+        agentSessionId: patch.agentSessionId ?? existing.document.status.agentSessionId,
+        lastHeartbeatAt:
+          patch.lastHeartbeatAt !== undefined
+            ? toUtcIso(patch.lastHeartbeatAt)
+            : existing.document.status.lastHeartbeatAt,
+        leaseExpiresAt:
+          patch.leaseExpiresAt !== undefined
+            ? toUtcIso(patch.leaseExpiresAt)
+            : existing.document.status.leaseExpiresAt,
+        currentContributionCid:
+          patch.currentContributionCid ?? existing.document.status.currentContributionCid,
+        conditions: patch.conditions ?? existing.document.status.conditions,
+        lastTransitionAt:
+          patch.lastTransitionAt !== undefined
+            ? toUtcIso(patch.lastTransitionAt)
+            : existing.document.status.lastTransitionAt,
+        revision: existing.document.status.revision + 1,
+      },
+    };
+
+    const existingClaim = claimViewToClaim(existing.document);
+    const updatedClaim = claimViewToClaim(updatedDocument);
+    const now = new Date();
+    const existingActiveUnexpired =
+      existingClaim.status === "active" &&
+      new Date(existingClaim.leaseExpiresAt).getTime() >= now.getTime();
+    const updatedActiveUnexpired =
+      updatedClaim.status === "active" &&
+      new Date(updatedClaim.leaseExpiresAt).getTime() >= now.getTime();
+    const needsActiveAcquire = updatedActiveUnexpired && !existingActiveUnexpired;
+    const needsActiveDelete = !updatedActiveUnexpired && existingClaim.status === "active";
+
+    if (needsActiveAcquire) {
+      await this.writeActiveIndexExclusive(updatedClaim);
+    }
+
+    try {
+      await this.writeClaimDocumentCas(claimId, updatedDocument, existing.etag);
+    } catch (err) {
+      if (needsActiveAcquire) {
+        await safeCleanup(
+          this.deleteActiveIndexUnlessCurrentClaimOwns(updatedClaim),
+          "rollback status active index",
+          {
+            silent: true,
+          },
+        );
+      }
+      throw err;
+    }
+
+    if (needsActiveDelete) {
+      await this.deleteActiveIndex(updatedClaim);
+    }
+
+    this.claimCache.set(updatedClaim.claimId, updatedClaim);
+    this.invalidateActiveClaimsCache();
+    this.publishWatch(updatedClaim, "MODIFIED");
+    return updatedDocument;
+  }
+
   async createClaim(claim: Claim): Promise<Claim> {
     validateClaimContext(claim);
 
-    // Check for duplicate claimId via conditional write (ifNoneMatch="*")
-    // This is race-safe: the write will fail if the file already exists.
+    // Acquire target ownership before exposing the claim file. If the
+    // subsequent conditional claim write fails, rollback is limited to
+    // active-index state this operation still appears to own.
     const createdClaim: Claim = {
       ...claim,
       createdAt: toUtcIso(claim.createdAt),
@@ -136,33 +425,9 @@ export class NexusClaimStore implements ClaimStore {
     };
 
     try {
-      await this.writeClaimConditional(createdClaim, { ifNoneMatch: "*" });
-    } catch (err) {
-      if (err instanceof NexusConflictError) {
-        throw new StateConflictError({
-          resource: "Claim",
-          reason: "already exists",
-          message: `Claim with id '${claim.claimId}' already exists`,
-        });
-      }
-      throw err;
-    }
-
-    // Acquire target lock + write active index. The lock uses ifNoneMatch="*"
-    // to atomically enforce one-active-per-target. If it fails, roll back.
-    try {
       await this.writeActiveIndexExclusive(createdClaim);
     } catch (err) {
-      // Roll back the claim file — the lock is the gate.
-      await safeCleanup(
-        withSemaphore(this.semaphore, () =>
-          this.client.delete(claimPath(this.zoneId, claim.claimId)),
-        ),
-        "rollback claim file after index failure",
-        { silent: true },
-      );
       if (err instanceof NexusConflictError) {
-        // Another claim already active on this target — find it for error message
         const now = new Date();
         const activeOnTarget = await this.findActiveOnTarget(claim.targetRef, now);
         const existingId = activeOnTarget?.claimId ?? "(unknown)";
@@ -170,6 +435,24 @@ export class NexusClaimStore implements ClaimStore {
           resource: "Claim",
           reason: "target already has an active claim",
           message: `Target '${claim.targetRef}' already has an active claim '${existingId}'`,
+        });
+      }
+      throw err;
+    }
+
+    try {
+      await this.writeClaimConditional(createdClaim, { ifNoneMatch: "*" });
+    } catch (err) {
+      await safeCleanup(
+        this.deleteActiveIndexUnlessCurrentClaimOwns(createdClaim),
+        "rollback active index after claim write failure",
+        { silent: true },
+      );
+      if (err instanceof NexusConflictError) {
+        throw new StateConflictError({
+          resource: "Claim",
+          reason: "already exists",
+          message: `Claim with id '${claim.claimId}' already exists`,
         });
       }
       throw err;
@@ -199,8 +482,8 @@ export class NexusClaimStore implements ClaimStore {
     if (resolution.action === "renew" && activeOnTarget !== undefined) {
       // Re-read with ETag for CAS write
       const withEtag = await this.readClaimWithEtag(activeOnTarget.claimId);
-      const existing = withEtag?.claim ?? activeOnTarget;
-      const etag = withEtag?.etag;
+      const existing =
+        withEtag !== undefined ? claimViewToClaim(withEtag.document) : activeOnTarget;
       const durationMs = computeLeaseDuration(claim);
       const renewed: Claim = {
         ...existing,
@@ -209,8 +492,8 @@ export class NexusClaimStore implements ClaimStore {
         intentSummary: claim.intentSummary,
         revision: (existing.revision ?? 0) + 1,
       };
-      if (etag !== undefined) {
-        await this.writeClaimCas(renewed, etag);
+      if (withEtag !== undefined) {
+        await this.writeClaimCas(renewed, withEtag.etag, withEtag.document);
       } else {
         await this.writeClaim(renewed);
       }
@@ -234,8 +517,26 @@ export class NexusClaimStore implements ClaimStore {
     };
 
     try {
+      await this.writeActiveIndexExclusive(createdClaim);
+    } catch (err) {
+      if (err instanceof NexusConflictError) {
+        throw new StateConflictError({
+          resource: "Claim",
+          reason: "target already has an active claim",
+          message: `Target '${claim.targetRef}' already has an active claim`,
+        });
+      }
+      throw err;
+    }
+
+    try {
       await this.writeClaimConditional(createdClaim, { ifNoneMatch: "*" });
     } catch (err) {
+      await safeCleanup(
+        this.deleteActiveIndexUnlessCurrentClaimOwns(createdClaim),
+        "rollback active index after claimOrRenew write failure",
+        { silent: true },
+      );
       if (err instanceof NexusConflictError) {
         throw new StateConflictError({
           resource: "Claim",
@@ -243,20 +544,6 @@ export class NexusClaimStore implements ClaimStore {
           message: `Claim with id '${claim.claimId}' already exists`,
         });
       }
-      throw err;
-    }
-
-    // Write active index — roll back claim on failure
-    try {
-      await this.writeActiveIndexExclusive(createdClaim);
-    } catch (err) {
-      await safeCleanup(
-        withSemaphore(this.semaphore, () =>
-          this.client.delete(claimPath(this.zoneId, claim.claimId)),
-        ),
-        "rollback claim file after claimOrRenew index failure",
-        { silent: true },
-      );
       throw err;
     }
 
@@ -272,8 +559,10 @@ export class NexusClaimStore implements ClaimStore {
 
   async heartbeat(claimId: string, leaseDurationMs?: number): Promise<Claim> {
     const result = await this.readClaimWithEtag(claimId);
-    validateHeartbeat(result?.claim, claimId);
-    const { claim: validClaim, etag } = result as ClaimWithEtag;
+    const claim = result !== undefined ? claimViewToClaim(result.document) : undefined;
+    validateHeartbeat(claim, claimId);
+    const validClaim = claim as Claim;
+    const etag = result?.etag as string;
 
     // Lock-ownership fence: if the target lock no longer points to
     // this claim, a takeover has already superseded us. Renewing the
@@ -290,7 +579,7 @@ export class NexusClaimStore implements ClaimStore {
       revision: (validClaim.revision ?? 0) + 1,
     };
 
-    await this.writeClaimCas(updated, etag);
+    await this.writeClaimCas(updated, etag, result?.document);
     this.claimCache.set(updated.claimId, updated);
     this.invalidateActiveClaimsCache();
     // Heartbeats advance heartbeatAt/leaseExpiresAt and watchers depend
@@ -337,7 +626,8 @@ export class NexusClaimStore implements ClaimStore {
     // List all claim files (not just active index — need to catch lease-expired)
     const allClaimsWithEtags = await this.listAllClaimsWithEtags();
 
-    for (const { claim, etag } of allClaimsWithEtags) {
+    for (const { document, etag } of allClaimsWithEtags) {
+      const claim = claimViewToClaim(document);
       if (claim.status !== "active") continue;
 
       let reason: typeof ExpiryReason.LeaseExpired | typeof ExpiryReason.Stalled | undefined;
@@ -357,7 +647,7 @@ export class NexusClaimStore implements ClaimStore {
           status: "expired" as ClaimStatus,
           revision: (claim.revision ?? 0) + 1,
         };
-        await this.writeClaimCas(expired, etag);
+        await this.writeClaimCas(expired, etag, document);
         await this.deleteActiveIndex(expired);
         this.claimCache.set(expired.claimId, expired);
         this.publishWatch(expired, "MODIFIED");
@@ -377,7 +667,7 @@ export class NexusClaimStore implements ClaimStore {
 
     if (targetRef !== undefined) {
       const dir = activeClaimTargetDir(this.zoneId, targetRef);
-      return this.readActiveClaimsFromDir(dir, now);
+      return this.readActiveClaimsFromDir(dir, now, targetRef);
     }
 
     // Check TTL-based cache for all-active-claims query
@@ -391,17 +681,32 @@ export class NexusClaimStore implements ClaimStore {
     });
 
     // Parallel reads for all non-directory entries
-    const claimIds = entries
+    const indexedClaims = entries
       .filter((entry) => !entry.isDirectory)
-      .map((entry) => decodeSegment(entry.name));
+      .map((entry) => ({
+        claimId: decodeSegment(entry.name),
+        targetRef: targetRefFromActiveIndexPath(this.zoneId, entry.path),
+      }));
 
-    const results = await Promise.all(claimIds.map((claimId) => this.readClaim(claimId)));
+    const results = await Promise.all(
+      indexedClaims.map(async ({ claimId, targetRef: indexedTargetRef }) => {
+        const result = await this.readClaimWithEtag(claimId);
+        const claim = result !== undefined ? claimViewToClaim(result.document) : undefined;
+        return { claim, indexedTargetRef };
+      }),
+    );
 
     const claims: Claim[] = [];
-    for (const claim of results) {
+    const seen = new Set<string>();
+    for (const { claim, indexedTargetRef } of results) {
       if (claim !== undefined && claim.status === "active") {
-        if (new Date(claim.leaseExpiresAt).getTime() >= now.getTime()) {
+        if (
+          indexedTargetRef === claim.targetRef &&
+          new Date(claim.leaseExpiresAt).getTime() >= now.getTime() &&
+          !seen.has(claim.claimId)
+        ) {
           claims.push(claim);
+          seen.add(claim.claimId);
         }
       }
     }
@@ -504,8 +809,10 @@ export class NexusClaimStore implements ClaimStore {
 
   private async transitionClaim(claimId: string, newStatus: ClaimStatus): Promise<Claim> {
     const result = await this.readClaimWithEtag(claimId);
-    validateTransition(result?.claim, claimId, newStatus);
-    const { claim: validClaim, etag } = result as ClaimWithEtag;
+    const claim = result !== undefined ? claimViewToClaim(result.document) : undefined;
+    validateTransition(claim, claimId, newStatus);
+    const validClaim = claim as Claim;
+    const etag = result?.etag as string;
 
     // Belt-and-suspenders: re-check the lease immediately before the
     // CAS write. Between the first validate and writeClaimCas, the
@@ -531,7 +838,7 @@ export class NexusClaimStore implements ClaimStore {
       status: newStatus,
       revision: (validClaim.revision ?? 0) + 1,
     };
-    await this.writeClaimCas(updated, etag);
+    await this.writeClaimCas(updated, etag, result?.document);
     if (newStatus !== "active") {
       await this.deleteActiveIndex(updated);
     }
@@ -548,14 +855,15 @@ export class NexusClaimStore implements ClaimStore {
     const cached = this.claimCache.get(claimId);
     if (cached !== undefined) return cached;
     const result = await this.readClaimWithEtag(claimId);
+    const claim = result !== undefined ? claimViewToClaim(result.document) : undefined;
     if (result !== undefined) {
-      this.claimCache.set(claimId, result.claim);
+      this.claimCache.set(claimId, claimViewToClaim(result.document));
     }
-    return result?.claim;
+    return claim;
   }
 
   /** Read a claim and its VFS ETag atomically (needed for CAS writes via ifMatch). */
-  private async readClaimWithEtag(claimId: string): Promise<ClaimWithEtag | undefined> {
+  private async readClaimWithEtag(claimId: string): Promise<ClaimDocumentWithEtag | undefined> {
     const p = claimPath(this.zoneId, claimId);
     const result = await withRetry(
       () => withSemaphore(this.semaphore, () => this.client.readWithMeta(p)),
@@ -563,26 +871,29 @@ export class NexusClaimStore implements ClaimStore {
       this.config,
     );
     if (result === undefined) return undefined;
-    return { claim: decodeClaim(result.content), etag: result.etag };
+    return { document: decodeClaimDocument(result.content), etag: result.etag };
   }
 
   /** Write claim with ifMatch for CAS safety on mutations. */
-  private async writeClaimCas(claim: Claim, expectedEtag: string): Promise<void> {
-    const p = claimPath(this.zoneId, claim.claimId);
-    await withRetry(
-      () =>
-        withSemaphore(this.semaphore, () =>
-          this.client.write(p, encodeClaim(claim), { ifMatch: expectedEtag }),
-        ),
-      "writeClaimCas",
-      this.config,
+  private async writeClaimCas(
+    claim: Claim,
+    expectedEtag: string,
+    existingDocument?: ClaimDocument,
+  ): Promise<void> {
+    await this.writeClaimDocumentCas(
+      claim.claimId,
+      claimToDocumentPreservingSplitFields(claim, existingDocument),
+      expectedEtag,
     );
   }
 
   private async writeClaim(claim: Claim): Promise<void> {
     const p = claimPath(this.zoneId, claim.claimId);
     await withRetry(
-      () => withSemaphore(this.semaphore, () => this.client.write(p, encodeClaim(claim))),
+      () =>
+        withSemaphore(this.semaphore, () =>
+          this.client.write(p, encodeClaimDocument(claimToDocument(claim))),
+        ),
       "writeClaim",
       this.config,
     );
@@ -592,13 +903,64 @@ export class NexusClaimStore implements ClaimStore {
   private async writeClaimConditional(
     claim: Claim,
     opts: { ifNoneMatch?: string; ifMatch?: string },
-  ): Promise<void> {
+  ): Promise<string> {
     const path = claimPath(this.zoneId, claim.claimId);
-    await withRetry(
-      () => withSemaphore(this.semaphore, () => this.client.write(path, encodeClaim(claim), opts)),
+    const result = await withRetry(
+      () =>
+        withSemaphore(this.semaphore, () =>
+          this.client.write(path, encodeClaimDocument(claimToDocument(claim)), opts),
+        ),
       "writeClaimConditional",
       this.config,
     );
+    return result.etag;
+  }
+
+  private async writeClaimDocumentConditional(
+    claimId: string,
+    document: ClaimDocument,
+    opts: { readonly ifNoneMatch: "*" },
+  ): Promise<string> {
+    const result = await withRetry(
+      () =>
+        withSemaphore(this.semaphore, () =>
+          this.client.write(claimPath(this.zoneId, claimId), encodeClaimDocument(document), opts),
+        ),
+      "writeClaimDocumentConditional",
+      this.config,
+    );
+    return result.etag;
+  }
+
+  private async writeClaimDocumentCas(
+    claimId: string,
+    document: ClaimDocument,
+    etag: string,
+  ): Promise<void> {
+    await withRetry(
+      () =>
+        withSemaphore(this.semaphore, () =>
+          this.client.write(claimPath(this.zoneId, claimId), encodeClaimDocument(document), {
+            ifMatch: etag,
+          }),
+        ),
+      "writeClaimDocumentCas",
+      this.config,
+    );
+  }
+
+  private async deleteActiveIndexUnlessCurrentClaimOwns(claim: Claim): Promise<void> {
+    const current = await this.readClaimWithEtag(claim.claimId);
+    const currentClaim = current !== undefined ? claimViewToClaim(current.document) : undefined;
+    if (
+      currentClaim !== undefined &&
+      currentClaim.status === "active" &&
+      currentClaim.targetRef === claim.targetRef &&
+      new Date(currentClaim.leaseExpiresAt).getTime() >= Date.now()
+    ) {
+      return;
+    }
+    await this.deleteActiveIndex(claim);
   }
 
   /**
@@ -635,13 +997,18 @@ export class NexusClaimStore implements ClaimStore {
       const isEmptyTombstone = holderId.length === 0;
 
       let holderStale = isEmptyTombstone;
-      let holderResult: ClaimWithEtag | undefined;
+      let holderTargetMismatch = false;
+      let holderResult: ClaimDocumentWithEtag | undefined;
       if (!holderStale) {
         holderResult = await this.readClaimWithEtag(holderId);
-        const holderClaim = holderResult?.claim;
+        const holderClaim =
+          holderResult !== undefined ? claimViewToClaim(holderResult.document) : undefined;
+        holderTargetMismatch =
+          holderClaim !== undefined && holderClaim.targetRef !== claim.targetRef;
         holderStale =
           holderClaim === undefined ||
           holderClaim.status !== "active" ||
+          holderTargetMismatch ||
           new Date(holderClaim.leaseExpiresAt).getTime() < Date.now();
       }
 
@@ -658,14 +1025,16 @@ export class NexusClaimStore implements ClaimStore {
       // holder record has moved under us (another party already
       // expired it, or the record was deleted), fall through: the
       // holder is already non-active and our lock takeover is safe.
-      if (holderResult !== undefined && holderResult.claim.status === "active") {
+      const holderClaim =
+        holderResult !== undefined ? claimViewToClaim(holderResult.document) : undefined;
+      if (holderResult !== undefined && holderClaim?.status === "active" && !holderTargetMismatch) {
         const expiredHolder: Claim = {
-          ...holderResult.claim,
+          ...holderClaim,
           status: "expired" as ClaimStatus,
-          revision: (holderResult.claim.revision ?? 0) + 1,
+          revision: (holderClaim.revision ?? 0) + 1,
         };
         try {
-          await this.writeClaimCas(expiredHolder, holderResult.etag);
+          await this.writeClaimCas(expiredHolder, holderResult.etag, holderResult.document);
           this.claimCache.set(expiredHolder.claimId, expiredHolder);
         } catch (expireErr) {
           // CAS-expire conflict: the holder record changed under us.
@@ -681,10 +1050,15 @@ export class NexusClaimStore implements ClaimStore {
           if (!isConflict) throw expireErr;
 
           const refreshed = await this.readClaimWithEtag(holderId);
+          const refreshedClaim =
+            refreshed !== undefined ? claimViewToClaim(refreshed.document) : undefined;
+          const refreshedTargetMismatch =
+            refreshedClaim !== undefined && refreshedClaim.targetRef !== claim.targetRef;
           const refreshedIsStale =
             refreshed === undefined ||
-            refreshed.claim.status !== "active" ||
-            new Date(refreshed.claim.leaseExpiresAt).getTime() < Date.now();
+            refreshedClaim?.status !== "active" ||
+            refreshedTargetMismatch ||
+            new Date(refreshedClaim.leaseExpiresAt).getTime() < Date.now();
           if (!refreshedIsStale) {
             // The holder heartbeated (or was renewed) and is live
             // again — abort the takeover. Re-throw the ORIGINAL
@@ -695,8 +1069,8 @@ export class NexusClaimStore implements ClaimStore {
           // Still stale on the refresh — safe to proceed. Populate
           // the cache from the refresh so a subsequent same-process
           // reader sees the latest state.
-          if (refreshed !== undefined) {
-            this.claimCache.set(refreshed.claim.claimId, refreshed.claim);
+          if (refreshed !== undefined && refreshedClaim !== undefined) {
+            this.claimCache.set(refreshedClaim.claimId, refreshedClaim);
           }
         }
       }
@@ -780,22 +1154,35 @@ export class NexusClaimStore implements ClaimStore {
 
   private async findActiveOnTarget(targetRef: string, now: Date): Promise<Claim | undefined> {
     const dir = activeClaimTargetDir(this.zoneId, targetRef);
-    const claims = await this.readActiveClaimsFromDir(dir, now);
+    const claims = await this.readActiveClaimsFromDir(dir, now, targetRef);
     return claims.length > 0 ? claims[0] : undefined;
   }
 
-  private async readActiveClaimsFromDir(dir: string, now: Date): Promise<Claim[]> {
+  private async readActiveClaimsFromDir(
+    dir: string,
+    now: Date,
+    targetRef: string,
+  ): Promise<Claim[]> {
     const entries = await listAllPages(this.client, this.semaphore, this.config, dir);
 
     const nonDirEntries = entries.filter((e) => !e.isDirectory);
     const claimIds = nonDirEntries.map((entry) => decodeSegment(entry.name));
-    const fetched = await batchParallel(claimIds, (claimId) => this.readClaim(claimId));
+    const fetched = await batchParallel(claimIds, async (claimId) => {
+      const result = await this.readClaimWithEtag(claimId);
+      return result !== undefined ? claimViewToClaim(result.document) : undefined;
+    });
 
     const claims: Claim[] = [];
+    const seen = new Set<string>();
     for (const claim of fetched) {
       if (claim !== undefined && claim.status === "active") {
-        if (new Date(claim.leaseExpiresAt).getTime() >= now.getTime()) {
+        if (
+          claim.targetRef === targetRef &&
+          new Date(claim.leaseExpiresAt).getTime() >= now.getTime() &&
+          !seen.has(claim.claimId)
+        ) {
           claims.push(claim);
+          seen.add(claim.claimId);
         }
       }
     }
@@ -804,10 +1191,10 @@ export class NexusClaimStore implements ClaimStore {
 
   private async listAllClaims(): Promise<Claim[]> {
     const results = await this.listAllClaimsWithEtags();
-    return results.map((r) => r.claim);
+    return results.map((r) => claimViewToClaim(r.document));
   }
 
-  private async listAllClaimsWithEtags(): Promise<ClaimWithEtag[]> {
+  private async listAllClaimsWithEtags(): Promise<ClaimDocumentWithEtag[]> {
     const dir = claimsDir(this.zoneId);
     const entries = await listAllPages(this.client, this.semaphore, this.config, dir);
 
@@ -815,6 +1202,6 @@ export class NexusClaimStore implements ClaimStore {
     const claimIds = nonDirEntries.map((entry) => decodeSegment(entry.name.replace(/\.json$/, "")));
     const fetched = await batchParallel(claimIds, (claimId) => this.readClaimWithEtag(claimId));
 
-    return fetched.filter((result): result is ClaimWithEtag => result !== undefined);
+    return fetched.filter((result): result is ClaimDocumentWithEtag => result !== undefined);
   }
 }
