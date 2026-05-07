@@ -22,6 +22,7 @@ import {
   DEFAULT_SESSION_FINALIZERS,
   Finalizer,
 } from "../core/lifecycle-metadata.js";
+import type { Claim } from "../core/models.js";
 import type {
   CreateSessionInput,
   Session,
@@ -517,10 +518,21 @@ export interface SqliteGoalSessionStoreOptions {
 }
 
 interface ClaimCleanupStore {
+  onClaimWrite?: (op: "ADDED" | "MODIFIED" | "DELETED", claim: Claim) => void;
   releaseOwnedBy(ownerRef: OwnerRef): number | Promise<number>;
   deleteTerminalOwnedBy(ownerRef: OwnerRef): number | Promise<number>;
   releaseOwnedBySync?(ownerRef: OwnerRef): number;
   deleteTerminalOwnedBySync?(ownerRef: OwnerRef): number;
+  releaseOwnedBySyncBuffered?(ownerRef: OwnerRef, pendingWrites: PendingClaimWrite[]): number;
+  deleteTerminalOwnedBySyncBuffered?(
+    ownerRef: OwnerRef,
+    pendingWrites: PendingClaimWrite[],
+  ): number;
+}
+
+interface PendingClaimWrite {
+  readonly op: "ADDED" | "MODIFIED" | "DELETED";
+  readonly claim: Claim;
 }
 
 function ownerRefForSession(session: Session): OwnerRef {
@@ -992,6 +1004,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     await this.getClaimStore();
     const deletionTimestamp = session.deletionTimestamp ?? new Date().toISOString();
     const remainingFinalizers = [...startingFinalizers];
+    const pendingClaimWrites: PendingClaimWrite[] = [];
     const closeRuntimePending =
       this.closeRuntime !== undefined && startingFinalizers.includes(Finalizer.CloseRuntime);
     try {
@@ -1002,8 +1015,8 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
 
           try {
             if (finalizer === Finalizer.ReleaseSlots) {
-              this.releaseOwnedClaimsSync(ownerRef);
-              this.deleteTerminalOwnedClaimsSync(ownerRef);
+              this.releaseOwnedClaimsSync(ownerRef, pendingClaimWrites);
+              this.deleteTerminalOwnedClaimsSync(ownerRef, pendingClaimWrites);
             } else if (finalizer === Finalizer.DrainContribs) {
               this.deleteSessionContributionLinks(id);
             }
@@ -1035,6 +1048,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
         blockers: [{ finalizer: err.finalizer, message: err.message }],
       };
     }
+    this.flushPendingClaimWrites(pendingClaimWrites);
 
     if (closeRuntimePending) {
       const runtimeFinalizers = [...remainingFinalizers];
@@ -1151,12 +1165,15 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     return claimStore.deleteTerminalOwnedBy(ownerRef);
   }
 
-  private releaseOwnedClaimsSync(ownerRef: OwnerRef): number {
-    return this.runClaimCleanupSync("releaseOwnedBy", ownerRef);
+  private releaseOwnedClaimsSync(ownerRef: OwnerRef, pendingWrites?: PendingClaimWrite[]): number {
+    return this.runClaimCleanupSync("releaseOwnedBy", ownerRef, pendingWrites);
   }
 
-  private deleteTerminalOwnedClaimsSync(ownerRef: OwnerRef): number {
-    return this.runClaimCleanupSync("deleteTerminalOwnedBy", ownerRef);
+  private deleteTerminalOwnedClaimsSync(
+    ownerRef: OwnerRef,
+    pendingWrites?: PendingClaimWrite[],
+  ): number {
+    return this.runClaimCleanupSync("deleteTerminalOwnedBy", ownerRef, pendingWrites);
   }
 
   private deleteSessionContributionLinks(sessionId: string): number {
@@ -1194,6 +1211,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
   private runClaimCleanupSync(
     method: "releaseOwnedBy" | "deleteTerminalOwnedBy",
     ownerRef: OwnerRef,
+    pendingWrites?: PendingClaimWrite[],
   ): number {
     if (this.claimStore === undefined) {
       throw new Error(
@@ -1201,11 +1219,24 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
       );
     }
 
+    const bufferedSyncMethod =
+      method === "releaseOwnedBy"
+        ? this.claimStore.releaseOwnedBySyncBuffered
+        : this.claimStore.deleteTerminalOwnedBySyncBuffered;
+    if (pendingWrites !== undefined && bufferedSyncMethod !== undefined) {
+      return bufferedSyncMethod.call(this.claimStore, ownerRef, pendingWrites);
+    }
+
     const syncMethod =
       method === "releaseOwnedBy"
         ? this.claimStore.releaseOwnedBySync
         : this.claimStore.deleteTerminalOwnedBySync;
     if (syncMethod !== undefined) {
+      if (pendingWrites !== undefined) {
+        throw new Error(
+          `SqliteGoalSessionStore deleteSession() requires buffered ${method} sync cleanup to preserve atomic claim callbacks`,
+        );
+      }
       return syncMethod.call(this.claimStore, ownerRef);
     }
 
@@ -1217,6 +1248,13 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     }
 
     return result;
+  }
+
+  private flushPendingClaimWrites(pendingWrites: readonly PendingClaimWrite[]): void {
+    if (pendingWrites.length === 0 || this.claimStore?.onClaimWrite === undefined) return;
+    for (const pendingWrite of pendingWrites) {
+      this.claimStore.onClaimWrite(pendingWrite.op, pendingWrite.claim);
+    }
   }
 
   private persistSessionFinalizersSync(

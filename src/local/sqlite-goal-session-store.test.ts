@@ -813,6 +813,10 @@ describe("session deletion finalizers", () => {
       ownerRef,
     });
     await stores.claimStore.createClaim(claim);
+    const events: Array<{ op: string; claimId: string }> = [];
+    stores.claimStore.onClaimWrite = (op, writtenClaim) => {
+      events.push({ op, claimId: writtenClaim.claimId });
+    };
     const contribution = makeContribution({ summary: "blocked drain contribution" });
     await stores.contributionStore.put(contribution);
     await store.addContributionToSession(session.id, contribution.cid);
@@ -831,6 +835,7 @@ describe("session deletion finalizers", () => {
     expect(result.blockers).toEqual([
       { finalizer: "grove.io/drain-contribs", message: "drain still busy" },
     ]);
+    expect(events).toEqual([]);
     expect((await stores.claimStore.getClaim(claim.claimId))?.status).toBe("active");
     expect(await store.getSessionContributions(session.id)).toEqual([contribution.cid]);
     const fetched = await store.getSession(session.id);

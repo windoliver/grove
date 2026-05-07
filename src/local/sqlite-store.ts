@@ -1883,6 +1883,13 @@ export class SqliteClaimStore implements ClaimStore {
   };
 
   releaseOwnedBySync(ownerRef: OwnerRef): number {
+    return this.releaseOwnedBySyncBuffered(ownerRef);
+  }
+
+  releaseOwnedBySyncBuffered(
+    ownerRef: OwnerRef,
+    pendingWrites?: Array<{ op: "ADDED" | "MODIFIED" | "DELETED"; claim: Claim }>,
+  ): number {
     const nowIso = new Date().toISOString();
     const rows = this.db
       .prepare(
@@ -1893,15 +1900,24 @@ export class SqliteClaimStore implements ClaimStore {
       )
       .all(nowIso, ...ownerRefBindings(ownerRef)) as readonly ClaimRow[];
 
-    if (this.onClaimWrite) {
-      for (const row of rows) this.onClaimWrite("MODIFIED", rowToClaim(row));
-    }
+    this.recordClaimWrites(
+      rows.map((row) => rowToClaim(row)),
+      "MODIFIED",
+      pendingWrites,
+    );
     return rows.length;
   }
 
   releaseOwnedBy = async (ownerRef: OwnerRef): Promise<number> => this.releaseOwnedBySync(ownerRef);
 
   deleteTerminalOwnedBySync(ownerRef: OwnerRef): number {
+    return this.deleteTerminalOwnedBySyncBuffered(ownerRef);
+  }
+
+  deleteTerminalOwnedBySyncBuffered(
+    ownerRef: OwnerRef,
+    pendingWrites?: Array<{ op: "ADDED" | "MODIFIED" | "DELETED"; claim: Claim }>,
+  ): number {
     const rows = this.db
       .prepare(
         `DELETE FROM claims
@@ -1910,9 +1926,11 @@ export class SqliteClaimStore implements ClaimStore {
       )
       .all(...ownerRefBindings(ownerRef)) as readonly ClaimRow[];
 
-    if (this.onClaimWrite) {
-      for (const row of rows) this.onClaimWrite("DELETED", rowToClaim(row));
-    }
+    this.recordClaimWrites(
+      rows.map((row) => rowToClaim(row)),
+      "DELETED",
+      pendingWrites,
+    );
     return rows.length;
   }
 
@@ -2087,6 +2105,20 @@ export class SqliteClaimStore implements ClaimStore {
       reason: "lease expired",
       message: `Cannot ${newStatus === "completed" ? "complete" : "release"} claim '${claimId}': lease expired at ${existing.leaseExpiresAt}`,
     });
+  }
+
+  private recordClaimWrites(
+    claims: readonly Claim[],
+    op: "ADDED" | "MODIFIED" | "DELETED",
+    pendingWrites?: Array<{ op: "ADDED" | "MODIFIED" | "DELETED"; claim: Claim }>,
+  ): void {
+    if (pendingWrites !== undefined) {
+      for (const claim of claims) pendingWrites.push({ op, claim });
+      return;
+    }
+    if (this.onClaimWrite) {
+      for (const claim of claims) this.onClaimWrite(op, claim);
+    }
   }
 }
 
