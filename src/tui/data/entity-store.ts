@@ -72,14 +72,14 @@ export class EntityStore<K extends WatchKind> {
     return this.informer.hasSynced();
   }
 
-  getStats(): {
-    readonly writes: number;
-    readonly version: number;
-    readonly lagSamples: readonly number[];
-  } {
+  getStats(): EntityStoreStats {
+    const q = this.informer.getQueueStats();
     return {
       writes: this.writeCounter,
       version: this.version,
+      overflows: q.overflows,
+      queueDepth: q.depth,
+      queueLimit: q.limit,
       lagSamples: [...this.lagRing],
     };
   }
@@ -145,6 +145,9 @@ export class EntityStore<K extends WatchKind> {
 export interface EntityStoreStats {
   readonly writes: number;
   readonly version: number;
+  readonly overflows: number;
+  readonly queueDepth: number;
+  readonly queueLimit: number;
   readonly lagSamples: readonly number[];
 }
 
