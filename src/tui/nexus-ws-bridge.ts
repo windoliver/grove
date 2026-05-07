@@ -1236,7 +1236,11 @@ export class NexusWsBridge {
       d.includes("stream closed") ||
       d.includes("session not started") ||
       d.includes("not ready") ||
-      d.includes("acp_not_initialized")
+      d.includes("acp_not_initialized") ||
+      // AcpRuntime returns this when a queued send observes its session
+      // replaced before the prompt starts. Same restart race as the others.
+      d.includes("session_closed") ||
+      d.includes("session closed before turn started")
     );
   }
 

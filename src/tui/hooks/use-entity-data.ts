@@ -96,10 +96,15 @@ export function useEntityData<K extends WatchKind>(
     // window can't reconstruct global ordering — page 2 of a desc sort
     // computed from "items 21..40 returned in server order" produces
     // "those 20 items, locally desc-sorted", not "the actual items 21..40
-    // of the global desc list". So we apply sort ONLY when the consumer
-    // didn't ask for paging (offset/limit unset). Predicate is always
-    // applied because the hook never relays it to the fetcher.
-    const isPagedFallback = opts.offset !== undefined || opts.limit !== undefined;
+    // of the global desc list". So we suppress local sort only when the
+    // consumer asked for true paging (an explicit `offset`).
+    //
+    // Bare `limit` (no offset) is just a row cap, not paging — views like
+    // ActivityPanel pass `limit=30` to mean "newest 30, however many we
+    // see locally" and still expect local sort to honor `byCreatedDesc`.
+    // Keep sort active in that case; predicate is always applied because
+    // the hook never relays it to the fetcher.
+    const isPagedFallback = opts.offset !== undefined;
     let out: readonly EntityForKind<K>[] = polled.data;
     if (opts.predicate) out = out.filter(opts.predicate);
     if (opts.sort && !isPagedFallback) out = [...out].sort(opts.sort);

@@ -543,6 +543,10 @@ export class SpawnManager {
     // can edit files, commit, push, and create PRs.
     let workspacePath: string;
     let workspaceMode!: WorkspaceMode;
+    // Hoisted out of the inner block so the spawn-failure catch can clean
+    // up the provisioned worktree even though the workspace registry path
+    // (cleanWorkspace) won't see it (no spawn record was persisted yet).
+    let provisionedWorkspacePath: string | undefined;
     {
       const groveDir = this.groveDir;
       const projectRoot = groveDir ? resolve(groveDir, "..") : process.cwd();
@@ -576,6 +580,7 @@ export class SpawnManager {
           baseBranch,
         });
         workspacePath = provisioned.path;
+        provisionedWorkspacePath = provisioned.path;
       } catch (provisionErr) {
         const reason = provisionErr instanceof Error ? provisionErr.message : String(provisionErr);
         debugLog("spawn", `workspace provisioning failed for role=${roleId}: ${reason}`);
@@ -749,13 +754,36 @@ export class SpawnManager {
         throw new Error("No agent runtime or tmux available for spawning");
       }
     } catch (spawnErr) {
-      // Roll back workspace on spawn failure
+      // Roll back workspace on spawn failure.
+      //
+      // `cleanWorkspace` is keyed off the workspace registry (getWorkspace
+      // returns undefined when there's no row) and the spawn record isn't
+      // persisted until after this catch, so the registry path can no-op.
+      // Explicitly remove the provisioned worktree path so failures here
+      // (e.g. codex isolation prep throw on disk-full / quota) don't strand
+      // an orphaned git worktree + branch on disk for later operators to
+      // discover. `git worktree remove` is preferred (cleans the parent
+      // repo's metadata too); fall back to `rm -rf` for non-worktree paths.
       if (this.provider.cleanWorkspace) {
         await safeCleanup(
           this.provider.cleanWorkspace(spawnId, spawnId),
           "rollback workspace after spawn failure",
           { silent: true },
         );
+      }
+      if (provisionedWorkspacePath) {
+        try {
+          execSync(`git worktree remove --force ${JSON.stringify(provisionedWorkspacePath)}`, {
+            stdio: "ignore",
+          });
+        } catch {
+          try {
+            const { rmSync } = await import("node:fs");
+            rmSync(provisionedWorkspacePath, { recursive: true, force: true });
+          } catch {
+            /* best-effort */
+          }
+        }
       }
       throw spawnErr;
     }
