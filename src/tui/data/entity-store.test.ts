@@ -43,6 +43,7 @@ function makeFakeInformer(): {
     hasSynced: () => synced,
     getById: (id: string) => store.get(id) as never,
     list: () => Array.from(store.values()) as never,
+    getQueueStats: () => ({ depth: 0, limit: 1000, overflows: 0 }),
   } as unknown as Informer<"Contribution">;
   return {
     informer,
@@ -237,6 +238,30 @@ describe("EntityStore — getStats / writeCounter", () => {
   });
 });
 
+describe("EntityStore — overflow + queueDepth propagation (B2)", () => {
+  test("getStats() reflects informer.getQueueStats()", () => {
+    const fake = makeFakeInformer();
+    // Override getQueueStats with a controllable stub.
+    let depth = 0;
+    let overflows = 0;
+    (fake.informer as unknown as { getQueueStats: () => unknown }).getQueueStats = () => ({
+      depth,
+      limit: 42,
+      overflows,
+    });
+    const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
+
+    expect(store.getStats().queueDepth).toBe(0);
+    expect(store.getStats().queueLimit).toBe(42);
+    expect(store.getStats().overflows).toBe(0);
+
+    depth = 7;
+    overflows = 3;
+    expect(store.getStats().queueDepth).toBe(7);
+    expect(store.getStats().overflows).toBe(3);
+  });
+});
+
 describe("EntityStore — lag ring", () => {
   test("pushes a positive sample when emittedAt is well-formed", async () => {
     const fake = makeFakeInformer();
@@ -386,6 +411,27 @@ describe("EntityStoreFactory", () => {
     expect(Object.keys(all)).toContain("Contribution");
     expect(Object.keys(all)).toContain("Claim");
     expect(all.Contribution?.writes).toBe(0);
+  });
+
+  test("getAllStats rolls up overflows + queueDepth from each kind's informer", () => {
+    const factory = new EntityStoreFactory(makeInformerFactory());
+    const cStore = factory.storeFor("Contribution");
+    const claimStore = factory.storeFor("Claim");
+
+    // Override getQueueStats on each store's underlying informer with controllable stubs.
+    (cStore as unknown as { informer: { getQueueStats: () => unknown } }).informer.getQueueStats =
+      () => ({ depth: 7, limit: 1000, overflows: 2 });
+    (
+      claimStore as unknown as { informer: { getQueueStats: () => unknown } }
+    ).informer.getQueueStats = () => ({ depth: 3, limit: 500, overflows: 5 });
+
+    const all = factory.getAllStats();
+    expect(all.Contribution?.overflows).toBe(2);
+    expect(all.Contribution?.queueDepth).toBe(7);
+    expect(all.Contribution?.queueLimit).toBe(1000);
+    expect(all.Claim?.overflows).toBe(5);
+    expect(all.Claim?.queueDepth).toBe(3);
+    expect(all.Claim?.queueLimit).toBe(500);
   });
 
   test("dispose disposes every store; idempotent", () => {
