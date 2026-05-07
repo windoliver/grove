@@ -134,11 +134,56 @@ describe("NexusSessionStore", () => {
       deletionAudit?: readonly unknown[];
     };
 
-    expect(first?.uid).toBeTruthy();
-    expect(second?.uid).toBe(first?.uid);
+    expect(first?.uid).toBe("legacy");
+    expect(second?.uid).toBe("legacy");
     expect(first?.finalizers).toEqual([]);
-    expect(raw.uid).toBe(first?.uid);
+    expect(raw.uid).toBe("legacy");
     expect(raw.finalizers).toBeUndefined();
+  });
+
+  test("legacy sessions without uid match legacy owner refs during cleanup", async () => {
+    await client.write(
+      "/zones/test-zone/sessions/legacy.json",
+      encoder.encode(
+        JSON.stringify({
+          id: "legacy",
+          goal: "legacy cleanup",
+          status: "active",
+          createdAt: "2026-05-07T00:00:00.000Z",
+          contributionCount: 0,
+        }),
+      ),
+    );
+    await claimStore.createClaim(
+      makeClaim({
+        claimId: "legacy-owned-claim",
+        targetRef: "legacy-owned-target",
+        ownerRef: { kind: "session", id: "legacy", uid: "legacy" },
+      }),
+    );
+    const store = new NexusSessionStore(client, "test-zone", { claimStore });
+
+    const fetched = await store.getSessionRecord("legacy");
+    const rawAfterRead = (await readJson(client, "/zones/test-zone/sessions/legacy.json")) as {
+      uid?: string;
+      finalizers?: readonly string[];
+    };
+    const blockers = await store.listSessionDeleteBlockers("legacy");
+    const result = await store.deleteSession("legacy");
+
+    expect(fetched?.uid).toBe("legacy");
+    expect(rawAfterRead.uid).toBe("legacy");
+    expect(rawAfterRead.finalizers).toBeUndefined();
+    expect(blockers).toEqual([
+      { finalizer: "grove.io/release-slots", message: "1 active owned claim remain" },
+    ]);
+    expect(result).toEqual({
+      sessionId: "legacy",
+      deleted: true,
+      forced: false,
+      blockers: [],
+    });
+    expect(await claimStore.getClaim("legacy-owned-claim")).toBeUndefined();
   });
 
   test("getContributions reads legacy arrays and addContribution rewrites them to v2 owner links", async () => {
@@ -206,6 +251,54 @@ describe("NexusSessionStore", () => {
     expect(
       await client.read("/zones/test-zone/contributions/blake3:session-link.json"),
     ).toBeDefined();
+  });
+
+  test("deleteSession treats a stale finalizer write after concurrent delete as idempotent", async () => {
+    const setupStore = new NexusSessionStore(client, "test-zone");
+    const session = await setupStore.createSession({ goal: "concurrent delete" });
+    const sessionPath = `/zones/test-zone/sessions/${session.id}.json`;
+    let deleteBeforeFirstFinalizerWrite = false;
+    let successfulSessionWrites = 0;
+    const wrappedClient: NexusClient = {
+      read: (path) => client.read(path),
+      readWithMeta: async (path) => {
+        const result = await client.readWithMeta(path);
+        if (path === sessionPath && result !== undefined) {
+          deleteBeforeFirstFinalizerWrite = true;
+        }
+        return result;
+      },
+      write: async (path, content, opts) => {
+        if (path === sessionPath && deleteBeforeFirstFinalizerWrite) {
+          deleteBeforeFirstFinalizerWrite = false;
+          await client.delete(path);
+        }
+        const result = await client.write(path, content, opts);
+        if (path === sessionPath) {
+          successfulSessionWrites++;
+        }
+        return result;
+      },
+      exists: (path) => client.exists(path),
+      stat: (path) => client.stat(path),
+      delete: (path) => client.delete(path),
+      list: (path, opts) => client.list(path, opts),
+      mkdir: (path, opts) => client.mkdir(path, opts),
+      search: (query, opts) => client.search(query, opts),
+      close: () => client.close(),
+    };
+    const store = new NexusSessionStore(wrappedClient, "test-zone", { claimStore });
+
+    const result = await store.deleteSession(session.id);
+
+    expect(result).toEqual({
+      sessionId: session.id,
+      deleted: true,
+      forced: false,
+      blockers: [],
+    });
+    expect(successfulSessionWrites).toBe(0);
+    expect(await client.read(sessionPath)).toBeUndefined();
   });
 
   test("deleteSession keeps deletionTimestamp and failed/later finalizers when closeRuntime blocks", async () => {

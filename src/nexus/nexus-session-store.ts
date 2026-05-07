@@ -25,6 +25,7 @@ import type {
 } from "../core/session.js";
 import type { ClaimStore } from "../core/store.js";
 import type { NexusClient } from "./client.js";
+import { NexusConflictError } from "./errors.js";
 import { NexusClaimStore } from "./nexus-claim-store.js";
 
 const encoder = new TextEncoder();
@@ -47,6 +48,11 @@ interface ContributionSidecarV2 {
 interface LoadedContributionLinks {
   readonly items: readonly SessionContributionLink[];
   readonly isLegacy: boolean;
+}
+
+interface PersistedSessionRecordWithEtag {
+  readonly persisted: PersistedSessionRecord;
+  readonly etag: string;
 }
 
 export interface NexusSessionStoreOptions {
@@ -76,6 +82,16 @@ function isKnownSessionFinalizer(finalizer: string): finalizer is KnownFinalizer
 
 function forceWarning(sessionId: string): string {
   return `force delete skipped finalizer waits for session ${sessionId}`;
+}
+
+function isCasConflict(error: unknown): boolean {
+  return (
+    error instanceof NexusConflictError ||
+    (typeof error === "object" &&
+      error !== null &&
+      "name" in error &&
+      error.name === "StateConflictError")
+  );
 }
 
 function isSessionContributionLink(value: unknown): value is SessionContributionLink {
@@ -129,7 +145,7 @@ export class NexusSessionStore implements SessionStore {
     readonly session: Session;
     readonly needsUidBackfill: boolean;
   } {
-    const uid = session.uid ?? this.legacyUidBySessionId.get(session.id) ?? randomUUID();
+    const uid = session.uid ?? this.legacyUidBySessionId.get(session.id) ?? session.id;
     this.legacyUidBySessionId.set(session.id, uid);
     const finalizers = normalizeSessionFinalizers(session.finalizers);
     const deletionAudit = session.deletionAudit ?? [];
@@ -144,8 +160,16 @@ export class NexusSessionStore implements SessionStore {
     return { session: normalized, needsUidBackfill: session.uid !== uid };
   }
 
-  private async writeSessionRecord(session: Session): Promise<void> {
-    await this.client.write(this.sessionPath(session.id), encoder.encode(JSON.stringify(session)));
+  private async writeSessionRecord(
+    session: Session,
+    options?: { readonly ifMatch?: string | undefined },
+  ): Promise<string> {
+    const result = await this.client.write(
+      this.sessionPath(session.id),
+      encoder.encode(JSON.stringify(session)),
+      options,
+    );
+    return result.etag;
   }
 
   private async readPersistedSessionRecord(
@@ -157,6 +181,35 @@ export class NexusSessionStore implements SessionStore {
       return JSON.parse(decoder.decode(data)) as PersistedSessionRecord;
     } catch {
       return undefined;
+    }
+  }
+
+  private async readPersistedSessionRecordWithEtag(
+    id: string,
+  ): Promise<PersistedSessionRecordWithEtag | undefined> {
+    try {
+      const data = await this.client.readWithMeta(this.sessionPath(id));
+      if (data === undefined) return undefined;
+      return {
+        persisted: JSON.parse(decoder.decode(data.content)) as PersistedSessionRecord,
+        etag: data.etag,
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async writeDeleteStateSessionRecord(
+    session: Session,
+    expectedEtag: string,
+  ): Promise<string | undefined> {
+    try {
+      return await this.writeSessionRecord(session, { ifMatch: expectedEtag });
+    } catch (error) {
+      if (!isCasConflict(error)) throw error;
+      const latest = await this.readPersistedSessionRecordWithEtag(session.id);
+      if (latest === undefined) return undefined;
+      throw error;
     }
   }
 
@@ -257,19 +310,20 @@ export class NexusSessionStore implements SessionStore {
    * contribution sidecar read keeps that hot path O(1) in session size.
    */
   async getSessionRecord(id: string): Promise<Session | undefined> {
-    const persisted = await this.readPersistedSessionRecord(id);
-    if (persisted === undefined) return undefined;
-    const normalized = this.normalizeSessionRecord(persisted);
+    const loaded = await this.readPersistedSessionRecordWithEtag(id);
+    if (loaded === undefined) return undefined;
+    const normalized = this.normalizeSessionRecord(loaded.persisted);
     if (normalized.needsUidBackfill) {
       try {
         await this.client.write(
           this.sessionPath(id),
           encoder.encode(
             JSON.stringify({
-              ...persisted,
+              ...loaded.persisted,
               uid: normalized.session.uid,
             }),
           ),
+          { ifMatch: loaded.etag },
         );
       } catch {
         // Preserve a stable in-memory uid even if a legacy rewrite fails.
@@ -289,9 +343,17 @@ export class NexusSessionStore implements SessionStore {
     id: string,
     updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason" | "stopStatus">>,
   ): Promise<void> {
-    const existing = await this.getSessionRecord(id);
-    if (!existing) return;
-    await this.writeSessionRecord({ ...existing, ...updates });
+    const loaded = await this.readPersistedSessionRecordWithEtag(id);
+    if (loaded === undefined) return;
+    const existing = this.normalizeSessionRecord(loaded.persisted).session;
+    try {
+      await this.writeSessionRecord({ ...existing, ...updates }, { ifMatch: loaded.etag });
+    } catch (error) {
+      if (!isCasConflict(error)) throw error;
+      const latest = await this.readPersistedSessionRecordWithEtag(id);
+      if (latest === undefined) return;
+      throw error;
+    }
   }
 
   async listSessions(query?: SessionQuery): Promise<readonly Session[]> {
@@ -319,8 +381,8 @@ export class NexusSessionStore implements SessionStore {
   }
 
   async deleteSession(id: string, options?: SessionDeleteOptions): Promise<SessionDeleteResult> {
-    const persisted = await this.readPersistedSessionRecord(id);
-    if (persisted === undefined) {
+    const loaded = await this.readPersistedSessionRecordWithEtag(id);
+    if (loaded === undefined) {
       return {
         sessionId: id,
         deleted: false,
@@ -328,6 +390,8 @@ export class NexusSessionStore implements SessionStore {
         blockers: [{ finalizer: Finalizer.ReleaseSlots, message: "session not found" }],
       };
     }
+    const persisted = loaded.persisted;
+    let currentEtag = loaded.etag;
     const session = this.normalizeSessionRecord(persisted).session;
 
     const ownerRef = ownerRefForSession(session);
@@ -346,7 +410,16 @@ export class NexusSessionStore implements SessionStore {
           warning,
         }),
       };
-      await this.writeSessionRecord(terminating);
+      const terminatingEtag = await this.writeDeleteStateSessionRecord(terminating, currentEtag);
+      if (terminatingEtag === undefined) {
+        return {
+          sessionId: id,
+          deleted: true,
+          forced: true,
+          blockers: [],
+          warning,
+        };
+      }
 
       const claimStore = await this.getClaimStore();
       const cleanupErrors: string[] = [];
@@ -383,7 +456,16 @@ export class NexusSessionStore implements SessionStore {
       deletionTimestamp,
       deletionAudit: session.deletionAudit ?? [],
     };
-    await this.writeSessionRecord(current);
+    const initialDeleteEtag = await this.writeDeleteStateSessionRecord(current, currentEtag);
+    if (initialDeleteEtag === undefined) {
+      return {
+        sessionId: id,
+        deleted: true,
+        forced: false,
+        blockers: [],
+      };
+    }
+    currentEtag = initialDeleteEtag;
 
     const claimStore = await this.getClaimStore();
     for (const finalizer of DEFAULT_SESSION_FINALIZERS) {
@@ -416,7 +498,16 @@ export class NexusSessionStore implements SessionStore {
         ...current,
         finalizers: current.finalizers.filter((value) => value !== finalizer),
       };
-      await this.writeSessionRecord(current);
+      const nextEtag = await this.writeDeleteStateSessionRecord(current, currentEtag);
+      if (nextEtag === undefined) {
+        return {
+          sessionId: id,
+          deleted: true,
+          forced: false,
+          blockers: [],
+        };
+      }
+      currentEtag = nextEtag;
     }
 
     if (current.finalizers.length > 0) {
