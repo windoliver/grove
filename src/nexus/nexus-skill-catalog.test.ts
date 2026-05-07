@@ -515,6 +515,89 @@ describe("resolveNexusSkillCatalogRoot", () => {
     }
   });
 
+  test("redacts Nexus URLs from fallback warnings and required errors", async () => {
+    const root = mkdtempSync(join(tmpdir(), "grove-nexus-skills-"));
+    const client = new MockNexusClient();
+    const keys = signingFixture();
+    const secretUrl = "https://user:secret@nexus.example/api/v2/files/read?token=abc#frag";
+    try {
+      client.read = async (_path: string): Promise<Uint8Array | undefined> => {
+        throw new Error(`Failed to connect to Nexus at ${secretUrl}: boom`);
+      };
+      const localSkill = join(root, "local", "grove");
+      mkdirSync(localSkill, { recursive: true });
+      writeFileSync(join(localSkill, "SKILL.md"), "local-skill", "utf-8");
+      const trustedKeys = [
+        {
+          id: keys.keyId,
+          algorithm: "ed25519" as const,
+          publicKeySpkiDer: keys.publicKeySpkiDer,
+        },
+      ];
+
+      const fallback = await resolveNexusSkillCatalogRoot({
+        client,
+        zoneId: "zone1",
+        cacheRoot: join(root, ".grove", "cache", "skills"),
+        skills: ["grove"],
+        policy: "warn-and-fallback",
+        trustedKeys,
+        localFallbackRoots: [join(root, "local")],
+      });
+      const warningReason = fallback.warnings[0]?.reason ?? "";
+
+      expect(fallback.source).toBe("local");
+      expect(warningReason).toContain("https://nexus.example/[redacted]");
+      expect(warningReason).not.toContain("user:secret");
+      expect(warningReason).not.toContain("token=abc");
+      expect(warningReason).not.toContain("/api/v2/files/read");
+
+      let requiredMessage = "";
+      try {
+        await resolveNexusSkillCatalogRoot({
+          client,
+          zoneId: "zone1",
+          cacheRoot: join(root, ".grove", "cache", "required-skills"),
+          skills: ["grove"],
+          policy: "required",
+          trustedKeys,
+          localFallbackRoots: [join(root, "local")],
+        });
+      } catch (error) {
+        requiredMessage = error instanceof Error ? error.message : String(error);
+      }
+
+      expect(requiredMessage).toContain("https://nexus.example/[redacted]");
+      expect(requiredMessage).not.toContain("user:secret");
+      expect(requiredMessage).not.toContain("token=abc");
+      expect(requiredMessage).not.toContain("/api/v2/files/read");
+
+      let noFallbackCauseMessage = "";
+      try {
+        await resolveNexusSkillCatalogRoot({
+          client,
+          zoneId: "zone1",
+          cacheRoot: join(root, ".grove", "cache", "no-fallback-skills"),
+          skills: ["grove"],
+          policy: "warn-and-fallback",
+          trustedKeys,
+          localFallbackRoots: [],
+        });
+      } catch (error) {
+        if (error instanceof Error && error.cause instanceof Error) {
+          noFallbackCauseMessage = error.cause.message;
+        }
+      }
+
+      expect(noFallbackCauseMessage).toContain("https://nexus.example/[redacted]");
+      expect(noFallbackCauseMessage).not.toContain("user:secret");
+      expect(noFallbackCauseMessage).not.toContain("token=abc");
+      expect(noFallbackCauseMessage).not.toContain("/api/v2/files/read");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("failed local fallback copy preserves existing resolved root", async () => {
     const root = mkdtempSync(join(tmpdir(), "grove-nexus-skills-"));
     const client = new MockNexusClient();

@@ -75,6 +75,7 @@ interface SkillBundleMarker {
 const COMPLETION_MARKER = ".grove-skill-bundle.json";
 const decoder = new TextDecoder();
 const segmentEncoder = new TextEncoder();
+const URL_PATTERN = /\bhttps?:\/\/[^\s"'<>]+/gi;
 
 function safePathSegment(value: string): string {
   const bytes = segmentEncoder.encode(value);
@@ -122,11 +123,45 @@ function catalogCacheSignaturePath(cacheRoot: string): string {
   return join(catalogCacheCurrentDir(cacheRoot), "index.sig");
 }
 
+function redactUrlMatch(raw: string): string {
+  let candidate = raw;
+  let suffix = "";
+  while (candidate.length > 0) {
+    try {
+      const url = new URL(candidate);
+      const needsRedaction =
+        url.username.length > 0 ||
+        url.password.length > 0 ||
+        (url.pathname.length > 0 && url.pathname !== "/") ||
+        url.search.length > 0 ||
+        url.hash.length > 0;
+      if (!needsRedaction) return `${url.protocol}//${url.host}${suffix}`;
+      return `${url.protocol}//${url.host}/[redacted]${suffix}`;
+    } catch {
+      suffix = `${candidate[candidate.length - 1]}${suffix}`;
+      candidate = candidate.slice(0, -1);
+    }
+  }
+  return `[redacted-url]${suffix}`;
+}
+
+function redactSensitiveText(text: string): string {
+  return text.replace(URL_PATTERN, redactUrlMatch);
+}
+
 function reasonFromError(error: unknown): string {
   if (error instanceof Error) {
-    return error.message;
+    return redactSensitiveText(error.message);
   }
-  return String(error);
+  return redactSensitiveText(String(error));
+}
+
+function safeSurfaceError(error: unknown): Error {
+  const reason = reasonFromError(error);
+  if (error instanceof SkillCatalogTrustError) {
+    return new SkillCatalogTrustError(reason);
+  }
+  return new SkillCatalogUnavailableError(reason);
 }
 
 function fallbackWarnings(
@@ -543,7 +578,7 @@ export async function resolveNexusSkillCatalogRoot(
     return await resolveFromNexus(opts);
   } catch (error) {
     if (opts.policy === "required") {
-      throw error;
+      throw safeSurfaceError(error);
     }
 
     const cached = await tryVerifiedCache(opts);
@@ -564,7 +599,7 @@ export async function resolveNexusSkillCatalogRoot(
 
     throw new SkillCatalogUnavailableError(
       "Nexus skill catalog is unavailable and no verified cache or local fallback could resolve requested skills",
-      { cause: error },
+      { cause: safeSurfaceError(error) },
     );
   }
 }
