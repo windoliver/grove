@@ -122,6 +122,35 @@ describe("buildAcpLaunchArgs", () => {
     ]);
   });
 
+  test("skips codex MCP argv overrides when CODEX_HOME config is authoritative", () => {
+    expect(
+      buildAcpLaunchArgs(
+        codexLaunch,
+        {
+          model: "gpt-5.4-mini",
+          command: "codex --full-auto",
+          mcpServers: [
+            {
+              name: "grove",
+              command: "/Users/example/.bun/bin/bun",
+              args: ["run", "/tmp/grove/dist/mcp/serve.js"],
+              env: { GROVE_DIR: "/tmp/grove/.grove" },
+            },
+          ],
+        },
+        { GROVE_CODEX_WRITE_MCP_CONFIG: "1" },
+      ),
+    ).toEqual([
+      "codex-acp.js",
+      "-c",
+      'model="gpt-5.4-mini"',
+      "-c",
+      'sandbox_mode="danger-full-access"',
+      "-c",
+      'approval_policy="never"',
+    ]);
+  });
+
   test("does not pass codex config flags to non-codex adapters", () => {
     expect(
       buildAcpLaunchArgs(
