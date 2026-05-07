@@ -74,10 +74,16 @@ export const ActivityView: React.NamedExoticComponent<ActivityProps> = React.mem
       [onContributionsLoaded],
     );
 
+    // Pagination is applied EXACTLY ONCE inside EntityView via offset+limit.
+    // The provider call therefore over-fetches `pageOffset + pageSize` items
+    // starting from 0 (no provider-level offset) so EntityView's slice can
+    // page within the returned window. If we asked the provider to also
+    // page, applyEntityShape inside useEntityData's polled branch would
+    // re-slice the already-paged list — pageOffset>0 would render empty.
     const fallbackFetcher = useCallback(async (): Promise<readonly ContributionEntity[]> => {
-      const items = await provider.getActivity({ limit: pageSize, offset: pageOffset });
+      const items = await provider.getActivity({ limit: pageOffset + pageSize });
       return items.map((c) => contributionToEntity(c, NAMESPACE));
-    }, [provider, pageSize, pageOffset]);
+    }, [provider, pageOffset, pageSize]);
 
     return (
       <box flexDirection="column">
