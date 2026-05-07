@@ -806,6 +806,13 @@ describe("session deletion finalizers", () => {
 
   it("deleteSession keeps failed and later finalizers after an earlier finalizer fails", async () => {
     const session = await store.createSession({ goal: "blocked drain" });
+    const ownerRef = { kind: "session" as const, id: session.id, uid: session.uid };
+    const claim = makeClaim({
+      claimId: "blocked-drain-claim",
+      targetRef: "blocked-drain-target",
+      ownerRef,
+    });
+    await stores.claimStore.createClaim(claim);
     const contribution = makeContribution({ summary: "blocked drain contribution" });
     await stores.contributionStore.put(contribution);
     await store.addContributionToSession(session.id, contribution.cid);
@@ -824,8 +831,14 @@ describe("session deletion finalizers", () => {
     expect(result.blockers).toEqual([
       { finalizer: "grove.io/drain-contribs", message: "drain still busy" },
     ]);
+    expect((await stores.claimStore.getClaim(claim.claimId))?.status).toBe("active");
+    expect(await store.getSessionContributions(session.id)).toEqual([contribution.cid]);
     const fetched = await store.getSession(session.id);
-    expect(fetched?.finalizers).toEqual(["grove.io/drain-contribs", "grove.io/close-runtime"]);
+    expect(fetched?.finalizers).toEqual([
+      "grove.io/release-slots",
+      "grove.io/drain-contribs",
+      "grove.io/close-runtime",
+    ]);
     stores.db.run("DROP TRIGGER fail_session_drain");
   });
 

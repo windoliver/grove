@@ -946,7 +946,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     }
 
     const ownerRef = ownerRefForSession(session);
-    const finalizers = normalizeSessionFinalizers(session.finalizers);
+    const startingFinalizers = normalizeSessionFinalizers(session.finalizers);
     if (options?.force === true) {
       const warning = forceWarning(id);
       const now = new Date().toISOString();
@@ -991,12 +991,13 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
 
     await this.getClaimStore();
     const deletionTimestamp = session.deletionTimestamp ?? new Date().toISOString();
+    const remainingFinalizers = [...startingFinalizers];
     const closeRuntimePending =
-      this.closeRuntime !== undefined && finalizers.includes(Finalizer.CloseRuntime);
+      this.closeRuntime !== undefined && startingFinalizers.includes(Finalizer.CloseRuntime);
     try {
-      this.runSessionDeleteTransaction(id, deletionTimestamp, finalizers, () => {
+      this.runSessionDeleteTransaction(id, deletionTimestamp, remainingFinalizers, () => {
         for (const finalizer of DEFAULT_SESSION_FINALIZERS) {
-          if (!finalizers.includes(finalizer)) continue;
+          if (!remainingFinalizers.includes(finalizer)) continue;
           if (closeRuntimePending && finalizer === Finalizer.CloseRuntime) break;
 
           try {
@@ -1011,7 +1012,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
             throw new SessionDeleteFinalizerError(finalizer, message);
           }
 
-          this.persistSessionFinalizersSync(id, deletionTimestamp, finalizers, finalizer);
+          this.persistSessionFinalizersSync(id, deletionTimestamp, remainingFinalizers, finalizer);
         }
 
         if (!closeRuntimePending) {
@@ -1020,14 +1021,13 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
       });
     } catch (err) {
       if (!(err instanceof SessionDeleteFinalizerError)) throw err;
-      const remainingFinalizers = finalizers.slice(finalizers.indexOf(err.finalizer));
       this.db
         .prepare(
           `UPDATE sessions
            SET finalizers_json = ?, deletion_timestamp = COALESCE(deletion_timestamp, ?)
            WHERE session_id = ?`,
         )
-        .run(JSON.stringify(remainingFinalizers), deletionTimestamp, id);
+        .run(JSON.stringify(startingFinalizers), deletionTimestamp, id);
       return {
         sessionId: id,
         deleted: false,
@@ -1037,13 +1037,13 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     }
 
     if (closeRuntimePending) {
-      const remainingFinalizers = finalizers.slice(finalizers.indexOf(Finalizer.CloseRuntime));
+      const runtimeFinalizers = [...remainingFinalizers];
 
       try {
         await this.closeRuntime?.({
           ...session,
           deletionTimestamp,
-          finalizers: remainingFinalizers,
+          finalizers: runtimeFinalizers,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -1053,7 +1053,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
              SET finalizers_json = ?, deletion_timestamp = COALESCE(deletion_timestamp, ?)
              WHERE session_id = ?`,
           )
-          .run(JSON.stringify(remainingFinalizers), deletionTimestamp, id);
+          .run(JSON.stringify(runtimeFinalizers), deletionTimestamp, id);
         return {
           sessionId: id,
           deleted: false,
@@ -1062,11 +1062,11 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
         };
       }
 
-      this.runSessionDeleteTransaction(id, deletionTimestamp, finalizers, () => {
+      this.runSessionDeleteTransaction(id, deletionTimestamp, remainingFinalizers, () => {
         this.persistSessionFinalizersSync(
           id,
           deletionTimestamp,
-          finalizers,
+          remainingFinalizers,
           Finalizer.CloseRuntime,
         );
         this.db.prepare("DELETE FROM sessions WHERE session_id = ?").run(id);
