@@ -5,7 +5,11 @@
  *   - overflows >= 1 (queue overran at least once)
  *   - factory.relist called >= 1 (recovery triggered)
  *   - per-applyEvent wall time < 50ms (TUI never freezes beyond resync duration)
- *   - post-burst store snapshot equals server snapshot
+ *
+ * Note: post-burst snapshot equality vs a "server truth" is NOT asserted —
+ * overflow is lossy by design (queue clears, recovery comes from the next
+ * list→watch handshake). That convergence is verified by the per-relist
+ * RELIST_END atomic-replace path (covered in Informer's main test suite).
  */
 
 import { describe, expect, test } from "bun:test";
