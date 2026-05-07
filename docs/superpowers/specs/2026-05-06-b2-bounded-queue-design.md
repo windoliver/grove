@@ -106,19 +106,34 @@ private async enqueueControl(e: WatchClientEvent): Promise<void> {
 private scheduleDrain(): void {
   if (this.flushScheduled) return;
   this.flushScheduled = true;
-  queueMicrotask(() => this.drain());
+  queueMicrotask(() => {
+    void this.drain();
+  });
 }
 
 private async drain(): Promise<void> {
-  this.flushScheduled = false;
-  if (this.queue.size === 0) return;
-  const pending = this.queue;
-  this.queue = new Map();
-  for (const ev of pending.values()) {
-    await this.applyEvent(ev);
+  // Hold flushScheduled=true for the drain's full lifetime so events that
+  // arrive during an `await applyEvent(...)` accumulate in `this.queue`
+  // without scheduling a second microtask. The loop sweeps them on its
+  // next iteration, preserving the serialized-fanout invariant — only
+  // one drain runs at a time, which is required because applyEvent
+  // mutates shared state (this.store, this.staging) and dispatches
+  // handlers that themselves may await.
+  try {
+    while (this.queue.size > 0) {
+      const pending = this.queue;
+      this.queue = new Map();
+      for (const ev of pending.values()) {
+        await this.applyEvent(ev);
+      }
+    }
+  } finally {
+    this.flushScheduled = false;
   }
 }
 ```
+
+> **Drain re-entry note:** an earlier draft had `flushScheduled = false` at the top of `drain()`, which would let a delta arriving during `await applyEvent(...)` schedule a second microtask. Two drains running concurrently would race on `this.store`/`this.staging` and break the serialized-fanout guarantee that an existing test asserts. The loop pattern above keeps a single drain in flight while still draining all queued events.
 
 `isControlEvent`: `op in {RELIST_BEGIN, RELIST, RELIST_END, RELIST_ABORTED}`. (BOOKMARK is consumed inside `WatchClient` for cursor-advance and never reaches `Informer`.) `RELIST` is treated as a control op even though it carries an entity, because snapshot rows must land in `staging`, not the in-flight delta queue — draining first is a cheap no-op when the server respects the BEGIN→END ordering.
 
