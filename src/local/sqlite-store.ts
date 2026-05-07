@@ -586,6 +586,28 @@ export function initSqliteDb(dbPath: string): Database {
       if (scCols.length > 0 && !new Set(scCols.map((c) => c.name)).has("owner_ref_json")) {
         db.run("ALTER TABLE session_contributions ADD COLUMN owner_ref_json TEXT");
       }
+      if (scCols.length > 0) {
+        db.run(`
+          UPDATE session_contributions
+          SET owner_ref_json = json_object(
+            'kind', 'session',
+            'id', session_id,
+            'uid', (
+              SELECT sessions.uid
+              FROM sessions
+              WHERE sessions.session_id = session_contributions.session_id
+            )
+          )
+          WHERE (owner_ref_json IS NULL OR owner_ref_json = '')
+            AND EXISTS (
+              SELECT 1
+              FROM sessions
+              WHERE sessions.session_id = session_contributions.session_id
+                AND sessions.uid IS NOT NULL
+                AND sessions.uid <> ''
+            )
+        `);
+      }
     }
 
     db.run("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)", [
@@ -754,13 +776,15 @@ export function createSqliteStores(
   close: () => void;
 } {
   const db = initSqliteDb(dbPath);
+  const contributionStore = new SqliteContributionStore(db);
+  const claimStore = new SqliteClaimStore(db);
   return {
     db,
-    contributionStore: new SqliteContributionStore(db),
-    claimStore: new SqliteClaimStore(db),
+    contributionStore,
+    claimStore,
     bountyStore: new SqliteBountyStore(db),
     outcomeStore: new SqliteOutcomeStore(db),
-    goalSessionStore: new SqliteGoalSessionStore(db),
+    goalSessionStore: new SqliteGoalSessionStore(db, { claimStore }),
     handoffStore: new SqliteHandoffStore(db, opts?.sessionId),
     idempotencyStore: new SqliteIdempotencyStore(db),
     close: () => {
@@ -1504,6 +1528,13 @@ export class SqliteContributionStore implements ContributionStore {
 const CLAIM_SELECT_COLS = `claim_id, target_ref, agent_id, status, intent_summary,
   created_at, heartbeat_at, lease_expires_at, context_json, owner_ref_json, finalizers_json,
   deletion_timestamp, agent_json, attempt_count, revision`;
+const OWNER_REF_PREDICATE = `json_extract(owner_ref_json, '$.kind') = ?
+  AND json_extract(owner_ref_json, '$.id') = ?
+  AND json_extract(owner_ref_json, '$.uid') = ?`;
+
+function ownerRefBindings(ownerRef: OwnerRef): readonly [string, string, string] {
+  return [ownerRef.kind, ownerRef.id, ownerRef.uid];
+}
 
 /**
  * SQLite-backed ClaimStore with lease-based coordination.
@@ -1838,8 +1869,8 @@ export class SqliteClaimStore implements ClaimStore {
       params.push(query.targetRef);
     }
     if (query?.ownerRef !== undefined) {
-      sql += " AND owner_ref_json = ?";
-      params.push(JSON.stringify(query.ownerRef));
+      sql += ` AND ${OWNER_REF_PREDICATE}`;
+      params.push(...ownerRefBindings(query.ownerRef));
     }
 
     sql += " ORDER BY created_at DESC";
@@ -1853,10 +1884,10 @@ export class SqliteClaimStore implements ClaimStore {
       .prepare(
         `UPDATE claims
          SET status = 'released', heartbeat_at = ?, revision = revision + 1
-         WHERE status = 'active' AND owner_ref_json = ?
+         WHERE status = 'active' AND ${OWNER_REF_PREDICATE}
          RETURNING ${CLAIM_SELECT_COLS}`,
       )
-      .all(nowIso, JSON.stringify(ownerRef)) as readonly ClaimRow[];
+      .all(nowIso, ...ownerRefBindings(ownerRef)) as readonly ClaimRow[];
 
     if (this.onClaimWrite) {
       for (const row of rows) this.onClaimWrite("MODIFIED", rowToClaim(row));
@@ -1868,10 +1899,10 @@ export class SqliteClaimStore implements ClaimStore {
     const rows = this.db
       .prepare(
         `DELETE FROM claims
-         WHERE status IN ('completed', 'expired', 'released') AND owner_ref_json = ?
+         WHERE status IN ('completed', 'expired', 'released') AND ${OWNER_REF_PREDICATE}
          RETURNING ${CLAIM_SELECT_COLS}`,
       )
-      .all(JSON.stringify(ownerRef)) as readonly ClaimRow[];
+      .all(...ownerRefBindings(ownerRef)) as readonly ClaimRow[];
 
     if (this.onClaimWrite) {
       for (const row of rows) this.onClaimWrite("DELETED", rowToClaim(row));

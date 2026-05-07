@@ -547,6 +547,71 @@ describe("schema migration", () => {
     }
   });
 
+  test("v14 migration backfills session contribution owner refs", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-migration-"));
+    const dbPath = join(dir, "test.db");
+    try {
+      const db = new Database(dbPath);
+      db.run("PRAGMA journal_mode = WAL");
+      db.run("PRAGMA foreign_keys = ON");
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
+          session_id TEXT PRIMARY KEY,
+          goal TEXT,
+          config_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'active',
+          started_at TEXT NOT NULL,
+          archived_at INTEGER,
+          contribution_count INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS session_contributions (
+          session_id TEXT NOT NULL,
+          cid TEXT NOT NULL,
+          added_at TEXT NOT NULL,
+          PRIMARY KEY (session_id, cid)
+        );
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+        VALUES (13, '2026-01-01T00:00:00Z');
+      `);
+      db.run(
+        `INSERT INTO sessions (session_id, goal, config_json, status, started_at, contribution_count)
+         VALUES (?, ?, '{}', 'active', ?, 1)`,
+        ["legacy-session", "legacy goal", new Date().toISOString()],
+      );
+      db.run(
+        `INSERT INTO session_contributions (session_id, cid, added_at)
+         VALUES (?, ?, ?)`,
+        ["legacy-session", "blake3:legacy", new Date().toISOString()],
+      );
+      db.close();
+
+      const migrated = initSqliteDb(dbPath);
+      const session = migrated
+        .prepare("SELECT uid FROM sessions WHERE session_id = ?")
+        .get("legacy-session") as { uid: string } | null;
+      const link = migrated
+        .prepare(
+          "SELECT owner_ref_json FROM session_contributions WHERE session_id = ? AND cid = ?",
+        )
+        .get("legacy-session", "blake3:legacy") as { owner_ref_json: string | null } | null;
+
+      expect(session?.uid).toBeTruthy();
+      expect(link?.owner_ref_json).toBeTruthy();
+      expect(JSON.parse(link?.owner_ref_json ?? "{}")).toEqual({
+        kind: "session",
+        id: "legacy-session",
+        uid: session?.uid,
+      });
+
+      migrated.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("backfill does not duplicate tags on re-open", async () => {
     const dir = await mkdtemp(join(tmpdir(), "sqlite-migration-"));
     const dbPath = join(dir, "test.db");

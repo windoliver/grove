@@ -508,10 +508,29 @@ function listRowToSession(row: SessionListRow): Session {
 
 export interface SqliteGoalSessionStoreOptions {
   readonly closeRuntime?: (session: Session) => Promise<void>;
+  readonly claimStore?:
+    | {
+        releaseOwnedBy(ownerRef: OwnerRef): Promise<number>;
+        deleteTerminalOwnedBy(ownerRef: OwnerRef): Promise<number>;
+      }
+    | undefined;
+}
+
+interface ClaimCleanupStore {
+  releaseOwnedBy(ownerRef: OwnerRef): Promise<number>;
+  deleteTerminalOwnedBy(ownerRef: OwnerRef): Promise<number>;
 }
 
 function ownerRefForSession(session: Session): OwnerRef {
   return { kind: "session", id: session.id, uid: session.uid };
+}
+
+const OWNER_REF_PREDICATE = `json_extract(owner_ref_json, '$.kind') = ?
+  AND json_extract(owner_ref_json, '$.id') = ?
+  AND json_extract(owner_ref_json, '$.uid') = ?`;
+
+function ownerRefBindings(ownerRef: OwnerRef): readonly [string, string, string] {
+  return [ownerRef.kind, ownerRef.id, ownerRef.uid];
 }
 
 function forceWarning(sessionId: string): string {
@@ -522,6 +541,7 @@ function forceWarning(sessionId: string): string {
 export class SqliteGoalSessionStore implements GoalSessionStore {
   readonly db: Database;
   private readonly closeRuntime: ((session: Session) => Promise<void>) | undefined;
+  private claimStore: ClaimCleanupStore | undefined;
 
   // Prepared statements (lazy init)
   private stmtGetGoal: Statement | undefined;
@@ -539,6 +559,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
   constructor(db: Database, options?: SqliteGoalSessionStoreOptions) {
     this.db = db;
     this.closeRuntime = options?.closeRuntime;
+    this.claimStore = options?.claimStore;
     db.exec(GOAL_SESSION_DDL);
   }
 
@@ -923,8 +944,8 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
         .run(now, JSON.stringify(audit), id);
 
       try {
-        this.releaseOwnedClaims(ownerRef);
-        this.deleteTerminalOwnedClaims(ownerRef);
+        await this.releaseOwnedClaims(ownerRef);
+        await this.deleteTerminalOwnedClaims(ownerRef);
       } catch (err) {
         cleanupErrors.push(err instanceof Error ? err.message : String(err));
       }
@@ -960,8 +981,8 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
 
       try {
         if (finalizer === Finalizer.ReleaseSlots) {
-          this.releaseOwnedClaims(ownerRef);
-          this.deleteTerminalOwnedClaims(ownerRef);
+          await this.releaseOwnedClaims(ownerRef);
+          await this.deleteTerminalOwnedClaims(ownerRef);
         } else if (finalizer === Finalizer.DrainContribs) {
           this.deleteSessionContributionLinks(id);
         } else if (finalizer === Finalizer.CloseRuntime) {
@@ -1065,26 +1086,14 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     return result.changes;
   }
 
-  private releaseOwnedClaims(ownerRef: OwnerRef): number {
-    const nowIso = new Date().toISOString();
-    const result = this.db
-      .prepare(
-        `UPDATE claims
-         SET status = 'released', heartbeat_at = ?, revision = revision + 1
-         WHERE status = 'active' AND owner_ref_json = ?`,
-      )
-      .run(nowIso, JSON.stringify(ownerRef));
-    return result.changes;
+  private async releaseOwnedClaims(ownerRef: OwnerRef): Promise<number> {
+    const claimStore = await this.getClaimStore();
+    return claimStore.releaseOwnedBy(ownerRef);
   }
 
-  private deleteTerminalOwnedClaims(ownerRef: OwnerRef): number {
-    const result = this.db
-      .prepare(
-        `DELETE FROM claims
-         WHERE status IN ('completed', 'expired', 'released') AND owner_ref_json = ?`,
-      )
-      .run(JSON.stringify(ownerRef));
-    return result.changes;
+  private async deleteTerminalOwnedClaims(ownerRef: OwnerRef): Promise<number> {
+    const claimStore = await this.getClaimStore();
+    return claimStore.deleteTerminalOwnedBy(ownerRef);
   }
 
   private deleteSessionContributionLinks(sessionId: string): number {
@@ -1097,9 +1106,10 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
   private countActiveOwnedClaims(ownerRef: OwnerRef): number {
     const row = this.db
       .prepare(
-        "SELECT COUNT(*) AS count FROM claims WHERE status = 'active' AND owner_ref_json = ?",
+        `SELECT COUNT(*) AS count FROM claims
+         WHERE status = 'active' AND ${OWNER_REF_PREDICATE}`,
       )
-      .get(JSON.stringify(ownerRef)) as { count: number } | null;
+      .get(...ownerRefBindings(ownerRef)) as { count: number } | null;
     return row?.count ?? 0;
   }
 
@@ -1108,6 +1118,14 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
       .prepare("SELECT COUNT(*) AS count FROM session_contributions WHERE session_id = ?")
       .get(sessionId) as { count: number } | null;
     return row?.count ?? 0;
+  }
+
+  private async getClaimStore(): Promise<ClaimCleanupStore> {
+    if (this.claimStore !== undefined) return this.claimStore;
+    const { SqliteClaimStore } = await import("./sqlite-store.js");
+    const claimStore = new SqliteClaimStore(this.db);
+    this.claimStore = claimStore;
+    return claimStore;
   }
 
   // -----------------------------------------------------------------------

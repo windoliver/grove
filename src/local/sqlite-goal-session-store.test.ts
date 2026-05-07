@@ -748,6 +748,36 @@ describe("session deletion finalizers", () => {
     expect(result.warning).toContain("force delete skipped finalizer waits");
     expect(await blocking.getSession(session.id)).toBeUndefined();
   });
+
+  it("deleteSession emits claim write callbacks for released and deleted owned claims", async () => {
+    const session = await store.createSession({ goal: "callbacks" });
+    const ownerRef = { kind: "session" as const, id: session.id, uid: session.uid };
+    const active = makeClaim({
+      claimId: "callback-active",
+      targetRef: "callback-target-active",
+      ownerRef,
+    });
+    const terminal = makeClaim({
+      claimId: "callback-terminal",
+      targetRef: "callback-target-terminal",
+      ownerRef,
+    });
+    await stores.claimStore.createClaim(active);
+    await stores.claimStore.createClaim(terminal);
+    await stores.claimStore.release(terminal.claimId);
+
+    const events: Array<{ op: string; claimId: string }> = [];
+    stores.claimStore.onClaimWrite = (op, claim) => {
+      events.push({ op, claimId: claim.claimId });
+    };
+
+    const result = await store.deleteSession(session.id);
+
+    expect(result.deleted).toBe(true);
+    expect(events).toContainEqual({ op: "MODIFIED", claimId: active.claimId });
+    expect(events).toContainEqual({ op: "DELETED", claimId: active.claimId });
+    expect(events).toContainEqual({ op: "DELETED", claimId: terminal.claimId });
+  });
 });
 
 // ---------------------------------------------------------------------------
