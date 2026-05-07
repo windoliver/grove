@@ -532,6 +532,32 @@ export function runClaimStoreTests(
       expect(new Date(result.leaseExpiresAt).getTime()).toBeGreaterThan(beforeRenew);
     });
 
+    test("claimOrRenew updates ownerRef on same-agent renewal", async () => {
+      const initialOwner = { kind: "session" as const, id: "renew-owner-old", uid: "uid-old" };
+      const renewedOwner = { kind: "session" as const, id: "renew-owner-new", uid: "uid-new" };
+      const original = makeClaim({
+        claimId: "renew-owner-original",
+        targetRef: "renew-owner-target",
+        agent: { agentId: "agent-owner" },
+        ownerRef: initialOwner,
+      });
+      await store.createClaim(original);
+
+      const result = await store.claimOrRenew(
+        makeClaim({
+          claimId: "renew-owner-attempt",
+          targetRef: "renew-owner-target",
+          agent: { agentId: "agent-owner" },
+          ownerRef: renewedOwner,
+        }),
+      );
+      const stored = await store.getClaim(result.claimId);
+
+      expect(result.claimId).toBe("renew-owner-original");
+      expect(result.ownerRef).toEqual(renewedOwner);
+      expect(stored?.ownerRef).toEqual(renewedOwner);
+    });
+
     test("claimOrRenew respects requested lease duration on renewal", async () => {
       const original = makeClaim({
         claimId: "renew-duration",

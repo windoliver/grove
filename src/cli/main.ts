@@ -24,6 +24,8 @@
  *   grove tui           — Operator TUI dashboard
  */
 
+import type { OwnerRef } from "../core/lifecycle-metadata.js";
+import type { SessionStore } from "../core/session.js";
 import { UsageError } from "./errors.js";
 import { suggestCommand } from "./utils/string.js";
 
@@ -34,6 +36,7 @@ import { suggestCommand } from "./utils/string.js";
 /** Dependencies injected into claim-based commands. */
 interface CommandDeps {
   readonly claimStore: import("../core/store.js").ClaimStore;
+  readonly sessionOwnerRef?: OwnerRef | undefined;
   readonly stdout: (msg: string) => void;
   readonly stderr: (msg: string) => void;
 }
@@ -62,6 +65,22 @@ type Command =
       readonly handler: (args: readonly string[], deps: CommandDeps) => Promise<void>;
       readonly helpText?: string;
     };
+
+async function resolveSessionOwnerRef(
+  goalSessionStore: Pick<SessionStore, "getSession">,
+): Promise<OwnerRef | undefined> {
+  const sessionId = process.env.GROVE_SESSION_ID;
+  if (!sessionId) return undefined;
+
+  const session = await goalSessionStore.getSession(sessionId);
+  if (session === undefined) {
+    throw new Error(
+      `Session ${sessionId} not found. GROVE_SESSION_ID points at a session that does not exist in this grove's session store.`,
+    );
+  }
+
+  return { kind: "session", id: session.id, uid: session.uid };
+}
 
 // ---------------------------------------------------------------------------
 // Command registry
@@ -195,9 +214,11 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
         const { dbPath } = resolveGroveDir(groveOverride);
         const stores = createSqliteStores(dbPath);
         try {
+          const sessionOwnerRef = await resolveSessionOwnerRef(stores.goalSessionStore);
           await runBounty(args, {
             bountyStore: stores.bountyStore,
             claimStore: stores.claimStore,
+            ...(sessionOwnerRef !== undefined ? { sessionOwnerRef } : {}),
             stdout: (msg) => console.log(msg),
             stderr: (msg) => console.error(msg),
           });
@@ -536,8 +557,10 @@ async function main(): Promise<void> {
     const { dbPath } = resolveGroveDir(groveOverride);
     const stores = createSqliteStores(dbPath);
     try {
+      const sessionOwnerRef = await resolveSessionOwnerRef(stores.goalSessionStore);
       await command.handler(subArgs, {
         claimStore: stores.claimStore,
+        ...(sessionOwnerRef !== undefined ? { sessionOwnerRef } : {}),
         stdout: (msg) => console.log(msg),
         stderr: (msg) => console.error(msg),
       });

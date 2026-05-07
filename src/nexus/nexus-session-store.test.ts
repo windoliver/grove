@@ -301,6 +301,198 @@ describe("NexusSessionStore", () => {
     expect(await client.read(sessionPath)).toBeUndefined();
   });
 
+  test("deleteSession retries initial delete-state write after benign CAS conflict", async () => {
+    const setupStore = new NexusSessionStore(client, "test-zone");
+    const session = await setupStore.createSession({ goal: "initial CAS retry" });
+    const sessionPath = `/zones/test-zone/sessions/${session.id}.json`;
+    let conflicted = false;
+    const wrappedClient: NexusClient = {
+      read: (path) => client.read(path),
+      readWithMeta: (path) => client.readWithMeta(path),
+      write: async (path, content, opts) => {
+        if (path === sessionPath && opts?.ifMatch !== undefined && !conflicted) {
+          conflicted = true;
+          const current = await client.read(path);
+          if (current !== undefined) {
+            await client.write(path, current);
+          }
+        }
+        return client.write(path, content, opts);
+      },
+      exists: (path) => client.exists(path),
+      stat: (path) => client.stat(path),
+      delete: (path) => client.delete(path),
+      list: (path, opts) => client.list(path, opts),
+      mkdir: (path, opts) => client.mkdir(path, opts),
+      search: (query, opts) => client.search(query, opts),
+      close: () => client.close(),
+    };
+    const store = new NexusSessionStore(wrappedClient, "test-zone", { claimStore });
+
+    const result = await store.deleteSession(session.id);
+
+    expect(conflicted).toBe(true);
+    expect(result).toEqual({
+      sessionId: session.id,
+      deleted: true,
+      forced: false,
+      blockers: [],
+    });
+    expect(await client.read(sessionPath)).toBeUndefined();
+  });
+
+  test("deleteSession applies default finalizers for legacy sessions after initial CAS conflict", async () => {
+    const sessionPath = "/zones/test-zone/sessions/legacy-cas.json";
+    await client.write(
+      sessionPath,
+      encoder.encode(
+        JSON.stringify({
+          id: "legacy-cas",
+          goal: "legacy CAS",
+          status: "active",
+          createdAt: "2026-05-07T00:00:00.000Z",
+          contributionCount: 0,
+        }),
+      ),
+    );
+    await claimStore.createClaim(
+      makeClaim({
+        claimId: "legacy-cas-owned-claim",
+        targetRef: "legacy-cas-owned-target",
+        ownerRef: { kind: "session", id: "legacy-cas", uid: "legacy-cas" },
+      }),
+    );
+    let conflicted = false;
+    const wrappedClient: NexusClient = {
+      read: (path) => client.read(path),
+      readWithMeta: (path) => client.readWithMeta(path),
+      write: async (path, content, opts) => {
+        if (path === sessionPath && opts?.ifMatch !== undefined && !conflicted) {
+          conflicted = true;
+          const current = await client.read(path);
+          if (current !== undefined) {
+            await client.write(path, current);
+          }
+        }
+        return client.write(path, content, opts);
+      },
+      exists: (path) => client.exists(path),
+      stat: (path) => client.stat(path),
+      delete: (path) => client.delete(path),
+      list: (path, opts) => client.list(path, opts),
+      mkdir: (path, opts) => client.mkdir(path, opts),
+      search: (query, opts) => client.search(query, opts),
+      close: () => client.close(),
+    };
+    const store = new NexusSessionStore(wrappedClient, "test-zone", { claimStore });
+
+    const result = await store.deleteSession("legacy-cas");
+
+    expect(conflicted).toBe(true);
+    expect(result).toEqual({
+      sessionId: "legacy-cas",
+      deleted: true,
+      forced: false,
+      blockers: [],
+    });
+    expect(await claimStore.getClaim("legacy-cas-owned-claim")).toBeUndefined();
+    expect(await client.read(sessionPath)).toBeUndefined();
+  });
+
+  test("deleteSession preserves concurrently added unknown finalizers after CAS conflict", async () => {
+    const setupStore = new NexusSessionStore(client, "test-zone");
+    const session = await setupStore.createSession({ goal: "concurrent finalizer" });
+    const sessionPath = `/zones/test-zone/sessions/${session.id}.json`;
+    let conflicted = false;
+    const wrappedClient: NexusClient = {
+      read: (path) => client.read(path),
+      readWithMeta: (path) => client.readWithMeta(path),
+      write: async (path, content, opts) => {
+        if (path === sessionPath && opts?.ifMatch !== undefined && !conflicted) {
+          conflicted = true;
+          const current = await client.read(path);
+          if (current !== undefined) {
+            const currentSession = JSON.parse(decoder.decode(current)) as Session;
+            await client.write(
+              path,
+              encoder.encode(
+                JSON.stringify({
+                  ...currentSession,
+                  finalizers: [...currentSession.finalizers, "grove.io/future-cleanup"],
+                }),
+              ),
+            );
+          }
+        }
+        return client.write(path, content, opts);
+      },
+      exists: (path) => client.exists(path),
+      stat: (path) => client.stat(path),
+      delete: (path) => client.delete(path),
+      list: (path, opts) => client.list(path, opts),
+      mkdir: (path, opts) => client.mkdir(path, opts),
+      search: (query, opts) => client.search(query, opts),
+      close: () => client.close(),
+    };
+    const store = new NexusSessionStore(wrappedClient, "test-zone", { claimStore });
+
+    const result = await store.deleteSession(session.id);
+    const fetched = await store.getSession(session.id);
+
+    expect(conflicted).toBe(true);
+    expect(result).toEqual({
+      sessionId: session.id,
+      deleted: false,
+      forced: false,
+      blockers: [{ finalizer: "grove.io/future-cleanup", message: "unknown finalizer pending" }],
+    });
+    expect(fetched?.finalizers).toEqual(["grove.io/future-cleanup"]);
+  });
+
+  test("deleteSession retries finalizer removal write after benign CAS conflict", async () => {
+    const setupStore = new NexusSessionStore(client, "test-zone");
+    const session = await setupStore.createSession({ goal: "finalizer CAS retry" });
+    const sessionPath = `/zones/test-zone/sessions/${session.id}.json`;
+    let sessionWrites = 0;
+    let conflicted = false;
+    const wrappedClient: NexusClient = {
+      read: (path) => client.read(path),
+      readWithMeta: (path) => client.readWithMeta(path),
+      write: async (path, content, opts) => {
+        if (path === sessionPath && opts?.ifMatch !== undefined) {
+          sessionWrites += 1;
+          if (sessionWrites === 2 && !conflicted) {
+            conflicted = true;
+            const current = await client.read(path);
+            if (current !== undefined) {
+              await client.write(path, current);
+            }
+          }
+        }
+        return client.write(path, content, opts);
+      },
+      exists: (path) => client.exists(path),
+      stat: (path) => client.stat(path),
+      delete: (path) => client.delete(path),
+      list: (path, opts) => client.list(path, opts),
+      mkdir: (path, opts) => client.mkdir(path, opts),
+      search: (query, opts) => client.search(query, opts),
+      close: () => client.close(),
+    };
+    const store = new NexusSessionStore(wrappedClient, "test-zone", { claimStore });
+
+    const result = await store.deleteSession(session.id);
+
+    expect(conflicted).toBe(true);
+    expect(result).toEqual({
+      sessionId: session.id,
+      deleted: true,
+      forced: false,
+      blockers: [],
+    });
+    expect(await client.read(sessionPath)).toBeUndefined();
+  });
+
   test("deleteSession keeps deletionTimestamp and failed/later finalizers when closeRuntime blocks", async () => {
     const store = new NexusSessionStore(client, "test-zone", {
       claimStore,

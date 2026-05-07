@@ -15,6 +15,7 @@ import { WatchHub } from "../core/watch-hub.js";
 import { createLocalRuntime, type LocalRuntime } from "../local/runtime.js";
 import { type McpDeps, sessionToOwnerRef } from "./deps.js";
 import { toOperationDeps } from "./operation-adapter.js";
+import { GOAL_SESSION_MUTATION_METHODS } from "./scope-mutation-methods.js";
 
 function requireWorkspace(runtime: LocalRuntime): McpDeps["workspace"] {
   if (runtime.workspace === undefined) {
@@ -115,5 +116,9 @@ describe("MCP deps parity with LocalRuntime", () => {
       uid: "stable-uid",
     });
     expect(sessionToOwnerRef(undefined)).toBeUndefined();
+  });
+
+  test("HTTP MCP stale-scope mutation guard covers session deletion", () => {
+    expect(GOAL_SESSION_MUTATION_METHODS).toContain("deleteSession");
   });
 });

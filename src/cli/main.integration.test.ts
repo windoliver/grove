@@ -11,11 +11,16 @@ import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { BountyStatus } from "../core/bounty.js";
 import { RelationType } from "../core/models.js";
 import { makeContribution, makeRelation } from "../core/test-helpers.js";
 import { FsCas } from "../local/fs-cas.js";
 import { SqliteGoalSessionStore } from "../local/sqlite-goal-session-store.js";
-import { initSqliteDb, SqliteContributionStore } from "../local/sqlite-store.js";
+import {
+  createSqliteStores,
+  initSqliteDb,
+  SqliteContributionStore,
+} from "../local/sqlite-store.js";
 
 const CLI_PATH = join(import.meta.dir, "main.ts");
 
@@ -23,9 +28,11 @@ const CLI_PATH = join(import.meta.dir, "main.ts");
 async function runCli(
   args: string[],
   cwd: string,
+  env?: Record<string, string | undefined>,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const proc = Bun.spawn(["bun", "run", CLI_PATH, ...args], {
     cwd,
+    env: { ...process.env, ...env },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -69,6 +76,7 @@ async function setupGrove(): Promise<{ c1Cid: string; c2Cid: string }> {
   await store.put(c2);
 
   store.close();
+  db.close();
   return { c1Cid: c1.cid, c2Cid: c2.cid };
 }
 
@@ -345,6 +353,85 @@ describe("CLI commands (with grove)", () => {
     const { stderr, exitCode } = await runCli(["checkout", "blake3:abc"], tmpDir);
     expect(exitCode).toBe(1);
     expect(stderr).toContain("--to");
+  });
+
+  // -------------------------------------------------------------------------
+  // grove claim / bounty session ownership
+  // -------------------------------------------------------------------------
+  test("grove claim stamps ownerRef from GROVE_SESSION_ID", async () => {
+    await setupGrove();
+    let stores = createSqliteStores(join(groveDir, "grove.db"));
+    const session = await stores.goalSessionStore.createSession({ goal: "owned claim" });
+    stores.close();
+
+    const { exitCode } = await runCli(
+      ["claim", "owned-target", "--agent-id", "session-agent"],
+      tmpDir,
+      { GROVE_SESSION_ID: session.id },
+    );
+
+    expect(exitCode).toBe(0);
+    stores = createSqliteStores(join(groveDir, "grove.db"));
+    try {
+      const claims = await stores.claimStore.activeClaims("owned-target");
+      expect(claims[0]?.ownerRef).toEqual({
+        kind: "session",
+        id: session.id,
+        uid: session.uid,
+      });
+    } finally {
+      stores.close();
+    }
+  });
+
+  test("grove bounty claim stamps ownerRef from GROVE_SESSION_ID", async () => {
+    await setupGrove();
+    let stores = createSqliteStores(join(groveDir, "grove.db"));
+    const session = await stores.goalSessionStore.createSession({ goal: "owned bounty claim" });
+    stores.close();
+
+    const created = await runCli(
+      [
+        "bounty",
+        "create",
+        "Owned bounty",
+        "--amount",
+        "100",
+        "--deadline",
+        "1d",
+        "--agent-id",
+        "bounty-author",
+      ],
+      tmpDir,
+      { GROVE_SESSION_ID: session.id },
+    );
+    expect(created.exitCode).toBe(0);
+
+    stores = createSqliteStores(join(groveDir, "grove.db"));
+    const bounty = (await stores.bountyStore.listBounties({ status: BountyStatus.Open }))[0];
+    stores.close();
+    if (bounty === undefined) {
+      throw new Error("expected created bounty");
+    }
+
+    const claimed = await runCli(
+      ["bounty", "claim", bounty.bountyId, "--agent-id", "bounty-claimer"],
+      tmpDir,
+      { GROVE_SESSION_ID: session.id },
+    );
+
+    expect(claimed.exitCode).toBe(0);
+    stores = createSqliteStores(join(groveDir, "grove.db"));
+    try {
+      const claims = await stores.claimStore.activeClaims(`bounty:${bounty.bountyId}`);
+      expect(claims[0]?.ownerRef).toEqual({
+        kind: "session",
+        id: session.id,
+        uid: session.uid,
+      });
+    } finally {
+      stores.close();
+    }
   });
 
   // -------------------------------------------------------------------------

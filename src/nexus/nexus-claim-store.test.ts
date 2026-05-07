@@ -95,6 +95,37 @@ describe("NexusClaimStore ownerRef lifecycle", () => {
     expect(filtered.every((claim) => claim.ownerRef?.uid === canonicalOwnerRef.uid)).toBe(true);
   });
 
+  test("claimOrRenew same-agent renewal updates stored ownerRef", async () => {
+    const initialOwner: OwnerRef = { kind: "session", id: "session-old", uid: "uid-old" };
+    const renewedOwner: OwnerRef = { kind: "session", id: "session-new", uid: "uid-new" };
+    await store.createClaim(
+      makeClaim({
+        claimId: "renew-owner-existing",
+        targetRef: "renew-owner-target",
+        agent: { agentId: "agent-renew-owner" },
+        ownerRef: initialOwner,
+      }),
+    );
+
+    const renewed = await store.claimOrRenew(
+      makeClaim({
+        claimId: "renew-owner-attempt",
+        targetRef: "renew-owner-target",
+        agent: { agentId: "agent-renew-owner" },
+        ownerRef: renewedOwner,
+      }),
+    );
+    const fetched = await store.getClaim("renew-owner-existing");
+
+    expect(renewed.claimId).toBe("renew-owner-existing");
+    expect(renewed.ownerRef).toEqual(renewedOwner);
+    expect(fetched?.ownerRef).toEqual(renewedOwner);
+    expect(await store.listClaims({ ownerRef: initialOwner })).toEqual([]);
+    expect(
+      (await store.listClaims({ ownerRef: renewedOwner })).map((claim) => claim.claimId),
+    ).toEqual(["renew-owner-existing"]);
+  });
+
   test("releaseOwnedBy releases matching active claims, invalidates active cache, and publishes watch events", async () => {
     const ownerRef: OwnerRef = { kind: "session", id: "release-session", uid: "uid-1" };
     const otherOwner: OwnerRef = { kind: "session", id: "release-session", uid: "uid-2" };

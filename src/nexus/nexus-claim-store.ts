@@ -208,6 +208,7 @@ export class NexusClaimStore implements ClaimStore {
         heartbeatAt: nowIso,
         leaseExpiresAt: new Date(now.getTime() + durationMs).toISOString(),
         intentSummary: claim.intentSummary,
+        ...(claim.ownerRef !== undefined ? { ownerRef: claim.ownerRef } : {}),
         revision: (existing.revision ?? 0) + 1,
       };
       if (etag !== undefined) {

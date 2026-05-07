@@ -6,6 +6,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { StateConflictError } from "../core/errors.js";
 import {
   appendDeletionAudit,
   DEFAULT_SESSION_FINALIZERS,
@@ -52,6 +53,11 @@ interface LoadedContributionLinks {
 
 interface PersistedSessionRecordWithEtag {
   readonly persisted: PersistedSessionRecord;
+  readonly etag: string;
+}
+
+interface DeleteStateSessionWrite {
+  readonly session: Session;
   readonly etag: string;
 }
 
@@ -202,15 +208,52 @@ export class NexusSessionStore implements SessionStore {
   private async writeDeleteStateSessionRecord(
     session: Session,
     expectedEtag: string,
-  ): Promise<string | undefined> {
-    try {
-      return await this.writeSessionRecord(session, { ifMatch: expectedEtag });
-    } catch (error) {
-      if (!isCasConflict(error)) throw error;
-      const latest = await this.readPersistedSessionRecordWithEtag(session.id);
-      if (latest === undefined) return undefined;
-      throw error;
+  ): Promise<DeleteStateSessionWrite | undefined> {
+    let desired = session;
+    let etag = expectedEtag;
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const nextEtag = await this.writeSessionRecord(desired, { ifMatch: etag });
+        return { session: desired, etag: nextEtag };
+      } catch (error) {
+        if (!isCasConflict(error)) throw error;
+        const latest = await this.readPersistedSessionRecordWithEtag(session.id);
+        if (latest === undefined) return undefined;
+        const latestSession = this.normalizeSessionRecord(latest.persisted).session;
+        const latestFinalizers = resolveDeleteFinalizers(latest.persisted.finalizers);
+        const desiredFinalizers = new Set(desired.finalizers);
+        const deletionAudit = [...(latestSession.deletionAudit ?? [])];
+        for (const event of desired.deletionAudit ?? []) {
+          if (
+            deletionAudit.some(
+              (existing) =>
+                existing.at === event.at &&
+                existing.actor === event.actor &&
+                existing.warning === event.warning,
+            )
+          ) {
+            continue;
+          }
+          deletionAudit.push(event);
+        }
+        desired = {
+          ...latestSession,
+          deletionTimestamp: desired.deletionTimestamp ?? latestSession.deletionTimestamp,
+          finalizers: latestFinalizers.filter(
+            (finalizer) => desiredFinalizers.has(finalizer) || !isKnownSessionFinalizer(finalizer),
+          ),
+          deletionAudit,
+        };
+        etag = latest.etag;
+      }
     }
+
+    throw new StateConflictError({
+      resource: "Session",
+      reason: "delete state write conflict",
+      message: `Could not persist delete state for session '${session.id}' after concurrent updates; retry the delete request`,
+    });
   }
 
   private async readContributionLinks(
@@ -456,8 +499,8 @@ export class NexusSessionStore implements SessionStore {
       deletionTimestamp,
       deletionAudit: session.deletionAudit ?? [],
     };
-    const initialDeleteEtag = await this.writeDeleteStateSessionRecord(current, currentEtag);
-    if (initialDeleteEtag === undefined) {
+    const initialDeleteWrite = await this.writeDeleteStateSessionRecord(current, currentEtag);
+    if (initialDeleteWrite === undefined) {
       return {
         sessionId: id,
         deleted: true,
@@ -465,7 +508,8 @@ export class NexusSessionStore implements SessionStore {
         blockers: [],
       };
     }
-    currentEtag = initialDeleteEtag;
+    current = initialDeleteWrite.session;
+    currentEtag = initialDeleteWrite.etag;
 
     const claimStore = await this.getClaimStore();
     for (const finalizer of DEFAULT_SESSION_FINALIZERS) {
@@ -498,8 +542,8 @@ export class NexusSessionStore implements SessionStore {
         ...current,
         finalizers: current.finalizers.filter((value) => value !== finalizer),
       };
-      const nextEtag = await this.writeDeleteStateSessionRecord(current, currentEtag);
-      if (nextEtag === undefined) {
+      const nextWrite = await this.writeDeleteStateSessionRecord(current, currentEtag);
+      if (nextWrite === undefined) {
         return {
           sessionId: id,
           deleted: true,
@@ -507,7 +551,8 @@ export class NexusSessionStore implements SessionStore {
           blockers: [],
         };
       }
-      currentEtag = nextEtag;
+      current = nextWrite.session;
+      currentEtag = nextWrite.etag;
     }
 
     if (current.finalizers.length > 0) {

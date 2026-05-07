@@ -36,6 +36,7 @@ import { parsePort } from "../shared/env.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import { parseCurrentSessionPayload, SessionStateReadError } from "./current-session.js";
 import { type McpDeps, sessionToOwnerRef } from "./deps.js";
+import { GOAL_SESSION_MUTATION_METHODS } from "./scope-mutation-methods.js";
 import { createMcpServer } from "./server.js";
 
 // --- Security constants -----------------------------------------------------
@@ -585,14 +586,11 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     "clear",
   ]);
   if (goalSessionStore !== undefined) {
-    goalSessionStore = guardMutableMethods(goalSessionStore, mutationGuard, [
-      "setGoal",
-      "createSession",
-      "updateSession",
-      "archiveSession",
-      "addContributionToSession",
-      "gcStaleSessions",
-    ]);
+    goalSessionStore = guardMutableMethods(
+      goalSessionStore,
+      mutationGuard,
+      GOAL_SESSION_MUTATION_METHODS,
+    );
   }
   if (activeHandoffStore !== undefined) {
     activeHandoffStore = guardMutableMethods(activeHandoffStore, mutationGuard, [
