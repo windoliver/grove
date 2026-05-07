@@ -42,7 +42,7 @@
   },
   "scripts": {
     "build": "bun run --cwd packages/ask-user build && tsup",
-    "typecheck": "bun run --cwd packages/ask-user typecheck && bun run --cwd packages/ask-user build && tsc --noEmit",
+    "typecheck": "bun run --cwd packages/ask-user typecheck && tsc --noEmit",
     "lint": "biome check .",
     "format": "biome format --write .",
     "start:server": "bun run src/server/serve.ts",
@@ -52,7 +52,7 @@
     "nexus:up": "docker compose up nexus -d",
     "nexus:down": "docker compose down",
     "check": "biome check .",
-    "postinstall": "bun run --cwd packages/ask-user build && bun ./scripts/install-hooks.mjs",
+    "postinstall": "bun ./scripts/install-hooks.mjs",
     "smoke:watch-relist": "bun run tests/e2e/watch-relist-tmux.ts"
   },
   "dependencies": {

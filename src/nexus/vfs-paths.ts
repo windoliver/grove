@@ -98,10 +98,92 @@ export function contributionContentHashIndexPath(
   return `${base}/indexes/contributions/content-hash/${encodeSegment(contentHash)}`;
 }
 
-function contributionIndexBase(zoneId: string, sessionId?: string): string {
+function zoneDataBase(zoneId: string, sessionId?: string): string {
   return sessionId
     ? `/zones/${encodeSegment(zoneId)}/sessions/${encodeSegment(sessionId)}`
     : `/zones/${encodeSegment(zoneId)}`;
+}
+
+function contributionIndexBase(zoneId: string, sessionId?: string): string {
+  return `${zoneDataBase(zoneId, sessionId)}/indexes/contributions`;
+}
+
+function createdAtBucket(createdAt: string): string {
+  const date = new Date(createdAt);
+  const year = String(date.getUTCFullYear()).padStart(4, "0");
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  const hour = String(date.getUTCHours()).padStart(2, "0");
+  return `${year}/${month}/${day}/${hour}`;
+}
+
+function createdAtEntryName(createdAt: string, cid: string): string {
+  const timestamp = String(new Date(createdAt).getTime()).padStart(13, "0");
+  return `${timestamp}-${encodeSegment(cid)}`;
+}
+
+/** Directory containing created-at contribution index buckets. */
+export function contributionCreatedAtIndexRootDir(zoneId: string, sessionId?: string): string {
+  return `${contributionIndexBase(zoneId, sessionId)}/created-at`;
+}
+
+/** Marker written after created-at contribution indexes have been backfilled. */
+export function contributionCreatedAtIndexReadyPath(zoneId: string, sessionId?: string): string {
+  return `${contributionCreatedAtIndexRootDir(zoneId, sessionId)}/.ready`;
+}
+
+/** Directory for a UTC-hour created-at contribution index bucket. */
+export function contributionCreatedAtIndexBucketDir(
+  zoneId: string,
+  bucket: string,
+  sessionId?: string,
+): string {
+  return `${contributionCreatedAtIndexRootDir(zoneId, sessionId)}/${bucket}`;
+}
+
+/** Path to a created-at contribution index marker. */
+export function contributionCreatedAtIndexPath(
+  zoneId: string,
+  createdAt: string,
+  cid: string,
+  sessionId?: string,
+): string {
+  return `${contributionCreatedAtIndexBucketDir(zoneId, createdAtBucket(createdAt), sessionId)}/${createdAtEntryName(createdAt, cid)}`;
+}
+
+/** Directory containing created-at contribution index buckets for an agent. */
+export function contributionAgentCreatedAtIndexRootDir(
+  zoneId: string,
+  agentId: string,
+  sessionId?: string,
+): string {
+  return `${contributionIndexBase(zoneId, sessionId)}/agents/${encodeSegment(agentId)}/created-at`;
+}
+
+/** Directory for a UTC-hour created-at contribution index bucket for an agent. */
+export function contributionAgentCreatedAtIndexBucketDir(
+  zoneId: string,
+  agentId: string,
+  bucket: string,
+  sessionId?: string,
+): string {
+  return `${contributionAgentCreatedAtIndexRootDir(zoneId, agentId, sessionId)}/${bucket}`;
+}
+
+/** Path to a created-at contribution index marker for an agent. */
+export function contributionAgentCreatedAtIndexPath(
+  zoneId: string,
+  agentId: string,
+  createdAt: string,
+  cid: string,
+  sessionId?: string,
+): string {
+  return `${contributionAgentCreatedAtIndexBucketDir(
+    zoneId,
+    agentId,
+    createdAtBucket(createdAt),
+    sessionId,
+  )}/${createdAtEntryName(createdAt, cid)}`;
 }
 
 /** Path to a relation index entry (from source pointing to target). */
@@ -111,12 +193,12 @@ export function relationIndexPath(
   sourceCid: string,
   sessionId?: string,
 ): string {
-  return `${contributionIndexBase(zoneId, sessionId)}/indexes/relations/${encodeSegment(targetCid)}/${encodeSegment(sourceCid)}.json`;
+  return `${zoneDataBase(zoneId, sessionId)}/indexes/relations/${encodeSegment(targetCid)}/${encodeSegment(sourceCid)}.json`;
 }
 
 /** Directory containing all relations pointing to a target. */
 export function relationIndexDir(zoneId: string, targetCid: string, sessionId?: string): string {
-  return `${contributionIndexBase(zoneId, sessionId)}/indexes/relations/${encodeSegment(targetCid)}`;
+  return `${zoneDataBase(zoneId, sessionId)}/indexes/relations/${encodeSegment(targetCid)}`;
 }
 
 // ---------------------------------------------------------------------------
