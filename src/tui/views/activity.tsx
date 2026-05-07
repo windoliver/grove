@@ -6,7 +6,7 @@
  * built-in title doesn't model offset display.
  */
 
-import React, { useState } from "react";
+import React, { useCallback, useState } from "react";
 import type { ContributionEntity } from "../../core/entity.js";
 import type { Contribution } from "../../core/models.js";
 import {
@@ -65,6 +65,13 @@ export const ActivityView: React.NamedExoticComponent<ActivityProps> = React.mem
     const { provider, active, cursor, pageOffset, pageSize, onContributionsLoaded } = props;
     const [count, setCount] = useState(0);
 
+    const onDataChanged = useCallback(
+      (entities: readonly ContributionEntity[]) => {
+        if (onContributionsLoaded) onContributionsLoaded(entities.map(entityToContribution));
+      },
+      [onContributionsLoaded],
+    );
+
     return (
       <box flexDirection="column">
         <box marginBottom={1} flexDirection="row">
@@ -85,9 +92,7 @@ export const ActivityView: React.NamedExoticComponent<ActivityProps> = React.mem
           offset={pageOffset}
           limit={pageSize}
           onRowCountChanged={setCount}
-          onDataChanged={(entities) => {
-            if (onContributionsLoaded) onContributionsLoaded(entities.map(entityToContribution));
-          }}
+          onDataChanged={onDataChanged}
         />
       </box>
     );
