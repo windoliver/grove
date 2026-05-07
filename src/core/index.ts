@@ -176,7 +176,7 @@ export {
   evaluateStopConditions,
   LifecycleState,
 } from "./lifecycle.js";
-export type { OwnerRef } from "./lifecycle-metadata.js";
+export type { OwnerRef, SessionFinalizer } from "./lifecycle-metadata.js";
 export { LocalEventBus } from "./local-event-bus.js";
 export type {
   GroveLoopRunnerOptions,

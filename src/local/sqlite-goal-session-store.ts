@@ -16,7 +16,7 @@
 
 import type { Database, Statement } from "bun:sqlite";
 import type { GroveContract } from "../core/contract.js";
-import type { DeletionAuditEvent, OwnerRef } from "../core/lifecycle-metadata.js";
+import type { DeletionAuditEvent, OwnerRef, SessionFinalizer } from "../core/lifecycle-metadata.js";
 import {
   appendDeletionAudit,
   DEFAULT_SESSION_FINALIZERS,
@@ -480,7 +480,7 @@ function rowToSession(row: SessionRow): Session {
     presetName: row.preset_name ?? undefined,
     status: row.status as Session["status"],
     createdAt: row.started_at,
-    finalizers: JSON.parse(row.finalizers_json) as readonly Finalizer[],
+    finalizers: JSON.parse(row.finalizers_json) as readonly SessionFinalizer[],
     deletionTimestamp: row.deletion_timestamp ?? undefined,
     deletionAudit: JSON.parse(row.deletion_audit_json) as readonly DeletionAuditEvent[],
     completedAt: row.ended_at ?? undefined,
@@ -504,7 +504,7 @@ function listRowToSession(row: SessionListRow): Session {
     presetName: row.preset_name ?? undefined,
     status: row.status as Session["status"],
     createdAt: row.started_at,
-    finalizers: JSON.parse(row.finalizers_json) as readonly Finalizer[],
+    finalizers: JSON.parse(row.finalizers_json) as readonly SessionFinalizer[],
     deletionTimestamp: row.deletion_timestamp ?? undefined,
     deletionAudit: JSON.parse(row.deletion_audit_json) as readonly DeletionAuditEvent[],
     completedAt: row.ended_at ?? undefined,
@@ -569,7 +569,7 @@ function forceWarning(sessionId: string): string {
   return `force delete skipped finalizer waits for session ${sessionId}`;
 }
 
-function normalizeSessionFinalizers(finalizers: readonly string[]): string[] {
+function normalizeSessionFinalizers(finalizers: readonly SessionFinalizer[]): SessionFinalizer[] {
   return finalizers.length === 0 ? [...DEFAULT_SESSION_FINALIZERS] : [...finalizers];
 }
 
@@ -1143,7 +1143,9 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
           remainingFinalizers,
           Finalizer.CloseRuntime,
         );
-        this.db.prepare("DELETE FROM sessions WHERE session_id = ?").run(id);
+        if (remainingFinalizers.length === 0) {
+          this.db.prepare("DELETE FROM sessions WHERE session_id = ?").run(id);
+        }
       });
 
       if (remainingFinalizers.length > 0) {
@@ -1201,7 +1203,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     for (const finalizer of finalizers) {
       if (isKnownSessionFinalizer(finalizer)) continue;
       blockers.push({
-        finalizer: finalizer as Finalizer,
+        finalizer,
         message: "unknown finalizer pending",
       });
     }
@@ -1325,9 +1327,11 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     }
   }
 
-  private buildFinalizerBlockers(finalizers: readonly string[]): readonly SessionDeleteBlocker[] {
+  private buildFinalizerBlockers(
+    finalizers: readonly SessionFinalizer[],
+  ): readonly SessionDeleteBlocker[] {
     return finalizers.map((finalizer) => ({
-      finalizer: finalizer as Finalizer,
+      finalizer,
       message: isKnownSessionFinalizer(finalizer)
         ? finalizer === Finalizer.CloseRuntime
           ? "runtime cleanup pending"
@@ -1339,8 +1343,8 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
   private persistSessionFinalizersSync(
     sessionId: string,
     deletionTimestamp: string,
-    currentFinalizers: string[],
-    completedFinalizer: string,
+    currentFinalizers: SessionFinalizer[],
+    completedFinalizer: SessionFinalizer,
   ): void {
     const remainingFinalizers = currentFinalizers.filter((f) => f !== completedFinalizer);
     this.db
@@ -1356,7 +1360,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
   private runSessionDeleteTransaction(
     sessionId: string,
     deletionTimestamp: string,
-    finalizers: string[],
+    finalizers: SessionFinalizer[],
     action: () => void,
   ): void {
     const tx = this.db.transaction(() => {

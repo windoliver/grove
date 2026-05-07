@@ -6,7 +6,7 @@
  */
 
 import type { GroveContract } from "./contract.js";
-import type { DeletionAuditEvent, Finalizer } from "./lifecycle-metadata.js";
+import type { DeletionAuditEvent, SessionFinalizer } from "./lifecycle-metadata.js";
 import type { LoopStopStatus } from "./loop-runner.js";
 import type { AgentTopology } from "./topology.js";
 
@@ -37,7 +37,7 @@ export interface Session {
   readonly presetName?: string | undefined;
   readonly status: SessionStatus;
   readonly createdAt: string;
-  readonly finalizers: readonly Finalizer[];
+  readonly finalizers: readonly SessionFinalizer[];
   readonly deletionTimestamp?: string | undefined;
   readonly deletionAudit?: readonly DeletionAuditEvent[] | undefined;
   readonly completedAt?: string | undefined;
@@ -95,7 +95,7 @@ export interface SessionDeleteOptions {
 }
 
 export interface SessionDeleteBlocker {
-  readonly finalizer: Finalizer;
+  readonly finalizer: SessionFinalizer;
   readonly message: string;
 }
 

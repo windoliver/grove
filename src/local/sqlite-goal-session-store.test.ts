@@ -733,6 +733,28 @@ describe("session deletion finalizers", () => {
     expect(fetched?.finalizers).toEqual(["grove.io/close-runtime"]);
   });
 
+  it("deleteSession keeps unknown finalizers pending after close-runtime succeeds", async () => {
+    const blocking = new SqliteGoalSessionStore(stores.db, {
+      closeRuntime: async () => {
+        // Successful runtime cleanup still must not skip unknown finalizers.
+      },
+    });
+    const session = await blocking.createSession({ goal: "runtime then unknown" });
+    stores.db
+      .prepare("UPDATE sessions SET finalizers_json = ? WHERE session_id = ?")
+      .run(JSON.stringify(["grove.io/close-runtime", "grove.io/future-cleanup"]), session.id);
+
+    const result = await blocking.deleteSession(session.id);
+
+    expect(result.deleted).toBe(false);
+    expect(result.blockers).toEqual([
+      { finalizer: "grove.io/future-cleanup", message: "unknown finalizer pending" },
+    ]);
+    const fetched = await blocking.getSession(session.id);
+    expect(fetched).toBeDefined();
+    expect(fetched?.finalizers).toEqual(["grove.io/future-cleanup"]);
+  });
+
   it("deleteSession force removes session and returns warning", async () => {
     const blocking = new SqliteGoalSessionStore(stores.db, {
       claimStore: stores.claimStore,

@@ -12,6 +12,7 @@ export const Finalizer = {
   CloseRuntime: "grove.io/close-runtime",
 } as const;
 export type Finalizer = (typeof Finalizer)[keyof typeof Finalizer];
+export type SessionFinalizer = Finalizer | (string & {});
 
 export const DEFAULT_SESSION_FINALIZERS: readonly Finalizer[] = [
   Finalizer.ReleaseSlots,
