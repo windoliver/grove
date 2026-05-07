@@ -295,6 +295,38 @@ describe("NexusContributionStore", () => {
         sessionStore.close();
       }
     });
+
+    test("session-scoped readers deduplicate dual relation indexes", async () => {
+      const sessionStore = new NexusContributionStore({
+        client,
+        zoneId: "test-zone",
+        sessionId: "session-a",
+        retryMaxAttempts: 1,
+      });
+      try {
+        const parent = makeContribution({ summary: "dual-index parent" });
+        const child = makeContribution({
+          summary: "dual-index child",
+          relations: [{ targetCid: parent.cid, relationType: RelationType.RespondsTo }],
+        });
+        await sessionStore.put(parent);
+        await sessionStore.put(child);
+        await client.write(
+          relationIndexPath("test-zone", parent.cid, child.cid),
+          new TextEncoder().encode(JSON.stringify({ relationType: RelationType.RespondsTo })),
+        );
+
+        expect((await sessionStore.children(parent.cid)).map((c) => c.cid)).toEqual([child.cid]);
+        expect(
+          (await sessionStore.findExisting(child.agent.agentId, parent.cid, child.kind)).map(
+            (c) => c.cid,
+          ),
+        ).toEqual([child.cid]);
+        expect((await sessionStore.replyCounts([parent.cid])).get(parent.cid)).toBe(1);
+      } finally {
+        sessionStore.close();
+      }
+    });
   });
 
   describe("search", () => {

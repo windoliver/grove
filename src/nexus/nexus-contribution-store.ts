@@ -223,7 +223,23 @@ export class NexusContributionStore implements ContributionStore {
         relationIndexDir(this.zoneId, targetCid),
       ),
     ]);
-    return [...sessionEntries, ...legacyEntries];
+    return this.dedupeRelationEntries([...sessionEntries, ...legacyEntries]);
+  }
+
+  private dedupeRelationEntries(entries: readonly ListEntry[]): readonly ListEntry[] {
+    const seen = new Set<string>();
+    const deduped: ListEntry[] = [];
+    for (const entry of entries) {
+      if (entry.isDirectory) {
+        deduped.push(entry);
+        continue;
+      }
+      const sourceCid = entry.name.replace(/\.json$/, "");
+      if (seen.has(sourceCid)) continue;
+      seen.add(sourceCid);
+      deduped.push(entry);
+    }
+    return deduped;
   }
 
   async put(contribution: Contribution): Promise<ContributionPutResult> {
