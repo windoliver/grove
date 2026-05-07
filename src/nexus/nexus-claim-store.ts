@@ -20,6 +20,7 @@ import {
 import type { ClaimEntity } from "../core/entity.js";
 import { claimToEntity } from "../core/entity.js";
 import { StateConflictError } from "../core/errors.js";
+import { type OwnerRef, ownerRefsEqual } from "../core/lifecycle-metadata.js";
 import type { Claim, ClaimStatus } from "../core/models.js";
 import type {
   ActiveClaimFilter,
@@ -427,9 +428,36 @@ export class NexusClaimStore implements ClaimStore {
     if (query?.targetRef !== undefined) {
       claims = claims.filter((c) => c.targetRef === query.targetRef);
     }
+    if (query?.ownerRef !== undefined) {
+      claims = claims.filter((c) => ownerRefsEqual(c.ownerRef, query.ownerRef));
+    }
 
     claims.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     return claims;
+  }
+
+  async releaseOwnedBy(ownerRef: OwnerRef): Promise<number> {
+    const nowIso = new Date().toISOString();
+    const claims = await this.listClaims({ status: "active" as ClaimStatus, ownerRef });
+    for (const claim of claims) {
+      const result = await this.readClaimWithEtag(claim.claimId);
+      if (result === undefined || result.claim.status !== "active") continue;
+
+      const released: Claim = {
+        ...result.claim,
+        status: "released" as ClaimStatus,
+        heartbeatAt: nowIso,
+        revision: (result.claim.revision ?? 0) + 1,
+      };
+      await this.writeClaimCas(released, result.etag);
+      await this.deleteActiveIndex(released);
+      this.claimCache.set(released.claimId, released);
+      this.publishWatch(released, "MODIFIED");
+    }
+    if (claims.length > 0) {
+      this.invalidateActiveClaimsCache();
+    }
+    return claims.length;
   }
 
   async cleanCompleted(retentionMs: number): Promise<number> {
@@ -496,6 +524,29 @@ export class NexusClaimStore implements ClaimStore {
 
   close(): void {
     // No-op — lifecycle managed by client
+  }
+
+  async deleteTerminalOwnedBy(ownerRef: OwnerRef): Promise<number> {
+    const claims = await this.listClaims({
+      status: ["completed", "expired", "released"] as readonly ClaimStatus[],
+      ownerRef,
+    });
+    for (const claim of claims) {
+      await withRetry(
+        () =>
+          withSemaphore(this.semaphore, () =>
+            this.client.delete(claimPath(this.zoneId, claim.claimId)),
+          ),
+        "deleteTerminalOwnedBy",
+        this.config,
+      );
+      this.claimCache.delete(claim.claimId);
+      this.publishWatch(claim, "DELETED");
+    }
+    if (claims.length > 0) {
+      this.invalidateActiveClaimsCache();
+    }
+    return claims.length;
   }
 
   // -----------------------------------------------------------------------

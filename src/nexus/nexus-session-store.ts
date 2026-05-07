@@ -6,31 +6,94 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { DEFAULT_SESSION_FINALIZERS } from "../core/lifecycle-metadata.js";
-import type { CreateSessionInput, Session, SessionQuery, SessionStore } from "../core/session.js";
+import {
+  appendDeletionAudit,
+  DEFAULT_SESSION_FINALIZERS,
+  Finalizer,
+  type Finalizer as KnownFinalizer,
+  type OwnerRef,
+  type SessionFinalizer,
+} from "../core/lifecycle-metadata.js";
+import type {
+  CreateSessionInput,
+  Session,
+  SessionDeleteBlocker,
+  SessionDeleteOptions,
+  SessionDeleteResult,
+  SessionQuery,
+  SessionStore,
+} from "../core/session.js";
+import type { ClaimStore } from "../core/store.js";
 import type { NexusClient } from "./client.js";
+import { NexusClaimStore } from "./nexus-claim-store.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-type PersistedSessionRecord = Omit<Session, "uid" | "finalizers"> &
-  Partial<Pick<Session, "uid" | "finalizers">>;
+type PersistedSessionRecord = Omit<Session, "uid" | "finalizers" | "deletionAudit"> &
+  Partial<Pick<Session, "uid" | "finalizers" | "deletionAudit">>;
 
-function normalizeSessionRecord(session: PersistedSessionRecord): Session {
-  return {
-    ...session,
-    uid: session.uid ?? session.id,
-    finalizers: session.finalizers ?? DEFAULT_SESSION_FINALIZERS,
-  };
+interface SessionContributionLink {
+  readonly cid: string;
+  readonly ownerRef: OwnerRef;
+  readonly addedAt: string;
+}
+
+interface ContributionSidecarV2 {
+  readonly version: 2;
+  readonly items: readonly SessionContributionLink[];
+}
+
+type ContributionSidecar = readonly string[] | ContributionSidecarV2;
+
+interface LoadedContributionLinks {
+  readonly items: readonly SessionContributionLink[];
+  readonly isLegacy: boolean;
+}
+
+export interface NexusSessionStoreOptions {
+  readonly claimStore?: ClaimStore | undefined;
+  readonly closeRuntime?: ((session: Session) => Promise<void>) | undefined;
+}
+
+function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function ownerRefForSession(session: Pick<Session, "id" | "uid">): OwnerRef {
+  return { kind: "session", id: session.id, uid: session.uid };
+}
+
+function normalizeSessionFinalizers(
+  finalizers: readonly SessionFinalizer[] | undefined,
+): readonly SessionFinalizer[] {
+  if (finalizers === undefined || finalizers.length === 0) {
+    return [...DEFAULT_SESSION_FINALIZERS];
+  }
+  return [...finalizers];
+}
+
+function isKnownSessionFinalizer(finalizer: string): finalizer is KnownFinalizer {
+  return (DEFAULT_SESSION_FINALIZERS as readonly string[]).includes(finalizer);
+}
+
+function forceWarning(sessionId: string): string {
+  return `force delete skipped finalizer waits for session ${sessionId}`;
 }
 
 export class NexusSessionStore implements SessionStore {
   private readonly client: NexusClient;
   private readonly zoneId: string;
+  private readonly closeRuntime: ((session: Session) => Promise<void>) | undefined;
+  private readonly injectedClaimStore: ClaimStore | undefined;
+  private lazyClaimStore: ClaimStore | undefined;
+  private readonly legacyUidBySessionId = new Map<string, string>();
 
-  constructor(client: NexusClient, zoneId: string) {
+  constructor(client: NexusClient, zoneId: string, options?: NexusSessionStoreOptions) {
     this.client = client;
     this.zoneId = zoneId;
+    this.injectedClaimStore = options?.claimStore;
+    this.closeRuntime = options?.closeRuntime;
   }
 
   private sessionPath(id: string): string {
@@ -41,27 +104,123 @@ export class NexusSessionStore implements SessionStore {
     return `/zones/${this.zoneId}/sessions/${id}.contributions.json`;
   }
 
+  private normalizeSessionRecord(session: PersistedSessionRecord): {
+    readonly session: Session;
+    readonly changed: boolean;
+  } {
+    const uid = session.uid ?? this.legacyUidBySessionId.get(session.id) ?? randomUUID();
+    this.legacyUidBySessionId.set(session.id, uid);
+    const finalizers = normalizeSessionFinalizers(session.finalizers);
+    const deletionAudit = session.deletionAudit ?? [];
+    const contributionCount = session.contributionCount ?? 0;
+    const normalized: Session = {
+      ...session,
+      uid,
+      finalizers,
+      deletionAudit,
+      contributionCount,
+    };
+    const changed =
+      session.uid !== uid ||
+      session.deletionAudit === undefined ||
+      session.contributionCount !== contributionCount ||
+      session.finalizers === undefined ||
+      !arraysEqual(session.finalizers, finalizers);
+    return { session: normalized, changed };
+  }
+
+  private async writeSessionRecord(session: Session): Promise<void> {
+    await this.client.write(this.sessionPath(session.id), encoder.encode(JSON.stringify(session)));
+  }
+
+  private async readContributionLinks(
+    sessionId: string,
+    session?: Pick<Session, "id" | "uid" | "createdAt">,
+  ): Promise<LoadedContributionLinks> {
+    const data = await this.client.read(this.contributionsPath(sessionId));
+    if (data === undefined) return { items: [], isLegacy: false };
+
+    const parsed = JSON.parse(decoder.decode(data)) as ContributionSidecar;
+    if (Array.isArray(parsed)) {
+      const fallbackOwnerRef = ownerRefForSession({
+        id: sessionId,
+        uid: session?.uid ?? sessionId,
+      });
+      return {
+        isLegacy: true,
+        items: parsed.map((cid) => ({
+          cid,
+          ownerRef: session !== undefined ? ownerRefForSession(session) : fallbackOwnerRef,
+          addedAt: session?.createdAt ?? new Date().toISOString(),
+        })),
+      };
+    }
+
+    if (parsed.version === 2 && Array.isArray(parsed.items)) {
+      return { items: parsed.items, isLegacy: false };
+    }
+
+    return { items: [], isLegacy: false };
+  }
+
+  private async writeContributionLinks(
+    sessionId: string,
+    items: readonly SessionContributionLink[],
+  ): Promise<void> {
+    const sidecar: ContributionSidecarV2 = { version: 2, items };
+    await this.client.write(
+      this.contributionsPath(sessionId),
+      encoder.encode(JSON.stringify(sidecar)),
+    );
+  }
+
+  private async getClaimStore(): Promise<ClaimStore> {
+    if (this.injectedClaimStore !== undefined) return this.injectedClaimStore;
+    if (this.lazyClaimStore !== undefined) return this.lazyClaimStore;
+    this.lazyClaimStore = new NexusClaimStore({
+      client: this.client,
+      zoneId: this.zoneId,
+    });
+    return this.lazyClaimStore;
+  }
+
+  private buildRemainingFinalizerBlockers(
+    finalizers: readonly SessionFinalizer[],
+  ): readonly SessionDeleteBlocker[] {
+    return finalizers.map((finalizer) => ({
+      finalizer,
+      message: isKnownSessionFinalizer(finalizer)
+        ? finalizer === Finalizer.CloseRuntime
+          ? "runtime cleanup pending"
+          : "finalizer still pending"
+        : "unknown finalizer pending",
+    }));
+  }
+
   async createSession(input: CreateSessionInput): Promise<Session> {
     const id = randomUUID().slice(0, 8);
+    const createdAt = new Date().toISOString();
     const session: Session = {
       id,
-      uid: id,
+      uid: randomUUID(),
       goal: input.goal,
       presetName: input.presetName,
       topology: input.topology,
       status: "active",
-      createdAt: new Date().toISOString(),
+      createdAt,
       finalizers: DEFAULT_SESSION_FINALIZERS,
+      deletionAudit: [],
       contributionCount: 0,
       config: input.config,
     };
-    await this.client.write(this.sessionPath(session.id), encoder.encode(JSON.stringify(session)));
+    await this.writeSessionRecord(session);
     return session;
   }
 
   /** Write an existing session record (preserving its ID) — used for mirroring. */
   async putSession(session: Session): Promise<void> {
-    await this.client.write(this.sessionPath(session.id), encoder.encode(JSON.stringify(session)));
+    const normalized = this.normalizeSessionRecord(session);
+    await this.writeSessionRecord(normalized.session);
   }
 
   /**
@@ -73,8 +232,18 @@ export class NexusSessionStore implements SessionStore {
   async getSessionRecord(id: string): Promise<Session | undefined> {
     try {
       const data = await this.client.read(this.sessionPath(id));
-      if (!data) return undefined;
-      return normalizeSessionRecord(JSON.parse(decoder.decode(data)) as PersistedSessionRecord);
+      if (data === undefined) return undefined;
+      const normalized = this.normalizeSessionRecord(
+        JSON.parse(decoder.decode(data)) as PersistedSessionRecord,
+      );
+      if (normalized.changed) {
+        try {
+          await this.writeSessionRecord(normalized.session);
+        } catch {
+          // Preserve a stable in-memory uid even if a legacy rewrite fails.
+        }
+      }
+      return normalized.session;
     } catch {
       return undefined;
     }
@@ -91,42 +260,207 @@ export class NexusSessionStore implements SessionStore {
     id: string,
     updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason" | "stopStatus">>,
   ): Promise<void> {
-    const existing = await this.getSession(id);
+    const existing = await this.getSessionRecord(id);
     if (!existing) return;
-    const updated = { ...existing, ...updates };
-    await this.client.write(this.sessionPath(id), encoder.encode(JSON.stringify(updated)));
+    await this.writeSessionRecord({ ...existing, ...updates });
   }
 
   async listSessions(query?: SessionQuery): Promise<readonly Session[]> {
     try {
       const result = await this.client.list(`/zones/${this.zoneId}/sessions`);
       const sessions: Session[] = [];
-      for (const f of result.files) {
-        // Skip contributions files
-        if (f.name.endsWith(".contributions.json")) continue;
-        try {
-          const data = await this.client.read(`/zones/${this.zoneId}/sessions/${f.name}`);
-          if (data) {
-            const s = normalizeSessionRecord(
-              JSON.parse(decoder.decode(data)) as PersistedSessionRecord,
-            );
-            if (query?.status) {
-              if (s.status !== query.status) continue;
-            } else if (!query?.includeArchived) {
-              if (s.status === "archived") continue;
-            }
-            if (query?.presetName && s.presetName !== query.presetName) continue;
-            const cids = await this.getContributions(s.id);
-            sessions.push({ ...s, contributionCount: cids.length });
-          }
-        } catch {
-          // Skip malformed
+      for (const file of result.files) {
+        if (!file.name.endsWith(".json") || file.name.endsWith(".contributions.json")) continue;
+        const sessionId = file.name.replace(/\.json$/, "");
+        const session = await this.getSessionRecord(sessionId);
+        if (session === undefined) continue;
+        if (query?.status !== undefined) {
+          if (session.status !== query.status) continue;
+        } else if (!query?.includeArchived && session.status === "archived") {
+          continue;
         }
+        if (query?.presetName !== undefined && session.presetName !== query.presetName) continue;
+        const contributions = await this.getContributions(session.id);
+        sessions.push({ ...session, contributionCount: contributions.length });
       }
       return sessions.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
     } catch {
       return [];
     }
+  }
+
+  async deleteSession(id: string, options?: SessionDeleteOptions): Promise<SessionDeleteResult> {
+    const session = await this.getSessionRecord(id);
+    if (session === undefined) {
+      return {
+        sessionId: id,
+        deleted: false,
+        forced: false,
+        blockers: [{ finalizer: Finalizer.ReleaseSlots, message: "session not found" }],
+      };
+    }
+
+    const ownerRef = ownerRefForSession(session);
+    const startingFinalizers = normalizeSessionFinalizers(session.finalizers);
+    const deletionTimestamp = session.deletionTimestamp ?? new Date().toISOString();
+
+    if (options?.force === true) {
+      const warning = forceWarning(id);
+      const terminating: Session = {
+        ...session,
+        finalizers: startingFinalizers,
+        deletionTimestamp,
+        deletionAudit: appendDeletionAudit(session.deletionAudit, {
+          at: new Date().toISOString(),
+          actor: options.actor ?? "unknown",
+          warning,
+        }),
+      };
+      await this.writeSessionRecord(terminating);
+
+      const claimStore = await this.getClaimStore();
+      const cleanupErrors: string[] = [];
+      try {
+        await claimStore.releaseOwnedBy(ownerRef);
+      } catch (error) {
+        cleanupErrors.push(error instanceof Error ? error.message : String(error));
+      }
+      try {
+        await claimStore.deleteTerminalOwnedBy(ownerRef);
+      } catch (error) {
+        cleanupErrors.push(error instanceof Error ? error.message : String(error));
+      }
+      try {
+        await this.client.delete(this.contributionsPath(id));
+      } catch (error) {
+        cleanupErrors.push(error instanceof Error ? error.message : String(error));
+      }
+
+      await this.client.delete(this.sessionPath(id));
+      return {
+        sessionId: id,
+        deleted: true,
+        forced: true,
+        blockers: [],
+        warning,
+        ...(cleanupErrors.length > 0 ? { cleanupErrors } : {}),
+      };
+    }
+
+    let current: Session = {
+      ...session,
+      finalizers: [...startingFinalizers],
+      deletionTimestamp,
+      deletionAudit: session.deletionAudit ?? [],
+    };
+    await this.writeSessionRecord(current);
+
+    const claimStore = await this.getClaimStore();
+    for (const finalizer of DEFAULT_SESSION_FINALIZERS) {
+      if (!current.finalizers.includes(finalizer)) continue;
+
+      try {
+        if (finalizer === Finalizer.ReleaseSlots) {
+          await claimStore.releaseOwnedBy(ownerRef);
+          await claimStore.deleteTerminalOwnedBy(ownerRef);
+        } else if (finalizer === Finalizer.DrainContribs) {
+          await this.client.delete(this.contributionsPath(id));
+        } else if (finalizer === Finalizer.CloseRuntime && this.closeRuntime !== undefined) {
+          await this.closeRuntime(current);
+        }
+      } catch (error) {
+        return {
+          sessionId: id,
+          deleted: false,
+          forced: false,
+          blockers: [
+            {
+              finalizer,
+              message: error instanceof Error ? error.message : String(error),
+            },
+          ],
+        };
+      }
+
+      current = {
+        ...current,
+        finalizers: current.finalizers.filter((value) => value !== finalizer),
+      };
+      await this.writeSessionRecord(current);
+    }
+
+    if (current.finalizers.length > 0) {
+      return {
+        sessionId: id,
+        deleted: false,
+        forced: false,
+        blockers: this.buildRemainingFinalizerBlockers(current.finalizers),
+      };
+    }
+
+    await this.client.delete(this.sessionPath(id));
+    return {
+      sessionId: id,
+      deleted: true,
+      forced: false,
+      blockers: [],
+    };
+  }
+
+  async listSessionDeleteBlockers(id: string): Promise<readonly SessionDeleteBlocker[]> {
+    const session = await this.getSessionRecord(id);
+    if (session === undefined) {
+      return [{ finalizer: Finalizer.ReleaseSlots, message: "session not found" }];
+    }
+
+    const finalizers = normalizeSessionFinalizers(session.finalizers);
+    const ownerRef = ownerRefForSession(session);
+    const blockers: SessionDeleteBlocker[] = [];
+
+    if (finalizers.includes(Finalizer.ReleaseSlots)) {
+      const claimStore = await this.getClaimStore();
+      const activeOwnedClaims = await claimStore.listClaims({
+        status: "active",
+        ownerRef,
+      });
+      if (activeOwnedClaims.length > 0) {
+        blockers.push({
+          finalizer: Finalizer.ReleaseSlots,
+          message: `${activeOwnedClaims.length} active owned claim${
+            activeOwnedClaims.length === 1 ? "" : "s"
+          } remain`,
+        });
+      }
+    }
+
+    if (finalizers.includes(Finalizer.DrainContribs)) {
+      const links = await this.getContributions(id);
+      if (links.length > 0) {
+        blockers.push({
+          finalizer: Finalizer.DrainContribs,
+          message: `${links.length} session contribution link${
+            links.length === 1 ? "" : "s"
+          } remain`,
+        });
+      }
+    }
+
+    if (this.closeRuntime !== undefined && finalizers.includes(Finalizer.CloseRuntime)) {
+      blockers.push({
+        finalizer: Finalizer.CloseRuntime,
+        message: "runtime cleanup pending",
+      });
+    }
+
+    for (const finalizer of finalizers) {
+      if (isKnownSessionFinalizer(finalizer)) continue;
+      blockers.push({
+        finalizer,
+        message: "unknown finalizer pending",
+      });
+    }
+
+    return blockers;
   }
 
   async archiveSession(id: string): Promise<void> {
@@ -137,21 +471,28 @@ export class NexusSessionStore implements SessionStore {
   }
 
   async addContribution(sessionId: string, cid: string): Promise<void> {
-    const cids = [...(await this.getContributions(sessionId))];
-    if (!cids.includes(cid)) {
-      cids.push(cid);
+    const session = await this.getSessionRecord(sessionId);
+    const loaded = await this.readContributionLinks(sessionId, session ?? undefined);
+    const items = [...loaded.items];
+    if (!items.some((item) => item.cid === cid)) {
+      items.push({
+        cid,
+        ownerRef:
+          session !== undefined
+            ? ownerRefForSession(session)
+            : { kind: "session", id: sessionId, uid: sessionId },
+        addedAt: new Date().toISOString(),
+      });
     }
-    await this.client.write(
-      this.contributionsPath(sessionId),
-      encoder.encode(JSON.stringify(cids)),
-    );
+    if (loaded.isLegacy || items.length !== loaded.items.length) {
+      await this.writeContributionLinks(sessionId, items);
+    }
   }
 
   async getContributions(sessionId: string): Promise<readonly string[]> {
     try {
-      const data = await this.client.read(this.contributionsPath(sessionId));
-      if (!data) return [];
-      return JSON.parse(decoder.decode(data)) as string[];
+      const loaded = await this.readContributionLinks(sessionId);
+      return loaded.items.map((item) => item.cid);
     } catch {
       return [];
     }
