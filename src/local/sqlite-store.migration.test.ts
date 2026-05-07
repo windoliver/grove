@@ -647,4 +647,62 @@ describe("schema migration", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  test("v14 migration backfills missing session UIDs even when uid column already exists", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-migration-"));
+    const dbPath = join(dir, "test.db");
+    try {
+      const db = new Database(dbPath);
+      db.run("PRAGMA journal_mode = WAL");
+      db.run("PRAGMA foreign_keys = ON");
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
+          session_id TEXT PRIMARY KEY,
+          uid TEXT,
+          goal TEXT,
+          config_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'active',
+          started_at TEXT NOT NULL,
+          archived_at INTEGER,
+          contribution_count INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT OR REPLACE INTO schema_migrations (version, applied_at)
+        VALUES (14, '2026-01-01T00:00:00Z');
+      `);
+      db.run(
+        `INSERT INTO sessions (session_id, uid, goal, config_json, status, started_at)
+         VALUES (?, ?, 'null uid', '{}', 'active', ?)`,
+        ["legacy-null-uid", null, new Date().toISOString()],
+      );
+      db.run(
+        `INSERT INTO sessions (session_id, uid, goal, config_json, status, started_at)
+         VALUES (?, ?, 'empty uid', '{}', 'active', ?)`,
+        ["legacy-empty-uid", "", new Date().toISOString()],
+      );
+      db.run(
+        `INSERT INTO sessions (session_id, uid, goal, config_json, status, started_at)
+         VALUES (?, ?, 'stable uid', '{}', 'active', ?)`,
+        ["legacy-stable-uid", "stable-uid", new Date().toISOString()],
+      );
+      db.close();
+
+      const migrated = initSqliteDb(dbPath);
+      const rows = migrated
+        .prepare("SELECT session_id, uid FROM sessions ORDER BY session_id")
+        .all() as readonly { session_id: string; uid: string | null }[];
+
+      expect(rows.find((row) => row.session_id === "legacy-null-uid")?.uid).toBeTruthy();
+      expect(rows.find((row) => row.session_id === "legacy-empty-uid")?.uid).toBeTruthy();
+      expect(rows.find((row) => row.session_id === "legacy-stable-uid")?.uid).toBe("stable-uid");
+      expect(rows.find((row) => row.session_id === "legacy-null-uid")?.uid).not.toBe("stable-uid");
+      expect(rows.find((row) => row.session_id === "legacy-empty-uid")?.uid).not.toBe("stable-uid");
+
+      migrated.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

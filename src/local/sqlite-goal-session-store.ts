@@ -548,6 +548,11 @@ interface PendingClaimWrite {
   readonly claim: Claim;
 }
 
+interface PendingSessionDeleteState {
+  readonly deleted: boolean;
+  readonly blockers: readonly SessionDeleteBlocker[];
+}
+
 function ownerRefForSession(session: Session): OwnerRef {
   return { kind: "session", id: session.id, uid: session.uid };
 }
@@ -564,12 +569,16 @@ function forceWarning(sessionId: string): string {
   return `force delete skipped finalizer waits for session ${sessionId}`;
 }
 
-function normalizeSessionFinalizers(finalizers: readonly Finalizer[]): Finalizer[] {
+function normalizeSessionFinalizers(finalizers: readonly string[]): string[] {
   return finalizers.length === 0 ? [...DEFAULT_SESSION_FINALIZERS] : [...finalizers];
 }
 
 function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
   return typeof value === "object" && value !== null && "then" in value;
+}
+
+function isKnownSessionFinalizer(finalizer: string): finalizer is Finalizer {
+  return (DEFAULT_SESSION_FINALIZERS as readonly string[]).includes(finalizer);
 }
 
 class SessionDeleteFinalizerError extends Error {
@@ -973,6 +982,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     const ownerRef = ownerRefForSession(session);
     const startingFinalizers = normalizeSessionFinalizers(session.finalizers);
     if (options?.force === true) {
+      await this.getClaimStore();
       const warning = forceWarning(id);
       const now = new Date().toISOString();
       const auditTrail = appendDeletionAudit(session.deletionAudit, {
@@ -982,20 +992,20 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
       });
       const auditEvent = auditTrail.at(-1);
       const cleanupErrors: string[] = [];
-
-      try {
-        await this.releaseOwnedClaims(ownerRef);
-        await this.deleteTerminalOwnedClaims(ownerRef);
-      } catch (err) {
-        cleanupErrors.push(err instanceof Error ? err.message : String(err));
-      }
-      try {
-        this.deleteSessionContributionLinks(id);
-      } catch (err) {
-        cleanupErrors.push(err instanceof Error ? err.message : String(err));
-      }
+      const pendingClaimWrites: PendingClaimWrite[] = [];
 
       const forceDeleteTx = this.db.transaction(() => {
+        try {
+          this.releaseOwnedClaimsSync(ownerRef, pendingClaimWrites);
+          this.deleteTerminalOwnedClaimsSync(ownerRef, pendingClaimWrites);
+        } catch (err) {
+          cleanupErrors.push(err instanceof Error ? err.message : String(err));
+        }
+        try {
+          this.deleteSessionContributionLinks(id);
+        } catch (err) {
+          cleanupErrors.push(err instanceof Error ? err.message : String(err));
+        }
         this.db
           .prepare(
             `UPDATE sessions
@@ -1023,6 +1033,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
         this.db.prepare("DELETE FROM sessions WHERE session_id = ?").run(id);
       });
       forceDeleteTx.immediate();
+      this.flushPendingClaimWrites(pendingClaimWrites);
       return {
         sessionId: id,
         deleted: true,
@@ -1037,6 +1048,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     const deletionTimestamp = session.deletionTimestamp ?? new Date().toISOString();
     const remainingFinalizers = [...startingFinalizers];
     const pendingClaimWrites: PendingClaimWrite[] = [];
+    let pendingDeleteState: PendingSessionDeleteState = { deleted: true, blockers: [] };
     const closeRuntimePending =
       this.closeRuntime !== undefined && startingFinalizers.includes(Finalizer.CloseRuntime);
     try {
@@ -1060,6 +1072,14 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
           this.persistSessionFinalizersSync(id, deletionTimestamp, remainingFinalizers, finalizer);
         }
 
+        if (!closeRuntimePending && remainingFinalizers.length > 0) {
+          pendingDeleteState = {
+            deleted: false,
+            blockers: this.buildFinalizerBlockers(remainingFinalizers),
+          };
+          return;
+        }
+
         if (!closeRuntimePending) {
           this.db.prepare("DELETE FROM sessions WHERE session_id = ?").run(id);
         }
@@ -1081,6 +1101,14 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
       };
     }
     this.flushPendingClaimWrites(pendingClaimWrites);
+    if (!pendingDeleteState.deleted) {
+      return {
+        sessionId: id,
+        deleted: false,
+        forced: false,
+        blockers: pendingDeleteState.blockers,
+      };
+    }
 
     if (closeRuntimePending) {
       const runtimeFinalizers = [...remainingFinalizers];
@@ -1117,6 +1145,15 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
         );
         this.db.prepare("DELETE FROM sessions WHERE session_id = ?").run(id);
       });
+
+      if (remainingFinalizers.length > 0) {
+        return {
+          sessionId: id,
+          deleted: false,
+          forced: false,
+          blockers: this.buildFinalizerBlockers(remainingFinalizers),
+        };
+      }
     }
 
     return {
@@ -1161,6 +1198,14 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
       });
     }
 
+    for (const finalizer of finalizers) {
+      if (isKnownSessionFinalizer(finalizer)) continue;
+      blockers.push({
+        finalizer: finalizer as Finalizer,
+        message: "unknown finalizer pending",
+      });
+    }
+
     return blockers;
   };
 
@@ -1186,16 +1231,6 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
       [cutoff],
     );
     return result.changes;
-  }
-
-  private async releaseOwnedClaims(ownerRef: OwnerRef): Promise<number> {
-    const claimStore = await this.getClaimStore();
-    return claimStore.releaseOwnedBy(ownerRef);
-  }
-
-  private async deleteTerminalOwnedClaims(ownerRef: OwnerRef): Promise<number> {
-    const claimStore = await this.getClaimStore();
-    return claimStore.deleteTerminalOwnedBy(ownerRef);
   }
 
   private releaseOwnedClaimsSync(ownerRef: OwnerRef, pendingWrites?: PendingClaimWrite[]): number {
@@ -1290,11 +1325,22 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     }
   }
 
+  private buildFinalizerBlockers(finalizers: readonly string[]): readonly SessionDeleteBlocker[] {
+    return finalizers.map((finalizer) => ({
+      finalizer: finalizer as Finalizer,
+      message: isKnownSessionFinalizer(finalizer)
+        ? finalizer === Finalizer.CloseRuntime
+          ? "runtime cleanup pending"
+          : "finalizer still pending"
+        : "unknown finalizer pending",
+    }));
+  }
+
   private persistSessionFinalizersSync(
     sessionId: string,
     deletionTimestamp: string,
-    currentFinalizers: Finalizer[],
-    completedFinalizer: Finalizer,
+    currentFinalizers: string[],
+    completedFinalizer: string,
   ): void {
     const remainingFinalizers = currentFinalizers.filter((f) => f !== completedFinalizer);
     this.db
@@ -1310,7 +1356,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
   private runSessionDeleteTransaction(
     sessionId: string,
     deletionTimestamp: string,
-    finalizers: Finalizer[],
+    finalizers: string[],
     action: () => void,
   ): void {
     const tx = this.db.transaction(() => {

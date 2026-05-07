@@ -735,11 +735,26 @@ describe("session deletion finalizers", () => {
 
   it("deleteSession force removes session and returns warning", async () => {
     const blocking = new SqliteGoalSessionStore(stores.db, {
+      claimStore: stores.claimStore,
       closeRuntime: async () => {
         throw new Error("runtime still flushing");
       },
     });
     const session = await blocking.createSession({ goal: "force" });
+    const ownerRef = { kind: "session" as const, id: session.id, uid: session.uid };
+    const claim = makeClaim({
+      claimId: "force-delete-claim",
+      targetRef: "force-delete-target",
+      ownerRef,
+    });
+    await stores.claimStore.createClaim(claim);
+    const contribution = makeContribution({ summary: "force delete contribution" });
+    await stores.contributionStore.put(contribution);
+    await blocking.addContributionToSession(session.id, contribution.cid);
+    const events: Array<{ op: string; claimId: string }> = [];
+    stores.claimStore.onClaimWrite = (op, writtenClaim) => {
+      events.push({ op, claimId: writtenClaim.claimId });
+    };
 
     const result = await blocking.deleteSession(session.id, { force: true, actor: "test" });
 
@@ -747,6 +762,10 @@ describe("session deletion finalizers", () => {
     expect(result.forced).toBe(true);
     expect(result.warning).toContain("force delete skipped finalizer waits");
     expect(await blocking.getSession(session.id)).toBeUndefined();
+    expect(await stores.claimStore.getClaim(claim.claimId)).toBeUndefined();
+    expect(await blocking.getSessionContributions(session.id)).toEqual([]);
+    expect(events).toContainEqual({ op: "MODIFIED", claimId: claim.claimId });
+    expect(events).toContainEqual({ op: "DELETED", claimId: claim.claimId });
     const auditRows = stores.db
       .prepare(
         `SELECT session_id, at, actor, force, warning, event_json
@@ -771,6 +790,41 @@ describe("session deletion finalizers", () => {
       force: true,
       warning: result.warning,
     });
+  });
+
+  it("deleteSession force rolls back cleanup and callbacks if final session delete fails", async () => {
+    const session = await store.createSession({ goal: "force rollback" });
+    const ownerRef = { kind: "session" as const, id: session.id, uid: session.uid };
+    const claim = makeClaim({
+      claimId: "force-rollback-claim",
+      targetRef: "force-rollback-target",
+      ownerRef,
+    });
+    await stores.claimStore.createClaim(claim);
+    const contribution = makeContribution({ summary: "force rollback contribution" });
+    await stores.contributionStore.put(contribution);
+    await store.addContributionToSession(session.id, contribution.cid);
+    const events: Array<{ op: string; claimId: string }> = [];
+    stores.claimStore.onClaimWrite = (op, writtenClaim) => {
+      events.push({ op, claimId: writtenClaim.claimId });
+    };
+    stores.db.run(
+      "CREATE TABLE force_session_delete_guard (session_id TEXT NOT NULL REFERENCES sessions(session_id))",
+    );
+    stores.db
+      .prepare("INSERT INTO force_session_delete_guard (session_id) VALUES (?)")
+      .run(session.id);
+
+    await expect(store.deleteSession(session.id, { force: true, actor: "test" })).rejects.toThrow();
+
+    expect(events).toEqual([]);
+    expect(await store.getSession(session.id)).toBeDefined();
+    expect((await stores.claimStore.getClaim(claim.claimId))?.status).toBe("active");
+    expect(await store.getSessionContributions(session.id)).toEqual([contribution.cid]);
+    const auditRows = stores.db
+      .prepare("SELECT COUNT(*) AS count FROM session_deletion_audits WHERE session_id = ?")
+      .get(session.id) as { count: number } | null;
+    expect(auditRows?.count).toBe(0);
   });
 
   it("deleteSession emits claim write callbacks for released and deleted owned claims", async () => {
@@ -912,6 +966,27 @@ describe("session deletion finalizers", () => {
     expect(await store.getSession(session.id)).toBeDefined();
     expect((await stores.claimStore.getClaim(claim.claimId))?.status).toBe("active");
     expect(await store.getSessionContributions(session.id)).toEqual([contribution.cid]);
+  });
+
+  it("deleteSession keeps unknown finalizers pending until force delete", async () => {
+    const session = await store.createSession({ goal: "unknown finalizer" });
+    stores.db
+      .prepare("UPDATE sessions SET finalizers_json = ? WHERE session_id = ?")
+      .run(JSON.stringify(["grove.io/future-cleanup"]), session.id);
+
+    const result = await store.deleteSession(session.id);
+
+    expect(result.deleted).toBe(false);
+    expect(result.blockers).toEqual([
+      { finalizer: "grove.io/future-cleanup", message: "unknown finalizer pending" },
+    ]);
+    const fetched = await store.getSession(session.id);
+    expect(fetched?.finalizers).toEqual(["grove.io/future-cleanup"]);
+
+    const forced = await store.deleteSession(session.id, { force: true, actor: "test" });
+
+    expect(forced.deleted).toBe(true);
+    expect(await store.getSession(session.id)).toBeUndefined();
   });
 });
 

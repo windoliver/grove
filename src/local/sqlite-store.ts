@@ -564,12 +564,12 @@ export function initSqliteDb(dbPath: string): Database {
         const sessionColNames = new Set(sessionCols.map((c) => c.name));
         if (!sessionColNames.has("uid")) {
           db.run("ALTER TABLE sessions ADD COLUMN uid TEXT");
-          const rows = db
-            .prepare("SELECT session_id FROM sessions WHERE uid IS NULL OR uid = ''")
-            .all() as readonly { session_id: string }[];
-          const update = db.prepare("UPDATE sessions SET uid = ? WHERE session_id = ?");
-          for (const row of rows) update.run(crypto.randomUUID(), row.session_id);
         }
+        const rows = db
+          .prepare("SELECT session_id FROM sessions WHERE uid IS NULL OR uid = ''")
+          .all() as readonly { session_id: string }[];
+        const update = db.prepare("UPDATE sessions SET uid = ? WHERE session_id = ?");
+        for (const row of rows) update.run(crypto.randomUUID(), row.session_id);
         if (!sessionColNames.has("finalizers_json")) {
           db.run("ALTER TABLE sessions ADD COLUMN finalizers_json TEXT NOT NULL DEFAULT '[]'");
         }
