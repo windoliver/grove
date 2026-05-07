@@ -33,7 +33,7 @@ import type {
 import { toUtcIso } from "../core/time.js";
 import { debugLog } from "../tui/debug-log.js";
 import { batchParallel } from "./batch.js";
-import type { NexusClient, ReadResult, WriteResult } from "./client.js";
+import type { ListEntry, NexusClient, ReadResult, WriteResult } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
 import { NexusConflictError } from "./errors.js";
@@ -236,6 +236,50 @@ export class NexusContributionStore implements ContributionStore {
         : `nexus:${this.zoneId}:contributions`;
     this.semaphore = new Semaphore(this.config.maxConcurrency);
     this.cache = new LruCache(this.config.cacheMaxEntries);
+  }
+
+  private async listRelationEntries(targetCid: string): Promise<readonly ListEntry[]> {
+    if (this.sessionId === undefined) {
+      return listAllPages(
+        this.client,
+        this.semaphore,
+        this.config,
+        relationIndexDir(this.zoneId, targetCid),
+      );
+    }
+
+    // Compatibility for session data written before relation indexes were session-scoped.
+    const [sessionEntries, legacyEntries] = await Promise.all([
+      listAllPages(
+        this.client,
+        this.semaphore,
+        this.config,
+        relationIndexDir(this.zoneId, targetCid, this.sessionId),
+      ),
+      listAllPages(
+        this.client,
+        this.semaphore,
+        this.config,
+        relationIndexDir(this.zoneId, targetCid),
+      ),
+    ]);
+    return this.dedupeRelationEntries([...sessionEntries, ...legacyEntries]);
+  }
+
+  private dedupeRelationEntries(entries: readonly ListEntry[]): readonly ListEntry[] {
+    const seen = new Set<string>();
+    const deduped: ListEntry[] = [];
+    for (const entry of entries) {
+      if (entry.isDirectory) {
+        deduped.push(entry);
+        continue;
+      }
+      const sourceCid = entry.name.replace(/\.json$/, "");
+      if (seen.has(sourceCid)) continue;
+      seen.add(sourceCid);
+      deduped.push(entry);
+    }
+    return deduped;
   }
 
   async put(contribution: Contribution): Promise<ContributionPutResult> {
@@ -519,7 +563,12 @@ export class NexusContributionStore implements ContributionStore {
 
   private async writeContributionIndexes(contribution: Contribution): Promise<void> {
     for (const rel of contribution.relations) {
-      const relPath = relationIndexPath(this.zoneId, rel.targetCid, contribution.cid);
+      const relPath = relationIndexPath(
+        this.zoneId,
+        rel.targetCid,
+        contribution.cid,
+        this.sessionId,
+      );
       const relData = encode({
         relationType: rel.relationType,
         ...(rel.metadata !== undefined ? { metadata: rel.metadata } : {}),
@@ -762,9 +811,7 @@ export class NexusContributionStore implements ContributionStore {
   }
 
   async children(cid: string): Promise<readonly Contribution[]> {
-    const relDir = relationIndexDir(this.zoneId, cid);
-    // Expected: directory may not exist yet
-    const entries = await listAllPages(this.client, this.semaphore, this.config, relDir);
+    const entries = await this.listRelationEntries(cid);
 
     const seen = new Set<string>();
     const cids: string[] = [];
@@ -825,9 +872,7 @@ export class NexusContributionStore implements ContributionStore {
   }
 
   async relatedTo(cid: string, relationType?: RelationType): Promise<readonly Contribution[]> {
-    const relDir = relationIndexDir(this.zoneId, cid);
-    // Expected: directory may not exist yet
-    const entries = await listAllPages(this.client, this.semaphore, this.config, relDir);
+    const entries = await this.listRelationEntries(cid);
 
     const contributions: Contribution[] = [];
     const seen = new Set<string>();
@@ -913,9 +958,7 @@ export class NexusContributionStore implements ContributionStore {
     kind: ContributionKind,
     relationType?: RelationType,
   ): Promise<readonly Contribution[]> {
-    const relDir = relationIndexDir(this.zoneId, targetCid);
-    // Expected: directory may not exist yet
-    const allEntries = await listAllPages(this.client, this.semaphore, this.config, relDir);
+    const allEntries = await this.listRelationEntries(targetCid);
 
     const contributions: Contribution[] = [];
     for (const entry of allEntries) {
@@ -1076,9 +1119,7 @@ export class NexusContributionStore implements ContributionStore {
       const nextLevel: string[] = [];
 
       for (const parentCid of currentLevel) {
-        const relDir = relationIndexDir(this.zoneId, parentCid);
-        // Expected: directory may not exist yet
-        const entries = await listAllPages(this.client, this.semaphore, this.config, relDir);
+        const entries = await this.listRelationEntries(parentCid);
 
         for (const entry of entries) {
           if (entry.isDirectory) continue;
@@ -1124,9 +1165,7 @@ export class NexusContributionStore implements ContributionStore {
     if (cids.length === 0) return result;
 
     for (const cid of cids) {
-      const relDir = relationIndexDir(this.zoneId, cid);
-      // Expected: directory may not exist yet
-      const entries = await listAllPages(this.client, this.semaphore, this.config, relDir);
+      const entries = await this.listRelationEntries(cid);
 
       let count = 0;
       for (const entry of entries) {
