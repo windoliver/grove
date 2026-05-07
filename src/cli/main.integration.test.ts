@@ -382,6 +382,29 @@ describe("CLI commands (with grove)", () => {
     });
   });
 
+  test("grove session delete reports a missing grove database", async () => {
+    groveDir = join(tmpDir, ".grove");
+    await mkdir(groveDir, { recursive: true });
+
+    const { stdout, exitCode } = await runCli(["session", "delete", "missing"], tmpDir);
+
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stdout)).toEqual({
+      error: { code: "NOT_FOUND", message: "No grove database found" },
+    });
+  });
+
+  test("grove session delete reports a missing session", async () => {
+    await setupGrove();
+
+    const { stdout, exitCode } = await runCli(["session", "delete", "missing"], tmpDir);
+
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stdout)).toEqual({
+      error: { code: "NOT_FOUND", message: "Session not found: missing" },
+    });
+  });
+
   // -------------------------------------------------------------------------
   // Error handling
   // -------------------------------------------------------------------------
