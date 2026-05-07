@@ -1,4 +1,7 @@
 import { type ChildProcessByStdio, spawn as nodeSpawn } from "node:child_process";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { Readable as NodeReadable, Writable as NodeWritable } from "node:stream";
 import {
@@ -82,6 +85,56 @@ function resolveAgentFromConfig(config: AgentConfig): string {
   return "codex";
 }
 
+/**
+ * Prepare an ephemeral CODEX_HOME for grove-spawned codex children. Copies the
+ * user's auth.json (so login persists), writes a minimal config.toml (model +
+ * personality only), and excludes user-level mcp_servers entries that may
+ * point to enterprise endpoints unreachable from this environment (DNS-blocked
+ * MaaS, etc.). Without this, a single failing user MCP server brings down the
+ * whole ACP connection on startup via rmcp's fatal-on-transport-close behavior.
+ */
+async function prepareIsolatedCodexHome(env: NodeJS.ProcessEnv): Promise<string> {
+  const userHome = env.CODEX_HOME ?? join(env.HOME ?? "/tmp", ".codex");
+  const isolated = mkdtempSync(join(tmpdir(), "grove-codex-"));
+  // Copy auth.json if present so login persists.
+  const userAuth = join(userHome, "auth.json");
+  if (existsSync(userAuth)) {
+    try {
+      copyFileSync(userAuth, join(isolated, "auth.json"));
+    } catch {
+      /* best-effort */
+    }
+  }
+  // Minimal config: keep model preferences from user config but skip everything
+  // else (mcp_servers, projects, plugins, notify hooks). Grove's per-spawn MCP
+  // servers are appended via `-c mcp_servers.<name>.command=...` at launch time.
+  const userConfigPath = join(userHome, "config.toml");
+  const lines: string[] = [];
+  if (existsSync(userConfigPath)) {
+    try {
+      const fs = await import("node:fs/promises");
+      const text = await fs.readFile(userConfigPath, "utf8");
+      // Keep only top-level scalar assignments before the first `[section]`.
+      // This preserves model/personality/effort but drops every table
+      // (mcp_servers.X, projects.X, plugins, etc.).
+      for (const raw of text.split("\n")) {
+        const line = raw.trimEnd();
+        if (line.startsWith("[")) break;
+        if (line.length > 0) lines.push(line);
+      }
+    } catch {
+      /* best-effort */
+    }
+  }
+  if (lines.length === 0) {
+    lines.push('model = "gpt-5"');
+  }
+  writeFileSync(join(isolated, "config.toml"), `${lines.join("\n")}\n`, "utf-8");
+  // Ensure plugins dir exists empty (some codex plugins bundle MCP servers).
+  mkdirSync(join(isolated, "plugins"), { recursive: true });
+  return isolated;
+}
+
 async function launchSubprocess(
   agent: string,
   cwd: string,
@@ -93,9 +146,29 @@ async function launchSubprocess(
   } = {},
 ): Promise<LaunchResult> {
   const launch = resolveAcpLaunch(agent);
-  const child = nodeSpawn(launch.command, buildAcpLaunchArgs(launch, opts, env), {
+
+  // Codex loads MCP servers from the user's ~/.codex/config.toml at startup.
+  // If any of those servers fail to connect (e.g., DNS-blocked enterprise MCP
+  // endpoints reachable only on VPN), the codex `rmcp` worker quits fatal,
+  // which closes the entire ACP stdio connection and breaks downstream sends.
+  // Isolate codex from the user MCP config by pointing CODEX_HOME at an
+  // ephemeral directory that contains only the user's auth (so login still
+  // works) and a minimal config.toml. Grove's per-spawn MCP servers are
+  // appended via `-c` flags in buildAcpLaunchArgs and remain in effect.
+  const childEnv = { ...env };
+  if (agent === "codex" && env.GROVE_CODEX_NO_ISOLATION !== "1") {
+    try {
+      const isolatedHome = await prepareIsolatedCodexHome(env);
+      childEnv.CODEX_HOME = isolatedHome;
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[acp-runtime] codex isolated-home prep failed: ${detail}\n`);
+    }
+  }
+
+  const child = nodeSpawn(launch.command, buildAcpLaunchArgs(launch, opts, childEnv), {
     cwd,
-    env,
+    env: childEnv,
     stdio: ["pipe", "pipe", "pipe"],
   }) as ChildProcessByStdio<Writable, Readable, Readable>;
 
