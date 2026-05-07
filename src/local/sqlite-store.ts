@@ -16,16 +16,21 @@ import { ContextSchema, fromManifest, toManifest, verifyCid } from "../core/mani
 import type {
   AgentIdentity,
   Claim,
+  ClaimSpecRecord,
   ClaimStatus,
+  ClaimStatusRecord,
+  ClaimView,
   Contribution,
   ContributionKind,
   JsonValue,
   Relation,
   RelationType,
 } from "../core/models.js";
+import { claimToSpecRecord, claimToStatusRecord, claimViewToClaim } from "../core/models.js";
 import type {
   ActiveClaimFilter,
   ClaimQuery,
+  ClaimStatusPatch,
   ClaimStore,
   ContributionPutResult,
   ContributionQuery,
@@ -914,41 +919,86 @@ function rowToContribution(row: { manifest_json: string }): Contribution {
   return fromManifest(JSON.parse(row.manifest_json) as unknown, { verify: false });
 }
 
-interface ClaimRow {
-  readonly claim_id: string;
+interface ClaimSpecRow {
+  readonly id: string;
+  readonly role_name: string | null;
+  readonly platform: string | null;
+  readonly blueprint: string | null;
+  readonly assignee_json: string | null;
+  readonly lease_deadline_sec: number | null;
+  readonly priority: number | null;
+  readonly max_iterations: number | null;
+  readonly generation: number;
   readonly target_ref: string;
   readonly agent_id: string;
-  readonly status: string;
-  readonly intent_summary: string;
-  readonly created_at: string;
-  readonly heartbeat_at: string;
-  readonly lease_expires_at: string;
-  readonly context_json: string | null;
   readonly agent_json: string;
+  readonly intent_summary: string;
+  readonly context_json: string | null;
+  readonly created_at: string;
+}
+
+interface ClaimStatusRow {
+  readonly id: string;
+  readonly phase: string;
+  readonly observed_generation: number;
+  readonly agent_session_id: string | null;
+  readonly last_heartbeat_at: string;
+  readonly lease_expires_at: string;
+  readonly current_contribution_cid: string | null;
+  readonly conditions_json: string;
+  readonly last_transition_at: string;
   readonly attempt_count: number;
   readonly revision: number;
 }
 
-function rowToClaim(row: ClaimRow, statusOverride?: ClaimStatus): Claim {
-  const base: Claim = {
-    claimId: row.claim_id,
+interface ClaimViewRow extends ClaimSpecRow, ClaimStatusRow {}
+
+function rowToClaimSpec(row: ClaimSpecRow): ClaimSpecRecord {
+  return {
+    id: row.id,
+    ...(row.role_name === null ? {} : { roleName: row.role_name }),
+    ...(row.platform === null ? {} : { platform: row.platform }),
+    ...(row.blueprint === null ? {} : { blueprint: row.blueprint }),
+    ...(row.assignee_json === null
+      ? {}
+      : { assignee: JSON.parse(row.assignee_json) as AgentIdentity }),
+    ...(row.lease_deadline_sec === null ? {} : { leaseDeadlineSec: row.lease_deadline_sec }),
+    ...(row.priority === null ? {} : { priority: row.priority }),
+    ...(row.max_iterations === null ? {} : { maxIterations: row.max_iterations }),
+    generation: row.generation,
     targetRef: row.target_ref,
     agent: JSON.parse(row.agent_json) as AgentIdentity,
-    status: (statusOverride ?? row.status) as ClaimStatus,
     intentSummary: row.intent_summary,
+    ...(row.context_json === null
+      ? {}
+      : { context: JSON.parse(row.context_json) as Readonly<Record<string, JsonValue>> }),
     createdAt: row.created_at,
-    heartbeatAt: row.heartbeat_at,
+  };
+}
+
+function rowToClaimStatus(row: ClaimStatusRow): ClaimStatusRecord {
+  return {
+    id: row.id,
+    phase: row.phase as ClaimStatus,
+    observedGeneration: row.observed_generation,
+    ...(row.agent_session_id === null ? {} : { agentSessionId: row.agent_session_id }),
+    lastHeartbeatAt: row.last_heartbeat_at,
     leaseExpiresAt: row.lease_expires_at,
-    ...(row.attempt_count > 0 && { attemptCount: row.attempt_count }),
+    ...(row.current_contribution_cid === null
+      ? {}
+      : { currentContributionCid: row.current_contribution_cid }),
+    conditions: JSON.parse(row.conditions_json) as ClaimStatusRecord["conditions"],
+    lastTransitionAt: row.last_transition_at,
+    attemptCount: row.attempt_count,
     revision: row.revision,
   };
-  if (row.context_json !== null) {
-    return {
-      ...base,
-      context: JSON.parse(row.context_json) as Readonly<Record<string, JsonValue>>,
-    };
-  }
-  return base;
+}
+
+function rowToClaimView(row: ClaimViewRow): ClaimView {
+  return {
+    spec: rowToClaimSpec(row),
+    status: rowToClaimStatus(row),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1527,8 +1577,33 @@ export class SqliteContributionStore implements ContributionStore {
 // SqliteClaimStore
 // ---------------------------------------------------------------------------
 
-const CLAIM_SELECT_COLS = `claim_id, target_ref, agent_id, status, intent_summary,
-  created_at, heartbeat_at, lease_expires_at, context_json, agent_json, attempt_count, revision`;
+const CLAIM_VIEW_SELECT_COLS = `
+  s.id AS id,
+  s.role_name AS role_name,
+  s.platform AS platform,
+  s.blueprint AS blueprint,
+  s.assignee_json AS assignee_json,
+  s.lease_deadline_sec AS lease_deadline_sec,
+  s.priority AS priority,
+  s.max_iterations AS max_iterations,
+  s.generation AS generation,
+  s.target_ref AS target_ref,
+  s.agent_id AS agent_id,
+  s.agent_json AS agent_json,
+  s.intent_summary AS intent_summary,
+  s.context_json AS context_json,
+  s.created_at AS created_at,
+  st.phase AS phase,
+  st.observed_generation AS observed_generation,
+  st.agent_session_id AS agent_session_id,
+  st.last_heartbeat_at AS last_heartbeat_at,
+  st.lease_expires_at AS lease_expires_at,
+  st.current_contribution_cid AS current_contribution_cid,
+  st.conditions_json AS conditions_json,
+  st.last_transition_at AS last_transition_at,
+  st.attempt_count AS attempt_count,
+  st.revision AS revision
+`;
 
 /**
  * SQLite-backed ClaimStore with lease-based coordination.
@@ -1555,8 +1630,166 @@ export class SqliteClaimStore implements ClaimStore {
     this.db = db;
     this.storeIdentity = db.filename;
 
-    this.stmtGetClaim = db.query(`SELECT ${CLAIM_SELECT_COLS} FROM claims WHERE claim_id = ?`);
+    this.stmtGetClaim = db.query(`
+      SELECT ${CLAIM_VIEW_SELECT_COLS}
+      FROM claim_spec s
+      JOIN claim_status st ON st.id = s.id
+      WHERE s.id = ?
+    `);
   }
+
+  putClaimSpec = async (spec: ClaimSpecRecord): Promise<ClaimView> => {
+    this.validateSpecContext(spec);
+
+    let op: "ADDED" | "MODIFIED" = "MODIFIED";
+    const tx = this.db.transaction(() => {
+      const existing = this.readClaimView(spec.id);
+      const nowIso = new Date().toISOString();
+      const activeOnTarget = this.db
+        .prepare(
+          `SELECT s.id AS claim_id
+           FROM claim_spec s
+           JOIN claim_status st ON st.id = s.id
+           WHERE s.target_ref = ?
+             AND st.phase = 'active'
+             AND st.lease_expires_at >= ?
+             AND s.id <> ?`,
+        )
+        .get(spec.targetRef, nowIso, spec.id) as { claim_id: string } | null;
+
+      if (activeOnTarget !== null) {
+        throw new StateConflictError({
+          resource: "Claim",
+          reason: "target already has an active claim",
+          message: `Target '${spec.targetRef}' already has an active claim '${activeOnTarget.claim_id}'`,
+        });
+      }
+
+      if (existing === null) {
+        op = "ADDED";
+        const leaseDeadlineSec = spec.leaseDeadlineSec ?? DEFAULT_LEASE_DURATION_MS / 1000;
+        const createdAtMs = new Date(spec.createdAt).getTime();
+        const leaseExpiresAt = new Date(createdAtMs + leaseDeadlineSec * 1000).toISOString();
+        this.insertSpecRow({ ...spec, generation: 1 });
+        this.insertStatusRow({
+          id: spec.id,
+          phase: "active",
+          observedGeneration: 0,
+          lastHeartbeatAt: nowIso,
+          leaseExpiresAt,
+          conditions: [],
+          lastTransitionAt: nowIso,
+          attemptCount: 0,
+          revision: 1,
+        });
+        return;
+      }
+
+      this.db
+        .prepare(
+          `UPDATE claim_spec
+           SET role_name = ?,
+               platform = ?,
+               blueprint = ?,
+               assignee_json = ?,
+               lease_deadline_sec = ?,
+               priority = ?,
+               max_iterations = ?,
+               generation = generation + 1,
+               target_ref = ?,
+               agent_id = ?,
+               agent_json = ?,
+               intent_summary = ?,
+               context_json = ?
+           WHERE id = ?`,
+        )
+        .run(
+          spec.roleName ?? null,
+          spec.platform ?? null,
+          spec.blueprint ?? null,
+          spec.assignee !== undefined ? JSON.stringify(spec.assignee) : null,
+          spec.leaseDeadlineSec ?? null,
+          spec.priority ?? null,
+          spec.maxIterations ?? null,
+          spec.targetRef,
+          spec.agent.agentId,
+          JSON.stringify(spec.agent),
+          spec.intentSummary,
+          spec.context !== undefined ? JSON.stringify(spec.context) : null,
+          spec.id,
+        );
+    });
+    tx.immediate();
+
+    const view = this.readClaimView(spec.id);
+    if (view === null) throw new Error(`Failed to read back claim '${spec.id}'`);
+    this.onClaimWrite?.(op, claimViewToClaim(view));
+    return view;
+  };
+
+  getClaimView = async (claimId: string): Promise<ClaimView | undefined> => {
+    return this.readClaimView(claimId) ?? undefined;
+  };
+
+  patchClaimStatus = async (claimId: string, patch: ClaimStatusPatch): Promise<ClaimView> => {
+    const assignments: string[] = [];
+    const params: SQLQueryBindings[] = [];
+    const addAssignment = (column: string, value: SQLQueryBindings): void => {
+      assignments.push(`${column} = ?`);
+      params.push(value);
+    };
+
+    if (patch.phase !== undefined) {
+      addAssignment("phase", patch.phase);
+    }
+    if (patch.observedGeneration !== undefined) {
+      addAssignment("observed_generation", patch.observedGeneration);
+    }
+    if (patch.agentSessionId !== undefined) {
+      addAssignment("agent_session_id", patch.agentSessionId);
+    }
+    if (patch.lastHeartbeatAt !== undefined) {
+      addAssignment("last_heartbeat_at", toUtcIso(patch.lastHeartbeatAt));
+    }
+    if (patch.leaseExpiresAt !== undefined) {
+      addAssignment("lease_expires_at", toUtcIso(patch.leaseExpiresAt));
+    }
+    if (patch.currentContributionCid !== undefined) {
+      addAssignment("current_contribution_cid", patch.currentContributionCid);
+    }
+    if (patch.conditions !== undefined) {
+      addAssignment("conditions_json", JSON.stringify(patch.conditions));
+    }
+    if (patch.lastTransitionAt !== undefined) {
+      addAssignment("last_transition_at", toUtcIso(patch.lastTransitionAt));
+    }
+
+    assignments.push("revision = revision + 1");
+    params.push(claimId);
+
+    const tx = this.db.transaction(() => {
+      const existing = this.readClaimView(claimId);
+      if (existing === null) {
+        throw new NotFoundError({
+          resource: "Claim",
+          identifier: claimId,
+          message: `Claim '${claimId}' not found`,
+        });
+      }
+
+      this.db
+        .prepare(`UPDATE claim_status SET ${assignments.join(", ")} WHERE id = ?`)
+        .run(...params);
+
+      const view = this.readClaimView(claimId);
+      if (view === null) throw new Error(`Failed to read back claim '${claimId}'`);
+      return view;
+    });
+
+    const view = tx.immediate();
+    this.onClaimWrite?.("MODIFIED", claimViewToClaim(view));
+    return view;
+  };
 
   createClaim = async (claim: Claim): Promise<Claim> => {
     this.validateClaimContext(claim);
@@ -1568,8 +1801,8 @@ export class SqliteClaimStore implements ClaimStore {
     // Atomic check-and-insert: IMMEDIATE transaction prevents TOCTOU races
     const createTx = this.db.transaction(() => {
       const existing = this.db
-        .prepare("SELECT claim_id FROM claims WHERE claim_id = ?")
-        .get(claim.claimId) as { claim_id: string } | null;
+        .prepare("SELECT id FROM claim_spec WHERE id = ?")
+        .get(claim.claimId) as { id: string } | null;
 
       if (existing !== null) {
         throw new StateConflictError({
@@ -1583,7 +1816,10 @@ export class SqliteClaimStore implements ClaimStore {
       const now = new Date().toISOString();
       const activeOnTarget = this.db
         .prepare(
-          "SELECT claim_id FROM claims WHERE target_ref = ? AND status = 'active' AND lease_expires_at >= ?",
+          `SELECT s.id AS claim_id
+           FROM claim_spec s
+           JOIN claim_status st ON st.id = s.id
+           WHERE s.target_ref = ? AND st.phase = 'active' AND st.lease_expires_at >= ?`,
         )
         .get(claim.targetRef, now) as { claim_id: string } | null;
 
@@ -1595,7 +1831,13 @@ export class SqliteClaimStore implements ClaimStore {
         });
       }
 
-      this.insertClaimRow(claim, createdAtUtc, heartbeatUtc, leaseExpiresUtc);
+      this.insertSpecAndDefaultStatus({
+        ...claim,
+        createdAt: createdAtUtc,
+        heartbeatAt: heartbeatUtc,
+        leaseExpiresAt: leaseExpiresUtc,
+        revision: 1,
+      });
     });
     try {
       createTx.immediate();
@@ -1608,8 +1850,9 @@ export class SqliteClaimStore implements ClaimStore {
       }
     }
 
-    const created = this.readClaim(claim.claimId);
-    if (created === null) throw new Error(`Failed to read back claim '${claim.claimId}'`);
+    const view = this.readClaimView(claim.claimId);
+    if (view === null) throw new Error(`Failed to read back claim '${claim.claimId}'`);
+    const created = claimViewToClaim(view);
     this.onClaimWrite?.("ADDED", created);
     return created;
   };
@@ -1629,8 +1872,10 @@ export class SqliteClaimStore implements ClaimStore {
       const nowIso = now.toISOString();
       const activeOnTarget = this.db
         .prepare(
-          `SELECT claim_id, agent_id FROM claims
-           WHERE target_ref = ? AND status = 'active' AND lease_expires_at >= ?`,
+          `SELECT s.id AS claim_id, s.agent_id AS agent_id
+           FROM claim_spec s
+           JOIN claim_status st ON st.id = s.id
+           WHERE s.target_ref = ? AND st.phase = 'active' AND st.lease_expires_at >= ?`,
         )
         .get(claim.targetRef, nowIso) as { claim_id: string; agent_id: string } | null;
 
@@ -1647,11 +1892,14 @@ export class SqliteClaimStore implements ClaimStore {
           const freshExpiry = new Date(now.getTime() + durationMs).toISOString();
           this.db
             .prepare(
-              `UPDATE claims SET heartbeat_at = ?, lease_expires_at = ?, intent_summary = ?,
-                 revision = revision + 1
-               WHERE claim_id = ?`,
+              `UPDATE claim_status
+               SET last_heartbeat_at = ?, lease_expires_at = ?, revision = revision + 1
+               WHERE id = ?`,
             )
-            .run(nowIso, freshExpiry, claim.intentSummary, activeOnTarget.claim_id);
+            .run(nowIso, freshExpiry, activeOnTarget.claim_id);
+          this.db
+            .prepare("UPDATE claim_spec SET intent_summary = ? WHERE id = ?")
+            .run(claim.intentSummary, activeOnTarget.claim_id);
           resultClaimId = activeOnTarget.claim_id;
           return;
         }
@@ -1665,8 +1913,8 @@ export class SqliteClaimStore implements ClaimStore {
 
       // No active claim → create new
       const existingId = this.db
-        .prepare("SELECT claim_id FROM claims WHERE claim_id = ?")
-        .get(claim.claimId) as { claim_id: string } | null;
+        .prepare("SELECT id FROM claim_spec WHERE id = ?")
+        .get(claim.claimId) as { id: string } | null;
       if (existingId !== null) {
         throw new StateConflictError({
           resource: "Claim",
@@ -1675,7 +1923,13 @@ export class SqliteClaimStore implements ClaimStore {
         });
       }
 
-      this.insertClaimRow(claim, createdAtUtc, heartbeatUtc, leaseExpiresUtc);
+      this.insertSpecAndDefaultStatus({
+        ...claim,
+        createdAt: createdAtUtc,
+        heartbeatAt: heartbeatUtc,
+        leaseExpiresAt: leaseExpiresUtc,
+        revision: 1,
+      });
     });
     try {
       tx.immediate();
@@ -1688,8 +1942,9 @@ export class SqliteClaimStore implements ClaimStore {
       }
     }
 
-    const result = this.readClaim(resultClaimId);
-    if (result === null) throw new Error(`Failed to read back claim '${resultClaimId}'`);
+    const view = this.readClaimView(resultClaimId);
+    if (view === null) throw new Error(`Failed to read back claim '${resultClaimId}'`);
+    const result = claimViewToClaim(view);
     // Renew anchors the lease forward — that IS the lease boundary moving,
     // which the watch protocol cares about, so fire MODIFIED. New insert
     // path fires ADDED.
@@ -1698,7 +1953,8 @@ export class SqliteClaimStore implements ClaimStore {
   };
 
   getClaim = async (claimId: string): Promise<Claim | undefined> => {
-    return this.readClaim(claimId) ?? undefined;
+    const view = this.readClaimView(claimId);
+    return view === null ? undefined : claimViewToClaim(view);
   };
 
   heartbeat = async (claimId: string, leaseDurationMs?: number): Promise<Claim> => {
@@ -1707,22 +1963,18 @@ export class SqliteClaimStore implements ClaimStore {
     const newExpiry = new Date(now.getTime() + duration);
 
     // Atomic UPDATE WHERE: only succeeds if claim is active with valid lease
-    const rows = this.db
+    const result = this.db
       .prepare(
-        `UPDATE claims
-         SET heartbeat_at = ?, lease_expires_at = ?, revision = revision + 1
-         WHERE claim_id = ? AND status = 'active' AND lease_expires_at >= ?
-         RETURNING ${CLAIM_SELECT_COLS}`,
+        `UPDATE claim_status
+         SET last_heartbeat_at = ?, lease_expires_at = ?, revision = revision + 1
+         WHERE id = ? AND phase = 'active' AND lease_expires_at >= ?`,
       )
-      .all(
-        now.toISOString(),
-        newExpiry.toISOString(),
-        claimId,
-        now.toISOString(),
-      ) as readonly ClaimRow[];
+      .run(now.toISOString(), newExpiry.toISOString(), claimId, now.toISOString());
 
-    if (rows.length > 0 && rows[0] !== undefined) {
-      const claim = rowToClaim(rows[0]);
+    if (result.changes > 0) {
+      const view = this.readClaimView(claimId);
+      if (view === null) throw new Error(`Failed to read back claim '${claimId}'`);
+      const claim = claimViewToClaim(view);
       // Heartbeat advances heartbeat_at + lease_expires_at + revision; views
       // render the lease deadline from the cached entity, so without firing
       // a MODIFIED write the cache would still show the prior lease and the
@@ -1736,7 +1988,7 @@ export class SqliteClaimStore implements ClaimStore {
     }
 
     // UPDATE matched nothing — determine why for a specific error message
-    const existing = this.readClaim(claimId);
+    const existing = this.readClaimView(claimId);
     if (existing === null) {
       throw new NotFoundError({
         resource: "Claim",
@@ -1744,17 +1996,17 @@ export class SqliteClaimStore implements ClaimStore {
         message: `Claim '${claimId}' not found`,
       });
     }
-    if (existing.status !== "active") {
+    if (existing.status.phase !== "active") {
       throw new StateConflictError({
         resource: "Claim",
-        reason: `status is '${existing.status}'`,
-        message: `Cannot heartbeat claim '${claimId}' with status '${existing.status}' (must be active)`,
+        reason: `status is '${existing.status.phase}'`,
+        message: `Cannot heartbeat claim '${claimId}' with status '${existing.status.phase}' (must be active)`,
       });
     }
     throw new StateConflictError({
       resource: "Claim",
       reason: "lease expired",
-      message: `Cannot heartbeat claim '${claimId}': lease expired at ${existing.leaseExpiresAt}`,
+      message: `Cannot heartbeat claim '${claimId}': lease expired at ${existing.status.leaseExpiresAt}`,
     });
   };
 
@@ -1778,15 +2030,18 @@ export class SqliteClaimStore implements ClaimStore {
       // Step 1: Expire claims with expired leases
       const leaseExpired = this.db
         .prepare(
-          `UPDATE claims SET status = 'expired', revision = revision + 1
-           WHERE status = 'active' AND lease_expires_at < ?
-           RETURNING claim_id, target_ref, agent_id, status, intent_summary,
-                     created_at, heartbeat_at, lease_expires_at, context_json, agent_json, attempt_count, revision`,
+          `UPDATE claim_status
+           SET phase = 'expired', last_transition_at = ?, revision = revision + 1
+           WHERE phase = 'active' AND lease_expires_at < ?
+           RETURNING id`,
         )
-        .all(nowIso) as readonly ClaimRow[];
+        .all(nowIso, nowIso) as readonly { id: string }[];
 
       for (const row of leaseExpired) {
-        results.push({ claim: rowToClaim(row), reason: ExpiryReason.LeaseExpired });
+        const view = this.readClaimView(row.id);
+        if (view !== null) {
+          results.push({ claim: claimViewToClaim(view), reason: ExpiryReason.LeaseExpired });
+        }
       }
 
       // Step 2: Expire stalled agents (heartbeat gap exceeds threshold)
@@ -1794,15 +2049,18 @@ export class SqliteClaimStore implements ClaimStore {
         const stallCutoff = new Date(now.getTime() - options.stallThresholdMs).toISOString();
         const stalled = this.db
           .prepare(
-            `UPDATE claims SET status = 'expired', revision = revision + 1
-             WHERE status = 'active' AND heartbeat_at < ?
-             RETURNING claim_id, target_ref, agent_id, status, intent_summary,
-                       created_at, heartbeat_at, lease_expires_at, context_json, agent_json, attempt_count, revision`,
+            `UPDATE claim_status
+             SET phase = 'expired', last_transition_at = ?, revision = revision + 1
+             WHERE phase = 'active' AND last_heartbeat_at < ?
+             RETURNING id`,
           )
-          .all(stallCutoff) as readonly ClaimRow[];
+          .all(nowIso, stallCutoff) as readonly { id: string }[];
 
         for (const row of stalled) {
-          results.push({ claim: rowToClaim(row), reason: ExpiryReason.Stalled });
+          const view = this.readClaimView(row.id);
+          if (view !== null) {
+            results.push({ claim: claimViewToClaim(view), reason: ExpiryReason.Stalled });
+          }
         }
       }
 
@@ -1818,40 +2076,46 @@ export class SqliteClaimStore implements ClaimStore {
 
   activeClaims = async (targetRef?: string): Promise<readonly Claim[]> => {
     const now = new Date().toISOString();
-    let sql = `SELECT ${CLAIM_SELECT_COLS} FROM claims WHERE status = 'active' AND lease_expires_at >= ?`;
+    let sql = `SELECT ${CLAIM_VIEW_SELECT_COLS}
+      FROM claim_spec s
+      JOIN claim_status st ON st.id = s.id
+      WHERE st.phase = 'active' AND st.lease_expires_at >= ?`;
     const params: SQLQueryBindings[] = [now];
 
     if (targetRef !== undefined) {
-      sql += " AND target_ref = ?";
+      sql += " AND s.target_ref = ?";
       params.push(targetRef);
     }
 
-    const rows = this.db.prepare(sql).all(...params) as readonly ClaimRow[];
-    return rows.map((row) => rowToClaim(row));
+    const rows = this.db.prepare(sql).all(...params) as readonly ClaimViewRow[];
+    return rows.map((row) => claimViewToClaim(rowToClaimView(row)));
   };
 
   listClaims = async (query?: ClaimQuery): Promise<readonly Claim[]> => {
-    let sql = `SELECT ${CLAIM_SELECT_COLS} FROM claims WHERE 1=1`;
+    let sql = `SELECT ${CLAIM_VIEW_SELECT_COLS}
+      FROM claim_spec s
+      JOIN claim_status st ON st.id = s.id
+      WHERE 1=1`;
     const params: SQLQueryBindings[] = [];
 
     if (query?.status !== undefined) {
       const statuses = Array.isArray(query.status) ? query.status : [query.status];
       const placeholders = statuses.map(() => "?").join(", ");
-      sql += ` AND status IN (${placeholders})`;
+      sql += ` AND st.phase IN (${placeholders})`;
       params.push(...statuses);
     }
     if (query?.agentId !== undefined) {
-      sql += " AND agent_id = ?";
+      sql += " AND s.agent_id = ?";
       params.push(query.agentId);
     }
     if (query?.targetRef !== undefined) {
-      sql += " AND target_ref = ?";
+      sql += " AND s.target_ref = ?";
       params.push(query.targetRef);
     }
 
-    sql += " ORDER BY created_at DESC";
-    const rows = this.db.prepare(sql).all(...params) as readonly ClaimRow[];
-    return rows.map((row) => rowToClaim(row));
+    sql += " ORDER BY s.created_at DESC";
+    const rows = this.db.prepare(sql).all(...params) as readonly ClaimViewRow[];
+    return rows.map((row) => claimViewToClaim(rowToClaimView(row)));
   };
 
   cleanCompleted = async (retentionMs: number): Promise<number> => {
@@ -1860,28 +2124,39 @@ export class SqliteClaimStore implements ClaimStore {
     // A long-running claim that completed moments ago has a recent heartbeat_at,
     // so it won't be prematurely deleted. An old expired claim whose agent died
     // long ago has a stale heartbeat_at, so it gets cleaned up correctly.
-    const result = this.db
-      .prepare(
-        `DELETE FROM claims
-         WHERE status IN ('completed', 'expired', 'released')
-         AND heartbeat_at < ?`,
-      )
-      .run(cutoff);
-    return result.changes;
+    const tx = this.db.transaction(() => {
+      const ids = this.db
+        .prepare(
+          `SELECT s.id
+           FROM claim_spec s
+           JOIN claim_status st ON st.id = s.id
+           WHERE st.phase IN ('completed', 'expired', 'released')
+             AND st.last_heartbeat_at < ?`,
+        )
+        .all(cutoff) as readonly { id: string }[];
+      const deleteSpec = this.db.prepare("DELETE FROM claim_spec WHERE id = ?");
+      for (const row of ids) {
+        deleteSpec.run(row.id);
+      }
+      return ids.length;
+    });
+    return tx.immediate();
   };
 
   countActiveClaims = async (filter?: ActiveClaimFilter): Promise<number> => {
     const now = new Date().toISOString();
-    let sql =
-      "SELECT COUNT(*) as cnt FROM claims WHERE status = 'active' AND lease_expires_at >= ?";
+    let sql = `SELECT COUNT(*) as cnt
+       FROM claim_spec s
+       JOIN claim_status st ON st.id = s.id
+       WHERE st.phase = 'active' AND st.lease_expires_at >= ?`;
     const params: SQLQueryBindings[] = [now];
 
     if (filter?.agentId !== undefined) {
-      sql += " AND agent_id = ?";
+      sql += " AND s.agent_id = ?";
       params.push(filter.agentId);
     }
     if (filter?.targetRef !== undefined) {
-      sql += " AND target_ref = ?";
+      sql += " AND s.target_ref = ?";
       params.push(filter.targetRef);
     }
 
@@ -1896,14 +2171,16 @@ export class SqliteClaimStore implements ClaimStore {
 
     const rows = this.db
       .prepare(
-        `SELECT ${CLAIM_SELECT_COLS} FROM claims
-         WHERE status = 'active'
-           AND lease_expires_at >= ?
-           AND heartbeat_at < ?`,
+        `SELECT ${CLAIM_VIEW_SELECT_COLS}
+         FROM claim_spec s
+         JOIN claim_status st ON st.id = s.id
+         WHERE st.phase = 'active'
+           AND st.lease_expires_at >= ?
+           AND st.last_heartbeat_at < ?`,
       )
-      .all(nowIso, stallCutoff) as readonly ClaimRow[];
+      .all(nowIso, stallCutoff) as readonly ClaimViewRow[];
 
-    return rows.map((row) => rowToClaim(row));
+    return rows.map((row) => claimViewToClaim(rowToClaimView(row)));
   };
 
   async listEntities(query?: ClaimQuery): Promise<readonly ClaimEntity[]> {
@@ -1943,37 +2220,91 @@ export class SqliteClaimStore implements ClaimStore {
     }
   }
 
-  private insertClaimRow(
-    claim: Claim,
-    createdAtUtc: string,
-    heartbeatUtc: string,
-    leaseExpiresUtc: string,
-  ): void {
+  private validateSpecContext(spec: ClaimSpecRecord): void {
+    if (spec.context !== undefined) {
+      const result = ContextSchema.safeParse(spec.context);
+      if (!result.success) {
+        throw new Error(`Invalid claim context: ${result.error.message}`);
+      }
+    }
+  }
+
+  private insertSpecAndDefaultStatus(claim: Claim): void {
+    const spec = claimToSpecRecord(claim);
+    const status = claimToStatusRecord({ ...claim, revision: 1 });
+    this.insertSpecRow({ ...spec, generation: 1 });
+    this.insertStatusRow(status);
+  }
+
+  private insertSpecRow(spec: ClaimSpecRecord): void {
     this.db
       .prepare(
-        `INSERT INTO claims (claim_id, target_ref, agent_id, status, intent_summary,
-         created_at, heartbeat_at, lease_expires_at, context_json, agent_json, attempt_count)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO claim_spec (
+          id, role_name, platform, blueprint, assignee_json, lease_deadline_sec,
+          priority, max_iterations, generation, target_ref, agent_id, agent_json,
+          intent_summary, context_json, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        claim.claimId,
-        claim.targetRef,
-        claim.agent.agentId,
-        claim.status,
-        claim.intentSummary,
-        createdAtUtc,
-        heartbeatUtc,
-        leaseExpiresUtc,
-        claim.context !== undefined ? JSON.stringify(claim.context) : null,
-        JSON.stringify(claim.agent),
-        claim.attemptCount ?? 0,
+        spec.id,
+        spec.roleName ?? null,
+        spec.platform ?? null,
+        spec.blueprint ?? null,
+        spec.assignee !== undefined ? JSON.stringify(spec.assignee) : null,
+        spec.leaseDeadlineSec ?? null,
+        spec.priority ?? null,
+        spec.maxIterations ?? null,
+        spec.generation,
+        spec.targetRef,
+        spec.agent.agentId,
+        JSON.stringify(spec.agent),
+        spec.intentSummary,
+        spec.context !== undefined ? JSON.stringify(spec.context) : null,
+        toUtcIso(spec.createdAt),
       );
   }
 
-  private readClaim(claimId: string): Claim | null {
-    const row = this.stmtGetClaim.get(claimId) as ClaimRow | null;
+  private insertStatusRow(status: ClaimStatusRecord): void {
+    this.db
+      .prepare(
+        `INSERT INTO claim_status (
+          id, phase, observed_generation, agent_session_id, last_heartbeat_at,
+          lease_expires_at, current_contribution_cid, conditions_json,
+          last_transition_at, attempt_count, revision
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          phase = excluded.phase,
+          observed_generation = excluded.observed_generation,
+          agent_session_id = excluded.agent_session_id,
+          last_heartbeat_at = excluded.last_heartbeat_at,
+          lease_expires_at = excluded.lease_expires_at,
+          current_contribution_cid = excluded.current_contribution_cid,
+          conditions_json = excluded.conditions_json,
+          last_transition_at = excluded.last_transition_at,
+          attempt_count = excluded.attempt_count,
+          revision = excluded.revision`,
+      )
+      .run(
+        status.id,
+        status.phase,
+        status.observedGeneration,
+        status.agentSessionId ?? null,
+        toUtcIso(status.lastHeartbeatAt),
+        toUtcIso(status.leaseExpiresAt),
+        status.currentContributionCid ?? null,
+        JSON.stringify(status.conditions),
+        toUtcIso(status.lastTransitionAt),
+        status.attemptCount,
+        status.revision,
+      );
+  }
+
+  private readClaimView(claimId: string): ClaimView | null {
+    const row = this.stmtGetClaim.get(claimId) as ClaimViewRow | null;
     if (row === null) return null;
-    return rowToClaim(row);
+    return rowToClaimView(row);
   }
 
   private transitionClaim(claimId: string, newStatus: ClaimStatus): Claim {
@@ -1983,22 +2314,24 @@ export class SqliteClaimStore implements ClaimStore {
     // target lock may already belong to another agent (finding: Codex
     // round-3 one-active-claim-per-target invariant).
     const nowIso = new Date().toISOString();
-    const rows = this.db
+    const result = this.db
       .prepare(
-        `UPDATE claims SET status = ?, revision = revision + 1
-         WHERE claim_id = ? AND status = 'active' AND lease_expires_at >= ?
-         RETURNING ${CLAIM_SELECT_COLS}`,
+        `UPDATE claim_status
+         SET phase = ?, last_transition_at = ?, revision = revision + 1
+         WHERE id = ? AND phase = 'active' AND lease_expires_at >= ?`,
       )
-      .all(newStatus, claimId, nowIso) as readonly ClaimRow[];
+      .run(newStatus, nowIso, claimId, nowIso);
 
-    if (rows.length > 0 && rows[0] !== undefined) {
-      const claim = rowToClaim(rows[0]);
+    if (result.changes > 0) {
+      const view = this.readClaimView(claimId);
+      if (view === null) throw new Error(`Failed to read back claim '${claimId}'`);
+      const claim = claimViewToClaim(view);
       this.onClaimWrite?.("MODIFIED", claim);
       return claim;
     }
 
     // UPDATE matched nothing — determine why
-    const existing = this.readClaim(claimId);
+    const existing = this.readClaimView(claimId);
     if (existing === null) {
       throw new NotFoundError({
         resource: "Claim",
@@ -2006,17 +2339,17 @@ export class SqliteClaimStore implements ClaimStore {
         message: `Claim '${claimId}' not found`,
       });
     }
-    if (existing.status !== "active") {
+    if (existing.status.phase !== "active") {
       throw new StateConflictError({
         resource: "Claim",
-        reason: `status is '${existing.status}'`,
-        message: `Cannot transition claim '${claimId}' from '${existing.status}' to '${newStatus}' (must be active)`,
+        reason: `status is '${existing.status.phase}'`,
+        message: `Cannot transition claim '${claimId}' from '${existing.status.phase}' to '${newStatus}' (must be active)`,
       });
     }
     throw new StateConflictError({
       resource: "Claim",
       reason: "lease expired",
-      message: `Cannot ${newStatus === "completed" ? "complete" : "release"} claim '${claimId}': lease expired at ${existing.leaseExpiresAt}`,
+      message: `Cannot ${newStatus === "completed" ? "complete" : "release"} claim '${claimId}': lease expired at ${existing.status.leaseExpiresAt}`,
     });
   }
 }
