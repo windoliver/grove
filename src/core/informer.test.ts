@@ -1346,6 +1346,32 @@ describe("Informer queue — RV-coalescing", () => {
     ac.abort();
     await runPromise;
   });
+
+  test("getQueueStats: depth visible after sync-prefix enqueue, returns to 0 after drain", async () => {
+    const { stream, emit } = makeFakeStream();
+    const ac = new AbortController();
+    const informer = new Informer(stream, "Contribution", { queueLimit: 100 });
+    const runPromise = informer.run(ac.signal);
+
+    expect(informer.getQueueStats()).toEqual({ depth: 0, limit: 100, overflows: 0 });
+
+    // Sync-prefix enqueue 50 distinct ids (drain microtask hasn't fired yet).
+    const promises: Array<Promise<void> | void> = [];
+    for (let i = 0; i < 50; i += 1) {
+      promises.push(emit(deltaEvent("ADDED", `id-${i}`, String(i + 1))));
+    }
+    expect(informer.getQueueStats().depth).toBe(50);
+    expect(informer.getQueueStats().limit).toBe(100);
+    expect(informer.getQueueStats().overflows).toBe(0);
+
+    await Promise.all(promises);
+    await drainMicrotasks();
+
+    expect(informer.getQueueStats().depth).toBe(0);
+
+    ac.abort();
+    await runPromise;
+  });
 });
 
 describe("Informer queue — overflow", () => {
