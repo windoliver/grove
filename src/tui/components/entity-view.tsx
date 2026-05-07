@@ -146,10 +146,7 @@ function EntityViewInner<K extends WatchKind>(props: EntityViewProps<K>): React.
         </box>
       )}
       {data.length === 0 ? (
-        <EmptyState
-          title={emptyTitle ?? `No ${String(kind).toLowerCase()}.`}
-          hint={emptyHint}
-        />
+        <EmptyState title={emptyTitle ?? `No ${String(kind).toLowerCase()}.`} hint={emptyHint} />
       ) : (
         <Table columns={[...tableColumns]} rows={rows} cursor={cursor} maxRows={MAX_ROWS} />
       )}
