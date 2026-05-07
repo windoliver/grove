@@ -13,6 +13,17 @@ import type { NexusClient } from "./client.js";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+type PersistedSessionRecord = Omit<Session, "uid" | "finalizers"> &
+  Partial<Pick<Session, "uid" | "finalizers">>;
+
+function normalizeSessionRecord(session: PersistedSessionRecord): Session {
+  return {
+    ...session,
+    uid: session.uid ?? session.id,
+    finalizers: session.finalizers ?? DEFAULT_SESSION_FINALIZERS,
+  };
+}
+
 export class NexusSessionStore implements SessionStore {
   private readonly client: NexusClient;
   private readonly zoneId: string;
@@ -63,7 +74,7 @@ export class NexusSessionStore implements SessionStore {
     try {
       const data = await this.client.read(this.sessionPath(id));
       if (!data) return undefined;
-      return JSON.parse(decoder.decode(data)) as Session;
+      return normalizeSessionRecord(JSON.parse(decoder.decode(data)) as PersistedSessionRecord);
     } catch {
       return undefined;
     }
@@ -96,7 +107,9 @@ export class NexusSessionStore implements SessionStore {
         try {
           const data = await this.client.read(`/zones/${this.zoneId}/sessions/${f.name}`);
           if (data) {
-            const s = JSON.parse(decoder.decode(data)) as Session;
+            const s = normalizeSessionRecord(
+              JSON.parse(decoder.decode(data)) as PersistedSessionRecord,
+            );
             if (query?.status) {
               if (s.status !== query.status) continue;
             } else if (!query?.includeArchived) {

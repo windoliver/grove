@@ -6,6 +6,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { DEFAULT_SESSION_FINALIZERS } from "../core/lifecycle-metadata.js";
 import type { Session } from "../core/session.js";
 import type { NexusClient } from "./client.js";
 import { NexusSessionStore } from "./nexus-session-store.js";
@@ -118,6 +119,33 @@ describe("NexusSessionStore", () => {
     const fetched = await store.getSession("put-test");
     expect(fetched).toBeDefined();
     expect(fetched!.goal).toBe("Put test");
+  });
+
+  it("normalizes legacy session records without uid or finalizers", async () => {
+    const client = createMockClient();
+    const encoder = new TextEncoder();
+    await client.write(
+      "/zones/test-zone/sessions/legacy-test.json",
+      encoder.encode(
+        JSON.stringify({
+          id: "legacy-test",
+          goal: "Legacy test",
+          status: "active",
+          createdAt: new Date().toISOString(),
+          contributionCount: 0,
+        }),
+      ),
+    );
+    const store = new NexusSessionStore(client, "test-zone");
+
+    const record = await store.getSessionRecord("legacy-test");
+    const listed = await store.listSessions();
+
+    expect(record?.uid).toBe("legacy-test");
+    expect(record?.finalizers).toEqual(DEFAULT_SESSION_FINALIZERS);
+    expect(listed.find((session) => session.id === "legacy-test")?.finalizers).toEqual(
+      DEFAULT_SESSION_FINALIZERS,
+    );
   });
 
   it("config field survives JSON round-trip through NexusSessionStore", async () => {

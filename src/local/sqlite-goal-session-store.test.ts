@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DEFAULT_SESSION_FINALIZERS } from "../core/lifecycle-metadata.js";
 import { LoopStopStatus } from "../core/loop-runner.js";
 import type { SessionStore } from "../core/session.js";
 import { sessionStoreConformance } from "../core/session-store.conformance.js";
@@ -150,6 +151,19 @@ describe("Sessions", () => {
     expect(fetched!.id).toBe(created.id);
     expect(fetched!.goal).toBe("Test goal");
     expect(fetched!.status).toBe("active");
+  });
+
+  it("getSession() and listSessions() expose default finalizers after reading", async () => {
+    const created = await store.createSession({ goal: "Finalizer defaults" });
+
+    const fetched = await store.getSession(created.id);
+    const listed = await store.listSessions();
+
+    expect(created.finalizers).toEqual(DEFAULT_SESSION_FINALIZERS);
+    expect(fetched?.finalizers).toEqual(DEFAULT_SESSION_FINALIZERS);
+    expect(listed.find((session) => session.id === created.id)?.finalizers).toEqual(
+      DEFAULT_SESSION_FINALIZERS,
+    );
   });
 
   it("getSession() returns undefined for missing", async () => {
