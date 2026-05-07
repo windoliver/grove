@@ -1133,6 +1133,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
       return [{ finalizer: Finalizer.ReleaseSlots, message: "session not found" }];
     }
 
+    const finalizers = normalizeSessionFinalizers(session.finalizers);
     const ownerRef = ownerRefForSession(session);
     const blockers: SessionDeleteBlocker[] = [];
     const activeClaims = this.countActiveOwnedClaims(ownerRef);
@@ -1153,7 +1154,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
       });
     }
 
-    if (this.closeRuntime !== undefined && session.finalizers.includes(Finalizer.CloseRuntime)) {
+    if (this.closeRuntime !== undefined && finalizers.includes(Finalizer.CloseRuntime)) {
       blockers.push({
         finalizer: Finalizer.CloseRuntime,
         message: "runtime cleanup pending",

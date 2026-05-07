@@ -828,6 +828,25 @@ describe("session deletion finalizers", () => {
     expect(await stores.contributionStore.get(contribution.cid)).toBeDefined();
   });
 
+  it("listSessionDeleteBlockers treats empty legacy finalizers as defaults for close-runtime", async () => {
+    const blocking = new SqliteGoalSessionStore(stores.db, {
+      closeRuntime: async () => {
+        throw new Error("runtime still flushing");
+      },
+    });
+    const session = await blocking.createSession({ goal: "legacy blockers" });
+    stores.db
+      .prepare("UPDATE sessions SET finalizers_json = '[]' WHERE session_id = ?")
+      .run(session.id);
+
+    const blockers = await blocking.listSessionDeleteBlockers(session.id);
+
+    expect(blockers).toContainEqual({
+      finalizer: "grove.io/close-runtime",
+      message: "runtime cleanup pending",
+    });
+  });
+
   it("deleteSession keeps failed and later finalizers after an earlier finalizer fails", async () => {
     const session = await store.createSession({ goal: "blocked drain" });
     const ownerRef = { kind: "session" as const, id: session.id, uid: session.uid };
