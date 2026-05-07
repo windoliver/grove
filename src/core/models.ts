@@ -8,6 +8,8 @@
  * See spec/schemas/contribution.json for the canonical wire format.
  */
 
+import type { Condition } from "./entity.js";
+
 /** Contribution kinds — the type of work being contributed. */
 export const ContributionKind = {
   Work: "work",
@@ -185,4 +187,43 @@ export interface Claim {
    * operations. Local stores may track it but are not required to.
    */
   readonly revision?: number | undefined;
+}
+
+/** User-owned desired state for a claim. */
+export interface ClaimSpecRecord {
+  readonly id: string;
+  readonly roleName?: string | undefined;
+  readonly platform?: string | undefined;
+  readonly blueprint?: string | undefined;
+  readonly assignee?: AgentIdentity | undefined;
+  readonly leaseDeadlineSec?: number | undefined;
+  readonly priority?: number | undefined;
+  readonly maxIterations?: number | undefined;
+  readonly generation: number;
+  readonly targetRef: string;
+  readonly agent: AgentIdentity;
+  readonly intentSummary: string;
+  readonly context?: Readonly<Record<string, JsonValue>> | undefined;
+  readonly createdAt: string;
+}
+
+/** Controller-owned observed state for a claim. */
+export interface ClaimStatusRecord {
+  readonly id: string;
+  readonly phase: ClaimStatus;
+  readonly observedGeneration: number;
+  readonly agentSessionId?: string | undefined;
+  readonly lastHeartbeatAt: string;
+  readonly leaseExpiresAt: string;
+  readonly currentContributionCid?: string | undefined;
+  readonly conditions: readonly Condition[];
+  readonly lastTransitionAt: string;
+  readonly attemptCount: number;
+  readonly revision: number;
+}
+
+/** Merged split claim view. */
+export interface ClaimView {
+  readonly spec: ClaimSpecRecord;
+  readonly status: ClaimStatusRecord;
 }

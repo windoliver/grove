@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { ClaimStatus } from "./models.js";
 import type { ClaimStore } from "./store.js";
-import { makeClaim } from "./test-helpers.js";
+import { makeAgent, makeClaim } from "./test-helpers.js";
 
 /** Factory that creates a fresh ClaimStore and returns a cleanup function. */
 export type ClaimStoreFactory = () => Promise<{
@@ -52,6 +52,105 @@ export function runClaimStoreTests(
     afterEach(async () => {
       store.close();
       await cleanup();
+    });
+
+    test("putClaimSpec creates a claim view with default status", async () => {
+      const now = new Date().toISOString();
+      const view = await store.putClaimSpec({
+        id: "spec-create",
+        roleName: "coder",
+        platform: "codex",
+        blueprint: "implement issue",
+        assignee: makeAgent({ agentId: "agent-spec", platform: "codex", role: "coder" }),
+        leaseDeadlineSec: 600,
+        priority: 7,
+        maxIterations: 3,
+        generation: 99,
+        targetRef: "target-spec",
+        agent: makeAgent({ agentId: "agent-spec", platform: "codex", role: "coder" }),
+        intentSummary: "Implement claim split",
+        context: { issue: 270 },
+        createdAt: now,
+      });
+
+      expect(view.spec.id).toBe("spec-create");
+      expect(view.spec.generation).toBe(1);
+      expect(view.spec.roleName).toBe("coder");
+      expect(view.status.id).toBe("spec-create");
+      expect(view.status.phase).toBe(ClaimStatus.Active);
+      expect(view.status.observedGeneration).toBe(0);
+      expect(view.status.revision).toBe(1);
+    });
+
+    test("putClaimSpec increments generation without changing status revision", async () => {
+      const created = await store.putClaimSpec({
+        id: "spec-update",
+        targetRef: "target-spec-update",
+        agent: makeAgent({ agentId: "agent-spec-update" }),
+        intentSummary: "first spec",
+        createdAt: new Date().toISOString(),
+        generation: 1,
+      });
+      const statusUpdated = await store.patchClaimStatus("spec-update", {
+        phase: ClaimStatus.Active,
+        observedGeneration: created.spec.generation,
+        lastHeartbeatAt: "2026-01-01T00:01:00.000Z",
+      });
+
+      const updated = await store.putClaimSpec({
+        ...statusUpdated.spec,
+        intentSummary: "second spec",
+        generation: 1,
+      });
+
+      expect(updated.spec.generation).toBe(created.spec.generation + 1);
+      expect(updated.spec.intentSummary).toBe("second spec");
+      expect(updated.status.revision).toBe(statusUpdated.status.revision);
+      expect(updated.status.lastHeartbeatAt).toBe(statusUpdated.status.lastHeartbeatAt);
+    });
+
+    test("patchClaimStatus changes status without changing spec generation", async () => {
+      const created = await store.putClaimSpec({
+        id: "status-update",
+        targetRef: "target-status-update",
+        agent: makeAgent({ agentId: "agent-status-update" }),
+        intentSummary: "status-only write",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        generation: 1,
+      });
+
+      const patched = await store.patchClaimStatus("status-update", {
+        phase: ClaimStatus.Completed,
+        observedGeneration: created.spec.generation,
+        agentSessionId: "session-1",
+        lastHeartbeatAt: "2026-01-01T00:05:00.000Z",
+        leaseExpiresAt: "2026-01-01T00:10:00.000Z",
+        currentContributionCid:
+          "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        conditions: [
+          {
+            type: "Completed",
+            status: "True",
+            observedGeneration: created.spec.generation,
+            lastTransitionTime: "2026-01-01T00:05:00.000Z",
+            reason: "controller",
+            message: "done",
+          },
+        ],
+        lastTransitionAt: "2026-01-01T00:05:00.000Z",
+      });
+
+      expect(patched.spec.generation).toBe(created.spec.generation);
+      expect(patched.spec.intentSummary).toBe(created.spec.intentSummary);
+      expect(patched.status.phase).toBe(ClaimStatus.Completed);
+      expect(patched.status.observedGeneration).toBe(created.spec.generation);
+      expect(patched.status.agentSessionId).toBe("session-1");
+      expect(patched.status.revision).toBe(created.status.revision + 1);
+      expect(patched.status.conditions[0]?.type).toBe("Completed");
+    });
+
+    test("getClaimView returns undefined for a missing claim", async () => {
+      await expect(store.getClaimView("missing-view")).resolves.toBeUndefined();
     });
 
     // ------------------------------------------------------------------
