@@ -1232,4 +1232,38 @@ describe("Informer queue — RV-coalescing", () => {
     ac.abort();
     await runPromise;
   });
+
+  test("ADDED then DELETED same id within burst → final state absent", async () => {
+    const { stream, emit } = makeFakeStream();
+    const ac = new AbortController();
+    const informer = new Informer(stream, "Contribution");
+    const runPromise = informer.run(ac.signal);
+
+    await emit(deltaEvent("ADDED", "x", "1"));
+    await emit(deltaEvent("DELETED", "x", "2"));
+    await drainMicrotasks();
+
+    expect(informer.getById("x")).toBeUndefined();
+
+    ac.abort();
+    await runPromise;
+  });
+
+  test("DELETED then ADDED same id within burst → final state present (recreated)", async () => {
+    const { stream, emit } = makeFakeStream();
+    const ac = new AbortController();
+    const informer = new Informer(stream, "Contribution");
+    const runPromise = informer.run(ac.signal);
+
+    await emit(deltaEvent("DELETED", "x", "1"));
+    await emit(deltaEvent("ADDED", "x", "2"));
+    await drainMicrotasks();
+
+    expect(
+      (informer.getById("x") as { resourceVersion: string } | undefined)?.resourceVersion,
+    ).toBe("2");
+
+    ac.abort();
+    await runPromise;
+  });
 });
