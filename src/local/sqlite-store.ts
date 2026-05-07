@@ -53,7 +53,7 @@ import { claimToEntity, contributionToEntity } from "../core/entity.js";
 import { ClaimConflictError, NotFoundError, StateConflictError } from "../core/errors.js";
 import { toUtcIso } from "../core/time.js";
 
-export const CURRENT_SCHEMA_VERSION = 13;
+export const CURRENT_SCHEMA_VERSION = 14;
 const SQLITE_BIND_LIMIT = 900;
 
 // ---------------------------------------------------------------------------
@@ -144,6 +144,44 @@ const SCHEMA_DDL = `
   CREATE INDEX IF NOT EXISTS idx_claims_status ON claims(status);
   -- Composite index for active-claim queries: WHERE status = 'active' AND lease_expires_at >= ?
   CREATE INDEX IF NOT EXISTS idx_claims_status_lease ON claims(status, lease_expires_at);
+
+  CREATE TABLE IF NOT EXISTS claim_spec (
+    id TEXT PRIMARY KEY,
+    role_name TEXT,
+    platform TEXT,
+    blueprint TEXT,
+    assignee_json TEXT,
+    lease_deadline_sec INTEGER,
+    priority INTEGER,
+    max_iterations INTEGER,
+    generation INTEGER NOT NULL DEFAULT 1,
+    target_ref TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    agent_json TEXT NOT NULL,
+    intent_summary TEXT NOT NULL,
+    context_json TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS claim_status (
+    id TEXT PRIMARY KEY,
+    phase TEXT NOT NULL DEFAULT 'active',
+    observed_generation INTEGER NOT NULL DEFAULT 0,
+    agent_session_id TEXT,
+    last_heartbeat_at TEXT NOT NULL,
+    lease_expires_at TEXT NOT NULL,
+    current_contribution_cid TEXT,
+    conditions_json TEXT NOT NULL DEFAULT '[]',
+    last_transition_at TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    revision INTEGER NOT NULL DEFAULT 1,
+    FOREIGN KEY (id) REFERENCES claim_spec(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_claim_spec_target ON claim_spec(target_ref);
+  CREATE INDEX IF NOT EXISTS idx_claim_spec_agent ON claim_spec(agent_id);
+  CREATE INDEX IF NOT EXISTS idx_claim_status_phase ON claim_status(phase);
+  CREATE INDEX IF NOT EXISTS idx_claim_status_phase_lease ON claim_status(phase, lease_expires_at);
 
   -- Workspaces table for agent session isolation (per-agent isolation)
   CREATE TABLE IF NOT EXISTS workspaces (
@@ -309,6 +347,55 @@ export function initSqliteDb(dbPath: string): Database {
         db.run("UPDATE claims SET revision = 1 WHERE revision = 0");
       }
     }
+
+    // Migration -> v14: split legacy claims into claim_spec and claim_status.
+    db.run(`
+      INSERT OR IGNORE INTO claim_spec (
+        id, role_name, platform, assignee_json, lease_deadline_sec, generation,
+        target_ref, agent_id, agent_json, intent_summary, context_json, created_at
+      )
+      SELECT
+        claim_id,
+        json_extract(agent_json, '$.role'),
+        json_extract(agent_json, '$.platform'),
+        agent_json,
+        CASE
+          WHEN strftime('%s', lease_expires_at) > strftime('%s', created_at)
+          THEN CAST(strftime('%s', lease_expires_at) - strftime('%s', created_at) AS INTEGER)
+          ELSE NULL
+        END,
+        revision,
+        target_ref,
+        agent_id,
+        agent_json,
+        intent_summary,
+        context_json,
+        created_at
+      FROM claims
+      WHERE NOT EXISTS (
+        SELECT 1 FROM claim_spec WHERE claim_spec.id = claims.claim_id
+      )
+    `);
+    db.run(`
+      INSERT OR IGNORE INTO claim_status (
+        id, phase, observed_generation, last_heartbeat_at, lease_expires_at,
+        conditions_json, last_transition_at, attempt_count, revision
+      )
+      SELECT
+        claim_id,
+        status,
+        revision,
+        heartbeat_at,
+        lease_expires_at,
+        '[]',
+        heartbeat_at,
+        attempt_count,
+        revision
+      FROM claims
+      WHERE NOT EXISTS (
+        SELECT 1 FROM claim_status WHERE claim_status.id = claims.claim_id
+      )
+    `);
 
     // Composite index — idempotent via IF NOT EXISTS (from v4→v5)
     db.run(
