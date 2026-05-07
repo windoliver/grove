@@ -54,10 +54,6 @@ export interface NexusSessionStoreOptions {
   readonly closeRuntime?: ((session: Session) => Promise<void>) | undefined;
 }
 
-function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
-  return a.length === b.length && a.every((value, index) => value === b[index]);
-}
-
 function ownerRefForSession(session: Pick<Session, "id" | "uid">): OwnerRef {
   return { kind: "session", id: session.id, uid: session.uid };
 }
@@ -65,10 +61,13 @@ function ownerRefForSession(session: Pick<Session, "id" | "uid">): OwnerRef {
 function normalizeSessionFinalizers(
   finalizers: readonly SessionFinalizer[] | undefined,
 ): readonly SessionFinalizer[] {
-  if (finalizers === undefined || finalizers.length === 0) {
-    return [...DEFAULT_SESSION_FINALIZERS];
-  }
-  return [...finalizers];
+  return finalizers === undefined ? [] : [...finalizers];
+}
+
+function resolveDeleteFinalizers(
+  finalizers: readonly SessionFinalizer[] | undefined,
+): readonly SessionFinalizer[] {
+  return finalizers === undefined ? [...DEFAULT_SESSION_FINALIZERS] : [...finalizers];
 }
 
 function isKnownSessionFinalizer(finalizer: string): finalizer is KnownFinalizer {
@@ -128,7 +127,7 @@ export class NexusSessionStore implements SessionStore {
 
   private normalizeSessionRecord(session: PersistedSessionRecord): {
     readonly session: Session;
-    readonly changed: boolean;
+    readonly needsUidBackfill: boolean;
   } {
     const uid = session.uid ?? this.legacyUidBySessionId.get(session.id) ?? randomUUID();
     this.legacyUidBySessionId.set(session.id, uid);
@@ -142,17 +141,23 @@ export class NexusSessionStore implements SessionStore {
       deletionAudit,
       contributionCount,
     };
-    const changed =
-      session.uid !== uid ||
-      session.deletionAudit === undefined ||
-      session.contributionCount !== contributionCount ||
-      session.finalizers === undefined ||
-      !arraysEqual(session.finalizers, finalizers);
-    return { session: normalized, changed };
+    return { session: normalized, needsUidBackfill: session.uid !== uid };
   }
 
   private async writeSessionRecord(session: Session): Promise<void> {
     await this.client.write(this.sessionPath(session.id), encoder.encode(JSON.stringify(session)));
+  }
+
+  private async readPersistedSessionRecord(
+    id: string,
+  ): Promise<PersistedSessionRecord | undefined> {
+    try {
+      const data = await this.client.read(this.sessionPath(id));
+      if (data === undefined) return undefined;
+      return JSON.parse(decoder.decode(data)) as PersistedSessionRecord;
+    } catch {
+      return undefined;
+    }
   }
 
   private async readContributionLinks(
@@ -252,23 +257,25 @@ export class NexusSessionStore implements SessionStore {
    * contribution sidecar read keeps that hot path O(1) in session size.
    */
   async getSessionRecord(id: string): Promise<Session | undefined> {
-    try {
-      const data = await this.client.read(this.sessionPath(id));
-      if (data === undefined) return undefined;
-      const normalized = this.normalizeSessionRecord(
-        JSON.parse(decoder.decode(data)) as PersistedSessionRecord,
-      );
-      if (normalized.changed) {
-        try {
-          await this.writeSessionRecord(normalized.session);
-        } catch {
-          // Preserve a stable in-memory uid even if a legacy rewrite fails.
-        }
+    const persisted = await this.readPersistedSessionRecord(id);
+    if (persisted === undefined) return undefined;
+    const normalized = this.normalizeSessionRecord(persisted);
+    if (normalized.needsUidBackfill) {
+      try {
+        await this.client.write(
+          this.sessionPath(id),
+          encoder.encode(
+            JSON.stringify({
+              ...persisted,
+              uid: normalized.session.uid,
+            }),
+          ),
+        );
+      } catch {
+        // Preserve a stable in-memory uid even if a legacy rewrite fails.
       }
-      return normalized.session;
-    } catch {
-      return undefined;
     }
+    return normalized.session;
   }
 
   async getSession(id: string): Promise<Session | undefined> {
@@ -312,8 +319,8 @@ export class NexusSessionStore implements SessionStore {
   }
 
   async deleteSession(id: string, options?: SessionDeleteOptions): Promise<SessionDeleteResult> {
-    const session = await this.getSessionRecord(id);
-    if (session === undefined) {
+    const persisted = await this.readPersistedSessionRecord(id);
+    if (persisted === undefined) {
       return {
         sessionId: id,
         deleted: false,
@@ -321,9 +328,10 @@ export class NexusSessionStore implements SessionStore {
         blockers: [{ finalizer: Finalizer.ReleaseSlots, message: "session not found" }],
       };
     }
+    const session = this.normalizeSessionRecord(persisted).session;
 
     const ownerRef = ownerRefForSession(session);
-    const startingFinalizers = normalizeSessionFinalizers(session.finalizers);
+    const startingFinalizers = resolveDeleteFinalizers(persisted.finalizers);
     const deletionTimestamp = session.deletionTimestamp ?? new Date().toISOString();
 
     if (options?.force === true) {
@@ -430,12 +438,13 @@ export class NexusSessionStore implements SessionStore {
   }
 
   async listSessionDeleteBlockers(id: string): Promise<readonly SessionDeleteBlocker[]> {
-    const session = await this.getSessionRecord(id);
-    if (session === undefined) {
+    const persisted = await this.readPersistedSessionRecord(id);
+    if (persisted === undefined) {
       return [{ finalizer: Finalizer.ReleaseSlots, message: "session not found" }];
     }
+    const session = this.normalizeSessionRecord(persisted).session;
 
-    const finalizers = normalizeSessionFinalizers(session.finalizers);
+    const finalizers = resolveDeleteFinalizers(persisted.finalizers);
     const ownerRef = ownerRefForSession(session);
     const blockers: SessionDeleteBlocker[] = [];
 

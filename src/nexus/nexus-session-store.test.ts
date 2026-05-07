@@ -111,7 +111,7 @@ describe("NexusSessionStore", () => {
     });
   });
 
-  test("legacy sessions without uid or finalizers are normalized and persisted", async () => {
+  test("legacy sessions without uid are normalized and persisted without rewriting missing finalizers", async () => {
     await client.write(
       "/zones/test-zone/sessions/legacy.json",
       encoder.encode(
@@ -136,10 +136,9 @@ describe("NexusSessionStore", () => {
 
     expect(first?.uid).toBeTruthy();
     expect(second?.uid).toBe(first?.uid);
-    expect(first?.finalizers).toEqual(DEFAULT_SESSION_FINALIZERS);
+    expect(first?.finalizers).toEqual([]);
     expect(raw.uid).toBe(first?.uid);
-    expect(raw.finalizers).toEqual(DEFAULT_SESSION_FINALIZERS);
-    expect(raw.deletionAudit).toEqual([]);
+    expect(raw.finalizers).toBeUndefined();
   });
 
   test("getContributions reads legacy arrays and addContribution rewrites them to v2 owner links", async () => {
@@ -353,5 +352,83 @@ describe("NexusSessionStore", () => {
     expect(fetched?.finalizers).toEqual(["grove.io/future-cleanup"]);
     expect(forced.deleted).toBe(true);
     expect(await store.getSession(session.id)).toBeUndefined();
+  });
+
+  test("explicit empty finalizers stay drained on read and delete does not resurrect defaults", async () => {
+    const store = new NexusSessionStore(client, "test-zone", { claimStore });
+    const session = await store.createSession({ goal: "drained" });
+    await client.write(
+      `/zones/test-zone/sessions/${session.id}.json`,
+      encoder.encode(
+        JSON.stringify({
+          ...(await store.getSessionRecord(session.id)),
+          finalizers: [],
+        }),
+      ),
+    );
+
+    const fetched = await store.getSession(session.id);
+    const listed = await store.listSessions();
+    const rawAfterRead = (await readJson(
+      client,
+      `/zones/test-zone/sessions/${session.id}.json`,
+    )) as {
+      finalizers?: readonly string[];
+    };
+    const deleted = await store.deleteSession(session.id);
+
+    expect(fetched?.finalizers).toEqual([]);
+    expect(listed.find((item) => item.id === session.id)?.finalizers).toEqual([]);
+    expect(rawAfterRead.finalizers).toEqual([]);
+    expect(deleted).toEqual({
+      sessionId: session.id,
+      deleted: true,
+      forced: false,
+      blockers: [],
+    });
+  });
+
+  test("legacy missing finalizers are not rewritten on read but delete still applies default cleanup", async () => {
+    const session = await new NexusSessionStore(client, "test-zone").createSession({
+      goal: "legacy delete",
+    });
+    const ownerRef = { kind: "session" as const, id: session.id, uid: session.uid };
+    await claimStore.createClaim(
+      makeClaim({ claimId: "legacy-delete-claim", targetRef: "legacy-delete-target", ownerRef }),
+    );
+    await client.write(
+      `/zones/test-zone/sessions/${session.id}.json`,
+      encoder.encode(
+        JSON.stringify({
+          id: session.id,
+          uid: session.uid,
+          goal: session.goal,
+          status: session.status,
+          createdAt: session.createdAt,
+          deletionAudit: [],
+          contributionCount: 0,
+        }),
+      ),
+    );
+
+    const store = new NexusSessionStore(client, "test-zone", { claimStore });
+    const fetched = await store.getSession(session.id);
+    const rawAfterRead = (await readJson(
+      client,
+      `/zones/test-zone/sessions/${session.id}.json`,
+    )) as {
+      finalizers?: readonly string[];
+    };
+    const deleted = await store.deleteSession(session.id);
+
+    expect(fetched?.finalizers).toEqual([]);
+    expect(rawAfterRead.finalizers).toBeUndefined();
+    expect(deleted).toEqual({
+      sessionId: session.id,
+      deleted: true,
+      forced: false,
+      blockers: [],
+    });
+    expect(await claimStore.getClaim("legacy-delete-claim")).toBeUndefined();
   });
 });
