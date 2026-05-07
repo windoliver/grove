@@ -24,6 +24,9 @@ import {
   outcomePath,
   outcomeStatusIndexPath,
   relationIndexPath,
+  skillCatalogBundlePath,
+  skillCatalogIndexPath,
+  skillCatalogSignaturePath,
   tagIndexPath,
   targetLockPath,
 } from "./vfs-paths.js";
@@ -251,6 +254,23 @@ describe("path construction correctness", () => {
   test("targetLockPath returns /zones/{zone}/indexes/claims/target-lock/{targetRef}", () => {
     expect(targetLockPath(zone, targetRef)).toBe(
       `/zones/${zone}/indexes/claims/target-lock/${targetRef}`,
+    );
+  });
+});
+
+describe("skill catalog paths", () => {
+  test("constructs zone-scoped skill catalog paths", () => {
+    expect(skillCatalogIndexPath("zone1")).toBe("/zones/zone1/skill-catalog/index.json");
+    expect(skillCatalogSignaturePath("zone1")).toBe("/zones/zone1/skill-catalog/index.sig");
+    expect(skillCatalogBundlePath("zone1", "blake3:abc123")).toBe(
+      "/zones/zone1/skill-catalog/bundles/blake3:abc123.zip",
+    );
+  });
+
+  test("encodes zone and bundle hash segments", () => {
+    expect(skillCatalogIndexPath("../zone")).toBe("/zones/..%2Fzone/skill-catalog/index.json");
+    expect(skillCatalogBundlePath("zone/one", "blake3:a/b")).toBe(
+      "/zones/zone%2Fone/skill-catalog/bundles/blake3:a%2Fb.zip",
     );
   });
 });

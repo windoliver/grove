@@ -37,6 +37,25 @@ export function casMetaPath(zoneId: string, contentHash: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Skill catalog paths
+// ---------------------------------------------------------------------------
+
+/** Path to the signed skill catalog index JSON. */
+export function skillCatalogIndexPath(zoneId: string): string {
+  return `/zones/${encodeSegment(zoneId)}/skill-catalog/index.json`;
+}
+
+/** Path to the skill catalog signature sidecar. */
+export function skillCatalogSignaturePath(zoneId: string): string {
+  return `/zones/${encodeSegment(zoneId)}/skill-catalog/index.sig`;
+}
+
+/** Path to an immutable skill bundle ZIP selected by a verified bundle hash. */
+export function skillCatalogBundlePath(zoneId: string, bundleHash: string): string {
+  return `/zones/${encodeSegment(zoneId)}/skill-catalog/bundles/${encodeSegment(bundleHash)}.zip`;
+}
+
+// ---------------------------------------------------------------------------
 // Contribution paths
 // ---------------------------------------------------------------------------
 
