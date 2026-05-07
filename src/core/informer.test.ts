@@ -1314,6 +1314,38 @@ describe("Informer queue — RV-coalescing", () => {
     ac.abort();
     await runPromise;
   });
+
+  test("RELIST_BEGIN drains queued deltas BEFORE setting staging; RELIST_END atomic-replaces", async () => {
+    const { stream, emit } = makeFakeStream();
+    const ac = new AbortController();
+    const informer = new Informer(stream, "Contribution");
+    const runPromise = informer.run(ac.signal);
+
+    // Queue 5 distinct deltas (sync prefix — they enqueue but drain microtask hasn't fired).
+    const promises: Array<Promise<void> | void> = [];
+    for (let i = 0; i < 5; i += 1) {
+      promises.push(emit(deltaEvent("ADDED", `delta-${i}`, String(i + 1))));
+    }
+    // Now emit RELIST_BEGIN — control event drains pending FIRST, then sets staging.
+    await emit({ op: "RELIST_BEGIN", rv: 100n, kind: "Contribution", entity: null });
+    await Promise.all(promises);
+
+    // After RELIST_BEGIN: deltas have been applied to store (they drained before staging set).
+    for (let i = 0; i < 5; i += 1) {
+      expect(informer.getById(`delta-${i}`)?.id).toBe(`delta-${i}`);
+    }
+
+    // Emit RELIST_END with no RELIST rows → empty snapshot atomically replaces store.
+    await emit({ op: "RELIST_END", rv: 100n, kind: "Contribution", entity: null });
+
+    // After RELIST_END: store cleared by atomic replace from empty staging.
+    for (let i = 0; i < 5; i += 1) {
+      expect(informer.getById(`delta-${i}`)).toBeUndefined();
+    }
+
+    ac.abort();
+    await runPromise;
+  });
 });
 
 describe("Informer queue — overflow", () => {
