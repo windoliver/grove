@@ -271,6 +271,7 @@ export async function claimBountyOperation(
         createdAt: now.toISOString(),
         heartbeatAt: now.toISOString(),
         leaseExpiresAt: new Date(now.getTime() + leaseDurationMs).toISOString(),
+        ...(deps.sessionOwnerRef !== undefined ? { ownerRef: deps.sessionOwnerRef } : {}),
       });
 
       // If we rotated the claim ID, update the bounty record to point at the
@@ -321,6 +322,7 @@ export async function claimBountyOperation(
       createdAt: now.toISOString(),
       heartbeatAt: now.toISOString(),
       leaseExpiresAt: new Date(now.getTime() + leaseDurationMs).toISOString(),
+      ...(deps.sessionOwnerRef !== undefined ? { ownerRef: deps.sessionOwnerRef } : {}),
     });
 
     let claimed: Bounty;
