@@ -6,6 +6,7 @@
  */
 
 import type { GroveContract } from "./contract.js";
+import type { DeletionAuditEvent, Finalizer } from "./lifecycle-metadata.js";
 import type { LoopStopStatus } from "./loop-runner.js";
 import type { AgentTopology } from "./topology.js";
 
@@ -31,10 +32,14 @@ export type SessionStatus = "pending" | "active" | "completed" | "cancelled" | "
 /** A session instance within a grove. */
 export interface Session {
   readonly id: string;
+  readonly uid: string;
   readonly goal?: string | undefined;
   readonly presetName?: string | undefined;
   readonly status: SessionStatus;
   readonly createdAt: string;
+  readonly finalizers: readonly Finalizer[];
+  readonly deletionTimestamp?: string | undefined;
+  readonly deletionAudit?: readonly DeletionAuditEvent[] | undefined;
   readonly completedAt?: string | undefined;
   readonly stopReason?: string | undefined;
   /** Machine-readable final loop status for operator UI and automation. */

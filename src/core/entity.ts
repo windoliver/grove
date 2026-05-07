@@ -7,6 +7,7 @@
  */
 
 import type { AgentSession } from "./agent-runtime.js";
+import type { Finalizer, OwnerRef } from "./lifecycle-metadata.js";
 import type {
   AgentIdentity,
   Claim,
@@ -31,16 +32,13 @@ export interface Condition {
   readonly message: string;
 }
 
-export interface OwnerRef {
-  readonly kind: string;
-  readonly id: string;
-}
-
 export interface EntityMetadata {
   readonly generation: number;
   readonly creationTimestamp?: string | undefined;
   readonly labels?: Readonly<Record<string, string>> | undefined;
   readonly ownerRefs?: readonly OwnerRef[] | undefined;
+  readonly finalizers?: readonly Finalizer[] | undefined;
+  readonly deletionTimestamp?: string | undefined;
 }
 
 export interface Entity<K extends string, Spec, Status> {
@@ -201,8 +199,19 @@ export function claimToEntity(
     effectivePhase === "completed",
     c.heartbeatAt,
   );
+  const terminatingCondition: Condition = mkCond(
+    "Terminating",
+    c.deletionTimestamp !== undefined,
+    c.deletionTimestamp ?? c.heartbeatAt,
+    c.deletionTimestamp !== undefined ? "deletion-requested" : effectivePhase,
+  );
 
-  const conditions: readonly Condition[] = [activeCondition, expiredCondition, completedCondition];
+  const conditions: readonly Condition[] = [
+    activeCondition,
+    expiredCondition,
+    completedCondition,
+    terminatingCondition,
+  ];
 
   return {
     kind: "Claim",
@@ -236,6 +245,9 @@ export function claimToEntity(
     metadata: {
       generation: metaGen,
       creationTimestamp: c.createdAt,
+      ownerRefs: c.ownerRef !== undefined ? [c.ownerRef] : undefined,
+      finalizers: c.finalizers,
+      deletionTimestamp: c.deletionTimestamp,
     },
   };
 }

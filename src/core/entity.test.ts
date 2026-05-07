@@ -10,8 +10,10 @@ import type {
   EntityMetadata,
 } from "./entity.js";
 import { agentSessionToEntity, claimToEntity, contributionToEntity } from "./entity.js";
+import { Finalizer } from "./lifecycle-metadata.js";
 import type { Claim, Contribution } from "./models.js";
 import { ClaimStatus, ContributionKind, ContributionMode } from "./models.js";
+import { makeClaim } from "./test-helpers.js";
 
 describe("Entity envelope types", () => {
   test("Condition has six required fields", () => {
@@ -129,7 +131,7 @@ describe("contributionToEntity", () => {
   });
 });
 
-function makeClaim(overrides: Partial<Claim> = {}): Claim {
+function makeEntityClaim(overrides: Partial<Claim> = {}): Claim {
   return {
     claimId: "claim-1",
     targetRef: "target-x",
@@ -151,21 +153,21 @@ const pastLeaseClock = (): number => Date.parse("2026-04-23T00:10:00Z");
 
 describe("claimToEntity", () => {
   test("wraps claimId as id, kind=Claim", () => {
-    const e: ClaimEntity = claimToEntity(makeClaim(), claimClock);
+    const e: ClaimEntity = claimToEntity(makeEntityClaim(), claimClock);
     expect(e.kind).toBe("Claim");
     expect(e.id).toBe("claim-1");
     expect(e.namespace).toBe("default");
   });
 
   test("spec carries targetRef, agent, intentSummary, context", () => {
-    const e = claimToEntity(makeClaim({ context: { k: "v" } }), claimClock);
+    const e = claimToEntity(makeEntityClaim({ context: { k: "v" } }), claimClock);
     expect(e.spec.targetRef).toBe("target-x");
     expect(e.spec.intentSummary).toBe("do x");
     expect(e.spec.context).toEqual({ k: "v" });
   });
 
   test("status carries phase/heartbeatAt/leaseExpiresAt/attemptCount", () => {
-    const e = claimToEntity(makeClaim({ attemptCount: 2 }), claimClock);
+    const e = claimToEntity(makeEntityClaim({ attemptCount: 2 }), claimClock);
     expect(e.status.phase).toBe("active");
     expect(e.status.persistedPhase).toBe("active");
     expect(e.status.heartbeatAt).toBe("2026-04-23T00:01:00Z");
@@ -174,32 +176,32 @@ describe("claimToEntity", () => {
   });
 
   test("status.phase is effective (lease-aware); persistedPhase is raw", () => {
-    const e = claimToEntity(makeClaim({ status: ClaimStatus.Active }), pastLeaseClock);
+    const e = claimToEntity(makeEntityClaim({ status: ClaimStatus.Active }), pastLeaseClock);
     expect(e.status.phase).toBe("expired");
     expect(e.status.persistedPhase).toBe("active");
   });
 
   test("attemptCount defaults to 0 when undefined on input", () => {
-    const e = claimToEntity(makeClaim(), claimClock);
+    const e = claimToEntity(makeEntityClaim(), claimClock);
     expect(e.status.attemptCount).toBe(0);
   });
 
   test("revision maps to resourceVersion + observedGeneration + metadata.generation", () => {
-    const e = claimToEntity(makeClaim({ revision: 7 }), claimClock);
+    const e = claimToEntity(makeEntityClaim({ revision: 7 }), claimClock);
     expect(e.resourceVersion).toBe("7");
     expect(e.observedGeneration).toBe(7);
     expect(e.metadata.generation).toBe(7);
   });
 
   test("missing revision → resourceVersion='0', generation=1", () => {
-    const e = claimToEntity(makeClaim(), claimClock);
+    const e = claimToEntity(makeEntityClaim(), claimClock);
     expect(e.resourceVersion).toBe("0");
     expect(e.observedGeneration).toBe(0);
     expect(e.metadata.generation).toBe(1);
   });
 
   test("active phase (lease fresh) → Active=True, Expired=False, Completed=False", () => {
-    const e = claimToEntity(makeClaim({ status: ClaimStatus.Active }), claimClock);
+    const e = claimToEntity(makeEntityClaim({ status: ClaimStatus.Active }), claimClock);
     const m = Object.fromEntries(e.conditions.map((c) => [c.type, c]));
     expect(m.Active?.status).toBe("True");
     expect(m.Expired?.status).toBe("False");
@@ -209,7 +211,7 @@ describe("claimToEntity", () => {
   });
 
   test("active phase but lease expired → Active=False, Expired=True, reason=lease-expired", () => {
-    const e = claimToEntity(makeClaim({ status: ClaimStatus.Active }), pastLeaseClock);
+    const e = claimToEntity(makeEntityClaim({ status: ClaimStatus.Active }), pastLeaseClock);
     const m = Object.fromEntries(e.conditions.map((c) => [c.type, c]));
     expect(m.Active?.status).toBe("False");
     expect(m.Expired?.status).toBe("True");
@@ -222,7 +224,7 @@ describe("claimToEntity", () => {
     // wall clocks: one before the lease, one after. The lease-aware
     // projection must signal a version change so downstream caches
     // cannot conflate the Active and Expired snapshots.
-    const claim = makeClaim({ status: ClaimStatus.Active, revision: 5 });
+    const claim = makeEntityClaim({ status: ClaimStatus.Active, revision: 5 });
     const fresh = claimToEntity(claim, claimClock);
     const stale = claimToEntity(claim, pastLeaseClock);
     expect(fresh.resourceVersion).toBe("5");
@@ -237,19 +239,19 @@ describe("claimToEntity", () => {
 
   test("lease-expired suffix does not apply to terminal phases", () => {
     const completed = claimToEntity(
-      makeClaim({ status: ClaimStatus.Completed, revision: 3 }),
+      makeEntityClaim({ status: ClaimStatus.Completed, revision: 3 }),
       pastLeaseClock,
     );
     expect(completed.resourceVersion).toBe("3");
     const released = claimToEntity(
-      makeClaim({ status: ClaimStatus.Released, revision: 4 }),
+      makeEntityClaim({ status: ClaimStatus.Released, revision: 4 }),
       pastLeaseClock,
     );
     expect(released.resourceVersion).toBe("4");
   });
 
   test("released claim with past lease stays released (lease-gate only applies to active)", () => {
-    const e = claimToEntity(makeClaim({ status: ClaimStatus.Released }), pastLeaseClock);
+    const e = claimToEntity(makeEntityClaim({ status: ClaimStatus.Released }), pastLeaseClock);
     const m = Object.fromEntries(e.conditions.map((c) => [c.type, c]));
     expect(m.Active?.status).toBe("False");
     expect(m.Expired?.status).toBe("False");
@@ -258,14 +260,14 @@ describe("claimToEntity", () => {
   });
 
   test("completed claim with past lease stays completed", () => {
-    const e = claimToEntity(makeClaim({ status: ClaimStatus.Completed }), pastLeaseClock);
+    const e = claimToEntity(makeEntityClaim({ status: ClaimStatus.Completed }), pastLeaseClock);
     const m = Object.fromEntries(e.conditions.map((c) => [c.type, c]));
     expect(m.Completed?.status).toBe("True");
     expect(m.Expired?.status).toBe("False");
   });
 
   test("expired phase → Expired=True, Active=False", () => {
-    const e = claimToEntity(makeClaim({ status: ClaimStatus.Expired }), claimClock);
+    const e = claimToEntity(makeEntityClaim({ status: ClaimStatus.Expired }), claimClock);
     const m = Object.fromEntries(e.conditions.map((c) => [c.type, c]));
     expect(m.Active?.status).toBe("False");
     expect(m.Expired?.status).toBe("True");
@@ -273,14 +275,14 @@ describe("claimToEntity", () => {
   });
 
   test("completed phase → Completed=True, Active=False", () => {
-    const e = claimToEntity(makeClaim({ status: ClaimStatus.Completed }), claimClock);
+    const e = claimToEntity(makeEntityClaim({ status: ClaimStatus.Completed }), claimClock);
     const m = Object.fromEntries(e.conditions.map((c) => [c.type, c]));
     expect(m.Completed?.status).toBe("True");
     expect(m.Active?.status).toBe("False");
   });
 
   test("released phase → Active=False, Expired=False, Completed=False", () => {
-    const e = claimToEntity(makeClaim({ status: ClaimStatus.Released }), claimClock);
+    const e = claimToEntity(makeEntityClaim({ status: ClaimStatus.Released }), claimClock);
     const m = Object.fromEntries(e.conditions.map((c) => [c.type, c]));
     expect(m.Active?.status).toBe("False");
     expect(m.Expired?.status).toBe("False");
@@ -288,7 +290,7 @@ describe("claimToEntity", () => {
   });
 
   test("conditions observedGeneration mirrors entity observedGeneration", () => {
-    const e = claimToEntity(makeClaim({ revision: 3 }), claimClock);
+    const e = claimToEntity(makeEntityClaim({ revision: 3 }), claimClock);
     for (const c of e.conditions) {
       expect(c.observedGeneration).toBe(3);
     }
@@ -297,13 +299,28 @@ describe("claimToEntity", () => {
   test("default clock uses wall-clock Date.now()", () => {
     // leaseExpiresAt year 9999 — guaranteed in the future for any wall clock
     const e = claimToEntity(
-      makeClaim({
+      makeEntityClaim({
         status: ClaimStatus.Active,
         leaseExpiresAt: "9999-01-01T00:00:00Z",
       }),
     );
     const m = Object.fromEntries(e.conditions.map((c) => [c.type, c]));
     expect(m.Active?.status).toBe("True");
+  });
+
+  test("claimToEntity exposes owner refs, finalizers, and terminating condition", () => {
+    const claim = makeClaim({
+      ownerRef: { kind: "session", id: "s1", uid: "u1" },
+      finalizers: [Finalizer.ReleaseSlots],
+      deletionTimestamp: "2026-05-07T00:00:00.000Z",
+    });
+
+    const entity = claimToEntity(claim, () => Date.parse("2026-05-07T00:00:01.000Z"), "zone-a");
+
+    expect(entity.metadata.ownerRefs).toEqual([{ kind: "session", id: "s1", uid: "u1" }]);
+    expect(entity.metadata.finalizers).toEqual([Finalizer.ReleaseSlots]);
+    expect(entity.metadata.deletionTimestamp).toBe("2026-05-07T00:00:00.000Z");
+    expect(entity.conditions.find((c) => c.type === "Terminating")?.status).toBe("True");
   });
 });
 
