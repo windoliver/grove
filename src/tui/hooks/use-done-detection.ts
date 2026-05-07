@@ -70,7 +70,7 @@ export function useDoneDetection(
             payload.summary &&
             isDoneContribution(payload as { summary: string; context?: unknown })
           ) {
-            checkDone(role.name);
+            checkDone(event.sourceRole);
           }
         }
         if (event.type === "stop") {

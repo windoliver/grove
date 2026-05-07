@@ -19,6 +19,7 @@ import { TopologyRouter } from "../core/topology-router.js";
 import { WatchHub } from "../core/watch-hub.js";
 import { createLocalRuntime } from "../local/runtime.js";
 import { type McpDeps, sessionToOwnerRef } from "./deps.js";
+import { resolveNexusApiKey } from "./env.js";
 import { createMcpServer } from "./server.js";
 
 // --- Initialization (eager — catches config errors at startup) ------------
@@ -169,7 +170,7 @@ try {
   }
 
   const nexusUrl = process.env.GROVE_NEXUS_URL;
-  const nexusApiKey = process.env.NEXUS_API_KEY;
+  const nexusApiKey = resolveNexusApiKey(cwd);
 
   // Always create local runtime for workspace, frontier, CAS.
   //
@@ -401,7 +402,7 @@ try {
     if (nexusClient) {
       const { NexusEventBus } = await import("../nexus/nexus-event-bus.js");
       const { NexusIpcClient } = await import("../nexus/nexus-ipc-client.js");
-      const apiKey = process.env.NEXUS_API_KEY;
+      const apiKey = nexusApiKey;
       const ipcClient =
         nexusUrl && apiKey
           ? new NexusIpcClient({ nexusUrl, apiKey, sessionId: process.env.GROVE_SESSION_ID })

@@ -20,6 +20,7 @@ import { toast } from "@opentui-ui/toast/react";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ContributionEntity } from "../../core/entity.js";
 import type { EventBus } from "../../core/event-bus.js";
+import type { Handoff } from "../../core/handoff.js";
 import type { Contribution } from "../../core/models.js";
 import type { AgentTopology } from "../../core/topology.js";
 import { useInterval } from "../../local/use-interval.js";
@@ -35,7 +36,7 @@ import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import { InputMode } from "../hooks/use-panel-focus.js";
 import { useTuiStatePersistence } from "../hooks/use-session-persistence.js";
 import type { DashboardData, TuiDataProvider } from "../provider.js";
-import { isVfsProvider } from "../provider.js";
+import { isHandoffProvider, isVfsProvider } from "../provider.js";
 import { agentStatusIcon, KIND_ICONS, PLATFORM_COLORS, theme } from "../theme.js";
 import { AgentListView } from "../views/agent-list.js";
 import { DagView } from "../views/dag.js";
@@ -361,6 +362,9 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       );
       return sorted.map(entityToContribution);
     }, [contribInformerReady, contribEntities.data, contributionsPoll.data]);
+    // Session scoping is handled server-side (provider.setSessionScope).
+    // The feed already contains only this session's contributions.
+    const feed = contributions ?? [];
 
     // Aggregate poll health for the status bar: show stale/error when either
     // path is unhealthy. Informer error always surfaces (even when we're still
@@ -382,22 +386,15 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
       contributionsPoll.error?.message,
     ]);
 
-    // Fetch handoffs once on mount; subsequent updates ride the eventBus
-    // subscription below (handoff.overdue / handoff.seen / handoff.acked).
-    const [handoffs, setHandoffs] = useState<readonly import("../../core/handoff.js").Handoff[]>(
-      [],
-    );
-    useEffect(() => {
-      const hasMethod = "getHandoffs" in provider;
+    const [handoffs, setHandoffs] = useState<readonly Handoff[]>([]);
+    const refreshHandoffs = useCallback((): void => {
+      const hasMethod = isHandoffProvider(provider);
       debugLog(
         "handoffs",
         `hasGetHandoffs=${hasMethod} sessionStartedAt=${sessionStartedAt ?? "none"}`,
       );
       if (!hasMethod) return;
-      const p = provider as {
-        getHandoffs: (q?: unknown) => Promise<readonly import("../../core/handoff.js").Handoff[]>;
-      };
-      void p
+      void provider
         .getHandoffs({ limit: 200 })
         .then((all) => {
           const cutoff =
@@ -414,31 +411,33 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
         });
     }, [provider, sessionStartedAt]);
 
-    // Subscribe to handoff lifecycle events (handoff.overdue, handoff.seen,
-    // handoff.acked) for real-time panel updates. When any handoff event
-    // arrives, trigger an immediate re-fetch so the panel reflects the change
-    // without waiting for the next polling interval.
+    useEffect(() => {
+      refreshHandoffs();
+    }, [refreshHandoffs]);
+
+    const feedCidKey = useMemo(() => feed.map((c) => c.cid).join("\0"), [feed]);
+    useEffect(() => {
+      if (feedCidKey.length === 0) return;
+      refreshHandoffs();
+    }, [feedCidKey, refreshHandoffs]);
+
+    useInterval(
+      refreshHandoffs,
+      Math.max(1000, Math.min(intervalMs, 2000)),
+      expandedPanel === RunningPanel.Handoffs,
+    );
+
+    // Handoff reply transitions can be written by an MCP subprocess without a
+    // topology-route event. Refetch on route events, feed changes, and while
+    // the handoff panel is visible so the operator pane reflects replied state.
     useEffect(() => {
       if (!eventBus) return;
       const roles = topology?.roles.map((r) => r.name) ?? [];
       if (roles.length === 0) return;
-      const hasMethod = "getHandoffs" in provider;
-      if (!hasMethod) return;
-      const p = provider as {
-        getHandoffs: (q?: unknown) => Promise<readonly import("../../core/handoff.js").Handoff[]>;
-      };
+      if (!isHandoffProvider(provider)) return;
       const handler = () => {
-        debugLog("eventBus", "handoff event — refreshing handoffs");
-        void p
-          .getHandoffs({ limit: 200 })
-          .then((all) => {
-            const cutoff =
-              sessionStartedAt ?? new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-            setHandoffs(all.filter((h) => h.createdAt >= cutoff));
-          })
-          .catch(() => {
-            /* handoff refresh errors are non-fatal — the next bus event will retry */
-          });
+        debugLog("eventBus", "handoff event - refreshing handoffs");
+        refreshHandoffs();
       };
       for (const role of roles) {
         eventBus.subscribe(role, handler);
@@ -448,11 +447,7 @@ export const RunningView: React.NamedExoticComponent<RunningViewProps> = React.m
           eventBus.unsubscribe(role, handler);
         }
       };
-    }, [eventBus, topology, provider, sessionStartedAt]);
-
-    // Session scoping is handled server-side (provider.setSessionScope).
-    // The feed already contains only this session's contributions.
-    const feed = contributions ?? [];
+    }, [eventBus, topology, provider, refreshHandoffs]);
 
     debugLog("feed.fetch", `total=${feed.length} sessionStartedAt=${sessionStartedAt ?? "none"}`);
 

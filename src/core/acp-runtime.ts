@@ -93,9 +93,10 @@ async function launchSubprocess(
   } = {},
 ): Promise<LaunchResult> {
   const launch = resolveAcpLaunch(agent);
-  const child = nodeSpawn(launch.command, buildAcpLaunchArgs(launch, opts, env), {
+  const childEnv = buildAcpLaunchEnv(agent, env, opts.mcpServers);
+  const child = nodeSpawn(launch.command, buildAcpLaunchArgs(launch, opts, childEnv), {
     cwd,
-    env,
+    env: childEnv,
     stdio: ["pipe", "pipe", "pipe"],
   }) as ChildProcessByStdio<Writable, Readable, Readable>;
 
@@ -142,8 +143,26 @@ export function buildAcpLaunchArgs(
   if (allowAll) {
     args.push("-c", 'sandbox_mode="danger-full-access"', "-c", 'approval_policy="never"');
   }
-  appendCodexMcpServerOverrides(args, opts.mcpServers);
+  appendCodexMcpServerOverrides(args, opts.mcpServers, env);
   return args;
+}
+
+export function buildAcpLaunchEnv(
+  agent: string,
+  env: NodeJS.ProcessEnv,
+  mcpServers: AgentConfig["mcpServers"] | undefined,
+): NodeJS.ProcessEnv {
+  const launchEnv: NodeJS.ProcessEnv = { ...env };
+  if (agent !== "codex") return launchEnv;
+
+  for (const server of mcpServers ?? []) {
+    if (server.name.trim() !== "grove") continue;
+    for (const [name, value] of Object.entries(server.env ?? {})) {
+      launchEnv[name] = value;
+    }
+  }
+
+  return launchEnv;
 }
 
 const SAFE_TOML_BARE_KEY = /^[A-Za-z0-9_-]+$/;
@@ -167,9 +186,34 @@ function shouldPassMcpEnvViaCodexConfig(name: string, value: string): boolean {
   return !SENSITIVE_ENV_NAME.test(name) && !SENSITIVE_ENV_VALUE.test(value);
 }
 
+function isGroveMcpInheritedEnv(name: string): boolean {
+  return name.startsWith("GROVE_") || name === "NEXUS_API_KEY";
+}
+
+function stringEnvEntries(env: NodeJS.ProcessEnv): [string, string][] {
+  return Object.entries(env).filter((entry): entry is [string, string] => {
+    return typeof entry[1] === "string";
+  });
+}
+
+function mergedCodexMcpServerEnv(
+  server: NonNullable<AgentConfig["mcpServers"]>[number],
+  env: NodeJS.ProcessEnv,
+): Record<string, string> {
+  const inherited =
+    server.name.trim() === "grove"
+      ? Object.fromEntries(stringEnvEntries(env).filter(([name]) => isGroveMcpInheritedEnv(name)))
+      : {};
+  return {
+    ...inherited,
+    ...(server.env ?? {}),
+  };
+}
+
 function appendCodexMcpServerOverrides(
   args: string[],
   mcpServers: AgentConfig["mcpServers"] | undefined,
+  env: NodeJS.ProcessEnv = process.env,
 ): void {
   for (const server of mcpServers ?? []) {
     const name = server.name.trim();
@@ -180,8 +224,11 @@ function appendCodexMcpServerOverrides(
     args.push("-c", `${serverKey}.command=${tomlString(command)}`);
     args.push("-c", `${serverKey}.args=${tomlStringArray(server.args ?? [])}`);
 
-    for (const [envName, envValue] of Object.entries(server.env ?? {})) {
-      if (!shouldPassMcpEnvViaCodexConfig(envName, envValue)) continue;
+    const envEntries = Object.entries(mergedCodexMcpServerEnv(server, env))
+      .filter(([envName, envValue]) => shouldPassMcpEnvViaCodexConfig(envName, envValue))
+      .sort(([left], [right]) => left.localeCompare(right));
+
+    for (const [envName, envValue] of envEntries) {
       args.push("-c", `${serverKey}.env.${tomlKeySegment(envName)}=${tomlString(envValue)}`);
     }
   }
