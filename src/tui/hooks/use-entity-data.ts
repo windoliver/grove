@@ -70,11 +70,16 @@ export function useEntityData<K extends WatchKind>(
     if (useInformerPath) {
       // entityResult.data already had `predicate` applied inside useEntities.
       // Apply only sort + offset/limit here to avoid double-filtering.
-      return applyEntityShape(entityResult.data, {
-        sort: opts.sort,
-        offset: opts.offset,
-        limit: opts.limit,
-      });
+      type MutableShapeOpts = {
+        sort?: (a: EntityForKind<K>, b: EntityForKind<K>) => number;
+        offset?: number;
+        limit?: number;
+      };
+      const innerOpts: MutableShapeOpts = {};
+      if (opts.sort) innerOpts.sort = opts.sort;
+      if (opts.offset !== undefined) innerOpts.offset = opts.offset;
+      if (opts.limit !== undefined) innerOpts.limit = opts.limit;
+      return applyEntityShape(entityResult.data, innerOpts);
     }
     if (polled.data === null) return [];
     // Polled fallback: predicate was NOT applied by the hook — apply here.

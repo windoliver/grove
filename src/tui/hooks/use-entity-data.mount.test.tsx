@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test";
 import type React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import { InformerFactory } from "../../core/informer.js";
+import type { ContributionEntity } from "../../core/entity.js";
 import type { WatchEntity } from "../../core/watch-events.js";
 import { WatchHub } from "../../core/watch-hub.js";
 import { EntityStoreFactory } from "../data/entity-store.js";
@@ -130,14 +131,14 @@ describe("useEntityData — mount integration", () => {
 
   test("polled fallback: when no InformerProvider, calls fetcher", async () => {
     let calls = 0;
-    const provider = {};
+    const provider = { hasSessionScope: () => false };
 
     function PolledProbe({ onResult }: { onResult: (r: unknown) => void }) {
       const r = useEntityData(provider, "Contribution", {
         active: true,
         fallbackFetcher: async () => {
           calls += 1;
-          return [entity("p", "2026-01-01T00:00:00Z")] as readonly WatchEntity[];
+          return [entity("p", "2026-01-01T00:00:00Z")] as readonly ContributionEntity[];
         },
       });
       onResult(r);
