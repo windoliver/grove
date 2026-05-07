@@ -13,9 +13,9 @@ import { DEFAULT_SESSION_FINALIZERS } from "../core/lifecycle-metadata.js";
 import { LoopStopStatus } from "../core/loop-runner.js";
 import type { SessionStore } from "../core/session.js";
 import { sessionStoreConformance } from "../core/session-store.conformance.js";
-import { makeContribution } from "../core/test-helpers.js";
-import type { GoalSessionStore, SqliteGoalSessionStore } from "./sqlite-goal-session-store.js";
-import { SESSION_GC_TTL_MS } from "./sqlite-goal-session-store.js";
+import { makeClaim, makeContribution } from "../core/test-helpers.js";
+import type { GoalSessionStore } from "./sqlite-goal-session-store.js";
+import { SESSION_GC_TTL_MS, SqliteGoalSessionStore } from "./sqlite-goal-session-store.js";
 import { createSqliteStores } from "./sqlite-store.js";
 
 // ---------------------------------------------------------------------------
@@ -530,8 +530,8 @@ describe("Session Config", () => {
 
   it("getSessionConfig returns undefined for malformed config_json", async () => {
     stores.db.run(
-      "INSERT INTO sessions (session_id, goal, config_json, status, started_at) VALUES (?, ?, ?, 'active', ?)",
-      ["bad-config", "test", "not-valid-json", new Date().toISOString()],
+      "INSERT INTO sessions (session_id, uid, goal, config_json, status, started_at) VALUES (?, ?, ?, ?, 'active', ?)",
+      ["bad-config", "bad-config-uid", "test", "not-valid-json", new Date().toISOString()],
     );
     const config = store.getSessionConfigSync("bad-config");
     expect(config).toBeUndefined();
@@ -546,9 +546,9 @@ describe("gcStaleSessions", () => {
   /** Helper: insert a session with a custom started_at timestamp. */
   function insertSessionAt(sessionId: string, startedAt: string, status = "completed"): void {
     stores.db.run(
-      `INSERT INTO sessions (session_id, status, started_at, config_json)
-       VALUES (?, ?, ?, '{}')`,
-      [sessionId, status, startedAt],
+      `INSERT INTO sessions (session_id, uid, status, started_at, config_json)
+       VALUES (?, ?, ?, ?, '{}')`,
+      [sessionId, `${sessionId}-uid`, status, startedAt],
     );
   }
 
@@ -616,9 +616,9 @@ describe("gcStaleSessions", () => {
     const startedAt = new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString(); // 26h ago
     const endedAt = new Date(Date.now() - 60_000).toISOString(); // 1 min ago
     stores.db.run(
-      `INSERT INTO sessions (session_id, status, started_at, ended_at, config_json)
-       VALUES (?, 'completed', ?, ?, '{}')`,
-      ["long-running-fresh-end", startedAt, endedAt],
+      `INSERT INTO sessions (session_id, uid, status, started_at, ended_at, config_json)
+       VALUES (?, ?, 'completed', ?, ?, '{}')`,
+      ["long-running-fresh-end", "long-running-fresh-end-uid", startedAt, endedAt],
     );
 
     const archived = store.gcStaleSessions(); // default 24h TTL
@@ -636,8 +636,8 @@ describe("gcStaleSessions", () => {
     insertSessionAt("stale-2", old, "cancelled");
     // Add one fresh active session
     stores.db.run(
-      `INSERT INTO sessions (session_id, status, started_at, config_json)
-       VALUES ('fresh-active', 'active', ?, '{}')`,
+      `INSERT INTO sessions (session_id, uid, status, started_at, config_json)
+       VALUES ('fresh-active', 'fresh-active-uid', 'active', ?, '{}')`,
       [new Date().toISOString()],
     );
 
@@ -693,6 +693,63 @@ describe("listSessions volume", () => {
   });
 });
 
+describe("session deletion finalizers", () => {
+  it("deleteSession releases owned claims and removes session contribution links", async () => {
+    const session = await store.createSession({ goal: "cleanup" });
+    const ownerRef = { kind: "session" as const, id: session.id, uid: session.uid };
+    const claim = makeClaim({ claimId: "owned-claim", targetRef: "owned-target", ownerRef });
+    await stores.claimStore.createClaim(claim);
+    const contribution = makeContribution({ summary: "owned contribution" });
+    await stores.contributionStore.put(contribution);
+    await store.addContributionToSession(session.id, contribution.cid);
+
+    const result = await store.deleteSession(session.id);
+
+    expect(result.deleted).toBe(true);
+    expect(result.forced).toBe(false);
+    expect(result.blockers).toEqual([]);
+    expect(await store.getSession(session.id)).toBeUndefined();
+    expect(await stores.claimStore.getClaim("owned-claim")).toBeUndefined();
+    expect(await store.getSessionContributions(session.id)).toEqual([]);
+    expect(await stores.contributionStore.get(contribution.cid)).toBeDefined();
+  });
+
+  it("deleteSession returns blockers when close-runtime finalizer fails", async () => {
+    const blocking = new SqliteGoalSessionStore(stores.db, {
+      closeRuntime: async () => {
+        throw new Error("runtime still flushing");
+      },
+    });
+    const session = await blocking.createSession({ goal: "blocked" });
+
+    const result = await blocking.deleteSession(session.id);
+
+    expect(result.deleted).toBe(false);
+    expect(result.blockers).toEqual([
+      { finalizer: "grove.io/close-runtime", message: "runtime still flushing" },
+    ]);
+    const fetched = await blocking.getSession(session.id);
+    expect(fetched?.deletionTimestamp).toBeDefined();
+    expect(fetched?.finalizers).toEqual(["grove.io/close-runtime"]);
+  });
+
+  it("deleteSession force removes session and returns warning", async () => {
+    const blocking = new SqliteGoalSessionStore(stores.db, {
+      closeRuntime: async () => {
+        throw new Error("runtime still flushing");
+      },
+    });
+    const session = await blocking.createSession({ goal: "force" });
+
+    const result = await blocking.deleteSession(session.id, { force: true, actor: "test" });
+
+    expect(result.deleted).toBe(true);
+    expect(result.forced).toBe(true);
+    expect(result.warning).toContain("force delete skipped finalizer waits");
+    expect(await blocking.getSession(session.id)).toBeUndefined();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // SessionStore conformance suite via adapter
 // ---------------------------------------------------------------------------
@@ -710,6 +767,8 @@ function adaptGoalSessionStore(gs: GoalSessionStore): SessionStore {
     getSession: (id) => gs.getSession(id),
     updateSession: (id, updates) => gs.updateSession(id, updates),
     listSessions: (query) => gs.listSessions(query),
+    deleteSession: (id, options) => gs.deleteSession(id, options),
+    listSessionDeleteBlockers: (id) => gs.listSessionDeleteBlockers(id),
     archiveSession: (id) => gs.archiveSession(id),
     addContribution: (sid, cid) => gs.addContributionToSession(sid, cid),
     getContributions: (sid) => gs.getSessionContributions(sid),

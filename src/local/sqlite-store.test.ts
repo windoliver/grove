@@ -14,6 +14,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runClaimStoreTests } from "../core/claim-store.conformance.js";
+import type { OwnerRef } from "../core/lifecycle-metadata.js";
 import { ContributionKind, RelationType } from "../core/models.js";
 import { runContributionStoreTests } from "../core/store.conformance.js";
 import { makeClaim, makeContribution } from "../core/test-helpers.js";
@@ -178,6 +179,63 @@ describe("SqliteStore session filtering", () => {
       expect(await store.count({ sessionId: "missing-session" })).toBe(0);
     } finally {
       store.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("SqliteClaimStore ownerRef persistence", () => {
+  test("claimOrRenew persists ownerRef when creating a claim", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-claim-owner-create-"));
+    const dbPath = join(dir, "test.db");
+    const { claimStore, close } = createSqliteStores(dbPath);
+    try {
+      const ownerRef: OwnerRef = { kind: "session", id: "session-1", uid: "uid-1" };
+      const claim = makeClaim({
+        claimId: "owner-create",
+        targetRef: "owner-create-target",
+        ownerRef,
+      });
+
+      const created = await claimStore.claimOrRenew(claim);
+      const fetched = await claimStore.getClaim(created.claimId);
+
+      expect(created.ownerRef).toEqual(ownerRef);
+      expect(fetched?.ownerRef).toEqual(ownerRef);
+    } finally {
+      close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("claimOrRenew same-agent renewal updates stored ownerRef", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-claim-owner-renew-"));
+    const dbPath = join(dir, "test.db");
+    const { claimStore, close } = createSqliteStores(dbPath);
+    try {
+      const initialOwner: OwnerRef = { kind: "session", id: "session-1", uid: "uid-1" };
+      const renewedOwner: OwnerRef = { kind: "session", id: "session-1", uid: "uid-2" };
+      const original = makeClaim({
+        claimId: "owner-renew-original",
+        targetRef: "owner-renew-target",
+        ownerRef: initialOwner,
+      });
+      await claimStore.claimOrRenew(original);
+
+      const renewal = makeClaim({
+        claimId: "owner-renew-next",
+        targetRef: original.targetRef,
+        agent: original.agent,
+        ownerRef: renewedOwner,
+      });
+      const renewed = await claimStore.claimOrRenew(renewal);
+      const fetched = await claimStore.getClaim(original.claimId);
+
+      expect(renewed.claimId).toBe(original.claimId);
+      expect(renewed.ownerRef).toEqual(renewedOwner);
+      expect(fetched?.ownerRef).toEqual(renewedOwner);
+    } finally {
+      close();
       await rm(dir, { recursive: true, force: true });
     }
   });
