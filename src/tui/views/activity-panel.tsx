@@ -2,7 +2,8 @@
  * Activity panel — recent contributions, EntityView-backed.
  */
 
-import React from "react";
+import React, { useCallback } from "react";
+import { contributionToEntity, type ContributionEntity } from "../../core/entity.js";
 import {
   agentColumn,
   byCreatedDesc,
@@ -23,6 +24,8 @@ export interface ActivityPanelProps {
   readonly onRowCountChanged?: ((count: number) => void) | undefined;
 }
 
+const NAMESPACE = "default";
+
 const COLUMNS = [
   cidColumn(16),
   kindColumn(12),
@@ -36,6 +39,11 @@ const PANEL_LIMIT = 30;
 
 export const ActivityPanelView: React.NamedExoticComponent<ActivityPanelProps> = React.memo(
   function ActivityPanelView(props: ActivityPanelProps): React.ReactNode {
+    const fallbackFetcher = useCallback(async (): Promise<readonly ContributionEntity[]> => {
+      const items = await props.provider.getActivity({ limit: PANEL_LIMIT });
+      return items.map((c) => contributionToEntity(c, NAMESPACE));
+    }, [props.provider]);
+
     return (
       <EntityView
         kind="Contribution"
@@ -45,6 +53,7 @@ export const ActivityPanelView: React.NamedExoticComponent<ActivityPanelProps> =
         cursor={props.cursor}
         sort={byCreatedDesc}
         limit={PANEL_LIMIT}
+        fallbackFetcher={fallbackFetcher}
         title="Activity"
         emptyTitle="No recent activity."
         emptyHint="Activity appears as agents publish contributions."

@@ -1258,6 +1258,32 @@ export class NexusWsBridge {
     let lastDetail = "";
     for (let attempt = 0; attempt <= backoffsMs.length; attempt += 1) {
       if (this.draining || this.closed) return;
+      // Re-check the current session for this role before each attempt.
+      // If the role was re-registered during a backoff window — the exact
+      // crash/bootstrap race this retry is recovering from — keep targeting
+      // the captured (now torn-down) session would dead-letter a handoff
+      // that the replacement's SSE loop should still pick up. When the
+      // mapping flips to a new session, abort retries so the replacement
+      // delivers normally; when the role is gone entirely, dead-letter.
+      const currentSession = this.sessions.get(targetRole);
+      if (!currentSession) {
+        process.stderr.write(
+          `[NexusWsBridge] role=${targetRole} unregistered during retry — dead-lettering\n`,
+        );
+        await this.markHandoffDeadLettered(
+          resolvedHandoffId,
+          targetRole,
+          `role unregistered during retry: ${lastDetail || "no prior attempt"}`,
+          retryContext,
+        );
+        return;
+      }
+      if (currentSession.id !== session.id) {
+        process.stderr.write(
+          `[NexusWsBridge] role=${targetRole} session replaced during retry (was=${session.id} now=${currentSession.id}) — aborting retries; replacement SSE will redeliver\n`,
+        );
+        return;
+      }
       try {
         const turn = await this.opts.runtime.send(session, notification);
         const result = await turn.result.catch((err) => ({

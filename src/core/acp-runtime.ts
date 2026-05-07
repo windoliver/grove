@@ -86,12 +86,41 @@ function resolveAgentFromConfig(config: AgentConfig): string {
 }
 
 /**
+ * Top-level scalar keys we copy from the user's `~/.codex/config.toml` into the
+ * isolated CODEX_HOME. Restrict to safe, well-known keys: model preferences
+ * and explicit grove-relevant settings. Anything else (notify hooks pointing
+ * at desktop-app binaries, history backends, telemetry endpoints, …) is
+ * dropped because we don't want grove-spawned children running side effects
+ * the user wired into their interactive Codex.
+ *
+ * Tables (`[mcp_servers.X]`, `[projects.X]`, `[plugins]`) are always dropped
+ * — grove provides its own MCP server set via `-c` flags in
+ * `buildAcpLaunchArgs`, and per-project trust is bypassed entirely because
+ * grove-spawned workspaces are ephemeral and explicitly approved by the
+ * `GROVE_ALLOW_ALL_PERMISSIONS=1` / sandbox config the launcher passes.
+ */
+const SAFE_CODEX_TOP_LEVEL_KEYS = new Set([
+  "model",
+  "model_provider",
+  "personality",
+  "model_reasoning_effort",
+  "model_reasoning_summaries",
+  "approvals_reviewer",
+]);
+
+/**
+ * Match a top-level TOML scalar assignment: `key = ...` outside any table.
+ * We bail at the first `[` line to switch to "inside-section" mode.
+ */
+const TOML_TOP_LEVEL_KEY_LINE = /^([A-Za-z0-9_-]+)\s*=/;
+
+/**
  * Prepare an ephemeral CODEX_HOME for grove-spawned codex children. Copies the
- * user's auth.json (so login persists), writes a minimal config.toml (model +
- * personality only), and excludes user-level mcp_servers entries that may
- * point to enterprise endpoints unreachable from this environment (DNS-blocked
- * MaaS, etc.). Without this, a single failing user MCP server brings down the
- * whole ACP connection on startup via rmcp's fatal-on-transport-close behavior.
+ * user's auth.json (so login persists), then writes a minimal config.toml
+ * containing ONLY allow-listed top-level scalars. Drops everything else —
+ * `mcp_servers` (DNS-blocked enterprise endpoints crash codex's rmcp transport
+ * on bootstrap), `projects.*` trust (grove uses its own permission gating),
+ * `notify` hooks (would invoke desktop apps for grove turns), plugins.
  */
 async function prepareIsolatedCodexHome(env: NodeJS.ProcessEnv): Promise<string> {
   const userHome = env.CODEX_HOME ?? join(env.HOME ?? "/tmp", ".codex");
@@ -105,31 +134,54 @@ async function prepareIsolatedCodexHome(env: NodeJS.ProcessEnv): Promise<string>
       /* best-effort */
     }
   }
-  // Minimal config: keep model preferences from user config but skip everything
-  // else (mcp_servers, projects, plugins, notify hooks). Grove's per-spawn MCP
-  // servers are appended via `-c mcp_servers.<name>.command=...` at launch time.
+
   const userConfigPath = join(userHome, "config.toml");
-  const lines: string[] = [];
+  const safeLines: string[] = [];
   if (existsSync(userConfigPath)) {
     try {
       const fs = await import("node:fs/promises");
       const text = await fs.readFile(userConfigPath, "utf8");
-      // Keep only top-level scalar assignments before the first `[section]`.
-      // This preserves model/personality/effort but drops every table
-      // (mcp_servers.X, projects.X, plugins, etc.).
+      let inSection = false;
+      let currentLineKey: string | null = null;
+      // Walk lines maintaining "are we inside a [table]" mode. Carry over
+      // continuation lines for the most-recent allow-listed top-level key so
+      // multi-line array values (e.g. `notify = [\n  "x",\n  "y"\n]`) are
+      // dropped wholesale rather than half-copied. Any unknown key — even a
+      // top-level scalar — is skipped.
       for (const raw of text.split("\n")) {
         const line = raw.trimEnd();
-        if (line.startsWith("[")) break;
-        if (line.length > 0) lines.push(line);
+        const trimmed = line.trim();
+        if (trimmed.length === 0 || trimmed.startsWith("#")) continue;
+        if (trimmed.startsWith("[")) {
+          inSection = true;
+          currentLineKey = null;
+          continue;
+        }
+        if (inSection) continue;
+        const m = TOML_TOP_LEVEL_KEY_LINE.exec(trimmed);
+        if (m) {
+          const key = m[1];
+          if (key !== undefined && SAFE_CODEX_TOP_LEVEL_KEYS.has(key)) {
+            safeLines.push(line);
+            currentLineKey = key;
+          } else {
+            currentLineKey = null;
+          }
+        } else if (currentLineKey !== null) {
+          // Continuation of a previously-allowed key (e.g. multi-line array).
+          safeLines.push(line);
+        }
       }
     } catch {
       /* best-effort */
     }
   }
-  if (lines.length === 0) {
-    lines.push('model = "gpt-5"');
+  if (safeLines.length === 0) {
+    // Fallback: a minimal config codex will accept. Grove's `-c model=...`
+    // flag in `buildAcpLaunchArgs` overrides this when a model is configured.
+    safeLines.push('model = "gpt-5"');
   }
-  writeFileSync(join(isolated, "config.toml"), `${lines.join("\n")}\n`, "utf-8");
+  writeFileSync(join(isolated, "config.toml"), `${safeLines.join("\n")}\n`, "utf-8");
   // Ensure plugins dir exists empty (some codex plugins bundle MCP servers).
   mkdirSync(join(isolated, "plugins"), { recursive: true });
   return isolated;

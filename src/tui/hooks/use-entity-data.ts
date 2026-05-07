@@ -66,8 +66,19 @@ export function useEntityData<K extends WatchKind>(
     opts.active && !useInformerPath && !!opts.fallbackFetcher,
   );
 
+  // When no remote informer is gated AND no fallback fetcher is supplied
+  // (e.g. local mode without an explicit polling adapter), the polled
+  // useEventDrivenData stays in its initial loading=true state forever
+  // because `active` is false, leaving the consuming view perpetually
+  // spinning. Treat that as "use entityResult — local hub still feeds
+  // EntityStore" so views show whatever the local store has, instead of
+  // an indefinite loading spinner. The narrow case where the local store
+  // is genuinely empty resolves to an empty list, identical to the
+  // pre-migration behavior with no fetcher results.
+  const useEntityStoreFallback = !useInformerPath && !opts.fallbackFetcher;
+
   const data = useMemo<readonly EntityForKind<K>[]>(() => {
-    if (useInformerPath) {
+    if (useInformerPath || useEntityStoreFallback) {
       // entityResult.data already had `predicate` applied inside useEntities.
       // Apply only sort + offset/limit here to avoid double-filtering.
       type MutableShapeOpts = {
@@ -86,6 +97,7 @@ export function useEntityData<K extends WatchKind>(
     return applyEntityShape(polled.data, opts);
   }, [
     useInformerPath,
+    useEntityStoreFallback,
     entityResult.data,
     polled.data,
     opts.sort,
@@ -96,10 +108,14 @@ export function useEntityData<K extends WatchKind>(
 
   return {
     data,
-    loading: useInformerPath
-      ? !entityResult.hasSynced && data.length === 0
-      : polled.loading && polled.data === null,
-    isStale: useInformerPath ? false : polled.isStale,
-    error: useInformerPath ? (entityResult.error ?? undefined) : (polled.error ?? undefined),
+    loading:
+      useInformerPath || useEntityStoreFallback
+        ? !entityResult.hasSynced && data.length === 0
+        : polled.loading && polled.data === null,
+    isStale: useInformerPath || useEntityStoreFallback ? false : polled.isStale,
+    error:
+      useInformerPath || useEntityStoreFallback
+        ? (entityResult.error ?? undefined)
+        : (polled.error ?? undefined),
   };
 }

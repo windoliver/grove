@@ -7,8 +7,10 @@
  */
 
 import React, { useCallback, useState } from "react";
-import type { ContributionEntity } from "../../core/entity.js";
+import { contributionToEntity, type ContributionEntity } from "../../core/entity.js";
 import type { Contribution } from "../../core/models.js";
+
+const NAMESPACE = "default";
 import {
   agentColumn,
   byCreatedDesc,
@@ -72,6 +74,11 @@ export const ActivityView: React.NamedExoticComponent<ActivityProps> = React.mem
       [onContributionsLoaded],
     );
 
+    const fallbackFetcher = useCallback(async (): Promise<readonly ContributionEntity[]> => {
+      const items = await provider.getActivity({ limit: pageSize, offset: pageOffset });
+      return items.map((c) => contributionToEntity(c, NAMESPACE));
+    }, [provider, pageSize, pageOffset]);
+
     return (
       <box flexDirection="column">
         <box marginBottom={1} flexDirection="row">
@@ -91,6 +98,7 @@ export const ActivityView: React.NamedExoticComponent<ActivityProps> = React.mem
           sort={byCreatedDesc}
           offset={pageOffset}
           limit={pageSize}
+          fallbackFetcher={fallbackFetcher}
           onRowCountChanged={setCount}
           onDataChanged={onDataChanged}
         />

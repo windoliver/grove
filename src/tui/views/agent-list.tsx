@@ -6,8 +6,10 @@
  */
 
 import React, { useCallback, useMemo, useState } from "react";
-import type { ClaimEntity } from "../../core/entity.js";
+import { claimToEntity, type ClaimEntity } from "../../core/entity.js";
 import { useInterval } from "../../local/use-interval.js";
+
+const NAMESPACE = "default";
 import { agentIdFromSession, type TmuxManager } from "../agents/tmux-manager.js";
 import {
   type AgentJoinCtx,
@@ -126,6 +128,11 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
       [onSelectSession, agentSessions],
     );
 
+    const fallbackFetcher = useCallback(async (): Promise<readonly ClaimEntity[]> => {
+      const claims = await provider.getClaims({ status: "active" });
+      return claims.map((c) => claimToEntity(c, () => Date.now(), NAMESPACE));
+    }, [provider]);
+
     return (
       <EntityView
         kind="Claim"
@@ -135,6 +142,7 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
         cursor={cursor}
         predicate={isActive}
         sort={byRoleAndName}
+        fallbackFetcher={fallbackFetcher}
         title="Agents"
         emptyTitle="No agents registered."
         emptyHint="Press r to register, or Ctrl+P to spawn."
