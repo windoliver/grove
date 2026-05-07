@@ -139,6 +139,26 @@ export class Informer<K extends WatchKind = WatchKind> {
     }
   }
 
+  /**
+   * Enqueue path used by `stream.run`'s `onEvent` callback.
+   *
+   * Return type is `void | Promise<void>` by design:
+   * - Delta events (ADDED/MODIFIED/DELETED): returns void synchronously.
+   *   Hot path under burst — avoiding async at this layer means a 100k/s
+   *   stream doesn't pay one microtask per event in the WatchClient's
+   *   `await onEvent(e)` loop.
+   * - Control events (RELIST_BEGIN/RELIST/RELIST_END/RELIST_ABORTED):
+   *   returns the Promise from `enqueueControl`, which drains pending
+   *   deltas BEFORE applying the control event so the staging-Map
+   *   invariant in `applyEvent` holds across snapshot boundaries.
+   *
+   * Caller MUST await the return. WatchClient/LocalWatchClient already
+   * `await onEvent(e)` per the `WatchStream.run` contract; the arrow
+   * `(e) => this.enqueue(e)` in `run()` propagates that promise.
+   * Skipping the await would let a delta arriving immediately after
+   * RELIST_END be applied before the snapshot replace, breaking the
+   * drain-then-apply barrier.
+   */
   private enqueue(e: WatchClientEvent): void | Promise<void> {
     if (isControlEvent(e.op)) return this.enqueueControl(e);
     const id = e.entity?.id;
@@ -168,6 +188,10 @@ export class Informer<K extends WatchKind = WatchKind> {
 
   private async enqueueControl(e: WatchClientEvent): Promise<void> {
     if (this.queue.size > 0) {
+      // Swap-and-iterate (vs `clear()`) is intentional and mirrors `drain()`'s
+      // re-entry guard: a delta enqueued during `await applyEvent(ev)` lands
+      // in the new map and is picked up by the next iteration / next drain,
+      // not silently dropped.
       const pending = this.queue;
       this.queue = new Map();
       for (const ev of pending.values()) await this.applyEvent(ev);
