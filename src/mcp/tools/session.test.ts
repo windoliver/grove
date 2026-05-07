@@ -196,6 +196,21 @@ describe("grove_session_delete_blockers", () => {
     expect(result.isError).toBe(true);
     expect(result.text).toContain("NOT_FOUND");
   });
+
+  test("returns NOT_CONFIGURED when goalSessionStore is missing", async () => {
+    const serverNoStore = new McpServer(
+      { name: "test", version: "0.0.1" },
+      { capabilities: { tools: {} } },
+    );
+    registerSessionTools(serverNoStore, testDeps.deps);
+
+    const result = await callTool(serverNoStore, "grove_session_delete_blockers", {
+      sessionId: "missing",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("NOT_CONFIGURED");
+  });
 });
 
 describe("grove_delete_session", () => {
@@ -248,6 +263,15 @@ describe("grove_delete_session", () => {
     const data = JSON.parse(result.text);
     expect(data.deleted).toBe(true);
     expect(data.forced).toBe(true);
+  });
+
+  test("returns NOT_FOUND when the session does not exist", async () => {
+    const result = await callTool(server, "grove_delete_session", {
+      sessionId: "missing",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("NOT_FOUND");
   });
 
   test("returns NOT_CONFIGURED when goalSessionStore is missing", async () => {

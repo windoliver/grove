@@ -255,4 +255,18 @@ describe("session routes", () => {
       error: { code: "NOT_FOUND", message: "Session not found: missing" },
     });
   });
+
+  test("DELETE /api/sessions/:id returns not configured without a goalSessionStore", async () => {
+    const { app } = createTestApp();
+
+    const res = await app.request("/api/sessions/missing", {
+      method: "DELETE",
+      headers: TEST_AUTH_HEADERS,
+    });
+
+    expect(res.status).toBe(501);
+    expect(await res.json()).toEqual({
+      error: { code: "NOT_CONFIGURED", message: "Goal/session store is not configured" },
+    });
+  });
 });
