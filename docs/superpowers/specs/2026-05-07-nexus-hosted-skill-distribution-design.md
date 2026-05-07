@@ -4,7 +4,7 @@
 - **Issue:** [#326](https://github.com/windoliver/grove/issues/326)
 - **Parent:** [#202](https://github.com/windoliver/grove/issues/202)
 - **Builds on:** [#262](https://github.com/windoliver/grove/issues/262), `docs/superpowers/specs/2026-04-20-native-skill-injection-design.md`
-- **Status:** Approved design, pending implementation plan
+- **Status:** Runtime implementation planned; publish CLI remains a child issue
 
 ## Summary
 
