@@ -56,6 +56,9 @@ import { toUtcIso } from "../core/time.js";
 
 export const CURRENT_SCHEMA_VERSION = 14;
 const SQLITE_BIND_LIMIT = 900;
+const SESSIONS_DELETION_TIMESTAMP_INDEX_DDL = `
+  CREATE INDEX IF NOT EXISTS idx_sessions_deletion_timestamp ON sessions(deletion_timestamp);
+`;
 
 // ---------------------------------------------------------------------------
 // Schema DDL
@@ -576,6 +579,7 @@ export function initSqliteDb(dbPath: string): Database {
         if (!sessionColNames.has("deletion_audit_json")) {
           db.run("ALTER TABLE sessions ADD COLUMN deletion_audit_json TEXT NOT NULL DEFAULT '[]'");
         }
+        db.exec(SESSIONS_DELETION_TIMESTAMP_INDEX_DDL);
       }
     }
 
@@ -1878,7 +1882,7 @@ export class SqliteClaimStore implements ClaimStore {
     return rows.map((row) => rowToClaim(row));
   };
 
-  releaseOwnedBy = async (ownerRef: OwnerRef): Promise<number> => {
+  releaseOwnedBySync(ownerRef: OwnerRef): number {
     const nowIso = new Date().toISOString();
     const rows = this.db
       .prepare(
@@ -1893,9 +1897,11 @@ export class SqliteClaimStore implements ClaimStore {
       for (const row of rows) this.onClaimWrite("MODIFIED", rowToClaim(row));
     }
     return rows.length;
-  };
+  }
 
-  deleteTerminalOwnedBy = async (ownerRef: OwnerRef): Promise<number> => {
+  releaseOwnedBy = async (ownerRef: OwnerRef): Promise<number> => this.releaseOwnedBySync(ownerRef);
+
+  deleteTerminalOwnedBySync(ownerRef: OwnerRef): number {
     const rows = this.db
       .prepare(
         `DELETE FROM claims
@@ -1908,7 +1914,10 @@ export class SqliteClaimStore implements ClaimStore {
       for (const row of rows) this.onClaimWrite("DELETED", rowToClaim(row));
     }
     return rows.length;
-  };
+  }
+
+  deleteTerminalOwnedBy = async (ownerRef: OwnerRef): Promise<number> =>
+    this.deleteTerminalOwnedBySync(ownerRef);
 
   cleanCompleted = async (retentionMs: number): Promise<number> => {
     const cutoff = new Date(Date.now() - retentionMs).toISOString();

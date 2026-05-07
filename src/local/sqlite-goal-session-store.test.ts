@@ -778,6 +778,80 @@ describe("session deletion finalizers", () => {
     expect(events).toContainEqual({ op: "DELETED", claimId: active.claimId });
     expect(events).toContainEqual({ op: "DELETED", claimId: terminal.claimId });
   });
+
+  it("deleteSession treats empty legacy finalizers as defaults", async () => {
+    const session = await store.createSession({ goal: "legacy finalizers" });
+    const ownerRef = { kind: "session" as const, id: session.id, uid: session.uid };
+    const claim = makeClaim({
+      claimId: "legacy-finalizer-claim",
+      targetRef: "legacy-finalizer-target",
+      ownerRef,
+    });
+    await stores.claimStore.createClaim(claim);
+    const contribution = makeContribution({ summary: "legacy finalizer contribution" });
+    await stores.contributionStore.put(contribution);
+    await store.addContributionToSession(session.id, contribution.cid);
+    stores.db
+      .prepare("UPDATE sessions SET finalizers_json = '[]' WHERE session_id = ?")
+      .run(session.id);
+
+    const result = await store.deleteSession(session.id);
+
+    expect(result.deleted).toBe(true);
+    expect(await store.getSession(session.id)).toBeUndefined();
+    expect(await stores.claimStore.getClaim(claim.claimId)).toBeUndefined();
+    expect(await store.getSessionContributions(session.id)).toEqual([]);
+    expect(await stores.contributionStore.get(contribution.cid)).toBeDefined();
+  });
+
+  it("deleteSession keeps failed and later finalizers after an earlier finalizer fails", async () => {
+    const session = await store.createSession({ goal: "blocked drain" });
+    const contribution = makeContribution({ summary: "blocked drain contribution" });
+    await stores.contributionStore.put(contribution);
+    await store.addContributionToSession(session.id, contribution.cid);
+    stores.db.run(`
+      CREATE TRIGGER fail_session_drain
+      BEFORE DELETE ON session_contributions
+      WHEN OLD.session_id = '${session.id}'
+      BEGIN
+        SELECT RAISE(ABORT, 'drain still busy');
+      END
+    `);
+
+    const result = await store.deleteSession(session.id);
+
+    expect(result.deleted).toBe(false);
+    expect(result.blockers).toEqual([
+      { finalizer: "grove.io/drain-contribs", message: "drain still busy" },
+    ]);
+    const fetched = await store.getSession(session.id);
+    expect(fetched?.finalizers).toEqual(["grove.io/drain-contribs", "grove.io/close-runtime"]);
+    stores.db.run("DROP TRIGGER fail_session_drain");
+  });
+
+  it("deleteSession rolls back claim and link cleanup if final session delete fails", async () => {
+    const session = await store.createSession({ goal: "atomic delete" });
+    const ownerRef = { kind: "session" as const, id: session.id, uid: session.uid };
+    const claim = makeClaim({
+      claimId: "atomic-delete-claim",
+      targetRef: "atomic-delete-target",
+      ownerRef,
+    });
+    await stores.claimStore.createClaim(claim);
+    const contribution = makeContribution({ summary: "atomic delete contribution" });
+    await stores.contributionStore.put(contribution);
+    await store.addContributionToSession(session.id, contribution.cid);
+    stores.db.run(
+      "CREATE TABLE session_delete_guard (session_id TEXT NOT NULL REFERENCES sessions(session_id))",
+    );
+    stores.db.prepare("INSERT INTO session_delete_guard (session_id) VALUES (?)").run(session.id);
+
+    await expect(store.deleteSession(session.id)).rejects.toThrow();
+
+    expect(await store.getSession(session.id)).toBeDefined();
+    expect((await stores.claimStore.getClaim(claim.claimId))?.status).toBe("active");
+    expect(await store.getSessionContributions(session.id)).toEqual([contribution.cid]);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -54,9 +54,13 @@ describe("schema migration", () => {
       const tables = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         .all() as readonly { name: string }[];
+      const indexes = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' ORDER BY name")
+        .all() as readonly { name: string }[];
       db.close();
 
       const tableNames = tables.map((t) => t.name);
+      const indexNames = indexes.map((i) => i.name);
       expect(tableNames).toContain("contributions");
       expect(tableNames).toContain("contribution_tags");
       expect(tableNames).toContain("artifacts");
@@ -65,6 +69,7 @@ describe("schema migration", () => {
       expect(tableNames).toContain("schema_migrations");
       expect(tableNames).toContain("contributions_fts");
       expect(tableNames).toContain("workspaces");
+      expect(indexNames).toContain("idx_sessions_deletion_timestamp");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
