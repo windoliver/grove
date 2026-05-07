@@ -343,7 +343,7 @@ function buildCommands(groveOverride: string | undefined): readonly Command[] {
     },
     {
       name: "session",
-      description: "Manage agent sessions (start, list, status, stop)",
+      description: "Manage agent sessions (start, list, status, stop, delete)",
       needsStore: false,
       handler: async (args) => {
         const { executeSession } = await import("./commands/session.js");
@@ -580,7 +580,7 @@ Navigation:
   grove threads [--tag <tag>]          List active discussion threads
 
 Agents:
-  grove session start|list|status|stop Manage agent sessions
+  grove session start|list|status|stop|delete Manage agent sessions
   grove status [--json]                Agent status overview
   grove inbox send|read                Agent messaging
   grove whoami                         Show resolved agent identity

@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { RelationType } from "../core/models.js";
 import { makeContribution, makeRelation } from "../core/test-helpers.js";
 import { FsCas } from "../local/fs-cas.js";
+import { SqliteGoalSessionStore } from "../local/sqlite-goal-session-store.js";
 import { initSqliteDb, SqliteContributionStore } from "../local/sqlite-store.js";
 
 const CLI_PATH = join(import.meta.dir, "main.ts");
@@ -344,6 +345,41 @@ describe("CLI commands (with grove)", () => {
     const { stderr, exitCode } = await runCli(["checkout", "blake3:abc"], tmpDir);
     expect(exitCode).toBe(1);
     expect(stderr).toContain("--to");
+  });
+
+  // -------------------------------------------------------------------------
+  // grove session delete
+  // -------------------------------------------------------------------------
+  test("grove session delete --force deletes a SQLite session", async () => {
+    groveDir = join(tmpDir, ".grove");
+    await mkdir(groveDir, { recursive: true });
+    const db = initSqliteDb(join(groveDir, "grove.db"));
+    const store = new SqliteGoalSessionStore(db);
+    const session = await store.createSession({ goal: "delete me" });
+    db.close();
+
+    const { stdout, exitCode } = await runCli(["session", "delete", session.id, "--force"], tmpDir);
+
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout) as {
+      readonly sessionId: string;
+      readonly deleted: boolean;
+      readonly forced: boolean;
+      readonly warning?: string;
+    };
+    expect(parsed.sessionId).toBe(session.id);
+    expect(parsed.deleted).toBe(true);
+    expect(parsed.forced).toBe(true);
+    expect(parsed.warning).toContain("force delete skipped finalizer waits");
+  });
+
+  test("grove session delete rejects a missing session id", async () => {
+    const { stdout, exitCode } = await runCli(["session", "delete"], tmpDir);
+
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stdout)).toEqual({
+      error: { code: "VALIDATION_ERROR", message: "session id is required" },
+    });
   });
 
   // -------------------------------------------------------------------------

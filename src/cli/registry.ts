@@ -224,7 +224,7 @@ export const COMMANDS: readonly CommandMeta[] = [
   },
   {
     name: "session",
-    description: "Manage agent sessions (start, list, status, stop)",
+    description: "Manage agent sessions (start, list, status, stop, delete)",
     flags: [],
     subcommands: [
       {
@@ -235,6 +235,7 @@ export const COMMANDS: readonly CommandMeta[] = [
       { name: "list", description: "List sessions", flags: [] },
       { name: "status", description: "Show session status", flags: [] },
       { name: "stop", description: "Stop current session", flags: ["reason"] },
+      { name: "delete", description: "Delete a session", flags: ["force"] },
     ],
   },
   {
