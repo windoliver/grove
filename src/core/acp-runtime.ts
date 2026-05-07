@@ -210,13 +210,21 @@ async function launchSubprocess(
   const childEnv = { ...env };
   let isolatedHomeForCleanup: string | undefined;
   if (agent === "codex" && env.GROVE_CODEX_NO_ISOLATION !== "1") {
+    // Fail closed: if isolation prep throws, refuse the spawn rather than
+    // launching against the user's live ~/.codex (which would re-introduce
+    // the rmcp-fatal-on-bootstrap path this isolation exists to prevent,
+    // and run user-level notify hooks against grove turns). Operators that
+    // explicitly accept the risk can opt out with GROVE_CODEX_NO_ISOLATION=1.
     try {
       const isolatedHome = await prepareIsolatedCodexHome(env);
       childEnv.CODEX_HOME = isolatedHome;
       isolatedHomeForCleanup = isolatedHome;
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[acp-runtime] codex isolated-home prep failed: ${detail}\n`);
+      throw new Error(
+        `[acp-runtime] codex isolated-home prep failed: ${detail}. ` +
+          `Set GROVE_CODEX_NO_ISOLATION=1 to launch with the user's ~/.codex (NOT recommended).`,
+      );
     }
   }
 

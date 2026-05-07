@@ -91,19 +91,18 @@ export function useEntityData<K extends WatchKind>(
       return applyEntityShape(entityResult.data, innerOpts);
     }
     if (polled.data === null) return [];
-    // Polled fallback: the fallbackFetcher is responsible for paging
-    // (offset/limit). Re-slicing here would re-page already-paged provider
-    // results — for pageOffset > 0 the second slice would render empty
-    // when the over-fetch caps out (e.g. `/api/contributions` limit=100).
-    // BUT we DO apply `predicate` and `sort` because:
-    //   - the hook never relays predicate to the fetcher (so the fetcher
-    //     has no way to filter on it)
-    //   - sort applied to a paged window is well-defined (orders within
-    //     the page) and is required for views like AgentListView that
-    //     declare deterministic agent ordering via byRoleAndName
+    // Polled fallback: the fallbackFetcher is responsible for paging AND
+    // ordering when paging is in use. Applying sort to an already-paged
+    // window can't reconstruct global ordering — page 2 of a desc sort
+    // computed from "items 21..40 returned in server order" produces
+    // "those 20 items, locally desc-sorted", not "the actual items 21..40
+    // of the global desc list". So we apply sort ONLY when the consumer
+    // didn't ask for paging (offset/limit unset). Predicate is always
+    // applied because the hook never relays it to the fetcher.
+    const isPagedFallback = opts.offset !== undefined || opts.limit !== undefined;
     let out: readonly EntityForKind<K>[] = polled.data;
     if (opts.predicate) out = out.filter(opts.predicate);
-    if (opts.sort) out = [...out].sort(opts.sort);
+    if (opts.sort && !isPagedFallback) out = [...out].sort(opts.sort);
     return out;
   }, [useInformerPath, useEntityStoreFallback, entityResult.data, polled.data, opts.sort, opts.offset, opts.limit, opts.predicate]);
 

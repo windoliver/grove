@@ -1892,18 +1892,24 @@ export class NexusWsBridge {
       // Session-identity re-check: handleEvent captured `session` at SSE
       // dispatch time, but the sys_read fetch + decode above are async.
       // If the role was unregistered or replaced during that window, the
-      // captured session may now be closed. Push to a dead session would
-      // fail and — worse — trigger dead-lettering for a handoff that a
-      // replacement session should still receive. Skip delivery and skip
-      // dead-lettering in that case; the replacement's own SSE loop will
-      // pick up the redelivery from Nexus.
+      // captured session may now be closed.
+      //
+      // Skipping here is unsafe: dispatchInboxDelivery's role-level
+      // message_id dedupe is shared across sessions, so the replacement's
+      // SSE loop won't re-pull the same entry. Falling through to
+      // sendWithTransientRetry retargets delivery to the current session
+      // (or treats a missing role as transient inside the retry budget).
       const current = this.sessions.get(_targetRole);
-      if (!current || current.id !== session.id) {
+      if (!current) {
         debugLog(
           "wsBridge.readAndPush",
-          `SKIP stale session for role=${_targetRole} captured=${session.id} current=${current?.id ?? "none"}`,
+          `role=${_targetRole} unregistered before push — handing off to retry helper for transient handling`,
         );
-        return;
+      } else if (current.id !== session.id) {
+        debugLog(
+          "wsBridge.readAndPush",
+          `session changed for role=${_targetRole} captured=${session.id} current=${current.id} — retry helper will retarget`,
+        );
       }
 
       // Capture the correlated handoffId NOW using DETERMINISTIC keys
