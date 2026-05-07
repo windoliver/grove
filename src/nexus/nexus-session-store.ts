@@ -8,9 +8,11 @@
 import { randomUUID } from "node:crypto";
 import type { CreateSessionInput, Session, SessionQuery, SessionStore } from "../core/session.js";
 import type { NexusClient } from "./client.js";
+import { NexusConflictError } from "./errors.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const MAX_SESSION_LINK_UPDATE_ATTEMPTS = 10;
 
 export class NexusSessionStore implements SessionStore {
   private readonly client: NexusClient;
@@ -120,14 +122,26 @@ export class NexusSessionStore implements SessionStore {
   }
 
   async addContribution(sessionId: string, cid: string): Promise<void> {
-    const cids = [...(await this.getContributions(sessionId))];
-    if (!cids.includes(cid)) {
-      cids.push(cid);
+    const path = this.contributionsPath(sessionId);
+    for (let attempt = 0; attempt < MAX_SESSION_LINK_UPDATE_ATTEMPTS; attempt++) {
+      const current = await this.client.readWithMeta(path);
+      const cids =
+        current === undefined ? [] : (JSON.parse(decoder.decode(current.content)) as string[]);
+      if (cids.includes(cid)) return;
+
+      try {
+        await this.client.write(path, encoder.encode(JSON.stringify([...cids, cid])), {
+          ...(current === undefined ? { ifNoneMatch: "*" } : { ifMatch: current.etag }),
+        });
+        return;
+      } catch (err) {
+        if (err instanceof NexusConflictError) continue;
+        throw err;
+      }
     }
-    await this.client.write(
-      this.contributionsPath(sessionId),
-      encoder.encode(JSON.stringify(cids)),
-    );
+    throw new NexusConflictError({
+      message: `Could not attach contribution '${cid}' to session '${sessionId}' after ${MAX_SESSION_LINK_UPDATE_ATTEMPTS} attempts`,
+    });
   }
 
   async getContributions(sessionId: string): Promise<readonly string[]> {

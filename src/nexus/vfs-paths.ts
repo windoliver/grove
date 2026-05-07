@@ -98,14 +98,25 @@ export function contributionContentHashIndexPath(
   return `${base}/indexes/contributions/content-hash/${encodeSegment(contentHash)}`;
 }
 
+function contributionIndexBase(zoneId: string, sessionId?: string): string {
+  return sessionId
+    ? `/zones/${encodeSegment(zoneId)}/sessions/${encodeSegment(sessionId)}`
+    : `/zones/${encodeSegment(zoneId)}`;
+}
+
 /** Path to a relation index entry (from source pointing to target). */
-export function relationIndexPath(zoneId: string, targetCid: string, sourceCid: string): string {
-  return `/zones/${encodeSegment(zoneId)}/indexes/relations/${encodeSegment(targetCid)}/${encodeSegment(sourceCid)}.json`;
+export function relationIndexPath(
+  zoneId: string,
+  targetCid: string,
+  sourceCid: string,
+  sessionId?: string,
+): string {
+  return `${contributionIndexBase(zoneId, sessionId)}/indexes/relations/${encodeSegment(targetCid)}/${encodeSegment(sourceCid)}.json`;
 }
 
 /** Directory containing all relations pointing to a target. */
-export function relationIndexDir(zoneId: string, targetCid: string): string {
-  return `/zones/${encodeSegment(zoneId)}/indexes/relations/${encodeSegment(targetCid)}`;
+export function relationIndexDir(zoneId: string, targetCid: string, sessionId?: string): string {
+  return `${contributionIndexBase(zoneId, sessionId)}/indexes/relations/${encodeSegment(targetCid)}`;
 }
 
 // ---------------------------------------------------------------------------

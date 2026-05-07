@@ -7,7 +7,9 @@
 
 import { describe, expect, it } from "bun:test";
 import type { Session } from "../core/session.js";
-import type { NexusClient } from "./client.js";
+import type { NexusClient, WriteOptions, WriteResult } from "./client.js";
+import { NexusConflictError } from "./errors.js";
+import { MockNexusClient } from "./mock-client.js";
 import { NexusSessionStore } from "./nexus-session-store.js";
 
 // ---------------------------------------------------------------------------
@@ -16,12 +18,39 @@ import { NexusSessionStore } from "./nexus-session-store.js";
 
 function createMockClient(): NexusClient {
   const files = new Map<string, Uint8Array>();
-  const _encoder = new TextEncoder();
+  const etags = new Map<string, string>();
+  let etagCounter = 0;
+
+  const nextEtag = (): string => `etag-${++etagCounter}`;
 
   return {
-    read: async (path: string) => files.get(path) ?? null,
-    write: async (path: string, data: Uint8Array) => {
+    read: async (path: string) => files.get(path),
+    readWithMeta: async (path: string) => {
+      const content = files.get(path);
+      if (content === undefined) return undefined;
+      return { content, etag: etags.get(path) ?? "" };
+    },
+    write: async (path: string, data: Uint8Array, opts?: WriteOptions): Promise<WriteResult> => {
+      const existing = files.get(path);
+      const existingEtag = etags.get(path);
+      if (opts?.ifNoneMatch === "*" && existing !== undefined) {
+        throw new NexusConflictError({
+          message: `File already exists: ${path}`,
+          expectedEtag: "*",
+          ...(existingEtag !== undefined ? { actualEtag: existingEtag } : {}),
+        });
+      }
+      if (opts?.ifMatch !== undefined && existingEtag !== opts.ifMatch) {
+        throw new NexusConflictError({
+          message: `ETag mismatch on ${path}`,
+          expectedEtag: opts.ifMatch,
+          ...(existingEtag !== undefined ? { actualEtag: existingEtag } : {}),
+        });
+      }
+      const etag = nextEtag();
       files.set(path, data);
+      etags.set(path, etag);
+      return { bytesWritten: data.byteLength, etag };
     },
     exists: async (path: string) => files.has(path),
     list: async (dir: string) => {
@@ -160,5 +189,20 @@ describe("NexusSessionStore", () => {
     const fetched = await store.getSession(session.id);
     expect(fetched!.status).toBe("archived");
     expect(fetched!.completedAt).toBeDefined();
+  });
+
+  it("addContribution() preserves concurrent session links", async () => {
+    const client = new MockNexusClient();
+    const store = new NexusSessionStore(client, "test-zone");
+    const session = await store.createSession({ goal: "Concurrent links" });
+
+    await Promise.all([
+      store.addContribution(session.id, "blake3:first"),
+      store.addContribution(session.id, "blake3:second"),
+    ]);
+
+    const cids = await store.getContributions(session.id);
+    expect(new Set(cids)).toEqual(new Set(["blake3:first", "blake3:second"]));
+    expect(cids.length).toBe(2);
   });
 });

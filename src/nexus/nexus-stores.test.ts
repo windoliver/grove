@@ -6,17 +6,22 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Bounty } from "../core/bounty.js";
 import { withBountyContentHash } from "../core/content-dedup.js";
 import type { Contribution } from "../core/models.js";
 import { type ClaimStatus, ContributionKind, RelationType } from "../core/models.js";
 import { makeClaim, makeContribution } from "../core/test-helpers.js";
+import type { WriteOptions, WriteResult } from "./client.js";
 import { MockNexusClient } from "./mock-client.js";
 import { NexusBountyStore } from "./nexus-bounty-store.js";
 import { NexusCas } from "./nexus-cas.js";
 import { NexusClaimStore } from "./nexus-claim-store.js";
 import { NexusContributionStore } from "./nexus-contribution-store.js";
 import { NexusOutcomeStore } from "./nexus-outcome-store.js";
+import { relationIndexDir } from "./vfs-paths.js";
 
 // ---------------------------------------------------------------------------
 // NexusContributionStore tests
@@ -224,6 +229,37 @@ describe("NexusContributionStore", () => {
       } finally {
         sessionAStore.close();
         sessionBStore.close();
+      }
+    });
+
+    test("session-scoped relations are indexed under the session tree", async () => {
+      const sessionStore = new NexusContributionStore({
+        client,
+        zoneId: "test-zone",
+        sessionId: "session-a",
+        retryMaxAttempts: 1,
+      });
+      try {
+        const parent = makeContribution({ summary: "session parent" });
+        const child = makeContribution({
+          summary: "session child",
+          relations: [{ targetCid: parent.cid, relationType: RelationType.RespondsTo }],
+        });
+        await sessionStore.put(parent);
+        await sessionStore.put(child);
+
+        const rootRelationEntries = await client.list(relationIndexDir("test-zone", parent.cid));
+        const sessionRelationEntries = await client.list(
+          relationIndexDir("test-zone", parent.cid, "session-a"),
+        );
+
+        expect(rootRelationEntries.files).toEqual([]);
+        expect(sessionRelationEntries.files.map((entry) => entry.name)).toEqual([
+          `${child.cid}.json`,
+        ]);
+        expect((await sessionStore.children(parent.cid)).map((c) => c.cid)).toEqual([child.cid]);
+      } finally {
+        sessionStore.close();
       }
     });
   });
@@ -753,6 +789,54 @@ describe("NexusCas", () => {
       const hash = await cas.put(data);
       const retrieved = await cas.get(hash);
       expect(retrieved).toEqual(data);
+    });
+
+    test("putFile serializes memory-heavy blob writes", async () => {
+      class TrackingClient extends MockNexusClient {
+        activeBlobWrites = 0;
+        maxActiveBlobWrites = 0;
+
+        override async write(
+          path: string,
+          content: Uint8Array,
+          opts?: WriteOptions,
+        ): Promise<WriteResult> {
+          const isBlob = path.includes("/cas/") && !path.endsWith(".meta");
+          if (!isBlob) return super.write(path, content, opts);
+
+          this.activeBlobWrites += 1;
+          this.maxActiveBlobWrites = Math.max(this.maxActiveBlobWrites, this.activeBlobWrites);
+          try {
+            await new Promise((resolve) => setTimeout(resolve, 25));
+            return await super.write(path, content, opts);
+          } finally {
+            this.activeBlobWrites -= 1;
+          }
+        }
+      }
+
+      const trackingClient = new TrackingClient();
+      const trackingCas = new NexusCas({
+        client: trackingClient,
+        zoneId: "test-zone",
+        retryMaxAttempts: 1,
+        maxConcurrency: 20,
+      });
+      const dir = await mkdtemp(join(tmpdir(), "grove-nexus-cas-test-"));
+      try {
+        const first = join(dir, "first.bin");
+        const second = join(dir, "second.bin");
+        await writeFile(first, new Uint8Array([1, 2, 3]));
+        await writeFile(second, new Uint8Array([4, 5, 6]));
+
+        await Promise.all([trackingCas.putFile(first), trackingCas.putFile(second)]);
+
+        expect(trackingClient.maxActiveBlobWrites).toBe(1);
+      } finally {
+        trackingCas.close();
+        await trackingClient.close();
+        await rm(dir, { recursive: true, force: true });
+      }
     });
   });
 });

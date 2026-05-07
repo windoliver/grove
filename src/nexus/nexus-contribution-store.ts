@@ -479,7 +479,12 @@ export class NexusContributionStore implements ContributionStore {
 
   private async writeContributionIndexes(contribution: Contribution): Promise<void> {
     for (const rel of contribution.relations) {
-      const relPath = relationIndexPath(this.zoneId, rel.targetCid, contribution.cid);
+      const relPath = relationIndexPath(
+        this.zoneId,
+        rel.targetCid,
+        contribution.cid,
+        this.sessionId,
+      );
       const relData = encode({
         relationType: rel.relationType,
         ...(rel.metadata !== undefined ? { metadata: rel.metadata } : {}),
@@ -698,7 +703,7 @@ export class NexusContributionStore implements ContributionStore {
   }
 
   async children(cid: string): Promise<readonly Contribution[]> {
-    const relDir = relationIndexDir(this.zoneId, cid);
+    const relDir = relationIndexDir(this.zoneId, cid, this.sessionId);
     // Expected: directory may not exist yet
     const entries = await listAllPages(this.client, this.semaphore, this.config, relDir);
 
@@ -761,7 +766,7 @@ export class NexusContributionStore implements ContributionStore {
   }
 
   async relatedTo(cid: string, relationType?: RelationType): Promise<readonly Contribution[]> {
-    const relDir = relationIndexDir(this.zoneId, cid);
+    const relDir = relationIndexDir(this.zoneId, cid, this.sessionId);
     // Expected: directory may not exist yet
     const entries = await listAllPages(this.client, this.semaphore, this.config, relDir);
 
@@ -849,7 +854,7 @@ export class NexusContributionStore implements ContributionStore {
     kind: ContributionKind,
     relationType?: RelationType,
   ): Promise<readonly Contribution[]> {
-    const relDir = relationIndexDir(this.zoneId, targetCid);
+    const relDir = relationIndexDir(this.zoneId, targetCid, this.sessionId);
     // Expected: directory may not exist yet
     const allEntries = await listAllPages(this.client, this.semaphore, this.config, relDir);
 
@@ -910,7 +915,7 @@ export class NexusContributionStore implements ContributionStore {
       const nextLevel: string[] = [];
 
       for (const parentCid of currentLevel) {
-        const relDir = relationIndexDir(this.zoneId, parentCid);
+        const relDir = relationIndexDir(this.zoneId, parentCid, this.sessionId);
         // Expected: directory may not exist yet
         const entries = await listAllPages(this.client, this.semaphore, this.config, relDir);
 
@@ -958,7 +963,7 @@ export class NexusContributionStore implements ContributionStore {
     if (cids.length === 0) return result;
 
     for (const cid of cids) {
-      const relDir = relationIndexDir(this.zoneId, cid);
+      const relDir = relationIndexDir(this.zoneId, cid, this.sessionId);
       // Expected: directory may not exist yet
       const entries = await listAllPages(this.client, this.semaphore, this.config, relDir);
 
