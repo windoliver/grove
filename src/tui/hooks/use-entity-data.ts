@@ -72,9 +72,7 @@ export function useEntityData<K extends WatchKind>(
   // because `active` is false, leaving the consuming view perpetually
   // spinning. Treat that as "use entityResult — local hub still feeds
   // EntityStore" so views show whatever the local store has, instead of
-  // an indefinite loading spinner. The narrow case where the local store
-  // is genuinely empty resolves to an empty list, identical to the
-  // pre-migration behavior with no fetcher results.
+  // an indefinite loading spinner.
   const useEntityStoreFallback = !useInformerPath && !opts.fallbackFetcher;
 
   const data = useMemo<readonly EntityForKind<K>[]>(() => {
@@ -93,18 +91,13 @@ export function useEntityData<K extends WatchKind>(
       return applyEntityShape(entityResult.data, innerOpts);
     }
     if (polled.data === null) return [];
-    // Polled fallback: predicate was NOT applied by the hook — apply here.
-    return applyEntityShape(polled.data, opts);
-  }, [
-    useInformerPath,
-    useEntityStoreFallback,
-    entityResult.data,
-    polled.data,
-    opts.sort,
-    opts.offset,
-    opts.limit,
-    opts.predicate,
-  ]);
+    // Polled fallback: the fallbackFetcher is responsible for paging and
+    // ordering. Reshaping here would re-slice already-paged provider
+    // results — for pageOffset > 0 the second slice would render empty
+    // when the over-fetch caps out (e.g. `/api/contributions` limit=100).
+    // Apply only `predicate` (the hook never relayed it to the fetcher).
+    return opts.predicate ? polled.data.filter(opts.predicate) : polled.data;
+  }, [useInformerPath, useEntityStoreFallback, entityResult.data, polled.data, opts.sort, opts.offset, opts.limit, opts.predicate]);
 
   return {
     data,
