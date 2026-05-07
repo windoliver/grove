@@ -745,6 +745,75 @@ describe("EnforcingClaimStore", () => {
       }
     });
 
+    test("putClaimSpec enforces global limit for new active claims", async () => {
+      const { dir, db, claimStore } = await setupStores();
+      try {
+        const contract = makeContract({
+          concurrency: { maxActiveClaims: 1 },
+        });
+        const store = new EnforcingClaimStore(claimStore, contract);
+
+        await store.createClaim(
+          makeClaim({ claimId: "c1", targetRef: "t1", agent: { agentId: "a1" } }),
+        );
+
+        try {
+          await store.putClaimSpec({
+            id: "split-c2",
+            generation: 0,
+            targetRef: "t2",
+            agent: { agentId: "a2" },
+            intentSummary: "split claim",
+            createdAt: new Date().toISOString(),
+          });
+          expect.unreachable("should have thrown");
+        } catch (e) {
+          expect(e).toBeInstanceOf(ConcurrencyLimitError);
+          const err = e as ConcurrencyLimitError;
+          expect(err.limitType).toBe("global");
+          expect(err.current).toBe(1);
+          expect(err.limit).toBe(1);
+        }
+      } finally {
+        await cleanup(dir, db);
+      }
+    });
+
+    test("patchClaimStatus enforces global limit when activating a split claim", async () => {
+      const { dir, db, claimStore } = await setupStores();
+      try {
+        const contract = makeContract({
+          concurrency: { maxActiveClaims: 1 },
+        });
+        const store = new EnforcingClaimStore(claimStore, contract);
+
+        await store.createClaim(
+          makeClaim({ claimId: "c1", targetRef: "t1", agent: { agentId: "a1" } }),
+        );
+        await claimStore.createClaim(
+          makeClaim({ claimId: "c2", targetRef: "t2", agent: { agentId: "a2" } }),
+        );
+        await claimStore.release("c2");
+
+        try {
+          await store.patchClaimStatus("c2", {
+            phase: "active",
+            lastHeartbeatAt: new Date().toISOString(),
+            leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+          });
+          expect.unreachable("should have thrown");
+        } catch (e) {
+          expect(e).toBeInstanceOf(ConcurrencyLimitError);
+          const err = e as ConcurrencyLimitError;
+          expect(err.limitType).toBe("global");
+          expect(err.current).toBe(1);
+          expect(err.limit).toBe(1);
+        }
+      } finally {
+        await cleanup(dir, db);
+      }
+    });
+
     test("expired claims do not count toward global limit", async () => {
       const { dir, db, claimStore } = await setupStores();
       try {

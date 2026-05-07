@@ -22,11 +22,21 @@ import {
   LeaseViolationError,
   RateLimitError,
 } from "./errors.js";
-import type { Claim, Contribution, ContributionKind, Relation, RelationType } from "./models.js";
+import {
+  type Claim,
+  type ClaimSpecRecord,
+  type ClaimView,
+  type Contribution,
+  type ContributionKind,
+  claimViewToClaim,
+  type Relation,
+  type RelationType,
+} from "./models.js";
 import type { SessionRuntimeConfig } from "./session-config.js";
 import type {
   ActiveClaimFilter,
   ClaimQuery,
+  ClaimStatusPatch,
   ClaimStore,
   ContributionPutManyOutcome,
   ContributionPutOutcome,
@@ -548,6 +558,59 @@ export class EnforcingClaimStore implements ClaimStore {
     return this.inner.heartbeat(claimId, effectiveDurationMs);
   };
 
+  putClaimSpec = async (spec: ClaimSpecRecord): Promise<ClaimView> => {
+    return this.writeMutex.runExclusive(async () => {
+      const existing = await this.inner.getClaimView(spec.id);
+      const existingClaim = existing !== undefined ? claimViewToClaim(existing) : undefined;
+      const existingActive =
+        existingClaim !== undefined &&
+        existingClaim.status === "active" &&
+        new Date(existingClaim.leaseExpiresAt).getTime() >= this.clockTime();
+
+      if (existingClaim === undefined) {
+        await this.enforceConcurrencyLimitsFor(spec.targetRef, spec.agent.agentId);
+      } else if (existingActive) {
+        await this.enforceConcurrencyLimitsFor(spec.targetRef, spec.agent.agentId, {
+          global: false,
+          perAgent: existingClaim.agent.agentId !== spec.agent.agentId,
+          perTarget: existingClaim.targetRef !== spec.targetRef,
+        });
+      }
+      this.enforceSpecLeaseLimit(spec);
+
+      return await this.inner.putClaimSpec(spec);
+    });
+  };
+
+  getClaimView = (claimId: string): Promise<ClaimView | undefined> =>
+    this.inner.getClaimView(claimId);
+
+  patchClaimStatus = async (claimId: string, patch: ClaimStatusPatch): Promise<ClaimView> => {
+    return this.writeMutex.runExclusive(async () => {
+      const existing = await this.inner.getClaimView(claimId);
+      if (existing !== undefined) {
+        const nowMs = this.clockTime();
+        const existingClaim = claimViewToClaim(existing);
+        const existingActive =
+          existingClaim.status === "active" &&
+          new Date(existingClaim.leaseExpiresAt).getTime() >= nowMs;
+        const patchedPhase = patch.phase ?? existing.status.phase;
+        const patchedLeaseExpiresAt = patch.leaseExpiresAt ?? existing.status.leaseExpiresAt;
+        const patchedActive =
+          patchedPhase === "active" && new Date(patchedLeaseExpiresAt).getTime() >= nowMs;
+
+        if (patchedActive && !existingActive) {
+          await this.enforceConcurrencyLimitsFor(
+            existing.spec.targetRef,
+            existing.spec.agent.agentId,
+          );
+        }
+      }
+
+      return await this.inner.patchClaimStatus(claimId, patch);
+    });
+  };
+
   // claimOrRenew — enforced via mutex with concurrency + lease checks
   claimOrRenew = async (claim: Claim): Promise<Claim> => {
     return this.writeMutex.runExclusive(async () => {
@@ -592,11 +655,26 @@ export class EnforcingClaimStore implements ClaimStore {
   // ========================================================================
 
   private async enforceConcurrencyLimits(claim: Claim): Promise<void> {
+    await this.enforceConcurrencyLimitsFor(claim.targetRef, claim.agent.agentId);
+  }
+
+  private async enforceConcurrencyLimitsFor(
+    targetRef: string,
+    agentId: string,
+    checks: {
+      readonly global?: boolean | undefined;
+      readonly perAgent?: boolean | undefined;
+      readonly perTarget?: boolean | undefined;
+    } = {},
+  ): Promise<void> {
     const concurrency = this.config.concurrency;
     if (concurrency === undefined) return;
+    const checkGlobal = checks.global ?? true;
+    const checkPerAgent = checks.perAgent ?? true;
+    const checkPerTarget = checks.perTarget ?? true;
 
     // Check global active claim limit
-    if (concurrency.maxActiveClaims !== undefined) {
+    if (checkGlobal && concurrency.maxActiveClaims !== undefined) {
       const globalCount = await this.inner.countActiveClaims();
       if (globalCount >= concurrency.maxActiveClaims) {
         throw new ConcurrencyLimitError({
@@ -608,9 +686,13 @@ export class EnforcingClaimStore implements ClaimStore {
     }
 
     // Check per-agent claim limit (0 means unlimited)
-    if (concurrency.maxClaimsPerAgent !== undefined && concurrency.maxClaimsPerAgent > 0) {
+    if (
+      checkPerAgent &&
+      concurrency.maxClaimsPerAgent !== undefined &&
+      concurrency.maxClaimsPerAgent > 0
+    ) {
       const agentCount = await this.inner.countActiveClaims({
-        agentId: claim.agent.agentId,
+        agentId,
       });
       if (agentCount >= concurrency.maxClaimsPerAgent) {
         throw new ConcurrencyLimitError({
@@ -622,9 +704,9 @@ export class EnforcingClaimStore implements ClaimStore {
     }
 
     // Check per-target claim limit
-    if (concurrency.maxClaimsPerTarget !== undefined) {
+    if (checkPerTarget && concurrency.maxClaimsPerTarget !== undefined) {
       const targetCount = await this.inner.countActiveClaims({
-        targetRef: claim.targetRef,
+        targetRef,
       });
       if (targetCount >= concurrency.maxClaimsPerTarget) {
         throw new ConcurrencyLimitError({
@@ -634,6 +716,22 @@ export class EnforcingClaimStore implements ClaimStore {
         });
       }
     }
+  }
+
+  private enforceSpecLeaseLimit(spec: ClaimSpecRecord): void {
+    const maxLeaseSeconds = this.config.execution?.maxLeaseSeconds;
+    if (maxLeaseSeconds === undefined || spec.leaseDeadlineSec === undefined) return;
+
+    if (spec.leaseDeadlineSec > maxLeaseSeconds) {
+      throw new LeaseViolationError({
+        requestedSeconds: spec.leaseDeadlineSec,
+        maxSeconds: maxLeaseSeconds,
+      });
+    }
+  }
+
+  private clockTime(): number {
+    return Date.now();
   }
 
   private enforceLeaseLimit(claim: Claim): void {
