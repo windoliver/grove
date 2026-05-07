@@ -417,32 +417,26 @@ export class NexusSessionStore implements SessionStore {
     const ownerRef = ownerRefForSession(session);
     const blockers: SessionDeleteBlocker[] = [];
 
-    if (finalizers.includes(Finalizer.ReleaseSlots)) {
-      const claimStore = await this.getClaimStore();
-      const activeOwnedClaims = await claimStore.listClaims({
-        status: "active",
-        ownerRef,
+    const claimStore = await this.getClaimStore();
+    const activeOwnedClaims = await claimStore.listClaims({
+      status: "active",
+      ownerRef,
+    });
+    if (activeOwnedClaims.length > 0) {
+      blockers.push({
+        finalizer: Finalizer.ReleaseSlots,
+        message: `${activeOwnedClaims.length} active owned claim${
+          activeOwnedClaims.length === 1 ? "" : "s"
+        } remain`,
       });
-      if (activeOwnedClaims.length > 0) {
-        blockers.push({
-          finalizer: Finalizer.ReleaseSlots,
-          message: `${activeOwnedClaims.length} active owned claim${
-            activeOwnedClaims.length === 1 ? "" : "s"
-          } remain`,
-        });
-      }
     }
 
-    if (finalizers.includes(Finalizer.DrainContribs)) {
-      const links = await this.getContributions(id);
-      if (links.length > 0) {
-        blockers.push({
-          finalizer: Finalizer.DrainContribs,
-          message: `${links.length} session contribution link${
-            links.length === 1 ? "" : "s"
-          } remain`,
-        });
-      }
+    const links = await this.getContributions(id);
+    if (links.length > 0) {
+      blockers.push({
+        finalizer: Finalizer.DrainContribs,
+        message: `${links.length} session contribution link${links.length === 1 ? "" : "s"} remain`,
+      });
     }
 
     if (this.closeRuntime !== undefined && finalizers.includes(Finalizer.CloseRuntime)) {

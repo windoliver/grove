@@ -532,6 +532,7 @@ export class NexusClaimStore implements ClaimStore {
       ownerRef,
     });
     for (const claim of claims) {
+      await this.deleteActiveIndex(claim);
       await withRetry(
         () =>
           withSemaphore(this.semaphore, () =>

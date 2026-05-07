@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { EventBus, GroveEvent, PublishResult } from "../core/event-bus.js";
 import { DEFAULT_SESSION_FINALIZERS } from "../core/lifecycle-metadata.js";
+import type { ClaimStore } from "../core/store.js";
 import { makeClaim } from "../core/test-helpers.js";
+import type { NexusClient } from "./client.js";
 import { MockNexusClient } from "./mock-client.js";
 import { NexusClaimStore } from "./nexus-claim-store.js";
 import { NexusSessionStore } from "./nexus-session-store.js";
@@ -34,6 +36,34 @@ class RecordingEventBus implements EventBus {
 async function readJson(client: MockNexusClient, path: string): Promise<unknown> {
   const data = await client.read(path);
   return data === undefined ? undefined : JSON.parse(decoder.decode(data));
+}
+
+function createSessionWriteRecorder(
+  client: MockNexusClient,
+  sessionPath: string,
+): {
+  readonly client: NexusClient;
+  readonly writes: Session[];
+} {
+  const writes: Session[] = [];
+  const wrapped: NexusClient = {
+    read: (path) => client.read(path),
+    readWithMeta: (path) => client.readWithMeta(path),
+    write: async (path, content, opts) => {
+      if (path === sessionPath) {
+        writes.push(JSON.parse(decoder.decode(content)) as Session);
+      }
+      return client.write(path, content, opts);
+    },
+    exists: (path) => client.exists(path),
+    stat: (path) => client.stat(path),
+    delete: (path) => client.delete(path),
+    list: (path, opts) => client.list(path, opts),
+    mkdir: (path, opts) => client.mkdir(path, opts),
+    search: (query, opts) => client.search(query, opts),
+    close: () => client.close(),
+  };
+  return { client: wrapped, writes };
 }
 
 describe("NexusSessionStore", () => {
@@ -208,15 +238,26 @@ describe("NexusSessionStore", () => {
   });
 
   test("deleteSession force returns a warning and deletes unknown-finalizer sessions", async () => {
-    const store = new NexusSessionStore(client, "test-zone", {
-      claimStore,
+    const session = await new NexusSessionStore(client, "test-zone").createSession({
+      goal: "force",
+    });
+    const sessionPath = `/zones/test-zone/sessions/${session.id}.json`;
+    const { client: recordingClient, writes } = createSessionWriteRecorder(client, sessionPath);
+    const failingClaimStore: ClaimStore = {
+      ...claimStore,
+      releaseOwnedBy: async () => {
+        throw new Error("release cleanup failed");
+      },
+      deleteTerminalOwnedBy: async () => 0,
+    };
+    const store = new NexusSessionStore(recordingClient, "test-zone", {
+      claimStore: failingClaimStore,
       closeRuntime: async () => {
         throw new Error("unused in force path");
       },
     });
-    const session = await store.createSession({ goal: "force" });
     await client.write(
-      `/zones/test-zone/sessions/${session.id}.json`,
+      sessionPath,
       encoder.encode(
         JSON.stringify({
           ...(await store.getSessionRecord(session.id)),
@@ -232,6 +273,12 @@ describe("NexusSessionStore", () => {
       deleted: true,
       forced: true,
       blockers: [],
+      warning: `force delete skipped finalizer waits for session ${session.id}`,
+      cleanupErrors: ["release cleanup failed"],
+    });
+    expect(writes.at(-1)?.deletionAudit?.at(-1)).toMatchObject({
+      actor: "test",
+      force: true,
       warning: `force delete skipped finalizer waits for session ${session.id}`,
     });
     expect(await store.getSession(session.id)).toBeUndefined();
@@ -251,6 +298,33 @@ describe("NexusSessionStore", () => {
     expect(blockers).toEqual([
       { finalizer: "grove.io/release-slots", message: "1 active owned claim remain" },
       { finalizer: "grove.io/drain-contribs", message: "1 session contribution link remain" },
+    ]);
+  });
+
+  test("listSessionDeleteBlockers still reports owned resources when only future finalizers remain", async () => {
+    const store = new NexusSessionStore(client, "test-zone", { claimStore });
+    const session = await store.createSession({ goal: "future blockers" });
+    const ownerRef = { kind: "session" as const, id: session.id, uid: session.uid };
+    await claimStore.createClaim(
+      makeClaim({ claimId: "future-blocker-claim", targetRef: "future-blocker-target", ownerRef }),
+    );
+    await store.addContribution(session.id, "blake3:future-blocker");
+    await client.write(
+      `/zones/test-zone/sessions/${session.id}.json`,
+      encoder.encode(
+        JSON.stringify({
+          ...(await store.getSessionRecord(session.id)),
+          finalizers: ["grove.io/future-cleanup"],
+        }),
+      ),
+    );
+
+    const blockers = await store.listSessionDeleteBlockers(session.id);
+
+    expect(blockers).toEqual([
+      { finalizer: "grove.io/release-slots", message: "1 active owned claim remain" },
+      { finalizer: "grove.io/drain-contribs", message: "1 session contribution link remain" },
+      { finalizer: "grove.io/future-cleanup", message: "unknown finalizer pending" },
     ]);
   });
 

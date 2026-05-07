@@ -6,6 +6,7 @@ import { makeClaim } from "../core/test-helpers.js";
 import { MockNexusClient } from "./mock-client.js";
 import { NexusClaimStore } from "./nexus-claim-store.js";
 import { NexusWatchPublisher } from "./nexus-watch-publisher.js";
+import { activeClaimIndexPath, claimPath, targetLockPath } from "./vfs-paths.js";
 
 class RecordingEventBus implements EventBus {
   readonly events: GroveEvent[] = [];
@@ -181,5 +182,46 @@ describe("NexusClaimStore ownerRef lifecycle", () => {
         return payload.entityId === "delete-owned-terminal" && payload.op === "DELETED";
       }),
     ).toHaveLength(1);
+  });
+
+  test("deleteTerminalOwnedBy also clears stale active indexes and target locks for terminal claims", async () => {
+    const ownerRef: OwnerRef = { kind: "session", id: "stale-session", uid: "uid-1" };
+    const otherOwner: OwnerRef = { kind: "session", id: "stale-session", uid: "uid-2" };
+    const targetRef = "stale-target";
+    await store.createClaim(
+      makeClaim({
+        claimId: "stale-owned-terminal",
+        targetRef,
+        ownerRef,
+      }),
+    );
+    await store.release("stale-owned-terminal");
+    await client.write(
+      activeClaimIndexPath("test-zone", targetRef, "stale-owned-terminal"),
+      new Uint8Array(0),
+    );
+    await client.write(
+      targetLockPath("test-zone", targetRef),
+      new TextEncoder().encode("stale-owned-terminal"),
+    );
+    await store.createClaim(
+      makeClaim({
+        claimId: "stale-other-terminal",
+        targetRef: "stale-target-other",
+        ownerRef: otherOwner,
+      }),
+    );
+    await store.release("stale-other-terminal");
+
+    const count = await store.deleteTerminalOwnedBy(ownerRef);
+    const lockData = await client.read(targetLockPath("test-zone", targetRef));
+
+    expect(count).toBe(1);
+    expect(await client.read(claimPath("test-zone", "stale-owned-terminal"))).toBeUndefined();
+    expect(
+      await client.read(activeClaimIndexPath("test-zone", targetRef, "stale-owned-terminal")),
+    ).toBeUndefined();
+    expect(lockData === undefined || new TextDecoder().decode(lockData) === "").toBe(true);
+    expect((await store.getClaim("stale-other-terminal"))?.status).toBe(ClaimStatus.Released);
   });
 });
