@@ -86,13 +86,16 @@ export interface EntityHint {
 export interface EntityViewProps<K extends WatchKind> {
   readonly kind: K;
   readonly columns: readonly EntityColumn<EntityFor<K>>[];
+  readonly provider: unknown;                 // forwarded to useEntityWatchEnabled
 
   readonly predicate?: (e: EntityFor<K>) => boolean;
   readonly sort?: (a: EntityFor<K>, b: EntityFor<K>) => number;
-  readonly limit?: number;
+  readonly offset?: number;                   // pagination start
+  readonly limit?: number;                    // pagination length
   readonly fallbackFetcher?: () => Promise<readonly EntityFor<K>[]>;
 
   readonly title?: string;
+  readonly headerSuffix?: React.ReactNode;    // extra header content after DataStatus
   readonly emptyTitle?: string;
   readonly emptyHint?: string;
 
@@ -100,6 +103,7 @@ export interface EntityViewProps<K extends WatchKind> {
   readonly cursor: number;
   readonly onRowCountChanged?: (n: number) => void;
   readonly onSelect?: (entity: EntityFor<K> | undefined) => void;
+  readonly onDataChanged?: (data: readonly EntityFor<K>[]) => void;
 
   readonly hints?: readonly EntityHint[];     // for C3 hint bar; no key handlers installed
 }
