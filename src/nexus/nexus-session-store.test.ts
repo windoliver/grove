@@ -205,4 +205,16 @@ describe("NexusSessionStore", () => {
     expect(new Set(cids)).toEqual(new Set(["blake3:first", "blake3:second"]));
     expect(cids.length).toBe(2);
   });
+
+  it("addContribution() preserves bursty concurrent session links", async () => {
+    const client = new MockNexusClient();
+    const store = new NexusSessionStore(client, "test-zone");
+    const session = await store.createSession({ goal: "Bursty links" });
+    const cids = Array.from({ length: 30 }, (_, i) => `blake3:${String(i).padStart(2, "0")}`);
+
+    await Promise.all(cids.map((cid) => store.addContribution(session.id, cid)));
+
+    expect(new Set(await store.getContributions(session.id))).toEqual(new Set(cids));
+    expect((await store.getSession(session.id))?.contributionCount).toBe(30);
+  });
 });

@@ -21,7 +21,7 @@ import { NexusCas } from "./nexus-cas.js";
 import { NexusClaimStore } from "./nexus-claim-store.js";
 import { NexusContributionStore } from "./nexus-contribution-store.js";
 import { NexusOutcomeStore } from "./nexus-outcome-store.js";
-import { relationIndexDir } from "./vfs-paths.js";
+import { relationIndexDir, relationIndexPath } from "./vfs-paths.js";
 
 // ---------------------------------------------------------------------------
 // NexusContributionStore tests
@@ -258,6 +258,39 @@ describe("NexusContributionStore", () => {
           `${child.cid}.json`,
         ]);
         expect((await sessionStore.children(parent.cid)).map((c) => c.cid)).toEqual([child.cid]);
+      } finally {
+        sessionStore.close();
+      }
+    });
+
+    test("session-scoped readers preserve legacy root relation indexes", async () => {
+      const sessionStore = new NexusContributionStore({
+        client,
+        zoneId: "test-zone",
+        sessionId: "session-a",
+        retryMaxAttempts: 1,
+      });
+      try {
+        const parent = makeContribution({ summary: "legacy session parent" });
+        const child = makeContribution({
+          summary: "legacy session child",
+          relations: [{ targetCid: parent.cid, relationType: RelationType.RespondsTo }],
+        });
+        await sessionStore.put(parent);
+        await sessionStore.put(child);
+
+        await client.delete(relationIndexPath("test-zone", parent.cid, child.cid, "session-a"));
+        await client.write(
+          relationIndexPath("test-zone", parent.cid, child.cid),
+          new TextEncoder().encode(JSON.stringify({ relationType: RelationType.RespondsTo })),
+        );
+
+        expect((await sessionStore.children(parent.cid)).map((c) => c.cid)).toEqual([child.cid]);
+        expect((await sessionStore.relatedTo(parent.cid)).map((c) => c.cid)).toEqual([child.cid]);
+        expect(
+          (await sessionStore.thread(parent.cid)).map((node) => node.contribution.cid),
+        ).toEqual([parent.cid, child.cid]);
+        expect((await sessionStore.replyCounts([parent.cid])).get(parent.cid)).toBe(1);
       } finally {
         sessionStore.close();
       }
