@@ -35,7 +35,7 @@ import { createLocalRuntime } from "../local/runtime.js";
 import { parsePort } from "../shared/env.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import { parseCurrentSessionPayload, SessionStateReadError } from "./current-session.js";
-import type { McpDeps } from "./deps.js";
+import { type McpDeps, sessionToOwnerRef } from "./deps.js";
 import { createMcpServer } from "./server.js";
 
 // --- Security constants -----------------------------------------------------
@@ -544,10 +544,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
       ? await goalSessionStore.getSession(sessionId)
       : undefined;
   const ownerSession = nexusClient !== undefined ? sessionRecord : localSession;
-  const sessionOwnerRef =
-    ownerSession !== undefined
-      ? { kind: "session" as const, id: ownerSession.id, uid: ownerSession.uid }
-      : undefined;
+  const sessionOwnerRef = sessionToOwnerRef(ownerSession);
 
   const contributionMutations = ["put", "putMany", "putWithCowrite"] as const;
   contributionStore = guardMutableMethods(contributionStore, mutationGuard, contributionMutations);

@@ -15,9 +15,18 @@ import type { DeadlineWatcher } from "../core/deadline-watcher.js";
 import type { EventBus } from "../core/event-bus.js";
 import type { HandoffStore } from "../core/handoff.js";
 import type { OwnerRef } from "../core/lifecycle-metadata.js";
+import type { Session } from "../core/session.js";
 import type { TopologyRouter } from "../core/topology-router.js";
 import type { WorkspaceManager } from "../core/workspace.js";
 import type { ServerDeps } from "../server/deps.js";
+
+export function sessionToOwnerRef(
+  session: Pick<Session, "id" | "uid"> | undefined,
+): OwnerRef | undefined {
+  return session !== undefined
+    ? { kind: "session" as const, id: session.id, uid: session.uid }
+    : undefined;
+}
 
 /** Dependencies injected into the MCP server. Extends ServerDeps with workspace and contract. */
 export interface McpDeps extends ServerDeps {
