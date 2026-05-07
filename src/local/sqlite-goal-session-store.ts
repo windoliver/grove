@@ -16,6 +16,7 @@
 
 import type { Database, Statement } from "bun:sqlite";
 import type { GroveContract } from "../core/contract.js";
+import { DEFAULT_SESSION_FINALIZERS } from "../core/lifecycle-metadata.js";
 import type { CreateSessionInput, Session, SessionQuery } from "../core/session.js";
 import type { AgentTopology } from "../core/topology.js";
 import { resolveRoleWorkspaceStrategies } from "../core/topology.js";
@@ -431,10 +432,12 @@ function rowToSession(row: SessionRow): Session {
   }
   return {
     id: row.session_id,
+    uid: row.session_id,
     goal: row.goal ?? undefined,
     presetName: row.preset_name ?? undefined,
     status: row.status as Session["status"],
     createdAt: row.started_at,
+    finalizers: [],
     completedAt: row.ended_at ?? undefined,
     stopReason: row.stop_reason ?? undefined,
     stopStatus: row.stop_status ?? undefined,
@@ -451,10 +454,12 @@ function rowToSession(row: SessionRow): Session {
 function listRowToSession(row: SessionListRow): Session {
   return {
     id: row.session_id,
+    uid: row.session_id,
     goal: row.goal ?? undefined,
     presetName: row.preset_name ?? undefined,
     status: row.status as Session["status"],
     createdAt: row.started_at,
+    finalizers: [],
     completedAt: row.ended_at ?? undefined,
     stopReason: row.stop_reason ?? undefined,
     stopStatus: row.stop_status ?? undefined,
@@ -612,10 +617,12 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
 
     return {
       id: sessionId,
+      uid: sessionId,
       goal: input.goal,
       presetName: input.presetName,
       status: "active",
       createdAt: startedAt,
+      finalizers: DEFAULT_SESSION_FINALIZERS,
       completedAt: undefined,
       topology: input.topology,
       contributionCount: 0,

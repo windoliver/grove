@@ -6,6 +6,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { DEFAULT_SESSION_FINALIZERS } from "../core/lifecycle-metadata.js";
 import type { CreateSessionInput, Session, SessionQuery, SessionStore } from "../core/session.js";
 import type { NexusClient } from "./client.js";
 
@@ -30,13 +31,16 @@ export class NexusSessionStore implements SessionStore {
   }
 
   async createSession(input: CreateSessionInput): Promise<Session> {
+    const id = randomUUID().slice(0, 8);
     const session: Session = {
-      id: randomUUID().slice(0, 8),
+      id,
+      uid: id,
       goal: input.goal,
       presetName: input.presetName,
       topology: input.topology,
       status: "active",
       createdAt: new Date().toISOString(),
+      finalizers: DEFAULT_SESSION_FINALIZERS,
       contributionCount: 0,
       config: input.config,
     };

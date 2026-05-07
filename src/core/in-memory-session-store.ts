@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { DEFAULT_SESSION_FINALIZERS } from "./lifecycle-metadata.js";
 import type { CreateSessionInput, Session, SessionQuery, SessionStore } from "./session.js";
 
 /**
@@ -10,13 +11,16 @@ export class InMemorySessionStore implements SessionStore {
   private readonly contributions = new Map<string, string[]>();
 
   async createSession(input: CreateSessionInput): Promise<Session> {
+    const id = randomUUID().slice(0, 8);
     const session: Session = {
-      id: randomUUID().slice(0, 8),
+      id,
+      uid: id,
       goal: input.goal,
       presetName: input.presetName,
       topology: input.topology,
       status: "pending",
       createdAt: new Date().toISOString(),
+      finalizers: DEFAULT_SESSION_FINALIZERS,
       contributionCount: 0,
     };
     this.sessions.push(session);

@@ -106,9 +106,11 @@ describe("NexusSessionStore", () => {
     const store = new NexusSessionStore(client, "test-zone");
     const session: Session = {
       id: "put-test",
+      uid: "put-test",
       goal: "Put test",
       status: "active",
       createdAt: new Date().toISOString(),
+      finalizers: [],
       contributionCount: 0,
     };
     await store.putSession(session);
