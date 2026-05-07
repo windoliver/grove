@@ -8,9 +8,10 @@
  * responses via Server-Sent Events (SSE).
  *
  * Usage:
- *   grove-mcp-http                          # listen on 0.0.0.0:4015
+ *   grove-mcp-http                          # listen on localhost:4015
  *   PORT=8080 grove-mcp-http                # custom port
  *   GROVE_DIR=/path grove-mcp-http          # explicit grove directory
+ *   MCP_HOST=0.0.0.0 GROVE_MCP_ALLOW_REMOTE=true GROVE_MCP_AUTH_TOKEN=... grove-mcp-http
  *
  * Endpoints:
  *   POST /mcp   — JSON-RPC requests (initialize, tool calls, etc.)
@@ -36,6 +37,7 @@ import { parsePort } from "../shared/env.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import { parseCurrentSessionPayload, SessionStateReadError } from "./current-session.js";
 import type { McpDeps } from "./deps.js";
+import { resolveMcpHttpBindPolicy } from "./http-bind-policy.js";
 import { createMcpServer } from "./server.js";
 
 // --- Security constants -----------------------------------------------------
@@ -48,13 +50,29 @@ const MAX_MCP_BODY_SIZE = 10 * 1024 * 1024;
  * When set, every request must include `Authorization: Bearer <token>`.
  * When unset, auth is skipped (backward compatible for local-only use).
  */
-const AUTH_TOKEN = process.env.GROVE_MCP_AUTH_TOKEN ?? undefined;
+const AUTH_TOKEN = process.env.GROVE_MCP_AUTH_TOKEN?.trim() || undefined;
 
 // --- Initialization ---------------------------------------------------------
 
 const groveOverride = process.env.GROVE_DIR ?? undefined;
 const cwd = process.cwd();
 const port = parsePort(process.env.PORT, 4015);
+const bindPolicy = resolveMcpHttpBindPolicy({
+  host: process.env.MCP_HOST,
+  authToken: AUTH_TOKEN,
+  allowRemote: process.env.GROVE_MCP_ALLOW_REMOTE,
+});
+
+if (!bindPolicy.allowed) {
+  process.stderr.write(`grove-mcp-http: FATAL: ${bindPolicy.reason}\n`);
+  process.exit(1);
+}
+
+if (bindPolicy.remote) {
+  process.stderr.write(
+    "grove-mcp-http: WARN: binding MCP HTTP to a non-localhost address with bearer auth enabled\n",
+  );
+}
 
 let groveDir!: string;
 let runtime!: ReturnType<typeof createLocalRuntime>;
@@ -1429,8 +1447,8 @@ const httpServer = createServer((req, res) => {
   });
 });
 
-httpServer.listen(port, () => {
-  process.stderr.write(`grove-mcp-http: listening on http://0.0.0.0:${port}/mcp\n`);
+httpServer.listen(port, bindPolicy.host, () => {
+  process.stderr.write(`grove-mcp-http: listening on http://${bindPolicy.host}:${port}/mcp\n`);
 });
 
 // Graceful shutdown

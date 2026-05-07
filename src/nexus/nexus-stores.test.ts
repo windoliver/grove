@@ -146,6 +146,64 @@ describe("NexusContributionStore", () => {
       const result = await store.list({ limit: 2 });
       expect(result.length).toBe(2);
     });
+
+    test("list resolves and does not cache stale results when invalidated mid-scan", async () => {
+      class DelayedFtsReadClient extends MockNexusClient {
+        private blocked = false;
+        private releaseRead: (() => void) | undefined;
+        private resolveBlocked: () => void = () => undefined;
+        readonly readBlocked = new Promise<void>((resolve) => {
+          this.resolveBlocked = resolve;
+        });
+
+        releaseBlockedRead(): void {
+          this.releaseRead?.();
+        }
+
+        override async read(path: string): Promise<Uint8Array | undefined> {
+          if (!this.blocked && path.includes("/indexes/fts/")) {
+            this.blocked = true;
+            this.resolveBlocked();
+            await new Promise<void>((resolve) => {
+              this.releaseRead = resolve;
+            });
+          }
+          return super.read(path);
+        }
+      }
+
+      const delayedClient = new DelayedFtsReadClient();
+      const delayedStore = new NexusContributionStore({
+        client: delayedClient,
+        zoneId: "test-zone",
+        retryMaxAttempts: 1,
+      });
+      try {
+        const first = makeContribution({
+          summary: "first",
+          createdAt: "2026-01-01T00:00:00Z",
+        });
+        const second = makeContribution({
+          summary: "second",
+          createdAt: "2026-01-02T00:00:00Z",
+        });
+        await delayedStore.put(first);
+
+        const inFlightList = delayedStore.list();
+        await delayedClient.readBlocked;
+        await delayedStore.put(second);
+        delayedClient.releaseBlockedRead();
+
+        const staleResult = await inFlightList;
+        expect(staleResult.map((c) => c.cid)).toEqual([first.cid]);
+
+        const freshResult = await delayedStore.list();
+        expect(freshResult.map((c) => c.cid)).toEqual([first.cid, second.cid]);
+      } finally {
+        delayedStore.close();
+        await delayedClient.close();
+      }
+    });
   });
 
   describe("children and ancestors", () => {
