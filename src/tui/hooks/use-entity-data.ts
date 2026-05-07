@@ -101,13 +101,14 @@ export function useEntityData<K extends WatchKind>(
     //
     // Bare `limit` (no offset) is just a row cap, not paging — views like
     // ActivityPanel pass `limit=30` to mean "newest 30, however many we
-    // see locally" and still expect local sort to honor `byCreatedDesc`.
-    // Keep sort active in that case; predicate is always applied because
-    // the hook never relays it to the fetcher.
+    // see locally". We still apply sort first, then enforce the cap so
+    // the user sees the top-N after sorting. Predicate is always applied
+    // because the hook never relays it to the fetcher.
     const isPagedFallback = opts.offset !== undefined;
     let out: readonly EntityForKind<K>[] = polled.data;
     if (opts.predicate) out = out.filter(opts.predicate);
     if (opts.sort && !isPagedFallback) out = [...out].sort(opts.sort);
+    if (opts.limit !== undefined && !isPagedFallback) out = out.slice(0, opts.limit);
     return out;
   }, [useInformerPath, useEntityStoreFallback, entityResult.data, polled.data, opts.sort, opts.offset, opts.limit, opts.predicate]);
 
