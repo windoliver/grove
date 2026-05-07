@@ -11,7 +11,7 @@
 
 import type { AgentSessionEntity, ClaimEntity, ContributionEntity } from "./entity.js";
 import { LocalWatchClient } from "./local-watch-client.js";
-import { WatchClient, type WatchClientOptions } from "./watch-client.js";
+import { WatchClient, type WatchClientOp, type WatchClientOptions } from "./watch-client.js";
 import type { WatchEntity, WatchKind } from "./watch-events.js";
 import type { WatchHub } from "./watch-hub.js";
 import type { WatchClientEvent, WatchStream } from "./watch-stream.js";
@@ -41,6 +41,10 @@ export interface InformerOptions {
   readonly onOverflow?: (kind: WatchKind) => void;
 }
 
+function isControlEvent(op: WatchClientOp): boolean {
+  return op === "RELIST_BEGIN" || op === "RELIST" || op === "RELIST_END" || op === "RELIST_ABORTED";
+}
+
 export class Informer<K extends WatchKind = WatchKind> {
   private readonly stream: WatchStream;
   private readonly kind: WatchKind;
@@ -54,6 +58,9 @@ export class Informer<K extends WatchKind = WatchKind> {
   private _running = false;
   // Set during run() so dispatch can race handlers against the abort signal.
   private _signal: AbortSignal | null = null;
+  private queue = new Map<string, WatchClientEvent>();
+  private overflows = 0;
+  private flushScheduled = false;
 
   constructor(stream: WatchStream, kind: WatchKind, opts?: InformerOptions) {
     this.stream = stream;
@@ -125,11 +132,82 @@ export class Informer<K extends WatchKind = WatchKind> {
     this._running = true;
     this._signal = signal;
     try {
-      await this.stream.run({ onEvent: (e) => this.applyEvent(e), signal });
+      await this.stream.run({ onEvent: (e) => this.enqueue(e), signal });
     } finally {
       this._signal = null;
       this._running = false;
     }
+  }
+
+  private enqueue(e: WatchClientEvent): void | Promise<void> {
+    if (isControlEvent(e.op)) return this.enqueueControl(e);
+    const id = e.entity?.id;
+    if (id === undefined) return;
+    if (this.queue.has(id)) {
+      this.queue.set(id, e);
+      return;
+    }
+    if (this.queue.size >= this.queueLimit) {
+      this.queue.clear();
+      this.overflows += 1;
+      if (this.onOverflow) {
+        try {
+          this.onOverflow(this.kind);
+        } catch (err) {
+          console.error(
+            `Informer[${this.kind}]: onOverflow callback threw, recovery skipped:`,
+            err,
+          );
+        }
+      }
+      return;
+    }
+    this.queue.set(id, e);
+    this.scheduleDrain();
+  }
+
+  private async enqueueControl(e: WatchClientEvent): Promise<void> {
+    if (this.queue.size > 0) {
+      const pending = this.queue;
+      this.queue = new Map();
+      for (const ev of pending.values()) await this.applyEvent(ev);
+    }
+    await this.applyEvent(e);
+  }
+
+  private scheduleDrain(): void {
+    if (this.flushScheduled) return;
+    this.flushScheduled = true;
+    queueMicrotask(() => {
+      void this.drain();
+    });
+  }
+
+  private async drain(): Promise<void> {
+    // Keep flushScheduled=true for the duration of the drain so concurrent
+    // enqueues don't schedule a second microtask that races us; they instead
+    // accumulate in this.queue and we sweep them in the next loop iteration.
+    // This preserves serialized fanout: a slow handler in one batch blocks
+    // delivery of the next batch.
+    try {
+      while (this.queue.size > 0) {
+        const pending = this.queue;
+        this.queue = new Map();
+        for (const ev of pending.values()) {
+          await this.applyEvent(ev);
+        }
+      }
+    } finally {
+      this.flushScheduled = false;
+    }
+  }
+
+  getQueueStats(): {
+    readonly depth: number;
+    readonly limit: number;
+    readonly overflows: number;
+  } {
+    return { depth: this.queue.size, limit: this.queueLimit, overflows: this.overflows };
   }
 
   private async applyEvent(e: WatchClientEvent): Promise<void> {

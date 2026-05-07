@@ -690,7 +690,10 @@ describe("Informer run() safety", () => {
           sse("ADDED", { rv: "6", kind: "Contribution", entity: E_A }, "6"),
           fetchAc,
         ),
-        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+        // minMs:1 (not 0) so the watch loop yields to setTimeout — needed because
+        // delta enqueue is sync (B2 queue), so the loop no longer blocks on the
+        // hung handler and would otherwise starve the test's setTimeout(20).
+        backoff: { minMs: 1, maxMs: 1, jitter: 0 },
       }),
       "Contribution",
     );
@@ -909,7 +912,11 @@ describe("Informer handler isolation", () => {
   test("slow async handler delays next event delivery (serialized fanout)", async () => {
     // WatchClient's per-event ordering guarantee extends through informer fanout:
     // the second event must not be delivered before the first handler settles.
+    // Use a separate fetchAc so the watch loop's auto-abort on second watch call
+    // does not abort the run signal — otherwise the in-flight drain would race
+    // against the abort and skip cid-a's handler before resolveFirst() fires.
     const ac = new AbortController();
+    const fetchAc = new AbortController();
     const order: string[] = [];
     let resolveFirst: (() => void) | undefined;
 
@@ -921,9 +928,12 @@ describe("Informer handler isolation", () => {
         fetch: makeFetch(
           { items: [], listResourceVersion: "5" },
           `${sse("ADDED", { rv: "6", kind: "Contribution", entity: E_A }, "6")}${sse("ADDED", { rv: "7", kind: "Contribution", entity: E_B }, "7")}`,
-          ac,
+          fetchAc,
         ),
-        backoff: { minMs: 0, maxMs: 0, jitter: 0 },
+        // minMs:1 (not 0) so the watch loop yields to setTimeout — needed because
+        // delta enqueue is sync (B2 queue), so the loop no longer blocks on the
+        // hung handler and would otherwise starve the test's setTimeout(20).
+        backoff: { minMs: 1, maxMs: 1, jitter: 0 },
       }),
       "Contribution",
     );
