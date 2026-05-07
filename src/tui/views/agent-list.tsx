@@ -23,7 +23,9 @@ import {
   targetColumn,
 } from "../components/columns/agent-columns.js";
 import { isActive } from "../components/columns/claim-columns.js";
+import { EmptyState } from "../components/empty-state.js";
 import { EntityView } from "../components/entity-view.js";
+import { useProviderScoped } from "../hooks/informer-context.js";
 import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { TuiDataProvider } from "../provider.js";
 import { BRAILLE_SPINNER, timing } from "../theme.js";
@@ -40,6 +42,7 @@ export interface AgentListProps {
 export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.memo(
   function AgentListView(props: AgentListProps): React.ReactNode {
     const { provider, tmux, active, cursor, onSelectSession } = props;
+    const isScoped = useProviderScoped(provider);
     const [spinnerFrame, setSpinnerFrame] = useState(0);
     useInterval(
       () => setSpinnerFrame((f) => (f + 1) % BRAILLE_SPINNER.length),
@@ -132,6 +135,25 @@ export const AgentListView: React.NamedExoticComponent<AgentListProps> = React.m
       const claims = await provider.getClaims({ status: "active" });
       return claims.map((c) => claimToEntity(c, () => Date.now(), NAMESPACE));
     }, [provider]);
+
+    // Scoped sessions: `useEntityWatchEnabled` returns false in scoped mode,
+    // and `provider.getClaims` is namespace-global (no session filter), so
+    // the fallback would render claims from OTHER sessions. Render an empty
+    // state instead until session-scoped claim filtering lands. Mirrors the
+    // ClaimsView short-circuit.
+    if (isScoped) {
+      return (
+        <box flexDirection="column">
+          <box marginBottom={1}>
+            <text>Agents (0)</text>
+          </box>
+          <EmptyState
+            title="No agents registered."
+            hint="Press r to register, or Ctrl+P to spawn."
+          />
+        </box>
+      );
+    }
 
     return (
       <EntityView

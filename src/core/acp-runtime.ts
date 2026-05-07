@@ -1,5 +1,5 @@
 import { type ChildProcessByStdio, spawn as nodeSpawn } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
@@ -208,21 +208,36 @@ async function launchSubprocess(
   // works) and a minimal config.toml. Grove's per-spawn MCP servers are
   // appended via `-c` flags in buildAcpLaunchArgs and remain in effect.
   const childEnv = { ...env };
+  let isolatedHomeForCleanup: string | undefined;
   if (agent === "codex" && env.GROVE_CODEX_NO_ISOLATION !== "1") {
     try {
       const isolatedHome = await prepareIsolatedCodexHome(env);
       childEnv.CODEX_HOME = isolatedHome;
+      isolatedHomeForCleanup = isolatedHome;
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[acp-runtime] codex isolated-home prep failed: ${detail}\n`);
     }
   }
 
-  const child = nodeSpawn(launch.command, buildAcpLaunchArgs(launch, opts, childEnv), {
-    cwd,
-    env: childEnv,
-    stdio: ["pipe", "pipe", "pipe"],
-  }) as ChildProcessByStdio<Writable, Readable, Readable>;
+  let child: ChildProcessByStdio<Writable, Readable, Readable>;
+  try {
+    child = nodeSpawn(launch.command, buildAcpLaunchArgs(launch, opts, childEnv), {
+      cwd,
+      env: childEnv,
+      stdio: ["pipe", "pipe", "pipe"],
+    }) as ChildProcessByStdio<Writable, Readable, Readable>;
+  } catch (err) {
+    // Spawn itself failed — auth.json is on disk; clean up before bubbling.
+    if (isolatedHomeForCleanup) {
+      try {
+        rmSync(isolatedHomeForCleanup, { recursive: true, force: true });
+      } catch {
+        /* best-effort */
+      }
+    }
+    throw err;
+  }
 
   const stdinWebWritable = NodeWritable.toWeb(child.stdin) as WritableStream<Uint8Array>;
   const stdoutWebReadable = NodeReadable.toWeb(child.stdout) as ReadableStream<Uint8Array>;
@@ -297,6 +312,27 @@ async function launchSubprocess(
       child.kill("SIGTERM");
     } catch {
       /* ignore */
+    }
+    // Wait briefly for the child to exit so we don't `rm -rf` the isolated
+    // home out from under codex while it's still flushing session state.
+    // Bounded so a stuck child doesn't block teardown indefinitely.
+    if (isolatedHomeForCleanup) {
+      const exited = await new Promise<boolean>((resolve) => {
+        if (child.exitCode !== null || child.signalCode !== null) return resolve(true);
+        const timer = setTimeout(() => resolve(false), 2000);
+        child.once("exit", () => {
+          clearTimeout(timer);
+          resolve(true);
+        });
+      });
+      try {
+        rmSync(isolatedHomeForCleanup, { recursive: true, force: true });
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        process.stderr.write(
+          `[acp-runtime] codex isolated-home cleanup failed (childExited=${exited}): ${detail}\n`,
+        );
+      }
     }
   };
   return { clientStream, dispose };

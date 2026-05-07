@@ -1256,15 +1256,19 @@ export class NexusWsBridge {
   ): Promise<void> {
     const backoffsMs = [500, 1500, 3000, 5000];
     let lastDetail = "";
+    let activeSession = session;
     for (let attempt = 0; attempt <= backoffsMs.length; attempt += 1) {
       if (this.draining || this.closed) return;
       // Re-check the current session for this role before each attempt.
       // If the role was re-registered during a backoff window — the exact
-      // crash/bootstrap race this retry is recovering from — keep targeting
-      // the captured (now torn-down) session would dead-letter a handoff
-      // that the replacement's SSE loop should still pick up. When the
-      // mapping flips to a new session, abort retries so the replacement
-      // delivers normally; when the role is gone entirely, dead-letter.
+      // crash/bootstrap race this retry is recovering from — pushing to the
+      // captured (now torn-down) session would dead-letter a handoff that
+      // the replacement should still receive. We can't trust the
+      // replacement's SSE loop to redeliver because dispatchInboxDelivery's
+      // dedupe cache (role/message_id/path) is shared across sessions and
+      // the prior attempt may have marked this entry as seen. So when the
+      // session flips, retarget the live send to the replacement session
+      // instead of bailing. When the role is gone entirely, dead-letter.
       const currentSession = this.sessions.get(targetRole);
       if (!currentSession) {
         process.stderr.write(
@@ -1278,14 +1282,14 @@ export class NexusWsBridge {
         );
         return;
       }
-      if (currentSession.id !== session.id) {
+      if (currentSession.id !== activeSession.id) {
         process.stderr.write(
-          `[NexusWsBridge] role=${targetRole} session replaced during retry (was=${session.id} now=${currentSession.id}) — aborting retries; replacement SSE will redeliver\n`,
+          `[NexusWsBridge] role=${targetRole} session replaced during retry (was=${activeSession.id} now=${currentSession.id}) — retargeting send to replacement\n`,
         );
-        return;
+        activeSession = currentSession;
       }
       try {
-        const turn = await this.opts.runtime.send(session, notification);
+        const turn = await this.opts.runtime.send(activeSession, notification);
         const result = await turn.result.catch((err) => ({
           turnId: turn.turnId,
           stopReason: "error" as const,
