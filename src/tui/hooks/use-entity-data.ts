@@ -91,12 +91,20 @@ export function useEntityData<K extends WatchKind>(
       return applyEntityShape(entityResult.data, innerOpts);
     }
     if (polled.data === null) return [];
-    // Polled fallback: the fallbackFetcher is responsible for paging and
-    // ordering. Reshaping here would re-slice already-paged provider
+    // Polled fallback: the fallbackFetcher is responsible for paging
+    // (offset/limit). Re-slicing here would re-page already-paged provider
     // results — for pageOffset > 0 the second slice would render empty
     // when the over-fetch caps out (e.g. `/api/contributions` limit=100).
-    // Apply only `predicate` (the hook never relayed it to the fetcher).
-    return opts.predicate ? polled.data.filter(opts.predicate) : polled.data;
+    // BUT we DO apply `predicate` and `sort` because:
+    //   - the hook never relays predicate to the fetcher (so the fetcher
+    //     has no way to filter on it)
+    //   - sort applied to a paged window is well-defined (orders within
+    //     the page) and is required for views like AgentListView that
+    //     declare deterministic agent ordering via byRoleAndName
+    let out: readonly EntityForKind<K>[] = polled.data;
+    if (opts.predicate) out = out.filter(opts.predicate);
+    if (opts.sort) out = [...out].sort(opts.sort);
+    return out;
   }, [useInformerPath, useEntityStoreFallback, entityResult.data, polled.data, opts.sort, opts.offset, opts.limit, opts.predicate]);
 
   return {
