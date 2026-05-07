@@ -154,3 +154,114 @@ describe("grove_create_session", () => {
     expect(result.text).toContain("NOT_CONFIGURED");
   });
 });
+
+describe("grove_session_delete_blockers", () => {
+  let testDeps: TestMcpDeps;
+  let deps: McpDeps;
+  let server: McpServer;
+
+  beforeEach(async () => {
+    testDeps = await createTestMcpDeps();
+    const db = initSqliteDb(`${testDeps.tempDir}/goal-session.db`);
+    const goalSessionStore = new SqliteGoalSessionStore(db);
+    deps = { ...testDeps.deps, goalSessionStore };
+    server = new McpServer({ name: "test", version: "0.0.1" }, { capabilities: { tools: {} } });
+    registerSessionTools(server, deps);
+  });
+
+  afterEach(async () => {
+    await testDeps.cleanup();
+  });
+
+  test("returns blockers for an existing session", async () => {
+    const created = await callTool(server, "grove_create_session", { goal: "delete blockers" });
+    const session = JSON.parse(created.text);
+
+    const result = await callTool(server, "grove_session_delete_blockers", {
+      sessionId: session.id,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(result.text)).toEqual({
+      sessionId: session.id,
+      blockers: [],
+    });
+  });
+
+  test("returns NOT_FOUND when the session does not exist", async () => {
+    const result = await callTool(server, "grove_session_delete_blockers", {
+      sessionId: "missing",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("NOT_FOUND");
+  });
+});
+
+describe("grove_delete_session", () => {
+  let testDeps: TestMcpDeps;
+  let deps: McpDeps;
+  let server: McpServer;
+
+  beforeEach(async () => {
+    testDeps = await createTestMcpDeps();
+    const db = initSqliteDb(`${testDeps.tempDir}/goal-session.db`);
+    const goalSessionStore = new SqliteGoalSessionStore(db);
+    deps = { ...testDeps.deps, goalSessionStore };
+    server = new McpServer({ name: "test", version: "0.0.1" }, { capabilities: { tools: {} } });
+    registerSessionTools(server, deps);
+  });
+
+  afterEach(async () => {
+    await testDeps.cleanup();
+  });
+
+  test("deletes an existing session with default actor", async () => {
+    const created = await callTool(server, "grove_create_session", { goal: "delete" });
+    const session = JSON.parse(created.text);
+
+    const result = await callTool(server, "grove_delete_session", {
+      sessionId: session.id,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(result.text)).toEqual({
+      sessionId: session.id,
+      deleted: true,
+      forced: false,
+      blockers: [],
+    });
+    expect(await deps.goalSessionStore?.getSession(session.id)).toBeUndefined();
+  });
+
+  test("passes force and actor to session deletion", async () => {
+    const created = await callTool(server, "grove_create_session", { goal: "force delete" });
+    const session = JSON.parse(created.text);
+
+    const result = await callTool(server, "grove_delete_session", {
+      sessionId: session.id,
+      force: true,
+      actor: "operator",
+    });
+
+    expect(result.isError).toBeUndefined();
+    const data = JSON.parse(result.text);
+    expect(data.deleted).toBe(true);
+    expect(data.forced).toBe(true);
+  });
+
+  test("returns NOT_CONFIGURED when goalSessionStore is missing", async () => {
+    const serverNoStore = new McpServer(
+      { name: "test", version: "0.0.1" },
+      { capabilities: { tools: {} } },
+    );
+    registerSessionTools(serverNoStore, testDeps.deps);
+
+    const result = await callTool(serverNoStore, "grove_delete_session", {
+      sessionId: "missing",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("NOT_CONFIGURED");
+  });
+});

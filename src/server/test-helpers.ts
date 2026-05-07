@@ -24,6 +24,7 @@ import type {
 } from "../core/store.js";
 import { InMemoryContributionStore } from "../core/testing.js";
 import { WatchHub, type WatchHubOptions } from "../core/watch-hub.js";
+import type { GoalSessionStore } from "../local/sqlite-goal-session-store.js";
 import { NexusWatchSubscriber } from "../nexus/nexus-watch-subscriber.js";
 import { createApp } from "./app.js";
 import type { ServerDeps, ServerEnv } from "./deps.js";
@@ -344,6 +345,7 @@ export interface TestContext {
 export interface CreateTestAppOptions {
   readonly watchHubOptions?: WatchHubOptions;
   readonly eventBus?: EventBus;
+  readonly goalSessionStore?: GoalSessionStore;
 }
 
 /** Create a test app with fresh in-memory stores. */
@@ -387,6 +389,7 @@ export function createTestApp(opts: CreateTestAppOptions = {}): TestContext {
     claimStore,
     cas,
     frontier,
+    goalSessionStore: opts.goalSessionStore,
     watchHub,
     watchSubscriber,
   };
