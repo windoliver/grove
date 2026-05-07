@@ -350,6 +350,7 @@ const deps: ServerDeps = {
   cas: serverCas,
   frontier: serverFrontier,
   gossip: gossipService,
+  controllerToken: process.env.GROVE_CONTROLLER_TOKEN,
   gossipHmacSecret: gossipHmacSecret,
   topology: runtime.contract?.topology,
   contract: runtime.contract,

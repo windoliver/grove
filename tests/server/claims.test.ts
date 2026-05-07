@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { TestContext } from "./helpers.js";
-import { claimBody, createTestContext, TEST_AUTH_HEADERS } from "./helpers.js";
+import {
+  claimBody,
+  createTestContext,
+  TEST_AUTH_HEADERS,
+  TEST_CONTROLLER_HEADERS,
+} from "./helpers.js";
 
 describe("POST /api/claims", () => {
   let ctx: TestContext;
@@ -137,6 +142,208 @@ describe("POST /api/claims", () => {
     });
 
     expect(res.status).toBe(400);
+  });
+});
+
+describe("split claim routes", () => {
+  let ctx: TestContext;
+
+  beforeEach(async () => {
+    ctx = await createTestContext();
+  });
+  afterEach(async () => {
+    await ctx.cleanup();
+  });
+
+  test("PUT /api/claims/:id writes spec only and returns merged view", async () => {
+    const res = await ctx.app.request("/api/claims/split-put", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify(claimBody()),
+    });
+
+    expect(res.status).toBe(201);
+    const data = await res.json();
+    expect(data.spec.id).toBe("split-put");
+    expect(data.status.phase).toBe("active");
+    expect(data.status.observedGeneration).toBe(0);
+  });
+
+  test("PUT /api/claims/:id rejects status-owned fields", async () => {
+    const res = await ctx.app.request("/api/claims/split-put-reject", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify(claimBody({ phase: "completed" })),
+    });
+
+    expect(res.status).toBe(400);
+
+    const attemptCountRes = await ctx.app.request("/api/claims/split-put-reject-attempt", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify(claimBody({ attemptCount: 2 })),
+    });
+
+    expect(attemptCountRes.status).toBe(400);
+  });
+
+  test("GET /api/claims/:id returns merged view", async () => {
+    const putRes = await ctx.app.request("/api/claims/split-get", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify(claimBody({ targetRef: "split-target" })),
+    });
+    expect(putRes.status).toBe(201);
+
+    const res = await ctx.app.request("/api/claims/split-get", {
+      headers: TEST_AUTH_HEADERS,
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.spec.id).toBe("split-get");
+    expect(data.spec.targetRef).toBe("split-target");
+    expect(data.status.phase).toBe("active");
+  });
+
+  test("PATCH /api/claims/:id/status requires controller token before body validation", async () => {
+    const putRes = await ctx.app.request("/api/claims/split-status-auth", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify(claimBody()),
+    });
+    expect(putRes.status).toBe(201);
+
+    const res = await ctx.app.request("/api/claims/split-status-auth/status", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify({ phase: "completed" }),
+    });
+
+    expect(res.status).toBe(403);
+    const data = await res.json();
+    expect(data).toEqual({
+      error: { code: "FORBIDDEN", message: "Controller token required" },
+    });
+
+    const mismatchedRes = await ctx.app.request("/api/claims/split-status-auth/status", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        ...TEST_AUTH_HEADERS,
+        "X-Grove-Controller-Token": "wrong-token",
+      },
+      body: JSON.stringify({ phase: "completed" }),
+    });
+
+    expect(mismatchedRes.status).toBe(403);
+    expect(await mismatchedRes.json()).toEqual({
+      error: { code: "FORBIDDEN", message: "Controller token required" },
+    });
+
+    const missingInvalidRes = await ctx.app.request("/api/claims/split-status-auth/status", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify({ targetRef: "different" }),
+    });
+
+    expect(missingInvalidRes.status).toBe(403);
+    expect(await missingInvalidRes.json()).toEqual({
+      error: { code: "FORBIDDEN", message: "Controller token required" },
+    });
+
+    const mismatchedInvalidRes = await ctx.app.request("/api/claims/split-status-auth/status", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        ...TEST_AUTH_HEADERS,
+        "X-Grove-Controller-Token": "wrong-token",
+      },
+      body: JSON.stringify({ targetRef: "different" }),
+    });
+
+    expect(mismatchedInvalidRes.status).toBe(403);
+    expect(await mismatchedInvalidRes.json()).toEqual({
+      error: { code: "FORBIDDEN", message: "Controller token required" },
+    });
+  });
+
+  test("PATCH /api/claims/:id/status writes status only with controller token", async () => {
+    const putRes = await ctx.app.request("/api/claims/split-status-patch", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify(
+        claimBody({
+          targetRef: "split-preserve-target",
+          intentSummary: "Preserve this spec",
+          priority: 3,
+        }),
+      ),
+    });
+    expect(putRes.status).toBe(201);
+    const created = await putRes.json();
+
+    const res = await ctx.app.request("/api/claims/split-status-patch/status", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        ...TEST_AUTH_HEADERS,
+        ...TEST_CONTROLLER_HEADERS,
+      },
+      body: JSON.stringify({
+        phase: "completed",
+        observedGeneration: created.spec.generation,
+        agentSessionId: "session-1",
+        currentContributionCid: "b3:work",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.status.phase).toBe("completed");
+    expect(data.status.observedGeneration).toBe(created.spec.generation);
+    expect(data.status.agentSessionId).toBe("session-1");
+    expect(data.status.currentContributionCid).toBe("b3:work");
+    expect(data.spec.targetRef).toBe("split-preserve-target");
+    expect(data.spec.intentSummary).toBe("Preserve this spec");
+    expect(data.spec.priority).toBe(3);
+    expect(data.spec.generation).toBe(created.spec.generation);
+  });
+
+  test("PATCH /api/claims/:id/status rejects spec-owned fields", async () => {
+    const putRes = await ctx.app.request("/api/claims/split-status-reject", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify(claimBody()),
+    });
+    expect(putRes.status).toBe(201);
+
+    const res = await ctx.app.request("/api/claims/split-status-reject/status", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        ...TEST_AUTH_HEADERS,
+        ...TEST_CONTROLLER_HEADERS,
+      },
+      body: JSON.stringify({ phase: "completed", targetRef: "different-target" }),
+    });
+
+    expect(res.status).toBe(400);
+
+    const createdAtRes = await ctx.app.request("/api/claims/split-status-reject/status", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        ...TEST_AUTH_HEADERS,
+        ...TEST_CONTROLLER_HEADERS,
+      },
+      body: JSON.stringify({
+        phase: "completed",
+        createdAt: "2026-05-06T12:00:00.000Z",
+      }),
+    });
+
+    expect(createdAtRes.status).toBe(400);
   });
 });
 
