@@ -28,7 +28,11 @@ import type { WorkspaceIsolationPolicy, WorkspaceMode } from "../core/workspace-
 import { provisionWorkspace } from "../core/workspace-provisioner.js";
 import { startInterval } from "../local/use-interval.js";
 import { NexusHttpClient } from "../nexus/nexus-http-client.js";
-import { resolveNexusSkillCatalogRoot } from "../nexus/nexus-skill-catalog.js";
+import {
+  type ResolvedSkillCatalogRoot,
+  resolveNexusSkillCatalogRoot,
+  type SkillResolutionWarning,
+} from "../nexus/nexus-skill-catalog.js";
 import { safeCleanup } from "../shared/safe-cleanup.js";
 import type { SpawnOptions, TmuxManager } from "./agents/tmux-manager.js";
 import { agentIdFromSession } from "./agents/tmux-manager.js";
@@ -74,6 +78,28 @@ export interface SpawnResult {
   readonly workspacePath: string;
   /** Describes how this agent's workspace was provisioned. */
   readonly workspaceMode: WorkspaceMode;
+}
+
+class RequiredSkillCatalogResolutionError extends Error {
+  constructor(message: string, cause: unknown) {
+    super(message, { cause });
+    this.name = "RequiredSkillCatalogResolutionError";
+  }
+}
+
+function isRequiredSkillCatalogResolutionError(
+  error: unknown,
+): error is RequiredSkillCatalogResolutionError {
+  return error instanceof RequiredSkillCatalogResolutionError;
+}
+
+function messageFromError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function formatSkillCatalogWarning(warning: SkillResolutionWarning): string {
+  const fallback = warning.fallbackSource ? ` fallback: ${warning.fallbackSource};` : "";
+  return `Nexus skill catalog warning for '${warning.skillName}': attempted ${warning.attemptedSource};${fallback} ${warning.reason}`;
 }
 
 /**
@@ -411,9 +437,17 @@ export class SpawnManager {
     );
   }
 
+  private reportSkillCatalogWarnings(warnings: readonly SkillResolutionWarning[]): void {
+    for (const warning of warnings) {
+      const message = formatSkillCatalogWarning(warning);
+      this.onError(message);
+      debugLog("spawn", message);
+    }
+  }
+
   private async resolveSkillRootForSpawn(
     roleSkills: readonly string[],
-  ): Promise<string | undefined> {
+  ): Promise<ResolvedSkillCatalogRoot | undefined> {
     if (roleSkills.length === 0 || !this.groveDir) return undefined;
     const configPath = join(this.groveDir, "grove.json");
     if (!existsSync(configPath)) return undefined;
@@ -421,23 +455,40 @@ export class SpawnManager {
     const config = parseGroveConfig(raw);
     if (config.mode !== "nexus" || config.skillCatalog === undefined) return undefined;
 
-    const nexusUrl = process.env.GROVE_NEXUS_URL ?? config.nexusUrl;
-    if (!nexusUrl) return undefined;
+    const nexusUrl = process.env.GROVE_NEXUS_URL || config.nexusUrl;
+    if (!nexusUrl) {
+      if (config.skillCatalog.policy !== "required") return undefined;
+      throw new RequiredSkillCatalogResolutionError(
+        "Nexus skill catalog required but no Nexus URL is configured",
+        undefined,
+      );
+    }
     const client = new NexusHttpClient({
       url: nexusUrl,
       apiKey: process.env.NEXUS_API_KEY || undefined,
     });
     const projectRoot = dirname(this.groveDir);
-    const result = await resolveNexusSkillCatalogRoot({
-      client,
-      zoneId: process.env.GROVE_ZONE_ID ?? "default",
-      cacheRoot: join(this.groveDir, "cache", "skills"),
-      skills: roleSkills,
-      policy: config.skillCatalog.policy,
-      trustedKeys: config.skillCatalog.trustedKeys,
-      localFallbackRoots: [join(this.groveDir, "skills"), resolveBundledSkillsRoot(projectRoot)],
-    });
-    return result.root;
+    try {
+      const result = await resolveNexusSkillCatalogRoot({
+        client,
+        zoneId: process.env.GROVE_ZONE_ID ?? "default",
+        cacheRoot: join(this.groveDir, "cache", "skills"),
+        skills: roleSkills,
+        policy: config.skillCatalog.policy,
+        trustedKeys: config.skillCatalog.trustedKeys,
+        localFallbackRoots: [join(this.groveDir, "skills"), resolveBundledSkillsRoot(projectRoot)],
+      });
+      this.reportSkillCatalogWarnings(result.warnings);
+      return result;
+    } catch (error) {
+      if (config.skillCatalog.policy === "required") {
+        throw new RequiredSkillCatalogResolutionError(
+          `Nexus skill catalog required but resolution failed: ${messageFromError(error)}`,
+          error,
+        );
+      }
+      throw error;
+    }
   }
 
   /**
@@ -641,13 +692,13 @@ export class SpawnManager {
           ? (context.skills as readonly string[])
           : [];
         if (roleSkills.length > 0 && this.groveDir) {
-          const resolvedSkillRoot = await this.resolveSkillRootForSpawn(roleSkills);
+          const resolvedSkillCatalog = await this.resolveSkillRootForSpawn(roleSkills);
           await injectSkills({
             workspacePath,
             skills: roleSkills,
             bundledSkillsRoot:
-              resolvedSkillRoot ?? resolveBundledSkillsRoot(dirname(this.groveDir)),
-            workspaceOverrideRoot: resolvedSkillRoot ? undefined : join(this.groveDir, "skills"),
+              resolvedSkillCatalog?.root ?? resolveBundledSkillsRoot(dirname(this.groveDir)),
+            workspaceOverrideRoot: resolvedSkillCatalog ? undefined : join(this.groveDir, "skills"),
           });
         }
         // Protect config files from agent mutation (#7 Workspace Mutation Constraints)
@@ -680,7 +731,10 @@ export class SpawnManager {
         }
       } catch (configErr) {
         const reason = configErr instanceof Error ? configErr.message : String(configErr);
-        if (this.workspaceIsolationPolicy === "strict") {
+        if (
+          this.workspaceIsolationPolicy === "strict" ||
+          isRequiredSkillCatalogResolutionError(configErr)
+        ) {
           throw new Error(`Bootstrap failed for '${roleId}': ${reason}`);
         }
         this.onError(`Config write failed: ${reason}`);

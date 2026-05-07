@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GroveContract } from "./contract.js";
@@ -54,6 +54,44 @@ function makeContract(overrides?: Partial<GroveContract>): GroveContract {
     },
     ...overrides,
   };
+}
+
+function writeNexusGroveConfig(
+  groveDir: string,
+  opts: { readonly policy: "required" | "warn-and-fallback"; readonly nexusUrl: string },
+): void {
+  mkdirSync(groveDir, { recursive: true });
+  writeFileSync(
+    join(groveDir, "grove.json"),
+    `${JSON.stringify(
+      {
+        name: "test",
+        mode: "nexus",
+        nexusUrl: opts.nexusUrl,
+        skillCatalog: {
+          policy: opts.policy,
+          trustedKeys: [
+            {
+              id: "test-key",
+              algorithm: "ed25519",
+              publicKeySpkiDer: "AA==",
+            },
+          ],
+        },
+      },
+      null,
+      2,
+    )}\n`,
+    "utf-8",
+  );
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
+  }
 }
 
 /** Make an orchestrator that uses allow-fallback policy so /tmp tests pass. */
@@ -1117,6 +1155,112 @@ describe("SessionOrchestrator — workspace isolation policy", () => {
       } catch {
         // best-effort
       }
+    }
+  });
+
+  test("allow-fallback worktree failure fails closed when required Nexus skill catalog applies", async () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), "grove-so-required-prebootstrap-"));
+    const previousNexusUrl = process.env.GROVE_NEXUS_URL;
+    process.env.GROVE_NEXUS_URL = "";
+
+    const runtime = new MockRuntime();
+    const bus = new LocalEventBus();
+    try {
+      writeNexusGroveConfig(join(projectRoot, ".grove"), {
+        policy: "required",
+        nexusUrl: "http://127.0.0.1:1",
+      });
+
+      const contract = makeContract({
+        topology: {
+          structure: "flat",
+          roles: [
+            {
+              name: "worker",
+              description: "Do the work",
+              command: "echo worker",
+              skills: ["grove"],
+            },
+          ],
+        },
+      });
+      const topology = contract.topology;
+      if (!topology) {
+        throw new Error("test contract must include topology");
+      }
+
+      const orchestrator = new SessionOrchestrator({
+        goal: "Test required skill catalog pre-bootstrap",
+        contract,
+        topology,
+        runtime,
+        eventBus: bus,
+        projectRoot,
+        repos: [{ kind: "local", path: projectRoot }],
+        workspaceBaseDir: join(projectRoot, ".grove", "workspaces"),
+        workspaceIsolationPolicy: "allow-fallback",
+        sessionId: "requiredprebootstrap123",
+      });
+
+      await expect(orchestrator.start()).rejects.toThrow("Nexus skill catalog required");
+      expect(runtime.spawnCalls).toHaveLength(0);
+    } finally {
+      bus.close();
+      restoreEnv("GROVE_NEXUS_URL", previousNexusUrl);
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("allow-fallback still fails closed when required Nexus skill catalog is unreachable", async () => {
+    const bareRepo = makeFixtureBareRepo();
+    const previousNexusUrl = process.env.GROVE_NEXUS_URL;
+    process.env.GROVE_NEXUS_URL = "";
+
+    try {
+      writeNexusGroveConfig(join(bareRepo, ".grove"), {
+        policy: "required",
+        nexusUrl: "http://127.0.0.1:1",
+      });
+
+      const runtime = new MockRuntime();
+      const bus = new LocalEventBus();
+      const contract = makeContract({
+        topology: {
+          structure: "flat",
+          roles: [
+            {
+              name: "worker",
+              description: "Do the work",
+              command: "echo worker",
+              skills: ["grove"],
+            },
+          ],
+        },
+      });
+      const topology = contract.topology;
+      if (!topology) {
+        throw new Error("test contract must include topology");
+      }
+
+      const orchestrator = new SessionOrchestrator({
+        goal: "Test required skill catalog",
+        contract,
+        topology,
+        runtime,
+        eventBus: bus,
+        projectRoot: bareRepo,
+        repos: [{ kind: "local", path: bareRepo }],
+        workspaceBaseDir: join(tmpdir(), `grove-so-ws-${Date.now()}`),
+        workspaceIsolationPolicy: "allow-fallback",
+        sessionId: "requiredcatalog123456",
+      });
+
+      await expect(orchestrator.start()).rejects.toThrow("Nexus skill catalog required");
+      expect(runtime.spawnCalls).toHaveLength(0);
+      bus.close();
+    } finally {
+      restoreEnv("GROVE_NEXUS_URL", previousNexusUrl);
+      rmSync(bareRepo, { recursive: true, force: true });
     }
   });
 
