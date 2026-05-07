@@ -80,6 +80,31 @@ describe("batchParallel", () => {
     ).rejects.toThrow("boom");
   });
 
+  test("does not start queued work after the first rejection", async () => {
+    const started: number[] = [];
+    let releaseBlockedTask: (() => void) | undefined;
+
+    const result = batchParallel(
+      [0, 1, 2, 3, 4],
+      async (n) => {
+        started.push(n);
+        if (n === 0) throw new Error("boom");
+        if (n === 1) {
+          await new Promise<void>((resolve) => {
+            releaseBlockedTask = resolve;
+          });
+        }
+        return n;
+      },
+      2,
+    );
+
+    await delay(10);
+    expect(started).toEqual([0, 1]);
+    releaseBlockedTask?.();
+    await expect(result).rejects.toThrow("boom");
+  });
+
   test("works with concurrency of 1 (sequential)", async () => {
     const order: number[] = [];
     const items = [1, 2, 3];

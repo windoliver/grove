@@ -795,12 +795,11 @@ export class NexusContributionStore implements ContributionStore {
     );
 
     if (this.listCacheEpoch !== epochAtStart) {
-      // An invalidation arrived while we were scanning. Throw so all
-      // waiting callers (usePolledData et al.) preserve their last-known-
-      // good data instead of overwriting it with a stale pre-invalidation
-      // snapshot. The post-invalidation scan (started by the SSE refresh
-      // handler) will resolve with fresh data on the next await.
-      throw new Error("list scan superseded by cache invalidation — discard result");
+      // A write or SSE invalidation arrived while this scan was in flight.
+      // Return the snapshot to the current caller, but do not cache it: the
+      // next list() will miss cache and scan the fresh index.
+      debugLog("store.list", "scan invalidated mid-flight; returning uncached snapshot");
+      return allContributions;
     }
 
     if (ftsComplete && manifestComplete) {
