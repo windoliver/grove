@@ -14,6 +14,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runClaimStoreTests } from "../core/claim-store.conformance.js";
+import type { Claim } from "../core/models.js";
 import { ClaimStatus, ContributionKind, RelationType } from "../core/models.js";
 import { runContributionStoreTests } from "../core/store.conformance.js";
 import { makeAgent, makeClaim, makeContribution } from "../core/test-helpers.js";
@@ -823,6 +824,31 @@ describe("SqliteClaimStore onClaimWrite hook", () => {
     const claim = makeClaim({ targetRef: "watch-create" });
     await claimStore.createClaim(claim);
     expect(events).toEqual([{ op: "ADDED", id: claim.claimId }]);
+  });
+
+  test("split spec and status writes preserve spec ownership in watch snapshots", async () => {
+    const events: Array<{ op: string; claim: Claim }> = [];
+    claimStore.onClaimWrite = (op, c) => events.push({ op, claim: c });
+
+    const created = await claimStore.putClaimSpec({
+      id: "watch-split",
+      targetRef: "target-watch-split",
+      agent: { agentId: "agent-watch-split" },
+      intentSummary: "initial split spec",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      generation: 1,
+    });
+    const patched = await claimStore.patchClaimStatus("watch-split", {
+      phase: ClaimStatus.Completed,
+      observedGeneration: created.spec.generation,
+      lastHeartbeatAt: "2026-01-01T00:05:00.000Z",
+    });
+
+    expect(events.map((event) => event.op)).toEqual(["ADDED", "MODIFIED"]);
+    expect(events[0]?.claim.intentSummary).toBe("initial split spec");
+    expect(events[1]?.claim.intentSummary).toBe("initial split spec");
+    expect(events[1]?.claim.status).toBe(ClaimStatus.Completed);
+    expect(patched.spec.intentSummary).toBe("initial split spec");
   });
 
   test("heartbeat fires MODIFIED so cached lease fields stay fresh", async () => {
