@@ -5,6 +5,7 @@ import {
   createTestContext,
   TEST_AUTH_HEADERS,
   TEST_CONTROLLER_HEADERS,
+  TEST_NAMESPACE,
 } from "./helpers.js";
 
 describe("POST /api/claims", () => {
@@ -308,6 +309,55 @@ describe("split claim routes", () => {
     expect(data.spec.intentSummary).toBe("Preserve this spec");
     expect(data.spec.priority).toBe(3);
     expect(data.spec.generation).toBe(created.spec.generation);
+  });
+
+  test("split writes emit claim watch events", async () => {
+    const ac = new AbortController();
+    const events = ctx.deps.watchHub
+      .subscribe(TEST_NAMESPACE, "Claim", 0n, ac.signal)
+      [Symbol.asyncIterator]();
+
+    const putRes = await ctx.app.request("/api/claims/split-watch", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...TEST_AUTH_HEADERS },
+      body: JSON.stringify(
+        claimBody({
+          targetRef: "split-watch-target",
+          intentSummary: "Watch split claim",
+        }),
+      ),
+    });
+    expect(putRes.status).toBe(201);
+
+    const added = await events.next();
+    expect(added.done).toBe(false);
+    expect(added.value?.op).toBe("ADDED");
+    expect(added.value?.entity.id).toBe("split-watch");
+    expect(added.value?.entity.spec.intentSummary).toBe("Watch split claim");
+
+    const patchRes = await ctx.app.request("/api/claims/split-watch/status", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        ...TEST_AUTH_HEADERS,
+        ...TEST_CONTROLLER_HEADERS,
+      },
+      body: JSON.stringify({
+        phase: "completed",
+        agentSessionId: "session-watch",
+        lastTransitionAt: "2026-01-01T00:05:00.000Z",
+      }),
+    });
+    expect(patchRes.status).toBe(200);
+
+    const modified = await events.next();
+    expect(modified.done).toBe(false);
+    expect(modified.value?.op).toBe("MODIFIED");
+    expect(modified.value?.entity.id).toBe("split-watch");
+    expect(modified.value?.entity.status.phase).toBe("completed");
+    expect(modified.value?.entity.status.agentSessionId).toBe("session-watch");
+
+    ac.abort();
   });
 
   test("PATCH /api/claims/:id/status rejects spec-owned fields", async () => {

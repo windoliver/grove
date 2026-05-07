@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { runClaimStoreTests } from "../../../src/core/claim-store.conformance.js";
+import { StateConflictError } from "../../../src/core/errors.js";
 import { makeAgent, makeClaim } from "../../../src/core/test-helpers.js";
 import type { ReadResult, WriteOptions, WriteResult } from "../../../src/nexus/client.js";
 import { MockNexusClient } from "../../../src/nexus/mock-client.js";
@@ -197,6 +198,47 @@ describe("NexusClaimStore adapter-specific", () => {
     expect(patched.spec.generation).toBe(created.spec.generation);
     expect(patched.status.phase).toBe("completed");
     expect(patched.status.revision).toBe(created.status.revision + 1);
+  });
+
+  test("patchClaimStatus maps active target conflicts to StateConflictError", async () => {
+    const now = Date.now();
+    const oldCreatedAt = new Date(now).toISOString();
+    const oldReleasedAt = new Date(now + 1_000).toISOString();
+    const newCreatedAt = new Date(now + 2_000).toISOString();
+    const oldReactivatedAt = new Date(now + 3_000).toISOString();
+    const activeLeaseExpiresAt = new Date(now + 600_000).toISOString();
+
+    await store.putClaimSpec({
+      id: "nexus-activation-old",
+      targetRef: "target-nexus-activation",
+      agent: makeAgent({ agentId: "agent-nexus-activation-old" }),
+      intentSummary: "old activation candidate",
+      createdAt: oldCreatedAt,
+      generation: 1,
+    });
+    await store.patchClaimStatus("nexus-activation-old", {
+      phase: "released",
+      lastHeartbeatAt: oldReleasedAt,
+      lastTransitionAt: oldReleasedAt,
+    });
+
+    await store.putClaimSpec({
+      id: "nexus-activation-new",
+      targetRef: "target-nexus-activation",
+      agent: makeAgent({ agentId: "agent-nexus-activation-new" }),
+      intentSummary: "new active holder",
+      createdAt: newCreatedAt,
+      generation: 1,
+    });
+
+    await expect(
+      store.patchClaimStatus("nexus-activation-old", {
+        phase: "active",
+        lastHeartbeatAt: oldReactivatedAt,
+        leaseExpiresAt: activeLeaseExpiresAt,
+        lastTransitionAt: oldReactivatedAt,
+      }),
+    ).rejects.toThrow(StateConflictError);
   });
 
   test("legacy heartbeat and release preserve split-only status fields", async () => {

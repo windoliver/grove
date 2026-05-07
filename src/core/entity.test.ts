@@ -9,7 +9,12 @@ import type {
   Entity,
   EntityMetadata,
 } from "./entity.js";
-import { agentSessionToEntity, claimToEntity, contributionToEntity } from "./entity.js";
+import {
+  agentSessionToEntity,
+  claimToEntity,
+  claimViewToEntity,
+  contributionToEntity,
+} from "./entity.js";
 import type { Claim, ClaimView, Contribution } from "./models.js";
 import {
   ClaimStatus,
@@ -296,6 +301,62 @@ describe("claimToEntity", () => {
     expect(entity.status.lastHeartbeatAt).toBe("2026-01-01T00:01:00.000Z");
     expect(entity.status.leaseExpiresAt).toBe("2026-01-01T00:06:00.000Z");
     expect(entity.metadata.generation).toBe(4);
+  });
+
+  test("claimViewToEntity preserves split spec generation and controller status fields", () => {
+    const conditions: readonly Condition[] = [
+      {
+        type: "Completed",
+        status: "True",
+        observedGeneration: 9,
+        lastTransitionTime: "2026-01-01T00:05:00.000Z",
+        reason: "controller",
+        message: "done",
+      },
+    ];
+    const view: ClaimView = {
+      spec: {
+        id: "claim-view-rich",
+        roleName: "coder",
+        platform: "codex",
+        assignee: { agentId: "agent-view", role: "reviewer" },
+        generation: 9,
+        targetRef: "target-view",
+        agent: { agentId: "agent-view", role: "coder", platform: "codex" },
+        intentSummary: "view claim",
+        context: { issue: 270 },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+      status: {
+        id: "claim-view-rich",
+        phase: ClaimStatus.Completed,
+        observedGeneration: 9,
+        agentSessionId: "session-view",
+        lastHeartbeatAt: "2026-01-01T00:04:00.000Z",
+        leaseExpiresAt: "2026-01-01T00:10:00.000Z",
+        currentContributionCid:
+          "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        conditions,
+        lastTransitionAt: "2026-01-01T00:05:00.000Z",
+        attemptCount: 3,
+        revision: 4,
+      },
+    };
+
+    const entity = claimViewToEntity(view, () => Date.parse("2026-01-01T00:06:00.000Z"), "ns/view");
+
+    expect(entity.id).toBe("claim-view-rich");
+    expect(entity.namespace).toBe("ns/view");
+    expect(entity.metadata.generation).toBe(9);
+    expect(entity.observedGeneration).toBe(9);
+    expect(entity.resourceVersion).toBe("4");
+    expect(entity.status.observedGeneration).toBe(9);
+    expect(entity.status.agentSessionId).toBe("session-view");
+    expect(entity.status.currentContributionCid).toBe(
+      "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    expect(entity.status.attemptCount).toBe(3);
+    expect(entity.conditions).toEqual(conditions);
   });
 
   test("status carries phase/heartbeatAt/leaseExpiresAt/attemptCount", () => {

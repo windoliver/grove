@@ -54,7 +54,7 @@ import { SqliteOutcomeStore } from "./sqlite-outcome-store.js";
 import { DEFAULT_LEASE_DURATION_MS } from "../core/claim-logic.js";
 import { computeContributionContentHash } from "../core/content-dedup.js";
 import type { ClaimEntity, ContributionEntity } from "../core/entity.js";
-import { claimToEntity, contributionToEntity } from "../core/entity.js";
+import { claimViewToEntity, contributionToEntity } from "../core/entity.js";
 import { ClaimConflictError, NotFoundError, StateConflictError } from "../core/errors.js";
 import { toUtcIso } from "../core/time.js";
 
@@ -1777,6 +1777,34 @@ export class SqliteClaimStore implements ClaimStore {
         });
       }
 
+      const nowIso = new Date().toISOString();
+      const updatedPhase = patch.phase ?? existing.status.phase;
+      const updatedLeaseExpiresAt =
+        patch.leaseExpiresAt !== undefined
+          ? toUtcIso(patch.leaseExpiresAt)
+          : existing.status.leaseExpiresAt;
+      if (updatedPhase === "active" && updatedLeaseExpiresAt >= nowIso) {
+        const activeOnTarget = this.db
+          .prepare(
+            `SELECT s.id AS claim_id
+             FROM claim_spec s
+             JOIN claim_status st ON st.id = s.id
+             WHERE s.target_ref = ?
+               AND st.phase = 'active'
+               AND st.lease_expires_at >= ?
+               AND s.id <> ?`,
+          )
+          .get(existing.spec.targetRef, nowIso, claimId) as { claim_id: string } | null;
+
+        if (activeOnTarget !== null) {
+          throw new StateConflictError({
+            resource: "Claim",
+            reason: "target already has an active claim",
+            message: `Target '${existing.spec.targetRef}' already has an active claim '${activeOnTarget.claim_id}'`,
+          });
+        }
+      }
+
       this.db
         .prepare(`UPDATE claim_status SET ${assignments.join(", ")} WHERE id = ?`)
         .run(...params);
@@ -2092,6 +2120,10 @@ export class SqliteClaimStore implements ClaimStore {
   };
 
   listClaims = async (query?: ClaimQuery): Promise<readonly Claim[]> => {
+    return this.queryClaimViews(query).map((view) => claimViewToClaim(view));
+  };
+
+  private queryClaimViews(query?: ClaimQuery): readonly ClaimView[] {
     let sql = `SELECT ${CLAIM_VIEW_SELECT_COLS}
       FROM claim_spec s
       JOIN claim_status st ON st.id = s.id
@@ -2115,8 +2147,8 @@ export class SqliteClaimStore implements ClaimStore {
 
     sql += " ORDER BY s.created_at DESC";
     const rows = this.db.prepare(sql).all(...params) as readonly ClaimViewRow[];
-    return rows.map((row) => claimViewToClaim(rowToClaimView(row)));
-  };
+    return rows.map((row) => rowToClaimView(row));
+  }
 
   cleanCompleted = async (retentionMs: number): Promise<number> => {
     const cutoff = new Date(Date.now() - retentionMs).toISOString();
@@ -2191,9 +2223,9 @@ export class SqliteClaimStore implements ClaimStore {
     // should call listClaims() directly.
     const baseQuery: ClaimQuery | undefined =
       query === undefined ? undefined : { ...query, status: undefined };
-    const items = await this.listClaims(baseQuery);
+    const items = this.queryClaimViews(baseQuery);
     const namespace = readStoreNamespace(this.db);
-    const entities = items.map((c) => claimToEntity(c, () => Date.now(), namespace));
+    const entities = items.map((view) => claimViewToEntity(view, () => Date.now(), namespace));
     if (query?.status === undefined) return entities;
     const wanted = Array.isArray(query.status) ? new Set(query.status) : new Set([query.status]);
     return entities.filter((e) => wanted.has(e.status.phase));

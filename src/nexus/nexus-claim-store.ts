@@ -18,7 +18,7 @@ import {
   validateTransition,
 } from "../core/claim-logic.js";
 import type { ClaimEntity } from "../core/entity.js";
-import { claimToEntity } from "../core/entity.js";
+import { claimToEntity, claimViewToEntity } from "../core/entity.js";
 import { NotFoundError, StateConflictError } from "../core/errors.js";
 import {
   type Claim,
@@ -382,7 +382,20 @@ export class NexusClaimStore implements ClaimStore {
     const needsActiveDelete = !updatedActiveUnexpired && existingClaim.status === "active";
 
     if (needsActiveAcquire) {
-      await this.writeActiveIndexExclusive(updatedClaim);
+      try {
+        await this.writeActiveIndexExclusive(updatedClaim);
+      } catch (err) {
+        if (err instanceof NexusConflictError) {
+          const activeOnTarget = await this.findActiveOnTarget(updatedClaim.targetRef, now);
+          const existingId = activeOnTarget?.claimId ?? "(unknown)";
+          throw new StateConflictError({
+            resource: "Claim",
+            reason: "target already has an active claim",
+            message: `Target '${updatedClaim.targetRef}' already has an active claim '${existingId}'`,
+          });
+        }
+        throw err;
+      }
     }
 
     try {
@@ -792,11 +805,31 @@ export class NexusClaimStore implements ClaimStore {
     // and excluded from "active" queries.
     const baseQuery: ClaimQuery | undefined =
       query === undefined ? undefined : { ...query, status: undefined };
-    const items = await this.listClaims(baseQuery);
-    const entities = items.map((c) => claimToEntity(c, () => Date.now(), this.zoneId));
+    const items = await this.listClaimViews(baseQuery);
+    const entities = items.map((view) => claimViewToEntity(view, () => Date.now(), this.zoneId));
     if (query?.status === undefined) return entities;
     const wanted = Array.isArray(query.status) ? new Set(query.status) : new Set([query.status]);
     return entities.filter((e) => wanted.has(e.status.phase));
+  }
+
+  private async listClaimViews(query?: ClaimQuery): Promise<readonly ClaimView[]> {
+    let views = (await this.listAllClaimsWithEtags()).map((result) => result.document);
+
+    if (query?.status !== undefined) {
+      const statuses = Array.isArray(query.status) ? query.status : [query.status];
+      views = views.filter((view) => statuses.includes(view.status.phase));
+    }
+    if (query?.agentId !== undefined) {
+      views = views.filter((view) => view.spec.agent.agentId === query.agentId);
+    }
+    if (query?.targetRef !== undefined) {
+      views = views.filter((view) => view.spec.targetRef === query.targetRef);
+    }
+
+    views.sort(
+      (a, b) => new Date(b.spec.createdAt).getTime() - new Date(a.spec.createdAt).getTime(),
+    );
+    return views;
   }
 
   close(): void {

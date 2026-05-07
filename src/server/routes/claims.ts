@@ -11,7 +11,7 @@ import type { Hono as HonoType, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
 import { DEFAULT_LEASE_MS } from "../../core/constants.js";
-import { claimToEntity } from "../../core/entity.js";
+import { claimToEntity, claimViewToEntity } from "../../core/entity.js";
 import type { AgentIdentity, Claim, ClaimSpecRecord, JsonValue } from "../../core/models.js";
 import { listClaimsOperation, releaseOperation } from "../../core/operations/index.js";
 import type { ClaimStatusPatch } from "../../core/store.js";
@@ -248,6 +248,27 @@ claims.put("/:id", zValidator("json", specBodySchema), async (c) => {
   };
 
   const view = await deps.claimStore.putClaimSpec(spec);
+  const namespace = c.get("namespace");
+  const entity = claimViewToEntity(view, () => Date.now(), namespace);
+  try {
+    deps.watchHub.recordWrite({
+      kind: "Claim",
+      namespace,
+      op: existing === undefined ? "ADDED" : "MODIFIED",
+      entity,
+    });
+    deps.watchSubscriber?.markSeen({
+      kind: "Claim",
+      entityId: view.spec.id,
+      generation: entity.metadata.generation,
+    });
+  } catch (err) {
+    process.stderr.write(
+      `[grove] Warning: watch fan-out threw after PUT /api/claims/${claimId}: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+  }
   return c.json(view, existing === undefined ? 201 : 200);
 });
 
@@ -291,6 +312,22 @@ claims.patch(
     };
 
     const view = await deps.claimStore.patchClaimStatus(c.req.param("id"), patch);
+    const namespace = c.get("namespace");
+    const entity = claimViewToEntity(view, () => Date.now(), namespace);
+    try {
+      deps.watchHub.recordWrite({ kind: "Claim", namespace, op: "MODIFIED", entity });
+      deps.watchSubscriber?.markSeen({
+        kind: "Claim",
+        entityId: view.spec.id,
+        generation: entity.metadata.generation,
+      });
+    } catch (err) {
+      process.stderr.write(
+        `[grove] Warning: watch fan-out threw after PATCH /api/claims/${view.spec.id}/status: ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
+    }
     return c.json(view);
   },
 );

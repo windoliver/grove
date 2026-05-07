@@ -250,6 +250,58 @@ describe("SqliteClaimStore split API", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  test("patchClaimStatus rejects activation when target already has an active claim", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-split-api-activate-conflict-"));
+    const dbPath = join(dir, "test.db");
+    const { claimStore, close } = createSqliteStores(dbPath);
+    try {
+      const now = Date.now();
+      const oldCreatedAt = new Date(now).toISOString();
+      const oldReleasedAt = new Date(now + 1_000).toISOString();
+      const newCreatedAt = new Date(now + 2_000).toISOString();
+      const oldReactivatedAt = new Date(now + 3_000).toISOString();
+      const activeLeaseExpiresAt = new Date(now + 600_000).toISOString();
+
+      await claimStore.putClaimSpec({
+        id: "activation-old",
+        targetRef: "activation-target",
+        agent: makeAgent({ agentId: "agent-old" }),
+        intentSummary: "old claim",
+        createdAt: oldCreatedAt,
+        generation: 1,
+      });
+      await claimStore.patchClaimStatus("activation-old", {
+        phase: ClaimStatus.Released,
+        lastHeartbeatAt: oldReleasedAt,
+        lastTransitionAt: oldReleasedAt,
+      });
+
+      await claimStore.putClaimSpec({
+        id: "activation-new",
+        targetRef: "activation-target",
+        agent: makeAgent({ agentId: "agent-new" }),
+        intentSummary: "new claim",
+        createdAt: newCreatedAt,
+        generation: 1,
+      });
+
+      await expect(
+        claimStore.patchClaimStatus("activation-old", {
+          phase: ClaimStatus.Active,
+          lastHeartbeatAt: oldReactivatedAt,
+          leaseExpiresAt: activeLeaseExpiresAt,
+          lastTransitionAt: oldReactivatedAt,
+        }),
+      ).rejects.toThrow(/active claim/);
+
+      const active = await claimStore.activeClaims("activation-target");
+      expect(active.map((claim) => claim.claimId)).toEqual(["activation-new"]);
+    } finally {
+      close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("SqliteIdempotencyStore", () => {
