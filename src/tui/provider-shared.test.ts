@@ -94,6 +94,7 @@ function makeMockClaimStore(): ClaimStore {
       heartbeatAt: "",
       leaseExpiresAt: "",
     }),
+    releaseOwnedBy: async () => 0,
     complete: async (id) => ({
       claimId: id,
       targetRef: "t",
@@ -104,6 +105,7 @@ function makeMockClaimStore(): ClaimStore {
       heartbeatAt: "",
       leaseExpiresAt: "",
     }),
+    deleteTerminalOwnedBy: async () => 0,
     expireStale: async () => [],
     activeClaims: async () => [],
     listClaims: async () => [],

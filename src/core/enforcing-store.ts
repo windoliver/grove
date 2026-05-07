@@ -22,6 +22,7 @@ import {
   LeaseViolationError,
   RateLimitError,
 } from "./errors.js";
+import type { OwnerRef } from "./lifecycle-metadata.js";
 import type { Claim, Contribution, ContributionKind, Relation, RelationType } from "./models.js";
 import type { SessionRuntimeConfig } from "./session-config.js";
 import type {
@@ -572,7 +573,10 @@ export class EnforcingClaimStore implements ClaimStore {
   // Read/mutation operations — direct delegation
   getClaim = (claimId: string): Promise<Claim | undefined> => this.inner.getClaim(claimId);
   release = (claimId: string): Promise<Claim> => this.inner.release(claimId);
+  releaseOwnedBy = (ownerRef: OwnerRef): Promise<number> => this.inner.releaseOwnedBy(ownerRef);
   complete = (claimId: string): Promise<Claim> => this.inner.complete(claimId);
+  deleteTerminalOwnedBy = (ownerRef: OwnerRef): Promise<number> =>
+    this.inner.deleteTerminalOwnedBy(ownerRef);
   expireStale = (options?: ExpireStaleOptions): Promise<readonly ExpiredClaim[]> =>
     this.inner.expireStale(options);
   activeClaims = (targetRef?: string): Promise<readonly Claim[]> =>
