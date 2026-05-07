@@ -4,6 +4,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
+import { InMemoryClaimStore } from "../../server/test-helpers.js";
 import { claimOperation, listClaimsOperation, releaseOperation } from "./claim.js";
 import type { OperationDeps } from "./deps.js";
 import type { TestOperationDeps } from "./test-helpers.js";
@@ -129,6 +130,25 @@ describe("claimOperation", () => {
     const lease = new Date(result.value.leaseExpiresAt).getTime();
     const expected = Date.now() + 60_000;
     expect(Math.abs(lease - expected)).toBeLessThan(10_000);
+  });
+
+  test("claimOperation stamps session ownerRef when deps provide one", async () => {
+    const claimStore = new InMemoryClaimStore();
+    const ownerRef = { kind: "session" as const, id: "s1", uid: "u1" };
+
+    const result = await claimOperation(
+      {
+        targetRef: "owned-target",
+        intentSummary: "owned work",
+        agent: { agentId: "agent-a" },
+      },
+      { claimStore, sessionOwnerRef: ownerRef },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const stored = await claimStore.getClaim(result.value.claimId);
+    expect(stored?.ownerRef).toEqual(ownerRef);
   });
 });
 

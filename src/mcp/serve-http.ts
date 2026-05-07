@@ -444,6 +444,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
   let nexusHandoffStore: import("../nexus/nexus-handoff-store.js").NexusHandoffStore | undefined;
   let topologyRouter: TopologyRouter | undefined;
   let loadedContract: import("../core/contract.js").GroveContract | undefined = runtime.contract;
+  let sessionRecord: import("../core/session.js").Session | undefined;
   const mutationGuard = createScopeMutationGuard(sessionId);
 
   if (nexusClient) {
@@ -459,17 +460,19 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     cas = new NexusCas({ client: nexusClient, zoneId });
     nexusHandoffStore = new NexusHandoffStore(nexusClient, sessionId, zoneId);
 
-    if (sessionId && !loadedContract) {
+    if (sessionId) {
       const { NexusSessionStore } = await import("../nexus/nexus-session-store.js");
       const nexusSessionStore = new NexusSessionStore(nexusClient, zoneId);
       // Retry briefly in case the TUI session mirror is still in flight.
       const retryDelaysMs = [0, 100, 250, 500, 1000];
-      let sessionRecord: import("../core/session.js").Session | undefined;
       for (const delay of retryDelaysMs) {
         if (delay > 0) await new Promise((r) => setTimeout(r, delay));
         sessionRecord = await nexusSessionStore.getSessionRecord(sessionId).catch(() => undefined);
         if (sessionRecord?.config) break;
       }
+    }
+
+    if (sessionId && !loadedContract) {
       // Policy matches serve.ts: default to weak (compatible) fallback,
       // opt into strict via GROVE_MCP_STRICT_CONTRACT=1. See serve.ts for
       // rationale — legacy sessions created without a frozen contract
@@ -535,6 +538,16 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     // Bootstrap/pre-session: no session to scope to — fall back to unscoped
     activeHandoffStore = runtime.handoffStore;
   }
+
+  const localSession =
+    sessionId !== undefined && nexusClient === undefined
+      ? await goalSessionStore.getSession(sessionId)
+      : undefined;
+  const ownerSession = nexusClient !== undefined ? sessionRecord : localSession;
+  const sessionOwnerRef =
+    ownerSession !== undefined
+      ? { kind: "session" as const, id: ownerSession.id, uid: ownerSession.uid }
+      : undefined;
 
   const contributionMutations = ["put", "putMany", "putWithCowrite"] as const;
   contributionStore = guardMutableMethods(contributionStore, mutationGuard, contributionMutations);
@@ -685,6 +698,7 @@ async function buildScopedDeps(sessionId: string | undefined): Promise<ScopedDep
     workspace,
     contract: loadedContract,
     ...(sessionId !== undefined ? { idempotencyKeyScope: sessionId } : {}),
+    ...(sessionOwnerRef !== undefined ? { sessionOwnerRef } : {}),
     onContributionWrite: runtime.onContributionWrite,
     workspaceBoundary: runtime.groveRoot,
     goalSessionStore,

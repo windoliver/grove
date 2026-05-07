@@ -14,6 +14,7 @@ import type { CreditsService } from "../core/credits.js";
 import type { DeadlineWatcher } from "../core/deadline-watcher.js";
 import type { EventBus } from "../core/event-bus.js";
 import type { HandoffStore } from "../core/handoff.js";
+import type { OwnerRef } from "../core/lifecycle-metadata.js";
 import type { TopologyRouter } from "../core/topology-router.js";
 import type { WorkspaceManager } from "../core/workspace.js";
 import type { ServerDeps } from "../server/deps.js";
@@ -31,6 +32,8 @@ export interface McpDeps extends ServerDeps {
    * avoid cross-session cache collisions inside contributeOperation.
    */
   readonly idempotencyKeyScope?: string | undefined;
+  /** Owner stamped onto claims created by this MCP session. */
+  readonly sessionOwnerRef?: OwnerRef | undefined;
   /** Called after a contribution is written to invalidate caches (e.g., frontier). */
   readonly onContributionWrite?: (() => void) | undefined;
   /** Called after a contribution is written, receiving its CID (for session tagging). */

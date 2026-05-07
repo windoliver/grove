@@ -419,6 +419,14 @@ try {
   // tag every contribution write against the session at the MCP layer.
   // Nexus handles this via path-scoped stores; local SQLite needs the junction table.
   const envSessionId = process.env.GROVE_SESSION_ID;
+  const sessionOwnerRef =
+    envSessionId !== undefined
+      ? await runtime.goalSessionStore
+          .getSession(envSessionId)
+          .then((s) =>
+            s !== undefined ? { kind: "session" as const, id: s.id, uid: s.uid } : undefined,
+          )
+      : undefined;
   const onContributionWritten =
     envSessionId && !nexusClient
       ? (cid: string) => {
@@ -530,6 +538,7 @@ try {
     contract: loadedContract,
     onContributionWrite: runtime.onContributionWrite,
     ...(onContributionWritten ? { onContributionWritten } : {}),
+    ...(sessionOwnerRef !== undefined ? { sessionOwnerRef } : {}),
     workspaceBoundary: runtime.groveRoot,
     goalSessionStore: runtime.goalSessionStore,
     ...(outcomeStore ? { outcomeStore } : {}),
