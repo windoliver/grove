@@ -4,6 +4,66 @@ import type { WatchClientEvent } from "./watch-client.js";
 import { WatchClient } from "./watch-client.js";
 import type { WatchEntity } from "./watch-events.js";
 import { WatchHub } from "./watch-hub.js";
+import type { WatchStream } from "./watch-stream.js";
+
+function makeFakeStream(): {
+  stream: WatchStream;
+  emit: (e: WatchClientEvent) => Promise<void>;
+} {
+  let onEvent: ((e: WatchClientEvent) => void | Promise<void>) | null = null;
+  const stream: WatchStream = {
+    run: async (opts) => {
+      onEvent = opts.onEvent;
+      // Block until aborted; tests trigger emit() externally.
+      await new Promise<void>((resolve) => {
+        opts.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      onEvent = null;
+    },
+  };
+  return {
+    stream,
+    emit: async (e) => {
+      if (!onEvent) throw new Error("stream not running");
+      await onEvent(e);
+    },
+  };
+}
+
+function deltaEvent(
+  op: "ADDED" | "MODIFIED" | "DELETED",
+  id: string,
+  rv: string,
+): WatchClientEvent {
+  return {
+    op,
+    rv: BigInt(rv),
+    kind: "Contribution",
+    entity: {
+      kind: "Contribution",
+      namespace: "default",
+      id,
+      spec: {
+        contributionKind: "code",
+        mode: "direct",
+        summary: id,
+        artifacts: {},
+        relations: [],
+        tags: [],
+      } as never,
+      status: {},
+      conditions: [],
+      observedGeneration: 0,
+      resourceVersion: rv,
+      metadata: { generation: 1 },
+    },
+  };
+}
+
+async function drainMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
 
 // Minimal entity shapes (WatchClient passes them through as-is)
 const E_A: WatchEntity = {
@@ -1137,4 +1197,39 @@ test("Informer.addEventHandler forwards emittedAt via optional meta arg", async 
   await informer.run(new AbortController().signal);
   expect(seenMeta.length).toBe(1);
   expect(seenMeta[0]?.emittedAt).toBe("2026-05-04T12:00:00.000Z");
+});
+
+describe("Informer queue — RV-coalescing", () => {
+  test("10000 events for same id → 1 applyEvent, peak depth 1", async () => {
+    const { stream, emit } = makeFakeStream();
+    const ac = new AbortController();
+    const informer = new Informer(stream, "Contribution");
+    const runPromise = informer.run(ac.signal);
+
+    const handlerCalls: string[] = [];
+    informer.addEventHandler((op, entity) => {
+      handlerCalls.push(`${op}:${(entity as { resourceVersion: string }).resourceVersion}`);
+    });
+
+    // Burst all 10k emits synchronously: enqueue runs sync inside emit's body
+    // up to its first await, so the loop never yields to microtasks. This
+    // exercises pure coalescing — a single drain microtask runs after the loop,
+    // sees the queue has one entry (RV=10000 overwrote the rest), processes it.
+    // Awaiting per-iteration would let drain run between events and defeat coalescing.
+    let peakDepth = 0;
+    const emits: Array<Promise<void>> = [];
+    for (let i = 0; i < 10_000; i += 1) {
+      emits.push(emit(deltaEvent("MODIFIED", "same", String(i + 1))));
+      const d = informer.getQueueStats().depth;
+      if (d > peakDepth) peakDepth = d;
+    }
+    await Promise.all(emits);
+    await drainMicrotasks();
+
+    expect(peakDepth).toBe(1);
+    expect(handlerCalls).toEqual(["MODIFIED:10000"]);
+
+    ac.abort();
+    await runPromise;
+  });
 });
