@@ -125,14 +125,14 @@ export class Informer<K extends WatchKind = WatchKind> {
     this._running = true;
     this._signal = signal;
     try {
-      await this.stream.run({ onEvent: (e) => this.onEvent(e), signal });
+      await this.stream.run({ onEvent: (e) => this.applyEvent(e), signal });
     } finally {
       this._signal = null;
       this._running = false;
     }
   }
 
-  private async onEvent(e: WatchClientEvent): Promise<void> {
+  private async applyEvent(e: WatchClientEvent): Promise<void> {
     switch (e.op) {
       case "RELIST_BEGIN":
         this.staging = new Map();
