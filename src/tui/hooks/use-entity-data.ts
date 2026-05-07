@@ -110,7 +110,16 @@ export function useEntityData<K extends WatchKind>(
     if (opts.sort && !isPagedFallback) out = [...out].sort(opts.sort);
     if (opts.limit !== undefined && !isPagedFallback) out = out.slice(0, opts.limit);
     return out;
-  }, [useInformerPath, useEntityStoreFallback, entityResult.data, polled.data, opts.sort, opts.offset, opts.limit, opts.predicate]);
+  }, [
+    useInformerPath,
+    useEntityStoreFallback,
+    entityResult.data,
+    polled.data,
+    opts.sort,
+    opts.offset,
+    opts.limit,
+    opts.predicate,
+  ]);
 
   return {
     data,

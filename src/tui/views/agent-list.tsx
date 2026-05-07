@@ -6,10 +6,8 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { claimToEntity, type ClaimEntity } from "../../core/entity.js";
+import { type ClaimEntity, claimToEntity } from "../../core/entity.js";
 import { useInterval } from "../../local/use-interval.js";
-
-const NAMESPACE = "default";
 import { agentIdFromSession, type TmuxManager } from "../agents/tmux-manager.js";
 import {
   type AgentJoinCtx,
@@ -29,6 +27,8 @@ import { useProviderScoped } from "../hooks/informer-context.js";
 import { useEventDrivenData } from "../hooks/use-event-driven-data.js";
 import type { TuiDataProvider } from "../provider.js";
 import { BRAILLE_SPINNER, timing } from "../theme.js";
+
+const NAMESPACE = "default";
 
 export interface AgentListProps {
   readonly provider: TuiDataProvider;

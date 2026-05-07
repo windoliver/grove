@@ -785,11 +785,7 @@ export class SpawnManager {
         const gitOpts: { stdio: "ignore"; cwd?: string } = { stdio: "ignore" };
         if (provisionedRepoCwd) gitOpts.cwd = provisionedRepoCwd;
         try {
-          execFileSync(
-            "git",
-            ["worktree", "remove", "--force", provisionedWorkspacePath],
-            gitOpts,
-          );
+          execFileSync("git", ["worktree", "remove", "--force", provisionedWorkspacePath], gitOpts);
         } catch {
           try {
             const { rmSync } = await import("node:fs");

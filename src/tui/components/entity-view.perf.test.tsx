@@ -9,8 +9,8 @@
 import { describe, expect, test } from "bun:test";
 import type React from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import { InformerFactory } from "../../core/informer.js";
 import type { ContributionEntity } from "../../core/entity.js";
+import { InformerFactory } from "../../core/informer.js";
 import type { WatchEntity } from "../../core/watch-events.js";
 import { WatchHub } from "../../core/watch-hub.js";
 import { EntityStoreFactory } from "../data/entity-store.js";

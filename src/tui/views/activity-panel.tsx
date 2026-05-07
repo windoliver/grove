@@ -3,7 +3,7 @@
  */
 
 import React, { useCallback } from "react";
-import { contributionToEntity, type ContributionEntity } from "../../core/entity.js";
+import { type ContributionEntity, contributionToEntity } from "../../core/entity.js";
 import {
   agentColumn,
   byCreatedDesc,

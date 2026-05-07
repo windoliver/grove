@@ -7,10 +7,8 @@
  */
 
 import React, { useCallback, useState } from "react";
-import { contributionToEntity, type ContributionEntity } from "../../core/entity.js";
+import { type ContributionEntity, contributionToEntity } from "../../core/entity.js";
 import type { Contribution } from "../../core/models.js";
-
-const NAMESPACE = "default";
 import {
   agentColumn,
   byCreatedDesc,
@@ -23,6 +21,8 @@ import {
 } from "../components/columns/contribution-columns.js";
 import { EntityView } from "../components/entity-view.js";
 import type { TuiDataProvider } from "../provider.js";
+
+const NAMESPACE = "default";
 
 export interface ActivityProps {
   readonly provider: TuiDataProvider;

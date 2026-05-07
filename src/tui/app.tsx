@@ -780,7 +780,9 @@ export function App({
       // checkSpawnDepth. Lift this restriction once getClaims supports
       // session-scoped filtering.
       if (activeClaims === null) {
-        showError("Spawn unavailable in scoped session (topology checks need session-scoped claims)");
+        showError(
+          "Spawn unavailable in scoped session (topology checks need session-scoped claims)",
+        );
         return;
       }
 
