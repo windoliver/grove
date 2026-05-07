@@ -747,6 +747,30 @@ describe("session deletion finalizers", () => {
     expect(result.forced).toBe(true);
     expect(result.warning).toContain("force delete skipped finalizer waits");
     expect(await blocking.getSession(session.id)).toBeUndefined();
+    const auditRows = stores.db
+      .prepare(
+        `SELECT session_id, at, actor, force, warning, event_json
+         FROM session_deletion_audits
+         WHERE session_id = ?`,
+      )
+      .all(session.id) as readonly {
+      session_id: string;
+      at: string;
+      actor: string;
+      force: number;
+      warning: string;
+      event_json: string;
+    }[];
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0]?.session_id).toBe(session.id);
+    expect(auditRows[0]?.actor).toBe("test");
+    expect(auditRows[0]?.force).toBe(1);
+    expect(auditRows[0]?.warning).toContain("force delete skipped finalizer waits");
+    expect(JSON.parse(auditRows[0]?.event_json ?? "{}")).toMatchObject({
+      actor: "test",
+      force: true,
+      warning: result.warning,
+    });
   });
 
   it("deleteSession emits claim write callbacks for released and deleted owned claims", async () => {

@@ -68,6 +68,7 @@ describe("schema migration", () => {
       expect(tableNames).toContain("claims");
       expect(tableNames).toContain("schema_migrations");
       expect(tableNames).toContain("contributions_fts");
+      expect(tableNames).toContain("session_deletion_audits");
       expect(tableNames).toContain("workspaces");
       expect(indexNames).toContain("idx_sessions_deletion_timestamp");
     } finally {

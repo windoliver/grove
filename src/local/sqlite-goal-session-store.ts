@@ -295,6 +295,15 @@ export const GOAL_SESSION_DDL = `
     contribution_count INTEGER NOT NULL DEFAULT 0
   );
 
+  CREATE TABLE IF NOT EXISTS session_deletion_audits (
+    session_id TEXT NOT NULL,
+    at TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    force INTEGER NOT NULL,
+    warning TEXT NOT NULL,
+    event_json TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS session_contributions (
     session_id TEXT NOT NULL REFERENCES sessions(session_id),
     cid TEXT NOT NULL,
@@ -304,6 +313,10 @@ export const GOAL_SESSION_DDL = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_session_contributions_session_id ON session_contributions(session_id);
+  CREATE INDEX IF NOT EXISTS idx_session_deletion_audits_session_id
+    ON session_deletion_audits(session_id);
+  CREATE INDEX IF NOT EXISTS idx_session_deletion_audits_at
+    ON session_deletion_audits(at);
   CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
   CREATE INDEX IF NOT EXISTS idx_sessions_archived ON sessions(archived_at);
 
@@ -962,21 +975,13 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     if (options?.force === true) {
       const warning = forceWarning(id);
       const now = new Date().toISOString();
-      const audit = appendDeletionAudit(session.deletionAudit, {
+      const auditTrail = appendDeletionAudit(session.deletionAudit, {
         at: now,
         actor: options.actor ?? "unknown",
         warning,
       });
+      const auditEvent = auditTrail.at(-1);
       const cleanupErrors: string[] = [];
-
-      this.db
-        .prepare(
-          `UPDATE sessions
-           SET deletion_timestamp = COALESCE(deletion_timestamp, ?),
-               deletion_audit_json = ?
-           WHERE session_id = ?`,
-        )
-        .run(now, JSON.stringify(audit), id);
 
       try {
         await this.releaseOwnedClaims(ownerRef);
@@ -990,7 +995,34 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
         cleanupErrors.push(err instanceof Error ? err.message : String(err));
       }
 
-      this.db.prepare("DELETE FROM sessions WHERE session_id = ?").run(id);
+      const forceDeleteTx = this.db.transaction(() => {
+        this.db
+          .prepare(
+            `UPDATE sessions
+             SET deletion_timestamp = COALESCE(deletion_timestamp, ?),
+                 deletion_audit_json = ?
+             WHERE session_id = ?`,
+          )
+          .run(now, JSON.stringify(auditTrail), id);
+        if (auditEvent !== undefined) {
+          this.db
+            .prepare(
+              `INSERT INTO session_deletion_audits
+               (session_id, at, actor, force, warning, event_json)
+               VALUES (?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              id,
+              auditEvent.at,
+              auditEvent.actor,
+              auditEvent.force ? 1 : 0,
+              auditEvent.warning,
+              JSON.stringify(auditEvent),
+            );
+        }
+        this.db.prepare("DELETE FROM sessions WHERE session_id = ?").run(id);
+      });
+      forceDeleteTx.immediate();
       return {
         sessionId: id,
         deleted: true,
