@@ -1,14 +1,16 @@
 /**
- * useEntity — reactive single-record subscription over the informer cache.
+ * useEntity — reactive single-record subscription over the EntityStore (B1 #296).
  *
- * Subscribes to the named kind, but the handler ignores events whose
- * entity id ≠ id, avoiding re-render churn for unrelated changes.
+ * Subscribes to the named kind via useSyncExternalStore so React re-renders
+ * on every store version bump; reads the entity via store.getById(id) and
+ * suppresses no-op updates with Object.is. The store's microtask coalescer
+ * means N writes within one microtask trigger one notify.
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useRef, useSyncExternalStore } from "react";
 import type { Informer } from "../../core/informer.js";
 import type { WatchKind } from "../../core/watch-events.js";
-import { useInformerOptional } from "./informer-context.js";
+import { useEntityStoreOptional } from "./entity-store-context.js";
 
 export function selectEntityById<I extends Informer>(
   informer: I,
@@ -29,34 +31,20 @@ export function useEntity<K extends WatchKind>(
   kind: K,
   id: string | undefined,
 ): UseEntityResult<EntityFor<K>> {
-  const informer = useInformerOptional(kind);
-  const [data, setData] = useState<EntityFor<K> | undefined>(
-    () => selectEntityById(informer, id) as EntityFor<K> | undefined,
-  );
-  const [hasSynced, setHasSynced] = useState<boolean>(informer.hasSynced());
+  const store = useEntityStoreOptional(kind);
+  const subscribe = useCallback((onChange: () => void) => store.subscribe(onChange), [store]);
+  const getVersion = useCallback(() => store.getVersion(), [store]);
+  // Version return is unused — the call exists only to register a
+  // subscription and trigger re-render on each bump.
+  useSyncExternalStore(subscribe, getVersion);
 
-  useEffect(() => {
-    if (id === undefined) {
-      setData(undefined);
-      return;
-    }
-    setData(selectEntityById(informer, id) as EntityFor<K> | undefined);
-    const unsubEvent = informer.addEventHandler((_op, entity) => {
-      if (entity.id !== id) return;
-      setData(selectEntityById(informer, id) as EntityFor<K> | undefined);
-      if (!hasSynced && informer.hasSynced()) setHasSynced(true);
-    });
-    // Subscribe to RELIST_END so empty/unchanged snapshots still flip
-    // hasSynced and refresh data, even when no per-entity event fires.
-    const unsubSync = informer.addSyncHandler(() => {
-      setData(selectEntityById(informer, id) as EntityFor<K> | undefined);
-      if (!hasSynced && informer.hasSynced()) setHasSynced(true);
-    });
-    return () => {
-      unsubEvent();
-      unsubSync();
-    };
-  }, [informer, id, hasSynced]);
+  // Stable ref so an unchanged entity (same identity per Informer's frozen
+  // refs) doesn't churn the returned object.
+  const dataRef = useRef<EntityFor<K> | undefined>(undefined);
+  const next = id === undefined ? undefined : (store.getById(id) as EntityFor<K> | undefined);
+  if (!Object.is(dataRef.current, next)) {
+    dataRef.current = next;
+  }
 
-  return { data, hasSynced };
+  return { data: dataRef.current, hasSynced: store.hasSynced() };
 }

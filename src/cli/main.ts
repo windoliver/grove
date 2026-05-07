@@ -447,6 +447,21 @@ Usage:
       },
     },
     {
+      name: "check-trajectory",
+      description: "Check a local agent transcript against trajectory rules",
+      needsStore: false,
+      helpText: `grove check-trajectory — check a local agent transcript
+
+Usage:
+  grove check-trajectory --transcript <path> [--spec <path>] [--runtime auto|acpx|codex|claude-stream-json|subprocess|unknown] [--format markdown|json] [--annotated-log <path>]`,
+      handler: async (args) => {
+        const { parseCheckTrajectoryArgs, runCheckTrajectory } = await import(
+          "./commands/check-trajectory.js"
+        );
+        await runCheckTrajectory(parseCheckTrajectoryArgs(args));
+      },
+    },
+    {
       name: "completions",
       description: "Generate shell completion scripts",
       needsStore: false,
@@ -602,6 +617,7 @@ Advanced:
   grove gossip <subcommand>            P2P federation (peers, sync, daemon, ...)
   grove skill install                  Install AI assistant skill files
   grove diagnostics [--out <path>]    Create a diagnostics ZIP for bug reports
+  grove check-trajectory --transcript <path> Check local transcript rules
   grove completions bash|zsh|fish      Generate shell completion scripts
   grove tui [--nexus <url>]            Operator TUI dashboard
 

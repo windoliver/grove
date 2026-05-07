@@ -135,6 +135,11 @@ export const COMMANDS: readonly CommandMeta[] = [
     flags: ["from", "depth", "json"],
   },
   {
+    name: "check-trajectory",
+    description: "Check an agent transcript against trajectory rules",
+    flags: ["transcript", "spec", "runtime", "format", "annotated-log"],
+  },
+  {
     name: "thread",
     description: "View a discussion thread",
     flags: ["depth", "n", "json"],

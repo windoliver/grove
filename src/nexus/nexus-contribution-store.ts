@@ -33,7 +33,7 @@ import type {
 import { toUtcIso } from "../core/time.js";
 import { debugLog } from "../tui/debug-log.js";
 import { batchParallel } from "./batch.js";
-import type { NexusClient, ReadResult, WriteResult } from "./client.js";
+import type { ListEntry, NexusClient, ReadResult, WriteResult } from "./client.js";
 import type { NexusConfig, ResolvedNexusConfig } from "./config.js";
 import { resolveConfig } from "./config.js";
 import { NexusConflictError } from "./errors.js";
@@ -43,7 +43,14 @@ import type { NexusWatchPublisher } from "./nexus-watch-publisher.js";
 import { withRetry, withSemaphore } from "./retry.js";
 import { Semaphore } from "./semaphore.js";
 import {
+  contributionAgentCreatedAtIndexBucketDir,
+  contributionAgentCreatedAtIndexPath,
+  contributionAgentCreatedAtIndexRootDir,
   contributionContentHashIndexPath,
+  contributionCreatedAtIndexBucketDir,
+  contributionCreatedAtIndexPath,
+  contributionCreatedAtIndexReadyPath,
+  contributionCreatedAtIndexRootDir,
   contributionPath,
   ftsIndexDir,
   ftsIndexPath,
@@ -58,6 +65,9 @@ const CONTENT_HASH_REPAIR_STATE = "repairing";
 const CONTENT_HASH_REPAIR_STALE_MS = 5 * 60_000;
 const CONTENT_HASH_REPAIR_WAIT_MS = 2_000;
 const CONTENT_HASH_REPAIR_POLL_MS = 10;
+const HOUR_MS = 60 * 60_000;
+const COUNT_SINCE_BUCKET_SCAN_LIMIT = 48;
+const COUNT_SINCE_FUTURE_LOOKAHEAD_MS = HOUR_MS;
 
 interface ContentHashRepairMarker {
   readonly state: typeof CONTENT_HASH_REPAIR_STATE;
@@ -120,6 +130,32 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function utcHourBucketFromMs(ms: number): string {
+  const date = new Date(ms);
+  const year = String(date.getUTCFullYear()).padStart(4, "0");
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  const hour = String(date.getUTCHours()).padStart(2, "0");
+  return `${year}/${month}/${day}/${hour}`;
+}
+
+function utcHourStartsBetween(startMs: number, endMs: number): readonly number[] {
+  const starts: number[] = [];
+  const first = Math.floor(startMs / HOUR_MS) * HOUR_MS;
+  const last = Math.floor(endMs / HOUR_MS) * HOUR_MS;
+  for (let current = first; current <= last; current += HOUR_MS) {
+    starts.push(current);
+  }
+  return starts;
+}
+
+function createdAtTimestampFromIndexEntry(name: string): number | undefined {
+  const separator = name.indexOf("-");
+  if (separator <= 0) return undefined;
+  const timestamp = Number.parseInt(name.slice(0, separator), 10);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
 /**
  * Nexus-backed ContributionStore.
  */
@@ -151,6 +187,7 @@ export class NexusContributionStore implements ContributionStore {
   private listCacheResult: Contribution[] | undefined;
   private listCacheTime = 0;
   private readonly listCacheTtlMs = 2_000;
+  private createdAtIndexBackfill: Promise<void> | undefined;
 
   // Epoch versioning for the list cache. Every invalidate() / write
   // increments the epoch. A list() cache miss captures the epoch at
@@ -193,9 +230,56 @@ export class NexusContributionStore implements ContributionStore {
     this.zoneId = this.config.zoneId;
     this.sessionId = this.config.sessionId;
     this.watchPublisher = this.config.watchPublisher;
-    this.storeIdentity = `nexus:${this.zoneId}:contributions`;
+    this.storeIdentity =
+      this.sessionId !== undefined
+        ? `nexus:${this.zoneId}:sessions:${this.sessionId}:contributions`
+        : `nexus:${this.zoneId}:contributions`;
     this.semaphore = new Semaphore(this.config.maxConcurrency);
     this.cache = new LruCache(this.config.cacheMaxEntries);
+  }
+
+  private async listRelationEntries(targetCid: string): Promise<readonly ListEntry[]> {
+    if (this.sessionId === undefined) {
+      return listAllPages(
+        this.client,
+        this.semaphore,
+        this.config,
+        relationIndexDir(this.zoneId, targetCid),
+      );
+    }
+
+    // Compatibility for session data written before relation indexes were session-scoped.
+    const [sessionEntries, legacyEntries] = await Promise.all([
+      listAllPages(
+        this.client,
+        this.semaphore,
+        this.config,
+        relationIndexDir(this.zoneId, targetCid, this.sessionId),
+      ),
+      listAllPages(
+        this.client,
+        this.semaphore,
+        this.config,
+        relationIndexDir(this.zoneId, targetCid),
+      ),
+    ]);
+    return this.dedupeRelationEntries([...sessionEntries, ...legacyEntries]);
+  }
+
+  private dedupeRelationEntries(entries: readonly ListEntry[]): readonly ListEntry[] {
+    const seen = new Set<string>();
+    const deduped: ListEntry[] = [];
+    for (const entry of entries) {
+      if (entry.isDirectory) {
+        deduped.push(entry);
+        continue;
+      }
+      const sourceCid = entry.name.replace(/\.json$/, "");
+      if (seen.has(sourceCid)) continue;
+      seen.add(sourceCid);
+      deduped.push(entry);
+    }
+    return deduped;
   }
 
   async put(contribution: Contribution): Promise<ContributionPutResult> {
@@ -479,7 +563,12 @@ export class NexusContributionStore implements ContributionStore {
 
   private async writeContributionIndexes(contribution: Contribution): Promise<void> {
     for (const rel of contribution.relations) {
-      const relPath = relationIndexPath(this.zoneId, rel.targetCid, contribution.cid);
+      const relPath = relationIndexPath(
+        this.zoneId,
+        rel.targetCid,
+        contribution.cid,
+        this.sessionId,
+      );
       const relData = encode({
         relationType: rel.relationType,
         ...(rel.metadata !== undefined ? { metadata: rel.metadata } : {}),
@@ -491,6 +580,8 @@ export class NexusContributionStore implements ContributionStore {
       const tp = tagIndexPath(this.zoneId, tag, contribution.cid);
       await withSemaphore(this.semaphore, () => this.client.write(tp, new Uint8Array(0)));
     }
+
+    await this.writeCreatedAtIndexes(contribution);
 
     const ftsPath = ftsIndexPath(this.zoneId, contribution.cid, this.sessionId);
     await withSemaphore(this.semaphore, () =>
@@ -507,6 +598,28 @@ export class NexusContributionStore implements ContributionStore {
           createdAt: toUtcIso(contribution.createdAt),
           tags: contribution.tags,
         }),
+      ),
+    );
+  }
+
+  private async writeCreatedAtIndexes(contribution: Contribution): Promise<void> {
+    const createdAt = toUtcIso(contribution.createdAt);
+    await withSemaphore(this.semaphore, () =>
+      this.client.write(
+        contributionCreatedAtIndexPath(this.zoneId, createdAt, contribution.cid, this.sessionId),
+        new Uint8Array(0),
+      ),
+    );
+    await withSemaphore(this.semaphore, () =>
+      this.client.write(
+        contributionAgentCreatedAtIndexPath(
+          this.zoneId,
+          contribution.agent.agentId,
+          createdAt,
+          contribution.cid,
+          this.sessionId,
+        ),
+        new Uint8Array(0),
       ),
     );
   }
@@ -682,12 +795,11 @@ export class NexusContributionStore implements ContributionStore {
     );
 
     if (this.listCacheEpoch !== epochAtStart) {
-      // An invalidation arrived while we were scanning. Throw so all
-      // waiting callers (usePolledData et al.) preserve their last-known-
-      // good data instead of overwriting it with a stale pre-invalidation
-      // snapshot. The post-invalidation scan (started by the SSE refresh
-      // handler) will resolve with fresh data on the next await.
-      throw new Error("list scan superseded by cache invalidation — discard result");
+      // A write or SSE invalidation arrived while this scan was in flight.
+      // Return the snapshot to the current caller, but do not cache it: the
+      // next list() will miss cache and scan the fresh index.
+      debugLog("store.list", "scan invalidated mid-flight; returning uncached snapshot");
+      return allContributions;
     }
 
     if (ftsComplete && manifestComplete) {
@@ -698,9 +810,7 @@ export class NexusContributionStore implements ContributionStore {
   }
 
   async children(cid: string): Promise<readonly Contribution[]> {
-    const relDir = relationIndexDir(this.zoneId, cid);
-    // Expected: directory may not exist yet
-    const entries = await listAllPages(this.client, this.semaphore, this.config, relDir);
+    const entries = await this.listRelationEntries(cid);
 
     const seen = new Set<string>();
     const cids: string[] = [];
@@ -761,9 +871,7 @@ export class NexusContributionStore implements ContributionStore {
   }
 
   async relatedTo(cid: string, relationType?: RelationType): Promise<readonly Contribution[]> {
-    const relDir = relationIndexDir(this.zoneId, cid);
-    // Expected: directory may not exist yet
-    const entries = await listAllPages(this.client, this.semaphore, this.config, relDir);
+    const entries = await this.listRelationEntries(cid);
 
     const contributions: Contribution[] = [];
     const seen = new Set<string>();
@@ -849,9 +957,7 @@ export class NexusContributionStore implements ContributionStore {
     kind: ContributionKind,
     relationType?: RelationType,
   ): Promise<readonly Contribution[]> {
-    const relDir = relationIndexDir(this.zoneId, targetCid);
-    // Expected: directory may not exist yet
-    const allEntries = await listAllPages(this.client, this.semaphore, this.config, relDir);
+    const allEntries = await this.listRelationEntries(targetCid);
 
     const contributions: Contribution[] = [];
     for (const entry of allEntries) {
@@ -886,11 +992,113 @@ export class NexusContributionStore implements ContributionStore {
   }
 
   async countSince(query: { agentId?: string; since: string }): Promise<number> {
+    const indexedCount = await this.countSinceFromCreatedAtIndex(query);
+    if (indexedCount !== undefined) return indexedCount;
+    await this.ensureCreatedAtIndex();
+    const backfilledCount = await this.countSinceFromCreatedAtIndex(query);
+    if (backfilledCount !== undefined) return backfilledCount;
+    return this.countSinceByList(query);
+  }
+
+  private async countSinceByList(query: { agentId?: string; since: string }): Promise<number> {
     const all = await this.list(
       query.agentId !== undefined ? { agentId: query.agentId } : undefined,
     );
     const sinceTime = new Date(query.since).getTime();
     return all.filter((c) => new Date(c.createdAt).getTime() >= sinceTime).length;
+  }
+
+  private async countSinceFromCreatedAtIndex(query: {
+    agentId?: string;
+    since: string;
+  }): Promise<number | undefined> {
+    const sinceTime = Date.parse(query.since);
+    if (!Number.isFinite(sinceTime)) return 0;
+
+    const readyPath = contributionCreatedAtIndexReadyPath(this.zoneId, this.sessionId);
+    const indexReady = await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.exists(readyPath)),
+      "countSince:indexReady",
+      this.config,
+    );
+    if (!indexReady) return undefined;
+
+    const rootDir =
+      query.agentId !== undefined
+        ? contributionAgentCreatedAtIndexRootDir(this.zoneId, query.agentId, this.sessionId)
+        : contributionCreatedAtIndexRootDir(this.zoneId, this.sessionId);
+
+    const endTime = Math.max(Date.now() + COUNT_SINCE_FUTURE_LOOKAHEAD_MS, sinceTime);
+    const buckets = utcHourStartsBetween(sinceTime, endTime);
+    const entries =
+      buckets.length <= COUNT_SINCE_BUCKET_SCAN_LIMIT
+        ? (
+            await batchParallel(buckets, (bucketStart) => {
+              const bucket = utcHourBucketFromMs(bucketStart);
+              const dir =
+                query.agentId !== undefined
+                  ? contributionAgentCreatedAtIndexBucketDir(
+                      this.zoneId,
+                      query.agentId,
+                      bucket,
+                      this.sessionId,
+                    )
+                  : contributionCreatedAtIndexBucketDir(this.zoneId, bucket, this.sessionId);
+              return listAllPages(this.client, this.semaphore, this.config, dir);
+            })
+          ).flat()
+        : await listAllPages(this.client, this.semaphore, this.config, rootDir, {
+            recursive: true,
+          });
+
+    let count = 0;
+    for (const entry of entries) {
+      if (entry.isDirectory) continue;
+      const createdAt = createdAtTimestampFromIndexEntry(entry.name);
+      if (createdAt !== undefined && createdAt >= sinceTime) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  private async ensureCreatedAtIndex(): Promise<void> {
+    const readyPath = contributionCreatedAtIndexReadyPath(this.zoneId, this.sessionId);
+    const alreadyReady = await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.exists(readyPath)),
+      "countSince:ensureIndexReady",
+      this.config,
+    );
+    if (alreadyReady) return;
+
+    if (this.createdAtIndexBackfill === undefined) {
+      const backfill = this.backfillCreatedAtIndex(readyPath);
+      this.createdAtIndexBackfill = backfill;
+      const clearIfOwner = () => {
+        if (this.createdAtIndexBackfill === backfill) {
+          this.createdAtIndexBackfill = undefined;
+        }
+      };
+      void backfill.then(clearIfOwner, clearIfOwner);
+    }
+
+    await this.createdAtIndexBackfill;
+  }
+
+  private async backfillCreatedAtIndex(readyPath: string): Promise<void> {
+    const contributions = await this.list();
+    await batchParallel(contributions, (contribution) =>
+      withRetry(
+        () => this.writeCreatedAtIndexes(contribution),
+        "countSince:backfillCreatedAtIndex",
+        this.config,
+      ),
+    );
+    await withRetry(
+      () => withSemaphore(this.semaphore, () => this.client.write(readyPath, new Uint8Array(0))),
+      "countSince:markIndexReady",
+      this.config,
+    );
   }
 
   async thread(
@@ -910,9 +1118,7 @@ export class NexusContributionStore implements ContributionStore {
       const nextLevel: string[] = [];
 
       for (const parentCid of currentLevel) {
-        const relDir = relationIndexDir(this.zoneId, parentCid);
-        // Expected: directory may not exist yet
-        const entries = await listAllPages(this.client, this.semaphore, this.config, relDir);
+        const entries = await this.listRelationEntries(parentCid);
 
         for (const entry of entries) {
           if (entry.isDirectory) continue;
@@ -958,9 +1164,7 @@ export class NexusContributionStore implements ContributionStore {
     if (cids.length === 0) return result;
 
     for (const cid of cids) {
-      const relDir = relationIndexDir(this.zoneId, cid);
-      // Expected: directory may not exist yet
-      const entries = await listAllPages(this.client, this.semaphore, this.config, relDir);
+      const entries = await this.listRelationEntries(cid);
 
       let count = 0;
       for (const entry of entries) {

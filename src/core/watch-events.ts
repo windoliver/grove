@@ -21,6 +21,14 @@ export interface WatchEvent {
   readonly kind: WatchKind;
   readonly namespace: string;
   readonly entity: WatchEntity;
+  /**
+   * Server-stamped ISO-8601 wall-clock timestamp of when this event was
+   * serialized for delivery (SSE frame-write boundary in remote mode, or
+   * hub fan-out in local mode). Optional for backward compat with frames
+   * produced before B1 (#296). Consumers compute `grove_store_sse_lag`
+   * as `Date.now() - Date.parse(emittedAt)` when present.
+   */
+  readonly emittedAt?: string;
 }
 
 /** Argument shape for `WatchHub.recordWrite` / `OperationDeps.onEntityWrite`. */

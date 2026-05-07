@@ -23,6 +23,8 @@ import { contributionToEntity } from "../../core/entity.js";
 import { InformerFactory } from "../../core/informer.js";
 import { makeContribution } from "../../core/test-helpers.js";
 import { createTestApp, TEST_NAMESPACE, TEST_NAMESPACE_KEY } from "../../server/test-helpers.js";
+import { EntityStoreFactory } from "../data/entity-store.js";
+import { EntityStoreProvider } from "./entity-store-context.js";
 import { InformerProvider } from "./informer-context.js";
 import { useDerived } from "./use-derived.js";
 
@@ -84,7 +86,9 @@ describe("useDerived remote E2E (PR3 #389)", () => {
       renderer = TestRenderer.create(
         (
           <InformerProvider value={factory}>
-            <CountProbe factory={factory} onState={onState} />
+            <EntityStoreProvider value={new EntityStoreFactory(factory)}>
+              <CountProbe factory={factory} onState={onState} />
+            </EntityStoreProvider>
           </InformerProvider>
         ) as React.ReactElement,
       );

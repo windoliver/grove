@@ -299,8 +299,15 @@ export interface ClaimStore {
    */
   claimOrRenew(claim: Claim): Promise<Claim>;
 
-  /** Get a claim by ID. */
-  getClaim(claimId: string): Promise<Claim | undefined>;
+  /**
+   * Get a claim by ID.
+   *
+   * `opts.bypassCache` forces a fresh read from the backing store, bypassing
+   * any per-id cache. Required for cross-process freshness paths (e.g. the
+   * /api/watch/notify bridge) — claim ids are not content-addressed and the
+   * status can transition under us in another process.
+   */
+  getClaim(claimId: string, opts?: { bypassCache?: boolean }): Promise<Claim | undefined>;
 
   /**
    * Update heartbeat timestamp and renew lease.

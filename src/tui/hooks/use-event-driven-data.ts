@@ -72,6 +72,8 @@ export function useEventDrivenData<T>(
 
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
+  const activeRef = useRef(active);
+  activeRef.current = active;
 
   const doFetch = useCallback(async () => {
     try {
@@ -108,7 +110,11 @@ export function useEventDrivenData<T>(
 
   // App-level RefreshContext — covers r-key + app's topology-role event fan-out.
   // Lets panels migrate without prop-drilling eventBus/role.
-  useRefreshSignal(doFetch);
+  const doRefreshFetch = useCallback(() => {
+    if (!activeRef.current) return;
+    void doFetch();
+  }, [doFetch]);
+  useRefreshSignal(doRefreshFetch);
 
   // No polling. EventBus + RefreshContext are the only update paths.
 

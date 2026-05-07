@@ -1222,6 +1222,158 @@ export class NexusWsBridge {
    * `inbox_delivered` vs `agent_received`) is out of scope for the
    * turn-typing migration and tracked as a follow-up.
    */
+  /**
+   * Detect transient ACP errors that warrant a retry instead of an
+   * immediate dead-letter. Bootstrapping codex/claude can take several
+   * seconds; pushing during that window fails with "connection closed"
+   * even though the runtime will be ready momentarily. Retrying with
+   * backoff before dead-lettering gives the recipient time to come up.
+   */
+  private static isTransientAcpError(detail: string): boolean {
+    const d = detail.toLowerCase();
+    return (
+      d.includes("connection closed") ||
+      d.includes("stream closed") ||
+      d.includes("session not started") ||
+      d.includes("not ready") ||
+      d.includes("acp_not_initialized") ||
+      // AcpRuntime returns this when a queued send observes its session
+      // replaced before the prompt starts. Same restart race as the others.
+      d.includes("session_closed") ||
+      d.includes("session closed before turn started")
+    );
+  }
+
+  /**
+   * Send a notification with bounded transient-retry. Retries on ACP
+   * connection-closed-style errors (recipient bootstrap race) with
+   * exponential backoff. Permanent errors fall through to dead-letter.
+   */
+  private async sendWithTransientRetry(
+    session: AgentSession,
+    notification: string,
+    targetRole: string,
+    resolvedHandoffId: string | undefined,
+    retryContext:
+      | { ipcMessageId: string; sender: string | undefined; sourceCid: string | undefined }
+      | undefined,
+  ): Promise<void> {
+    const backoffsMs = [500, 1500, 3000, 5000];
+    let lastDetail = "";
+    let activeSession = session;
+    for (let attempt = 0; attempt <= backoffsMs.length; attempt += 1) {
+      if (this.draining || this.closed) return;
+      // Re-check the current session for this role before each attempt.
+      // If the role was re-registered during a backoff window — the exact
+      // crash/bootstrap race this retry is recovering from — pushing to the
+      // captured (now torn-down) session would dead-letter a handoff that
+      // the replacement should still receive. We can't trust the
+      // replacement's SSE loop to redeliver because dispatchInboxDelivery's
+      // dedupe cache (role/message_id/path) is shared across sessions and
+      // the prior attempt may have marked this entry as seen. So when the
+      // session flips, retarget the live send to the replacement session.
+      //
+      // Treat a momentarily missing role binding as ANOTHER transient state
+      // within the existing backoff budget — the unregister→reregister gap
+      // for codex/claude restarts is exactly the case this retry is trying
+      // to recover from. Only dead-letter once retries are exhausted.
+      const currentSession = this.sessions.get(targetRole);
+      if (!currentSession) {
+        if (attempt < backoffsMs.length) {
+          process.stderr.write(
+            `[NexusWsBridge] role=${targetRole} unregistered during retry attempt=${attempt + 1} — waiting for re-register\n`,
+          );
+          lastDetail = "role temporarily unregistered (waiting for re-register)";
+          await new Promise((r) => setTimeout(r, backoffsMs[attempt] ?? 1000));
+          continue;
+        }
+        process.stderr.write(
+          `[NexusWsBridge] role=${targetRole} unregistered through retry budget — dead-lettering\n`,
+        );
+        await this.markHandoffDeadLettered(
+          resolvedHandoffId,
+          targetRole,
+          `role unregistered through retry budget: ${lastDetail || "no prior attempt"}`,
+          retryContext,
+        );
+        return;
+      }
+      if (currentSession.id !== activeSession.id) {
+        process.stderr.write(
+          `[NexusWsBridge] role=${targetRole} session replaced during retry (was=${activeSession.id} now=${currentSession.id}) — retargeting send to replacement\n`,
+        );
+        activeSession = currentSession;
+      }
+      try {
+        const turn = await this.opts.runtime.send(activeSession, notification);
+        const result = await turn.result.catch((err) => ({
+          turnId: turn.turnId,
+          stopReason: "error" as const,
+          error: {
+            code: "turn_rejected",
+            message: err instanceof Error ? err.message : String(err),
+          },
+        }));
+        if (result.stopReason === "end_turn") {
+          if (resolvedHandoffId) {
+            await this.markHandoffDeliveredById(resolvedHandoffId, targetRole);
+          }
+          return;
+        }
+        const detail = result.error
+          ? `${result.error.code}: ${result.error.message}`
+          : `stopReason=${result.stopReason}`;
+        lastDetail = detail;
+        if (NexusWsBridge.isTransientAcpError(detail) && attempt < backoffsMs.length) {
+          process.stderr.write(
+            `[NexusWsBridge] transient push failure role=${targetRole} attempt=${attempt + 1}: ${detail} (will retry)\n`,
+          );
+          await new Promise((r) => setTimeout(r, backoffsMs[attempt] ?? 1000));
+          continue;
+        }
+        process.stderr.write(
+          `[NexusWsBridge] local push failed for role=${targetRole} turn=${turn.turnId}: ${detail}\n`,
+        );
+        await this.markHandoffDeadLettered(
+          resolvedHandoffId,
+          targetRole,
+          `local push abnormal: ${detail}`,
+          retryContext,
+        );
+        return;
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        lastDetail = detail;
+        if (NexusWsBridge.isTransientAcpError(detail) && attempt < backoffsMs.length) {
+          process.stderr.write(
+            `[NexusWsBridge] transient runtime.send error role=${targetRole} attempt=${attempt + 1}: ${detail} (will retry)\n`,
+          );
+          await new Promise((r) => setTimeout(r, backoffsMs[attempt] ?? 1000));
+          continue;
+        }
+        process.stderr.write(
+          `[NexusWsBridge] runtime.send rejected for role=${targetRole}: ${detail}\n`,
+        );
+        await this.markHandoffDeadLettered(
+          resolvedHandoffId,
+          targetRole,
+          `runtime.send rejected: ${detail}`,
+          retryContext,
+        );
+        return;
+      }
+    }
+    process.stderr.write(
+      `[NexusWsBridge] exhausted transient retries for role=${targetRole}: ${lastDetail}\n`,
+    );
+    await this.markHandoffDeadLettered(
+      resolvedHandoffId,
+      targetRole,
+      `transient retries exhausted: ${lastDetail}`,
+      retryContext,
+    );
+  }
+
   private async markHandoffDeadLettered(
     handoffId: string | undefined,
     targetRole: string,
@@ -1744,18 +1896,24 @@ export class NexusWsBridge {
       // Session-identity re-check: handleEvent captured `session` at SSE
       // dispatch time, but the sys_read fetch + decode above are async.
       // If the role was unregistered or replaced during that window, the
-      // captured session may now be closed. Push to a dead session would
-      // fail and — worse — trigger dead-lettering for a handoff that a
-      // replacement session should still receive. Skip delivery and skip
-      // dead-lettering in that case; the replacement's own SSE loop will
-      // pick up the redelivery from Nexus.
+      // captured session may now be closed.
+      //
+      // Skipping here is unsafe: dispatchInboxDelivery's role-level
+      // message_id dedupe is shared across sessions, so the replacement's
+      // SSE loop won't re-pull the same entry. Falling through to
+      // sendWithTransientRetry retargets delivery to the current session
+      // (or treats a missing role as transient inside the retry budget).
       const current = this.sessions.get(_targetRole);
-      if (!current || current.id !== session.id) {
+      if (!current) {
         debugLog(
           "wsBridge.readAndPush",
-          `SKIP stale session for role=${_targetRole} captured=${session.id} current=${current?.id ?? "none"}`,
+          `role=${_targetRole} unregistered before push — handing off to retry helper for transient handling`,
         );
-        return;
+      } else if (current.id !== session.id) {
+        debugLog(
+          "wsBridge.readAndPush",
+          `session changed for role=${_targetRole} captured=${session.id} current=${current.id} — retry helper will retarget`,
+        );
       }
 
       // Capture the correlated handoffId NOW using DETERMINISTIC keys
@@ -1789,52 +1947,13 @@ export class NexusWsBridge {
       // to a torn-down runtime.
       if (this.draining || this.closed) return;
 
-      const sendPromise = this.opts.runtime
-        .send(session, notification)
-        .then(async (turn) => {
-          const result = await turn.result.catch((err) => ({
-            turnId: turn.turnId,
-            stopReason: "error" as const,
-            error: {
-              code: "turn_rejected",
-              message: err instanceof Error ? err.message : String(err),
-            },
-          }));
-          // For control-plane delivery, `end_turn` is the only success
-          // signal. Treat cancelled / max_tokens / error / unknown stop
-          // reasons all as delivery failures so the handoff is dead-
-          // lettered — matches watchTurnError's abnormal-terminal policy.
-          if (result.stopReason === "end_turn") {
-            if (resolvedHandoffId) {
-              await this.markHandoffDeliveredById(resolvedHandoffId, _targetRole);
-            }
-          } else {
-            const detail = result.error
-              ? `${result.error.code}: ${result.error.message}`
-              : `stopReason=${result.stopReason}`;
-            process.stderr.write(
-              `[NexusWsBridge] local push failed for role=${_targetRole} turn=${turn.turnId}: ${detail}\n`,
-            );
-            await this.markHandoffDeadLettered(
-              resolvedHandoffId,
-              _targetRole,
-              `local push abnormal: ${detail}`,
-              retryContext,
-            );
-          }
-        })
-        .catch(async (err) => {
-          const detail = err instanceof Error ? err.message : String(err);
-          process.stderr.write(
-            `[NexusWsBridge] runtime.send rejected for role=${_targetRole}: ${detail}\n`,
-          );
-          await this.markHandoffDeadLettered(
-            resolvedHandoffId,
-            _targetRole,
-            `runtime.send rejected: ${detail}`,
-            retryContext,
-          );
-        });
+      const sendPromise = this.sendWithTransientRetry(
+        session,
+        notification,
+        _targetRole,
+        resolvedHandoffId,
+        retryContext,
+      );
 
       // Track the send-and-status-update promise so shutdown() can
       // await it (bounded) before the final drain. Without this, a

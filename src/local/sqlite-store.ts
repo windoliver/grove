@@ -437,6 +437,10 @@ export function initSqliteDb(dbPath: string): Database {
           `
           WITH ranked AS (
             SELECT cid,
+                   FIRST_VALUE(cid) OVER (
+                     PARTITION BY content_hash
+                     ORDER BY created_at ASC, rowid ASC
+                   ) AS canonical_cid,
                    ROW_NUMBER() OVER (
                      PARTITION BY content_hash
                      ORDER BY created_at ASC, rowid ASC
@@ -444,16 +448,30 @@ export function initSqliteDb(dbPath: string): Database {
             FROM contributions
             WHERE content_hash IS NOT NULL AND content_hash <> ''
           )
-          SELECT cid FROM ranked WHERE rn > 1
+          SELECT cid, canonical_cid FROM ranked WHERE rn > 1
         `,
         )
-        .all() as readonly { cid: string }[];
+        .all() as readonly { cid: string; canonical_cid: string }[];
       for (const row of duplicateRows) {
+        db.run("UPDATE relations SET target_cid = ? WHERE target_cid = ?", [
+          row.canonical_cid,
+          row.cid,
+        ]);
         db.run("DELETE FROM contributions_fts WHERE cid = ?", [row.cid]);
         db.run("DELETE FROM contribution_tags WHERE cid = ?", [row.cid]);
         db.run("DELETE FROM artifacts WHERE contribution_cid = ?", [row.cid]);
         db.run("DELETE FROM relations WHERE source_cid = ?", [row.cid]);
         db.run("DELETE FROM contributions WHERE cid = ?", [row.cid]);
+      }
+      if (duplicateRows.length > 0) {
+        db.run(`
+          DELETE FROM relations
+          WHERE rowid NOT IN (
+            SELECT MIN(rowid)
+            FROM relations
+            GROUP BY source_cid, target_cid, relation_type, metadata_json
+          )
+        `);
       }
 
       db.run(
@@ -1991,7 +2009,11 @@ export class SqliteClaimStore implements ClaimStore {
     return result;
   };
 
-  getClaim = async (claimId: string): Promise<Claim | undefined> => {
+  getClaim = async (
+    claimId: string,
+    _opts?: { bypassCache?: boolean },
+  ): Promise<Claim | undefined> => {
+    // SQLite reads directly from disk; split claim reads have no per-id cache to bypass.
     const view = this.readClaimView(claimId);
     return view === null ? undefined : claimViewToClaim(view);
   };
@@ -2496,7 +2518,8 @@ export class SqliteStore implements ContributionStore {
   // ClaimStore delegation
   createClaim = (claim: Claim): Promise<Claim> => this.claims.createClaim(claim);
   claimOrRenew = (claim: Claim): Promise<Claim> => this.claims.claimOrRenew(claim);
-  getClaim = (claimId: string): Promise<Claim | undefined> => this.claims.getClaim(claimId);
+  getClaim = (claimId: string, opts?: { bypassCache?: boolean }): Promise<Claim | undefined> =>
+    this.claims.getClaim(claimId, opts);
   heartbeat = (claimId: string, leaseDurationMs?: number): Promise<Claim> =>
     this.claims.heartbeat(claimId, leaseDurationMs);
   release = (claimId: string): Promise<Claim> => this.claims.release(claimId);
