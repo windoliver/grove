@@ -1084,6 +1084,54 @@ describe("InformerFactory lifecycle", () => {
   });
 });
 
+// ─── InformerFactory queue config ─────────────────────────────────────────────
+
+describe("InformerFactory queue config", () => {
+  test("queueLimits override applies per kind", () => {
+    const factory = new InformerFactory({
+      mode: "local",
+      hub: new WatchHub(),
+      namespace: "default",
+      listFn: () => [],
+      queueLimits: { AgentSession: 5 },
+    });
+    const c = factory.informerFor("Contribution");
+    const a = factory.informerFor("AgentSession");
+    expect(c.getQueueStats().limit).toBe(1000); // default
+    expect(a.getQueueStats().limit).toBe(5); // overridden
+  });
+
+  test("overflow on a factory-created informer triggers factory.relist(kind)", async () => {
+    const factory = new InformerFactory({
+      mode: "local",
+      hub: new WatchHub(),
+      namespace: "default",
+      listFn: () => [],
+      queueLimits: { Contribution: 2 },
+    });
+    // Spy on relist by wrapping the bound method.
+    const relistCalls: WatchKind[] = [];
+    const origRelist = factory.relist.bind(factory);
+    factory.relist = async (kind?: WatchKind) => {
+      if (kind) relistCalls.push(kind);
+      return origRelist(kind);
+    };
+    const informer = factory.informerFor("Contribution");
+    // Drive overflow via the private enqueue path (cast through unknown).
+    const enq = (informer as unknown as { enqueue: (e: WatchClientEvent) => void }).enqueue.bind(
+      informer,
+    );
+    enq(deltaEvent("ADDED", "a", "1"));
+    enq(deltaEvent("ADDED", "b", "2"));
+    enq(deltaEvent("ADDED", "c", "3")); // overflow
+    // relist is async (microtask) since onOverflow does void this.relist(kind)
+    await drainMicrotasks();
+    expect(relistCalls).toEqual(["Contribution"]);
+    expect(informer.getQueueStats().overflows).toBe(1);
+    await factory.stopAll();
+  });
+});
+
 // ─── Cache immutability ───────────────────────────────────────────────────────
 
 describe("Informer cache immutability", () => {

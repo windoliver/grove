@@ -407,28 +407,40 @@ function isAbortError(err: unknown): boolean {
 
 export type Backoff = NonNullable<WatchClientOptions["backoff"]>;
 
-export type InformerFactoryOptions =
-  | {
-      readonly mode: "remote";
-      readonly baseUrl: string;
-      readonly authHeader: string;
-      readonly fetch?: typeof fetch;
-      readonly backoff?: Backoff;
-    }
-  | {
-      readonly mode: "local";
-      readonly hub: WatchHub;
-      readonly namespace: string;
-      /**
-       * Snapshot source per kind. Sync and async shapes both supported so
-       * Promise-returning local stores (`ContributionStore.listEntities`,
-       * `ClaimStore.listEntities`) can be wired without forcing callers to
-       * pre-await. LocalWatchClient awaits the result before iteration.
-       */
-      readonly listFn: (
-        kind: WatchKind,
-      ) => readonly WatchEntity[] | Promise<readonly WatchEntity[]>;
-    };
+interface InformerFactoryBaseOptions {
+  /**
+   * Per-kind override for `InformerOptions.queueLimit`. Kinds not present
+   * in the map fall back to the Informer default (1000). Wired into each
+   * factory-created Informer's constructor along with an `onOverflow`
+   * callback that triggers `factory.relist(kind)` to recover from drops.
+   */
+  readonly queueLimits?: Partial<Record<WatchKind, number>>;
+}
+
+export type InformerFactoryOptions = InformerFactoryBaseOptions &
+  (
+    | {
+        readonly mode: "remote";
+        readonly baseUrl: string;
+        readonly authHeader: string;
+        readonly fetch?: typeof fetch;
+        readonly backoff?: Backoff;
+      }
+    | {
+        readonly mode: "local";
+        readonly hub: WatchHub;
+        readonly namespace: string;
+        /**
+         * Snapshot source per kind. Sync and async shapes both supported so
+         * Promise-returning local stores (`ContributionStore.listEntities`,
+         * `ClaimStore.listEntities`) can be wired without forcing callers to
+         * pre-await. LocalWatchClient awaits the result before iteration.
+         */
+        readonly listFn: (
+          kind: WatchKind,
+        ) => readonly WatchEntity[] | Promise<readonly WatchEntity[]>;
+      }
+  );
 
 export type FactoryErrorListener = (kind: WatchKind, err: Error | null) => void;
 
@@ -550,7 +562,12 @@ export class InformerFactory {
     const existing = this.running.get(kind);
     if (existing) return existing.informer as Informer<K>;
     const stream = this.makeStream(kind);
-    const informer = new Informer<K>(stream, kind);
+    const informer = new Informer<K>(stream, kind, {
+      queueLimit: this.opts.queueLimits?.[kind] ?? 1000,
+      onOverflow: (k) => {
+        void this.relist(k);
+      },
+    });
     this.running.set(kind, {
       informer: informer as Informer,
       controller: new AbortController(),
