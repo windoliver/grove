@@ -1644,18 +1644,27 @@ export class SqliteClaimStore implements ClaimStore {
     let op: "ADDED" | "MODIFIED" = "MODIFIED";
     const tx = this.db.transaction(() => {
       const existing = this.readClaimView(spec.id);
-      const nowIso = new Date().toISOString();
-      const activeOnTarget = this.db
-        .prepare(
-          `SELECT s.id AS claim_id
-           FROM claim_spec s
-           JOIN claim_status st ON st.id = s.id
-           WHERE s.target_ref = ?
-             AND st.phase = 'active'
-             AND st.lease_expires_at >= ?
-             AND s.id <> ?`,
-        )
-        .get(spec.targetRef, nowIso, spec.id) as { claim_id: string } | null;
+      const now = new Date();
+      const nowIso = now.toISOString();
+      const existingActiveUnexpired =
+        existing !== null &&
+        existing.status.phase === "active" &&
+        new Date(existing.status.leaseExpiresAt).getTime() >= now.getTime();
+
+      const activeOnTarget =
+        existing === null || existingActiveUnexpired
+          ? (this.db
+              .prepare(
+                `SELECT s.id AS claim_id
+                 FROM claim_spec s
+                 JOIN claim_status st ON st.id = s.id
+                 WHERE s.target_ref = ?
+                   AND st.phase = 'active'
+                   AND st.lease_expires_at >= ?
+                   AND s.id <> ?`,
+              )
+              .get(spec.targetRef, nowIso, spec.id) as { claim_id: string } | null)
+          : null;
 
       if (activeOnTarget !== null) {
         throw new StateConflictError({
@@ -1926,7 +1935,9 @@ export class SqliteClaimStore implements ClaimStore {
             )
             .run(nowIso, freshExpiry, activeOnTarget.claim_id);
           this.db
-            .prepare("UPDATE claim_spec SET intent_summary = ? WHERE id = ?")
+            .prepare(
+              "UPDATE claim_spec SET intent_summary = ?, generation = generation + 1 WHERE id = ?",
+            )
             .run(claim.intentSummary, activeOnTarget.claim_id);
           resultClaimId = activeOnTarget.claim_id;
           return;

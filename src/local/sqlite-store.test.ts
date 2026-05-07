@@ -198,6 +198,79 @@ describe("SqliteClaimStore split API", () => {
     }
   });
 
+  test("putClaimSpec allows terminal and expired claim spec edits despite an active claim on the same target", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-split-api-terminal-edit-"));
+    const dbPath = join(dir, "test.db");
+    const { claimStore, close } = createSqliteStores(dbPath);
+    try {
+      const now = new Date();
+      const activeLeaseExpiresAt = new Date(now.getTime() + 600_000).toISOString();
+
+      const terminal = await claimStore.putClaimSpec({
+        id: "terminal-edit",
+        targetRef: "shared-terminal-target",
+        agent: makeAgent({ agentId: "agent-terminal" }),
+        intentSummary: "terminal before edit",
+        createdAt: now.toISOString(),
+        generation: 1,
+      });
+      await claimStore.patchClaimStatus("terminal-edit", {
+        phase: ClaimStatus.Completed,
+        lastHeartbeatAt: new Date(now.getTime() + 1_000).toISOString(),
+        leaseExpiresAt: activeLeaseExpiresAt,
+        lastTransitionAt: new Date(now.getTime() + 1_000).toISOString(),
+      });
+      await claimStore.putClaimSpec({
+        id: "terminal-active-holder",
+        targetRef: "shared-terminal-target",
+        agent: makeAgent({ agentId: "agent-terminal-holder" }),
+        intentSummary: "active holder",
+        createdAt: new Date(now.getTime() + 2_000).toISOString(),
+        generation: 1,
+      });
+
+      const terminalEdited = await claimStore.putClaimSpec({
+        ...terminal.spec,
+        intentSummary: "terminal after edit",
+      });
+
+      expect(terminalEdited.spec.generation).toBe(terminal.spec.generation + 1);
+      expect(terminalEdited.spec.intentSummary).toBe("terminal after edit");
+      expect(terminalEdited.status.phase).toBe(ClaimStatus.Completed);
+
+      const expired = await claimStore.putClaimSpec({
+        id: "expired-edit",
+        targetRef: "shared-expired-target",
+        agent: makeAgent({ agentId: "agent-expired" }),
+        intentSummary: "expired before edit",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        generation: 1,
+        leaseDeadlineSec: 60,
+      });
+      await claimStore.putClaimSpec({
+        id: "expired-active-holder",
+        targetRef: "shared-expired-target",
+        agent: makeAgent({ agentId: "agent-expired-holder" }),
+        intentSummary: "active holder",
+        createdAt: now.toISOString(),
+        generation: 1,
+      });
+
+      const expiredEdited = await claimStore.putClaimSpec({
+        ...expired.spec,
+        intentSummary: "expired after edit",
+      });
+
+      expect(expiredEdited.spec.generation).toBe(expired.spec.generation + 1);
+      expect(expiredEdited.spec.intentSummary).toBe("expired after edit");
+      expect(expiredEdited.status.phase).toBe(ClaimStatus.Active);
+      expect(new Date(expiredEdited.status.leaseExpiresAt).getTime()).toBeLessThan(Date.now());
+    } finally {
+      close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("patchClaimStatus merges split-only fields and getClaimView reflects the patch", async () => {
     const dir = await mkdtemp(join(tmpdir(), "sqlite-split-api-patch-"));
     const dbPath = join(dir, "test.db");
@@ -297,6 +370,42 @@ describe("SqliteClaimStore split API", () => {
 
       const active = await claimStore.activeClaims("activation-target");
       expect(active.map((claim) => claim.claimId)).toEqual(["activation-new"]);
+    } finally {
+      close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("claimOrRenew same-agent renewal bumps spec generation when intent changes", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sqlite-claim-renew-generation-"));
+    const dbPath = join(dir, "test.db");
+    const { claimStore, close } = createSqliteStores(dbPath);
+    try {
+      const first = await claimStore.claimOrRenew(
+        makeClaim({
+          claimId: "renew-generation-first",
+          targetRef: "renew-generation-target",
+          agent: makeAgent({ agentId: "agent-renew-generation" }),
+          intentSummary: "first intent",
+        }),
+      );
+      const firstView = await claimStore.getClaimView(first.claimId);
+      expect(firstView?.spec.generation).toBe(1);
+
+      const renewed = await claimStore.claimOrRenew(
+        makeClaim({
+          claimId: "renew-generation-second",
+          targetRef: "renew-generation-target",
+          agent: makeAgent({ agentId: "agent-renew-generation" }),
+          intentSummary: "renewed intent",
+        }),
+      );
+      const renewedView = await claimStore.getClaimView(renewed.claimId);
+
+      expect(renewed.claimId).toBe(first.claimId);
+      expect(renewedView?.spec.intentSummary).toBe("renewed intent");
+      expect(renewedView?.spec.generation).toBe((firstView?.spec.generation ?? 0) + 1);
+      expect(renewedView?.status.revision).toBe((firstView?.status.revision ?? 0) + 1);
     } finally {
       close();
       await rm(dir, { recursive: true, force: true });
