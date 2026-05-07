@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Informer, InformerFactory } from "./informer.js";
 import type { WatchClientEvent } from "./watch-client.js";
 import { WatchClient } from "./watch-client.js";
-import type { WatchEntity } from "./watch-events.js";
+import type { WatchEntity, WatchKind } from "./watch-events.js";
 import { WatchHub } from "./watch-hub.js";
 import type { WatchStream } from "./watch-stream.js";
 
@@ -1262,6 +1262,66 @@ describe("Informer queue — RV-coalescing", () => {
     expect(
       (informer.getById("x") as { resourceVersion: string } | undefined)?.resourceVersion,
     ).toBe("2");
+
+    ac.abort();
+    await runPromise;
+  });
+});
+
+describe("Informer queue — overflow", () => {
+  test("queueLimit+1 distinct ids → overflows=1, queue cleared, onOverflow fired exactly once", async () => {
+    const { stream, emit } = makeFakeStream();
+    const ac = new AbortController();
+    const overflowKinds: WatchKind[] = [];
+    const informer = new Informer(stream, "Contribution", {
+      queueLimit: 5,
+      onOverflow: (kind) => overflowKinds.push(kind),
+    });
+    const runPromise = informer.run(ac.signal);
+
+    // Sync-prefix burst: enqueue 5 distinct ids before yielding to microtasks,
+    // so depth is observed at exactly 5 before drain runs.
+    const emits: Array<Promise<void>> = [];
+    for (let i = 0; i < 5; i += 1) {
+      emits.push(emit(deltaEvent("ADDED", `id-${i}`, String(i + 1))));
+    }
+    expect(informer.getQueueStats().depth).toBe(5);
+    expect(informer.getQueueStats().overflows).toBe(0);
+
+    // 6th distinct id (still in same sync-prefix burst) — must overflow.
+    emits.push(emit(deltaEvent("ADDED", "id-overflow", "6")));
+    expect(informer.getQueueStats().depth).toBe(0);
+    expect(informer.getQueueStats().overflows).toBe(1);
+    expect(overflowKinds).toEqual(["Contribution"]);
+
+    await Promise.all(emits);
+
+    ac.abort();
+    await runPromise;
+  });
+
+  test("onOverflow callback that throws does not corrupt queue state", async () => {
+    const { stream, emit } = makeFakeStream();
+    const ac = new AbortController();
+    const informer = new Informer(stream, "Contribution", {
+      queueLimit: 2,
+      onOverflow: () => {
+        throw new Error("boom");
+      },
+    });
+    const runPromise = informer.run(ac.signal);
+
+    // Sync-prefix burst: keep all 3 emits in same microtask boundary so the
+    // 3rd one observes depth=2 and triggers overflow.
+    const emits: Array<Promise<void>> = [];
+    emits.push(emit(deltaEvent("ADDED", "a", "1")));
+    emits.push(emit(deltaEvent("ADDED", "b", "2")));
+    emits.push(emit(deltaEvent("ADDED", "c", "3"))); // overflows; throws inside callback
+
+    expect(informer.getQueueStats().depth).toBe(0);
+    expect(informer.getQueueStats().overflows).toBe(1);
+
+    await Promise.all(emits);
 
     ac.abort();
     await runPromise;
