@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { EventBus, GroveEvent, PublishResult } from "../core/event-bus.js";
 import { DEFAULT_SESSION_FINALIZERS } from "../core/lifecycle-metadata.js";
+import type { Session } from "../core/session.js";
 import type { ClaimStore } from "../core/store.js";
 import { makeClaim } from "../core/test-helpers.js";
 import type { NexusClient } from "./client.js";
@@ -243,13 +244,11 @@ describe("NexusSessionStore", () => {
     });
     const sessionPath = `/zones/test-zone/sessions/${session.id}.json`;
     const { client: recordingClient, writes } = createSessionWriteRecorder(client, sessionPath);
-    const failingClaimStore: ClaimStore = {
-      ...claimStore,
-      releaseOwnedBy: async () => {
-        throw new Error("release cleanup failed");
-      },
-      deleteTerminalOwnedBy: async () => 0,
+    const failingClaimStore = Object.create(claimStore) as ClaimStore;
+    failingClaimStore.releaseOwnedBy = async () => {
+      throw new Error("release cleanup failed");
     };
+    failingClaimStore.deleteTerminalOwnedBy = async () => 0;
     const store = new NexusSessionStore(recordingClient, "test-zone", {
       claimStore: failingClaimStore,
       closeRuntime: async () => {

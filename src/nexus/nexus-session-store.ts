@@ -44,8 +44,6 @@ interface ContributionSidecarV2 {
   readonly items: readonly SessionContributionLink[];
 }
 
-type ContributionSidecar = readonly string[] | ContributionSidecarV2;
-
 interface LoadedContributionLinks {
   readonly items: readonly SessionContributionLink[];
   readonly isLegacy: boolean;
@@ -79,6 +77,30 @@ function isKnownSessionFinalizer(finalizer: string): finalizer is KnownFinalizer
 
 function forceWarning(sessionId: string): string {
   return `force delete skipped finalizer waits for session ${sessionId}`;
+}
+
+function isSessionContributionLink(value: unknown): value is SessionContributionLink {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  const ownerRef = record.ownerRef;
+  if (typeof record.cid !== "string" || typeof record.addedAt !== "string") return false;
+  if (typeof ownerRef !== "object" || ownerRef === null) return false;
+  const ownerRefRecord = ownerRef as Record<string, unknown>;
+  return (
+    ownerRefRecord.kind === "session" &&
+    typeof ownerRefRecord.id === "string" &&
+    typeof ownerRefRecord.uid === "string"
+  );
+}
+
+function isContributionSidecarV2(value: unknown): value is ContributionSidecarV2 {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    record.version === 2 &&
+    Array.isArray(record.items) &&
+    record.items.every(isSessionContributionLink)
+  );
 }
 
 export class NexusSessionStore implements SessionStore {
@@ -140,7 +162,7 @@ export class NexusSessionStore implements SessionStore {
     const data = await this.client.read(this.contributionsPath(sessionId));
     if (data === undefined) return { items: [], isLegacy: false };
 
-    const parsed = JSON.parse(decoder.decode(data)) as ContributionSidecar;
+    const parsed = JSON.parse(decoder.decode(data)) as unknown;
     if (Array.isArray(parsed)) {
       const fallbackOwnerRef = ownerRefForSession({
         id: sessionId,
@@ -156,7 +178,7 @@ export class NexusSessionStore implements SessionStore {
       };
     }
 
-    if (parsed.version === 2 && Array.isArray(parsed.items)) {
+    if (isContributionSidecarV2(parsed)) {
       return { items: parsed.items, isLegacy: false };
     }
 
