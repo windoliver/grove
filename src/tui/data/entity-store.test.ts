@@ -413,6 +413,27 @@ describe("EntityStoreFactory", () => {
     expect(all.Contribution?.writes).toBe(0);
   });
 
+  test("getAllStats rolls up overflows + queueDepth from each kind's informer", () => {
+    const factory = new EntityStoreFactory(makeInformerFactory());
+    const cStore = factory.storeFor("Contribution");
+    const claimStore = factory.storeFor("Claim");
+
+    // Override getQueueStats on each store's underlying informer with controllable stubs.
+    (cStore as unknown as { informer: { getQueueStats: () => unknown } }).informer.getQueueStats =
+      () => ({ depth: 7, limit: 1000, overflows: 2 });
+    (
+      claimStore as unknown as { informer: { getQueueStats: () => unknown } }
+    ).informer.getQueueStats = () => ({ depth: 3, limit: 500, overflows: 5 });
+
+    const all = factory.getAllStats();
+    expect(all.Contribution?.overflows).toBe(2);
+    expect(all.Contribution?.queueDepth).toBe(7);
+    expect(all.Contribution?.queueLimit).toBe(1000);
+    expect(all.Claim?.overflows).toBe(5);
+    expect(all.Claim?.queueDepth).toBe(3);
+    expect(all.Claim?.queueLimit).toBe(500);
+  });
+
   test("dispose disposes every store; idempotent", () => {
     const factory = new EntityStoreFactory(makeInformerFactory());
     factory.storeFor("Contribution");
