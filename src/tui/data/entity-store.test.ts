@@ -43,6 +43,7 @@ function makeFakeInformer(): {
     hasSynced: () => synced,
     getById: (id: string) => store.get(id) as never,
     list: () => Array.from(store.values()) as never,
+    getQueueStats: () => ({ depth: 0, limit: 1000, overflows: 0 }),
   } as unknown as Informer<"Contribution">;
   return {
     informer,
@@ -234,6 +235,30 @@ describe("EntityStore — getStats / writeCounter", () => {
     await fake.emit("ADDED", entity("a"));
     await drainMicrotasks();
     expect(store.getStats().version).toBe(store.getVersion());
+  });
+});
+
+describe("EntityStore — overflow + queueDepth propagation (B2)", () => {
+  test("getStats() reflects informer.getQueueStats()", () => {
+    const fake = makeFakeInformer();
+    // Override getQueueStats with a controllable stub.
+    let depth = 0;
+    let overflows = 0;
+    (fake.informer as unknown as { getQueueStats: () => unknown }).getQueueStats = () => ({
+      depth,
+      limit: 42,
+      overflows,
+    });
+    const store = new EntityStore<"Contribution">(fake.informer, "Contribution");
+
+    expect(store.getStats().queueDepth).toBe(0);
+    expect(store.getStats().queueLimit).toBe(42);
+    expect(store.getStats().overflows).toBe(0);
+
+    depth = 7;
+    overflows = 3;
+    expect(store.getStats().queueDepth).toBe(7);
+    expect(store.getStats().overflows).toBe(3);
   });
 });
 
