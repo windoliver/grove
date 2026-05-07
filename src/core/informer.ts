@@ -34,8 +34,18 @@ export type EventHandlerFn<K extends WatchKind = WatchKind> = (
 
 export type SyncHandlerFn = () => void;
 
+export interface InformerOptions {
+  /** Max distinct entity ids buffered between drain cycles. Default 1000. */
+  readonly queueLimit?: number;
+  /** Fired exactly once per overflow event. Wired by InformerFactory to factory.relist(kind). */
+  readonly onOverflow?: (kind: WatchKind) => void;
+}
+
 export class Informer<K extends WatchKind = WatchKind> {
   private readonly stream: WatchStream;
+  private readonly kind: WatchKind;
+  private readonly queueLimit: number;
+  private readonly onOverflow: ((kind: WatchKind) => void) | null;
   private readonly store = new Map<string, EntityForKind<K>>();
   private readonly handlers: Array<EventHandlerFn<K>> = [];
   private readonly syncHandlers: Array<SyncHandlerFn> = [];
@@ -45,8 +55,11 @@ export class Informer<K extends WatchKind = WatchKind> {
   // Set during run() so dispatch can race handlers against the abort signal.
   private _signal: AbortSignal | null = null;
 
-  constructor(stream: WatchStream) {
+  constructor(stream: WatchStream, kind: WatchKind, opts?: InformerOptions) {
     this.stream = stream;
+    this.kind = kind;
+    this.queueLimit = opts?.queueLimit ?? 1000;
+    this.onOverflow = opts?.onOverflow ?? null;
   }
 
   /**
@@ -435,7 +448,7 @@ export class InformerFactory {
     const existing = this.running.get(kind);
     if (existing) return existing.informer as Informer<K>;
     const stream = this.makeStream(kind);
-    const informer = new Informer<K>(stream);
+    const informer = new Informer<K>(stream, kind);
     this.running.set(kind, {
       informer: informer as Informer,
       controller: new AbortController(),

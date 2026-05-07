@@ -92,6 +92,7 @@ describe("Informer hasSynced", () => {
         fetch: fetchImpl,
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler((_op, _entity) => {
       // Only called after RELIST_END; check synced at first delta
@@ -115,6 +116,7 @@ describe("Informer hasSynced", () => {
         fetch: makeFetch({ items: [], listResourceVersion: "5" }, "", ac),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     expect(informer.hasSynced()).toBe(false);
     await informer.run(ac.signal);
@@ -135,6 +137,7 @@ describe("Informer cache after initial sync", () => {
         fetch: makeFetch({ items: [E_A, E_B], listResourceVersion: "5" }, "", ac),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     await informer.run(ac.signal);
     const items = informer.list();
@@ -153,6 +156,7 @@ describe("Informer cache after initial sync", () => {
         fetch: makeFetch({ items: [E_A, E_B], listResourceVersion: "5" }, "", ac),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     await informer.run(ac.signal);
     expect((informer.getById("cid-a") as { id: string } | undefined)?.id).toBe("cid-a");
@@ -178,6 +182,7 @@ describe("Informer delta events", () => {
         ),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler((op, entity) => {
       events.push({ op, id: (entity as { id: string }).id });
@@ -203,6 +208,7 @@ describe("Informer delta events", () => {
         ),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler((op, entity) => {
       events.push({
@@ -234,6 +240,7 @@ describe("Informer delta events", () => {
         ),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler((op, entity) => {
       events.push({ op, id: (entity as { id: string }).id });
@@ -285,6 +292,7 @@ describe("Informer Replace reconciliation on relist", () => {
         fetch: fetchImpl,
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler((op, entity) => {
       events.push({ op, id: (entity as { id: string }).id });
@@ -328,6 +336,7 @@ describe("Informer Replace reconciliation on relist", () => {
         fetch: fetchImpl,
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler((op, entity) => {
       events.push({ op, id: (entity as { id: string }).id });
@@ -371,6 +380,7 @@ describe("Informer Replace reconciliation on relist", () => {
         fetch: fetchImpl,
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler((op, entity) => {
       events.push({
@@ -419,6 +429,7 @@ describe("Informer Replace reconciliation on relist", () => {
         fetch: fetchImpl,
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler((op, entity) => {
       events.push({ op, id: (entity as { id: string }).id });
@@ -471,6 +482,7 @@ describe("Informer RELIST_ABORTED", () => {
         fetch: fetchImpl,
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     await informer.run(ac.signal);
 
@@ -502,6 +514,7 @@ describe("Informer multiple handlers", () => {
         ),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler((op, entity) => {
       h1Events.push(`${op}:${(entity as { id: string }).id}`);
@@ -538,6 +551,7 @@ describe("Informer handler sees post-update cache", () => {
         ),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler((op, entity) => {
       if (op === "ADDED") {
@@ -651,6 +665,7 @@ describe("Informer run() safety", () => {
         fetch: fetchImpl,
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     // Start first run (will block waiting for list response)
     const firstRun = informer.run(ac.signal);
@@ -677,6 +692,7 @@ describe("Informer run() safety", () => {
         ),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler(async () => {
       // Never resolves on its own
@@ -706,6 +722,7 @@ describe("Informer run() safety", () => {
         fetch: makeFetch({ items: [], listResourceVersion: "5" }, "", ac1),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     await informer.run(ac1.signal);
     // First run completed — second run must be accepted (not throw)
@@ -718,6 +735,7 @@ describe("Informer run() safety", () => {
         fetch: makeFetch({ items: [], listResourceVersion: "5" }, "", ac2),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     // Different instance, but proves the _running flag resets after completion
     await expect(informer2.run(ac2.signal)).resolves.toBeUndefined();
@@ -739,6 +757,7 @@ describe("Informer handler isolation", () => {
           fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
           backoff: { minMs: 0, maxMs: 0, jitter: 0 },
         }),
+        "Contribution",
       );
       informer.addEventHandler(() => {
         throw new Error("handler boom");
@@ -763,6 +782,7 @@ describe("Informer handler isolation", () => {
           fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
           backoff: { minMs: 0, maxMs: 0, jitter: 0 },
         }),
+        "Contribution",
       );
       informer.addEventHandler(() => {
         throw new Error("noisy handler");
@@ -788,6 +808,7 @@ describe("Informer handler isolation", () => {
         ),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     const unsubscribe = informer.addEventHandler((op, entity) => {
       received.push(`${op}:${(entity as { id: string }).id}`);
@@ -814,6 +835,7 @@ describe("Informer handler isolation", () => {
         ),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     unsub = informer.addEventHandler((op, entity) => {
       const id = (entity as { id: string }).id;
@@ -844,6 +866,7 @@ describe("Informer handler isolation", () => {
         fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     unsub = informer.addEventHandler(() => {
       unsub?.(); // self-unsubscribe during first dispatch
@@ -868,6 +891,7 @@ describe("Informer handler isolation", () => {
           fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
           backoff: { minMs: 0, maxMs: 0, jitter: 0 },
         }),
+        "Contribution",
       );
       // Async handler that rejects — must not propagate as unhandled rejection
       informer.addEventHandler(async () => {
@@ -901,6 +925,7 @@ describe("Informer handler isolation", () => {
         ),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     informer.addEventHandler(async (_op, entity) => {
       order.push(`enter:${(entity as { id: string }).id}`);
@@ -1002,6 +1027,7 @@ describe("Informer cache immutability", () => {
         fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     await informer.run(ac.signal);
     const entity = informer.getById("cid-a");
@@ -1027,6 +1053,7 @@ describe("Informer cache immutability", () => {
         fetch: makeFetch({ items: [E_A, E_B], listResourceVersion: "5" }, "", ac),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     await informer.run(ac.signal);
     for (const e of informer.list()) {
@@ -1044,6 +1071,7 @@ describe("Informer cache immutability", () => {
         fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     await informer.run(ac.signal);
     const entity = informer.getById("cid-a");
@@ -1069,6 +1097,7 @@ describe("Informer cache immutability", () => {
         fetch: makeFetch({ items: [E_A], listResourceVersion: "5" }, "", ac),
         backoff: { minMs: 0, maxMs: 0, jitter: 0 },
       }),
+      "Contribution",
     );
     await informer.run(ac.signal);
     const entity = informer.getById("cid-a") as unknown as { spec: object; metadata: object };
@@ -1091,7 +1120,7 @@ test("Informer.addEventHandler forwards emittedAt via optional meta arg", async 
       });
     },
   };
-  const informer = new Informer<"Contribution">(stream as never);
+  const informer = new Informer<"Contribution">(stream as never, "Contribution");
   informer.addEventHandler((_op, _entity, meta) => {
     seenMeta.push(meta);
   });
