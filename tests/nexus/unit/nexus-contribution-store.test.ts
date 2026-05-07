@@ -19,6 +19,17 @@ import {
   contributionPath,
 } from "../../../src/nexus/vfs-paths.js";
 
+class CountingNexusClient extends MockNexusClient {
+  manifestReadCount = 0;
+
+  override async read(path: string): Promise<Uint8Array | undefined> {
+    if (path.includes("/contributions/") && path.endsWith(".json")) {
+      this.manifestReadCount += 1;
+    }
+    return super.read(path);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Conformance tests
 // ---------------------------------------------------------------------------
@@ -353,5 +364,62 @@ describe("NexusContributionStore adapter-specific", () => {
 
   test("storeIdentity includes zone", () => {
     expect(store.storeIdentity).toBe("nexus:test-zone:contributions");
+  });
+
+  test("session-scoped storeIdentity includes session", () => {
+    const sessionStore = new NexusContributionStore({
+      client,
+      zoneId: "test-zone",
+      sessionId: "session-a",
+      retryMaxAttempts: 1,
+    });
+
+    expect(sessionStore.storeIdentity).toBe("nexus:test-zone:sessions:session-a:contributions");
+
+    sessionStore.close();
+  });
+
+  test("countSince backfills count indexes once, then avoids contribution manifest reads", async () => {
+    const countingClient = new CountingNexusClient();
+    const writeStore = new NexusContributionStore({
+      client: countingClient,
+      zoneId: "count-zone",
+      retryMaxAttempts: 1,
+    });
+    const recent = makeContribution({
+      summary: "recent",
+      createdAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+      agent: { agentId: "agent-a" },
+    });
+    const old = makeContribution({
+      summary: "old",
+      createdAt: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
+      agent: { agentId: "agent-a" },
+    });
+    await writeStore.putMany([recent, old]);
+    writeStore.close();
+
+    const freshStore = new NexusContributionStore({
+      client: countingClient,
+      zoneId: "count-zone",
+      retryMaxAttempts: 1,
+    });
+    const query = {
+      agentId: "agent-a",
+      since: new Date(Date.now() - 60 * 60_000).toISOString(),
+    };
+
+    const count = await freshStore.countSince(query);
+
+    expect(count).toBe(1);
+    expect(countingClient.manifestReadCount).toBeGreaterThan(0);
+
+    countingClient.manifestReadCount = 0;
+    await expect(freshStore.countSince(query)).resolves.toBe(1);
+    expect(countingClient.manifestReadCount).toBe(0);
+    expect(await countingClient.read(contributionPath("count-zone", recent.cid))).toBeDefined();
+
+    freshStore.close();
+    await countingClient.close();
   });
 });

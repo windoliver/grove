@@ -12,6 +12,8 @@ import type { Contribution, Relation } from "../../core/models.js";
 import { RelationType } from "../../core/models.js";
 import type { OperationDeps } from "../../core/operations/deps.js";
 import type {
+  ContributionPutManyOutcome,
+  ContributionPutOutcome,
   ContributionQuery,
   ContributionStore,
   HotThreadsOptions,
@@ -80,14 +82,16 @@ class SessionFilteredContributionStore implements ContributionStore {
     return contributions.filter((c) => cids.has(c.cid));
   }
 
-  put = async (contribution: Contribution): Promise<void> => {
-    await this.inner.put(contribution);
+  put = async (contribution: Contribution): Promise<ContributionPutOutcome> => {
+    const result = await this.inner.put(contribution);
     this.sessionCidsPromise = undefined;
+    return result;
   };
 
-  putMany = async (contributions: readonly Contribution[]): Promise<void> => {
-    await this.inner.putMany(contributions);
+  putMany = async (contributions: readonly Contribution[]): Promise<ContributionPutManyOutcome> => {
+    const result = await this.inner.putMany(contributions);
     this.sessionCidsPromise = undefined;
+    return result;
   };
 
   get = async (cid: string): Promise<Contribution | undefined> => {

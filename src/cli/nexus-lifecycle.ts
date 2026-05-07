@@ -43,6 +43,14 @@ const HEALTH_POLL_MS = 1_000;
 /** Default `nexus up` timeout (seconds). */
 const NEXUS_UP_TIMEOUT_S = 180;
 
+const LIFECYCLE_PATH_EXTRAS = [
+  join(homedir(), ".local/bin"),
+  join(homedir(), ".bun/bin"),
+  "/Applications/OrbStack.app/Contents/MacOS/xbin",
+  "/opt/homebrew/bin",
+  "/usr/local/bin",
+] as const;
+
 // ---------------------------------------------------------------------------
 // Port derivation
 // ---------------------------------------------------------------------------
@@ -113,10 +121,89 @@ export function readNexusState(projectRoot: string): NexusState | undefined {
 // CLI detection
 // ---------------------------------------------------------------------------
 
-/** Check whether the `nexus` CLI is available on PATH. */
+function existingPathCandidate(path: string): boolean {
+  try {
+    return existsSync(path);
+  } catch {
+    return false;
+  }
+}
+
+function withLifecyclePathEnv(env: Record<string, string | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) out[key] = value;
+  }
+
+  const parts = (out.PATH ?? "")
+    .split(":")
+    .map((part) => part.trim())
+    .filter((part) => part !== "");
+  for (const extra of LIFECYCLE_PATH_EXTRAS) {
+    if (!parts.includes(extra)) parts.push(extra);
+  }
+  out.PATH = parts.join(":");
+  return out;
+}
+
+export function resolveNexusCliPath(
+  env: Record<string, string | undefined> = process.env,
+  exists: (path: string) => boolean = existingPathCandidate,
+): string {
+  const explicit = env.NEXUS_CLI?.trim();
+  if (explicit) return explicit;
+
+  const pathDirs = (env.PATH ?? "")
+    .split(":")
+    .map((part) => part.trim())
+    .filter((part) => part !== "");
+  for (const dir of pathDirs) {
+    const candidate = join(dir, "nexus");
+    if (exists(candidate)) return candidate;
+  }
+
+  for (const candidate of [
+    join(homedir(), ".local/bin/nexus"),
+    join(homedir(), ".local/share/grove-nexus-venv/bin/nexus"),
+    "/opt/homebrew/bin/nexus",
+    "/usr/local/bin/nexus",
+    "/tmp/grove-nexus-venv/bin/nexus",
+  ]) {
+    if (exists(candidate)) return candidate;
+  }
+
+  return "nexus";
+}
+
+function resolveNexusPythonPath(env: Record<string, string | undefined> = process.env): string {
+  const explicit = env.NEXUS_PYTHON?.trim();
+  if (explicit) return explicit;
+
+  const nexusCli = resolveNexusCliPath(withLifecyclePathEnv(env));
+  if (nexusCli !== "nexus" && existsSync(nexusCli)) {
+    try {
+      const firstLine = readFileSync(nexusCli, "utf-8").split(/\r?\n/, 1)[0] ?? "";
+      if (firstLine.startsWith("#!")) {
+        const shebangParts = firstLine.slice(2).trim().split(/\s+/);
+        const executable = shebangParts[0];
+        if (executable && executable !== "/usr/bin/env") return executable;
+        const envExecutable = shebangParts[1];
+        if (envExecutable) return envExecutable;
+      }
+    } catch {
+      // Fall back to python3 below.
+    }
+  }
+
+  return "python3";
+}
+
+/** Check whether the `nexus` CLI is available on PATH or a known user install path. */
 export async function checkNexusCli(): Promise<boolean> {
   try {
-    const proc = Bun.spawn(["nexus", "--version"], {
+    const spawnEnv = withLifecyclePathEnv(process.env);
+    const proc = Bun.spawn([resolveNexusCliPath(spawnEnv), "--version"], {
+      env: spawnEnv,
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -223,13 +310,14 @@ export async function ensureNexusComposeFile(projectRoot: string): Promise<void>
   // 1. Try the nexus Python package bundled data directory.
   let sourceDir: string | undefined;
   try {
+    const spawnEnv = withLifecyclePathEnv(process.env);
     const proc = Bun.spawn(
       [
-        "python3",
+        resolveNexusPythonPath(spawnEnv),
         "-c",
         "import importlib.resources; p = importlib.resources.files('nexus.cli.data'); print(p)",
       ],
-      { stdout: "pipe", stderr: "pipe" },
+      { env: spawnEnv, stdout: "pipe", stderr: "pipe" },
     );
     const [code, out] = await Promise.all([proc.exited, new Response(proc.stdout).text()]);
     if (code === 0) {
@@ -343,11 +431,12 @@ function resolveNexusSource(explicit?: string): string | undefined {
  * the same flags, preventing silent divergence (e.g. missing --port-strategy).
  */
 function buildNexusUpArgs(opts: {
+  nexusCli: string;
   wantsBuild: boolean;
   sourceDir?: string | undefined;
   timeout?: number | undefined;
 }): string[] {
-  const args = ["nexus", "up", "--port-strategy", "auto"];
+  const args = [opts.nexusCli, "up", "--port-strategy", "auto"];
   if (opts.timeout != null) args.push("--timeout", String(opts.timeout));
   if (opts.wantsBuild && opts.sourceDir) {
     args.push("--build", "--compose-file", join(opts.sourceDir, "nexus-stack.yml"));
@@ -355,21 +444,57 @@ function buildNexusUpArgs(opts: {
   return args;
 }
 
+function coerceEnvString(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim() !== "") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return undefined;
+}
+
+function readNexusComposeEnv(projectRoot: string): Record<string, string> {
+  const yamlPath = join(projectRoot, "nexus.yaml");
+  if (!existsSync(yamlPath)) return {};
+  try {
+    const parsed = yamlParse(readFileSync(yamlPath, "utf-8")) as Record<string, unknown> | null;
+    const ports = parsed?.ports as Record<string, unknown> | undefined;
+    const env: Record<string, string> = {};
+    const http = coerceEnvString(ports?.http);
+    const grpc = coerceEnvString(ports?.grpc);
+    const postgres = coerceEnvString(ports?.postgres);
+    const dragonfly = coerceEnvString(ports?.dragonfly);
+    const zoekt = coerceEnvString(ports?.zoekt);
+    if (http) env.NEXUS_PORT = http;
+    if (grpc) env.NEXUS_GRPC_PORT = grpc;
+    if (postgres) env.POSTGRES_PORT = postgres;
+    if (dragonfly) env.DRAGONFLY_PORT = dragonfly;
+    if (zoekt) env.ZOEKT_PORT = zoekt;
+    const apiKey = coerceEnvString(parsed?.api_key);
+    const auth = coerceEnvString(parsed?.auth);
+    const dataDir = coerceEnvString(parsed?.data_dir);
+    if (apiKey) env.NEXUS_API_KEY = apiKey;
+    if (auth) env.NEXUS_AUTH_TYPE = auth;
+    if (dataDir) env.NEXUS_HOST_DATA_DIR = dataDir;
+    return env;
+  } catch {
+    return {};
+  }
+}
+
 function readConfiguredHttpPort(projectRoot: string): number | undefined {
   try {
     const yamlPath = join(projectRoot, "nexus.yaml");
     if (!existsSync(yamlPath)) return undefined;
     const parsed = yamlParse(readFileSync(yamlPath, "utf-8")) as Record<string, unknown> | null;
-    const http = (parsed?.ports as Record<string, unknown> | undefined)?.http;
-    if (typeof http === "number" && http > 0 && http <= 65530) return http;
+    const http = coerceEnvString((parsed?.ports as Record<string, unknown> | undefined)?.http);
+    const port = http ? Number(http) : undefined;
+    if (port && Number.isInteger(port) && port > 0 && port <= 65530) return port;
   } catch {
     // Fall through to derived port.
   }
   return undefined;
 }
 
-function buildNexusUpEnv(projectRoot: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env };
+function buildNexusUpEnv(projectRoot: string): Record<string, string> {
+  const env = withLifecyclePathEnv({ ...process.env, ...readNexusComposeEnv(projectRoot) });
   if (!env.NEXUS_SEARCH_DAEMON) {
     env.NEXUS_SEARCH_DAEMON = "false";
   }
@@ -424,12 +549,13 @@ export async function nexusUp(_projectRoot: string, opts: NexusUpOptions = {}): 
     }
   }
 
-  const args = buildNexusUpArgs({ wantsBuild, sourceDir, timeout });
-  const env = buildNexusUpEnv(projectRoot);
+  const spawnEnv = buildNexusUpEnv(projectRoot);
+  const nexusCli = resolveNexusCliPath(spawnEnv);
+  const args = buildNexusUpArgs({ nexusCli, wantsBuild, sourceDir, timeout });
 
   const proc = Bun.spawn(args, {
     cwd: projectRoot,
-    env,
+    env: spawnEnv,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -488,10 +614,15 @@ export async function nexusUp(_projectRoot: string, opts: NexusUpOptions = {}): 
     // Retry without --timeout if the flag is unsupported (nexus-ai-fs < 0.9.0).
     // Both primary and fallback use buildNexusUpArgs — no flag divergence.
     if (stderr.includes("no such option") || stderr.includes("unrecognized arguments")) {
-      const fallbackArgs = buildNexusUpArgs({ wantsBuild, sourceDir, timeout: undefined });
+      const fallbackArgs = buildNexusUpArgs({
+        nexusCli,
+        wantsBuild,
+        sourceDir,
+        timeout: undefined,
+      });
       const fallback = Bun.spawn(fallbackArgs, {
         cwd: projectRoot,
-        env,
+        env: spawnEnv,
         stdout: "pipe",
         stderr: "pipe",
       });
@@ -519,8 +650,10 @@ export async function nexusUp(_projectRoot: string, opts: NexusUpOptions = {}): 
 export async function nexusDown(_projectRoot: string): Promise<void> {
   const cwd = _projectRoot;
   try {
-    const proc = Bun.spawn(["nexus", "down"], {
+    const spawnEnv = withLifecyclePathEnv(process.env);
+    const proc = Bun.spawn([resolveNexusCliPath(spawnEnv), "down"], {
       cwd,
+      env: spawnEnv,
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -876,6 +1009,25 @@ export async function ensureNexusRunning(
     const apiKey = readNexusApiKey(projectRoot);
     report("Nexus is ready (already running)");
     return { url: foundUrl, apiKey };
+  }
+
+  // -----------------------------------------------------------------------
+  // 1b. Container is running but the 3s parallel probe didn't catch it.
+  //     If `discoverRunningNexus` found our container, wait up to 15s for
+  //     it to respond before restarting. The restart in section 3 kills
+  //     in-flight grove-server connections; avoid it when the container
+  //     is just slow to answer (Raft re-election, cold cache, etc.).
+  // -----------------------------------------------------------------------
+  if (containerUrl) {
+    report(`[ensureNexus] container running, waiting up to 15s for health at ${containerUrl}...`);
+    try {
+      await waitForNexusHealth(containerUrl, 15_000);
+      const apiKey = readNexusApiKey(projectRoot);
+      report("Nexus is ready (already running, slow response)");
+      return { url: containerUrl, apiKey };
+    } catch {
+      report("[ensureNexus] container unresponsive after 15s, falling through to restart...");
+    }
   }
 
   // -----------------------------------------------------------------------

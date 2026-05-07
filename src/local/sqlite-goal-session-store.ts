@@ -272,6 +272,7 @@ export const GOAL_SESSION_DDL = `
     started_at TEXT NOT NULL,
     ended_at TEXT,
     stop_reason TEXT,
+    stop_status TEXT,
     archived_at INTEGER,
     contribution_count INTEGER NOT NULL DEFAULT 0
   );
@@ -326,6 +327,7 @@ interface SessionRow {
   started_at: string;
   ended_at: string | null;
   stop_reason: string | null;
+  stop_status: import("../core/loop-runner.js").LoopStopStatus | null;
   archived_at: number | null;
   contribution_count: number;
 }
@@ -342,6 +344,7 @@ interface SessionListRow {
   started_at: string;
   ended_at: string | null;
   stop_reason: string | null;
+  stop_status: import("../core/loop-runner.js").LoopStopStatus | null;
   contribution_count: number;
 }
 
@@ -366,10 +369,10 @@ export interface GoalSessionStore {
   /** Get a session by ID. */
   getSession(sessionId: string): Promise<Session | undefined>;
 
-  /** Update mutable session fields (status, completedAt, stopReason). */
+  /** Update mutable session fields (status, completedAt, stopReason, stopStatus). */
   updateSession(
     sessionId: string,
-    updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason">>,
+    updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason" | "stopStatus">>,
   ): Promise<void>;
 
   /** Archive a session, setting its ended_at timestamp and archived_at epoch. */
@@ -434,6 +437,7 @@ function rowToSession(row: SessionRow): Session {
     createdAt: row.started_at,
     completedAt: row.ended_at ?? undefined,
     stopReason: row.stop_reason ?? undefined,
+    stopStatus: row.stop_status ?? undefined,
     topology: row.topology_json ? (JSON.parse(row.topology_json) as AgentTopology) : undefined,
     contributionCount: row.contribution_count,
     config,
@@ -453,6 +457,7 @@ function listRowToSession(row: SessionListRow): Session {
     createdAt: row.started_at,
     completedAt: row.ended_at ?? undefined,
     stopReason: row.stop_reason ?? undefined,
+    stopStatus: row.stop_status ?? undefined,
     topology: undefined,
     contributionCount: row.contribution_count,
     // config intentionally omitted from list results for performance
@@ -544,7 +549,7 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
   listSessions = async (query?: SessionQuery): Promise<readonly Session[]> => {
     const baseSelect = `
       SELECT s.session_id, s.goal, s.preset_name, s.status, s.started_at, s.ended_at,
-             s.stop_reason, s.contribution_count
+             s.stop_reason, s.stop_status, s.contribution_count
       FROM sessions s
     `;
 
@@ -689,20 +694,22 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
    */
   updateSession = async (
     sessionId: string,
-    updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason">>,
+    updates: Partial<Pick<Session, "status" | "completedAt" | "stopReason" | "stopStatus">>,
   ): Promise<void> => {
     const hasStatus = updates.status !== undefined;
     const hasCompletedAt = updates.completedAt !== undefined;
     const hasStopReason = updates.stopReason !== undefined;
+    const hasStopStatus = updates.stopStatus !== undefined;
 
     // Route archiving through archiveSession() for consistency
     if (hasStatus && updates.status === "archived") {
       await this.archiveSession(sessionId);
       // Also apply completedAt/stopReason overrides if provided
-      if (hasCompletedAt || hasStopReason) {
+      if (hasCompletedAt || hasStopReason || hasStopStatus) {
         await this.updateSession(sessionId, {
           ...(hasCompletedAt ? { completedAt: updates.completedAt } : {}),
           ...(hasStopReason ? { stopReason: updates.stopReason } : {}),
+          ...(hasStopStatus ? { stopStatus: updates.stopStatus } : {}),
         });
       }
       return;
@@ -711,9 +718,18 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     const status = updates.status;
     const completedAt = updates.completedAt;
     const stopReason = updates.stopReason;
+    const stopStatus = updates.stopStatus;
 
     // Pattern: all three fields — most common from session completion
-    if (hasStatus && hasCompletedAt && hasStopReason && status && completedAt && stopReason) {
+    if (
+      hasStatus &&
+      hasCompletedAt &&
+      hasStopReason &&
+      !hasStopStatus &&
+      status &&
+      completedAt &&
+      stopReason
+    ) {
       this.stmtCompleteSession ??= this.db.prepare(
         "UPDATE sessions SET status = ?, ended_at = ?, stop_reason = ? WHERE session_id = ?",
       );
@@ -754,6 +770,10 @@ export class SqliteGoalSessionStore implements GoalSessionStore {
     if (stopReason) {
       setClauses.push("stop_reason = ?");
       params.push(stopReason);
+    }
+    if (stopStatus) {
+      setClauses.push("stop_status = ?");
+      params.push(stopStatus);
     }
 
     if (setClauses.length === 0) return;

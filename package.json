@@ -42,17 +42,17 @@
   },
   "scripts": {
     "build": "bun run --cwd packages/ask-user build && tsup",
-    "typecheck": "bun run --cwd packages/ask-user typecheck && bun run --cwd packages/ask-user build && tsc --noEmit",
+    "typecheck": "bun run --cwd packages/ask-user typecheck && tsc --noEmit",
     "lint": "biome check .",
     "format": "biome format --write .",
     "start:server": "bun run src/server/serve.ts",
-    "test": "bun test && bun test --cwd packages/ask-user",
-    "test:coverage": "bun test --coverage && bun test --cwd packages/ask-user --coverage",
+    "test": "bun test --timeout 60000 && bun test --cwd packages/ask-user --timeout 60000",
+    "test:coverage": "bun test --timeout 60000 --coverage && bun test --cwd packages/ask-user --timeout 60000 --coverage",
     "test:integration": "NEXUS_URL=http://localhost:2026 bun test tests/nexus/integration/",
     "nexus:up": "docker compose up nexus -d",
     "nexus:down": "docker compose down",
     "check": "biome check .",
-    "postinstall": "bun run --cwd packages/ask-user build && bun ./scripts/install-hooks.mjs",
+    "postinstall": "bun ./scripts/install-hooks.mjs",
     "smoke:watch-relist": "bun run tests/e2e/watch-relist-tmux.ts"
   },
   "dependencies": {

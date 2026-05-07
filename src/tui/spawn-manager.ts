@@ -789,10 +789,11 @@ export class SpawnManager {
 
       if (this.agentRuntime) {
         // Use AgentRuntime interface — works with acpx, subprocess, or any runtime
-        // Determine if this role should wait for IPC push instead of starting immediately.
-        // Detected from prompt content: "wait for" signals a reactive role.
-        const rolePromptText = String(context?.rolePrompt ?? "").toLowerCase();
-        const waitForPush = context?.waitForPush === true || rolePromptText.includes("wait for");
+        // Only an explicit launch context can suppress the initial prompt.
+        // Role prompts often say "wait for feedback" after the first action;
+        // treating that as passive mode prevents starter roles from ever
+        // receiving their first instruction.
+        const waitForPush = context?.waitForPush === true;
 
         // Extract platform/model from context (set by topology role or profile overlay)
         const platform = context?.platform as

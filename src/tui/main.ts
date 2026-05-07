@@ -488,10 +488,14 @@ async function buildAppProps(
   // Construct InformerFactory for the SSE-driven cache (#295).
   //
   // Remote mode targets the grove-server watch routes (`/api/list`,
-  // `/api/watch`) over HTTP/SSE. `mode: "nexus"` talks to Nexus VFS
-  // endpoints which do not host these routes; for now those sessions
-  // skip the factory and views fall back to event-driven fetches plus
-  // RefreshContext fan-out until a Nexus-backed WatchStream lands.
+  // `/api/watch`) over HTTP/SSE.
+  //
+  // Nexus mode also uses a remote-mode factory pointing at the local
+  // grove-server (started by `grove up` and reachable on the standard
+  // service port). Without this, `mode: "nexus"` sessions had no
+  // InformerFactory at all — every Entity-backed view fell back to the
+  // polled provider path, missing the EntityStore subscription path the
+  // running-view's contribution feed (and other migrated views) rely on.
   //
   // Local mode (PR2 #388) uses an in-process `WatchHub` plus the
   // SqliteContributionStore / SqliteClaimStore + AgentRuntime as the
@@ -501,8 +505,9 @@ async function buildAppProps(
   let informerFactory: import("../core/informer.js").InformerFactory | undefined;
   {
     const { InformerFactory } = await import("../core/informer.js");
+    const remoteAuth = remoteAuthHeaders?.Authorization;
     if (backend.mode === "remote") {
-      const authHeader = remoteAuthHeaders?.Authorization;
+      const authHeader = remoteAuth;
       // Grove-server watch routes require auth; without a credential we can't
       // construct a usable factory. Better to omit it than to start watching
       // anonymously and surface 401 noise — hooks throw on factory absence
@@ -513,6 +518,28 @@ async function buildAppProps(
           baseUrl: backend.url,
           authHeader,
         });
+      }
+    } else if (backend.mode === "nexus") {
+      // Nexus mode: target the locally-managed grove-server (started by
+      // `grove up`) at the standard HTTP port. Auth is the project API
+      // key written into `.grove/api-key` by `grove init`.
+      try {
+        const groveDir = effectiveGrove ?? findGroveDir(effectiveGrove);
+        if (!groveDir) throw new Error("groveDir unresolved");
+        const { readClientKey } = await import("../core/project-key.js");
+        const { resolveServicePort } = await import("../shared/service-lifecycle.js");
+        const apiKey = readClientKey(groveDir);
+        if (apiKey) {
+          const port = resolveServicePort("server");
+          informerFactory = new InformerFactory({
+            mode: "remote",
+            baseUrl: `http://localhost:${port}`,
+            authHeader: `Bearer ${apiKey}`,
+          });
+        }
+      } catch {
+        // Best-effort: when the API key or service port can't be resolved,
+        // skip the factory rather than throw — views fall back to polling.
       }
     } else if (backend.mode === "local" && watchHub && cleanupRuntime) {
       const localCleanupRuntime = cleanupRuntime;
@@ -834,6 +861,8 @@ export async function handleTui(
       // need the watch loops running by the time those views mount.
       const { InformerProvider } = await import("./hooks/informer-context.js");
       const { RefreshProvider } = await import("./hooks/refresh-context.js");
+      const { EntityStoreProvider } = await import("./hooks/entity-store-context.js");
+      const { EntityStoreFactory } = await import("./data/entity-store.js");
       const appElement = React.createElement(
         SpawnManagerContext,
         { value: spawnManager },
@@ -849,9 +878,17 @@ export async function handleTui(
             // migrated views ignore them. PR3+ removes this gate when
             // sessionId plumbing lands.
             scopeAwareProvider: result.appProps.provider,
-            children: React.createElement(RefreshProvider, {
-              factory: result.informerFactory,
-              children: appElement,
+            // The `--url` path is a single-connect lifecycle (no factory
+            // swap), so the EntityStoreFactory is constructed once and lives
+            // for the process lifetime. No dispose() path is needed; the
+            // interactive flow uses EntityStoreProviderHolder for swap
+            // safety.
+            children: React.createElement(EntityStoreProvider, {
+              value: new EntityStoreFactory(result.informerFactory),
+              children: React.createElement(RefreshProvider, {
+                factory: result.informerFactory,
+                children: appElement,
+              }),
             }),
           })
         : appElement;
@@ -1049,6 +1086,7 @@ export async function handleTui(
     const { TuiApp } = await import("./tui-app.js");
     const { InformerProviderHolder } = await import("./hooks/informer-context.js");
     const { RefreshProviderHolder } = await import("./hooks/refresh-context.js");
+    const { EntityStoreProviderHolder } = await import("./hooks/entity-store-context.js");
 
     const tuiAppEl = React.createElement(TuiApp, {
       groveExists,
@@ -1065,10 +1103,14 @@ export async function handleTui(
       holder: informerHolder,
       children: tuiAppEl,
     });
+    const storeHolderEl = React.createElement(EntityStoreProviderHolder, {
+      holder: informerHolder,
+      children: refreshHolderEl,
+    });
     const informerHolderEl = React.createElement(InformerProviderHolder, {
       holder: informerHolder,
       eager: true,
-      children: refreshHolderEl,
+      children: storeHolderEl,
     });
     root.render(
       React.createElement(

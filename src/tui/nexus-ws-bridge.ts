@@ -111,6 +111,16 @@ interface EventRecordPayload {
   sequence_number?: number | undefined;
 }
 
+interface InboxListPage {
+  readonly items: readonly Record<string, unknown>[];
+  readonly hasMore: boolean;
+  readonly nextCursor?: string | undefined;
+}
+
+const INBOX_DRAIN_INTERVAL_MS = 2000;
+const INBOX_DRAIN_TIMEOUT_MS = 5000;
+const INBOX_DRAIN_LIMIT = 100;
+
 /** URL builder for the per-role inbox subscription on the new events SSE. */
 function inboxStreamUrl(nexusUrl: string, role: string, sessionId?: string | undefined): string {
   // path_pattern is matched (SQL LIKE) against the stored zone-prefixed path.
@@ -156,9 +166,65 @@ function inboxDirPath(recipient: string, sessionId?: string | undefined): string
   return sessionId ? `/sessions/${sessionId}/ipc/${recipient}/inbox` : `/ipc/${recipient}/inbox`;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function stringField(
+  record: Record<string, unknown>,
+  ...keys: readonly string[]
+): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string") return value;
+  }
+  return undefined;
+}
+
+function booleanField(
+  record: Record<string, unknown>,
+  ...keys: readonly string[]
+): boolean | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "boolean") return value;
+  }
+  return undefined;
+}
+
+function messageIdFromInboxPath(path: string): string | undefined {
+  const clean = stripZonePrefix(path);
+  const file = clean
+    .split("/")
+    .filter((part) => part.length > 0)
+    .at(-1);
+  if (!file) return undefined;
+  return file.endsWith(".json") ? file.slice(0, -".json".length) : file;
+}
+
+function inboxPathFromListItem(
+  role: string,
+  item: Record<string, unknown>,
+  sessionId?: string | undefined,
+): string | undefined {
+  const path = stringField(item, "path");
+  if (path) return stripZonePrefix(path);
+  const name = stringField(item, "name");
+  if (!name) return undefined;
+  return `${inboxDirPath(role, sessionId)}/${name}`;
+}
+
+function modifiedMsFromListItem(item: Record<string, unknown>): number | undefined {
+  const raw = stringField(item, "modified_at", "modifiedAt");
+  if (!raw) return undefined;
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
 export class NexusWsBridge {
   private readonly opts: NexusWsBridgeOptions;
   private readonly localInstanceId: string;
+  private readonly bridgeStartedAtMs = Date.now();
   private readonly sessions = new Map<string, AgentSession>();
   // Active per-connect controllers. Each connectSse attempt creates one
   // and removes it in finally so long-running bridges don't accumulate
@@ -180,6 +246,11 @@ export class NexusWsBridge {
   private recentMessageIds = new Map<string, Set<string>>();
   private recentMessagePaths = new Map<string, Set<string>>();
   private static readonly RECENT_CAP = 256;
+  // SSE is the primary transport, but the Nexus event stream is intentionally
+  // best-effort around reconnects. A bounded inbox drain gives every registered
+  // role deterministic recovery for messages already materialized in VFS.
+  private inboxDrainStops = new Map<string, () => void>();
+  private inboxDrainInFlight = new Set<string>();
   // Unresolved-dead-letter queue: when a local push fails but correlation
   // could not be resolved even after in-line retry (linkage race or
   // transient store outage), the pending entry is queued here so a
@@ -266,9 +337,11 @@ export class NexusWsBridge {
       // reconnect loops against the same Nexus stream after a re-register.
       const prior = this.roleAborts.get(role);
       if (prior) prior.abort();
+      this.stopInboxDrain(role);
       const controller = new AbortController();
       this.roleAborts.set(role, controller);
       void this.startSseForRole(role, controller.signal);
+      this.startInboxDrain(role);
     }
   }
 
@@ -289,6 +362,7 @@ export class NexusWsBridge {
       if (!current || current.id !== expectedSessionId) return;
     }
     this.sessions.delete(role);
+    this.stopInboxDrain(role);
     const controller = this.roleAborts.get(role);
     if (controller) {
       controller.abort();
@@ -409,7 +483,13 @@ export class NexusWsBridge {
       ac.abort();
     }
     this.roleAborts.clear();
+    for (const stop of this.inboxDrainStops.values()) {
+      stop();
+    }
+    this.inboxDrainStops.clear();
+    this.inboxDrainInFlight.clear();
     this.recentMessageIds.clear();
+    this.recentMessagePaths.clear();
     this.sessions.clear();
   }
 
@@ -457,6 +537,96 @@ export class NexusWsBridge {
       return resp.ok;
     } catch {
       return false;
+    }
+  }
+
+  private startInboxDrain(role: string): void {
+    this.stopInboxDrain(role);
+    void this.drainRoleInbox(role, "register");
+    const stop = startInterval(
+      () => {
+        void this.drainRoleInbox(role, "poll");
+      },
+      INBOX_DRAIN_INTERVAL_MS,
+      { unref: true },
+    );
+    this.inboxDrainStops.set(role, stop);
+  }
+
+  private stopInboxDrain(role: string): void {
+    const stop = this.inboxDrainStops.get(role);
+    if (!stop) return;
+    stop();
+    this.inboxDrainStops.delete(role);
+  }
+
+  private async drainRoleInbox(role: string, reason: string): Promise<void> {
+    if (this.closed || this.draining || !this.sessions.has(role)) return;
+    if (this.inboxDrainInFlight.has(role)) return;
+    this.inboxDrainInFlight.add(role);
+    try {
+      let cursor: string | undefined;
+      let pages = 0;
+      const sessionId = this.currentSessionId();
+      do {
+        const page = await this.listInboxFiles(role, sessionId, cursor);
+        for (const item of page.items) {
+          const isDirectory = booleanField(item, "is_directory", "isDirectory");
+          if (isDirectory === true) continue;
+          const path = inboxPathFromListItem(role, item, sessionId);
+          if (!path || !path.endsWith(".json")) continue;
+          const modifiedMs = modifiedMsFromListItem(item);
+          if (modifiedMs !== undefined && modifiedMs < this.bridgeStartedAtMs) continue;
+          const messageId = messageIdFromInboxPath(path);
+          this.dispatchInboxDelivery(path, role, undefined, messageId, this.bridgeStartedAtMs);
+        }
+        cursor = page.hasMore ? page.nextCursor : undefined;
+        pages += 1;
+      } while (cursor && pages < 10);
+    } catch (err) {
+      debugLog(
+        "wsBridge.drainRoleInbox",
+        `role=${role} reason=${reason} err=${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      this.inboxDrainInFlight.delete(role);
+    }
+  }
+
+  private async listInboxFiles(
+    role: string,
+    sessionId?: string | undefined,
+    cursor?: string,
+  ): Promise<InboxListPage> {
+    const params = new URLSearchParams({
+      path: inboxDirPath(role, sessionId),
+      limit: String(INBOX_DRAIN_LIMIT),
+    });
+    if (cursor) params.set("cursor", cursor);
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), INBOX_DRAIN_TIMEOUT_MS);
+    try {
+      const resp = await fetch(`${this.opts.nexusUrl}/api/v2/files/list?${params.toString()}`, {
+        headers: {
+          Authorization: `Bearer ${this.opts.apiKey}`,
+        },
+        signal: ac.signal,
+      });
+      if (!resp.ok) return { items: [], hasMore: false };
+      const json = (await resp.json()) as unknown;
+      if (!isRecord(json)) return { items: [], hasMore: false };
+      const rawItems = Array.isArray(json.items)
+        ? json.items
+        : Array.isArray(json.files)
+          ? json.files
+          : [];
+      return {
+        items: rawItems.filter(isRecord),
+        hasMore: booleanField(json, "has_more", "hasMore") ?? false,
+        nextCursor: stringField(json, "next_cursor", "nextCursor"),
+      };
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -642,9 +812,9 @@ export class NexusWsBridge {
       // the silent post-start outage the migration is supposed to surface.
       const ctype = resp.headers.get("content-type") ?? "";
       if (!ctype.toLowerCase().includes("text/event-stream")) return false;
+      void this.drainRoleInbox(role, "stream-open");
 
       const reader = resp.body.getReader();
-      await this.drainInboxForRole(role);
       const decoder = new TextDecoder();
       let buffer = "";
       // Transport health ≠ message arrival. A valid SSE stream may be
@@ -774,9 +944,10 @@ export class NexusWsBridge {
         // pattern drift or shared streams.
         if (rec.type !== "write") return;
         const relPath = stripZonePrefix(rec.path);
+        const messageId = messageIdFromInboxPath(relPath) ?? rec.event_id;
         event = {
           event: "message_delivered",
-          message_id: rec.event_id,
+          message_id: messageId,
           sender: rec.agent_id ?? "",
           recipient: role,
           type: "event",
@@ -791,48 +962,29 @@ export class NexusWsBridge {
         `role=${role} sender=${event.sender} path=${event.path} registeredSessions=[${[...this.sessions.keys()].join(",")}]`,
       );
 
-      // Per-role dedupe: re-register aborts the old loop but cannot
-      // force the in-flight dispatch to unwind before the new loop
-      // comes online. Both loops can see the same Nexus message_id in
-      // the handoff window — without this guard the runtime would
-      // receive the same prompt twice.
-      if (event.message_id) {
-        let seen = this.recentMessageIds.get(role);
-        if (!seen) {
-          seen = new Set<string>();
-          this.recentMessageIds.set(role, seen);
-        }
-        if (seen.has(event.message_id)) {
-          debugLog("wsBridge.handleEvent", `DEDUPE role=${role} message_id=${event.message_id}`);
-          return;
-        }
-        seen.add(event.message_id);
-        if (seen.size > NexusWsBridge.RECENT_CAP) {
-          const first = seen.values().next().value;
-          if (first !== undefined) seen.delete(first);
-        }
-      }
-
-      const session = this.sessions.get(role);
-      if (!session) {
-        debugLog("wsBridge.handleEvent", `NO SESSION for role=${role} — cannot deliver`);
-        return;
-      }
-      if (!this.claimRecentPath(role, event.path)) {
-        debugLog("wsBridge.handleEvent", `DEDUPE role=${role} path=${event.path}`);
-        return;
-      }
-
-      // Rsync workspace files before delivering — the callback syncs source→target workspace
-      try {
-        this.opts.onBeforeDeliver?.(event.sender, role);
-      } catch {
-        /* non-fatal */
-      }
-      void this.readAndPush(event.path, role, session, event.sender, event.message_id);
+      this.dispatchInboxDelivery(event.path, role, event.sender, event.message_id);
     } catch {
       // Skip malformed events
     }
+  }
+
+  private rememberMessageId(role: string, messageId: string): boolean {
+    let seen = this.recentMessageIds.get(role);
+    if (!seen) {
+      seen = new Set<string>();
+      this.recentMessageIds.set(role, seen);
+    }
+    if (seen.has(messageId)) {
+      debugLog("wsBridge.handleEvent", `DEDUPE role=${role} message_id=${messageId}`);
+      return false;
+    }
+    seen.add(messageId);
+
+    if (seen.size > NexusWsBridge.RECENT_CAP) {
+      const first = seen.values().next().value;
+      if (first !== undefined) seen.delete(first);
+    }
+    return true;
   }
 
   private claimRecentPath(role: string, path: string): boolean {
@@ -850,44 +1002,25 @@ export class NexusWsBridge {
     return true;
   }
 
-  private async drainInboxForRole(role: string): Promise<void> {
+  private dispatchInboxDelivery(
+    path: string,
+    role: string,
+    sender: string | undefined,
+    ipcMessageId: string | undefined,
+    minTimestampMs?: number,
+  ): void {
     const session = this.sessions.get(role);
-    if (!session || this.closed || this.draining) return;
-    const sessionId = this.currentSessionId();
-    const dir = inboxDirPath(role, sessionId);
-    const listUrl = `${this.opts.nexusUrl}/api/v2/files/list?path=${encodeURIComponent(
-      dir,
-    )}&details=true`;
-    try {
-      const resp = await fetch(listUrl, {
-        headers: {
-          Authorization: `Bearer ${this.opts.apiKey}`,
-        },
-      });
-      if (!resp.ok) return;
-      const result = (await resp.json()) as {
-        items?: Array<{ path?: string; isDirectory?: boolean; modifiedAt?: string | null }>;
-      };
-      const files = (result.items ?? [])
-        .filter((item) => !item.isDirectory && typeof item.path === "string")
-        .sort((a, b) => {
-          const left = a.modifiedAt ?? "";
-          const right = b.modifiedAt ?? "";
-          const leftPath = a.path ?? "";
-          const rightPath = b.path ?? "";
-          return left === right ? leftPath.localeCompare(rightPath) : left.localeCompare(right);
-        });
-      for (const file of files) {
-        const path = file.path;
-        if (!path || !this.claimRecentPath(role, path)) continue;
-        void this.readAndPush(path, role, session, "", undefined);
-      }
-    } catch (err) {
-      debugLog(
-        "wsBridge.drainInbox",
-        `role=${role} dir=${dir} err=${err instanceof Error ? err.message : String(err)}`,
-      );
+    if (!session) {
+      debugLog("wsBridge.handleEvent", `NO SESSION for role=${role} — cannot deliver`);
+      return;
     }
+    if (ipcMessageId && !this.rememberMessageId(role, ipcMessageId)) return;
+    if (!this.claimRecentPath(role, path)) {
+      debugLog("wsBridge.handleEvent", `DEDUPE role=${role} path=${path}`);
+      return;
+    }
+
+    void this.readAndPush(path, role, session, sender ?? "", ipcMessageId, minTimestampMs);
   }
 
   /**
@@ -1459,6 +1592,7 @@ export class NexusWsBridge {
     session: AgentSession,
     sender: string,
     ipcMessageId?: string,
+    minTimestampMs?: number,
   ): Promise<void> {
     try {
       // Shutdown teardown guard: refuse to push or retry once shutdown
@@ -1508,11 +1642,23 @@ export class NexusWsBridge {
         sender?: string;
         message_id?: string;
         session_id?: string;
+        timestamp?: string;
         payload?: Record<string, unknown>;
       };
 
       const msgSender = msg.from ?? msg.sender ?? sender;
       const effectiveIpcMessageId = msg.message_id ?? ipcMessageId;
+      if (minTimestampMs !== undefined && typeof msg.timestamp === "string") {
+        const msgTimestampMs = Date.parse(msg.timestamp);
+        if (Number.isFinite(msgTimestampMs) && msgTimestampMs < minTimestampMs) {
+          debugLog(
+            "wsBridge.readAndPush",
+            `SKIP stale inbox message role=${_targetRole} path=${path} timestamp=${msg.timestamp}`,
+          );
+          return;
+        }
+      }
+
       const activeSessionId = this.currentSessionId();
       if (activeSessionId) {
         const pathSessionId = path.match(/^\/sessions\/([^/]+)\//)?.[1];
@@ -1524,6 +1670,14 @@ export class NexusWsBridge {
           );
           return;
         }
+      }
+
+      // Rsync workspace files before delivering — for event-stream delivery
+      // the sender is often only known after reading the inbox envelope.
+      try {
+        this.opts.onBeforeDeliver?.(msgSender, _targetRole);
+      } catch {
+        /* non-fatal */
       }
 
       // Pre-dispatch: typed acp.* envelopes go to the typed consumer and

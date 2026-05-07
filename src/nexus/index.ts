@@ -42,4 +42,6 @@ export {
   resolveNexusSkillCatalogRoot,
   writeSkillCatalogToNexusForTest,
 } from "./nexus-skill-catalog.js";
+export type { NexusWorkflowStoreConfig } from "./nexus-workflow-store.js";
+export { NexusWorkflowStore } from "./nexus-workflow-store.js";
 export { Semaphore } from "./semaphore.js";

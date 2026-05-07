@@ -212,10 +212,12 @@ export class NexusHttpClient implements NexusClient {
     }
     if (response.status === 412 || response.status === 409) {
       // Optimistic-concurrency mismatch (if_match / if_none_match). Surface
-      // as a structured error so callers (claim store CAS path) can retry.
+      // as a structured conflict so store-level repair paths can run.
       const detail = await response.text().catch(() => "");
+      const actualEtag = response.headers.get("etag") ?? undefined;
       throw new NexusConflictError({
         message: `Precondition failed: ${detail || response.status}`,
+        ...(actualEtag !== undefined ? { actualEtag } : {}),
       });
     }
     if (response.status === 429) {
@@ -283,7 +285,12 @@ export class NexusHttpClient implements NexusClient {
       encoding: "utf8",
     };
     if (opts?.ifMatch !== undefined) body.if_match = opts.ifMatch;
-    if (opts?.ifNoneMatch !== undefined) body.if_none_match = opts.ifNoneMatch === "*";
+    if (opts?.ifNoneMatch !== undefined) {
+      // Grove's storage port uses the HTTP If-None-Match "*" sentinel for
+      // create-only writes. Nexus REST v0.10 models the same condition as a
+      // boolean field instead of the raw header value.
+      body.if_none_match = opts.ifNoneMatch === "*";
+    }
 
     const result = await this.request("POST", "/api/v2/files/write", WriteResponseSchema, {
       body,

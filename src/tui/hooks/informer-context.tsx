@@ -68,21 +68,17 @@ function attachScopeListener(
 
 export function InformerProvider(props: InformerProviderProps): ReactNode {
   const { value, eager = false, scopeAwareProvider, children } = props;
-  const [scoped, setScoped] = useState<boolean>(() => readScopeFlag(scopeAwareProvider));
-  useEffect(() => {
-    setScoped(readScopeFlag(scopeAwareProvider));
-    const detach = attachScopeListener(scopeAwareProvider, setScoped);
-    return detach;
-  }, [scopeAwareProvider]);
-
+  // Scope listener is no longer used to gate eager-start. Per-view filtering
+  // is owned by `useEntityWatchEnabled` + opt-in bypass; see
+  // InformerProviderHolder for the rationale.
+  void scopeAwareProvider;
   useEffect(() => {
     if (!eager) return;
-    if (scoped) return;
     value.startAll();
     return () => {
       void value.stopAll();
     };
-  }, [value, eager, scoped]);
+  }, [value, eager]);
   return <InformerContext.Provider value={value}>{children}</InformerContext.Provider>;
 }
 
@@ -192,7 +188,29 @@ export function useProviderScoped(provider: unknown): boolean {
   return scoped;
 }
 
-export function useEntityWatchEnabled(provider: unknown, kind: WatchKind): boolean {
+export interface UseEntityWatchEnabledOptions {
+  /**
+   * When true, the gate ignores `provider.hasSessionScope()` and returns
+   * true even in scoped sessions. The caller takes responsibility for
+   * applying client-side scope filtering on the entities (e.g. by
+   * `metadata.creationTimestamp >= sessionStartedAt`). Without this,
+   * scoped views fall back to the polled provider path which scopes
+   * server-side via `setSessionScope`.
+   *
+   * The running-view contribution feed sets this to true and applies a
+   * session-time filter inline. Other views (agent-list, frontier-view,
+   * dashboard) currently rely on the conservative default. PR3+ may add
+   * server-side sessionId filtering to /api/watch, at which point this
+   * opt-in becomes the default.
+   */
+  readonly bypassSessionScopeGate?: boolean | undefined;
+}
+
+export function useEntityWatchEnabled(
+  provider: unknown,
+  kind: WatchKind,
+  options: UseEntityWatchEnabledOptions = {},
+): boolean {
   const factory = useContext(InformerContext);
   // PR2 (#388) Codex round 3: subscribe to scope transitions so that a
   // view rendered before the user enters a scoped session re-renders to
@@ -202,7 +220,7 @@ export function useEntityWatchEnabled(provider: unknown, kind: WatchKind): boole
   if (!factory) return false;
   if (!factory.supportsKind(kind)) return false;
   if (factory.mode !== "remote") return false;
-  if (scoped) return false;
+  if (scoped && !options.bypassSessionScopeGate) return false;
   return true;
 }
 
@@ -319,22 +337,27 @@ export function InformerProviderHolder(props: InformerProviderHolderProps): Reac
     return detach;
   }, [holder, sync]);
 
+  // Render the same Context.Provider element on every transition (factory
+  // may be null briefly between mount and the holder's first set()). A
+  // `<>{children}</>` ↔ `<InformerProvider>...` swap would unmount and
+  // remount every descendant the moment the factory arrives, erasing
+  // TuiApp's mode/appProps state mid-session-start. While factory is null
+  // the holder's effect for eager-start is a no-op.
+  //
+  // Watch streams stay running across session-scope transitions: per-view
+  // gating is owned by `useEntityWatchEnabled` (default-off in scoped mode,
+  // opt-in via `bypassSessionScopeGate` for views that apply client-side
+  // session filtering). Suspending the stream here would leave the cache
+  // empty even for opt-in consumers.
+  void scopeAwareProvider;
+  void provider;
+  void setScoped;
   useEffect(() => {
-    setScoped(readScopeFlag(resolvedProvider));
-    const detach = attachScopeListener(resolvedProvider, setScoped);
-    return detach;
-  }, [resolvedProvider]);
-
-  useEffect(() => {
-    if (!factory || !eager || scoped) return;
+    if (!factory || !eager) return;
     factory.startAll();
     return () => {
       void factory.stopAll();
     };
-  }, [factory, eager, scoped]);
-
-  // Keep a stable provider wrapper mounted even before the async factory is
-  // available. Switching from a fragment to a provider remounts children,
-  // which resets TuiApp during the welcome -> boardroom handoff.
+  }, [factory, eager]);
   return <InformerContext.Provider value={factory}>{children}</InformerContext.Provider>;
 }

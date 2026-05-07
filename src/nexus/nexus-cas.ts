@@ -125,6 +125,7 @@ export class NexusCas implements ContentStore {
   private readonly config: ResolvedNexusConfig;
   private readonly zoneId: string;
   private readonly semaphore: Semaphore;
+  private readonly fileUploadSemaphore: Semaphore;
   private readonly existsCache: LruCache<boolean>;
   private readonly statCache: LruCache<Artifact>;
 
@@ -133,6 +134,7 @@ export class NexusCas implements ContentStore {
     this.client = this.config.client;
     this.zoneId = this.config.zoneId;
     this.semaphore = new Semaphore(this.config.maxConcurrency);
+    this.fileUploadSemaphore = new Semaphore(1);
     this.existsCache = new LruCache(this.config.cacheMaxEntries);
     this.statCache = new LruCache(this.config.cacheMaxEntries);
   }
@@ -293,12 +295,14 @@ export class NexusCas implements ContentStore {
         return contentHash;
       }
 
-      const fileData = new Uint8Array(await readFile(stagingFile));
-      await withRetry(
-        () => withSemaphore(this.semaphore, () => this.client.write(blobPath, fileData)),
-        "putFile",
-        this.config,
-      );
+      await withSemaphore(this.fileUploadSemaphore, async () => {
+        const fileData = new Uint8Array(await readFile(stagingFile));
+        await withRetry(
+          () => withSemaphore(this.semaphore, () => this.client.write(blobPath, fileData)),
+          "putFile",
+          this.config,
+        );
+      });
 
       const metaP = casMetaPath(this.zoneId, contentHash);
       await withRetry(

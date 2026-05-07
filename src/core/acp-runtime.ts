@@ -103,6 +103,70 @@ async function launchSubprocess(
   const stdoutWebReadable = NodeReadable.toWeb(child.stdout) as ReadableStream<Uint8Array>;
   const clientStream = ndJsonStream(stdinWebWritable, stdoutWebReadable);
 
+  // Optionally tee child stderr to our stderr with an [acp:agent:pid] prefix
+  // so launch failures (auth errors, missing CLI, ACP shim crashes) are
+  // observable instead of silently dropped. Gated behind GROVE_DEBUG_ACP=1
+  // because: (a) parent stderr is persisted to managed-service log files,
+  // so verbose or looping children can grow logs without bound; (b) child
+  // stderr can carry repository content or credentials that should not be
+  // captured by default. Always read from the pipe (drain) to avoid the
+  // OS pipe buffer back-pressuring the child.
+  //
+  // Implementation notes:
+  //   - Stream-decode via TextDecoder so UTF-8 code points split across
+  //     chunk boundaries don't get mangled.
+  //   - Cap by raw UTF-8 byte count (Buffer.byteLength), not JS string
+  //     length (which is UTF-16 code units and undercounts non-BMP).
+  //   - Truncate on a line boundary; the trailing partial line after a
+  //     truncation is dropped along with everything after it.
+  const pid = child.pid ?? 0;
+  const teeEnabled = process.env.GROVE_DEBUG_ACP === "1";
+  const prefix = `[acp:${agent}:${pid}] `;
+  const MAX_BYTES = 1_048_576; // 1 MiB cap per session.
+  let bytesWritten = 0;
+  let truncationLogged = false;
+  let lineCarry = "";
+  const decoder = new TextDecoder("utf-8", { fatal: false });
+  const writeLine = (line: string): boolean => {
+    // Returns false if the cap was hit; caller stops feeding more.
+    if (bytesWritten >= MAX_BYTES) return false;
+    const out = `${prefix}${line}\n`;
+    const outBytes = Buffer.byteLength(out, "utf-8");
+    if (bytesWritten + outBytes > MAX_BYTES) {
+      bytesWritten = MAX_BYTES;
+      return false;
+    }
+    process.stderr.write(out);
+    bytesWritten += outBytes;
+    return true;
+  };
+  child.stderr.on("data", (chunk: Buffer) => {
+    if (!teeEnabled) return;
+    if (bytesWritten >= MAX_BYTES) return;
+    // `stream: true` keeps a partial multi-byte code point pending across
+    // chunks instead of emitting a replacement char.
+    const text = lineCarry + decoder.decode(chunk, { stream: true });
+    const parts = text.split("\n");
+    lineCarry = parts.pop() ?? "";
+    for (const line of parts) {
+      if (line.length === 0) continue;
+      if (!writeLine(line) && !truncationLogged) {
+        process.stderr.write(`${prefix}[truncated after ${MAX_BYTES} bytes]\n`);
+        truncationLogged = true;
+        return;
+      }
+    }
+  });
+  child.stderr.on("end", () => {
+    if (!teeEnabled) return;
+    // Flush any trailing partial line that didn't have a newline.
+    const tail = lineCarry + decoder.decode();
+    lineCarry = "";
+    if (tail.length > 0 && bytesWritten < MAX_BYTES) {
+      writeLine(tail);
+    }
+  });
+
   const dispose = async () => {
     try {
       child.kill("SIGTERM");
@@ -188,6 +252,8 @@ function appendCodexMcpServerOverrides(
 }
 
 export class AcpRuntime implements AgentRuntime {
+  readonly sendsInitialPromptOnSpawn = true;
+
   private resolver: PermissionResolver;
   private readonly fsAuditor: AcpRuntimeOptions["fsAuditor"];
   private readonly logDir: string | undefined;
@@ -277,12 +343,21 @@ export class AcpRuntime implements AgentRuntime {
           terminal: false,
         },
       });
-      const mcpServers = (config.mcpServers ?? []).map((s) => ({
-        name: s.name,
-        command: s.command,
-        args: [...(s.args ?? [])],
-        env: s.env ? Object.entries(s.env).map(([name, value]) => ({ name, value })) : [],
-      }));
+      const groveMcpEnv = Object.fromEntries(
+        Object.entries(mergedEnv).filter(
+          ([key]) => key.startsWith("GROVE_") || key === "NEXUS_API_KEY",
+        ),
+      ) as Record<string, string>;
+      const mcpServers = (config.mcpServers ?? []).map((s) => {
+        const inheritedEnv = s.name === "grove" ? groveMcpEnv : {};
+        const env = { ...inheritedEnv, ...(s.env ?? {}) };
+        return {
+          name: s.name,
+          command: s.command,
+          args: [...(s.args ?? [])],
+          env: Object.entries(env).map(([name, value]) => ({ name, value })),
+        };
+      });
       created = await connection.newSession({ cwd: config.cwd, mcpServers });
     } catch (err) {
       try {
@@ -453,6 +528,11 @@ export class AcpRuntime implements AgentRuntime {
     const entry = this.sessions.get(session.id);
     if (!entry) return;
     entry.closed = true;
+    try {
+      await entry.currentTurn?.cancel();
+    } catch {
+      /* best effort */
+    }
     // Drain any pending sends so we don't leak prompt() promises past dispose.
     try {
       await entry.sendChainTail;

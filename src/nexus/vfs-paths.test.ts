@@ -23,12 +23,15 @@ import {
   ftsIndexPath,
   outcomePath,
   outcomeStatusIndexPath,
+  relationIndexDir,
   relationIndexPath,
   skillCatalogBundlePath,
   skillCatalogIndexPath,
   skillCatalogSignaturePath,
   tagIndexPath,
   targetLockPath,
+  workflowPath,
+  workflowsDir,
 } from "./vfs-paths.js";
 
 // ---------------------------------------------------------------------------
@@ -194,6 +197,7 @@ describe("path construction correctness", () => {
   const sourceCid = "blake3source";
   const status = "open";
   const targetRef = "ref-abc";
+  const workflowId = "workflow-001";
 
   test("casPath returns /zones/{zone}/cas/{hash}", () => {
     expect(casPath(zone, hash)).toBe(`/zones/${zone}/cas/${hash}`);
@@ -218,6 +222,18 @@ describe("path construction correctness", () => {
   test("relationIndexPath returns /zones/{zone}/indexes/relations/{target}/{source}.json", () => {
     expect(relationIndexPath(zone, targetCid, sourceCid)).toBe(
       `/zones/${zone}/indexes/relations/${targetCid}/${sourceCid}.json`,
+    );
+  });
+
+  test("relationIndexPath scopes to session path when sessionId is provided", () => {
+    expect(relationIndexPath(zone, targetCid, sourceCid, "session-1")).toBe(
+      `/zones/${zone}/sessions/session-1/indexes/relations/${targetCid}/${sourceCid}.json`,
+    );
+  });
+
+  test("relationIndexDir scopes to session path when sessionId is provided", () => {
+    expect(relationIndexDir(zone, targetCid, "session-1")).toBe(
+      `/zones/${zone}/sessions/session-1/indexes/relations/${targetCid}`,
     );
   });
 
@@ -255,6 +271,14 @@ describe("path construction correctness", () => {
     expect(targetLockPath(zone, targetRef)).toBe(
       `/zones/${zone}/indexes/claims/target-lock/${targetRef}`,
     );
+  });
+
+  test("workflowPath returns /zones/{zone}/workflows/{workflowId}.json", () => {
+    expect(workflowPath(zone, workflowId)).toBe(`/zones/${zone}/workflows/${workflowId}.json`);
+  });
+
+  test("workflowsDir returns /zones/{zone}/workflows", () => {
+    expect(workflowsDir(zone)).toBe(`/zones/${zone}/workflows`);
   });
 });
 

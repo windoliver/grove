@@ -20,6 +20,8 @@ import TestRenderer, { act } from "react-test-renderer";
 import { InformerFactory } from "../../core/informer.js";
 import type { WatchEntity } from "../../core/watch-events.js";
 import { WatchHub } from "../../core/watch-hub.js";
+import { EntityStoreFactory } from "../data/entity-store.js";
+import { EntityStoreProvider } from "./entity-store-context.js";
 import { InformerProvider } from "./informer-context.js";
 import { useDerived } from "./use-derived.js";
 
@@ -130,7 +132,9 @@ describe("useDerived mount + publish (PR3 #389)", () => {
       renderer = TestRenderer.create(
         (
           <InformerProvider value={factory}>
-            <Probe factory={factory} onState={onState} />
+            <EntityStoreProvider value={new EntityStoreFactory(factory)}>
+              <Probe factory={factory} onState={onState} />
+            </EntityStoreProvider>
           </InformerProvider>
         ) as React.ReactElement,
       );
@@ -184,7 +188,9 @@ describe("useDerived mount + publish (PR3 #389)", () => {
       renderer = TestRenderer.create(
         (
           <InformerProvider value={factory}>
-            <Probe factory={factory} onState={onState} />
+            <EntityStoreProvider value={new EntityStoreFactory(factory)}>
+              <Probe factory={factory} onState={onState} />
+            </EntityStoreProvider>
           </InformerProvider>
         ) as React.ReactElement,
       );
@@ -238,7 +244,9 @@ describe("useDerived mount + publish (PR3 #389)", () => {
       renderer = TestRenderer.create(
         (
           <InformerProvider value={factory}>
-            <CountingProbe factory={factory} />
+            <EntityStoreProvider value={new EntityStoreFactory(factory)}>
+              <CountingProbe factory={factory} />
+            </EntityStoreProvider>
           </InformerProvider>
         ) as React.ReactElement,
       );
@@ -261,9 +269,10 @@ describe("useDerived mount + publish (PR3 #389)", () => {
       await flushMicrotasks(50);
     });
 
-    // Without coalescing: 50 events → 50 computes. With coalescing: synchronous
-    // burst collapses to 1 microtask-deferred recompute. Allow up to a few
-    // (test renderer / scheduler ticks may schedule extra microtasks).
+    // useDerived's setTimeout(0) macrotask gate collapses the entire burst
+    // (across multiple Informer-dispatch microtasks AND across multiple kinds)
+    // into a single recompute. Without it, callers like Dashboard/DAG would
+    // pay O(N) full-cache projections per relist on large Groves.
     const burstComputes = computeCount - baselineComputes;
     expect(burstComputes).toBeLessThanOrEqual(3);
     expect(burstComputes).toBeGreaterThanOrEqual(1);
@@ -293,7 +302,9 @@ describe("useDerived mount + publish (PR3 #389)", () => {
       renderer = TestRenderer.create(
         (
           <InformerProvider value={factory}>
-            <Probe factory={factory} onState={onState} />
+            <EntityStoreProvider value={new EntityStoreFactory(factory)}>
+              <Probe factory={factory} onState={onState} />
+            </EntityStoreProvider>
           </InformerProvider>
         ) as React.ReactElement,
       );

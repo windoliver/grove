@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { LoopStopStatus } from "../core/loop-runner.js";
 import type { SessionStore } from "../core/session.js";
 import { sessionStoreConformance } from "../core/session-store.conformance.js";
 import { makeContribution } from "../core/test-helpers.js";
@@ -218,6 +219,23 @@ describe("updateSession", () => {
     expect(fetched!.status).toBe("completed");
     expect(fetched!.completedAt).toBe(completedAt);
     expect(fetched!.stopReason).toBe("done");
+  });
+
+  it("persists semantic stopStatus through getSession and listSessions", async () => {
+    const s = await store.createSession({});
+    const completedAt = new Date().toISOString();
+    await store.updateSession(s.id, {
+      status: "completed",
+      completedAt,
+      stopReason: "No improvement for 5 rounds",
+      stopStatus: LoopStopStatus.Plateau,
+    });
+
+    const fetched = await store.getSession(s.id);
+    expect(fetched!.stopStatus).toBe(LoopStopStatus.Plateau);
+
+    const listed = await store.listSessions({ includeArchived: true });
+    expect(listed.find((session) => session.id === s.id)?.stopStatus).toBe(LoopStopStatus.Plateau);
   });
 
   it("updateSession({ status: 'archived' }) delegates to archiveSession", async () => {

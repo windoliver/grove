@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { GroveContract } from "../core/contract.js";
 import { LocalEventBus } from "../core/local-event-bus.js";
+import { LoopStopStatus } from "../core/loop-runner.js";
 import { MockRuntime } from "../core/mock-runtime.js";
 import { SessionService } from "./session-service.js";
 import type { WsSocket } from "./ws-handler.js";
@@ -169,6 +170,7 @@ describe("createWsHandler", () => {
       .map((s) => JSON.parse(s) as Record<string, unknown>)
       .filter((m) => m.type === "session_complete");
     expect(events.length).toBeGreaterThanOrEqual(1);
+    expect(events.at(-1)?.stopStatus).toBe(LoopStopStatus.Interrupted);
 
     handler.close(ws);
     service.destroy();

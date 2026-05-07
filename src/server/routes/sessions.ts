@@ -52,6 +52,8 @@ function toSessionResponse(session: Session) {
     status: session.status,
     startedAt: session.createdAt,
     endedAt: session.completedAt,
+    stopReason: session.stopReason,
+    stopStatus: session.stopStatus,
     contributionCount: session.contributionCount,
     ...(session.topology !== undefined && { topology: session.topology }),
     // Expose the frozen contract snapshot so clients (e.g. NexusProvider mirroring)

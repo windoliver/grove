@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GroveContract } from "./contract.js";
 import { LocalEventBus } from "./local-event-bus.js";
+import { LoopStopStatus } from "./loop-runner.js";
 import { MockRuntime } from "./mock-runtime.js";
 import {
   computeRoutingSignatureForContribution,
@@ -171,6 +172,37 @@ describe("SessionOrchestrator", () => {
     bus.close();
   });
 
+  test("start does not resend goals for runtimes that prompt during spawn", async () => {
+    const contract = makeContract();
+    const runtime = new MockRuntime();
+    Object.assign(runtime, { sendsInitialPromptOnSpawn: true });
+    const { orchestrator, bus } = makeOrchestrator(contract, { runtime });
+
+    await orchestrator.start();
+
+    expect(runtime.sendCalls).toHaveLength(0);
+    bus.close();
+  });
+
+  test("start forwards Grove MCP server through AgentConfig", async () => {
+    const contract = makeContract();
+    const { orchestrator, runtime, bus } = makeOrchestrator(contract, {
+      sessionId: "session-mcp-forward",
+    });
+
+    await orchestrator.start();
+
+    const coderConfig = runtime.spawnCalls.find((call) => call.role === "coder")?.config;
+    expect(coderConfig?.mcpServers).toHaveLength(1);
+    expect(coderConfig?.mcpServers?.[0]?.name).toBe("grove");
+    expect(coderConfig?.mcpServers?.[0]?.command).toBe("bun");
+    expect(coderConfig?.mcpServers?.[0]?.args?.join(" ")).toContain("mcp/serve");
+    expect(coderConfig?.mcpServers?.[0]?.env?.GROVE_DIR).toBe("/tmp/.grove");
+    expect(coderConfig?.mcpServers?.[0]?.env?.GROVE_AGENT_ROLE).toBe("coder");
+    expect(coderConfig?.mcpServers?.[0]?.env?.GROVE_SESSION_ID).toBe("session-mcp-forward");
+    bus.close();
+  });
+
   test("stop closes all agents", async () => {
     const contract = makeContract();
     const { orchestrator, runtime, bus } = makeOrchestrator(contract);
@@ -185,6 +217,20 @@ describe("SessionOrchestrator", () => {
     const status = orchestrator.getStatus();
     expect(status.stopped).toBe(true);
     expect(status.stopReason).toBe("Budget exceeded");
+    expect(runtime.closeCalls).toHaveLength(2);
+    bus.close();
+  });
+
+  test("stop records semantic stop status", async () => {
+    const contract = makeContract();
+    const { orchestrator, runtime, bus } = makeOrchestrator(contract);
+
+    await orchestrator.start();
+    await orchestrator.stop("Operator interrupted", LoopStopStatus.Interrupted);
+
+    const status = orchestrator.getStatus();
+    expect(status.stopped).toBe(true);
+    expect(status.stopStatus).toBe(LoopStopStatus.Interrupted);
     expect(runtime.closeCalls).toHaveLength(2);
     bus.close();
   });
@@ -342,6 +388,157 @@ describe("SessionOrchestrator", () => {
     // 2 initial goal sends + 1 routed handoff to reviewer.
     expect(runtime.sendCalls).toHaveLength(3);
     expect(runtime.sendCalls[2]!.message).toContain("local coder contribution");
+    bus.close();
+  });
+
+  test("polling waits for every role to signal done before stopping", async () => {
+    const runtime = new MockRuntime();
+    const bus = new LocalEventBus();
+    const contract = makeContract();
+    const contributions: ReturnType<typeof makeContribution>[] = [];
+    const contributionStore = {
+      list: async () => contributions,
+    };
+
+    const orchestrator = new SessionOrchestrator({
+      goal: "Build auth module",
+      contract,
+      topology: contract.topology!,
+      runtime,
+      eventBus: bus,
+      projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
+      workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback",
+      contributionStore,
+    });
+    const internals = orchestrator as unknown as {
+      startContributionPolling: () => void;
+      pollContributions: () => Promise<void>;
+    };
+    internals.startContributionPolling = () => undefined;
+
+    const started = await orchestrator.start();
+    const coderSessionId = started.agents.find((a) => a.role === "coder")?.session.id;
+    const reviewerSessionId = started.agents.find((a) => a.role === "reviewer")?.session.id;
+    const coderToken = runtime.spawnCalls.find((c) => c.role === "coder")?.config.env
+      ?.GROVE_ROUTING_TOKEN;
+    const reviewerToken = runtime.spawnCalls.find((c) => c.role === "reviewer")?.config.env
+      ?.GROVE_ROUTING_TOKEN;
+
+    contributions.push(
+      signContributionForRouting(
+        makeContribution({
+          summary: "[DONE] coder done",
+          context: { done: true },
+          agent: { agentId: coderSessionId ?? "missing", role: "coder" },
+        }),
+        coderToken ?? "missing-token",
+      ),
+    );
+    await internals.pollContributions();
+
+    expect(orchestrator.getStatus().stopped).toBe(false);
+
+    contributions.push(
+      signContributionForRouting(
+        makeContribution({
+          summary: "[DONE] reviewer done",
+          context: { done: true },
+          agent: { agentId: reviewerSessionId ?? "missing", role: "reviewer" },
+        }),
+        reviewerToken ?? "missing-token",
+      ),
+    );
+    await internals.pollContributions();
+
+    const final = orchestrator.getStatus();
+    expect(final.stopped).toBe(true);
+    expect(final.stopStatus).toBe(LoopStopStatus.Achieved);
+    bus.close();
+  });
+
+  test("polling stops when terminal reviewer signals done but ignores non-terminal coder done", async () => {
+    const runtime = new MockRuntime();
+    const bus = new LocalEventBus();
+    const contract = makeContract({
+      topology: {
+        structure: "graph",
+        roles: [
+          {
+            name: "coder",
+            description: "Write code",
+            command: "echo coder",
+            edges: [{ target: "reviewer", edgeType: "delegates" }],
+          },
+          {
+            name: "reviewer",
+            description: "Review code",
+            command: "echo reviewer",
+          },
+        ],
+      },
+    });
+    const contributions: ReturnType<typeof makeContribution>[] = [];
+    const contributionStore = {
+      list: async () => contributions,
+    };
+
+    const orchestrator = new SessionOrchestrator({
+      goal: "Build auth module",
+      contract,
+      topology: contract.topology!,
+      runtime,
+      eventBus: bus,
+      projectRoot: "/tmp",
+      repos: [{ kind: "local", path: "/tmp" }],
+      workspaceBaseDir: "/tmp/workspaces",
+      workspaceIsolationPolicy: "allow-fallback",
+      contributionStore,
+    });
+    const internals = orchestrator as unknown as {
+      startContributionPolling: () => void;
+      pollContributions: () => Promise<void>;
+    };
+    internals.startContributionPolling = () => undefined;
+
+    const started = await orchestrator.start();
+    const coderSessionId = started.agents.find((a) => a.role === "coder")?.session.id;
+    const reviewerSessionId = started.agents.find((a) => a.role === "reviewer")?.session.id;
+    const coderToken = runtime.spawnCalls.find((c) => c.role === "coder")?.config.env
+      ?.GROVE_ROUTING_TOKEN;
+    const reviewerToken = runtime.spawnCalls.find((c) => c.role === "reviewer")?.config.env
+      ?.GROVE_ROUTING_TOKEN;
+
+    contributions.push(
+      signContributionForRouting(
+        makeContribution({
+          summary: "[DONE] coder done",
+          context: { done: true },
+          agent: { agentId: coderSessionId ?? "missing", role: "coder" },
+        }),
+        coderToken ?? "missing-token",
+      ),
+    );
+    await internals.pollContributions();
+
+    expect(orchestrator.getStatus().stopped).toBe(false);
+
+    contributions.push(
+      signContributionForRouting(
+        makeContribution({
+          summary: "[DONE] reviewer done",
+          context: { done: true },
+          agent: { agentId: reviewerSessionId ?? "missing", role: "reviewer" },
+        }),
+        reviewerToken ?? "missing-token",
+      ),
+    );
+    await internals.pollContributions();
+
+    const final = orchestrator.getStatus();
+    expect(final.stopped).toBe(true);
+    expect(final.stopStatus).toBe(LoopStopStatus.Achieved);
     bus.close();
   });
 
